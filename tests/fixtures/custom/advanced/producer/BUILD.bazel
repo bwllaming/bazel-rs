@@ -1,0 +1,2 @@
+load(":defs.bzl", "produce")
+produce(name = "payload", visibility = ["//visibility:public"])

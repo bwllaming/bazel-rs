@@ -1,0 +1,19 @@
+load(":defs.bzl", "chain", "empty", "forward", "hidden", "inspect", "none", "scalar", "text")
+
+exports_files(["a.txt", "b.txt"])
+
+scalar(name = "scalar")
+words = ["caller"]
+scalar(name = "snapshot", message = "override", words = words, number = -2, enabled = False)
+words.append("not-in-call-snapshot")
+
+chain(name = "chain", src = ":a.txt")
+genrule(name = "chain_native", srcs = [":chain"], outs = ["chain-final.txt"], cmd = "cat $(location :chain) > $@")
+text(name = "independent", text = "independent\n")
+filegroup(name = "chain_all", srcs = [":chain_native", ":independent"])
+
+forward(name = "forwarded")
+inspect(name = "inspected", out = "inspect-main.txt", extras = ["inspect-extra.txt", "inspect-other.txt"])
+empty(name = "empty")
+none(name = "none")
+hidden(name = "hidden", out = "hidden-explicit.txt")

@@ -1,0 +1,2 @@
+load("//:errors.bzl", "cycle")
+cycle(name = "bad")

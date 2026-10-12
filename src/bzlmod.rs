@@ -1,0 +1,1254 @@
+//! Native, recording-only MODULE.bazel evaluation (not dependency resolution).
+//!
+//! No extension is loaded, repository fetched, patch command run, or toolchain
+//! resolved here. Labels remain apparent labels until the resolver supplies a
+//! repository mapping. Includes and repository-rule evaluation are unsupported.
+use allocative::Allocative;
+use anyhow::{anyhow, bail};
+use serde_json::Value as Json;
+use starlark::environment::{GlobalsBuilder, LibraryExtension, Module};
+use starlark::eval::{Arguments, Evaluator};
+use starlark::syntax::{AstModule, Dialect};
+use starlark::values::dict::DictRef;
+use starlark::values::list::ListRef;
+use starlark::values::tuple::TupleRef;
+use starlark::values::{Heap, Value, ValueLike};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::path::Path;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModuleFile {
+    /// None means no module() directive; legal for an anonymous root module.
+    pub module: Option<ModuleInfo>,
+    pub dependencies: Vec<Dependency>,
+    /// Keyed by module name, with at most one override of any kind per module.
+    pub overrides: BTreeMap<String, ModuleOverride>,
+    pub extension_usages: Vec<ExtensionUsage>,
+    pub registrations: Vec<Registration>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModuleInfo {
+    pub name: String,
+    pub version: String,
+    /// Declared metadata only; Bazel 9.3 treats this field as a no-op (level 0).
+    pub compatibility_level: i32,
+    /// None is omitted; Some("") is explicitly defaulted to the module name.
+    pub repo_name: Option<String>,
+    pub bazel_compatibility: Vec<String>,
+}
+impl ModuleInfo {
+    pub fn effective_repo_name(&self) -> &str {
+        self.repo_name
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&self.name)
+    }
+}
+
+/// Distinguishes omitted, explicit empty/string, and explicit None (nodep).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum DependencyRepoName {
+    #[default]
+    Default,
+    Explicit(String),
+    Nodep,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Dependency {
+    pub name: String,
+    pub version: String,
+    /// Declared metadata only; Bazel 9.3 treats this field as a no-op (-1).
+    pub max_compatibility_level: i32,
+    pub repo_name: DependencyRepoName,
+    pub dev_dependency: bool,
+}
+impl Default for Dependency {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            version: String::new(),
+            max_compatibility_level: -1,
+            repo_name: DependencyRepoName::Default,
+            dev_dependency: false,
+        }
+    }
+}
+impl Dependency {
+    pub fn effective_repo_name(&self) -> Option<&str> {
+        match &self.repo_name {
+            DependencyRepoName::Nodep => None,
+            DependencyRepoName::Explicit(s) if !s.is_empty() => Some(s),
+            _ => Some(&self.name),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PatchOptions {
+    pub patches: Vec<String>,
+    pub patch_cmds: Vec<String>,
+    pub patch_strip: i32,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ModuleOverride {
+    LocalPath {
+        path: String,
+    },
+    SingleVersion {
+        version: String,
+        registry: String,
+        patches: PatchOptions,
+    },
+    MultipleVersion {
+        versions: Vec<String>,
+        registry: String,
+    },
+    Git {
+        remote: String,
+        commit: String,
+        tag: String,
+        branch: String,
+        init_submodules: bool,
+        strip_prefix: String,
+        patches: PatchOptions,
+    },
+    Archive {
+        urls: Vec<String>,
+        integrity: String,
+        sha256: String,
+        strip_prefix: String,
+        archive_type: String,
+        patches: PatchOptions,
+    },
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExtensionIdentity {
+    /// Apparent label, not a resolved canonical repository identity.
+    pub label: String,
+    pub extension_name: String,
+    /// Each isolate=True call gets a distinct file-local identity.
+    pub isolation: Option<usize>,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExtensionDeclaration {
+    pub dev_dependency: bool,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExtensionUsage {
+    pub identity: ExtensionIdentity,
+    pub declarations: Vec<ExtensionDeclaration>,
+    pub tags: Vec<ExtensionTag>,
+    pub imports: Vec<RepositoryImport>,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExtensionTag {
+    pub name: String,
+    pub attributes: BTreeMap<String, Json>,
+    pub declaration: usize,
+    pub dev_dependency: bool,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RepositoryImport {
+    pub local_name: String,
+    pub exported_name: String,
+    pub declaration: usize,
+    pub dev_dependency: bool,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum RegistrationKind {
+    #[default]
+    Toolchains,
+    ExecutionPlatforms,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Registration {
+    pub kind: RegistrationKind,
+    pub labels: Vec<String>,
+    pub dev_dependency: bool,
+}
+
+#[derive(Default)]
+struct State {
+    file: ModuleFile,
+    non_module_called: bool,
+    repo_names: BTreeSet<String>,
+    next_isolation: usize,
+}
+
+// Upstream derives generate unsafe marker-trait implementations. All our values
+// contain only owned/static data or integer handles; no handwritten unsafe code.
+#[allow(unsafe_code)]
+mod values {
+    use super::*;
+    use starlark::starlark_simple_value;
+    use starlark::values::{
+        NoSerialize, ProvidesStaticType, StarlarkPagablePanic, StarlarkValue, starlark_value,
+    };
+
+    #[derive(Default, ProvidesStaticType)]
+    pub(super) struct Collector {
+        pub state: RefCell<State>,
+        pub ignore_overrides: bool,
+    }
+
+    #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
+    pub(super) struct Builtin(pub &'static str);
+    impl fmt::Display for Builtin {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+    starlark_simple_value!(Builtin);
+    #[starlark_value(type = "module_directive")]
+    impl<'v> StarlarkValue<'v> for Builtin {
+        fn invoke(
+            &self,
+            _me: Value<'v>,
+            args: &Arguments<'v, '_>,
+            eval: &mut Evaluator<'v, '_, '_>,
+        ) -> starlark::Result<Value<'v>> {
+            invoke(self.0, args, eval).map_err(starlark::Error::new_other)
+        }
+    }
+
+    #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
+    pub(super) struct ExtensionProxy {
+        pub usage: usize,
+        pub declaration: usize,
+    }
+    impl fmt::Display for ExtensionProxy {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("<module_extension_proxy>")
+        }
+    }
+    starlark_simple_value!(ExtensionProxy);
+    #[starlark_value(type = "module_extension_proxy")]
+    impl<'v> StarlarkValue<'v> for ExtensionProxy {
+        fn get_attr(&self, name: &str, heap: Heap<'v>) -> Option<Value<'v>> {
+            Some(heap.alloc(TagCallable {
+                proxy: self.clone(),
+                name: name.to_owned(),
+            }))
+        }
+        fn has_attr(&self, _name: &str, _heap: Heap<'v>) -> bool {
+            true
+        }
+    }
+
+    #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
+    struct TagCallable {
+        proxy: ExtensionProxy,
+        name: String,
+    }
+    impl fmt::Display for TagCallable {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "<extension tag {}>", self.name)
+        }
+    }
+    starlark_simple_value!(TagCallable);
+    #[starlark_value(type = "module_extension_tag")]
+    impl<'v> StarlarkValue<'v> for TagCallable {
+        fn invoke(
+            &self,
+            _me: Value<'v>,
+            args: &Arguments<'v, '_>,
+            eval: &mut Evaluator<'v, '_, '_>,
+        ) -> starlark::Result<Value<'v>> {
+            let record = || -> anyhow::Result<()> {
+                args.no_positional_args(eval.heap())
+                    .map_err(|e| anyhow!("{e}"))?;
+                let mut attributes = BTreeMap::new();
+                for (key, value) in args.names_map().map_err(|e| anyhow!("{e}"))?.iter() {
+                    attributes.insert(key.as_str().to_owned(), owned_json(*value, 0)?);
+                }
+                let mut state = context(eval)?.state.borrow_mut();
+                let usage = &mut state.file.extension_usages[self.proxy.usage];
+                usage.tags.push(ExtensionTag {
+                    name: self.name.clone(),
+                    attributes,
+                    declaration: self.proxy.declaration,
+                    dev_dependency: usage.declarations[self.proxy.declaration].dev_dependency,
+                });
+                Ok(())
+            };
+            record().map_err(starlark::Error::new_other)?;
+            Ok(Value::new_none())
+        }
+    }
+}
+use values::{Builtin, Collector, ExtensionProxy};
+
+fn context<'a>(eval: &'a Evaluator<'_, '_, '_>) -> anyhow::Result<&'a Collector> {
+    eval.extra
+        .and_then(|extra| extra.downcast_ref::<Collector>())
+        .ok_or_else(|| anyhow!("MODULE directive requires a MODULE.bazel evaluation context"))
+}
+
+/// Read only the specified file. No include, load, or repository access occurs.
+pub fn evaluate(path: &Path) -> Result<ModuleFile, String> {
+    evaluate_for_resolution(path, false)
+}
+
+/// Resolution context: ignore overrides for non-root modules or when the root
+/// is evaluated with --ignore_dev_dependency. Arguments are still validated.
+pub fn evaluate_for_resolution(path: &Path, ignore_overrides: bool) -> Result<ModuleFile, String> {
+    let source = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read MODULE file {}: {e}", path.display()))?;
+    evaluate_source_for_resolution(&path.to_string_lossy(), source, ignore_overrides)
+}
+
+pub fn evaluate_source(filename: &str, source: String) -> Result<ModuleFile, String> {
+    evaluate_source_for_resolution(filename, source, false)
+}
+
+/// Like evaluate_for_resolution, for a safely read registry MODULE source.
+pub fn evaluate_source_for_resolution(
+    filename: &str,
+    source: String,
+    ignore_overrides: bool,
+) -> Result<ModuleFile, String> {
+    let dialect = Dialect {
+        enable_def: false,
+        enable_lambda: false,
+        enable_load: false,
+        enable_top_level_stmt: false,
+        ..Dialect::Standard
+    };
+    let ast = AstModule::parse(filename, source, &dialect).map_err(|e| e.to_string())?;
+    let mut globals = GlobalsBuilder::extended_by(&[LibraryExtension::Print]);
+    for name in [
+        "module",
+        "bazel_dep",
+        "local_path_override",
+        "single_version_override",
+        "multiple_version_override",
+        "git_override",
+        "archive_override",
+        "use_extension",
+        "use_repo",
+        "register_toolchains",
+        "register_execution_platforms",
+        "include",
+        "use_repo_rule",
+        "Label",
+        "inject_repo",
+        "override_repo",
+        "flag_alias",
+    ] {
+        globals.set(name, Builtin(name));
+    }
+    let globals = globals.build();
+    let collector = Collector {
+        ignore_overrides,
+        ..Default::default()
+    };
+    Module::with_temp_heap(|module| {
+        let mut eval = Evaluator::new(&module);
+        eval.extra = Some(&collector);
+        eval.set_max_callstack_size(128)
+            .map_err(|e| e.to_string())?;
+        eval.eval_module(ast, &globals).map_err(|e| e.to_string())?;
+        Ok::<_, String>(())
+    })?;
+    Ok(collector.state.into_inner().file)
+}
+
+struct Kwargs<'v>(BTreeMap<String, Value<'v>>);
+impl<'v> Kwargs<'v> {
+    fn new(args: &Arguments<'v, '_>) -> anyhow::Result<Self> {
+        Ok(Self(
+            args.names_map()
+                .map_err(|e| anyhow!("{e}"))?
+                .iter()
+                .map(|(k, v)| (k.as_str().to_owned(), *v))
+                .collect(),
+        ))
+    }
+    fn required(&mut self, name: &str) -> anyhow::Result<Value<'v>> {
+        self.0
+            .remove(name)
+            .ok_or_else(|| anyhow!("missing required argument {name:?}"))
+    }
+    fn string(&mut self, name: &str, default: Option<&str>) -> anyhow::Result<String> {
+        match self.0.remove(name) {
+            Some(v) => string(v, name),
+            None => default
+                .map(str::to_owned)
+                .ok_or_else(|| anyhow!("missing required argument {name:?}")),
+        }
+    }
+    fn boolean(&mut self, name: &str) -> anyhow::Result<bool> {
+        self.0
+            .remove(name)
+            .map(|v| {
+                v.unpack_bool()
+                    .ok_or_else(|| anyhow!("{name} must be a bool"))
+            })
+            .transpose()
+            .map(|v| v.unwrap_or(false))
+    }
+    fn integer(&mut self, name: &str, default: i32, min: i32) -> anyhow::Result<i32> {
+        let n = self
+            .0
+            .remove(name)
+            .map(|v| {
+                v.unpack_i32()
+                    .ok_or_else(|| anyhow!("{name} must be a 32-bit int"))
+            })
+            .transpose()?
+            .unwrap_or(default);
+        if n < min {
+            bail!("{name} must be at least {min}");
+        }
+        Ok(n)
+    }
+    fn strings(&mut self, name: &str) -> anyhow::Result<Vec<String>> {
+        self.0
+            .remove(name)
+            .map(|v| strings(v, name))
+            .transpose()
+            .map(|v| v.unwrap_or_default())
+    }
+    fn finish(self) -> anyhow::Result<()> {
+        if let Some(name) = self.0.keys().next() {
+            bail!("unknown or unsupported argument {name:?}");
+        }
+        Ok(())
+    }
+    fn patches(&mut self) -> anyhow::Result<PatchOptions> {
+        Ok(PatchOptions {
+            patches: self.strings("patches")?,
+            patch_cmds: self.strings("patch_cmds")?,
+            patch_strip: self.integer("patch_strip", 0, 0)?,
+        })
+    }
+    fn version(&mut self, name: &str) -> anyhow::Result<String> {
+        let v = self.string(name, Some(""))?;
+        validate_version(&v)?;
+        Ok(v)
+    }
+    fn registry(&mut self) -> anyhow::Result<String> {
+        let r = self.string("registry", Some(""))?;
+        if !r.is_empty() {
+            validate_url(&r, "registry")?;
+        }
+        Ok(r)
+    }
+}
+
+fn invoke<'v>(
+    name: &str,
+    args: &Arguments<'v, '_>,
+    eval: &mut Evaluator<'v, '_, '_>,
+) -> anyhow::Result<Value<'v>> {
+    let collector = context(eval)?;
+    match name {
+        "include" => bail!(
+            "include() is unsupported until the resolver supplies include filesystem semantics"
+        ),
+        "use_repo_rule" => {
+            bail!("use_repo_rule() is unsupported: repository rules are not evaluated")
+        }
+        "Label" => bail!("Label() is unsupported in MODULE evaluation; use label strings"),
+        "inject_repo" | "override_repo" | "flag_alias" => {
+            bail!("{name}() is unsupported in MODULE evaluation")
+        }
+        _ => {}
+    }
+    let mut kwargs = Kwargs::new(args)?;
+    let mut state = collector.state.borrow_mut();
+    if name == "module" {
+        if state.file.module.is_some() {
+            bail!("module() may only be called once");
+        }
+        if state.non_module_called {
+            bail!("module() must be called before other MODULE directives");
+        }
+    } else {
+        state.non_module_called = true;
+    }
+
+    if name == "use_extension" {
+        let pos: Vec<_> = args
+            .positions(eval.heap())
+            .map_err(|e| anyhow!("{e}"))?
+            .collect();
+        if pos.len() > 2 {
+            bail!("use_extension accepts at most two positional arguments");
+        }
+        for (key, value) in ["extension_bzl_file", "extension_name"]
+            .into_iter()
+            .zip(pos)
+        {
+            if kwargs.0.insert(key.to_owned(), value).is_some() {
+                bail!("argument {key} supplied twice");
+            }
+        }
+        let label = kwargs.string("extension_bzl_file", None)?;
+        validate_extension_label(&label)?;
+        let extension_name = kwargs.string("extension_name", None)?;
+        if !identifier(&extension_name) {
+            bail!("invalid extension name {extension_name:?}");
+        }
+        let dev_dependency = kwargs.boolean("dev_dependency")?;
+        let isolate = kwargs.boolean("isolate")?;
+        kwargs.finish()?;
+        let isolation = if isolate {
+            let id = state.next_isolation;
+            state.next_isolation += 1;
+            Some(id)
+        } else {
+            None
+        };
+        let identity = ExtensionIdentity {
+            label,
+            extension_name,
+            isolation,
+        };
+        let usage = match state
+            .file
+            .extension_usages
+            .iter()
+            .position(|u| u.identity == identity)
+        {
+            Some(i) => i,
+            None => {
+                state.file.extension_usages.push(ExtensionUsage {
+                    identity,
+                    ..Default::default()
+                });
+                state.file.extension_usages.len() - 1
+            }
+        };
+        let declarations = &mut state.file.extension_usages[usage].declarations;
+        let declaration = declarations.len();
+        declarations.push(ExtensionDeclaration { dev_dependency });
+        return Ok(eval.heap().alloc(ExtensionProxy { usage, declaration }));
+    }
+    if name == "use_repo" {
+        let mut pos = args.positions(eval.heap()).map_err(|e| anyhow!("{e}"))?;
+        let proxy = pos
+            .next()
+            .ok_or_else(|| anyhow!("use_repo requires an extension proxy"))?;
+        let proxy = proxy
+            .downcast_ref::<ExtensionProxy>()
+            .ok_or_else(|| anyhow!("use_repo requires an extension proxy"))?;
+        let mut imports = Vec::new();
+        for v in pos {
+            let s = string(v, "repository name")?;
+            imports.push((s.clone(), s));
+        }
+        for (local, value) in kwargs.0 {
+            imports.push((local, string(value, "exported repository name")?));
+        }
+        for (local, exported) in imports {
+            validate_repo_name(&local)?;
+            validate_repo_name(&exported)?;
+            reserve_repo(&mut state, &local)?;
+            let usage = &mut state.file.extension_usages[proxy.usage];
+            usage.imports.push(RepositoryImport {
+                local_name: local,
+                exported_name: exported,
+                declaration: proxy.declaration,
+                dev_dependency: usage.declarations[proxy.declaration].dev_dependency,
+            });
+        }
+        return Ok(Value::new_none());
+    }
+    if matches!(name, "register_toolchains" | "register_execution_platforms") {
+        let labels = args
+            .positions(eval.heap())
+            .map_err(|e| anyhow!("{e}"))?
+            .map(|v| string(v, "target pattern"))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        for label in &labels {
+            if !label.starts_with("//") && !label.starts_with('@') {
+                bail!("registration requires an absolute target pattern, got {label:?}");
+            }
+        }
+        let dev_dependency = kwargs.boolean("dev_dependency")?;
+        kwargs.finish()?;
+        state.file.registrations.push(Registration {
+            labels,
+            dev_dependency,
+            kind: if name == "register_toolchains" {
+                RegistrationKind::Toolchains
+            } else {
+                RegistrationKind::ExecutionPlatforms
+            },
+        });
+        return Ok(Value::new_none());
+    }
+    args.no_positional_args(eval.heap())
+        .map_err(|e| anyhow!("{e}"))?;
+    match name {
+        "module" => {
+            let name = kwargs.string("name", Some(""))?;
+            if !name.is_empty() {
+                validate_module_name(&name)?;
+            }
+            let version = kwargs.version("version")?;
+            let compatibility_level = kwargs.integer("compatibility_level", 0, i32::MIN)?;
+            let repo_name = kwargs
+                .0
+                .remove("repo_name")
+                .map(|v| string(v, "repo_name"))
+                .transpose()?;
+            let bazel_compatibility = kwargs.strings("bazel_compatibility")?;
+            for constraint in &bazel_compatibility {
+                validate_bazel_constraint(constraint)?;
+            }
+            kwargs.finish()?;
+            let info = ModuleInfo {
+                name,
+                version,
+                compatibility_level,
+                repo_name,
+                bazel_compatibility,
+            };
+            if !info.effective_repo_name().is_empty() {
+                validate_repo_name(info.effective_repo_name())?;
+                reserve_repo(&mut state, info.effective_repo_name())?;
+            }
+            state.file.module = Some(info);
+        }
+        "bazel_dep" => {
+            let name = kwargs.string("name", None)?;
+            validate_module_name(&name)?;
+            let version = kwargs.version("version")?;
+            let max_compatibility_level =
+                kwargs.integer("max_compatibility_level", -1, i32::MIN)?;
+            let repo_name = match kwargs.0.remove("repo_name") {
+                None => DependencyRepoName::Default,
+                Some(v) if v.is_none() => DependencyRepoName::Nodep,
+                Some(v) => DependencyRepoName::Explicit(string(v, "repo_name")?),
+            };
+            let dev_dependency = kwargs.boolean("dev_dependency")?;
+            kwargs.finish()?;
+            let dep = Dependency {
+                name,
+                version,
+                max_compatibility_level,
+                repo_name,
+                dev_dependency,
+            };
+            if let Some(repo) = dep.effective_repo_name() {
+                validate_repo_name(repo)?;
+                reserve_repo(&mut state, repo)?;
+            }
+            state.file.dependencies.push(dep);
+        }
+        _ => {
+            let module_name = kwargs.string("module_name", None)?;
+            validate_module_name(&module_name)?;
+            let value = match name {
+                "local_path_override" => {
+                    let path = kwargs.string("path", None)?;
+                    if path.is_empty() {
+                        bail!("local_path_override path must not be empty");
+                    }
+                    ModuleOverride::LocalPath { path }
+                }
+                "single_version_override" => ModuleOverride::SingleVersion {
+                    version: kwargs.version("version")?,
+                    registry: kwargs.registry()?,
+                    patches: kwargs.patches()?,
+                },
+                "multiple_version_override" => {
+                    let versions = strings(kwargs.required("versions")?, "versions")?;
+                    if versions.len() < 2 {
+                        bail!("multiple_version_override requires at least 2 versions");
+                    }
+                    for v in &versions {
+                        validate_version(v)?;
+                    }
+                    ModuleOverride::MultipleVersion {
+                        versions,
+                        registry: kwargs.registry()?,
+                    }
+                }
+                "git_override" => {
+                    let remote = kwargs.string("remote", None)?;
+                    if remote.is_empty() {
+                        bail!("git_override remote must not be empty");
+                    }
+                    let commit = kwargs.string("commit", Some(""))?;
+                    let tag = kwargs.string("tag", Some(""))?;
+                    let branch = kwargs.string("branch", Some(""))?;
+                    if [&commit, &tag, &branch]
+                        .iter()
+                        .filter(|v| !v.is_empty())
+                        .count()
+                        != 1
+                    {
+                        bail!("git_override requires exactly one of commit, tag, branch");
+                    }
+                    ModuleOverride::Git {
+                        remote,
+                        commit,
+                        tag,
+                        branch,
+                        init_submodules: kwargs.boolean("init_submodules")?,
+                        strip_prefix: kwargs.string("strip_prefix", Some(""))?,
+                        patches: kwargs.patches()?,
+                    }
+                }
+                "archive_override" => {
+                    let urls = kwargs.required("urls")?;
+                    let urls = if let Some(s) = urls.unpack_str() {
+                        vec![s.to_owned()]
+                    } else {
+                        strings(urls, "urls")?
+                    };
+                    if urls.is_empty() {
+                        bail!("archive_override urls must not be empty");
+                    }
+                    for url in &urls {
+                        validate_url(url, "archive URL")?;
+                    }
+                    let sha256 = kwargs.string("sha256", Some(""))?;
+                    if !sha256.is_empty()
+                        && (sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()))
+                    {
+                        bail!("sha256 must contain 64 hexadecimal digits");
+                    }
+                    ModuleOverride::Archive {
+                        urls,
+                        sha256,
+                        integrity: kwargs.string("integrity", Some(""))?,
+                        strip_prefix: kwargs.string("strip_prefix", Some(""))?,
+                        archive_type: kwargs.string("archive_type", Some(""))?,
+                        patches: kwargs.patches()?,
+                    }
+                }
+                _ => bail!("unsupported MODULE directive {name}"),
+            };
+            kwargs.finish()?;
+            // ModuleThreadContext.addOverride (Bazel 9.3): ignored overrides
+            // return before duplicate checking, but after directive validation.
+            if collector.ignore_overrides {
+                return Ok(Value::new_none());
+            }
+            if state.file.overrides.contains_key(&module_name) {
+                bail!("duplicate override for module {module_name:?}");
+            }
+            state.file.overrides.insert(module_name, value);
+        }
+    }
+    Ok(Value::new_none())
+}
+
+fn reserve_repo(state: &mut State, name: &str) -> anyhow::Result<()> {
+    if !state.repo_names.insert(name.to_owned()) {
+        bail!("repository name {name:?} is already used");
+    }
+    Ok(())
+}
+fn string(value: Value<'_>, name: &str) -> anyhow::Result<String> {
+    value
+        .unpack_str()
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow!("{name} must be a string"))
+}
+fn strings(value: Value<'_>, name: &str) -> anyhow::Result<Vec<String>> {
+    if let Some(list) = ListRef::from_value(value) {
+        list.iter().map(|v| string(v, name)).collect()
+    } else if let Some(tuple) = TupleRef::from_value(value) {
+        tuple.iter().map(|v| string(v, name)).collect()
+    } else {
+        bail!("{name} must be a list or tuple of strings")
+    }
+}
+fn identifier(s: &str) -> bool {
+    !s.is_empty()
+        && s.bytes()
+            .enumerate()
+            .all(|(i, b)| b == b'_' || b.is_ascii_alphabetic() || (i > 0 && b.is_ascii_digit()))
+}
+fn validate_module_name(s: &str) -> anyhow::Result<()> {
+    if !s.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+        || !s
+            .as_bytes()
+            .last()
+            .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        || !s
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
+    {
+        bail!("invalid module name {s:?}");
+    }
+    Ok(())
+}
+fn validate_repo_name(s: &str) -> anyhow::Result<()> {
+    if !s.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
+        || !s
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+    {
+        bail!("invalid repository name {s:?}");
+    }
+    Ok(())
+}
+/// Bazel's relaxed SemVer grammar, with u64 numeric identifiers. The original
+/// version (including build metadata) is retained; selection normalizes later.
+fn validate_version(s: &str) -> anyhow::Result<()> {
+    if s.is_empty() {
+        return Ok(());
+    }
+    let (main, build) = s.split_once('+').map_or((s, None), |(a, b)| (a, Some(b)));
+    let (release, pre) = main
+        .split_once('-')
+        .map_or((main, None), |(a, b)| (a, Some(b)));
+    let valid_chars = |p: &str, hyphens: bool| {
+        !p.is_empty()
+            && p.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || (hyphens && b == b'-'))
+    };
+    let identifiers = |p: &str| {
+        p.split('.').all(|v| {
+            !v.is_empty() && (!v.bytes().all(|b| b.is_ascii_digit()) || v.parse::<u64>().is_ok())
+        })
+    };
+    if !valid_chars(release, false)
+        || !identifiers(release)
+        || pre.is_some_and(|v| !valid_chars(v, true) || !identifiers(v))
+        || build.is_some_and(|v| !valid_chars(v, true))
+    {
+        bail!("invalid module version {s:?}");
+    }
+    Ok(())
+}
+fn validate_bazel_constraint(s: &str) -> anyhow::Result<()> {
+    let version = [">=", "<=", ">", "<", "-"]
+        .iter()
+        .find_map(|p| s.strip_prefix(p));
+    if !version.is_some_and(|v| {
+        let parts: Vec<_> = v.split('.').collect();
+        parts.len() == 3
+            && parts
+                .iter()
+                .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    }) {
+        bail!("invalid bazel_compatibility constraint {s:?}");
+    }
+    Ok(())
+}
+fn validate_url(s: &str, what: &str) -> anyhow::Result<()> {
+    let Some((scheme, rest)) = s.split_once("://") else {
+        bail!("invalid {what}: expected http, https, or file URL, got {s:?}");
+    };
+    if !matches!(scheme, "http" | "https" | "file")
+        || rest.is_empty()
+        || s.chars().any(char::is_whitespace)
+        || (scheme != "file" && rest.starts_with('/'))
+    {
+        bail!("invalid {what} URL {s:?}");
+    }
+    Ok(())
+}
+fn validate_extension_label(s: &str) -> anyhow::Result<()> {
+    // Full label/repository canonicalization belongs to the resolver. Relative
+    // root-package labels are accepted, as they are by Bazel's use_extension.
+    let body = if let Some(body) = s.strip_prefix('@') {
+        let (_, body) = body
+            .split_once("//")
+            .ok_or_else(|| anyhow!("invalid extension label {s:?}"))?;
+        body
+    } else if let Some(body) = s.strip_prefix("//") {
+        body
+    } else if let Some(body) = s.strip_prefix(':') {
+        body
+    } else {
+        s
+    };
+    if body.is_empty() || !body.ends_with(".bzl") || s.chars().any(char::is_whitespace) {
+        bail!("invalid extension label {s:?}: expected a .bzl file label");
+    }
+    Ok(())
+}
+fn owned_json(value: Value<'_>, depth: usize) -> anyhow::Result<Json> {
+    if depth > 64 {
+        bail!("extension tag attributes are cyclic or exceed nesting depth 64");
+    }
+    if value.is_none() {
+        return Ok(Json::Null);
+    }
+    if let Some(s) = value.unpack_str() {
+        return Ok(Json::String(s.to_owned()));
+    }
+    if let Some(b) = value.unpack_bool() {
+        return Ok(Json::Bool(b));
+    }
+    if matches!(value.get_type(), "int" | "float") {
+        let number = value.to_json_value()?;
+        if !number.is_number() {
+            bail!("non-finite extension tag numbers are unsupported");
+        }
+        return Ok(number);
+    }
+    if let Some(list) = ListRef::from_value(value) {
+        return list
+            .iter()
+            .map(|v| owned_json(v, depth + 1))
+            .collect::<anyhow::Result<Vec<_>>>()
+            .map(Json::Array);
+    }
+    if let Some(dict) = DictRef::from_value(value) {
+        let mut map = serde_json::Map::new();
+        for (k, v) in dict.iter() {
+            map.insert(string(k, "tag dictionary key")?, owned_json(v, depth + 1)?);
+        }
+        return Ok(Json::Object(map));
+    }
+    bail!(
+        "unsupported extension tag attribute type {}; expected primitives, lists, or string-keyed dictionaries",
+        value.get_type()
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn run(s: &str) -> ModuleFile {
+        evaluate_source("MODULE.bazel", s.to_owned()).unwrap()
+    }
+    fn fails(s: &str, expected: &str) {
+        let error = evaluate_source("MODULE.bazel", s.to_owned()).unwrap_err();
+        assert!(
+            error.contains(expected),
+            "{s}\nexpected {expected:?}, got {error}"
+        );
+    }
+
+    #[test]
+    fn assignments_comprehensions_and_owned_tag_data() {
+        let f = run(r#"
+module(name="root", version="1.2-pre.3+build", bazel_compatibility=[">=7.0.0"])
+versions = ["1.0", "2.0"]
+[bazel_dep(name="dep" + str(i), version=v) for i, v in enumerate(versions)]
+x = use_extension("@dep0//:ext.bzl", "download")
+attrs = {"nested": [True, None, 42, {"url": "https://invalid.invalid"}]}
+x.download(name="pkg", versions=[v + ".1" for v in versions], attrs=attrs)
+attrs["nested"].append("later mutation")
+use_repo(x, "pkg", local="other")
+"#);
+        assert_eq!(f.module.unwrap().compatibility_level, 0);
+        assert_eq!(f.dependencies.len(), 2);
+        assert_eq!(f.dependencies[1].version, "2.0");
+        let u = &f.extension_usages[0];
+        assert_eq!(u.tags[0].name, "download");
+        assert_eq!(
+            u.tags[0].attributes["versions"],
+            serde_json::json!(["1.0.1", "2.0.1"])
+        );
+        assert_eq!(
+            u.tags[0].attributes["attrs"]["nested"]
+                .as_array()
+                .unwrap()
+                .len(),
+            4
+        );
+        assert_eq!(u.imports[1].local_name, "local");
+        assert_eq!(u.imports[1].exported_name, "other");
+    }
+
+    #[test]
+    fn dependency_defaults_aliases_and_nodep_are_distinct() {
+        let f = run(
+            "bazel_dep(name='a')\nbazel_dep(name='b',repo_name='')\nbazel_dep(name='c',repo_name=None,dev_dependency=True)\nbazel_dep(name='d',repo_name='alias',max_compatibility_level=3)",
+        );
+        assert_eq!(f.dependencies[0].repo_name, DependencyRepoName::Default);
+        assert_eq!(f.dependencies[0].max_compatibility_level, -1);
+        assert_eq!(
+            f.dependencies[1].repo_name,
+            DependencyRepoName::Explicit(String::new())
+        );
+        assert_eq!(f.dependencies[1].effective_repo_name(), Some("b"));
+        assert_eq!(f.dependencies[2].effective_repo_name(), None);
+        assert!(f.dependencies[2].dev_dependency);
+        assert_eq!(f.dependencies[3].effective_repo_name(), Some("alias"));
+    }
+
+    #[test]
+    fn merged_extensions_preserve_declaration_dev_flags_and_isolation() {
+        let f = run(r#"
+a = use_extension("//:ext.bzl", "ext", dev_dependency=True)
+b = use_extension("//:ext.bzl", "ext")
+a.tag(x=1)
+b.tag(x=2)
+use_repo(a, dev="a")
+use_repo(b, prod="b")
+c = use_extension("//:ext.bzl", "ext", isolate=True)
+d = use_extension("//:ext.bzl", "ext", isolate=True)
+c.tag()
+d.tag()
+"#);
+        assert_eq!(f.extension_usages.len(), 3);
+        let u = &f.extension_usages[0];
+        assert_eq!(u.declarations.len(), 2);
+        assert!(u.tags[0].dev_dependency);
+        assert!(!u.tags[1].dev_dependency);
+        assert_eq!(u.tags[1].declaration, 1);
+        assert!(u.imports[0].dev_dependency);
+        assert!(!u.imports[1].dev_dependency);
+        assert_ne!(
+            f.extension_usages[1].identity,
+            f.extension_usages[2].identity
+        );
+    }
+
+    #[test]
+    fn overrides_record_without_running_commands_or_accessing_paths() {
+        let f = run(r#"
+local_path_override(module_name="local", path="/does/not/exist")
+single_version_override(module_name="single", version="1.0", registry="file:///no-registry", patches=["//:fix.patch"], patch_cmds=["exit 99"], patch_strip=1)
+multiple_version_override(module_name="multi", versions=["1", "2"])
+git_override(module_name="git", remote="https://invalid.invalid/repo", branch="main", init_submodules=True)
+archive_override(module_name="archive", urls="https://invalid.invalid/a.tar.gz", strip_prefix="src", archive_type="tar.gz")
+"#);
+        assert_eq!(f.overrides.len(), 5);
+        let ModuleOverride::SingleVersion {
+            patches, registry, ..
+        } = &f.overrides["single"]
+        else {
+            panic!()
+        };
+        assert_eq!(patches.patch_cmds, ["exit 99"]);
+        assert_eq!(registry, "file:///no-registry");
+        let ModuleOverride::Archive { urls, .. } = &f.overrides["archive"] else {
+            panic!()
+        };
+        assert_eq!(urls, &["https://invalid.invalid/a.tar.gz"]);
+    }
+
+    #[test]
+    fn registration_kinds_order_and_dev_flags() {
+        let f = run(
+            "register_toolchains('//tc:all','@sdk//:tc',dev_dependency=True)\nregister_execution_platforms('//platforms:all')",
+        );
+        assert_eq!(f.registrations[0].labels, ["//tc:all", "@sdk//:tc"]);
+        assert!(f.registrations[0].dev_dependency);
+        assert_eq!(
+            f.registrations[1].kind,
+            RegistrationKind::ExecutionPlatforms
+        );
+        assert!(!f.registrations[1].dev_dependency);
+    }
+
+    #[test]
+    fn duplicate_and_out_of_order_directives_fail() {
+        fails("module()\nmodule()", "only be called once");
+        fails(
+            "bazel_dep(name='a')\nmodule()",
+            "before other MODULE directives",
+        );
+        fails(
+            "local_path_override(module_name='a',path='a')\ngit_override(module_name='a',remote='x',tag='v1')",
+            "duplicate override",
+        );
+        fails(
+            "bazel_dep(name='a')\nbazel_dep(name='b',repo_name='a')",
+            "already used",
+        );
+        fails(
+            "x=use_extension('//:e.bzl','e')\nuse_repo(x,'a',a='b')",
+            "already used",
+        );
+    }
+
+    #[test]
+    fn invalid_types_names_versions_registry_and_unknown_arguments_fail() {
+        for (source, expected) in [
+            (
+                "bazel_dep(name='a',typo=True)",
+                "unknown or unsupported argument",
+            ),
+            ("bazel_dep(name='a',dev_dependency=1)", "must be a bool"),
+            ("bazel_dep(name='a',repo_name=42)", "must be a string"),
+            ("module(compatibility_level=True)", "must be a 32-bit int"),
+            ("module(repo_name=None)", "must be a string"),
+            ("bazel_dep(name='Bad')", "invalid module name"),
+            (
+                "bazel_dep(name='a',version='1..2')",
+                "invalid module version",
+            ),
+            (
+                "bazel_dep(name='a',version='1/2')",
+                "invalid module version",
+            ),
+            (
+                "bazel_dep(name='a',version='18446744073709551616')",
+                "invalid module version",
+            ),
+            (
+                "module(bazel_compatibility=['7.0.0'])",
+                "invalid bazel_compatibility",
+            ),
+            (
+                "single_version_override(module_name='a',registry='not-url')",
+                "invalid registry",
+            ),
+            (
+                "single_version_override(module_name='a',patch_strip=-1)",
+                "at least 0",
+            ),
+            (
+                "multiple_version_override(module_name='a',versions=['1'])",
+                "at least 2",
+            ),
+            (
+                "git_override(module_name='a',remote='r',tag='t',commit='c')",
+                "exactly one",
+            ),
+            (
+                "archive_override(module_name='a',urls=[1])",
+                "must be a string",
+            ),
+            (
+                "archive_override(module_name='a',urls=[])",
+                "must not be empty",
+            ),
+            (
+                "archive_override(module_name='a',urls='https://a/a',sha256='x')",
+                "64 hexadecimal",
+            ),
+            (
+                "register_toolchains(':relative')",
+                "absolute target pattern",
+            ),
+            ("use_repo('not a proxy','a')", "extension proxy"),
+            ("x=use_extension('//:x.bzl','x')\nx.tag(1)", "positional"),
+            (
+                "x=use_extension('//:x.bzl','x')\nx.tag(value=x)",
+                "unsupported extension tag attribute",
+            ),
+            (
+                "x=use_extension('//:x.bzl','x')\nx.tag(value={1:'x'})",
+                "dictionary key must be a string",
+            ),
+        ] {
+            fails(source, expected);
+        }
+    }
+
+    #[test]
+    fn prohibited_language_and_unsupported_features_fail_explicitly() {
+        for source in [
+            "load('//:evil.bzl','evil')",
+            "def f():\n    pass",
+            "for x in []:\n    pass",
+            "if True:\n    module()",
+            "f=lambda x: x",
+        ] {
+            assert!(
+                evaluate_source("MODULE.bazel", source.to_owned()).is_err(),
+                "{source}"
+            );
+        }
+        fails(
+            "include('//:other.MODULE.bazel')",
+            "include() is unsupported",
+        );
+        fails(
+            "use_repo_rule('//:defs.bzl','rule')",
+            "use_repo_rule() is unsupported",
+        );
+        fails("Label('//:x')", "Label() is unsupported");
+        for source in ["native.foo()", "rule()", "provider()"] {
+            assert!(evaluate_source("MODULE.bazel", source.to_owned()).is_err());
+        }
+    }
+
+    #[test]
+    fn cyclic_tag_values_report_error_instead_of_recursing_forever() {
+        fails(
+            "x=use_extension('//:x.bzl','x')\na=[]\na.append(a)\nx.tag(value=a)",
+            "cyclic or exceed nesting depth",
+        );
+    }
+
+    #[test]
+    fn empty_and_anonymous_root_modules_are_supported() {
+        assert_eq!(run(""), ModuleFile::default());
+        assert_eq!(
+            run("module()\nprint('recording only')").module,
+            Some(ModuleInfo::default())
+        );
+    }
+
+    #[test]
+    fn argument_expansion_and_keyword_extension_arguments() {
+        let f = run(r#"
+opts = {"name": "a", "version": "1.2.3"}
+bazel_dep(**opts)
+x = use_extension(extension_bzl_file="//:e.bzl", extension_name="e")
+x.tag(**{"dash-key": [1, 2]})
+use_repo(x, *["repo"], **{"repo.alias": "original"})
+register_toolchains(*["//:tc"], **{"dev_dependency": True})
+"#);
+        assert_eq!(f.dependencies[0].name, "a");
+        assert_eq!(
+            f.extension_usages[0].tags[0].attributes["dash-key"],
+            serde_json::json!([1, 2])
+        );
+        assert_eq!(f.extension_usages[0].imports[1].local_name, "repo.alias");
+        fails(
+            "use_extension('//:e.bzl', 'e', extension_name='f')",
+            "supplied twice",
+        );
+    }
+
+    #[test]
+    fn side_effects_require_the_module_collector() {
+        let mut globals = GlobalsBuilder::standard();
+        globals.set("module", Builtin("module"));
+        let globals = globals.build();
+        Module::with_temp_heap(|module| {
+            let ast =
+                AstModule::parse("other.star", "module()".to_owned(), &Dialect::Standard).unwrap();
+            let error = Evaluator::new(&module)
+                .eval_module(ast, &globals)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("MODULE.bazel evaluation context"), "{error}");
+        });
+    }
+
+    #[test]
+    fn ignored_overrides_skip_duplicates_but_still_validate_arguments() {
+        let duplicate = "local_path_override(module_name='a',path='first')\nlocal_path_override(module_name='a',path='second')";
+        assert!(
+            evaluate_source_for_resolution("MODULE.bazel", duplicate.to_owned(), true)
+                .unwrap()
+                .overrides
+                .is_empty()
+        );
+        fails(duplicate, "duplicate override");
+        for (source, expected) in [
+            (
+                "local_path_override(module_name='a',path=1)",
+                "must be a string",
+            ),
+            (
+                "local_path_override(module_name='a',path='x',typo=True)",
+                "unknown or unsupported argument",
+            ),
+            (
+                "single_version_override(module_name='a',version='1..2')",
+                "invalid module version",
+            ),
+            (
+                "multiple_version_override(module_name='a',versions=['1'])",
+                "at least 2 versions",
+            ),
+        ] {
+            let error = evaluate_source_for_resolution("MODULE.bazel", source.to_owned(), true)
+                .unwrap_err();
+            assert!(error.contains(expected), "{source}: {error}");
+        }
+    }
+}

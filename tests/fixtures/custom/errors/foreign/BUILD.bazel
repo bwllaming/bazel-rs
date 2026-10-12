@@ -1,0 +1,2 @@
+load("//:errors.bzl", "foreign")
+foreign(name = "bad", src = "//:a.txt")

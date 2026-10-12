@@ -1,0 +1,2 @@
+filegroup(name = "pkg", srcs = ["data.txt"], visibility = ["//consumer:__pkg__"])
+filegroup(name = "tree", srcs = ["data.txt"], visibility = ["//consumer:__subpackages__"])

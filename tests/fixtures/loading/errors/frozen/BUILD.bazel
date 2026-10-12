@@ -1,0 +1,2 @@
+load("//macros:helper.bzl", "mutate_frozen")
+mutate_frozen()

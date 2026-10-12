@@ -1,0 +1,7 @@
+load("//macros:rules.bzl", pipeline = "loading_pipeline")
+
+pipeline(name = "diamond")
+filegroup(name = "nested", srcs = [":diamond", "assets/a.txt"])
+filegroup(name = "flattened", srcs = [":nested", ":diamond", "assets/a.txt"])
+filegroup(name = "public_default", srcs = ["//public:before", "//public:after"])
+filegroup(name = "export_default", srcs = ["//private:exported.txt"])

@@ -1,0 +1,13 @@
+load(":defs.bzl", "forward_source", "inspect_source", "source_info")
+
+exports_files(["data.txt", "defs.bzl"])
+genrule(name = "copy", srcs = ["data.txt"], outs = ["copy.txt"], cmd = "cat $(SRCS) > $@", visibility = ["//visibility:public"])
+source_info(name = "hidden", source = ":data.txt")
+forward_source(name = "forwarded", source = ":hidden", visibility = ["//visibility:public"])
+inspect_source(name = "inspect", source = ":forwarded")
+filegroup(name = "via_dep", srcs = ["@dep//p:data.txt"])
+filegroup(name = "via_main", srcs = ["@@//p:data.txt"])
+filegroup(name = "private", srcs = ["data.txt"], visibility = ["//visibility:private"])
+filegroup(name = "pkg_visible", srcs = ["data.txt"], visibility = ["//p:__pkg__"])
+filegroup(name = "main_visible", srcs = ["data.txt"], visibility = ["@@//p:__pkg__"])
+filegroup(name = "own_allowed", srcs = [":private", ":pkg_visible"])

@@ -1,0 +1,15 @@
+filegroup(name = "inputs", srcs = ["input.txt"])
+
+genrule(
+    name = "copy",
+    srcs = [":inputs"],
+    outs = ["copied.txt"],
+    cmd = "cat $(location :inputs) > $@",
+)
+
+genrule(
+    name = "upper",
+    srcs = [":copied.txt"],
+    outs = ["upper.txt"],
+    cmd = "tr '[:lower:]' '[:upper:]' < $< > $@",
+)

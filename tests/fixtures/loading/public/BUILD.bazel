@@ -1,0 +1,4 @@
+filegroup(name = "before", srcs = ["data.txt"])
+package(default_visibility = ["//visibility:public"])
+filegroup(name = "after", srcs = ["data.txt"])
+filegroup(name = "override", srcs = ["data.txt"], visibility = ["//visibility:private"])

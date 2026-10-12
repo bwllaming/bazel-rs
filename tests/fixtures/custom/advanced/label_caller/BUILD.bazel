@@ -1,0 +1,7 @@
+load("//advanced/label_helper:defs.bzl", "DEFINITION_LABEL")
+load("//advanced/label_rules:defs.bzl", "capture", "capture_via_macro")
+exports_files(["source.txt"], visibility = ["//visibility:public"])
+capture(name = "defaults")
+capture(name = "none_default", src = None)
+capture(name = "caller_string", src = ":source.txt")
+capture_via_macro(name = "immutable_label", src = DEFINITION_LABEL)

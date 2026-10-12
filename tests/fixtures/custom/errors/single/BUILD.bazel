@@ -1,0 +1,3 @@
+load("//:errors.bzl", "single")
+filegroup(name = "two", srcs = ["//:a.txt", "//:b.txt"])
+single(name = "bad", src = ":two")

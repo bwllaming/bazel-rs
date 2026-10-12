@@ -1,0 +1,2 @@
+load("//:defs.bzl", "forward")
+forward(name = "bad", src = "//private:secret")

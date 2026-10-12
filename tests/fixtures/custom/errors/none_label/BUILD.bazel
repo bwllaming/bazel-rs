@@ -1,0 +1,2 @@
+load("//advanced/none:defs.bzl", "mandatory_label")
+mandatory_label(name = "bad", dep = None)

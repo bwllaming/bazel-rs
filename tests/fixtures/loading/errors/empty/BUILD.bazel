@@ -1,0 +1,1 @@
+filegroup(name = "empty", srcs = glob(["absent-*.txt"], allow_empty = False))

@@ -1,0 +1,181 @@
+# bazel-rs
+
+**Experimental native Rust foundations for a Bazel-compatible build system. Not
+a replacement for Bazel, and not full feature parity.** Compatibility target:
+official Bazel **9.3.0**. No command delegates to upstream Bazel.
+
+The starting implementation evaluates a narrow BUILD subset and executes native
+local actions. It cannot build or test the main `bwllaming/code` application.
+That checkout currently pins **9.1.1**, independently of this project's 9.3 target.
+
+## Tooling
+
+```sh
+./scripts/setup-rust.sh
+direnv allow
+direnv exec . cargo test --locked
+direnv exec . cargo clippy --locked --all-targets -- -D warnings
+direnv exec . cargo build --locked --release
+```
+
+Rust **1.99.0**, rustfmt, Clippy, rust-analyzer and rust-src are pinned in
+`rust-toolchain.toml`. Rustup and Cargo live under `.direnv/`; installation checks
+the official rustup-init SHA256 and does not change shell startup files. `.envrc`
+only sets paths and variables; entering the directory does not run installers.
+Dependencies are locked in `Cargo.lock`. Linux is the supported execution host.
+After a release build, direnv also exposes `bazel-rs` on PATH. It never installs
+a `bazel` alias or replaces the main repo's launcher.
+
+## Try the native subset
+
+```sh
+cd tests/fixtures/basic
+../../../target/release/bazel-rs --ignore_all_rc_files query //:all
+../../../target/release/bazel-rs --ignore_all_rc_files build //:upper
+# Run again to exercise verified local action-cache hits.
+../../../target/release/bazel-rs --ignore_all_rc_files build //:upper
+```
+
+Build stdout contains `label<TAB>absolute artifact path`. Outputs live in an
+implementation-specific content-addressed cache, **not** Bazel's conventional
+`bazel-bin` tree. Default cache: `<workspace>/bazel-rs-out`; override with the
+startup option `--cache-dir=/absolute/path`.
+
+Implemented:
+
+- Workspace and package discovery; main and local external-repository labels, with a deliberately
+  restricted ASCII path grammar and no symlink package directories. `.git`,
+  `.direnv`, and `bazel-rs-out` are reserved directories. Recursive discovery
+  rejects nonempty `.bazelignore`/`REPO.bazel` directives rather than ignoring them.
+- Real Starlark parsing/evaluation via `starlark` 0.14.2: expressions, constants,
+  and comprehensions; BUILD-appropriate restrictions on definitions/control flow.
+- Main and local-override repository `.bzl` loading: nested/aliased loads, frozen modules, load-cycle
+  detection and legacy macros calling a Bazel-style `native` struct. Loaded
+  symbols are file-local unless explicitly re-exported. `struct()` is available
+  in `.bzl` files, not predeclared in BUILD files.
+- Canonical/apparent repository mappings, lexical `.bzl` label/default resolution
+  and repository-qualified visibility. Main-only source operations resolve
+  MODULE metadata lazily. External source `File.short_path` is metadata
+  (`../<canonical>/...`), distinct from its execution path (`external/<canonical>/...`).
+- `glob` with `*`/`**`, sorted results, exclusions, directory filtering and
+  package boundaries. Bazel 9.3 defaults to `allow_empty=False`; each inclusion
+  pattern and the final result must match unless explicitly overridden.
+- `filegroup(name, srcs)` and `genrule(name, srcs, outs, cmd)`; public/private,
+  `__pkg__` and `__subpackages__` visibility, enforced across dependencies.
+- `package(default_visibility=...)`, including late defaults, and `exports_files`.
+  Exports default to public regardless of package defaults. Implicit files inherit
+  package defaults, matching Bazel 9.3's default flag setting.
+- Native custom `rule` definitions with typed string/list/int/bool/label/output
+  attributes, declaration snapshots, `None` fallback and definition-relative label defaults.
+  Implementations run during analysis, never during query.
+- `DefaultInfo` and custom providers survive module freezing and retain identity
+  across packages. Provider-carried generated files remain usable even when they
+  are not default outputs. File values and depsets preserve artifact identity.
+- Persistent-DAG depsets support all four orders and homogeneous File, string,
+  Label, bool, int32 and immutable tuple elements. Native `Args` supports `add`,
+  `add_all`, `add_joined`, registered top-level mappers and action-registration snapshots.
+- `ctx.actions.declare_file`, binary-safe native `write`, `run_shell` and direct
+  `run`. Shell arguments/environment are keyed; custom shell actions do not
+  inherit genrule's strict-shell flags. Only requested output actions execute.
+- Literal `query` patterns: labels, `//pkg:all`, `//pkg/...`, and `//...`.
+- Scoped `mod graph --output=json` for explicit modules, with optional
+  `--registry=file:///absolute/path` filesystem registries: local metadata/MVS,
+  nodep and multiple-version selection. The captured module report passes 11
+  exact reference JSON cases plus five native-only capability probes.
+  `query` and `build` also accept filesystem `--registry` options. Local override
+  roots and registry `source.json` type `local_path` roots are loadable and have
+  scoped differential coverage. Neither mechanism downloads repositories.
+- Dependency analysis, cycle detection, generated-file dependencies, and
+  validation of the selected graph before executing actions.
+- Genrule Make variables `$@`, `$<`, `$(SRCS)`, `$(OUTS)`, `$(RULEDIR)`, `$(@D)`,
+  `$(location ...)`, `$(locations ...)`, and escaped `$$`.
+- Bounded parallel action DAG execution (`build --jobs=N`) with full preflight,
+  generated-input dependency tracking and failure propagation. Default parallelism
+  is the available CPU count capped at 32; the library's `build()` remains serial.
+- Genrules use `bash -e -o pipefail`; custom shell actions do not. SHA256 action
+  keys use `native-action-v4`; output-content and executable
+  mode validation on cache hits; per-key cross-process locks; atomic publication.
+
+Unknown attributes, options, rules, and unsupported commands fail rather than
+being silently ignored. Existing rc files require explicit
+`--ignore_all_rc_files`: **this deliberately removes their configuration** and is
+not a way to claim rc compatibility. `capabilities` prints the machine-readable
+scope in [`docs/capabilities.json`](docs/capabilities.json).
+
+### Execution and cache limitations
+
+**Trusted BUILD files and commands only. There is no security sandbox.** Shell
+actions can access the host and network. Working-directory isolation is not
+hermetic execution. The action environment is cleared and explicitly set, but
+undeclared host tools/files, time and network responses are not tracked. Cache
+correctness requires actions to depend only on declared inputs and a stable host
+tool environment. Absolute temporary/working paths must not enter outputs.
+Only regular files are supported; no trees or symlink artifacts. On action failure,
+new scheduling stops and in-flight actions are joined. There is no process
+cancellation/timeout or persistent analysis server yet. Globs do not follow
+symlinks; potentially matching symlinks fail explicitly (Bazel can follow them).
+Symbolic macros, executable/test rule modes, runfiles, tree artifacts, HTTP/Git/
+archive repository retrieval, patches, package groups and license metadata remain
+unsupported. External loading is limited to existing local source roots; module
+extensions, repository rules and toolchains are not implemented. Native MODULE
+metadata evaluation and local selected-module graph resolution do not fetch
+repositories or execute extensions. Implicit built-in
+modules are unsupported; active extension usages fail in `mod graph` even when
+hidden from output. Load caching is per package evaluation,
+not a persistent incremental graph.
+Action logs spool to temporary files and bounded tails are replayed to stderr.
+
+## Differential checks and measurements
+
+```sh
+./scripts/fetch-bazel.sh
+python3 scripts/validate.py --iterations 10
+python3 scripts/validate_loading.py
+python3 scripts/validate_custom.py
+python3 -m unittest discover -s tests -p 'test_*.py'
+```
+
+The separately downloaded, SHA256-verified Bazel binary is a **test oracle only**.
+The validation harness compares fixture query labels and generated bytes, checks
+local cache reuse, and measures first invocation separately from repeated warm
+queries. It also probes the small `~/code` filegroup `//src/docker:config` and
+records the unsupported Go-rule loading boundary.
+
+It bypasses the main repo's source-modifying/telemetry wrapper, disables known
+telemetry and remote-write channels, uses isolated output bases, disables lockfile
+updates and convenience symlinks, and shuts down only its own reference server.
+It does not run deployment targets or the main repo's application test suite.
+Raw JSON goes to `artifacts/validation.json`.
+
+The loading suite adds a six-action macro-defined diamond, independent jobs=1/4
+caches, source exports/defaults, visibility failures, frozen-global errors and
+six allowlisted source-only targets from `~/code`. It records repository
+status/diff hashes before and after. Results go to
+`artifacts/loading-validation.json`; no repository script is executed.
+See [`docs/LOADING_VALIDATION.md`](docs/LOADING_VALIDATION.md) for milestone scope.
+
+The custom-rule suite records generated bytes/hashes, jobs=1/4 cold/warm action
+counts, source invalidation, providers, direct execution, Args snapshots and
+`None` defaults in `artifacts/custom-validation.json`. See
+[`docs/CUSTOM_RULE_VALIDATION.md`](docs/CUSTOM_RULE_VALIDATION.md) for evidence,
+timing caveats and its historical milestone capture.
+
+Module graph evidence is in `artifacts/module-validation.json`. Local external
+repository differential validation passes 20 scoped checks and is not implied by
+module JSON parity. The native application query
+`//src/beyondwork.ai/utils/str:str` still fails on unavailable registry metadata
+for `aspect_bazel_lib@2.22.5`; no Go build/test parity is established. See
+[`docs/REPOSITORY_VALIDATION.md`](docs/REPOSITORY_VALIDATION.md) for implementation
+scope, the source-preserving application probe and evidence boundaries.
+
+Tiny-fixture latency is **not evidence of full-repo performance**. See
+[`docs/ROADMAP.md`](docs/ROADMAP.md) for the missing engine and compatibility work.
+
+## Source references
+
+- [Official Bazel 9.3.0 release](https://github.com/bazelbuild/bazel/releases/tag/9.3.0)
+- [Official release artifacts](https://releases.bazel.build/9.3.0/release/index.html)
+- [Bazel architecture](https://bazel.build/contribute/codebase)
+- [Starlark embedding API](https://docs.rs/starlark/0.14.2/starlark/)
+- [Rustup project toolchains](https://rust-lang.github.io/rustup/overrides.html)
+- [direnv](https://direnv.net/)

@@ -1,0 +1,2 @@
+filegroup(name = "allowed", srcs = ["//access:tree"])
+filegroup(name = "denied", srcs = ["//access:pkg"])

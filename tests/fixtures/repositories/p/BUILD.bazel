@@ -1,0 +1,10 @@
+load("@first//p:defs.bzl", "inspect_source")
+
+exports_files(["data.txt"])
+genrule(name = "copy", srcs = ["data.txt"], outs = ["copy.txt"], cmd = "cat $(SRCS) > $@")
+filegroup(name = "copies", srcs = [":copy", "@first//p:copy", "@second//p:copy"])
+filegroup(name = "sources", srcs = ["data.txt", "@first//p:data.txt", "@second//p:data.txt"])
+inspect_source(name = "inspect", source = "@first//p:forwarded")
+filegroup(name = "main_allowed", srcs = ["@first//p:main_visible"])
+filegroup(name = "private_denied", srcs = ["@first//p:private"])
+filegroup(name = "pkg_denied", srcs = ["@first//p:pkg_visible"])

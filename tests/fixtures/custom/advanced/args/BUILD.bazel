@@ -1,0 +1,2 @@
+load(":defs.bzl", "argument_rule")
+argument_rule(name = "arguments")

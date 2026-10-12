@@ -1,0 +1,2 @@
+module(name = "fixture_alpha", version = "1.0")
+bazel_dep(name = "fixture_beta", version = "1.0", repo_name = "dep")

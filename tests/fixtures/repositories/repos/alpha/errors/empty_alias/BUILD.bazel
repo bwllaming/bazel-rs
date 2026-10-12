@@ -1,0 +1,1 @@
+filegroup(name = "bad", srcs = ["@//p:data.txt"])

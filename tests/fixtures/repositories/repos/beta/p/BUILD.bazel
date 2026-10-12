@@ -1,0 +1,2 @@
+exports_files(["data.txt"])
+genrule(name = "copy", srcs = ["data.txt"], outs = ["copy.txt"], cmd = "cat $(SRCS) > $@", visibility = ["//visibility:public"])

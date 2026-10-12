@@ -1,0 +1,1 @@
+load("//:assets/subpackage/not_here.bzl", "value")

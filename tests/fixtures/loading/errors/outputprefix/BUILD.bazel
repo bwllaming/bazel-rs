@@ -1,0 +1,2 @@
+genrule(name = "gen", outs = ["child"], cmd = "echo parent > $@")
+filegroup(name = "collision", srcs = ["//errors/outputprefix/child:gen", ":gen"])

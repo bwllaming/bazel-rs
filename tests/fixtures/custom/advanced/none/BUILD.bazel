@@ -1,0 +1,2 @@
+load("//:defs.bzl", "scalar")
+scalar(name = "scalar", message = None, words = None, number = None, enabled = None)

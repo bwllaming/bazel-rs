@@ -1,0 +1,1 @@
+genrule(name = "gen", outs = ["out"], cmd = "echo child > $@", visibility = ["//visibility:public"])

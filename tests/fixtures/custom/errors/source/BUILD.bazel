@@ -1,0 +1,2 @@
+load("//:errors.bzl", "no_source")
+no_source(name = "bad", src = "//:a.txt")

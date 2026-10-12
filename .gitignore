@@ -1,0 +1,6 @@
+/target/
+/.direnv/
+/artifacts/
+bazel-rs-out/
+__pycache__/
+*.pyc

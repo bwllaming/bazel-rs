@@ -1,0 +1,2 @@
+load("//advanced/provider_errors:defs.bzl", "bad")
+bad(name = "bad", mode = "duplicate")

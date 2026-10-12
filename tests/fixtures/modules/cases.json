@@ -1,0 +1,82 @@
+{
+  "namespace": "opencode_modcheck_93_",
+  "modules": {
+    "a@1.0": "bazel_dep(name = \"{ns}b\", version = \"1.0\")\n",
+    "b@1.0": "",
+    "b@2.0": "",
+    "c@1.0": "bazel_dep(name = \"{ns}b\", version = \"2.0\")\n",
+    "discard@1.0": "bazel_dep(name = \"{ns}b\", version = \"2.0\")\n",
+    "discard@2.0": "bazel_dep(name = \"{ns}b\", version = \"1.0\")\n",
+    "raiser@1.0": "bazel_dep(name = \"{ns}discard\", version = \"2.0\")\n",
+    "dev@1.0": "",
+    "filtered@1.0": "bazel_dep(name = \"{ns}missing_dev\", version = \"1.0\", dev_dependency = True)\nlocal_path_override(module_name = \"{ns}missing_dev\", path = \"/intentionally/nonexistent/nonroot/override\")\n",
+    "low@1.0": "bazel_dep(name = \"{ns}multi\", version = \"1.0\", repo_name = \"low_alias\")\n",
+    "mid@1.0": "bazel_dep(name = \"{ns}multi\", version = \"2.0\", repo_name = \"mid_alias\")\n",
+    "high@1.0": "bazel_dep(name = \"{ns}multi\", version = \"3.0\", repo_name = \"high_alias\")\n",
+    "multi@1.0": "",
+    "multi@2.0": "",
+    "multi@3.0": "",
+    "cyclea@1.0": "bazel_dep(name = \"{ns}cycleb\", version = \"1.0\")\n",
+    "cycleb@1.0": "bazel_dep(name = \"{ns}cyclea\", version = \"1.0\")\n"
+  },
+  "override": "module(name = \"{ns}b\", version = \"9.7\")\n",
+  "cases": [
+    {
+      "name": "chain",
+      "root": "bazel_dep(name = \"{ns}a\", version = \"1.0\")\n",
+      "expected": [{"module": "a@1.0", "dependencies": [{"module": "b@1.0"}]}]
+    },
+    {
+      "name": "diamond_selection",
+      "root": "bazel_dep(name = \"{ns}c\", version = \"1.0\")\nbazel_dep(name = \"{ns}a\", version = \"1.0\")\n",
+      "expected": [{"module": "a@1.0", "dependencies": [{"module": "b@2.0"}]}, {"module": "c@1.0", "dependencies": [{"module": "b@2.0", "unexpanded": true}]}]
+    },
+    {
+      "name": "discarded_version_raises_other_dep",
+      "root": "bazel_dep(name = \"{ns}discard\", version = \"1.0\")\nbazel_dep(name = \"{ns}raiser\", version = \"1.0\")\n",
+      "expected": [{"module": "discard@2.0", "dependencies": [{"module": "b@2.0"}]}, {"module": "raiser@1.0", "dependencies": [{"module": "discard@2.0", "unexpanded": true}]}]
+    },
+    {
+      "name": "root_shared_bfs",
+      "root": "bazel_dep(name = \"{ns}b\", version = \"1.0\")\nbazel_dep(name = \"{ns}a\", version = \"1.0\")\n",
+      "expected": [{"module": "a@1.0", "dependencies": [{"module": "b@1.0", "unexpanded": true}]}, {"module": "b@1.0"}]
+    },
+    {
+      "name": "local_override_declared_version",
+      "root": "bazel_dep(name = \"{ns}b\", version = \"1.0\", repo_name = \"chosen_alias\")\nlocal_path_override(module_name = \"{ns}b\", path = {override_path})\n",
+      "expected": [{"module": "b@_", "version": "9.7", "alias": "chosen_alias"}]
+    },
+    {
+      "name": "nodep_fulfilled_upgrade_no_edge",
+      "root": "bazel_dep(name = \"{ns}a\", version = \"1.0\")\nbazel_dep(name = \"{ns}b\", version = \"2.0\", repo_name = None)\nbazel_dep(name = \"{ns}unfulfilled\", version = \"1.0\", repo_name = None)\n",
+      "expected": [{"module": "a@1.0", "dependencies": [{"module": "b@2.0"}]}]
+    },
+    {
+      "name": "multiple_version_snap_aliases",
+      "root": "bazel_dep(name = \"{ns}low\", version = \"1.0\")\nbazel_dep(name = \"{ns}mid\", version = \"1.0\")\nbazel_dep(name = \"{ns}high\", version = \"1.0\")\nmultiple_version_override(module_name = \"{ns}multi\", versions = [\"2.0\", \"3.0\"])\n",
+      "expected": [{"module": "high@1.0", "dependencies": [{"module": "multi@3.0", "alias": "high_alias"}]}, {"module": "low@1.0", "dependencies": [{"module": "multi@2.0", "alias": "low_alias"}]}, {"module": "mid@1.0", "dependencies": [{"module": "multi@2.0", "alias": "mid_alias", "unexpanded": true}]}]
+    },
+    {
+      "name": "dev_dependencies_enabled",
+      "root": "bazel_dep(name = \"{ns}filtered\", version = \"1.0\")\nbazel_dep(name = \"{ns}dev\", version = \"1.0\", dev_dependency = True)\nbazel_dep(name = \"{ns}b\", version = \"1.0\")\nlocal_path_override(module_name = \"{ns}b\", path = {override_path})\n",
+      "expected": [{"module": "b@_", "version": "9.7"}, {"module": "dev@1.0"}, {"module": "filtered@1.0"}]
+    },
+    {
+      "name": "dev_dependencies_and_overrides_ignored",
+      "flags": ["--ignore_dev_dependency"],
+      "root": "bazel_dep(name = \"{ns}filtered\", version = \"1.0\")\nbazel_dep(name = \"{ns}dev\", version = \"1.0\", dev_dependency = True)\nbazel_dep(name = \"{ns}b\", version = \"1.0\")\nlocal_path_override(module_name = \"{ns}b\", path = {override_path})\n",
+      "expected": [{"module": "b@1.0"}, {"module": "filtered@1.0"}]
+    },
+    {
+      "name": "graph_cycles",
+      "root": "bazel_dep(name = \"{ns}cyclea\", version = \"1.0\")\n",
+      "expected": [{"module": "cyclea@1.0", "dependencies": [{"module": "cycleb@1.0", "cycles": [{"module": "cyclea@1.0", "unexpanded": true}]}]}]
+    },
+    {
+      "name": "graph_cycles_hidden",
+      "flags": ["--nocycles"],
+      "root": "bazel_dep(name = \"{ns}cyclea\", version = \"1.0\")\n",
+      "expected": [{"module": "cyclea@1.0", "dependencies": [{"module": "cycleb@1.0"}]}]
+    }
+  ]
+}

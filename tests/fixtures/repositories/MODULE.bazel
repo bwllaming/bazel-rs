@@ -1,0 +1,5 @@
+module(name = "fixture_root", version = "1.0")
+bazel_dep(name = "fixture_alpha", version = "1.0", repo_name = "first")
+bazel_dep(name = "fixture_beta", version = "1.0", repo_name = "second")
+local_path_override(module_name = "fixture_alpha", path = "repos/alpha")
+local_path_override(module_name = "fixture_beta", path = "repos/beta")

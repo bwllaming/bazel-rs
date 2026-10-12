@@ -1,0 +1,4 @@
+_ = None if glob(["plain/**"], allow_empty = True) == [] else fail("regular file prefix is not a directory")
+_ = None if glob(["*"], exclude = ["**/*.txt"], allow_empty = True) == ["BUILD.bazel", "plain"] else fail("root hidden exclusion mismatch")
+_ = None if glob(["**"], exclude = ["**/*.txt"], allow_empty = True) == ["BUILD.bazel", "plain"] else fail("recursive hidden exclusion mismatch")
+filegroup(name = "check")
