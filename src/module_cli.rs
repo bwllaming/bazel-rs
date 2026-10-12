@@ -1,19 +1,21 @@
-//! Native, filesystem-only `mod graph --output=json` for explicit modules.
+//! Native `mod graph --output=json` for explicit modules.
 //!
 //! This implements Bazel 9.3's hidden-extension, non-verbose, selected-module
 //! JSON tree profile, not full `bazel mod` parity. Implicit `bazel_tools` and
 //! other built-ins are not injected. Extensions cannot be executed, so active
-//! extension usages are errors even with `--extension_info=hidden`. No network,
-//! repository materialization, or lockfile writes are performed.
+//! extension usages are errors even with `--extension_info=hidden`. Remote
+//! registries require explicit --lockfile_mode=off. No repository materialization
+//! or lockfile reads/writes are performed.
 use crate::bzlmod::ModuleFile;
 use crate::module_graph::{self, ResolvedGraph, ResolverOptions};
+use crate::registry::Registry;
 use serde_json::{Value, json};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Run a native module subcommand. `args` begins with `graph`, not `mod`.
-/// Only explicit filesystem registries and the documented JSON profile work.
+/// Only explicit registries and the documented JSON profile work.
 pub fn run(root: &Path, args: &[String]) -> Result<String, String> {
     let options = Options::parse(args)?;
     let graph = module_graph::resolve(root, &options.resolver)?;
@@ -65,7 +67,8 @@ impl Options {
                             options.resolver.registries.push(registry_path(value)?)
                         }
                         ("--output", "json") => output_json = true,
-                        ("--extension_info", "hidden") | ("--lockfile_mode", "off") => {}
+                        ("--extension_info", "hidden") => {}
+                        ("--lockfile_mode", "off") => options.resolver.allow_remote = true,
                         _ => {
                             return Err(format!(
                                 "unsupported native mod graph option {flag}={value}; supported profile: --output=json --extension_info=hidden --lockfile_mode=off"
@@ -95,6 +98,7 @@ impl Options {
         if !output_json {
             return Err("native mod graph requires --output=json; the default text formatter is not implemented".to_owned());
         }
+        options.resolver.validate_registries()?;
         Ok(options)
     }
 }
@@ -108,41 +112,8 @@ fn boolean(flag: &str, value: Option<&str>) -> Result<bool, String> {
     Ok(value != flag.starts_with("--no"))
 }
 
-pub fn registry_path(uri: &str) -> Result<PathBuf, String> {
-    let error = || {
-        format!(
-            "unsupported registry {uri:?}: use an explicit filesystem URL file:///absolute/path; network registries are not implemented"
-        )
-    };
-    let path = uri
-        .strip_prefix("file://")
-        .filter(|p| p.starts_with('/') && !p.starts_with("//"))
-        .ok_or_else(error)?;
-    if path.contains(['?', '#']) {
-        return Err(error());
-    }
-    let mut decoded = Vec::new();
-    let mut bytes = path.bytes();
-    while let Some(b) = bytes.next() {
-        if b == b'%' {
-            let hi = bytes
-                .next()
-                .and_then(|b| (b as char).to_digit(16))
-                .ok_or_else(error)?;
-            let lo = bytes
-                .next()
-                .and_then(|b| (b as char).to_digit(16))
-                .ok_or_else(error)?;
-            decoded.push((hi * 16 + lo) as u8);
-        } else {
-            decoded.push(b);
-        }
-    }
-    if decoded.contains(&0) {
-        return Err(error());
-    }
-    let path = String::from_utf8(decoded).map_err(|_| error())?;
-    Ok(PathBuf::from(path))
+pub fn registry_path(uri: &str) -> Result<Registry, String> {
+    Registry::parse(uri)
 }
 
 fn reject_extensions(module: &ModuleFile, ignore_dev: bool, name: &str) -> Result<(), String> {
@@ -353,6 +324,7 @@ mod tests {
     use super::*;
     use crate::bzlmod::{Dependency, DependencyRepoName, ModuleInfo};
     use crate::module_graph::{ModuleSource, ResolvedModule};
+    use std::path::PathBuf;
 
     fn graph(edges: &[(&str, &[&str])]) -> ResolvedGraph {
         let mut graph = ResolvedGraph::default();
@@ -546,7 +518,10 @@ mod tests {
         .unwrap();
         assert_eq!(
             options.resolver.registries,
-            vec![PathBuf::from("/first"), PathBuf::from("/second space")]
+            vec![
+                PathBuf::from("/first").into(),
+                PathBuf::from("/second space").into()
+            ]
         );
         assert!(options.resolver.ignore_dev_dependencies);
         assert!(options.cycles);

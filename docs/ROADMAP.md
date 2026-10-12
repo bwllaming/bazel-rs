@@ -14,15 +14,24 @@ nodep discovery and multiple-version overrides. The captured module differential
 report passes 11 exact JSON cases; five additional probes test native capability
 rejections only. Local override repositories now support BUILD/`.bzl` loading,
 canonical/apparent mappings, lexical labels and repository-qualified visibility.
-Registry `local_path` source roots are implemented; the separate repository
-differential passes 20 scoped checks. These are portions of
-milestones 1–3, not complete gates: HTTP/Git/archive retrieval, patches, extensions, configured
-analysis, toolchains and the production execution/test stack remain missing.
+Registry `local_path` source roots are implemented; the separate local repository
+differential covers 20 scoped checks. Explicit HTTP registries and verified
+tar/tar.gz/ZIP source materialization now have an implementation, including
+mirrors, overlays, private staging and cache validation. See
+`docs/REMOTE_REPOSITORIES.md` for its strict limits and verification profile.
+These are portions of milestones 1–3, not complete gates: Git sources, archive
+overrides, patches, lockfiles, extensions, configured analysis, toolchains and the
+production execution/test stack remain missing.
 Successful fixture or filegroup builds do not establish application parity.
-The source-preserving native query of `//src/beyondwork.ai/utils/str:str` fails
+The previously captured native query of `//src/beyondwork.ai/utils/str:str` failed
 before application analysis because `aspect_bazel_lib@2.22.5` is unavailable in
-the supplied local registries (none); remote fetching is unsupported. See
+the supplied local registries (none); remote fetching was then unsupported. See
 `docs/REPOSITORY_VALIDATION.md` and `artifacts/mainrepo-application-loading.json`.
+The explicit-HTTPS follow-up now resolves remote MODULE files and reaches
+`rules_swift@3.1.2`, where MODULE evaluation rejects `use_repo_rule`. This is a
+new, observed compatibility blocker, not a successful application query. The
+follow-up preserved the checkout and cleaned its isolated cache; evidence is
+`artifacts/mainrepo-remote-loading.json`.
 
 The official 9.3.0 release was published 2026-10-07, with upstream tag commit
 `e89755babf3e941bc1e9d8120b1cd48854ab9dfa`. The main checkout's `.bazeliskrc` pins
@@ -75,10 +84,13 @@ main-repo filegroup smoke checks. No whole-repo speed claim.
 
 Implemented sub-slice: lazy local module selection; local override roots;
 repository-aware package/label identity and loading; optional filesystem
-registries for `query`, `build` and `mod graph`. New registry `source.json`
-`local_path` support accesses existing source trees, not downloaded archives.
-The local loading/source-root differential covers 20 checks; it does not cover
-downloaded archives or extension-generated repositories.
+registries for `query`, `build` and `mod graph`. Registry `source.json`
+`local_path` support accesses existing source trees. Explicit HTTP(S) registries
+require `--lockfile_mode=off` and fetch fresh metadata; supported archive sources
+use verified download blobs and staged tree publication. The historical local
+loading/source-root differential does not cover downloaded archives;
+`scripts/validate_remote.py` is their separate validation surface. Neither profile
+establishes extension-generated repository or application compatibility.
 
 Gate: `query //...` and the repo's graph expressions match reference sets and
 diagnostics; offline replay of pinned external repositories; repository scripts

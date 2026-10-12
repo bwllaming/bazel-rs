@@ -7,17 +7,18 @@ const HELP: &str = "bazel-rs — experimental native build engine (NOT full Baze
 Usage:
   bazel-rs [--ignore_all_rc_files] [--cache-dir=PATH] query PATTERN
   bazel-rs [--ignore_all_rc_files] [--cache-dir=PATH] build [--jobs=N] TARGET...
-  bazel-rs [--ignore_all_rc_files] mod graph --output=json [--registry=file:///PATH]
+  bazel-rs [--ignore_all_rc_files] mod graph --output=json [--registry=URL]
   bazel-rs version | --version | capabilities
 
 Patterns: //..., //package/..., //package:all, //package:target, :target
 Build options: --jobs=N or --jobs N (positive integer; default: available CPUs, max 32)
-Repository options: --registry=file:///PATH (repeatable), --ignore_dev_dependency
-External sources: local_path_override and filesystem-registry local_path entries only.
+Repository options: --registry=URL (file/http/https, repeatable), --ignore_dev_dependency
+Remote registries require explicit --lockfile_mode=off; other lockfile modes are unsupported.
+External sources: local_path_override, registry local_path entries and verified archives.
 Native rules: filegroup(name, srcs), genrule(name, srcs, outs, cmd)
 Loading: local .bzl legacy macros, glob, package defaults and exports_files.
 Analysis: custom rules/attributes/providers, declared files, write/run/run_shell actions.
-No upstream fallback. No test command, remote repository fetching, module extensions, toolchains,
+No upstream fallback. No test command, arbitrary repository rules, module extensions, toolchains,
 remote execution, rc expansion, sandbox or full query language yet.
 Builds execute trusted shell commands locally; this is not a security sandbox.
 ";
@@ -76,7 +77,7 @@ fn run() -> Result<(), String> {
         let mut args = rest.into_iter();
         while let Some(arg) = args.next() {
             if arg == "--registry" {
-                let value = args.next().ok_or("--registry requires a filesystem URL")?;
+                let value = args.next().ok_or("--registry requires a URL")?;
                 resolver_options
                     .registries
                     .push(bazel_rs::module_cli::registry_path(&value)?);
@@ -84,6 +85,18 @@ fn run() -> Result<(), String> {
                 resolver_options
                     .registries
                     .push(bazel_rs::module_cli::registry_path(value)?);
+            } else if arg == "--lockfile_mode" || arg.starts_with("--lockfile_mode=") {
+                let value = if let Some(value) = arg.strip_prefix("--lockfile_mode=") {
+                    value.to_owned()
+                } else {
+                    args.next().ok_or("--lockfile_mode requires a value")?
+                };
+                if value != "off" {
+                    return Err(format!(
+                        "unsupported --lockfile_mode={value}; lockfile support is not implemented; use --lockfile_mode=off"
+                    ));
+                }
+                resolver_options.allow_remote = true;
             } else if matches!(
                 arg.as_str(),
                 "--ignore_dev_dependency"
@@ -103,6 +116,7 @@ fn run() -> Result<(), String> {
             }
         }
         rest = positional;
+        resolver_options.validate_registries()?;
         if command == "query" && rest.len() != 1 {
             return Err("query requires exactly one literal target pattern; query expressions are not implemented".into());
         }
@@ -140,15 +154,21 @@ fn run() -> Result<(), String> {
         let output = bazel_rs::module_cli::run(&root, &rest)?;
         print!("{output}");
         eprintln!(
-            "bazel-rs: explicit local module graph only; built-in dependency closure and extension execution are not implemented"
+            "bazel-rs: explicit module graph only; built-in dependency closure and extension execution are not implemented"
         );
         return Ok(());
     }
     let current_package = current_package(&root, &cwd)?;
-    let repositories = Arc::new(bazel_rs::repository::RepositorySet::with_options(
-        root.clone(),
-        resolver_options,
-    ));
+    let cache = cache.unwrap_or_else(|| root.join("bazel-rs-out"));
+    let cache = if cache.is_absolute() {
+        cache
+    } else {
+        cwd.join(cache)
+    };
+    let repositories = Arc::new(
+        bazel_rs::repository::RepositorySet::with_options(root.clone(), resolver_options)
+            .with_source_cache(cache.join("repositories")),
+    );
     let mut engine = Engine::with_repositories(repositories);
     let labels = engine.select(&rest, &current_package)?;
     if command == "query" {
@@ -157,12 +177,6 @@ fn run() -> Result<(), String> {
             println!("{label}");
         }
     } else {
-        let cache = cache.unwrap_or_else(|| root.join("bazel-rs-out"));
-        let cache = if cache.is_absolute() {
-            cache
-        } else {
-            cwd.join(cache)
-        };
         let summary = engine.build_with_jobs(&labels, &cache, jobs)?;
         for (label, output) in summary.outputs {
             println!("{label}\t{}", output.display());

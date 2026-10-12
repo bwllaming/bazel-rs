@@ -50,16 +50,38 @@ main application's build/test suite remain unimplemented; see docs/ROADMAP.md.
 - [x] Record the safe native application-loading failure and unchanged source
       checkout (`artifacts/mainrepo-application-loading.json`); no application parity.
 
+## Explicit HTTP registry and verified archive increment
+
+- [x] Preserve selected registry origin and exact authoritative MODULE bytes.
+- [x] Native bounded HTTP(S), explicit lockfile-off opt-in, 404/410 fallback and
+      hard transport/metadata errors; filesystem registry behavior preserved.
+- [x] Verified tar/tar.gz/ZIP materialization, mirrors, executable overlays,
+      authoritative MODULE replacement, staged publication and checked caches.
+- [x] Reject unsupported patches, links, archive extensions and unsafe paths;
+      document strict native-profile limits, not full archive parity.
+- [x] Reproduce and fix warm-cache URL-policy bypass and skipped ZIP CRC checks.
+- [x] Complete 17-check remote report: three format differentials and fourteen
+      native-only lifecycle/security checks, with captured cleanup receipts.
+- [x] Pass 328 Rust tests, 143 Python tests, formatting, strict Clippy, release
+      compilation and error-free rust-analyzer diagnostics.
+- [x] Preserve adjacent differential coverage; replace the obsolete HTTPS
+      rejection probe with a genuinely unsupported registry scheme.
+- [x] Probe real application loading with HTTPS: advances to the explicit
+      `rules_swift@3.1.2` `use_repo_rule` blocker, preserving the checkout.
+
+Current evidence: `artifacts/remote-validation.json`,
+`artifacts/mainrepo-remote-loading.json`, `docs/REMOTE_REPOSITORIES.md`.
+
 ## Remaining compatibility gates
 
 - [ ] Complete Bzlmod/repository compatibility beyond local selection/loading:
-      verified HTTP/Git/archive retrieval, patches, lockfiles, built-in closure,
+      complete downloader/archive semantics, Git retrieval, patches, lockfiles, built-in closure,
       module extensions and repository rules using pinned fixtures.
 - [ ] Configurations, toolchains and providers sufficient for actual repository
       Go/Python/Node rule analysis, followed by safe executable/test targets.
 
 Captured differential artifacts record 39 custom-rule and 24 loading checks;
 module JSON validation is separate from the 20 repository differential checks.
-Full checks pass 296 Rust tests and 124 Python tests; rust-analyzer diagnostics,
-formatting, strict Clippy and release compilation pass.
+The previous local increment passed 296 Rust tests and 124 Python tests; the
+remote increment's updated counts are recorded above.
 This still does not mean full application builds/tests work.

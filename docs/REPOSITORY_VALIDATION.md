@@ -83,7 +83,7 @@ order, without projecting away graph differences:
 
 The profile is `--output=json --noinclude_builtin --extension_info=hidden
 --lockfile_mode=off`. Five additional **native-only** probes reject a missing
-module, unknown option, network registry, unsupported output and pending
+module, unknown option, unsupported registry scheme, unsupported output and pending
 extension execution. They are not five negative differential parity cases.
 Canonical mappings and repository source roots are not established by JSON tree
 equivalence alone. Binary hashes and command streams are retained in the report;

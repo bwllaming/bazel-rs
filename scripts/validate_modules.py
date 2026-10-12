@@ -173,7 +173,7 @@ def boundary_probes(fixture, registry, native, workspace, runner):
     probes = [
         ("missing_module", root + 'bazel_dep(name = "' + fixture["namespace"] + 'absent", version = "1.0")\n', [], "not found"),
         ("unknown_option", root, ["--invented_module_flag"], "unknown"),
-        ("network_registry", root, ["--registry=https://bcr.bazel.build"], "unsupported registry"),
+        ("unsupported_registry_scheme", root, ["--registry=ftp://unsupported.invalid/registry"], "unsupported URL"),
         ("unsupported_output", root, ["--output=text"], "unsupported"),
         ("extension_pending", root + 'ext = use_extension("//:extension.bzl", "ext")\n', [], "cannot execute module extensions"),
     ]

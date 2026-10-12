@@ -1,12 +1,12 @@
-//! Lazy, local-only repository roots and strict apparent-name resolution.
+//! Lazy repository roots and strict apparent-name resolution.
 //!
 //! Main-repository source operations never evaluate MODULE.bazel. External
-//! resolution records the graph once; it does not execute extensions, retrieve
-//! archives, or mistake registry metadata for a materialized source tree.
-//! Source roots may be local overrides or registry `local_path` descriptors.
-//! Both are live, read-only inputs, not copied or downloaded repositories.
+//! resolution records the graph once and does not execute extensions or mistake
+//! registry metadata for a materialized source tree. Local source roots remain
+//! live inputs; archive sources are materialized only when requested.
 use crate::label::{Label, PackageId, validate_repository_name};
 use crate::module_graph::{self, ModuleSource, ResolvedGraph, ResolverOptions};
+use crate::registry::Registry;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -15,6 +15,7 @@ use std::sync::OnceLock;
 pub struct RepositorySet {
     root: PathBuf,
     options: ResolverOptions,
+    source_cache: PathBuf,
     resolved: OnceLock<Result<ResolvedGraph, String>>,
     registry_roots: OnceLock<BTreeMap<String, OnceLock<Result<PathBuf, String>>>>,
 }
@@ -26,11 +27,17 @@ impl RepositorySet {
 
     pub fn with_options(root: PathBuf, options: ResolverOptions) -> Self {
         Self {
+            source_cache: root.join("bazel-rs-out/repositories"),
             root,
             options,
             resolved: OnceLock::new(),
             registry_roots: OnceLock::new(),
         }
+    }
+
+    pub fn with_source_cache(mut self, cache: PathBuf) -> Self {
+        self.source_cache = cache;
+        self
     }
 
     pub fn main_root(&self) -> &Path {
@@ -59,6 +66,7 @@ impl RepositorySet {
                 registry,
                 name,
                 version,
+                module_file,
             } => {
                 let roots = self.registry_roots.get_or_init(|| {
                     graph
@@ -69,7 +77,14 @@ impl RepositorySet {
                 });
                 roots[repository]
                     .get_or_init(|| {
-                        registry_local_root(registry, name, version).map_err(|error| {
+                        registry_source_root(
+                            registry,
+                            name,
+                            version,
+                            module_file,
+                            &self.source_cache,
+                        )
+                        .map_err(|error| {
                             format!("repository @@{repository} is not materialized: {error}")
                         })
                     })
@@ -113,33 +128,46 @@ impl RepositorySet {
     }
 }
 
-fn registry_local_root(registry: &Path, name: &str, version: &str) -> Result<PathBuf, String> {
-    let descriptor = registry
-        .join("modules")
-        .join(name)
-        .join(version)
-        .join("source.json");
-    let source = read_registry_object(&descriptor)?;
+fn registry_source_root(
+    registry: &Registry,
+    name: &str,
+    version: &str,
+    module_file: &[u8],
+    cache: &Path,
+) -> Result<PathBuf, String> {
+    let relative = format!("modules/{name}/{version}/source.json");
+    let descriptor = registry.location(&relative);
+    let source = registry
+        .read_object(&relative)?
+        .ok_or_else(|| format!("missing registry source descriptor {descriptor}"))?;
     match source.get("type") {
         Some(serde_json::Value::String(kind)) if kind == "local_path" => {}
         None => {
-            return Err(format!(
-                "unsupported default archive source in {}; only type local_path is supported",
-                descriptor.display()
-            ));
+            return crate::materializer::materialize(
+                registry,
+                name,
+                version,
+                module_file,
+                &source,
+                cache,
+            );
         }
-        Some(kind) => {
-            return Err(format!(
-                "unsupported source type {kind} in {}; only type local_path is supported (no archive/git retrieval)",
-                descriptor.display()
-            ));
+        Some(serde_json::Value::String(kind)) if kind == "archive" => {
+            return crate::materializer::materialize(
+                registry,
+                name,
+                version,
+                module_file,
+                &source,
+                cache,
+            );
         }
+        Some(kind) => return Err(format!("unsupported source type {kind} in {descriptor}")),
     }
     for key in source.keys() {
         if !matches!(key.as_str(), "type" | "path") {
             return Err(format!(
-                "unsupported local_path source field {key:?} in {}; patches and other source transformations are not implemented",
-                descriptor.display()
+                "unsupported local_path source field {key:?} in {descriptor}; patches and other source transformations are not implemented"
             ));
         }
     }
@@ -147,43 +175,46 @@ fn registry_local_root(registry: &Path, name: &str, version: &str) -> Result<Pat
         .get("path")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| {
-            format!(
-                "local_path source requires a nonempty string path in {}",
-                descriptor.display()
-            )
+            format!("local_path source requires a nonempty string path in {descriptor}")
         })?;
     if path.is_empty() || path.contains('\0') {
         return Err(format!(
-            "invalid local_path path in {}: must be nonempty and contain no NUL",
-            descriptor.display()
+            "invalid local_path path in {descriptor}: must be nonempty and contain no NUL"
         ));
     }
     let path = PathBuf::from(path);
     let chosen = if path.is_absolute() {
         path
     } else {
-        let config_path = registry.join("bazel_registry.json");
-        let config = read_registry_object(&config_path).map_err(|error| {
+        let config_path = registry.location("bazel_registry.json");
+        let config = registry.read_object("bazel_registry.json").map_err(|error| {
             format!("relative local_path source requires registry module_base_path: {error}")
-        })?;
+        })?.ok_or_else(|| format!("relative local_path source requires registry module_base_path: missing {config_path}"))?;
         let base = config
             .get("module_base_path")
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| {
                 format!(
-                    "relative local_path source requires string module_base_path in {}",
-                    config_path.display()
+                    "relative local_path source requires string module_base_path in {config_path}"
                 )
             })?;
         if base.contains('\0') {
             return Err(format!(
-                "invalid module_base_path in {}: NUL is not allowed",
-                config_path.display()
+                "invalid module_base_path in {config_path}: NUL is not allowed"
             ));
         }
         // IndexRegistry.getLocalPathRepoSpec resolves a relative base against
         // the selected registry, not the workspace or source descriptor folder.
-        registry.join(base).join(path)
+        let base = PathBuf::from(base);
+        if base.is_absolute() {
+            base.join(path)
+        } else if let Some(registry) = registry.local_path() {
+            registry.join(base).join(path)
+        } else {
+            return Err(format!(
+                "relative module_base_path is unsupported for remote registry {registry}; local_path sources require an absolute path or absolute module_base_path"
+            ));
+        }
     };
     let root = std::fs::canonicalize(&chosen).map_err(|error| {
         format!(
@@ -198,45 +229,6 @@ fn registry_local_root(registry: &Path, name: &str, version: &str) -> Result<Pat
         ));
     }
     Ok(root)
-}
-
-/// Match module_graph's registry security boundary. Registry metadata must not
-/// traverse symlinks, and the registry tree must not change during these reads.
-/// A declared source root may itself resolve through symlinks, like an override.
-fn read_registry_object(path: &Path) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-    let mut current = PathBuf::new();
-    for component in path.components() {
-        current.push(component.as_os_str());
-        let metadata = std::fs::symlink_metadata(&current).map_err(|error| {
-            format!(
-                "cannot inspect registry path {}: {error}",
-                current.display()
-            )
-        })?;
-        if metadata.file_type().is_symlink() {
-            return Err(format!(
-                "symlink registry paths are unsupported: {}",
-                current.display()
-            ));
-        }
-    }
-    if !path.is_file() {
-        return Err(format!(
-            "registry entry is not a regular file: {}",
-            path.display()
-        ));
-    }
-    let text = std::fs::read_to_string(path)
-        .map_err(|error| format!("cannot read registry metadata {}: {error}", path.display()))?;
-    match serde_json::from_str(&text)
-        .map_err(|error| format!("invalid registry JSON {}: {error}", path.display()))?
-    {
-        serde_json::Value::Object(object) => Ok(object),
-        _ => Err(format!(
-            "registry metadata must be a JSON object: {}",
-            path.display()
-        )),
-    }
 }
 
 #[cfg(test)]
@@ -274,7 +266,7 @@ mod tests {
             RepositorySet::with_options(
                 self.0.join("main"),
                 ResolverOptions {
-                    registries: vec![self.0.join("registry")],
+                    registries: vec![self.0.join("registry").into()],
                     ..ResolverOptions::default()
                 },
             )
@@ -390,7 +382,7 @@ mod tests {
         let repos = RepositorySet::with_options(
             f.0.join("main"),
             ResolverOptions {
-                registries: vec![f.0.join("registry")],
+                registries: vec![f.0.join("registry").into()],
                 ..ResolverOptions::default()
             },
         );
@@ -458,17 +450,13 @@ mod tests {
         let repos = f.registry();
         f.write("main/MODULE.bazel", "module(name='main')\nbazel_dep(name='dep',version='1')\nbazel_dep(name='local',version='1')\nlocal_path_override(module_name='local',path='../local')\n");
         f.write("local/MODULE.bazel", "module(name='local')\n");
-        f.source(serde_json::json!({"type":"archive", "url":"https://unused.invalid/archive"}));
+        // Invalid before any download is attempted, even with archive support.
+        f.source(serde_json::json!({"type":"archive", "url":17}));
         assert!(repos.root("").is_ok());
         assert!(repos.resolved.get().is_none());
         assert!(repos.root("local+").is_ok());
         assert!(repos.registry_roots.get().is_none());
-        assert!(
-            repos
-                .root("dep+")
-                .unwrap_err()
-                .contains("unsupported source type")
-        );
+        assert!(repos.root("dep+").unwrap_err().contains("url"));
     }
 
     #[test]
@@ -555,7 +543,7 @@ mod tests {
         let repos = RepositorySet::with_options(
             f.0.join("main"),
             ResolverOptions {
-                registries: vec![f.0.join("registry"), f.0.join("other")],
+                registries: vec![f.0.join("registry").into(), f.0.join("other").into()],
                 ..ResolverOptions::default()
             },
         );

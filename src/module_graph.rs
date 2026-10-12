@@ -1,16 +1,19 @@
-//! Local-only Bzlmod discovery and minimal version selection.
+//! Bzlmod registry discovery and minimal version selection.
 //!
 //! Discovery reads every reachable requested MODULE version before selection;
 //! selection upgrades by module name (Bazel 9.3 compatibility levels are no-ops), rewrites edges,
 //! and prunes unreachable modules. It never materializes repositories or executes
 //! extensions. Nodep discovery reaches a fixed point before MVS and multiple-
 //! version snapping; nodep-only reachability validates but does not retain repos.
-//! Registry source.json/downloads and patches are unsupported. Implicit built-in
+//! This graph does not materialize registry sources. MODULE patches are unsupported.
+//! Remote registry reads require explicit lockfile-off opt-in; no lockfiles are read
+//! or written. Implicit built-in
 //! bazel_tools is not injected or fabricated: this graph covers explicit deps.
 //!
 //! Semantics: https://bazel.build/external/module#version-selection
 //! Relaxed versions: https://bazel.build/external/module#version_format
 use crate::bzlmod::{self, Dependency, ModuleFile, ModuleOverride};
+use crate::registry::Registry;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -19,9 +22,27 @@ const MAX_DISCOVERED_MODULES: usize = 10_000;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ResolverOptions {
-    /// Local registry roots, searched in order. No implicit remote registry.
-    pub registries: Vec<PathBuf>,
+    /// Explicit registry roots, searched in order. No implicit remote registry.
+    pub registries: Vec<Registry>,
     pub ignore_dev_dependencies: bool,
+    /// Remote CLI resolution requires explicitly disabling unsupported lockfiles.
+    pub allow_remote: bool,
+}
+
+impl ResolverOptions {
+    pub fn validate_registries(&self) -> Result<(), String> {
+        for registry in &self.registries {
+            self.validate_registry(registry)?;
+        }
+        Ok(())
+    }
+
+    fn validate_registry(&self, registry: &Registry) -> Result<(), String> {
+        if registry.local_path().is_none() && !self.allow_remote {
+            return Err("--lockfile_mode=off is required for remote registries; lockfile support is not implemented".to_owned());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -53,14 +74,17 @@ pub struct ResolvedModule {
 pub enum ModuleSource {
     LocalPath(PathBuf),
     Registry {
-        registry: PathBuf,
+        registry: Registry,
         name: String,
         version: String,
+        /// Authoritative bytes of the selected and evaluated MODULE.bazel.
+        module_file: Vec<u8>,
     },
 }
 
-/// Resolve a workspace directory's MODULE.bazel using only local files.
+/// Resolve a workspace directory's MODULE.bazel using explicit registries.
 pub fn resolve(root: &Path, options: &ResolverOptions) -> Result<ResolvedGraph, String> {
+    options.validate_registries()?;
     let root_path = std::fs::canonicalize(root).map_err(|e| {
         format!(
             "cannot resolve root module directory {}: {e}",
@@ -364,7 +388,7 @@ impl Discovery<'_> {
                 format!("cannot resolve local override for {name:?} at {path:?}: {e}")
             })?;
             let module = bzlmod::evaluate_for_resolution(&path.join("MODULE.bazel"), true)?;
-            validate_declared_module(&module, name, None, &path)?;
+            validate_declared_module(&module, name, None, &path.display().to_string())?;
             return Ok((module, ModuleSource::LocalPath(path)));
         }
         if version.normalized.is_empty() {
@@ -376,42 +400,38 @@ impl Discovery<'_> {
             Some(
                 ModuleOverride::SingleVersion { registry, .. }
                 | ModuleOverride::MultipleVersion { registry, .. },
-            ) if !registry.is_empty() => Some(vec![local_registry_url(registry)?]),
+            ) if !registry.is_empty() => Some(vec![Registry::parse(registry)?]),
             _ => None,
         };
         let registries = override_registry
             .as_deref()
             .unwrap_or(&self.options.registries);
         for registry in registries {
-            let Some(registry) = canonical_registry(registry)? else {
+            self.options.validate_registry(registry)?;
+            let relative = format!("modules/{name}/{}/MODULE.bazel", version.normalized);
+            let path = registry.location(&relative);
+            let Some(source) = registry.read_text(&relative)? else {
                 continue;
             };
-            let path = registry
-                .join("modules")
-                .join(name)
-                .join(&version.normalized)
-                .join("MODULE.bazel");
-            let Some(source) = read_registry_file(&path)? else {
-                continue;
-            };
-            let module =
-                bzlmod::evaluate_source_for_resolution(&path.to_string_lossy(), source, true)?;
+            let module_file = source.as_bytes().to_vec();
+            let module = bzlmod::evaluate_source_for_resolution(&path, source, true)?;
             validate_declared_module(&module, name, Some(version), &path)?;
             return Ok((
                 module,
                 ModuleSource::Registry {
-                    registry,
+                    registry: registry.clone(),
                     name: name.to_owned(),
                     version: version.normalized.clone(),
+                    module_file,
                 },
             ));
         }
         Err(format!(
-            "module {name}@{} was not found in local registries [{}]; remote fetching is unsupported",
+            "module {name}@{} was not found in registries [{}]",
             version.normalized,
             registries
                 .iter()
-                .map(|p| p.display().to_string())
+                .map(ToString::to_string)
                 .collect::<Vec<_>>()
                 .join(", ")
         ))
@@ -422,18 +442,15 @@ fn validate_declared_module(
     module: &ModuleFile,
     name: &str,
     version: Option<&Version>,
-    path: &Path,
+    path: &str,
 ) -> Result<(), String> {
-    let info = module.module.as_ref().ok_or_else(|| {
-        format!(
-            "dependency module {name:?} at {} must declare module()",
-            path.display()
-        )
-    })?;
+    let info = module
+        .module
+        .as_ref()
+        .ok_or_else(|| format!("dependency module {name:?} at {path} must declare module()"))?;
     if info.name != name {
         return Err(format!(
-            "module name mismatch at {}: requested {name:?}, declared {:?}",
-            path.display(),
+            "module name mismatch at {path}: requested {name:?}, declared {:?}",
             info.name
         ));
     }
@@ -441,10 +458,8 @@ fn validate_declared_module(
         let declared = Version::parse(&info.version)?;
         if declared != *version {
             return Err(format!(
-                "module version mismatch at {}: requested {:?}, declared {:?}",
-                path.display(),
-                version.normalized,
-                info.version
+                "module version mismatch at {path}: requested {:?}, declared {:?}",
+                version.normalized, info.version
             ));
         }
     }
@@ -637,119 +652,19 @@ fn mapping(
     Ok(mapping)
 }
 
-fn canonical_registry(path: &Path) -> Result<Option<PathBuf>, String> {
-    if !no_symlinks(path)? {
-        return Ok(None);
-    }
-    let canonical = match std::fs::canonicalize(path) {
-        Ok(path) => path,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => {
-            return Err(format!(
-                "cannot open local registry {}: {e}",
-                path.display()
-            ));
-        }
-    };
-    if !canonical.is_dir() {
-        return Err(format!(
-            "local registry is not a directory: {}",
-            canonical.display()
-        ));
-    }
-    Ok(Some(canonical))
-}
-
-/// Refuse symlinks in all path components, not just the final MODULE file.
-/// Registry trees are trusted not to be changed concurrently with these reads.
-fn no_symlinks(path: &Path) -> Result<bool, String> {
-    let mut current = PathBuf::new();
-    for component in path.components() {
-        current.push(component.as_os_str());
-        match std::fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(format!(
-                    "symlink registry paths are unsupported: {}",
-                    current.display()
-                ));
-            }
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-            Err(e) => {
-                return Err(format!(
-                    "cannot inspect registry path {}: {e}",
-                    current.display()
-                ));
-            }
-        }
-    }
-    Ok(true)
-}
-
-fn read_registry_file(path: &Path) -> Result<Option<String>, String> {
-    if !no_symlinks(path)? {
-        return Ok(None);
-    }
-    let metadata =
-        std::fs::metadata(path).map_err(|e| format!("cannot inspect {}: {e}", path.display()))?;
-    if !metadata.is_file() {
-        return Err(format!(
-            "registry entry is not a regular file: {}",
-            path.display()
-        ));
-    }
-    std::fs::read_to_string(path)
-        .map(Some)
-        .map_err(|e| format!("cannot read {}: {e}", path.display()))
-}
-
-fn local_registry_url(url: &str) -> Result<PathBuf, String> {
-    let Some(rest) = url.strip_prefix("file://") else {
-        return Err(format!(
-            "remote registry override {url:?} is unsupported: only local file:// registries can be read"
-        ));
-    };
-    let rest = rest
-        .strip_prefix("localhost/")
-        .map_or_else(|| rest.to_owned(), |p| format!("/{p}"));
-    if !rest.starts_with('/') || rest.contains(['?', '#']) {
-        return Err(format!(
-            "unsupported file registry URL {url:?}: expected an absolute local path without query or fragment"
-        ));
-    }
-    let mut bytes = Vec::new();
-    let mut input = rest.bytes();
-    while let Some(b) = input.next() {
-        if b == b'%' {
-            let hi = input.next().and_then(|c| char::from(c).to_digit(16));
-            let lo = input.next().and_then(|c| char::from(c).to_digit(16));
-            match (hi, lo) {
-                (Some(hi), Some(lo)) => bytes.push((hi * 16 + lo) as u8),
-                _ => return Err(format!("invalid percent encoding in registry URL {url:?}")),
-            }
-        } else {
-            bytes.push(b);
-        }
-    }
-    if bytes.contains(&0) {
-        return Err("NUL in registry URL is unsupported".to_owned());
-    }
-    let path =
-        String::from_utf8(bytes).map_err(|_| "non-UTF-8 registry URL is unsupported".to_owned())?;
-    Ok(PathBuf::from(path))
-}
-
 fn check_yanked(source: &ModuleSource) -> Result<(), String> {
     let ModuleSource::Registry {
         registry,
         name,
         version,
+        ..
     } = source
     else {
         return Ok(());
     };
-    let path = registry.join("modules").join(name).join("metadata.json");
-    let Some(text) = read_registry_file(&path)? else {
+    let relative = format!("modules/{name}/metadata.json");
+    let path = registry.location(&relative);
+    let Some(text) = registry.read_text(&relative)? else {
         return Ok(());
     };
     // IndexRegistry.grabJson treats blank documents as absent metadata.
@@ -757,10 +672,10 @@ fn check_yanked(source: &ModuleSource) -> Result<(), String> {
         return Ok(());
     }
     let metadata: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|e| format!("invalid registry metadata {}: {e}", path.display()))?;
+        .map_err(|e| format!("invalid registry metadata {path}: {e}"))?;
     let object = metadata
         .as_object()
-        .ok_or_else(|| format!("registry metadata must be an object: {}", path.display()))?;
+        .ok_or_else(|| format!("registry metadata must be an object: {path}"))?;
     let Some(yanked) = object.get("yanked_versions") else {
         return Ok(());
     };
@@ -770,12 +685,12 @@ fn check_yanked(source: &ModuleSource) -> Result<(), String> {
     }
     let yanked = yanked
         .as_object()
-        .ok_or_else(|| format!("yanked_versions must be an object: {}", path.display()))?;
+        .ok_or_else(|| format!("yanked_versions must be an object: {path}"))?;
     let selected = Version::parse(version)?;
     for (v, reason) in yanked {
         let reason = reason
             .as_str()
-            .ok_or_else(|| format!("yanked version reason must be a string: {}", path.display()))?;
+            .ok_or_else(|| format!("yanked version reason must be a string: {path}"))?;
         if Version::parse(v)? == selected {
             return Err(format!(
                 "selected module {name}@{version} is yanked: {reason}; yanked-version allowlists are unsupported"
@@ -925,7 +840,7 @@ mod tests {
         }
         fn options(&self) -> ResolverOptions {
             ResolverOptions {
-                registries: vec![self.registry.clone()],
+                registries: vec![self.registry.clone().into()],
                 ..Default::default()
             }
         }
@@ -1184,37 +1099,37 @@ mod tests {
     }
 
     #[test]
-    fn registry_override_and_ordered_fallback_are_local_only() {
+    fn registry_override_and_ordered_fallback_keep_local_semantics() {
         let f = Fixture::new("bazel_dep(name='a',version='1')");
         f.module("a", "1", "");
         let empty = f.base.join("empty");
         std::fs::create_dir_all(&empty).unwrap();
         let opts = ResolverOptions {
-            registries: vec![empty.clone(), f.registry.clone()],
+            registries: vec![empty.clone().into(), f.registry.clone().into()],
             ignore_dev_dependencies: false,
+            ..Default::default()
         };
         assert!(resolve(&f.root, &opts).unwrap().modules.contains_key("a+"));
         std::fs::write(f.root.join("MODULE.bazel"), format!("bazel_dep(name='a',version='1')\nsingle_version_override(module_name='a',registry={:?})", format!("file://{}", f.registry.display()))).unwrap();
         let graph = resolve(
             &f.root,
             &ResolverOptions {
-                registries: vec![empty],
+                registries: vec![empty.into()],
                 ..Default::default()
             },
         )
         .unwrap();
         assert_eq!(graph.modules["a+"].version, "1");
         assert_eq!(
-            local_registry_url("file:///tmp/a%20b").unwrap(),
-            PathBuf::from("/tmp/a b")
+            Registry::parse("file:///tmp/a%20b").unwrap(),
+            PathBuf::from("/tmp/a b").into()
         );
-        assert!(
-            local_registry_url("https://example.invalid")
-                .unwrap_err()
-                .contains("remote registry")
-        );
-        assert!(local_registry_url("file://remote.example/x").is_err());
-        assert!(local_registry_url("file:///tmp/%xx").is_err());
+        assert!(matches!(
+            Registry::parse("https://example.invalid").unwrap(),
+            Registry::Url(_)
+        ));
+        assert!(Registry::parse("file://remote.example/x").is_err());
+        assert!(Registry::parse("file:///tmp/%xx").is_err());
     }
 
     #[test]
@@ -1266,7 +1181,7 @@ mod tests {
             ),
             (
                 "bazel_dep(name='a',version='1')\nsingle_version_override(module_name='a',registry='https://invalid.invalid')",
-                "remote registry",
+                "--lockfile_mode=off is required for remote registries",
             ),
         ] {
             let f = Fixture::new(source);
@@ -1574,7 +1489,7 @@ mod tests {
         assert_eq!(graph.modules.len(), 1);
         assert_eq!(graph.modules["c+"].version, "1");
         assert!(
-            matches!(&graph.modules["c+"].source, ModuleSource::Registry { registry, version, .. } if registry == &f.registry && version == "1")
+            matches!(&graph.modules["c+"].source, ModuleSource::Registry { registry, version, .. } if registry.local_path() == Some(f.registry.as_path()) && version == "1")
         );
     }
 
@@ -1677,7 +1592,7 @@ mod tests {
         f.module("a", "1", "");
         let missing = f.base.join("does-not-exist").join("registry");
         let options = ResolverOptions {
-            registries: vec![missing.clone(), f.registry.clone()],
+            registries: vec![missing.clone().into(), f.registry.clone().into()],
             ..Default::default()
         };
         assert!(!missing.exists());
@@ -1688,7 +1603,7 @@ mod tests {
         let file = f.base.join("not-a-directory");
         std::fs::write(&file, "registry cannot be a file").unwrap();
         let options = ResolverOptions {
-            registries: vec![file, f.registry.clone()],
+            registries: vec![file.into(), f.registry.clone().into()],
             ..Default::default()
         };
         assert!(
@@ -1706,7 +1621,7 @@ mod tests {
         let link = f.base.join("linked-registry");
         std::os::unix::fs::symlink(&f.registry, &link).unwrap();
         let options = ResolverOptions {
-            registries: vec![link, f.registry.clone()],
+            registries: vec![link.into(), f.registry.clone().into()],
             ..Default::default()
         };
         assert!(
@@ -1727,7 +1642,7 @@ mod tests {
         std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o0)).unwrap();
         let probe = std::fs::read_dir(&denied);
         let options = ResolverOptions {
-            registries: vec![denied.clone(), f.registry.clone()],
+            registries: vec![denied.clone().into(), f.registry.clone().into()],
             ..Default::default()
         };
         let result = resolve(&f.root, &options);
