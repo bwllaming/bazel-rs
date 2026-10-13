@@ -30,7 +30,8 @@ digest, evidence, snapshot, valid_evidence = direct.digest, direct.evidence, dir
 archive_plan, generated_expectations = local.archive_plan, local.generated_expectations
 generated_snapshot, publications = local.generated_snapshot, local.publications
 steps_for, success = local.steps_for, extensions.success
-CONTRACT = ROOT / 'artifacts/native-existing-rules-contract.json'
+# Tracked historical diagnostics, not a native acceptance report.
+CONTRACT = ROOT / 'tests/fixtures/existing_rules/reference_diagnostics.json'
 SOURCES = list(dict.fromkeys([ROOT / 'scripts/validate_existing_rules.py',
     ROOT / 'tests/test_validate_existing_rules.py', CONTRACT, *local.SOURCES,
     *sorted(p for p in (ROOT / 'resources/bazel_tools').rglob('*') if p.is_file())]))
