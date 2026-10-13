@@ -40,8 +40,11 @@ passes six families and 70 phases, including 90 actual CLI commands, in
 then compares all four generated files on cold/warm runs. Source/binary stability
 and reference shutdown/scratch cleanup are recorded.
 
-The preserved application now loads the generated globals file and fails at the
+The application at the introspection increment loaded the generated globals file and failed at the
 missing `macro` global; see `artifacts/mainrepo-existing-rules-loading.json`.
 Fixture version 1.42.1 does not establish the application's selected version.
+The subsequent [symbolic-macro increment](SYMBOLIC_MACROS.md) advances that probe
+to missing `PackageSpecificationInfo`, without claiming complete features-library
+execution.
 Full application build/test, complete
 features-library loading, SDKs and performance parity remain unproven.

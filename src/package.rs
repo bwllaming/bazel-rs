@@ -8,7 +8,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail};
 use starlark::any::ProvidesStaticType;
 use starlark::environment::{Globals, GlobalsBuilder, LibraryExtension, Module};
-use starlark::eval::{Evaluator, ReturnFileLoader};
+use starlark::eval::{Arguments, Evaluator, ReturnFileLoader};
 use starlark::starlark_module;
 use starlark::syntax::ast::{Argument, Expr};
 use starlark::syntax::{AstModule, Dialect};
@@ -16,6 +16,7 @@ use starlark::values::Value;
 use starlark::values::list::ListRef;
 use starlark::values::none::NoneType;
 use starlark::values::structs::AllocStruct;
+use starlark::values::tuple::TupleRef;
 
 use crate::build_settings::BuildSetting;
 use crate::custom_rule::{AttrSpec, AttrValue, CustomInvocation};
@@ -31,6 +32,12 @@ pub enum RuleKind {
 }
 
 #[derive(Clone, Debug)]
+pub struct MacroOwner {
+    pub definition_package: PackageId,
+    pub name: String,
+}
+
+#[derive(Clone, Debug)]
 pub struct Rule {
     pub label: Label,
     pub kind: RuleKind,
@@ -39,6 +46,7 @@ pub struct Rule {
     pub cmd: Option<String>,
     pub visibility: Visibility,
     pub custom: Option<CustomInvocation>,
+    pub macro_owner: Option<MacroOwner>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -46,6 +54,7 @@ pub struct Package {
     pub rules: BTreeMap<Label, Rule>,
     pub exports: BTreeMap<Label, Visibility>,
     pub default_visibility: Visibility,
+    pub macro_names: BTreeSet<String>,
 }
 
 impl std::ops::Deref for Package {
@@ -72,6 +81,10 @@ mod collector {
         pub defaulted_rules: RefCell<BTreeSet<Label>>,
         pub package_called: Cell<bool>,
         pub custom: RefCell<Vec<PendingCustom>>,
+        pub active_macro: RefCell<Option<MacroOwner>>,
+        pub macro_names: RefCell<BTreeSet<String>>,
+        // An index of actual rule/output/export declarations, not inferred inputs.
+        pub declared_names: RefCell<BTreeSet<String>>,
     }
 }
 use collector::Declarations;
@@ -142,6 +155,26 @@ pub(crate) fn register_custom<'v>(
 }
 
 impl Declarations {
+    fn check_macro_collision(&self, name: &str) -> anyhow::Result<()> {
+        if self.macro_names.borrow().contains(name)
+            && self
+                .active_macro
+                .borrow()
+                .as_ref()
+                .is_none_or(|owner| owner.name != name)
+        {
+            bail!("target {name:?} conflicts with an existing macro");
+        }
+        Ok(())
+    }
+
+    fn forbid_in_macro(&self, function: &str) -> anyhow::Result<()> {
+        if self.active_macro.borrow().is_some() {
+            bail!("{function}() is not allowed inside a symbolic macro");
+        }
+        Ok(())
+    }
+
     fn package_id(&self) -> PackageId {
         PackageId {
             repository: self.repository.clone(),
@@ -159,6 +192,7 @@ impl Declarations {
         visibility: Option<Visibility>,
     ) -> anyhow::Result<NoneType> {
         let label = local_label(name, &self.package_id(), "rule name")?;
+        self.check_macro_collision(name)?;
         for src in &srcs {
             (if kind == RuleKind::Custom {
                 Label::parse_canonical(src).map(|_| ())
@@ -171,12 +205,26 @@ impl Declarations {
             bail!("genrule {label}: outs must not be empty");
         }
         for out in &outs {
+            self.check_macro_collision(out)?;
             label
                 .with_name(out)
                 .map_err(|e| anyhow!("invalid output path {out:?}: {e}"))?;
         }
-        if visibility.is_none() {
-            self.defaulted_rules.borrow_mut().insert(label.clone());
+        let macro_owner = self.active_macro.borrow().clone();
+        let visibility = if let Some(owner) = &macro_owner {
+            visibility
+                .unwrap_or(Visibility::Private)
+                .with_package(&owner.definition_package)
+        } else {
+            if visibility.is_none() {
+                self.defaulted_rules.borrow_mut().insert(label.clone());
+            }
+            visibility.unwrap_or_else(|| self.default_visibility.borrow().clone())
+        };
+        {
+            let mut names = self.declared_names.borrow_mut();
+            names.insert(name.to_owned());
+            names.extend(outs.iter().cloned());
         }
         self.rules.borrow_mut().push(Rule {
             label,
@@ -184,8 +232,9 @@ impl Declarations {
             srcs,
             outs,
             cmd,
-            visibility: visibility.unwrap_or_else(|| self.default_visibility.borrow().clone()),
+            visibility,
             custom: None,
+            macro_owner,
         });
         Ok(NoneType)
     }
@@ -224,13 +273,155 @@ fn parse_visibility(
     if value.is_none() {
         return Ok(None);
     }
-    Visibility::parse_in(
-        &strings(value, "visibility")?,
-        &context.package_id(),
-        &context.repositories,
-    )
-    .map(Some)
-    .map_err(anyhow::Error::msg)
+    Visibility::from_labels(visibility_labels(value, context)?)
+        .map(Some)
+        .map_err(anyhow::Error::msg)
+}
+
+fn visibility_labels(value: Value<'_>, context: &Declarations) -> anyhow::Result<Vec<Label>> {
+    let items = if let Some(list) = ListRef::from_value(value) {
+        list.content()
+    } else if let Some(tuple) = TupleRef::from_value(value) {
+        tuple.content()
+    } else {
+        bail!("visibility must be a list or tuple of strings or Labels");
+    };
+    let mut budget = crate::repository_budget::HostBudget::default();
+    items
+        .iter()
+        .map(|value| {
+            if let Some((repository, package, name)) = crate::starlark_types::label_parts(*value) {
+                for part in [repository, package, name] {
+                    budget.string(part).map_err(anyhow::Error::msg)?;
+                }
+                Ok(Label {
+                    repository: repository.to_owned(),
+                    package: package.to_owned(),
+                    name: name.to_owned(),
+                })
+            } else if let Some(text) = value.unpack_str() {
+                let bytes = context
+                    .repositories
+                    .resolution_size_bound(text, &context.repository, &context.package)
+                    .map_err(anyhow::Error::msg)?;
+                budget.bytes(bytes).map_err(anyhow::Error::msg)?;
+                budget.node().map_err(anyhow::Error::msg)?;
+                context
+                    .repositories
+                    .parse(text, &context.repository, &context.package)
+                    .map_err(anyhow::Error::msg)
+            } else {
+                bail!("visibility entries must be strings or Labels")
+            }
+        })
+        .collect()
+}
+
+struct MacroFrame<'a> {
+    slot: &'a RefCell<Option<MacroOwner>>,
+    previous: Option<MacroOwner>,
+}
+
+impl<'a> MacroFrame<'a> {
+    fn enter(slot: &'a RefCell<Option<MacroOwner>>, owner: MacroOwner) -> Self {
+        Self {
+            slot,
+            previous: slot.replace(Some(owner)),
+        }
+    }
+}
+
+impl Drop for MacroFrame<'_> {
+    fn drop(&mut self) {
+        self.slot.replace(self.previous.take());
+    }
+}
+
+pub(crate) fn invoke_symbolic_macro<'v>(
+    eval: &mut Evaluator<'v, '_, '_>,
+    definition_label: &str,
+    exported: Option<&str>,
+    implementation: Value<'v>,
+    args: &Arguments<'v, '_>,
+) -> anyhow::Result<Value<'v>> {
+    // Copy the independent extra reference: never borrow eval or a RefMut over
+    // the callback, whose helpers reenter this same declaration collector.
+    let extra = eval.extra;
+    let context = extra
+        .and_then(|extra| extra.downcast_ref::<Declarations>())
+        .ok_or_else(|| anyhow!("symbolic macros may only be invoked during BUILD evaluation"))?;
+    if exported.is_none() {
+        bail!("symbolic macro must be exported before invocation");
+    }
+    if context.active_macro.borrow().is_some() {
+        bail!("nested symbolic macro invocations are unsupported");
+    }
+    args.no_positional_args(eval.heap())
+        .map_err(|e| anyhow!(e.to_string()))?;
+    let named = args.names_map().map_err(|e| anyhow!(e.to_string()))?;
+    let mut name = None;
+    let mut visibility = None;
+    for (key, value) in named.iter() {
+        match key.as_str() {
+            // Deliberately reject None cleanly (upstream 9.3 crashes here).
+            "name" => {
+                name = Some(
+                    value
+                        .unpack_str()
+                        .ok_or_else(|| anyhow!("macro name must be a string"))?,
+                )
+            }
+            "visibility" => visibility = Some(*value),
+            key => bail!("unknown macro attribute {key:?}"),
+        }
+    }
+    let name = name.ok_or_else(|| anyhow!("missing mandatory macro attribute name"))?;
+    local_label(name, &context.package_id(), "macro name")?;
+    let raw = match visibility.filter(|value| !value.is_none()) {
+        Some(value) => visibility_labels(value, context)?,
+        None => context.default_visibility.borrow().declared_labels(),
+    };
+    let labels = crate::visibility::macro_visibility_labels(raw, &context.package_id())
+        .map_err(anyhow::Error::msg)?;
+    let owner = MacroOwner {
+        definition_package: Label::parse_canonical(definition_label)
+            .map_err(anyhow::Error::msg)?
+            .package_id(),
+        name: name.to_owned(),
+    };
+    if context.declared_names.borrow().contains(name) || context.macro_names.borrow().contains(name)
+    {
+        bail!("macro {name:?} conflicts with an existing target or macro");
+    }
+    // Freeze a fresh list on an isolated heap, never the caller's containers.
+    let owned = Module::with_temp_heap(|module| -> anyhow::Result<_> {
+        let values = labels
+            .iter()
+            .map(|label| crate::starlark_types::alloc_label(module.heap(), &label.to_string()))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        module.set("visibility", module.heap().alloc(values));
+        let frozen = module
+            .freeze()
+            .map_err(|e| anyhow!("cannot freeze macro visibility: {e:?}"))?;
+        frozen.get("visibility").map_err(|e| anyhow!(e.to_string()))
+    })?;
+    let visibility = eval.heap().access_owned_frozen_value(&owned);
+    context.macro_names.borrow_mut().insert(name.to_owned());
+    let _frame = MacroFrame::enter(&context.active_macro, owner);
+    let result = eval
+        .eval_function(
+            implementation,
+            &[],
+            &[
+                ("name", eval.heap().alloc(name)),
+                ("visibility", visibility),
+            ],
+        )
+        .map_err(|e| anyhow!(e.to_string()))?;
+    if !result.is_none() {
+        bail!("symbolic macro {name:?} must return None");
+    }
+    Ok(Value::new_none())
 }
 
 fn declarations<'a>(eval: &'a Evaluator<'_, '_, '_>) -> anyhow::Result<&'a Declarations> {
@@ -289,6 +480,7 @@ fn package_globals(builder: &mut GlobalsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let context = declarations(eval)?;
+        context.forbid_in_macro("package")?;
         if context.package_called.replace(true) {
             bail!("package() may only be called once");
         }
@@ -310,6 +502,9 @@ fn package_globals(builder: &mut GlobalsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let context = declarations(eval)?;
+        if context.active_macro.borrow().is_some() {
+            bail!("exports_files() inside symbolic macros is unsupported");
+        }
         if licenses.is_some_and(|value| !value.is_none()) {
             bail!("exports_files licenses metadata is not implemented");
         }
@@ -317,6 +512,8 @@ fn package_globals(builder: &mut GlobalsBuilder) {
         let visibility = parse_visibility(visibility, context)?.unwrap_or(Visibility::Public);
         for name in strings(srcs, "exports_files srcs")? {
             let label = local_label(&name, &context.package_id(), "exported file")?;
+            context.check_macro_collision(&name)?;
+            context.declared_names.borrow_mut().insert(name);
             if let Some(previous) = context
                 .exports
                 .borrow_mut()
@@ -337,6 +534,7 @@ fn package_globals(builder: &mut GlobalsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Vec<String>> {
         let context = declarations(eval)?;
+        context.forbid_in_macro("glob")?;
         let includes = include
             .map(|v| strings(v, "glob include"))
             .transpose()?
@@ -418,6 +616,7 @@ fn bzl_globals_for(phase: BzlPhase) -> Globals {
     crate::providers::globals(&mut bzl);
     crate::repository_rule::globals(&mut bzl);
     crate::module_extension::globals(&mut bzl);
+    crate::symbolic_macro::globals(&mut bzl);
     bzl.build()
 }
 
@@ -509,6 +708,9 @@ fn evaluate_at(
         defaulted_rules: RefCell::new(BTreeSet::new()),
         package_called: Cell::new(false),
         custom: RefCell::new(Vec::new()),
+        active_macro: RefCell::new(None),
+        macro_names: RefCell::new(BTreeSet::new()),
+        declared_names: RefCell::new(BTreeSet::new()),
     };
     let frozen = Module::with_temp_heap(|module| {
         let mut evaluator = Evaluator::new(&module);
@@ -561,6 +763,7 @@ fn evaluate_at(
         rules,
         exports,
         default_visibility,
+        macro_names: declarations.macro_names.into_inner(),
     })
 }
 
@@ -928,6 +1131,386 @@ unused = [genrule(name = "make_" + n, outs = [n + ".out"], cmd = "echo " + n + "
         std::fs::write(root.0.join("pkg/defs.bzl"), defs).unwrap();
         std::fs::write(root.0.join("pkg/BUILD.bazel"), build).unwrap();
         evaluate(&root.0, "pkg")
+    }
+
+    #[test]
+    fn symbolic_macro_expands_native_declarations() {
+        let package = custom_fixture(
+            "def impl(name, visibility):\n    native.genrule(name=name, outs=[name + '.out'], cmd='echo macro-ok > $@', visibility=visibility)\nm = macro(implementation=impl)\n",
+            "load(':defs.bzl', 'm')\nm(name='demo')",
+        ).unwrap();
+        let rule = &package[&Label::parse(":demo", "pkg").unwrap()];
+        assert_eq!(rule.outs, ["demo.out"]);
+        assert_eq!(rule.cmd.as_deref(), Some("echo macro-ok > $@"));
+        assert_eq!(rule.macro_owner.as_ref().unwrap().name, "demo");
+        assert_eq!(package.macro_names, BTreeSet::from(["demo".into()]));
+    }
+
+    const SYMBOLIC_ZERO: &str =
+        "def impl(name, visibility):\n    pass\nm = macro(implementation=impl)\n";
+
+    fn symbolic_error(defs: &str, calls: &str, expected: &str) {
+        let error = custom_fixture(defs, &format!("load(':defs.bzl', 'm')\n{calls}")).unwrap_err();
+        assert!(
+            error.to_lowercase().contains(&expected.to_lowercase()),
+            "expected {expected:?}: {error}"
+        );
+    }
+
+    #[test]
+    fn symbolic_macro_invocation_validation_and_return_contract() {
+        for (call, expected) in [
+            ("m()", "mandatory"),
+            ("m('x')", "positional"),
+            ("m(name=None)", "string"),
+            ("m(name=1)", "string"),
+            ("m(name='')", "macro name"),
+            ("m(name='../bad')", "macro name"),
+            ("m(name='x', unknown=None)", "unknown"),
+            (
+                "m(name='x', visibility='//visibility:public')",
+                "visibility",
+            ),
+            ("m(name='x', visibility=[1])", "visibility"),
+            ("m(name='x', visibility=['//other:group'])", "package_group"),
+            (
+                "m(name='x', visibility=['//visibility:public', '//other:group'])",
+                "package_group",
+            ),
+        ] {
+            symbolic_error(SYMBOLIC_ZERO, call, expected);
+        }
+        symbolic_error(
+            "def impl(name, visibility):\n    return 1\nm = macro(implementation=impl)",
+            "m(name='x')",
+            "must return None",
+        );
+        symbolic_error(
+            "def impl():\n    pass\nm = macro(implementation=impl)",
+            "m(name='x')",
+            "parameter",
+        );
+        symbolic_error(
+            "def impl(name, visibility):\n    m(name=name + '_nested')\nm = macro(implementation=impl)",
+            "m(name='x')",
+            "nested symbolic",
+        );
+        symbolic_error(
+            "def impl(name, visibility):\n    pass\nbox = [macro(implementation=impl)]\ndef m():\n    box[0](name='x')",
+            "m()",
+            "exported",
+        );
+        symbolic_error(
+            "def impl(name, visibility):\n    pass\ndef m():\n    return macro(implementation=impl)",
+            "m()",
+            ".bzl initialization",
+        );
+        rejected("macro(implementation=None)", "macro");
+        let package = custom_fixture(
+            SYMBOLIC_ZERO,
+            "load(':defs.bzl', 'm')\nx = m(name='dir/name')\nx == None or fail('return')",
+        )
+        .unwrap();
+        assert!(package.macro_names.contains("dir/name"));
+        assert!(package.rules.is_empty());
+    }
+
+    #[test]
+    fn symbolic_macro_exact_name_reservations_all_declaration_orders() {
+        let defs = format!(
+            "{SYMBOLIC_ZERO}\ndef rule_impl(ctx):\n    return []\nr = rule(implementation=rule_impl, attrs={{'out':attr.output()}})\ndef custom(name):\n    r(name='custom', out=name)\n"
+        );
+        for declaration in [
+            "filegroup(name='demo')",
+            "genrule(name='other', outs=['demo'], cmd='true')",
+            "exports_files(['demo'])",
+            "custom(name='demo')",
+        ] {
+            for calls in [
+                format!("{declaration}\nm(name='demo')"),
+                format!("m(name='demo')\n{declaration}"),
+            ] {
+                let error =
+                    custom_fixture(&defs, &format!("load(':defs.bzl', 'm', 'custom')\n{calls}"))
+                        .unwrap_err();
+                assert!(error.contains("conflicts"), "{calls}: {error}");
+            }
+        }
+        symbolic_error(SYMBOLIC_ZERO, "m(name='demo')\nm(name='demo')", "conflicts");
+        let package = custom_fixture(SYMBOLIC_ZERO, "load(':defs.bzl', 'm')\nm(name='demo')\nm(name='demo_child')\nfilegroup(name='demo_other')").unwrap();
+        assert_eq!(package.macro_names.len(), 2);
+        assert!(
+            package
+                .rules
+                .values()
+                .all(|rule| rule.macro_owner.is_none())
+        );
+        for declaration in [
+            "native.filegroup(name='demo')",
+            "native.genrule(name='other', outs=['demo'], cmd='true')",
+            "r(name='other', out='demo')",
+        ] {
+            let defs = format!(
+                "{SYMBOLIC_ZERO}\nzero = m\ndef rule_impl(ctx):\n    return []\nr = rule(implementation=rule_impl, attrs={{'out':attr.output()}})\ndef emit(name, visibility):\n    {declaration}\nx = macro(implementation=emit)"
+            );
+            let error = custom_fixture(
+                &defs,
+                "load(':defs.bzl', 'zero', 'x')\nzero(name='demo')\nx(name='othermacro')",
+            )
+            .unwrap_err();
+            assert!(error.contains("conflicts"), "{declaration}: {error}");
+        }
+        // Owning a reservation permits both an own-name rule and an own-name output.
+        let package = custom_fixture("def impl(name, visibility):\n    native.genrule(name=name+'_rule', outs=[name], cmd='true')\nm=macro(implementation=impl)", "load(':defs.bzl', 'm')\nm(name='demo')").unwrap();
+        assert_eq!(package.rules.len(), 1);
+    }
+
+    #[test]
+    fn symbolic_macro_closures_custom_rules_and_late_defaults() {
+        let root = TempRoot::new();
+        std::fs::create_dir_all(root.0.join("defs")).unwrap();
+        std::fs::write(root.0.join("defs/BUILD"), "").unwrap();
+        std::fs::write(
+            root.0.join("defs/macros.bzl"),
+            r#"
+def rule_impl(ctx):
+    return []
+r = rule(implementation=rule_impl)
+def helper(name):
+    native.filegroup(name=name+"_private")
+    r(name=name+"_custom")
+def factory():
+    captured = "alive"
+    def impl(name, visibility):
+        captured == "alive" or fail("lost closure")
+        native.package_name() == "pkg" or fail("wrong package")
+        helper(name)
+        native.filegroup(name=name, visibility=visibility)
+    return macro(implementation=impl)
+m = factory()
+"#,
+        )
+        .unwrap();
+        std::fs::write(root.0.join("pkg/BUILD"), "load('//defs:macros.bzl', 'm')\nfilegroup(name='ordinary')\nm(name='demo')\npackage(default_visibility=['//visibility:public'])\nm(name='public')\nm(name='none', visibility=None)\nm(name='empty', visibility=[])").unwrap();
+        let package = evaluate(&root.0, "pkg").unwrap();
+        let owner = PackageId {
+            repository: "".into(),
+            package: "defs".into(),
+        };
+        let caller = PackageId {
+            repository: "".into(),
+            package: "pkg".into(),
+        };
+        for rule in package.rules.values() {
+            if rule.label.name == "ordinary" {
+                assert!(rule.macro_owner.is_none());
+                assert_eq!(rule.visibility, Visibility::Public);
+                continue;
+            }
+            let frame = rule.macro_owner.as_ref().unwrap();
+            assert_eq!(frame.definition_package, owner);
+            assert!(rule.label.name.starts_with(&frame.name));
+            assert!(rule.visibility.allows_in(&owner, &owner));
+            if rule.label.name.ends_with("_private") || rule.label.name.ends_with("_custom") {
+                assert!(!rule.visibility.allows_in(&owner, &caller));
+            } else if matches!(rule.label.name.as_str(), "public" | "none") {
+                assert_eq!(rule.visibility, Visibility::Public);
+            } else {
+                assert_ne!(rule.visibility, Visibility::Public);
+                assert!(rule.visibility.allows_in(&owner, &caller));
+            }
+        }
+        assert!(
+            package[&Label::parse(":demo_custom", "pkg").unwrap()]
+                .custom
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn symbolic_macro_visibility_frozen_sorted_typed_and_input_not_frozen() {
+        let defs = r#"
+def impl(name, visibility):
+    type(visibility) == "list" or fail("not list")
+    [type(v) for v in visibility] == ["Label"] * len(visibility) or fail("not labels")
+    expected = {
+        "duplicates": ["@@//pkg:__pkg__", "@@//pkg:__pkg__", "@@//z:__pkg__", "@@//z:__pkg__"],
+        "public": ["@@//visibility:public"],
+        "recursive": ["@@//:__subpackages__", "@@//pkg:__pkg__"],
+        "private": ["@@//pkg:__pkg__"],
+    }
+    [str(v) for v in visibility] == expected[name] or fail(str(visibility))
+m = macro(implementation=impl)
+def legacy():
+    data = [Label("//z:__pkg__"), "//z:__pkg__", "//visibility:private", "//pkg:__pkg__", "//pkg:__pkg__"]
+    m(name="duplicates", visibility=data)
+    data.append("still mutable")
+    len(data) == 6 or fail("caller list changed")
+    m(name="public", visibility=("//z:__pkg__", "//visibility:public", "//visibility:private"))
+    m(name="recursive", visibility=["//:__subpackages__"])
+    m(name="private", visibility=[])
+"#;
+        custom_fixture(defs, "load(':defs.bzl', 'legacy')\nlegacy()").unwrap();
+        symbolic_error(
+            "def impl(name, visibility):\n    visibility.append(Label('//other:__pkg__'))\nm=macro(implementation=impl)",
+            "m(name='x')",
+            "immutable",
+        );
+    }
+
+    #[test]
+    fn symbolic_macro_restricted_helpers_and_legacy_regression() {
+        for (statement, expected) in [
+            (
+                "native.glob(['*'], allow_empty=True)",
+                "glob() is not allowed",
+            ),
+            (
+                "native.package(default_visibility=['//visibility:public'])",
+                "package() is not allowed",
+            ),
+            (
+                "native.exports_files(['source'])",
+                "exports_files() inside symbolic macros is unsupported",
+            ),
+        ] {
+            let defs = format!(
+                "def helper():\n    {statement}\ndef impl(name, visibility):\n    helper()\nm=macro(implementation=impl)\ndef legacy():\n    helper()\n    native.filegroup(name='ordinary')"
+            );
+            symbolic_error(&defs, "m(name='x')", expected);
+            let package = custom_fixture(&defs, "load(':defs.bzl', 'legacy')\nlegacy()").unwrap();
+            assert!(
+                package
+                    .rules
+                    .values()
+                    .all(|rule| rule.macro_owner.is_none())
+            );
+        }
+    }
+
+    #[test]
+    fn symbolic_macro_ordinary_visibility_accepts_labels_and_tuples_only_here() {
+        let package = custom_fixture("def m():\n    native.filegroup(name='x', visibility=(Label('//other:__pkg__'), ':__pkg__'))", "load(':defs.bzl', 'm')\nm()").unwrap();
+        let rule = &package[&Label::parse(":x", "pkg").unwrap()];
+        assert!(rule.visibility.allows("pkg", "other"));
+        rejected("filegroup(name='x', srcs=('a',))", "list of strings");
+        rejected(
+            "filegroup(name='x', visibility=('//visibility:public', '//visibility:private'))",
+            "cannot be combined",
+        );
+    }
+
+    #[test]
+    fn symbolic_macro_callback_error_restores_frame_and_guards_before_mutation() {
+        for (body, call, reserved) in [
+            ("fail('callback failure')", "m(name='x')", true),
+            ("return 7", "m(name='x')", true),
+            (
+                "native.package(default_visibility=['//visibility:public'])",
+                "m(name='x')",
+                true,
+            ),
+            ("native.exports_files(['source'])", "m(name='x')", true),
+            ("native.glob(['../invalid'])", "m(name='x')", true),
+            ("fail('must not run')", "m(name='x', unknown=None)", false),
+            ("fail('must not run')", "m(name='x', visibility=[1])", false),
+            ("fail('must not run')", "m(name='../bad')", false),
+        ] {
+            let repositories = Arc::new(RepositorySet::new(PathBuf::from(".")));
+            let extension = crate::loading::ExtensionContext {
+                label: Label::parse("//defs:macro.bzl", "").unwrap(),
+                repositories: repositories.clone(),
+            };
+            let frozen = Module::with_temp_heap(|module| {
+                let mut eval = Evaluator::new(&module);
+                eval.extra = Some(&extension);
+                eval.eval_module(
+                    AstModule::parse(
+                        "//defs:macro.bzl",
+                        format!(
+                            "def impl(name, visibility):\n    {body}\nm=macro(implementation=impl)"
+                        ),
+                        &Dialect::Standard,
+                    )
+                    .unwrap(),
+                    &bzl_globals(),
+                )
+                .unwrap();
+                drop(eval);
+                module.freeze().unwrap()
+            });
+            let context = Declarations {
+                package: "pkg".into(),
+                repository: "".into(),
+                repositories,
+                root: PathBuf::from("/nonexistent-symbolic-macro-test-root"),
+                rules: RefCell::new(Vec::new()),
+                exports: RefCell::new(BTreeMap::new()),
+                default_visibility: RefCell::new(Visibility::Private),
+                defaulted_rules: RefCell::new(BTreeSet::new()),
+                package_called: Cell::new(false),
+                custom: RefCell::new(Vec::new()),
+                active_macro: RefCell::new(None),
+                macro_names: RefCell::new(BTreeSet::new()),
+                declared_names: RefCell::new(BTreeSet::new()),
+            };
+            Module::with_temp_heap(|module| {
+                module.set(
+                    "m",
+                    module
+                        .heap()
+                        .access_owned_frozen_value(&frozen.get("m").unwrap()),
+                );
+                let mut eval = Evaluator::new(&module);
+                eval.extra = Some(&context);
+                let globals = GlobalsBuilder::standard()
+                    .with(rule_globals)
+                    .with(package_globals)
+                    .build();
+                let error = eval
+                    .eval_module(
+                        AstModule::parse("pkg/BUILD", call.to_owned(), &Dialect::Standard).unwrap(),
+                        &globals,
+                    )
+                    .unwrap_err()
+                    .to_string();
+                assert!(context.active_macro.borrow().is_none(), "{body}: {error}");
+                assert_eq!(
+                    context.macro_names.borrow().contains("x"),
+                    reserved,
+                    "{call}"
+                );
+                assert!(!context.package_called.get());
+                assert_eq!(*context.default_visibility.borrow(), Visibility::Private);
+                assert!(context.exports.borrow().is_empty());
+                assert!(context.rules.borrow().is_empty());
+                if body.contains("glob") {
+                    assert!(error.contains("not allowed"), "{error}");
+                }
+                eval.eval_module(AstModule::parse("pkg/BUILD", "filegroup(name='ordinary')\npackage(default_visibility=['//visibility:public'])".into(), &Dialect::Standard).unwrap(), &globals).unwrap();
+                assert!(context.rules.borrow()[0].macro_owner.is_none());
+                assert!(context.package_called.get());
+            });
+        }
+        let previous = MacroOwner {
+            definition_package: PackageId {
+                repository: "".into(),
+                package: "previous".into(),
+            },
+            name: "previous".into(),
+        };
+        let slot = RefCell::new(Some(previous.clone()));
+        {
+            let _frame = MacroFrame::enter(
+                &slot,
+                MacroOwner {
+                    name: "active".into(),
+                    ..previous
+                },
+            );
+            assert_eq!(slot.borrow().as_ref().unwrap().name, "active");
+        }
+        assert_eq!(slot.borrow().as_ref().unwrap().name, "previous");
     }
 
     #[test]

@@ -174,6 +174,20 @@ checkout is unchanged; no application query/build/test success is claimed.
 
 ## Remaining compatibility gates
 
+### Ownership-aware symbolic macros
+
+- [x] Pin constructor, export, visibility, output-name and implicit-source
+      contracts against Bazel 9.3, then approve the bounded architecture.
+- [x] Implement real no-user-attrs expansion, ownership and source eligibility.
+- [x] Verify native/custom actions, private-access denials, namespace timing,
+      collisions, frozen callbacks and adjacent ordinary behavior.
+- [x] Complete eight reference QA families / 108 phases, 838 Rust / 469 Python
+      tests, seven adjacent suites, release, analyzer, application probe and cleanup.
+- [x] Obtain unconditional final review of the bounded macro profile.
+
+This increment does not substitute a loader-only `macro` global or claim complete
+symbolic-macro support. See `docs/SYMBOLIC_MACROS.md` for exact scope.
+
 ### Dynamic extension introspection
 
 - [x] Implement active-extension-only `existing_rule` / `existing_rules`, strict

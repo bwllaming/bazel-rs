@@ -1,5 +1,5 @@
-//! Repository-aware visibility; package groups and symbolic macro visibility are
-//! deliberately not approximated.
+//! Repository-aware visibility and bounded symbolic-macro visibility grants.
+//! Package groups are deliberately not approximated.
 use crate::label::{Label, PackageId};
 use crate::repository::RepositorySet;
 
@@ -38,7 +38,7 @@ impl Visibility {
         Self::from_labels(labels)
     }
 
-    fn from_labels(labels: Vec<Label>) -> Result<Self, String> {
+    pub(crate) fn from_labels(labels: Vec<Label>) -> Result<Self, String> {
         if labels.is_empty() {
             return Ok(Self::Private);
         }
@@ -79,6 +79,54 @@ impl Visibility {
         Ok(Self::Packages(scopes))
     }
 
+    /// Add an exact authority grant without changing the declared scope sequence.
+    pub(crate) fn with_package(&self, package: &PackageId) -> Self {
+        let exact = PackageScope {
+            package: package.clone(),
+            recursive: false,
+        };
+        match self {
+            Self::Public => Self::Public,
+            Self::Private => Self::Packages(vec![exact]),
+            Self::Packages(scopes) => {
+                let mut scopes = scopes.clone();
+                if !scopes.contains(&exact) {
+                    scopes.push(exact);
+                }
+                Self::Packages(scopes)
+            }
+        }
+    }
+
+    /// Recover declared labels, including their order and duplicate scopes.
+    pub(crate) fn declared_labels(&self) -> Vec<Label> {
+        match self {
+            Self::Public | Self::Private => vec![Label {
+                repository: String::new(),
+                package: "visibility".into(),
+                name: if matches!(self, Self::Public) {
+                    "public"
+                } else {
+                    "private"
+                }
+                .into(),
+            }],
+            Self::Packages(scopes) => scopes
+                .iter()
+                .map(|scope| Label {
+                    repository: scope.package.repository.clone(),
+                    package: scope.package.package.clone(),
+                    name: if scope.recursive {
+                        "__subpackages__"
+                    } else {
+                        "__pkg__"
+                    }
+                    .into(),
+                })
+                .collect(),
+        }
+    }
+
     pub fn allows(&self, declaring_package: &str, requesting_package: &str) -> bool {
         self.allows_in(
             &PackageId {
@@ -112,9 +160,167 @@ impl Visibility {
     }
 }
 
+/// Normalize the observable macro callback labels separately from ordinary
+/// visibility parsing, whose mixed-sentinel rejection remains unchanged.
+pub(crate) fn macro_visibility_labels(
+    labels: Vec<Label>,
+    caller: &PackageId,
+) -> Result<Vec<Label>, String> {
+    let mut public = false;
+    let mut normalized = Vec::new();
+    for label in labels {
+        if label.repository.is_empty()
+            && label.package == "visibility"
+            && matches!(label.name.as_str(), "public" | "private")
+        {
+            public |= label.name == "public";
+        } else if matches!(label.name.as_str(), "__pkg__" | "__subpackages__") {
+            normalized.push(label);
+        } else {
+            return Err(format!(
+                "package_group visibility is not implemented: {label}"
+            ));
+        }
+    }
+    // Every input is validated before public can collapse the list.
+    if public {
+        return Ok(Visibility::Public.declared_labels());
+    }
+    let caller = Label {
+        repository: caller.repository.clone(),
+        package: caller.package.clone(),
+        name: "__pkg__".into(),
+    };
+    if !normalized.contains(&caller) {
+        normalized.push(caller);
+    }
+    // Label's derived ordering is canonical (repository, package, name).
+    // Do not deduplicate: duplicates are observable callback data.
+    normalized.sort();
+    Ok(normalized)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn labels(values: &[&str]) -> Vec<Label> {
+        values
+            .iter()
+            .map(|value| Label::parse_canonical(value).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn macro_public_collapse_validates_every_label() {
+        let caller = labels(&["//app:x"])[0].package_id();
+        assert_eq!(
+            macro_visibility_labels(
+                labels(&[
+                    "//visibility:private",
+                    "//visibility:public",
+                    "//z:__pkg__",
+                    "//visibility:public",
+                ]),
+                &caller,
+            )
+            .unwrap(),
+            labels(&["//visibility:public"])
+        );
+        for bad in [
+            "//x:group",
+            "@@dep//visibility:public",
+            "//visibility:publik",
+        ] {
+            for input in [
+                vec!["//visibility:public", bad],
+                vec![bad, "//visibility:public"],
+            ] {
+                assert!(
+                    macro_visibility_labels(labels(&input), &caller)
+                        .unwrap_err()
+                        .contains("package_group")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn macro_private_filter_preserves_duplicates_and_sorts_canonically() {
+        let caller = labels(&["//app:x"])[0].package_id();
+        assert_eq!(
+            macro_visibility_labels(
+                labels(&[
+                    "//z:__pkg__",
+                    "//visibility:private",
+                    "//app:__pkg__",
+                    "//z:__pkg__",
+                    "//app:__pkg__",
+                ]),
+                &caller,
+            )
+            .unwrap(),
+            labels(&[
+                "//app:__pkg__",
+                "//app:__pkg__",
+                "//z:__pkg__",
+                "//z:__pkg__",
+            ])
+        );
+        for input in [
+            vec![],
+            vec!["//visibility:private"],
+            vec!["//visibility:private", "//visibility:private"],
+        ] {
+            assert_eq!(
+                macro_visibility_labels(labels(&input), &caller).unwrap(),
+                labels(&["//app:__pkg__"])
+            );
+        }
+        let external = labels(&["@@dep//app:x"])[0].package_id();
+        assert_eq!(
+            macro_visibility_labels(
+                labels(&["@@z//:__pkg__", "//app:__pkg__", "//:__subpackages__"]),
+                &external,
+            )
+            .unwrap(),
+            labels(&[
+                "//:__subpackages__",
+                "//app:__pkg__",
+                "@@dep//app:__pkg__",
+                "@@z//:__pkg__",
+            ])
+        );
+        assert_eq!(
+            macro_visibility_labels(labels(&["//:__subpackages__"]), &caller).unwrap(),
+            labels(&["//:__subpackages__", "//app:__pkg__"])
+        );
+    }
+
+    #[test]
+    fn declared_labels_and_authority_grants_preserve_scope_sequence() {
+        let input = labels(&["@@dep//z:__pkg__", "//:__subpackages__", "@@dep//z:__pkg__"]);
+        let visibility = Visibility::from_labels(input.clone()).unwrap();
+        assert_eq!(visibility.declared_labels(), input);
+        let package = labels(&["//app:x"])[0].package_id();
+        let mut expected = input;
+        expected.push(labels(&["//app:__pkg__"]).remove(0));
+        let granted = visibility.with_package(&package);
+        assert_eq!(granted.declared_labels(), expected);
+        assert_eq!(granted.with_package(&package), granted);
+        assert_eq!(
+            Visibility::Public.with_package(&package),
+            Visibility::Public
+        );
+        assert_eq!(
+            Visibility::Private.with_package(&package).declared_labels(),
+            labels(&["//app:__pkg__"])
+        );
+        assert_eq!(
+            Visibility::Private.declared_labels(),
+            labels(&["//visibility:private"])
+        );
+    }
+
     fn parse(values: &[&str]) -> Visibility {
         Visibility::parse(
             &values.iter().map(|v| v.to_string()).collect::<Vec<_>>(),

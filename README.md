@@ -131,6 +131,8 @@ snapshot timing and frozen ownership across rules, repositories and extension ta
 provides the compatibility version only in MODULE-loaded native bindings.
 [Extension introspection](docs/EXISTING_RULES.md) enforces active-callback phase
 checks and preserves genuine `maybe()` duplicate-declaration behavior.
+[Symbolic macros](docs/SYMBOLIC_MACROS.md) have a bounded name/visibility-only
+profile with real expansion, definition ownership and source/visibility checks.
 [Genuine built-in modules](docs/BUILTIN_MODULES.md) are available through the
 native-only `--experimental-builtin-modules` transition option, using complete
 verified Linux x86-64 resources; the default remains explicit modules only.

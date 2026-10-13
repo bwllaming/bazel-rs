@@ -40,6 +40,7 @@ pub mod repository_store;
 pub mod repository_text;
 pub mod scheduler;
 pub mod starlark_types;
+mod symbolic_macro;
 pub mod template_variable_info;
 pub mod visibility;
 pub mod workspace;
