@@ -29,6 +29,21 @@ the primary URL; descriptor mirrors follow it. Checksum failures never publish a
 blob or repository. The registry itself supplies the digest: HTTP registry access
 does **not** authenticate that digest; use trusted HTTPS or local fixtures.
 
+The explicitly recognized `docs_url` source field is inert documentation
+metadata. Like Bazel 9.3's archive deserializer, native materialization ignores
+its value regardless of JSON type: it is never validated as a URL, fetched, or
+used as a mirror. Other unsupported source fields still fail. The complete
+parsed descriptor remains part of native tree identity, so a documentation-only
+change can produce a separate tree while reusing the verified archive blob.
+This preserves parsed metadata values, not original JSON formatting.
+
+The `docs_url` correction passes nine genuine JSON-value comparisons and two
+native rejection checks; HTTP traces show no documentation requests. The
+preserved application probe now advances to an unsupported `XGlobalHeader`
+entry in a demanded archive. General PAX support is not implied by accepting
+documentation metadata. See `artifacts/archive-docs-url-validation.json` and
+`artifacts/mainrepo-archive-docs-url-loading.json`.
+
 Extraction uses a private staging directory. Only regular UTF-8 files/directories
 are accepted; traversal, absolute paths, links, special entries, GNU/PAX extension
 records and conflicting files fail explicitly. This is stricter than Bazel's

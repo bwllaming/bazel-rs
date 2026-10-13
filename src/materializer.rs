@@ -134,6 +134,9 @@ pub fn materialize_with_patches(
                 | "overlay"
                 | "patches"
                 | "patch_strip"
+                // BCR documentation metadata is ignored by Bazel's archive
+                // deserializer for every JSON value, never parsed or fetched.
+                | "docs_url"
         ) {
             return Err(format!("unsupported archive source field {key:?}"));
         }
@@ -569,6 +572,89 @@ mod tests {
         fs::write(&path, &archive).unwrap();
         let source = json!({ "url": reqwest::Url::from_file_path(path).unwrap().as_str(), "integrity": sri(&archive), "strip_prefix": "pkg" }).as_object().unwrap().clone();
         (Registry::LocalPath(registry), source)
+    }
+
+    #[test]
+    fn documentary_source_metadata_is_inert_but_retained_in_tree_identity() {
+        let temp = tempfile::Builder::new()
+            .prefix("archive-docs-")
+            .tempdir_in("/tmp/opencode")
+            .unwrap();
+        let (registry, mut source) = fixture(temp.path());
+        let cache = temp.path().join("cache");
+        let module = b"module(name='dep',version='1')\n";
+        let first = materialize(&registry, "dep", "1", module, &source, &cache).unwrap();
+        let expected = snapshot(&first).unwrap();
+        let mut trees = std::collections::BTreeSet::from([first]);
+        // Later metadata-only identities must reuse the already verified blob.
+        fs::remove_file(temp.path().join("source.tar")).unwrap();
+        for value in [
+            json!("http://127.0.0.1:9/documentation"),
+            json!("not a URL"),
+            json!("https://synthetic-user:synthetic-password@invalid.test/docs"),
+            Value::Null,
+            json!(17),
+            json!(true),
+            json!(["file:///must-not-read", 42]),
+            json!({"url": "http://127.0.0.1:9/must-not-fetch"}),
+        ] {
+            source.insert("docs_url".into(), value);
+            let path = materialize(&registry, "dep", "1", module, &source, &cache).unwrap();
+            assert_eq!(snapshot(&path).unwrap(), expected);
+            assert!(
+                trees.insert(path.clone()),
+                "parsed metadata must remain in tree identity"
+            );
+            assert_eq!(
+                materialize(&registry, "dep", "1", module, &source, &cache).unwrap(),
+                path
+            );
+        }
+        assert_eq!(
+            fs::read_dir(cache.join("downloads/sha256"))
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn documentary_metadata_does_not_admit_other_source_fields_or_skip_integrity() {
+        let temp = tempfile::Builder::new()
+            .prefix("archive-docs-errors-")
+            .tempdir_in("/tmp/opencode")
+            .unwrap();
+        let (registry, mut source) = fixture(temp.path());
+        let cache = temp.path().join("cache");
+        source.insert("docs_url".into(), json!({"anything": [false, null]}));
+        source.insert("patch_cmds".into(), json!(["must not execute"]));
+        let error = materialize(
+            &registry,
+            "dep",
+            "1",
+            b"module(name='dep')",
+            &source,
+            &cache,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("unsupported archive source field \"patch_cmds\""),
+            "{error}"
+        );
+        assert!(!cache.exists());
+        source.remove("patch_cmds");
+        source.insert("integrity".into(), json!(sri(b"not the archive")));
+        let error = materialize(
+            &registry,
+            "dep",
+            "1",
+            b"module(name='dep')",
+            &source,
+            &cache,
+        )
+        .unwrap_err();
+        assert!(error.contains("integrity"), "{error}");
+        assert_eq!(fs::read_dir(cache.join("trees")).unwrap().count(), 0);
     }
 
     #[test]
