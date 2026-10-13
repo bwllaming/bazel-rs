@@ -174,6 +174,20 @@ checkout is unchanged; no application query/build/test success is claimed.
 
 ## Remaining compatibility gates
 
+### Dynamic extension introspection
+
+- [x] Implement active-extension-only `existing_rule` / `existing_rules`, strict
+      signatures, frozen empty results, and rejection in other evaluation contexts.
+- [x] Preserve genuine `maybe()` duplicate errors and execute the full unchanged
+      upstream extension; pass six QA families and 70 phases with cleanup.
+- [x] Pass 794 Rust tests, 446 Python tests, six adjacent suites, strict Clippy,
+      release build and analyzer diagnostics on one frozen candidate.
+- [x] Obtain unconditional final review of the bounded extension-call-path profile.
+
+The application now reaches a missing `macro` global in generated globals code.
+Symbolic macros require real declaration ownership and visibility semantics;
+no constructor placeholder or full application success is claimed.
+
 ### Local metadata and MODULE-native version
 
 - [x] Retain local definition metadata in direct/ordinary provenance and preserve

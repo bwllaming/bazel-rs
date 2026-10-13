@@ -129,6 +129,8 @@ setting overrides, configured analysis and implicit Make expansion remain unsupp
 snapshot timing and frozen ownership across rules, repositories and extension tags.
 [Local repository metadata](docs/LOCAL_REPOSITORIES.md) retains the local flag and
 provides the compatibility version only in MODULE-loaded native bindings.
+[Extension introspection](docs/EXISTING_RULES.md) enforces active-callback phase
+checks and preserves genuine `maybe()` duplicate-declaration behavior.
 [Genuine built-in modules](docs/BUILTIN_MODULES.md) are available through the
 native-only `--experimental-builtin-modules` transition option, using complete
 verified Linux x86-64 resources; the default remains explicit modules only.

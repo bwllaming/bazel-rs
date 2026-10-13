@@ -31,6 +31,11 @@ existing MODULE behavior of ignoring root overrides.
 
 ## Constructors and attributes
 
+MODULE-loaded native `existing_rule` / `existing_rules` calls support Bazel's
+active-extension no-op semantics with dynamic phase checks and frozen results.
+See [EXISTING_RULES.md](EXISTING_RULES.md); this does not implement BUILD rule
+introspection or skip duplicate repository declarations.
+
 `module_extension` accepts a callable implementation and `tag_classes`, plus
 `doc`. It accepts only empty `environ`, false `os_dependent`/`arch_dependent`, and
 zero `facts_version` in this profile. Unsupported nondefault options fail explicitly.

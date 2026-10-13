@@ -367,6 +367,27 @@ enum BzlPhase {
     Module,
 }
 
+/// Only the extension-context branch is implemented. BUILD introspection is a
+/// separate surface, so these functions are not installed in BUILD native.
+#[starlark_module]
+fn module_native_globals(builder: &mut GlobalsBuilder) {
+    fn existing_rule(
+        #[starlark(require = pos)] name: &str,
+        eval: &mut Evaluator<'_, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let _ = name;
+        crate::extension_ctx::require_extension_introspection(eval, "existing_rule")?;
+        Ok(NoneType)
+    }
+
+    fn existing_rules(
+        eval: &mut Evaluator<'_, '_, '_>,
+    ) -> anyhow::Result<starlark::values::FrozenValue> {
+        crate::extension_ctx::require_extension_introspection(eval, "existing_rules")?;
+        Ok(starlark::values::FrozenValue::new_empty_dict())
+    }
+}
+
 /// BUILD-loaded extension globals. These deliberately omit native.bazel_version.
 pub fn bzl_globals() -> Globals {
     bzl_globals_for(BzlPhase::Build)
@@ -384,6 +405,7 @@ fn bzl_globals_for(phase: BzlPhase) -> Globals {
         .with(package_globals);
     if matches!(phase, BzlPhase::Module) {
         native.set("bazel_version", crate::COMPATIBILITY_VERSION);
+        module_native_globals(&mut native);
     }
     let native = native.build();
     let mut bzl =

@@ -209,6 +209,20 @@ fn context<'a>(eval: &'a Evaluator<'_, '_, '_>) -> Option<&'a Context> {
     eval.extra.and_then(|extra| extra.downcast_ref::<Context>())
 }
 
+/// Bazel's extension-evaluation no-op marker is dynamic, not a property of the
+/// function's MODULE-loaded globals. Initialization and repository evaluators
+/// carry different context types and must not receive empty introspection data.
+pub(crate) fn require_extension_introspection(
+    eval: &Evaluator<'_, '_, '_>,
+    function_name: &str,
+) -> anyhow::Result<()> {
+    ensure!(
+        context(eval).is_some(),
+        "{function_name}() can only be used while evaluating a BUILD file, a legacy macro, or a rule finalizer"
+    );
+    Ok(())
+}
+
 pub(crate) fn repository_context(eval: &Evaluator<'_, '_, '_>) -> Option<Arc<RepositorySet>> {
     context(eval).map(|context| context.repositories.clone())
 }

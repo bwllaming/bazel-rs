@@ -66,9 +66,13 @@ Pinned contracts and actual reference lifecycle observations are preserved in
 Full application builds/tests, SDKs, configured analysis and performance parity
 remain unfinished.
 
-The preserved application query advances past local repository construction and
-fails at `native.existing_rule` in Bazel's genuine `maybe()` utility, called by
+The application query at the local-repository increment advanced past construction
+and failed at `native.existing_rule` in Bazel's genuine `maybe()` utility, called by
 the upstream `bazel_features` extension. Thus helper-callback comparisons do not
 claim complete upstream-extension execution. See
 `artifacts/mainrepo-local-repositories-loading.json`; checkout preservation and
 cleanup are recorded there.
+
+The subsequent [extension introspection increment](EXISTING_RULES.md) executes
+that original extension and advances to a missing `macro` global in generated
+code. The separate proof boundaries above remain unchanged.
