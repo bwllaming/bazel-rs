@@ -1,4 +1,7 @@
 //! Experimental native Bazel-compatible primitives. Not a Bazel replacement yet.
+/// Semantics targeted by the native implementation, not a full-parity claim.
+pub const COMPATIBILITY_VERSION: &str = "9.3.0";
+
 pub mod action;
 pub mod analysis;
 pub mod archive;

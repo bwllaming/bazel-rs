@@ -174,6 +174,20 @@ checkout is unchanged; no application query/build/test success is claimed.
 
 ## Remaining compatibility gates
 
+### Local metadata and MODULE-native version
+
+- [x] Retain local definition metadata in direct/ordinary provenance and preserve
+      existing callback-before-publication behavior and guards.
+- [x] Isolate MODULE-native version bindings from BUILD-loaded `.bzl` and test
+      shared-repository-set loading, ownership and unchanged warm-run execution.
+- [x] Pass 788 Rust tests, 422 Python tests, strict Clippy and release build.
+- [x] Pass six genuine helper/lifecycle QA families and 39 phases, preserving
+      every original archive file and checking complete generated outputs.
+- [x] Finish all six adjacent receipts and unconditional final review.
+
+The preserved application now reaches missing `native.existing_rule` in genuine
+`maybe()` code. Full upstream-extension execution remains unproven.
+
 ### Ordered dictionary attributes
 
 - [x] Implement typed ordered values across custom rules, direct repositories,

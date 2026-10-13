@@ -30,8 +30,10 @@ rule symbols. Other ambiguous namespace combinations fail explicitly.
 
 ## Supported surface
 
-`repository_rule` supports callable implementations, `attrs`, and `doc`; `local`
-and `configure` must be false and `environ` empty. Attribute kinds are string,
+`repository_rule` supports callable implementations, `attrs`, `doc` and retained
+`local` metadata; `configure` must be false and `environ` empty. See
+[LOCAL_REPOSITORIES.md](LOCAL_REPOSITORIES.md) for the bounded serverless lifecycle
+and MODULE-only `native.bazel_version` binding. Attribute kinds are string,
 string-list, ordered string-list dictionary, int32, bool, label and label-list.
 Dictionary values and nested lists are frozen; their full typing, tuple,
 ordering and snapshot contract is in [STRING_LIST_DICT.md](STRING_LIST_DICT.md).

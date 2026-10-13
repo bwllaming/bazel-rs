@@ -361,13 +361,31 @@ fn package_globals(builder: &mut GlobalsBuilder) {
     }
 }
 
-/// Complete extension-file globals, shared by package and definition loading.
-/// Native declarations still require a BUILD evaluation context when invoked.
+#[derive(Clone, Copy)]
+enum BzlPhase {
+    Build,
+    Module,
+}
+
+/// BUILD-loaded extension globals. These deliberately omit native.bazel_version.
 pub fn bzl_globals() -> Globals {
-    let native = GlobalsBuilder::new()
+    bzl_globals_for(BzlPhase::Build)
+}
+
+/// MODULE-loaded extensions and repository definitions retain these bindings
+/// through initialization, transitive loads and frozen callback execution.
+pub fn module_bzl_globals() -> Globals {
+    bzl_globals_for(BzlPhase::Module)
+}
+
+fn bzl_globals_for(phase: BzlPhase) -> Globals {
+    let mut native = GlobalsBuilder::new()
         .with(rule_globals)
-        .with(package_globals)
-        .build();
+        .with(package_globals);
+    if matches!(phase, BzlPhase::Module) {
+        native.set("bazel_version", crate::COMPATIBILITY_VERSION);
+    }
+    let native = native.build();
     let mut bzl =
         GlobalsBuilder::extended_by(&[LibraryExtension::StructType, LibraryExtension::Print]);
     bzl.frozen_heap().add_reference(native.heap());

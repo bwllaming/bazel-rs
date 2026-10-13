@@ -52,8 +52,9 @@ fn run() -> Result<(), String> {
         }
         "version" | "--version" if rest.is_empty() => {
             println!(
-                "bazel-rs {} (experimental; compatibility target Bazel 9.3.0)",
-                env!("CARGO_PKG_VERSION")
+                "bazel-rs {} (experimental; compatibility target Bazel {})",
+                env!("CARGO_PKG_VERSION"),
+                bazel_rs::COMPATIBILITY_VERSION,
             );
             return Ok(());
         }

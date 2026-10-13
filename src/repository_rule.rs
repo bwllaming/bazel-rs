@@ -25,6 +25,7 @@ pub struct RuleDefinition {
     pub implementation: OwnedFrozenValue,
     pub schema: BTreeMap<String, AttrSpec>,
     pub identity: String,
+    pub local: bool,
 }
 
 // Compile-time assertion: prepared definitions can cross worker boundaries.
@@ -60,6 +61,9 @@ mod values {
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
         pub schema: BTreeMap<String, AttrSpec>,
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        pub local: bool,
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
         pub definition_label: String,
@@ -170,6 +174,7 @@ pub fn unpack(value: &OwnedFrozenValue) -> Result<RuleDefinition, String> {
         implementation,
         schema: definition.schema.clone(),
         identity,
+        local: definition.local,
     })
 }
 
@@ -191,9 +196,6 @@ pub fn globals(builder: &mut GlobalsBuilder) {
             .ok_or_else(|| anyhow!(
                 "repository_rule() definitions are only allowed during .bzl extension initialization, not BUILD evaluation"
             ))?;
-        if local {
-            bail!("repository_rule(local=True) is unsupported");
-        }
         if configure {
             bail!("repository_rule(configure=True) is unsupported");
         }
@@ -258,6 +260,7 @@ pub fn globals(builder: &mut GlobalsBuilder) {
         Ok(eval.heap().alloc(RepoDefinitionGen {
             implementation,
             schema,
+            local,
             // The initializing extension owns the rule's export. Attribute
             // defaults independently use the innermost helper's lexical label.
             definition_label: context.label.to_string(),
@@ -793,6 +796,9 @@ mod tests {
         assert_eq!(r.identity, "//defs:repos.bzl%R");
         assert_eq!(alias.identity, r.identity);
         assert_ne!(other.identity, r.identity);
+        assert!(!r.local);
+        assert!(!alias.local);
+        assert!(!other.local);
         assert!(
             r.implementation
                 .value()
@@ -814,6 +820,63 @@ mod tests {
         drop(original);
         drop(reexport);
         assert_eq!(unpack(&value).unwrap().identity, "//defs:repos.bzl%R");
+    }
+
+    #[test]
+    fn local_metadata_survives_alias_reexport_clone_and_implementation_owner_drop() {
+        for (option, local) in [
+            ("", false),
+            (", local=False", false),
+            (", local=True", true),
+        ] {
+            let helper = extension_in(
+                "//helper:helper.bzl",
+                "def _private(x):\n    return x + 1\ndef run(x):\n    return _private(x)\nImplementationAlias = run",
+                &HashMap::new(),
+            )
+            .unwrap();
+            let original = extension_in(
+                "//defs:repos.bzl",
+                &format!(
+                    "load('//helper:helper.bzl', 'ImplementationAlias')\nR = repository_rule(ImplementationAlias, attrs={{'text': attr.string(default='kept')}}{option})\nAlias = R"
+                ),
+                &HashMap::from([("//helper:helper.bzl", &helper)]),
+            )
+            .unwrap();
+            let reexport = extension_in(
+                "//other:alias.bzl",
+                "load('//defs:repos.bzl', 'Alias')\nRenamed = Alias",
+                &HashMap::from([("//defs:repos.bzl", &original)]),
+            )
+            .unwrap();
+            for name in ["R", "Alias"] {
+                assert_eq!(unpack(&original.get(name).unwrap()).unwrap().local, local);
+            }
+            let value = reexport.get("Renamed").unwrap();
+            drop(helper);
+            drop(original);
+            drop(reexport);
+            let definition = unpack(&value).unwrap();
+            drop(value);
+            let cloned = definition.clone();
+            drop(definition);
+            assert_eq!(cloned.local, local);
+            assert_eq!(cloned.identity, "//defs:repos.bzl%R");
+            let attrs = bind(&cloned, json!({})).unwrap();
+            assert_eq!(attrs["text"], AttrValue::String("kept".to_owned()));
+            assert!(!attrs.contains_key("local"));
+            assert_eq!(cloned.schema.len(), 1);
+            Module::with_temp_heap(|module| {
+                let implementation = module
+                    .heap()
+                    .access_owned_frozen_value(&cloned.implementation);
+                drop(cloned);
+                let result = Evaluator::new(&module)
+                    .eval_function(implementation, &[module.heap().alloc(41)], &[])
+                    .unwrap();
+                assert_eq!(result.unpack_i32(), Some(42));
+            });
+        }
     }
 
     #[test]
@@ -950,7 +1013,10 @@ mod tests {
     #[test]
     fn constructor_rejects_unsupported_options_and_bad_signatures() {
         for (expression, expected) in [
-            ("repository_rule(impl, local=True)", "local=True"),
+            ("repository_rule(impl, local=1)", "bool"),
+            ("repository_rule(impl, local=0)", "bool"),
+            ("repository_rule(impl, local=None)", "bool"),
+            ("repository_rule(impl, local='True')", "bool"),
             ("repository_rule(impl, configure=True)", "configure=True"),
             (
                 "repository_rule(impl, environ=['HOME'])",

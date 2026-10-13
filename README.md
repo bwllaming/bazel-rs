@@ -127,6 +127,8 @@ and propagate native template-variable providers to explicit consumers; CLI
 setting overrides, configured analysis and implicit Make expansion remain unsupported.
 [Ordered dictionary attributes](docs/STRING_LIST_DICT.md) preserve typed values,
 snapshot timing and frozen ownership across rules, repositories and extension tags.
+[Local repository metadata](docs/LOCAL_REPOSITORIES.md) retains the local flag and
+provides the compatibility version only in MODULE-loaded native bindings.
 [Genuine built-in modules](docs/BUILTIN_MODULES.md) are available through the
 native-only `--experimental-builtin-modules` transition option, using complete
 verified Linux x86-64 resources; the default remains explicit modules only.

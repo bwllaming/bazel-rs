@@ -19,7 +19,7 @@ pub enum BuiltinId {
     BazelTools93,
 }
 
-pub const VERSION: &str = "9.3.0";
+pub const VERSION: &str = crate::COMPATIBILITY_VERSION;
 const ARCHIVE: &[u8] = include_bytes!("../resources/bazel_tools/embedded_tools.tar.gz");
 const MANIFEST: &[u8] = include_bytes!("../resources/bazel_tools/manifest.json");
 const MODULE_SHA256: &str = "a0fab7d7a9314cfba6d73f33c50643ba26dac9be28700ff35e88306dbd69fecd";

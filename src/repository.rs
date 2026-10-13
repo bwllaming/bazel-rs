@@ -73,9 +73,10 @@ struct OrdinaryRepository {
 impl serde::Serialize for OrdinaryRepository {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut value = serializer.serialize_struct("RepositorySpec", 5)?;
+        let mut value = serializer.serialize_struct("RepositorySpec", 6)?;
         value.serialize_field("definition_identity", &self.definition.identity)?;
         value.serialize_field("schema", &self.definition.schema)?;
+        value.serialize_field("local", &self.definition.local)?;
         value.serialize_field("attributes", &self.attributes)?;
         value.serialize_field("canonical_name", &self.canonical_name)?;
         value.serialize_field("original_name", &self.original_name)?;
@@ -384,7 +385,7 @@ impl RepositorySet {
                 Arc::new(self.clone()),
                 &label,
                 symbol,
-                &crate::package::bzl_globals(),
+                &crate::package::module_bzl_globals(),
             )?;
             let definition = repository_rule::unpack(&loaded.value)
                 .map_err(|error| format!("repository rule {label}%{symbol}: {error}"))?;
@@ -455,6 +456,7 @@ impl RepositorySet {
                     "sources": prepared.loaded.sources,
                     "attributes": attributes,
                     "schema": prepared.definition.schema,
+                    "local": prepared.definition.local,
                     "owner_mapping": runtime.catalog.owner_mappings[&group.owner],
                     "repository_mapping": entry.mapping,
                 }))
@@ -502,7 +504,7 @@ impl RepositorySet {
             }
             let loaded = loading::load_module_extension_in(
                 Arc::new(self.clone()), &group.label, &group.symbol,
-                &crate::package::bzl_globals(),
+                &crate::package::module_bzl_globals(),
             )?;
             let mut preparation_budget = crate::repository_budget::HostBudget::default();
             for (label, source) in &loaded.sources {
@@ -976,6 +978,67 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn ordinary_repository_local_metadata_participates_in_provenance_not_attributes() {
+        let f = Fixture::new();
+        f.write(
+            "MODULE.bazel",
+            "e=use_extension('//:extension.bzl','extension')\nuse_repo(e,'implicit','explicit','enabled')\n",
+        );
+        f.write("BUILD", "fail('BUILD must not run')\n");
+        f.write(
+            "rules.bzl",
+            "def implementation(ctx):\n    fail('repository callback must not run during preparation')\nImplementationAlias = implementation\nimplicit = repository_rule(ImplementationAlias)\nexplicit = repository_rule(ImplementationAlias, local=False)\nenabled = repository_rule(ImplementationAlias, local=True)\nAlias = enabled\n",
+        );
+        f.write(
+            "reexport.bzl",
+            "load(':rules.bzl', 'implicit', 'explicit', 'Alias')\nImplicit = implicit\nExplicit = explicit\nEnabled = Alias\n",
+        );
+        f.write(
+            "extension.bzl",
+            "load(':reexport.bzl', 'Implicit', 'Explicit', 'Enabled')\ndef implementation(ctx):\n    Implicit(name='implicit')\n    Explicit(name='explicit')\n    Enabled(name='enabled')\nextension = module_extension(implementation)\n",
+        );
+        let repos = RepositorySet::new(f.0.clone());
+        let (prepared, enabled) = repos.ordinary_repository("+extension+enabled").unwrap();
+        let provenance: serde_json::Value = serde_json::from_slice(&prepared.provenance).unwrap();
+        for (name, local) in [("implicit", false), ("explicit", false), ("enabled", true)] {
+            let repository = &prepared.repositories[name];
+            assert_eq!(repository.definition.local, local);
+            assert_eq!(
+                repository.definition.identity,
+                format!("//:rules.bzl%{name}")
+            );
+            assert!(!repository.attributes.contains_key("local"));
+            assert!(repository.definition.schema.is_empty());
+            assert_eq!(provenance["repositories"][name]["local"], local);
+        }
+        // Hold all source, identity, schema and call metadata constant: only the
+        // retained local flag changes serialized provenance, including false.
+        let mut toggled = OrdinaryRepository {
+            definition: enabled.definition.clone(),
+            attributes: enabled.attributes.clone(),
+            original_name: enabled.original_name.clone(),
+            canonical_name: enabled.canonical_name.clone(),
+            root: DemandSlot::new(),
+        };
+        let before = bounded_provenance(&toggled, 4096).unwrap();
+        toggled.definition.local = false;
+        let after = bounded_provenance(&toggled, 4096).unwrap();
+        assert_ne!(before, after);
+        let mut before: serde_json::Value = serde_json::from_slice(&before).unwrap();
+        let mut after: serde_json::Value = serde_json::from_slice(&after).unwrap();
+        assert_eq!(
+            before.as_object_mut().unwrap().remove("local"),
+            Some(true.into())
+        );
+        assert_eq!(
+            after.as_object_mut().unwrap().remove("local"),
+            Some(false.into())
+        );
+        assert_eq!(before, after);
+        assert!(!f.0.join("bazel-rs-out").exists());
     }
 
     #[test]

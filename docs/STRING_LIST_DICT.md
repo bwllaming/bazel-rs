@@ -69,13 +69,14 @@ source/binary receipts. The final gate passes 781 Rust and 408 Python tests;
 `artifacts/string-list-dict-verification-manifest.json` binds the candidate and
 reports.
 
-The genuine `bazel_features` helper additionally needs supported local-repository
-lifecycle metadata and MODULE-loaded `native.bazel_version`. Those are separate
-requirements, not silently accepted options or fabricated globals here. Full
+The genuine `bazel_features` helper additionally needs local-repository lifecycle
+metadata and MODULE-loaded `native.bazel_version`. Those are implemented in the
+separate [local repository profile](LOCAL_REPOSITORIES.md), not silently accepted
+options or fabricated globals. Full
 application builds/tests, configured analysis, SDKs and performance parity remain
 unfinished.
 
-The preserved application query now passes the dictionary constructor and stops
+The preserved application query at the dictionary increment passed the constructor and stopped
 at `repository_rule(local=True)` in genuine `bazel_features` code. Its checkout
 and required Git symlink remain unchanged. The fixture version does not establish
 the application's selected dependency version; see
