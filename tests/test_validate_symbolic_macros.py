@@ -22,8 +22,8 @@ class PlanTests(unittest.TestCase):
     def test_exact_unique_plan_and_lexical_fixtures(self):
         self.assertEqual(len(suite.CASEPLAN), 8)
         self.assertEqual(len(set(suite.PLAN)), 8)
-        self.assertEqual(sum(len(suite.phases_for(c, True)) for c in suite.CASEPLAN), 50)
-        self.assertEqual(sum(len(suite.phases_for(c)) for c in suite.CASEPLAN), 108)
+        self.assertEqual(sum(len(suite.phases_for(c, True)) for c in suite.CASEPLAN), 51)
+        self.assertEqual(sum(len(suite.phases_for(c)) for c in suite.CASEPLAN), 109)
         for item in suite.CASEPLAN:
             self.assertEqual(len(item['probes']), len(set(item['probes'])))
             for probe in item['probes']:
@@ -41,6 +41,15 @@ class PlanTests(unittest.TestCase):
         for name, probe in [('invented', 'x'), ('functional', 'invented')]:
             with self.assertRaisesRegex(ValueError, 'unknown planned'):
                 suite.fixture(name, probe)
+
+    def test_package_group_is_paired_positive_forwarded_visibility(self):
+        value = suite.fixture('visibility', 'package-group')
+        self.assertIsNone(value['diagnostic'])
+        self.assertIn(b'package_group(name="friends",packages=["//app"])', value['files']['app/BUILD.bazel'])
+        self.assertIn(b'visibility=[":friends"]', value['files']['app/BUILD.bazel'])
+        self.assertIn(b'GROUP_VISIBILITY_NOT_FORWARDED', value['files']['defs/m.bzl'])
+        self.assertEqual(value['target'], '//app:consumer')
+        self.assertNotIn('package-group', suite.CASEPLAN[-1]['probes'])
 
     def test_native_boundaries_never_claim_reference_rejection(self):
         item = suite.CASEPLAN[-1]
@@ -143,8 +152,7 @@ class DiagnosticTests(unittest.TestCase):
             'package-phase': 'package() can only be used while evaluating a BUILD file',
             'user-attrs': 'macro user attrs are unsupported', 'inheritance': 'inherit_attrs is unsupported',
             'finalizer': 'finalizer=True is unsupported', 'nested': 'nested symbolic macros are unsupported',
-            'exports-files': 'exports_files inside a symbolic macro is unsupported',
-            'package-group': 'package_group visibility is unsupported'}
+            'exports-files': 'exports_files inside a symbolic macro is unsupported'}
         self.assertEqual(set(messages), set(suite.DIAGNOSTICS))
         for diagnostic, message in messages.items():
             with self.subTest(diagnostic=diagnostic):
@@ -173,7 +181,6 @@ class DiagnosticTests(unittest.TestCase):
                 'positional': 'error: Wrong number of positional arguments, expected 0, got 1',
                 'unexported': 'error: symbolic macro must be exported before invocation',
                 'glob-phase': 'error: glob() is not allowed inside a symbolic macro',
-                'package-group': 'error: package_group visibility is not implemented: //app:friends',
                 }.items():
             suite.require_rejection(record(text), diagnostic)
             with self.assertRaises(ValueError):

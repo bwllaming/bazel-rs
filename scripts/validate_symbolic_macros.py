@@ -36,7 +36,7 @@ CASEPLAN = [
     common.case('functional', ('private-closure', 'factory-owner-alias', 'module-initialization')),
     common.case('visibility', ('normalized-fresh-list', 'late-default', 'late-default-private', 'same-definition', 'caller-to-private',
         'ordinary-rule', 'ordinary-output', 'ordinary-file', 'different-definition',
-        'factory-not-lexical', 'external-same-path')),
+        'factory-not-lexical', 'external-same-path', 'package-group')),
     common.case('sources', ('macro-only', 'explicit-export', 'ordinary-before', 'ordinary-after',
         'custom-default-unselected', 'reserved-name')),
     common.case('namespace', ('valid-rule-outside-output', 'dynamic-artifact',
@@ -48,12 +48,12 @@ CASEPLAN = [
     common.case('phase', ('constructor-build', 'invocation-init', 'repository-invocation',
         'extension-invocation', 'glob-helper', 'package-helper')),
     common.case('native-boundary', ('user-attrs', 'inheritance', 'finalizer', 'nested',
-        'exports-files', 'name-none', 'package-group', 'build-introspection'), 'native_boundary'),
+        'exports-files', 'name-none', 'build-introspection'), 'native_boundary'),
 ]
 PLAN = [(c['name'], c['kind']) for c in CASEPLAN]
 LIMITATIONS = [
     'Functional Starlark def/closure macros with empty-effective attrs only; no full Bazel or application parity.',
-    'Nonempty attrs, inheritance, finalizers, nesting, in-macro exports_files and package_groups are native-only unsupported boundaries.',
+    'Nonempty attrs, inheritance, finalizers, nesting and in-macro exports_files are native-only unsupported boundaries.',
     'name=None is native-only robustness: known upstream crash is deliberately never rerun.',
     'BUILD native.existing_rule(s) remains absent; no D BUILD introspection parity claim.',
     'Private closures and custom action output bytes are real Starlark, not SDK stubs.',
@@ -122,7 +122,15 @@ def fixture(name, probe):
             files['app/BUILD.bazel'] = 'genrule(name="demo",srcs=["@made//:data"],outs=["demo.out"],cmd="cat $(SRCS) > $@")\n'
             expected, markers = {'demo.out': b'<macro m>'}, ['MACRO_READY']
     elif name == 'visibility':
-        if probe == 'normalized-fresh-list':
+        if probe == 'package-group':
+            files['defs/m.bzl'] = macro('if [x.package+":"+x.name for x in visibility] != ["app:__pkg__","app:friends"]:\n    fail("GROUP_VISIBILITY_NOT_FORWARDED")\n'+gen())
+            files['app/BUILD.bazel'] = ('load("//defs:m.bzl","m")\n'
+                'package_group(name="friends",packages=["//app"])\n'
+                'm(name="demo",visibility=[":friends"])\n'
+                'filegroup(name="consumer",srcs=[":demo"])\n')
+            target = '//app:consumer'
+            queries = [('//app:friends', ['//app:friends'])]
+        elif probe == 'normalized-fresh-list':
             body = ('if type(visibility) != "list" or [type(x) for x in visibility] != ["Label" for x in visibility]:\n'
                 '    fail("VISIBILITY_NOT_TYPED_LIST")\n'
                 'write(name=name,out=name+".out",text="|".join([x.package+":"+x.name for x in visibility]),visibility=visibility)\n')
@@ -301,9 +309,6 @@ def fixture(name, probe):
         elif probe == 'name-none':
             files['app/BUILD.bazel'] = 'load("//defs:m.bzl","m")\nm(name=None)\n'
             diagnostic, markers = 'integer-name', ['MACRO_READY']
-        elif probe == 'package-group':
-            files['app/BUILD.bazel'] = 'load("//defs:m.bzl","m")\nm(name="demo",visibility=["//visibility:public","//app:friends"])\n'
-            diagnostic, markers = probe, ['MACRO_READY']
         else:
             files['defs/m.bzl'] = macro('if hasattr(native,"existing_rule") or hasattr(native,"existing_rules"):\n    fail("BUILD_INTROSPECTION_LEAK")\n'+gen())
     return dict(files={p: raw.encode() if isinstance(raw, str) else raw for p, raw in files.items()},
@@ -346,7 +351,6 @@ DIAGNOSTICS = {
     'finalizer': r'finalizer[^\n]*(?:unsupported|not supported|False)',
     'nested': r'(?:nested[^\n]*(?:macro|unsupported)|macro[^\n]*(?:nested|nesting)[^\n]*(?:unsupported|not supported))',
     'exports-files': r'exports_files[^\n]*(?:unsupported|not supported|macro)',
-    'package-group': r'(?:package.group|visibility)[^\n]*(?:unsupported|not supported|not implemented|__pkg__|__subpackages__)',
 }
 
 

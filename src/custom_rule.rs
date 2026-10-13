@@ -1,4 +1,7 @@
 //! Owned custom-rule schemas and trace/freeze-safe Starlark definitions.
+// Starlark's fixed attribute signatures also generate module-level helpers.
+#![allow(clippy::too_many_arguments)]
+
 use allocative::Allocative;
 use anyhow::{anyhow, bail};
 use starlark::environment::GlobalsBuilder;
@@ -14,6 +17,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::build_settings::{BuildSetting, BuildSettingKind};
+use crate::providers::ProviderRequirement;
 
 #[derive(Clone, Debug, PartialEq, Eq, Allocative, serde::Serialize)]
 pub enum AttrKind {
@@ -48,6 +52,9 @@ pub struct AttrSpec {
     pub allow_single_file: bool,
     #[serde(skip_serializing_if = "is_false")]
     pub non_empty: bool,
+    #[allow(private_interfaces)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub required_providers: Vec<Vec<ProviderRequirement>>,
 }
 fn is_false(value: &bool) -> bool {
     !*value
@@ -78,6 +85,69 @@ fn string_list(value: Value<'_>) -> anyhow::Result<Vec<String>> {
                 .ok_or_else(|| anyhow!("expected a list of strings"))
         })
         .collect()
+}
+
+/// Normalize OR-of-AND requirements without copying an unbounded input sequence.
+/// Every constructor is validated, even after an empty alternative was seen.
+fn required_providers(value: Value<'_>) -> anyhow::Result<Vec<Vec<ProviderRequirement>>> {
+    let outer = sequence_ref(value)
+        .ok_or_else(|| anyhow!("providers must be a list or tuple of Provider constructors"))?;
+    let mut budget = crate::repository_budget::HostBudget::default();
+    budget.node().map_err(anyhow::Error::msg)?;
+    if outer.is_empty() {
+        return Ok(Vec::new());
+    }
+    let nested = sequence_ref(outer[0]).is_some();
+    let mut clauses = Vec::new();
+    let mut unrestricted = false;
+    let mut clause = |items: &[Value<'_>]| -> anyhow::Result<Vec<ProviderRequirement>> {
+        budget.node().map_err(anyhow::Error::msg)?;
+        let mut seen = std::collections::BTreeSet::new();
+        let mut requirements = Vec::new();
+        for &item in items {
+            budget.node().map_err(anyhow::Error::msg)?;
+            // requirement_info bounds its transient owned result before cloning;
+            // this cumulative budget charges it before either retained insertion.
+            let requirement = crate::providers::requirement_info(item)
+                .map_err(|error| anyhow!("providers: {error}"))?;
+            budget.string(&requirement.id).map_err(anyhow::Error::msg)?;
+            budget
+                .string(&requirement.display_name)
+                .map_err(anyhow::Error::msg)?;
+            if seen.insert(requirement.id.clone()) {
+                requirements.push(requirement);
+            }
+        }
+        Ok(requirements)
+    };
+    if nested {
+        for &item in outer {
+            let items = sequence_ref(item).ok_or_else(|| {
+                anyhow!("providers must not mix Provider constructors and sequences")
+            })?;
+            let requirements = clause(items)?;
+            unrestricted |= requirements.is_empty();
+            clauses.push(requirements);
+        }
+    } else {
+        clauses.push(clause(outer)?);
+    }
+    if unrestricted {
+        clauses.clear();
+    }
+    Ok(clauses)
+}
+
+fn with_required_providers(
+    mut descriptor: Descriptor,
+    value: Value<'_>,
+) -> anyhow::Result<Descriptor> {
+    descriptor.0.required_providers = required_providers(value)?;
+    // Defaults and provider metadata must fit together, not just independently.
+    crate::repository_budget::HostBudget::default()
+        .spec(&descriptor.0)
+        .map_err(anyhow::Error::msg)?;
+    Ok(descriptor)
 }
 
 /// Attribute defaults use the innermost executing extension's lexical package.
@@ -510,6 +580,7 @@ fn descriptor_in_package(
         allow_files: allow_files || allow_single_file,
         allow_single_file,
         non_empty: false,
+        required_providers: Vec::new(),
     }))
 }
 
@@ -570,6 +641,7 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named, default = false)] mandatory: bool,
         #[starlark(require = named, default = false)] allow_files: bool,
         #[starlark(require = named, default = false)] allow_single_file: bool,
+        #[starlark(require = named, default = starlark::values::list::AllocList::EMPTY)] providers: Value<'v>,
         #[starlark(require = named, default = "target")] cfg: &str,
         #[starlark(require = named)] doc: Option<&str>,
         eval: &mut Evaluator<'v, '_, '_>,
@@ -582,19 +654,21 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
         let resolve = |text: &str| {
             crate::loading::resolve_label_bounded(eval, text, &mut budget.borrow_mut())
         };
-        descriptor_in_package(
+        let descriptor = descriptor_in_package(
             AttrKind::Label,
             default,
             mandatory,
             allow_files,
             allow_single_file,
             definition_package(eval).map(|_| &resolve as &LabelResolver<'_>),
-        )
+        )?;
+        with_required_providers(descriptor, providers)
     }
     fn label_list<'v>(
         #[starlark(require = named)] default: Option<Value<'v>>,
         #[starlark(require = named, default = false)] mandatory: bool,
         #[starlark(require = named, default = false)] allow_files: bool,
+        #[starlark(require = named, default = starlark::values::list::AllocList::EMPTY)] providers: Value<'v>,
         #[starlark(require = named, default = "target")] cfg: &str,
         #[starlark(require = named)] doc: Option<&str>,
         eval: &mut Evaluator<'v, '_, '_>,
@@ -607,14 +681,15 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
         let resolve = |text: &str| {
             crate::loading::resolve_label_bounded(eval, text, &mut budget.borrow_mut())
         };
-        descriptor_in_package(
+        let descriptor = descriptor_in_package(
             AttrKind::LabelList,
             default,
             mandatory,
             allow_files,
             false,
             definition_package(eval).map(|_| &resolve as &LabelResolver<'_>),
-        )
+        )?;
+        with_required_providers(descriptor, providers)
     }
     fn output(
         #[starlark(require = named, default = false)] mandatory: bool,
@@ -782,8 +857,185 @@ pub fn rule_globals(builder: &mut GlobalsBuilder) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use starlark::environment::Module;
+    use starlark::environment::{FrozenModule, Module};
     use starlark::syntax::{AstModule, Dialect};
+
+    fn provider_extension(label: &str, source: &str) -> anyhow::Result<FrozenModule> {
+        let globals = GlobalsBuilder::standard()
+            .with(rule_globals)
+            .with(crate::providers::globals)
+            .with(crate::template_variable_info::install)
+            .build();
+        Module::with_temp_heap(|module| {
+            let context = crate::loading::ExtensionContext {
+                label: crate::label::Label::parse(label, "").unwrap(),
+                repositories: std::sync::Arc::new(crate::repository::RepositorySet::new(
+                    std::path::PathBuf::from("."),
+                )),
+            };
+            let ast = AstModule::parse(label, source.to_owned(), &Dialect::Standard).unwrap();
+            {
+                let mut eval = Evaluator::new(&module);
+                eval.extra = Some(&context);
+                eval.eval_module(ast, &globals)
+                    .map_err(|error| anyhow!("{error}"))?;
+            }
+            module.freeze().map_err(|error| anyhow!("{error:?}"))
+        })
+    }
+
+    #[test]
+    fn provider_constraints_normalize_sequences_and_preserve_export_identity() {
+        let frozen = provider_extension(
+            "//defs:rules.bzl",
+            r#"
+P = provider()
+Alias = P
+Q = provider()
+T = platform_common.TemplateVariableInfo
+items = [P, Alias, DefaultInfo, T, P]
+x = attr.label(providers=items)
+items.append(Q)
+y = attr.label_list(providers=((P, P), [T, Q]))
+a = attr.label()
+b = attr.label(providers=())
+c = attr.label(providers=[[], [P]])
+d = attr.label_list(providers=((P,), ()))
+"#,
+        )
+        .unwrap();
+        let x = frozen.get("x").unwrap();
+        let x = attribute_spec_ref(x.value()).unwrap();
+        assert_eq!(x.required_providers.len(), 1);
+        assert_eq!(
+            x.required_providers[0]
+                .iter()
+                .map(|p| p.display_name.as_str())
+                .collect::<Vec<_>>(),
+            ["P", "DefaultInfo", "TemplateVariableInfo"]
+        );
+        assert_eq!(x.required_providers[0][0].id, "//defs:rules.bzl%P");
+        let y = frozen.get("y").unwrap();
+        let y = attribute_spec_ref(y.value()).unwrap();
+        assert_eq!(
+            y.required_providers
+                .iter()
+                .map(Vec::len)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
+        for name in ["a", "b", "c", "d"] {
+            let value = frozen.get(name).unwrap();
+            let spec = attribute_spec_ref(value.value()).unwrap();
+            assert!(spec.required_providers.is_empty());
+            assert!(
+                !serde_json::to_string(spec)
+                    .unwrap()
+                    .contains("required_providers")
+            );
+        }
+
+        let other = provider_extension("//other:rules.bzl", "P = provider()\n").unwrap();
+        Module::with_temp_heap(|module| {
+            let first = frozen.get("P").unwrap();
+            let second = other.get("P").unwrap();
+            let first = module.heap().access_owned_frozen_value(&first);
+            let second = module.heap().access_owned_frozen_value(&second);
+            let clauses =
+                required_providers(module.heap().alloc(vec![first, second, first])).unwrap();
+            assert_eq!(clauses[0].len(), 2);
+            assert_eq!(clauses[0][0].display_name, clauses[0][1].display_name);
+            assert_ne!(clauses[0][0].id, clauses[0][1].id);
+        });
+    }
+
+    #[test]
+    fn provider_constraints_reject_malformed_and_unexported_even_after_empty_clause() {
+        for kind in ["label", "label_list"] {
+            for expression in [
+                "None",
+                "'legacy'",
+                "[\"PackageSpecificationInfo\"]",
+                "[['legacy']]",
+                "[None]",
+                "[True]",
+                "[1]",
+                "[len]",
+                "[DefaultInfo()]",
+                "[P()]",
+                "[P, [DefaultInfo]]",
+                "[[P], DefaultInfo]",
+                "[[[P]]]",
+                "[provider()]",
+                "[[], [provider()]]",
+                "[[], ['legacy']]",
+                "[[], [[P]]]",
+                "[[], P]",
+                "{}",
+            ] {
+                let source = format!("P = provider()\nx = attr.{kind}(providers={expression})\n");
+                let error = provider_extension("//defs:rules.bzl", &source)
+                    .unwrap_err()
+                    .to_string();
+                assert!(error.contains("providers"), "{source}: {error}");
+            }
+        }
+        for kind in [
+            "string",
+            "string_list",
+            "string_list_dict",
+            "bool",
+            "int",
+            "output",
+            "output_list",
+        ] {
+            let error = definition_error(&format!("attr.{kind}(providers=[])"));
+            assert!(error.contains("providers"), "{kind}: {error}");
+        }
+        assert!(definition_error("rule(implementation=impl, provides=[])").contains("provides"));
+    }
+
+    #[test]
+    fn provider_constraints_budget_input_before_deduplication_and_empty_normalization() {
+        for expression in [
+            "[DefaultInfo]*100000",
+            "[[DefaultInfo]]*40000",
+            "[[]]*100000",
+            "[[]] + [[DefaultInfo]]*40000",
+        ] {
+            let error = definition_error(&format!("attr.label(providers={expression})"));
+            assert!(
+                error.contains("host preparation") && error.contains("limit"),
+                "{expression}: {error}"
+            );
+        }
+        let source = "P = provider()\nx = attr.label(providers=[[P]]*10000)\ndef impl(ctx):\n    return []\nr = rule(implementation=impl, attrs={name: x for name in ['a', 'b', 'c']})\n";
+        let error = provider_extension("//defs:rules.bzl", source)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("host preparation") && error.contains("limit"),
+            "{error}"
+        );
+        let label = format!("//{}:rules.bzl", "p".repeat(65536));
+        let error = provider_extension(
+            &label,
+            "P = provider()\nx = attr.label(providers=[P]*129)\n",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("host preparation") && error.contains("limit"),
+            "{error}"
+        );
+        let error = definition_error(
+            "attr.label(default='//:'+'x'*(7*1024*1024), providers=[[DefaultInfo]]*15000)",
+        );
+        assert!(
+            error.contains("host preparation") && error.contains("limit"),
+            "{error}"
+        );
+    }
 
     fn definition_error(expression: &str) -> String {
         let globals = GlobalsBuilder::standard()

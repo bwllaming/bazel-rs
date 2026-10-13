@@ -57,8 +57,9 @@ cannot become implicit input targets.
 
 Later `package(default_visibility=...)` calls preserve the existing ordinary-rule
 behavior but do not retroactively change a macro's earlier visibility snapshot.
-Package groups and configured visibility remain outside the existing bounded
-visibility profile.
+Package groups were outside the original macro increment's visibility profile.
+The subsequent [package-specification increment](PACKAGE_SPECIFICATIONS.md)
+adds group resolution; broader configured visibility remains unfinished.
 
 ## Names and phase restrictions
 
@@ -85,15 +86,17 @@ profile, although Bazel allows it. Ordinary legacy helper behavior is unchanged.
 Pinned reference constructor/phase probes are under
 `/tmp/opencode/next-d-macro-contract/`; output, collision, visibility and implicit
 source probes are under `/tmp/opencode/symbolic-macro-edge-contract/`.
-The native/reference matrix passes eight families and 108 phases, with 191 actual
+The original macro increment's native/reference matrix passed eight families and
+108 phases, with 191 actual
 CLI commands, in `artifacts/symbolic-macros-validation.json`. It records frozen
-source/binary bindings, reference shutdown and scratch cleanup. The final gate
-passes 838 Rust and 469 Python tests, including 17 real CLI macro tests and 23
-harness tests. Seven adjacent suites pass on the same candidate.
+source/binary bindings, reference shutdown and scratch cleanup. That increment's
+final gate passed 838 Rust and 469 Python tests, including 17 real CLI macro tests
+and 23 harness tests. Seven adjacent suites passed on that candidate.
 
-The preserved application query advances past
+At that increment, the preserved application query advanced past
 the `macro` global and stops at missing `PackageSpecificationInfo` in generated
 globals code. See `artifacts/mainrepo-symbolic-macros-loading.json`; checkout,
 required symlink contents and scratch cleanup remain verified.
+The later package-specification probe advances to missing `RunEnvironmentInfo`.
 Full application builds/tests, complete macro compatibility, SDKs, configured
 analysis and performance parity remain unproven.

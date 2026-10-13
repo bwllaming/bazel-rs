@@ -174,6 +174,21 @@ checkout is unchanged; no application query/build/test success is claimed.
 
 ## Remaining compatibility gates
 
+### Native package specifications
+
+- [x] Pin real group/provider, constraint and visibility contracts against Bazel
+      9.3; approve owned graph and implementation boundaries.
+- [x] Implement real package-group production, membership consumers, required
+      providers and group visibility, including source-root validation.
+- [x] Verify native/reference cases and update the previous unsupported-group
+      macro boundary to genuine supported semantics.
+- [x] Complete 897 Rust / 490 Python tests, both native/reference matrices,
+      seven adjacent suites, application probe, analyzer and cleanup.
+- [x] Obtain unconditional final review of the bounded package-specification profile.
+
+See `docs/PACKAGE_SPECIFICATIONS.md`; reference contracts alone do not establish
+native success or full parity.
+
 ### Ownership-aware symbolic macros
 
 - [x] Pin constructor, export, visibility, output-name and implicit-source

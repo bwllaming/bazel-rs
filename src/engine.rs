@@ -3,9 +3,12 @@ use crate::action::{self, Action};
 use crate::analysis::{self, DependencyTarget};
 use crate::label::{Label, PackageId};
 use crate::package::{self, Package, Rule, RuleKind};
+use crate::package_specification::{self, GroupNode};
 use crate::repository::RepositorySet;
+use crate::repository_budget::HostBudget;
 use crate::scheduler::{self, Dependency, PlannedAction};
 use crate::starlark_types::File;
+use crate::visibility::Visibility;
 use crate::workspace;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
@@ -68,6 +71,8 @@ pub struct Engine {
     repositories: Arc<RepositorySet>,
     packages: BTreeMap<PackageId, Package>,
     generated: BTreeMap<Label, (Label, String)>,
+    group_nodes: BTreeMap<Label, Arc<GroupNode>>,
+    group_budget: HostBudget,
 }
 
 impl Engine {
@@ -80,6 +85,8 @@ impl Engine {
             repositories,
             packages: BTreeMap::new(),
             generated: BTreeMap::new(),
+            group_nodes: BTreeMap::new(),
+            group_budget: HostBudget::default(),
         }
     }
 
@@ -155,7 +162,10 @@ impl Engine {
             || (!package.macro_names.contains(&label.name)
                 && package
                     .values()
-                    .filter(|rule| rule.macro_owner.is_none())
+                    .filter(|rule| {
+                        rule.macro_owner.is_none()
+                            && !matches!(rule.kind, RuleKind::PackageGroup(_))
+                    })
                     .any(|rule| {
                         rule.srcs
                             .iter()
@@ -203,7 +213,7 @@ impl Engine {
     }
 
     fn resolve_rule_src(&self, rule: &Rule, text: &str) -> Result<Label, String> {
-        if rule.kind == RuleKind::Custom {
+        if matches!(rule.kind, RuleKind::Custom) {
             // Custom attributes were canonicalized during package evaluation.
             // In particular, //p:t here denotes main, even in an external rule.
             Label::parse_canonical(text)
@@ -241,7 +251,12 @@ impl Engine {
                         package,
                     };
                     self.load_package(&id)?;
-                    selected.extend(self.packages[&id].keys().cloned());
+                    selected.extend(
+                        self.packages[&id]
+                            .values()
+                            .filter(|rule| !matches!(rule.kind, RuleKind::PackageGroup(_)))
+                            .map(|rule| rule.label.clone()),
+                    );
                 }
             } else if let Some(prefix) = pattern.strip_suffix(":all") {
                 if !prefix.is_empty() && !prefix.starts_with("//") && !prefix.starts_with('@') {
@@ -252,7 +267,12 @@ impl Engine {
                     .parse(pattern, "", current_package)?
                     .package_id();
                 self.load_package(&id)?;
-                selected.extend(self.packages[&id].keys().cloned());
+                selected.extend(
+                    self.packages[&id]
+                        .values()
+                        .filter(|rule| !matches!(rule.kind, RuleKind::PackageGroup(_)))
+                        .map(|rule| rule.label.clone()),
+                );
             } else {
                 if pattern.contains(['(', ')', '*', ' ']) {
                     return Err(format!(
@@ -267,6 +287,97 @@ impl Engine {
         Ok(selected.into_iter().collect())
     }
 
+    fn resolve_group(
+        &mut self,
+        label: &Label,
+        active: &mut Vec<Label>,
+    ) -> Result<Arc<GroupNode>, String> {
+        let package = label.package_id();
+        self.load_package(&package)?;
+        let Some(rule) = self.packages[&package].get(label) else {
+            // Preserve existing missing/source/output diagnostics, but never
+            // analyze a callback or fabricate a source from an include edge.
+            self.target(label)?;
+            return Err(format!("{label} does not refer to a package group"));
+        };
+        let RuleKind::PackageGroup(definition) = &rule.kind else {
+            return Err(format!("{label} does not refer to a package group"));
+        };
+        // Cache hits cannot bypass actual target kind or symbolic ownership.
+        check_macro_namespace(rule, label)?;
+        if let Some(node) = self.group_nodes.get(label) {
+            return Ok(Arc::clone(node));
+        }
+        if active.contains(label) {
+            return Err(format!("package group include cycle at {label}"));
+        }
+        if active.len() >= 256 {
+            return Err("package group DAG exceeds depth limit 256 path nodes".into());
+        }
+        self.group_budget.node()?;
+        definition.own_specs.charge(&mut self.group_budget)?;
+        for part in [&label.repository, &label.package, &label.name] {
+            self.group_budget.string(part)?;
+        }
+        // Repeated edges consume budget too, BEFORE allocating the edge vector.
+        for edge in &definition.includes {
+            self.group_budget.node()?;
+            for part in [&edge.repository, &edge.package, &edge.name] {
+                self.group_budget.string(part)?;
+            }
+        }
+        // Keep the declaration alive across recursive package loading without
+        // copying its specifications or include labels. Cache hits above do not
+        // even clone this Arc. The sole local payload copy is precharged above.
+        let definition = Arc::clone(definition);
+        active.push(label.clone());
+        let result = (|| {
+            let mut includes = Vec::with_capacity(definition.includes.len());
+            for edge in &definition.includes {
+                includes.push(self.resolve_group(edge, active)?);
+            }
+            // Cached child heights are checked by the constructor, independently
+            // of this traversal's active depth.
+            let node = Arc::new(GroupNode::new(
+                Arc::new(definition.own_specs.clone()),
+                includes,
+            )?);
+            self.group_nodes.insert(label.clone(), node.clone());
+            Ok(node)
+        })();
+        active.pop();
+        result
+    }
+
+    fn source_visibility(&self, label: &Label) -> Visibility {
+        let package = &self.packages[&label.package_id()];
+        package
+            .exports
+            .get(label)
+            .unwrap_or(&package.default_visibility)
+            .clone()
+    }
+
+    /// Resolve every effective group reference, even when a pure scope or the
+    /// same-authority fast path would already grant access. Roots pass None:
+    /// their outgoing visibility dependencies are validated, not access-checked.
+    fn visible(
+        &mut self,
+        visibility: &Visibility,
+        declaring: &PackageId,
+        requesting: Option<&PackageId>,
+    ) -> Result<bool, String> {
+        let mut group_grant = false;
+        for label in visibility.group_labels() {
+            let node = self.resolve_group(label, &mut Vec::new())?;
+            group_grant |= requesting.is_some_and(|package| node.contains(package));
+        }
+        Ok(
+            requesting
+                .is_none_or(|package| visibility.allows_in(declaring, package) || group_grant),
+        )
+    }
+
     fn analyze(
         &mut self,
         label: &Label,
@@ -275,7 +386,10 @@ impl Engine {
         plan: &mut Vec<Rule>,
     ) -> Result<(), String> {
         let rule = match self.target(label)? {
-            Target::Source(_) => return Ok(()),
+            Target::Source(_) => {
+                self.visible(&self.source_visibility(label), &label.package_id(), None)?;
+                return Ok(());
+            }
             Target::Rule(rule) => rule,
             Target::Output(rule, _) => {
                 check_macro_namespace(&rule, label)?;
@@ -285,6 +399,10 @@ impl Engine {
         // Check the requested target and its generator before memoization, but
         // never scan unrelated outputs or impose this analysis gate on query.
         check_macro_namespace(&rule, &rule.label)?;
+        self.visible(&rule.visibility, &rule_authority(&rule), None)?;
+        if matches!(rule.kind, RuleKind::PackageGroup(_)) {
+            self.resolve_group(&rule.label, &mut Vec::new())?;
+        }
         if done.contains(&rule.label) {
             return Ok(());
         }
@@ -307,17 +425,28 @@ impl Engine {
         for src in &rule.srcs {
             let dependency = self.resolve_rule_src(&rule, src)?;
             let visible = match self.target(&dependency)? {
-                Target::Rule(dep) | Target::Output(dep, _) => dep
-                    .visibility
-                    .allows_in(&rule_authority(&dep), &requesting_package),
-                Target::Source(_) => {
-                    let package = &self.packages[&dependency.package_id()];
-                    package
-                        .exports
-                        .get(&dependency)
-                        .unwrap_or(&package.default_visibility)
-                        .allows_in(&dependency.package_id(), &requesting_package)
+                Target::Rule(dep) | Target::Output(dep, _) => {
+                    check_macro_namespace(&dep, &dependency)?;
+                    check_macro_namespace(&dep, &dep.label)?;
+                    if matches!(dep.kind, RuleKind::PackageGroup(_))
+                        && !matches!(rule.kind, RuleKind::Custom)
+                    {
+                        return Err(format!(
+                            "{}: package group '{dependency}' is misplaced in srcs",
+                            rule.label
+                        ));
+                    }
+                    self.visible(
+                        &dep.visibility,
+                        &rule_authority(&dep),
+                        Some(&requesting_package),
+                    )?
                 }
+                Target::Source(_) => self.visible(
+                    &self.source_visibility(&dependency),
+                    &dependency.package_id(),
+                    Some(&requesting_package),
+                )?,
             };
             if !visible {
                 return Err(format!("{dependency} is not visible to {}", rule.label));
@@ -426,7 +555,25 @@ impl Engine {
         let mut producers: BTreeMap<PathBuf, Label> = BTreeMap::new();
         let mut nodes = Vec::new();
         for rule in &plan {
-            if rule.kind == RuleKind::Custom {
+            if matches!(rule.kind, RuleKind::PackageGroup(_)) {
+                let node = self.resolve_group(&rule.label, &mut Vec::new())?;
+                let info = starlark::environment::Module::with_temp_heap(|module| {
+                    let value = package_specification::alloc_info(&module.heap(), node);
+                    module.set("__info", value);
+                    let frozen = module.freeze().map_err(|error| {
+                        format!("cannot freeze package group provider: {error:?}")
+                    })?;
+                    frozen.get("__info").map_err(|error| error.to_string())
+                })?;
+                custom_providers.insert(
+                    rule.label.clone(),
+                    BTreeMap::from([(package_specification::PROVIDER_ID.to_owned(), info)]),
+                );
+                provider_files.insert(rule.label.clone(), Vec::new());
+                dry.insert(rule.label.clone(), Vec::new());
+                continue;
+            }
+            if matches!(rule.kind, RuleKind::Custom) {
                 let mut dependency_targets = BTreeMap::new();
                 let mut available = BTreeMap::new();
                 for src in &rule.srcs {
@@ -448,12 +595,15 @@ impl Engine {
                         })?;
                         available.insert(file.clone(), artifact.clone());
                     }
+                    let target = self.target(&label)?;
                     dependency_targets.insert(
                         label.to_string(),
                         DependencyTarget {
                             label: label.to_string(),
                             files,
-                            is_source: matches!(self.target(&label)?, Target::Source(_)),
+                            is_source: matches!(target, Target::Source(_)),
+                            is_rule: matches!(&target, Target::Rule(rule) if !matches!(rule.kind, RuleKind::PackageGroup(_))),
+                            is_package_group: matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::PackageGroup(_))),
                             providers: custom_providers.get(&label).cloned().unwrap_or_default(),
                             provider_files: target_provider_files,
                         },
@@ -543,7 +693,7 @@ impl Engine {
                         .map(|label| label.generated_exec_path())
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            if rule.kind == RuleKind::Genrule {
+            if matches!(rule.kind, RuleKind::Genrule) {
                 add_output_locations(rule, &outputs, &mut locations)?;
                 let command = expand_command_in(
                     rule.cmd.as_deref().ok_or("genrule has no command")?,
@@ -911,6 +1061,484 @@ mod tests {
             engine.analyze(&test_label(root), &mut Vec::new(), &mut done, &mut plan)?;
         }
         Ok(plan)
+    }
+
+    fn group(label: &str, specs: &[&str], includes: &[&str]) -> Rule {
+        let mut rule = test_rule(label, None);
+        rule.kind = RuleKind::PackageGroup(Arc::new(package_specification::GroupDefinition {
+            own_specs: package_specification::parse_specs(
+                &specs.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>(),
+                &rule.label.package_id(),
+                &RepositorySet::new(PathBuf::new()),
+            )
+            .unwrap(),
+            includes: includes.iter().map(|s| test_label(s)).collect(),
+        }));
+        rule.visibility = Visibility::Public;
+        rule
+    }
+
+    #[test]
+    fn package_group_cached_diamond_keeps_independent_exclusions_and_identity() {
+        let mut engine = test_engine(
+            PathBuf::new(),
+            vec![
+                group("//g:leaf", &["//foo/private"], &[]),
+                group("//g:left", &["//foo/...", "-//foo/private"], &["//g:leaf"]),
+                group("//g:right", &["//other"], &["//g:leaf"]),
+                group("//g:root", &[], &["//g:left", "//g:right", "//g:left"]),
+            ],
+        );
+        let root = engine
+            .resolve_group(&test_label("//g:root"), &mut Vec::new())
+            .unwrap();
+        assert_eq!(engine.group_nodes.len(), 4);
+        for member in ["//foo/private:x", "//foo/public:x", "//other:x"] {
+            assert!(root.contains(&test_label(member).package_id()));
+        }
+        assert!(!root.contains(&test_label("//foobar:x").package_id()));
+        let left = engine
+            .resolve_group(&test_label("//g:left"), &mut Vec::new())
+            .unwrap();
+        let right = engine
+            .resolve_group(&test_label("//g:right"), &mut Vec::new())
+            .unwrap();
+        assert!(!Arc::ptr_eq(&left, &right));
+        assert!(left.contains(&test_label("//foo/public:x").package_id()));
+        assert!(!right.contains(&test_label("//foo/public:x").package_id()));
+        assert!(Arc::ptr_eq(
+            &root,
+            &engine
+                .resolve_group(&test_label("//g:root"), &mut Vec::new())
+                .unwrap()
+        ));
+    }
+
+    #[test]
+    fn package_group_large_shared_declarations_and_cached_edges_never_copy_payloads() {
+        let leaf_label = test_label("//g:leaf");
+        let root_label = test_label("//g:root");
+        let large_package = format!("//{}", "p".repeat(512 * 1024));
+        let leaf = group("//g:leaf", &[&large_package], &[]);
+        let mut root = group("//g:root", &[], &[]);
+        let RuleKind::PackageGroup(definition) = &mut root.kind else {
+            unreachable!()
+        };
+        const EDGES: usize = 4096;
+        Arc::get_mut(definition).unwrap().includes = vec![leaf_label.clone(); EDGES];
+        let mut engine = test_engine(PathBuf::new(), vec![leaf, root]);
+        let RuleKind::PackageGroup(declaration) =
+            &engine.packages[&leaf_label.package_id()][&leaf_label].kind
+        else {
+            unreachable!()
+        };
+        let declaration = Arc::clone(declaration);
+        let Target::Rule(first) = engine.target(&leaf_label).unwrap() else {
+            unreachable!()
+        };
+        let RuleKind::PackageGroup(first) = first.kind else {
+            unreachable!()
+        };
+        assert!(Arc::ptr_eq(&declaration, &first));
+        for _ in 0..128 {
+            let Target::Rule(next) = engine.target(&leaf_label).unwrap() else {
+                unreachable!()
+            };
+            let RuleKind::PackageGroup(next) = next.kind else {
+                unreachable!()
+            };
+            assert!(Arc::ptr_eq(&first, &next));
+        }
+        // GroupDefinition deliberately has no Clone implementation: every
+        // generic Target/Rule snapshot above must share the declaration payload.
+        let declaration_owners = Arc::strong_count(&declaration);
+        let leaf_node = engine.resolve_group(&leaf_label, &mut Vec::new()).unwrap();
+        let root_node = engine.resolve_group(&root_label, &mut Vec::new()).unwrap();
+        assert_eq!(engine.group_nodes.len(), 2);
+        assert_eq!(Arc::strong_count(&leaf_node), EDGES + 2);
+        assert_eq!(Arc::strong_count(&declaration), declaration_owners);
+        assert!(root_node.contains(&test_label(&format!("{large_package}:x")).package_id()));
+
+        // Once the engine's cumulative node budget is exhausted, both cached
+        // resolutions must still succeed without charging or copying payloads.
+        while engine.group_budget.node().is_ok() {}
+        for _ in 0..128 {
+            assert!(Arc::ptr_eq(
+                &leaf_node,
+                &engine.resolve_group(&leaf_label, &mut Vec::new()).unwrap()
+            ));
+            assert!(Arc::ptr_eq(
+                &root_node,
+                &engine.resolve_group(&root_label, &mut Vec::new()).unwrap()
+            ));
+        }
+        assert_eq!(Arc::strong_count(&declaration), declaration_owners);
+        assert_eq!(Arc::strong_count(&leaf_node), EDGES + 2);
+    }
+
+    #[test]
+    fn package_group_cached_height_rejects_257_path_nodes_child_first() {
+        let mut rules = vec![group("//g:n0", &[], &[])];
+        for n in 1..=256 {
+            rules.push(group(
+                &format!("//g:n{n}"),
+                &[],
+                &[&format!("//g:n{}", n - 1)],
+            ));
+        }
+        let mut engine = test_engine(PathBuf::new(), rules);
+        for n in 0..256 {
+            engine
+                .resolve_group(&test_label(&format!("//g:n{n}")), &mut Vec::new())
+                .unwrap();
+        }
+        let error = engine
+            .resolve_group(&test_label("//g:n256"), &mut Vec::new())
+            .unwrap_err();
+        assert!(error.contains("depth limit 256"), "{error}");
+        assert_eq!(engine.group_nodes.len(), 256);
+        assert!(!engine.group_nodes.contains_key(&test_label("//g:n256")));
+    }
+
+    #[test]
+    fn package_group_edge_budget_precedes_allocation_and_cache_publication() {
+        let mut huge = group("//g:huge", &[], &[]);
+        let RuleKind::PackageGroup(definition) = &mut huge.kind else {
+            unreachable!()
+        };
+        Arc::get_mut(definition).unwrap().includes = vec![test_label("//g:leaf"); 100_001];
+        let mut engine = test_engine(PathBuf::new(), vec![huge, group("//g:leaf", &[], &[])]);
+        let error = engine
+            .resolve_group(&test_label("//g:huge"), &mut Vec::new())
+            .unwrap_err();
+        assert!(
+            error.contains("host preparation") && error.contains("limit"),
+            "{error}"
+        );
+        assert!(engine.group_nodes.is_empty());
+
+        // Distinct successfully published nodes share one engine-wide budget.
+        let long_package = format!("//{}", "p".repeat(1024 * 1024));
+        let rules = (0..9)
+            .map(|n| group(&format!("//g:n{n}"), &[&long_package], &[]))
+            .collect();
+        let mut engine = test_engine(PathBuf::new(), rules);
+        for n in 0..7 {
+            engine
+                .resolve_group(&test_label(&format!("//g:n{n}")), &mut Vec::new())
+                .unwrap();
+        }
+        assert!(
+            engine
+                .resolve_group(&test_label("//g:n7"), &mut Vec::new())
+                .unwrap_err()
+                .contains("byte limit")
+        );
+        assert_eq!(engine.group_nodes.len(), 7);
+        // Cached hits require no new persistent allocation budget.
+        assert!(
+            engine
+                .resolve_group(&test_label("//g:n0"), &mut Vec::new())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn package_group_query_excludes_nonrules_and_includes_never_declare_files() {
+        let f = Fixture::new();
+        f.write("MODULE.bazel", "");
+        f.write("app/data", "not an implicit source");
+        f.write(
+            "app/BUILD",
+            "package_group(name='g', includes=[':data'])\nfilegroup(name='ordinary')",
+        );
+        let mut engine = Engine::new(f.0.clone());
+        for pattern in ["//app:all", "//app/..."] {
+            assert_eq!(
+                engine.select(&[pattern.into()], "").unwrap(),
+                vec![test_label("//app:ordinary")]
+            );
+        }
+        assert_eq!(
+            engine.select(&["//app:g".into()], "").unwrap(),
+            vec![test_label("//app:g")]
+        );
+        assert!(
+            engine
+                .select(&["//app:data".into()], "")
+                .unwrap_err()
+                .contains("not declared")
+        );
+        assert!(
+            engine
+                .build(&[test_label("//app:g")], &f.0.join("cache"))
+                .unwrap_err()
+                .contains("not declared")
+        );
+        assert!(!f.0.join("cache").exists());
+    }
+
+    #[test]
+    fn package_group_visibility_validates_roots_sources_and_all_refs_before_grants() {
+        let f = Fixture::new();
+        f.write("app/data", "source");
+        for invalid in ["missing", "ordinary", "cycle"] {
+            for source in [false, true] {
+                for incoming in [false, true] {
+                    let mut root = test_rule("//app:root", None);
+                    let visibility = Visibility::from_labels(vec![
+                        test_label("//app:__pkg__"),
+                        test_label(&format!("//app:{invalid}")),
+                    ])
+                    .unwrap();
+                    root.visibility = visibility.clone();
+                    let mut consumer = test_rule("//app:consumer", None);
+                    consumer
+                        .srcs
+                        .push(if source { ":data" } else { ":root" }.into());
+                    let mut engine = test_engine(
+                        f.0.clone(),
+                        vec![
+                            root,
+                            consumer,
+                            test_rule("//app:ordinary", None),
+                            group("//app:cycle", &[], &["//app:cycle"]),
+                        ],
+                    );
+                    engine
+                        .packages
+                        .get_mut(&test_label("//app:root").package_id())
+                        .unwrap()
+                        .exports
+                        .insert(test_label("//app:data"), visibility);
+                    let target = if incoming {
+                        "//app:consumer"
+                    } else if source {
+                        "//app:data"
+                    } else {
+                        "//app:root"
+                    };
+                    assert!(engine.select(&[target.into()], "").is_ok());
+                    let error = engine
+                        .build(&[test_label(target)], &f.0.join("cache"))
+                        .unwrap_err();
+                    assert!(
+                        error.contains(match invalid {
+                            "missing" => "not declared",
+                            "ordinary" => "does not refer to a package group",
+                            _ => "cycle",
+                        }),
+                        "{target}: {error}"
+                    );
+                    assert!(!f.0.join("cache").exists());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn package_group_visibility_uses_effective_macro_and_source_authorities() {
+        let f = Fixture::new();
+        f.write("app/data", "source");
+        for requested in ["//producer:demo", "//producer:demo.out", "//app:data"] {
+            for allowed in ["//defs", "//app", "@@dep//defs"] {
+                let mut producer = test_rule("//producer:demo", Some(("//owner:m.bzl", "demo")));
+                producer.visibility =
+                    Visibility::from_labels(vec![test_label("//g:allow")]).unwrap();
+                producer.outs.push("demo.out".into());
+                let mut consumer = test_rule("//app:demo", Some(("//defs:m.bzl", "demo")));
+                consumer.srcs.push(requested.into());
+                let mut engine = test_engine(
+                    f.0.clone(),
+                    vec![producer, consumer, group("//g:allow", &[allowed], &[])],
+                );
+                engine
+                    .packages
+                    .get_mut(&test_label("//app:demo").package_id())
+                    .unwrap()
+                    .exports
+                    .insert(
+                        test_label("//app:data"),
+                        Visibility::from_labels(vec![test_label("//g:allow")]).unwrap(),
+                    );
+                let result = analyze_roots(&mut engine, &["//app:demo"]);
+                assert_eq!(
+                    result.is_ok(),
+                    allowed == "//defs",
+                    "{requested} {allowed}: {result:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn package_group_kind_checks_precede_callbacks_and_native_inputs_reject_groups() {
+        let f = Fixture::new();
+        f.write("MODULE.bazel", "");
+        f.write(
+            "app/defs.bzl",
+            "def impl(ctx):\n    fail('WRONG_KIND_CALLBACK_RAN')\nr = rule(implementation=impl)\n",
+        );
+        for build in [
+            "package_group(name='root', includes=[':wrong'])",
+            "filegroup(name='root', visibility=[':wrong'])",
+        ] {
+            f.write(
+                "app/BUILD",
+                &format!("load(':defs.bzl', 'r')\nr(name='wrong')\n{build}"),
+            );
+            let mut engine = Engine::new(f.0.clone());
+            let error = engine
+                .build(&[test_label("//app:root")], &f.0.join("cache"))
+                .unwrap_err();
+            assert!(
+                error.contains("does not refer to a package group"),
+                "{error}"
+            );
+            assert!(!error.contains("WRONG_KIND_CALLBACK_RAN"), "{error}");
+        }
+        for declaration in [
+            "filegroup(name='root', srcs=[':g'])",
+            "genrule(name='root', srcs=[':g'], outs=['out'], cmd='touch $@')",
+        ] {
+            f.write(
+                "app/BUILD",
+                &format!("package_group(name='g')\n{declaration}"),
+            );
+            let mut engine = Engine::new(f.0.clone());
+            assert!(
+                engine
+                    .build(&[test_label("//app:root")], &f.0.join("cache"))
+                    .unwrap_err()
+                    .contains("misplaced")
+            );
+        }
+        assert!(!f.0.join("cache").exists());
+    }
+
+    #[test]
+    fn package_group_macro_namespace_is_checked_on_includes_and_cache_hits() {
+        let mut owned = group("//app:outside", &["public"], &[]);
+        owned.macro_owner = Some(MacroOwner {
+            definition_package: test_label("//defs:m.bzl").package_id(),
+            name: "demo".into(),
+        });
+        let mut engine = test_engine(
+            PathBuf::new(),
+            vec![owned, group("//app:root", &[], &["//app:outside"])],
+        );
+        assert!(engine.select(&["//app:outside".into()], "").is_ok());
+        assert!(
+            engine
+                .resolve_group(&test_label("//app:root"), &mut Vec::new())
+                .unwrap_err()
+                .contains("symbolic macro namespace")
+        );
+        assert!(engine.group_nodes.is_empty());
+        let mut engine = test_engine(
+            PathBuf::new(),
+            vec![group("//app:outside", &["public"], &[])],
+        );
+        engine
+            .resolve_group(&test_label("//app:outside"), &mut Vec::new())
+            .unwrap();
+        engine
+            .packages
+            .get_mut(&test_label("//app:outside").package_id())
+            .unwrap()
+            .rules
+            .get_mut(&test_label("//app:outside"))
+            .unwrap()
+            .macro_owner = Some(MacroOwner {
+            definition_package: test_label("//defs:m.bzl").package_id(),
+            name: "demo".into(),
+        });
+        assert!(
+            engine
+                .resolve_group(&test_label("//app:outside"), &mut Vec::new())
+                .unwrap_err()
+                .contains("symbolic macro namespace")
+        );
+    }
+
+    #[test]
+    fn package_group_provider_materializes_independent_frozen_instances_and_empty_files() {
+        let f = Fixture::new();
+        f.write("MODULE.bazel", "");
+        f.write("app/defs.bzl", r#"
+def impl(ctx):
+    a = ctx.attr.a[PackageSpecificationInfo]
+    b = ctx.attr.b[PackageSpecificationInfo]
+    a == b or fail("native equality")
+    (a.contains("//allowed:x") and not b.contains("//allowed:x")) or fail("merged data")
+    (b.contains("//different:x") and not a.contains("//different:x")) or fail("merged data")
+    ctx.attr.a.files.to_list() == [] or fail("group artifacts")
+    ctx.attr.a[DefaultInfo].files.to_list() == [] or fail("default artifacts")
+    out = ctx.actions.declare_file("result")
+    ctx.actions.write(out, str(a.contains("//allowed:x")) + ":" + str(b.contains("//allowed:x")))
+    return [DefaultInfo(files=depset([out]))]
+check = rule(implementation=impl, attrs={"a":attr.label(providers=[PackageSpecificationInfo]), "b":attr.label(providers=[PackageSpecificationInfo])})
+def emit(name, visibility):
+    native.package_group(name=name, packages=["//allowed"])
+m = macro(implementation=emit)
+"#);
+        f.write("app/BUILD", "load(':defs.bzl', 'check', 'm')\nm(name='a')\npackage_group(name='b', packages=['//different'])\ncheck(name='consumer', a=':a', b=':b')\npackage(default_visibility=[':missing'])");
+        // The consumer's bad default is intentional: no callback/action may run
+        // until its outgoing visibility references have been validated.
+        let mut engine = Engine::new(f.0.clone());
+        let standalone = engine
+            .build(&[test_label("//app:a")], &f.0.join("empty-cache"))
+            .unwrap();
+        assert!(standalone.outputs.is_empty());
+        assert_eq!((standalone.executed, standalone.cache_hits), (0, 0));
+        assert!(
+            engine
+                .build(&[test_label("//app:consumer")], &f.0.join("bad-cache"))
+                .unwrap_err()
+                .contains("not declared")
+        );
+        assert!(!f.0.join("bad-cache").exists());
+        f.write("app/BUILD", "load(':defs.bzl', 'check', 'm')\nm(name='a')\npackage_group(name='b', packages=['//different'])\ncheck(name='consumer', a=':a', b=':b')");
+        let mut engine = Engine::new(f.0.clone());
+        for warm in [false, true] {
+            let result = engine
+                .build(&[test_label("//app:consumer")], &f.0.join("cache"))
+                .unwrap();
+            assert_eq!(std::fs::read(&result.outputs[0].1).unwrap(), b"True:False");
+            assert_eq!(
+                (result.executed, result.cache_hits),
+                if warm { (0, 1) } else { (1, 0) }
+            );
+        }
+        assert_eq!(engine.group_nodes.len(), 2);
+    }
+
+    #[test]
+    fn package_group_source_default_visibility_and_public_normalization() {
+        let f = Fixture::new();
+        f.write("MODULE.bazel", "");
+        f.write("app/data", "source");
+        f.write("app/BUILD", "filegroup(name='declares_source', srcs=['data'])\npackage(default_visibility=[':missing'])");
+        let mut engine = Engine::new(f.0.clone());
+        assert!(engine.select(&["//app:data".into()], "").is_ok());
+        assert!(
+            engine
+                .build(&[test_label("//app:data")], &f.0.join("bad-cache"))
+                .unwrap_err()
+                .contains("not declared")
+        );
+        assert!(!f.0.join("bad-cache").exists());
+        f.write("app/defs.bzl", "def impl(name, visibility):\n    native.filegroup(name=name, visibility=visibility)\nm=macro(implementation=impl)");
+        f.write("app/BUILD", "load(':defs.bzl','m')\nm(name='root', visibility=['//nonexistent:group', '//visibility:public'])");
+        let mut engine = Engine::new(f.0.clone());
+        assert!(
+            engine
+                .build(&[test_label("//app:root")], &f.0.join("cache"))
+                .unwrap()
+                .outputs
+                .is_empty()
+        );
+        assert!(engine.group_nodes.is_empty());
     }
 
     #[test]

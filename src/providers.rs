@@ -27,6 +27,63 @@ use std::sync::OnceLock;
 use crate::loading::ExtensionContext;
 use crate::starlark_types::{File, is_default_info, unpack_label};
 
+pub(crate) const DEFAULT_INFO_PROVIDER_ID: &str = "builtin:DefaultInfo";
+
+#[derive(Clone, Debug, Eq, PartialEq, Allocative, serde::Serialize)]
+pub(crate) struct ProviderRequirement {
+    pub id: String,
+    pub display_name: String,
+}
+
+/// Only genuine, exported constructors are legal attribute requirements. Keep
+/// display names separate: upstream package-group placement uses their exact,
+/// case-sensitive spelling, not the canonical provider key.
+///
+/// Preflight this transient owned result before copying. A schema parser must
+/// additionally charge each result to its cumulative budget BEFORE retaining it.
+pub(crate) fn requirement_info(value: Value<'_>) -> anyhow::Result<ProviderRequirement> {
+    let mut budget = crate::repository_budget::HostBudget::default();
+    if let Some(constructor) = ProviderConstructor::from_value(value) {
+        let name = constructor.exported.get().ok_or_else(|| anyhow!(
+            "required provider must be assigned to a global exported name in its defining extension"
+        ))?;
+        budget
+            .string(&constructor.extension)
+            .map_err(anyhow::Error::msg)?;
+        budget.string(name).map_err(anyhow::Error::msg)?;
+        budget.string(name).map_err(anyhow::Error::msg)?;
+        budget.bytes(1).map_err(anyhow::Error::msg)?;
+        return Ok(ProviderRequirement {
+            id: format!("{}%{name}", constructor.extension),
+            display_name: name.clone(),
+        });
+    }
+    let (id, display_name) = if crate::template_variable_info::is_constructor(value) {
+        (
+            crate::template_variable_info::PROVIDER_ID,
+            "TemplateVariableInfo",
+        )
+    } else if crate::package_specification::is_constructor(value) {
+        (
+            crate::package_specification::PROVIDER_ID,
+            "PackageSpecificationInfo",
+        )
+    } else if crate::starlark_types::is_default_info_constructor(value) {
+        (DEFAULT_INFO_PROVIDER_ID, "DefaultInfo")
+    } else {
+        bail!(
+            "required providers must be exported Provider constructors, got {}",
+            value.get_type()
+        );
+    };
+    budget.string(id).map_err(anyhow::Error::msg)?;
+    budget.string(display_name).map_err(anyhow::Error::msg)?;
+    Ok(ProviderRequirement {
+        id: id.to_owned(),
+        display_name: display_name.to_owned(),
+    })
+}
+
 // Only derive-generated marker/trace/coercion implementations need this lint
 // exception. Owned constructor metadata contains no Starlark heap references.
 #[allow(unsafe_code)]
@@ -219,6 +276,9 @@ where
 
 /// Stable identity of an exported constructor, never of an instance.
 pub fn provider_identity(value: Value<'_>) -> Option<String> {
+    if crate::package_specification::is_constructor(value) {
+        return Some(crate::package_specification::PROVIDER_ID.to_owned());
+    }
     if crate::template_variable_info::is_constructor(value) {
         return Some(crate::template_variable_info::PROVIDER_ID.to_owned());
     }
@@ -227,6 +287,9 @@ pub fn provider_identity(value: Value<'_>) -> Option<String> {
 
 /// Stable identity of an instance, never of a constructor or ordinary struct.
 pub fn instance_identity(value: Value<'_>) -> Option<String> {
+    if crate::package_specification::is_instance(value) {
+        return Some(crate::package_specification::PROVIDER_ID.to_owned());
+    }
     if crate::template_variable_info::is_instance(value) {
         return Some(crate::template_variable_info::PROVIDER_ID.to_owned());
     }
@@ -268,6 +331,11 @@ pub fn returned_custom_providers<'v>(
                 value.get_type()
             )
         })?;
+        if crate::package_specification::is_instance(value) {
+            bail!(
+                "returning PackageSpecificationInfo from a custom rule is unsupported; obtain it from an actual package_group target"
+            );
+        }
         if providers.insert(identity.clone(), value).is_some() {
             bail!("implementation returned provider {identity} more than once");
         }
@@ -306,6 +374,11 @@ pub fn provider_files(value: Value<'_>) -> anyhow::Result<Vec<File>> {
                 return Ok(());
             }
             self.active.insert(identity);
+            if crate::package_specification::is_instance(value) {
+                bail!(
+                    "unsupported PackageSpecificationInfo payload in a returned provider; native package-group provider forwarding is unsupported"
+                );
+            }
             if let Some(file) = File::from_value(value) {
                 self.file(file.clone());
             } else if crate::template_variable_info::is_instance(value) {
@@ -433,6 +506,7 @@ mod tests {
             .with(analysis_globals)
             .with(globals)
             .with(crate::template_variable_info::install)
+            .with(crate::package_specification::install)
             .build()
     }
 
@@ -471,6 +545,14 @@ mod tests {
 
     fn pass(source: &str) {
         extension("//defs:providers.bzl", &format!("{source}\n")).unwrap();
+    }
+
+    #[test]
+    fn package_specification_constructor_is_a_real_noncallable_key() {
+        pass(
+            "P = PackageSpecificationInfo\n(type(P) == 'Provider' and repr(P) == '<function PackageSpecificationInfo>' and dir(P) == []) or fail('native key')\n(P == PackageSpecificationInfo and {P: 1}[PackageSpecificationInfo] == 1 and P != DefaultInfo) or fail('identity')",
+        );
+        fail("PackageSpecificationInfo()", "not supported on type");
     }
 
     fn fail(source: &str, message: &str) {
@@ -550,6 +632,143 @@ mod tests {
         );
         assert!(provider_identity(first.get("x").unwrap().value()).is_none());
         assert!(instance_identity(p.value()).is_none());
+    }
+
+    #[test]
+    fn requirements_use_exported_constructor_keys_and_exact_display_names() {
+        let first = extension("//defs:providers.bzl", "NotPackageSpecificationInfo = provider()\nAlias = NotPackageSpecificationInfo\nx = Alias()\nDefault = DefaultInfo\nTemplate = platform_common.TemplateVariableInfo\nGroup = PackageSpecificationInfo").unwrap();
+        let second = extension(
+            "//elsewhere:providers.bzl",
+            "NotPackageSpecificationInfo = provider()",
+        )
+        .unwrap();
+        let key = first.get("NotPackageSpecificationInfo").unwrap();
+        let expected = ProviderRequirement {
+            id: "//defs:providers.bzl%NotPackageSpecificationInfo".into(),
+            display_name: "NotPackageSpecificationInfo".into(),
+        };
+        assert_eq!(requirement_info(key.value()).unwrap(), expected);
+        assert_eq!(
+            requirement_info(first.get("Alias").unwrap().value()).unwrap(),
+            expected
+        );
+        let other =
+            requirement_info(second.get("NotPackageSpecificationInfo").unwrap().value()).unwrap();
+        assert_ne!(other.id, expected.id);
+        assert_eq!(other.display_name, expected.display_name);
+        for (symbol, id, name) in [
+            ("Default", DEFAULT_INFO_PROVIDER_ID, "DefaultInfo"),
+            (
+                "Template",
+                crate::template_variable_info::PROVIDER_ID,
+                "TemplateVariableInfo",
+            ),
+            (
+                "Group",
+                crate::package_specification::PROVIDER_ID,
+                "PackageSpecificationInfo",
+            ),
+        ] {
+            let value = first.get(symbol).unwrap();
+            assert_eq!(
+                requirement_info(value.value()).unwrap(),
+                ProviderRequirement {
+                    id: id.into(),
+                    display_name: name.into()
+                }
+            );
+        }
+        // The synthetic requirement key must NOT broaden default return/lookup
+        // dispatch into the custom-provider path.
+        assert!(provider_identity(first.get("Default").unwrap().value()).is_none());
+        assert!(requirement_info(first.get("x").unwrap().value()).is_err());
+        drop(first);
+        assert_eq!(requirement_info(key.value()).unwrap(), expected);
+        Module::with_temp_heap(|module| {
+            let context = context("//defs:providers.bzl");
+            for source in [
+                "provider()",
+                "DefaultInfo()",
+                "platform_common.TemplateVariableInfo({})",
+                "len",
+                "'PackageSpecificationInfo'",
+                "None",
+                "struct()",
+                "42",
+            ] {
+                let ast =
+                    AstModule::parse("invalid.bzl", source.into(), &Dialect::Standard).unwrap();
+                let mut eval = Evaluator::new(&module);
+                eval.extra = Some(&context);
+                let value = eval.eval_module(ast, &test_globals()).unwrap();
+                assert!(requirement_info(value).is_err(), "{source}");
+            }
+            let huge = module.heap().alloc(ProviderConstructor {
+                extension: "x".repeat(8 * 1024 * 1024),
+                exported: OnceLock::from("Name".to_owned()),
+                fields: None,
+                _doc: None,
+            });
+            assert!(
+                requirement_info(huge)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("byte limit")
+            );
+        });
+    }
+
+    #[test]
+    fn package_specification_custom_return_and_nested_payload_are_controlled_errors() {
+        let definitions = extension("//defs:providers.bzl", "P = provider()").unwrap();
+        Module::with_temp_heap(|module| {
+            module.import_public_symbols(&definitions);
+            let package = crate::label::PackageId {
+                repository: String::new(),
+                package: "groups".into(),
+            };
+            let contents = crate::package_specification::parse_specs(
+                &["//allowed".into()],
+                &package,
+                &crate::repository::RepositorySet::new(".".into()),
+            )
+            .unwrap();
+            let node = std::sync::Arc::new(
+                crate::package_specification::GroupNode::new(std::sync::Arc::new(contents), vec![])
+                    .unwrap(),
+            );
+            let info = crate::package_specification::alloc_info(&module.heap(), node);
+            assert!(requirement_info(info).is_err());
+            module.set("info", info);
+            for source in ["info", "[info]", "(info,)", "[DefaultInfo(), info]"] {
+                let ast =
+                    AstModule::parse("return.star", source.into(), &Dialect::Standard).unwrap();
+                let result = Evaluator::new(&module)
+                    .eval_module(ast, &test_globals())
+                    .unwrap();
+                let error = returned_custom_providers(result).unwrap_err().to_string();
+                assert!(
+                    error.contains("PackageSpecificationInfo") && error.contains("unsupported"),
+                    "{error}"
+                );
+            }
+            for source in [
+                "P(value=info)",
+                "P(value=[{'k': struct(nested=(info,))}])",
+                "P(value={info: 'key'})",
+            ] {
+                let ast =
+                    AstModule::parse("return.star", source.into(), &Dialect::Standard).unwrap();
+                let result = Evaluator::new(&module)
+                    .eval_module(ast, &test_globals())
+                    .unwrap();
+                let error = provider_files(result).unwrap_err().to_string();
+                assert!(
+                    error.contains("unsupported PackageSpecificationInfo payload"),
+                    "{error}"
+                );
+            }
+        });
     }
 
     #[test]

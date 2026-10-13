@@ -1,5 +1,5 @@
 //! Repository-aware visibility and bounded symbolic-macro visibility grants.
-//! Package groups are deliberately not approximated.
+//! Package-group labels are retained for fallible analysis-time resolution.
 use crate::label::{Label, PackageId};
 use crate::repository::RepositorySet;
 
@@ -8,13 +8,7 @@ pub enum Visibility {
     Public,
     #[default]
     Private,
-    Packages(Vec<PackageScope>),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PackageScope {
-    package: PackageId,
-    recursive: bool,
+    Labels(Vec<Label>),
 }
 
 impl Visibility {
@@ -60,40 +54,25 @@ impl Visibility {
                 });
             }
         }
-        let mut scopes = Vec::new();
-        for label in labels {
-            let recursive = match label.name.as_str() {
-                "__pkg__" => false,
-                "__subpackages__" => true,
-                _ => {
-                    return Err(format!(
-                        "package_group visibility is not implemented: {label}"
-                    ));
-                }
-            };
-            scopes.push(PackageScope {
-                package: label.package_id(),
-                recursive,
-            });
-        }
-        Ok(Self::Packages(scopes))
+        Ok(Self::Labels(labels))
     }
 
     /// Add an exact authority grant without changing the declared scope sequence.
     pub(crate) fn with_package(&self, package: &PackageId) -> Self {
-        let exact = PackageScope {
-            package: package.clone(),
-            recursive: false,
+        let exact = Label {
+            repository: package.repository.clone(),
+            package: package.package.clone(),
+            name: "__pkg__".into(),
         };
         match self {
             Self::Public => Self::Public,
-            Self::Private => Self::Packages(vec![exact]),
-            Self::Packages(scopes) => {
+            Self::Private => Self::Labels(vec![exact]),
+            Self::Labels(scopes) => {
                 let mut scopes = scopes.clone();
                 if !scopes.contains(&exact) {
                     scopes.push(exact);
                 }
-                Self::Packages(scopes)
+                Self::Labels(scopes)
             }
         }
     }
@@ -111,20 +90,18 @@ impl Visibility {
                 }
                 .into(),
             }],
-            Self::Packages(scopes) => scopes
-                .iter()
-                .map(|scope| Label {
-                    repository: scope.package.repository.clone(),
-                    package: scope.package.package.clone(),
-                    name: if scope.recursive {
-                        "__subpackages__"
-                    } else {
-                        "__pkg__"
-                    }
-                    .into(),
-                })
-                .collect(),
+            Self::Labels(labels) => labels.clone(),
         }
+    }
+
+    pub(crate) fn group_labels(&self) -> impl Iterator<Item = &Label> {
+        let labels = match self {
+            Self::Labels(labels) => labels.as_slice(),
+            Self::Public | Self::Private => &[],
+        };
+        labels
+            .iter()
+            .filter(|label| !matches!(label.name.as_str(), "__pkg__" | "__subpackages__"))
     }
 
     pub fn allows(&self, declaring_package: &str, requesting_package: &str) -> bool {
@@ -147,14 +124,15 @@ impl Visibility {
         match self {
             Self::Public => true,
             Self::Private => false,
-            Self::Packages(scopes) => scopes.iter().any(|s| {
-                requesting_package.repository == s.package.repository
-                    && (requesting_package.package == s.package.package
-                        || (s.recursive
-                            && (s.package.package.is_empty()
+            Self::Labels(scopes) => scopes.iter().any(|s| {
+                matches!(s.name.as_str(), "__pkg__" | "__subpackages__")
+                    && requesting_package.repository == s.repository
+                    && (requesting_package.package == s.package
+                        || (s.name == "__subpackages__"
+                            && (s.package.is_empty()
                                 || requesting_package
                                     .package
-                                    .starts_with(&format!("{}/", s.package.package)))))
+                                    .starts_with(&format!("{}/", s.package)))))
             }),
         }
     }
@@ -174,12 +152,8 @@ pub(crate) fn macro_visibility_labels(
             && matches!(label.name.as_str(), "public" | "private")
         {
             public |= label.name == "public";
-        } else if matches!(label.name.as_str(), "__pkg__" | "__subpackages__") {
-            normalized.push(label);
         } else {
-            return Err(format!(
-                "package_group visibility is not implemented: {label}"
-            ));
+            normalized.push(label);
         }
     }
     // Every input is validated before public can collapse the list.
@@ -226,19 +200,18 @@ mod tests {
             .unwrap(),
             labels(&["//visibility:public"])
         );
-        for bad in [
+        for group in [
             "//x:group",
             "@@dep//visibility:public",
             "//visibility:publik",
         ] {
             for input in [
-                vec!["//visibility:public", bad],
-                vec![bad, "//visibility:public"],
+                vec!["//visibility:public", group],
+                vec![group, "//visibility:public"],
             ] {
-                assert!(
-                    macro_visibility_labels(labels(&input), &caller)
-                        .unwrap_err()
-                        .contains("package_group")
+                assert_eq!(
+                    macro_visibility_labels(labels(&input), &caller).unwrap(),
+                    labels(&["//visibility:public"])
                 );
             }
         }
@@ -298,7 +271,13 @@ mod tests {
 
     #[test]
     fn declared_labels_and_authority_grants_preserve_scope_sequence() {
-        let input = labels(&["@@dep//z:__pkg__", "//:__subpackages__", "@@dep//z:__pkg__"]);
+        let input = labels(&[
+            "@@dep//z:__pkg__",
+            "//:__subpackages__",
+            "@@dep//z:__pkg__",
+            "//groups:g",
+            "//groups:g",
+        ]);
         let visibility = Visibility::from_labels(input.clone()).unwrap();
         assert_eq!(visibility.declared_labels(), input);
         let package = labels(&["//app:x"])[0].package_id();
@@ -349,9 +328,19 @@ mod tests {
         assert!(!parse(&[":__pkg__"]).allows("owner", "owner/child"));
     }
     #[test]
-    fn groups_and_mixed_public_are_rejected() {
+    fn groups_are_retained_but_mixed_public_and_unknown_repositories_are_rejected() {
+        let group = parse(&["//other:group", "//other:group", "//x:__pkg__"]);
+        assert_eq!(
+            group.declared_labels(),
+            labels(&["//other:group", "//other:group", "//x:__pkg__"])
+        );
+        assert_eq!(
+            group.group_labels().cloned().collect::<Vec<_>>(),
+            labels(&["//other:group", "//other:group"])
+        );
+        assert!(!group.allows("owner", "other"));
+        assert!(group.allows("owner", "x"));
         for values in [
-            vec!["//other:group"],
             vec!["//visibility:public", "//x:__pkg__"],
             vec!["@repo//p:__pkg__"],
         ] {
@@ -408,11 +397,12 @@ mod tests {
         );
         {
             let input = "@@dep+//visibility:public";
-            assert!(
-                Visibility::parse_in(&[input.into()], &owner, &repositories)
-                    .unwrap_err()
-                    .contains("package_group")
+            let visibility = Visibility::parse_in(&[input.into()], &owner, &repositories).unwrap();
+            assert_eq!(
+                visibility.group_labels().cloned().collect::<Vec<_>>(),
+                labels(&[input])
             );
+            assert!(!visibility.allows_in(&owner, &main_package()));
         }
         assert!(
             Visibility::parse_in(
@@ -422,5 +412,9 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    fn main_package() -> PackageId {
+        labels(&["//elsewhere:x"])[0].package_id()
     }
 }

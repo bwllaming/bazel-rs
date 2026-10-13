@@ -66,7 +66,20 @@ impl HostBudget {
 
     pub(crate) fn spec(&mut self, spec: &AttrSpec) -> Result<(), String> {
         self.node()?;
-        self.attr_value(&spec.default)
+        self.attr_value(&spec.default)?;
+        // Preserve the existing cost and serialization profile of empty metadata.
+        if !spec.required_providers.is_empty() {
+            self.node()?;
+            for clause in &spec.required_providers {
+                self.node()?;
+                for provider in clause {
+                    self.node()?;
+                    self.string(&provider.id)?;
+                    self.string(&provider.display_name)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn attr_value(&mut self, value: &AttrValue) -> Result<(), String> {
@@ -153,6 +166,61 @@ mod tests {
     use crate::custom_rule::AttrKind;
 
     #[test]
+    fn provider_metadata_is_charged_with_defaults_and_repeated_schemas() {
+        let mut spec = AttrSpec {
+            kind: AttrKind::Label,
+            default: AttrValue::Label(None),
+            mandatory: false,
+            allow_files: false,
+            allow_single_file: false,
+            non_empty: false,
+            required_providers: Vec::new(),
+        };
+        let mut empty = HostBudget::default();
+        empty.spec(&spec).unwrap();
+        assert_eq!((empty.nodes, empty.bytes), (2, 2 * NODE_BYTES));
+        spec.required_providers = vec![vec![crate::providers::ProviderRequirement {
+            id: "//defs:rules.bzl%P".into(),
+            display_name: "P".into(),
+        }]];
+        let mut budget = HostBudget::default();
+        budget.spec(&spec).unwrap();
+        assert_eq!(budget.nodes, 7);
+        assert_eq!(
+            budget.bytes,
+            7 * NODE_BYTES + COPY_WEIGHT * ("//defs:rules.bzl%P".len() + 1)
+        );
+        spec.required_providers[0][0].id = "x".repeat(1024 * 1024);
+        let schema = BTreeMap::from([("dep".to_owned(), spec.clone())]);
+        let mut budget = HostBudget::default();
+        for _ in 0..7 {
+            budget.schema(&schema).unwrap();
+        }
+        assert!(
+            budget
+                .schema(&schema)
+                .unwrap_err()
+                .contains("weighted byte limit")
+        );
+        spec.default = AttrValue::Label(Some("x".repeat(7 * 1024 * 1024)));
+        assert!(
+            HostBudget::default()
+                .spec(&spec)
+                .unwrap_err()
+                .contains("weighted byte limit")
+        );
+        spec.default = AttrValue::Label(None);
+        spec.required_providers[0][0].id.clear();
+        spec.required_providers[0][0].display_name = "x".repeat(9 * 1024 * 1024);
+        assert!(
+            HostBudget::default()
+                .spec(&spec)
+                .unwrap_err()
+                .contains("weighted byte limit")
+        );
+    }
+
+    #[test]
     fn string_list_dict_charges_root_keys_sequences_and_elements() {
         let value = AttrValue::StringListDict(vec![
             ("z".into(), vec!["first".into(), "second".into()]),
@@ -204,6 +272,7 @@ mod tests {
                 allow_files: false,
                 allow_single_file: false,
                 non_empty: false,
+                required_providers: Vec::new(),
             },
         )]);
         let mut budget = HostBudget::default();

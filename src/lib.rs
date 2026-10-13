@@ -25,6 +25,7 @@ pub mod module_cli;
 pub mod module_extension;
 pub mod module_graph;
 pub mod package;
+pub mod package_specification;
 pub mod patch_inputs;
 pub mod patching;
 pub mod providers;

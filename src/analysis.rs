@@ -40,6 +40,10 @@ pub struct DependencyTarget {
     pub label: String,
     pub files: Vec<File>,
     pub is_source: bool,
+    /// Actual ordinary rule target, not a source/output file or package group.
+    pub is_rule: bool,
+    /// Actual package-group kind; never inferred from provider presence.
+    pub is_package_group: bool,
     pub providers: BTreeMap<String, OwnedFrozenValue>,
     pub provider_files: Vec<File>,
 }
@@ -425,6 +429,42 @@ fn dependency<'a>(
             target.files.len()
         );
     }
+    if target.is_package_group {
+        // Upstream's placement exception deliberately uses printable-name
+        // substrings, not provider identity or AND/OR satisfaction. Groups are
+        // non-rules, so an additional missing provider does not reject them.
+        ensure!(
+            matches!(name, "visibility" | "_allowlist_function_transition")
+                || spec.required_providers.iter().flatten().any(|provider| {
+                    provider
+                        .display_name
+                        .contains("PackageSpecificationProvider")
+                        || provider.display_name.contains("PackageSpecificationInfo")
+                }),
+            "attribute {name}: package group '{label}' is misplaced here (they are only allowed in the visibility attribute)"
+        );
+    } else if target.is_rule {
+        ensure!(
+            spec.required_providers.is_empty()
+                || spec.required_providers.iter().any(|clause| {
+                    clause.iter().all(|provider| {
+                        provider.id == crate::providers::DEFAULT_INFO_PROVIDER_ID
+                            || target.providers.contains_key(&provider.id)
+                    })
+                }),
+            "attribute {name}: '{label}' does not have mandatory providers: {}",
+            spec.required_providers
+                .iter()
+                .map(|clause| clause
+                    .iter()
+                    .map(|provider| format!("'{}'", provider.display_name))
+                    .collect::<Vec<_>>()
+                    .join(", "))
+                .map(|clause| format!("[{clause}]"))
+                .collect::<Vec<_>>()
+                .join(" or ")
+        );
+    }
     Ok(target)
 }
 
@@ -704,6 +744,239 @@ mod tests {
     use super::*;
     use starlark::environment::Globals;
     use starlark::syntax::{AstModule, Dialect};
+
+    fn provider_fixture() -> (
+        BTreeMap<String, DependencyTarget>,
+        BTreeMap<String, AttrSpec>,
+    ) {
+        let frozen = Module::with_temp_heap(|module| {
+            let context = crate::loading::ExtensionContext {
+                label: Label::parse("//defs:providers.bzl", "").unwrap(),
+                repositories: Arc::new(RepositorySet::new(std::path::PathBuf::from("."))),
+            };
+            let globals = starlark::environment::GlobalsBuilder::standard()
+                .with(crate::custom_rule::rule_globals)
+                .with(crate::providers::globals)
+                .with(crate::template_variable_info::install)
+                .build();
+            let ast = AstModule::parse(
+                "//defs:providers.bzl",
+                r#"
+P = provider()
+Q = provider()
+NotPackageSpecificationInfo = provider()
+NotPackageSpecificationProvider = provider()
+T = platform_common.TemplateVariableInfo
+p = P()
+t = T({"key": "value"})
+unrestricted = attr.label()
+default = attr.label(providers=[DefaultInfo])
+both = attr.label(providers=[P, T])
+alternative = attr.label_list(providers=[[P, Q], [T]])
+missing = attr.label(providers=[Q])
+group = attr.label(providers=[[NotPackageSpecificationInfo, Q]])
+old_group_name = attr.label(providers=[NotPackageSpecificationProvider])
+erased = attr.label(providers=[[], [NotPackageSpecificationInfo]])
+"#
+                .into(),
+                &Dialect::Standard,
+            )
+            .unwrap();
+            {
+                let mut eval = Evaluator::new(&module);
+                eval.extra = Some(&context);
+                eval.eval_module(ast, &globals).unwrap();
+            }
+            module.freeze().unwrap()
+        });
+        let providers = ["p", "t"]
+            .into_iter()
+            .map(|name| {
+                let value = frozen.get(name).unwrap();
+                (
+                    crate::providers::instance_identity(value.value()).unwrap(),
+                    value,
+                )
+            })
+            .collect();
+        let specs = [
+            "unrestricted",
+            "default",
+            "both",
+            "alternative",
+            "missing",
+            "group",
+            "old_group_name",
+            "erased",
+        ]
+        .into_iter()
+        .map(|name| {
+            let value = frozen.get(name).unwrap();
+            (
+                name.to_owned(),
+                crate::custom_rule::attribute_spec(value.value()).unwrap(),
+            )
+        })
+        .collect();
+        let target = DependencyTarget {
+            label: "//pkg:dep".into(),
+            files: Vec::new(),
+            is_source: false,
+            is_rule: true,
+            is_package_group: false,
+            providers,
+            provider_files: Vec::new(),
+        };
+        (BTreeMap::from([(target.label.clone(), target)]), specs)
+    }
+
+    #[test]
+    fn ordinary_provider_constraints_use_actual_instances_and_synthesized_default() {
+        let (mut deps, specs) = provider_fixture();
+        for spec in ["unrestricted", "default", "both", "alternative"] {
+            dependency("//pkg:dep", "dep", &specs[spec], &deps).unwrap();
+        }
+        let error = dependency("//pkg:dep", "dep", &specs["missing"], &deps)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("attribute dep")
+                && error.contains("mandatory providers")
+                && error.contains("Q"),
+            "{error}"
+        );
+        deps.get_mut("//pkg:dep").unwrap().providers.clear();
+        dependency("//pkg:dep", "another_attr", &specs["default"], &deps).unwrap();
+        for spec in ["both", "alternative", "group"] {
+            assert!(dependency("//pkg:dep", "another_attr", &specs[spec], &deps).is_err());
+        }
+        // An empty files collection does not turn an ordinary rule into a file.
+        assert!(deps["//pkg:dep"].files.is_empty());
+    }
+
+    #[test]
+    fn package_groups_have_separate_name_placement_gate_not_provider_satisfaction() {
+        let (mut deps, specs) = provider_fixture();
+        let group = deps.get_mut("//pkg:dep").unwrap();
+        group.is_rule = false;
+        group.is_package_group = true;
+        group.providers.clear();
+        for spec in ["group", "old_group_name"] {
+            dependency("//pkg:dep", "g", &specs[spec], &deps).unwrap();
+        }
+        for spec in ["unrestricted", "default", "erased", "both"] {
+            let error = dependency("//pkg:dep", "g", &specs[spec], &deps)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("package group") && error.contains("misplaced"),
+                "{error}"
+            );
+            for name in ["visibility", "_allowlist_function_transition"] {
+                dependency("//pkg:dep", name, &specs[spec], &deps).unwrap();
+            }
+        }
+        let mut single = specs["group"].clone();
+        single.allow_single_file = true;
+        assert!(
+            dependency("//pkg:dep", "g", &single, &deps)
+                .unwrap_err()
+                .to_string()
+                .contains("exactly one file")
+        );
+    }
+
+    #[test]
+    fn file_targets_skip_provider_matching_but_keep_file_checks_first() {
+        let (mut deps, specs) = provider_fixture();
+        let target = deps.get_mut("//pkg:dep").unwrap();
+        target.is_rule = false;
+        target.is_source = true;
+        target.providers.clear();
+        let mut spec = specs["missing"].clone();
+        assert!(
+            dependency("//pkg:dep", "src", &spec, &deps)
+                .unwrap_err()
+                .to_string()
+                .contains("allow_files=False")
+        );
+        spec.allow_files = true;
+        dependency("//pkg:dep", "src", &spec, &deps).unwrap();
+        spec.allow_single_file = true;
+        assert!(
+            dependency("//pkg:dep", "src", &spec, &deps)
+                .unwrap_err()
+                .to_string()
+                .contains("exactly one file")
+        );
+        deps.get_mut("//pkg:dep").unwrap().files.push(File {
+            path: "pkg/dep".into(),
+            short_path: "pkg/dep".into(),
+            owner: "//pkg:dep".into(),
+            is_source: true,
+        });
+        dependency("//pkg:dep", "src", &spec, &deps).unwrap();
+        // Output-file targets also have no rule class. Preserve the existing
+        // is_source-only permission behavior independently of provider checks.
+        deps.get_mut("//pkg:dep").unwrap().is_source = false;
+        dependency("//pkg:dep", "out", &specs["missing"], &deps).unwrap();
+    }
+
+    #[test]
+    fn provider_checks_precede_callback_and_check_each_attribute_and_list_item() {
+        let root = tempfile::Builder::new()
+            .prefix("provider-analysis-")
+            .tempdir_in("/tmp/opencode")
+            .unwrap();
+        std::fs::write(
+            root.path().join("defs.bzl"),
+            r#"
+P = provider()
+def impl(ctx):
+    fail("consumer callback entered")
+r = rule(implementation=impl, attrs={
+    "a": attr.label(providers=[DefaultInfo]),
+    "b": attr.label(providers=[P]),
+    "many": attr.label_list(providers=[platform_common.TemplateVariableInfo]),
+})
+"#,
+        )
+        .unwrap();
+        let (mut deps, _) = provider_fixture();
+        let mut second = deps["//pkg:dep"].clone();
+        second.label = "//pkg:second".into();
+        second.providers.clear();
+        deps.insert(second.label.clone(), second);
+        for (call, expected) in [
+            (
+                "r(name='consumer', a='//pkg:dep', b='//pkg:dep')",
+                "attribute b",
+            ),
+            (
+                "r(name='consumer', many=['//pkg:dep', '//pkg:second'])",
+                "attribute many",
+            ),
+            ("r(name='consumer', b=None)", "consumer callback entered"),
+        ] {
+            std::fs::write(
+                root.path().join("BUILD.bazel"),
+                format!("load(':defs.bzl', 'r')\n{call}\n"),
+            )
+            .unwrap();
+            let package = crate::package::evaluate(root.path(), "").unwrap();
+            let rule = &package[&Label::parse("//:consumer", "").unwrap()];
+            // Use the producer's real instance under its own exported identity;
+            // this definition's distinct P intentionally cannot satisfy it.
+            let error = analyze(rule, &deps).unwrap_err();
+            assert!(error.contains(expected), "{call}: {error}");
+            if expected == "attribute many" {
+                assert!(error.contains("//pkg:second"), "{error}");
+            }
+            if expected != "consumer callback entered" {
+                assert!(!error.contains("consumer callback entered"), "{error}");
+            }
+        }
+    }
 
     fn empty_context() -> Context {
         Context {

@@ -805,6 +805,10 @@ pub(crate) fn is_default_info(value: Value<'_>) -> bool {
     DefaultInfoValue::from_value(value).is_some()
 }
 
+pub(crate) fn is_default_info_constructor(value: Value<'_>) -> bool {
+    DefaultInfoConstructor::from_value(value).is_some()
+}
+
 impl fmt::Display for Target {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "<Target {}>", self.label)

@@ -21,14 +21,18 @@ use starlark::values::tuple::TupleRef;
 use crate::build_settings::BuildSetting;
 use crate::custom_rule::{AttrSpec, AttrValue, CustomInvocation};
 use crate::label::{Label, PackageId};
+use crate::package_specification::{self, GroupDefinition};
 use crate::repository::RepositorySet;
+use crate::repository_budget::HostBudget;
 use crate::visibility::Visibility;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum RuleKind {
     Filegroup,
     Genrule,
     Custom,
+    #[allow(private_interfaces)]
+    PackageGroup(Arc<GroupDefinition>),
 }
 
 #[derive(Clone, Debug)]
@@ -85,6 +89,7 @@ mod collector {
         pub macro_names: RefCell<BTreeSet<String>>,
         // An index of actual rule/output/export declarations, not inferred inputs.
         pub declared_names: RefCell<BTreeSet<String>>,
+        pub group_budget: RefCell<HostBudget>,
     }
 }
 use collector::Declarations;
@@ -194,14 +199,14 @@ impl Declarations {
         let label = local_label(name, &self.package_id(), "rule name")?;
         self.check_macro_collision(name)?;
         for src in &srcs {
-            (if kind == RuleKind::Custom {
+            (if matches!(kind, RuleKind::Custom) {
                 Label::parse_canonical(src).map(|_| ())
             } else {
                 Label::validate_syntax(src, &self.package)
             })
             .map_err(|e| anyhow!("invalid srcs entry {src:?} in {label}: {e}"))?;
         }
-        if kind == RuleKind::Genrule && outs.is_empty() {
+        if matches!(kind, RuleKind::Genrule) && outs.is_empty() {
             bail!("genrule {label}: outs must not be empty");
         }
         for out in &outs {
@@ -432,6 +437,120 @@ fn declarations<'a>(eval: &'a Evaluator<'_, '_, '_>) -> anyhow::Result<&'a Decla
 
 #[starlark_module]
 fn rule_globals(builder: &mut GlobalsBuilder) {
+    fn package_group<'v>(
+        #[starlark(require = named)] name: &str,
+        #[starlark(require = named)] packages: Option<Value<'v>>,
+        #[starlark(require = named)] includes: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let context = declarations(eval)?;
+        let specs = packages
+            .map(|value| {
+                crate::custom_rule::sequence_ref(value).ok_or_else(|| {
+                    anyhow!("package_group packages must be a list or tuple of strings")
+                })
+            })
+            .transpose()?
+            .unwrap_or(&[]);
+        let edges = includes
+            .map(|value| {
+                crate::custom_rule::sequence_ref(value).ok_or_else(|| {
+                    anyhow!("package_group includes must be a list or tuple of strings or Labels")
+                })
+            })
+            .transpose()?
+            .unwrap_or(&[]);
+        // Charge all borrowed data cumulatively, including mapped-label expansion,
+        // before copying either sequence or any string into host-owned storage.
+        let mut budget = context.group_budget.borrow_mut();
+        for part in [name, &context.repository, &context.package] {
+            budget.string(part).map_err(anyhow::Error::msg)?;
+        }
+        for value in specs {
+            let text = value
+                .unpack_str()
+                .ok_or_else(|| anyhow!("package_group packages entries must be strings"))?;
+            budget.string(text).map_err(anyhow::Error::msg)?;
+            let text = text.strip_prefix('-').unwrap_or(text);
+            if text.starts_with('/') || text.starts_with('@') {
+                budget
+                    .bytes(
+                        context
+                            .repositories
+                            .resolution_size_bound(text, &context.repository, &context.package)
+                            .map_err(anyhow::Error::msg)?
+                            .saturating_add(2),
+                    )
+                    .map_err(anyhow::Error::msg)?;
+            }
+        }
+        for value in edges {
+            budget.node().map_err(anyhow::Error::msg)?;
+            if let Some((repository, package, name)) = crate::starlark_types::label_parts(*value) {
+                for part in [repository, package, name] {
+                    budget.string(part).map_err(anyhow::Error::msg)?;
+                }
+            } else if let Some(text) = value.unpack_str() {
+                budget.string(text).map_err(anyhow::Error::msg)?;
+                budget
+                    .bytes(
+                        context
+                            .repositories
+                            .resolution_size_bound(text, &context.repository, &context.package)
+                            .map_err(anyhow::Error::msg)?,
+                    )
+                    .map_err(anyhow::Error::msg)?;
+            } else {
+                bail!("package_group includes entries must be strings or Labels");
+            }
+        }
+        drop(budget);
+        let specs = specs
+            .iter()
+            .map(|value| value.unpack_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        let own_specs = package_specification::parse_specs(
+            &specs,
+            &context.package_id(),
+            &context.repositories,
+        )
+        .map_err(anyhow::Error::msg)?;
+        let includes = edges
+            .iter()
+            .map(|value| {
+                if let Some((repository, package, name)) =
+                    crate::starlark_types::label_parts(*value)
+                {
+                    Ok(Label {
+                        repository: repository.to_owned(),
+                        package: package.to_owned(),
+                        name: name.to_owned(),
+                    })
+                } else {
+                    context
+                        .repositories
+                        .parse(
+                            value.unpack_str().unwrap(),
+                            &context.repository,
+                            &context.package,
+                        )
+                        .map_err(anyhow::Error::msg)
+                }
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        context.declare(
+            name,
+            RuleKind::PackageGroup(Arc::new(GroupDefinition {
+                own_specs,
+                includes,
+            })),
+            Vec::new(),
+            Vec::new(),
+            None,
+            Some(Visibility::Public),
+        )
+    }
+
     fn filegroup<'v>(
         #[starlark(require = named)] name: &str,
         #[starlark(require = named)] srcs: Option<Value<'v>>,
@@ -613,6 +732,7 @@ fn bzl_globals_for(phase: BzlPhase) -> Globals {
     crate::custom_rule::rule_globals(&mut bzl);
     crate::build_settings::install(&mut bzl);
     crate::template_variable_info::install(&mut bzl);
+    package_specification::install(&mut bzl);
     crate::providers::globals(&mut bzl);
     crate::repository_rule::globals(&mut bzl);
     crate::module_extension::globals(&mut bzl);
@@ -711,6 +831,7 @@ fn evaluate_at(
         active_macro: RefCell::new(None),
         macro_names: RefCell::new(BTreeSet::new()),
         declared_names: RefCell::new(BTreeSet::new()),
+        group_budget: RefCell::new(HostBudget::default()),
     };
     let frozen = Module::with_temp_heap(|module| {
         let mut evaluator = Evaluator::new(&module);
@@ -850,10 +971,10 @@ genrule(name = "constant", outs = ["constant.txt"], cmd = "echo hi > $@")
         .unwrap();
         assert_eq!(rules.len(), 4);
         let empty = &rules[&Label::parse(":empty", "pkg").unwrap()];
-        assert_eq!(empty.kind, RuleKind::Filegroup);
+        assert!(matches!(empty.kind, RuleKind::Filegroup));
         assert!(empty.srcs.is_empty() && empty.outs.is_empty() && empty.cmd.is_none());
         let generated = &rules[&Label::parse(":make", "pkg").unwrap()];
-        assert_eq!(generated.kind, RuleKind::Genrule);
+        assert!(matches!(generated.kind, RuleKind::Genrule));
         assert_eq!(generated.srcs, [":inputs"]);
         assert_eq!(generated.outs, ["dir/out"]);
         assert_eq!(generated.cmd.as_deref(), Some("cat $(SRCS) > $@"));
@@ -1004,7 +1125,6 @@ unused = [genrule(name = "make_" + n, outs = [n + ".out"], cmd = "echo " + n + "
             }
         }
         for value in [
-            "['//some:group']",
             "['//visibility:public', '//visibility:private']",
             "['//visibility:public', '//visibility:public']",
             "'//visibility:public'",
@@ -1039,6 +1159,157 @@ unused = [genrule(name = "make_" + n, outs = [n + ".out"], cmd = "echo " + n + "
     fn records_owned_attribute_snapshots() {
         let rules = eval("s = ['a']\nfilegroup(name='x', srcs=s)\ns.append('b')").unwrap();
         assert_eq!(rules[&Label::parse(":x", "pkg").unwrap()].srcs, ["a"]);
+    }
+
+    #[test]
+    fn package_group_declarations_snapshot_typed_data_and_intrinsic_public() {
+        let rules = eval("p = ['//allowed']\ni = [':child']\npackage_group(name='g', packages=p, includes=i)\np.append('//late')\ni.append(':late')\npackage_group(name='empty')\npackage(default_visibility=['//visibility:private'])").unwrap();
+        let g = &rules[&Label::parse(":g", "pkg").unwrap()];
+        let RuleKind::PackageGroup(definition) = &g.kind else {
+            panic!("not group")
+        };
+        assert_eq!(
+            definition.includes,
+            [Label::parse(":child", "pkg").unwrap()]
+        );
+        assert!(
+            definition
+                .own_specs
+                .contains(&Label::parse("//allowed:x", "").unwrap().package_id())
+        );
+        assert!(
+            !definition
+                .own_specs
+                .contains(&Label::parse("//late:x", "").unwrap().package_id())
+        );
+        for rule in rules.values() {
+            assert_eq!(rule.visibility, Visibility::Public);
+            assert!(
+                rule.srcs.is_empty()
+                    && rule.outs.is_empty()
+                    && rule.cmd.is_none()
+                    && rule.custom.is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn package_group_strict_signature_collisions_and_cumulative_budget() {
+        for call in [
+            "package_group()",
+            "package_group('g')",
+            "package_group(name=1)",
+            "package_group(name='g', packages=None)",
+            "package_group(name='g', packages='//p')",
+            "package_group(name='g', packages=[1])",
+            "package_group(name='g', includes=None)",
+            "package_group(name='g', includes=':g')",
+            "package_group(name='g', includes=[1])",
+            "package_group(name='g', visibility=[])",
+            "package_group(name='g', licenses=[])",
+            "package_group(name='g', tags=[])",
+        ] {
+            assert!(eval(call).is_err(), "accepted {call}");
+        }
+        for declaration in [
+            "filegroup(name='g')",
+            "package_group(name='g')",
+            "genrule(name='r', outs=['g'], cmd='true')",
+            "exports_files(['g'])",
+        ] {
+            for source in [
+                format!("{declaration}\npackage_group(name='g')"),
+                format!("package_group(name='g')\n{declaration}"),
+            ] {
+                let error = eval(&source).unwrap_err();
+                assert!(
+                    error.contains("collides") || error.contains("duplicate"),
+                    "{source}: {error}"
+                );
+            }
+        }
+        for source in [
+            "package_group(name='g', packages=['private']*100001)",
+            "package_group(name='g', includes=[':g']*100001)",
+            "package_group(name='a', packages=['private']*60000)\npackage_group(name='b', packages=['private']*60000)",
+        ] {
+            let error = eval(source).unwrap_err();
+            assert!(
+                error.contains("host preparation") && error.contains("limit"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn package_group_bzl_globals_phase_gate_and_lexical_label_distinction() {
+        for globals in [bzl_globals(), module_bzl_globals()] {
+            Module::with_temp_heap(|module| {
+                let mut eval = Evaluator::new(&module);
+                eval.eval_module(AstModule::parse("defs.bzl", "type(PackageSpecificationInfo) == 'Provider' or fail('key')\nKey = PackageSpecificationInfo".into(), &Dialect::Standard).unwrap(), &globals).unwrap();
+                let error = eval
+                    .eval_module(
+                        AstModule::parse(
+                            "defs.bzl",
+                            "native.package_group(name='g')".into(),
+                            &Dialect::Standard,
+                        )
+                        .unwrap(),
+                        &globals,
+                    )
+                    .unwrap_err()
+                    .to_string();
+                assert!(error.contains("outside package evaluation"), "{error}");
+            });
+        }
+        rejected("x = PackageSpecificationInfo", "PackageSpecificationInfo");
+        let root = TempRoot::new();
+        std::fs::create_dir_all(root.0.join("defs")).unwrap();
+        std::fs::write(root.0.join("defs/BUILD"), "").unwrap();
+        std::fs::write(root.0.join("defs/groups.bzl"), "def declare():\n    native.package_group(name='g', packages=('//allowed',), includes=(':child', Label(':child')))\n").unwrap();
+        std::fs::write(
+            root.0.join("pkg/BUILD"),
+            "load('//defs:groups.bzl','declare')\ndeclare()",
+        )
+        .unwrap();
+        let package = evaluate(&root.0, "pkg").unwrap();
+        let RuleKind::PackageGroup(definition) = &package[&Label::parse(":g", "pkg").unwrap()].kind
+        else {
+            panic!("not group")
+        };
+        assert_eq!(
+            definition.includes,
+            [
+                Label::parse("//pkg:child", "").unwrap(),
+                Label::parse("//defs:child", "").unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn package_group_macro_public_and_visibility_group_snapshots() {
+        let package = custom_fixture("def impl(name, visibility):\n    native.package_group(name=name, packages=['private'])\n    native.filegroup(name=name+'_rule', visibility=visibility)\nm = macro(implementation=impl)", "load(':defs.bzl','m')\nm(name='demo', visibility=['//groups:g', '//groups:g'])\nm(name='public', visibility=['//missing:g', '//visibility:public'])\npackage(default_visibility=['//groups:late'])").unwrap();
+        for name in ["demo", "public"] {
+            let group = &package[&Label::parse(&format!(":{name}"), "pkg").unwrap()];
+            assert!(matches!(group.kind, RuleKind::PackageGroup(_)));
+            assert_eq!(group.visibility, Visibility::Public);
+            assert_eq!(group.macro_owner.as_ref().unwrap().name, name);
+        }
+        let declared = package[&Label::parse(":demo_rule", "pkg").unwrap()]
+            .visibility
+            .declared_labels();
+        assert_eq!(
+            declared,
+            [
+                Label::parse("//groups:g", "").unwrap(),
+                Label::parse("//groups:g", "").unwrap(),
+                Label::parse("//pkg:__pkg__", "").unwrap()
+            ]
+        );
+        assert_eq!(
+            package[&Label::parse(":public_rule", "pkg").unwrap()].visibility,
+            Visibility::Public
+        );
     }
 
     struct TempRoot(PathBuf);
@@ -1172,11 +1443,6 @@ unused = [genrule(name = "make_" + n, outs = [n + ".out"], cmd = "echo " + n + "
                 "visibility",
             ),
             ("m(name='x', visibility=[1])", "visibility"),
-            ("m(name='x', visibility=['//other:group'])", "package_group"),
-            (
-                "m(name='x', visibility=['//visibility:public', '//other:group'])",
-                "package_group",
-            ),
         ] {
             symbolic_error(SYMBOLIC_ZERO, call, expected);
         }
@@ -1222,6 +1488,7 @@ unused = [genrule(name = "make_" + n, outs = [n + ".out"], cmd = "echo " + n + "
         );
         for declaration in [
             "filegroup(name='demo')",
+            "package_group(name='demo')",
             "genrule(name='other', outs=['demo'], cmd='true')",
             "exports_files(['demo'])",
             "custom(name='demo')",
@@ -1247,6 +1514,7 @@ unused = [genrule(name = "make_" + n, outs = [n + ".out"], cmd = "echo " + n + "
         );
         for declaration in [
             "native.filegroup(name='demo')",
+            "native.package_group(name='demo')",
             "native.genrule(name='other', outs=['demo'], cmd='true')",
             "r(name='other', out='demo')",
         ] {
@@ -1453,6 +1721,7 @@ def legacy():
                 active_macro: RefCell::new(None),
                 macro_names: RefCell::new(BTreeSet::new()),
                 declared_names: RefCell::new(BTreeSet::new()),
+                group_budget: RefCell::new(HostBudget::default()),
             };
             Module::with_temp_heap(|module| {
                 module.set(
@@ -1777,7 +2046,7 @@ deps.append("later")
         )
         .unwrap();
         let rule = &package[&Label::parse(":x", "pkg").unwrap()];
-        assert_eq!(rule.kind, RuleKind::Custom);
+        assert!(matches!(rule.kind, RuleKind::Custom));
         assert_eq!(rule.srcs, ["//other:x", "//pkg:source", "//pkg:plain.txt"]);
         assert_eq!(rule.outs, ["result", "dir/second"]);
         let custom = rule.custom.as_ref().unwrap();

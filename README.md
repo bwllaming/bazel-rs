@@ -114,8 +114,9 @@ Only regular files are supported; no trees or symlink artifacts. On action failu
 new scheduling stops and in-flight actions are joined. There is no process
 cancellation/timeout or persistent analysis server yet. Globs do not follow
 symlinks; potentially matching symlinks fail explicitly (Bazel can follow them).
-Symbolic macros, executable/test rule modes, runfiles, tree artifacts, package
-groups and license metadata remain unsupported. External loading supports the
+Full symbolic-macro schemas, executable/test rule modes, runfiles, tree artifacts,
+the full package-specification grammar and license metadata remain unsupported.
+External loading supports the
 bounded verified registry/archive, text-patch and pinned Git profiles described
 in `docs/`. Direct `use_repo_rule` callbacks now have a bounded native file/template
 executor; see [its exact limits](docs/REPOSITORY_RULES.md), including ASCII
@@ -133,6 +134,8 @@ provides the compatibility version only in MODULE-loaded native bindings.
 checks and preserves genuine `maybe()` duplicate-declaration behavior.
 [Symbolic macros](docs/SYMBOLIC_MACROS.md) have a bounded name/visibility-only
 profile with real expansion, definition ownership and source/visibility checks.
+[Package specifications](docs/PACKAGE_SPECIFICATIONS.md) connect native groups,
+provider-constrained consumers, membership and visibility checks.
 [Genuine built-in modules](docs/BUILTIN_MODULES.md) are available through the
 native-only `--experimental-builtin-modules` transition option, using complete
 verified Linux x86-64 resources; the default remains explicit modules only.
