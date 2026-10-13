@@ -26,7 +26,20 @@ Builds execute trusted shell commands locally; this is not a security sandbox.
 ";
 
 fn run() -> Result<(), String> {
-    let mut args = std::env::args().skip(1).peekable();
+    let args = std::env::args_os().skip(1).collect::<Vec<_>>();
+    // Reject override options before any startup, arity or command diagnostic
+    // could echo a secret-bearing inline or split argument.
+    for arg in &args {
+        bazel_rs::module_cli::reject_unsupported_repo_env_argument(arg)?;
+    }
+    let args = args
+        .into_iter()
+        .map(|arg| {
+            arg.into_string()
+                .map_err(|_| "command-line arguments must be valid UTF-8".to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut args = args.into_iter().peekable();
     let mut ignore_rc = false;
     let mut cache = None;
     while let Some(arg) = args.peek() {

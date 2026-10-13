@@ -174,6 +174,19 @@ checkout is unchanged; no application query/build/test success is claimed.
 
 ## Remaining compatibility gates
 
+### Repository environment dependencies
+
+- [x] Observe declared and dynamic repository environment inputs lazily, with
+      real getenv/file/consumer behavior and keyed publication identities.
+- [x] Preserve empty-profile identities and method bindings while enforcing
+      redacted diagnostics, bounded observation caches and explicit exclusions.
+- [x] Verify synthetic-variable reference/cache/privacy scenarios and regressions
+      before claiming this repository execution profile.
+
+Verified 1,149 Rust/671 Python tests, 67 comparison phases/353 commands and
+sixteen adjacent suites. The isolated application query advances to missing
+attr.string_dict; no ambient-environment or application-success equivalence is claimed.
+
 ### Native JSON codec
 
 - [x] Implement four JSON methods with exact integer/finite-float handling,

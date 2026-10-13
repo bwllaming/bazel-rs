@@ -17,13 +17,24 @@ const MAX_DEPTH: usize = 64;
 const COPY_WEIGHT: usize = 8;
 const NODE_BYTES: usize = 128;
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct HostBudget {
     bytes: usize,
     nodes: usize,
 }
 
 impl HostBudget {
+    /// Commit compound reservations only after every component succeeds.
+    pub(crate) fn transaction(
+        &mut self,
+        reserve: impl FnOnce(&mut Self) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let mut candidate = self.clone();
+        reserve(&mut candidate)?;
+        *self = candidate;
+        Ok(())
+    }
+
     fn add_bytes(&mut self, bytes: usize) -> Result<(), String> {
         self.bytes = self
             .bytes

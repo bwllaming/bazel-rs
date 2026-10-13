@@ -52,6 +52,9 @@ struct Options {
 }
 impl Options {
     fn parse(args: &[String]) -> Result<Self, String> {
+        for arg in args {
+            reject_unsupported_repo_env_argument(std::ffi::OsStr::new(arg))?;
+        }
         if args.first().map(String::as_str) != Some("graph") {
             return Err("native mod supports only 'graph --output=json'".to_owned());
         }
@@ -126,6 +129,20 @@ fn boolean(flag: &str, value: Option<&str>) -> Result<bool, String> {
 
 pub fn registry_path(uri: &str) -> Result<Registry, String> {
     Registry::parse(uri)
+}
+
+/// Reject unsupported repository overrides without including their values.
+/// Library module-command callers need the same protection as the CLI entry.
+pub fn reject_unsupported_repo_env_argument(arg: &std::ffi::OsStr) -> Result<(), String> {
+    let bytes = arg.as_encoded_bytes();
+    if bytes == b"--repo_env" || bytes.starts_with(b"--repo_env=") {
+        Err(
+            "unsupported option --repo_env; repository environment overrides are not implemented"
+                .to_owned(),
+        )
+    } else {
+        Ok(())
+    }
 }
 
 /// Native-only transition switch, independent of graph display/registry policy.

@@ -9,6 +9,7 @@ use starlark::starlark_module;
 use starlark::values::dict::DictRef;
 use starlark::values::list::{AllocList, ListRef};
 use starlark::values::none::NoneType;
+use starlark::values::tuple::TupleRef;
 use starlark::values::{OwnedFrozenValue, Value, ValueLike};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -19,6 +20,7 @@ use crate::extension_calls::RecordedValue;
 use crate::label::Label;
 use crate::loading::ExtensionContext;
 use crate::repository_budget::HostBudget;
+use crate::repository_environment::DeclaredEnvironment;
 
 #[derive(Clone, Debug)]
 pub struct RuleDefinition {
@@ -26,6 +28,7 @@ pub struct RuleDefinition {
     pub schema: BTreeMap<String, AttrSpec>,
     pub identity: String,
     pub local: bool,
+    pub environ: DeclaredEnvironment,
 }
 
 // Compile-time assertion: prepared definitions can cross worker boundaries.
@@ -64,6 +67,9 @@ mod values {
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
         pub local: bool,
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        pub environ: DeclaredEnvironment,
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
         pub definition_label: String,
@@ -149,7 +155,8 @@ pub(crate) fn charge_schema(value: Value<'_>, budget: &mut HostBudget) -> Result
     if let Some(name) = definition.exported.get() {
         budget.string(name)?;
     }
-    budget.schema(&definition.schema)
+    budget.schema(&definition.schema)?;
+    definition.environ.charge(budget)
 }
 
 /// Extract an exported frozen definition while retaining its implementation heap.
@@ -160,7 +167,9 @@ pub fn unpack(value: &OwnedFrozenValue) -> Result<RuleDefinition, String> {
         .downcast_ref::<FrozenRepoDefinition>()
         .ok_or_else(|| "expected a frozen repository_rule definition".to_owned())?;
     // The ordinary recorder also charges this cumulatively before rooting calls.
-    HostBudget::default().schema(&definition.schema)?;
+    let mut budget = HostBudget::default();
+    budget.schema(&definition.schema)?;
+    definition.environ.charge(&mut budget)?;
     let identity = definition
         .identity()
         .ok_or_else(|| "repository_rule must have an exported name".to_owned())?;
@@ -175,6 +184,7 @@ pub fn unpack(value: &OwnedFrozenValue) -> Result<RuleDefinition, String> {
         schema: definition.schema.clone(),
         identity,
         local: definition.local,
+        environ: definition.environ.clone(),
     })
 }
 
@@ -199,11 +209,20 @@ pub fn globals(builder: &mut GlobalsBuilder) {
         if configure {
             bail!("repository_rule(configure=True) is unsupported");
         }
-        let environ = ListRef::from_value(environ)
-            .ok_or_else(|| anyhow!("repository_rule environ must be a list of strings"))?;
-        if !environ.is_empty() {
-            bail!("repository_rule with nonempty environ is unsupported");
+        let mut budget = HostBudget::default();
+        let string = |value: Value<'v>| {
+            value.unpack_str().ok_or_else(|| {
+                "repository_rule environ must be a list or tuple of strings".to_owned()
+            })
+        };
+        let environ = if let Some(list) = ListRef::from_value(environ) {
+            DeclaredEnvironment::from_names(list.iter().map(string), &mut budget)
+        } else if let Some(tuple) = TupleRef::from_value(environ) {
+            DeclaredEnvironment::from_names(tuple.iter().map(string), &mut budget)
+        } else {
+            bail!("repository_rule environ must be a list or tuple of strings");
         }
+        .map_err(anyhow::Error::msg)?;
         if !doc.is_none() && doc.unpack_str().is_none() {
             bail!("repository_rule doc must be a string or None");
         }
@@ -223,7 +242,6 @@ pub fn globals(builder: &mut GlobalsBuilder) {
             .map_err(|e| {
                 anyhow!("repository_rule implementation must be callable with ctx: {e}")
             })?;
-        let mut budget = HostBudget::default();
         let mut schema = BTreeMap::new();
         if !attrs.is_none() {
             let attrs = DictRef::from_value(attrs).ok_or_else(|| {
@@ -261,6 +279,7 @@ pub fn globals(builder: &mut GlobalsBuilder) {
             implementation,
             schema,
             local,
+            environ,
             // The initializing extension owns the rule's export. Attribute
             // defaults independently use the innermost helper's lexical label.
             definition_label: context.label.to_string(),
@@ -807,6 +826,42 @@ mod tests {
     }
 
     #[test]
+    fn environ_declarations_copy_sort_deduplicate_and_freeze_without_becoming_attrs() {
+        let module = extension(
+            "def impl(ctx):\n    return None\nnames = ['Z', 'A', 'Z', '', '=', 'A=B', 'A\\x00B', '?']\nR = repository_rule(impl, environ=names)\nnames.append('LATER')\nnames[0] = 'CHANGED'\nTuple = repository_rule(impl, environ=('B', 'A', 'B'))\nEmpty = repository_rule(impl, environ=())"
+        ).unwrap();
+        let r = unpack(&module.get("R").unwrap()).unwrap();
+        assert_eq!(r.environ.names(), ["", "=", "?", "A", "A\0B", "A=B", "Z"]);
+        assert!(r.schema.is_empty());
+        assert!(!bind(&r, json!({})).unwrap().contains_key("environ"));
+        assert_eq!(
+            unpack(&module.get("Tuple").unwrap())
+                .unwrap()
+                .environ
+                .names(),
+            ["A", "B"]
+        );
+        assert!(
+            unpack(&module.get("Empty").unwrap())
+                .unwrap()
+                .environ
+                .is_empty()
+        );
+        let owned = r.clone();
+        drop(module);
+        assert_eq!(owned.environ.names(), r.environ.names());
+    }
+
+    #[test]
+    fn duplicate_environment_declarations_are_charged_before_deduplication() {
+        let error = extension("def impl(ctx):\n    return None\nR = repository_rule(impl, environ=['SYNTHETIC'] * 100001)").unwrap_err();
+        assert!(error.contains("host preparation"), "{error}");
+        for expression in ["['é']", "['x' * 4097]", "[True]", "[None]", "{'A': 1}"] {
+            assert!(extension(&format!("def impl(ctx):\n    return None\nR = repository_rule(impl, environ={expression})")).is_err());
+        }
+    }
+
+    #[test]
     fn reexport_preserves_original_identity() {
         let original =
             extension("def impl(ctx):\n    return None\nR = repository_rule(impl)").unwrap();
@@ -1019,11 +1074,17 @@ mod tests {
             ("repository_rule(impl, local='True')", "bool"),
             ("repository_rule(impl, configure=True)", "configure=True"),
             (
-                "repository_rule(impl, environ=['HOME'])",
-                "nonempty environ",
+                "repository_rule(impl, environ=None)",
+                "list or tuple of strings",
             ),
-            ("repository_rule(impl, environ=None)", "list of strings"),
-            ("repository_rule(impl, environ=())", "list of strings"),
+            (
+                "repository_rule(impl, environ=[1])",
+                "list or tuple of strings",
+            ),
+            (
+                "repository_rule(impl, environ='HOME')",
+                "list or tuple of strings",
+            ),
             ("repository_rule(impl, remotable=False)", "remotable"),
             ("repository_rule(impl, unknown=False)", "unknown"),
             ("repository_rule(impl, {})", "positional"),

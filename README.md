@@ -148,6 +148,8 @@ including ordered File sets transported through custom providers.
 real actions and guarded contexts; private dependency attributes remain unsupported.
 [Native JSON](docs/JSON.md) provides a dedicated bounded codec with exact numeric
 handling rather than the interpreter's incompatible generic serialization path.
+[Repository environment inputs](docs/REPOSITORY_ENVIRONMENT.md) track declared
+and dynamic named reads without exposing a fabricated OS environment dictionary.
 [Genuine built-in modules](docs/BUILTIN_MODULES.md) are available through the
 native-only `--experimental-builtin-modules` transition option, using complete
 verified Linux x86-64 resources; the default remains explicit modules only.

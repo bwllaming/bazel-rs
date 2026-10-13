@@ -113,12 +113,22 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(failed['diagnostic'], 'failure')
         self.assertIn(b'ctx.file', failed['files']['defs.bzl'])
 
+    def test_environment_boundary_is_invalid_shape_not_obsolete_support_denial(self):
+        value = suite.fixture('native-boundary', 'environ-shape')
+        self.assertIn(b'environ=None', value['files']['defs.bzl'])
+        self.assertEqual(value['diagnostic'], 'environ-shape')
+        suite.require_rejection(record('repository_rule environ must be a list or tuple of strings'), 'environ-shape')
+        for text in ('repository_rule environ is unsupported', 'unknown global repository_rule',
+                     'repository_rule configure is unsupported'):
+            with self.assertRaises(ValueError):
+                suite.require_rejection(record(text), 'environ-shape')
+
 
 class DiagnosticTests(unittest.TestCase):
     def test_controlled_categories(self):
         for diagnostic, text in dict(local="parameter 'local' got value of type 'int', want 'bool'",
                 native="name 'native' is not defined", failure='Error in fail: LOCAL_AFTER_WRITE',
-                configure='configure is unsupported', environ='environ is unsupported',
+                configure='configure is unsupported', **{'environ-shape': 'environ must be a list or tuple'},
                 escape='repository path traversal is forbidden').items():
             suite.require_rejection(record(text), diagnostic)
             for bad in ('panicked', 'network unavailable', 'permission denied', 'internal error', 'failed to download'):

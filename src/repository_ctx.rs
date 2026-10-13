@@ -1,4 +1,4 @@
-//! Bounded native repository callbacks. Only file/template are supported.
+//! Bounded native repository callbacks: file/template and tracked getenv.
 //! Paths use the native label component profile (ASCII alphanumeric, `._+-`).
 //! The caller owns the private stage and publication/cleanup; this is not an OS
 //! sandbox and assumes no concurrent hostile filesystem mutation of that stage.
@@ -8,7 +8,7 @@ use allocative::Allocative;
 use anyhow::{Context as _, anyhow, bail, ensure};
 use serde::Serialize;
 use starlark::environment::{Methods, MethodsBuilder, Module};
-use starlark::eval::Evaluator;
+use starlark::eval::{Arguments, Evaluator};
 use starlark::starlark_module;
 use starlark::values::dict::DictRef;
 use starlark::values::none::NoneType;
@@ -25,6 +25,7 @@ use std::sync::Arc;
 use crate::custom_rule::AttrValue;
 use crate::label::{Label, PackageId};
 use crate::repository::RepositorySet;
+use crate::repository_environment::{Captured, EnvError, Watch, WatchedEnvironment};
 use crate::repository_rule::RuleDefinition;
 use crate::starlark_types::{alloc_label, unpack_label};
 
@@ -36,6 +37,8 @@ const MAX_OPERATIONS: usize = 10_000;
 pub struct ExecutionInputs {
     /// Ordered reads, including repeated reads of a subsequently changed file.
     pub templates: Vec<TemplateInput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub watched_env: Option<WatchedEnvironment>,
 }
 
 #[derive(Debug, Serialize)]
@@ -50,6 +53,7 @@ struct State {
     written: usize,
     read: usize,
     writes: usize,
+    environment: Watch,
 }
 
 // Marker/trace/freeze derives generate unsafe implementations. Runtime host
@@ -367,8 +371,102 @@ fn replace_bytes(input: &[u8], key: &[u8], replacement: &[u8]) -> anyhow::Result
 
 starlark::methods_static!(REPOSITORY_METHODS = repository_methods);
 
+/// A private, value-free marker carried intact by ErrorKind::Native. Only this
+/// method's failures suppress source diagnostics; user messages cannot opt in.
+#[derive(Debug)]
+enum GetenvError {
+    Receiver,
+    Phase,
+    Arguments,
+    Name,
+    Default,
+    Environment(EnvError),
+}
+
+impl fmt::Display for GetenvError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Receiver => f.write_str("getenv requires a repository_ctx receiver"),
+            Self::Phase => f.write_str("repository_ctx is only available during repository execution"),
+            Self::Arguments => f.write_str("repository getenv requires one or two positional arguments and no keyword arguments"),
+            Self::Name => f.write_str("repository getenv name must be a string"),
+            Self::Default => f.write_str("repository getenv default must be a string or None"),
+            Self::Environment(error) => fmt::Display::fmt(error, f),
+        }
+    }
+}
+impl std::error::Error for GetenvError {}
+impl From<EnvError> for GetenvError {
+    fn from(error: EnvError) -> Self {
+        Self::Environment(error)
+    }
+}
+
+fn getenv_impl<'v>(
+    this: Value<'v>,
+    args: &Arguments<'v, '_>,
+    eval: &mut Evaluator<'v, '_, '_>,
+) -> Result<Value<'v>, GetenvError> {
+    // Validate the genuine receiver and phase before inspecting user arguments.
+    if values::RepositoryCtx::from_value(this).is_none() {
+        return Err(GetenvError::Receiver);
+    }
+    let context = context(eval).map_err(|_| GetenvError::Phase)?;
+    // Discard binder errors without formatting or retaining their payloads.
+    args.no_named_args().map_err(|_| GetenvError::Arguments)?;
+    let mut positions = args
+        .positions(eval.heap())
+        .map_err(|_| GetenvError::Arguments)?;
+    let name = positions.next().ok_or(GetenvError::Arguments)?;
+    let default = positions.next().unwrap_or_else(Value::new_none);
+    if positions.next().is_some() {
+        return Err(GetenvError::Arguments);
+    }
+    let name = name.unpack_str().ok_or(GetenvError::Name)?;
+    if !default.is_none() && default.unpack_str().is_none() {
+        return Err(GetenvError::Default);
+    }
+    let entry = context
+        .state
+        .borrow_mut()
+        .environment
+        .observe(context.repositories.environment(), name)?;
+    match entry.captured()? {
+        Captured::Absent => Ok(default),
+        Captured::Value(value) => {
+            context
+                .state
+                .borrow_mut()
+                .environment
+                .charge_return(value)?;
+            Ok(eval.heap().alloc(value.as_ref()))
+        }
+    }
+}
+
+fn callback_error(error: starlark::Error) -> anyhow::Error {
+    if let starlark::ErrorKind::Native(native) = error.kind()
+        && let Some(private) = native.downcast_ref::<GetenvError>()
+    {
+        // Render the bounded marker itself, not arbitrary attached context or
+        // the diagnostic's source/stack, which may contain rejected arguments.
+        return anyhow!(private.to_string());
+    }
+    anyhow!(error.to_string())
+}
+
 #[starlark_module]
 fn repository_methods(builder: &mut MethodsBuilder) {
+    fn getenv<'v>(
+        this: Value<'v>,
+        args: &Arguments<'v, '_>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        // Raw Arguments bypass generated binding: keyword/arity failures must
+        // enter the same typed privacy boundary as name/default/read failures.
+        getenv_impl(this, args, eval).map_err(anyhow::Error::new)
+    }
+
     fn file<'v>(
         this: Value<'v>,
         #[starlark(require = pos)] path: &str,
@@ -520,16 +618,25 @@ pub fn execute(
             eval.set_max_tick_count(1_000_000)?;
             eval.set_max_heap_size(128 * 1024 * 1024)?;
             eval.extra = Some(&context);
+            for name in definition.environ.names() {
+                context
+                    .state
+                    .borrow_mut()
+                    .environment
+                    .observe(context.repositories.environment(), name)?;
+            }
             let returned = eval
                 .eval_function(implementation, &[ctx], &[])
-                .map_err(|error| anyhow!(error.to_string()))?;
+                .map_err(callback_error)?;
             ensure!(
                 returned.is_none(),
                 "repository implementation return values other than None are unsupported"
             );
             Ok(())
         })?;
-        Ok(context.state.into_inner().inputs)
+        let mut state = context.state.into_inner();
+        state.inputs.watched_env = state.environment.inputs()?;
+        Ok(state.inputs)
     };
     run().map_err(|error| {
         format!(
@@ -628,6 +735,202 @@ mod tests {
         fn bytes(&self, name: &str) -> Vec<u8> {
             fs::read(self.stage.path().join(name)).unwrap()
         }
+    }
+
+    #[test]
+    fn empty_execution_inputs_keep_exact_legacy_bytes() {
+        assert_eq!(
+            serde_json::to_string(&ExecutionInputs::default()).unwrap(),
+            r#"{"templates":[]}"#
+        );
+    }
+
+    #[test]
+    fn getenv_present_empty_absent_defaults_and_template_flow() {
+        use crate::repository_environment::tests::Reader;
+        use std::sync::atomic::Ordering;
+        for value in [Some("SyntheticSecret"), Some(""), None] {
+            let mut fixture = Fixture::new();
+            let reader = Reader::new(Ok(value.map(Into::into)));
+            fixture.repositories = Arc::new(
+                (*fixture.repositories)
+                    .clone()
+                    .with_environment_reader(reader.clone()),
+            );
+            let inputs = fixture.run("v = ctx.getenv('SYNTHETIC', 'first')\nctx.file('value', v)\nctx.file('template', '@VALUE@')\nctx.template('expanded', 'template', {'@VALUE@': ctx.getenv('SYNTHETIC', 'second')})").unwrap();
+            assert_eq!(fixture.bytes("value"), value.unwrap_or("first").as_bytes());
+            assert_eq!(
+                fixture.bytes("expanded"),
+                value.unwrap_or("second").as_bytes()
+            );
+            assert_eq!(reader.calls.load(Ordering::SeqCst), 1);
+            let metadata = serde_json::to_string(&inputs).unwrap();
+            assert!(metadata.contains("watched_env"));
+            assert!(!metadata.contains("SyntheticSecret"));
+            assert!(!format!("{inputs:?}").contains("SyntheticSecret"));
+        }
+    }
+
+    #[test]
+    fn getenv_validates_bindings_before_reader_and_never_echoes_rejected_values() {
+        use crate::repository_environment::tests::Reader;
+        use std::sync::atomic::Ordering;
+        let mut fixture = Fixture::new();
+        let reader = Reader::new(Ok(Some("SyntheticSecret".into())));
+        fixture.repositories = Arc::new(
+            (*fixture.repositories)
+                .clone()
+                .with_environment_reader(reader.clone()),
+        );
+        for body in [
+            "ctx.getenv(['RejectedSecret'])",
+            "ctx.getenv('SYNTHETIC', ['RejectedSecret'])",
+            "ctx.getenv('SYNTHETIC', default='RejectedSecret')",
+            "ctx.getenv(name='RejectedSecret')",
+            "ctx.getenv('SYNTHETIC', None, 'RejectedSecret')",
+            "ctx.getenv('SYNTHETIC', RejectedSecret='RejectedSecret')",
+            "ctx.getenv('SYNTHETIC', **{'RejectedSecret': 'RejectedSecret'})",
+            "ctx.getenv('SYNTHETIC', **['RejectedSecret'])",
+            "ctx.getenv(*['SYNTHETIC', None, 'RejectedSecret'])",
+            "ctx.getenv(*struct(RejectedSecret='RejectedSecret'))",
+            "ctx.getenv('SYNTHETIC', **{1: 'RejectedSecret'})",
+            "ctx.getenv(name='RejectedSecret', **{'name': 'RejectedSecret'})",
+            "ctx.getenv()",
+        ] {
+            let error = fixture.run(body).unwrap_err();
+            assert!(!error.contains("RejectedSecret"), "{error}");
+            assert!(!error.contains("SyntheticSecret"), "{error}");
+        }
+        assert_eq!(reader.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn non_environment_callback_errors_preserve_source_even_after_getenv_or_spoofed_messages() {
+        use crate::repository_environment::tests::Reader;
+        let mut fixture = Fixture::new();
+        let reader = Reader::new(Ok(None));
+        fixture.repositories = Arc::new(
+            (*fixture.repositories)
+                .clone()
+                .with_environment_reader(reader),
+        );
+        for body in [
+            "native.package_group(name='bad')",
+            "ctx.getenv('SYNTHETIC')\nnative.package_group(name='bad')",
+        ] {
+            let error = fixture.run(body).unwrap_err();
+            assert!(
+                error.contains("native.package_group(name='bad')"),
+                "{error}"
+            );
+            assert!(
+                error.contains("rule declaration outside package evaluation"),
+                "{error}"
+            );
+            assert!(error.contains("Traceback"), "{error}");
+        }
+        let error = fixture
+            .run("def getenv():\n    fail('repository getenv name must be a string')\ngetenv()")
+            .unwrap_err();
+        assert!(
+            error.contains("fail('repository getenv name must be a string')"),
+            "{error}"
+        );
+        assert!(error.contains("Traceback"), "{error}");
+    }
+
+    #[test]
+    fn getenv_private_marker_is_typed_and_drops_arbitrary_attached_context() {
+        let marked = starlark::Error::new_native(
+            anyhow::Error::new(GetenvError::Name).context("RejectedSecret"),
+        );
+        let error = callback_error(marked).to_string();
+        assert_eq!(error, "repository getenv name must be a string");
+        let unmarked = starlark::Error::new_native(anyhow!(
+            "repository getenv name must be a string: ordinary error"
+        ));
+        assert_eq!(
+            callback_error(unmarked).to_string(),
+            "repository getenv name must be a string: ordinary error"
+        );
+        Module::with_temp_heap(|module| {
+            let mut eval = Evaluator::new(&module);
+            assert!(matches!(
+                getenv_impl(
+                    module.heap().alloc("RejectedSecret"),
+                    &Arguments::default(),
+                    &mut eval
+                ),
+                Err(GetenvError::Receiver)
+            ));
+        });
+    }
+
+    #[test]
+    fn getenv_wrong_phase_rejects_before_lookup() {
+        use crate::repository_environment::tests::Reader;
+        use std::sync::atomic::Ordering;
+        let fixture = Fixture::new();
+        let reader = Reader::new(Ok(Some("SyntheticSecret".into())));
+        let repositories = Arc::new(
+            (*fixture.repositories)
+                .clone()
+                .with_environment_reader(reader.clone()),
+        );
+        Module::with_temp_heap(|module| {
+            let ctx = module.heap().alloc(RepositoryCtxGen {
+                attrs: Value::new_none(),
+                name: "repo".into(),
+                original_name: "repo".into(),
+            });
+            let method = ctx.get_attr("getenv", module.heap()).unwrap().unwrap();
+            let loading = crate::loading::ExtensionContext {
+                repositories,
+                label: Label::parse_canonical("//:defs.bzl").unwrap(),
+            };
+            let mut eval = Evaluator::new(&module);
+            let error = eval
+                .eval_function(method, &[module.heap().alloc("SYNTHETIC")], &[])
+                .unwrap_err();
+            assert!(
+                error
+                    .without_diagnostic()
+                    .to_string()
+                    .contains("only available during repository execution")
+            );
+            assert!(
+                matches!(error.kind(), starlark::ErrorKind::Native(native) if matches!(native.downcast_ref::<GetenvError>(), Some(GetenvError::Phase)))
+            );
+            // A loading context carries repositories too, but is not an execution capability.
+            eval.extra = Some(&loading);
+            assert!(
+                eval.eval_function(method, &[module.heap().alloc("SYNTHETIC")], &[])
+                    .is_err()
+            );
+        });
+        assert_eq!(reader.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn getenv_error_never_defaults_and_is_cached_between_callbacks() {
+        use crate::repository_environment::{ReadError, tests::Reader};
+        use std::sync::atomic::Ordering;
+        let mut fixture = Fixture::new();
+        let reader = Reader::new(Err(ReadError));
+        fixture.repositories = Arc::new(
+            (*fixture.repositories)
+                .clone()
+                .with_environment_reader(reader.clone()),
+        );
+        for _ in 0..2 {
+            let error = fixture
+                .run("ctx.file('value', ctx.getenv('RejectedSecret', 'RejectedSecret'))")
+                .unwrap_err();
+            assert!(error.contains("repository environment read failed"));
+            assert!(!error.contains("RejectedSecret"), "{error}");
+            assert!(!fixture.stage.path().join("value").exists());
+        }
+        assert_eq!(reader.calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -886,7 +1189,7 @@ mod tests {
     #[test]
     fn unsupported_methods_returns_and_options_leave_only_private_stage() {
         let fixture = Fixture::new();
-        for method in ["execute", "download", "symlink", "path", "getenv"] {
+        for method in ["execute", "download", "symlink", "path"] {
             fixture.error(
                 &format!("ctx.file('partial', 'private')\nctx.{method}('x')"),
                 method,

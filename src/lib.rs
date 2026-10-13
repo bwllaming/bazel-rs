@@ -38,6 +38,7 @@ mod repository_budget;
 pub mod repository_catalog;
 pub mod repository_ctx;
 pub mod repository_demand;
+mod repository_environment;
 pub mod repository_links;
 pub mod repository_rule;
 pub mod repository_store;

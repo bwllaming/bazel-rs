@@ -36,6 +36,7 @@ struct RepositoryState {
     resolved: OnceLock<Result<ResolvedGraph, String>>,
     registry_roots: OnceLock<BTreeMap<String, OnceLock<Result<PathBuf, String>>>>,
     direct: OnceLock<Result<DirectRuntime, String>>,
+    environment: Arc<crate::repository_environment::Snapshot>,
 }
 
 #[derive(Debug)]
@@ -74,13 +75,18 @@ struct OrdinaryRepository {
 impl serde::Serialize for OrdinaryRepository {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut value = serializer.serialize_struct("RepositorySpec", 6)?;
+        let has_environ = !self.definition.environ.is_empty();
+        let mut value =
+            serializer.serialize_struct("RepositorySpec", 6 + usize::from(has_environ))?;
         value.serialize_field("definition_identity", &self.definition.identity)?;
         value.serialize_field("schema", &self.definition.schema)?;
         value.serialize_field("local", &self.definition.local)?;
         value.serialize_field("attributes", &self.attributes)?;
         value.serialize_field("canonical_name", &self.canonical_name)?;
         value.serialize_field("original_name", &self.original_name)?;
+        if has_environ {
+            value.serialize_field("environ", &self.definition.environ)?;
+        }
         value.end()
     }
 }
@@ -141,6 +147,15 @@ impl RepositorySet {
     }
 
     fn configured(root: PathBuf, options: ResolverOptions, source_cache: PathBuf) -> Self {
+        Self::configured_environment(root, options, source_cache, Arc::default())
+    }
+
+    fn configured_environment(
+        root: PathBuf,
+        options: ResolverOptions,
+        source_cache: PathBuf,
+        environment: Arc<crate::repository_environment::Snapshot>,
+    ) -> Self {
         Self {
             state: Arc::new(RepositoryState {
                 runtime_id: NEXT_RUNTIME_ID.fetch_add(1, Ordering::Relaxed),
@@ -152,12 +167,35 @@ impl RepositorySet {
                 resolved: OnceLock::new(),
                 registry_roots: OnceLock::new(),
                 direct: OnceLock::new(),
+                environment,
             }),
         }
     }
 
     pub fn with_source_cache(self, cache: PathBuf) -> Self {
-        Self::configured(self.state.root.clone(), self.state.options.clone(), cache)
+        Self::configured_environment(
+            self.state.root.clone(),
+            self.state.options.clone(),
+            cache,
+            self.state.environment.clone(),
+        )
+    }
+
+    pub(crate) fn environment(&self) -> &crate::repository_environment::Snapshot {
+        &self.state.environment
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_environment_reader(
+        self,
+        reader: Arc<dyn crate::repository_environment::EnvironmentReader>,
+    ) -> Self {
+        Self::configured_environment(
+            self.state.root.clone(),
+            self.state.options.clone(),
+            self.state.source_cache.clone(),
+            Arc::new(crate::repository_environment::Snapshot::with_reader(reader)),
+        )
     }
 
     /// Library-relative cache paths are workspace-relative. The CLI resolves
@@ -417,6 +455,7 @@ impl RepositorySet {
             let mut budget = crate::repository_budget::HostBudget::default();
             for declaration in &group.declarations {
                 budget.schema(&definition.schema)?;
+                definition.environ.charge(&mut budget)?;
                 budget.string(&declaration.canonical_name)?;
                 budget.node()?;
                 for (name, value) in &declaration.attributes {
@@ -467,7 +506,7 @@ impl RepositorySet {
                 let group = &runtime.catalog.groups[&entry.group_id];
                 let declaration = &group.declarations[entry.declaration_index];
                 let attributes = &prepared.attributes[entry.declaration_index];
-                let provenance = serde_json::to_vec(&serde_json::json!({
+                let mut provenance = serde_json::json!({
                     "profile": "direct-file-template-v1",
                     "owner": group.owner,
                     "raw_identity": group.raw_identity,
@@ -479,8 +518,20 @@ impl RepositorySet {
                     "local": prepared.definition.local,
                     "owner_mapping": runtime.catalog.owner_mappings[&group.owner],
                     "repository_mapping": entry.mapping,
-                }))
-                .map_err(|error| format!("cannot serialize repository provenance: {error}"))?;
+                });
+                if !prepared.definition.environ.is_empty() {
+                    provenance
+                        .as_object_mut()
+                        .expect("provenance object")
+                        .insert(
+                            "environ".to_owned(),
+                            serde_json::to_value(&prepared.definition.environ).map_err(|_| {
+                                "cannot serialize repository environment declaration".to_owned()
+                            })?,
+                        );
+                }
+                let provenance = serde_json::to_vec(&provenance)
+                    .map_err(|error| format!("cannot serialize repository provenance: {error}"))?;
                 crate::repository_store::materialize(
                     self.source_cache_path()?,
                     &provenance,
@@ -577,6 +628,7 @@ impl RepositorySet {
                 // Charge omitted defaults and supplied values before the binder
                 // expands either into another owned attribute map.
                 preparation_budget.schema(&recorded.definition.schema)?;
+                recorded.definition.environ.charge(&mut preparation_budget)?;
                 for (name, value) in &recorded.attributes {
                     preparation_budget.string(name)?;
                     preparation_budget.recorded(value, 0)?;
@@ -1354,6 +1406,242 @@ mod tests {
         );
         assert_eq!(before, after);
         assert!(!f.0.join("bazel-rs-out").exists());
+    }
+
+    #[test]
+    fn environment_snapshot_lifetime_follows_owner_not_source_cache_configuration() {
+        use crate::repository_environment::{Watch, tests::Reader};
+        let f = Fixture::new();
+        let reader = Reader::new(Ok(Some("SyntheticSecret".into())));
+        let original = RepositorySet::new(f.0.clone()).with_environment_reader(reader.clone());
+        let clone = original.clone();
+        let configured = clone.clone().with_source_cache("another-cache".into());
+        assert!(Arc::ptr_eq(
+            &original.state.environment,
+            &clone.state.environment
+        ));
+        assert!(Arc::ptr_eq(
+            &original.state.environment,
+            &configured.state.environment
+        ));
+        assert_ne!(original.state.runtime_id, configured.state.runtime_id);
+        for owner in [&original, &clone, &configured] {
+            Watch::default()
+                .observe(owner.environment(), "SYNTHETIC")
+                .unwrap();
+        }
+        assert_eq!(reader.calls.load(Ordering::SeqCst), 1);
+        let fresh = RepositorySet::new(f.0.clone()).with_environment_reader(reader.clone());
+        Watch::default()
+            .observe(fresh.environment(), "SYNTHETIC")
+            .unwrap();
+        assert_eq!(reader.calls.load(Ordering::SeqCst), 2);
+        assert!(!Arc::ptr_eq(
+            &original.state.environment,
+            &RepositorySet::new(f.0.clone()).state.environment
+        ));
+        assert!(!Arc::ptr_eq(
+            &original.state.environment,
+            &RepositorySet::with_options(f.0.clone(), ResolverOptions::default())
+                .state
+                .environment
+        ));
+        assert!(!format!("{original:?}").contains("SyntheticSecret"));
+    }
+
+    fn environment_fixture(ordinary: bool, declaration: &str, body: &str) -> Fixture {
+        let f = Fixture::new();
+        f.write("BUILD", "");
+        f.write("rules.bzl", &format!("def implementation(ctx):\n    {body}\nR = repository_rule(implementation, environ={declaration})\n"));
+        if ordinary {
+            f.write(
+                "MODULE.bazel",
+                "e=use_extension('//:extension.bzl','extension')\nuse_repo(e,'repo','other')\n",
+            );
+            f.write("extension.bzl", "load(':rules.bzl', 'R')\ndef implementation(ctx):\n    R(name='repo')\n    R(name='other')\nextension=module_extension(implementation)\n");
+        } else {
+            f.write(
+                "MODULE.bazel",
+                "r=use_repo_rule('//:rules.bzl','R')\nr(name='repo')\nr(name='other')\n",
+            );
+        }
+        f
+    }
+
+    #[test]
+    fn direct_and_ordinary_environment_content_identity_restore_and_demand_memoization() {
+        use crate::repository_environment::{Watch, tests::Reader};
+        for ordinary in [false, true] {
+            for (declaration, body, output_changes) in [
+                ("['SYNTHETIC']", "ctx.file('value', 'constant')", false),
+                (
+                    "[]",
+                    "ctx.getenv('SYNTHETIC')\n    ctx.file('value', 'constant')",
+                    false,
+                ),
+                (
+                    "('SYNTHETIC',)",
+                    "ctx.file('value', ctx.getenv('SYNTHETIC'))",
+                    true,
+                ),
+            ] {
+                let f = environment_fixture(ordinary, declaration, body);
+                let run = |value: &str, unrelated: bool| {
+                    let reader = Reader::new(Ok(Some(value.into())));
+                    let repos =
+                        RepositorySet::new(f.0.clone()).with_environment_reader(reader.clone());
+                    let canonical = repos.parse("@repo//:value", "", "").unwrap().repository;
+                    assert_eq!(reader.calls.load(Ordering::SeqCst), 0);
+                    if unrelated {
+                        Watch::default()
+                            .observe(repos.environment(), "UNRELATED")
+                            .unwrap();
+                    }
+                    let root = repos.root(&canonical).unwrap().to_path_buf();
+                    assert_eq!(
+                        std::fs::read(root.join("value")).unwrap(),
+                        if output_changes {
+                            value.as_bytes()
+                        } else {
+                            b"constant"
+                        }
+                    );
+                    let calls = reader.calls.load(Ordering::SeqCst);
+                    assert_eq!(calls, if unrelated { 2 } else { 1 });
+                    assert_eq!(repos.clone().root(&canonical).unwrap(), root);
+                    assert_eq!(reader.calls.load(Ordering::SeqCst), calls);
+                    // Only inventory persists; neither requested names nor values.
+                    for entry in
+                        std::fs::read_dir(f.0.join("bazel-rs-out/repositories/direct/manifests"))
+                            .unwrap()
+                    {
+                        let bytes = std::fs::read(entry.unwrap().path()).unwrap();
+                        let text = String::from_utf8(bytes).unwrap();
+                        assert!(!text.contains("SyntheticSecret"));
+                        assert!(!text.contains("SYNTHETIC"));
+                        let manifest: serde_json::Value = serde_json::from_str(&text).unwrap();
+                        assert_eq!(manifest.as_object().unwrap().len(), 4);
+                        assert_eq!(manifest["profile"], "direct-file-template-v1");
+                    }
+                    root
+                };
+                let first = run("SyntheticSecretFirst", false);
+                assert_eq!(run("SyntheticSecretFirst", true), first);
+                assert_ne!(run("SyntheticSecretChanged", false), first);
+                assert_eq!(run("SyntheticSecretFirst", false), first);
+            }
+        }
+    }
+
+    #[test]
+    fn unused_and_prepared_declarations_do_not_capture_environment() {
+        use crate::repository_environment::tests::Reader;
+        for ordinary in [false, true] {
+            let f = environment_fixture(ordinary, "['SYNTHETIC']", "fail('must not run')");
+            let reader = Reader::new(Ok(None));
+            let repos = RepositorySet::new(f.0.clone()).with_environment_reader(reader.clone());
+            let canonical = repos.parse("@repo//:value", "", "").unwrap().repository;
+            assert_eq!(reader.calls.load(Ordering::SeqCst), 0);
+            repos.mapping(&canonical).unwrap();
+            if ordinary {
+                let (prepared, _) = repos.ordinary_repository(&canonical).unwrap();
+                assert!(String::from_utf8_lossy(&prepared.provenance).contains("environ"));
+            } else {
+                let runtime = repos.direct_runtime().unwrap();
+                repos
+                    .prepare_direct_group(&runtime.catalog.repositories[&canonical].group_id)
+                    .unwrap();
+            }
+            assert_eq!(reader.calls.load(Ordering::SeqCst), 0);
+            assert!(!f.0.join("bazel-rs-out").exists());
+        }
+    }
+
+    #[test]
+    fn environment_capture_and_callback_errors_never_publish_and_demand_errors_are_cached() {
+        use crate::repository_environment::{ReadError, tests::Reader};
+        for ordinary in [false, true] {
+            for reader_failure in [false, true] {
+                let f = environment_fixture(
+                    ordinary,
+                    "['SYNTHETIC']",
+                    "ctx.file('partial', 'safe')\n    ctx.getenv('SYNTHETIC')\n    fail('deliberate failure')",
+                );
+                let reader = Reader::new(if reader_failure {
+                    Err(ReadError)
+                } else {
+                    Ok(Some("SyntheticSecret".into()))
+                });
+                let repos = RepositorySet::new(f.0.clone()).with_environment_reader(reader.clone());
+                let canonical = repos.parse("@repo//:value", "", "").unwrap().repository;
+                let error = repos.root(&canonical).unwrap_err();
+                assert!(!error.contains("SyntheticSecret"));
+                assert!(
+                    error.contains(if reader_failure {
+                        "environment read failed"
+                    } else {
+                        "deliberate failure"
+                    }),
+                    "{error}"
+                );
+                assert_eq!(repos.clone().root(&canonical).unwrap_err(), error);
+                assert_eq!(reader.calls.load(Ordering::SeqCst), 1);
+                for subdir in ["trees", "manifests", "locks"] {
+                    assert_eq!(
+                        std::fs::read_dir(
+                            f.0.join("bazel-rs-out/repositories/direct").join(subdir)
+                        )
+                        .unwrap()
+                        .count(),
+                        0
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn environment_provenance_omission_keeps_legacy_field_order_and_profile() {
+        let f = environment_fixture(true, "[]", "return None");
+        let repos = RepositorySet::new(f.0.clone());
+        let canonical = repos.parse("@repo//:value", "", "").unwrap().repository;
+        let (prepared, repository) = repos.ordinary_repository(&canonical).unwrap();
+        let before = serde_json::to_string(repository).unwrap();
+        assert!(!before.contains("environ"));
+        let legacy = serde_json::json!({
+            "definition_identity": repository.definition.identity,
+            "schema": repository.definition.schema,
+            "local": repository.definition.local,
+            "attributes": repository.attributes,
+            "canonical_name": repository.canonical_name,
+            "original_name": repository.original_name,
+        });
+        assert_eq!(before, serde_json::to_string(&legacy).unwrap());
+        let mut changed = OrdinaryRepository {
+            definition: repository.definition.clone(),
+            attributes: repository.attributes.clone(),
+            canonical_name: repository.canonical_name.clone(),
+            original_name: repository.original_name.clone(),
+            root: DemandSlot::new(),
+        };
+        changed.definition.environ =
+            crate::repository_environment::DeclaredEnvironment::from_names(
+                [Ok("SYNTHETIC")],
+                &mut crate::repository_budget::HostBudget::default(),
+            )
+            .unwrap();
+        let mut with_environ = serde_json::to_value(&changed).unwrap();
+        assert_eq!(
+            with_environ
+                .as_object_mut()
+                .unwrap()
+                .remove("environ")
+                .unwrap(),
+            serde_json::json!(["SYNTHETIC"])
+        );
+        assert_eq!(serde_json::to_string(&with_environ).unwrap(), before);
+        let provenance: serde_json::Value = serde_json::from_slice(&prepared.provenance).unwrap();
+        assert_eq!(provenance["profile"], "ordinary-file-template-v1");
     }
 
     #[test]

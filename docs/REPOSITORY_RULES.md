@@ -31,7 +31,8 @@ rule symbols. Other ambiguous namespace combinations fail explicitly.
 ## Supported surface
 
 `repository_rule` supports callable implementations, `attrs`, `doc` and retained
-`local` metadata; `configure` must be false and `environ` empty. See
+`local` metadata and snapshotted list/tuple `environ` declarations; `configure`
+must be false. See
 [LOCAL_REPOSITORIES.md](LOCAL_REPOSITORIES.md) for the bounded serverless lifecycle
 and MODULE-only `native.bazel_version` binding. Attribute kinds are string,
 string-list, ordered string-list dictionary, int32, bool, label and label-list.
@@ -53,6 +54,10 @@ Callbacks receive real `ctx.attr` values, `ctx.name` (canonical), and
   The two paths are positional-only. Substitutions are sequential, literal,
   dictionary-insertion-order replacements; empty search keys do nothing.
   Only the `auto` watch setting is supported.
+* `ctx.getenv(name, default=None)` reads and tracks a named ASCII environment
+  observation. Both arguments are positional-only. Declared names are observed
+  even if unread; missing differs from empty. See the bounded
+  [environment profile](REPOSITORY_ENVIRONMENT.md).
 
 Output paths must be clean relative ASCII components containing letters, digits,
 `_`, `-`, `.`, or `+`. Absolute paths, empty components, `.`/`..`, symlink traversal
@@ -63,7 +68,7 @@ Arbitrary template bytes, including invalid UTF-8 and CRLF, are preserved.
 
 Only an implicit or explicit `None` callback return is supported. Other returns
 fail explicitly even where upstream accepts them as repository metadata.
-Execution, downloads, extraction, environment access, symlink creation, path
+Execution, downloads, extraction, `os.environ`, symlink creation, path
 objects and general host filesystem access are not implemented.
 
 ## String and resource bounds

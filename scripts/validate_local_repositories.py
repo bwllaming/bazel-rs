@@ -40,7 +40,7 @@ CASEPLAN = [
     common.case('genuine', ('full-four-files', 'version-functional', 'minimal-globals-functional')),
     common.case('laziness', ('unused', 'failure-after-write')),
     common.case('typing', ('direct.int', 'ordinary.int', 'direct.string', 'ordinary.string')),
-    common.case('native-boundary', ('configure', 'environ', 'escape'), 'native_boundary'),
+    common.case('native-boundary', ('configure', 'environ-shape', 'escape'), 'native_boundary'),
 ]
 PLAN = [(c['name'], c['kind']) for c in CASEPLAN]
 DIAGNOSTICS = {
@@ -48,7 +48,7 @@ DIAGNOSTICS = {
     'native': r'(?:name [\'\"]native[\'\"] is not defined|Variable [`\'\"]native[`\'\"] not found|undefined[^\n]*native)',
     'failure': r'(?:Error in fail:|error:)[^\n]*LOCAL_AFTER_WRITE',
     'configure': r'configure[^\n]*(?:unsupported|not supported)',
-    'environ': r'environ[^\n]*(?:unsupported|not supported)',
+    'environ-shape': r'environ[^\n]*(?:list|tuple|sequence)|(?:list|tuple|sequence)[^\n]*environ',
     'escape': r'(?:path|repository)[^\n]*(?:escape|traversal|\.\.|relative|outside)',
 }
 GLOBALS_PRESENT = ('macro', 'PackageSpecificationInfo', 'RunEnvironmentInfo', 'set', 'subrule', 'DefaultInfo')
@@ -115,8 +115,8 @@ def fixture(name, probe):
     keyword = '' if local == 'default' else ',local='+('False' if local == 'false' else 'True')
     if name == 'typing':
         keyword, diagnostic = ',local='+('1' if probe.endswith('.int') else '"yes"'), 'local'
-    if name == 'native-boundary' and probe in ('configure', 'environ'):
-        keyword += ',configure=True' if probe == 'configure' else ',environ=["QA_UNUSED"]'
+    if name == 'native-boundary' and probe in ('configure', 'environ-shape'):
+        keyword += ',configure=True' if probe == 'configure' else ',environ=None'
         diagnostic = probe
     body = ('print("NATIVERUN")\nctx.file("a",native.bazel_version+"\\n",executable=True)\n'
             'ctx.file("b",native.bazel_version+"\\n",executable=True)\n'
