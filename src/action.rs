@@ -24,7 +24,10 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-const FORMAT: &str = "native-action-v4";
+const FORMAT: &str = "native-action-v5";
+// Bazel 9.3 OutputPermissions.READONLY: all completed regular action outputs,
+// including non-executable writes, normalize after execution, not during it.
+const OUTPUT_MODE: u32 = 0o555;
 const SHELL: &str = "/bin/bash";
 const SHELL_FLAGS: [&str; 4] = ["-e", "-o", "pipefail", "-c"];
 const LOG_TAIL_BYTES: usize = 64 * 1024;
@@ -356,10 +359,14 @@ fn cache_valid(directory: &Path, key: &str, outputs: &[PathBuf]) -> bool {
             return Ok(false);
         }
         for (entry, name) in manifest.outputs.iter().zip(outputs) {
-            if entry.name != hex(name.as_os_str().as_bytes()) || entry.executable & !0o111 != 0 {
+            if entry.name != hex(name.as_os_str().as_bytes()) || entry.executable != 0o111 {
                 return Ok(false);
             }
-            let actual = read_input(&directory.join("outputs").join(name))?;
+            let path = directory.join("outputs").join(name);
+            if regular_file(&path)?.permissions().mode() & 0o7777 != OUTPUT_MODE {
+                return Ok(false);
+            }
+            let actual = read_input(&path)?;
             if actual.digest != entry.digest || actual.executable != entry.executable {
                 return Ok(false);
             }
@@ -582,7 +589,17 @@ pub fn execute(cache_root: &Path, action: &Action) -> Result<ActionResult, Strin
     // output contents too, so the manifest describes exactly what is published.
     let mut collected = Vec::new();
     for name in &outputs {
-        let input = read_input(&execroot.join(name)).map_err(|e| {
+        let path = execroot.join(name);
+        let snapshot = || -> Result<Input, String> {
+            // Match metadata collection order: a successful action may leave a
+            // regular output unreadable. Normalize before reading its bytes,
+            // but never chmod a symlink or a path through a linked ancestor.
+            regular_file(&path)?;
+            fs::set_permissions(&path, fs::Permissions::from_mode(OUTPUT_MODE))
+                .map_err(|e| io_error("cannot normalize action output permissions", &path, e))?;
+            read_input(&path)
+        };
+        let input = snapshot().map_err(|e| {
             format!(
                 "action '{}' has missing or invalid output '{}': {e}",
                 action.id,
@@ -599,15 +616,14 @@ pub fn execute(cache_root: &Path, action: &Action) -> Result<ActionResult, Strin
         outputs: Vec::new(),
     };
     for (name, input) in collected {
-        write_file(
-            &completed.join("outputs").join(name),
-            &input.bytes,
-            input.executable,
-        )?;
+        let path = completed.join("outputs").join(name);
+        write_file(&path, &input.bytes, 0o111)?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(OUTPUT_MODE))
+            .map_err(|e| io_error("cannot normalize action output permissions", &path, e))?;
         manifest.outputs.push(Output {
             name: hex(name.as_os_str().as_bytes()),
             digest: input.digest,
-            executable: input.executable,
+            executable: 0o111,
         });
     }
     let manifest_bytes =
@@ -739,7 +755,7 @@ mod tests {
                 .permissions()
                 .mode()
                 & 0o777,
-            0o644
+            0o555
         );
         assert!(!marker.exists());
         assert!(execute(&fixture.cache(), &action).unwrap().cache_hit);
@@ -764,7 +780,7 @@ mod tests {
                 .permissions()
                 .mode()
                 & 0o777,
-            0o755
+            0o555
         );
         action.write.as_mut().unwrap().content.push(0xff);
         let changed = execute(&fixture.cache(), &action).unwrap();
@@ -783,6 +799,7 @@ mod tests {
         let action = fixture.write_action(b"restored\0".to_vec());
         let first = execute(&fixture.cache(), &action).unwrap();
         let path = &first.outputs[0];
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
         fs::write(path, b"tampered").unwrap();
         assert!(!execute(&fixture.cache(), &action).unwrap().cache_hit);
         assert_eq!(fs::read(path).unwrap(), b"restored\0");
@@ -790,7 +807,7 @@ mod tests {
         assert!(!execute(&fixture.cache(), &action).unwrap().cache_hit);
         assert_eq!(
             fs::metadata(path).unwrap().permissions().mode() & 0o777,
-            0o644
+            0o555
         );
         assert!(execute(&fixture.cache(), &action).unwrap().cache_hit);
     }
@@ -930,6 +947,7 @@ mod tests {
         )
         .unwrap();
         let recovered = execute(&fixture.cache(), &action).unwrap();
+        fs::set_permissions(&recovered.outputs[0], fs::Permissions::from_mode(0o755)).unwrap();
         fs::write(&recovered.outputs[0], "tampered").unwrap();
         assert!(!execute(&fixture.cache(), &action).unwrap().cache_hit);
         assert_eq!(fs::read(&recovered.outputs[0]).unwrap(), b"recovered");
@@ -1184,11 +1202,18 @@ mod tests {
         let action = fixture.action();
         let result = execute(&fixture.cache(), &action).unwrap();
         let path = &result.outputs[0];
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
         fs::write(path, "tampered").unwrap();
         assert!(!execute(&fixture.cache(), &action).unwrap().cache_hit);
         assert_eq!(fs::read(path).unwrap(), b"hello\n");
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(!execute(&fixture.cache(), &action).unwrap().cache_hit);
+        for mode in [0o444, 0o644, 0o755, 0o4755] {
+            fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+            assert!(!execute(&fixture.cache(), &action).unwrap().cache_hit);
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o7777,
+                OUTPUT_MODE
+            );
+        }
         fs::remove_file(path).unwrap();
         assert!(!execute(&fixture.cache(), &action).unwrap().cache_hit);
         let entry = path.parent().unwrap().parent().unwrap().parent().unwrap();
