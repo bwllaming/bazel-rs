@@ -174,6 +174,23 @@ checkout is unchanged; no application query/build/test success is claimed.
 
 ## Remaining compatibility gates
 
+### Scoped subrule execution
+
+- [x] Execute real zero-attribute subrules and declared nested calls with frozen
+      ownership, current-context guards and actual action/provider outputs.
+- [x] Preserve method-specific Args factory lifetime and document controlled
+      rejection of expired factories instead of reproducing reference crashes.
+- [x] Verify real CLI/reference/cache/source-change behavior and adjacent context
+      and build-setting regressions before claiming the bounded integration.
+
+Verified 1,057 Rust/609 Python tests, 99 comparison phases/162 commands and
+thirteen adjacent suites. Default Args-file serialization is supported without
+claiming deferred mapper or configurable parameter-file parity. The preserved
+application advances to missing json.
+
+Private attribute dependencies, configured toolchains/fragments and their
+visibility/default semantics remain a separate increment, not ignored inputs.
+
 ### Starlark set execution
 
 - [x] Preserve the exact pinned interpreter as a licensed, provenance-verified

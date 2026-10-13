@@ -4,6 +4,8 @@ pub const COMPATIBILITY_VERSION: &str = "9.3.0";
 
 pub mod action;
 pub mod analysis;
+mod analysis_ctx;
+mod analysis_runtime;
 pub mod archive;
 pub mod args;
 mod attribute_values;
@@ -42,6 +44,7 @@ pub mod repository_text;
 mod run_environment_info;
 pub mod scheduler;
 pub mod starlark_types;
+mod subrule;
 mod symbolic_macro;
 pub mod template_variable_info;
 pub mod visibility;

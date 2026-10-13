@@ -63,6 +63,8 @@ fn is_false(value: &bool) -> bool {
 pub struct CustomInvocation {
     pub build_setting: Option<BuildSetting>,
     pub implementation: OwnedFrozenValue,
+    /// Strong frozen roots for direct declarations, including factory closures.
+    pub subrules: Vec<OwnedFrozenValue>,
     pub top_level_functions: Vec<OwnedFrozenValue>,
     pub attrs: BTreeMap<String, AttrValue>,
     pub schema: BTreeMap<String, AttrSpec>,
@@ -389,6 +391,7 @@ mod values {
     #[repr(C)]
     pub(super) struct DefinitionGen<V> {
         pub implementation: V,
+        pub subrules: Vec<V>,
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
         pub build_setting: Option<BuildSetting>,
@@ -425,6 +428,11 @@ mod values {
                 .borrow_mut()
                 .schema(&self.schema)
                 .map_err(|e| starlark::Error::new_other(anyhow!(e)))?;
+            crate::subrule::preflight(
+                self.subrules.iter().map(|value| value.to_value()),
+                &mut budget.borrow_mut(),
+            )
+            .map_err(starlark::Error::new_other)?;
             let resolve = |text: &str| {
                 let bytes = repositories
                     .resolution_size_bound(text, &package.repository, &package.package)
@@ -518,6 +526,7 @@ mod values {
                 name,
                 visibility,
                 self.implementation.to_value(),
+                self.subrules.iter().map(|value| value.to_value()).collect(),
                 attrs,
                 self.schema.clone(),
                 self.build_setting,
@@ -717,6 +726,8 @@ mod definitions {
         fn rule<'v>(
             #[starlark(require = named)] implementation: Value<'v>,
             #[starlark(require = named)] attrs: Option<Value<'v>>,
+            #[starlark(require = named, default = starlark::values::list::AllocList::EMPTY)]
+            subrules: Value<'v>,
             #[starlark(require = named)] doc: Option<&str>,
             #[starlark(require = named, default = false)] executable: bool,
             #[starlark(require = named, default = false)] test: bool,
@@ -761,6 +772,8 @@ mod definitions {
             let mut schema = BTreeMap::new();
             let mut budget = crate::repository_budget::HostBudget::default();
             budget.node().map_err(anyhow::Error::msg)?;
+            let subrules = crate::subrule::snapshot(subrules, &mut budget)?;
+            crate::subrule::validate_exports(&subrules, &mut budget)?;
             if let Some(attrs) = attrs {
                 let dict = DictRef::from_value(attrs)
                     .ok_or_else(|| anyhow!("rule attrs must be a dict of attribute descriptors"))?;
@@ -838,6 +851,7 @@ mod definitions {
             }
             Ok(eval.heap().alloc(DefinitionGen {
                 implementation,
+                subrules,
                 schema,
                 build_setting,
             }))

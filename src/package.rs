@@ -98,6 +98,7 @@ use collector::Declarations;
 struct PendingCustom {
     index: usize,
     slot: String,
+    subrule_slots: Vec<String>,
     attrs: BTreeMap<String, AttrValue>,
     schema: BTreeMap<String, AttrSpec>,
     build_setting: Option<BuildSetting>,
@@ -116,11 +117,13 @@ pub(crate) fn custom_label_context(
     Ok((context.repositories.clone(), context.package_id()))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn register_custom<'v>(
     eval: &mut Evaluator<'v, '_, '_>,
     name: &str,
     visibility: Option<Value<'v>>,
     implementation: Value<'v>,
+    subrules: Vec<Value<'v>>,
     attrs: BTreeMap<String, AttrValue>,
     schema: BTreeMap<String, AttrSpec>,
     build_setting: Option<BuildSetting>,
@@ -149,9 +152,19 @@ pub(crate) fn register_custom<'v>(
     // Not a valid Starlark identifier: BUILD assignments cannot overwrite roots.
     let slot = format!("__custom_implementation${index}");
     eval.module().set(&slot, implementation);
+    let subrule_slots = subrules
+        .into_iter()
+        .enumerate()
+        .map(|(i, value)| {
+            let slot = format!("__custom_subrule${index}${i}");
+            eval.module().set(&slot, value);
+            slot
+        })
+        .collect();
     context.custom.borrow_mut().push(PendingCustom {
         index,
         slot,
+        subrule_slots,
         attrs,
         schema,
         build_setting,
@@ -741,6 +754,7 @@ fn bzl_globals_for(phase: BzlPhase) -> Globals {
     crate::repository_rule::globals(&mut bzl);
     crate::module_extension::globals(&mut bzl);
     crate::symbolic_macro::globals(&mut bzl);
+    crate::subrule::globals(&mut bzl);
     bzl.build()
 }
 
@@ -863,6 +877,16 @@ fn evaluate_at(
             .map_err(|e| e.to_string())?;
         declared_rules[pending.index].custom = Some(CustomInvocation {
             implementation,
+            subrules: pending
+                .subrule_slots
+                .iter()
+                .map(|slot| {
+                    frozen
+                        .get_any_visibility(slot)
+                        .map(|(value, _)| value)
+                        .map_err(|error| error.to_string())
+                })
+                .collect::<Result<_, _>>()?,
             top_level_functions: loaded.functions.clone(),
             attrs: pending.attrs,
             schema: pending.schema,

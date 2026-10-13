@@ -86,6 +86,75 @@ pub fn alloc_args<'v>(heap: Heap<'v>, active: Arc<AtomicBool>) -> Value<'v> {
     })
 }
 
+/// Serialize only genuine, active Args for actions.write's default SHELL_QUOTED
+/// format: shell-escape each argument and append LF. Borrow the already-expanded
+/// strings directly; do not allocate an intermediate list or clone their payloads.
+/// Native map_each remains eager at builder mutation, unlike Bazel's deferred
+/// command-line expansion. This adds neither deferred callbacks nor param files;
+/// use_param_file/set_param_file_format deliberately remain unsupported.
+pub(crate) fn serialize_write_content(value: Value<'_>) -> anyhow::Result<Vec<u8>> {
+    let args = value
+        .downcast_ref::<Args>()
+        .ok_or_else(|| anyhow!("write content must be a string or Args"))?;
+    args.check_active()?;
+    let values = args.values.borrow();
+    // Compute the exact output allocation with checked arithmetic, without an
+    // invented content-size cap. Each embedded apostrophe expands from 1 to 4
+    // bytes; quotes contribute 2 and every argument contributes a trailing LF.
+    let mut size = 0usize;
+    for text in values.iter() {
+        size = size
+            .checked_add(text.len())
+            .and_then(|size| size.checked_add(1))
+            .ok_or_else(|| anyhow!("Args write content size overflow"))?;
+        if shell_quote_required(text) {
+            size = size
+                .checked_add(2)
+                .ok_or_else(|| anyhow!("Args write content size overflow"))?;
+            for byte in text.bytes() {
+                if byte == b'\'' {
+                    size = size
+                        .checked_add(3)
+                        .ok_or_else(|| anyhow!("Args write content size overflow"))?;
+                }
+            }
+        }
+    }
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(size)
+        .map_err(|error| anyhow!("cannot allocate Args write content: {error}"))?;
+    for text in values.iter() {
+        if shell_quote_required(text) {
+            output.push(b'\'');
+            for byte in text.bytes() {
+                if byte == b'\'' {
+                    output.extend_from_slice(b"'\\''");
+                } else {
+                    output.push(byte);
+                }
+            }
+            output.push(b'\'');
+        } else {
+            output.extend_from_slice(text.as_bytes());
+        }
+        output.push(b'\n');
+    }
+    debug_assert_eq!(output.len(), size);
+    Ok(output)
+}
+
+fn shell_quote_required(text: &str) -> bool {
+    // Pinned Bazel ShellEscaper.java:57-110. Only ASCII letters/digits and
+    // @%-_+:,./ are safe; ~ is additionally safe except at the start. Preserve
+    // UTF-8, backslashes and embedded newlines literally within strong quotes.
+    text.is_empty()
+        || text.starts_with('~')
+        || !text
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"@%-_+:,./~".contains(&byte))
+}
+
 fn sequence(value: Value<'_>) -> anyhow::Result<Vec<Value<'_>>> {
     if let Some(list) = ListRef::from_value(value) {
         Ok(list.iter().collect())
@@ -196,7 +265,7 @@ fn check_mapper(
         // actual top-level def declarations, including private/imported helpers.
         ensure!(
             !name.contains("lambda")
-                && (crate::analysis::is_top_level_mapper(eval, map_each)
+                && (crate::analysis_runtime::is_top_level_mapper(eval, map_each)
                     || eval
                         .module()
                         .get(name)
@@ -386,6 +455,26 @@ mod tests {
         fn expanded<'v>(arguments: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
             Ok(heap.alloc(expand_arguments(arguments)?))
         }
+
+        fn serialized(arguments: Value<'_>) -> anyhow::Result<String> {
+            Ok(String::from_utf8(serialize_write_content(arguments)?)?)
+        }
+    }
+
+    // An intentionally misleading runtime type name must not grant Args access.
+    #[allow(unsafe_code)]
+    mod spoof {
+        use super::*;
+        #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
+        pub(super) struct SpoofArgs;
+        impl fmt::Display for SpoofArgs {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("<Args>")
+            }
+        }
+        starlark::starlark_simple_value!(SpoofArgs);
+        #[starlark_value(type = "Args")]
+        impl<'v> StarlarkValue<'v> for SpoofArgs {}
     }
 
     fn eval(source: &str) -> Result<String, String> {
@@ -426,6 +515,127 @@ mod tests {
     fn fail(source: &str, message: &str) {
         let error = eval(source).unwrap_err();
         assert!(error.contains(message), "{source}: {error}");
+    }
+
+    #[test]
+    fn default_write_bytes_match_pinned_shell_escaper_and_reference_fixture() {
+        Module::with_temp_heap(|module| {
+            let active = Arc::new(AtomicBool::new(true));
+            let value = alloc_args(module.heap(), active.clone());
+            let builder = Args::from_value(value).unwrap();
+            assert!(serialize_write_content(value).unwrap().is_empty());
+            for (text, expected) in [
+                ("plain", "plain\n"),
+                ("aAzZ09@%-_+:,./", "aAzZ09@%-_+:,./\n"),
+                ("a~b", "a~b\n"),
+                ("./~", "./~\n"),
+                ("~", "'~'\n"),
+                ("~user/file", "'~user/file'\n"),
+                ("", "''\n"),
+                ("space value", "'space value'\n"),
+                ("single'quote", "'single'\\''quote'\n"),
+                ("'", "''\\'''\n"),
+                ("''", "''\\'''\\'''\n"),
+                ("double\"quote", "'double\"quote'\n"),
+                ("back\\slash", "'back\\slash'\n"),
+                ("line1\nline2", "'line1\nline2'\n"),
+                ("\t\r", "'\t\r'\n"),
+                ("雪é🙂", "'雪é🙂'\n"),
+                ("x=y", "'x=y'\n"),
+                ("!#$&*?[]();<>|`", "'!#$&*?[]();<>|`'\n"),
+                ("\0", "'\0'\n"),
+            ] {
+                builder.values.borrow_mut().clear();
+                builder.append(vec![text.to_owned()]).unwrap();
+                assert_eq!(
+                    serialize_write_content(value).unwrap(),
+                    expected.as_bytes(),
+                    "{text:?}"
+                );
+            }
+            builder.values.borrow_mut().clear();
+            builder
+                .append(
+                    [
+                        "plain",
+                        "space value",
+                        "single'quote",
+                        "double\"quote",
+                        "back\\slash",
+                        "",
+                        "line1\nline2",
+                        "雪é🙂",
+                    ]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                )
+                .unwrap();
+            let bytes = serialize_write_content(value).unwrap();
+            // Actual mixed.out/mixed.exec bytes from actions-write-args-contract.
+            assert_eq!(bytes, "plain\n'space value'\n'single'\\''quote'\n'double\"quote'\n'back\\slash'\n''\n'line1\nline2'\n'雪é🙂'\n".as_bytes());
+            active.store(false, Ordering::Release);
+            assert!(
+                serialize_write_content(value)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("analysis has ended")
+            );
+            let spoof = module.heap().alloc(spoof::SpoofArgs);
+            assert_eq!(spoof.get_type(), "Args");
+            assert!(
+                serialize_write_content(spoof)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("string or Args")
+            );
+        });
+    }
+
+    #[test]
+    fn write_serializes_eager_formatting_and_mapping_without_new_param_file_support() {
+        pass(
+            r#"
+a.add('v w', format='pre:%s:%%')
+a.add_all(['a', 'b c', ''], format_each='<%s>', before_each='--value', terminate_with='--end')
+serialized(a) == "'pre:v w:%'\n--value\n'<a>'\n--value\n'<b c>'\n--value\n'<>'\n--end\n"
+"#,
+        );
+        pass(
+            r#"
+def mapper(value):
+    if value == 'skip':
+        return None
+    if value == 'two':
+        return ['x y', "q'z"]
+    return value
+a.add_all(['skip', 'two', 'z'], map_each=mapper, format_each='[%s]')
+serialized(a) == "'[x y]'\n'[q'\\''z]'\n'[z]'\n"
+"#,
+        );
+        for source in [
+            "serialized([])",
+            "serialized(())",
+            "serialized({})",
+            "serialized('not Args')",
+            "serialized(None)",
+            "serialized(depset([]))",
+        ] {
+            fail(source, "string or Args");
+        }
+        // The existing native eager boundary is explicit: mapper failure occurs
+        // at add_all, not at genuine Bazel's later write-action execution phase.
+        fail(
+            "def bad(x):\n    fail('EAGER_NATIVE_MAPPER')\na.add_all(['x'], map_each=bad)\nserialized(a)",
+            "EAGER_NATIVE_MAPPER",
+        );
+        for format in ["shell", "multiline", "flag_per_line"] {
+            fail(
+                &format!("a.set_param_file_format({format:?})"),
+                "parameter files are unsupported",
+            );
+        }
+        fail("a.use_param_file('@%s')", "parameter files are unsupported");
     }
 
     #[test]

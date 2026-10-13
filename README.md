@@ -144,6 +144,8 @@ and nested transport to explicit consumers, not automatic run/test environments.
 CLI target loading and reuses it without eagerly resolving unused declarations.
 [Native sets](docs/STARLARK_SETS.md) are available in BUILD, MODULE and `.bzl`,
 including ordered File sets transported through custom providers.
+[Scoped subrules](docs/SUBRULES.md) execute declared zero-attribute helpers with
+real actions and guarded contexts; private dependency attributes remain unsupported.
 [Genuine built-in modules](docs/BUILTIN_MODULES.md) are available through the
 native-only `--experimental-builtin-modules` transition option, using complete
 verified Linux x86-64 resources; the default remains explicit modules only.

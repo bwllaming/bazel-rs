@@ -1,39 +1,22 @@
 //! Filesystem-free analysis of the supported Starlark custom-rule subset.
-// Public Starlark signatures mirror Bazel's keyword-rich action APIs; the
-// attribute macro also generates matching high-arity call trampolines.
-#![allow(clippy::too_many_arguments)]
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
 
-use allocative::Allocative;
 use anyhow::{anyhow, bail, ensure};
-use starlark::any::ProvidesStaticType;
-use starlark::environment::{Methods, MethodsBuilder, Module};
+use starlark::environment::Module;
 use starlark::eval::Evaluator;
-use starlark::starlark_module;
-use starlark::values::dict::DictRef;
-use starlark::values::list::ListRef;
-use starlark::values::none::NoneType;
 use starlark::values::structs::AllocStruct;
-use starlark::values::{
-    FrozenHeapName, Heap, NoSerialize, OwnedFrozenValue, StarlarkPagable, StarlarkValue, Value,
-    starlark_value,
-};
+use starlark::values::{FrozenHeapName, Heap, OwnedFrozenValue, Value};
 
-use crate::action::{Action, WriteAction};
 use crate::custom_rule::{AttrSpec, AttrValue};
-use crate::label::Label;
 use crate::package::Rule;
 use crate::repository::RepositorySet;
-use crate::starlark_types::{
-    File, alloc_file, alloc_target, default_files, file_list, unpack_file,
-};
+use crate::starlark_types::{File, alloc_file, alloc_target, default_files};
 
 #[derive(Clone, Debug)]
 pub struct DependencyTarget {
@@ -48,12 +31,9 @@ pub struct DependencyTarget {
     pub provider_files: Vec<File>,
 }
 
-#[derive(Clone, Debug)]
-pub struct RegisteredAction {
-    pub action: Action,
-    pub inputs: Vec<File>,
-    pub outputs: Vec<File>,
-}
+pub use crate::analysis_runtime::RegisteredAction;
+pub(crate) use crate::analysis_runtime::repository_context;
+use crate::analysis_runtime::{Context, alloc_actions};
 
 #[derive(Debug)]
 pub struct AnalysisResult {
@@ -62,351 +42,6 @@ pub struct AnalysisResult {
     pub actions: Vec<RegisteredAction>,
     pub providers: BTreeMap<String, OwnedFrozenValue>,
     pub provider_files: Vec<File>,
-}
-
-// The upstream marker derive generates unsafe impls; all data here is owned,
-// with no Starlark Values or references hidden from tracing.
-#[allow(unsafe_code)]
-mod owned_types {
-    use super::*;
-
-    #[derive(ProvidesStaticType)]
-    pub(super) struct Context {
-        pub label: Label,
-        pub dependency_files: BTreeSet<File>,
-        pub declared: RefCell<Vec<File>>,
-        pub actions: RefCell<Vec<RegisteredAction>>,
-        pub active: Arc<AtomicBool>,
-        pub top_level_functions: Vec<OwnedFrozenValue>,
-        pub repositories: Arc<RepositorySet>,
-    }
-
-    #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagable)]
-    pub(super) struct Actions;
-}
-use owned_types::{Actions, Context};
-
-impl Drop for Context {
-    fn drop(&mut self) {
-        self.active.store(false, Ordering::Release);
-    }
-}
-
-impl Context {
-    fn declare(&self, name: &str) -> anyhow::Result<File> {
-        let output = self.label.with_name(name).map_err(anyhow::Error::msg)?;
-        let file = File {
-            path: output.generated_exec_path().to_string_lossy().into_owned(),
-            short_path: output.short_path().to_string_lossy().into_owned(),
-            owner: self.label.to_string(),
-            is_source: false,
-        };
-        let mut declared = self.declared.borrow_mut();
-        if !declared.contains(&file) {
-            ensure!(
-                !self
-                    .dependency_files
-                    .iter()
-                    .any(|other| other.path == file.path),
-                "declared output {} conflicts with a dependency artifact",
-                file.path
-            );
-            declared.push(file.clone());
-        }
-        Ok(file)
-    }
-
-    fn known_file(&self, file: &File) -> bool {
-        self.dependency_files.contains(file) || self.declared.borrow().contains(file)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn register(
-        &self,
-        outputs: Vec<File>,
-        inputs: Vec<File>,
-        command: String,
-        write: Option<WriteAction>,
-        program: Option<String>,
-        arguments: Vec<String>,
-        environment: BTreeMap<String, String>,
-    ) -> anyhow::Result<()> {
-        ensure!(
-            !outputs.is_empty(),
-            "an action must have at least one output"
-        );
-        let declared = self.declared.borrow();
-        let mut seen = BTreeSet::new();
-        let mut actions = self.actions.borrow_mut();
-        for output in &outputs {
-            ensure!(
-                !output.is_source
-                    && output.owner == self.label.to_string()
-                    && declared.contains(output),
-                "action output {} is not declared by {}",
-                output.path,
-                self.label
-            );
-            ensure!(
-                seen.insert(output.path.clone()),
-                "duplicate action output {}",
-                output.path
-            );
-            ensure!(
-                !actions.iter().any(|action| action.outputs.contains(output)),
-                "output {} has more than one generating action",
-                output.path
-            );
-        }
-        for input in &inputs {
-            ensure!(
-                self.known_file(input),
-                "action input {} is not a dependency or declared output",
-                input.path
-            );
-        }
-        let action = Action {
-            id: format!("{}#{}", self.label, actions.len()),
-            command,
-            inputs: Vec::new(),
-            outputs: outputs
-                .iter()
-                .map(|file| file.path.clone().into())
-                .collect(),
-            write,
-            program,
-            shell_strict: false,
-            arguments,
-            environment,
-        };
-        crate::action::validate_structure(&action).map_err(anyhow::Error::msg)?;
-        actions.push(RegisteredAction {
-            action,
-            inputs,
-            outputs,
-        });
-        Ok(())
-    }
-}
-
-fn context<'a>(eval: &'a Evaluator<'_, '_, '_>) -> anyhow::Result<&'a Context> {
-    eval.extra
-        .and_then(|extra| extra.downcast_ref::<Context>())
-        .ok_or_else(|| anyhow!("ctx.actions is only available during rule analysis"))
-}
-
-pub(crate) fn is_top_level_mapper(eval: &Evaluator<'_, '_, '_>, value: Value<'_>) -> bool {
-    context(eval).is_ok_and(|context| {
-        context
-            .top_level_functions
-            .iter()
-            .any(|function| function.value().ptr_eq(value))
-    })
-}
-
-pub(crate) fn repository_context(eval: &Evaluator<'_, '_, '_>) -> Option<Arc<RepositorySet>> {
-    context(eval)
-        .ok()
-        .map(|context| context.repositories.clone())
-}
-
-impl fmt::Display for Actions {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("ctx.actions")
-    }
-}
-
-starlark::starlark_simple_value!(Actions);
-starlark::methods_static!(ACTION_METHODS = all_action_methods);
-
-fn all_action_methods(builder: &mut MethodsBuilder) {
-    action_methods(builder);
-    direct_action_methods(builder);
-}
-
-#[starlark_value(type = "actions")]
-impl<'v> StarlarkValue<'v> for Actions {
-    fn get_methods() -> Option<&'static Methods> {
-        Some(ACTION_METHODS.methods())
-    }
-}
-
-fn string_list(value: Value<'_>) -> anyhow::Result<Vec<String>> {
-    crate::args::expand_arguments(value)
-}
-
-fn environment(value: Value<'_>) -> anyhow::Result<BTreeMap<String, String>> {
-    let dict =
-        DictRef::from_value(value).ok_or_else(|| anyhow!("env must be a string-to-string dict"))?;
-    dict.iter()
-        .map(|(key, value)| {
-            Ok((
-                key.unpack_str()
-                    .ok_or_else(|| anyhow!("env keys must be strings"))?
-                    .to_owned(),
-                value
-                    .unpack_str()
-                    .ok_or_else(|| anyhow!("env values must be strings"))?
-                    .to_owned(),
-            ))
-        })
-        .collect()
-}
-
-#[allow(clippy::too_many_arguments)]
-#[starlark_module]
-fn action_methods(builder: &mut MethodsBuilder) {
-    fn args<'v>(this: Value<'v>, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<Value<'v>> {
-        let _ = this;
-        Ok(crate::args::alloc_args(
-            eval.heap(),
-            context(eval)?.active.clone(),
-        ))
-    }
-    fn declare_file<'v>(
-        this: Value<'v>,
-        filename: &str,
-        #[starlark(default = NoneType)] sibling: Value<'v>,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<Value<'v>> {
-        let _ = this;
-        let context = context(eval)?;
-        let name = if sibling.is_none() {
-            filename.to_owned()
-        } else {
-            let sibling = unpack_file(sibling)?;
-            ensure!(
-                context.known_file(&sibling),
-                "sibling must be a dependency or declared File"
-            );
-            let owner = Label::parse_canonical(&sibling.owner).map_err(anyhow::Error::msg)?;
-            ensure!(
-                owner.package_id() == context.label.package_id(),
-                "sibling must be in the current package"
-            );
-            let path = std::path::Path::new(&sibling.path);
-            let exec = if sibling.is_source {
-                path
-            } else {
-                path.strip_prefix("bazel-out/rust-fastbuild/bin")
-                    .map_err(|_| anyhow!("invalid generated sibling execution path"))?
-            };
-            let relative = exec
-                .strip_prefix(context.label.package_exec_path())
-                .map_err(|_| anyhow!("sibling is outside the current package"))?;
-            relative
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new(""))
-                .join(filename)
-                .to_string_lossy()
-                .into_owned()
-        };
-        Ok(alloc_file(eval.heap(), context.declare(&name)?))
-    }
-
-    fn write<'v>(
-        this: Value<'v>,
-        output: Value<'v>,
-        content: &str,
-        #[starlark(default = false)] is_executable: bool,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<NoneType> {
-        let _ = this;
-        context(eval)?.register(
-            vec![unpack_file(output)?],
-            Vec::new(),
-            String::new(),
-            Some(WriteAction {
-                content: content.as_bytes().to_vec(),
-                executable: is_executable,
-            }),
-            None,
-            Vec::new(),
-            BTreeMap::new(),
-        )?;
-        Ok(NoneType)
-    }
-
-    fn run_shell<'v>(
-        this: Value<'v>,
-        #[starlark(require = named)] outputs: Value<'v>,
-        #[starlark(require = named)] command: &str,
-        #[starlark(require = named)] inputs: Option<Value<'v>>,
-        #[starlark(require = named)] arguments: Option<Value<'v>>,
-        #[starlark(require = named)] env: Option<Value<'v>>,
-        #[starlark(require = named, default = false)] use_default_shell_env: bool,
-        #[starlark(require = named)] mnemonic: Option<&str>,
-        #[starlark(require = named)] progress_message: Option<&str>,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<NoneType> {
-        let _ = (this, mnemonic, progress_message);
-        ensure!(
-            !use_default_shell_env,
-            "use_default_shell_env=True is unsupported"
-        );
-        ensure!(
-            ListRef::from_value(outputs).is_some(),
-            "outputs must be a list of Files"
-        );
-        context(eval)?.register(
-            file_list(outputs)?,
-            inputs.map(file_list).transpose()?.unwrap_or_default(),
-            command.to_owned(),
-            None,
-            None,
-            arguments.map(string_list).transpose()?.unwrap_or_default(),
-            env.map(environment).transpose()?.unwrap_or_default(),
-        )?;
-        Ok(NoneType)
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-#[starlark_module]
-fn direct_action_methods(builder: &mut MethodsBuilder) {
-    fn run<'v>(
-        this: Value<'v>,
-        #[starlark(require = named)] outputs: Value<'v>,
-        #[starlark(require = named)] executable: Value<'v>,
-        #[starlark(require = named)] inputs: Option<Value<'v>>,
-        #[starlark(require = named)] tools: Option<Value<'v>>,
-        #[starlark(require = named)] arguments: Option<Value<'v>>,
-        #[starlark(require = named)] env: Option<Value<'v>>,
-        #[starlark(require = named, default = false)] use_default_shell_env: bool,
-        #[starlark(require = named)] mnemonic: Option<&str>,
-        #[starlark(require = named)] progress_message: Option<&str>,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<NoneType> {
-        let _ = (this, mnemonic, progress_message);
-        ensure!(
-            !use_default_shell_env,
-            "use_default_shell_env=True is unsupported"
-        );
-        ensure!(
-            ListRef::from_value(outputs).is_some(),
-            "outputs must be a list of Files"
-        );
-        let mut inputs = inputs.map(file_list).transpose()?.unwrap_or_default();
-        inputs.extend(tools.map(file_list).transpose()?.unwrap_or_default());
-        let program = if let Some(program) = executable.unpack_str() {
-            program.to_owned()
-        } else {
-            let file = unpack_file(executable)?;
-            let program = format!("./{}", file.path);
-            inputs.push(file);
-            program
-        };
-        context(eval)?.register(
-            file_list(outputs)?,
-            inputs,
-            String::new(),
-            None,
-            Some(program),
-            arguments.map(string_list).transpose()?.unwrap_or_default(),
-            env.map(environment).transpose()?.unwrap_or_default(),
-        )?;
-        Ok(NoneType)
-    }
 }
 
 fn dependency<'a>(
@@ -597,7 +232,7 @@ fn make_ctx<'v>(
         ("file", heap.alloc(AllocStruct(single_files))),
         ("outputs", heap.alloc(AllocStruct(outputs))),
         ("label", label),
-        ("actions", heap.alloc(Actions)),
+        ("actions", alloc_actions(heap, context.scope.root())),
     ]));
     if invocation.build_setting.is_some() {
         let default = invocation
@@ -608,9 +243,15 @@ fn make_ctx<'v>(
             heap,
             backing,
             default.clone(),
+            context.scope.root(),
         ))
     } else {
-        Ok(backing)
+        Ok(crate::analysis_ctx::alloc_rule(
+            heap,
+            backing,
+            context.scope.root(),
+            None,
+        ))
     }
 }
 
@@ -661,6 +302,10 @@ fn analyze_inner(
         active: Arc::new(AtomicBool::new(true)),
         top_level_functions: invocation.top_level_functions.clone(),
         repositories,
+        scope: crate::analysis_runtime::ScopeState::new(
+            rule.label.to_string(),
+            crate::subrule::direct_ids(invocation.subrules.iter().map(|value| value.value()))?,
+        ),
     };
     for output in &rule.outs {
         context.declare(output)?;
@@ -677,9 +322,12 @@ fn analyze_inner(
             let implementation = module
                 .heap()
                 .access_owned_frozen_value(&invocation.implementation);
-            let returned = eval
-                .eval_function(implementation, &[ctx], &[])
-                .map_err(|error| anyhow!(error.to_string()))?;
+            let returned = eval.eval_function(implementation, &[ctx], &[]);
+            // Invalidate capabilities before inspecting or freezing providers,
+            // on both successful callback return and ordinary evaluation error.
+            context.scope.finish();
+            context.active.store(false, Ordering::Release);
+            let returned = returned.map_err(|error| anyhow!(error.to_string()))?;
             let files = default_files(returned)?.unwrap_or(predeclared);
             let custom = crate::providers::returned_custom_providers(returned)?;
             // All current custom rules are non-executable/non-test (true flags
@@ -752,6 +400,7 @@ fn analyze_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::label::Label;
     use starlark::environment::Globals;
     use starlark::syntax::{AstModule, Dialect};
 
@@ -1143,6 +792,7 @@ r = rule(implementation=impl, attrs={
             active: Arc::new(AtomicBool::new(true)),
             top_level_functions: Vec::new(),
             repositories: Arc::new(RepositorySet::new(std::path::PathBuf::from("."))),
+            scope: crate::analysis_runtime::ScopeState::new("//pkg:rule".into(), BTreeSet::new()),
         }
     }
 
@@ -1151,9 +801,10 @@ r = rule(implementation=impl, attrs={
         Module::with_temp_heap(|module| -> anyhow::Result<()> {
             module.set(
                 "ctx",
-                module
-                    .heap()
-                    .alloc(AllocStruct([("actions", module.heap().alloc(Actions))])),
+                module.heap().alloc(AllocStruct([(
+                    "actions",
+                    alloc_actions(module.heap(), context.scope.root()),
+                )])),
             );
             let mut eval = Evaluator::new(&module);
             eval.extra = Some(&context);

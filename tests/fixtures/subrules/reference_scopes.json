@@ -1,0 +1,123 @@
+{
+  "kind": "reference_fixture_subset",
+  "evidence": "REFERENCE_ONLY; not a native PASS report",
+  "origins": {
+    "scopes": {
+      "artifact": "artifacts/subrule-scope-contract.json",
+      "sha256": "48f5a3bbd62f7bee3ce206d5f1d6df2a75670441cbd37558daa3a75ea9ccf0e5"
+    },
+    "args_factories": {
+      "artifact": "artifacts/subrule-args-factory-contract.json",
+      "sha256": "355b0ecffd91a17809d171e6e381f1b19d4eecaf0a22be6f3cbaabc9c4dbbab9"
+    }
+  },
+  "native_adapter": "The native test removes only the unused platform(name=\"local_platform\") BUILD declaration. Stored fixture strings, including all .bzl callbacks, are unmodified reference source; adapted native BUILD files are not byte-identical.",
+  "scopes": [
+    {
+      "name": "zeroattrs-no-config-views",
+      "files": {
+        "MODULE.bazel": "module(name=\"subrule_scope_contract\")\n",
+        "BUILD.bazel": "load(\":defs.bzl\",\"r\")\nplatform(name=\"local_platform\")\nr(name=\"zeroattrs\")\n",
+        "defs.bzl": "def _sub(ctx, parent=None, mode=\"\", old=None, receiver=None, out=None):\n    f=ctx.actions.declare_file(ctx.label.name+\".seed\")\n    ctx.actions.write(f,\"seed-data\\n\")\n    print(\"SUBRULE_ENTER\",str(ctx.label))\n    return f\nS=subrule(implementation=_sub,attrs={},toolchains=[],fragments=[],subrules=[])\ndef _rule(ctx):\n    f=S()\n    return [DefaultInfo(files=depset([f]))]\nr=rule(implementation=_rule,subrules=[S])\n"
+      }
+    },
+    {
+      "name": "locked-parent-direct-and-getattr",
+      "files": {
+        "MODULE.bazel": "module(name=\"subrule_scope_contract\")\n",
+        "BUILD.bazel": "load(\":defs.bzl\",\"r\")\nplatform(name=\"local_platform\")\nr(name=\"locked_direct\")\nr(name=\"locked_getattr\")\n",
+        "defs.bzl": "def _sub(ctx, parent=None, mode=\"\", old=None, receiver=None, out=None):\n    f=ctx.actions.declare_file(ctx.label.name+\".seed\")\n    ctx.actions.write(f,\"seed-data\\n\")\n    print(\"SUBRULE_ENTER\",str(ctx.label))\n    if mode==\"locked_direct\":\n        x=parent.label\n    else:\n        x=getattr(parent,\"label\",None)\n    print(\"GUARD_BYPASSED\",x)\n    return f\nS=subrule(implementation=_sub,attrs={},toolchains=[],fragments=[],subrules=[])\ndef _rule(ctx):\n    f=S(parent=ctx,mode=ctx.label.name)\n    return [DefaultInfo(files=depset([f]))]\nr=rule(implementation=_rule,subrules=[S])\n"
+      }
+    },
+    {
+      "name": "locked-parent-structural-introspection",
+      "files": {
+        "MODULE.bazel": "module(name=\"subrule_scope_contract\")\n",
+        "BUILD.bazel": "load(\":defs.bzl\",\"r\")\nplatform(name=\"local_platform\")\nr(name=\"structural\")\n",
+        "defs.bzl": "def _sub(ctx, parent=None, mode=\"\", old=None, receiver=None, out=None):\n    f=ctx.actions.declare_file(ctx.label.name+\".seed\")\n    ctx.actions.write(f,\"seed-data\\n\")\n    print(\"SUBRULE_ENTER\",str(ctx.label))\n    content=str(hasattr(parent,\"label\"))+\"|\"+str(\"label\" in dir(parent))+\"|\"+getattr(parent,\"not_a_field\",\"fallback\")+\"\\n\"\n    out=ctx.actions.declare_file(ctx.label.name+\".out\")\n    ctx.actions.write(out,content)\n    return [f,out]\nS=subrule(implementation=_sub,attrs={},toolchains=[],fragments=[],subrules=[])\ndef _rule(ctx):\n    files=S(parent=ctx)\n    return [DefaultInfo(files=depset(files))]\nr=rule(implementation=_rule,subrules=[S])\n"
+      }
+    },
+    {
+      "name": "captured-parent-actions-object",
+      "files": {
+        "MODULE.bazel": "module(name=\"subrule_scope_contract\")\n",
+        "BUILD.bazel": "load(\":defs.bzl\",\"r\")\nplatform(name=\"local_platform\")\nr(name=\"parent_declare\")\nr(name=\"parent_write\")\n",
+        "defs.bzl": "def _sub(ctx, parent=None, mode=\"\", old=None, receiver=None, out=None):\n    f=ctx.actions.declare_file(ctx.label.name+\".seed\")\n    ctx.actions.write(f,\"seed-data\\n\")\n    print(\"SUBRULE_ENTER\",str(ctx.label))\n    if mode==\"parent_declare\":\n        receiver.declare_file(\"forbidden\")\n    else:\n        receiver.write(out,\"forbidden\")\n    print(\"GUARD_BYPASSED\")\n    return f\nS=subrule(implementation=_sub,attrs={},toolchains=[],fragments=[],subrules=[])\ndef _rule(ctx):\n    actions=ctx.actions\n    out=actions.declare_file(ctx.label.name+\".parent\")\n    f=S(receiver=actions,out=out,mode=ctx.label.name)\n    return [DefaultInfo(files=depset([f]))]\nr=rule(implementation=_rule,subrules=[S])\n"
+      }
+    },
+    {
+      "name": "captured-parent-bound-write",
+      "files": {
+        "MODULE.bazel": "module(name=\"subrule_scope_contract\")\n",
+        "BUILD.bazel": "load(\":defs.bzl\",\"r\")\nplatform(name=\"local_platform\")\nr(name=\"parent_bound\")\n",
+        "defs.bzl": "def _sub(ctx, parent=None, mode=\"\", old=None, receiver=None, out=None):\n    f=ctx.actions.declare_file(ctx.label.name+\".seed\")\n    ctx.actions.write(f,\"seed-data\\n\")\n    print(\"SUBRULE_ENTER\",str(ctx.label))\n    receiver(out,\"forbidden\")\n    print(\"GUARD_BYPASSED\")\n    return f\nS=subrule(implementation=_sub,attrs={},toolchains=[],fragments=[],subrules=[])\ndef _rule(ctx):\n    out=ctx.actions.declare_file(ctx.label.name+\".parent\")\n    write=ctx.actions.write\n    f=S(receiver=write,out=out)\n    return [DefaultInfo(files=depset([f]))]\nr=rule(implementation=_rule,subrules=[S])\n"
+      }
+    },
+    {
+      "name": "escaped-subrule-context",
+      "files": {
+        "MODULE.bazel": "module(name=\"subrule_scope_contract\")\n",
+        "BUILD.bazel": "load(\":defs.bzl\",\"r\")\nplatform(name=\"local_platform\")\nr(name=\"escaped_ctx\")\n",
+        "defs.bzl": "def _sub(ctx, parent=None, mode=\"\", old=None, receiver=None, out=None):\n    f=ctx.actions.declare_file(ctx.label.name+\".seed\")\n    ctx.actions.write(f,\"seed-data\\n\")\n    print(\"SUBRULE_ENTER\",str(ctx.label))\n    return ctx\nS=subrule(implementation=_sub,attrs={},toolchains=[],fragments=[],subrules=[])\ndef _rule(ctx):\n    escaped=S()\n    x=escaped.label\n    print(\"GUARD_BYPASSED\",x)\n    return []\nr=rule(implementation=_rule,subrules=[S])\n"
+      }
+    },
+    {
+      "name": "escaped-subrule-actions-and-bound-write",
+      "files": {
+        "MODULE.bazel": "module(name=\"subrule_scope_contract\")\n",
+        "BUILD.bazel": "load(\":defs.bzl\",\"r\")\nplatform(name=\"local_platform\")\nr(name=\"escaped_actions\")\nr(name=\"escaped_bound\")\n",
+        "defs.bzl": "def _sub(ctx, parent=None, mode=\"\", old=None, receiver=None, out=None):\n    f=ctx.actions.declare_file(ctx.label.name+\".seed\")\n    ctx.actions.write(f,\"seed-data\\n\")\n    print(\"SUBRULE_ENTER\",str(ctx.label))\n    if mode==\"escaped_actions\":\n        return ctx.actions\n    return ctx.actions.write\nS=subrule(implementation=_sub,attrs={},toolchains=[],fragments=[],subrules=[])\ndef _rule(ctx):\n    out=ctx.actions.declare_file(ctx.label.name+\".parent\")\n    escaped=S(mode=ctx.label.name)\n    if ctx.label.name==\"escaped_actions\":\n        escaped.write(out,\"forbidden\")\n    else:\n        escaped(out,\"forbidden\")\n    print(\"GUARD_BYPASSED\")\n    return []\nr=rule(implementation=_rule,subrules=[S])\n"
+      }
+    },
+    {
+      "name": "same-subrule-second-call-stale-context",
+      "files": {
+        "MODULE.bazel": "module(name=\"subrule_scope_contract\")\n",
+        "BUILD.bazel": "load(\":defs.bzl\",\"r\")\nplatform(name=\"local_platform\")\nr(name=\"stale_same\")\n",
+        "defs.bzl": "def _sub(ctx, parent=None, mode=\"\", old=None, receiver=None, out=None):\n    if old!=None:\n        x=old.label\n        print(\"GUARD_BYPASSED\",x)\n        return None\n    f=ctx.actions.declare_file(ctx.label.name+\".seed\")\n    ctx.actions.write(f,\"seed-data\\n\")\n    print(\"SUBRULE_ENTER\",str(ctx.label))\n    return ctx\nS=subrule(implementation=_sub,attrs={},toolchains=[],fragments=[],subrules=[])\ndef _rule(ctx):\n    old=S()\n    S(old=old)\n    return []\nr=rule(implementation=_rule,subrules=[S])\n"
+      }
+    },
+    {
+      "name": "subrule-args-escape-parent-add-and-consume",
+      "files": {
+        "MODULE.bazel": "module(name=\"subrule_scope_contract\")\n",
+        "BUILD.bazel": "load(\":defs.bzl\",\"r\")\nplatform(name=\"local_platform\")\nr(name=\"args_escape\")\n",
+        "defs.bzl": "def _sub(ctx, parent=None, mode=\"\", old=None, receiver=None, out=None):\n    f=ctx.actions.declare_file(ctx.label.name+\".seed\")\n    ctx.actions.write(f,\"seed-data\\n\")\n    print(\"SUBRULE_ENTER\",str(ctx.label))\n    args=ctx.actions.args()\n    args.add(\"from-subrule\")\n    return struct(file=f,args=args)\nS=subrule(implementation=_sub,attrs={},toolchains=[],fragments=[],subrules=[])\ndef _rule(ctx):\n    result=S()\n    result.args.add(\"from-parent\")\n    out=ctx.actions.declare_file(ctx.label.name+\".out\")\n    ctx.actions.write(out,result.args)\n    return [DefaultInfo(files=depset([result.file,out]))]\nr=rule(implementation=_rule,subrules=[S])\n"
+      }
+    }
+  ],
+  "args_factories": [
+    {
+      "name": "parent_object",
+      "files": {
+        "MODULE.bazel": "module(name=\"subrule_args_factory_contract\")\n",
+        "BUILD.bazel": "load(\":defs.bzl\",\"r\")\nplatform(name=\"local_platform\")\nr(name=\"parent_object\")\n",
+        "defs.bzl": "def _sub(ctx,receiver=None):\n    print(\"BEFORE_FACTORY\", \"parent_object\")\n    args=receiver.args()\n    args.add(\"parent_object\")\n    print(\"AFTER_FACTORY\", \"parent_object\")\n    out=ctx.actions.declare_file(ctx.label.name+\".out\")\n    ctx.actions.run_shell(outputs=[out],arguments=[args],command=\"printf '%s\\\\n' \\\"$@\\\" > '\"+out.path+\"'\")\n    return out\nS=subrule(implementation=_sub,attrs={},toolchains=[],fragments=[],subrules=[])\ndef _rule(ctx):\n    receiver=ctx.actions\n    out=S(receiver=receiver)\n    return [DefaultInfo(files=depset([out]))]\nr=rule(implementation=_rule,subrules=[S])\n"
+      }
+    },
+    {
+      "name": "parent_bound",
+      "files": {
+        "MODULE.bazel": "module(name=\"subrule_args_factory_contract\")\n",
+        "BUILD.bazel": "load(\":defs.bzl\",\"r\")\nplatform(name=\"local_platform\")\nr(name=\"parent_bound\")\n",
+        "defs.bzl": "def _sub(ctx,receiver=None):\n    print(\"BEFORE_FACTORY\", \"parent_bound\")\n    args=receiver()\n    args.add(\"parent_bound\")\n    print(\"AFTER_FACTORY\", \"parent_bound\")\n    out=ctx.actions.declare_file(ctx.label.name+\".out\")\n    ctx.actions.run_shell(outputs=[out],arguments=[args],command=\"printf '%s\\\\n' \\\"$@\\\" > '\"+out.path+\"'\")\n    return out\nS=subrule(implementation=_sub,attrs={},toolchains=[],fragments=[],subrules=[])\ndef _rule(ctx):\n    receiver=ctx.actions.args\n    out=S(receiver=receiver)\n    return [DefaultInfo(files=depset([out]))]\nr=rule(implementation=_rule,subrules=[S])\n"
+      }
+    },
+    {
+      "name": "child_object",
+      "files": {
+        "MODULE.bazel": "module(name=\"subrule_args_factory_contract\")\n",
+        "BUILD.bazel": "load(\":defs.bzl\",\"r\")\nplatform(name=\"local_platform\")\nr(name=\"child_object\")\n",
+        "defs.bzl": "def _sub(ctx,receiver=None):\n    return ctx.actions\nS=subrule(implementation=_sub,attrs={},toolchains=[],fragments=[],subrules=[])\ndef _rule(ctx):\n    receiver=S()\n    print(\"BEFORE_FACTORY\", \"child_object\")\n    args=receiver.args()\n    args.add(\"child_object\")\n    print(\"AFTER_FACTORY\", \"child_object\")\n    out=ctx.actions.declare_file(ctx.label.name+\".out\")\n    ctx.actions.run_shell(outputs=[out],arguments=[args],command=\"printf '%s\\\\n' \\\"$@\\\" > '\"+out.path+\"'\")\n    return [DefaultInfo(files=depset([out]))]\nr=rule(implementation=_rule,subrules=[S])\n"
+      }
+    },
+    {
+      "name": "child_bound",
+      "files": {
+        "MODULE.bazel": "module(name=\"subrule_args_factory_contract\")\n",
+        "BUILD.bazel": "load(\":defs.bzl\",\"r\")\nplatform(name=\"local_platform\")\nr(name=\"child_bound\")\n",
+        "defs.bzl": "def _sub(ctx,receiver=None):\n    return ctx.actions.args\nS=subrule(implementation=_sub,attrs={},toolchains=[],fragments=[],subrules=[])\ndef _rule(ctx):\n    receiver=S()\n    print(\"BEFORE_FACTORY\", \"child_bound\")\n    args=receiver()\n    args.add(\"child_bound\")\n    print(\"AFTER_FACTORY\", \"child_bound\")\n    out=ctx.actions.declare_file(ctx.label.name+\".out\")\n    ctx.actions.run_shell(outputs=[out],arguments=[args],command=\"printf '%s\\\\n' \\\"$@\\\" > '\"+out.path+\"'\")\n    return [DefaultInfo(files=depset([out]))]\nr=rule(implementation=_rule,subrules=[S])\n"
+      }
+    }
+  ]
+}
