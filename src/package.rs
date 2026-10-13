@@ -725,8 +725,11 @@ fn bzl_globals_for(phase: BzlPhase) -> Globals {
         module_native_globals(&mut native);
     }
     let native = native.build();
-    let mut bzl =
-        GlobalsBuilder::extended_by(&[LibraryExtension::StructType, LibraryExtension::Print]);
+    let mut bzl = GlobalsBuilder::extended_by(&[
+        LibraryExtension::StructType,
+        LibraryExtension::Print,
+        LibraryExtension::SetType,
+    ]);
     bzl.frozen_heap().add_reference(native.heap());
     bzl.set("native", AllocStruct(native.iter()));
     crate::custom_rule::rule_globals(&mut bzl);
@@ -801,7 +804,7 @@ fn evaluate_at(
         }
         expr.visit_expr(|child| expressions.push(child));
     }
-    let globals = GlobalsBuilder::standard()
+    let globals = GlobalsBuilder::extended_by(&[LibraryExtension::SetType])
         .with(rule_globals)
         .with(package_globals)
         .build();
@@ -946,6 +949,91 @@ fn validate_rules(declarations: Vec<Rule>) -> Result<BTreeMap<Label, Rule>, Stri
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sets_in_build_and_loaded_bzl_keep_order_aliases_and_sequence_boundaries() {
+        let package = custom_fixture(
+            "Set = set\nBASE = Set(['b.txt', 'a.txt', 'b.txt'])\ndef files():\n    result = set(BASE)\n    alias = result\n    result |= set(['c.txt'])\n    (list(alias) == ['b.txt', 'a.txt', 'c.txt'] and list(BASE) == ['b.txt', 'a.txt']) or fail('aliases')\n    return list(result)\n",
+            "load(':defs.bzl', 'Set', 'BASE', 'files')\n(Set == set and type(Set) == 'builtin_function_or_method') or fail('constructor')\nfilegroup(name='direct', srcs=list(set(['b.txt', 'a.txt', 'b.txt'])))\nfilegroup(name='loaded', srcs=files())",
+        ).unwrap();
+        assert_eq!(
+            package[&Label::parse(":direct", "pkg").unwrap()].srcs,
+            ["b.txt", "a.txt"]
+        );
+        assert_eq!(
+            package[&Label::parse(":loaded", "pkg").unwrap()].srcs,
+            ["b.txt", "a.txt", "c.txt"]
+        );
+        rejected(
+            "filegroup(name='x', srcs=set(['a.txt']))",
+            "list of strings",
+        );
+        // Enabling sets must not expose the unrelated .bzl extensions in BUILD.
+        rejected("x = struct()", "struct");
+        rejected("print('x')", "print");
+        let error = custom_fixture(
+            "def impl(ctx):\n    pass\nr = rule(implementation=impl, attrs={'dep': attr.label(providers=[set])})",
+            "load(':defs.bzl', 'r')",
+        ).unwrap_err();
+        assert!(error.contains("Provider constructors"), "{error}");
+    }
+
+    #[test]
+    fn sets_in_both_bzl_phases_survive_transitive_load_and_frozen_callbacks() {
+        let root = TempRoot::new();
+        std::fs::write(root.0.join("pkg/BUILD"), "").unwrap();
+        std::fs::write(
+            root.0.join("pkg/base.bzl"),
+            "Set = set\nBASE = Set(['b', 'a', 'b'])\n",
+        )
+        .unwrap();
+        std::fs::write(root.0.join("pkg/defs.bzl"), r#"
+load(':base.bzl', 'Set', 'BASE')
+Alias = Set
+(Alias == set and repr(set) == '<built-in function set>' and dir(set) == [] and not hasattr(set, 'type')) or fail('constructor')
+not hasattr(native, 'set') or fail('native.set')
+def copy():
+    result = Alias(BASE)
+    result.add('c')
+    return list(result), list(BASE), Alias == set
+def mutate():
+    BASE.add('c')
+"#).unwrap();
+        for globals in [bzl_globals(), module_bzl_globals()] {
+            let ast = AstModule::parse(
+                "pkg/BUILD",
+                "load(':defs.bzl', 'copy', 'mutate', 'Alias')".into(),
+                &Dialect::Standard,
+            )
+            .unwrap();
+            let loaded = crate::loading::load_modules(&root.0, "pkg", &ast, &globals).unwrap();
+            let defs = &loaded[":defs.bzl"];
+            let copy = defs.get("copy").unwrap();
+            let mutate = defs.get("mutate").unwrap();
+            let alias = defs.get("Alias").unwrap();
+            drop(loaded);
+            Module::with_temp_heap(|module| {
+                let mut eval = Evaluator::new(&module);
+                let result = eval
+                    .eval_function(module.heap().access_owned_frozen_value(&copy), &[], &[])
+                    .unwrap();
+                assert_eq!(
+                    result.to_repr(),
+                    "([\"b\", \"a\", \"c\"], [\"b\", \"a\"], True)"
+                );
+                assert!(
+                    eval.eval_function(module.heap().access_owned_frozen_value(&mutate), &[], &[])
+                        .is_err()
+                );
+                module.set("Alias", module.heap().access_owned_frozen_value(&alias));
+                for source in ["{Alias: 1}", "set([Alias])", "Alias.type", "Alias[int]"] {
+                    let ast =
+                        AstModule::parse("use.bzl", source.into(), &Dialect::Standard).unwrap();
+                    assert!(eval.eval_module(ast, &globals).is_err(), "{source}");
+                }
+            });
+        }
+    }
+
     #[test]
     fn run_environment_available_in_both_bzl_modes() {
         for globals in [super::bzl_globals(), super::module_bzl_globals()] {

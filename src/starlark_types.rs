@@ -847,9 +847,15 @@ impl<'v> StarlarkValue<'v> for Target {
     }
 
     fn is_in(&self, other: Value<'v>) -> starlark::Result<bool> {
-        Ok(DefaultInfoConstructor::from_value(other).is_some()
-            || crate::providers::provider_identity(other)
-                .is_some_and(|identity| self.providers.contains_key(&identity)))
+        if DefaultInfoConstructor::from_value(other).is_some() {
+            return Ok(true);
+        }
+        let identity = crate::providers::provider_identity(other).ok_or_else(|| {
+            starlark::Error::new_other(anyhow!(
+                "Target membership requires an exported provider constructor"
+            ))
+        })?;
+        Ok(self.providers.contains_key(&identity))
     }
 }
 
@@ -1250,7 +1256,15 @@ ok = (len(labels.to_list()) == 2 and owner == target.label and
 
     #[test]
     fn target_and_default_info_provider() {
-        pass("DefaultInfo in target and not ('DefaultInfo' in target)");
+        pass("DefaultInfo in target");
+        for key in ["'DefaultInfo'", "DefaultInfo()", "len", "None", "42"] {
+            for operator in ["in", "not in"] {
+                fail(
+                    &format!("{key} {operator} target"),
+                    "Target membership requires an exported provider constructor",
+                );
+            }
+        }
         pass("target[DefaultInfo].files.to_list() == [a] and target.files.to_list() == [a]");
         pass("target.label == Label('//pkg:rule') and type(target) == 'Target'");
         pass(

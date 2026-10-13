@@ -12,11 +12,12 @@ use starlark::eval::{Arguments, Evaluator};
 use starlark::values::dict::DictRef;
 use starlark::values::list::ListRef;
 use starlark::values::none::NoneType;
+use starlark::values::set::SetRef;
 use starlark::values::structs::StructRef;
 use starlark::values::tuple::TupleRef;
 use starlark::values::{
     Coerce, Freeze, Heap, NoSerialize, ProvidesStaticType, StarlarkPagable, StarlarkPagablePanic,
-    StarlarkValue, Trace, Value, ValueLike, starlark_value,
+    StarlarkValue, Trace, UnpackValue, Value, ValueLike, starlark_value,
 };
 use starlark::{starlark_complex_value, starlark_module, starlark_simple_value};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -412,6 +413,10 @@ pub fn provider_files(value: Value<'_>) -> anyhow::Result<Vec<File>> {
                 for child in tuple.iter() {
                     self.walk(child, depth + 1)?;
                 }
+            } else if let Some(set) = SetRef::unpack_value_opt(value) {
+                for child in set.iter() {
+                    self.walk(child, depth + 1)?;
+                }
             } else if let Some(dict) = DictRef::from_value(value) {
                 for (key, child) in dict.iter() {
                     self.walk(key, depth + 1)?;
@@ -515,7 +520,7 @@ mod tests {
     use starlark::syntax::{AstModule, Dialect};
 
     fn test_globals() -> Globals {
-        GlobalsBuilder::extended_by(&[LibraryExtension::StructType])
+        GlobalsBuilder::extended_by(&[LibraryExtension::StructType, LibraryExtension::SetType])
             .with(analysis_globals)
             .with(globals)
             .with(crate::template_variable_info::install)
@@ -637,11 +642,25 @@ names = x.info.inherited_environment
 names.append("consumer")
 (x.info.environment == {"z": "v"} and x.info.inherited_environment == ["HOME", "HOME"]) or fail("fresh projections")
 (R in native_target and native_target[R] == x.info) or fail("native key dispatch")
-(R() not in target and "RunEnvironmentInfo" not in native_target) or fail("strict keys")
 "#.into(), &Dialect::Standard).unwrap();
             Evaluator::new(&module)
                 .eval_module(ast, &test_globals())
                 .unwrap();
+            for source in [
+                "R() not in target",
+                "'RunEnvironmentInfo' not in native_target",
+            ] {
+                let ast =
+                    AstModule::parse("wrong_key.bzl", source.into(), &Dialect::Standard).unwrap();
+                let error = Evaluator::new(&module)
+                    .eval_module(ast, &test_globals())
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    error.contains("Target membership requires an exported provider constructor"),
+                    "{source}: {error}"
+                );
+            }
             for source in [
                 "target[R]",
                 "target[R()]",
@@ -839,6 +858,7 @@ names.append("consumer")
                 "DefaultInfo()",
                 "platform_common.TemplateVariableInfo({})",
                 "len",
+                "set",
                 "'PackageSpecificationInfo'",
                 "None",
                 "struct()",
@@ -904,6 +924,8 @@ names.append("consumer")
                 "P(value=info)",
                 "P(value=[{'k': struct(nested=(info,))}])",
                 "P(value={info: 'key'})",
+                "P(value=set([info]))",
+                "P(value=[set([(info,)])])",
             ] {
                 let ast =
                     AstModule::parse("return.star", source.into(), &Dialect::Standard).unwrap();
@@ -1052,8 +1074,14 @@ names.append("consumer")
                 ("P(x={'k': 1})", Some(vec![])),
                 ("l = []; p = P(x=l); l.append(p); p", None),
                 ("P(x=len)", None),
+                ("P(x=set([len]))", None),
+                ("l = []; l.append(l); P(x=[set([file]), l])", None),
                 (
                     "def deep():\n    x = []\n    for i in range(140):\n        x = [x]\n    return P(x=x)\ndeep()",
+                    None,
+                ),
+                (
+                    "def deep():\n    x = file\n    for i in range(140):\n        x = (x,)\n    return P(x=set([x]))\ndeep()",
                     None,
                 ),
             ] {
@@ -1066,6 +1094,172 @@ names.append("consumer")
                     Some(expected) => assert_eq!(provider_files(result).unwrap(), expected),
                     None => assert!(provider_files(result).is_err(), "{source}"),
                 }
+            }
+        });
+    }
+
+    #[test]
+    fn set_payload_files_preserve_first_encounter_order_shared_values_and_freeze() {
+        let generated = File {
+            path: "bazel-rs-out/bin/pkg/generated.txt".into(),
+            short_path: "pkg/generated.txt".into(),
+            owner: "//pkg:producer".into(),
+            is_source: false,
+        };
+        let second_source = File {
+            path: "pkg/second.txt".into(),
+            short_path: "pkg/second.txt".into(),
+            owner: "//pkg:second.txt".into(),
+            is_source: true,
+        };
+        let expected = vec![generated.clone(), file(), second_source.clone()];
+        let frozen = Module::with_temp_heap(|module| {
+            module.set("file", alloc_file(module.heap(), file()));
+            module.set("generated", alloc_file(module.heap(), generated));
+            module.set("second", alloc_file(module.heap(), second_source));
+            let context = context("//defs:sets.bzl");
+            let ast = AstModule::parse("sets.bzl", r#"
+P = provider()
+shared = set([generated, file, generated])
+nested = set([(file, P(files=(second, generated)))])
+metadata = set([RunEnvironmentInfo({'MODE': 'test'}, ['HOME']), platform_common.TemplateVariableInfo({'FLAG': 'value'})])
+x = P(a=shared, b=(nested, shared), c=metadata)
+empty = P(files=set(), metadata=metadata)
+"#.into(), &Dialect::Standard).unwrap();
+            {
+                let mut eval = Evaluator::new(&module);
+                eval.extra = Some(&context);
+                eval.eval_module(ast, &test_globals()).unwrap();
+            }
+            assert_eq!(provider_files(module.get("x").unwrap()).unwrap(), expected);
+            assert!(
+                provider_files(module.get("empty").unwrap())
+                    .unwrap()
+                    .is_empty()
+            );
+            module.freeze().unwrap()
+        });
+        let payload = frozen.get("x").unwrap();
+        drop(frozen);
+        assert_eq!(provider_files(payload.value()).unwrap(), expected);
+        let reowned = Module::with_temp_heap(|module| {
+            module.set("x", module.heap().access_owned_frozen_value(&payload));
+            module.freeze().unwrap()
+        });
+        drop(payload);
+        assert_eq!(
+            provider_files(reowned.get("x").unwrap().value()).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn set_constructor_is_not_a_target_provider_key() {
+        let definitions = extension(
+            "//defs:sets.bzl",
+            "P = provider()\nx = P(files=set([file]))\nSet = set",
+        )
+        .unwrap();
+        let payload = definitions.get("x").unwrap();
+        let key = definitions.get("Set").unwrap();
+        assert!(provider_identity(key.value()).is_none());
+        let error = requirement_info(key.value()).unwrap_err().to_string();
+        assert!(error.contains("Provider constructors"), "{error}");
+        Module::with_temp_heap(|module| {
+            module.import_public_symbols(&definitions);
+            module.set(
+                "target",
+                alloc_target_with_providers(
+                    module.heap(),
+                    "//pkg:target",
+                    vec![],
+                    BTreeMap::from([(instance_identity(payload.value()).unwrap(), payload)]),
+                ),
+            );
+            let ast = AstModule::parse("use.star", "(P in target and DefaultInfo in target) or fail('provider membership')\nlist(target[P].files) == [file] or fail('provider files')".into(), &Dialect::Standard).unwrap();
+            Evaluator::new(&module)
+                .eval_module(ast, &test_globals())
+                .unwrap();
+            for source in [
+                "set in target",
+                "Set in target",
+                "set not in target",
+                "Set not in target",
+            ] {
+                let ast = AstModule::parse("use.star", source.into(), &Dialect::Standard).unwrap();
+                let error = Evaluator::new(&module)
+                    .eval_module(ast, &test_globals())
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    error.contains("Target membership requires an exported provider constructor"),
+                    "{source}: {error}"
+                );
+            }
+            for source in ["target[set]", "target[Set]"] {
+                let ast = AstModule::parse("use.star", source.into(), &Dialect::Standard).unwrap();
+                let error = Evaluator::new(&module)
+                    .eval_module(ast, &test_globals())
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    error.contains("exported provider constructor"),
+                    "{source}: {error}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn target_membership_rejects_unexported_constructor_but_not_absent_exported_key() {
+        let definitions = extension(
+            "//defs:providers.bzl",
+            "def factory():\n    return provider()\nBOX = [factory()]\nP = provider()",
+        )
+        .unwrap();
+        Module::with_temp_heap(|module| {
+            module.import_public_symbols(&definitions);
+            module.set(
+                "target",
+                alloc_target_with_providers(module.heap(), "//pkg:target", vec![], BTreeMap::new()),
+            );
+            let ast = AstModule::parse("use.star", "(P not in target and DefaultInfo in target and target[DefaultInfo].files.to_list() == []) or fail('valid absent keys')\nBOX[0]".into(), &Dialect::Standard).unwrap();
+            let unexported = Evaluator::new(&module)
+                .eval_module(ast, &test_globals())
+                .unwrap();
+            assert!(ProviderConstructor::from_value(unexported).is_some());
+            assert!(provider_identity(unexported).is_none());
+            assert!(
+                requirement_info(unexported)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("exported name")
+            );
+            for (source, expected) in [
+                (
+                    "BOX[0] in target",
+                    "Target membership requires an exported provider constructor",
+                ),
+                (
+                    "BOX[0] not in target",
+                    "Target membership requires an exported provider constructor",
+                ),
+                (
+                    "target[BOX[0]]",
+                    "Target indexing requires an exported provider constructor",
+                ),
+                ("target[P]", "does not provide"),
+                (
+                    "P() in target",
+                    "Target membership requires an exported provider constructor",
+                ),
+            ] {
+                let ast = AstModule::parse("use.star", source.into(), &Dialect::Standard).unwrap();
+                let error = Evaluator::new(&module)
+                    .eval_module(ast, &test_globals())
+                    .unwrap_err()
+                    .to_string();
+                assert!(error.contains(expected), "{source}: {error}");
             }
         });
     }

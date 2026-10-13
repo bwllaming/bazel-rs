@@ -335,7 +335,6 @@ copy = x.variables
 copy["FLAG"] = "consumer-mutated"
 (x.variables == {"FLAG": "seed"}) or fail("consumer snapshot")
 (target[T] == x and target[T].variables["FLAG"] == "seed") or fail("lookup")
-(T({}) not in target and "builtin:TemplateVariableInfo" not in target) or fail("strict keys")
 "#
                 .to_owned(),
                 &Dialect::Standard,
@@ -344,6 +343,21 @@ copy["FLAG"] = "consumer-mutated"
             Evaluator::new(&module)
                 .eval_module(ast, &globals())
                 .unwrap();
+            for source in [
+                "T({}) not in target",
+                "'builtin:TemplateVariableInfo' not in target",
+            ] {
+                let ast =
+                    AstModule::parse("invalid.bzl", source.into(), &Dialect::Standard).unwrap();
+                let error = Evaluator::new(&module)
+                    .eval_module(ast, &globals())
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    error.contains("Target membership requires an exported provider constructor"),
+                    "{source}: {error}"
+                );
+            }
             let ast = AstModule::parse(
                 "invalid.bzl",
                 "target[T({})]".to_owned(),

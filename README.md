@@ -142,6 +142,8 @@ provider-constrained consumers, membership and visibility checks.
 and nested transport to explicit consumers, not automatic run/test environments.
 [Root MODULE validation](docs/ROOT_MODULE_VALIDATION.md) records the root before
 CLI target loading and reuses it without eagerly resolving unused declarations.
+[Native sets](docs/STARLARK_SETS.md) are available in BUILD, MODULE and `.bzl`,
+including ordered File sets transported through custom providers.
 [Genuine built-in modules](docs/BUILTIN_MODULES.md) are available through the
 native-only `--experimental-builtin-modules` transition option, using complete
 verified Linux x86-64 resources; the default remains explicit modules only.

@@ -1,9 +1,14 @@
 # Starlark set compatibility work
 
-The core repair passes the verification gates below. Production BUILD, MODULE
-and `.bzl` globals are **not enabled by this core-only stage**. A separate
-integration stage must prove real action outputs and provider-contained File
-dependency retention before exposing the constructor there.
+The core repair passes the verification gates below. The subsequent production
+integration enables sets in BUILD, MODULE and both ordinary/MODULE-loaded `.bzl`
+environments. Its frozen-binary comparison passes the bounded profile described
+below; this is not unrestricted Bazel compatibility.
+
+Provider payloads containing sets are traversed in order, including generated
+Files. Existing cycle/depth guards, first-encounter deduplication and provider
+identity checks remain intact. This is not an implicit conversion to a sequence:
+use `list(s)` where an action, attribute or other API requires a list/tuple.
 
 ## Core contract
 
@@ -83,10 +88,39 @@ recorded: iterator error cleanup was corrected, static constructor typing was
 restored, profiling expectations gained only the three new opcode rows, and the
 genuine `.elems()` input gap was fixed without weakening the Go fixture.
 
-Evidence is bound in `artifacts/h1-set-core-verification-manifest.json`, including
+Historical core-only evidence is bound in `artifacts/h1-set-core-verification-manifest.json`, including
 full before/after interpreter results, host tests, analyzer comparison, regression
 receipts and preserved application probe. Production globals remain deliberately
-disabled in this core-only stage, so that probe still fails at missing `set`.
+disabled in that core-only stage, so its preserved probe fails at missing `set`.
+The later production integration requires its own candidate, reference matrix
+and preserved application probe; it does not rewrite that historical result.
+
+## Verified production integration
+
+The production gate passes **1,011 Rust and 572 Python tests**, including 16
+real set-driven CLI groups and 39 strict harness tests. The new candidate passes
+seven comparison families, 33 probes, 62 phases and 136 CLI commands in
+`artifacts/starlark-sets-validation.json`. Its status is
+`PASS_ONLY_BOUNDED_PROFILE`: both reference self-XOR crashes remain explicit
+intentional divergences. Twelve adjacent suites also pass.
+
+Actual generated Files carried only through a custom provider's set are scheduled
+for their consumer, with empty implicit DefaultInfo files. Cold/warm builds and
+source changes produce verified ordered bytes. Frozen factories and genuine
+module-extension/repository callbacks likewise produce consumed action outputs.
+
+The comparison exposed and closed a preexisting Target membership gap. Membership
+now requires an exported provider constructor, like indexing: invalid values and
+unexported constructors error; valid absent providers yield `False`, and
+DefaultInfo remains present. Original debug-false observations are preserved,
+while `membership_gap_closure` binds new paired native/reference rejection.
+
+The preserved frozen application query advances to missing `subrule` in generated
+globals code. Checkout contents and the required Git symlink remain unchanged;
+probe scratch and comparison servers are cleaned. Bindings and receipts are in
+`artifacts/h2-set-integration-verification-manifest.json` and
+`artifacts/mainrepo-starlark-sets-loading.json`. Analyzer results retain the exact
+twelve known dependency diagnostics, with zero new or root-source errors.
 
 General value formatting, frozen-provider hashing and broader depset-element
 compatibility remain separate limitations. The disabled-set command-line flag

@@ -476,7 +476,8 @@ pub(crate) fn evaluate_source_with_builtins(
     let ast = AstModule::parse(filename, source, &dialect).map_err(|e| e.to_string())?;
     validate_module_syntax(&ast)?;
     let source_profile_error = crate::repository_text::validate_execution_source(&ast).err();
-    let mut globals = GlobalsBuilder::extended_by(&[LibraryExtension::Print]);
+    let mut globals =
+        GlobalsBuilder::extended_by(&[LibraryExtension::Print, LibraryExtension::SetType]);
     for name in [
         "module",
         "bazel_dep",
@@ -1298,6 +1299,46 @@ mod tests {
     use super::*;
     fn run(s: &str) -> ModuleFile {
         evaluate_source("MODULE.bazel", s.to_owned()).unwrap()
+    }
+
+    #[test]
+    fn sets_in_module_globals_record_only_explicit_sequence_conversions() {
+        let file = run(r#"
+Set = set
+names = Set(['b', 'a', 'b'])
+alias = names
+names.update(set(['c']))
+(list(alias) == ['b', 'a', 'c'] and type(Set) == 'builtin_function_or_method' and dir(Set) == [] and not hasattr(Set, 'type')) or fail('set globals')
+module(name='root')
+[bazel_dep(name=name, version='1') for name in names]
+e = use_extension('//:ext.bzl', 'ext')
+e.tag(names=list(names))
+"#);
+        assert_eq!(
+            file.dependencies
+                .iter()
+                .map(|dep| dep.name.as_str())
+                .collect::<Vec<_>>(),
+            ["b", "a", "c"]
+        );
+        assert_eq!(
+            file.extension_usages[0].tags[0].attributes["names"],
+            serde_json::json!(["b", "a", "c"])
+        );
+        for source in [
+            "e=use_extension('//:ext.bzl','ext')\ne.tag(names=set(['a']))",
+            "r=use_repo_rule('//:repo.bzl','repo')\nr(name='repo', names=set(['a']))",
+        ] {
+            fails(source, "unsupported extension tag attribute");
+        }
+        for source in ["x = {set: 1}", "x = set([set])"] {
+            fails(source, "not hashable");
+        }
+        fails("x = set.type", "type");
+        fails("x = set[int]", "not supported");
+        fails("names=set()\nnames |= set(['c'])", "may not be reassigned");
+        fails("load('//:defs.bzl', 'Set')", "load");
+        fails("def f():\n    return set()", "def");
     }
 
     #[test]

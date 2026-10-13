@@ -180,8 +180,12 @@ checkout is unchanged; no application query/build/test success is claimed.
       vendor baseline; verify unchanged dependency resolution and native behavior.
 - [x] Repair real set methods, constructor metadata and assignment-specific
       mutation semantics without changing ordinary binary operations.
-- [ ] Enable genuine sets in BUILD/MODULE/.bzl and retain generated File
+- [x] Enable genuine sets in BUILD/MODULE/.bzl and retain generated File
       dependencies through provider-contained sets; verify actual action outputs.
+
+Production integration verified 1,011 Rust/572 Python tests, 62 comparison phases,
+136 CLI commands and twelve adjacent suites. Invalid/unexported Target membership
+now rejects correctly. The unchanged application advances to missing subrule.
 
 Each stage is separately verified and committed. Default-enabled core set support
 does not establish general-value formatting, disabled-flag or full Bazel parity.
