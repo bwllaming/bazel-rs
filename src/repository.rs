@@ -116,7 +116,31 @@ impl RepositorySet {
         // repository has the empty alias: external @// is NOT self or main.
         let main_empty_alias = repository.is_empty() && text.starts_with("@//");
         if text.starts_with('@') && !text.starts_with("@@") && !main_empty_alias {
-            Label::parse_in(text, repository, package, self.mapping(repository)?)
+            let mapping = self.mapping(repository)?;
+            if let Some((apparent, _)) = text[1..].split_once("//")
+                && !mapping.contains_key(apparent)
+            {
+                let graph = self.resolve_graph()?;
+                let module = if repository.is_empty() {
+                    &graph.root
+                } else {
+                    &graph.modules[repository].module
+                };
+                if let Some(usage) = module.extension_usages.iter().find(|usage| {
+                    usage.identity.is_repo_rule()
+                        && usage
+                            .imports
+                            .iter()
+                            .any(|import| import.local_name == apparent)
+                }) {
+                    Label::validate_syntax(text, package)?;
+                    return Err(format!(
+                        "repository @{apparent} is declared by use_repo_rule {:?} in @@{repository} but is not materialized: repository rule execution is not implemented",
+                        usage.identity.extension_name
+                    ));
+                }
+            }
+            Label::parse_in(text, repository, package, mapping)
         } else {
             let mapping = if main_empty_alias {
                 BTreeMap::from([(String::new(), String::new())])
@@ -366,6 +390,72 @@ mod tests {
         f.write("MODULE.bazel", "module(name='main')\n");
         assert_eq!(repos.resolve_graph().unwrap_err(), error);
         assert!(repos.root("").is_ok());
+    }
+
+    #[test]
+    fn direct_repository_declarations_are_pending_and_owner_scoped() {
+        let f = Fixture::new();
+        let repos = f.registry();
+        f.write("main/MODULE.bazel", "module(name='main')\nbazel_dep(name='dep',version='1')\nr=use_repo_rule('//:missing.bzl','r')\nr(name='root_generated')\n");
+        f.write("registry/modules/dep/1/MODULE.bazel", "module(name='dep',version='1')\nr=use_repo_rule('//:missing.bzl','r')\nr(name='dep_generated')\nr(name='ignored',dev_dependency=True)\n");
+        assert!(repos.root("").is_ok());
+        assert!(repos.resolved.get().is_none());
+        assert_eq!(
+            repos.parse("@dep//:file", "", "").unwrap().repository,
+            "dep+"
+        );
+        for (name, owner) in [("root_generated", ""), ("dep_generated", "dep+")] {
+            let error = repos
+                .parse(&format!("@{name}//:file"), owner, "")
+                .unwrap_err();
+            assert!(error.contains("declared by use_repo_rule"), "{error}");
+            assert!(
+                error.contains("repository rule execution is not implemented"),
+                "{error}"
+            );
+            assert!(!repos.mapping(owner).unwrap().contains_key(name));
+        }
+        for (name, owner) in [
+            ("dep_generated", ""),
+            ("root_generated", "dep+"),
+            ("ignored", "dep+"),
+        ] {
+            assert!(
+                repos
+                    .parse(&format!("@{name}//:file"), owner, "")
+                    .unwrap_err()
+                    .contains("unknown apparent repository")
+            );
+        }
+        assert!(repos.registry_roots.get().is_none());
+        assert!(!f.0.join("main/bazel-rs-out").exists());
+    }
+
+    #[test]
+    fn ignored_root_direct_repositories_do_not_enter_pending_namespace() {
+        let f = Fixture::new();
+        f.write("MODULE.bazel", "module(name='main')\nr=use_repo_rule('//:missing.bzl','r')\nr(name='ignored',dev_dependency=True)\n");
+        let repos = RepositorySet::with_options(
+            f.0.clone(),
+            ResolverOptions {
+                ignore_dev_dependencies: true,
+                ..Default::default()
+            },
+        );
+        assert!(
+            repos
+                .parse("@ignored//:file", "", "")
+                .unwrap_err()
+                .contains("unknown apparent repository")
+        );
+        assert!(
+            repos
+                .resolve_graph()
+                .unwrap()
+                .root
+                .extension_usages
+                .is_empty()
+        );
     }
 
     #[test]

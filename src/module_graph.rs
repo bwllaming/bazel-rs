@@ -12,7 +12,7 @@
 //!
 //! Semantics: https://bazel.build/external/module#version-selection
 //! Relaxed versions: https://bazel.build/external/module#version_format
-use crate::bzlmod::{self, Dependency, ModuleFile, ModuleOverride};
+use crate::bzlmod::{self, Dependency, EvaluationContext, ModuleFile, ModuleOverride, ModuleRole};
 use crate::registry::Registry;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -97,9 +97,12 @@ pub fn resolve(root: &Path, options: &ResolverOptions) -> Result<ResolvedGraph, 
             root_path.display()
         ));
     }
-    let root = bzlmod::evaluate_for_resolution(
+    let root = bzlmod::evaluate_with_context(
         &root_path.join("MODULE.bazel"),
-        options.ignore_dev_dependencies,
+        EvaluationContext {
+            role: ModuleRole::Root,
+            ignore_dev_dependencies: options.ignore_dev_dependencies,
+        },
     )?;
     let no_overrides = BTreeMap::new();
     // Bazel 9.3 ModuleThreadContext.addOverride ignores all MODULE overrides
@@ -387,7 +390,13 @@ impl Discovery<'_> {
             let path = std::fs::canonicalize(self.root_path.join(path)).map_err(|e| {
                 format!("cannot resolve local override for {name:?} at {path:?}: {e}")
             })?;
-            let module = bzlmod::evaluate_for_resolution(&path.join("MODULE.bazel"), true)?;
+            let module = bzlmod::evaluate_with_context(
+                &path.join("MODULE.bazel"),
+                EvaluationContext {
+                    role: ModuleRole::Dependency,
+                    ignore_dev_dependencies: self.options.ignore_dev_dependencies,
+                },
+            )?;
             validate_declared_module(&module, name, None, &path.display().to_string())?;
             return Ok((module, ModuleSource::LocalPath(path)));
         }
@@ -414,7 +423,14 @@ impl Discovery<'_> {
                 continue;
             };
             let module_file = source.as_bytes().to_vec();
-            let module = bzlmod::evaluate_source_for_resolution(&path, source, true)?;
+            let module = bzlmod::evaluate_source_with_context(
+                &path,
+                source,
+                EvaluationContext {
+                    role: ModuleRole::Dependency,
+                    ignore_dev_dependencies: self.options.ignore_dev_dependencies,
+                },
+            )?;
             validate_declared_module(&module, name, Some(version), &path)?;
             return Ok((
                 module,
@@ -1212,6 +1228,52 @@ mod tests {
             "/not/read"
         );
         assert_eq!(graph.root.registrations[0].labels, ["@generated//:all"]);
+    }
+
+    #[test]
+    fn repo_rule_recording_uses_root_and_registry_dependency_contexts_without_mappings() {
+        let calls = "r=use_repo_rule('raw invalid label','raw invalid symbol')\nr(name='prod')\nr(name='dev',dev_dependency=True)";
+        let f = Fixture::new(&format!("bazel_dep(name='a',version='1')\n{calls}"));
+        // Ignored calls must neither serialize the proxy nor reserve prod.
+        f.module(
+            "a",
+            "1",
+            &format!("{calls}\nr(name='prod',dev_dependency=True,unsupported=r)"),
+        );
+        for ignore_dev_dependencies in [false, true] {
+            let mut options = f.options();
+            options.ignore_dev_dependencies = ignore_dev_dependencies;
+            let graph = resolve(&f.root, &options).unwrap();
+            let root = &graph.root.extension_usages[0];
+            assert!(root.identity.is_repo_rule());
+            assert_eq!(root.tags.len(), if ignore_dev_dependencies { 1 } else { 2 });
+            assert_eq!(root.tags.len(), root.imports.len());
+            assert_eq!(root.tags.len(), root.declarations.len());
+            let dependency = &graph.modules["a+"];
+            let usage = &dependency.module.extension_usages[0];
+            assert_eq!(usage.tags.len(), 1);
+            assert_eq!(usage.imports.len(), 1);
+            assert_eq!(usage.declarations.len(), 1);
+            assert_eq!(usage.imports[0].local_name, "prod");
+            for name in ["prod", "dev"] {
+                assert!(!graph.root_mapping.contains_key(name));
+                assert!(!dependency.mapping.contains_key(name));
+                assert!(!graph.modules.contains_key(name));
+            }
+        }
+    }
+
+    #[test]
+    fn repo_rule_local_dependencies_skip_dev_only_usages_and_still_validate_names() {
+        let f = Fixture::new(
+            "bazel_dep(name='a')\nlocal_path_override(module_name='a',path='local-a')",
+        );
+        f.local("local-a", "module(name='a')\nr=use_repo_rule('invalid','symbol')\nr(name='dev',dev_dependency=True,unsupported=r)");
+        let graph = f.resolve();
+        assert!(graph.modules["a+"].module.extension_usages.is_empty());
+        assert!(!graph.modules["a+"].mapping.contains_key("dev"));
+        f.local("local-a", "module(name='a')\nr=use_repo_rule('invalid','symbol')\nr(name='_x',dev_dependency=True,unsupported=r)");
+        f.fails("invalid repository name");
     }
 
     #[test]

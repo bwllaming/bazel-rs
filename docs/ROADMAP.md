@@ -32,6 +32,11 @@ The explicit-HTTPS follow-up now resolves remote MODULE files and reaches
 new, observed compatibility blocker, not a successful application query. The
 follow-up preserved the checkout and cleaned its isolated cache; evidence is
 `artifacts/mainrepo-remote-loading.json`.
+The subsequent direct-repository metadata increment records `use_repo_rule`
+without executing it and advances to the unsupported `hermetic_cc_toolchain`
+patch override (`artifacts/mainrepo-direct-loading.json`). See
+`docs/DIRECT_REPOSITORY_DECLARATIONS.md`; generated repositories, genuine built-in
+execution and application analysis remain separate, incomplete requirements.
 
 The official 9.3.0 release was published 2026-10-07, with upstream tag commit
 `e89755babf3e941bc1e9d8120b1cd48854ab9dfa`. The main checkout's `.bazeliskrc` pins

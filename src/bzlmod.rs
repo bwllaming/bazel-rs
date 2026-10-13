@@ -2,14 +2,16 @@
 //!
 //! No extension is loaded, repository fetched, patch command run, or toolchain
 //! resolved here. Labels remain apparent labels until the resolver supplies a
-//! repository mapping. Includes and repository-rule evaluation are unsupported.
+//! repository mapping. Direct repository-rule calls are recorded as innate
+//! extension usages; loading/executing their rules and includes are unsupported.
 use allocative::Allocative;
 use anyhow::{anyhow, bail};
 use serde_json::Value as Json;
 use starlark::environment::{GlobalsBuilder, LibraryExtension, Module};
 use starlark::eval::{Arguments, Evaluator};
+use starlark::syntax::ast::{Argument, AstExpr, AstStmt, Expr, Stmt};
 use starlark::syntax::{AstModule, Dialect};
-use starlark::values::dict::DictRef;
+use starlark::values::dict::{AllocDict, DictRef};
 use starlark::values::list::ListRef;
 use starlark::values::tuple::TupleRef;
 use starlark::values::{Heap, Value, ValueLike};
@@ -27,6 +29,26 @@ pub struct ModuleFile {
     pub overrides: BTreeMap<String, ModuleOverride>,
     pub extension_usages: Vec<ExtensionUsage>,
     pub registrations: Vec<Registration>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ModuleRole {
+    #[default]
+    Root,
+    Dependency,
+}
+
+/// Evaluation-time filtering, before direct repository names are reserved.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EvaluationContext {
+    pub role: ModuleRole,
+    pub ignore_dev_dependencies: bool,
+}
+impl EvaluationContext {
+    /// Bazel 9.3 uses this same predicate for ignoring overrides.
+    pub fn effective_ignore_dev_dependencies(self) -> bool {
+        self.role == ModuleRole::Dependency || self.ignore_dev_dependencies
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -133,6 +155,15 @@ pub struct ExtensionIdentity {
     /// Each isolate=True call gets a distinct file-local identity.
     pub isolation: Option<usize>,
 }
+impl ExtensionIdentity {
+    /// Innate names contain a required space; real extension names are identifiers.
+    /// The raw concatenation is opaque: do not split or canonicalize it here.
+    pub fn is_repo_rule(&self) -> bool {
+        self.label == "//:MODULE.bazel"
+            && self.extension_name.contains(' ')
+            && self.isolation.is_none()
+    }
+}
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ExtensionDeclaration {
     pub dev_dependency: bool,
@@ -147,6 +178,8 @@ pub struct ExtensionUsage {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ExtensionTag {
     pub name: String,
+    /// Owned after MODULE evaluation; nested mutable values retain their final
+    /// contents, rather than being deep-copied when the tag is called.
     pub attributes: BTreeMap<String, Json>,
     pub declaration: usize,
     pub dev_dependency: bool,
@@ -177,6 +210,14 @@ struct State {
     non_module_called: bool,
     repo_names: BTreeSet<String>,
     next_isolation: usize,
+    pending_attributes: Vec<PendingAttributes>,
+}
+
+/// Values live in traced module slots, never in this untraced collector.
+struct PendingAttributes {
+    slot: String,
+    usage: usize,
+    tag: usize,
 }
 
 // Upstream derives generate unsafe marker-trait implementations. All our values
@@ -192,7 +233,7 @@ mod values {
     #[derive(Default, ProvidesStaticType)]
     pub(super) struct Collector {
         pub state: RefCell<State>,
-        pub ignore_overrides: bool,
+        pub evaluation_context: EvaluationContext,
     }
 
     #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
@@ -240,6 +281,28 @@ mod values {
     }
 
     #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
+    pub(super) struct RepoRuleProxy {
+        pub raw_identity: String,
+    }
+    impl fmt::Display for RepoRuleProxy {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("<repo_rule_proxy>")
+        }
+    }
+    starlark_simple_value!(RepoRuleProxy);
+    #[starlark_value(type = "repo_rule_proxy")]
+    impl<'v> StarlarkValue<'v> for RepoRuleProxy {
+        fn invoke(
+            &self,
+            _me: Value<'v>,
+            args: &Arguments<'v, '_>,
+            eval: &mut Evaluator<'v, '_, '_>,
+        ) -> starlark::Result<Value<'v>> {
+            record_repo_rule(&self.raw_identity, args, eval).map_err(starlark::Error::new_other)
+        }
+    }
+
+    #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
     struct TagCallable {
         proxy: ExtensionProxy,
         name: String,
@@ -261,18 +324,28 @@ mod values {
             let record = || -> anyhow::Result<()> {
                 args.no_positional_args(eval.heap())
                     .map_err(|e| anyhow!("{e}"))?;
-                let mut attributes = BTreeMap::new();
-                for (key, value) in args.names_map().map_err(|e| anyhow!("{e}"))?.iter() {
-                    attributes.insert(key.as_str().to_owned(), owned_json(*value, 0)?);
-                }
-                let mut state = context(eval)?.state.borrow_mut();
+                let attributes = Kwargs::new(args)?.0;
+                let collector = context(eval)?;
+                let mut state = collector.state.borrow_mut();
                 let usage = &mut state.file.extension_usages[self.proxy.usage];
+                // Ignored proxies have detached usages in Bazel. Keep declaration
+                // metadata for our recorded profile, but do not retain or convert
+                // their unused tag values. use_repo still reserves import names.
+                if usage.declarations[self.proxy.declaration].dev_dependency
+                    && collector
+                        .evaluation_context
+                        .effective_ignore_dev_dependencies()
+                {
+                    return Ok(());
+                }
+                let tag = usage.tags.len();
                 usage.tags.push(ExtensionTag {
                     name: self.name.clone(),
-                    attributes,
+                    attributes: BTreeMap::new(),
                     declaration: self.proxy.declaration,
                     dev_dependency: usage.declarations[self.proxy.declaration].dev_dependency,
                 });
+                retain_tag_attributes(eval, &mut state, self.proxy.usage, tag, attributes);
                 Ok(())
             };
             record().map_err(starlark::Error::new_other)?;
@@ -280,7 +353,7 @@ mod values {
         }
     }
 }
-use values::{Builtin, Collector, ExtensionProxy};
+use values::{Builtin, Collector, ExtensionProxy, RepoRuleProxy};
 
 fn context<'a>(eval: &'a Evaluator<'_, '_, '_>) -> anyhow::Result<&'a Collector> {
     eval.extra
@@ -290,26 +363,58 @@ fn context<'a>(eval: &'a Evaluator<'_, '_, '_>) -> anyhow::Result<&'a Collector>
 
 /// Read only the specified file. No include, load, or repository access occurs.
 pub fn evaluate(path: &Path) -> Result<ModuleFile, String> {
-    evaluate_for_resolution(path, false)
+    evaluate_with_context(path, EvaluationContext::default())
 }
 
-/// Resolution context: ignore overrides for non-root modules or when the root
-/// is evaluated with --ignore_dev_dependency. Arguments are still validated.
-pub fn evaluate_for_resolution(path: &Path, ignore_overrides: bool) -> Result<ModuleFile, String> {
+/// Compatibility wrapper: the boolean is the effective ignore-dev predicate,
+/// including override filtering. Prefer evaluate_with_context for explicit roles.
+pub fn evaluate_for_resolution(
+    path: &Path,
+    ignore_dev_dependencies: bool,
+) -> Result<ModuleFile, String> {
+    evaluate_with_context(
+        path,
+        EvaluationContext {
+            role: ModuleRole::Root,
+            ignore_dev_dependencies,
+        },
+    )
+}
+
+pub fn evaluate_with_context(
+    path: &Path,
+    context: EvaluationContext,
+) -> Result<ModuleFile, String> {
     let source = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read MODULE file {}: {e}", path.display()))?;
-    evaluate_source_for_resolution(&path.to_string_lossy(), source, ignore_overrides)
+    evaluate_source_with_context(&path.to_string_lossy(), source, context)
 }
 
 pub fn evaluate_source(filename: &str, source: String) -> Result<ModuleFile, String> {
-    evaluate_source_for_resolution(filename, source, false)
+    evaluate_source_with_context(filename, source, EvaluationContext::default())
 }
 
-/// Like evaluate_for_resolution, for a safely read registry MODULE source.
+/// Compatibility wrapper with an effective ignore-dev predicate, not just overrides.
+/// Prefer evaluate_source_with_context for explicit root/dependency roles.
 pub fn evaluate_source_for_resolution(
     filename: &str,
     source: String,
-    ignore_overrides: bool,
+    ignore_dev_dependencies: bool,
+) -> Result<ModuleFile, String> {
+    evaluate_source_with_context(
+        filename,
+        source,
+        EvaluationContext {
+            role: ModuleRole::Root,
+            ignore_dev_dependencies,
+        },
+    )
+}
+
+pub fn evaluate_source_with_context(
+    filename: &str,
+    source: String,
+    evaluation_context: EvaluationContext,
 ) -> Result<ModuleFile, String> {
     let dialect = Dialect {
         enable_def: false,
@@ -319,6 +424,7 @@ pub fn evaluate_source_for_resolution(
         ..Dialect::Standard
     };
     let ast = AstModule::parse(filename, source, &dialect).map_err(|e| e.to_string())?;
+    validate_module_syntax(&ast)?;
     let mut globals = GlobalsBuilder::extended_by(&[LibraryExtension::Print]);
     for name in [
         "module",
@@ -343,7 +449,7 @@ pub fn evaluate_source_for_resolution(
     }
     let globals = globals.build();
     let collector = Collector {
-        ignore_overrides,
+        evaluation_context,
         ..Default::default()
     };
     Module::with_temp_heap(|module| {
@@ -352,9 +458,73 @@ pub fn evaluate_source_for_resolution(
         eval.set_max_callstack_size(128)
             .map_err(|e| e.to_string())?;
         eval.eval_module(ast, &globals).map_err(|e| e.to_string())?;
+        finish_tag_attributes(&module, &mut collector.state.borrow_mut())
+            .map_err(|e| format!("cannot record MODULE attributes in {filename}: {e}"))?;
         Ok::<_, String>(())
     })?;
     Ok(collector.state.into_inner().file)
+}
+
+/// Bazel's DotBazelFileSyntaxChecker restricts call syntax even in unreachable
+/// expressions. Its resolver also prohibits rebinding file-global names. Check
+/// the AST before evaluation: runtime argument binding cannot enforce either.
+fn validate_module_syntax(ast: &AstModule) -> Result<(), String> {
+    fn check_expr(ast: &AstModule, expr: &AstExpr) -> Result<(), String> {
+        if let Expr::Call(_, arguments) = &expr.node {
+            for argument in &arguments.args {
+                let message = match &argument.node {
+                    Argument::Args(_) => Some("*args are not allowed in MODULE.bazel"),
+                    Argument::KwArgs(value) if !matches!(&value.node, Expr::Dict(_)) => {
+                        Some("**kwargs must be a dict literal in MODULE.bazel")
+                    }
+                    _ => None,
+                };
+                if let Some(message) = message {
+                    return Err(format!("{}: {message}", ast.file_span(argument.span)));
+                }
+            }
+        }
+        expr.node.visit_expr_err(|child| check_expr(ast, child))
+    }
+
+    fn check_bindings(
+        ast: &AstModule,
+        statement: &AstStmt,
+        first_bindings: &mut BTreeMap<String, String>,
+    ) -> Result<(), String> {
+        let target = match &statement.node {
+            Stmt::Statements(statements) => {
+                for statement in statements {
+                    check_bindings(ast, statement, first_bindings)?;
+                }
+                return Ok(());
+            }
+            Stmt::Assign(assign) => &assign.lhs,
+            Stmt::AssignModify(target, _, _) => target,
+            // def/for/if/load are rejected by the parser's MODULE dialect.
+            // Comprehension targets are local, not file-global bindings.
+            _ => return Ok(()),
+        };
+        let mut result = Ok(());
+        target.node.visit_lvalue(|identifier| {
+            if result.is_err() {
+                return;
+            }
+            let name = &identifier.node.ident;
+            let location = ast.file_span(identifier.span).to_string();
+            if let Some(first) = first_bindings.get(name) {
+                result = Err(format!("{location}: global binding {name:?} may not be reassigned; first bound at {first}"));
+            } else {
+                first_bindings.insert(name.clone(), location);
+            }
+        });
+        result
+    }
+
+    ast.statement()
+        .node
+        .visit_expr_result(|expr| check_expr(ast, expr))?;
+    check_bindings(ast, ast.statement(), &mut BTreeMap::new())
 }
 
 struct Kwargs<'v>(BTreeMap<String, Value<'v>>);
@@ -450,9 +620,6 @@ fn invoke<'v>(
         "include" => bail!(
             "include() is unsupported until the resolver supplies include filesystem semantics"
         ),
-        "use_repo_rule" => {
-            bail!("use_repo_rule() is unsupported: repository rules are not evaluated")
-        }
         "Label" => bail!("Label() is unsupported in MODULE evaluation; use label strings"),
         "inject_repo" | "override_repo" | "flag_alias" => {
             bail!("{name}() is unsupported in MODULE evaluation")
@@ -472,6 +639,26 @@ fn invoke<'v>(
         state.non_module_called = true;
     }
 
+    if name == "use_repo_rule" {
+        if !kwargs.0.is_empty() {
+            bail!(
+                "use_repo_rule accepts exactly two positional-only string arguments; no keyword arguments"
+            );
+        }
+        let pos: Vec<_> = args
+            .positions(eval.heap())
+            .map_err(|e| anyhow!("{e}"))?
+            .collect();
+        if pos.len() != 2 {
+            bail!("use_repo_rule requires exactly two positional-only string arguments");
+        }
+        // Upstream postpones label parsing and symbol validation until loading.
+        let bzl = string(pos[0], "bzl_file")?;
+        let rule = string(pos[1], "rule_name")?;
+        return Ok(eval.heap().alloc(RepoRuleProxy {
+            raw_identity: format!("{bzl} {rule}"),
+        }));
+    }
     if name == "use_extension" {
         let pos: Vec<_> = args
             .positions(eval.heap())
@@ -730,7 +917,10 @@ fn invoke<'v>(
             kwargs.finish()?;
             // ModuleThreadContext.addOverride (Bazel 9.3): ignored overrides
             // return before duplicate checking, but after directive validation.
-            if collector.ignore_overrides {
+            if collector
+                .evaluation_context
+                .effective_ignore_dev_dependencies()
+            {
                 return Ok(Value::new_none());
             }
             if state.file.overrides.contains_key(&module_name) {
@@ -739,6 +929,110 @@ fn invoke<'v>(
             state.file.overrides.insert(module_name, value);
         }
     }
+    Ok(Value::new_none())
+}
+
+/// AttributeValues/TagCallable retain shallow keyword bindings until MODULE
+/// evaluation ends. A fresh outer dict prevents **kwargs rebinding from changing
+/// those bindings, while its original nested Values remain live and GC-traced.
+fn retain_tag_attributes<'v>(
+    eval: &Evaluator<'v, '_, '_>,
+    state: &mut State,
+    usage: usize,
+    tag: usize,
+    attributes: BTreeMap<String, Value<'v>>,
+) {
+    // Not a valid Starlark identifier: MODULE assignments cannot overwrite roots.
+    let slot = format!("__module_tag_attributes${}", state.pending_attributes.len());
+    eval.module()
+        .set(&slot, eval.heap().alloc(AllocDict(attributes)));
+    state
+        .pending_attributes
+        .push(PendingAttributes { slot, usage, tag });
+}
+
+/// Convert only after successful evaluation and before the temporary heap drops.
+/// Both ordinary tags and innate repository tags use the same bounded types.
+fn finish_tag_attributes(module: &Module, state: &mut State) -> anyhow::Result<()> {
+    for pending in std::mem::take(&mut state.pending_attributes) {
+        let value = module
+            .get(&pending.slot)
+            .ok_or_else(|| anyhow!("internal error: missing MODULE attribute root"))?;
+        let dict = DictRef::from_value(value)
+            .ok_or_else(|| anyhow!("internal error: MODULE attribute root is not a dict"))?;
+        let mut attributes = BTreeMap::new();
+        for (key, value) in dict.iter() {
+            attributes.insert(string(key, "tag attribute name")?, owned_json(value, 0)?);
+        }
+        state.file.extension_usages[pending.usage].tags[pending.tag].attributes = attributes;
+    }
+    Ok(())
+}
+
+fn record_repo_rule<'v>(
+    raw_identity: &str,
+    args: &Arguments<'v, '_>,
+    eval: &mut Evaluator<'v, '_, '_>,
+) -> anyhow::Result<Value<'v>> {
+    let collector = context(eval)?;
+    args.no_positional_args(eval.heap())
+        .map_err(|e| anyhow!("{e}"))?;
+    let mut kwargs = Kwargs::new(args)?;
+    let name_value = kwargs.required("name")?;
+    let name = string(name_value, "name")?;
+    let dev_dependency = kwargs.boolean("dev_dependency")?;
+    validate_repo_name(&name)?;
+    // Unlike bazel_dep/use_repo, an ignored direct call reserves no name and
+    // creates no usage. Even unsupported attribute values are not inspected.
+    if dev_dependency
+        && collector
+            .evaluation_context
+            .effective_ignore_dev_dependencies()
+    {
+        return Ok(Value::new_none());
+    }
+    kwargs.0.insert("name".to_owned(), name_value);
+    let mut state = collector.state.borrow_mut();
+    reserve_repo(&mut state, &name)?;
+    let identity = ExtensionIdentity {
+        label: "//:MODULE.bazel".to_owned(),
+        extension_name: raw_identity.to_owned(),
+        isolation: None,
+    };
+    let index = match state
+        .file
+        .extension_usages
+        .iter()
+        .position(|u| u.identity == identity)
+    {
+        Some(index) => index,
+        None => {
+            state.file.extension_usages.push(ExtensionUsage {
+                identity,
+                ..Default::default()
+            });
+            state.file.extension_usages.len() - 1
+        }
+    };
+    let usage = &mut state.file.extension_usages[index];
+    let declaration = usage.declarations.len();
+    let tag = usage.tags.len();
+    usage
+        .declarations
+        .push(ExtensionDeclaration { dev_dependency });
+    usage.tags.push(ExtensionTag {
+        name: "repo".to_owned(),
+        attributes: BTreeMap::new(),
+        declaration,
+        dev_dependency,
+    });
+    usage.imports.push(RepositoryImport {
+        local_name: name.clone(),
+        exported_name: name,
+        declaration,
+        dev_dependency,
+    });
+    retain_tag_attributes(eval, &mut state, index, tag, kwargs.0);
     Ok(Value::new_none())
 }
 
@@ -950,7 +1244,7 @@ use_repo(x, "pkg", local="other")
                 .as_array()
                 .unwrap()
                 .len(),
-            4
+            5
         );
         assert_eq!(u.imports[1].local_name, "local");
         assert_eq!(u.imports[1].exported_name, "other");
@@ -1136,6 +1430,103 @@ archive_override(module_name="archive", urls="https://invalid.invalid/a.tar.gz",
     }
 
     #[test]
+    fn module_syntax_kwargs_require_an_outer_dict_literal() {
+        for expression in [
+            "kwargs",
+            "dict(name='repo')",
+            "{k:v for k,v in [('name','repo')]}",
+            "({'name':'repo'} if True else {})",
+            "[{'name':'repo'}][0]",
+        ] {
+            fails(
+                &format!(
+                    "r=use_repo_rule('raw','rule')\nkwargs={{'name':'repo'}}\nr(**{expression})"
+                ),
+                "**kwargs must be a dict literal",
+            );
+        }
+    }
+
+    #[test]
+    fn module_syntax_star_args_are_forbidden_even_when_empty_or_unreachable() {
+        for source in [
+            "module(*[])",
+            "module(*())",
+            "use_repo_rule(*['raw','rule'])",
+            "xs=[]\nxs.append(*[1])",
+            "[str(*[1]) for i in []]",
+            "fail('must not evaluate')\n[str(*[]) for i in []]",
+        ] {
+            fails(source, "*args are not allowed");
+        }
+    }
+
+    #[test]
+    fn module_syntax_checks_nested_dead_calls_before_evaluation() {
+        for source in [
+            "kwargs={}\n[str(dict(**kwargs)) for i in []]",
+            "kwargs={}\nxs=[]\n[xs.append(dict(**kwargs)) for i in []]",
+            "kwargs={}\n[dict(**{}) for i in [] if dict(**kwargs)]",
+            "kwargs={}\ndict(**{'value':[dict(**kwargs) for i in []]})",
+            "kwargs={}\nfail('must not evaluate')\n[dict(**kwargs) for i in []]",
+            "kwargs={}\nxs=[]\nxs[dict(**kwargs)]=1",
+        ] {
+            fails(source, "**kwargs must be a dict literal");
+        }
+    }
+
+    #[test]
+    fn module_syntax_global_duplicate_bindings_are_static_errors() {
+        for source in [
+            "x=1\nx=2",
+            "xs=[]\nxs+=[]",
+            "x=1\n(x,y)=(2,3)",
+            "(x,(y,x))=(1,(2,3))",
+            "[x,y]=[1,2]\ny=3",
+            "x=1; x=2",
+            "fail('must not evaluate')\nx=1\nx=2",
+        ] {
+            fails(source, "global binding");
+        }
+        let error = evaluate_source("syntax.MODULE.bazel", "x=1\nx=2".to_owned()).unwrap_err();
+        assert!(error.contains("syntax.MODULE.bazel:1:"), "{error}");
+        assert!(error.contains("syntax.MODULE.bazel:2:"), "{error}");
+    }
+
+    #[test]
+    fn module_syntax_dict_literals_mutations_and_comprehension_scopes_remain_legal() {
+        let f = run(r#"
+key="values"
+xs=["before"]
+holder={"values":xs,"count":0}
+r=use_repo_rule("raw","rule")
+r(name="repo",**{key:holder["values"],"computed":[x for x in [1,2]]})
+holder["values"]=["replacement"]
+holder["count"]+=1
+xs.append("after")
+xs[0]="updated"
+xs.append("last")
+x="global"
+ys=[x for x in [1,2]]
+zs={str(x):x for x in [3,4]}
+ws=[(x,y) for x,y in [(5,6)]]
+y="new global"
+module="shadow predeclared"
+r(name="second",x=x,y=y,module=module,ys=ys,zs=zs,ws=[str(v) for v in ws],count=holder["count"])
+"#);
+        let tags = &f.extension_usages[0].tags;
+        assert_eq!(
+            tags[0].attributes["values"],
+            serde_json::json!(["updated", "after", "last"])
+        );
+        assert_eq!(tags[0].attributes["computed"], serde_json::json!([1, 2]));
+        assert_eq!(tags[1].attributes["x"], "global");
+        assert_eq!(tags[1].attributes["y"], "new global");
+        assert_eq!(tags[1].attributes["module"], "shadow predeclared");
+        assert_eq!(tags[1].attributes["count"], 1);
+    }
+
+    #[test]
     fn prohibited_language_and_unsupported_features_fail_explicitly() {
         for source in [
             "load('//:evil.bzl','evil')",
@@ -1153,10 +1544,6 @@ archive_override(module_name="archive", urls="https://invalid.invalid/a.tar.gz",
             "include('//:other.MODULE.bazel')",
             "include() is unsupported",
         );
-        fails(
-            "use_repo_rule('//:defs.bzl','rule')",
-            "use_repo_rule() is unsupported",
-        );
         fails("Label('//:x')", "Label() is unsupported");
         for source in ["native.foo()", "rule()", "provider()"] {
             assert!(evaluate_source("MODULE.bazel", source.to_owned()).is_err());
@@ -1171,6 +1558,438 @@ archive_override(module_name="archive", urls="https://invalid.invalid/a.tar.gz",
         );
     }
 
+    fn contexts() -> [EvaluationContext; 4] {
+        [
+            EvaluationContext::default(),
+            EvaluationContext {
+                role: ModuleRole::Root,
+                ignore_dev_dependencies: true,
+            },
+            EvaluationContext {
+                role: ModuleRole::Dependency,
+                ignore_dev_dependencies: false,
+            },
+            EvaluationContext {
+                role: ModuleRole::Dependency,
+                ignore_dev_dependencies: true,
+            },
+        ]
+    }
+
+    fn in_context(source: &str, context: EvaluationContext) -> Result<ModuleFile, String> {
+        evaluate_source_with_context("MODULE.bazel", source.to_owned(), context)
+    }
+
+    #[test]
+    fn ignored_extension_tags_skip_value_capture_but_import_names_stay_reserved() {
+        let prefix =
+            "e=use_extension('//:missing.bzl','ext',dev_dependency=True)\ne.tag(value=e)\n";
+        for context in contexts() {
+            if !context.effective_ignore_dev_dependencies() {
+                assert!(
+                    in_context(prefix, context)
+                        .unwrap_err()
+                        .contains("unsupported extension tag attribute")
+                );
+                continue;
+            }
+            let file = in_context(prefix, context).unwrap();
+            assert!(
+                file.extension_usages
+                    .iter()
+                    .all(|usage| usage.tags.is_empty())
+            );
+            let mixed = in_context(
+                &format!("{prefix}p=use_extension('//:missing.bzl','ext')\np.tag(value=7)"),
+                context,
+            )
+            .unwrap();
+            assert_eq!(mixed.extension_usages[0].tags.len(), 1);
+            assert_eq!(mixed.extension_usages[0].tags[0].attributes["value"], 7);
+            let collision = format!(
+                "{prefix}use_repo(e,'reserved')\nr=use_repo_rule('missing','rule')\nr(name='reserved')"
+            );
+            assert!(
+                in_context(&collision, context)
+                    .unwrap_err()
+                    .contains("already used")
+            );
+            let invalid_call =
+                "e=use_extension('//:missing.bzl','ext',dev_dependency=True)\ne.tag(7)";
+            assert!(in_context(invalid_call, context).is_err());
+        }
+    }
+
+    fn assert_direct_usage(usage: &ExtensionUsage, expected: &[(&str, bool)]) {
+        assert!(usage.identity.is_repo_rule());
+        assert_eq!(usage.declarations.len(), expected.len());
+        assert_eq!(usage.tags.len(), expected.len());
+        assert_eq!(usage.imports.len(), expected.len());
+        for (i, (name, dev)) in expected.iter().enumerate() {
+            assert_eq!(usage.declarations[i].dev_dependency, *dev);
+            assert_eq!(usage.tags[i].name, "repo");
+            assert_eq!(usage.tags[i].attributes["name"], *name);
+            assert!(!usage.tags[i].attributes.contains_key("dev_dependency"));
+            assert_eq!(usage.tags[i].declaration, i);
+            assert_eq!(usage.tags[i].dev_dependency, *dev);
+            assert_eq!(usage.imports[i].local_name, *name);
+            assert_eq!(usage.imports[i].exported_name, *name);
+            assert_eq!(usage.imports[i].declaration, i);
+            assert_eq!(usage.imports[i].dev_dependency, *dev);
+        }
+    }
+
+    #[test]
+    fn repo_rule_declaration_signature_and_ordering() {
+        for source in [
+            "use_repo_rule()",
+            "use_repo_rule('a')",
+            "use_repo_rule('a','b','c')",
+            "use_repo_rule(bzl_file='a',rule_name='b')",
+            "use_repo_rule('a',rule_name='b')",
+            "use_repo_rule('a','b',extra=None)",
+        ] {
+            fails(source, "two positional-only string arguments");
+        }
+        for source in ["use_repo_rule(1,'b')", "use_repo_rule('a',None)"] {
+            fails(source, "must be a string");
+        }
+        assert!(
+            run("r=use_repo_rule('invalid label','bad symbol')")
+                .extension_usages
+                .is_empty()
+        );
+        fails(
+            "r=use_repo_rule('','')\nmodule()",
+            "before other MODULE directives",
+        );
+        let f = run("module()\nr=use_repo_rule('','')\nr(name='repo')");
+        assert_eq!(f.extension_usages[0].identity.extension_name, " ");
+        assert_direct_usage(&f.extension_usages[0], &[("repo", false)]);
+    }
+
+    #[test]
+    fn repo_rule_raw_concatenation_merges_only_when_invoked() {
+        let f = run(r#"
+unused = use_repo_rule("//:never_loaded.bzl", "never")
+a = use_repo_rule("invalid label", "bad symbol")
+b = use_repo_rule("invalid", "label bad symbol")
+c = use_repo_rule("invalid label", "bad symbol")
+normal = use_extension("//:real.bzl", "real")
+b(name="first", dev_dependency=True)
+a(name="second")
+c(name="third")
+other = use_repo_rule("other", "rule")
+other(name="fourth")
+"#);
+        assert_eq!(f.extension_usages.len(), 3);
+        assert!(!f.extension_usages[0].identity.is_repo_rule());
+        let u = &f.extension_usages[1];
+        assert_eq!(
+            u.identity,
+            ExtensionIdentity {
+                label: "//:MODULE.bazel".to_owned(),
+                extension_name: "invalid label bad symbol".to_owned(),
+                isolation: None,
+            }
+        );
+        assert_direct_usage(u, &[("first", true), ("second", false), ("third", false)]);
+        assert_direct_usage(&f.extension_usages[2], &[("fourth", false)]);
+        let mut identity = u.identity.clone();
+        identity.label = "//:other.bazel".to_owned();
+        assert!(!identity.is_repo_rule());
+        identity.label = "//:MODULE.bazel".to_owned();
+        identity.isolation = Some(0);
+        assert!(!identity.is_repo_rule());
+        identity.isolation = None;
+        identity.extension_name = "identifier".to_owned();
+        assert!(!identity.is_repo_rule());
+    }
+
+    #[test]
+    fn repo_rule_context_filters_before_snapshot_or_name_reservation() {
+        for context in contexts() {
+            let ignored = context.effective_ignore_dev_dependencies();
+            let f = in_context(
+                "r=use_repo_rule('raw','rule')\nr(name='prod')\nr(name='dev',dev_dependency=True)",
+                context,
+            )
+            .unwrap();
+            let expected = if ignored {
+                vec![("prod", false)]
+            } else {
+                vec![("prod", false), ("dev", true)]
+            };
+            assert_direct_usage(&f.extension_usages[0], &expected);
+            let only_dev = in_context(
+                "r=use_repo_rule('raw','rule')\nr(name='dev',dev_dependency=True)",
+                context,
+            )
+            .unwrap();
+            assert_eq!(only_dev.extension_usages.is_empty(), ignored);
+            let unsupported = "r=use_repo_rule('raw','rule')\nresult=r(name='repo',dev_dependency=True,foo=r)\nr(name='repo',result=result)";
+            if ignored {
+                let f = in_context(unsupported, context).unwrap();
+                assert_direct_usage(&f.extension_usages[0], &[("repo", false)]);
+                assert_eq!(
+                    f.extension_usages[0].tags[0].attributes["result"],
+                    Json::Null
+                );
+            } else {
+                // Namespace errors occur during evaluation, before deferred
+                // conversion can reject the first call's proxy-valued attribute.
+                assert!(
+                    in_context(unsupported, context)
+                        .unwrap_err()
+                        .contains("already used")
+                );
+            }
+            // Overrides share exactly the effective ignore-dev predicate.
+            let f = in_context("local_path_override(module_name='a',path='x')", context).unwrap();
+            assert_eq!(f.overrides.is_empty(), ignored);
+        }
+    }
+
+    #[test]
+    fn repo_rule_duplicate_dev_matrix() {
+        for context in contexts() {
+            for (first, second) in [(true, true), (true, false), (false, true), (false, false)] {
+                let boolean = |b| if b { "True" } else { "False" };
+                let source = format!(
+                    "r=use_repo_rule('raw','rule')\nr(name='same',dev_dependency={})\nr(name='same',dev_dependency={})",
+                    boolean(first),
+                    boolean(second)
+                );
+                let active = [first, second]
+                    .into_iter()
+                    .filter(|dev| !*dev || !context.effective_ignore_dev_dependencies())
+                    .collect::<Vec<_>>();
+                let result = in_context(&source, context);
+                if active.len() == 2 {
+                    assert!(result.unwrap_err().contains("already used"));
+                } else {
+                    let f = result.unwrap();
+                    if active.is_empty() {
+                        assert!(f.extension_usages.is_empty());
+                    } else {
+                        assert_direct_usage(&f.extension_usages[0], &[("same", active[0])]);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn repo_rule_call_signature_validated_even_when_dev_is_ignored() {
+        for context in contexts() {
+            for (call, expected) in [
+                ("r(dev_dependency=True)", "missing required argument"),
+                (
+                    "r(name='_x',dev_dependency=True)",
+                    "invalid repository name",
+                ),
+                ("r(name='',dev_dependency=True)", "invalid repository name"),
+                ("r(name=None,dev_dependency=True)", "must be a string"),
+                ("r(name=1,dev_dependency=True)", "must be a string"),
+                ("r(name='repo',dev_dependency=1)", "must be a bool"),
+                ("r('repo',dev_dependency=True)", "positional"),
+            ] {
+                let error = in_context(&format!("r=use_repo_rule('raw','rule')\n{call}"), context)
+                    .unwrap_err();
+                assert!(error.contains(expected), "{call}: {error}");
+            }
+            for call in [
+                "r(name='repo',dev_dependency=True,**{'name':'other'})",
+                "r(name='repo',dev_dependency=True,**{'dev_dependency':True})",
+            ] {
+                assert!(
+                    in_context(&format!("r=use_repo_rule('raw','rule')\n{call}"), context).is_err()
+                );
+            }
+            let error = in_context(
+                "r=use_repo_rule('raw','rule')\nr(name='repo',dev_dependency=True)\nmodule()",
+                context,
+            )
+            .unwrap_err();
+            assert!(error.contains("before other MODULE directives"));
+        }
+    }
+
+    #[test]
+    fn repo_rule_namespace_collisions_include_ignored_deps_and_imports() {
+        for context in contexts() {
+            for prefix in [
+                "module(name='taken')",
+                "module(name='root',repo_name='taken')",
+                "bazel_dep(name='dep',repo_name='taken')",
+                "bazel_dep(name='dep',repo_name='taken',dev_dependency=True)",
+                "x=use_extension('//:e.bzl','e')\nuse_repo(x,'taken')",
+                "x=use_extension('//:e.bzl','e',dev_dependency=True)\nuse_repo(x,'taken')",
+                "other=use_repo_rule('other','rule')\nother(name='taken')",
+            ] {
+                let error = in_context(
+                    &format!("{prefix}\nr=use_repo_rule('raw','rule')\nr(name='taken')"),
+                    context,
+                )
+                .unwrap_err();
+                assert!(error.contains("already used"), "{prefix}: {error}");
+                if context.effective_ignore_dev_dependencies() {
+                    in_context(&format!("{prefix}\nr=use_repo_rule('raw','rule')\nr(name='taken',dev_dependency=True)"), context).unwrap();
+                }
+            }
+            for suffix in [
+                "bazel_dep(name='dep',repo_name='taken',dev_dependency=True)",
+                "x=use_extension('//:e.bzl','e',dev_dependency=True)\nuse_repo(x,'taken')",
+            ] {
+                assert!(
+                    in_context(
+                        &format!("r=use_repo_rule('raw','rule')\nr(name='taken')\n{suffix}"),
+                        context
+                    )
+                    .unwrap_err()
+                    .contains("already used")
+                );
+            }
+        }
+        let f = run(
+            "module(name='root',repo_name='renamed')\nr=use_repo_rule('raw','rule')\nr(name='root')",
+        );
+        assert_direct_usage(&f.extension_usages[0], &[("root", false)]);
+    }
+
+    #[test]
+    fn repo_rule_arbitrary_attributes_are_owned_bounded_final_values() {
+        let f = run(r#"
+r=use_repo_rule("not a label", "not an identifier")
+attrs={"nested":[True,None,42,1.5,{"x":"before"}]}
+result=r(name="repo",dev_dependency=True,repo_mapping={"@a":"@b"},tags=["manual"],visibility=None,**{"dash-key":attrs,"":False})
+attrs["nested"][4]["x"]="after"
+attrs["nested"].append("later")
+r(name="second",result=result)
+"#);
+        assert_direct_usage(&f.extension_usages[0], &[("repo", true), ("second", false)]);
+        assert_eq!(
+            f.extension_usages[0].tags[0].attributes,
+            BTreeMap::from([
+                ("name".to_owned(), serde_json::json!("repo")),
+                ("repo_mapping".to_owned(), serde_json::json!({"@a":"@b"})),
+                ("tags".to_owned(), serde_json::json!(["manual"])),
+                ("visibility".to_owned(), Json::Null),
+                (
+                    "dash-key".to_owned(),
+                    serde_json::json!({"nested":[true,null,42,1.5,{"x":"after"},"later"]})
+                ),
+                ("".to_owned(), Json::Bool(false)),
+            ])
+        );
+        assert_eq!(
+            f.extension_usages[0].tags[1].attributes["result"],
+            Json::Null
+        );
+        for (setup, value, expected) in [
+            ("", "r", "unsupported extension tag attribute"),
+            ("", "(1,2)", "unsupported extension tag attribute"),
+            ("", "{1:'x'}", "dictionary key must be a string"),
+            ("a=[]\na.append(a)", "a", "cyclic or exceed nesting depth"),
+        ] {
+            fails(
+                &format!("r=use_repo_rule('raw','rule')\n{setup}\nr(name='repo',value={value})"),
+                expected,
+            );
+        }
+    }
+
+    fn deferred_attributes_reference_matrix(direct: bool) {
+        let declaration = if direct {
+            "r=use_repo_rule('raw','rule')\ncall=r"
+        } else {
+            "r=use_repo_rule('raw','rule')\nx=use_extension('//:e.bzl','e')\ncall=x.tag"
+        };
+        let f = run(&format!(
+            r#"
+{declaration}
+xs=["before"]
+original=xs
+nested={{"items":xs}}
+kwargs={{"name":"first","values":xs,"nested":nested,"proxy_type":type(r)}}
+call(**{{"name":kwargs["name"],"values":kwargs["values"],"nested":kwargs["nested"],"proxy_type":kwargs["proxy_type"]}})
+kwargs["values"]=["outer replacement"]
+kwargs["nested"]={{"items":["outer replacement"]}}
+kwargs["name"]="not the recorded name"
+original.append("after")
+nested["added"]={{"list":[1]}}
+call(name="second",values=original)
+original.append("last")
+nested["added"]["list"].append(2)
+"#
+        ));
+        let usage = &f.extension_usages[0];
+        assert_eq!(usage.tags.len(), 2);
+        let final_list = serde_json::json!(["before", "after", "last"]);
+        assert_eq!(usage.tags[0].attributes["values"], final_list);
+        assert_eq!(usage.tags[1].attributes["values"], final_list);
+        assert_eq!(usage.tags[0].attributes["name"], "first");
+        assert_eq!(usage.tags[1].attributes["name"], "second");
+        assert_eq!(
+            usage.tags[0].attributes["nested"],
+            serde_json::json!({
+                "items":["before","after","last"], "added":{"list":[1,2]}
+            })
+        );
+        assert_eq!(usage.tags[0].attributes["proxy_type"], "repo_rule_proxy");
+    }
+
+    #[test]
+    fn deferred_attributes_direct_retain_references_until_module_end() {
+        deferred_attributes_reference_matrix(true);
+    }
+
+    #[test]
+    fn deferred_attributes_ordinary_retain_references_until_module_end() {
+        deferred_attributes_reference_matrix(false);
+    }
+
+    #[test]
+    fn deferred_attributes_final_cycles_and_depth_are_rejected() {
+        for declaration in [
+            "call=use_repo_rule('raw','rule')",
+            "x=use_extension('//:e.bzl','e')\ncall=x.tag",
+        ] {
+            fails(
+                &format!("{declaration}\nxs=[]\ncall(name='repo',values=xs)\nxs.append(xs)"),
+                "cyclic or exceed nesting depth",
+            );
+            fails(
+                &format!(
+                    "{declaration}\nnodes=[[] for i in range(66)]\ncall(name='repo',values=nodes[0])\n[nodes[i].append(nodes[i+1]) for i in range(65)]"
+                ),
+                "cyclic or exceed nesting depth",
+            );
+        }
+    }
+
+    #[test]
+    fn deferred_attributes_only_final_value_types_are_serialized() {
+        for declaration in [
+            "call=use_repo_rule('raw','rule')",
+            "x=use_extension('//:e.bzl','e')\ncall=x.tag",
+        ] {
+            let f = run(&format!(
+                "{declaration}\nattrs={{'value':call}}\ncall(name='repo',attrs=attrs)\nattrs['value']='repaired'"
+            ));
+            assert_eq!(
+                f.extension_usages[0].tags[0].attributes["attrs"],
+                serde_json::json!({"value":"repaired"})
+            );
+            fails(
+                &format!(
+                    "{declaration}\nattrs={{'value':'before'}}\ncall(name='repo',attrs=attrs)\nattrs['value']=call"
+                ),
+                "unsupported extension tag attribute",
+            );
+        }
+    }
+
     #[test]
     fn empty_and_anonymous_root_modules_are_supported() {
         assert_eq!(run(""), ModuleFile::default());
@@ -1181,14 +2000,14 @@ archive_override(module_name="archive", urls="https://invalid.invalid/a.tar.gz",
     }
 
     #[test]
-    fn argument_expansion_and_keyword_extension_arguments() {
+    fn dict_literal_expansion_and_keyword_extension_arguments() {
         let f = run(r#"
 opts = {"name": "a", "version": "1.2.3"}
-bazel_dep(**opts)
+bazel_dep(**{"name":opts["name"],"version":opts["version"]})
 x = use_extension(extension_bzl_file="//:e.bzl", extension_name="e")
 x.tag(**{"dash-key": [1, 2]})
-use_repo(x, *["repo"], **{"repo.alias": "original"})
-register_toolchains(*["//:tc"], **{"dev_dependency": True})
+use_repo(x, "repo", **{"repo.alias": "original"})
+register_toolchains("//:tc", **{"dev_dependency": True})
 "#);
         assert_eq!(f.dependencies[0].name, "a");
         assert_eq!(

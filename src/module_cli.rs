@@ -123,6 +123,12 @@ fn reject_extensions(module: &ModuleFile, ignore_dev: bool, name: &str) -> Resul
             .iter()
             .any(|d| !d.dev_dependency || !ignore_dev)
         {
+            if usage.identity.is_repo_rule() {
+                return Err(format!(
+                    "module {name:?} declares repositories with use_repo_rule {:?}: native mod graph cannot execute repository rules",
+                    usage.identity.extension_name
+                ));
+            }
             return Err(format!(
                 "module {name:?} uses extension {:?}%{}: native mod graph cannot execute module extensions, even with --extension_info=hidden",
                 usage.identity.label, usage.identity.extension_name

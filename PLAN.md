@@ -72,6 +72,23 @@ main application's build/test suite remain unimplemented; see docs/ROADMAP.md.
 Current evidence: `artifacts/remote-validation.json`,
 `artifacts/mainrepo-remote-loading.json`, `docs/REMOTE_REPOSITORIES.md`.
 
+## Direct repository declaration increment
+
+`use_repo_rule` metadata now uses explicit root/dependency contexts, deferred
+MODULE attribute capture, and owner-scoped pending-repository diagnostics. MODULE
+syntax rejects global rebinding and unsupported star-argument forms before
+evaluation; ignored dev extension tags do not trigger unsupported value conversion.
+This remains recording-only, not repository-rule execution. See
+`docs/DIRECT_REPOSITORY_DECLARATIONS.md` for the bounded contract.
+
+Its full check passes 349 Rust tests, 169 Python tests, formatting, strict Clippy,
+and release compilation. Real-surface metadata/reference and application probes
+are retained under `artifacts/direct-*` and `artifacts/mainrepo-direct-loading.json`.
+The latter stops at the unsupported `hermetic_cc_toolchain` patch override.
+The direct declaration report passes 46 differential cases, one lazy-loading probe
+and one native-only unsupported-execution boundary. Adjacent module/local/remote
+reports pass 16/20/17 checks on the same release binary.
+
 ## Remaining compatibility gates
 
 - [ ] Complete Bzlmod/repository compatibility beyond local selection/loading:
