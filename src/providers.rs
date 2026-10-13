@@ -219,11 +219,17 @@ where
 
 /// Stable identity of an exported constructor, never of an instance.
 pub fn provider_identity(value: Value<'_>) -> Option<String> {
+    if crate::template_variable_info::is_constructor(value) {
+        return Some(crate::template_variable_info::PROVIDER_ID.to_owned());
+    }
     ProviderConstructor::from_value(value)?.identity()
 }
 
 /// Stable identity of an instance, never of a constructor or ordinary struct.
 pub fn instance_identity(value: Value<'_>) -> Option<String> {
+    if crate::template_variable_info::is_instance(value) {
+        return Some(crate::template_variable_info::PROVIDER_ID.to_owned());
+    }
     Some(ProviderInstance::from_value(value)?.identity.clone())
 }
 
@@ -237,7 +243,7 @@ fn sequence(value: Value<'_>) -> anyhow::Result<Vec<Value<'_>>> {
     }
 }
 
-/// Validate an implementation return value and collect custom providers. The
+/// Validate an implementation return value and collect custom/native providers. The
 /// returned Values still belong to the analysis heap and must be frozen by the
 /// caller before crossing target boundaries. DefaultInfo is handled separately.
 pub fn returned_custom_providers<'v>(
@@ -302,6 +308,8 @@ pub fn provider_files(value: Value<'_>) -> anyhow::Result<Vec<File>> {
             self.active.insert(identity);
             if let Some(file) = File::from_value(value) {
                 self.file(file.clone());
+            } else if crate::template_variable_info::is_instance(value) {
+                // Its fully owned string-to-string snapshot cannot contain files.
             } else if let Some(files) = crate::starlark_types::contained_depset_files(value) {
                 for file in files {
                     self.file(file);
@@ -424,6 +432,7 @@ mod tests {
         GlobalsBuilder::extended_by(&[LibraryExtension::StructType])
             .with(analysis_globals)
             .with(globals)
+            .with(crate::template_variable_info::install)
             .build()
     }
 
@@ -574,6 +583,93 @@ mod tests {
                 assert!(returned_custom_providers(result).is_err(), "{source}");
             }
         });
+    }
+
+    #[test]
+    fn template_variable_return_gates_nested_payloads_and_default_outputs() {
+        let definitions = extension(
+            "//defs:providers.bzl",
+            "P = provider()\nT = platform_common.TemplateVariableInfo",
+        )
+        .unwrap();
+        Module::with_temp_heap(|module| {
+            module.import_public_symbols(&definitions);
+            module.set("file", alloc_file(module.heap(), file()));
+            for (source, count, files) in [
+                ("T({'FLAG': 'seed'})", 1, None),
+                ("[T({})]", 1, None),
+                ("(T({}),)", 1, None),
+                ("[P(), T({}), DefaultInfo()]", 2, None),
+                ("[DefaultInfo(files=depset()), T({}), P()]", 2, Some(vec![])),
+                (
+                    "[T({}), DefaultInfo(files=depset([file])), P()]",
+                    2,
+                    Some(vec![file()]),
+                ),
+            ] {
+                let ast =
+                    AstModule::parse("impl.star", source.to_owned(), &Dialect::Standard).unwrap();
+                let result = Evaluator::new(&module)
+                    .eval_module(ast, &test_globals())
+                    .unwrap();
+                assert_eq!(
+                    returned_custom_providers(result).unwrap().len(),
+                    count,
+                    "{source}"
+                );
+                assert_eq!(default_files(result).unwrap(), files, "{source}");
+                // Analysis uses None to preserve predeclared outputs, not an
+                // empty file set merely because another provider was returned.
+                assert_eq!(
+                    default_files(result)
+                        .unwrap()
+                        .unwrap_or_else(|| vec![file()]),
+                    files.unwrap_or_else(|| vec![file()])
+                );
+            }
+            for source in ["[T({}), T({})]", "x = T({}); [x, x]"] {
+                let ast =
+                    AstModule::parse("impl.star", source.to_owned(), &Dialect::Standard).unwrap();
+                let result = Evaluator::new(&module)
+                    .eval_module(ast, &test_globals())
+                    .unwrap();
+                let error = returned_custom_providers(result).unwrap_err().to_string();
+                assert!(
+                    error.contains("builtin:TemplateVariableInfo more than once"),
+                    "{error}"
+                );
+            }
+            for source in ["T", "[T]", "struct(variables={})", "[struct(variables={})]"] {
+                let ast =
+                    AstModule::parse("impl.star", source.to_owned(), &Dialect::Standard).unwrap();
+                let result = Evaluator::new(&module)
+                    .eval_module(ast, &test_globals())
+                    .unwrap();
+                assert!(returned_custom_providers(result).is_err(), "{source}");
+                assert!(default_files(result).is_err(), "{source}");
+            }
+            let ast =
+                AstModule::parse("impl.star", "T({'x': file})".to_owned(), &Dialect::Standard)
+                    .unwrap();
+            assert!(
+                Evaluator::new(&module)
+                    .eval_module(ast, &test_globals())
+                    .is_err()
+            );
+        });
+        let frozen = extension(
+            "//defs:nested.bzl",
+            "P = provider()\nT = platform_common.TemplateVariableInfo\nx = P(nested=[T({'z': 'v'}), {'k': struct(info=T({}))}], file=file)\nempty = P(nested=(T({}),))",
+        ).unwrap();
+        let nested = frozen.get("x").unwrap();
+        let empty = frozen.get("empty").unwrap();
+        drop(frozen);
+        assert_eq!(provider_files(nested.value()).unwrap(), vec![file()]);
+        assert!(provider_files(empty.value()).unwrap().is_empty());
+        assert_ne!(
+            provider_identity(definitions.get("P").unwrap().value()).as_deref(),
+            Some(crate::template_variable_info::PROVIDER_ID)
+        );
     }
 
     #[test]

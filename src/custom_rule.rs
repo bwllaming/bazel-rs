@@ -6,10 +6,13 @@ use starlark::eval::{Arguments, Evaluator};
 use starlark::starlark_module;
 use starlark::values::dict::DictRef;
 use starlark::values::list::ListRef;
+use starlark::values::none::NoneType;
 use starlark::values::structs::AllocStruct;
 use starlark::values::{OwnedFrozenValue, Value, ValueLike};
 use std::collections::BTreeMap;
 use std::fmt;
+
+use crate::build_settings::{BuildSetting, BuildSettingKind};
 
 #[derive(Clone, Debug, PartialEq, Eq, Allocative, serde::Serialize)]
 pub enum AttrKind {
@@ -43,6 +46,7 @@ pub struct AttrSpec {
 }
 #[derive(Clone, Debug)]
 pub struct CustomInvocation {
+    pub build_setting: Option<BuildSetting>,
     pub implementation: OwnedFrozenValue,
     pub top_level_functions: Vec<OwnedFrozenValue>,
     pub attrs: BTreeMap<String, AttrValue>,
@@ -256,6 +260,9 @@ mod values {
         pub implementation: V,
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
+        pub build_setting: Option<BuildSetting>,
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
         pub schema: BTreeMap<String, AttrSpec>,
     }
     impl<V> fmt::Display for DefinitionGen<V> {
@@ -310,7 +317,19 @@ mod values {
                         if value.is_none() {
                             continue;
                         }
-                        let parsed = spec.kind.parse(*value, Some(&resolve)).map_err(|e| {
+                        // Bazel's build-setting boolean conversion accepts 0/1;
+                        // ordinary attr.bool attributes remain strictly boolean.
+                        let parsed = if key == "build_setting_default"
+                            && self
+                                .build_setting
+                                .is_some_and(|s| s.kind == BuildSettingKind::Bool)
+                            && matches!(value.unpack_i32(), Some(0 | 1))
+                        {
+                            Ok(AttrValue::Bool(value.unpack_i32() == Some(1)))
+                        } else {
+                            spec.kind.parse(*value, Some(&resolve))
+                        }
+                        .map_err(|e| {
                             starlark::Error::new_other(anyhow!("attribute {key:?}: {e}"))
                         })?;
                         attrs.insert(key.to_owned(), parsed);
@@ -337,6 +356,7 @@ mod values {
                 self.implementation.to_value(),
                 attrs,
                 self.schema.clone(),
+                self.build_setting,
             )
             .map_err(starlark::Error::new_other)?;
             Ok(Value::new_none())
@@ -499,91 +519,137 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
     }
 }
 
-#[starlark_module]
-fn definition_globals(builder: &mut GlobalsBuilder) {
-    fn rule<'v>(
-        #[starlark(require = named)] implementation: Value<'v>,
-        #[starlark(require = named)] attrs: Option<Value<'v>>,
-        #[starlark(require = named)] doc: Option<&str>,
-        #[starlark(require = named, default = false)] executable: bool,
-        #[starlark(require = named, default = false)] test: bool,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<Value<'v>> {
-        let _ = doc;
-        if definition_package(eval).is_none() {
-            bail!(
-                "rule() definitions are only allowed during extension initialization, not BUILD evaluation"
-            );
-        }
-        if executable || test {
-            bail!("executable and test custom rules are unsupported");
-        }
-        implementation
-            .check_callable_with(
-                [&starlark::typing::Ty::any()],
-                [],
-                None,
-                None,
-                &starlark::typing::Ty::any(),
-            )
-            .map_err(|e| anyhow!("rule implementation must be callable with ctx: {e}"))?;
-        let mut schema = BTreeMap::new();
-        if let Some(attrs) = attrs {
-            let dict = DictRef::from_value(attrs)
-                .ok_or_else(|| anyhow!("rule attrs must be a dict of attribute descriptors"))?;
-            for (name, spec) in dict.iter() {
-                let name = name
-                    .unpack_str()
-                    .ok_or_else(|| anyhow!("attribute names must be strings"))?;
-                if matches!(
-                    name,
-                    "name"
-                        | "visibility"
-                        | "tags"
-                        | "testonly"
-                        | "deprecation"
-                        | "features"
-                        | "compatible_with"
-                        | "restricted_to"
-                        | "target_compatible_with"
-                        | "exec_compatible_with"
-                        | "exec_group_compatible_with"
-                        | "exec_properties"
-                        | "package_metadata"
-                        | "toolchains"
-                        | "licenses"
-                        | "distribs"
-                ) {
-                    bail!("attribute {name:?} is reserved");
-                }
-                if name.is_empty()
-                    || !name.bytes().enumerate().all(|(i, b)| {
-                        b == b'_' || b.is_ascii_alphabetic() || (i > 0 && b.is_ascii_digit())
-                    })
-                {
-                    bail!("invalid attribute name {name:?}");
-                }
-                let spec = spec
-                    .downcast_ref::<Descriptor>()
-                    .ok_or_else(|| anyhow!("attribute {name:?} must be an attr descriptor"))?;
-                if name.starts_with('_') && spec.0.mandatory {
-                    bail!(
-                        "private attribute {name:?} cannot be mandatory because it cannot be set explicitly"
-                    );
-                }
-                schema.insert(name.to_owned(), spec.0.clone());
+// The public Starlark rule signature has independently named Bazel options.
+// Scope this allowance to the generated constructor and its argument wrappers.
+#[allow(clippy::too_many_arguments)]
+mod definitions {
+    use super::*;
+    #[starlark_module]
+    pub(super) fn definition_globals(builder: &mut GlobalsBuilder) {
+        fn rule<'v>(
+            #[starlark(require = named)] implementation: Value<'v>,
+            #[starlark(require = named)] attrs: Option<Value<'v>>,
+            #[starlark(require = named)] doc: Option<&str>,
+            #[starlark(require = named, default = false)] executable: bool,
+            #[starlark(require = named, default = false)] test: bool,
+            #[starlark(require = named, default = NoneType)] build_setting: Value<'v>,
+            #[starlark(require = named, default = NoneType)] cfg: Value<'v>,
+            eval: &mut Evaluator<'v, '_, '_>,
+        ) -> anyhow::Result<Value<'v>> {
+            let _ = doc;
+            if definition_package(eval).is_none() {
+                bail!(
+                    "rule() definitions are only allowed during extension initialization, not BUILD evaluation"
+                );
             }
+            if executable || test {
+                bail!("executable and test custom rules are unsupported");
+            }
+            let build_setting = if build_setting.is_none() {
+                None
+            } else {
+                Some(*BuildSetting::from_value(build_setting).ok_or_else(|| {
+                    anyhow!(
+                        "rule build_setting must be a BuildSetting, got {}",
+                        build_setting.get_type()
+                    )
+                })?)
+            };
+            if !cfg.is_none() {
+                if build_setting.is_some() {
+                    bail!("rule build_setting is incompatible with cfg");
+                }
+                bail!("rule cfg configuration transitions are unsupported");
+            }
+            implementation
+                .check_callable_with(
+                    [&starlark::typing::Ty::any()],
+                    [],
+                    None,
+                    None,
+                    &starlark::typing::Ty::any(),
+                )
+                .map_err(|e| anyhow!("rule implementation must be callable with ctx: {e}"))?;
+            let mut schema = BTreeMap::new();
+            if let Some(attrs) = attrs {
+                let dict = DictRef::from_value(attrs)
+                    .ok_or_else(|| anyhow!("rule attrs must be a dict of attribute descriptors"))?;
+                for (name, spec) in dict.iter() {
+                    let name = name
+                        .unpack_str()
+                        .ok_or_else(|| anyhow!("attribute names must be strings"))?;
+                    if matches!(
+                        name,
+                        "name"
+                            | "visibility"
+                            | "tags"
+                            | "testonly"
+                            | "deprecation"
+                            | "features"
+                            | "compatible_with"
+                            | "restricted_to"
+                            | "target_compatible_with"
+                            | "exec_compatible_with"
+                            | "exec_group_compatible_with"
+                            | "exec_properties"
+                            | "package_metadata"
+                            | "toolchains"
+                            | "licenses"
+                            | "distribs"
+                    ) {
+                        bail!("attribute {name:?} is reserved");
+                    }
+                    if name.is_empty()
+                        || !name.bytes().enumerate().all(|(i, b)| {
+                            b == b'_' || b.is_ascii_alphabetic() || (i > 0 && b.is_ascii_digit())
+                        })
+                    {
+                        bail!("invalid attribute name {name:?}");
+                    }
+                    let spec = spec
+                        .downcast_ref::<Descriptor>()
+                        .ok_or_else(|| anyhow!("attribute {name:?} must be an attr descriptor"))?;
+                    if name.starts_with('_') && spec.0.mandatory {
+                        bail!(
+                            "private attribute {name:?} cannot be mandatory because it cannot be set explicitly"
+                        );
+                    }
+                    schema.insert(name.to_owned(), spec.0.clone());
+                }
+            }
+            if let Some(setting) = build_setting {
+                for name in ["build_setting_default", "help"] {
+                    if schema.contains_key(name) {
+                        bail!("attribute {name:?} is reserved for build-setting rules");
+                    }
+                }
+                let kind = match setting.kind {
+                    BuildSettingKind::Bool => AttrKind::Bool,
+                    BuildSettingKind::Int => AttrKind::Int,
+                    BuildSettingKind::String => AttrKind::String,
+                    BuildSettingKind::StringList => AttrKind::StringList,
+                };
+                schema.insert(
+                    "build_setting_default".into(),
+                    descriptor(kind, None, true, false, false)?.0,
+                );
+                schema.insert(
+                    "help".into(),
+                    descriptor(AttrKind::String, None, false, false, false)?.0,
+                );
+            }
+            Ok(eval.heap().alloc(DefinitionGen {
+                implementation,
+                schema,
+                build_setting,
+            }))
         }
-        Ok(eval.heap().alloc(DefinitionGen {
-            implementation,
-            schema,
-        }))
     }
 }
 
 /// Install only into .bzl globals; BUILD may invoke loaded definitions, not create them.
 pub fn rule_globals(builder: &mut GlobalsBuilder) {
-    definition_globals(builder);
+    definitions::definition_globals(builder);
     crate::starlark_types::analysis_globals(builder);
     let attrs = GlobalsBuilder::new().with(attr_globals).build();
     builder.frozen_heap().add_reference(attrs.heap());
@@ -597,7 +663,10 @@ mod tests {
     use starlark::syntax::{AstModule, Dialect};
 
     fn definition_error(expression: &str) -> String {
-        let globals = GlobalsBuilder::standard().with(rule_globals).build();
+        let globals = GlobalsBuilder::standard()
+            .with(rule_globals)
+            .with(crate::build_settings::install)
+            .build();
         Module::with_temp_heap(|module| {
             let source = format!("def impl(ctx):\n    return []\nx = {expression}");
             let ast = AstModule::parse("defs.bzl", source, &Dialect::Standard).unwrap();
@@ -712,6 +781,34 @@ mod tests {
             ("rule(implementation=impl, executable=True)", "unsupported"),
             ("rule(implementation=impl, test=True)", "unsupported"),
             ("rule(implementation=impl, unknown=True)", "unknown"),
+            (
+                "rule(implementation=impl, build_setting=True)",
+                "BuildSetting, got bool",
+            ),
+            (
+                "rule(implementation=impl, build_setting='string')",
+                "BuildSetting, got string",
+            ),
+            (
+                "rule(implementation=impl, build_setting=attr.bool())",
+                "BuildSetting, got attribute",
+            ),
+            (
+                "rule(implementation=impl, cfg='target')",
+                "configuration transitions are unsupported",
+            ),
+            (
+                "rule(implementation=impl, build_setting=config.bool(), cfg='target')",
+                "build_setting is incompatible with cfg",
+            ),
+            (
+                "rule(implementation=impl, build_setting=config.string(), attrs={'help': attr.string()})",
+                "reserved for build-setting rules",
+            ),
+            (
+                "rule(implementation=impl, build_setting=config.bool(), attrs={'build_setting_default': attr.bool()})",
+                "reserved for build-setting rules",
+            ),
             ("rule(implementation=impl, attrs={'x': 1})", "descriptor"),
             (
                 "rule(implementation=impl, attrs={'name': attr.string()})",

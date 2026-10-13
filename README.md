@@ -122,6 +122,9 @@ executor; see [its exact limits](docs/REPOSITORY_RULES.md), including ASCII
 Starlark strings and binary-preserving templates. [Ordinary module extensions](docs/MODULE_EXTENSIONS.md)
 support bounded non-isolated callbacks, typed tags and deferred repository
 declarations; full extension/repository APIs and toolchains remain incomplete.
+[Build-setting defaults](docs/BUILD_SETTINGS.md) execute genuine implementations
+and propagate native template-variable providers to explicit consumers; CLI
+setting overrides, configured analysis and implicit Make expansion remain unsupported.
 [Genuine built-in modules](docs/BUILTIN_MODULES.md) are available through the
 native-only `--experimental-builtin-modules` transition option, using complete
 verified Linux x86-64 resources; the default remains explicit modules only.

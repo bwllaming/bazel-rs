@@ -8,6 +8,8 @@
   "registry_options": "query, build and mod graph accept explicit file/HTTP/HTTPS registries; remote registries require --lockfile_mode=off; no implicit network registry or lockfile implementation; fresh metadata requests, 404/410 missing, other failures hard errors",
   "native_rules": ["filegroup(name, srcs, visibility)", "genrule(name, srcs, outs, cmd, visibility)"],
   "custom_rules": "rule implementation callbacks, typed scalar/list/label/output attributes, declaration snapshots, None fallback, definition-relative label defaults, canonical main-repository Label strings (@@//), DefaultInfo, frozen custom-provider identity across packages and provider-only generated-file propagation",
+  "build_settings": "default-only config.bool/int/string/string_list descriptors and rule(build_setting=...), mandatory typed invocation snapshots, help attribute and dynamic ctx.build_setting_value with fresh mutable list copies; actual genuine skylib implementations produce their own providers; no CLI setting overrides or configured-analysis parity; see docs/BUILD_SETTINGS.md",
+  "template_variables": "native platform_common.TemplateVariableInfo with stable constructor identity, instance identity, ordered string snapshots, fresh mutable variables dictionaries, normal provider return/lookup/ownership semantics and explicit dependency consumers; no implicit Make expansion, ctx.var or toolchain resolution",
   "depsets": "persistent DAG; default/postorder/preorder/topological orders; homogeneous File, string, Label, bool, int32 and immutable tuple elements",
   "args": "native add/add_all/add_joined, formatting, mapping, deduplication and action-registration snapshots; top-level mapper identity registry, closures require allow_closure=True",
   "actions": ["declare_file (including sibling)", "write (native binary-safe)", "run_shell (arguments and environment)", "run (direct executable, arguments and environment)"],
@@ -33,7 +35,7 @@
   "unsupported": [
     "rc evaluation", "external .bzl loads without materializable source roots", "symbolic macros", "select", "package groups", "other package defaults", "license metadata",
     "full Git semantics including mutable refs and unrestricted symlinks, archive overrides, full patch semantics and patch commands, unsupported archive formats and links", "lockfile reading/writing and offline flags", "complete module-extension APIs, isolation, metadata, facts and SDK execution", "default builtin/registry semantics and --override_repository", "mod text output, builtin presentation, unused modules and verbose explanations", "full repository-rule APIs and byte-string semantics", "provider init", "executable/test custom rules", "runfiles", "tree artifacts",
-    "toolchains and platforms", "configuration transitions", "aspects", "test and run",
+    "toolchains and platforms", "CLI build-setting overrides, string_set and legacy allow_multiple", "implicit template-variable Make expansion and ctx.var", "configuration transitions", "aspects", "test and run",
     "cquery and aquery", "query expressions", "sandboxing", "remote cache and execution",
     "persistent workers", "BEP and profiles", "watch mode", "Windows execution",
     "daemon and incremental analysis", "process cancellation/timeouts", "symlink glob traversal"

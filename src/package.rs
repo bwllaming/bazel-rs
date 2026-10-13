@@ -17,6 +17,7 @@ use starlark::values::list::ListRef;
 use starlark::values::none::NoneType;
 use starlark::values::structs::AllocStruct;
 
+use crate::build_settings::BuildSetting;
 use crate::custom_rule::{AttrSpec, AttrValue, CustomInvocation};
 use crate::label::{Label, PackageId};
 use crate::repository::RepositorySet;
@@ -81,6 +82,7 @@ struct PendingCustom {
     slot: String,
     attrs: BTreeMap<String, AttrValue>,
     schema: BTreeMap<String, AttrSpec>,
+    build_setting: Option<BuildSetting>,
 }
 
 pub(crate) fn repository_context(eval: &Evaluator<'_, '_, '_>) -> Option<Arc<RepositorySet>> {
@@ -103,6 +105,7 @@ pub(crate) fn register_custom<'v>(
     implementation: Value<'v>,
     attrs: BTreeMap<String, AttrValue>,
     schema: BTreeMap<String, AttrSpec>,
+    build_setting: Option<BuildSetting>,
 ) -> anyhow::Result<()> {
     let context = declarations(eval)?;
     let mut srcs = Vec::new();
@@ -133,6 +136,7 @@ pub(crate) fn register_custom<'v>(
         slot,
         attrs,
         schema,
+        build_setting,
     });
     Ok(())
 }
@@ -369,6 +373,8 @@ pub fn bzl_globals() -> Globals {
     bzl.frozen_heap().add_reference(native.heap());
     bzl.set("native", AllocStruct(native.iter()));
     crate::custom_rule::rule_globals(&mut bzl);
+    crate::build_settings::install(&mut bzl);
+    crate::template_variable_info::install(&mut bzl);
     crate::providers::globals(&mut bzl);
     crate::repository_rule::globals(&mut bzl);
     crate::module_extension::globals(&mut bzl);
@@ -493,6 +499,7 @@ fn evaluate_at(
             top_level_functions: loaded.functions.clone(),
             attrs: pending.attrs,
             schema: pending.schema,
+            build_setting: pending.build_setting,
         });
     }
     let mut rules = validate_rules(declared_rules).map_err(|e| format!("{filename}: {e}"))?;
@@ -881,6 +888,242 @@ unused = [genrule(name = "make_" + n, outs = [n + ".out"], cmd = "echo " + n + "
         std::fs::write(root.0.join("pkg/defs.bzl"), defs).unwrap();
         std::fs::write(root.0.join("pkg/BUILD.bazel"), build).unwrap();
         evaluate(&root.0, "pkg")
+    }
+
+    #[test]
+    fn build_setting_declarations_retain_metadata_and_typed_defaults() {
+        use crate::build_settings::BuildSettingKind;
+        let package = custom_fixture(
+            r#"
+def impl(ctx):
+    fail("implementation must not run during loading")
+b = rule(implementation=impl, build_setting=config.bool())
+i = rule(implementation=impl, build_setting=config.int(flag=True), cfg=None)
+s = rule(implementation=impl, build_setting=config.string(flag=True))
+ss = rule(implementation=impl, build_setting=config.string_list(flag=True, repeatable=True))
+ordinary = rule(implementation=impl, build_setting=None, cfg=None, attrs={"help": attr.string(), "build_setting_default": attr.bool()})
+"#,
+            r#"
+load(":defs.bzl", "b", "i", "s", "ss", "ordinary")
+b(name="b", build_setting_default=False)
+b(name="b0", build_setting_default=0)
+b(name="b1", build_setting_default=1)
+b(name="bt", build_setting_default=True)
+i(name="i", build_setting_default=-2147483648)
+i(name="imax", build_setting_default=2147483647)
+s(name="s", build_setting_default="value", help="description")
+ss(name="ss", build_setting_default=["first", "first", "second"])
+ordinary(name="ordinary", help="ordinary help", build_setting_default=True)
+"#,
+        ).unwrap();
+        for (name, kind, flag, repeatable, value) in [
+            (
+                "b",
+                BuildSettingKind::Bool,
+                false,
+                false,
+                AttrValue::Bool(false),
+            ),
+            (
+                "b0",
+                BuildSettingKind::Bool,
+                false,
+                false,
+                AttrValue::Bool(false),
+            ),
+            (
+                "b1",
+                BuildSettingKind::Bool,
+                false,
+                false,
+                AttrValue::Bool(true),
+            ),
+            (
+                "bt",
+                BuildSettingKind::Bool,
+                false,
+                false,
+                AttrValue::Bool(true),
+            ),
+            (
+                "i",
+                BuildSettingKind::Int,
+                true,
+                false,
+                AttrValue::Int(i32::MIN),
+            ),
+            (
+                "imax",
+                BuildSettingKind::Int,
+                true,
+                false,
+                AttrValue::Int(i32::MAX),
+            ),
+            (
+                "s",
+                BuildSettingKind::String,
+                true,
+                false,
+                AttrValue::String("value".into()),
+            ),
+            (
+                "ss",
+                BuildSettingKind::StringList,
+                true,
+                true,
+                AttrValue::Strings(vec!["first".into(), "first".into(), "second".into()]),
+            ),
+        ] {
+            let custom = package[&Label::parse(&format!(":{name}"), "pkg").unwrap()]
+                .custom
+                .as_ref()
+                .unwrap();
+            assert_eq!(
+                custom.build_setting,
+                Some(BuildSetting {
+                    kind,
+                    flag,
+                    repeatable
+                })
+            );
+            assert_eq!(custom.attrs["build_setting_default"], value);
+            assert!(custom.schema["build_setting_default"].mandatory);
+            assert_eq!(
+                custom.schema["help"].kind,
+                crate::custom_rule::AttrKind::String
+            );
+            assert_eq!(
+                custom.attrs["help"],
+                AttrValue::String(if name == "s" { "description" } else { "" }.into())
+            );
+        }
+        let ordinary = package[&Label::parse(":ordinary", "pkg").unwrap()]
+            .custom
+            .as_ref()
+            .unwrap();
+        assert_eq!(ordinary.build_setting, None);
+        assert_eq!(
+            ordinary.attrs["help"],
+            AttrValue::String("ordinary help".into())
+        );
+        assert_eq!(
+            ordinary.attrs["build_setting_default"],
+            AttrValue::Bool(true)
+        );
+    }
+
+    #[test]
+    fn build_setting_defaults_enforce_mandatory_and_exact_type_contracts() {
+        for (constructor, argument, expected) in [
+            ("bool", "", "missing mandatory attribute"),
+            ("int", "", "missing mandatory attribute"),
+            ("string", "", "missing mandatory attribute"),
+            ("string_list", "", "missing mandatory attribute"),
+            (
+                "bool",
+                ", build_setting_default=None",
+                "missing mandatory attribute",
+            ),
+            (
+                "int",
+                ", build_setting_default=None",
+                "missing mandatory attribute",
+            ),
+            (
+                "string",
+                ", build_setting_default=None",
+                "missing mandatory attribute",
+            ),
+            (
+                "string_list",
+                ", build_setting_default=None",
+                "missing mandatory attribute",
+            ),
+            ("bool", ", build_setting_default=2", "expected a bool"),
+            ("bool", ", build_setting_default=-1", "expected a bool"),
+            ("bool", ", build_setting_default='true'", "expected a bool"),
+            (
+                "int",
+                ", build_setting_default=True",
+                "expected a 32-bit int",
+            ),
+            (
+                "int",
+                ", build_setting_default=2147483648",
+                "expected a 32-bit int",
+            ),
+            (
+                "int",
+                ", build_setting_default=-2147483649",
+                "expected a 32-bit int",
+            ),
+            ("string", ", build_setting_default=1", "expected a string"),
+            (
+                "string_list",
+                ", build_setting_default=['ok', 1]",
+                "expected a list of strings",
+            ),
+            (
+                "string_list",
+                ", build_setting_default=('ok',)",
+                "expected a list of strings",
+            ),
+            (
+                "string",
+                ", build_setting_default='', help=1",
+                "expected a string",
+            ),
+        ] {
+            let defs = format!(
+                "def impl(ctx):\n    return []\nr = rule(implementation=impl, build_setting=config.{constructor}())"
+            );
+            let build = format!("load(':defs.bzl', 'r')\nr(name='x'{argument})");
+            let error = custom_fixture(&defs, &build).unwrap_err();
+            assert!(error.contains(expected), "{constructor}{argument}: {error}");
+        }
+        for (setting, attribute) in [
+            ("None", "build_setting_default"),
+            ("config.bool()", "ordinary_bool"),
+        ] {
+            let defs = format!(
+                "def impl(ctx):\n    return []\nr = rule(implementation=impl, build_setting={setting}, attrs={{'{attribute}': attr.bool()}})"
+            );
+            let build = format!("load(':defs.bzl', 'r')\nr(name='x', {attribute}=1)");
+            let error = custom_fixture(&defs, &build).unwrap_err();
+            assert!(error.contains("expected a bool"), "{error}");
+        }
+    }
+
+    #[test]
+    fn build_setting_list_defaults_snapshot_each_macro_invocation() {
+        let package = custom_fixture(
+            r#"
+def impl(ctx):
+    return []
+r = rule(implementation=impl, build_setting=config.string_list())
+def declare():
+    defaults = ["before"]
+    r(name="first", build_setting_default=defaults)
+    defaults.append("after")
+    r(name="second", build_setting_default=defaults)
+    defaults.append("later")
+"#,
+            "load(':defs.bzl', 'declare')\ndeclare()",
+        )
+        .unwrap();
+        for (name, expected) in [
+            ("first", vec!["before".into()]),
+            ("second", vec!["before".into(), "after".into()]),
+        ] {
+            let custom = package[&Label::parse(&format!(":{name}"), "pkg").unwrap()]
+                .custom
+                .as_ref()
+                .unwrap();
+            assert_eq!(
+                custom.attrs["build_setting_default"],
+                AttrValue::Strings(expected)
+            );
+        }
     }
 
     #[test]

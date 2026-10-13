@@ -79,6 +79,13 @@ tree through a native verified cache. The default transition, graph presentation
 registry/lockfile defaults and SDK APIs remain unfinished. See
 `docs/BUILTIN_MODULES.md`; this is not full application or performance parity.
 
+Default-only build settings now execute genuine skylib implementations and
+propagate their providers into consumer actions. Native TemplateVariableInfo
+preserves snapshot ownership and mutable copy-on-read dictionaries. This does
+not implement CLI overrides, transitions, implicit Make variables or toolchains.
+The preserved application loading probe next encounters the archive-source
+`docs_url` field; see `docs/BUILD_SETTINGS.md` for scope and evidence.
+
 The official 9.3.0 release was published 2026-10-07, with upstream tag commit
 `e89755babf3e941bc1e9d8120b1cd48854ab9dfa`. The main checkout's `.bazeliskrc` pins
 9.1.1. Changing that checkout's pin is outside this implementation.

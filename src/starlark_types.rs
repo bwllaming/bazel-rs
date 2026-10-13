@@ -771,7 +771,8 @@ impl<'v> StarlarkValue<'v> for DefaultInfoValue {
     }
 }
 
-/// Missing DefaultInfo or an omitted/None files field requests all declared
+/// Missing DefaultInfo (including TemplateVariableInfo-only returns) or an
+/// omitted/None files field requests the caller's implicit predeclared
 /// outputs; an explicitly empty depset requests no default outputs.
 pub fn default_files(result: Value<'_>) -> anyhow::Result<Option<Vec<File>>> {
     if result.is_none() {
@@ -790,7 +791,7 @@ pub fn default_files(result: Value<'_>) -> anyhow::Result<Option<Vec<File>>> {
             continue;
         }
         let provider = DefaultInfoValue::from_value(value)
-            .ok_or_else(|| anyhow!("unsupported returned provider {}; expected DefaultInfo or a custom provider instance", value.get_type()))?;
+            .ok_or_else(|| anyhow!("unsupported returned provider {}; expected DefaultInfo, TemplateVariableInfo, or a custom provider instance", value.get_type()))?;
         if found {
             bail!("implementation returned DefaultInfo more than once");
         }

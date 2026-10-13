@@ -174,6 +174,22 @@ checkout is unchanged; no application query/build/test success is claimed.
 
 ## Remaining compatibility gates
 
+### Default-only build settings
+
+- [x] Preserve owned setting descriptors and per-invocation typed defaults.
+- [x] Execute genuine skylib 1.8.2 implementations for all nine exported settings.
+- [x] Match reference-confirmed fresh mutable value and provider-map getter copies.
+- [x] Produce native TemplateVariableInfo and consume it through real dependencies.
+- [x] Verify native default-change cache behavior without accepting CLI overrides.
+- [x] Pass 741 Rust tests, 388 Python tests, strict linting, build and analyzer checks.
+- [x] Preserve the application checkout and advance loading to the archive-source
+      `docs_url` boundary, without claiming an application build or test success.
+- [x] Pass nine validation families (55 probes, 104 engine phases), five adjacent
+      CLI suites and unconditional review of the bounded default-only profile.
+
+CLI setting overrides, configuration matching/transitions, implicit Make-variable
+consumption and platform/toolchain resolution remain separate unimplemented gates.
+
 ### Genuine builtin transition
 
 - [x] Package all 421 official Bazel 9.3 Linux x86-64 embedded-tools files with

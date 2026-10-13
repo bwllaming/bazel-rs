@@ -1,0 +1,297 @@
+{
+  "archive": "bazel-skylib-1.8.2.tar.gz",
+  "archive_entry_count": 63,
+  "archive_sha256": "6e78f0e57de26801f6f564fa7c4a48dc8b36873e416257a92bbb0937eeac8446",
+  "common_settings_sha256": "f3bcedef4b2b2cbe9750d61852917954499c4ba5e83d79fb975ec5814eb76d20",
+  "file_count": 56,
+  "files": {
+    "BUILD": {
+      "mode": 420,
+      "sha256": "5c20cfb7082869d534ec792772ee80b8b6724892857095157bfc57f1e96eaa70",
+      "size_bytes": 2170
+    },
+    "CODEOWNERS": {
+      "mode": 420,
+      "sha256": "2a006750d3f205f29bb4a6fca335a5dc6daacc6328be100b3a8ee731e41f18b9",
+      "size_bytes": 161
+    },
+    "CONTRIBUTORS": {
+      "mode": 420,
+      "sha256": "f9a947f2075bac425dcb62515ff0f6a0916f4df2e3f473288e79d9a0e2cda898",
+      "size_bytes": 754
+    },
+    "LICENSE": {
+      "mode": 420,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "size_bytes": 11358
+    },
+    "MODULE.bazel": {
+      "mode": 420,
+      "sha256": "69ad6927098316848b34a9142bcc975e018ba27f08c4ff403f50c1b6e646ca67",
+      "size_bytes": 389
+    },
+    "WORKSPACE": {
+      "mode": 420,
+      "sha256": "d33b97d6d1722ae3a96d0dd3b8cb73c1458d642a3d74332495976463ae816643",
+      "size_bytes": 110
+    },
+    "WORKSPACE.bzlmod": {
+      "mode": 420,
+      "sha256": "97fd1ded8b3416a97ad918b932afab3328f6dc1404fdb063b047a3a7accc744a",
+      "size_bytes": 101
+    },
+    "bzl_library.bzl": {
+      "mode": 420,
+      "sha256": "19ad2a02f1b2f7c5568a21d2be1a9e73abc764be87eeb0422ba28922c81e647f",
+      "size_bytes": 1477
+    },
+    "lib.bzl": {
+      "mode": 420,
+      "sha256": "fa48282971d2d1f9ab5cb6c6a84f56a52f36c0df5cc6c69d2b609da7587f0a98",
+      "size_bytes": 795
+    },
+    "lib/BUILD": {
+      "mode": 420,
+      "sha256": "efb832e736bc05b4328d06ce1e66d28ac6c9af0c26c20d7faa33274eee56d668",
+      "size_bytes": 1853
+    },
+    "lib/collections.bzl": {
+      "mode": 420,
+      "sha256": "89533929b5b22427531df5505aef56b9e6876bd91b4a56df56b94f0d9c33a1de",
+      "size_bytes": 2176
+    },
+    "lib/dicts.bzl": {
+      "mode": 420,
+      "sha256": "739d6e8f3588f306c5efb01b8b59554b85476bfb35a45a66cc0a9ae2bc9ea0bc",
+      "size_bytes": 2410
+    },
+    "lib/modules.bzl": {
+      "mode": 420,
+      "sha256": "a5264676899a9913d472db7d6a0c78973d33420547c01e8053dc55db60ef819b",
+      "size_bytes": 4981
+    },
+    "lib/new_sets.bzl": {
+      "mode": 420,
+      "sha256": "2f2b6c2ae045bbf15adb4f0fe1a55943627024cc78c34c99b46f15cdd53ce2b7",
+      "size_bytes": 6359
+    },
+    "lib/old_sets.bzl": {
+      "mode": 420,
+      "sha256": "83f3dfffd05b5dcd3d97eabd1c4ef1c083a8f77054beddce8a2cce9aecc641da",
+      "size_bytes": 714
+    },
+    "lib/partial.bzl": {
+      "mode": 420,
+      "sha256": "0113c9ae3c9955f73f2043e66042e88253c4bf22165b759920189da5f8dc8f8b",
+      "size_bytes": 5587
+    },
+    "lib/paths.bzl": {
+      "mode": 420,
+      "sha256": "96cce43871d8228126a12ceff771351f9030b1e9d029f2185853aa6541766a83",
+      "size_bytes": 10378
+    },
+    "lib/selects.bzl": {
+      "mode": 420,
+      "sha256": "df3e9b6a0eaf081103b8d11dee55abcb98db8532cd552d6f32205c3a3d3f54c0",
+      "size_bytes": 9458
+    },
+    "lib/sets.bzl": {
+      "mode": 420,
+      "sha256": "262b62e17bac1fc7a8e7e00faa871f4214861364e2cf97b145695f69e6cedf90",
+      "size_bytes": 715
+    },
+    "lib/shell.bzl": {
+      "mode": 420,
+      "sha256": "7a200a10cc265c71146fd32b1922686857d86b7317ad7048f3af39761624851f",
+      "size_bytes": 1867
+    },
+    "lib/structs.bzl": {
+      "mode": 420,
+      "sha256": "c3fa79b9246582cb57c1bd9cbed999afbee822915d5888009bc0a197c43e9749",
+      "size_bytes": 1265
+    },
+    "lib/subpackages.bzl": {
+      "mode": 420,
+      "sha256": "6f8ce1d7e3a785df3b0ddf1063de67ae6b3b519bb103c09e1c2c3dd32041ec27",
+      "size_bytes": 3236
+    },
+    "lib/types.bzl": {
+      "mode": 420,
+      "sha256": "7ffca24c526fdaaf312b44646ea61a705d5b18433cfa22a7e44128fbc6bc7a7a",
+      "size_bytes": 3820
+    },
+    "lib/unittest.bzl": {
+      "mode": 420,
+      "sha256": "17c727497af64c8639d24f3e5056c6d83ab92c9ec22730e7a21dd751bd2d0dcd",
+      "size_bytes": 23842
+    },
+    "lib/versions.bzl": {
+      "mode": 420,
+      "sha256": "becde4cda68d230608ceb70b943e4d69153a923423961390a97a695b9baa8622",
+      "size_bytes": 4325
+    },
+    "rules/BUILD": {
+      "mode": 420,
+      "sha256": "8274cce584479da4ea7dfa593a5b30284859e02030a85fc61341fbbb28c70941",
+      "size_bytes": 1808
+    },
+    "rules/analysis_test.bzl": {
+      "mode": 420,
+      "sha256": "bbd17da90b1cf72787d5d82170dc75c8cfdcfa0558024ff704420c77fd67f66b",
+      "size_bytes": 2180
+    },
+    "rules/build_test.bzl": {
+      "mode": 420,
+      "sha256": "fba59a505781e907e7c943b5744d6bad7c853d87a8f3976567bc906990d1d6ff",
+      "size_bytes": 4347
+    },
+    "rules/common_settings.bzl": {
+      "mode": 420,
+      "sha256": "f3bcedef4b2b2cbe9750d61852917954499c4ba5e83d79fb975ec5814eb76d20",
+      "size_bytes": 6421
+    },
+    "rules/copy_directory.bzl": {
+      "mode": 420,
+      "sha256": "ab906bc02ccb61900521893bbce694dc3c69897d5155c324adab5b25933b3259",
+      "size_bytes": 1007
+    },
+    "rules/copy_file.bzl": {
+      "mode": 420,
+      "sha256": "f6b112ab18834555056e32b6cbb8a71b5137f4ffa9c77c0509cb3649fbbf6302",
+      "size_bytes": 1028
+    },
+    "rules/diff_test.bzl": {
+      "mode": 420,
+      "sha256": "56b623835c0bf8c18da23d111b1e460001edc223f0195d8702c34bb5b9644a26",
+      "size_bytes": 5352
+    },
+    "rules/directory/BUILD": {
+      "mode": 420,
+      "sha256": "67a96f21bde94820c9d8b200af1e4303b2f085f8ebfe52acaed761e33a193544",
+      "size_bytes": 1131
+    },
+    "rules/directory/directory.bzl": {
+      "mode": 420,
+      "sha256": "1b549099f7efcdfffa13abd53b85b21a3873f68d4482f7681e87eac5769b3a59",
+      "size_bytes": 5241
+    },
+    "rules/directory/glob.bzl": {
+      "mode": 420,
+      "sha256": "583ec3e33d1de7e97f8fc39ba26d661c52dfd4b57b810bbb83f8bb8f96ec5ddb",
+      "size_bytes": 2326
+    },
+    "rules/directory/private/BUILD": {
+      "mode": 420,
+      "sha256": "2ca62a36cd4cb060e77289dc8512931925efe6db81e7e9cf82a495887b585baa",
+      "size_bytes": 694
+    },
+    "rules/directory/private/glob.bzl": {
+      "mode": 420,
+      "sha256": "3ac0736f6e9f326d5a19940489540aac98984cf2da69861c6049ae079c871c76",
+      "size_bytes": 4721
+    },
+    "rules/directory/private/paths.bzl": {
+      "mode": 420,
+      "sha256": "be0fd1d3fb3f4f057a090abda08283dc373aa3115d31b7ad18d5516dcccf7bd7",
+      "size_bytes": 3163
+    },
+    "rules/directory/providers.bzl": {
+      "mode": 420,
+      "sha256": "c02beb01bf6558b2f80820abd03df578fbaf007546081b361b4ff449cd08ed74",
+      "size_bytes": 2554
+    },
+    "rules/directory/subdirectory.bzl": {
+      "mode": 420,
+      "sha256": "367e5b7d0764c06fc52c96dc9c2b81e4034f6a4a4906a169a2c2ecf706004320",
+      "size_bytes": 1375
+    },
+    "rules/expand_template.bzl": {
+      "mode": 420,
+      "sha256": "95c970eff006f68a58d520fa6597018081d3424bdd0c10b417cc5b266d5e4be9",
+      "size_bytes": 1710
+    },
+    "rules/native_binary.bzl": {
+      "mode": 420,
+      "sha256": "5ef5dbeb9a3ddb632717ac011d885384f6c5b90fc30fb08e467994b5eb615995",
+      "size_bytes": 3252
+    },
+    "rules/private/BUILD": {
+      "mode": 420,
+      "sha256": "b74bcdac3b3b9b721613e98e807a1a0e933365fc65e031233a8af09a6eb41046",
+      "size_bytes": 1422
+    },
+    "rules/private/bzl_library.bzl": {
+      "mode": 420,
+      "sha256": "2af90c331cd2fa82080fe5cc23c1165524e50c1f6f6489e81aa5ad7af26120aa",
+      "size_bytes": 3122
+    },
+    "rules/private/copy_common.bzl": {
+      "mode": 420,
+      "sha256": "77992e62e24a93c1b503866cc0cb6be2be9b4d082ac521aad763450e2bf489db",
+      "size_bytes": 2865
+    },
+    "rules/private/copy_directory_private.bzl": {
+      "mode": 420,
+      "sha256": "44e8f5d4461848bd7f646d13f5833c59f52d0b1b3c54afe9acc94f0f17eb2558",
+      "size_bytes": 5816
+    },
+    "rules/private/copy_file_private.bzl": {
+      "mode": 420,
+      "sha256": "5f9d5031f291c92f3a1cb7682b62656fd098d3b16c240d1dab9af6d5c2ffe62d",
+      "size_bytes": 5777
+    },
+    "rules/private/maprule_util.bzl": {
+      "mode": 420,
+      "sha256": "429a4d9f98d578cb9a8ef774af60cf38365917bec91175355f9a64ea5e6b5d30",
+      "size_bytes": 4726
+    },
+    "rules/private/write_file_private.bzl": {
+      "mode": 420,
+      "sha256": "e98a6996d3024eb76ef07f2a51920039e49ca45b3b7dfa463f0a9e7c1398ac6b",
+      "size_bytes": 3853
+    },
+    "rules/run_binary.bzl": {
+      "mode": 420,
+      "sha256": "33078ea85426c2f7b47208ff627d06cdc288a9de6173c72ae7263dcede6c6b1c",
+      "size_bytes": 4254
+    },
+    "rules/select_file.bzl": {
+      "mode": 420,
+      "sha256": "10b2d7bd171d29d909738e1bf8873520bc147b2ea4ef2dbe63b23f3e55b5a6ba",
+      "size_bytes": 1787
+    },
+    "rules/write_file.bzl": {
+      "mode": 420,
+      "sha256": "b5a1333a299fd98860a2949442a63d66927bb273d46d05d1623f5ebc1a9d9ea9",
+      "size_bytes": 1099
+    },
+    "skylark_library.bzl": {
+      "mode": 420,
+      "sha256": "fde1f7b5906245c92f74a5a1f31a96bffb816a1e5b6b223d5f44bcbd353e5342",
+      "size_bytes": 825
+    },
+    "toolchains/unittest/BUILD": {
+      "mode": 420,
+      "sha256": "881db5f5c0f16f8fced90203907d441c798608705ad25a0a149314b631f7b1c5",
+      "size_bytes": 1380
+    },
+    "version.bzl": {
+      "mode": 420,
+      "sha256": "f40db2947d297f63d902d33f7ca7cb6f868a942cb684b239870f7f8ba27ff63f",
+      "size_bytes": 737
+    },
+    "workspace.bzl": {
+      "mode": 420,
+      "sha256": "f3cee916e5345e5b5e3b8a3fb776fd084903e0e0077978c2b0276d419c53e728",
+      "size_bytes": 1485
+    }
+  },
+  "name": "bazel_skylib",
+  "notes": [
+    "Entire genuine release archive; extracted file bytes and original modes are unchanged.",
+    "MODULE.bazel, BUILD and all upstream files retained; local_path_override is test-only.",
+    "Custom root rules probe native APIs, never substitute for skylib providers or common_settings.bzl."
+  ],
+  "source_url": "https://github.com/bazelbuild/bazel-skylib/releases/download/1.8.2/bazel-skylib-1.8.2.tar.gz",
+  "version": "1.8.2"
+}

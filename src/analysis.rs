@@ -548,14 +548,27 @@ fn make_ctx<'v>(
     let label = alloc_target(heap, &rule.label.to_string(), Vec::new())
         .get_attr_error("label", heap)
         .map_err(|error| anyhow!(error.to_string()))?;
-    Ok(heap.alloc(AllocStruct([
+    let backing = heap.alloc(AllocStruct([
         ("attr", heap.alloc(AllocStruct(attrs))),
         ("files", heap.alloc(AllocStruct(files))),
         ("file", heap.alloc(AllocStruct(single_files))),
         ("outputs", heap.alloc(AllocStruct(outputs))),
         ("label", label),
         ("actions", heap.alloc(Actions)),
-    ])))
+    ]));
+    if invocation.build_setting.is_some() {
+        let default = invocation
+            .attrs
+            .get("build_setting_default")
+            .ok_or_else(|| anyhow!("build-setting invocation has no typed default"))?;
+        Ok(crate::build_setting_ctx::wrap(
+            heap,
+            backing,
+            default.clone(),
+        ))
+    } else {
+        Ok(backing)
+    }
 }
 
 pub fn analyze(
