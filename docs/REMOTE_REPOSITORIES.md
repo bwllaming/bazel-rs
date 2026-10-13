@@ -39,17 +39,56 @@ This preserves parsed metadata values, not original JSON formatting.
 
 The `docs_url` correction passes nine genuine JSON-value comparisons and two
 native rejection checks; HTTP traces show no documentation requests. The
-preserved application probe now advances to an unsupported `XGlobalHeader`
+preserved application probe at that increment advanced to an unsupported `XGlobalHeader`
 entry in a demanded archive. General PAX support is not implied by accepting
 documentation metadata. See `artifacts/archive-docs-url-validation.json` and
 `artifacts/mainrepo-archive-docs-url-loading.json`.
 
 Extraction uses a private staging directory. Only regular UTF-8 files/directories
-are accepted; traversal, absolute paths, links, special entries, GNU/PAX extension
-records and conflicting files fail explicitly. This is stricter than Bazel's
+are accepted; traversal, absolute paths, links, special entries, semantic PAX
+metadata, local PAX/GNU extension records and conflicting files fail explicitly.
+Global PAX headers containing only inert `comment` records are supported as
+described below. This is stricter than Bazel's
 extraction semantics. Executable files become 0755, others 0644. Downloads are
 limited to 256 MiB, expanded data to 1 GiB and entries to 100000; metadata/overlay
 files are limited to 16 MiB. These are explicit native-profile limits, not parity.
+
+### Bounded global PAX comments
+
+Raw tar iteration consumes global `g` headers only when every record is a
+strictly byte-length-framed `comment`. Parsing uses fixed-capacity buffering and
+checked lengths; it never splits values by lines or allocates a payload-sized
+string. Values are ignored opaque bytes, including embedded newlines, equals
+signs, NULs and non-UTF-8 bytes. This is not a claim of strict POSIX text validation.
+Empty headers, repeated comments, empty values and leading-zero lengths are
+accepted. Across an archive, at most 100000 PAX records are accepted, separately
+from the existing header, expanded-data and decompressed-stream limits.
+
+Metadata names must still be safe, nonempty relative paths; mode syntax and link
+fields are validated. These are explicit native restrictions on pseudo-header
+names, not complete Bazel/POSIX metadata-name compatibility. Headers are never
+written as files and cannot satisfy `strip_prefix`. Each global header must have
+a following validated regular-file or directory entry, even if that entry is
+filtered out by the prefix. A dangling global is rejected after trailer checks.
+
+All other global keys—including path, size, link, ownership, time, sparse and
+vendor metadata—remain unsupported, as do local PAX and GNU extensions. Adding
+semantic PAX fields later requires metadata-aware framing and effective-path
+validation, not silently dropping those fields. No archive bytes are rewritten
+to bypass these restrictions.
+
+The unchanged `bazel_features` 1.42.1 release fixture has one global comment,
+41 files and seven directory members. Its complete extracted manifest is checked
+before any registry overlays. Separate real CLI checks use an explicitly declared
+BUILD overlay as a test consumer; they are not evidence that upstream BUILD code
+is supported. Three positive comparisons and seven native rejection cases are
+recorded in `artifacts/pax-comments-validation.json`.
+
+The preserved application probe now passes archive extraction and fails at
+`attr.string_list_dict` in genuine `bazel_features` repository code. The fixture
+version does not establish the application's selected version. See
+`artifacts/mainrepo-pax-comments-loading.json`; no application-build success is
+claimed.
 
 Verified overlays replace files and are executable. Ordered registry patches
 then apply, original registry MODULE bytes replace the extracted MODULE, and

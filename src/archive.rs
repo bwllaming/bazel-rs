@@ -1,18 +1,20 @@
 //! Native extraction into caller-owned, private staging directories.
 //!
-//! Links, special files, non-UTF-8 names, and tar extension records (including
-//! GNU long names and PAX metadata) are deliberately unsupported and rejected.
+//! Links, special files, non-UTF-8 names, and semantic tar extensions are
+//! deliberately unsupported. Only strictly framed global PAX comments are
+//! consumed as inert metadata; local PAX and GNU extensions remain rejected.
 //! File permissions are normalized to 0755 when any executable bit is set, or
 //! 0644 otherwise; directories use 0755. Ownership and privileged bits are not
 //! preserved. The caller must remove staging on failure and exclude concurrent
 //! writers: metadata checks are not a defense against a hostile concurrent rename.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Cursor, Read};
+use std::io::{self, BufReader, Cursor, Read};
 use std::path::{Path, PathBuf};
 
 const MAX_EXPANDED: u64 = 1024 * 1024 * 1024;
 const MAX_ENTRIES: usize = 100_000;
+const MAX_PAX_RECORDS: usize = 100_000;
 
 /// Extract a verified archive without invoking external programs.
 ///
@@ -228,6 +230,72 @@ fn validate_tar_string(field: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// Consume only inert global comments without allocating metadata-sized buffers.
+/// Values are opaque bytes: embedded newlines, NULs and non-UTF-8 bytes have no
+/// extraction semantics. Framing is byte-length-delimited, never line-delimited.
+fn consume_global_comments(
+    reader: impl Read,
+    size: u64,
+    records: &mut usize,
+) -> Result<(), String> {
+    let mut reader = BufReader::with_capacity(8192, reader.take(size));
+    let mut remaining = size;
+    while remaining != 0 {
+        if *records >= MAX_PAX_RECORDS {
+            return Err("archive exceeds PAX record count limit".into());
+        }
+        *records += 1;
+        let mut length = 0u64;
+        let mut prefix = 0u64;
+        loop {
+            if prefix == remaining {
+                return Err("invalid PAX record length framing".into());
+            }
+            let mut byte = [0];
+            reader
+                .read_exact(&mut byte)
+                .map_err(|e| format!("truncated PAX record: {e}"))?;
+            prefix += 1;
+            if byte[0] == b' ' && prefix > 1 {
+                break;
+            }
+            if !byte[0].is_ascii_digit() {
+                return Err("invalid PAX record length framing".into());
+            }
+            length = length
+                .checked_mul(10)
+                .and_then(|n| n.checked_add(u64::from(byte[0] - b'0')))
+                .ok_or("PAX record length overflow")?;
+        }
+        // Eight bytes for `comment=` and one terminal LF, beyond the prefix.
+        let value_size = length
+            .checked_sub(prefix + 9)
+            .filter(|_| length <= remaining)
+            .ok_or("invalid PAX record length")?;
+        let mut key = [0; 8];
+        reader
+            .read_exact(&mut key)
+            .map_err(|e| format!("truncated PAX record key: {e}"))?;
+        if &key != b"comment=" {
+            return Err("unsupported global PAX key; only comment is supported".into());
+        }
+        let copied = io::copy(&mut reader.by_ref().take(value_size), &mut io::sink())
+            .map_err(|e| format!("read PAX comment: {e}"))?;
+        if copied != value_size {
+            return Err("truncated PAX comment value".into());
+        }
+        let mut newline = [0];
+        reader
+            .read_exact(&mut newline)
+            .map_err(|e| format!("truncated PAX record ending: {e}"))?;
+        if newline[0] != b'\n' {
+            return Err("PAX record must end with a newline".into());
+        }
+        remaining -= length;
+    }
+    Ok(())
+}
+
 fn extract_tar(reader: impl Read, state: &mut Extraction<'_>) -> Result<(), String> {
     let mut archive = tar::Archive::new(BoundedReader {
         inner: reader,
@@ -239,6 +307,8 @@ fn extract_tar(reader: impl Read, state: &mut Extraction<'_>) -> Result<(), Stri
         .entries()
         .map_err(|e| format!("read tar archive: {e}"))?
         .raw(true);
+    let mut pax_records = 0;
+    let mut pending_global = false;
     for entry in entries {
         let mut entry = entry.map_err(|e| format!("read tar entry: {e}"))?;
         let header = entry.header();
@@ -250,7 +320,8 @@ fn extract_tar(reader: impl Read, state: &mut Extraction<'_>) -> Result<(), Stri
         }
         let kind = header.entry_type();
         let directory = kind.is_dir();
-        if !directory && !kind.is_file() {
+        let global = kind == tar::EntryType::XGlobalHeader;
+        if !directory && !kind.is_file() && !global {
             return Err(format!(
                 "unsupported tar entry type (links, special files and extension records are rejected): {kind:?}"
             ));
@@ -266,6 +337,16 @@ fn extract_tar(reader: impl Read, state: &mut Extraction<'_>) -> Result<(), Stri
             .mode()
             .map_err(|e| format!("invalid tar mode: {e}"))?;
         state.account(size)?;
+        if global {
+            // A metadata name is never an output or a strip-prefix match. Keep
+            // the native safe-relative-path restriction even for these names.
+            if safe_components(&entry.path_bytes())?.is_empty() {
+                return Err("global PAX header requires a nonempty safe path".into());
+            }
+            consume_global_comments(&mut entry, size, &mut pax_records)?;
+            pending_global = true;
+            continue;
+        }
         let output = state.output(&entry.path_bytes(), directory)?;
         if let Some(output) = output {
             if directory {
@@ -274,6 +355,7 @@ fn extract_tar(reader: impl Read, state: &mut Extraction<'_>) -> Result<(), Stri
                 state.file(&output, mode, size, &mut entry)?;
             }
         }
+        pending_global = false;
     }
     // Read remaining gzip members and validate their checksums. Tar permits
     // zero padding after its end marker; reject nonzero trailing data instead
@@ -290,6 +372,9 @@ fn extract_tar(reader: impl Read, state: &mut Extraction<'_>) -> Result<(), Stri
         if buffer[..count].iter().any(|byte| *byte != 0) {
             return Err("nonzero trailing data after tar end marker".into());
         }
+    }
+    if pending_global {
+        return Err("global PAX header has no following regular file or directory".into());
     }
     Ok(())
 }
@@ -527,8 +612,20 @@ mod tests {
     }
 
     #[test]
+    fn global_comments_are_inert_and_do_not_become_output_entries() {
+        let bytes = tar_fixture(&[
+            ("metadata", b'g', 0o644, b"16 comment=seed\n"),
+            ("pkg/file", b'0', 0o644, b"hello"),
+        ]);
+        let destination = tempfile::tempdir().unwrap();
+        extract(&bytes, "tar", "pkg", destination.path()).unwrap();
+        assert_eq!(fs::read(destination.path().join("file")).unwrap(), b"hello");
+        assert_eq!(fs::read_dir(destination.path()).unwrap().count(), 1);
+    }
+
+    #[test]
     fn tar_links_special_files_and_extensions_are_explicit_errors() {
-        for kind in *b"123467xgLKS" {
+        for kind in *b"123467xLKS" {
             let bytes = tar_fixture(&[("unrelated", kind, 0o644, b"")]);
             assert!(
                 run(&bytes, "tar", "wanted")
@@ -537,6 +634,246 @@ mod tests {
                 "type {kind}"
             );
         }
+    }
+
+    fn pax_record(key: &str, value: &[u8]) -> Vec<u8> {
+        let mut length = key.len() + value.len() + 3;
+        loop {
+            let actual = length.to_string().len() + key.len() + value.len() + 3;
+            if actual == length {
+                break;
+            }
+            length = actual;
+        }
+        let mut record = format!("{length} {key}=").into_bytes();
+        record.extend_from_slice(value);
+        record.push(b'\n');
+        assert_eq!(record.len(), length);
+        record
+    }
+
+    #[test]
+    fn global_comments_use_byte_lengths_and_accept_opaque_values() {
+        for value in [
+            b"".as_slice(),
+            b"../not-a-path",
+            b"line\nnext=one\0\xff",
+            "日本語".as_bytes(),
+            &vec![b'x'; 8193],
+        ] {
+            let record = pax_record("comment", value);
+            let mut records = 0;
+            consume_global_comments(Cursor::new(&record), record.len() as u64, &mut records)
+                .unwrap();
+            assert_eq!(records, 1);
+        }
+        let data = b"0014 comment=\n12 comment=\n";
+        let mut records = 0;
+        consume_global_comments(Cursor::new(data), data.len() as u64, &mut records).unwrap();
+        assert_eq!(records, 2);
+    }
+
+    #[test]
+    fn malformed_or_semantic_global_metadata_is_rejected_before_filtering() {
+        for payload in [
+            b"0".as_slice(),
+            b"0 comment=\n",
+            b"-1 comment=\n",
+            b"+12 comment=\n",
+            b"a comment=\n",
+            b" comment=\n",
+            b"12comment=\n",
+            b"12 comment= ",
+            b"11 comment=\n",
+            b"13 comment=\n",
+            b"18446744073709551616 comment=\n",
+            b"12 comment=\nJUNK",
+            b"12 comment:\n",
+        ] {
+            let bytes = tar_fixture(&[
+                ("unrelated/meta", b'g', 0o644, payload),
+                ("wanted/f", b'0', 0o644, b"data"),
+            ]);
+            assert!(
+                run(&bytes, "tar", "wanted").unwrap_err().contains("PAX"),
+                "{payload:?}"
+            );
+        }
+        for key in [
+            "path",
+            "linkpath",
+            "size",
+            "mtime",
+            "uid",
+            "GNU.sparse.map",
+            "SCHILY.archtype",
+            "unknown",
+            "commentary",
+            "",
+        ] {
+            let payload = pax_record(key, b"../../outside-and-some-padding");
+            let bytes = tar_fixture(&[
+                ("unrelated/meta", b'g', 0o644, &payload),
+                ("wanted/f", b'0', 0o644, b"data"),
+            ]);
+            assert!(
+                run(&bytes, "tar", "wanted")
+                    .unwrap_err()
+                    .contains("unsupported global PAX key"),
+                "{key}"
+            );
+        }
+        for end in 0..16 {
+            let mut records = 0;
+            assert!(
+                consume_global_comments(
+                    Cursor::new(&b"16 comment=seed\n"[..end]),
+                    16,
+                    &mut records
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn global_metadata_requires_a_real_following_member_and_never_matches_prefix() {
+        let comment = b"12 comment=\n";
+        assert!(
+            run(&tar_fixture(&[("meta", b'g', 0o644, comment)]), "tar", "")
+                .unwrap_err()
+                .contains("no following")
+        );
+        assert!(
+            run(
+                &tar_fixture(&[("f", b'0', 0o644, b"data"), ("meta", b'g', 0o644, comment)]),
+                "tar",
+                ""
+            )
+            .unwrap_err()
+            .contains("no following")
+        );
+        // Empty and consecutive globals are valid when a real entry follows.
+        let bytes = tar_fixture(&[
+            ("wanted", b'g', 0o644, b""),
+            ("meta", b'g', 0o644, comment),
+            ("other/f", b'0', 0o644, b"data"),
+        ]);
+        run(&bytes, "tar", "").unwrap();
+        // A filtered real member clears the trailing-global guard, but metadata
+        // itself must not satisfy the requested prefix.
+        assert!(
+            run(&bytes, "tar", "wanted")
+                .unwrap_err()
+                .contains("did not match")
+        );
+        run(
+            &tar_fixture(&[
+                ("wanted/f", b'0', 0o644, b"data"),
+                ("meta", b'g', 0o644, b""),
+                ("other/f", b'0', 0o644, b"other"),
+            ]),
+            "tar",
+            "wanted",
+        )
+        .unwrap();
+        run(
+            &tar_fixture(&[("meta", b'g', 0o644, b""), ("directory/", b'5', 0o755, b"")]),
+            "tar",
+            "",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn global_metadata_retains_header_path_link_mode_and_checksum_guards() {
+        for name in ["../outside", "/absolute", "C:drive", "a\\b", "", "."] {
+            let bytes = tar_fixture(&[
+                (name, b'g', 0o644, b"12 comment=\n"),
+                ("wanted/f", b'0', 0o644, b"data"),
+            ]);
+            assert!(run(&bytes, "tar", "wanted").is_err(), "{name}");
+        }
+        for index in [0, 100, 157] {
+            let mut bytes = tar_fixture(&[
+                ("meta", b'g', 0o644, b"12 comment=\n"),
+                ("f", b'0', 0o644, b"data"),
+            ]);
+            bytes[index] = if index == 100 { b'Z' } else { b'x' };
+            if index != 0 {
+                let mut header = tar::Header::new_ustar();
+                header.as_mut_bytes().copy_from_slice(&bytes[..512]);
+                header.set_cksum();
+                bytes[..512].copy_from_slice(header.as_bytes());
+            }
+            assert!(run(&bytes, "tar", "").is_err(), "header offset {index}");
+        }
+    }
+
+    #[test]
+    fn global_record_budget_spans_headers_and_values_stream_without_large_reads() {
+        struct SmallReads<R>(R);
+        impl<R: Read> Read for SmallReads<R> {
+            fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+                assert!(
+                    output.len() <= 8192,
+                    "metadata read allocated an oversized buffer"
+                );
+                self.0.read(output)
+            }
+        }
+        let record = pax_record("comment", &vec![b'x'; 1024 * 1024]);
+        let mut records = MAX_PAX_RECORDS - 1;
+        consume_global_comments(
+            SmallReads(Cursor::new(&record)),
+            record.len() as u64,
+            &mut records,
+        )
+        .unwrap();
+        assert_eq!(records, MAX_PAX_RECORDS);
+        assert!(
+            consume_global_comments(Cursor::new(b"12 comment=\n"), 12, &mut records)
+                .unwrap_err()
+                .contains("record count")
+        );
+        // Empty payloads contain no records; headers have their separate budget.
+        consume_global_comments(Cursor::new(b""), 0, &mut records).unwrap();
+        let first = b"12 comment=\n".repeat(MAX_PAX_RECORDS / 2);
+        let second = b"12 comment=\n".repeat(MAX_PAX_RECORDS / 2 + 1);
+        let bytes = tar_fixture(&[
+            ("first", b'g', 0o644, &first),
+            ("second", b'g', 0o644, &second),
+            ("f", b'0', 0o644, b"data"),
+        ]);
+        assert!(
+            run(&bytes, "tar", "")
+                .unwrap_err()
+                .contains("PAX record count")
+        );
+    }
+
+    #[test]
+    fn global_comments_preserve_gzip_checksums_and_hidden_trailer_rejection() {
+        use flate2::{Compression, write::GzEncoder};
+        use std::io::Write;
+        let bytes = tar_fixture(&[
+            ("meta", b'g', 0o644, b"12 comment=\n"),
+            ("f", b'0', 0o644, b"data"),
+        ]);
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&bytes).unwrap();
+        let mut compressed = encoder.finish().unwrap();
+        run(&compressed, "tar.gz", "").unwrap();
+        let crc = compressed.len() - 8;
+        compressed[crc] ^= 1;
+        assert!(run(&compressed, "tar.gz", "").is_err());
+        let mut hidden = bytes;
+        hidden.extend_from_slice(&tar_fixture(&[("hidden", b'0', 0o644, b"bad")]));
+        assert!(
+            run(&hidden, "tar", "")
+                .unwrap_err()
+                .contains("trailing data")
+        );
     }
 
     #[test]

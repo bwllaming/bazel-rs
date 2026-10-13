@@ -174,6 +174,21 @@ checkout is unchanged; no application query/build/test success is claimed.
 
 ## Remaining compatibility gates
 
+### Bounded global PAX comments
+
+- [x] Verify unchanged genuine archive inventory against raw headers, Python and
+      Bazel's pinned Commons Compress parser before implementation.
+- [x] Stream strictly framed inert comments while retaining archive path, type,
+      checksum, byte/count limits and dangling-header checks.
+- [x] Compare all 41 genuine files and seven directories, including licenses and
+      upstream BUILD/MODULE content, without filtering or repackaging.
+- [x] Pass 751 Rust tests, 388 Python tests, strict Clippy and release build.
+- [x] Pass ten CLI cases, the preserved application probe, three adjacent
+      suites and unconditional final review of the bounded archive profile.
+
+Semantic global PAX fields, local PAX, GNU extensions and full extraction metadata
+parity remain unsupported; this increment does not enable them silently.
+
 ### Default-only build settings
 
 - [x] Preserve owned setting descriptors and per-invocation typed defaults.
