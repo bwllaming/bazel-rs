@@ -20,7 +20,7 @@ tar/tar.gz/ZIP source materialization now have an implementation, including
 mirrors, overlays, private staging and cache validation. See
 `docs/REMOTE_REPOSITORIES.md` for its strict limits and verification profile.
 These are portions of milestones 1–3, not complete gates: Git sources, archive
-overrides, patches, lockfiles, extensions, configured analysis, toolchains and the
+overrides, complete patch semantics, lockfiles, extensions, configured analysis, toolchains and the
 production execution/test stack remain missing.
 Successful fixture or filegroup builds do not establish application parity.
 The previously captured native query of `//src/beyondwork.ai/utils/str:str` failed
@@ -37,6 +37,11 @@ without executing it and advances to the unsupported `hermetic_cc_toolchain`
 patch override (`artifacts/mainrepo-direct-loading.json`). See
 `docs/DIRECT_REPOSITORY_DECLARATIONS.md`; generated repositories, genuine built-in
 execution and application analysis remain separate, incomplete requirements.
+The text-patch implementation now projects local MODULE patches during discovery
+and applies registry/local patches to staged archive sources. Its explicit bounds
+are documented in `docs/PATCHES.md`; 14 reference differential cases and 13
+native-only checks pass. The application follow-up reaches the unsupported `rules_distroless` Git
+override, without changing the checkout (`artifacts/mainrepo-patch-loading.json`).
 
 The official 9.3.0 release was published 2026-10-07, with upstream tag commit
 `e89755babf3e941bc1e9d8120b1cd48854ab9dfa`. The main checkout's `.bazeliskrc` pins

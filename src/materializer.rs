@@ -5,6 +5,7 @@
 //! Extracted trees are private staged publications with a checked file manifest.
 //! The cache and its ancestors must be trusted against concurrent hostile mutation,
 //! as must local execution generally; this is not a filesystem security sandbox.
+use crate::patch_inputs::LocalPatchPlan;
 use crate::registry::{self, Registry};
 use base64::Engine;
 use fs2::FileExt;
@@ -18,7 +19,7 @@ use std::path::{Component, Path, PathBuf};
 
 const DOWNLOAD_LIMIT: u64 = 256 * 1024 * 1024;
 const OVERLAY_LIMIT: u64 = 16 * 1024 * 1024;
-const FORMAT: &str = "native-repository-v1";
+const FORMAT: &str = "native-repository-v2";
 
 #[derive(Debug)]
 struct Integrity {
@@ -90,7 +91,7 @@ fn string<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'a str, Stri
         .ok_or_else(|| format!("archive source requires nonempty string {key}"))
 }
 
-/// Called only for the selected registry and only when its source root is needed.
+/// Materialize an archive without local override transformations.
 pub fn materialize(
     registry: &Registry,
     name: &str,
@@ -99,6 +100,28 @@ pub fn materialize(
     source: &Map<String, Value>,
     cache: &Path,
 ) -> Result<PathBuf, String> {
+    materialize_with_patches(
+        registry,
+        name,
+        version,
+        module_file,
+        source,
+        cache,
+        &LocalPatchPlan::default(),
+    )
+}
+
+/// `module_file` is ORIGINAL registry content, not the patched discovery input.
+pub fn materialize_with_patches(
+    registry: &Registry,
+    name: &str,
+    version: &str,
+    module_file: &[u8],
+    source: &Map<String, Value>,
+    cache: &Path,
+    local_patches: &LocalPatchPlan,
+) -> Result<PathBuf, String> {
+    local_patches.validate_materialization()?;
     for key in source.keys() {
         if !matches!(
             key.as_str(),
@@ -115,19 +138,20 @@ pub fn materialize(
             return Err(format!("unsupported archive source field {key:?}"));
         }
     }
-    if let Some(patches) = source.get("patches") {
-        let patches = patches
-            .as_object()
-            .ok_or("archive patches must be an object")?;
-        if !patches.is_empty() {
-            return Err("registry archive patches are not implemented".into());
-        }
-    }
-    if let Some(strip) = source.get("patch_strip")
-        && strip.as_u64().is_none()
-    {
-        return Err("archive patch_strip must be a nonnegative integer".into());
-    }
+    let patches = match source.get("patches") {
+        None => Map::new(),
+        Some(Value::Object(value)) => value.clone(),
+        _ => return Err("archive patches must be an object".into()),
+    };
+    let patch_strip = match source.get("patch_strip") {
+        None => 0,
+        Some(value) => usize::try_from(
+            value
+                .as_u64()
+                .ok_or("archive patch_strip must be a nonnegative integer")?,
+        )
+        .map_err(|_| "archive patch_strip is too large")?,
+    };
     let url = string(source, "url")?;
     let integrity = Integrity::parse(string(source, "integrity")?)?;
     let prefix = match source.get("strip_prefix") {
@@ -145,6 +169,10 @@ pub fn materialize(
     for (path, value) in &overlays {
         relative_path(path)?;
         Integrity::parse(value.as_str().ok_or("overlay integrity must be a string")?)?;
+    }
+    for (path, value) in &patches {
+        relative_path(path).map_err(|e| format!("unsafe registry patch path: {e}"))?;
+        Integrity::parse(value.as_str().ok_or("patch integrity must be a string")?)?;
     }
     let mut urls = Vec::new();
     let config = registry.read_object("bazel_registry.json")?;
@@ -201,6 +229,7 @@ pub fn materialize(
         source,
         config,
         module_file,
+        local_patches.cache_identity(),
     ))
     .map_err(|e| e.to_string())?;
     let key = hex(&Sha256::digest(identity));
@@ -241,13 +270,25 @@ pub fn materialize(
         let bytes = cached_download(&cache, &[location], &integrity, OVERLAY_LIMIT)?;
         write_source_file(staging.path(), &relative, &bytes, true)?;
     }
-    // Registry MODULE is authoritative even when archive/overlay contains another.
+    // Preserve descriptor insertion order, not lexical patch-name order.
+    for (path, value) in &patches {
+        let integrity = Integrity::parse(value.as_str().expect("validated patch integrity"))?;
+        let location =
+            registry.download_location(&format!("modules/{name}/{version}/patches/{path}"))?;
+        let bytes = cached_download(&cache, &[location], &integrity, OVERLAY_LIMIT)?;
+        crate::patching::parse(&bytes, patch_strip)
+            .and_then(|patch| patch.apply_tree(staging.path()))
+            .map_err(|e| format!("cannot apply registry patch {path:?}: {e}"))?;
+    }
+    // Remote patches see archive/overlay MODULE; replace it with original
+    // registry bytes before local overrides, so MODULE changes apply only once.
     write_source_file(
         staging.path(),
         Path::new("MODULE.bazel"),
         module_file,
         false,
     )?;
+    local_patches.apply_tree(staging.path())?;
     let manifest = Manifest {
         format: FORMAT.into(),
         files: snapshot(staging.path())?,
@@ -638,7 +679,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_integrity_patches_and_unsafe_overlays_without_publication() {
+    fn rejects_integrity_and_unsafe_transforms_without_publication() {
         let temp = tempfile::tempdir().unwrap();
         let (registry, source) = fixture(temp.path());
         let cache = temp.path().join("cache");
@@ -646,8 +687,8 @@ mod tests {
             ("integrity", json!(sri(b"wrong")), "integrity mismatch"),
             (
                 "patches",
-                json!({"fix.patch": sri(b"patch")}),
-                "patches are not implemented",
+                json!({"../fix.patch": sri(b"patch")}),
+                "unsafe registry patch path",
             ),
             (
                 "overlay",
@@ -684,6 +725,171 @@ mod tests {
             assert!(paths.windows(2).all(|p| p[0] == p[1]));
         });
         assert_eq!(fs::read_dir(cache.join("trees")).unwrap().count(), 2);
+    }
+
+    fn change(path: &str, before: &str, after: &str) -> Vec<u8> {
+        format!("diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-{before}\n+{after}\n").into_bytes()
+    }
+
+    #[test]
+    fn remote_patches_follow_descriptor_order_after_overlays_before_module() {
+        let temp = tempfile::tempdir().unwrap();
+        let (registry, mut source) = fixture(temp.path());
+        let entry = registry.local_path().unwrap().join("modules/dep/1");
+        fs::create_dir_all(entry.join("overlay")).unwrap();
+        fs::create_dir_all(entry.join("patches")).unwrap();
+        fs::write(entry.join("overlay/data"), b"overlay\n").unwrap();
+        source.insert("overlay".into(), json!({"data": sri(b"overlay\n")}));
+        let mut first = change("data", "overlay", "first");
+        first.extend(change(
+            "MODULE.bazel",
+            "wrong archive module",
+            "remote module",
+        ));
+        let second = change("data", "first", "second");
+        fs::write(entry.join("patches/z-first.patch"), &first).unwrap();
+        fs::write(entry.join("patches/a-second.patch"), &second).unwrap();
+        let mut patches = Map::new();
+        patches.insert("z-first.patch".into(), json!(sri(&first)));
+        patches.insert("a-second.patch".into(), json!(sri(&second)));
+        source.insert("patches".into(), Value::Object(patches));
+        source.insert("patch_strip".into(), json!(1));
+        let root = materialize(
+            &registry,
+            "dep",
+            "1",
+            b"authoritative\n",
+            &source,
+            &temp.path().join("cache"),
+        )
+        .unwrap();
+        assert_eq!(fs::read(root.join("data")).unwrap(), b"second\n");
+        assert_eq!(
+            fs::read(root.join("MODULE.bazel")).unwrap(),
+            b"authoritative\n"
+        );
+    }
+
+    #[test]
+    fn local_patch_snapshot_applies_once_and_changes_cache_identity() {
+        use crate::bzlmod::{ModuleFile, PatchOptions};
+        let temp = tempfile::tempdir().unwrap();
+        let (registry, source) = fixture(temp.path());
+        fs::write(temp.path().join("BUILD.bazel"), "").unwrap();
+        let mut first_bytes = change("MODULE.bazel", "authoritative", "patched module");
+        first_bytes.extend(change("data", "original", "first local"));
+        fs::write(temp.path().join("fix.patch"), &first_bytes).unwrap();
+        let options = PatchOptions {
+            patches: vec!["//:fix.patch".into()],
+            patch_strip: 1,
+            ..Default::default()
+        };
+        let first_plan =
+            crate::patch_inputs::snapshot(temp.path(), &ModuleFile::default(), &options).unwrap();
+        let mut second_bytes = change("MODULE.bazel", "authoritative", "patched module");
+        second_bytes.extend(change("data", "original", "second local"));
+        fs::write(temp.path().join("fix.patch"), &second_bytes).unwrap();
+        let second_plan =
+            crate::patch_inputs::snapshot(temp.path(), &ModuleFile::default(), &options).unwrap();
+        let cache = temp.path().join("cache");
+        let first = materialize_with_patches(
+            &registry,
+            "dep",
+            "1",
+            b"authoritative\n",
+            &source,
+            &cache,
+            &first_plan,
+        )
+        .unwrap();
+        assert_eq!(fs::read(first.join("data")).unwrap(), b"first local\n");
+        assert_eq!(
+            fs::read(first.join("MODULE.bazel")).unwrap(),
+            first_plan.apply_module(b"authoritative\n").unwrap()
+        );
+        fs::remove_file(temp.path().join("source.tar")).unwrap();
+        let second = materialize_with_patches(
+            &registry,
+            "dep",
+            "1",
+            b"authoritative\n",
+            &source,
+            &cache,
+            &second_plan,
+        )
+        .unwrap();
+        assert_ne!(first, second);
+        assert_eq!(fs::read(second.join("data")).unwrap(), b"second local\n");
+        assert_eq!(
+            fs::read(second.join("MODULE.bazel")).unwrap(),
+            b"patched module\n"
+        );
+        assert_eq!(
+            materialize_with_patches(
+                &registry,
+                "dep",
+                "1",
+                b"authoritative\n",
+                &source,
+                &cache,
+                &second_plan
+            )
+            .unwrap(),
+            second
+        );
+    }
+
+    #[test]
+    fn patch_failures_discard_stage_and_never_publish_a_repository() {
+        let temp = tempfile::tempdir().unwrap();
+        let (registry, mut source) = fixture(temp.path());
+        let patches = registry.local_path().unwrap().join("modules/dep/1/patches");
+        fs::create_dir_all(&patches).unwrap();
+        let invalid = change("data", "context not present", "incorrect success");
+        fs::write(patches.join("bad.patch"), &invalid).unwrap();
+        source.insert("patches".into(), json!({"bad.patch": sri(&invalid)}));
+        source.insert("patch_strip".into(), json!(1));
+        let cache = temp.path().join("cache");
+        assert!(
+            materialize(&registry, "dep", "1", b"module", &source, &cache)
+                .unwrap_err()
+                .contains("mismatched context")
+        );
+        assert!(fs::read_dir(cache.join("trees")).unwrap().next().is_none());
+        source.insert(
+            "patches".into(),
+            json!({"bad.patch": sri(b"different bytes")}),
+        );
+        assert!(
+            materialize(&registry, "dep", "1", b"module", &source, &cache)
+                .unwrap_err()
+                .contains("integrity mismatch")
+        );
+        assert!(fs::read_dir(cache.join("trees")).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn local_commands_are_rejected_before_archive_or_cache_access() {
+        use crate::bzlmod::{ModuleFile, PatchOptions};
+        let temp = tempfile::tempdir().unwrap();
+        let (registry, source) = fixture(temp.path());
+        let marker = temp.path().join("command-ran");
+        let options = PatchOptions {
+            patch_cmds: vec![format!("touch {}", marker.display())],
+            ..Default::default()
+        };
+        let plan =
+            crate::patch_inputs::snapshot(temp.path(), &ModuleFile::default(), &options).unwrap();
+        assert_eq!(plan.apply_module(b"module").unwrap(), b"module");
+        fs::remove_file(temp.path().join("source.tar")).unwrap();
+        let cache = temp.path().join("cache");
+        assert!(
+            materialize_with_patches(&registry, "dep", "1", b"module", &source, &cache, &plan)
+                .unwrap_err()
+                .contains("patch_cmds")
+        );
+        assert!(!cache.exists());
+        assert!(!marker.exists());
     }
 
     #[test]

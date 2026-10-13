@@ -48,7 +48,7 @@ PLAN = ([("differential." + kind, "differential") for kind in FORMATS]
         + [("native.cache." + kind, "native_only") for kind in FORMATS]
         + [("native." + name, "native_only") for name in (
             "graph-only", "empty-registries", "fallback-404", "fallback-410", "hard-500",
-            "selected-source-origin", "wrong-digest", "hostile-tar", "patches-unsupported",
+            "selected-source-origin", "wrong-digest", "hostile-tar", "binary-patch-unsupported",
             "warm-blob-url-policy", "zip-skipped-crc")])
 
 
@@ -174,7 +174,7 @@ class FixtureServer:
         source = {"url": self.url + archive_path, "integrity": sri(b"wrong") if wrong_digest else sri(archive),
                   "strip_prefix": "pkg", "overlay": {"data.bin": sri(DATA), "MODULE.bazel": sri(OVERLAY_MODULE)}}
         if patches:
-            source["patches"] = {"unsupported.patch": sri(b"not applied")}
+            source["patches"] = {"unsupported.patch": sri(b"GIT binary patch\nliteral 1\nA\n")}
         routes = {archive_path: (200, archive),
                   prefix + "/registry/bazel_registry.json": (200, b"{}\n"),
                   prefix + "/registry/modules/dep/metadata.json": (200, b'{"versions":["1.0"],"yanked_versions":{}}\n'),
@@ -182,6 +182,8 @@ class FixtureServer:
                   entry + "source.json": (source_status, json.dumps(source, sort_keys=True).encode()),
                   entry + "overlay/data.bin": (200, DATA),
                   entry + "overlay/MODULE.bazel": (200, OVERLAY_MODULE)}
+        if patches:
+            routes[entry + "patches/unsupported.patch"] = (200, b"GIT binary patch\nliteral 1\nA\n")
         self.routes.update(routes)
         return {"registry": self.url + prefix + "/registry", "prefix": prefix,
                 "module_path": entry + "MODULE.bazel", "source_path": entry + "source.json",
@@ -450,7 +452,7 @@ def native_probe(args, runner, scratch, workspace, server, scenario):
     name = "native." + scenario
     cache = scratch / (name + "-cache")
     options = {"wrong-digest": {"wrong_digest": True}, "hostile-tar": {"hostile": True},
-               "patches-unsupported": {"patches": True},
+               "binary-patch-unsupported": {"patches": True},
                "zip-skipped-crc": {"kind": "zip", "skipped_crc": True}}
     fixture = server.install("/" + scenario + "/first", **options.get(scenario, {}))
     registries = [fixture["registry"]]
@@ -495,12 +497,16 @@ def native_probe(args, runner, scratch, workspace, server, scenario):
         patterns = {"empty-registries": r"not found|registr", "hard-500": r"500",
                     "selected-source-origin": r"source.*(?:missing|404)|missing.*source",
                     "wrong-digest": r"integrity.*mismatch", "hostile-tar": r"unsafe.*path",
-                    "patches-unsupported": r"patch.*(?:not implemented|unsupported)",
+                    "binary-patch-unsupported": r"patch.*(?:not implemented|unsupported)",
                     "zip-skipped-crc": r"(?:CRC|checksum)"}
         require_rejection(result, patterns[scenario])
         if scenario == "zip-skipped-crc" and not re.search(r"zip", result["stderr"], re.I):
             raise ValueError("CRC rejection must identify ZIP reading, not SRI validation")
         no_published_tree(cache)
+        if scenario == "binary-patch-unsupported":
+            patch_path = fixture["prefix"] + "/registry/modules/dep/1.0/patches/unsupported.patch"
+            if counts.get(patch_path, 0) != 1 or "binary" not in result["stderr"].lower():
+                raise ValueError("binary patch rejection did not exercise the verified patch payload")
         if second and any(r["path"].startswith(second["prefix"] + "/") for r in requests):
             raise ValueError("hard/selected-source failure fell back to second registry")
         if scenario == "empty-registries" and requests:

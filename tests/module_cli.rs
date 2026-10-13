@@ -112,6 +112,51 @@ fn cli_json_selected_aliases_bfs_and_no_lockfile_writes() {
 }
 
 #[test]
+fn cli_projects_local_module_patches_before_selection_without_materializing() {
+    let fixture = Fixture::new(
+        "module(name='root',repo_name='self')\nbazel_dep(name='a',version='1')\nbazel_dep(name='b',version='1')\nsingle_version_override(module_name='a',patches=['@self//:fix.patch'],patch_strip=1)\n",
+    );
+    fixture.module("a", "1", "");
+    fixture.module("b", "1", "");
+    fixture.module("b", "2", "");
+    fixture.write("BUILD.bazel", "not evaluated !!!");
+    fixture.write("fix.patch", "--- a/MODULE.bazel\n+++ b/MODULE.bazel\n@@ -1 +1,2 @@\n module(name=\"a\", version=\"1\")\n+bazel_dep(name='b',version='2')\n");
+    let output = fixture.graph(&[]);
+    assert_eq!(output["dependencies"][1]["key"], "b@2");
+    assert_eq!(output["dependencies"][0]["dependencies"][0]["key"], "b@2");
+    fixture.write(
+        "fix.patch",
+        "--- a/source.txt\n+++ b/source.txt\n@@ -1 +1 @@\n-old\n+new\n",
+    );
+    let output = fixture.graph(&[]);
+    assert_eq!(output["dependencies"][1]["key"], "b@1");
+    assert_eq!(output["dependencies"][0]["dependencies"], json!([]));
+    assert!(!fixture.0.join("bazel-rs-out").exists());
+    assert!(!fixture.0.join("MODULE.bazel.lock").exists());
+}
+
+#[test]
+fn cli_graph_ignores_commands_and_canonical_external_patches_without_reading_sources() {
+    for options in [
+        "patch_cmds=['touch command-ran']",
+        "patches=['@@unavailable+//:missing.patch']",
+        "patch_strip=2",
+    ] {
+        let fixture = Fixture::new(&format!(
+            "bazel_dep(name='a',version='1')\nsingle_version_override(module_name='a',{options})\n"
+        ));
+        fixture.module("a", "1", "");
+        fixture.write(
+            "registry/modules/a/1/source.json",
+            "invalid source descriptor !!!",
+        );
+        assert_eq!(fixture.graph(&[])["dependencies"][0]["key"], "a@1");
+        assert!(!fixture.0.join("command-ran").exists());
+        assert!(!fixture.0.join("bazel-rs-out").exists());
+    }
+}
+
+#[test]
 fn cli_local_override_uses_empty_key_and_declared_version() {
     let fixture = Fixture::new(
         "module(name='root')\nbazel_dep(name='a', version='1.0', repo_name='alias')\nlocal_path_override(module_name='a', path='local')\n",
@@ -326,7 +371,9 @@ fn http_graph_fallback_preserves_origin_bytes_and_reads_metadata_fresh() {
             registry: options.registries[2].clone(),
             name: "a".into(),
             version: "1".into(),
-            module_file: module.as_bytes().to_vec()
+            module_file: module.as_bytes().to_vec(),
+            evaluated_module_file: module.as_bytes().to_vec(),
+            local_patches: Default::default(),
         }
     );
     assert_eq!(

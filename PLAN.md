@@ -89,10 +89,31 @@ The direct declaration report passes 46 differential cases, one lazy-loading pro
 and one native-only unsupported-execution boundary. Adjacent module/local/remote
 reports pass 16/20/17 checks on the same release binary.
 
+## Bounded native text patch increment
+
+Local single-version patches project root MODULE changes before discovery/MVS.
+Original registry bytes remain separate from evaluation bytes. Archive source
+materialization applies overlays, ordered verified registry patches, original
+MODULE replacement, then snapshotted local patches before publication. Cache keys
+include local patch contents and order; unsupported commands, external patch
+inputs and live local-path transformations fail explicitly.
+
+The full check passes 408 Rust tests and 194 Python tests, formatting, strict
+Clippy and release compilation. `artifacts/patch-validation.json` passes 14 genuine
+reference differential cases and 13 separately identified native-only boundaries.
+Exact graph selection and built UTF-8 file bytes prove the supported pipeline.
+The parser counts lexical path components before normalization and rejects
+adjacent ambiguous plain file sections, whose divergent upstream behavior is
+retained in `artifacts/patch-order-*-report.json`. See `docs/PATCHES.md` for limits.
+
+The read-only application probe advances to the unsupported `rules_distroless`
+Git override; the checkout remains unchanged. This is not application query,
+build or test success, nor full patch/Bazel compatibility.
+
 ## Remaining compatibility gates
 
 - [ ] Complete Bzlmod/repository compatibility beyond local selection/loading:
-      complete downloader/archive semantics, Git retrieval, patches, lockfiles, built-in closure,
+      complete downloader/archive semantics, Git retrieval, full patch semantics, lockfiles, built-in closure,
       module extensions and repository rules using pinned fixtures.
 - [ ] Configurations, toolchains and providers sufficient for actual repository
       Go/Python/Node rule analysis, followed by safe executable/test targets.

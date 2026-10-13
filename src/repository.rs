@@ -6,6 +6,7 @@
 //! live inputs; archive sources are materialized only when requested.
 use crate::label::{Label, PackageId, validate_repository_name};
 use crate::module_graph::{self, ModuleSource, ResolvedGraph, ResolverOptions};
+use crate::patch_inputs::LocalPatchPlan;
 use crate::registry::Registry;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -67,6 +68,8 @@ impl RepositorySet {
                 name,
                 version,
                 module_file,
+                local_patches,
+                ..
             } => {
                 let roots = self.registry_roots.get_or_init(|| {
                     graph
@@ -83,6 +86,7 @@ impl RepositorySet {
                             version,
                             module_file,
                             &self.source_cache,
+                            local_patches,
                         )
                         .map_err(|error| {
                             format!("repository @@{repository} is not materialized: {error}")
@@ -158,6 +162,7 @@ fn registry_source_root(
     version: &str,
     module_file: &[u8],
     cache: &Path,
+    local_patches: &LocalPatchPlan,
 ) -> Result<PathBuf, String> {
     let relative = format!("modules/{name}/{version}/source.json");
     let descriptor = registry.location(&relative);
@@ -167,26 +172,33 @@ fn registry_source_root(
     match source.get("type") {
         Some(serde_json::Value::String(kind)) if kind == "local_path" => {}
         None => {
-            return crate::materializer::materialize(
+            return crate::materializer::materialize_with_patches(
                 registry,
                 name,
                 version,
                 module_file,
                 &source,
                 cache,
+                local_patches,
             );
         }
         Some(serde_json::Value::String(kind)) if kind == "archive" => {
-            return crate::materializer::materialize(
+            return crate::materializer::materialize_with_patches(
                 registry,
                 name,
                 version,
                 module_file,
                 &source,
                 cache,
+                local_patches,
             );
         }
         Some(kind) => return Err(format!("unsupported source type {kind} in {descriptor}")),
+    }
+    if local_patches.has_transformations() {
+        return Err(format!(
+            "single_version_override patches and patch_cmds are unsupported for local_path source in {descriptor}; live source checkout is not modified"
+        ));
     }
     for key in source.keys() {
         if !matches!(key.as_str(), "type" | "path") {
@@ -506,6 +518,77 @@ mod tests {
         // Both success and failure are cached, without reevaluating descriptors.
         f.source(serde_json::json!({"type":"archive"}));
         assert_eq!(repos.root("dep+").unwrap(), root);
+    }
+
+    #[test]
+    fn local_path_sources_reject_override_transformations_without_mutating_live_tree() {
+        for options in [
+            "patches=[':fix.patch'],patch_strip=1",
+            "patch_cmds=['touch command-ran']",
+            "patches=['@@external+//:missing.patch']",
+        ] {
+            let f = Fixture::new();
+            let repos = f.registry();
+            f.write("main/MODULE.bazel", &format!("bazel_dep(name='dep',version='1')\nsingle_version_override(module_name='dep',{options})\n"));
+            f.write("main/BUILD", "");
+            f.write(
+                "main/fix.patch",
+                "--- a/data\n+++ b/data\n@@ -1 +1 @@\n-before\n+after\n",
+            );
+            f.write("live/data", "before\n");
+            f.write("live/MODULE.bazel", "invalid live MODULE !!!");
+            f.source(serde_json::json!({"type":"local_path", "path":f.0.join("live")}));
+            assert_eq!(repos.resolve_graph().unwrap().modules.len(), 1);
+            assert!(repos.registry_roots.get().is_none());
+            let error = repos.root("dep+").unwrap_err();
+            assert!(
+                error.contains("unsupported for local_path source"),
+                "{error}"
+            );
+            assert_eq!(std::fs::read(f.0.join("live/data")).unwrap(), b"before\n");
+            assert_eq!(
+                std::fs::read(f.0.join("live/MODULE.bazel")).unwrap(),
+                b"invalid live MODULE !!!"
+            );
+            assert!(!f.0.join("main/command-ran").exists());
+            assert!(!f.0.join("main/bazel-rs-out").exists());
+        }
+    }
+
+    #[test]
+    fn strip_only_override_keeps_local_path_sources_live() {
+        let f = Fixture::new();
+        let repos = f.registry();
+        f.write("main/MODULE.bazel", "bazel_dep(name='dep',version='1')\nsingle_version_override(module_name='dep',patch_strip=3)\n");
+        f.write("live/data", "before");
+        f.source(serde_json::json!({"type":"local_path", "path":f.0.join("live")}));
+        let root = repos.root("dep+").unwrap();
+        f.write("live/data", "after");
+        assert_eq!(std::fs::read(root.join("data")).unwrap(), b"after");
+        assert!(!f.0.join("main/bazel-rs-out").exists());
+    }
+
+    #[test]
+    fn archive_commands_and_external_patches_fail_before_fetch_or_cache_creation() {
+        for (options, diagnostic) in [
+            ("patch_cmds=['touch command-ran']", "patch_cmds"),
+            (
+                "patches=['@@external+//missing:fix.patch']",
+                "canonical external patch",
+            ),
+        ] {
+            let f = Fixture::new();
+            let repos = f.registry();
+            f.write("main/MODULE.bazel", &format!("bazel_dep(name='dep',version='1')\nsingle_version_override(module_name='dep',{options})\n"));
+            // Deliberately invalid descriptor: unsupported local operations must
+            // be diagnosed before archive parsing, fetching or cache creation.
+            f.source(serde_json::json!({"type":"archive"}));
+            assert_eq!(repos.resolve_graph().unwrap().modules.len(), 1);
+            let error = repos.root("dep+").unwrap_err();
+            assert!(error.contains(diagnostic), "{error}");
+            assert!(!f.0.join("main/command-ran").exists());
+            assert!(!f.0.join("main/bazel-rs-out").exists());
+        }
     }
 
     #[test]

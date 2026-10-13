@@ -13,6 +13,8 @@ pub mod materializer;
 pub mod module_cli;
 pub mod module_graph;
 pub mod package;
+pub mod patch_inputs;
+pub mod patching;
 pub mod providers;
 pub mod registry;
 pub mod repository;

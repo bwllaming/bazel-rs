@@ -36,9 +36,11 @@ extraction semantics. Executable files become 0755, others 0644. Downloads are
 limited to 256 MiB, expanded data to 1 GiB and entries to 100000; metadata/overlay
 files are limited to 16 MiB. These are explicit native-profile limits, not parity.
 
-Verified overlays replace files and are executable, then the exact MODULE bytes
-used in resolution replace the extracted MODULE. Nonempty patches fail before
-downloading: their omission never produces a falsely successful repository.
+Verified overlays replace files and are executable. Ordered registry patches
+then apply, original registry MODULE bytes replace the extracted MODULE, and
+ordered local override patches apply last. Discovery uses a separate MODULE-only
+projection of those local patches. The supported text-patch profile is bounded;
+see `docs/PATCHES.md`. Unsupported transformations fail rather than being omitted.
 
 Repository storage lives below `--cache-dir/repositories` (by default,
 `bazel-rs-out/repositories`). Publishers serialize with filesystem locks and

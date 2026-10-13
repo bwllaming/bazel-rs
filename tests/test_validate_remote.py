@@ -26,6 +26,18 @@ def record(stdout="", stderr="", returncode=0, **extra):
 
 
 class FixtureTests(unittest.TestCase):
+    def test_unsupported_patch_fixture_serves_sri_pinned_binary_format(self):
+        server = remote.FixtureServer({"requests": []})
+        try:
+            fixture = server.install("/binary", patches=True)
+            path = fixture["prefix"] + "/registry/modules/dep/1.0/patches/unsupported.patch"
+            status, data = server.routes[path]
+            self.assertEqual(status, 200)
+            self.assertTrue(data.startswith(b"GIT binary patch\n"))
+            self.assertEqual(fixture["source"]["patches"]["unsupported.patch"], remote.sri(data))
+        finally:
+            self.assertTrue(server.close()["closed"])
+
     def test_archives_are_deterministic_and_contain_binary_and_distinct_module(self):
         for kind in remote.FORMATS:
             with self.subTest(kind=kind):

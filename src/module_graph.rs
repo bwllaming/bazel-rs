@@ -5,7 +5,8 @@
 //! and prunes unreachable modules. It never materializes repositories or executes
 //! extensions. Nodep discovery reaches a fixed point before MVS and multiple-
 //! version snapping; nodep-only reachability validates but does not retain repos.
-//! This graph does not materialize registry sources. MODULE patches are unsupported.
+//! This graph projects root-owned patches onto registry MODULE files, but never
+//! materializes registry sources or executes patch commands.
 //! Remote registry reads require explicit lockfile-off opt-in; no lockfiles are read
 //! or written. Implicit built-in
 //! bazel_tools is not injected or fabricated: this graph covers explicit deps.
@@ -13,6 +14,7 @@
 //! Semantics: https://bazel.build/external/module#version-selection
 //! Relaxed versions: https://bazel.build/external/module#version_format
 use crate::bzlmod::{self, Dependency, EvaluationContext, ModuleFile, ModuleOverride, ModuleRole};
+use crate::patch_inputs::{self, LocalPatchPlan};
 use crate::registry::Registry;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -77,8 +79,12 @@ pub enum ModuleSource {
         registry: Registry,
         name: String,
         version: String,
-        /// Authoritative bytes of the selected and evaluated MODULE.bazel.
+        /// Original registry MODULE.bazel bytes, before any local patches.
         module_file: Vec<u8>,
+        /// Exact patched bytes evaluated during discovery.
+        evaluated_module_file: Vec<u8>,
+        /// Immutable inputs shared with later source materialization.
+        local_patches: LocalPatchPlan,
     },
 }
 
@@ -374,15 +380,6 @@ impl Discovery<'_> {
                     "archive_override for module {name:?} is unsupported: no archive fetching/extraction"
                 ));
             }
-            Some(ModuleOverride::SingleVersion { patches, .. })
-                if !patches.patches.is_empty()
-                    || !patches.patch_cmds.is_empty()
-                    || patches.patch_strip != 0 =>
-            {
-                return Err(format!(
-                    "patch options for module {name:?} are unsupported; MODULE patches cannot be silently ignored"
-                ));
-            }
             _ => {}
         }
         if let Some(ModuleOverride::LocalPath { path }) = self.overrides.get(name) {
@@ -423,6 +420,15 @@ impl Discovery<'_> {
                 continue;
             };
             let module_file = source.as_bytes().to_vec();
+            let local_patches = match self.overrides.get(name) {
+                Some(ModuleOverride::SingleVersion { patches, .. }) => {
+                    patch_inputs::snapshot(&self.root_path, self.root, patches)?
+                }
+                _ => LocalPatchPlan::default(),
+            };
+            let evaluated_module_file = local_patches.apply_module(&module_file)?;
+            let source = String::from_utf8(evaluated_module_file.clone())
+                .map_err(|error| format!("patched MODULE file {path} is not UTF-8: {error}"))?;
             let module = bzlmod::evaluate_source_with_context(
                 &path,
                 source,
@@ -439,6 +445,8 @@ impl Discovery<'_> {
                     name: name.to_owned(),
                     version: version.normalized.clone(),
                     module_file,
+                    evaluated_module_file,
+                    local_patches,
                 },
             ));
         }
@@ -886,6 +894,10 @@ mod tests {
             )
             .unwrap();
         }
+        fn patch(&self, name: &str, text: &str) {
+            std::fs::write(self.root.join("BUILD.bazel"), "not evaluated !!!").unwrap();
+            std::fs::write(self.root.join(name), text).unwrap();
+        }
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
@@ -1181,12 +1193,176 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_fetching_and_patches_are_never_silently_ignored() {
+    fn non_module_patches_leave_discovery_bytes_unchanged_without_source_descriptor() {
+        let f = Fixture::new(
+            "bazel_dep(name='a',version='1')\nsingle_version_override(module_name='a',patches=['//:fix.patch'],patch_strip=1)",
+        );
+        let original = "# exact registry bytes\r\nmodule(name='a',version='1')\r\n";
+        f.raw_module("a", "1", original);
+        f.patch(
+            "fix.patch",
+            "--- a/src/file\n+++ b/src/file\n@@ -1 +1 @@\n-before\n+after\n",
+        );
+        let graph = f.resolve();
+        let ModuleSource::Registry {
+            module_file,
+            evaluated_module_file,
+            local_patches,
+            ..
+        } = &graph.modules["a+"].source
+        else {
+            panic!()
+        };
+        assert_eq!(module_file, original.as_bytes());
+        assert_eq!(evaluated_module_file, module_file);
+        assert!(local_patches.has_transformations());
+        assert_eq!(graph.modules.len(), 1);
+        assert!(!f.root.join("bazel-rs-out").exists());
+        assert!(!f.registry.join("modules/a/1/source.json").exists());
+    }
+
+    #[test]
+    fn ordered_module_patches_add_dependencies_before_mvs_and_snapshot_inputs() {
+        let f = Fixture::new(
+            "module(name='root',repo_name='self')\nbazel_dep(name='a',version='1')\nbazel_dep(name='c',version='1')\nsingle_version_override(module_name='a',patches=['@self//:first.patch','@@//:second.patch'],patch_strip=1)",
+        );
+        let original = "module(name='a',version='1')\n";
+        f.raw_module("a", "1", original);
+        for version in ["1", "2", "3"] {
+            f.module("c", version, "");
+        }
+        f.patch("first.patch", "--- a/MODULE.bazel\n+++ b/MODULE.bazel\n@@ -1 +1,2 @@\n module(name='a',version='1')\n+bazel_dep(name='c',version='2')\n");
+        let second = |version| {
+            format!(
+                "--- a/MODULE.bazel\n+++ b/MODULE.bazel\n@@ -2 +2 @@\n-bazel_dep(name='c',version='2')\n+bazel_dep(name='c',version='{version}',repo_name='see')\n"
+            )
+        };
+        f.patch("second.patch", &second("3"));
+        let graph = f.resolve();
+        assert_eq!(graph.modules["c+"].version, "3");
+        assert_eq!(graph.modules["a+"].mapping["see"], "c+");
+        let ModuleSource::Registry {
+            module_file,
+            evaluated_module_file,
+            local_patches,
+            ..
+        } = &graph.modules["a+"].source
+        else {
+            panic!()
+        };
+        assert_eq!(module_file, original.as_bytes());
+        assert_eq!(
+            evaluated_module_file,
+            format!("{original}bazel_dep(name='c',version='3',repo_name='see')\n").as_bytes()
+        );
+        let identity = local_patches.cache_identity();
+        f.patch("second.patch", &second("2"));
+        assert_eq!(
+            local_patches.apply_module(module_file).unwrap(),
+            *evaluated_module_file
+        );
+        assert_eq!(local_patches.cache_identity(), identity);
+        assert_eq!(
+            std::fs::read(f.registry.join("modules/a/1/MODULE.bazel")).unwrap(),
+            *module_file
+        );
+        let fresh = f.resolve();
+        assert_eq!(fresh.modules["c+"].version, "2");
+        let ModuleSource::Registry {
+            local_patches: fresh_patches,
+            ..
+        } = &fresh.modules["a+"].source
+        else {
+            panic!()
+        };
+        assert_ne!(fresh_patches.cache_identity(), identity);
+    }
+
+    #[test]
+    fn commands_external_patches_and_strip_only_do_not_change_discovery() {
+        for options in [
+            "patch_cmds=['touch command-ran']",
+            "patches=['@@external+//missing:fix.patch']",
+            "patch_strip=7",
+        ] {
+            let f = Fixture::new(&format!(
+                "bazel_dep(name='a',version='1')\nsingle_version_override(module_name='a',{options})"
+            ));
+            f.module("a", "1", "");
+            let graph = f.resolve();
+            let ModuleSource::Registry {
+                module_file,
+                evaluated_module_file,
+                local_patches,
+                ..
+            } = &graph.modules["a+"].source
+            else {
+                panic!()
+            };
+            assert_eq!(module_file, evaluated_module_file);
+            assert_eq!(
+                local_patches.has_transformations(),
+                !options.starts_with("patch_strip")
+            );
+            assert!(!f.root.join("command-ran").exists());
+            assert!(!f.root.join("bazel-rs-out").exists());
+        }
+    }
+
+    #[test]
+    fn patched_declared_metadata_is_validated_not_original_metadata() {
+        let f = Fixture::new(
+            "bazel_dep(name='a',version='1')\nsingle_version_override(module_name='a',patches=[':fix.patch'],patch_strip=1)",
+        );
+        f.raw_module("a", "1", "module(name='wrong',version='9')\n");
+        f.patch("fix.patch", "--- a/MODULE.bazel\n+++ b/MODULE.bazel\n@@ -1 +1 @@\n-module(name='wrong',version='9')\n+module(name='a',version='1')\n");
+        assert_eq!(f.resolve().modules["a+"].name, "a");
+        f.patch("fix.patch", "--- a/MODULE.bazel\n+++ b/MODULE.bazel\n@@ -1 +1 @@\n-module(name='wrong',version='9')\n+module(name='a',version='2')\n");
+        f.fails("module version mismatch");
+    }
+
+    #[test]
+    fn malformed_non_module_sections_and_unsafe_paths_fail_discovery() {
+        let f = Fixture::new(
+            "bazel_dep(name='a',version='1')\nsingle_version_override(module_name='a',patches=[':fix.patch'],patch_strip=1)",
+        );
+        f.module("a", "1", "");
+        for patch in [
+            "--- a/src/file\n+++ b/src/file\n@@ -1,2 +1 @@\n-old\n+new\n",
+            "--- a/../escape\n+++ b/../escape\n@@ -1 +1 @@\n-old\n+new\n",
+            "diff --git a/src/file b/src/file\nold mode 100644\nnew mode 100755\n",
+        ] {
+            f.patch("fix.patch", patch);
+            f.fails("cannot parse patch");
+        }
+        f.patch("fix.patch", "--- a/MODULE.bazel\n+++ b/MODULE.bazel\n@@ -1 +1 @@\n-not the original\n+module(name='a',version='1')\n");
+        f.fails("cannot apply MODULE projection");
+    }
+
+    #[test]
+    fn patch_labels_use_root_package_and_effective_self_alias() {
+        let f = Fixture::new(
+            "module(name='root',repo_name='self')\nbazel_dep(name='a',version='1')\nsingle_version_override(module_name='a',patches=['@self//:fix.patch'],patch_strip=1)",
+        );
+        f.module("a", "1", "");
+        f.fails("missing a regular BUILD.bazel or BUILD");
+        std::fs::write(f.root.join("BUILD"), "").unwrap();
+        f.fails("cannot access patch file");
+        f.patch(
+            "fix.patch",
+            "--- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n+new\n",
+        );
+        assert_eq!(f.resolve().modules.len(), 1);
+        std::fs::write(f.root.join("MODULE.bazel"), "module(name='root',repo_name='self')\nbazel_dep(name='a',version='1')\nsingle_version_override(module_name='a',patches=['@root//:fix.patch'])").unwrap();
+        f.fails("unknown apparent repository");
+        let mut options = f.options();
+        options.ignore_dev_dependencies = true;
+        assert_eq!(resolve(&f.root, &options).unwrap().modules.len(), 1);
+    }
+
+    #[test]
+    fn unsupported_fetching_is_never_silently_ignored() {
         for (source, expected) in [
-            (
-                "bazel_dep(name='a',version='1')\nsingle_version_override(module_name='a',patches=['//:fix.patch'])",
-                "patch options",
-            ),
             (
                 "bazel_dep(name='a',version='1')\ngit_override(module_name='a',remote='r',tag='v1')",
                 "git_override",
