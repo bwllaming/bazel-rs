@@ -131,7 +131,29 @@ at its tracked internal symlink. The link is not omitted or flattened; preservin
 it safely is the next source-materialization increment. This remains incomplete
 application query/build/test compatibility.
 
-## Remaining compatibility gates
+## Direct repository-rule increment
+
+The bounded direct executor loads real transitive Starlark definitions, validates
+whole innate usages and runs demanded file/template callbacks. It preserves
+MODULE-owner mappings, private frozen helpers, label-default ownership, binary
+template bytes and ordered substitutions. Explicit source/attribute guards reject
+unsupported byte-string computations rather than silently changing output.
+
+Initialization and callbacks have evaluator limits. Repository demand cycles fail
+before recursive initialization; publication follows successful private execution
+and verified content/mode snapshots. Every fresh invocation reevaluates callbacks.
+Ordinary source aliases remain lazy and do not force unrelated extension namespace
+resolution. See `docs/REPOSITORY_RULES.md` for the exact subset and API limits.
+
+The application still stops at the unmaterialized nogo module-extension repository;
+this increment does not establish application query/build/test or full parity.
+
+Verification: 608 Rust and 270 Python tests pass, along with strict Clippy,
+formatting, release compilation and error-level Rust Analyzer diagnostics. The
+real CLI report passes seven Bazel differentials and nine native-only checks;
+all seven adjacent suites pass against the same release with recorded cleanup.
+
+## Preserved Git file-link increment
 
 The preserved Git file-link implementation retains literal internal file
 symlinks and records their kind/target in verified manifests. Committed blob
@@ -149,6 +171,8 @@ the same release binary with recorded cleanup.
 The application probe preserves the required `rules_distroless` link but still
 fails on the unmaterialized `@io_bazel_rules_nogo` extension repository. The
 checkout is unchanged; no application query/build/test success is claimed.
+
+## Remaining compatibility gates
 
 - [ ] Complete Bzlmod/repository compatibility beyond local selection/loading:
       complete downloader/archive/Git semantics, full patch semantics, lockfiles, built-in closure,

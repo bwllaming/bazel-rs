@@ -29,6 +29,9 @@ pub struct ModuleFile {
     pub overrides: BTreeMap<String, ModuleOverride>,
     pub extension_usages: Vec<ExtensionUsage>,
     pub registrations: Vec<Registration>,
+    /// Captured before evaluation, but enforced only when executing a direct
+    /// repository declaration. Metadata-only evaluation remains unchanged.
+    pub source_profile_error: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -425,6 +428,7 @@ pub fn evaluate_source_with_context(
     };
     let ast = AstModule::parse(filename, source, &dialect).map_err(|e| e.to_string())?;
     validate_module_syntax(&ast)?;
+    let source_profile_error = crate::repository_text::validate_execution_source(&ast).err();
     let mut globals = GlobalsBuilder::extended_by(&[LibraryExtension::Print]);
     for name in [
         "module",
@@ -462,7 +466,9 @@ pub fn evaluate_source_with_context(
             .map_err(|e| format!("cannot record MODULE attributes in {filename}: {e}"))?;
         Ok::<_, String>(())
     })?;
-    Ok(collector.state.into_inner().file)
+    let mut file = collector.state.into_inner().file;
+    file.source_profile_error = source_profile_error;
+    Ok(file)
 }
 
 /// Bazel's DotBazelFileSyntaxChecker restricts call syntax even in unreachable
@@ -1209,6 +1215,19 @@ mod tests {
     use super::*;
     fn run(s: &str) -> ModuleFile {
         evaluate_source("MODULE.bazel", s.to_owned()).unwrap()
+    }
+
+    #[test]
+    fn repository_source_profile_is_deferred_and_captured_from_evaluated_module() {
+        for expression in ["str(len('é'))", "str(len(chr(233)))", "'\\377'", "'\\x41'"] {
+            let file = run(&format!("module(name='main')\nunused = {expression}\n"));
+            assert_eq!(file.module.unwrap().name, "main");
+            assert!(file.source_profile_error.is_some(), "{expression}");
+        }
+        let file = run(
+            "module(name='main')\n# Unicode café comment is not a value\nx = r'\\377'\ny = '\\\\377'\n",
+        );
+        assert!(file.source_profile_error.is_none());
     }
     fn fails(s: &str, expected: &str) {
         let error = evaluate_source("MODULE.bazel", s.to_owned()).unwrap_err();

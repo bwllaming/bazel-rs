@@ -114,12 +114,13 @@ Only regular files are supported; no trees or symlink artifacts. On action failu
 new scheduling stops and in-flight actions are joined. There is no process
 cancellation/timeout or persistent analysis server yet. Globs do not follow
 symlinks; potentially matching symlinks fail explicitly (Bazel can follow them).
-Symbolic macros, executable/test rule modes, runfiles, tree artifacts, HTTP/Git/
-archive repository retrieval, patches, package groups and license metadata remain
-unsupported. External loading is limited to existing local source roots; module
-extensions, repository rules and toolchains are not implemented. Native MODULE
-metadata evaluation and local selected-module graph resolution do not fetch
-repositories or execute extensions. Implicit built-in
+Symbolic macros, executable/test rule modes, runfiles, tree artifacts, package
+groups and license metadata remain unsupported. External loading supports the
+bounded verified registry/archive, text-patch and pinned Git profiles described
+in `docs/`. Direct `use_repo_rule` callbacks now have a bounded native file/template
+executor; see [its exact limits](docs/REPOSITORY_RULES.md), including ASCII
+Starlark strings and binary-preserving templates. Ordinary module extensions,
+full repository APIs and toolchains are not implemented. Implicit built-in
 modules are unsupported; active extension usages fail in `mod graph` even when
 hidden from output. Load caching is per package evaluation,
 not a persistent incremental graph.

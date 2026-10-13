@@ -9,7 +9,7 @@ use starlark::eval::{Evaluator, ReturnFileLoader};
 use starlark::syntax::ast::{AstLiteral, Expr, Stmt};
 use starlark::syntax::{AstModule, Dialect};
 use starlark::values::{FrozenHeapName, OwnedFrozenValue};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -51,6 +51,7 @@ pub(crate) fn repositories(eval: &Evaluator<'_, '_, '_>) -> Option<Arc<Repositor
         .map(|context| context.repositories.clone())
         .or_else(|| crate::package::repository_context(eval))
         .or_else(|| crate::analysis::repository_context(eval))
+        .or_else(|| crate::repository_ctx::repository_context(eval))
 }
 
 pub fn resolve_label(eval: &Evaluator<'_, '_, '_>, text: &str) -> anyhow::Result<Label> {
@@ -61,6 +62,11 @@ pub fn resolve_label(eval: &Evaluator<'_, '_, '_>, text: &str) -> anyhow::Result
                 .map_err(anyhow::Error::msg);
         }
         if let Ok((_, package)) = crate::package::custom_label_context(eval) {
+            return repositories
+                .parse(text, &package.repository, &package.package)
+                .map_err(anyhow::Error::msg);
+        }
+        if let Some(package) = crate::repository_ctx::definition_package(eval) {
             return repositories
                 .parse(text, &package.repository, &package.package)
                 .map_err(anyhow::Error::msg);
@@ -90,6 +96,63 @@ pub struct LoadedModules {
     pub functions: Vec<OwnedFrozenValue>,
 }
 
+/// Exact input bytes and the owning repository's mapping for one evaluated file.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct SourceProvenance {
+    pub bytes: Vec<u8>,
+    pub mapping: BTreeMap<String, String>,
+}
+
+/// An owned frozen export, transitive function identities, and canonical inputs.
+/// No evaluator or repository runtime is retained by this result.
+#[derive(Debug)]
+pub struct LoadedDefinition {
+    pub value: OwnedFrozenValue,
+    pub functions: Vec<OwnedFrozenValue>,
+    pub sources: BTreeMap<String, SourceProvenance>,
+}
+
+/// Load a public export directly from a canonical `.bzl` label, without a BUILD
+/// shim. Unlike ordinary package loading, this demanded definition snapshots
+/// repository mappings and therefore may resolve the module graph.
+pub fn load_definition_in(
+    repositories: Arc<RepositorySet>,
+    label: &Label,
+    symbol: &str,
+    globals: &Globals,
+) -> Result<LoadedDefinition, String> {
+    if symbol.starts_with('_') {
+        return Err(format!(
+            "cannot load private symbol {symbol:?} from {label}"
+        ));
+    }
+    if symbol.is_empty()
+        || !symbol
+            .bytes()
+            .enumerate()
+            .all(|(i, b)| b == b'_' || b.is_ascii_alphabetic() || (i > 0 && b.is_ascii_digit()))
+    {
+        return Err(format!("invalid export identifier {symbol:?} from {label}"));
+    }
+    if !label.name.ends_with(".bzl") {
+        return Err(format!("load {label} requires a .bzl suffix"));
+    }
+    let mut loader = Loader::new(repositories, globals, true);
+    loader.load(label.clone())?;
+    let module = loader
+        .cache
+        .get(label)
+        .ok_or_else(|| format!("internal loader error: module {label} was not evaluated"))?;
+    let value = module
+        .get(symbol)
+        .map_err(|e| format!("cannot load {symbol:?} from {label}: {e}"))?;
+    Ok(LoadedDefinition {
+        value,
+        functions: loader.functions,
+        sources: loader.sources,
+    })
+}
+
 pub fn load_modules_with_functions(
     root: &Path,
     current_package: &str,
@@ -117,12 +180,7 @@ pub fn load_modules_with_functions_in(
     if labels.is_empty() {
         return Ok(LoadedModules::default());
     }
-    let mut loader = Loader {
-        repositories,
-        globals,
-        cache: HashMap::new(),
-        functions: Vec::new(),
-    };
+    let mut loader = Loader::new(repositories, globals, false);
     for label in labels {
         loader.load(label)?;
     }
@@ -174,6 +232,8 @@ struct Loader<'a> {
     globals: &'a Globals,
     cache: HashMap<Label, FrozenModule>,
     functions: Vec<OwnedFrozenValue>,
+    provenance_capture: bool,
+    sources: BTreeMap<String, SourceProvenance>,
 }
 
 enum Work {
@@ -181,7 +241,22 @@ enum Work {
     Finish(Label, Box<AstModule>),
 }
 
-impl Loader<'_> {
+impl<'a> Loader<'a> {
+    fn new(
+        repositories: Arc<RepositorySet>,
+        globals: &'a Globals,
+        provenance_capture: bool,
+    ) -> Self {
+        Self {
+            repositories,
+            globals,
+            cache: HashMap::new(),
+            functions: Vec::new(),
+            provenance_capture,
+            sources: BTreeMap::new(),
+        }
+    }
+
     fn load(&mut self, label: Label) -> Result<(), String> {
         // Explicit DFS frames avoid exhausting the Rust stack on deep graphs.
         let mut work = vec![Work::Enter(label)];
@@ -202,8 +277,20 @@ impl Loader<'_> {
                         ));
                     }
                     let path = self.source_path(&label)?;
-                    let source = fs::read_to_string(&path)
+                    let bytes = fs::read(&path)
                         .map_err(|e| format!("cannot read {label} ({}): {e}", path.display()))?;
+                    let source = std::str::from_utf8(&bytes)
+                        .map_err(|e| format!("cannot read {label} ({}): {e}", path.display()))?
+                        .to_owned();
+                    if self.provenance_capture {
+                        self.sources.insert(
+                            label.to_string(),
+                            SourceProvenance {
+                                bytes,
+                                mapping: self.repositories.mapping(&label.repository)?.clone(),
+                            },
+                        );
+                    }
                     // Bazel extension files allow definitions but not top-level
                     // if/for statements. Do not enable the Extended dialect.
                     let dialect = Dialect {
@@ -213,6 +300,9 @@ impl Loader<'_> {
                     };
                     let ast = AstModule::parse(&label.to_string(), source, &dialect)
                         .map_err(|e| format!("cannot parse {label}: {e}"))?;
+                    if self.provenance_capture {
+                        crate::repository_text::validate_execution_source(&ast)?;
+                    }
                     validate_bzl_load_order(&ast)?;
                     let dependencies = dependencies(&self.repositories, &label.package_id(), &ast)?;
                     active.push(label.clone());
@@ -234,6 +324,15 @@ impl Loader<'_> {
                             eval.extra = Some(&context);
                             eval.set_max_callstack_size(128)
                                 .map_err(|e| e.to_string())?;
+                            if self.provenance_capture {
+                                // Definition initialization is execution too: limiting
+                                // only the later callback leaves top-level/helper work
+                                // in any transitive .bzl outside the repository budget.
+                                eval.set_max_tick_count(1_000_000)
+                                    .map_err(|e| e.to_string())?;
+                                eval.set_max_heap_size(128 * 1024 * 1024)
+                                    .map_err(|e| e.to_string())?;
+                            }
                             eval.set_loader(&file_loader);
                             eval.eval_module(*ast, self.globals)
                                 .map_err(|e| format!("cannot evaluate {label}: {e}"))?;
@@ -447,6 +546,15 @@ mod tests {
             load_modules(&self.0, "", &parse(source), &Globals::standard())
         }
 
+        fn definition(&self, label: &str, symbol: &str) -> Result<LoadedDefinition, String> {
+            load_definition_in(
+                Arc::new(RepositorySet::new(self.0.clone())),
+                &Label::parse_canonical(label).unwrap(),
+                symbol,
+                &crate::package::bzl_globals(),
+            )
+        }
+
         fn error(&self, source: &str, expected: &str) {
             let error = self.load(source).unwrap_err();
             assert!(error.contains(expected), "expected {expected:?} in {error}");
@@ -478,6 +586,23 @@ mod tests {
 
     #[starlark_module]
     fn test_globals(builder: &mut GlobalsBuilder) {
+        fn rewrite_source(eval: &mut Evaluator) -> anyhow::Result<i32> {
+            let context = eval
+                .extra
+                .and_then(|extra| extra.downcast_ref::<ExtensionContext>())
+                .unwrap();
+            fs::write(
+                context
+                    .repositories
+                    .root(&context.label.repository)
+                    .map_err(anyhow::Error::msg)?
+                    .join(&context.label.package)
+                    .join(&context.label.name),
+                "value = 99\n",
+            )?;
+            Ok(42)
+        }
+
         fn count_evaluation() -> anyhow::Result<i32> {
             EVALUATIONS.fetch_add(1, Ordering::Relaxed);
             Ok(21)
@@ -506,6 +631,285 @@ mod tests {
             .unwrap()
             .is_empty()
         );
+    }
+
+    #[test]
+    fn definition_is_owned_debug_send_sync_and_keeps_private_transitive_functions() {
+        fn assert_traits<T: std::fmt::Debug + Send + Sync>() {}
+        assert_traits::<LoadedDefinition>();
+        assert_traits::<SourceProvenance>();
+        let temp = Temp::new();
+        temp.file("MODULE.bazel", "module(name='main')\n");
+        temp.file(
+            "helper.bzl",
+            "def _private(x):\n    return x + 1\ndef public(x):\n    return _private(x)\n",
+        );
+        temp.file(
+            "left.bzl",
+            "load(':helper.bzl', _public='public')\nleft = _public\n",
+        );
+        temp.file(
+            "right.bzl",
+            "load('@//:helper.bzl', _public='public')\nright = _public\n",
+        );
+        temp.file("defs.bzl", "load(':left.bzl', 'left')\nload(':right.bzl', 'right')\nidentity = left == right\nalias = left\n");
+        let repositories = Arc::new(RepositorySet::new(temp.0.clone()));
+        let weak = Arc::downgrade(&repositories);
+        let loaded = load_definition_in(
+            repositories,
+            &Label::parse_canonical("//:defs.bzl").unwrap(),
+            "alias",
+            &crate::package::bzl_globals(),
+        )
+        .unwrap();
+        assert!(
+            weak.upgrade().is_none(),
+            "frozen result retained repositories"
+        );
+        assert_eq!(loaded.sources.len(), 4);
+        assert_eq!(loaded.functions.len(), 2);
+        assert_eq!(
+            loaded
+                .functions
+                .iter()
+                .filter(|f| f.value().ptr_eq(loaded.value.value()))
+                .count(),
+            1
+        );
+        assert_eq!(
+            temp.definition("//:defs.bzl", "identity")
+                .unwrap()
+                .value
+                .value()
+                .unpack_bool(),
+            Some(true)
+        );
+        drop(temp);
+        Module::with_temp_heap(|module| {
+            let mut eval = Evaluator::new(&module);
+            for owned in std::iter::once(&loaded.value).chain(&loaded.functions) {
+                let function = module.heap().access_owned_frozen_value(owned);
+                let result = eval
+                    .eval_function(function, &[module.heap().alloc(41)], &[])
+                    .unwrap();
+                assert_eq!(result.unpack_i32(), Some(42));
+            }
+        });
+    }
+
+    #[test]
+    fn definition_accepts_provider_custom_rule_struct_and_scalar_exports() {
+        let temp = Temp::new();
+        temp.file("MODULE.bazel", "module(name='main')\n");
+        temp.file(
+            "defs.bzl",
+            r#"
+P = provider(fields=["answer"])
+def _impl(ctx):
+    return [P(answer=42)]
+r = rule(implementation=_impl, attrs={"dep": attr.label(default=Label(":input"))})
+bundle = struct(p=P(answer=42), r=r, label=Label(":input"), native_type=type(native))
+scalar = 42
+"#,
+        );
+        for (symbol, expected) in [
+            ("P", "Provider"),
+            ("r", "rule"),
+            ("bundle", "struct"),
+            ("scalar", "int"),
+        ] {
+            let loaded = temp.definition("//:defs.bzl", symbol).unwrap();
+            assert_eq!(loaded.value.value().get_type(), expected);
+        }
+        let bundle = temp.definition("//:defs.bzl", "bundle").unwrap().value;
+        drop(temp);
+        Module::with_temp_heap(|module| {
+            module.set("bundle", module.heap().access_owned_frozen_value(&bundle));
+            let value = Evaluator::new(&module).eval_module(
+                parse("bundle.p.answer == 42 and str(bundle.label) == '@@//:input' and bundle.native_type == 'struct'"),
+                &crate::package::bzl_globals(),
+            ).unwrap();
+            assert_eq!(value.unpack_bool(), Some(true));
+        });
+    }
+
+    #[test]
+    fn definition_rejects_private_invalid_missing_and_implicit_reexports() {
+        let temp = Temp::new();
+        // Invalid symbols must fail before filesystem access or evaluation.
+        for symbol in ["_private", "", "1name", "bad-name", "name space", "é"] {
+            let error = temp.definition("//:missing.bzl", symbol).unwrap_err();
+            assert!(
+                error.contains(if symbol.starts_with('_') {
+                    "private symbol"
+                } else {
+                    "invalid export identifier"
+                }),
+                "{error}"
+            );
+        }
+        temp.file("MODULE.bazel", "module(name='main')\n");
+        temp.file("helper.bzl", "public = 42\n");
+        temp.file("defs.bzl", "load(':helper.bzl', 'public')\n_private = 1\n");
+        for symbol in ["missing", "public"] {
+            let error = temp.definition("//:defs.bzl", symbol).unwrap_err();
+            assert!(
+                error.contains("cannot load") && error.contains(symbol),
+                "{error}"
+            );
+        }
+        assert!(
+            temp.definition("//:defs.star", "public")
+                .unwrap_err()
+                .contains(".bzl suffix")
+        );
+    }
+
+    #[test]
+    fn definition_evaluates_transitive_failures_and_reports_full_cycles() {
+        let temp = Temp::new();
+        temp.file("MODULE.bazel", "module(name='main')\n");
+        temp.file("defs.bzl", "load(':middle.bzl', 'middle')\nvalue = 42\n");
+        temp.file("middle.bzl", "load(':leaf.bzl', 'leaf')\nmiddle = leaf\n");
+        temp.file("leaf.bzl", "fail('TRANSITIVE_SENTINEL')\nleaf = 1\n");
+        let error = temp.definition("//:defs.bzl", "value").unwrap_err();
+        assert!(
+            error.contains("TRANSITIVE_SENTINEL") && error.contains("//:leaf.bzl"),
+            "{error}"
+        );
+        temp.file("leaf.bzl", "load('@@//:defs.bzl', 'value')\nleaf = value\n");
+        let error = temp.definition("//:defs.bzl", "value").unwrap_err();
+        assert!(
+            error.contains("//:defs.bzl -> //:middle.bzl -> //:leaf.bzl -> //:defs.bzl"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn definition_provenance_is_exact_read_bytes_not_post_evaluation_file() {
+        let temp = Temp::new();
+        temp.file("MODULE.bazel", "module(name='main')\n");
+        let source = "# café\r\nvalue = rewrite_source()\r\n";
+        temp.file("defs.bzl", source);
+        let globals = GlobalsBuilder::standard().with(test_globals).build();
+        let label = Label::parse_canonical("//:defs.bzl").unwrap();
+        let repositories = Arc::new(RepositorySet::new(temp.0.clone()));
+        let first = load_definition_in(repositories.clone(), &label, "value", &globals).unwrap();
+        assert_eq!(first.value.value().unpack_i32(), Some(42));
+        assert_eq!(first.sources["//:defs.bzl"].bytes, source.as_bytes());
+        assert_eq!(fs::read(temp.0.join("defs.bzl")).unwrap(), b"value = 99\n");
+        let second = load_definition_in(repositories, &label, "value", &globals).unwrap();
+        assert_eq!(second.value.value().unpack_i32(), Some(99));
+        assert_eq!(second.sources["//:defs.bzl"].bytes, b"value = 99\n");
+        assert!(serde_json::to_value(&first.sources).unwrap().is_object());
+        fs::write(temp.0.join("defs.bzl"), [0xff]).unwrap();
+        let error = temp.definition("//:defs.bzl", "value").unwrap_err();
+        assert!(
+            error.contains("cannot read //:defs.bzl") && error.contains("utf-8"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn definition_profile_checks_transitive_sources_without_changing_ordinary_loading() {
+        let temp = Temp::new();
+        temp.file("MODULE.bazel", "module(name='main')\n");
+        temp.file(
+            "defs.bzl",
+            "load(':helper.bzl', 'compute')\nvalue = compute()\n",
+        );
+        for source in [
+            "def compute():\n    return str(len('é'))\n",
+            "alias = chr\ndef compute():\n    return str(len(alias(233)))\n",
+        ] {
+            temp.file("helper.bzl", source);
+            let error = temp.definition("//:defs.bzl", "value").unwrap_err();
+            assert!(
+                error.contains("helper.bzl") && error.contains("direct repository execution"),
+                "{error}"
+            );
+            // The ordinary loader keeps its established behavior; the new
+            // conservative source profile is attached only to demanded definitions.
+            assert!(temp.load("load(':defs.bzl', 'value')\n").is_ok());
+        }
+    }
+
+    #[test]
+    fn definition_records_owner_mappings_using_existing_repository_configuration() {
+        let main = Temp::new();
+        let external = Temp::new();
+        external_fixture(&main, &external);
+        let module_path = main.0.join("MODULE.bazel");
+        let mut module = fs::read_to_string(&module_path).unwrap();
+        module.push_str("bazel_dep(name='unavailable',version='1',dev_dependency=True)\n");
+        main.file("MODULE.bazel", &module);
+        // Ignoring dev dependencies also ignores root overrides. A configured
+        // local registry therefore supplies the selected dependency instead.
+        main.file(
+            "registry/modules/dep/1/MODULE.bazel",
+            "module(name='dep',version='1',repo_name='self_dep')\n",
+        );
+        main.file(
+            "registry/modules/dep/1/source.json",
+            &serde_json::json!({"type": "local_path", "path": external.0}).to_string(),
+        );
+        main.file("defs.bzl", "load('@alias//:defs.bzl', 'dep')\nvalue = struct(main=Label('@alias//:input'), dep=dep)\n");
+        external.file(
+            "defs.bzl",
+            "load('@self_dep//:helper.bzl', 'helper')\ndep = helper\n",
+        );
+        external.file("helper.bzl", "helper = Label('@self_dep//:input')\n");
+        let cache = main.0.join("custom-cache");
+        fs::create_dir(&cache).unwrap();
+        fs::write(cache.join("sentinel"), "untouched").unwrap();
+        let repositories = Arc::new(
+            RepositorySet::with_options(
+                main.0.clone(),
+                crate::module_graph::ResolverOptions {
+                    registries: vec![main.0.join("registry").into()],
+                    ignore_dev_dependencies: true,
+                    ..Default::default()
+                },
+            )
+            .with_source_cache(cache.clone()),
+        );
+        let main_mapping = repositories.mapping("").unwrap().clone();
+        let dep_mapping = repositories.mapping("dep+").unwrap().clone();
+        // The loader must reuse this resolved graph, not construct another set.
+        main.file("MODULE.bazel", "invalid MODULE !!!\n");
+        let loaded = load_definition_in(
+            repositories,
+            &Label::parse_canonical("//:defs.bzl").unwrap(),
+            "value",
+            &crate::package::bzl_globals(),
+        )
+        .unwrap();
+        assert_eq!(loaded.sources.len(), 3);
+        assert_eq!(loaded.sources["//:defs.bzl"].mapping, main_mapping);
+        for label in ["@@dep+//:defs.bzl", "@@dep+//:helper.bzl"] {
+            assert_eq!(loaded.sources[label].mapping, dep_mapping);
+        }
+        assert_eq!(main_mapping["alias"], "dep+");
+        assert_eq!(dep_mapping["self_dep"], "dep+");
+        Module::with_temp_heap(|module| {
+            module.set(
+                "value",
+                module.heap().access_owned_frozen_value(&loaded.value),
+            );
+            assert_eq!(
+                Evaluator::new(&module)
+                    .eval_module(
+                        parse("str(value.main) == '@@dep+//:input' and value.main == value.dep"),
+                        &crate::package::bzl_globals()
+                    )
+                    .unwrap()
+                    .unpack_bool(),
+                Some(true)
+            );
+        });
+        assert_eq!(fs::read_dir(&cache).unwrap().count(), 1);
+        assert_eq!(fs::read(cache.join("sentinel")).unwrap(), b"untouched");
+        assert!(!main.0.join("bazel-rs-out").exists());
     }
 
     fn external_fixture(main: &Temp, external: &Temp) {

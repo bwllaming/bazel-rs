@@ -11,7 +11,7 @@ use starlark::values::{OwnedFrozenValue, Value, ValueLike};
 use std::collections::BTreeMap;
 use std::fmt;
 
-#[derive(Clone, Debug, PartialEq, Eq, Allocative)]
+#[derive(Clone, Debug, PartialEq, Eq, Allocative, serde::Serialize)]
 pub enum AttrKind {
     String,
     StringList,
@@ -22,7 +22,7 @@ pub enum AttrKind {
     Output,
     OutputList,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Allocative)]
+#[derive(Clone, Debug, PartialEq, Eq, Allocative, serde::Serialize)]
 pub enum AttrValue {
     String(String),
     Strings(Vec<String>),
@@ -33,7 +33,7 @@ pub enum AttrValue {
     Output(Option<String>),
     Outputs(Vec<String>),
 }
-#[derive(Clone, Debug, PartialEq, Eq, Allocative)]
+#[derive(Clone, Debug, PartialEq, Eq, Allocative, serde::Serialize)]
 pub struct AttrSpec {
     pub kind: AttrKind,
     pub default: AttrValue,
@@ -281,6 +281,13 @@ mod values {
     }
 }
 use values::{DefinitionGen, Descriptor};
+
+/// Copy the owned schema without exposing the private Starlark descriptor type.
+pub(crate) fn attribute_spec(value: Value<'_>) -> Option<AttrSpec> {
+    value
+        .downcast_ref::<Descriptor>()
+        .map(|value| value.0.clone())
+}
 
 fn descriptor(
     kind: AttrKind,

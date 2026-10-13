@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, bail};
 use starlark::any::ProvidesStaticType;
-use starlark::environment::{GlobalsBuilder, LibraryExtension, Module};
+use starlark::environment::{Globals, GlobalsBuilder, LibraryExtension, Module};
 use starlark::eval::{Evaluator, ReturnFileLoader};
 use starlark::starlark_module;
 use starlark::syntax::ast::{Argument, Expr};
@@ -357,6 +357,22 @@ fn package_globals(builder: &mut GlobalsBuilder) {
     }
 }
 
+/// Complete extension-file globals, shared by package and definition loading.
+/// Native declarations still require a BUILD evaluation context when invoked.
+pub fn bzl_globals() -> Globals {
+    let native = GlobalsBuilder::new()
+        .with(rule_globals)
+        .with(package_globals)
+        .build();
+    let mut bzl = GlobalsBuilder::extended_by(&[LibraryExtension::StructType]);
+    bzl.frozen_heap().add_reference(native.heap());
+    bzl.set("native", AllocStruct(native.iter()));
+    crate::custom_rule::rule_globals(&mut bzl);
+    crate::providers::globals(&mut bzl);
+    crate::repository_rule::globals(&mut bzl);
+    bzl.build()
+}
+
 /// Evaluate a BUILD file with native Starlark; never invoke upstream Bazel.
 ///
 /// The caller supplies a main-repository package path (empty for root). Rule and output
@@ -421,16 +437,7 @@ fn evaluate_at(
         .with(rule_globals)
         .with(package_globals)
         .build();
-    let native = GlobalsBuilder::new()
-        .with(rule_globals)
-        .with(package_globals)
-        .build();
-    let mut bzl = GlobalsBuilder::extended_by(&[LibraryExtension::StructType]);
-    bzl.frozen_heap().add_reference(native.heap());
-    bzl.set("native", AllocStruct(native.iter()));
-    crate::custom_rule::rule_globals(&mut bzl);
-    crate::providers::globals(&mut bzl);
-    let bzl_globals = bzl.build();
+    let bzl_globals = bzl_globals();
     let loaded = crate::loading::load_modules_with_functions_in(
         repositories.clone(),
         package,
@@ -820,6 +827,25 @@ unused = [genrule(name = "make_" + n, outs = [n + ".out"], cmd = "echo " + n + "
         let rules = evaluate(&root.0, "pkg").unwrap();
         assert_eq!(rules.len(), 1);
         assert!(rules.contains_key(&Label::parse(":preferred", "pkg").unwrap()));
+    }
+
+    #[test]
+    fn local_bzl_loading_does_not_resolve_unused_invalid_module() {
+        let root = TempRoot::new();
+        std::fs::write(root.0.join("MODULE.bazel"), "invalid MODULE !!!").unwrap();
+        std::fs::write(
+            root.0.join("pkg/defs.bzl"),
+            "def macro(name):\n    native.filegroup(name=name)\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.0.join("pkg/BUILD"),
+            "load(':defs.bzl', 'macro')\nmacro(name='local')\n",
+        )
+        .unwrap();
+        let package = evaluate(&root.0, "pkg").unwrap();
+        assert!(package.contains_key(&Label::parse("//pkg:local", "").unwrap()));
+        assert!(!root.0.join("bazel-rs-out").exists());
     }
 
     #[test]

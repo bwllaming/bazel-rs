@@ -1,27 +1,61 @@
 //! Lazy repository roots and strict apparent-name resolution.
 //!
 //! Main-repository source operations never evaluate MODULE.bazel. External
-//! resolution records the graph once and does not execute extensions or mistake
-//! registry metadata for a materialized source tree. Local source roots remain
+//! resolution records the graph once; direct repository rules execute only on
+//! root demand, never during alias lookup. Local source roots remain
 //! live inputs; archive sources are materialized only when requested. Git sources
 //! are materialized for discovery and revalidated before repository use.
 use crate::label::{Label, PackageId, validate_repository_name};
 use crate::module_graph::{self, ModuleSource, ResolvedGraph, ResolverOptions};
 use crate::patch_inputs::LocalPatchPlan;
 use crate::registry::Registry;
+use crate::repository_catalog::{self, DirectCatalog};
+use crate::repository_demand::DemandSlot;
+use crate::{custom_rule::AttrValue, loading, repository_rule};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
+
+static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Debug)]
+pub struct RepositorySet {
+    state: Arc<RepositoryState>,
+}
 
 #[derive(Debug)]
-pub struct RepositorySet {
+struct RepositoryState {
+    runtime_id: u64,
     root: PathBuf,
     options: ResolverOptions,
     source_cache: PathBuf,
     absolute_source_cache: OnceLock<Result<PathBuf, String>>,
     resolved: OnceLock<Result<ResolvedGraph, String>>,
     registry_roots: OnceLock<BTreeMap<String, OnceLock<Result<PathBuf, String>>>>,
+    direct: OnceLock<Result<DirectRuntime, String>>,
 }
+
+#[derive(Debug)]
+struct DirectRuntime {
+    catalog: DirectCatalog,
+    groups: BTreeMap<String, DemandSlot<PreparedGroup>>,
+    roots: BTreeMap<String, DemandSlot<PathBuf>>,
+}
+
+#[derive(Debug)]
+struct PreparedGroup {
+    definition: repository_rule::RuleDefinition,
+    loaded: loading::LoadedDefinition,
+    label: Label,
+    attributes: Vec<BTreeMap<String, AttrValue>>,
+}
+
+const _: fn() = || {
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<RepositorySet>();
+    send_sync::<PreparedGroup>();
+};
 
 impl RepositorySet {
     pub fn new(root: PathBuf) -> Self {
@@ -29,39 +63,44 @@ impl RepositorySet {
     }
 
     pub fn with_options(root: PathBuf, options: ResolverOptions) -> Self {
+        Self::configured(root, options, PathBuf::from("bazel-rs-out/repositories"))
+    }
+
+    fn configured(root: PathBuf, options: ResolverOptions, source_cache: PathBuf) -> Self {
         Self {
-            source_cache: PathBuf::from("bazel-rs-out/repositories"),
-            absolute_source_cache: OnceLock::new(),
-            root,
-            options,
-            resolved: OnceLock::new(),
-            registry_roots: OnceLock::new(),
+            state: Arc::new(RepositoryState {
+                runtime_id: NEXT_RUNTIME_ID.fetch_add(1, Ordering::Relaxed),
+                source_cache,
+                absolute_source_cache: OnceLock::new(),
+                root,
+                options,
+                resolved: OnceLock::new(),
+                registry_roots: OnceLock::new(),
+                direct: OnceLock::new(),
+            }),
         }
     }
 
-    pub fn with_source_cache(mut self, cache: PathBuf) -> Self {
-        self.source_cache = cache;
-        self.absolute_source_cache = OnceLock::new();
-        self.resolved = OnceLock::new();
-        self.registry_roots = OnceLock::new();
-        self
+    pub fn with_source_cache(self, cache: PathBuf) -> Self {
+        Self::configured(self.state.root.clone(), self.state.options.clone(), cache)
     }
 
     /// Library-relative cache paths are workspace-relative. The CLI resolves
     /// its cwd-relative option before constructing this set. Both discovery
     /// and later repository access must reuse this exact absolute path.
-    fn source_cache_path(&self) -> Result<&Path, String> {
-        self.absolute_source_cache
+    pub(crate) fn source_cache_path(&self) -> Result<&Path, String> {
+        self.state
+            .absolute_source_cache
             .get_or_init(|| {
-                if self.source_cache.is_absolute() {
-                    Ok(self.source_cache.clone())
+                if self.state.source_cache.is_absolute() {
+                    Ok(self.state.source_cache.clone())
                 } else {
-                    std::fs::canonicalize(&self.root)
-                        .map(|root| root.join(&self.source_cache))
+                    std::fs::canonicalize(&self.state.root)
+                        .map(|root| root.join(&self.state.source_cache))
                         .map_err(|e| {
                             format!(
                                 "cannot resolve repository cache workspace {}: {e}",
-                                self.root.display()
+                                self.state.root.display()
                             )
                         })
                 }
@@ -72,15 +111,16 @@ impl RepositorySet {
     }
 
     pub fn main_root(&self) -> &Path {
-        &self.root
+        &self.state.root
     }
 
     pub fn resolve_graph(&self) -> Result<&ResolvedGraph, String> {
-        self.resolved
+        self.state
+            .resolved
             .get_or_init(|| {
                 module_graph::resolve_with_source_cache(
-                    &self.root,
-                    &self.options,
+                    &self.state.root,
+                    &self.state.options,
                     self.source_cache_path()?,
                 )
             })
@@ -91,12 +131,12 @@ impl RepositorySet {
     pub fn root(&self, repository: &str) -> Result<&Path, String> {
         validate_repository_name(repository)?;
         if repository.is_empty() {
-            return Ok(&self.root);
+            return Ok(&self.state.root);
         }
         let graph = self.resolve_graph()?;
-        let module = graph.modules.get(repository).ok_or_else(|| {
-            format!("unknown canonical repository @@{repository}; extension repository not materialized or module not selected")
-        })?;
+        let Some(module) = graph.modules.get(repository) else {
+            return self.direct_root(repository);
+        };
         match &module.source {
             ModuleSource::LocalPath(root) => Ok(root),
             ModuleSource::Git {
@@ -104,7 +144,7 @@ impl RepositorySet {
                 local_patches,
                 tree,
             } => {
-                let roots = self.registry_roots.get_or_init(|| {
+                let roots = self.state.registry_roots.get_or_init(|| {
                     graph
                         .modules
                         .keys()
@@ -112,7 +152,7 @@ impl RepositorySet {
                         .collect()
                 });
                 roots[repository].get_or_init(|| {
-                    spec.validate(self.options.allow_remote)?;
+                    spec.validate(self.state.options.allow_remote)?;
                     if !tree.commit.eq_ignore_ascii_case(&spec.commit) {
                         return Err(format!("Git commit mismatch for repository @@{repository}"));
                     }
@@ -120,7 +160,7 @@ impl RepositorySet {
                         spec,
                         local_patches,
                         self.source_cache_path()?,
-                        self.options.allow_remote,
+                        self.state.options.allow_remote,
                         |_, bytes| {
                             if bytes != tree.module_file {
                                 return Err(format!("Git MODULE differs from resolved graph for repository @@{repository}"));
@@ -139,7 +179,7 @@ impl RepositorySet {
                 local_patches,
                 ..
             } => {
-                let roots = self.registry_roots.get_or_init(|| {
+                let roots = self.state.registry_roots.get_or_init(|| {
                     graph
                         .modules
                         .keys()
@@ -174,13 +214,149 @@ impl RepositorySet {
 
     pub fn mapping(&self, repository: &str) -> Result<&BTreeMap<String, String>, String> {
         validate_repository_name(repository)?;
-        let graph = self.resolve_graph()?;
-        if repository.is_empty() {
-            return Ok(&graph.root_mapping);
-        }
-        graph.modules.get(repository).map(|module| &module.mapping).ok_or_else(|| {
+        let catalog = &self.direct_runtime()?.catalog;
+        catalog.owner_mappings.get(repository)
+            .or_else(|| catalog.repositories.get(repository).map(|entry| &entry.mapping))
+            .ok_or_else(|| {
             format!("unknown canonical repository @@{repository}; extension repository not materialized or module not selected")
         })
+    }
+
+    /// Catalog construction is pure metadata work. In particular, its OnceLock
+    /// initializer cannot recursively demand a source root or load a definition.
+    fn direct_runtime(&self) -> Result<&DirectRuntime, String> {
+        self.state
+            .direct
+            .get_or_init(|| {
+                let catalog = repository_catalog::build(
+                    self.resolve_graph()?,
+                    self.state.options.ignore_dev_dependencies,
+                )?;
+                let groups = catalog
+                    .groups
+                    .keys()
+                    .map(|id| (id.clone(), DemandSlot::new()))
+                    .collect();
+                let roots = catalog
+                    .repositories
+                    .keys()
+                    .map(|name| (name.clone(), DemandSlot::new()))
+                    .collect();
+                Ok(DirectRuntime {
+                    catalog,
+                    groups,
+                    roots,
+                })
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
+    fn prepare_direct_group(&self, id: &str) -> Result<&PreparedGroup, String> {
+        let runtime = self.direct_runtime()?;
+        let group = runtime
+            .catalog
+            .groups
+            .get(id)
+            .ok_or_else(|| format!("unknown direct repository group {id:?}"))?;
+        let slot = runtime
+            .groups
+            .get(id)
+            .ok_or_else(|| format!("missing direct repository preparation slot {id:?}"))?;
+        slot.get_or_try_init(self.state.runtime_id, &format!("prepare:{id}"), || {
+            if let Some(error) = &group.owner_profile_error {
+                return Err(error.clone());
+            }
+            let (text, symbol) = group.definition_request()?;
+            let label = self.parse(text, &group.owner, "")?;
+            let loaded = loading::load_definition_in(
+                Arc::new(self.clone()),
+                &label,
+                symbol,
+                &crate::package::bzl_globals(),
+            )?;
+            let definition = repository_rule::unpack(&loaded.value)
+                .map_err(|error| format!("repository rule {label}%{symbol}: {error}"))?;
+            // An innate usage validates every declaration before executing even
+            // its first callback, including declarations not otherwise demanded.
+            let attributes = group
+                .declarations
+                .iter()
+                .map(|declaration| {
+                    repository_rule::bind_attributes(
+                        &definition,
+                        &declaration.attributes,
+                        &declaration.canonical_name,
+                        |text| self.parse(text, &group.owner, ""),
+                    )
+                    .map_err(|error| {
+                        format!("repository @@{}: {error}", declaration.canonical_name)
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(PreparedGroup {
+                definition,
+                loaded,
+                label,
+                attributes,
+            })
+        })
+    }
+
+    fn direct_root(&self, canonical: &str) -> Result<&Path, String> {
+        let runtime = self.direct_runtime()?;
+        let entry = runtime.catalog.repositories.get(canonical).ok_or_else(|| {
+            format!("unknown canonical repository @@{canonical}; extension repository not materialized or module not selected")
+        })?;
+        let slot = runtime
+            .roots
+            .get(canonical)
+            .ok_or_else(|| format!("missing direct repository root slot @@{canonical}"))?;
+        // Claim before preparation: definitions can themselves be generated,
+        // and a recursive definition demand must encounter our cycle guard.
+        slot.get_or_try_init(
+            self.state.runtime_id,
+            &format!("repository:{canonical}"),
+            || {
+                let prepared = self.prepare_direct_group(&entry.group_id)?;
+                let group = &runtime.catalog.groups[&entry.group_id];
+                let declaration = &group.declarations[entry.declaration_index];
+                let attributes = &prepared.attributes[entry.declaration_index];
+                let provenance = serde_json::to_vec(&serde_json::json!({
+                    "profile": "direct-file-template-v1",
+                    "owner": group.owner,
+                    "raw_identity": group.raw_identity,
+                    "public_label": prepared.label.to_string(),
+                    "definition_identity": prepared.definition.identity,
+                    "sources": prepared.loaded.sources,
+                    "attributes": attributes,
+                    "schema": prepared.definition.schema,
+                    "owner_mapping": runtime.catalog.owner_mappings[&group.owner],
+                    "repository_mapping": entry.mapping,
+                }))
+                .map_err(|error| format!("cannot serialize repository provenance: {error}"))?;
+                crate::repository_store::materialize(
+                    self.source_cache_path()?,
+                    &provenance,
+                    |stage| {
+                        let inputs = crate::repository_ctx::execute(
+                            Arc::new(self.clone()),
+                            &prepared.definition,
+                            &prepared.loaded.functions,
+                            attributes,
+                            canonical,
+                            &declaration.name,
+                            &prepared.label,
+                            stage,
+                        )?;
+                        serde_json::to_vec(&inputs).map_err(|error| {
+                            format!("cannot serialize repository execution inputs: {error}")
+                        })
+                    },
+                )
+            },
+        )
+        .map(PathBuf::as_path)
     }
 
     pub fn parse(&self, text: &str, repository: &str, package: &str) -> Result<Label, String> {
@@ -188,30 +364,36 @@ impl RepositorySet {
         // repository has the empty alias: external @// is NOT self or main.
         let main_empty_alias = repository.is_empty() && text.starts_with("@//");
         if text.starts_with('@') && !text.starts_with("@@") && !main_empty_alias {
-            let mapping = self.mapping(repository)?;
-            if let Some((apparent, _)) = text[1..].split_once("//")
-                && !mapping.contains_key(apparent)
-            {
-                let graph = self.resolve_graph()?;
-                let module = if repository.is_empty() {
-                    &graph.root
-                } else {
-                    &graph.modules[repository].module
-                };
-                if let Some(usage) = module.extension_usages.iter().find(|usage| {
+            let graph = self.resolve_graph()?;
+            let owner = if repository.is_empty() {
+                Some((&graph.root, &graph.root_mapping))
+            } else {
+                graph
+                    .modules
+                    .get(repository)
+                    .map(|module| (&module.module, &module.mapping))
+            };
+            if let Some((module, base_mapping)) = owner {
+                let apparent = text[1..]
+                    .split_once("//")
+                    .map_or(&text[1..], |(name, _)| name);
+                let direct_import = module.extension_usages.iter().any(|usage| {
                     usage.identity.is_repo_rule()
-                        && usage
-                            .imports
-                            .iter()
-                            .any(|import| import.local_name == apparent)
-                }) {
-                    Label::validate_syntax(text, package)?;
-                    return Err(format!(
-                        "repository @{apparent} is declared by use_repo_rule {:?} in @@{repository} but is not materialized: repository rule execution is not implemented",
-                        usage.identity.extension_name
-                    ));
+                        && usage.imports.iter().any(|import| {
+                            import.local_name == apparent
+                                && !(import.dev_dependency
+                                    && (!repository.is_empty()
+                                        || self.state.options.ignore_dev_dependencies))
+                        })
+                });
+                // Ordinary source loading does not need global extension name
+                // allocation. Preserve its laziness, including unknown ordinary
+                // imports, until an actual direct repository alias is demanded.
+                if base_mapping.contains_key(apparent) || !direct_import {
+                    return Label::parse_in(text, repository, package, base_mapping);
                 }
             }
+            let mapping = self.mapping(repository)?;
             Label::parse_in(text, repository, package, mapping)
         } else {
             let mapping = if main_empty_alias {
@@ -387,6 +569,46 @@ mod tests {
     }
 
     #[test]
+    fn cloned_repository_handles_share_graph_and_fresh_configuration_does_not_mutate_them() {
+        fn send_sync<T: Send + Sync>() {}
+        send_sync::<RepositorySet>();
+        let f = Fixture::new();
+        f.write("MODULE.bazel", "module(name='before')\n");
+        let original = RepositorySet::new(f.0.clone()).with_source_cache("first".into());
+        let cloned = original.clone();
+        let graph = original.resolve_graph().unwrap();
+        assert!(std::ptr::eq(graph, cloned.resolve_graph().unwrap()));
+        f.write("MODULE.bazel", "module(name='after')\n");
+        let fresh = cloned.with_source_cache("second".into());
+        assert_ne!(original.state.runtime_id, fresh.state.runtime_id);
+        assert!(fresh.state.direct.get().is_none());
+        assert_eq!(
+            original
+                .resolve_graph()
+                .unwrap()
+                .root
+                .module
+                .as_ref()
+                .unwrap()
+                .name,
+            "before"
+        );
+        assert_eq!(
+            fresh
+                .resolve_graph()
+                .unwrap()
+                .root
+                .module
+                .as_ref()
+                .unwrap()
+                .name,
+            "after"
+        );
+        assert_eq!(original.source_cache_path().unwrap(), f.0.join("first"));
+        assert_eq!(fresh.source_cache_path().unwrap(), f.0.join("second"));
+    }
+
+    #[test]
     fn main_and_canonical_parsing_are_lazy_even_with_broken_module() {
         let f = Fixture::new();
         for module in [None, Some("not valid MODULE syntax !!!")] {
@@ -399,10 +621,10 @@ mod tests {
                 assert!(repos.parse(input, "", "p").is_ok());
             }
             assert_eq!(repos.parse("//p:x", "dep+", "").unwrap().repository, "dep+");
-            assert!(repos.resolved.get().is_none());
+            assert!(repos.state.resolved.get().is_none());
             assert!(repos.parse("@//p:x", "dep+", "").is_err());
             assert!(repos.parse("@dep//p:x", "", "").is_err());
-            assert!(repos.resolved.get().is_some());
+            assert!(repos.state.resolved.get().is_some());
         }
     }
 
@@ -473,27 +695,36 @@ mod tests {
     }
 
     #[test]
-    fn direct_repository_declarations_are_pending_and_owner_scoped() {
+    fn direct_repository_aliases_resolve_without_definition_io_and_are_owner_scoped() {
         let f = Fixture::new();
         let repos = f.registry();
         f.write("main/MODULE.bazel", "module(name='main')\nbazel_dep(name='dep',version='1')\nr=use_repo_rule('//:missing.bzl','r')\nr(name='root_generated')\n");
         f.write("registry/modules/dep/1/MODULE.bazel", "module(name='dep',version='1')\nr=use_repo_rule('//:missing.bzl','r')\nr(name='dep_generated')\nr(name='ignored',dev_dependency=True)\n");
         assert!(repos.root("").is_ok());
-        assert!(repos.resolved.get().is_none());
+        assert!(repos.state.resolved.get().is_none());
         assert_eq!(
             repos.parse("@dep//:file", "", "").unwrap().repository,
             "dep+"
         );
-        for (name, owner) in [("root_generated", ""), ("dep_generated", "dep+")] {
-            let error = repos
-                .parse(&format!("@{name}//:file"), owner, "")
-                .unwrap_err();
-            assert!(error.contains("declared by use_repo_rule"), "{error}");
-            assert!(
-                error.contains("repository rule execution is not implemented"),
-                "{error}"
+        for (name, owner, canonical) in [
+            ("root_generated", "", "+r+root_generated"),
+            ("dep_generated", "dep+", "dep++r+dep_generated"),
+        ] {
+            let label = repos.parse(&format!("@{name}//:file"), owner, "").unwrap();
+            assert_eq!(label.repository, canonical);
+            assert_eq!(repos.mapping(owner).unwrap()[name], canonical);
+            assert_eq!(
+                repos
+                    .parse(&format!("@{name}//:file"), canonical, "")
+                    .unwrap(),
+                label
             );
-            assert!(!repos.mapping(owner).unwrap().contains_key(name));
+            assert!(
+                repos
+                    .parse("@unknown//:file", canonical, "")
+                    .unwrap_err()
+                    .contains("unknown apparent repository")
+            );
         }
         for (name, owner) in [
             ("dep_generated", ""),
@@ -507,12 +738,52 @@ mod tests {
                     .contains("unknown apparent repository")
             );
         }
-        assert!(repos.registry_roots.get().is_none());
+        assert!(repos.state.registry_roots.get().is_none());
         assert!(!f.0.join("main/bazel-rs-out").exists());
     }
 
     #[test]
-    fn ignored_root_direct_repositories_do_not_enter_pending_namespace() {
+    fn direct_definition_failure_is_demanded_and_cached_only_in_this_runtime() {
+        let f = Fixture::new();
+        f.write(
+            "MODULE.bazel",
+            "module(name='main')\nr=use_repo_rule('//:missing.bzl','r')\nr(name='generated')\n",
+        );
+        f.write("BUILD", "");
+        let repos = RepositorySet::new(f.0.clone());
+        let canonical = repos.parse("@generated//:file", "", "").unwrap().repository;
+        assert_eq!(canonical, "+r+generated");
+        assert!(!f.0.join("bazel-rs-out").exists());
+        let error = repos.root(&canonical).unwrap_err();
+        assert!(error.contains("missing.bzl"), "{error}");
+        f.write("missing.bzl", "r = 1\n");
+        assert_eq!(repos.clone().root(&canonical).unwrap_err(), error);
+        let fresh = repos.with_source_cache("another-cache".into());
+        assert!(
+            fresh
+                .root(&canonical)
+                .unwrap_err()
+                .contains("expected a frozen repository_rule")
+        );
+        assert!(!f.0.join("another-cache").exists());
+    }
+
+    #[test]
+    fn unused_invalid_definition_label_stays_lazy_until_root_demand() {
+        let f = Fixture::new();
+        f.write(
+            "MODULE.bazel",
+            "r=use_repo_rule('//bad/../:defs.bzl','maker')\nr(name='unused')\n",
+        );
+        let repos = RepositorySet::new(f.0.clone());
+        let canonical = repos.parse("@unused//:file", "", "").unwrap().repository;
+        assert_eq!(canonical, "+maker+unused");
+        assert!(!f.0.join("bazel-rs-out").exists());
+        assert!(repos.root(&canonical).is_err());
+    }
+
+    #[test]
+    fn ignored_root_direct_repositories_do_not_enter_namespace() {
         let f = Fixture::new();
         f.write("MODULE.bazel", "module(name='main')\nr=use_repo_rule('//:missing.bzl','r')\nr(name='ignored',dev_dependency=True)\n");
         let repos = RepositorySet::with_options(
@@ -607,7 +878,7 @@ mod tests {
             f.write("live/MODULE.bazel", "invalid live MODULE !!!");
             f.source(serde_json::json!({"type":"local_path", "path":f.0.join("live")}));
             assert_eq!(repos.resolve_graph().unwrap().modules.len(), 1);
-            assert!(repos.registry_roots.get().is_none());
+            assert!(repos.state.registry_roots.get().is_none());
             let error = repos.root("dep+").unwrap_err();
             assert!(
                 error.contains("unsupported for local_path source"),
@@ -694,9 +965,9 @@ mod tests {
         // Invalid before any download is attempted, even with archive support.
         f.source(serde_json::json!({"type":"archive", "url":17}));
         assert!(repos.root("").is_ok());
-        assert!(repos.resolved.get().is_none());
+        assert!(repos.state.resolved.get().is_none());
         assert!(repos.root("local+").is_ok());
-        assert!(repos.registry_roots.get().is_none());
+        assert!(repos.state.registry_roots.get().is_none());
         assert!(repos.root("dep+").unwrap_err().contains("url"));
     }
 

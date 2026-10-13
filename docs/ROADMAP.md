@@ -58,6 +58,13 @@ executed. No extension repository is fabricated and the application query still
 fails. See `docs/GIT_SYMLINKS.md` and
 `artifacts/mainrepo-git-links-loading.json`.
 
+Direct `use_repo_rule` execution now loads genuine frozen definitions, validates
+every declaration in a demanded innate usage, and synchronously runs demanded
+file/template callbacks. Generated names and label attributes remain owner-scoped;
+publication follows complete execution and checked snapshots. ASCII-only evaluated
+strings and the remaining API limits are explicit in `docs/REPOSITORY_RULES.md`.
+This is not ordinary module-extension execution or application compatibility.
+
 The official 9.3.0 release was published 2026-10-07, with upstream tag commit
 `e89755babf3e941bc1e9d8120b1cd48854ab9dfa`. The main checkout's `.bazeliskrc` pins
 9.1.1. Changing that checkout's pin is outside this implementation.

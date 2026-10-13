@@ -174,6 +174,11 @@ pub fn unpack_label(value: Value<'_>) -> Option<String> {
     )
 }
 
+/// Allocate a canonical label without target analysis (for repository attributes).
+pub fn alloc_label<'v>(heap: Heap<'v>, canonical: &str) -> anyhow::Result<Value<'v>> {
+    Ok(heap.alloc(LabelValue::parse(canonical)?))
+}
+
 #[starlark_value(type = "Label")]
 impl<'v> StarlarkValue<'v> for LabelValue {
     fn write_hash(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {

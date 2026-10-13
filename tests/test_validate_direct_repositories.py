@@ -33,7 +33,7 @@ MESSAGES = {
     "syntax_kwargs": "**kwargs must be a dict literal in MODULE.bazel",
     "syntax_star": "*args are not allowed in MODULE.bazel",
     "syntax_rebinding": 'global binding "x" may not be reassigned; first bound at MODULE.bazel:3:1',
-    "execution_pending": "repository @generated is declared by use_repo_rule \"//:rules.bzl r\" in @@ but is not materialized: repository rule execution is not implemented",
+    "ordinary_extension_unsupported": "Variable `module_extension` not found",
     "declaration_loaded": "Error in fail: declaration fixture was loaded",
 }
 
@@ -60,8 +60,48 @@ RECORDED_COLLISIONS = (
     (48, "Error in call: The repo name 'generated' cannot be defined by a repo rule at /tmp/opencode/direct-repositories-hhwllx6h/workspace/MODULE.bazel:6:6 as it is already defined by a repo rule at /tmp/opencode/direct-repositories-hhwllx6h/workspace/MODULE.bazel:5:5"),
 )
 
+# Exact debug CLI output retained in artifacts/direct-declaration-boundary-update.json.
+# The full file exports a supported repository_rule AND an unsupported module_extension.
+RECORDED_ORDINARY_EXTENSION = (
+    "bazel-rs: cannot evaluate //:defs.bzl: error: Variable `module_extension` not found\n"
+    " --> //:defs.bzl:7:7\n"
+    "  |\n"
+    "7 | ext = module_extension(implementation = _ext_impl)\n"
+    "  |       ^^^^^^^^^^^^^^^^\n"
+    "  |\n\n"
+)
+
 
 class RecordedDiagnosticTests(unittest.TestCase):
+    def test_actual_ordinary_extension_constructor_absence(self):
+        result = record(stdout="", stderr=RECORDED_ORDINARY_EXTENSION, returncode=1)
+        self.assertEqual(direct.require_rejection(result, "ordinary_extension_unsupported"),
+                         {"diagnostic_class": "ordinary_extension_unsupported", "returncode": 1})
+
+    def test_ordinary_extension_boundary_rejects_unrelated_failures(self):
+        good = record(stderr=RECORDED_ORDINARY_EXTENSION, returncode=1)
+        for stderr in (
+                "network unavailable", "permission denied", "syntax error", "module_extension",
+                "Variable `repository_rule` not found", "Variable `other` not found\nmodule_extension()",
+                "module_extension source file not found", "repository rule execution is not implemented",
+                "module_extension(name = ) syntax error",
+                *(RECORDED_ORDINARY_EXTENSION + suffix for suffix in (
+                    "network unavailable", "permission denied", "syntax error", "parse error",
+                    "unexpected token", "panicked", "internal error", "FATAL:", "crashed", "falling back"))):
+            with self.subTest(stderr=stderr), self.assertRaises(ValueError):
+                direct.require_rejection(dict(good, stderr=stderr), "ordinary_extension_unsupported")
+        for change in ({"returncode": 0}, {"returncode": None}, {"returncode": -9}, {"returncode": 101},
+                       {"returncode": 139}, {"returncode": True}, {"timed_out": True},
+                       {"interrupted": True}, {"spawn_error": "absent"}, {"stdout": "@@generated//:data\n"}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                direct.require_rejection(dict(good, **change), "ordinary_extension_unsupported")
+
+    def test_ordinary_extension_boundary_matches_only_builtin_absence(self):
+        for stderr in ("name 'module_extension' is not defined", "module_extension is unsupported",
+                       "module_extension constructor is not supported"):
+            with self.subTest(stderr=stderr):
+                direct.require_rejection(record(stderr=stderr, returncode=1), "ordinary_extension_unsupported")
+
     def test_actual_native_and_reference_declaration_type_errors(self):
         for code, stderr in RECORDED_DECLARATION_TYPES:
             with self.subTest(stderr=stderr):
@@ -94,9 +134,11 @@ class FixtureTests(unittest.TestCase):
         self.assertEqual(len(set(name for name, _ in direct.PLAN)), 48)
         self.assertEqual([(name, kind) for name, kind in direct.PLAN if kind != "differential"], [
             ("active-unused.load-probe", "reference_laziness_probe"),
-            ("native.generated-pending", "native_capability_boundary")])
+            ("native.ordinary-extension-definition-boundary", "native_capability_boundary")])
         self.assertTrue(all(item["target"] == "@dep//:data" for item in direct.CASES[:-1]))
         self.assertEqual(direct.CASES[-1]["target"], "@generated//:data")
+        self.assertEqual(direct.CASES[-1]["diagnostic_class"], "ordinary_extension_unsupported")
+        self.assertEqual(direct.CASES[-1]["defs"], direct.REAL_DEFS)
         self.assertEqual(direct.CANONICAL, "@@decldep+//:data")
 
     def test_private_registry_uses_exact_case_modules_and_real_rule_definition(self):
@@ -121,6 +163,7 @@ class FixtureTests(unittest.TestCase):
         # Syntax-check the trusted fixture text without executing a repository.
         compile(direct.REAL_DEFS, "defs.bzl", "exec")
         self.assertIn("repository_rule(implementation = _repo_impl)", direct.REAL_DEFS)
+        self.assertIn("module_extension(implementation = _ext_impl)", direct.REAL_DEFS)
         self.assertNotIn("fail(", direct.REAL_DEFS)
 
     def test_snapshot_records_paths_exact_binary_bytes_hashes_and_mutations(self):
@@ -201,7 +244,7 @@ class ComparisonTests(unittest.TestCase):
                     direct.require_rejection(record(stderr=wrong, returncode=1), diagnostic)
 
     def test_syntax_errors_are_still_rejected_for_semantic_classes_and_successful_queries(self):
-        for diagnostic in ("declaration_signature", "collision", "execution_pending"):
+        for diagnostic in ("declaration_signature", "collision", "ordinary_extension_unsupported"):
             with self.subTest(diagnostic=diagnostic), self.assertRaises(ValueError):
                 direct.require_rejection(record(stderr=MESSAGES[diagnostic] + "\nsyntax error", returncode=1), diagnostic)
         with self.assertRaises(ValueError):
@@ -234,11 +277,14 @@ class ComparisonTests(unittest.TestCase):
                 direct.evaluate(item, native, record(stderr=stderr, returncode=1), check)
             self.assertEqual(check["status"], "REFERENCE_FAILURE")
 
-    def test_generated_pending_is_native_only_and_requires_specific_capability(self):
+    def test_ordinary_extension_definition_is_native_only_and_requires_specific_capability(self):
         item = direct.CASES[-1]
         check = {}
-        direct.evaluate(item, record(stderr=MESSAGES["execution_pending"], returncode=1), None, check)
+        direct.evaluate(item, record(stderr=RECORDED_ORDINARY_EXTENSION, returncode=1), None, check)
         self.assertFalse(check["parity_claim"])
+        self.assertEqual(check["status"], "PASS")
+        self.assertIn("module-extension definition remains unsupported", check["details"])
+        self.assertIn("supported repository rule", check["details"])
         for result in (record("@@generated//:data\n"), record(stderr="unknown apparent repository generated", returncode=1)):
             with self.assertRaises(ValueError):
                 direct.evaluate(item, result, None, {})
@@ -350,6 +396,8 @@ class MainTests(unittest.TestCase):
                     elif item["diagnostic_class"] == "collision":
                         code, message = RECORDED_COLLISIONS[4 if engine == "reference" else 0]
                         result = record(stderr=message, returncode=code)
+                    elif item["diagnostic_class"] == "ordinary_extension_unsupported":
+                        result = record(stderr=RECORDED_ORDINARY_EXTENSION, returncode=1)
                     elif item["diagnostic_class"].startswith("syntax_"):
                         if fault == "wrong-syntax-" + engine:
                             wrong = "syntax_star" if item["diagnostic_class"] == "syntax_kwargs" else "syntax_kwargs"
@@ -421,9 +469,11 @@ class MainTests(unittest.TestCase):
             if name == "active-unused.load-probe":
                 self.assertIn('fail("declaration fixture was loaded")', observation["defs"])
                 self.assertIn('repo(name = "generated")', observation["root"])
-            elif name == "native.generated-pending":
+            elif name == "native.ordinary-extension-definition-boundary":
                 self.assertNotIn("fail(", observation["defs"])
                 self.assertIn("repository_rule(implementation = _repo_impl)", observation["defs"])
+                self.assertIn("module_extension(implementation = _ext_impl)", observation["defs"])
+                self.assertEqual(observation["defs"], direct.REAL_DEFS)
                 self.assertEqual(observation["argv"][-1], "@generated//:data")
                 self.assertEqual(observation["engine"], "native")
             else:
@@ -442,6 +492,10 @@ class MainTests(unittest.TestCase):
             self.assertTrue(check["inputs_unchanged"])
             self.assertEqual(check["files_before"], check["files_after"])
         self.assertEqual(report["completed_differential_cases"], 46)
+        self.assertFalse(any("Native generated repositories cannot execute" in text
+                             for text in report["limitations"]))
+        self.assertTrue(any("module-extension definition remains unsupported" in text
+                            for text in report["limitations"]))
         self.assertEqual({c["name"]: (c["expected"], c["input"]["diagnostic_class"])
                           for c in report["checks"] if c["name"].startswith("grammar.")}, {
             "grammar.kwargs-variable": ("rejection", "syntax_kwargs"),
