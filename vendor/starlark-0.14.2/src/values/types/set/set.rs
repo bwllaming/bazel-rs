@@ -15,36 +15,70 @@
  * limitations under the License.
  */
 
-use starlark_derive::starlark_module;
+// Modified for native Bazel 9.3 set compatibility; see vendor provenance.
+// Expose the Bazel constructor contract, not a parametric type object.
+use allocative::Allocative;
+use derive_more::Display;
+use starlark_derive::NoSerialize;
+use starlark_derive::StarlarkPagable;
+use starlark_derive::starlark_value;
 
 use crate as starlark;
 use crate::environment::GlobalsBuilder;
-use crate::values::Heap;
+use crate::eval::Arguments;
+use crate::eval::Evaluator;
+use crate::starlark_simple_value;
+use crate::typing::ParamSpec;
+use crate::typing::Ty;
+use crate::values::ProvidesStaticType;
+use crate::values::StarlarkValue;
 use crate::values::UnpackValue;
 use crate::values::Value;
-use crate::values::ValueOfUnchecked;
-use crate::values::function::SpecialBuiltinFunction;
+use crate::values::ValueLike;
 use crate::values::set::refs::SetRef;
-use crate::values::set::value::FrozenSet;
 use crate::values::set::value::SetData;
-use crate::values::typing::StarlarkIter;
 
-#[starlark_module]
 pub(crate) fn register_set(globals: &mut GlobalsBuilder) {
-    #[starlark(
-        as_type = FrozenSet,
-        speculative_exec_safe,
-        special_builtin_function = SpecialBuiltinFunction::Set,
-    )]
-    fn set<'v>(
-        #[starlark(require = pos)] arg: Option<ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>>,
-        heap: Heap<'v>,
-    ) -> starlark::Result<SetData<'v>> {
+    globals.set("set", SetConstructor);
+}
+
+#[derive(Debug, Display, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagable)]
+#[display("<built-in function set>")]
+struct SetConstructor;
+
+starlark_simple_value!(SetConstructor);
+
+#[starlark_value(type = "builtin_function_or_method")]
+impl<'v> StarlarkValue<'v> for SetConstructor {
+    fn typechecker_ty(&self) -> Option<Ty> {
+        // Callable metadata is independent of runtime type-object support:
+        // retain argument/result checking without exposing .type or set[T].
+        Some(Ty::function(
+            ParamSpec::pos_only([], [Ty::iter(Ty::any())]),
+            Ty::any_set(),
+        ))
+    }
+
+    // Deliberately inherit default unhashability and empty attributes. Reexports
+    // from independently built globals still denote this same constructor.
+    fn equals(&self, other: Value<'v>) -> crate::Result<bool> {
+        Ok(other.downcast_ref::<Self>().is_some())
+    }
+
+    fn invoke(
+        &self,
+        _me: Value<'v>,
+        args: &Arguments<'v, '_>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> crate::Result<Value<'v>> {
+        args.no_named_args()?;
+        let heap = eval.heap();
+        let arg = args.optional1(heap)?;
         let set = match arg {
-            Some(pos) => match SetRef::unpack_value_opt(pos.get()) {
+            Some(pos) => match SetRef::unpack_value_opt(pos) {
                 Some(set) => (set.aref).clone(),
                 None => {
-                    let it = pos.get().iterate(heap)?;
+                    let it = pos.iterate(heap)?;
                     let mut data = SetData::default();
                     for el in it {
                         let el = el.get_hashed()?;
@@ -55,12 +89,98 @@ pub(crate) fn register_set(globals: &mut GlobalsBuilder) {
             },
             None => SetData::default(),
         };
-        Ok(set)
+        Ok(heap.alloc(set))
     }
 }
 #[cfg(test)]
 mod tests {
     use crate::assert;
+    use crate::assert::Assert;
+
+    #[test]
+    fn test_constructor_surface_and_bindings() {
+        assert::is_true(
+            r#"
+type(set) == 'builtin_function_or_method' and
+repr(set) == '<built-in function set>' and
+str(set) == repr(set) and dir(set) == [] and
+not hasattr(set, 'type') and set == set and set != list
+"#
+            .replace(" and\n", " and ")
+            .as_str(),
+        );
+        assert::eq("list(set(*[(3, 1, 3)], **{}))", "[3, 1]");
+        assert::eq("list(set({'b': 1, 'a': 2}))", "['b', 'a']");
+        assert::eq("list(set(range(3)))", "[0, 1, 2]");
+        assert::fail("set(elements=[1])", "named");
+        assert::fail("set([], [])", "positional");
+        assert::fail("set(None)", "not supported");
+        assert::fail("set('abc')", "not supported");
+        assert::fail("set[int]", "not supported");
+        assert::fail("{set: 1}", "not hashable");
+        assert::fail("set([set])", "not hashable");
+    }
+
+    #[test]
+    fn test_constructor_frozen_aliases_and_fresh_copy() {
+        let mut a = Assert::new();
+        a.module("one.star", "R = set; S = set([2, 1])");
+        a.module("two.star", "R = set");
+        a.is_true(
+            r#"
+load('one.star', R1='R', S='S')
+load('two.star', R2='R')
+copy = R1(S)
+copy.add(3)
+R1 == R2 and R1 == set and R2 != list and list(S) == [2, 1] and list(copy) == [2, 1, 3]
+"#,
+        );
+    }
+
+    #[test]
+    fn test_constructor_iterable_is_not_a_method_collection() {
+        use crate as starlark;
+        use crate::values::{Heap, ProvidesStaticType, StarlarkValue, Value};
+        use allocative::Allocative;
+        use derive_more::Display;
+        use starlark_derive::{NoSerialize, StarlarkPagable};
+
+        #[derive(Debug, Display, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagable)]
+        #[display("host_iterable")]
+        struct HostIterable;
+        crate::starlark_simple_value!(HostIterable);
+
+        // Same Starlark type name as string elems/codepoints, different Rust
+        // identity: method collection validation must not accept a name spoof.
+        #[crate::values::starlark_value(type = "iterator")]
+        impl<'v> StarlarkValue<'v> for HostIterable {
+            unsafe fn iterate(&self, _me: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {
+                // A tuple is already an immutable iterator with no borrow guard.
+                Ok(heap.alloc((3, 1, 3)))
+            }
+        }
+
+        let mut a = Assert::new();
+        a.globals_add(|globals| {
+            globals.set("iterable", HostIterable);
+        });
+        a.is_true("list(set(iterable)) == [3, 1]");
+        for method in [
+            "union",
+            "intersection",
+            "difference",
+            "update",
+            "intersection_update",
+            "difference_update",
+            "symmetric_difference",
+            "symmetric_difference_update",
+            "issubset",
+            "issuperset",
+            "isdisjoint",
+        ] {
+            a.fail(&format!("set().{method}(iterable)"), "collection");
+        }
+    }
 
     #[test]
     fn test_set_type_as_type_compile_time() {
@@ -73,8 +193,7 @@ s = set(['not_int'])
 
 f_fail_ct(s)
 ",
-            //Is it actually runtime or compile time error?
-            r#"Value `set(["not_int"])` of type `set` does not match the type annotation `set[int]` for argument `x`"#,
+            "Operation `[]` not supported for types `builtin_function_or_method` and `type`",
         );
     }
 
@@ -87,8 +206,7 @@ def f_fail_ct(x: str) -> set[int]:
 
 f_fail_ct('not_int')
 ",
-            //Is it actually runtime or compile time error?
-            r#"Value `set(["not_int"])` of type `set` does not match the type annotation `set[int]` for return type"#,
+            "Operation `[]` not supported for types `builtin_function_or_method` and `type`",
         );
     }
 
@@ -103,7 +221,7 @@ s = set(['not_int'])
 
 noop(f_fail_rt)(s)
 ",
-            r#"Value `set(["not_int"])` of type `set` does not match the type annotation `set[int]` for argument `x`"#,
+            "Operation `[]` not supported for types `builtin_function_or_method` and `type`",
         );
     }
 }

@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for scoped iterator cleanup for native Bazel 9.3 sets; see vendor provenance.
+
 //! Unsorted/core interpreter stuff.
 
 use std::fmt::Write;
@@ -23,7 +25,6 @@ use starlark_derive::StarlarkPagable;
 use starlark_syntax::eval_exception::EvalException;
 
 use crate as starlark;
-use crate::eval::Evaluator;
 use crate::eval::bc::addr::BcPtrAddr;
 use crate::eval::bc::for_loop::LoopDepth;
 use crate::eval::bc::frame::BcFramePtr;
@@ -37,6 +38,7 @@ use crate::eval::bc::slow_arg::BcInstrEndArg;
 use crate::eval::bc::slow_arg::BcInstrSlowArg;
 use crate::eval::compiler::add_span_to_expr_error;
 use crate::eval::runtime::evaluator::EvaluationCallbacks;
+use crate::eval::Evaluator;
 use crate::values::Value;
 
 /// Ready to execute bytecode.
@@ -156,6 +158,7 @@ pub(crate) fn run_block<'v, EC: EvaluationCallbacks>(
     ec: &mut EC,
     mut ip: BcPtrAddr,
 ) -> Result<Value<'v>, EvalException> {
+    let iterator_scope = eval.iterator_scope();
     // Copy frame pointer to local variable to generate more efficient code.
     let frame = eval.current_frame;
 
@@ -167,8 +170,20 @@ pub(crate) fn run_block<'v, EC: EvaluationCallbacks>(
         // generated stack frame is too large which leads to C stack overflow in debug more.
         ip = match step(eval, ec, frame, ip) {
             InstrControl::Next(ip) => ip,
-            InstrControl::Return(v) => return Ok(v),
-            InstrControl::Err(e) => return Err(Bc::wrap_error_for_instr_ptr(ip, e, eval)),
+            InstrControl::Return(v) => {
+                assert_eq!(
+                    eval.iterator_scope(),
+                    iterator_scope,
+                    "VM iterator scope leak"
+                );
+                return Ok(v);
+            }
+            InstrControl::Err(e) => {
+                // Preserve the original diagnostic while frame/callstack are intact.
+                let error = Bc::wrap_error_for_instr_ptr(ip, e, eval);
+                eval.unwind_iterators(iterator_scope);
+                return Err(error);
+            }
         }
     }
 }

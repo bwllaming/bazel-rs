@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 set assignment compatibility; see vendor provenance.
+
 //! Instruction implementations.
 
 use std::cmp::Ordering;
@@ -25,15 +27,11 @@ use starlark_syntax::eval_exception::EvalException;
 use starlark_syntax::internal_error;
 
 use crate::coerce::coerce;
+use crate::collections::symbol::symbol::Symbol;
 use crate::collections::Hashed;
 use crate::collections::SmallMap;
-use crate::collections::symbol::symbol::Symbol;
 use crate::const_frozen_string;
 use crate::environment::slots::ModuleSlotId;
-use crate::eval::Arguments;
-use crate::eval::DefInfo;
-use crate::eval::Evaluator;
-use crate::eval::ParametersSpec;
 use crate::eval::bc::addr::BcAddrOffset;
 use crate::eval::bc::addr::BcAddrOffsetNeg;
 use crate::eval::bc::addr::BcPtrAddr;
@@ -58,27 +56,26 @@ use crate::eval::compiler::def::Def;
 use crate::eval::compiler::def::FrozenDef;
 use crate::eval::compiler::def::ParameterCompiled;
 use crate::eval::compiler::def::ParametersCompiled;
-use crate::eval::compiler::expr::EvalError;
 use crate::eval::compiler::expr::get_attr_hashed_bind;
 use crate::eval::compiler::expr::get_attr_hashed_raw;
+use crate::eval::compiler::expr::EvalError;
 use crate::eval::compiler::expr_throw_starlark_result;
-use crate::eval::compiler::stmt::AssignError;
 use crate::eval::compiler::stmt::add_assign;
+use crate::eval::compiler::stmt::bit_and_assign;
 use crate::eval::compiler::stmt::bit_or_assign;
+use crate::eval::compiler::stmt::bit_xor_assign;
 use crate::eval::compiler::stmt::possible_gc;
+use crate::eval::compiler::stmt::sub_assign;
+use crate::eval::compiler::stmt::AssignError;
 use crate::eval::runtime::arguments::ResolvedArgName;
 use crate::eval::runtime::frame_span::FrameSpan;
 use crate::eval::runtime::profile::instant::ProfilerInstant;
 use crate::eval::runtime::slots::LocalCapturedSlotId;
 use crate::eval::runtime::slots::LocalSlotId;
-use crate::values::FrozenStringValue;
-use crate::values::FrozenValue;
-use crate::values::FrozenValueTyped;
-use crate::values::Heap;
-use crate::values::StarlarkValue;
-use crate::values::StringValue;
-use crate::values::StringValueLike;
-use crate::values::Value;
+use crate::eval::Arguments;
+use crate::eval::DefInfo;
+use crate::eval::Evaluator;
+use crate::eval::ParametersSpec;
 use crate::values::any::FrozenAnyValue;
 use crate::values::dict::Dict;
 use crate::values::int::pointer_i32::PointerI32;
@@ -89,6 +86,14 @@ use crate::values::types::any_array::FrozenAnyArray;
 use crate::values::types::known_methods::KnownMethod;
 use crate::values::types::list::value::ListData;
 use crate::values::typing::type_compiled::compiled::TypeCompiled;
+use crate::values::FrozenStringValue;
+use crate::values::FrozenValue;
+use crate::values::FrozenValueTyped;
+use crate::values::Heap;
+use crate::values::StarlarkValue;
+use crate::values::StringValue;
+use crate::values::StringValueLike;
+use crate::values::Value;
 
 /// Instructions which either fail or proceed to the following instruction,
 /// and it returns error with span.
@@ -641,14 +646,17 @@ impl<I: InstrUnOpImpl> InstrNoFlowImpl for InstrUnOpWrapper<I> {
 pub(crate) struct InstrAddImpl;
 pub(crate) struct InstrAddAssignImpl;
 pub(crate) struct InstrSubImpl;
+pub(crate) struct InstrSubAssignImpl;
 pub(crate) struct InstrMultiplyImpl;
 pub(crate) struct InstrPercentImpl;
 pub(crate) struct InstrDivideImpl;
 pub(crate) struct InstrFloorDivideImpl;
 pub(crate) struct InstrBitAndImpl;
+pub(crate) struct InstrBitAndAssignImpl;
 pub(crate) struct InstrBitOrImpl;
 pub(crate) struct InstrBitOrAssignImpl;
 pub(crate) struct InstrBitXorImpl;
+pub(crate) struct InstrBitXorAssignImpl;
 pub(crate) struct InstrLeftShiftImpl;
 pub(crate) struct InstrRightShiftImpl;
 pub(crate) struct InstrInImpl;
@@ -656,14 +664,17 @@ pub(crate) struct InstrInImpl;
 pub(crate) type InstrAdd = InstrBinOp<InstrAddImpl>;
 pub(crate) type InstrAddAssign = InstrBinOp<InstrAddAssignImpl>;
 pub(crate) type InstrSub = InstrBinOp<InstrSubImpl>;
+pub(crate) type InstrSubAssign = InstrBinOp<InstrSubAssignImpl>;
 pub(crate) type InstrMultiply = InstrBinOp<InstrMultiplyImpl>;
 pub(crate) type InstrPercent = InstrBinOp<InstrPercentImpl>;
 pub(crate) type InstrDivide = InstrBinOp<InstrDivideImpl>;
 pub(crate) type InstrFloorDivide = InstrBinOp<InstrFloorDivideImpl>;
 pub(crate) type InstrBitAnd = InstrBinOp<InstrBitAndImpl>;
+pub(crate) type InstrBitAndAssign = InstrBinOp<InstrBitAndAssignImpl>;
 pub(crate) type InstrBitOr = InstrBinOp<InstrBitOrImpl>;
 pub(crate) type InstrBitOrAssign = InstrBinOp<InstrBitOrAssignImpl>;
 pub(crate) type InstrBitXor = InstrBinOp<InstrBitXorImpl>;
+pub(crate) type InstrBitXorAssign = InstrBinOp<InstrBitXorAssignImpl>;
 pub(crate) type InstrLeftShift = InstrBinOp<InstrLeftShiftImpl>;
 pub(crate) type InstrRightShift = InstrBinOp<InstrRightShiftImpl>;
 pub(crate) type InstrIn = InstrBinOp<InstrInImpl>;
@@ -686,6 +697,13 @@ impl InstrBinOpImpl for InstrSubImpl {
     #[inline(always)]
     fn eval<'v>(v0: Value<'v>, v1: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {
         v0.sub(v1, heap)
+    }
+}
+
+impl InstrBinOpImpl for InstrSubAssignImpl {
+    #[inline(always)]
+    fn eval<'v>(v0: Value<'v>, v1: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {
+        sub_assign(v0, v1, heap)
     }
 }
 
@@ -724,6 +742,13 @@ impl InstrBinOpImpl for InstrBitAndImpl {
     }
 }
 
+impl InstrBinOpImpl for InstrBitAndAssignImpl {
+    #[inline(always)]
+    fn eval<'v>(v0: Value<'v>, v1: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {
+        bit_and_assign(v0, v1, heap)
+    }
+}
+
 impl InstrBinOpImpl for InstrBitOrImpl {
     #[inline(always)]
     fn eval<'v>(v0: Value<'v>, v1: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {
@@ -742,6 +767,13 @@ impl InstrBinOpImpl for InstrBitXorImpl {
     #[inline(always)]
     fn eval<'v>(v0: Value<'v>, v1: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {
         v0.bit_xor(v1, heap)
+    }
+}
+
+impl InstrBinOpImpl for InstrBitXorAssignImpl {
+    #[inline(always)]
+    fn eval<'v>(v0: Value<'v>, v1: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {
+        bit_xor_assign(v0, v1, heap)
     }
 }
 
@@ -1251,6 +1283,7 @@ impl BcInstr for InstrIter {
             Ok(iter) => iter,
             Err(e) => return InstrControl::Err(e),
         };
+        eval.register_iterator(iter);
         match iter.get_ref().iter_next(0, eval.heap()) {
             Some(next) => {
                 frame.set_bc_slot(*iter_slot, iter);
@@ -1259,7 +1292,7 @@ impl BcInstr for InstrIter {
                 InstrControl::Next(ip.add_instr::<Self>())
             }
             None => {
-                iter.get_ref().iter_stop();
+                eval.stop_iterator(iter);
                 InstrControl::Next(ip.add_rel(*end))
             }
         }
@@ -1301,7 +1334,7 @@ impl BcInstr for InstrContinue {
                 InstrControl::Next(ip.add_rel_neg(*begin))
             }
             None => {
-                iter.get_ref().iter_stop();
+                eval.stop_iterator(iter);
                 InstrControl::Next(ip.add_rel(*end))
             }
         }
@@ -1313,13 +1346,13 @@ impl BcInstr for InstrBreak {
 
     #[inline(always)]
     fn run<'v, 'b>(
-        _eval: &mut Evaluator<'v, '_, '_>,
+        eval: &mut Evaluator<'v, '_, '_>,
         frame: BcFramePtr<'v>,
         ip: BcPtrAddr<'b>,
         (iter, end): &(BcSlotIn, BcAddrOffset),
     ) -> InstrControl<'v, 'b> {
         let iter = frame.get_bc_slot(*iter);
-        iter.get_ref().iter_stop();
+        eval.stop_iterator(iter);
         InstrControl::Next(ip.add_rel(*end))
     }
 }
@@ -1329,13 +1362,13 @@ impl BcInstr for InstrIterStop {
 
     #[inline(always)]
     fn run<'v, 'b>(
-        _eval: &mut Evaluator<'v, '_, '_>,
+        eval: &mut Evaluator<'v, '_, '_>,
         frame: BcFramePtr<'v>,
         ip: BcPtrAddr<'b>,
         iter: &BcSlotIn,
     ) -> InstrControl<'v, 'b> {
         let iter = frame.get_bc_slot(*iter);
-        iter.get_ref().iter_stop();
+        eval.stop_iterator(iter);
         InstrControl::Next(ip.add_instr::<Self>())
     }
 }

@@ -2,8 +2,9 @@
   "schema_version": 1,
   "crate": "starlark",
   "version": "0.14.2",
-  "baseline": "H0 unchanged published archive contents",
+  "baseline": "H0 published archive anchored unchanged; H1 compatibility patches declared separately",
   "archive": {
+    "scope": "Pristine upstream archive inventory; working-tree changes are recorded in declared_source_patches",
     "url": "https://crates.io/api/v1/crates/starlark/0.14.2/download",
     "sha256": "9062e866918dc4c9701c98ac99f7f4fa9e4b3b4edce306e147393bc75458c4fc",
     "root": "starlark-0.14.2",
@@ -26,7 +27,23 @@
     "commit": "0c8d107ab963362ba47ee3ab9e0173bc39bd101d",
     "commit_receipt": "starlark-0.14.2/.cargo_vcs_info.json"
   },
-  "declared_source_patches": [],
+  "declared_source_patches": [
+    {"path": "src/eval/bc/bytecode.rs", "original": {"size": 6024, "sha256": "f0d2ef389b44cdfc4eda48017df1e3c82e156276c4fa03334d92ac18eb1f176a"}, "current": {"size": 6574, "sha256": "4e9ad16e3cf3a15a4b3b5ec6b80fbb8229fca3864ed65ab75d82e45b09de3063"}},
+    {"path": "src/eval/bc/compiler/assign_modify.rs", "original": {"size": 8178, "sha256": "265eeab1db0b15b986e4aa21a6f33aba17744641da7c67093172bc4d79f08ad1"}, "current": {"size": 8301, "sha256": "70a7a4e635f4bb9492d310265f02ba3af976efd0d91f6677d03dcd0a4031db8b"}},
+    {"path": "src/eval/bc/instr_impl.rs", "original": {"size": 56763, "sha256": "f85d333018e9b81d7353a57e7056883503de5e1188061b000bc756d74b6ac4e6"}, "current": {"size": 57965, "sha256": "0c77e1fffd9d83123ba2a0ff46ab06bb6289af1507fea72beb0c46934255eaf2"}},
+    {"path": "src/eval/bc/opcode.rs", "original": {"size": 5789, "sha256": "3be76d3d2874f3247ef926ab243363e06bbcfa107960a60260b4d5f13e2bcab5"}, "current": {"size": 5927, "sha256": "434e556fa62e50c06e10a9758e13945794db9ae1e6daba1d07ae07cf6b036c81"}},
+    {"path": "src/eval/compiler/stmt.rs", "original": {"size": 30921, "sha256": "40ca5fbc987f2435ef8a68a731eb5e0838aca4a4dbb05d548906da2869f17978"}, "current": {"size": 32297, "sha256": "fed78b75369ee3c2a2da2bbaa0bceca6dc00068b6d427c5ce90dcb35bde39fdd"}},
+    {"path": "src/eval/runtime/evaluator.rs", "original": {"size": 53486, "sha256": "c888af6b8eecdcce0eeecebfa4756677b630c0a2473f72ac5ad396dc4df96c99"}, "current": {"size": 55411, "sha256": "5af18ffffca5ee84fee967c9a539893d266d2b94e4b83b9154fed12643602a1a"}},
+    {"path": "src/tests/uncategorized.rs", "original": {"size": 23524, "sha256": "f7ec37a3e8ac03fa91be4ae0712b6d804610a29e7803fe6c182231e383c84f5a"}, "current": {"size": 36090, "sha256": "b20f875ebb109a4ab32a2c58ed82f87709ccd389f874ea7115223a22d26399be"}},
+    {"path": "src/typing/tests/types.rs", "original": {"size": 2350, "sha256": "f57229518d02ef6dd60ea058b0255a1258a9b6021c6ba679bc642302fe86a30c"}, "current": {"size": 5052, "sha256": "e619f3f4b8b0ad903d49daf7eed728c8adbed66b868374b22a603a219dc7c1d9"}},
+    {"path": "src/values/types/set/methods.rs", "original": {"size": 19969, "sha256": "d9a6a27fd31f3ff5f36c3a15a5f7f6a7d75eca911dc906de2d2f4994b0cd31aa"}, "current": {"size": 29382, "sha256": "6f804a291ca810741cfbd8c0596e3740d41509e6fb057cb29bb06d5d9d978141"}},
+    {"path": "src/values/types/set/refs.rs", "original": {"size": 3618, "sha256": "327b7992e6fe48b19a26a5d6f4d6d9caf902e8b87a3b6a37bd175c78c891c14a"}, "current": {"size": 4022, "sha256": "83397d2cf8b651722e977191db850947eb85ef1d8041c60ba27a5654aaaf5f03"}},
+    {"path": "src/values/types/set/set.rs", "original": {"size": 3203, "sha256": "a1968426c890e36fbe4e9be65852f77face7dcdb9e369bb356b5bc31f2b653df"}, "current": {"size": 7264, "sha256": "f6d25e0a1acad5764ac02ccde05e735250ec64823cba86b1382708d2f0cc747b"}},
+    {"path": "src/values/types/set/value.rs", "original": {"size": 14488, "sha256": "5401efe4ecef1c0d2b8045b61098a6525085550a093fec2acb33497584c3a76d"}, "current": {"size": 18120, "sha256": "d264b3e89fffe4f86bf2bcf0ff19afe28c2a1defcabe1f380fde5bd675695a0f"}},
+    {"path": "src/eval/runtime/profile/golden/bytecode.csv.golden", "original": {"size": 2043, "sha256": "15bfa6198e1d602c27ba190c5f3f50fbbc6c9994d6c12e42def7eebf92fd05e6"}, "current": {"size": 2115, "sha256": "de56b47adc7f86829be5d1dbada7b7e95a81608d0a646ee0638b50158e0750d9"}},
+    {"path": "src/values/types/string/iter.rs", "original": {"size": 2906, "sha256": "1bb0df2422a821e97eb205075d95bfd4189bfa64531b1b2425ee4e27b4829e09"}, "current": {"size": 3654, "sha256": "1a66a47789f41ffe26a1686b2070d6421f9bd578cbb1449d14076c21d1286d82"}}
+  ],
+  "patch_scope": "Bazel-compatible core set methods/constructor, assignment-specific mutation, scoped iterator error cleanup and regressions; production set globals remain disabled in H1",
   "additional_files": [
     {
       "path": "LICENSE",
@@ -36,6 +53,13 @@
       "upstream_commit": "0c8d107ab963362ba47ee3ab9e0173bc39bd101d",
       "source_artifact": "artifacts/starlark-upstream-LICENSE",
       "reason": "Authentic pinned upstream license omitted from published crate archive"
+    },
+    {
+      "path": "BAZEL_RS_MODIFICATIONS.md",
+      "size": 672,
+      "sha256": "60cdeaa33736e546331f2b0a0882a2137d38c1a4e5588161a4d5ca229965f5ef",
+      "origin": "Local bazel-rs modification notice, not upstream material",
+      "reason": "Prominent modification notice for machine-readable profiling golden data"
     }
   ],
   "notice": {

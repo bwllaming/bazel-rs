@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 set assignment compatibility; see vendor provenance.
+
 //! Instruction opcode.
 
 use std::any;
@@ -64,6 +66,7 @@ pub(crate) enum BcOpcode {
     Add,
     AddAssign,
     Sub,
+    SubAssign,
     Multiply,
     Percent,
     PercentSOne,
@@ -71,9 +74,11 @@ pub(crate) enum BcOpcode {
     Divide,
     FloorDivide,
     BitAnd,
+    BitAndAssign,
     BitOr,
     BitOrAssign,
     BitXor,
+    BitXorAssign,
     LeftShift,
     RightShift,
     Len,

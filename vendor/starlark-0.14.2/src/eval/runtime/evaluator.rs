@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for scoped iterator cleanup for native Bazel 9.3 sets; see vendor provenance.
+
 use std::collections::HashSet;
 use std::mem;
 use std::mem::MaybeUninit;
@@ -33,12 +35,9 @@ use crate::codemap::ResolvedFileSpan;
 use crate::collections::alloca::Alloca;
 use crate::collections::string_pool::StringPool;
 use crate::const_frozen_string;
+use crate::environment::slots::ModuleSlotId;
 use crate::environment::FrozenModuleData;
 use crate::environment::Module;
-use crate::environment::slots::ModuleSlotId;
-use crate::eval::CallStack;
-use crate::eval::FileLoader;
-use crate::eval::SoftErrorHandler;
 use crate::eval::bc::addr::BcPtrAddr;
 use crate::eval::bc::bytecode::Bc;
 use crate::eval::bc::frame::BcFramePtr;
@@ -68,21 +67,24 @@ use crate::eval::runtime::rust_loc::rust_loc;
 use crate::eval::runtime::slots::LocalCapturedSlotId;
 use crate::eval::runtime::slots::LocalSlotId;
 use crate::eval::soft_error::HardErrorSoftErrorHandler;
+use crate::eval::CallStack;
+use crate::eval::FileLoader;
+use crate::eval::SoftErrorHandler;
 use crate::stdlib::breakpoint::BreakpointConsole;
 use crate::stdlib::breakpoint::RealBreakpointConsole;
 use crate::stdlib::extra::PrintHandler;
 use crate::stdlib::extra::StderrPrintHandler;
+use crate::values::any::FrozenAnyValue;
+use crate::values::function::NativeFunction;
+use crate::values::layout::value_captured::value_captured_get;
+use crate::values::layout::value_captured::FrozenValueCaptured;
+use crate::values::layout::value_captured::ValueCaptured;
 use crate::values::FrozenHeap;
 use crate::values::Heap;
 use crate::values::Trace;
 use crate::values::Tracer;
 use crate::values::Value;
 use crate::values::ValueLike;
-use crate::values::any::FrozenAnyValue;
-use crate::values::function::NativeFunction;
-use crate::values::layout::value_captured::FrozenValueCaptured;
-use crate::values::layout::value_captured::ValueCaptured;
-use crate::values::layout::value_captured::value_captured_get;
 
 #[derive(Error, Debug)]
 enum EvaluatorError {
@@ -139,6 +141,9 @@ pub struct Evaluator<'v, 'a, 'e> {
     pub(crate) module_env: &'a Module<'v>,
     /// Current function (`def` or `lambda`) frame: locals and bytecode stack.
     pub(crate) current_frame: BcFramePtr<'v>,
+    /// Raw VM iterator acquisitions, in nesting order (including aliased acquisitions).
+    /// Each bytecode block releases only entries acquired within its own scope.
+    active_iterators: Vec<Value<'v>>,
     // How we deal with a `load` function.
     pub(crate) loader: Option<&'a dyn FileLoader>,
     // `DefInfo` of currently executed module.
@@ -274,6 +279,7 @@ impl<'v, 'a, 'e: 'a> Evaluator<'v, 'a, 'e> {
             call_stack: CheapCallStack::default(),
             module_env: module,
             current_frame: BcFramePtr::null(),
+            active_iterators: Vec::new(),
             loader: None,
             extra: None,
             extra_mut: None,
@@ -300,6 +306,40 @@ impl<'v, 'a, 'e: 'a> Evaluator<'v, 'a, 'e> {
             is_cancelled: Box::new(|| false),
             infrequent_instr_check_counter: 0,
             total_tick_count_at_last_infrequent_check: 0,
+        }
+    }
+
+    /// Register the actual value returned by a successful raw `iterate` call,
+    /// before its first `iter_next`. Host RAII iterators are not registered here.
+    pub(crate) fn register_iterator(&mut self, iterator: Value<'v>) {
+        self.active_iterators.push(iterator);
+    }
+
+    pub(crate) fn iterator_scope(&self) -> usize {
+        self.active_iterators.len()
+    }
+
+    /// Compiler-generated normal exits must stop the latest acquisition, even
+    /// in release builds. Check before popping so a mismatch cannot unlock it.
+    pub(crate) fn stop_iterator(&mut self, expected: Value<'v>) {
+        let iterator = *self.active_iterators.last().expect("no active VM iterator");
+        assert!(iterator.ptr_eq(expected), "VM iterator stop order mismatch");
+        self.active_iterators.pop();
+        // The vtable wrapper calls unsafe iter_stop. This acquisition is removed
+        // exactly once, and only the returned iterator (not its owner) is stopped.
+        iterator.get_ref().iter_stop();
+    }
+
+    /// Release only this bytecode block's acquisitions after an ordinary error.
+    /// Outer/reentrant and host RAII iterators remain owned by their callers.
+    pub(crate) fn unwind_iterators(&mut self, scope: usize) {
+        assert!(
+            self.active_iterators.len() >= scope,
+            "VM iterator scope underflow"
+        );
+        while self.active_iterators.len() > scope {
+            let iterator = self.active_iterators.pop().unwrap();
+            iterator.get_ref().iter_stop();
         }
     }
 
@@ -793,6 +833,7 @@ impl<'v, 'a, 'e: 'a> Evaluator<'v, 'a, 'e> {
         self.time_flame_profile
             .record_call_enter(const_frozen_string!("trace/walk").to_value());
         self.module_env.trace(tracer);
+        self.active_iterators.trace(tracer);
         self.current_frame.trace(tracer);
         for frame in &mut self.frame_stack {
             if frame.is_inititalized() {

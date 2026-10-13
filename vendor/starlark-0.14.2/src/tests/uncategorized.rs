@@ -15,30 +15,41 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 set assignment compatibility; see vendor provenance.
+
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::fmt::Write;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 use allocative::Allocative;
 use anyhow::Context;
 use derive_more::Display;
-use starlark_derive::StarlarkPagable;
 use starlark_derive::starlark_module;
 use starlark_derive::starlark_value;
+use starlark_derive::StarlarkPagable;
 use starlark_syntax::golden_test_template::golden_test_template;
 
 use crate as starlark;
 use crate::any::ProvidesStaticType;
 use crate::assert;
 use crate::assert::Assert;
+use crate::codemap::FileSpanRef;
 use crate::collections::SmallMap;
 use crate::environment::Globals;
 use crate::environment::GlobalsBuilder;
 use crate::environment::Module;
+use crate::eval::runtime::before_stmt::BeforeStmtFunc;
+use crate::eval::runtime::before_stmt::BeforeStmtFuncDyn;
 use crate::eval::Evaluator;
 use crate::starlark_simple_value;
 use crate::syntax::AstModule;
 use crate::syntax::Dialect;
 use crate::tests::util::trim_rust_backtrace;
+use crate::values::layout::heap::heap_type::StarlarkTestHeapName;
+use crate::values::list_or_tuple::UnpackListOrTuple;
+use crate::values::none::NoneType;
 use crate::values::Freeze;
 use crate::values::FreezeResult;
 use crate::values::Freezer;
@@ -48,9 +59,6 @@ use crate::values::StarlarkValue;
 use crate::values::Trace;
 use crate::values::UnpackValue;
 use crate::values::Value;
-use crate::values::layout::heap::heap_type::StarlarkTestHeapName;
-use crate::values::list_or_tuple::UnpackListOrTuple;
-use crate::values::none::NoneType;
 
 #[test]
 fn alias_test() {
@@ -178,6 +186,268 @@ loop()"#,
     );
 }
 
+fn iterator_cleanup_eval<'v>(
+    eval: &mut Evaluator<'v, '_, '_>,
+    globals: &Globals,
+    source: &str,
+) -> crate::Result<Value<'v>> {
+    let ast = AstModule::parse(
+        "iterator_cleanup.star",
+        source.to_owned(),
+        &Dialect::AllOptionsInternal,
+    )?;
+    eval.eval_module(ast, globals)
+}
+
+#[derive(Debug, Display, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagable)]
+#[display("iterator_probe")]
+struct IteratorCleanupProbe {
+    length: usize,
+    // Test instrumentation is local to each run, not persisted with a value.
+    #[starlark_pagable(skip = "AtomicUsize::new(0)")]
+    acquired: AtomicUsize,
+    #[starlark_pagable(skip = "AtomicUsize::new(0)")]
+    stopped: AtomicUsize,
+}
+
+starlark_simple_value!(IteratorCleanupProbe);
+
+#[starlark_value(type = "iterator_probe")]
+impl<'v> StarlarkValue<'v> for IteratorCleanupProbe {
+    unsafe fn iterate(&self, me: Value<'v>, _heap: Heap<'v>) -> crate::Result<Value<'v>> {
+        self.acquired.fetch_add(1, Ordering::SeqCst);
+        Ok(me)
+    }
+
+    unsafe fn iter_next(&self, index: usize, _heap: Heap<'v>) -> Option<Value<'v>> {
+        assert!(self.acquired.load(Ordering::SeqCst) > self.stopped.load(Ordering::SeqCst));
+        (index < self.length).then(|| Value::testing_new_int(index as i32))
+    }
+
+    unsafe fn iter_stop(&self) {
+        assert!(
+            self.acquired.load(Ordering::SeqCst) > self.stopped.load(Ordering::SeqCst),
+            "iterator stopped twice"
+        );
+        self.stopped.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn test_iterator_cleanup_exactly_once() {
+    for (length, body, acquisitions, fails) in [
+        (0, "for x in ITER:\n    pass", 1, false),
+        (2, "for x in ITER:\n    pass", 1, false),
+        (2, "for x in ITER:\n    continue", 1, false),
+        (2, "for x in ITER:\n    break", 1, false),
+        (
+            2,
+            "for x in ITER:\n    for y in ITER:\n        return x",
+            2,
+            false,
+        ),
+        (
+            2,
+            "for x in ITER:\n    for y in ITER:\n        pass",
+            3,
+            false,
+        ),
+        (
+            2,
+            "for x in ITER:\n    return fail('return expression')",
+            1,
+            true,
+        ),
+        (2, "for x in ITER:\n    pass\nfail('after loop')", 1, true),
+        (2, "return [fail('comprehension') for x in ITER]", 1, true),
+        (2, "for x in ITER:\n    for y in 42:\n        pass", 1, true),
+        (
+            2,
+            "for x in ITER:\n    for y in ITER:\n        fail('nested')",
+            2,
+            true,
+        ),
+    ] {
+        Module::with_temp_heap(|module| {
+            let value = module.heap().alloc(IteratorCleanupProbe {
+                length,
+                acquired: AtomicUsize::new(0),
+                stopped: AtomicUsize::new(0),
+            });
+            module.set("ITER", value);
+            let probe = IteratorCleanupProbe::from_value(value).unwrap();
+            let mut eval = Evaluator::new(&module);
+            // Rust holds the probe reference across evaluation.
+            eval.disable_gc();
+            let body = body
+                .lines()
+                .map(|line| format!("    {line}\n"))
+                .collect::<String>();
+            let result = iterator_cleanup_eval(
+                &mut eval,
+                &Globals::standard(),
+                &format!("def f():\n{body}\nf()"),
+            );
+            assert_eq!(result.is_err(), fails, "{body}: {result:?}");
+            assert_eq!(eval.iterator_scope(), 0);
+            assert_eq!(
+                probe.acquired.load(Ordering::SeqCst),
+                acquisitions,
+                "{body}"
+            );
+            assert_eq!(probe.stopped.load(Ordering::SeqCst), acquisitions, "{body}");
+        });
+    }
+}
+
+#[test]
+fn test_iterator_cleanup_post_error_same_and_fresh_evaluator() {
+    // These are observed native post-error states, not executed Java parity claims.
+    for (init, mutate) in [
+        ("set([1, 2])", "S.add(3)"),
+        ("{1: 1, 2: 2}", "S[3] = 3"),
+        ("[1, 2]", "S.append(3)"),
+    ] {
+        for body in [
+            "for x in S:\n    for y in S:\n        fail('nested')",
+            "for x in S:\n    return fail('return expression')",
+            "for x in S:\n    return 'wrong return type'",
+            "for x in S:\n    pass\nfail('after loop')",
+            "return [fail('comprehension') for x in S]",
+            "for x in S:\n    for y in 42:\n        pass",
+        ] {
+            Module::with_temp_heap(|module| {
+                let globals = GlobalsBuilder::extended().build();
+                let mut eval = Evaluator::new(&module);
+                let body = body
+                    .lines()
+                    .map(|line| format!("    {line}\n"))
+                    .collect::<String>();
+                let source = format!("S = {init}\ndef f() -> int:\n{body}\nf()");
+                let error = iterator_cleanup_eval(&mut eval, &globals, &source).unwrap_err();
+                assert!(!error.to_string().is_empty());
+                assert_eq!(eval.iterator_scope(), 0);
+                iterator_cleanup_eval(&mut eval, &globals, mutate).unwrap();
+                drop(eval);
+                let mut fresh = Evaluator::new(&module);
+                iterator_cleanup_eval(&mut fresh, &globals, mutate).unwrap();
+            });
+        }
+    }
+    assert::pass("def f():\n    s = set([1])\n    for x in s:\n        return s.add(2)\nf()");
+}
+
+#[test]
+fn test_iterator_cleanup_reentrant_and_host_raii_scope() {
+    #[starlark_module]
+    fn globals(builder: &mut GlobalsBuilder) {
+        fn catch_inner<'v>(
+            inner: Value<'v>,
+            mutate: Value<'v>,
+            eval: &mut Evaluator<'v, '_, '_>,
+        ) -> anyhow::Result<NoneType> {
+            let scope = eval.iterator_scope();
+            assert!(scope > 0);
+            let error = eval.eval_function(inner, &[], &[]).unwrap_err();
+            assert!(error.to_string().contains("inner failure"));
+            assert_eq!(eval.iterator_scope(), scope);
+            // The caught inner error must not unlock the outer VM acquisition.
+            assert!(eval.eval_function(mutate, &[], &[]).is_err());
+            assert_eq!(eval.iterator_scope(), scope);
+            Ok(NoneType)
+        }
+    }
+    let mut a = Assert::new();
+    a.globals_add(globals);
+    a.pass(
+        r#"
+S = set([1, 2])
+def inner():
+    for x in S:
+        fail('inner failure')
+def mutate():
+    S.add(3)
+def outer():
+    for x in S:
+        catch_inner(inner, mutate)
+outer()
+mutate()
+assert_eq(list(S), [1, 2, 3])
+"#,
+    );
+
+    Module::with_temp_heap(|module| {
+        let globals = GlobalsBuilder::extended().build();
+        let mut eval = Evaluator::new(&module);
+        eval.disable_gc();
+        let value = iterator_cleanup_eval(&mut eval, &globals, "S = set([1, 2])\nS").unwrap();
+        let host_iterator = value.iterate(module.heap()).unwrap();
+        iterator_cleanup_eval(
+            &mut eval,
+            &globals,
+            "def f():\n    for x in S:\n        fail('inner failure')\nf()",
+        )
+        .unwrap_err();
+        assert_eq!(eval.iterator_scope(), 0);
+        assert!(iterator_cleanup_eval(&mut eval, &globals, "S.add(3)").is_err());
+        drop(host_iterator);
+        iterator_cleanup_eval(&mut eval, &globals, "S.add(3)").unwrap();
+    });
+}
+
+#[test]
+fn test_iterator_cleanup_cancellation_and_instrumentation() {
+    struct FailInLoop(bool);
+    impl<'e> BeforeStmtFuncDyn<'e> for FailInLoop {
+        fn call<'v>(
+            &mut self,
+            _span: FileSpanRef,
+            _continued: bool,
+            eval: &mut Evaluator<'v, '_, 'e>,
+        ) -> crate::Result<()> {
+            if self.0 && eval.iterator_scope() != 0 {
+                self.0 = false;
+                return Err(crate::Error::new_other(anyhow::anyhow!(
+                    "instrumentation failure"
+                )));
+            }
+            Ok(())
+        }
+    }
+    for instrument in [false, true] {
+        Module::with_temp_heap(|module| {
+            let globals = GlobalsBuilder::extended().build();
+            let checks = Cell::new(0);
+            let mut eval = Evaluator::new(&module);
+            if instrument {
+                eval.before_stmt(BeforeStmtFunc::from_dyn(Box::new(FailInLoop(true))));
+            } else {
+                eval.set_check_cancelled(Box::new(|| {
+                    checks.set(checks.get() + 1);
+                    checks.get() > 1
+                }));
+            }
+            let error = iterator_cleanup_eval(&mut eval, &globals, "S=set([1])\nPROGRESS=[]\ndef f():\n    for x in S:\n        for i in range(3000):\n            PROGRESS.append(i)\nf()").unwrap_err();
+            let expected = if instrument {
+                "instrumentation failure"
+            } else {
+                "Evaluation cancelled"
+            };
+            assert!(error.to_string().contains(expected), "{error}");
+            assert_eq!(eval.iterator_scope(), 0);
+            eval.set_check_cancelled(Box::new(|| false));
+            if !instrument {
+                assert!(
+                    iterator_cleanup_eval(&mut eval, &globals, "len(PROGRESS) > 0")
+                        .unwrap()
+                        .to_bool()
+                );
+            }
+            iterator_cleanup_eval(&mut eval, &globals, "S.add(2)").unwrap();
+        });
+    }
+}
+
 #[test]
 fn test_lvalue_once() {
     assert::is_true(
@@ -213,6 +483,100 @@ xs[f()] = g()
 xs == [1, 2, 10, 4]
 "#,
     );
+}
+
+#[test]
+fn test_set_augmented_assign_lvalue_once_and_local_slot_reuse() {
+    for (op, expected) in [
+        ("|", "[1, 2, 3]"),
+        ("-", "[1]"),
+        ("&", "[2]"),
+        ("^", "[1, 3]"),
+    ] {
+        // The direct-local form exercises write_bc_cb's definitely-assigned
+        // slot reuse; the call form also proves owner/index/RHS ordering.
+        for (target, events) in [
+            ("items[key]", "['rhs']"),
+            ("owner()[index()]", "['owner', 'index', 'rhs']"),
+        ] {
+            assert::pass(&format!(
+                r#"
+def test():
+    original = set([1, 2])
+    items = [original]
+    storage = items
+    key = 0
+    events = []
+    replacement = set([90])
+    right = set([2, 3])
+    def owner():
+        events.append('owner')
+        return storage
+    def index():
+        events.append('index')
+        return 0
+    def rhs():
+        events.append('rhs')
+        storage[0] = replacement
+        return right
+    {target} {op}= rhs()
+    assert_eq(events, {events})
+    assert_eq(list(original), {expected})
+    assert_eq(list(items[0]), {expected})
+    assert_eq(list(replacement), [90])
+    assert_eq(list(right), [2, 3])
+    original |= set([99])
+    assert_eq(list(items[0]), {expected} + [99])
+test()
+"#
+            ));
+        }
+    }
+}
+
+#[test]
+fn test_set_augmented_assign_aliases_and_pure_binary() {
+    for (op, expected) in [
+        ("|", "[1, 2, 3]"),
+        ("-", "[1]"),
+        ("&", "[2]"),
+        ("^", "[1, 3]"),
+    ] {
+        for (scope, inspect) in [
+            ("", "assert_eq(list(alias), EXPECTED)"),
+            ("local", "assert_eq(list(alias), EXPECTED)"),
+            (
+                "captured",
+                "def read():\n    return x\nassert_eq(list(read()), EXPECTED)\nassert_eq(list(alias), EXPECTED)",
+            ),
+        ] {
+            let body = format!(
+                r#"x = set([1, 2])
+alias = x
+right = set([2, 3])
+pure = x {op} right
+assert_eq(list(pure), {expected})
+assert_eq(list(x), [1, 2])
+x {op}= right
+{}
+assert_eq(list(right), [2, 3])
+x |= set([99])
+assert_eq(list(alias), {expected} + [99])
+assert_eq(list(pure), {expected})
+"#,
+                inspect.replace("EXPECTED", expected),
+            );
+            if scope.is_empty() {
+                assert::pass(&body);
+            } else {
+                let body = body
+                    .lines()
+                    .map(|line| format!("    {line}\n"))
+                    .collect::<String>();
+                assert::pass(&format!("def test():\n{body}\ntest()\n"));
+            }
+        }
+    }
 }
 
 #[test]
@@ -290,13 +654,7 @@ fn test_radd() {
     // We want select append to always produce a select, much like the
     // Bazel/Buck `select` function.
     #[derive(
-        Debug,
-        Display,
-        Clone,
-        ProvidesStaticType,
-        NoSerialize,
-        Allocative,
-        StarlarkPagable
+        Debug, Display, Clone, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagable,
     )]
     #[display("${:?}", _0)]
     struct Select(Vec<i32>);
@@ -371,6 +729,29 @@ assert_eq(repr(s2), "$[2, 1, 3]")
 
 #[test]
 fn test_compound_assignment() {
+    assert::pass(
+        r#"
+def test():
+    x = 13
+    x -= 4
+    assert_eq(x, 9)
+    x &= 7
+    assert_eq(x, 1)
+    x ^= 10
+    assert_eq(x, 11)
+    x |= 16
+    assert_eq(x, 27)
+    f = 3.5
+    f -= 1.25
+    assert_eq(f, 2.25)
+    xs = [13]
+    xs[0] -= 4
+    xs[0] &= 7
+    xs[0] ^= 10
+    assert_eq(xs, [11])
+test()
+"#,
+    );
     assert::pass(
         r#"
 x = 1
@@ -778,14 +1159,7 @@ fn test_label_assign() {
         }
     }
 
-    #[derive(
-        Debug,
-        ProvidesStaticType,
-        Display,
-        NoSerialize,
-        Allocative,
-        StarlarkPagable
-    )]
+    #[derive(Debug, ProvidesStaticType, Display, NoSerialize, Allocative, StarlarkPagable)]
     #[display("FrozenWrapper")]
     struct FrozenWrapper;
 

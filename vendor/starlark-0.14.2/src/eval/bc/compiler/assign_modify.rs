@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 set assignment compatibility; see vendor provenance.
+
 //! Write operators like `+=`.
 
 use starlark_syntax::syntax::ast::AssignOp;
@@ -24,9 +26,9 @@ use crate::eval::bc::compiler::expr::write_n_exprs;
 use crate::eval::bc::instr_impl::InstrAddAssign;
 use crate::eval::bc::instr_impl::InstrArrayIndex;
 use crate::eval::bc::instr_impl::InstrArrayIndexSet;
-use crate::eval::bc::instr_impl::InstrBitAnd;
+use crate::eval::bc::instr_impl::InstrBitAndAssign;
 use crate::eval::bc::instr_impl::InstrBitOrAssign;
-use crate::eval::bc::instr_impl::InstrBitXor;
+use crate::eval::bc::instr_impl::InstrBitXorAssign;
 use crate::eval::bc::instr_impl::InstrDivide;
 use crate::eval::bc::instr_impl::InstrFloorDivide;
 use crate::eval::bc::instr_impl::InstrLeftShift;
@@ -37,7 +39,7 @@ use crate::eval::bc::instr_impl::InstrPercent;
 use crate::eval::bc::instr_impl::InstrRightShift;
 use crate::eval::bc::instr_impl::InstrSetObjectField;
 use crate::eval::bc::instr_impl::InstrStoreModule;
-use crate::eval::bc::instr_impl::InstrSub;
+use crate::eval::bc::instr_impl::InstrSubAssign;
 use crate::eval::bc::stack_ptr::BcSlotIn;
 use crate::eval::bc::stack_ptr::BcSlotOut;
 use crate::eval::bc::stack_ptr::BcSlotsN;
@@ -70,14 +72,14 @@ impl AssignOnWriteBc for AssignOp {
         let arg = (v0, v1, target);
         match self {
             AssignOp::Add => bc.write_instr::<InstrAddAssign>(span, arg),
-            AssignOp::Subtract => bc.write_instr::<InstrSub>(span, arg),
+            AssignOp::Subtract => bc.write_instr::<InstrSubAssign>(span, arg),
             AssignOp::Multiply => bc.write_instr::<InstrMultiply>(span, arg),
             AssignOp::Divide => bc.write_instr::<InstrDivide>(span, arg),
             AssignOp::FloorDivide => bc.write_instr::<InstrFloorDivide>(span, arg),
             AssignOp::Percent => bc.write_instr::<InstrPercent>(span, arg),
-            AssignOp::BitAnd => bc.write_instr::<InstrBitAnd>(span, arg),
+            AssignOp::BitAnd => bc.write_instr::<InstrBitAndAssign>(span, arg),
             AssignOp::BitOr => bc.write_instr::<InstrBitOrAssign>(span, arg),
-            AssignOp::BitXor => bc.write_instr::<InstrBitXor>(span, arg),
+            AssignOp::BitXor => bc.write_instr::<InstrBitXorAssign>(span, arg),
             AssignOp::LeftShift => bc.write_instr::<InstrLeftShift>(span, arg),
             AssignOp::RightShift => bc.write_instr::<InstrRightShift>(span, arg),
         }

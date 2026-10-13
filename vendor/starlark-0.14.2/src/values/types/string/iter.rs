@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 set compatibility; see vendor provenance.
+
 //! Implementation of iterators for string type.
 
 use allocative::Allocative;
@@ -28,6 +30,7 @@ use starlark_derive::starlark_value;
 use crate as starlark;
 use crate::any::ProvidesStaticType;
 use crate::coerce::Coerce;
+use crate::values::FrozenValue;
 use crate::values::Heap;
 use crate::values::StarlarkValue;
 use crate::values::StringValue;
@@ -47,13 +50,28 @@ use crate::values::typing::iter::StarlarkIter;
     NoSerialize,
     ProvidesStaticType,
     Allocative,
-    StarlarkPagable
+    StarlarkPagable,
 )]
 #[display("iterator")]
 #[repr(C)]
 struct StringIterableGen<'v, V: ValueLike<'v>> {
     string: V::String,
     produce_char: bool, // if not char, then int
+}
+
+/// Recognize only the native proxy for Bazel's string character-elements list.
+/// This does not change the proxy's string/sequence API or admit codepoints and
+/// unrelated host iterables that happen to share the Starlark type `iterator`.
+pub(crate) fn is_string_elems<'v>(value: Value<'v>) -> bool {
+    if let Some(value) = value.unpack_frozen() {
+        value
+            .downcast_ref::<StringIterableGen<'static, FrozenValue>>()
+            .is_some_and(|iter| iter.produce_char)
+    } else {
+        value
+            .downcast_ref::<StringIterableGen<'v, Value<'v>>>()
+            .is_some_and(|iter| iter.produce_char)
+    }
 }
 
 pub(crate) fn iterate_chars<'v>(

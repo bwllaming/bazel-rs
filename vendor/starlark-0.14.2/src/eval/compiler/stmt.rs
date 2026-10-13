@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 set assignment compatibility; see vendor provenance.
+
 //! Evaluation environment, provide converters from Ast* element to value.
 //!
 //! # <a name="build_file"></a>Starlark and BUILD dialect
@@ -71,6 +73,8 @@ use crate::values::dict::Dict;
 use crate::values::dict::DictMut;
 use crate::values::dict::DictRef;
 use crate::values::types::list::value::ListData;
+use crate::values::types::set::methods::SetMutationOp;
+use crate::values::types::set::methods::try_set_augmented_assign;
 use crate::values::typing::type_compiled::compiled::TypeCompiled;
 
 #[derive(Clone, Debug, StarlarkPagable)]
@@ -557,14 +561,17 @@ pub(crate) fn possible_gc(eval: &mut Evaluator) {
     }
 }
 
-/// Implement lhs |= rhs, which is special in Starlark, because dicts are mutated,
-/// while all other types are not.
+/// Implement lhs |= rhs, mutating genuine set operands or a dict receiver.
 pub(crate) fn bit_or_assign<'v>(
     lhs: Value<'v>,
     rhs: Value<'v>,
     heap: Heap<'v>,
 ) -> crate::Result<Value<'v>> {
-    // The Starlark spec says dict |= mutates, while nothing else does.
+    if let Some(result) = try_set_augmented_assign(lhs, rhs, SetMutationOp::Union, heap) {
+        return result;
+    }
+
+    // Preserve the existing dict mutation and non-set binary fallback.
     // When mutating, be careful if they alias, so we don't have `lhs`
     // mutably borrowed when we iterate over `rhs`, as they might alias.
 
@@ -594,6 +601,44 @@ pub(crate) fn bit_or_assign<'v>(
     } else {
         lhs_aref.bit_or(rhs, heap)
     }
+}
+
+/// Implement lhs -= rhs, mutating only when both operands are genuine sets.
+pub(crate) fn sub_assign<'v>(
+    lhs: Value<'v>,
+    rhs: Value<'v>,
+    heap: Heap<'v>,
+) -> crate::Result<Value<'v>> {
+    if let Some(result) = try_set_augmented_assign(lhs, rhs, SetMutationOp::Difference, heap) {
+        return result;
+    }
+    lhs.sub(rhs, heap)
+}
+
+/// Implement lhs &= rhs, mutating only when both operands are genuine sets.
+pub(crate) fn bit_and_assign<'v>(
+    lhs: Value<'v>,
+    rhs: Value<'v>,
+    heap: Heap<'v>,
+) -> crate::Result<Value<'v>> {
+    if let Some(result) = try_set_augmented_assign(lhs, rhs, SetMutationOp::Intersection, heap) {
+        return result;
+    }
+    lhs.bit_and(rhs, heap)
+}
+
+/// Implement lhs ^= rhs, mutating only when both operands are genuine sets.
+pub(crate) fn bit_xor_assign<'v>(
+    lhs: Value<'v>,
+    rhs: Value<'v>,
+    heap: Heap<'v>,
+) -> crate::Result<Value<'v>> {
+    if let Some(result) =
+        try_set_augmented_assign(lhs, rhs, SetMutationOp::SymmetricDifference, heap)
+    {
+        return result;
+    }
+    lhs.bit_xor(rhs, heap)
 }
 
 /// Implement lhs += rhs, which is special in Starlark, because lists are mutated,

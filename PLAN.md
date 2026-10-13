@@ -178,7 +178,7 @@ checkout is unchanged; no application query/build/test success is claimed.
 
 - [x] Preserve the exact pinned interpreter as a licensed, provenance-verified
       vendor baseline; verify unchanged dependency resolution and native behavior.
-- [ ] Repair real set methods, constructor metadata and assignment-specific
+- [x] Repair real set methods, constructor metadata and assignment-specific
       mutation semantics without changing ordinary binary operations.
 - [ ] Enable genuine sets in BUILD/MODULE/.bzl and retain generated File
       dependencies through provider-contained sets; verify actual action outputs.

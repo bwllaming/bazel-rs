@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 set compatibility; see vendor provenance.
+
 use std::cell::Ref;
 use std::cell::RefCell;
 use std::cell::RefMut;
@@ -39,6 +41,15 @@ use crate::values::type_repr::StarlarkTypeRepr;
 /// Define the set type.
 pub struct SetRef<'v> {
     pub(crate) aref: Either<Ref<'v, SetData<'v>>, &'v SetData<'v>>,
+}
+
+// Modified: expose ordered borrowed traversal without exposing borrow storage.
+impl<'v> SetRef<'v> {
+    /// Iterate over members in insertion order, retaining the shared borrow.
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = Value<'v>> + '_ {
+        let data: &SetData<'v> = &self.aref;
+        data.iter()
+    }
 }
 
 impl<'v> Clone for SetRef<'v> {

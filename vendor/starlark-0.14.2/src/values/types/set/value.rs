@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 set compatibility; see vendor provenance.
+
 use std::cell::Ref;
 use std::cell::RefCell;
 use std::fmt;
@@ -24,7 +26,6 @@ use std::mem;
 use std::ops::Deref;
 
 use allocative::Allocative;
-use display_container::fmt_container;
 use serde::Serialize;
 use starlark::register_avalue_simple_frozen;
 use starlark_map::Hashed;
@@ -50,21 +51,15 @@ use crate::values::Trace;
 use crate::values::UnpackValue;
 use crate::values::Value;
 use crate::values::ValueError;
+use crate::values::ValueLike;
 use crate::values::comparison::equals_small_set;
+use crate::values::error::ControlError;
 use crate::values::set::methods;
 use crate::values::starlark_value;
 use crate::values::type_repr::SetType;
 use crate::values::type_repr::StarlarkTypeRepr;
 
-#[derive(
-    Clone,
-    Default,
-    Trace,
-    Debug,
-    ProvidesStaticType,
-    Allocative,
-    StarlarkPagable
-)]
+#[derive(Clone, Default, Trace, Debug, ProvidesStaticType, Allocative, StarlarkPagable)]
 #[repr(transparent)]
 pub(crate) struct SetGen<T>(pub(crate) T);
 
@@ -247,10 +242,27 @@ where
     }
 
     fn is_in(&self, other: Value<'v>) -> crate::Result<bool> {
-        Ok(self
-            .0
-            .content()
-            .contains_hashed(other.get_hashed()?.as_ref()))
+        // Modified: only ordinary unhashability means absence. Host hashing
+        // failures (including misleadingly similar diagnostics) must propagate.
+        let hashed = match other.get_hashed() {
+            Ok(hashed) => hashed,
+            Err(error) => {
+                if let crate::ErrorKind::Other(cause) = error.kind() {
+                    if matches!(
+                        cause.downcast_ref::<ControlError>(),
+                        Some(ControlError::NotHashableValue(_))
+                    ) {
+                        return Ok(false);
+                    }
+                }
+                return Err(error);
+            }
+        };
+        Ok(self.0.content().contains_hashed(hashed.as_ref()))
+    }
+
+    fn collect_repr(&self, collector: &mut String) {
+        collect_set_repr(&self.0, collector);
     }
 
     fn equals(&self, other: Value<'v>) -> crate::Result<bool> {
@@ -316,9 +328,9 @@ where
             return Ok(heap.alloc(SetData { content: items }));
         }
 
-        for h in rhs.aref.iter_hashed() {
-            if self.0.content().contains_hashed(h.as_ref()) {
-                items.insert_hashed_unique_unchecked(h);
+        for h in self.0.content().iter_hashed() {
+            if rhs.aref.content.contains_hashed(h) {
+                items.insert_hashed_unique_unchecked(h.copied());
             }
         }
 
@@ -397,13 +409,87 @@ impl<'v, T: SetLike<'v>> Serialize for SetGen<T> {
 
 impl<'v, T: SetLike<'v>> Display for SetGen<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt_container(f, "set([", "])", self.0.content().iter())
+        let mut repr = String::new();
+        collect_set_repr(&self.0, &mut repr);
+        f.write_str(&repr)
     }
+}
+
+// Modified: use the existing Value repr/cycle machinery for every member,
+// rather than abbreviated host Display (notably for long strings).
+fn collect_set_repr<'v>(set: &impl SetLike<'v>, collector: &mut String) {
+    let content = set.content();
+    if content.is_empty() {
+        collector.push_str("set()");
+        return;
+    }
+    collector.push_str("set([");
+    for (index, value) in content.iter().enumerate() {
+        if index != 0 {
+            collector.push_str(", ");
+        }
+        value.collect_repr(collector);
+    }
+    collector.push_str("])");
 }
 
 #[cfg(test)]
 mod tests {
     use crate::assert;
+
+    #[test]
+    fn test_membership_only_suppresses_typed_unhashability() {
+        use super::SetData;
+        use crate as starlark;
+        use crate::collections::StarlarkHasher;
+        use crate::values::{Heap, ProvidesStaticType, StarlarkValue};
+        use allocative::Allocative;
+        use derive_more::Display;
+        use starlark_derive::{NoSerialize, StarlarkPagable};
+
+        #[derive(Debug, Display, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagable)]
+        #[display("bad_hash")]
+        struct BadHash;
+        crate::starlark_simple_value!(BadHash);
+
+        #[crate::values::starlark_value(type = "bad_hash")]
+        impl<'v> StarlarkValue<'v> for BadHash {
+            fn write_hash(&self, _hasher: &mut StarlarkHasher) -> crate::Result<()> {
+                // Intentionally resembles the builtin diagnostic: message matching
+                // would incorrectly hide this unrelated host failure.
+                Err(crate::Error::new_other(anyhow::anyhow!(
+                    "host value is not hashable: deliberate failure"
+                )))
+            }
+        }
+
+        assert::is_true(
+            "s=set([1]); [] not in s and {} not in s and set() not in s and ([],) not in s and set not in s and 1 in s",
+        );
+        Heap::temp(|heap| {
+            let set = heap.alloc(SetData::default());
+            let bad = heap.alloc(BadHash);
+            let error = set.is_in(bad).unwrap_err();
+            assert!(error.to_string().contains("deliberate failure"));
+        });
+    }
+
+    #[test]
+    fn test_repr_uses_complete_member_repr() {
+        assert::eq("repr(set())", "'set()'");
+        assert::is_true("s='x' * 500; repr(set([s])) == 'set([' + repr(s) + '])'");
+        assert::is_true("str(set([3, 1])) == repr(set([3, 1]))");
+        use super::SetData;
+        use crate::values::{Heap, ValueLike};
+        Heap::temp(|heap| {
+            let mut data = SetData::default();
+            data.add_hashed(heap.alloc("x".repeat(500)).get_hashed().unwrap());
+            let set = heap.alloc(data);
+            let mut repr = String::new();
+            set.collect_repr(&mut repr);
+            assert_eq!(set.to_string(), repr);
+        });
+    }
 
     #[test]
     fn test_bit_or() {
@@ -450,7 +536,7 @@ mod tests {
 
     #[test]
     fn test_bit_and_ord() {
-        assert::eq("list(set([1, 2, 3]) & set([4, 3, 1]))", "[3, 1]")
+        assert::eq("list(set([1, 2, 3]) & set([4, 3, 1]))", "[1, 3]")
     }
 
     #[test]

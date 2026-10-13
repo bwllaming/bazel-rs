@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 set compatibility; see vendor provenance.
+
 //! Type-related operations.
 
 use crate::assert::Assert;
@@ -96,11 +98,13 @@ def f(x: list[str]) -> list[str]:
 #[test]
 fn test_set_parametrize() {
     let a = Assert::new();
-    a.pass(
+    // Modified: Bazel's set constructor is callable, not a parametric type.
+    a.fail(
         r#"
 def f(x: set[int]) -> set[int]:
     return x
 "#,
+        "Operation `[]` not supported for types `builtin_function_or_method` and `type`",
     );
 }
 
@@ -114,4 +118,81 @@ def f(x: list[str, int]):
 "#,
         "[,] can only be applied to dict or tuple functions in type expression",
     );
+}
+
+#[test]
+fn test_set_constructor_static_signature() {
+    use crate::environment::GlobalsBuilder;
+    use crate::typing::{ParamSpec, Ty};
+
+    let globals = GlobalsBuilder::extended().build();
+    let constructor = globals.get("set").unwrap();
+    assert_eq!(
+        Ty::of_value(constructor),
+        Ty::function(
+            ParamSpec::pos_only([], [Ty::iter(Ty::any())]),
+            Ty::any_set(),
+        ),
+    );
+    assert_eq!(constructor.get_type(), "builtin_function_or_method");
+}
+
+#[test]
+fn test_set_constructor_static_rejections() {
+    use crate::environment::GlobalsBuilder;
+    use crate::syntax::{AstModule, Dialect};
+    use crate::typing::AstModuleTypecheck;
+
+    let globals = GlobalsBuilder::extended().build();
+    for code in [
+        "def f() -> int:\n    return set()",
+        "ctor = set\ndef f() -> int:\n    return ctor()",
+        "def f():\n    return set(1)",
+        "def f():\n    return set([], [])",
+        "def f():\n    return set(elements=[])",
+        "def f():\n    return set(arg=[])",
+        "def f():\n    return set(unknown=[])",
+    ] {
+        // No function is called: rejection must be static, not a runtime error.
+        let ast = AstModule::parse(
+            "set_types.star",
+            code.to_owned(),
+            &Dialect::AllOptionsInternal,
+        )
+        .unwrap();
+        let (errors, _, _, _) = ast.typecheck(&globals, &Default::default());
+        assert_eq!(errors.len(), 1, "expected one static rejection: {code}");
+    }
+    Assert::new().fail(
+        "def f() -> int:\n    return set()",
+        "Expected type `int` but got `set[typing.Any]`",
+    );
+}
+
+#[test]
+fn test_set_constructor_static_valid_calls() {
+    use crate::environment::GlobalsBuilder;
+    use crate::syntax::{AstModule, Dialect};
+    use crate::typing::AstModuleTypecheck;
+
+    let globals = GlobalsBuilder::extended().build();
+    let code = r#"
+def f():
+    empty = set()
+    from_list = set([1, 2])
+    from_tuple = set((1, 2))
+    from_dict = set({1: 2})
+    from_range = set(range(3))
+    from_set = set(empty)
+    return [empty, from_list, from_tuple, from_dict, from_range, from_set]
+"#;
+    let ast = AstModule::parse(
+        "set_types.star",
+        code.to_owned(),
+        &Dialect::AllOptionsInternal,
+    )
+    .unwrap();
+    let (errors, _, _, _) = ast.typecheck(&globals, &Default::default());
+    assert!(errors.is_empty(), "valid constructor calls rejected");
+    Assert::new().pass(code);
 }

@@ -1,9 +1,11 @@
-# Pinned Starlark vendor baseline
+# Pinned Starlark vendor provenance
 
 The root `[patch.crates-io]` selects `vendor/starlark-0.14.2`. The dependency
 remains exactly `starlark = "=0.14.2"`; the lockfile changes only by removing
-that package's registry source and checksum. This baseline does not enable
-`set`, change Starlark semantics, or upgrade any dependency.
+that package's registry source and checksum. The original H0 baseline changed no
+semantics. Subsequent [set-core compatibility patches](STARLARK_SETS.md) are
+declared separately; they do not upgrade dependencies or enable production set
+globals in the core-only stage.
 
 ## Original published contents
 
@@ -14,11 +16,12 @@ Its `.cargo_vcs_info.json` identifies upstream commit
 `0c8d107ab963362ba47ee3ab9e0173bc39bd101d` in
 <https://github.com/facebook/starlark-rust>.
 
-All 685 regular archive members (3,535,949 bytes) retain their original relative
-paths and exact contents, including the published normalized `Cargo.toml`,
-`Cargo.toml.orig`, VCS metadata, upstream tests and golden files. There are no
-omitted members or source patches. No formatting, lint suppression, feature
-change, or pruning is permitted in this baseline.
+H0 preserved all 685 regular archive members (3,535,949 bytes), including the
+published manifests, VCS metadata, tests and golden files. All paths remain
+present. Each later source patch records original and current sizes/hashes;
+modified files retain their license headers and carry modification notices.
+The original archive and inventory digests are never replaced by patched-tree
+digests. Unlisted changes or additions fail verification.
 
 `vendor/starlark-0.14.2.provenance.json` records the origins and explicitly
 distinguishes the additional license from published archive members. Its
@@ -27,7 +30,8 @@ mapping. It is reproducible directly from the tracked tree; no ignored receipt,
 network request or registry cache is required. The optional expanded inventory
 is in `artifacts/starlark-set-vendor-baseline.json`.
 
-From the repository root, verify the tracked baseline with:
+From the repository root, verify current files and reconstruct the anchored
+original inventory using only declared patches:
 
 ```sh
 python3 - <<'PY'
@@ -36,7 +40,11 @@ from pathlib import Path
 p = json.loads(Path('vendor/starlark-0.14.2.provenance.json').read_text())
 root = Path(p['archive']['archive_member_inventory']['path_base'])
 extra = {v['path']: v for v in p['additional_files']}
-members, found_extra = [], set()
+patches = {v['path']: v for v in p['declared_source_patches']}
+assert len(extra) == len(p['additional_files'])
+assert len(patches) == len(p['declared_source_patches'])
+assert not set(extra).intersection(patches)
+members, found_extra, found_patches = [], set(), set()
 for f in sorted(root.rglob('*'), key=lambda f: f.relative_to(root).as_posix()):
     assert not f.is_symlink(), f
     if f.is_dir():
@@ -49,13 +57,19 @@ for f in sorted(root.rglob('*'), key=lambda f: f.relative_to(root).as_posix()):
         assert all(extra[item['path']][k] == v for k, v in item.items())
         found_extra.add(item['path'])
     else:
+        if item['path'] in patches:
+            patch = patches[item['path']]
+            assert all(item[k] == patch['current'][k] for k in ('size', 'sha256'))
+            found_patches.add(item['path'])
+            item = dict(path=item['path'], **patch['original'])
         members.append(item)
 assert found_extra == set(extra)
+assert found_patches == set(patches)
 assert len(members) == p['archive']['regular_members']
 assert sum(v['size'] for v in members) == p['archive']['uncompressed_regular_file_bytes']
 raw = json.dumps(members, sort_keys=True, separators=(',', ':')).encode()
 assert hashlib.sha256(raw).hexdigest() == p['archive']['archive_member_inventory']['canonical_json_sha256']
-print('Exact baseline inventory and added license verified')
+print('Original inventory, declared patches and declared additions verified')
 PY
 ```
 
@@ -74,12 +88,17 @@ NOTICE request returned HTTP 404 and the complete pinned tree contained no
 NOTICE, so none is fabricated. Acquisition evidence is in the `licensing`
 section of `artifacts/starlark-set-edge-contract.json`.
 
+`BAZEL_RS_MODIFICATIONS.md` is a separately declared local notice for the modified
+profiling CSV, whose machine-readable format cannot carry a source comment. It
+is not an upstream NOTICE file. Rust patches carry inline modification notices.
+
 ## Verification and scope
 
 The extraction inventory rejects absolute paths, parent traversal, duplicate
 paths, links and special files before copying any member. Verification compares
-every vendored member directly with its archive bytes and rejects unexpected
-files except the separately hashed LICENSE addition.
+every original member directly with its archive bytes. The portable verifier
+checks declared current patches and reconstructs that original inventory;
+unexpected files are rejected except separately declared additions.
 
 Before/after `cargo metadata --locked --offline --format-version 1` receipts
 are `artifacts/starlark-vendor-before-metadata.json` and
@@ -96,7 +115,7 @@ semantic-equivalence requirement. Upstream files must not be reformatted to
 make a broader formatting command pass. Record any path-dependency lint or
 format-scope failure rather than silently changing the preserved source.
 
-## Verified baseline results
+## Verified H0 baseline results (historical)
 
 The baseline passes 952 Rust and 533 Python tests, formatting, strict Clippy,
 release and locked/offline builds. Twelve native/reference regression suites pass
