@@ -105,7 +105,7 @@ int_setting(name="int_setting", build_setting_default=-2)
 string_flag(name="string_flag", build_setting_default="red")
 string_setting(name="string_setting", build_setting_default="plain")
 string_list_flag(name="string_list_flag", build_setting_default=["a", "", "b"])
-string_list_setting(name="string_list_setting", build_setting_default=["x", "y"])
+string_list_setting(name="string_list_setting", build_setting_default=("x", "y"))
 repeatable_string_flag(name="repeatable_string_flag", build_setting_default=["seed", "tail"])
 consume(name="values", settings=[":bool_flag", ":bool_setting", ":int_flag", ":int_setting", ":string_flag", ":string_setting", ":string_list_flag", ":string_list_setting", ":repeatable_string_flag"])
 "#);

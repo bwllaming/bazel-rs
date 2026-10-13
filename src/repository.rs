@@ -390,6 +390,19 @@ impl RepositorySet {
                 .map_err(|error| format!("repository rule {label}%{symbol}: {error}"))?;
             // An innate usage validates every declaration before executing even
             // its first callback, including declarations not otherwise demanded.
+            // Reserve the whole group's copied defaults and supplied payloads
+            // before binding any declaration. A budget per invocation would
+            // miss amplification by many name-only uses of one large default.
+            let mut budget = crate::repository_budget::HostBudget::default();
+            for declaration in &group.declarations {
+                budget.schema(&definition.schema)?;
+                budget.string(&declaration.canonical_name)?;
+                budget.node()?;
+                for (name, value) in &declaration.attributes {
+                    budget.string(name)?;
+                    budget.json(value, 0)?;
+                }
+            }
             let attributes = group
                 .declarations
                 .iter()

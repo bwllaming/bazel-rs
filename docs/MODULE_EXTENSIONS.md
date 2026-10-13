@@ -36,7 +36,9 @@ existing MODULE behavior of ignoring root overrides.
 zero `facts_version` in this profile. Unsupported nondefault options fail explicitly.
 `tag_class(attrs={}, *, doc=None)` owns a frozen descriptor schema and is unhashable.
 
-Supported attribute kinds are string, string-list, int32, bool, label and label-list.
+Supported attribute kinds are string, string-list, ordered string-list dictionary,
+int32, bool, label and label-list. See [STRING_LIST_DICT.md](STRING_LIST_DICT.md)
+for tuple normalization, frozen dictionary values and snapshot timing.
 Private attributes may be supplied or mandatory. Tag attributes have no automatic
 `name` or dev field; those names can instead be explicitly declared. Following the
 pinned implementation, explicit `None` means omission, even for an unknown key.

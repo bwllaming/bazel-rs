@@ -8,6 +8,7 @@ use starlark::values::dict::DictRef;
 use starlark::values::list::ListRef;
 use starlark::values::none::NoneType;
 use starlark::values::structs::AllocStruct;
+use starlark::values::tuple::TupleRef;
 use starlark::values::{OwnedFrozenValue, Value, ValueLike};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -18,6 +19,7 @@ use crate::build_settings::{BuildSetting, BuildSettingKind};
 pub enum AttrKind {
     String,
     StringList,
+    StringListDict,
     Int,
     Bool,
     Label,
@@ -29,6 +31,7 @@ pub enum AttrKind {
 pub enum AttrValue {
     String(String),
     Strings(Vec<String>),
+    StringListDict(Vec<(String, Vec<String>)>),
     Int(i32),
     Bool(bool),
     Label(Option<String>),
@@ -43,6 +46,11 @@ pub struct AttrSpec {
     pub mandatory: bool,
     pub allow_files: bool,
     pub allow_single_file: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    pub non_empty: bool,
+}
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 #[derive(Clone, Debug)]
 pub struct CustomInvocation {
@@ -53,8 +61,15 @@ pub struct CustomInvocation {
     pub schema: BTreeMap<String, AttrSpec>,
 }
 
-fn string_list(value: Value<'_>) -> anyhow::Result<Vec<String>> {
+/// Attribute sequences accept only lists and tuples, without copying their elements.
+pub(crate) fn sequence_ref<'v>(value: Value<'v>) -> Option<&'v [Value<'v>]> {
     ListRef::from_value(value)
+        .map(ListRef::content)
+        .or_else(|| TupleRef::from_value(value).map(TupleRef::content))
+}
+
+fn string_list(value: Value<'_>) -> anyhow::Result<Vec<String>> {
+    sequence_ref(value)
         .ok_or_else(|| anyhow!("expected a list of strings"))?
         .iter()
         .map(|v| {
@@ -105,22 +120,45 @@ impl AttrKind {
     /// This raw-copy phase and lexical normalization each have a cumulative
     /// per-descriptor budget; neither relies on later schema-wrapper checks.
     fn preflight_default(&self, value: Value<'_>) -> anyhow::Result<()> {
+        self.preflight_value_with_budget(
+            value,
+            &mut crate::repository_budget::HostBudget::default(),
+        )
+    }
+
+    pub(crate) fn preflight_value_with_budget(
+        &self,
+        value: Value<'_>,
+        budget: &mut crate::repository_budget::HostBudget,
+    ) -> anyhow::Result<()> {
         let is_label = |value: Value<'_>| {
             value.unpack_str().is_some() || crate::starlark_types::label_parts(value).is_some()
         };
         let expected = match self {
             Self::String if value.unpack_str().is_none() => Some("a string"),
             Self::StringList | Self::OutputList
-                if !ListRef::from_value(value)
+                if !sequence_ref(value)
                     .is_some_and(|list| list.iter().all(|v| v.unpack_str().is_some())) =>
             {
                 Some("a list of strings")
+            }
+            Self::StringListDict
+                if !DictRef::from_value(value).is_some_and(|dict| {
+                    dict.iter().all(|(key, values)| {
+                        key.unpack_str().is_some()
+                            && sequence_ref(values).is_some_and(|values| {
+                                values.iter().all(|value| value.unpack_str().is_some())
+                            })
+                    })
+                }) =>
+            {
+                Some("a dict of strings to a list of strings (or tuple of strings)")
             }
             Self::Int if value.unpack_i32().is_none() => Some("a 32-bit int"),
             Self::Bool if value.unpack_bool().is_none() => Some("a bool"),
             Self::Label if !value.is_none() && !is_label(value) => Some("a string or Label"),
             Self::LabelList
-                if !ListRef::from_value(value).is_some_and(|list| list.iter().all(is_label)) =>
+                if !sequence_ref(value).is_some_and(|list| list.iter().copied().all(is_label)) =>
             {
                 Some("a list of strings or Labels")
             }
@@ -130,7 +168,6 @@ impl AttrKind {
         if let Some(expected) = expected {
             bail!("expected {expected}");
         }
-        let mut budget = crate::repository_budget::HostBudget::default();
         let mut charge = |value: Value<'_>| -> Result<(), String> {
             budget.node()?;
             if let Some(text) = value.unpack_str() {
@@ -155,9 +192,19 @@ impl AttrKind {
             Ok(())
         };
         charge(value).map_err(anyhow::Error::msg)?;
-        if let Some(list) = ListRef::from_value(value) {
-            for value in list.iter() {
+        if let Some(list) = sequence_ref(value) {
+            for &value in list {
                 charge(value).map_err(anyhow::Error::msg)?;
+            }
+        }
+        if let Some(dict) = DictRef::from_value(value) {
+            for (key, values) in dict.iter() {
+                charge(key).map_err(anyhow::Error::msg)?;
+                charge(values).map_err(anyhow::Error::msg)?;
+                // The complete shape was checked above, before any budget errors.
+                for &value in sequence_ref(values).expect("validated attribute sequence") {
+                    charge(value).map_err(anyhow::Error::msg)?;
+                }
             }
         }
         Ok(())
@@ -167,6 +214,7 @@ impl AttrKind {
         match self {
             Self::String => AttrValue::String(String::new()),
             Self::StringList => AttrValue::Strings(Vec::new()),
+            Self::StringListDict => AttrValue::StringListDict(Vec::new()),
             Self::Int => AttrValue::Int(0),
             Self::Bool => AttrValue::Bool(false),
             Self::Label => AttrValue::Label(None),
@@ -189,6 +237,18 @@ impl AttrKind {
         Ok(match self {
             Self::String => AttrValue::String(string()?),
             Self::StringList => AttrValue::Strings(string_list(value)?),
+            Self::StringListDict => AttrValue::StringListDict(
+                DictRef::from_value(value)
+                    .ok_or_else(|| anyhow!("expected a dict of strings to a list of strings"))?
+                    .iter()
+                    .map(|(key, values)| {
+                        let key = key
+                            .unpack_str()
+                            .ok_or_else(|| anyhow!("expected dict keys to be strings"))?;
+                        Ok((key.to_owned(), string_list(values)?))
+                    })
+                    .collect::<anyhow::Result<_>>()?,
+            ),
             Self::Int => AttrValue::Int(
                 value
                     .unpack_i32()
@@ -205,9 +265,10 @@ impl AttrKind {
                 Some(label_value(value, resolver)?)
             }),
             Self::LabelList => AttrValue::Labels(
-                ListRef::from_value(value)
+                sequence_ref(value)
                     .ok_or_else(|| anyhow!("expected a list of strings or Labels"))?
                     .iter()
+                    .copied()
                     .map(|value| {
                         label_value(value, resolver)
                             .map_err(|e| anyhow!("expected a list of strings or Labels: {e}"))
@@ -286,7 +347,22 @@ mod values {
             let named = args.names_map()?;
             let (repositories, package) =
                 crate::package::custom_label_context(eval).map_err(starlark::Error::new_other)?;
+            // One budget covers the retained schema and every supplied/default value.
+            // Charge the schema before register_custom clones it, including defaults
+            // that will be overridden by explicit BUILD arguments.
+            let budget = std::cell::RefCell::new(crate::repository_budget::HostBudget::default());
+            budget
+                .borrow_mut()
+                .schema(&self.schema)
+                .map_err(|e| starlark::Error::new_other(anyhow!(e)))?;
             let resolve = |text: &str| {
+                let bytes = repositories
+                    .resolution_size_bound(text, &package.repository, &package.package)
+                    .map_err(anyhow::Error::msg)?;
+                budget
+                    .borrow_mut()
+                    .bytes(bytes)
+                    .map_err(anyhow::Error::msg)?;
                 repositories
                     .parse(text, &package.repository, &package.package)
                     .map_err(anyhow::Error::msg)
@@ -319,16 +395,27 @@ mod values {
                         }
                         // Bazel's build-setting boolean conversion accepts 0/1;
                         // ordinary attr.bool attributes remain strictly boolean.
-                        let parsed = if key == "build_setting_default"
-                            && self
-                                .build_setting
-                                .is_some_and(|s| s.kind == BuildSettingKind::Bool)
-                            && matches!(value.unpack_i32(), Some(0 | 1))
-                        {
-                            Ok(AttrValue::Bool(value.unpack_i32() == Some(1)))
-                        } else {
-                            spec.kind.parse(*value, Some(&resolve))
-                        }
+                        let parsed = (|| {
+                            budget
+                                .borrow_mut()
+                                .string(key)
+                                .map_err(anyhow::Error::msg)?;
+                            if key == "build_setting_default"
+                                && self
+                                    .build_setting
+                                    .is_some_and(|s| s.kind == BuildSettingKind::Bool)
+                                && matches!(value.unpack_i32(), Some(0 | 1))
+                            {
+                                budget.borrow_mut().node().map_err(anyhow::Error::msg)?;
+                                Ok(AttrValue::Bool(value.unpack_i32() == Some(1)))
+                            } else {
+                                spec.kind.preflight_value_with_budget(
+                                    *value,
+                                    &mut budget.borrow_mut(),
+                                )?;
+                                spec.kind.parse(*value, Some(&resolve))
+                            }
+                        })()
                         .map_err(|e| {
                             starlark::Error::new_other(anyhow!("attribute {key:?}: {e}"))
                         })?;
@@ -345,6 +432,13 @@ mod values {
                         return Err(starlark::Error::new_other(anyhow!(
                             "missing mandatory attribute {key:?}"
                         )));
+                    }
+                    {
+                        let mut budget = budget.borrow_mut();
+                        budget
+                            .string(key)
+                            .and_then(|()| budget.attr_value(&spec.default))
+                            .map_err(|e| starlark::Error::new_other(anyhow!(e)))?;
                     }
                     attrs.insert(key.clone(), spec.default.clone());
                 }
@@ -415,6 +509,7 @@ fn descriptor_in_package(
         mandatory,
         allow_files: allow_files || allow_single_file,
         allow_single_file,
+        non_empty: false,
     }))
 }
 
@@ -435,6 +530,24 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
     ) -> anyhow::Result<Descriptor> {
         let _ = doc;
         descriptor(AttrKind::StringList, default, mandatory, false, false)
+    }
+    fn string_list_dict(
+        #[starlark(default = true)] allow_empty: bool,
+        #[starlark(require = named)] default: Option<Value<'_>>,
+        #[starlark(require = named)] configurable: Option<Value<'_>>,
+        #[starlark(require = named, default = false)] mandatory: bool,
+        #[starlark(require = named, default = NoneType)] doc: Value<'_>,
+    ) -> anyhow::Result<Descriptor> {
+        if configurable.is_some() {
+            bail!("attr.string_list_dict configurable is unsupported");
+        }
+        if !doc.is_none() && doc.unpack_str().is_none() {
+            bail!("attr.string_list_dict doc must be a string or None");
+        }
+        let mut descriptor =
+            descriptor(AttrKind::StringListDict, default, mandatory, false, false)?;
+        descriptor.0.non_empty = !allow_empty;
+        Ok(descriptor)
     }
     fn int(
         #[starlark(require = named)] default: Option<Value<'_>>,
@@ -571,6 +684,8 @@ mod definitions {
                 )
                 .map_err(|e| anyhow!("rule implementation must be callable with ctx: {e}"))?;
             let mut schema = BTreeMap::new();
+            let mut budget = crate::repository_budget::HostBudget::default();
+            budget.node().map_err(anyhow::Error::msg)?;
             if let Some(attrs) = attrs {
                 let dict = DictRef::from_value(attrs)
                     .ok_or_else(|| anyhow!("rule attrs must be a dict of attribute descriptors"))?;
@@ -614,6 +729,8 @@ mod definitions {
                             "private attribute {name:?} cannot be mandatory because it cannot be set explicitly"
                         );
                     }
+                    budget.string(name).map_err(anyhow::Error::msg)?;
+                    budget.spec(&spec.0).map_err(anyhow::Error::msg)?;
                     schema.insert(name.to_owned(), spec.0.clone());
                 }
             }
@@ -629,14 +746,20 @@ mod definitions {
                     BuildSettingKind::String => AttrKind::String,
                     BuildSettingKind::StringList => AttrKind::StringList,
                 };
-                schema.insert(
-                    "build_setting_default".into(),
-                    descriptor(kind, None, true, false, false)?.0,
-                );
-                schema.insert(
-                    "help".into(),
-                    descriptor(AttrKind::String, None, false, false, false)?.0,
-                );
+                for (name, spec) in [
+                    (
+                        "build_setting_default",
+                        descriptor(kind, None, true, false, false)?.0,
+                    ),
+                    (
+                        "help",
+                        descriptor(AttrKind::String, None, false, false, false)?.0,
+                    ),
+                ] {
+                    budget.string(name).map_err(anyhow::Error::msg)?;
+                    budget.spec(&spec).map_err(anyhow::Error::msg)?;
+                    schema.insert(name.to_owned(), spec);
+                }
             }
             Ok(eval.heap().alloc(DefinitionGen {
                 implementation,
@@ -680,6 +803,273 @@ mod tests {
             eval.extra = Some(&context);
             eval.eval_module(ast, &globals).unwrap_err().to_string()
         })
+    }
+
+    #[test]
+    fn string_list_dict_snapshots_ordered_defaults_without_freezing_callers() {
+        let globals = GlobalsBuilder::standard().with(rule_globals).build();
+        Module::with_temp_heap(|module| {
+            let ast = AstModule::parse(
+                "defs.bzl",
+                r#"
+items = ["first", "first"]
+defaults = {"z": items, "a": ("last",), "empty": []}
+x = attr.string_list_dict(False, default=defaults, mandatory=True, doc=None)
+items.append("later")
+defaults["new"] = ["later"]
+y = attr.string_list_dict(allow_empty=False, doc="documented")
+z = attr.string_list_dict()
+"#
+                .into(),
+                &Dialect::Standard,
+            )
+            .unwrap();
+            Evaluator::new(&module).eval_module(ast, &globals).unwrap();
+            let spec = attribute_spec_ref(module.get("x").unwrap()).unwrap();
+            assert_eq!(spec.kind, AttrKind::StringListDict);
+            assert!(spec.non_empty && spec.mandatory);
+            assert_eq!(
+                spec.default,
+                AttrValue::StringListDict(vec![
+                    ("z".into(), vec!["first".into(), "first".into()]),
+                    ("a".into(), vec!["last".into()]),
+                    ("empty".into(), vec![]),
+                ])
+            );
+            let empty = attribute_spec_ref(module.get("y").unwrap()).unwrap();
+            assert!(empty.non_empty);
+            assert_eq!(empty.default, AttrValue::StringListDict(vec![]));
+            assert!(
+                !attribute_spec_ref(module.get("z").unwrap())
+                    .unwrap()
+                    .non_empty
+            );
+            assert_eq!(
+                DictRef::from_value(module.get("defaults").unwrap())
+                    .unwrap()
+                    .len(),
+                4
+            );
+            assert_eq!(sequence_ref(module.get("items").unwrap()).unwrap().len(), 3);
+        });
+    }
+
+    #[test]
+    fn string_list_dict_rejects_invalid_shapes_and_present_configurable() {
+        for expression in [
+            "attr.string_list_dict(default=None)",
+            "attr.string_list_dict(default=[])",
+            "attr.string_list_dict(default={1: []})",
+            "attr.string_list_dict(default={'x': 'text'})",
+            "attr.string_list_dict(default={'x': {}})",
+            "attr.string_list_dict(default={'x': [1]})",
+            "attr.string_list_dict(default={'x': (True,)})",
+            "attr.string_list_dict(default={'x': [Label('//:x')]})",
+            "attr.string_list_dict(default={Label('//:x'): []})",
+        ] {
+            let error = definition_error(expression);
+            assert!(
+                error.contains("expected a dict of strings to a list of strings"),
+                "{expression}: {error}"
+            );
+        }
+        for value in ["None", "True", "False", "1"] {
+            let error = definition_error(&format!("attr.string_list_dict(configurable={value})"));
+            assert!(error.contains("configurable is unsupported"), "{error}");
+        }
+        for (expression, expected) in [
+            (
+                "attr.string_list_dict(doc=1)",
+                "doc must be a string or None",
+            ),
+            ("attr.string_list_dict(allow_empty=None)", "bool"),
+            ("attr.string_list_dict(mandatory=1)", "bool"),
+            ("attr.string_list_dict(True, {})", "positional"),
+        ] {
+            let error = definition_error(expression);
+            assert!(error.contains(expected), "{expression}: {error}");
+        }
+    }
+
+    #[test]
+    fn string_list_dict_preflight_counts_keys_sequences_and_shared_strings() {
+        for expression in [
+            "attr.string_list_dict(default={'x'*(9*1024*1024): []})",
+            "attr.string_list_dict(default={'x': ['x'*(1024*1024)]*9})",
+            "attr.string_list_dict(default={'x': ('x'*(1024*1024),)*9})",
+            "attr.string_list_dict(default={str(i): [] for i in range(50000)})",
+            "attr.string_list_dict(default={'x': ['']*100000})",
+        ] {
+            let error = definition_error(expression);
+            assert!(
+                error.contains("host preparation") && error.contains("limit"),
+                "{expression}: {error}"
+            );
+        }
+        let error = definition_error(
+            "attr.string_list_dict(default={'x': ['x'*(1024*1024)]*9, 'bad': [1]})",
+        );
+        assert!(error.contains("list of strings"), "{error}");
+        assert!(!error.contains("host preparation"), "{error}");
+    }
+
+    #[test]
+    fn attribute_sequences_accept_tuples_and_keep_strict_elements() {
+        let globals = GlobalsBuilder::standard().with(rule_globals).build();
+        Module::with_temp_heap(|module| {
+            let ast = AstModule::parse(
+                "defs.bzl",
+                "ss = ('a', 'a')\nlabels = ('//:a', Label('//:b'))\nbad = (1,)".into(),
+                &Dialect::Standard,
+            )
+            .unwrap();
+            Evaluator::new(&module).eval_module(ast, &globals).unwrap();
+            for (kind, name, expected) in [
+                (
+                    AttrKind::StringList,
+                    "ss",
+                    AttrValue::Strings(vec!["a".into(), "a".into()]),
+                ),
+                (
+                    AttrKind::OutputList,
+                    "ss",
+                    AttrValue::Outputs(vec!["a".into(), "a".into()]),
+                ),
+                (
+                    AttrKind::LabelList,
+                    "labels",
+                    AttrValue::Labels(vec!["//:a".into(), "//:b".into()]),
+                ),
+            ] {
+                let value = module.get(name).unwrap();
+                kind.preflight_default(value).unwrap();
+                assert_eq!(kind.parse(value, None).unwrap(), expected);
+                assert!(kind.preflight_default(module.get("bad").unwrap()).is_err());
+            }
+        });
+        for expression in [
+            "attr.string_list(default=('x'*(1024*1024),)*9)",
+            "attr.label_list(default=('//:'+'x'*65536,)*129)",
+        ] {
+            assert!(definition_error(expression).contains("host preparation"));
+        }
+    }
+
+    #[test]
+    fn non_empty_metadata_preserves_existing_schema_serialization() {
+        let spec = descriptor(AttrKind::String, None, false, false, false)
+            .unwrap()
+            .0;
+        assert_eq!(
+            serde_json::to_string(&spec).unwrap(),
+            r#"{"kind":"String","default":{"String":""},"mandatory":false,"allow_files":false,"allow_single_file":false}"#
+        );
+        let mut spec = descriptor(AttrKind::StringListDict, None, false, false, false)
+            .unwrap()
+            .0;
+        spec.default = AttrValue::StringListDict(vec![
+            ("z".into(), vec!["b".into(), "a".into()]),
+            ("a".into(), vec![]),
+        ]);
+        assert!(!serde_json::to_string(&spec).unwrap().contains("non_empty"));
+        spec.non_empty = true;
+        assert_eq!(
+            serde_json::to_string(&spec).unwrap(),
+            r#"{"kind":"StringListDict","default":{"StringListDict":[["z",["b","a"]],["a",[]]]},"mandatory":false,"allow_files":false,"allow_single_file":false,"non_empty":true}"#
+        );
+    }
+
+    #[test]
+    fn rule_schema_preflight_charges_repeated_descriptor_aliases() {
+        let error = definition_error(
+            "attr.string_list_dict(default={'x': ['x'*(3*1024*1024)]})\nr = rule(implementation=impl, attrs={name: x for name in ['a','b','c']})",
+        );
+        assert!(
+            error.contains("host preparation") && error.contains("limit"),
+            "{error}"
+        );
+    }
+
+    fn build_fixture(definition: &str, call: &str) -> Result<crate::package::Package, String> {
+        let root = tempfile::Builder::new()
+            .prefix("attribute-budget-")
+            .tempdir_in("/tmp/opencode")
+            .unwrap();
+        std::fs::write(
+            root.path().join("defs.bzl"),
+            format!("def impl(ctx):\n    return []\n{definition}\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("BUILD.bazel"),
+            format!("load(':defs.bzl', 'r')\n{call}\n"),
+        )
+        .unwrap();
+        crate::package::evaluate(root.path(), "")
+    }
+
+    #[test]
+    fn build_attribute_preflight_aggregates_schema_explicit_values_and_defaults() {
+        for (definition, call) in [
+            (
+                "r = rule(implementation=impl, attrs={'x': attr.string_list_dict()})",
+                "r(name='x', x={'k': ['x'*(1024*1024)]*9})",
+            ),
+            (
+                "r = rule(implementation=impl, attrs={'a': attr.string_list_dict(), 'b': attr.string_list_dict()})",
+                "r(name='x', a={'k': ['x'*(5*1024*1024)]}, b={'k': ['x'*(5*1024*1024)]})",
+            ),
+            (
+                "r = rule(implementation=impl, attrs={'x': attr.string_list_dict(default={'k': ['x'*(5*1024*1024)]})})",
+                "r(name='x')",
+            ),
+            (
+                "r = rule(implementation=impl, attrs={'x': attr.string_list_dict(default={'k': ['x'*(5*1024*1024)]})})",
+                "r(name='x', x={'k': ['x'*(4*1024*1024)]})",
+            ),
+        ] {
+            let error = build_fixture(definition, call).unwrap_err();
+            assert!(
+                error.contains("host preparation") && error.contains("limit"),
+                "{error}"
+            );
+        }
+        build_fixture("r = rule(implementation=impl, attrs={'x': attr.string_list_dict(default={'k': ['x'*(5*1024*1024)]})})", "r(name='x', x={})").unwrap();
+    }
+
+    #[test]
+    fn build_string_list_dict_snapshots_values_and_preserves_none_mandatory_semantics() {
+        let definition = "r = rule(implementation=impl, attrs={'x': attr.string_list_dict(default={'default': ['value']})})";
+        let package = build_fixture(definition, "items=['a']\nd={'z': items, 'a': ('b',)}\nr(name='x', x=d)\nitems.append('late')\nd['new']=[]\nr(name='none', x=None)").unwrap();
+        assert_eq!(
+            package[&crate::label::Label::parse("//:x", "").unwrap()]
+                .custom
+                .as_ref()
+                .unwrap()
+                .attrs["x"],
+            AttrValue::StringListDict(vec![
+                ("z".into(), vec!["a".into()]),
+                ("a".into(), vec!["b".into()])
+            ])
+        );
+        assert_eq!(
+            package[&crate::label::Label::parse("//:none", "").unwrap()]
+                .custom
+                .as_ref()
+                .unwrap()
+                .attrs["x"],
+            AttrValue::StringListDict(vec![("default".into(), vec!["value".into()])])
+        );
+        let definition =
+            "r = rule(implementation=impl, attrs={'x': attr.string_list_dict(mandatory=True)})";
+        for call in ["r(name='x')", "r(name='x', x=None)"] {
+            assert!(
+                build_fixture(definition, call)
+                    .unwrap_err()
+                    .contains("missing mandatory attribute")
+            );
+        }
+        build_fixture(definition, "r(name='x', x={})").unwrap();
     }
 
     #[test]

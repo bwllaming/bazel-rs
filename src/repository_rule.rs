@@ -270,6 +270,9 @@ pub fn globals(builder: &mut GlobalsBuilder) {
 /// `raw` may include the original invocation's `name`; it is checked as a
 /// nonempty string, then replaced by `canonical_name` in the returned attributes.
 /// Nulls mean omitted, including unknown keys. Legacy metadata is ignored.
+/// Repository attributes are type-checked without enforcing analysis-only non_empty.
+// The caller must cumulatively preflight schema/default expansion and raw
+// arguments before calling this copying binder for a declaration group.
 pub fn bind_attributes(
     definition: &RuleDefinition,
     raw: &BTreeMap<String, serde_json::Value>,
@@ -313,6 +316,9 @@ pub fn bind_attributes(
             AttrValue::Strings(values) | AttrValue::Labels(values) | AttrValue::Outputs(values) => {
                 values.iter().all(|value| value.is_ascii())
             }
+            AttrValue::StringListDict(entries) => entries
+                .iter()
+                .all(|(key, values)| key.is_ascii() && values.iter().all(|value| value.is_ascii())),
             AttrValue::Label(value) | AttrValue::Output(value) => {
                 value.as_ref().is_none_or(|value| value.is_ascii())
             }
@@ -427,6 +433,27 @@ fn parse_attribute(
     Ok(match kind {
         AttrKind::String => AttrValue::String(string()?.to_owned()),
         AttrKind::StringList => AttrValue::Strings(strings()?),
+        AttrKind::StringListDict => AttrValue::StringListDict(
+            value
+                .as_object()
+                .ok_or_else(|| "expected a dict of string lists".to_owned())?
+                .iter()
+                .map(|(key, value)| {
+                    // Transport normalizes Starlark lists and tuples to JSON arrays.
+                    let values = value
+                        .as_array()
+                        .ok_or_else(|| format!("dict key {key:?}: expected a list of strings"))?
+                        .iter()
+                        .map(|value| {
+                            value.as_str().map(str::to_owned).ok_or_else(|| {
+                                format!("dict key {key:?}: expected a list of strings")
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok((key.clone(), values))
+                })
+                .collect::<Result<_, String>>()?,
+        ),
         AttrKind::Int => AttrValue::Int(
             value
                 .as_i64()
@@ -528,12 +555,210 @@ mod tests {
     }
 
     #[test]
-    fn repeated_descriptor_defaults_are_bounded_before_schema_clones() {
-        let error = extension("def impl(ctx):\n    return None\nd = attr.string(default='x' * 1048576)\nR = repository_rule(impl, attrs={'a' + str(i):d for i in range(600)})").unwrap_err();
-        assert!(
-            error.contains("host preparation weighted byte limit"),
-            "{error}"
+    fn string_list_dict_defaults_are_owned_ordered_and_serialize_flags_only_when_true() {
+        let module = extension(
+            "items = ['before', 'before']\nd = {'z': items, 'a': ()}\nspec = attr.string_list_dict(default=d, allow_empty=False)\nattrs = {'d': spec, 'old': attr.string()}\ndef impl(ctx):\n    return ctx\nR = repository_rule(impl, attrs=attrs)\nitems.append('after')\nd['later'] = []\nattrs['extra'] = attr.int()\n(d['z'] == ['before', 'before', 'after']) or fail('source mutated')",
+        ).unwrap();
+        let definition = unpack(&module.get("R").unwrap()).unwrap();
+        drop(module);
+        let expected = AttrValue::StringListDict(vec![
+            (
+                "z".to_owned(),
+                vec!["before".to_owned(), "before".to_owned()],
+            ),
+            ("a".to_owned(), vec![]),
+        ]);
+        assert_eq!(definition.schema.len(), 2);
+        assert_eq!(definition.schema["d"].kind, AttrKind::StringListDict);
+        assert!(definition.schema["d"].non_empty);
+        assert_eq!(definition.schema["d"].default, expected);
+        let mut bound = bind(&definition, json!({"d":null})).unwrap();
+        assert_eq!(bound["d"], expected);
+        if let AttrValue::StringListDict(entries) = bound.get_mut("d").unwrap() {
+            entries[0].1.push("bound-only".to_owned());
+        }
+        assert_eq!(definition.schema["d"].default, expected);
+        assert_eq!(bind(&definition, json!({})).unwrap()["d"], expected);
+        let serialized = serde_json::to_value(&definition.schema["d"]).unwrap();
+        assert_eq!(serialized["non_empty"], true);
+        assert_eq!(
+            serialized["default"],
+            json!({"StringListDict":[["z",["before","before"]],["a",[]]]})
         );
+        assert_eq!(
+            serde_json::to_value(&definition.schema["old"]).unwrap(),
+            json!({
+                "kind":"String", "default":{"String":""}, "mandatory":false,
+                "allow_files":false, "allow_single_file":false
+            })
+        );
+        Module::with_temp_heap(|module| {
+            let implementation = module
+                .heap()
+                .access_owned_frozen_value(&definition.implementation);
+            let result = Evaluator::new(&module)
+                .eval_function(implementation, &[module.heap().alloc(42)], &[])
+                .unwrap();
+            assert_eq!(result.unpack_i32(), Some(42));
+        });
+    }
+
+    #[test]
+    fn string_list_dict_binding_preserves_order_and_ignores_non_empty() {
+        let definition = definition("{'d':attr.string_list_dict(allow_empty=False)}");
+        let raw = json!({"d":{"z":["same","same"],"a":[]}});
+        let original = raw.clone();
+        assert_eq!(
+            bind(&definition, raw.clone()).unwrap()["d"],
+            AttrValue::StringListDict(vec![
+                ("z".to_owned(), vec!["same".to_owned(), "same".to_owned()]),
+                ("a".to_owned(), vec![]),
+            ])
+        );
+        assert_eq!(raw, original);
+        for value in [json!({}), json!({"d":null}), json!({"d":{}})] {
+            assert_eq!(
+                bind(&definition, value).unwrap()["d"],
+                AttrValue::StringListDict(vec![])
+            );
+        }
+        let required = self::definition(
+            "{'d':attr.string_list_dict(default={'z':['fallback']}, mandatory=True, allow_empty=False)}",
+        );
+        for value in [json!({}), json!({"d":null})] {
+            assert!(
+                bind(&required, value)
+                    .unwrap_err()
+                    .contains("missing mandatory repository attribute \"d\"")
+            );
+        }
+        assert_eq!(
+            bind(&required, json!({"d":{}})).unwrap()["d"],
+            AttrValue::StringListDict(vec![])
+        );
+    }
+
+    #[test]
+    fn string_list_dict_rejects_invalid_shapes_and_unicode_without_partial_binding() {
+        let definition = definition("{'a':attr.string_list_dict(), 'z':attr.string_list_dict()}");
+        for value in [
+            json!([]),
+            json!("text"),
+            json!(1),
+            json!({"k":"text"}),
+            json!({"k":1}),
+            json!({"k":null}),
+            json!({"k":{}}),
+            json!({"k":[1]}),
+            json!({"k":[true]}),
+            json!({"k":[null]}),
+            json!({"k":[[]]}),
+            json!({"k":[{}]}),
+        ] {
+            let supplied = raw(json!({"a":{"ok":["first"]}, "z":value}));
+            let original = supplied.clone();
+            let error = bind_attributes(&definition, &supplied, "repo", |_| panic!("not a label"))
+                .unwrap_err();
+            assert!(
+                error.contains("repository attribute \"z\": expected")
+                    || error.contains("repository attribute \"z\": dict key"),
+                "{error}"
+            );
+            assert_eq!(supplied, original);
+            assert_eq!(
+                definition.schema["a"].default,
+                AttrValue::StringListDict(vec![])
+            );
+        }
+        for value in [json!({"é":[]}), json!({"k":["ascii","é"]})] {
+            assert!(
+                bind(&definition, json!({"z":value}))
+                    .unwrap_err()
+                    .contains("non-ASCII repository attribute \"z\"")
+            );
+        }
+        for default in ["{'é':[]}", "{'k':('ascii', 'é')}"] {
+            let definition =
+                self::definition(&format!("{{'d':attr.string_list_dict(default={default})}}"));
+            assert!(
+                bind(&definition, json!({}))
+                    .unwrap_err()
+                    .contains("non-ASCII repository attribute \"d\"")
+            );
+        }
+    }
+
+    #[test]
+    fn recorded_string_list_dict_preserves_normalized_sequences_and_rejects_labels() {
+        let definition = definition("{'d':attr.string_list_dict()}");
+        // Both list and tuple input arrive as RecordedValue::List from transport.
+        let value = RecordedValue::Dict(vec![
+            (
+                "z".to_owned(),
+                RecordedValue::List(vec![
+                    RecordedValue::String("same".to_owned()),
+                    RecordedValue::String("same".to_owned()),
+                ]),
+            ),
+            ("a".to_owned(), RecordedValue::List(vec![])),
+        ]);
+        let raw = BTreeMap::from([("d".to_owned(), value)]);
+        let original = raw.clone();
+        let bound =
+            bind_recorded_attributes(&definition, &raw, "repo", |_| panic!("not a label")).unwrap();
+        assert_eq!(
+            bound["d"],
+            AttrValue::StringListDict(vec![
+                ("z".to_owned(), vec!["same".to_owned(), "same".to_owned()]),
+                ("a".to_owned(), vec![]),
+            ])
+        );
+        assert_eq!(raw, original);
+        for value in [
+            RecordedValue::Label("//:target".to_owned()),
+            RecordedValue::List(vec![RecordedValue::Label("//:target".to_owned())]),
+        ] {
+            let raw = BTreeMap::from([(
+                "d".to_owned(),
+                RecordedValue::Dict(vec![("k".to_owned(), value)]),
+            )]);
+            let error = bind_recorded_attributes(&definition, &raw, "repo", |_| {
+                panic!("must reject genuine Label")
+            })
+            .unwrap_err();
+            assert!(
+                error.contains("repository attribute \"d\"") && error.contains("got Label"),
+                "{error}"
+            );
+        }
+        for (key, value) in [("é", "ascii"), ("ascii", "é")] {
+            let raw = BTreeMap::from([(
+                "d".to_owned(),
+                RecordedValue::Dict(vec![(
+                    key.to_owned(),
+                    RecordedValue::List(vec![RecordedValue::String(value.to_owned())]),
+                )]),
+            )]);
+            assert!(
+                bind_recorded_attributes(&definition, &raw, "repo", |_| panic!("not a label"))
+                    .unwrap_err()
+                    .contains("non-ASCII repository attribute \"d\"")
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_descriptor_defaults_are_bounded_before_schema_clones() {
+        for descriptor in [
+            "attr.string(default='x' * 1048576)",
+            "attr.string_list_dict(default={'z':['x' * 1048576], 'a':[]})",
+        ] {
+            let error = extension(&format!("def impl(ctx):\n    return None\nd = {descriptor}\nR = repository_rule(impl, attrs={{'a' + str(i):d for i in range(600)}})")).unwrap_err();
+            assert!(
+                error.contains("host preparation weighted byte limit"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
@@ -1016,10 +1241,7 @@ mod tests {
                 "tags".to_owned(),
                 RecordedValue::Label("//:not_a_string".to_owned()),
             ),
-            (
-                "visibility".to_owned(),
-                RecordedValue::Dict(BTreeMap::new()),
-            ),
+            ("visibility".to_owned(), RecordedValue::Dict(vec![])),
             (
                 "name".to_owned(),
                 RecordedValue::String("original".to_owned()),
@@ -1032,11 +1254,7 @@ mod tests {
         assert_eq!(attrs["name"], AttrValue::String("ext+made".to_owned()));
         for (name, value, message) in [
             ("required", RecordedValue::None, "missing mandatory"),
-            (
-                "text",
-                RecordedValue::Dict(BTreeMap::new()),
-                "expected a string",
-            ),
+            ("text", RecordedValue::Dict(vec![]), "expected a string"),
             ("text", RecordedValue::String("é".to_owned()), "non-ASCII"),
             (
                 "unknown",

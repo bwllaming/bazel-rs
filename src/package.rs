@@ -1065,7 +1065,7 @@ ordinary(name="ordinary", help="ordinary help", build_setting_default=True)
             ),
             (
                 "string_list",
-                ", build_setting_default=('ok',)",
+                ", build_setting_default=('ok', 1)",
                 "expected a list of strings",
             ),
             (
@@ -1187,7 +1187,7 @@ r = rule(implementation=impl, attrs={
         for (call, expected) in [
             ("r(name='x')", "mandatory"),
             ("r(name='x', s=1)", "string"),
-            ("r(name='x', s='', ss=('a',))", "list of strings"),
+            ("r(name='x', s='', ss=(1,))", "list of strings"),
             ("r(name='x', s='', ss=[1])", "list of strings"),
             ("r(name='x', s='', i=True)", "int"),
             ("r(name='x', s='', b=1)", "bool"),

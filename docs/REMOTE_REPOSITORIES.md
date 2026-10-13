@@ -84,11 +84,15 @@ BUILD overlay as a test consumer; they are not evidence that upstream BUILD code
 is supported. Three positive comparisons and seven native rejection cases are
 recorded in `artifacts/pax-comments-validation.json`.
 
-The preserved application probe now passes archive extraction and fails at
+The preserved application probe at the archive increment passed extraction and failed at
 `attr.string_list_dict` in genuine `bazel_features` repository code. The fixture
 version does not establish the application's selected version. See
 `artifacts/mainrepo-pax-comments-loading.json`; no application-build success is
 claimed.
+
+The subsequent dictionary-attribute increment advances that same probe to
+`repository_rule(local=True)`; see `docs/STRING_LIST_DICT.md` for its typed-value
+profile and current evidence.
 
 Verified overlays replace files and are executable. Ordered registry patches
 then apply, original registry MODULE bytes replace the extracted MODULE, and

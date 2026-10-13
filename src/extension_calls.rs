@@ -8,6 +8,7 @@ use starlark::eval::{Arguments, Evaluator};
 use starlark::values::Value;
 use starlark::values::dict::DictRef;
 use starlark::values::list::ListRef;
+use starlark::values::tuple::TupleRef;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -28,7 +29,7 @@ pub enum RecordedValue {
     String(String),
     Label(String),
     List(Vec<RecordedValue>),
-    Dict(BTreeMap<String, RecordedValue>),
+    Dict(Vec<(String, RecordedValue)>),
 }
 
 #[derive(Debug)]
@@ -231,8 +232,15 @@ fn snapshot(
             values.push(snapshot(item, depth + 1, budget, host)?);
         }
         RecordedValue::List(values)
+    } else if let Some(tuple) = TupleRef::from_value(value) {
+        // Attribute list data accepts tuples, not arbitrary Starlark iterables.
+        let mut values = Vec::new();
+        for item in tuple.iter() {
+            values.push(snapshot(item, depth + 1, budget, host)?);
+        }
+        RecordedValue::List(values)
     } else if let Some(dict) = DictRef::from_value(value) {
-        let mut values = BTreeMap::new();
+        let mut values = Vec::new();
         for (key, item) in dict.iter() {
             let key = key.unpack_str().ok_or_else(|| {
                 anyhow!("repository snapshot dict keys must be ASCII strings; label-keyed dicts are unsupported")
@@ -240,7 +248,7 @@ fn snapshot(
             budget.key(key, depth + 1)?;
             host.string(key).map_err(anyhow::Error::msg)?;
             let item = snapshot(item, depth + 1, budget, host)?;
-            values.insert(key.to_owned(), item);
+            values.push((key.to_owned(), item));
         }
         RecordedValue::Dict(values)
     } else if value.get_type() == "int" {
@@ -362,10 +370,10 @@ mod tests {
         assert_eq!(calls[0].attributes["words"], before);
         assert_eq!(
             calls[0].attributes["nested"],
-            RecordedValue::Dict(BTreeMap::from([(
+            RecordedValue::Dict(vec![(
                 "k".to_owned(),
                 RecordedValue::List(vec![before.clone()])
-            ),]))
+            )])
         );
         assert_eq!(
             calls[1].attributes["words"],
@@ -384,6 +392,58 @@ mod tests {
             )
             .unwrap_err()
             .contains("unknown repository attribute")
+        );
+    }
+
+    #[test]
+    fn ordered_dicts_and_nested_tuples_snapshot_each_call_with_typed_labels() {
+        let calls = capture(
+            "words = ['before']\nnested = {'z': (words, main_label(), '//original:data'), 'a': ()}\ncapture(name='first', z=(nested,), a=[(1, 2)])\nwords.append('between')\nnested['m'] = ('new',)\ncapture(name='second', z=(nested,), a=[(1, 2)])\nwords.append('after')",
+        ).unwrap();
+        assert_eq!(
+            calls[0]
+                .attributes
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["a", "name", "z"]
+        );
+        let expected = |words: &[&str], extra: bool| {
+            let mut dict = vec![
+                (
+                    "z".to_owned(),
+                    RecordedValue::List(vec![
+                        RecordedValue::List(
+                            words
+                                .iter()
+                                .map(|s| RecordedValue::String((*s).to_owned()))
+                                .collect(),
+                        ),
+                        RecordedValue::Label("//original:data".to_owned()),
+                        RecordedValue::String("//original:data".to_owned()),
+                    ]),
+                ),
+                ("a".to_owned(), RecordedValue::List(vec![])),
+            ];
+            if extra {
+                dict.push((
+                    "m".to_owned(),
+                    RecordedValue::List(vec![RecordedValue::String("new".to_owned())]),
+                ));
+            }
+            RecordedValue::List(vec![RecordedValue::Dict(dict)])
+        };
+        assert_eq!(calls[0].attributes["z"], expected(&["before"], false));
+        assert_eq!(
+            calls[1].attributes["z"],
+            expected(&["before", "between"], true)
+        );
+        assert_eq!(
+            calls[0].attributes["a"],
+            RecordedValue::List(vec![RecordedValue::List(vec![
+                RecordedValue::Int(1),
+                RecordedValue::Int(2)
+            ])])
         );
     }
 
@@ -448,10 +508,10 @@ mod tests {
             ("-2147483649", "32-bit int"),
             ("1267650600228229401496703205376", "32-bit int"),
             ("1.5", "type float"),
-            ("(1, 2)", "type tuple"),
             ("capture", "unsupported repository snapshot"),
             ("'é'", "non-ASCII"),
             ("{'k': ['é']}", "non-ASCII"),
+            ("{'k': ('é',)}", "non-ASCII"),
             ("{'é': 'ok'}", "non-ASCII"),
             ("{1: 'ok'}", "dict keys"),
             ("{main_label(): 'ok'}", "label-keyed dicts"),
@@ -475,6 +535,7 @@ mod tests {
             format!("capture(name='made', value={deep})"),
             "x=[]\nx.append(x)\ncapture(name='made', value=x)".to_owned(),
             "x={}\nx['self']=x\ncapture(name='made', value=x)".to_owned(),
+            "x=[]\nt=(x,)\nx.append(t)\ncapture(name='made', value=t)".to_owned(),
         ] {
             let error = capture(&source).unwrap_err();
             assert!(error.contains("maximum depth"), "{error}");
@@ -501,6 +562,30 @@ mod tests {
         ))
         .unwrap_err();
         assert!(error.contains("10000 repository calls"), "{error}");
+    }
+
+    #[test]
+    fn tuple_and_dict_payloads_are_charged_before_copying() {
+        for value in [
+            format!("('x' * {MAX_CALL_BYTES},)"),
+            format!("{{'x' * {MAX_CALL_BYTES}: ()}}"),
+        ] {
+            let error = capture(&format!("capture(name='made', value={value})")).unwrap_err();
+            assert!(error.contains("bytes per call"), "{error}");
+        }
+        let error = capture(&format!(
+            "capture(name='made', value=(None,) * {MAX_NODES})"
+        ))
+        .unwrap_err();
+        assert!(error.contains("nodes"), "{error}");
+        // The weighted host budget is tighter than the raw snapshot byte cap.
+        let error =
+            capture("text='x' * (1024 * 1024)\ncapture(name='made', value={'z': (text,) * 8})")
+                .unwrap_err();
+        assert!(
+            error.contains("host preparation weighted byte limit"),
+            "{error}"
+        );
     }
 
     #[test]

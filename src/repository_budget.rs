@@ -78,6 +78,15 @@ impl HostBudget {
                     self.string(value)?;
                 }
             }
+            AttrValue::StringListDict(entries) => {
+                for (key, values) in entries {
+                    self.string(key)?;
+                    self.node()?;
+                    for value in values {
+                        self.string(value)?;
+                    }
+                }
+            }
             AttrValue::Label(value) | AttrValue::Output(value) => {
                 if let Some(value) = value {
                     self.string(value)?;
@@ -144,6 +153,47 @@ mod tests {
     use crate::custom_rule::AttrKind;
 
     #[test]
+    fn string_list_dict_charges_root_keys_sequences_and_elements() {
+        let value = AttrValue::StringListDict(vec![
+            ("z".into(), vec!["first".into(), "second".into()]),
+            ("empty".into(), vec![]),
+        ]);
+        let mut budget = HostBudget::default();
+        budget.attr_value(&value).unwrap();
+        assert_eq!(budget.nodes, 7);
+        assert_eq!(budget.bytes, 7 * NODE_BYTES + COPY_WEIGHT * (1 + 5 + 6 + 5));
+
+        let mut budget = HostBudget::default();
+        budget
+            .attr_value(&AttrValue::StringListDict(vec![]))
+            .unwrap();
+        assert_eq!(budget.nodes, 1);
+        for value in [
+            AttrValue::StringListDict(vec![("x".repeat(1024 * 1024), vec![])]),
+            AttrValue::StringListDict(vec![("x".into(), vec!["x".repeat(1024 * 1024)])]),
+        ] {
+            let mut budget = HostBudget::default();
+            for _ in 0..7 {
+                budget.attr_value(&value).unwrap();
+            }
+            assert!(
+                budget
+                    .attr_value(&value)
+                    .unwrap_err()
+                    .contains("weighted byte limit")
+            );
+        }
+        let value =
+            AttrValue::StringListDict(vec![(String::new(), vec![String::new(); MAX_NODES - 2])]);
+        assert!(
+            HostBudget::default()
+                .attr_value(&value)
+                .unwrap_err()
+                .contains("node limit")
+        );
+    }
+
+    #[test]
     fn defaults_and_repeated_schema_aliases_are_charged_without_copying() {
         let schema = BTreeMap::from([(
             "labels".to_owned(),
@@ -153,6 +203,7 @@ mod tests {
                 mandatory: false,
                 allow_files: false,
                 allow_single_file: false,
+                non_empty: false,
             },
         )]);
         let mut budget = HostBudget::default();

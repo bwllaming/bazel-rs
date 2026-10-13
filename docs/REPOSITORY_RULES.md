@@ -32,7 +32,10 @@ rule symbols. Other ambiguous namespace combinations fail explicitly.
 
 `repository_rule` supports callable implementations, `attrs`, and `doc`; `local`
 and `configure` must be false and `environ` empty. Attribute kinds are string,
-string-list, int32, bool, label and label-list. Defaults, mandatory attributes,
+string-list, ordered string-list dictionary, int32, bool, label and label-list.
+Dictionary values and nested lists are frozen; their full typing, tuple,
+ordering and snapshot contract is in [STRING_LIST_DICT.md](STRING_LIST_DICT.md).
+Defaults, mandatory attributes,
 explicit `None`, and the pinned 9.3 behavior for declared underscore-prefixed
 attributes are supported. Unknown `None` attributes are ignored, while unknown
 non-`None` attributes fail. Output attributes are invalid for repository rules.
@@ -85,6 +88,12 @@ loading is unchanged. Files and template inputs are at most 16 MiB each;
 cumulative I/O and operation counts are bounded. Publication allows at most
 10,000 entries, depth 64, 4096-byte paths and 64 MiB file contents. These are
 implementation limits, not a security sandbox.
+
+Direct preparation also preflights one aggregate host budget across a usage's
+declarations before binding or executing any callback. Repeated schema/default
+expansion, names and raw nested arguments count toward the existing 64 MiB
+weighted-byte and 100,000-node limits; name-only declarations cannot amplify a
+large dictionary default without accounting for each copy.
 
 ## Publication and freshness
 

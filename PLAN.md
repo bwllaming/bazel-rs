@@ -174,6 +174,21 @@ checkout is unchanged; no application query/build/test success is claimed.
 
 ## Remaining compatibility gates
 
+### Ordered dictionary attributes
+
+- [x] Implement typed ordered values across custom rules, direct repositories,
+      ordinary extension calls and tags, with contract-correct frozen ownership.
+- [x] Preserve MODULE-end versus extension-call snapshot timing and normalize
+      list/tuple attribute values consistently.
+- [x] Reproduce and fix aggregate direct-default amplification before callbacks;
+      pass 781 Rust tests, 408 Python tests, strict Clippy and release build.
+- [x] Complete eight dictionary QA families and 146 phases plus six adjacent suites.
+- [x] Obtain unconditional final review of this bounded profile.
+
+The preserved application advances to `repository_rule(local=True)` without
+checkout changes. Local lifecycle metadata and MODULE-only native version
+bindings remain a separate increment; full application builds/tests are unproven.
+
 ### Bounded global PAX comments
 
 - [x] Verify unchanged genuine archive inventory against raw headers, Python and

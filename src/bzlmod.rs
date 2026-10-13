@@ -20,6 +20,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::Path;
 
+use crate::repository_budget::HostBudget;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ModuleFile {
     /// None means no module() directive; legal for an anonymous root module.
@@ -1015,15 +1017,24 @@ fn retain_tag_attributes<'v>(
 /// Convert only after successful evaluation and before the temporary heap drops.
 /// Both ordinary tags and innate repository tags use the same bounded types.
 fn finish_tag_attributes(module: &Module, state: &mut State) -> anyhow::Result<()> {
+    // One budget for the entire MODULE's host conversion, including repeated
+    // references: each retained declaration produces a distinct owned copy.
+    let mut host = HostBudget::default();
     for pending in std::mem::take(&mut state.pending_attributes) {
         let value = module
             .get(&pending.slot)
             .ok_or_else(|| anyhow!("internal error: missing MODULE attribute root"))?;
         let dict = DictRef::from_value(value)
             .ok_or_else(|| anyhow!("internal error: MODULE attribute root is not a dict"))?;
+        host.node().map_err(anyhow::Error::msg)?;
         let mut attributes = BTreeMap::new();
         for (key, value) in dict.iter() {
-            attributes.insert(string(key, "tag attribute name")?, owned_json(value, 0)?);
+            let key = key
+                .unpack_str()
+                .ok_or_else(|| anyhow!("tag attribute name must be a string"))?;
+            host.string(key).map_err(anyhow::Error::msg)?;
+            let value = owned_json(value, 0, &mut host)?;
+            attributes.insert(key.to_owned(), value);
         }
         state.file.extension_usages[pending.usage].tags[pending.tag].attributes = attributes;
     }
@@ -1228,14 +1239,16 @@ fn validate_extension_label(s: &str) -> anyhow::Result<()> {
     }
     Ok(())
 }
-fn owned_json(value: Value<'_>, depth: usize) -> anyhow::Result<Json> {
+fn owned_json(value: Value<'_>, depth: usize, host: &mut HostBudget) -> anyhow::Result<Json> {
     if depth > 64 {
         bail!("extension tag attributes are cyclic or exceed nesting depth 64");
     }
+    host.node().map_err(anyhow::Error::msg)?;
     if value.is_none() {
         return Ok(Json::Null);
     }
     if let Some(s) = value.unpack_str() {
+        host.bytes(s.len()).map_err(anyhow::Error::msg)?;
         return Ok(Json::String(s.to_owned()));
     }
     if let Some(b) = value.unpack_bool() {
@@ -1249,21 +1262,33 @@ fn owned_json(value: Value<'_>, depth: usize) -> anyhow::Result<Json> {
         return Ok(number);
     }
     if let Some(list) = ListRef::from_value(value) {
-        return list
-            .iter()
-            .map(|v| owned_json(v, depth + 1))
-            .collect::<anyhow::Result<Vec<_>>>()
-            .map(Json::Array);
+        let mut values = Vec::new();
+        for value in list.iter() {
+            values.push(owned_json(value, depth + 1, host)?);
+        }
+        return Ok(Json::Array(values));
+    }
+    if let Some(tuple) = TupleRef::from_value(value) {
+        let mut values = Vec::new();
+        for value in tuple.iter() {
+            values.push(owned_json(value, depth + 1, host)?);
+        }
+        return Ok(Json::Array(values));
     }
     if let Some(dict) = DictRef::from_value(value) {
         let mut map = serde_json::Map::new();
         for (k, v) in dict.iter() {
-            map.insert(string(k, "tag dictionary key")?, owned_json(v, depth + 1)?);
+            let key = k
+                .unpack_str()
+                .ok_or_else(|| anyhow!("tag dictionary key must be a string"))?;
+            host.string(key).map_err(anyhow::Error::msg)?;
+            let value = owned_json(v, depth + 1, host)?;
+            map.insert(key.to_owned(), value);
         }
         return Ok(Json::Object(map));
     }
     bail!(
-        "unsupported extension tag attribute type {}; expected primitives, lists, or string-keyed dictionaries",
+        "unsupported extension tag attribute type {}; expected primitives, lists, tuples, or string-keyed dictionaries",
         value.get_type()
     )
 }
@@ -1447,6 +1472,93 @@ use_repo(x, "pkg", local="other")
         );
         assert_eq!(u.imports[1].local_name, "local");
         assert_eq!(u.imports[1].exported_name, "other");
+    }
+
+    #[test]
+    fn ordered_dicts_and_nested_tuples_retain_final_module_values_on_both_routes() {
+        for declaration in [
+            "call=use_repo_rule('raw','rule')",
+            "x=use_extension('//:e.bzl','e')\ncall=x.tag",
+        ] {
+            let file = run(&format!(
+                "{declaration}\nwords=['before']\npayload={{'z': (words, ('nested',)), 'a': ()}}\ncall(name='first', z=(payload,), a=[('list tuple',)])\nwords.append('between')\ncall(name='second', z=(payload,))\nwords.append('after')"
+            ));
+            let tags = &file.extension_usages[0].tags;
+            assert_eq!(
+                tags[0]
+                    .attributes
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                ["a", "name", "z"]
+            );
+            assert_eq!(tags[0].attributes["a"], serde_json::json!([["list tuple"]]));
+            for tag in tags {
+                let payload = &tag.attributes["z"][0];
+                assert_eq!(
+                    payload
+                        .as_object()
+                        .unwrap()
+                        .keys()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>(),
+                    ["z", "a"]
+                );
+                assert_eq!(
+                    payload["z"],
+                    serde_json::json!([["before", "between", "after"], ["nested"]])
+                );
+                assert_eq!(payload["a"], serde_json::json!([]));
+            }
+        }
+    }
+
+    #[test]
+    fn module_attribute_conversion_charges_tuple_nodes_and_borrowed_strings() {
+        for declaration in [
+            "call=use_repo_rule('raw','rule')",
+            "x=use_extension('//:e.bzl','e')\ncall=x.tag",
+        ] {
+            for value in [
+                "('x' * (16 * 1024 * 1024),)",
+                "{'x' * (16 * 1024 * 1024): ()}",
+                "('x' * (1024 * 1024),) * 8",
+            ] {
+                fails(
+                    &format!("{declaration}\ncall(name='repo', value={value})"),
+                    "host preparation weighted byte limit",
+                );
+            }
+            fails(
+                &format!("{declaration}\ncall(name='repo', value=(None,) * 100000)"),
+                "host preparation node limit",
+            );
+            fails(
+                &format!("{declaration}\nxs=[]\nt=(xs,)\ncall(name='repo', value=t)\nxs.append(t)"),
+                "cyclic or exceed nesting depth",
+            );
+        }
+    }
+
+    #[test]
+    fn module_host_budget_is_aggregate_across_attributes_calls_and_usages() {
+        let prefix = "x=use_extension('//:e.bzl','e')\nr=use_repo_rule('raw','rule')\ntext='x' * (5 * 1024 * 1024)";
+        // Each individual payload fits; retaining it twice must not reset the budget.
+        run(&format!("{prefix}\nx.tag(value=(text,))"));
+        for calls in [
+            "x.tag(a=(text,), z=(text,))",
+            "x.tag(value=(text,))\nx.tag(value=(text,))",
+            "x.tag(value=(text,))\nr(name='repo', value=(text,))",
+        ] {
+            fails(
+                &format!("{prefix}\n{calls}"),
+                "host preparation weighted byte limit",
+            );
+        }
+        fails(
+            "x=use_extension('//:e.bzl','e')\nx.tag(**{'x' * (16 * 1024 * 1024): None})",
+            "host preparation weighted byte limit",
+        );
     }
 
     #[test]
@@ -2193,7 +2305,6 @@ r(name="second",result=result)
         );
         for (setup, value, expected) in [
             ("", "r", "unsupported extension tag attribute"),
-            ("", "(1,2)", "unsupported extension tag attribute"),
             ("", "{1:'x'}", "dictionary key must be a string"),
             ("a=[]\na.append(a)", "a", "cyclic or exceed nesting depth"),
         ] {

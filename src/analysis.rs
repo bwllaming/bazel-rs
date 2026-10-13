@@ -451,6 +451,9 @@ fn make_ctx<'v>(
         let attr = match value {
             AttrValue::String(value) => heap.alloc(value.as_str()),
             AttrValue::Strings(value) => heap.alloc(value.clone()),
+            AttrValue::StringListDict(entries) => {
+                crate::attribute_values::alloc_string_list_dict(heap, entries)?
+            }
             AttrValue::Int(value) => heap.alloc(*value),
             AttrValue::Bool(value) => heap.alloc(*value),
             AttrValue::Label(value) => {
@@ -600,6 +603,13 @@ fn analyze_inner(
         .custom
         .as_ref()
         .ok_or_else(|| anyhow!("not a custom rule"))?;
+    for (name, spec) in &invocation.schema {
+        if spec.non_empty
+            && matches!(invocation.attrs.get(name), Some(AttrValue::StringListDict(entries)) if entries.is_empty())
+        {
+            return Err(anyhow!("attribute {name}: attribute must be non empty"));
+        }
+    }
     let context = Context {
         label: rule.label.clone(),
         dependency_files: dependencies

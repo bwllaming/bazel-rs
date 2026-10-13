@@ -3,6 +3,7 @@ pub mod action;
 pub mod analysis;
 pub mod archive;
 pub mod args;
+mod attribute_values;
 mod build_setting_ctx;
 pub mod build_settings;
 pub mod builtin_tools;

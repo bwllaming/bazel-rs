@@ -266,6 +266,9 @@ pub fn globals(builder: &mut GlobalsBuilder) {
 /// Bind a tag independently of repository-rule naming and metadata semantics.
 /// None is omission even for unknown names. Defaults already have lexical label
 /// ownership; only supplied strings are resolved in the MODULE caller's mapping.
+/// Like repository binding, tag type-checking does not enforce non_empty.
+/// Callers preflight cumulative schema/default expansion and raw JSON before
+/// using this copying binder across a module projection.
 pub fn bind_tag(
     schema: &BTreeMap<String, AttrSpec>,
     raw: &BTreeMap<String, serde_json::Value>,
@@ -297,6 +300,9 @@ pub fn bind_tag(
             AttrValue::Strings(values) | AttrValue::Labels(values) | AttrValue::Outputs(values) => {
                 values.iter().all(|value| value.is_ascii())
             }
+            AttrValue::StringListDict(entries) => entries
+                .iter()
+                .all(|(key, values)| key.is_ascii() && values.iter().all(|value| value.is_ascii())),
             AttrValue::Label(value) | AttrValue::Output(value) => {
                 value.as_ref().is_none_or(|value| value.is_ascii())
             }
@@ -333,6 +339,27 @@ fn parse_attribute(
     Ok(match kind {
         AttrKind::String => AttrValue::String(string()?.to_owned()),
         AttrKind::StringList => AttrValue::Strings(strings()?),
+        AttrKind::StringListDict => AttrValue::StringListDict(
+            value
+                .as_object()
+                .ok_or_else(|| "expected a dict of string lists".to_owned())?
+                .iter()
+                .map(|(key, value)| {
+                    // Transport normalizes Starlark lists and tuples to JSON arrays.
+                    let values = value
+                        .as_array()
+                        .ok_or_else(|| format!("dict key {key:?}: expected a list of strings"))?
+                        .iter()
+                        .map(|value| {
+                            value.as_str().map(str::to_owned).ok_or_else(|| {
+                                format!("dict key {key:?}: expected a list of strings")
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok((key.clone(), values))
+                })
+                .collect::<Result<_, String>>()?,
+        ),
         AttrKind::Int => AttrValue::Int(
             value
                 .as_i64()
@@ -432,11 +459,134 @@ mod tests {
     }
 
     #[test]
+    fn string_list_dict_schema_snapshot_survives_mutation_and_owner_drop() {
+        let module = extension(
+            "items = ['before', 'before']\nd = {'z': items, 'a': ()}\nattrs = {'d':attr.string_list_dict(default=d, allow_empty=False)}\nT = tag_class(attrs)\nclasses = {'t':T}\ndef impl(ctx):\n    return ctx\nE = module_extension(impl, tag_classes=classes)\nitems.append('after')\nd['later'] = []\nattrs['extra'] = attr.int()\nclasses['extra'] = tag_class()\n(d['z'] == ['before', 'before', 'after']) or fail('source mutated')",
+        ).unwrap();
+        let definition = unpack(&module.get("E").unwrap()).unwrap();
+        drop(module);
+        assert_eq!(definition.tag_classes.len(), 1);
+        let schema = &definition.tag_classes["t"];
+        assert_eq!(schema.len(), 1);
+        assert_eq!(schema["d"].kind, AttrKind::StringListDict);
+        assert!(schema["d"].non_empty);
+        let expected = AttrValue::StringListDict(vec![
+            (
+                "z".to_owned(),
+                vec!["before".to_owned(), "before".to_owned()],
+            ),
+            ("a".to_owned(), vec![]),
+        ]);
+        assert_eq!(schema["d"].default, expected);
+        let mut bound = bind(schema, json!({"d":null})).unwrap();
+        assert_eq!(bound["d"], expected);
+        if let AttrValue::StringListDict(entries) = bound.get_mut("d").unwrap() {
+            entries[0].1.push("bound-only".to_owned());
+        }
+        assert_eq!(schema["d"].default, expected);
+        assert_eq!(bind(schema, json!({})).unwrap()["d"], expected);
+        let serialized = serde_json::to_value(&schema["d"]).unwrap();
+        assert_eq!(serialized["non_empty"], true);
+        assert_eq!(
+            serialized["default"],
+            json!({"StringListDict":[["z",["before","before"]],["a",[]]]})
+        );
+        Module::with_temp_heap(|module| {
+            let implementation = module
+                .heap()
+                .access_owned_frozen_value(&definition.implementation);
+            let result = Evaluator::new(&module)
+                .eval_function(implementation, &[module.heap().alloc(42)], &[])
+                .unwrap();
+            assert_eq!(result.unpack_i32(), Some(42));
+        });
+    }
+
+    #[test]
+    fn string_list_dict_binding_preserves_order_and_ignores_non_empty() {
+        let schema = schema("{'d':attr.string_list_dict(allow_empty=False)}");
+        assert_eq!(
+            bind(&schema, json!({"d":{"z":["same","same"],"a":[]}})).unwrap()["d"],
+            AttrValue::StringListDict(vec![
+                ("z".to_owned(), vec!["same".to_owned(), "same".to_owned()]),
+                ("a".to_owned(), vec![]),
+            ])
+        );
+        for value in [json!({}), json!({"d":null}), json!({"d":{}})] {
+            assert_eq!(
+                bind(&schema, value).unwrap()["d"],
+                AttrValue::StringListDict(vec![])
+            );
+        }
+        let required = self::schema(
+            "{'d':attr.string_list_dict(default={'z':['fallback']}, mandatory=True, allow_empty=False)}",
+        );
+        for value in [json!({}), json!({"d":null})] {
+            assert!(
+                bind(&required, value)
+                    .unwrap_err()
+                    .contains("missing mandatory tag attribute \"d\"")
+            );
+        }
+        assert_eq!(
+            bind(&required, json!({"d":{}})).unwrap()["d"],
+            AttrValue::StringListDict(vec![])
+        );
+    }
+
+    #[test]
+    fn string_list_dict_rejects_invalid_shapes_and_unicode_without_partial_binding() {
+        let schema = schema("{'a':attr.string_list_dict(), 'z':attr.string_list_dict()}");
+        for value in [
+            json!([]),
+            json!("text"),
+            json!(1),
+            json!({"k":"text"}),
+            json!({"k":1}),
+            json!({"k":null}),
+            json!({"k":{}}),
+            json!({"k":[1]}),
+            json!({"k":[true]}),
+            json!({"k":[null]}),
+            json!({"k":[[]]}),
+            json!({"k":[{}]}),
+        ] {
+            let supplied = raw(json!({"a":{"ok":["first"]}, "z":value}));
+            let original = supplied.clone();
+            let error = bind_tag(&schema, &supplied, |_| panic!("not a label")).unwrap_err();
+            assert!(
+                error.contains("tag attribute \"z\": expected")
+                    || error.contains("tag attribute \"z\": dict key"),
+                "{error}"
+            );
+            assert_eq!(supplied, original);
+            assert_eq!(schema["a"].default, AttrValue::StringListDict(vec![]));
+        }
+        for value in [json!({"é":[]}), json!({"k":["ascii","é"]})] {
+            assert!(
+                bind(&schema, json!({"z":value}))
+                    .unwrap_err()
+                    .contains("non-ASCII tag attribute \"z\"")
+            );
+        }
+        for default in ["{'é':[]}", "{'k':('ascii', 'é')}"] {
+            let schema = self::schema(&format!("{{'d':attr.string_list_dict(default={default})}}"));
+            assert!(
+                bind(&schema, json!({}))
+                    .unwrap_err()
+                    .contains("non-ASCII tag attribute \"d\"")
+            );
+        }
+    }
+
+    #[test]
     fn repeated_descriptor_and_class_defaults_are_bounded_before_cloning() {
         for source in [
             "d = attr.string(default='x' * 1048576)\nT = tag_class({'a' + str(i): d for i in range(600)})",
             "T = tag_class({'value':attr.string(default='x' * 1048576)})\nE = module_extension(len, tag_classes={'t' + str(i):T for i in range(600)})",
             "T = tag_class({}, doc='x' * 1048576)\nE = module_extension(len, tag_classes={'t' + str(i):T for i in range(600)})",
+            "d = attr.string_list_dict(default={'z':['x' * 1048576], 'a':[]})\nT = tag_class({'a' + str(i):d for i in range(600)})",
+            "T = tag_class({'d':attr.string_list_dict(default={'z':['x' * 1048576], 'a':[]})})\nE = module_extension(len, tag_classes={'t' + str(i):T for i in range(600)})",
         ] {
             let error = extension(source).unwrap_err();
             assert!(

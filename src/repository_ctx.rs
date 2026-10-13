@@ -452,6 +452,15 @@ fn alloc_attrs<'v>(
                 heap.alloc(value.clone())
             }
             AttrValue::Int(value) => heap.alloc(*value),
+            AttrValue::StringListDict(entries) => {
+                ensure!(
+                    entries
+                        .iter()
+                        .all(|(key, values)| key.is_ascii() && values.iter().all(|v| v.is_ascii())),
+                    "repository string attributes must be ASCII"
+                );
+                crate::attribute_values::alloc_string_list_dict(heap, entries)?
+            }
             AttrValue::Bool(value) => heap.alloc(*value),
             AttrValue::Label(None) => Value::new_none(),
             AttrValue::Label(Some(label)) => alloc_label(heap, label)?,

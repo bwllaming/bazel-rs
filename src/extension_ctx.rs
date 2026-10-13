@@ -369,6 +369,9 @@ fn alloc_attrs<'v>(
         let value = match attr {
             AttrValue::String(value) => heap.alloc(value.as_str()),
             AttrValue::Strings(values) => heap.alloc(values.clone()),
+            AttrValue::StringListDict(entries) => {
+                crate::attribute_values::alloc_string_list_dict(heap, entries)?
+            }
             AttrValue::Int(value) => heap.alloc(*value),
             AttrValue::Bool(value) => heap.alloc(*value),
             AttrValue::Label(None) => Value::new_none(),
