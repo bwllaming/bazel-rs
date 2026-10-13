@@ -664,7 +664,7 @@ fn symbolic_macro_constructor_export_and_module_loading_phases() {
     for file in ["BUILD.bazel", "MODULE.bazel"] {
         let ws = Workspace::new("", "");
         ws.file(file, "macro()\n");
-        // Module evaluation is lazy: an external target forces MODULE loading.
+        // Preserve external coverage as well as local root-recording rejection.
         let target = if file == "MODULE.bazel" {
             "@missing//:all"
         } else {
@@ -677,6 +677,12 @@ fn symbolic_macro_constructor_export_and_module_loading_phases() {
         );
         rejected(&result, "macro");
         ws.untouched();
+        if file == "MODULE.bazel" {
+            for command in ["query", "build"] {
+                rejected(&ws.run(&[command, "//:all"]), "macro");
+                ws.untouched();
+            }
+        }
     }
     // A MODULE-loaded .bzl gets the constructor too, without fake SDK globals.
     let ws = Workspace::new(

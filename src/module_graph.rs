@@ -117,6 +117,19 @@ pub enum ModuleSource {
     },
 }
 
+/// One recording evaluation, shared by optional CLI validation and graph demand.
+#[derive(Debug)]
+pub(crate) struct RootModuleSnapshot {
+    root_path: PathBuf,
+    module: RootModulePresence,
+}
+
+#[derive(Debug)]
+enum RootModulePresence {
+    Present(Box<ModuleFile>),
+    Missing(String),
+}
+
 /// Resolve a workspace directory's MODULE.bazel using explicit registries.
 pub fn resolve(root: &Path, options: &ResolverOptions) -> Result<ResolvedGraph, String> {
     resolve_with_source_cache(root, options, Path::new("bazel-rs-out/repositories"))
@@ -129,6 +142,16 @@ pub fn resolve_with_source_cache(
     cache: &Path,
 ) -> Result<ResolvedGraph, String> {
     options.validate_registries()?;
+    let snapshot = read_root_module(root, options)?;
+    resolve_from_root_snapshot(&snapshot, options, cache)
+}
+
+/// Record the root only, without discovering dependencies or loading definitions.
+/// Only absence of MODULE.bazel itself is optional, not an invalid root directory.
+pub(crate) fn read_root_module(
+    root: &Path,
+    options: &ResolverOptions,
+) -> Result<RootModuleSnapshot, String> {
     let root_path = std::fs::canonicalize(root).map_err(|e| {
         format!(
             "cannot resolve root module directory {}: {e}",
@@ -141,15 +164,48 @@ pub fn resolve_with_source_cache(
             root_path.display()
         ));
     }
-    let source_cache = root_path.join(cache);
-    let root = bzlmod::evaluate_with_builtins(
-        &root_path.join("MODULE.bazel"),
+    let path = root_path.join("MODULE.bazel");
+    let source = match std::fs::read_to_string(&path) {
+        Ok(source) => source,
+        Err(error) => {
+            let diagnostic = format!("cannot read MODULE file {}: {error}", path.display());
+            return if error.kind() == std::io::ErrorKind::NotFound {
+                Ok(RootModuleSnapshot {
+                    root_path,
+                    module: RootModulePresence::Missing(diagnostic),
+                })
+            } else {
+                Err(diagnostic)
+            };
+        }
+    };
+    let module = bzlmod::evaluate_source_with_builtins(
+        &path.to_string_lossy(),
+        source,
         EvaluationContext {
             role: ModuleRole::Root,
             ignore_dev_dependencies: options.ignore_dev_dependencies,
         },
         options.builtin_profile.injection(&Key::Root),
     )?;
+    Ok(RootModuleSnapshot {
+        root_path,
+        module: RootModulePresence::Present(Box::new(module)),
+    })
+}
+
+/// Callers must pair the snapshot with the same immutable evaluation options.
+pub(crate) fn resolve_from_root_snapshot(
+    snapshot: &RootModuleSnapshot,
+    options: &ResolverOptions,
+    cache: &Path,
+) -> Result<ResolvedGraph, String> {
+    options.validate_registries()?;
+    let root = match &snapshot.module {
+        RootModulePresence::Present(module) => module.as_ref(),
+        RootModulePresence::Missing(diagnostic) => return Err(diagnostic.clone()),
+    };
+    let source_cache = snapshot.root_path.join(cache);
     let no_overrides = BTreeMap::new();
     // Bazel 9.3 ModuleThreadContext.addOverride ignores all MODULE overrides
     // when --ignore_dev_dependency is set, not just development dependencies.
@@ -196,10 +252,10 @@ pub fn resolve_with_source_cache(
         }
     }
     let discovery = Discovery {
-        root_path,
+        root_path: snapshot.root_path.clone(),
         source_cache: &source_cache,
         options,
-        root: &root,
+        root,
         overrides,
         use_embedded_builtin,
     };
@@ -245,7 +301,7 @@ pub fn resolve_with_source_cache(
     }
     let root_mapping = mapping(&Key::Root, &nodes, &selected, &canonical_names)?;
     Ok(ResolvedGraph {
-        root,
+        root: root.clone(),
         modules,
         root_mapping,
     })
@@ -1056,6 +1112,154 @@ mod tests {
     impl Drop for Fixture {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.base);
+        }
+    }
+
+    #[test]
+    fn root_module_reader_distinguishes_absence_from_invalid_roots_and_read_errors() {
+        let f = Fixture::new("");
+        let path = f.root.join("MODULE.bazel");
+        std::fs::remove_file(&path).unwrap();
+        let expected = bzlmod::evaluate(&path).unwrap_err();
+        let snapshot = read_root_module(&f.root, &f.options()).unwrap();
+        assert_eq!(snapshot.root_path, std::fs::canonicalize(&f.root).unwrap());
+        assert!(
+            matches!(&snapshot.module, RootModulePresence::Missing(error) if error == &expected)
+        );
+        assert_eq!(resolve(&f.root, &f.options()).unwrap_err(), expected);
+        assert_eq!(
+            resolve_with_source_cache(&f.root, &f.options(), Path::new("custom")).unwrap_err(),
+            expected
+        );
+        std::fs::write(&path, "module(name='new')").unwrap();
+        assert_eq!(
+            resolve_from_root_snapshot(&snapshot, &f.options(), Path::new("custom")).unwrap_err(),
+            expected
+        );
+        assert_eq!(f.resolve().root.module.unwrap().name, "new");
+
+        std::fs::write(&path, [0xff, 0xfe]).unwrap();
+        let error = read_root_module(&f.root, &f.options()).unwrap_err();
+        assert_eq!(error, bzlmod::evaluate(&path).unwrap_err());
+        assert!(error.contains("cannot read MODULE file"), "{error}");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert_eq!(
+            read_root_module(&f.root, &f.options()).unwrap_err(),
+            bzlmod::evaluate(&path).unwrap_err()
+        );
+        let missing_root = f.base.join("absent-root");
+        let error = read_root_module(&missing_root, &f.options()).unwrap_err();
+        assert!(
+            error.contains("cannot resolve root module directory"),
+            "{error}"
+        );
+        let file_root = f.base.join("not-a-directory");
+        std::fs::write(&file_root, "").unwrap();
+        let error = read_root_module(&file_root, &f.options()).unwrap_err();
+        assert!(
+            error.contains("root module path is not a directory"),
+            "{error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_module_reader_keeps_canonical_root_and_os_symlink_read_semantics() {
+        let f = Fixture::new("module(name='original')");
+        let alias = f.base.join("root-alias");
+        std::os::unix::fs::symlink(&f.root, &alias).unwrap();
+        let snapshot = read_root_module(&alias, &f.options()).unwrap();
+        assert_eq!(snapshot.root_path, std::fs::canonicalize(&f.root).unwrap());
+        std::fs::remove_file(&alias).unwrap();
+        std::fs::remove_file(f.root.join("MODULE.bazel")).unwrap();
+        assert_eq!(
+            resolve_from_root_snapshot(&snapshot, &f.options(), Path::new("custom"))
+                .unwrap()
+                .root
+                .module
+                .unwrap()
+                .name,
+            "original"
+        );
+        std::os::unix::fs::symlink("absent-target", f.root.join("MODULE.bazel")).unwrap();
+        let snapshot = read_root_module(&f.root, &f.options()).unwrap();
+        let expected = bzlmod::evaluate(&f.root.join("MODULE.bazel")).unwrap_err();
+        assert!(matches!(snapshot.module, RootModulePresence::Missing(error) if error == expected));
+    }
+
+    #[test]
+    fn root_module_reader_uses_root_builtin_injection_without_discovery() {
+        let f = Fixture::new("module(name='root')\nbazel_dep(name='missing',version='1')");
+        for ignore_dev_dependencies in [false, true] {
+            let options = ResolverOptions {
+                builtin_profile: BuiltinProfile::Bazel93Builtins,
+                ignore_dev_dependencies,
+                ..f.options()
+            };
+            let snapshot = read_root_module(&f.root, &options).unwrap();
+            let RootModulePresence::Present(module) = snapshot.module else {
+                panic!("expected recorded root");
+            };
+            assert_eq!(module.dependencies.len(), 1);
+            assert_eq!(module.dependencies[0].name, "missing");
+            assert_eq!(module.implicit_dependencies.len(), 1);
+            assert_eq!(module.implicit_dependencies[0].name, "bazel_tools");
+            assert!(!f.root.join("bazel-rs-out").exists());
+        }
+    }
+
+    #[test]
+    fn root_module_reader_retains_builtin_alias_collisions_in_each_dev_context() {
+        let f = Fixture::new("");
+        for source in [
+            "module(name='bazel_tools')",
+            "module(name='root',repo_name='bazel_tools')",
+            "bazel_dep(name='bazel_tools',version='1')",
+            "bazel_dep(name='other',repo_name='bazel_tools',dev_dependency=True)",
+            "e=use_extension('//:e.bzl','e')\nuse_repo(e,'bazel_tools')",
+            "e=use_extension('//:e.bzl','e',dev_dependency=True)\nuse_repo(e,bazel_tools='exported')",
+            "r=use_repo_rule('//:r.bzl','r')\nr(name='bazel_tools')",
+        ] {
+            std::fs::write(f.root.join("MODULE.bazel"), source).unwrap();
+            for ignore_dev_dependencies in [false, true] {
+                let options = ResolverOptions {
+                    builtin_profile: BuiltinProfile::Bazel93Builtins,
+                    ignore_dev_dependencies,
+                    ..f.options()
+                };
+                let error = read_root_module(&f.root, &options).unwrap_err();
+                assert!(
+                    error.contains("repository name \"bazel_tools\" is already used"),
+                    "{source}: {error}"
+                );
+                let explicit = ResolverOptions {
+                    builtin_profile: BuiltinProfile::ExplicitModules,
+                    ..options
+                };
+                let snapshot = read_root_module(&f.root, &explicit).unwrap();
+                let RootModulePresence::Present(module) = snapshot.module else {
+                    panic!("expected recorded root");
+                };
+                assert!(module.implicit_dependencies.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn root_module_public_graph_entry_validates_registry_options_before_reading() {
+        let f = Fixture::new("UnknownRootSymbol\n");
+        let options = ResolverOptions {
+            registries: vec![Registry::parse("https://example.invalid").unwrap()],
+            ..Default::default()
+        };
+        let expected = options.validate_registries().unwrap_err();
+        for root in [&f.root, &f.base.join("absent-root")] {
+            assert_eq!(resolve(root, &options).unwrap_err(), expected);
+            assert_eq!(
+                resolve_with_source_cache(root, &options, Path::new("custom")).unwrap_err(),
+                expected
+            );
         }
     }
 

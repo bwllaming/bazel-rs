@@ -19,12 +19,12 @@ The constructor is a genuine provider key in BUILD- and MODULE-loaded `.bzl`
 environments. It is not predeclared in top-level BUILD or MODULE files; a BUILD
 can load an explicitly exported `.bzl` alias.
 
-There is a separate, pre-existing loading-policy gap: local-only queries/builds
-can skip root `MODULE.bazel` evaluation entirely. When module resolution actually
-evaluates that file, the constructor is correctly undefined there. The original
-local-query differential failure is retained in
-`artifacts/run-environment-info-validation-first-attempt.json`; this metadata
-increment does not fix that broader root-validation policy.
+The original metadata increment retained a loading-policy gap: local-only
+queries/builds could skip root `MODULE.bazel` evaluation. The subsequent
+[root-validation increment](ROOT_MODULE_VALIDATION.md) closes that bypass before
+target loading. The original failed comparison remains unchanged in
+`artifacts/run-environment-info-validation-first-attempt.json`; new evidence,
+rather than rewritten history, establishes closure.
 
 Instances own copies without freezing caller containers. Both fields return fresh
 mutable dictionaries/lists in the current evaluation context, even after the
@@ -104,20 +104,23 @@ The preserved application probe advances past this provider and stops at missing
 `artifacts/mainrepo-run-environment-loading.json`; checkout contents and the
 required Git symlink are unchanged, and probe scratch is removed. Ten adjacent
 suites pass on the same frozen candidate, with a clean pinned analyzer scan.
-The final gate passes 923 Rust and 519 Python tests, including 14 real metadata
+The original metadata gate passed 923 Rust and 519 Python tests, including 14 real metadata
 CLI tests and 29 harness tests. Full gate and source/report bindings are recorded
 in `artifacts/run-environment-check.log` and
 `artifacts/run-environment-verification-manifest.json`.
 
-The bounded differential matrix evaluates MODULE through actual module demand.
-It passes seven families, 96 phases and 184 CLI commands in
+The original bounded differential matrix evaluated MODULE through module demand.
+It passed seven families, 96 phases and 184 CLI commands in
 `artifacts/run-environment-info-validation.json`, with stable source, registry and
 executable bindings plus successful shutdown and scratch cleanup. A small tracked
 excerpt at `tests/fixtures/run_environment_info/module_gap.json` preserves the
 original mismatch's exact phase and command records; the full failed report
 remains unchanged. Harness unit tests do not require that ignored full report.
-Its acceptance must not be read as a pass for the original local-query mismatch:
-that failure remains explicitly recorded in required `known_parity_gaps` evidence.
-Root-only CLI MODULE validation is scheduled as a separate subsequent increment.
+That historical acceptance did not fix the local-query mismatch. The updated
+matrix in `artifacts/g-run-environment-info-validation.json` passes seven families,
+98 phases and 186 commands, retaining external-demand coverage and adding the
+exact local-query case. Required `historical_parity_gaps` preserves the old
+native-success/reference-failure observations; `gap_closure` links new native
+exit 1/reference exit 48 rejection before loading or actions.
 Full Bazel parity, whole-application build/test success and broad performance
 claims remain unfinished.

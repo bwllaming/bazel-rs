@@ -143,7 +143,9 @@ fn local_repository_version_does_not_inject_native_into_top_level_files() {
         "MODULE.bazel",
         "module(name='main')\nobserved=native.bazel_version\n",
     );
-    // External demand forces MODULE evaluation; a local-only empty query is lazy.
+    // Root recording rejects both local and external demand; retain both scopes.
+    f.reject(&["query", "//:all"], "native");
+    f.reject(&["build", "//:all"], "native");
     f.reject(&["query", "@missing//:all"], "native");
 }
 

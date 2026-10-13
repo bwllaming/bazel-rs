@@ -42,9 +42,9 @@ def record(text='', code=1, **changes):
 class PlanTests(unittest.TestCase):
     def test_exact_plan_and_lexical_fixtures(self):
         self.assertEqual(len(suite.CASEPLAN), 7)
-        self.assertEqual(sum(len(c['probes']) for c in suite.CASEPLAN), 49)
-        self.assertEqual(suite.plan_receipt()['phases'], 96)
-        self.assertEqual(suite.plan_receipt(True)['phases'], 47)
+        self.assertEqual(sum(len(c['probes']) for c in suite.CASEPLAN), 50)
+        self.assertEqual(suite.plan_receipt()['phases'], 98)
+        self.assertEqual(suite.plan_receipt(True)['phases'], 48)
         for item in suite.CASEPLAN:
             self.assertEqual(len(item['probes']), len(set(item['probes'])))
             for probe in item['probes']:
@@ -192,6 +192,30 @@ class PlanTests(unittest.TestCase):
 
 
 class DiagnosticTests(unittest.TestCase):
+    def test_local_root_probe_precedes_external_regression_and_rejects_loading(self):
+        item = next(c for c in suite.CASEPLAN if c['name'] == 'module')
+        self.assertLess(item['probes'].index('module-global-local'), item['probes'].index('module-global'))
+        value = suite.fixture('module', 'module-global-local')
+        self.assertEqual(suite.steps_for(value, 'native'), [('query', '//app:check', [])])
+        self.assertEqual(suite.digest(value['files']['MODULE.bazel']), suite.KNOWN_PARITY_GAPS[0]['module']['sha256'])
+        self.assertEqual(value['returncodes'], {'native': 1, 'reference': 48})
+        for marker in (suite.READY, suite.ENTERED):
+            with self.assertRaisesRegex(ValueError, 'before root MODULE'):
+                suite.require_markers(record(marker), value, 'query', True, 'native', True)
+
+    def test_closure_receipt_requires_actual_new_success_and_mode(self):
+        phases = [dict(probe='module-global-local', engine=engine, runs=[i], status='PASS')
+            for i, engine in enumerate(('reference', 'native'))]
+        report = dict(checks=[dict(name='module', phases=phases)], runs=[dict(returncode=48), dict(returncode=1)])
+        self.assertTrue(suite.closure_receipt(report, False)['native_closure_verified'])
+        self.assertFalse(suite.closure_receipt(report, True)['native_closure_verified'])
+        for mutate in (lambda r: r['runs'][1].update(returncode=0),
+                lambda r: r['checks'][0]['phases'][1].update(status='FAIL'),
+                lambda r: r['checks'][0]['phases'].pop()):
+            changed = copy.deepcopy(report)
+            mutate(changed)
+            self.assertFalse(suite.closure_receipt(changed, False)['native_closure_verified'])
+
     def test_observed_native_diagnostic_spellings_are_exact_and_not_excerpts(self):
         # Seven failed native probes, six classifiers (two saved projections).
         examples = [
@@ -343,9 +367,12 @@ class ReplayTests(unittest.TestCase):
             path=str(root / 'registry' / Path(p).relative_to(suite.REGISTRY)))
             for p, e in sources.items() if Path(p).is_relative_to(suite.REGISTRY)}
         report = dict(schema_version=1, status='REFERENCE_ONLY_PASS' if args.reference_only else 'PASS',
+            started_at='2026-10-13T00:00:00+00:00', finished_at='2026-10-13T00:01:00+00:00',
             configuration={k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
             planned_checks=[item], plan=suite.plan_receipt(args.reference_only), limitations=suite.LIMITATIONS,
-            known_parity_gaps=copy.deepcopy(suite.KNOWN_PARITY_GAPS),
+            historical_parity_gaps=copy.deepcopy(suite.KNOWN_PARITY_GAPS),
+            historical_baseline_verification=dict(commit=suite.BASELINE_COMMIT,
+                historical_sources=suite.BASELINE_SOURCES.copy(), verified_from_git=True),
             errors=[], cleanup=[], scratch_cleaned=True, reference_shutdown_succeeded=True,
             sources_before=sources, sources_after=copy.deepcopy(sources), executables=executables,
             executables_after=copy.deepcopy(executables), reference_release='bazel 9.3.0',
@@ -354,6 +381,7 @@ class ReplayTests(unittest.TestCase):
             server_receipt=dict(pidfile=str(reference.output_base / 'server/server.pid.txt'), pid=4321,
                 proc_exists_after=False, remaining_pidfiles=[]), registry_before=registry, registry_after=copy.deepcopy(registry),
             runs=runs, checks=[dict(name='constructor', kind='differential', status='PASS', phases=[phase])])
+        report['gap_closure'] = suite.closure_receipt(report, args.reference_only)
         return phase, report, args, workspace, reference, item
 
     def test_phase_mutations(self):
@@ -385,16 +413,19 @@ class ReplayTests(unittest.TestCase):
             self.assertTrue(suite.report_passes(report))
             for mutate in (
                     lambda r: r.update(status='PASS'), lambda r: r.pop('status'),
-                    lambda r: r.pop('known_parity_gaps'), lambda r: r.update(known_parity_gaps=[]),
-                    lambda r: r['known_parity_gaps'][0].update(status='PASS'),
-                    lambda r: r['known_parity_gaps'][0].update(parity_claim=True),
-                    lambda r: r['known_parity_gaps'][0].update(parity_claim=0),
-                    lambda r: r['known_parity_gaps'][0].update(original_matrix_status='PASS'),
-                    lambda r: r['known_parity_gaps'][0]['observations']['native'].update(returncode=1),
-                    lambda r: r['known_parity_gaps'][0]['retained_receipt'].update(sha256='0'*64),
-                    lambda r: r['known_parity_gaps'][0].pop('evidence_excerpt'),
-                    lambda r: r['known_parity_gaps'][0]['evidence_excerpt'].update(sha256='0'*64),
-                    lambda r: r['known_parity_gaps'][0]['paired_replacement'].update(target='//app:check'),
+                    lambda r: r.pop('historical_parity_gaps'), lambda r: r.update(historical_parity_gaps=[]),
+                    lambda r: r['historical_parity_gaps'][0].update(status='PASS'),
+                    lambda r: r['historical_parity_gaps'][0].update(parity_claim=True),
+                    lambda r: r['historical_parity_gaps'][0].update(parity_claim=0),
+                    lambda r: r['historical_parity_gaps'][0].update(original_matrix_status='PASS'),
+                    lambda r: r['historical_parity_gaps'][0]['observations']['native'].update(returncode=1),
+                    lambda r: r['historical_parity_gaps'][0]['retained_receipt'].update(sha256='0'*64),
+                    lambda r: r['historical_parity_gaps'][0].pop('evidence_excerpt'),
+                    lambda r: r['historical_parity_gaps'][0]['evidence_excerpt'].update(sha256='0'*64),
+                    lambda r: r['historical_parity_gaps'][0]['paired_replacement'].update(target='//app:check'),
+                    lambda r: r['gap_closure'].update(native_closure_verified=True),
+                    lambda r: r['gap_closure'].update(status='RESOLVED_BY_ROOT_RECORDING_VALIDATION'),
+                    lambda r: r['historical_baseline_verification'].update(verified_from_git=False),
                     lambda r: r['plan'].update(sha256='0'*64), lambda r: r['plan'].update(commands=1),
                     lambda r: r['checks'][0]['phases'].clear(),
                     lambda r: r['checks'][0]['phases'].append(copy.deepcopy(r['checks'][0]['phases'][0])),

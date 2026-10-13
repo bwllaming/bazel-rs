@@ -3,8 +3,8 @@
 
 Reference preparation never executes native. Full execution requires a new frozen
 native SHA. Real Starlark fixtures, genuine ELF, local registry; no fallback.
-PASS covers this bounded profile only. The preserved first matrix FAILED: local
-queries may skip an invalid MODULE. Required known_parity_gaps retain that mismatch.
+PASS covers this bounded profile only. The preserved first matrix FAILED; its
+historical mismatch is retained separately from the new local closure probe.
 """
 
 import base64
@@ -21,6 +21,7 @@ import tempfile
 import validate_symbolic_macros as utility
 
 ROOT, COMMON_FLAGS = utility.ROOT, utility.COMMON_FLAGS
+SUITE_NAME = 'run-environment-info'
 common, direct = utility.common, utility.direct
 digest, evidence, snapshot, valid_evidence = utility.digest, utility.evidence, utility.snapshot, utility.valid_evidence
 success, DirectReference = utility.success, utility.DirectReference
@@ -63,10 +64,13 @@ KNOWN_PARITY_GAPS = [dict(
     },
     paired_replacement=dict(family='module', probe='module-global', target='@missing//:all',
         purpose='availability-on-demand: constructor is not predeclared when MODULE is evaluated; reject before repository lookup'),
-    baseline=dict(commit=BASELINE_COMMIT, unchanged_sources=BASELINE_SOURCES, preexisting_tests=BASELINE_TESTS,
-        evidence='Source identity and unchanged regression-test bodies; no old baseline binary was executed.'),
+    baseline=dict(commit=BASELINE_COMMIT, historical_sources=BASELINE_SOURCES, preexisting_tests=BASELINE_TESTS,
+        evidence='Historical git blob hashes, not current source identity; unchanged low-level lazy regression bodies. No old baseline binary was executed.'),
     parity_claim=False,
 )]
+CLOSURE_PROBE = dict(family='module', probe='module-global-local', stage='loading', command='query',
+    target='//app:check', module_sha256=KNOWN_PARITY_GAPS[0]['module']['sha256'],
+    returncodes={'native': 1, 'reference': 48})
 SOURCES = list(dict.fromkeys([Path(__file__).resolve(), ROOT / 'tests/test_validate_run_environment_info.py',
     GAP_RECEIPT, *(ROOT / p for p in BASELINE_SOURCES), ROOT / 'src/package.rs', *utility.SOURCES]))
 CASEPLAN = [
@@ -78,7 +82,7 @@ CASEPLAN = [
     common.case('transport', ('nested', 'multi-hop', 'predeclared', 'missing-key', 'required', 'instance-requirement',
         'string-requirement', 'string-key', 'instance-key')),
     common.case('phase', ('bare', 'list', 'default', 'duplicate', 'atomic')),
-    common.case('module', ('build-global', 'module-global', 'alias', 'repository', 'extension')),
+    common.case('module', ('build-global', 'module-global-local', 'module-global', 'alias', 'repository', 'extension')),
     common.case('action', ('implicit', 'explicit', 'all-entries')),
     common.case('native-boundary', ('executable', 'test'), 'native_boundary'),
 ]
@@ -90,9 +94,9 @@ LIMITATIONS = [
     'Inherited names remain metadata: no host reads or automatic action environment folding.',
     'Unicode and NUL values are metadata only; NUL is never passed to an OS environment.',
     'Reference-only preparation cannot claim native PASS; synthetic unit receipts are not engine evidence.',
-    'PASS is bounded metadata-profile PASS, not original-matrix or full Bazel parity: local queries may ignore invalid MODULE files.',
-    'The original native local query succeeded while genuine Bazel rejected its undefined MODULE global; known_parity_gaps preserves the failed receipt.',
-    'The paired MODULE-availability probe now forces graph evaluation via @missing//:all and must reject the undefined global before repository lookup.',
+    'PASS is bounded metadata-profile PASS, not original-matrix or full Bazel parity.',
+    'historical_parity_gaps preserves the original native0/reference48 FAIL unchanged; closure requires new paired local-query evidence.',
+    'The external @missing//:all MODULE-availability regression remains separate from local root validation.',
 ]
 MODULE = 'module(name="runenv_contract")\n'
 READY, ENTERED = 'RUNENV_READY', 'RUNENV_CONSUMER'
@@ -247,7 +251,7 @@ def fixture(name, probe):
             files['app/BUILD.bazel'] = 'load("//defs:check.bzl","check","good")\ngood(name="good")\ncheck(name="check")\n'
             value['target'] = ['//app:good', '//app:check']
     elif name == 'module':
-        if probe in ('build-global', 'module-global'):
+        if probe in ('build-global', 'module-global', 'module-global-local'):
             files['app/BUILD.bazel' if probe == 'build-global' else 'MODULE.bazel'] += 'x=RunEnvironmentInfo()\n'
             reject('missing-global')
             if probe == 'module-global':
@@ -278,7 +282,7 @@ def fixture(name, probe):
         reject('rule-'+probe)
     files['defs/check.bzl'] = rule(body, prefix, attrs, extra)
     value['failure_command'] = 'query' if value['stage'] == 'loading' else 'build'
-    value['returncodes'] = {'native': 1, 'reference': 48 if name == 'module' and probe == 'module-global'
+    value['returncodes'] = {'native': 1, 'reference': 48 if name == 'module' and probe in ('module-global', 'module-global-local')
         else 7 if value['stage'] == 'loading' else 1} if value['diagnostic'] else {'native': 0, 'reference': 0}
     value['files'] = {p: text.encode() for p, text in files.items()}
     return value
@@ -362,6 +366,9 @@ def plan_receipt(reference_only=False):
 
 
 def require_markers(record, value, command, first, engine, rejection):
+    if rejection and value['files'].get('MODULE.bazel') == KNOWN_PARITY_GAPS[0]['module']['text'].encode():
+        if any(utility.marker_count(record, marker) for marker in (READY, ENTERED)):
+            raise ValueError('BUILD/bzl/callback loaded before root MODULE validation')
     if first or engine == 'native':
         for marker in value['markers']:
             if not utility.marker_count(record, marker):
@@ -502,7 +509,7 @@ def validate_check(check, report, args, workspace, reference):
 def argument_parser():
     parser = common.argument_parser()
     parser.description = __doc__
-    parser.set_defaults(output=ROOT / 'artifacts/run-environment-info-validation.json')
+    parser.set_defaults(output=ROOT / ('artifacts/'+SUITE_NAME+'-validation.json'))
     parser.add_argument('--reference-source', type=Path, default=Path('/tmp/opencode/bazel-9.3-reference'))
     return parser
 
@@ -563,14 +570,30 @@ def validate_known_gap_sources(sources, check_baseline=False):
                 capture_output=True, timeout=10, check=True).stdout
     for path, sha in BASELINE_SOURCES.items():
         e = sources[str(ROOT / path)]
-        if e['sha256'] != sha or not valid_evidence(e) or (check_baseline and digest(baseline[path]) != sha):
-            raise ValueError('preexisting lazy MODULE source identity changed: '+path)
+        if not valid_evidence(e) or (check_baseline and digest(baseline[path]) != sha):
+            raise ValueError('invalid current source evidence or historical git blob mismatch: '+path)
     for test in BASELINE_TESTS:
         raw = base64.b64decode(sources[str(ROOT / test['path'])]['bytes_base64'], validate=True)
         if digest(regression_test_body(raw, test['name'])) != test['sha256']:
             raise ValueError('preexisting lazy MODULE regression body changed')
         if check_baseline and digest(regression_test_body(baseline[test['path']], test['name'])) != test['sha256']:
             raise ValueError('baseline lazy MODULE regression body differs')
+    return dict(commit=BASELINE_COMMIT, historical_sources={p: digest(raw) for p, raw in baseline.items()
+        if p in BASELINE_SOURCES}, verified_from_git=check_baseline)
+
+
+def closure_receipt(report, reference_only):
+    """Bind closure to actual successful phases, never to the requested run mode."""
+    phases = [p for c in report['checks'] if c['name'] == CLOSURE_PROBE['family']
+        for p in c['phases'] if p['probe'] == CLOSURE_PROBE['probe']]
+    runs = {p['engine']: p['runs'] for p in phases}
+    verified = (not reference_only and set(runs) == {'native', 'reference'}
+        and all(p['status'] == 'PASS' and not p.get('error') for p in phases)
+        and all(len(ids) == 1 and report['runs'][ids[0]]['returncode'] == CLOSURE_PROBE['returncodes'][engine]
+            for engine, ids in runs.items()))
+    return dict(probe=CLOSURE_PROBE, runs=runs, native_closure_verified=verified,
+        status='RESOLVED_BY_ROOT_RECORDING_VALIDATION' if verified else
+            'REFERENCE_ONLY_EXPECTED_CLOSURE' if reference_only else 'UNVERIFIED')
 
 
 OFFICIAL_FILES = {
@@ -618,7 +641,7 @@ def shutdown(reference, report):
     pid = int(path.read_text().strip()) if path.exists() else None
     if pid is not None and pid <= 1:
         raise ValueError('invalid private reference PID')
-    r = reference.runner.run('run-environment-info.shutdown', reference.startup+['shutdown']+list(COMMON_FLAGS),
+    r = reference.runner.run(SUITE_NAME+'.shutdown', reference.startup+['shutdown']+list(COMMON_FLAGS),
         reference.workspace, timeout=min(reference.runner.timeout, 15))
     success(r)
     remaining = sorted(str(p) for p in reference.output_base.rglob('server.pid.txt'))
@@ -638,8 +661,15 @@ def report_passes(report):
             setattr(args, key, Path(value) if key in ('native', 'reference', 'output', 'scratch_parent', 'reference_source') else value)
         expected_status = 'REFERENCE_ONLY_PASS' if args.reference_only else 'PASS'
         engines = ('reference',) if args.reference_only else ('reference', 'native')
+        started, finished = (datetime.datetime.fromisoformat(report[key]) for key in ('started_at', 'finished_at'))
+        if started.tzinfo is None or finished.tzinfo is None or finished < started:
+            return False
         if (report['schema_version'] != 1 or report['status'] not in ('FAIL', expected_status) or report['planned_checks'] != CASEPLAN
-                or json.dumps(report['known_parity_gaps'], sort_keys=True) != json.dumps(KNOWN_PARITY_GAPS, sort_keys=True)
+                or json.dumps(report['historical_parity_gaps'], sort_keys=True) != json.dumps(KNOWN_PARITY_GAPS, sort_keys=True)
+                or json.dumps(report['gap_closure'], sort_keys=True) != json.dumps(closure_receipt(report, args.reference_only), sort_keys=True)
+                or (not args.reference_only and report['gap_closure']['native_closure_verified'] is not True)
+                or report['historical_baseline_verification'] != dict(commit=BASELINE_COMMIT,
+                    historical_sources=BASELINE_SOURCES, verified_from_git=True)
                 or report['plan'] != plan_receipt(args.reference_only) or report['limitations'] != LIMITATIONS
                 or [(c['name'], c['kind']) for c in report['checks']] != PLAN
                 or report['errors'] or report['cleanup'] or not report['scratch_cleaned'] or not report['reference_shutdown_succeeded']
@@ -659,7 +689,7 @@ def report_passes(report):
             return False
         scratch = Path(report['scratch_directory'])
         workspace = scratch / 'workspace'
-        reference = DirectReference(args.reference, workspace, scratch, None, 'run-environment-info')
+        reference = DirectReference(args.reference, workspace, scratch, None, SUITE_NAME)
         receipt = report['server_receipt']
         if (report['cleanup_receipt'] != dict(path=str(scratch), removed=True)
                 or set(receipt) != {'pidfile', 'pid', 'proc_exists_after', 'remaining_pidfiles'}
@@ -690,7 +720,7 @@ def report_passes(report):
                     return False
         for r, name, argv, timeout in (
                 (runs[0], 'reference.version', reference.startup+['version', '--gnu_format'], args.timeout),
-                (runs[-1], 'run-environment-info.shutdown', reference.startup+['shutdown']+list(COMMON_FLAGS), min(args.timeout, 15))):
+                (runs[-1], SUITE_NAME+'.shutdown', reference.startup+['shutdown']+list(COMMON_FLAGS), min(args.timeout, 15))):
             if r['name'] != name or r['argv'] != argv or r['cwd'] != str(workspace) or r['timeout_seconds'] != timeout:
                 return False
             success(r)
@@ -707,8 +737,8 @@ def report_passes(report):
 
 def main(argv=None):
     args = argument_parser().parse_args(argv)
-    if args.reference_only and args.output == ROOT / 'artifacts/run-environment-info-validation.json':
-        args.output = ROOT / 'artifacts/run-environment-info-reference.json'
+    if args.reference_only and args.output == ROOT / ('artifacts/'+SUITE_NAME+'-validation.json'):
+        args.output = ROOT / ('artifacts/'+SUITE_NAME+'-reference.json')
     for field in ('native', 'reference', 'output', 'scratch_parent', 'reference_source'):
         setattr(args, field, getattr(args, field).expanduser().resolve())
     if (args.output in [args.native, args.reference, ROOT / KNOWN_PARITY_GAPS[0]['retained_receipt']['path'], *SOURCES]
@@ -717,7 +747,7 @@ def main(argv=None):
         raise ValueError('report cannot overwrite source or executable')
     report = dict(schema_version=1, status='FAIL', runs=[], checks=[], errors=[], cleanup=[],
         planned_checks=CASEPLAN, plan=plan_receipt(args.reference_only), limitations=LIMITATIONS,
-        known_parity_gaps=KNOWN_PARITY_GAPS,
+        historical_parity_gaps=KNOWN_PARITY_GAPS,
         configuration={k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
         scratch_cleaned=False, reference_shutdown_succeeded=False,
         started_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
@@ -726,17 +756,17 @@ def main(argv=None):
     interrupted = False
     try:
         report['sources_before'] = snapshot(SOURCES)
-        validate_known_gap_sources(report['sources_before'], check_baseline=True)
+        report['historical_baseline_verification'] = validate_known_gap_sources(report['sources_before'], check_baseline=True)
         report['executables'] = common.executable_evidence(args)
         report['official_source_before'] = reference_source_evidence(args.reference_source)
-        scratch = Path(tempfile.mkdtemp(prefix='run-environment-info-', dir=args.scratch_parent))
+        scratch = Path(tempfile.mkdtemp(prefix=SUITE_NAME+'-', dir=args.scratch_parent))
         report['scratch_directory'] = str(scratch)
         workspace = scratch / 'workspace'
         workspace.mkdir()
         (workspace / 'MODULE.bazel').write_text(MODULE)
         shutil.copytree(REGISTRY, scratch / 'registry')
         report['registry_before'] = snapshot(p for p in (scratch / 'registry').rglob('*') if p.is_file())
-        reference = DirectReference(args.reference, workspace, scratch, runner, 'run-environment-info')
+        reference = DirectReference(args.reference, workspace, scratch, runner, SUITE_NAME)
         report['reference_release'] = success(runner.run('reference.version', reference.startup+['version', '--gnu_format'], workspace)).strip()
         if report['reference_release'] != 'bazel 9.3.0':
             raise ValueError('wrong genuine reference release')
@@ -778,9 +808,10 @@ def main(argv=None):
             report['errors'].append('final evidence: '+str(exc))
         report['completed_phases'] = sum(p['status'] == 'PASS' for c in report['checks'] for p in c['phases'])
         report['completed_checks'] = sum(c['status'] == 'PASS' for c in report['checks'])
+        report['gap_closure'] = closure_receipt(report, args.reference_only)
+        report['finished_at'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         if report_passes(report):
             report['status'] = 'REFERENCE_ONLY_PASS' if args.reference_only else 'PASS'
-        report['finished_at'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         utility.write_report(args.output, report)
     print(report['status']+': '+str(args.output))
     return 130 if interrupted else 0 if report['status'] in ('PASS', 'REFERENCE_ONLY_PASS') else 1

@@ -190,11 +190,15 @@ executable/test rule support remain outside this increment.
 
 ### Root MODULE validation — next separate increment
 
-- [ ] Evaluate root MODULE for local CLI query/build before BUILD loading or
+- [x] Evaluate root MODULE for local CLI query/build before BUILD loading or
       actions; preserve low-level repository laziness and unused dependency
       laziness, and reuse the recorded root when graph resolution is demanded.
-- [ ] Reproduce and close the retained RunEnvironmentInfo local-query phase
+- [x] Reproduce and close the retained RunEnvironmentInfo local-query phase
       mismatch with genuine-reference, caching, no-MODULE and regression checks.
+
+Verified 952 Rust/533 Python tests, 29-phase root matrix, 98-phase metadata
+matrix, ten adjacent suites and unconditional review. Original failed evidence
+remains unchanged; application still stops at missing set.
 
 ### Native package specifications
 

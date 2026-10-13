@@ -428,6 +428,13 @@ fn predeclared_global_is_not_in_build_module_or_an_unassigned_bzl_export() {
         };
         rejected(&ws.run(&["query", target]), "RunEnvironmentInfo");
         ws.untouched();
+        if file == "MODULE.bazel" {
+            // Root recording also rejects local demand, without graph resolution.
+            for command in ["query", "build"] {
+                rejected(&ws.run(&[command, "//:all"]), "RunEnvironmentInfo");
+                ws.untouched();
+            }
+        }
     }
     let ws = Workspace::new(
         "Public=RunEnvironmentInfo\n",

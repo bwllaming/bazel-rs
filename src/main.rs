@@ -177,6 +177,7 @@ fn run() -> Result<(), String> {
         bazel_rs::repository::RepositorySet::with_options(root.clone(), resolver_options)
             .with_source_cache(cache.join("repositories")),
     );
+    repositories.validate_root_module()?;
     let mut engine = Engine::with_repositories(repositories);
     let labels = engine.select(&rest, &current_package)?;
     if command == "query" {

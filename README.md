@@ -54,8 +54,8 @@ Implemented:
   symbols are file-local unless explicitly re-exported. `struct()` is available
   in `.bzl` files, not predeclared in BUILD files.
 - Canonical/apparent repository mappings, lexical `.bzl` label/default resolution
-  and repository-qualified visibility. Main-only source operations resolve
-  MODULE metadata lazily. External source `File.short_path` is metadata
+  and repository-qualified visibility. CLI query/build first record root MODULE;
+  dependency discovery and low-level source operations remain lazy. External source `File.short_path` is metadata
   (`../<canonical>/...`), distinct from its execution path (`external/<canonical>/...`).
 - `glob` with `*`/`**`, sorted results, exclusions, directory filtering and
   package boundaries. Bazel 9.3 defaults to `allow_empty=False`; each inclusion
@@ -138,6 +138,8 @@ profile with real expansion, definition ownership and source/visibility checks.
 provider-constrained consumers, membership and visibility checks.
 [Run-environment metadata](docs/RUN_ENVIRONMENT_INFO.md) supports native snapshots
 and nested transport to explicit consumers, not automatic run/test environments.
+[Root MODULE validation](docs/ROOT_MODULE_VALIDATION.md) records the root before
+CLI target loading and reuses it without eagerly resolving unused declarations.
 [Genuine built-in modules](docs/BUILTIN_MODULES.md) are available through the
 native-only `--experimental-builtin-modules` transition option, using complete
 verified Linux x86-64 resources; the default remains explicit modules only.

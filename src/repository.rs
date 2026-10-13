@@ -32,6 +32,7 @@ struct RepositoryState {
     options: ResolverOptions,
     source_cache: PathBuf,
     absolute_source_cache: OnceLock<Result<PathBuf, String>>,
+    root_module: OnceLock<Result<module_graph::RootModuleSnapshot, String>>,
     resolved: OnceLock<Result<ResolvedGraph, String>>,
     registry_roots: OnceLock<BTreeMap<String, OnceLock<Result<PathBuf, String>>>>,
     direct: OnceLock<Result<DirectRuntime, String>>,
@@ -147,6 +148,7 @@ impl RepositorySet {
                 absolute_source_cache: OnceLock::new(),
                 root,
                 options,
+                root_module: OnceLock::new(),
                 resolved: OnceLock::new(),
                 registry_roots: OnceLock::new(),
                 direct: OnceLock::new(),
@@ -187,12 +189,30 @@ impl RepositorySet {
         &self.state.root
     }
 
+    fn root_module(&self) -> Result<&module_graph::RootModuleSnapshot, String> {
+        self.state
+            .root_module
+            .get_or_init(|| module_graph::read_root_module(&self.state.root, &self.state.options))
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
+    /// Record an optional root MODULE without resolving dependencies or loading
+    /// repository/extension definitions. Later graph demand reuses this record,
+    /// including cached absence or evaluation errors. Source-profile restrictions
+    /// remain deferred to the repository demand paths that enforce them.
+    pub fn validate_root_module(&self) -> Result<(), String> {
+        self.state.options.validate_registries()?;
+        self.root_module().map(|_| ())
+    }
+
     pub fn resolve_graph(&self) -> Result<&ResolvedGraph, String> {
         self.state
             .resolved
             .get_or_init(|| {
-                module_graph::resolve_with_source_cache(
-                    &self.state.root,
+                self.state.options.validate_registries()?;
+                module_graph::resolve_from_root_snapshot(
+                    self.root_module()?,
                     &self.state.options,
                     self.source_cache_path()?,
                 )
@@ -978,6 +998,301 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    fn assert_root_module_demand_is_lazy(repos: &RepositorySet) {
+        assert!(repos.state.resolved.get().is_none());
+        assert!(repos.state.direct.get().is_none());
+        assert!(repos.state.registry_roots.get().is_none());
+        assert!(repos.state.absolute_source_cache.get().is_none());
+    }
+
+    #[test]
+    fn root_module_preflight_records_unused_declarations_without_demand() {
+        let f = Fixture::new();
+        f.write("MODULE.bazel", "module(name='main')\nbazel_dep(name='not_downloaded',version='1')\nr=use_repo_rule('//:poison.bzl','r')\nr(name='direct')\ne=use_extension('//:poison.bzl','extension')\ne.tag(value='recorded')\nuse_repo(e,'ordinary')\n");
+        f.write("poison.bzl", "fail('definition must not load')\n");
+        f.write("BUILD", "fail('BUILD must not load')\n");
+        let repos = RepositorySet::with_options(
+            f.0.clone(),
+            ResolverOptions {
+                registries: vec![f.0.join("absent-registry").into()],
+                ..Default::default()
+            },
+        );
+        repos.validate_root_module().unwrap();
+        assert!(repos.state.root_module.get().unwrap().is_ok());
+        assert_root_module_demand_is_lazy(&repos);
+        assert!(!f.0.join("bazel-rs-out").exists());
+        assert!(!f.0.join("absent-registry").exists());
+    }
+
+    #[test]
+    fn root_module_success_shared_by_clones_preserves_graph_metadata_after_edit() {
+        let f = Fixture::new();
+        let repos = f.registry();
+        f.write("main/MODULE.bazel", "module(name='before',version='1')\nbazel_dep(name='dep',version='1',repo_name='original')\n");
+        repos.validate_root_module().unwrap();
+        let cloned = repos.clone();
+        f.write("main/MODULE.bazel", "module(name='after',version='2')\n");
+        cloned.validate_root_module().unwrap();
+        assert!(std::ptr::eq(
+            repos.root_module().unwrap(),
+            cloned.root_module().unwrap()
+        ));
+        assert_root_module_demand_is_lazy(&cloned);
+        let graph = cloned.resolve_graph().unwrap();
+        let info = graph.root.module.as_ref().unwrap();
+        assert_eq!((&*info.name, &*info.version), ("before", "1"));
+        assert_eq!(graph.root.dependencies.len(), 1);
+        assert_eq!(graph.root_mapping["original"], "dep+");
+        let ModuleSource::Registry {
+            registry,
+            module_file,
+            ..
+        } = &graph.modules["dep+"].source
+        else {
+            panic!("expected the original selected registry metadata");
+        };
+        assert_eq!(registry.local_path().unwrap(), f.0.join("registry"));
+        assert_eq!(module_file, b"module(name='dep',version='1')\n");
+        assert!(std::ptr::eq(graph, repos.resolve_graph().unwrap()));
+        let fresh = RepositorySet::with_options(f.0.join("main"), repos.state.options.clone());
+        fresh.validate_root_module().unwrap();
+        let graph = fresh.resolve_graph().unwrap();
+        assert_eq!(graph.root.module.as_ref().unwrap().name, "after");
+        assert_eq!(graph.root.module.as_ref().unwrap().version, "2");
+        assert!(graph.modules.is_empty());
+    }
+
+    #[test]
+    fn root_module_language_errors_are_cached_across_clones_not_fresh_sets() {
+        let f = Fixture::new();
+        for source in [
+            "x=RunEnvironmentInfo()",
+            "x=UnknownRootSymbol",
+            "module(",
+            "x=1//0",
+        ] {
+            f.write("MODULE.bazel", source);
+            let expected = crate::bzlmod::evaluate(&f.0.join("MODULE.bazel")).unwrap_err();
+            let repos = RepositorySet::new(f.0.clone());
+            let error = repos.validate_root_module().unwrap_err();
+            assert_eq!(error, expected);
+            assert!(error.contains("MODULE.bazel"), "{error}");
+            assert_root_module_demand_is_lazy(&repos);
+            let cloned = repos.clone();
+            f.write("MODULE.bazel", "module(name='fixed')\n");
+            assert_eq!(cloned.validate_root_module().unwrap_err(), error);
+            assert_eq!(cloned.resolve_graph().unwrap_err(), error);
+            let fresh = RepositorySet::new(f.0.clone());
+            fresh.validate_root_module().unwrap();
+            assert_eq!(
+                fresh
+                    .resolve_graph()
+                    .unwrap()
+                    .root
+                    .module
+                    .as_ref()
+                    .unwrap()
+                    .name,
+                "fixed"
+            );
+        }
+    }
+
+    #[test]
+    fn root_module_absence_is_valid_but_graph_demand_keeps_original_diagnostic() {
+        let f = Fixture::new();
+        let expected = crate::bzlmod::evaluate(&f.0.join("MODULE.bazel")).unwrap_err();
+        let repos = RepositorySet::new(f.0.clone());
+        repos.validate_root_module().unwrap();
+        assert_root_module_demand_is_lazy(&repos);
+        let cloned = repos.clone();
+        f.write("MODULE.bazel", "module(name='created')\n");
+        cloned.validate_root_module().unwrap();
+        assert!(std::ptr::eq(
+            repos.root_module().unwrap(),
+            cloned.root_module().unwrap()
+        ));
+        assert_eq!(cloned.resolve_graph().unwrap_err(), expected);
+        assert_eq!(repos.resolve_graph().unwrap_err(), expected);
+        let fresh = RepositorySet::new(f.0.clone());
+        fresh.validate_root_module().unwrap();
+        assert_eq!(
+            fresh
+                .resolve_graph()
+                .unwrap()
+                .root
+                .module
+                .as_ref()
+                .unwrap()
+                .name,
+            "created"
+        );
+    }
+
+    #[test]
+    fn root_module_source_cache_configuration_starts_a_fresh_runtime() {
+        let f = Fixture::new();
+        let repos = f.registry().with_source_cache("first".into());
+        f.source(serde_json::json!({"type":"local_path", "path":f.0}));
+        repos.validate_root_module().unwrap();
+        repos.mapping("").unwrap();
+        repos.root("dep+").unwrap();
+        assert!(repos.state.root_module.get().is_some());
+        assert!(repos.state.resolved.get().is_some());
+        assert!(repos.state.direct.get().is_some());
+        assert!(repos.state.registry_roots.get().is_some());
+        assert!(repos.state.absolute_source_cache.get().is_some());
+        f.write("main/MODULE.bazel", "module(name='fresh')\n");
+        let fresh = repos.clone().with_source_cache("second".into());
+        assert_ne!(fresh.state.runtime_id, repos.state.runtime_id);
+        assert_eq!(fresh.state.options, repos.state.options);
+        assert!(fresh.state.root_module.get().is_none());
+        assert_root_module_demand_is_lazy(&fresh);
+        fresh.validate_root_module().unwrap();
+        assert_eq!(
+            fresh
+                .resolve_graph()
+                .unwrap()
+                .root
+                .module
+                .as_ref()
+                .unwrap()
+                .name,
+            "fresh"
+        );
+        assert_eq!(
+            repos
+                .resolve_graph()
+                .unwrap()
+                .root
+                .module
+                .as_ref()
+                .unwrap()
+                .name,
+            "main"
+        );
+        assert_eq!(fresh.source_cache_path().unwrap(), f.0.join("main/second"));
+        assert_eq!(repos.source_cache_path().unwrap(), f.0.join("main/first"));
+    }
+
+    #[test]
+    fn root_module_ignore_dev_context_is_recorded_and_configuration_is_isolated() {
+        let f = Fixture::new();
+        for source in [
+            "r=use_repo_rule('//:absent.bzl','r')\nr(name='same')\nr(name='same',dev_dependency=True)\n",
+            "local_path_override(module_name='unused',path='one')\nlocal_path_override(module_name='unused',path='two')\n",
+        ] {
+            f.write("MODULE.bazel", source);
+            let strict = RepositorySet::new(f.0.clone());
+            assert!(strict.validate_root_module().is_err());
+            let ignored = RepositorySet::with_options(
+                f.0.clone(),
+                ResolverOptions {
+                    ignore_dev_dependencies: true,
+                    ..Default::default()
+                },
+            );
+            ignored.validate_root_module().unwrap();
+            assert_root_module_demand_is_lazy(&ignored);
+            let expected = crate::bzlmod::evaluate_with_context(
+                &f.0.join("MODULE.bazel"),
+                crate::bzlmod::EvaluationContext {
+                    role: crate::bzlmod::ModuleRole::Root,
+                    ignore_dev_dependencies: true,
+                },
+            )
+            .unwrap();
+            assert_eq!(ignored.resolve_graph().unwrap().root, expected);
+            assert!(strict.clone().validate_root_module().is_err());
+        }
+    }
+
+    #[test]
+    fn root_module_builtin_profile_is_isolated_and_retained_by_source_cache_configuration() {
+        let f = Fixture::new();
+        f.write("MODULE.bazel", "module(name='bazel_tools')\n");
+        let explicit = RepositorySet::new(f.0.clone());
+        explicit.validate_root_module().unwrap();
+        let builtin = RepositorySet::with_options(
+            f.0.clone(),
+            ResolverOptions {
+                builtin_profile: module_graph::BuiltinProfile::Bazel93Builtins,
+                ..Default::default()
+            },
+        );
+        let error = builtin.validate_root_module().unwrap_err();
+        assert!(
+            error.contains("repository name \"bazel_tools\" is already used"),
+            "{error}"
+        );
+        f.write("MODULE.bazel", "module(name='changed')\n");
+        assert_eq!(builtin.clone().validate_root_module().unwrap_err(), error);
+        let fresh = builtin.with_source_cache("new-cache".into());
+        assert_eq!(
+            fresh.state.options.builtin_profile,
+            module_graph::BuiltinProfile::Bazel93Builtins
+        );
+        assert!(fresh.state.root_module.get().is_none());
+        fresh.validate_root_module().unwrap();
+        assert_root_module_demand_is_lazy(&fresh);
+        assert_eq!(
+            explicit
+                .resolve_graph()
+                .unwrap()
+                .root
+                .module
+                .as_ref()
+                .unwrap()
+                .name,
+            "bazel_tools"
+        );
+    }
+
+    #[test]
+    fn root_module_source_profile_error_remains_deferred_to_repository_demand() {
+        let f = Fixture::new();
+        f.write("MODULE.bazel", "module(name='main')\nr=use_repo_rule('//:poison.bzl','r')\nr(name='made',text=str(len('é')))\n");
+        f.write("poison.bzl", "fail('definition must not load')\n");
+        let repos = RepositorySet::new(f.0.clone());
+        repos.validate_root_module().unwrap();
+        assert_root_module_demand_is_lazy(&repos);
+        let error = repos
+            .resolve_graph()
+            .unwrap()
+            .root
+            .source_profile_error
+            .as_ref()
+            .unwrap()
+            .clone();
+        assert!(error.contains("non-ASCII"), "{error}");
+        assert_eq!(
+            repos.parse("@made//:file", "", "").unwrap().repository,
+            "+r+made"
+        );
+        assert_eq!(repos.root("+r+made").unwrap_err(), error);
+        assert!(!f.0.join("bazel-rs-out").exists());
+    }
+
+    #[test]
+    fn root_module_invalid_registry_options_precede_recording() {
+        let f = Fixture::new();
+        f.write("MODULE.bazel", "UnknownRootSymbol\n");
+        let repos = RepositorySet::with_options(
+            f.0.clone(),
+            ResolverOptions {
+                registries: vec![Registry::parse("https://example.invalid").unwrap()],
+                ..Default::default()
+            },
+        );
+        let expected = repos.state.options.validate_registries().unwrap_err();
+        assert_eq!(repos.validate_root_module().unwrap_err(), expected);
+        assert!(repos.state.root_module.get().is_none());
+        assert_root_module_demand_is_lazy(&repos);
+        assert_eq!(repos.resolve_graph().unwrap_err(), expected);
+        assert!(repos.state.root_module.get().is_none());
     }
 
     #[test]
