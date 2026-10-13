@@ -4,8 +4,8 @@
 //! JSON tree profile, not full `bazel mod` parity. Implicit `bazel_tools` and
 //! other built-ins are not injected. Extensions cannot be executed, so active
 //! extension usages are errors even with `--extension_info=hidden`. Remote
-//! registries require explicit --lockfile_mode=off. No repository materialization
-//! or lockfile reads/writes are performed.
+//! registries and HTTPS Git require explicit --lockfile_mode=off. Git sources are
+//! materialized for discovery; registry sources and lockfiles are not read/written.
 use crate::bzlmod::ModuleFile;
 use crate::module_graph::{self, ResolvedGraph, ResolverOptions};
 use crate::registry::Registry;
@@ -17,8 +17,13 @@ use std::path::Path;
 /// Run a native module subcommand. `args` begins with `graph`, not `mod`.
 /// Only explicit registries and the documented JSON profile work.
 pub fn run(root: &Path, args: &[String]) -> Result<String, String> {
+    run_with_source_cache(root, args, Path::new("bazel-rs-out/repositories"))
+}
+
+/// Run with a caller-selected repository source cache.
+pub fn run_with_source_cache(root: &Path, args: &[String], cache: &Path) -> Result<String, String> {
     let options = Options::parse(args)?;
-    let graph = module_graph::resolve(root, &options.resolver)?;
+    let graph = module_graph::resolve_with_source_cache(root, &options.resolver, cache)?;
     reject_extensions(
         &graph.root,
         options.resolver.ignore_dev_dependencies,

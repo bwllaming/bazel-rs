@@ -150,8 +150,15 @@ fn run() -> Result<(), String> {
     if !ignore_rc {
         check_rc_files(&root)?;
     }
+    let cache = cache.unwrap_or_else(|| root.join("bazel-rs-out"));
+    let cache = if cache.is_absolute() {
+        cache
+    } else {
+        cwd.join(cache)
+    };
     if command == "mod" {
-        let output = bazel_rs::module_cli::run(&root, &rest)?;
+        let output =
+            bazel_rs::module_cli::run_with_source_cache(&root, &rest, &cache.join("repositories"))?;
         print!("{output}");
         eprintln!(
             "bazel-rs: explicit module graph only; built-in dependency closure and extension execution are not implemented"
@@ -159,12 +166,6 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     let current_package = current_package(&root, &cwd)?;
-    let cache = cache.unwrap_or_else(|| root.join("bazel-rs-out"));
-    let cache = if cache.is_absolute() {
-        cache
-    } else {
-        cwd.join(cache)
-    };
     let repositories = Arc::new(
         bazel_rs::repository::RepositorySet::with_options(root.clone(), resolver_options)
             .with_source_cache(cache.join("repositories")),

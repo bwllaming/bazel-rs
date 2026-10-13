@@ -3,7 +3,8 @@
 //! Main-repository source operations never evaluate MODULE.bazel. External
 //! resolution records the graph once and does not execute extensions or mistake
 //! registry metadata for a materialized source tree. Local source roots remain
-//! live inputs; archive sources are materialized only when requested.
+//! live inputs; archive sources are materialized only when requested. Git sources
+//! are materialized for discovery and revalidated before repository use.
 use crate::label::{Label, PackageId, validate_repository_name};
 use crate::module_graph::{self, ModuleSource, ResolvedGraph, ResolverOptions};
 use crate::patch_inputs::LocalPatchPlan;
@@ -17,6 +18,7 @@ pub struct RepositorySet {
     root: PathBuf,
     options: ResolverOptions,
     source_cache: PathBuf,
+    absolute_source_cache: OnceLock<Result<PathBuf, String>>,
     resolved: OnceLock<Result<ResolvedGraph, String>>,
     registry_roots: OnceLock<BTreeMap<String, OnceLock<Result<PathBuf, String>>>>,
 }
@@ -28,7 +30,8 @@ impl RepositorySet {
 
     pub fn with_options(root: PathBuf, options: ResolverOptions) -> Self {
         Self {
-            source_cache: root.join("bazel-rs-out/repositories"),
+            source_cache: PathBuf::from("bazel-rs-out/repositories"),
+            absolute_source_cache: OnceLock::new(),
             root,
             options,
             resolved: OnceLock::new(),
@@ -38,7 +41,34 @@ impl RepositorySet {
 
     pub fn with_source_cache(mut self, cache: PathBuf) -> Self {
         self.source_cache = cache;
+        self.absolute_source_cache = OnceLock::new();
+        self.resolved = OnceLock::new();
+        self.registry_roots = OnceLock::new();
         self
+    }
+
+    /// Library-relative cache paths are workspace-relative. The CLI resolves
+    /// its cwd-relative option before constructing this set. Both discovery
+    /// and later repository access must reuse this exact absolute path.
+    fn source_cache_path(&self) -> Result<&Path, String> {
+        self.absolute_source_cache
+            .get_or_init(|| {
+                if self.source_cache.is_absolute() {
+                    Ok(self.source_cache.clone())
+                } else {
+                    std::fs::canonicalize(&self.root)
+                        .map(|root| root.join(&self.source_cache))
+                        .map_err(|e| {
+                            format!(
+                                "cannot resolve repository cache workspace {}: {e}",
+                                self.root.display()
+                            )
+                        })
+                }
+            })
+            .as_ref()
+            .map(PathBuf::as_path)
+            .map_err(Clone::clone)
     }
 
     pub fn main_root(&self) -> &Path {
@@ -47,7 +77,13 @@ impl RepositorySet {
 
     pub fn resolve_graph(&self) -> Result<&ResolvedGraph, String> {
         self.resolved
-            .get_or_init(|| module_graph::resolve(&self.root, &self.options))
+            .get_or_init(|| {
+                module_graph::resolve_with_source_cache(
+                    &self.root,
+                    &self.options,
+                    self.source_cache_path()?,
+                )
+            })
             .as_ref()
             .map_err(Clone::clone)
     }
@@ -63,6 +99,38 @@ impl RepositorySet {
         })?;
         match &module.source {
             ModuleSource::LocalPath(root) => Ok(root),
+            ModuleSource::Git {
+                spec,
+                local_patches,
+                tree,
+            } => {
+                let roots = self.registry_roots.get_or_init(|| {
+                    graph
+                        .modules
+                        .keys()
+                        .map(|name| (name.clone(), OnceLock::new()))
+                        .collect()
+                });
+                roots[repository].get_or_init(|| {
+                    spec.validate(self.options.allow_remote)?;
+                    if !tree.commit.eq_ignore_ascii_case(&spec.commit) {
+                        return Err(format!("Git commit mismatch for repository @@{repository}"));
+                    }
+                    let (verified, ()) = crate::git_source::materialize(
+                        spec,
+                        local_patches,
+                        self.source_cache_path()?,
+                        self.options.allow_remote,
+                        |_, bytes| {
+                            if bytes != tree.module_file {
+                                return Err(format!("Git MODULE differs from resolved graph for repository @@{repository}"));
+                            }
+                            Ok(())
+                        },
+                    )?;
+                    Ok(verified.root)
+                }).as_ref().map(PathBuf::as_path).map_err(Clone::clone)
+            }
             ModuleSource::Registry {
                 registry,
                 name,
@@ -85,7 +153,7 @@ impl RepositorySet {
                             name,
                             version,
                             module_file,
-                            &self.source_cache,
+                            self.source_cache_path()?,
                             local_patches,
                         )
                         .map_err(|error| {

@@ -2,8 +2,8 @@
 //!
 //! Discovery reads every reachable requested MODULE version before selection;
 //! selection upgrades by module name (Bazel 9.3 compatibility levels are no-ops), rewrites edges,
-//! and prunes unreachable modules. It never materializes repositories or executes
-//! extensions. Nodep discovery reaches a fixed point before MVS and multiple-
+//! and prunes unreachable modules. Git overrides materialize during discovery;
+//! extensions are never executed. Nodep discovery reaches a fixed point before MVS and multiple-
 //! version snapping; nodep-only reachability validates but does not retain repos.
 //! This graph projects root-owned patches onto registry MODULE files, but never
 //! materializes registry sources or executes patch commands.
@@ -14,6 +14,7 @@
 //! Semantics: https://bazel.build/external/module#version-selection
 //! Relaxed versions: https://bazel.build/external/module#version_format
 use crate::bzlmod::{self, Dependency, EvaluationContext, ModuleFile, ModuleOverride, ModuleRole};
+use crate::git_source::{self, GitSpec, GitTree};
 use crate::patch_inputs::{self, LocalPatchPlan};
 use crate::registry::Registry;
 use std::cmp::Ordering;
@@ -59,7 +60,7 @@ pub struct ResolvedGraph {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedModule {
     pub name: String,
-    /// Normalized selected version. Local overrides have the empty version;
+    /// Normalized selected version. Non-registry overrides have the empty version;
     /// their declared version is retained in module.module instead.
     pub version: String,
     pub compatibility_level: i32,
@@ -75,6 +76,11 @@ pub struct ResolvedModule {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModuleSource {
     LocalPath(PathBuf),
+    Git {
+        spec: GitSpec,
+        local_patches: LocalPatchPlan,
+        tree: GitTree,
+    },
     Registry {
         registry: Registry,
         name: String,
@@ -90,6 +96,15 @@ pub enum ModuleSource {
 
 /// Resolve a workspace directory's MODULE.bazel using explicit registries.
 pub fn resolve(root: &Path, options: &ResolverOptions) -> Result<ResolvedGraph, String> {
+    resolve_with_source_cache(root, options, Path::new("bazel-rs-out/repositories"))
+}
+
+/// Resolve using a caller-selected source cache; relative caches are root-relative.
+pub fn resolve_with_source_cache(
+    root: &Path,
+    options: &ResolverOptions,
+    cache: &Path,
+) -> Result<ResolvedGraph, String> {
     options.validate_registries()?;
     let root_path = std::fs::canonicalize(root).map_err(|e| {
         format!(
@@ -103,6 +118,7 @@ pub fn resolve(root: &Path, options: &ResolverOptions) -> Result<ResolvedGraph, 
             root_path.display()
         ));
     }
+    let source_cache = root_path.join(cache);
     let root = bzlmod::evaluate_with_context(
         &root_path.join("MODULE.bazel"),
         EvaluationContext {
@@ -148,6 +164,7 @@ pub fn resolve(root: &Path, options: &ResolverOptions) -> Result<ResolvedGraph, 
     }
     let discovery = Discovery {
         root_path,
+        source_cache: &source_cache,
         options,
         root: &root,
         overrides,
@@ -225,6 +242,7 @@ impl Node {
 
 struct Discovery<'a> {
     root_path: PathBuf,
+    source_cache: &'a Path,
     options: &'a ResolverOptions,
     root: &'a ModuleFile,
     overrides: &'a BTreeMap<String, ModuleOverride>,
@@ -370,9 +388,57 @@ impl Discovery<'_> {
             return Err("built-in bazel_tools is unavailable in the local module resolver; no built-in repository is fabricated".to_owned());
         }
         match self.overrides.get(name) {
-            Some(ModuleOverride::Git { .. }) => {
-                return Err(format!(
-                    "git_override for module {name:?} is unsupported: no repository fetching"
+            Some(ModuleOverride::Git {
+                remote,
+                commit,
+                tag,
+                branch,
+                init_submodules,
+                strip_prefix,
+                patches,
+            }) => {
+                if !tag.is_empty() || !branch.is_empty() || *init_submodules {
+                    return Err(format!(
+                        "git_override for module {name:?} supports only full commit pins; tags, branches and init_submodules are not implemented"
+                    ));
+                }
+                let spec = GitSpec {
+                    remote: remote.clone(),
+                    commit: commit.clone(),
+                    strip_prefix: strip_prefix.clone(),
+                };
+                spec.validate(self.options.allow_remote)?;
+                let local_patches = patch_inputs::snapshot(&self.root_path, self.root, patches)?;
+                local_patches.validate_materialization()?;
+                let (tree, module) = git_source::materialize(
+                    &spec,
+                    &local_patches,
+                    self.source_cache,
+                    self.options.allow_remote,
+                    |root, bytes| {
+                        let path = root.join("MODULE.bazel").display().to_string();
+                        let source = String::from_utf8(bytes.to_vec()).map_err(|error| {
+                            format!("Git MODULE file {path} is not UTF-8: {error}")
+                        })?;
+                        let module = bzlmod::evaluate_source_with_context(
+                            &path,
+                            source,
+                            EvaluationContext {
+                                role: ModuleRole::Dependency,
+                                ignore_dev_dependencies: self.options.ignore_dev_dependencies,
+                            },
+                        )?;
+                        validate_declared_module(&module, name, None, &path)?;
+                        Ok(module)
+                    },
+                )?;
+                return Ok((
+                    module,
+                    ModuleSource::Git {
+                        spec,
+                        local_patches,
+                        tree,
+                    },
                 ));
             }
             Some(ModuleOverride::Archive { .. }) => {

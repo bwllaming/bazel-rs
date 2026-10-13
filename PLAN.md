@@ -110,10 +110,31 @@ The read-only application probe advances to the unsupported `rules_distroless`
 Git override; the checkout remains unchanged. This is not application query,
 build or test success, nor full patch/Bazel compatibility.
 
+## Commit-pinned Git increment
+
+The native engine uses isolated system Git for full-commit HTTPS/file overrides,
+verifies fetched/checked-out SHA identity, validates final patched MODULE before
+publication, and rechecks source manifests on cache hits. Discovery and repository
+access share one normalized cache path; CLI-relative paths remain cwd-relative.
+The regular-file-only profile and subprocess/export limits are documented in
+`docs/GIT_OVERRIDES.md`.
+
+The full check passes 452 Rust tests and 216 Python tests, formatting, strict
+Clippy and release compilation. The real-Git report passes four genuine Bazel
+differentials and 15 native-only checks. Public API/CLI regressions also prove
+case-insensitive full-SHA consistency and offline reuse of a workspace-relative
+library cache. Concurrent Linux procfs exit sentinels/ESRCH are distinguished from
+permission and malformed-data errors, preserving fail-closed cleanup.
+
+The application fetch verifies the requested `rules_distroless` commit but stops
+at its tracked internal symlink. The link is not omitted or flattened; preserving
+it safely is the next source-materialization increment. This remains incomplete
+application query/build/test compatibility.
+
 ## Remaining compatibility gates
 
 - [ ] Complete Bzlmod/repository compatibility beyond local selection/loading:
-      complete downloader/archive semantics, Git retrieval, full patch semantics, lockfiles, built-in closure,
+      complete downloader/archive/Git semantics, full patch semantics, lockfiles, built-in closure,
       module extensions and repository rules using pinned fixtures.
 - [ ] Configurations, toolchains and providers sufficient for actual repository
       Go/Python/Node rule analysis, followed by safe executable/test targets.

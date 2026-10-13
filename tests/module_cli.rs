@@ -66,6 +66,57 @@ impl Fixture {
         );
         serde_json::from_slice(&output.stdout).unwrap()
     }
+    fn git(&self, args: &[&str]) -> String {
+        let home = self.0.join("git-home");
+        fs::create_dir_all(&home).unwrap();
+        let output = Command::new("git")
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", &home)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z")
+            .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")
+            .args([
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "init.templateDir=",
+            ])
+            .args(args)
+            .current_dir(self.0.join("upstream"))
+            .output()
+            .unwrap();
+        succeeded(&output);
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+    fn git_source(&self, module: &str) -> String {
+        self.write("upstream/pkg/MODULE.bazel", module);
+        self.write("upstream/pkg/BUILD.bazel", "exports_files(['data'])\n");
+        self.write("upstream/pkg/data", "pinned\n");
+        self.git(&["init", "--quiet"]);
+        self.git(&["add", "."]);
+        self.git(&["commit", "--quiet", "-m", "pinned"]);
+        let commit = self.git(&["rev-parse", "HEAD"]);
+        self.write(
+            "upstream/pkg/MODULE.bazel",
+            "module(name='a',version='9')\n",
+        );
+        self.write("upstream/pkg/data", "head\n");
+        self.git(&["add", "."]);
+        self.git(&["commit", "--quiet", "-m", "newer head"]);
+        commit
+    }
+    fn git_override(&self, commit: &str, extra: &str) {
+        self.write("MODULE.bazel", &format!(
+            "module(name='root')\nbazel_dep(name='a',version='1',repo_name='alias')\ngit_override(module_name='a',remote={:?},commit={commit:?},strip_prefix='pkg'{extra})\n",
+            format!("file://{}", self.0.join("upstream").display())
+        ));
+    }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -170,6 +221,189 @@ fn cli_local_override_uses_empty_key_and_declared_version() {
     assert_eq!(output["dependencies"][0]["version"], "7.0");
     assert_eq!(output["dependencies"][0]["apparentName"], "alias");
     assert!(!fixture.0.join("MODULE.bazel.lock").exists());
+}
+
+#[test]
+fn git_graph_pins_first_commit_and_preserves_declared_version_in_private_cache() {
+    use bazel_rs::module_graph::{ModuleSource, ResolverOptions, resolve_with_source_cache};
+    let f = Fixture::new("");
+    let commit = f.git_source("module(name='a',version='7',repo_name='self_a')\nbazel_dep(name='ignored',dev_dependency=True)\nlocal_path_override(module_name='ignored',path='/not/read')\n");
+    f.git_override(&commit, "");
+    let cache = f.0.join("selected/repositories");
+    let graph = resolve_with_source_cache(&f.0, &ResolverOptions::default(), &cache).unwrap();
+    let module = &graph.modules["a+"];
+    assert_eq!(module.version, "");
+    assert_eq!(module.module.module.as_ref().unwrap().version, "7");
+    assert_eq!(graph.root_mapping["alias"], "a+");
+    assert_eq!(module.mapping["self_a"], "a+");
+    assert!(module.module.overrides.is_empty());
+    assert!(!module.mapping.contains_key("ignored"));
+    let ModuleSource::Git { spec, tree, .. } = &module.source else {
+        panic!("not Git")
+    };
+    assert_eq!(spec.commit, commit);
+    assert_eq!(tree.commit, commit);
+    assert!(tree.root.starts_with(cache.join("git")));
+    assert_eq!(fs::read(tree.root.join("data")).unwrap(), b"pinned\n");
+    assert_eq!(
+        fs::read(tree.root.join("MODULE.bazel")).unwrap(),
+        tree.module_file
+    );
+    assert_eq!(fs::read(f.0.join("upstream/pkg/data")).unwrap(), b"head\n");
+    assert!(!f.0.join("bazel-rs-out").exists());
+}
+
+#[test]
+fn git_cli_relative_cache_is_cwd_relative_and_graph_uses_empty_key() {
+    let f = Fixture::new("");
+    let commit = f.git_source("module(name='a',version='7')\n");
+    f.git_override(&commit, "");
+    fs::create_dir_all(f.0.join("subdir")).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
+        .args([
+            "--ignore_all_rc_files",
+            "--cache-dir=chosen",
+            "mod",
+            "graph",
+            "--output=json",
+        ])
+        .current_dir(f.0.join("subdir"))
+        .output()
+        .unwrap();
+    succeeded(&output);
+    let graph: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(graph["dependencies"][0]["key"], "a@_");
+    assert_eq!(graph["dependencies"][0]["version"], "7");
+    assert_eq!(graph["dependencies"][0]["apparentName"], "alias");
+    assert!(f.0.join("subdir/chosen/repositories/git").is_dir());
+    assert!(!f.0.join("chosen").exists());
+    assert!(!f.0.join("bazel-rs-out").exists());
+    assert!(!f.0.join("MODULE.bazel.lock").exists());
+}
+
+#[test]
+fn uppercase_git_pin_is_consistent_between_graph_and_repository_query() {
+    let f = Fixture::new("");
+    let commit = f.git_source("module(name='a',version='7')\n");
+    f.git_override(&commit.to_ascii_uppercase(), "");
+    succeeded(&f.command(&["--cache-dir=chosen", "mod", "graph", "--output=json"]));
+    let result = f.command(&["--cache-dir=chosen", "query", "@alias//:data"]);
+    succeeded(&result);
+    assert_eq!(String::from_utf8(result.stdout).unwrap(), "@@a+//:data\n");
+}
+
+#[test]
+fn git_module_patch_adds_dependency_before_selection_and_patches_full_tree() {
+    use bazel_rs::module_graph::{ModuleSource, ResolverOptions, resolve_with_source_cache};
+    let f = Fixture::new("");
+    let commit = f.git_source("module(name='a',version='7')\n");
+    f.git_override(&commit, ",patches=[':fix.patch'],patch_strip=1");
+    f.write("BUILD.bazel", "not evaluated !!!");
+    f.write("fix.patch", "diff --git a/MODULE.bazel b/MODULE.bazel\n--- a/MODULE.bazel\n+++ b/MODULE.bazel\n@@ -1 +1,2 @@\n module(name='a',version='7')\n+bazel_dep(name='leaf',version='2')\ndiff --git a/data b/data\n--- a/data\n+++ b/data\n@@ -1 +1 @@\n-pinned\n+patched\n");
+    f.module("leaf", "1", "");
+    f.module("leaf", "2", "");
+    let mut root = fs::read_to_string(f.0.join("MODULE.bazel")).unwrap();
+    root.push_str("bazel_dep(name='leaf',version='1')\n");
+    f.write("MODULE.bazel", &root);
+    let options = ResolverOptions {
+        registries: vec![f.0.join("registry").into()],
+        ..Default::default()
+    };
+    let graph = resolve_with_source_cache(&f.0, &options, &f.0.join("cache")).unwrap();
+    assert_eq!(graph.modules["leaf+"].version, "2");
+    assert_eq!(graph.modules["a+"].mapping["leaf"], "leaf+");
+    let ModuleSource::Git { tree, .. } = &graph.modules["a+"].source else {
+        panic!()
+    };
+    assert_eq!(fs::read(tree.root.join("data")).unwrap(), b"patched\n");
+    assert_eq!(fs::read(f.0.join("upstream/pkg/data")).unwrap(), b"head\n");
+    assert!(!f.0.join("bazel-rs-out").exists());
+}
+
+#[test]
+fn git_name_mismatch_does_not_publish_a_module_tree() {
+    let f = Fixture::new("");
+    let commit = f.git_source("module(name='wrong',version='7')\n");
+    f.git_override(&commit, "");
+    let failed = f.command(&["--cache-dir=chosen", "mod", "graph", "--output=json"]);
+    assert!(!failed.status.success());
+    assert!(
+        String::from_utf8_lossy(&failed.stderr).contains("module name mismatch"),
+        "{}",
+        String::from_utf8_lossy(&failed.stderr)
+    );
+    fn no_module(path: &std::path::Path) {
+        if !path.exists() {
+            return;
+        }
+        for entry in fs::read_dir(path).unwrap() {
+            let entry = entry.unwrap();
+            assert_ne!(entry.file_name(), "MODULE.bazel");
+            if entry.file_type().unwrap().is_dir() {
+                no_module(&entry.path());
+            }
+        }
+    }
+    no_module(&f.0.join("chosen"));
+    assert!(!f.0.join("bazel-rs-out").exists());
+}
+
+#[test]
+fn git_unsupported_options_and_patch_operations_fail_before_cache_creation() {
+    for (selector, extra, expected) in [
+        (
+            "tag='v1'",
+            ",patches=[':missing.patch']",
+            "supports only full commit pins",
+        ),
+        (
+            "branch='main'",
+            ",patches=[':missing.patch']",
+            "supports only full commit pins",
+        ),
+        (
+            "commit='1111111111111111111111111111111111111111'",
+            ",init_submodules=True,patches=[':missing.patch']",
+            "init_submodules",
+        ),
+        (
+            "commit='1111111111111111111111111111111111111111'",
+            ",patch_cmds=['touch command-ran']",
+            "patch_cmds",
+        ),
+        (
+            "commit='1111111111111111111111111111111111111111'",
+            ",patches=['@@external+//:missing.patch']",
+            "canonical external patch",
+        ),
+    ] {
+        let f = Fixture::new(&format!(
+            "bazel_dep(name='a')\ngit_override(module_name='a',remote='file:///nonexistent-native-git-fixture',{selector}{extra})\n"
+        ));
+        let failed = f.run(&[]);
+        assert!(!failed.status.success());
+        let error = String::from_utf8_lossy(&failed.stderr);
+        assert!(error.contains(expected), "{error}");
+        assert!(!f.0.join("bazel-rs-out").exists());
+        assert!(!f.0.join("command-ran").exists());
+    }
+}
+
+#[test]
+fn git_unknown_full_commit_reports_real_git_error_without_fallback() {
+    let f = Fixture::new("");
+    f.git_source("module(name='a',version='7')\n");
+    f.git_override("1111111111111111111111111111111111111111", "");
+    let failed = f.run(&[]);
+    assert!(!failed.status.success());
+    assert!(failed.stdout.is_empty());
+    let error = String::from_utf8_lossy(&failed.stderr);
+    assert!(error.to_ascii_lowercase().contains("git"), "{error}");
+    assert!(!error.contains("no repository fetching"), "{error}");
+    assert!(
+        error.contains("fetch") || error.contains("not our ref") || error.contains("not a valid"),
+        "{error}"
+    );
 }
 
 #[test]

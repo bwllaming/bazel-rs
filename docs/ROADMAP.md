@@ -43,6 +43,13 @@ are documented in `docs/PATCHES.md`; 14 reference differential cases and 13
 native-only checks pass. The application follow-up reaches the unsupported `rules_distroless` Git
 override, without changing the checkout (`artifacts/mainrepo-patch-loading.json`).
 
+Commit-pinned Git overrides now use an isolated system-Git process and a verified
+private source cache; final patched MODULE bytes drive discovery. Mutable refs,
+submodules and symlinks remain unsupported. The application Git fetch reaches a
+tracked internal symlink in `rules_distroless` and fails explicitly rather than
+omitting it (`artifacts/mainrepo-git-loading.json`). Full source and build/test
+compatibility therefore remain incomplete. See `docs/GIT_OVERRIDES.md`.
+
 The official 9.3.0 release was published 2026-10-07, with upstream tag commit
 `e89755babf3e941bc1e9d8120b1cd48854ab9dfa`. The main checkout's `.bazeliskrc` pins
 9.1.1. Changing that checkout's pin is outside this implementation.

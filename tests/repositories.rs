@@ -44,6 +44,50 @@ impl Fixture {
             .output()
             .unwrap()
     }
+    fn git(&self, args: &[&str]) -> String {
+        let home = self.0.join("git-home");
+        fs::create_dir_all(&home).unwrap();
+        let output = Command::new("git")
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", home)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z")
+            .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")
+            .args([
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "init.templateDir=",
+            ])
+            .args(args)
+            .current_dir(self.0.join("repos/alpha"))
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", stderr(&output));
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+    fn git_override(&self) -> String {
+        self.file(
+            "repos/alpha/MODULE.bazel",
+            "module(name='alpha',version='7')\n",
+        );
+        self.git(&["init", "--quiet"]);
+        self.git(&["add", "."]);
+        self.git(&["commit", "--quiet", "-m", "pinned"]);
+        let commit = self.git(&["rev-parse", "HEAD"]);
+        let module = format!(
+            "module(name='main_module')\nbazel_dep(name='alpha',version='1',repo_name='first')\ngit_override(module_name='alpha',remote={:?},commit={commit:?})\n",
+            format!("file://{}", self.0.join("repos/alpha").display())
+        );
+        self.file("MODULE.bazel", &module);
+        module
+    }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -300,4 +344,107 @@ fn unavailable_native_dependency_is_resolved_only_when_selected() {
         "filegroup(name='unsafe',srcs=['@not_declared//p:../escape'])\n",
     );
     assert!(!fixture.run(&["query", "@first//p:all"]).status.success());
+}
+
+#[test]
+fn git_query_build_and_exported_files_use_pinned_private_tree_and_selected_cache() {
+    let f = Fixture::new();
+    f.git_override();
+    f.file("repos/alpha/p/data.txt", "uncommitted upstream change");
+    let query = f.run(&["--cache-dir=chosen", "query", "@first//p:all"]);
+    assert!(query.status.success(), "{}", stderr(&query));
+    assert!(String::from_utf8_lossy(&query.stdout).contains("@@alpha+//p:copy"));
+    let source = files(&f.run(&["--cache-dir=chosen", "build", "@first//p:data.txt"]));
+    assert_eq!(source[0].0, "@@alpha+//p:data.txt");
+    assert!(source[0].1.starts_with(f.0.join("chosen/repositories/git")));
+    assert_eq!(fs::read(&source[0].1).unwrap(), b"alpha");
+    let built = f.run(&["--cache-dir=chosen", "build", "@first//p:copy"]);
+    let output = files(&built);
+    assert_eq!(fs::read(&output[0].1).unwrap(), b"alpha");
+    assert!(output[0].1.starts_with(f.0.join("chosen")));
+    let warm = f.run(&["--cache-dir=chosen", "build", "@first//p:copy"]);
+    assert_eq!(files(&warm), output);
+    assert!(stderr(&warm).contains("0 actions executed, 1 cache hits"));
+    assert_eq!(
+        fs::read(f.0.join("repos/alpha/p/data.txt")).unwrap(),
+        b"uncommitted upstream change"
+    );
+    assert!(!f.0.join("bazel-rs-out").exists());
+    assert!(!f.0.join("MODULE.bazel.lock").exists());
+}
+
+#[test]
+fn git_repository_uses_frozen_patch_plan_after_graph_resolution() {
+    use bazel_rs::module_graph::ModuleSource;
+    use bazel_rs::repository::RepositorySet;
+    let f = Fixture::new();
+    let module = f.git_override();
+    f.file(
+        "MODULE.bazel",
+        &module.replace(
+            "git_override(",
+            "git_override(patches=[':fix.patch'],patch_strip=1,",
+        ),
+    );
+    // Bazel's native text patcher normalizes modified lines to LF, even with
+    // no-final-newline markers; retain the source's original bytes separately.
+    f.file("fix.patch", "--- a/p/data.txt\n+++ b/p/data.txt\n@@ -1 +1 @@\n-alpha\n\\ No newline at end of file\n+patched\n\\ No newline at end of file\n");
+    let cache = f.0.join("chosen/repositories");
+    let repos = RepositorySet::new(f.0.clone()).with_source_cache(cache.clone());
+    let graph = repos.resolve_graph().unwrap();
+    let ModuleSource::Git {
+        tree,
+        local_patches,
+        ..
+    } = &graph.modules["alpha+"].source
+    else {
+        panic!("Git source lost")
+    };
+    let identity = local_patches.cache_identity();
+    assert!(tree.root.starts_with(&cache));
+    f.file("fix.patch", "not a patch anymore");
+    let root = repos.root("alpha+").unwrap();
+    assert_eq!(root, tree.root);
+    assert_eq!(fs::read(root.join("p/data.txt")).unwrap(), b"patched\n");
+    assert_eq!(local_patches.cache_identity(), identity);
+    assert_eq!(
+        fs::read(f.0.join("repos/alpha/p/data.txt")).unwrap(),
+        b"alpha"
+    );
+    assert!(!f.0.join("bazel-rs-out").exists());
+}
+
+#[test]
+fn relative_library_cache_reuses_discovery_tree_when_origin_goes_offline() {
+    use bazel_rs::module_graph::ModuleSource;
+    use bazel_rs::repository::RepositorySet;
+    struct WrongCache(std::path::PathBuf);
+    impl Drop for WrongCache {
+        fn drop(&mut self) {
+            if self.0.exists() {
+                fs::remove_dir_all(&self.0).unwrap();
+            }
+        }
+    }
+    let f = Fixture::new();
+    f.git_override();
+    let relative = std::path::PathBuf::from(format!(
+        "relative-git-{}",
+        f.0.file_name().unwrap().to_string_lossy()
+    ));
+    let wrong = WrongCache(std::env::current_dir().unwrap().join(&relative));
+    assert!(!wrong.0.exists());
+    let repos = RepositorySet::new(f.0.clone()).with_source_cache(relative.clone());
+    let ModuleSource::Git { tree, .. } = &repos.resolve_graph().unwrap().modules["alpha+"].source
+    else {
+        panic!("missing Git source")
+    };
+    assert!(tree.root.starts_with(f.0.join(relative)));
+    fs::rename(f.0.join("repos/alpha"), f.0.join("offline-alpha")).unwrap();
+    assert_eq!(repos.root("alpha+").unwrap(), tree.root);
+    assert_eq!(fs::read(tree.root.join("p/data.txt")).unwrap(), b"alpha");
+    assert!(
+        !wrong.0.exists(),
+        "relative cache must not switch to process cwd"
+    );
 }

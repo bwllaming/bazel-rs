@@ -6,6 +6,8 @@ pub mod args;
 pub mod bzlmod;
 pub mod custom_rule;
 pub mod engine;
+pub mod git_process;
+pub mod git_source;
 pub mod glob;
 pub mod label;
 pub mod loading;
