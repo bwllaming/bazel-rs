@@ -14,9 +14,11 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::OnceLock;
 
-use crate::custom_rule::{AttrKind, AttrSpec, AttrValue, attribute_spec};
+use crate::custom_rule::{AttrKind, AttrSpec, AttrValue, attribute_spec, attribute_spec_ref};
+use crate::extension_calls::RecordedValue;
 use crate::label::Label;
 use crate::loading::ExtensionContext;
+use crate::repository_budget::HostBudget;
 
 #[derive(Clone, Debug)]
 pub struct RuleDefinition {
@@ -113,17 +115,38 @@ mod values {
 
         fn invoke(
             &self,
-            _me: Value<'v>,
-            _args: &Arguments<'v, '_>,
-            _eval: &mut Evaluator<'v, '_, '_>,
+            me: Value<'v>,
+            args: &Arguments<'v, '_>,
+            eval: &mut Evaluator<'v, '_, '_>,
         ) -> starlark::Result<Value<'v>> {
-            Err(starlark::Error::new_other(anyhow!(
-                "repository rule calls are unsupported outside recorded MODULE/direct execution"
-            )))
+            crate::extension_ctx::record_repository_call(me, args, eval)
+                .map_err(starlark::Error::new_other)
         }
     }
 }
 use values::{FrozenRepoDefinition, RepoDefinitionGen};
+
+/// Called after the execution-phase guard, before recording any arguments.
+pub(crate) fn validate_invokable_value(value: Value<'_>) -> anyhow::Result<()> {
+    let definition = values::RepoDefinition::from_value(value)
+        .ok_or_else(|| anyhow!("expected a repository_rule definition"))?;
+    if definition.identity().is_none() {
+        bail!("repository_rule must have an exported name before it is called");
+    }
+    Ok(())
+}
+
+/// Cost estimation only: do not bind or validate callback arguments here.
+/// Every invocation is charged, even when many calls share the same callee.
+pub(crate) fn charge_schema(value: Value<'_>, budget: &mut HostBudget) -> Result<(), String> {
+    let definition = values::RepoDefinition::from_value(value)
+        .ok_or_else(|| "expected a repository_rule definition".to_owned())?;
+    budget.string(&definition.definition_label)?;
+    if let Some(name) = definition.exported.get() {
+        budget.string(name)?;
+    }
+    budget.schema(&definition.schema)
+}
 
 /// Extract an exported frozen definition while retaining its implementation heap.
 /// Transitive function registries belong to the loader, not this value.
@@ -132,6 +155,8 @@ pub fn unpack(value: &OwnedFrozenValue) -> Result<RuleDefinition, String> {
         .value()
         .downcast_ref::<FrozenRepoDefinition>()
         .ok_or_else(|| "expected a frozen repository_rule definition".to_owned())?;
+    // The ordinary recorder also charges this cumulatively before rooting calls.
+    HostBudget::default().schema(&definition.schema)?;
     let identity = definition
         .identity()
         .ok_or_else(|| "repository_rule must have an exported name".to_owned())?;
@@ -196,6 +221,7 @@ pub fn globals(builder: &mut GlobalsBuilder) {
             .map_err(|e| {
                 anyhow!("repository_rule implementation must be callable with ctx: {e}")
             })?;
+        let mut budget = HostBudget::default();
         let mut schema = BTreeMap::new();
         if !attrs.is_none() {
             let attrs = DictRef::from_value(attrs).ok_or_else(|| {
@@ -215,13 +241,18 @@ pub fn globals(builder: &mut GlobalsBuilder) {
                 {
                     bail!("invalid repository attribute name {name:?}");
                 }
-                let spec = attribute_spec(descriptor).ok_or_else(|| {
+                let spec = attribute_spec_ref(descriptor).ok_or_else(|| {
                     anyhow!("repository attribute {name:?} must be an attr descriptor")
                 })?;
                 if matches!(spec.kind, AttrKind::Output | AttrKind::OutputList) {
                     bail!("output attributes are invalid for repository rules: {name:?}");
                 }
-                schema.insert(name.to_owned(), spec);
+                budget.string(name).map_err(anyhow::Error::msg)?;
+                budget.spec(spec).map_err(anyhow::Error::msg)?;
+                schema.insert(
+                    name.to_owned(),
+                    attribute_spec(descriptor).expect("descriptor checked and charged above"),
+                );
             }
         }
         Ok(eval.heap().alloc(RepoDefinitionGen {
@@ -294,6 +325,84 @@ pub fn bind_attributes(
         }
     }
     Ok(attrs)
+}
+
+/// Bind call-time snapshots without erasing the distinction between genuine
+/// Label values and strings. Raw strings use the completed sibling mapping;
+/// genuine Labels retain their previously resolved canonical identity.
+pub fn bind_recorded_attributes(
+    definition: &RuleDefinition,
+    raw: &BTreeMap<String, RecordedValue>,
+    canonical_name: &str,
+    resolve: impl Fn(&str) -> Result<Label, String>,
+) -> Result<BTreeMap<String, AttrValue>, String> {
+    // The ordinary recorder supplies a cumulative reservation. Also guard this
+    // public host entry point before converting snapshots or expanding defaults.
+    let mut budget = HostBudget::default();
+    budget.schema(&definition.schema)?;
+    budget.string(canonical_name)?;
+    for (name, value) in raw {
+        budget.string(name)?;
+        budget.recorded(value, 0)?;
+    }
+    fn json_value(
+        value: &RecordedValue,
+        label_allowed: bool,
+        label_list_allowed: bool,
+    ) -> Result<serde_json::Value, String> {
+        Ok(match value {
+            RecordedValue::None => serde_json::Value::Null,
+            RecordedValue::Bool(value) => (*value).into(),
+            RecordedValue::Int(value) => (*value).into(),
+            RecordedValue::String(value) => value.clone().into(),
+            RecordedValue::Label(value) if label_allowed => {
+                // Display normally omits '@@' for main-repository labels.
+                // Restore it so caller-relative resolution cannot reanchor them.
+                Label::parse_canonical(value)?.canonical_starlark().into()
+            }
+            RecordedValue::Label(_) => {
+                return Err("expected an attribute-compatible value, got Label".to_owned());
+            }
+            RecordedValue::List(values) => serde_json::Value::Array(
+                values
+                    .iter()
+                    .map(|value| json_value(value, label_list_allowed, false))
+                    .collect::<Result<_, _>>()?,
+            ),
+            RecordedValue::Dict(values) => serde_json::Value::Object(
+                values
+                    .iter()
+                    .map(|(key, value)| Ok((key.clone(), json_value(value, false, false)?)))
+                    .collect::<Result<_, String>>()?,
+            ),
+        })
+    }
+
+    let mut converted = BTreeMap::new();
+    for (name, value) in raw {
+        if matches!(value, RecordedValue::None)
+            || matches!(name.as_str(), "tags" | "deprecation" | "visibility")
+        {
+            continue;
+        }
+        let kind = if name == "name" {
+            &AttrKind::String
+        } else {
+            &definition
+                .schema
+                .get(name)
+                .ok_or_else(|| format!("unknown repository attribute {name:?}"))?
+                .kind
+        };
+        let value = json_value(
+            value,
+            matches!(kind, AttrKind::Label),
+            matches!(kind, AttrKind::LabelList),
+        )
+        .map_err(|e| format!("repository attribute {name:?}: {e}"))?;
+        converted.insert(name.clone(), value);
+    }
+    bind_attributes(definition, &converted, canonical_name, resolve)
 }
 
 fn parse_attribute(
@@ -416,6 +525,15 @@ mod tests {
         bind_attributes(definition, &raw(value), "canonical+repo", |text| {
             Label::parse(text, "caller")
         })
+    }
+
+    #[test]
+    fn repeated_descriptor_defaults_are_bounded_before_schema_clones() {
+        let error = extension("def impl(ctx):\n    return None\nd = attr.string(default='x' * 1048576)\nR = repository_rule(impl, attrs={'a' + str(i):d for i in range(600)})").unwrap_err();
+        assert!(
+            error.contains("host preparation weighted byte limit"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -553,6 +671,12 @@ mod tests {
             module.freeze().unwrap().get("Hidden").unwrap()
         });
         assert!(unpack(&unexported).unwrap_err().contains("exported name"));
+        assert!(
+            validate_invokable_value(unexported.value())
+                .unwrap_err()
+                .to_string()
+                .contains("exported name")
+        );
     }
 
     #[test]
@@ -785,5 +909,147 @@ mod tests {
             error.contains("repository is not visible from the caller"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn recorded_labels_preserve_main_and_external_identity_while_strings_use_caller() {
+        let definition = definition("{'labels': attr.label_list()}");
+        let values = BTreeMap::from([(
+            "labels".to_owned(),
+            RecordedValue::List(vec![
+                RecordedValue::Label("//original:data".to_owned()),
+                RecordedValue::Label("@@original//pkg:data".to_owned()),
+                RecordedValue::String("//original:data".to_owned()),
+                RecordedValue::String(":local".to_owned()),
+                RecordedValue::String("@original//pkg:data".to_owned()),
+            ]),
+        )]);
+        let attrs = bind_recorded_attributes(&definition, &values, "canonical", |text| {
+            Label::parse_in(
+                text,
+                "extension",
+                "export",
+                &BTreeMap::from([("original".to_owned(), "remapped".to_owned())]),
+            )
+        })
+        .unwrap();
+        assert_eq!(
+            attrs["labels"],
+            AttrValue::Labels(vec![
+                "//original:data".to_owned(),
+                "@@original//pkg:data".to_owned(),
+                "@@extension//original:data".to_owned(),
+                "@@extension//export:local".to_owned(),
+                "@@remapped//pkg:data".to_owned(),
+            ])
+        );
+    }
+
+    #[test]
+    fn recorded_labels_are_not_strings_or_nested_label_lists() {
+        let definition = definition(
+            "{'s': attr.string(), 'ss': attr.string_list(), 'l': attr.label(), 'ls': attr.label_list()}",
+        );
+        let label = RecordedValue::Label("//:data".to_owned());
+        for (name, value) in [
+            ("s", label.clone()),
+            ("ss", RecordedValue::List(vec![label.clone()])),
+            ("l", RecordedValue::List(vec![label.clone()])),
+            (
+                "ls",
+                RecordedValue::List(vec![RecordedValue::List(vec![label.clone()])]),
+            ),
+        ] {
+            let error = bind_recorded_attributes(
+                &definition,
+                &BTreeMap::from([(name.to_owned(), value)]),
+                "canonical",
+                Label::parse_canonical,
+            )
+            .unwrap_err();
+            assert!(error.contains("Label"), "{name}: {error}");
+        }
+        let attrs = bind_recorded_attributes(
+            &definition,
+            &BTreeMap::from([("l".to_owned(), label)]),
+            "canonical",
+            |text| Label::parse(text, "elsewhere"),
+        )
+        .unwrap();
+        assert_eq!(attrs["l"], AttrValue::Label(Some("//:data".to_owned())));
+    }
+
+    #[test]
+    fn recorded_string_sibling_resolution_is_deferred_and_defaults_are_not_rebound() {
+        let definition = definition("{'l': attr.label(), 'default': attr.label(default=':tool')}");
+        let raw = BTreeMap::from([(
+            "l".to_owned(),
+            RecordedValue::String("@later//:data".to_owned()),
+        )]);
+        let siblings = BTreeMap::from([("later".to_owned(), "ext+later".to_owned())]);
+        let attrs = bind_recorded_attributes(&definition, &raw, "ext+first", |text| {
+            assert_eq!(text, "@later//:data", "only raw explicit labels resolve");
+            Label::parse_in(text, "extension", "public", &siblings)
+        })
+        .unwrap();
+        assert_eq!(
+            attrs["l"],
+            AttrValue::Label(Some("@@ext+later//:data".to_owned()))
+        );
+        assert_eq!(
+            attrs["default"],
+            AttrValue::Label(Some("//defs:tool".to_owned()))
+        );
+        assert_eq!(attrs["name"], AttrValue::String("ext+first".to_owned()));
+    }
+
+    #[test]
+    fn recorded_binding_skips_none_and_metadata_but_keeps_schema_validation() {
+        let definition = definition(
+            "{'required': attr.int(mandatory=True), 'text': attr.string(default='default')}",
+        );
+        let raw = BTreeMap::from([
+            ("unknown".to_owned(), RecordedValue::None),
+            ("required".to_owned(), RecordedValue::Int(7)),
+            ("text".to_owned(), RecordedValue::None),
+            (
+                "tags".to_owned(),
+                RecordedValue::Label("//:not_a_string".to_owned()),
+            ),
+            (
+                "visibility".to_owned(),
+                RecordedValue::Dict(BTreeMap::new()),
+            ),
+            (
+                "name".to_owned(),
+                RecordedValue::String("original".to_owned()),
+            ),
+        ]);
+        let attrs = bind_recorded_attributes(&definition, &raw, "ext+made", Label::parse_canonical)
+            .unwrap();
+        assert_eq!(attrs["required"], AttrValue::Int(7));
+        assert_eq!(attrs["text"], AttrValue::String("default".to_owned()));
+        assert_eq!(attrs["name"], AttrValue::String("ext+made".to_owned()));
+        for (name, value, message) in [
+            ("required", RecordedValue::None, "missing mandatory"),
+            (
+                "text",
+                RecordedValue::Dict(BTreeMap::new()),
+                "expected a string",
+            ),
+            ("text", RecordedValue::String("é".to_owned()), "non-ASCII"),
+            (
+                "unknown",
+                RecordedValue::Bool(false),
+                "unknown repository attribute",
+            ),
+        ] {
+            let mut raw = raw.clone();
+            raw.insert(name.to_owned(), value);
+            let error =
+                bind_recorded_attributes(&definition, &raw, "ext+made", Label::parse_canonical)
+                    .unwrap_err();
+            assert!(error.contains(message), "{name}: {error}");
+        }
     }
 }

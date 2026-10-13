@@ -181,6 +181,9 @@ pub struct ExtensionUsage {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ExtensionTag {
     pub name: String,
+    /// Zero-based module-wide invocation order of retained ordinary and innate
+    /// tags, before typed tag binding; unique across all usages in this MODULE.
+    pub ordinal: usize,
     /// Owned after MODULE evaluation; nested mutable values retain their final
     /// contents, rather than being deep-copied when the tag is called.
     pub attributes: BTreeMap<String, Json>,
@@ -330,6 +333,7 @@ mod values {
                 let attributes = Kwargs::new(args)?.0;
                 let collector = context(eval)?;
                 let mut state = collector.state.borrow_mut();
+                let ordinal = state.pending_attributes.len();
                 let usage = &mut state.file.extension_usages[self.proxy.usage];
                 // Ignored proxies have detached usages in Bazel. Keep declaration
                 // metadata for our recorded profile, but do not retain or convert
@@ -344,6 +348,7 @@ mod values {
                 let tag = usage.tags.len();
                 usage.tags.push(ExtensionTag {
                     name: self.name.clone(),
+                    ordinal,
                     attributes: BTreeMap::new(),
                     declaration: self.proxy.declaration,
                     dev_dependency: usage.declarations[self.proxy.declaration].dev_dependency,
@@ -1020,6 +1025,7 @@ fn record_repo_rule<'v>(
             state.file.extension_usages.len() - 1
         }
     };
+    let ordinal = state.pending_attributes.len();
     let usage = &mut state.file.extension_usages[index];
     let declaration = usage.declarations.len();
     let tag = usage.tags.len();
@@ -1028,6 +1034,7 @@ fn record_repo_rule<'v>(
         .push(ExtensionDeclaration { dev_dependency });
     usage.tags.push(ExtensionTag {
         name: "repo".to_owned(),
+        ordinal,
         attributes: BTreeMap::new(),
         declaration,
         dev_dependency,
@@ -1083,7 +1090,8 @@ fn validate_module_name(s: &str) -> anyhow::Result<()> {
     }
     Ok(())
 }
-fn validate_repo_name(s: &str) -> anyhow::Result<()> {
+/// Validates user-provided repository names, unlike the broader canonical repository grammar.
+pub(crate) fn validate_repo_name(s: &str) -> anyhow::Result<()> {
     if !s.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
         || !s
             .bytes()
@@ -1312,6 +1320,112 @@ d.tag()
             f.extension_usages[1].identity,
             f.extension_usages[2].identity
         );
+    }
+
+    #[test]
+    fn tag_ordinals_preserve_interleaving_across_raw_extension_usages() {
+        let f = run(r#"
+module(name="root")
+foo = use_extension("//:ext.bzl", "ext")
+bar = use_extension("@root//:ext.bzl", "ext")
+foo.t1()
+bar.t2()
+foo.t3()
+"#);
+        assert_eq!(f.extension_usages.len(), 2);
+        assert_eq!(f.extension_usages[0].identity.label, "//:ext.bzl");
+        assert_eq!(f.extension_usages[1].identity.label, "@root//:ext.bzl");
+        let mut tags = f
+            .extension_usages
+            .iter()
+            .flat_map(|usage| &usage.tags)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            tags.iter().map(|tag| tag.ordinal).collect::<Vec<_>>(),
+            [0, 2, 1]
+        );
+        tags.sort_by_key(|tag| tag.ordinal);
+        assert_eq!(
+            tags.iter().map(|tag| tag.name.as_str()).collect::<Vec<_>>(),
+            ["t1", "t2", "t3"]
+        );
+    }
+
+    #[test]
+    fn tag_ordinals_include_innate_calls_without_snapshotting_mutable_attributes() {
+        let f = run(r#"
+foo = use_extension("//:ext.bzl", "ext")
+rule = use_repo_rule("//:repo.bzl", "rule")
+attrs = {"nested": ["before"]}
+foo.t1(attrs=attrs)
+rule(name="first", attrs=attrs)
+attrs["nested"].append("between")
+foo.t2(attrs=attrs)
+rule(name="second", attrs=attrs)
+attrs["nested"].append("after")
+"#);
+        assert_eq!(f.extension_usages.len(), 2);
+        assert!(!f.extension_usages[0].identity.is_repo_rule());
+        assert_direct_usage(
+            &f.extension_usages[1],
+            &[("first", false), ("second", false)],
+        );
+        let mut tags = f
+            .extension_usages
+            .iter()
+            .flat_map(|usage| &usage.tags)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            tags.iter().map(|tag| tag.ordinal).collect::<Vec<_>>(),
+            [0, 2, 1, 3]
+        );
+        tags.sort_by_key(|tag| tag.ordinal);
+        assert_eq!(
+            tags.iter().map(|tag| tag.name.as_str()).collect::<Vec<_>>(),
+            ["t1", "repo", "t2", "repo"]
+        );
+        for tag in tags {
+            assert_eq!(
+                tag.attributes["attrs"],
+                serde_json::json!({"nested": ["before", "between", "after"]})
+            );
+        }
+    }
+
+    #[test]
+    fn tag_ordinals_skip_ignored_dev_tags_and_direct_calls() {
+        for context in contexts().into_iter().skip(1) {
+            let f = in_context(
+                r#"
+dev = use_extension("//:ext.bzl", "ext", dev_dependency=True)
+foo = use_extension("//:ext.bzl", "ext")
+rule = use_repo_rule("//:repo.bzl", "rule")
+ignored = use_repo_rule("//:ignored.bzl", "rule")
+dev.skipped(value=dev)
+ignored(name="first", dev_dependency=True, value=ignored)
+foo.t1()
+dev.skipped(value=dev)
+rule(name="first", dev_dependency=True, value=rule)
+rule(name="first")
+ignored(name="first", dev_dependency=True, value=ignored)
+foo.t2()
+dev.skipped(value=dev)
+"#,
+                context,
+            )
+            .unwrap();
+            assert_eq!(f.extension_usages.len(), 2);
+            let ordinary = &f.extension_usages[0];
+            assert_eq!(ordinary.declarations.len(), 2);
+            assert_eq!(ordinary.tags.len(), 2);
+            assert_eq!(ordinary.tags[0].name, "t1");
+            assert_eq!(ordinary.tags[0].ordinal, 0);
+            assert_eq!(ordinary.tags[1].name, "t2");
+            assert_eq!(ordinary.tags[1].ordinal, 2);
+            assert!(ordinary.tags.iter().all(|tag| tag.declaration == 1));
+            assert_direct_usage(&f.extension_usages[1], &[("first", false)]);
+            assert_eq!(f.extension_usages[1].tags[0].ordinal, 1);
+        }
     }
 
     #[test]

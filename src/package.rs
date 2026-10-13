@@ -370,6 +370,7 @@ pub fn bzl_globals() -> Globals {
     crate::custom_rule::rule_globals(&mut bzl);
     crate::providers::globals(&mut bzl);
     crate::repository_rule::globals(&mut bzl);
+    crate::module_extension::globals(&mut bzl);
     bzl.build()
 }
 

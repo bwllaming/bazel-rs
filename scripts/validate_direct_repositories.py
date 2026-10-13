@@ -3,7 +3,7 @@
 
 Registry source-file queries probe MODULE metadata and declaration laziness.
 One native-only query loads a complete ordinary .bzl definition file containing a
-supported repository rule and an unsupported module_extension constructor.
+supported repository rule and a module_extension with unsupported nonzero facts_version.
 No build/test, wrapper, credential environment changes, fake built-ins, or
 generated-repo success claim in this suite. Official Bazel may download its
 genuine built-in closure.
@@ -132,8 +132,13 @@ def cases():
                case("ignored.dev-nondev", mixed, ignore=True),
                case("negative.before-module", root=PROXY + ROOT_MODULE,
                     expected="rejection", diagnostic="module_order"),
-               case("native.ordinary-extension-definition-boundary", REAL_PROXY + 'repo(name = "generated")\n',
-                    target="@generated//:data", expected="native_boundary", diagnostic="ordinary_extension_unsupported")]
+               case("native.facts-version-unsupported", REAL_PROXY + 'repo(name = "generated")\n',
+                     target="@generated//:data", expected="native_boundary", diagnostic="facts_version_unsupported")]
+    # Keep ordinary constructors valid everywhere else, especially before the
+    # load sentinel. This boundary still loads the complete real definition file.
+    result[-1]["defs"] = REAL_DEFS.replace(
+        "module_extension(implementation = _ext_impl)",
+        "module_extension(implementation = _ext_impl, facts_version = 1)")
     return result
 
 
@@ -151,7 +156,7 @@ DIAGNOSTICS = {
     "syntax_kwargs": r"\*\*kwargs\b[^\n]*(?:must be (?:a )?(?:(?:dict|dictionary) literal|literal (?:dict|dictionary))|(?:not|only)[^\n]*allowed)|(?:only|must)[^\n]*(?:dict|dictionary) literal[^\n]*\*\*kwargs\b",
     "syntax_star": r"(?<!\*)\*args\b[^\n]*(?:not allowed|not supported|forbidden)",
     "syntax_rebinding": r"\bglobal binding\b[^\n]*may not be reassigned|\bcannot reassign global\b|\b(?:global |file.global )?(?:variable|name|identifier)\b[^\n]*(?:is |was )?(?:redeclared|already defined)|'[^'\n]+' redeclared at top level",
-    "ordinary_extension_unsupported": r"\bmodule_extension\b[`'\"]?(?: constructor)? (?:is )?(?:not found|not defined|unsupported|not supported)\b",
+    "facts_version_unsupported": r"\bmodule_extension with nonzero facts_version is unsupported\b",
     "declaration_loaded": re.escape(LOAD_SENTINEL),
 }
 SYNTAX_CLASSES = frozenset(("syntax_kwargs", "syntax_star", "syntax_rebinding"))
@@ -160,8 +165,8 @@ SYNTAX_CLASSES = frozenset(("syntax_kwargs", "syntax_star", "syntax_rebinding"))
 # Actual parse errors, unexpected tokens and crashes remain forbidden in all cases.
 UNRELATED = re.compile(r"parse error|unexpected token|panicked|internal error|FATAL:|crashed|falling back|fallback to", re.I)
 SYNTAX_ERROR = re.compile(r"syntax error", re.I)
-# The captured missing-builtin diagnostic is a name error, not a syntax error.
-# Do not exempt this boundary from the parser/syntax guards above.
+# Do not exempt constructor-profile rejection from parser/syntax guards.
+STALE_EXTENSION_ERROR = re.compile(r"\bmodule_extension\b[`'\"]?(?: constructor)? (?:is )?(?:not found|not defined|unsupported|not supported)\b", re.I)
 BOUNDARY_INFRASTRUCTURE_ERROR = re.compile(r"\bnetwork\b|\bdownload\b|permission denied|access denied|connection (?:refused|reset|timed out)", re.I)
 
 
@@ -242,8 +247,9 @@ def require_rejection(record, diagnostic):
     if (type(code) is not int or not 0 < code < 128 or code == 101 or record["timed_out"]
             or record.get("spawn_error") or record.get("interrupted") or record["stdout"].strip()
             or UNRELATED.search(record["stderr"])
-            or (diagnostic == "ordinary_extension_unsupported"
-                and BOUNDARY_INFRASTRUCTURE_ERROR.search(record["stderr"]))
+            or (diagnostic == "facts_version_unsupported"
+                 and (BOUNDARY_INFRASTRUCTURE_ERROR.search(record["stderr"])
+                      or STALE_EXTENSION_ERROR.search(record["stderr"])))
             or (diagnostic not in SYNTAX_CLASSES and SYNTAX_ERROR.search(record["stderr"]))
             or not re.search(DIAGNOSTICS[diagnostic], record["stderr"], re.I)):
         raise ValueError("expected controlled rejection in diagnostic class " + diagnostic)
@@ -255,7 +261,7 @@ def evaluate(item, native, official, check):
     if expected == "native_boundary":
         check["native"] = require_rejection(native, item["diagnostic_class"])
         check["parity_claim"] = False
-        check["details"] = ("Ordinary module-extension definition remains unsupported even when the requested file "
+        check["details"] = ("Nonzero module_extension facts_version remains unsupported even when the requested file "
                             "also exports a supported repository rule. Official execution NOT_RUN.")
         check["status"] = "PASS"
         return
@@ -397,9 +403,9 @@ def main(argv=None):
               "test_commands_executed": False, "build_commands_executed": False,
               "comparison": "Exact single source-label identity; controlled diagnostic classes, not exact error strings.",
               "limitations": ["MODULE declaration metadata only; full use_repo_rule/Bzlmod parity is NOT attained.",
-                              "Ordinary module-extension definition remains unsupported even when the requested file also exports a supported repository rule; this native-only probe is not differential parity.",
+                              "Nonzero module_extension facts_version remains unsupported even when the requested file also exports a supported repository rule; this native-only probe is not differential parity.",
                               "This suite makes no generated-repository success claim; pure direct execution is validated separately.",
-                              "Active-use mod graph is not compared: native extension execution is unsupported.",
+                              "Active-use mod graph is not compared: native mod graph does not execute extensions.",
                               "The load sentinel records official eager loading as UNSUPPORTED_BOUNDARY, never parity.",
                               "Query does not read source contents: before/after fixture bytes are recorded, not build outputs.",
                               "Reference uses real BCR built-ins; no dummy modules, overrides, or cached user repositories.",

@@ -1,8 +1,9 @@
 //! Lazy repository roots and strict apparent-name resolution.
 //!
 //! Main-repository source operations never evaluate MODULE.bazel. External
-//! resolution records the graph once; direct repository rules execute only on
-//! root demand, never during alias lookup. Local source roots remain
+//! resolution records the graph once; generated import aliases are metadata-only.
+//! Ordinary groups prepare on generated-root/mapping demand, while repository
+//! rules execute only on root demand. Local source roots remain
 //! live inputs; archive sources are materialized only when requested. Git sources
 //! are materialized for discovery and revalidated before repository use.
 use crate::label::{Label, PackageId, validate_repository_name};
@@ -12,7 +13,7 @@ use crate::registry::Registry;
 use crate::repository_catalog::{self, DirectCatalog};
 use crate::repository_demand::DemandSlot;
 use crate::{custom_rule::AttrValue, loading, repository_rule};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -41,6 +42,7 @@ struct DirectRuntime {
     catalog: DirectCatalog,
     groups: BTreeMap<String, DemandSlot<PreparedGroup>>,
     roots: BTreeMap<String, DemandSlot<PathBuf>>,
+    ordinary: BTreeMap<String, DemandSlot<PreparedOrdinary>>,
 }
 
 #[derive(Debug)]
@@ -51,10 +53,80 @@ struct PreparedGroup {
     attributes: Vec<BTreeMap<String, AttrValue>>,
 }
 
+#[derive(Debug)]
+struct PreparedOrdinary {
+    loaded: loading::LoadedDefinition,
+    generated_mapping: BTreeMap<String, String>,
+    repositories: BTreeMap<String, OrdinaryRepository>,
+    provenance: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct OrdinaryRepository {
+    definition: repository_rule::RuleDefinition,
+    attributes: BTreeMap<String, AttrValue>,
+    original_name: String,
+    canonical_name: String,
+    root: DemandSlot<PathBuf>,
+}
+
+impl serde::Serialize for OrdinaryRepository {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut value = serializer.serialize_struct("RepositorySpec", 5)?;
+        value.serialize_field("definition_identity", &self.definition.identity)?;
+        value.serialize_field("schema", &self.definition.schema)?;
+        value.serialize_field("attributes", &self.attributes)?;
+        value.serialize_field("canonical_name", &self.canonical_name)?;
+        value.serialize_field("original_name", &self.original_name)?;
+        value.end()
+    }
+}
+
+// Stream borrowed provenance instead of first cloning potentially large
+// defaults into serde_json::Value trees. Check the limit before buffer growth.
+fn bounded_provenance(value: &impl serde::Serialize, limit: usize) -> Result<Vec<u8>, String> {
+    struct Sink {
+        bytes: Vec<u8>,
+        limit: usize,
+    }
+    impl std::io::Write for Sink {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
+                return Err(std::io::Error::other(
+                    "ordinary extension host provenance limit exceeded",
+                ));
+            }
+            let required = self.bytes.len() + bytes.len();
+            if required > self.bytes.capacity() {
+                let capacity = required
+                    .max(self.bytes.capacity().saturating_mul(2))
+                    .min(self.limit);
+                self.bytes
+                    .try_reserve_exact(capacity - self.bytes.len())
+                    .map_err(std::io::Error::other)?;
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut sink = Sink {
+        bytes: Vec::new(),
+        limit,
+    };
+    serde_json::to_writer(&mut sink, value)
+        .map_err(|e| format!("cannot serialize ordinary extension provenance: {e}"))?;
+    Ok(sink.bytes)
+}
+
 const _: fn() = || {
     fn send_sync<T: Send + Sync>() {}
     send_sync::<RepositorySet>();
     send_sync::<PreparedGroup>();
+    send_sync::<PreparedOrdinary>();
 };
 
 impl RepositorySet {
@@ -135,7 +207,16 @@ impl RepositorySet {
         }
         let graph = self.resolve_graph()?;
         let Some(module) = graph.modules.get(repository) else {
-            return self.direct_root(repository);
+            return if self
+                .direct_runtime()?
+                .catalog
+                .repositories
+                .contains_key(repository)
+            {
+                self.direct_root(repository)
+            } else {
+                self.ordinary_root(repository)
+            };
         };
         match &module.source {
             ModuleSource::LocalPath(root) => Ok(root),
@@ -215,11 +296,14 @@ impl RepositorySet {
     pub fn mapping(&self, repository: &str) -> Result<&BTreeMap<String, String>, String> {
         validate_repository_name(repository)?;
         let catalog = &self.direct_runtime()?.catalog;
-        catalog.owner_mappings.get(repository)
-            .or_else(|| catalog.repositories.get(repository).map(|entry| &entry.mapping))
-            .ok_or_else(|| {
-            format!("unknown canonical repository @@{repository}; extension repository not materialized or module not selected")
-        })
+        if let Some(mapping) = catalog.owner_mappings.get(repository) {
+            return Ok(mapping);
+        }
+        if let Some(entry) = catalog.repositories.get(repository) {
+            return Ok(&entry.mapping);
+        }
+        let (prepared, _) = self.ordinary_repository(repository)?;
+        Ok(&prepared.generated_mapping)
     }
 
     /// Catalog construction is pure metadata work. In particular, its OnceLock
@@ -242,10 +326,16 @@ impl RepositorySet {
                     .keys()
                     .map(|name| (name.clone(), DemandSlot::new()))
                     .collect();
+                let ordinary = catalog
+                    .ordinary_groups
+                    .keys()
+                    .map(|id| (id.clone(), DemandSlot::new()))
+                    .collect();
                 Ok(DirectRuntime {
                     catalog,
                     groups,
                     roots,
+                    ordinary,
                 })
             })
             .as_ref()
@@ -359,7 +449,247 @@ impl RepositorySet {
         .map(PathBuf::as_path)
     }
 
-    pub fn parse(&self, text: &str, repository: &str, package: &str) -> Result<Label, String> {
+    fn prepare_ordinary_group(&self, id: &str) -> Result<&PreparedOrdinary, String> {
+        let runtime = self.direct_runtime()?;
+        let group = runtime
+            .catalog
+            .ordinary_groups
+            .get(id)
+            .ok_or_else(|| format!("unknown ordinary extension group {id:?}"))?;
+        let slot = runtime
+            .ordinary
+            .get(id)
+            .ok_or_else(|| format!("missing ordinary extension preparation slot {id:?}"))?;
+        slot.get_or_try_init(self.state.runtime_id, &format!("prepare:ordinary:{id}"), || {
+            for participant in &group.participants {
+                if let Some(error) = &participant.source_profile_error {
+                    return Err(error.clone());
+                }
+            }
+            let loaded = loading::load_module_extension_in(
+                Arc::new(self.clone()), &group.label, &group.symbol,
+                &crate::package::bzl_globals(),
+            )?;
+            let mut preparation_budget = crate::repository_budget::HostBudget::default();
+            for (label, source) in &loaded.sources {
+                preparation_budget.string(label)?;
+                preparation_budget.bytes(source.bytes.len())?;
+                for (apparent, canonical) in &source.mapping {
+                    preparation_budget.string(apparent)?;
+                    preparation_budget.string(canonical)?;
+                }
+            }
+            let definition = crate::module_extension::unpack(&loaded.value)
+                .map_err(|error| format!("module extension {}%{}: {error}", group.label, group.symbol))?;
+            let execution = crate::extension_ctx::execute(
+                Arc::new(self.clone()), &definition, &loaded.functions, &group.label,
+                &group.participants, group.root_has_non_dev_dependency,
+            )?;
+
+            // The requested extension host owns this mapping, not its first
+            // importing MODULE. Install all siblings before binding any spec.
+            let host_mapping = self.mapping(&group.label.repository)?;
+            for (apparent, canonical) in host_mapping {
+                preparation_budget.string(apparent)?;
+                preparation_budget.string(canonical)?;
+            }
+            let mut generated_mapping = host_mapping.clone();
+            let mut names = BTreeSet::new();
+            for recorded in &execution.repositories {
+                preparation_budget.string(&recorded.name)?;
+                preparation_budget.bytes(group.prefix.len())?;
+                crate::bzlmod::validate_repo_name(&recorded.name).map_err(|e| e.to_string())?;
+                if !names.insert(recorded.name.clone()) {
+                    return Err(format!("duplicate generated repository {:?}", recorded.name));
+                }
+                let canonical = format!("{}+{}", group.prefix, recorded.name);
+                validate_repository_name(&canonical)?;
+                let (prefix, _) = canonical.rsplit_once('+')
+                    .ok_or_else(|| format!("invalid generated repository @@{canonical}"))?;
+                if runtime.catalog.ordinary_routes.get(prefix).map(String::as_str) != Some(id) {
+                    return Err(format!("ambiguous ordinary extension route for @@{canonical}"));
+                }
+                if self.resolve_graph()?.modules.contains_key(&canonical)
+                    || runtime.catalog.repositories.contains_key(&canonical) {
+                    return Err(format!("generated repository canonical name collision: @@{canonical}"));
+                }
+                generated_mapping.insert(recorded.name.clone(), canonical);
+            }
+            let mut repositories = BTreeMap::new();
+            let resolution_budget = std::cell::RefCell::new(crate::repository_budget::HostBudget::default());
+            for recorded in execution.repositories {
+                // Charge omitted defaults and supplied values before the binder
+                // expands either into another owned attribute map.
+                preparation_budget.schema(&recorded.definition.schema)?;
+                for (name, value) in &recorded.attributes {
+                    preparation_budget.string(name)?;
+                    preparation_budget.recorded(value, 0)?;
+                }
+                let canonical_name = generated_mapping[&recorded.name].clone();
+                let attributes = repository_rule::bind_recorded_attributes(
+                    &recorded.definition, &recorded.attributes, &canonical_name,
+                    |text| {
+                        resolution_budget.borrow_mut().bytes(Label::resolution_size_bound(text, &group.label.repository, &group.label.package, &generated_mapping))?;
+                        Label::parse_in(text, &group.label.repository, &group.label.package, &generated_mapping)
+                    },
+                ).map_err(|error| format!("repository @@{canonical_name}: {error}"))?;
+                repositories.insert(recorded.name.clone(), OrdinaryRepository {
+                    definition: recorded.definition,
+                    attributes,
+                    original_name: recorded.name,
+                    canonical_name,
+                    root: DemandSlot::new(),
+                });
+            }
+            // Missing imports invalidate the complete usage even if that alias
+            // was never requested. Nothing from this group is published yet.
+            let mut imports = Vec::new();
+            let mut source_guards = Vec::new();
+            for participant in &group.participants {
+                preparation_budget.string(&participant.owner)?;
+                source_guards.push(serde_json::json!({
+                    "owner": participant.owner,
+                    "source_profile_error": participant.source_profile_error,
+                }));
+                for import in &participant.imports {
+                    preparation_budget.string(&import.local_name)?;
+                    preparation_budget.string(&import.exported_name)?;
+                    if !repositories.contains_key(&import.exported_name) {
+                        return Err(format!(
+                            "module extension {}%{} did not declare imported repository {:?} (alias @{} in MODULE owner {:?})",
+                            group.label, group.symbol, import.exported_name, import.local_name, participant.owner,
+                        ));
+                    }
+                    imports.push(serde_json::json!({
+                        "owner": participant.owner,
+                        "local_name": import.local_name,
+                        "exported_name": import.exported_name,
+                        "dev_dependency": import.dev_dependency,
+                    }));
+                }
+            }
+            #[derive(serde::Serialize)]
+            struct Provenance<'a> {
+                profile: &'static str,
+                public_label: String,
+                symbol: &'a str,
+                prefix: &'a str,
+                sources: &'a BTreeMap<String, loading::SourceProvenance>,
+                tag_classes: &'a BTreeMap<String, BTreeMap<String, crate::custom_rule::AttrSpec>>,
+                modules: &'a [crate::extension_ctx::BoundModule],
+                source_guards: &'a [serde_json::Value],
+                root_has_non_dev_dependency: bool,
+                generated_mapping: &'a BTreeMap<String, String>,
+                repositories: &'a BTreeMap<String, OrdinaryRepository>,
+                imports: &'a [serde_json::Value],
+            }
+            let provenance = bounded_provenance(&Provenance {
+                profile: "ordinary-file-template-v1",
+                public_label: group.label.to_string(),
+                symbol: &group.symbol, prefix: &group.prefix,
+                sources: &loaded.sources, tag_classes: &definition.tag_classes,
+                modules: &execution.modules, source_guards: &source_guards,
+                root_has_non_dev_dependency: group.root_has_non_dev_dependency,
+                generated_mapping: &generated_mapping, repositories: &repositories,
+                imports: &imports,
+            }, 64 * 1024 * 1024)?;
+            Ok(PreparedOrdinary { loaded, generated_mapping, repositories, provenance })
+        })
+    }
+
+    fn ordinary_repository(
+        &self,
+        canonical: &str,
+    ) -> Result<(&PreparedOrdinary, &OrdinaryRepository), String> {
+        let unknown = || {
+            format!(
+                "unknown canonical repository @@{canonical}; extension repository not materialized or module not selected"
+            )
+        };
+        // Exact last-separator routing avoids executing an unrelated extension
+        // for a merely similar canonical name. User names cannot contain '+'.
+        let (prefix, name) = canonical.rsplit_once('+').ok_or_else(unknown)?;
+        let runtime = self.direct_runtime()?;
+        let id = runtime
+            .catalog
+            .ordinary_routes
+            .get(prefix)
+            .ok_or_else(unknown)?;
+        crate::bzlmod::validate_repo_name(name).map_err(|error| error.to_string())?;
+        let prepared = self.prepare_ordinary_group(id)?;
+        let repository = prepared.repositories.get(name).ok_or_else(|| {
+            format!("generated repository @@{canonical} was not declared by its module extension")
+        })?;
+        Ok((prepared, repository))
+    }
+
+    fn ordinary_root(&self, canonical: &str) -> Result<&Path, String> {
+        let (prepared, repository) = self.ordinary_repository(canonical)?;
+        repository
+            .root
+            .get_or_try_init(
+                self.state.runtime_id,
+                &format!("repository:{canonical}"),
+                || {
+                    let (label, _) =
+                        repository
+                            .definition
+                            .identity
+                            .split_once('%')
+                            .ok_or_else(|| {
+                                format!(
+                                    "invalid repository rule identity {:?}",
+                                    repository.definition.identity
+                                )
+                            })?;
+                    let definition_label = Label::parse_canonical(label)?;
+                    // Length-frame the already serialized bytes; serializing
+                    // Vec<u8> as a JSON number array would amplify them again.
+                    let mut provenance = Vec::new();
+                    provenance
+                        .try_reserve_exact(
+                            16 + repository.canonical_name.len() + prepared.provenance.len(),
+                        )
+                        .map_err(|e| {
+                            format!("ordinary extension host provenance allocation limit: {e}")
+                        })?;
+                    provenance
+                        .extend_from_slice(&(repository.canonical_name.len() as u64).to_le_bytes());
+                    provenance.extend_from_slice(repository.canonical_name.as_bytes());
+                    provenance.extend_from_slice(&(prepared.provenance.len() as u64).to_le_bytes());
+                    provenance.extend_from_slice(&prepared.provenance);
+                    crate::repository_store::materialize(
+                        self.source_cache_path()?,
+                        &provenance,
+                        |stage| {
+                            let inputs = crate::repository_ctx::execute(
+                                Arc::new(self.clone()),
+                                &repository.definition,
+                                &prepared.loaded.functions,
+                                &repository.attributes,
+                                &repository.canonical_name,
+                                &repository.original_name,
+                                &definition_label,
+                                stage,
+                            )?;
+                            serde_json::to_vec(&inputs).map_err(|error| {
+                                format!("cannot serialize repository execution inputs: {error}")
+                            })
+                        },
+                    )
+                },
+            )
+            .map(PathBuf::as_path)
+    }
+
+    /// Select exactly the mapping parsing needs, without demanding an extension
+    /// catalog for base aliases or a module graph for canonical/local labels.
+    /// `None` is the local fast path (including the main repository's @// alias).
+    fn mapping_for_label(
+        &self,
+        text: &str,
+        repository: &str,
+    ) -> Result<Option<&BTreeMap<String, String>>, String> {
         // Apparent aliases require the owning module's mapping. Only the main
         // repository has the empty alias: external @// is NOT self or main.
         let main_empty_alias = repository.is_empty() && text.starts_with("@//");
@@ -377,26 +707,51 @@ impl RepositorySet {
                 let apparent = text[1..]
                     .split_once("//")
                     .map_or(&text[1..], |(name, _)| name);
-                let direct_import = module.extension_usages.iter().any(|usage| {
-                    usage.identity.is_repo_rule()
-                        && usage.imports.iter().any(|import| {
-                            import.local_name == apparent
-                                && !(import.dev_dependency
-                                    && (!repository.is_empty()
-                                        || self.state.options.ignore_dev_dependencies))
-                        })
+                if base_mapping.contains_key(apparent) {
+                    return Ok(Some(base_mapping));
+                }
+                let imported_usage = module.extension_usages.iter().find(|usage| {
+                    usage.imports.iter().any(|import| {
+                        import.local_name == apparent
+                            && !(import.dev_dependency
+                                && (!repository.is_empty()
+                                    || self.state.options.ignore_dev_dependencies))
+                    })
                 });
-                // Ordinary source loading does not need global extension name
-                // allocation. Preserve its laziness, including unknown ordinary
-                // imports, until an actual direct repository alias is demanded.
-                if base_mapping.contains_key(apparent) || !direct_import {
-                    return Label::parse_in(text, repository, package, base_mapping);
+                // Selected-module base aliases remain independent of extension
+                // catalog allocation. Only an active generated import needs it.
+                if imported_usage.is_some_and(|usage| usage.identity.isolation.is_some()) {
+                    return Err("isolated module extensions unsupported".to_owned());
+                }
+                let supported_generated_import = imported_usage.is_some();
+                if !supported_generated_import {
+                    return Ok(Some(base_mapping));
                 }
             }
-            let mapping = self.mapping(repository)?;
+            self.mapping(repository).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub(crate) fn resolution_size_bound(
+        &self,
+        text: &str,
+        repository: &str,
+        package: &str,
+    ) -> Result<usize, String> {
+        let empty = BTreeMap::new();
+        let mapping = self.mapping_for_label(text, repository)?.unwrap_or(&empty);
+        Ok(Label::resolution_size_bound(
+            text, repository, package, mapping,
+        ))
+    }
+
+    pub fn parse(&self, text: &str, repository: &str, package: &str) -> Result<Label, String> {
+        if let Some(mapping) = self.mapping_for_label(text, repository)? {
             Label::parse_in(text, repository, package, mapping)
         } else {
-            let mapping = if main_empty_alias {
+            let mapping = if repository.is_empty() && text.starts_with("@//") {
                 BTreeMap::from([(String::new(), String::new())])
             } else {
                 BTreeMap::new()
@@ -520,6 +875,27 @@ fn registry_source_root(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provenance_budget_counts_serialized_bytes_and_rejects_before_growth() {
+        let input = BTreeMap::from([("nul", "\0\0\0"), ("text", "plain")]);
+        let expected = serde_json::to_vec(&input).unwrap();
+        assert_eq!(
+            bounded_provenance(&input, expected.len()).unwrap(),
+            expected
+        );
+        assert!(
+            bounded_provenance(&input, expected.len() - 1)
+                .unwrap_err()
+                .contains("host provenance limit")
+        );
+        assert!(
+            bounded_provenance(&vec![255_u8; 4096], 4096)
+                .unwrap_err()
+                .contains("host provenance limit")
+        );
+        assert!(bounded_provenance(&(), 0).is_err());
+    }
     use std::sync::atomic::{AtomicU64, Ordering};
 
     struct Fixture(PathBuf);
@@ -618,8 +994,10 @@ mod tests {
             let repos = RepositorySet::new(f.0.clone());
             assert_eq!(repos.root("").unwrap(), f.0);
             for input in ["//p:x", ":x", "@//p:x", "@@//p:x", "@@dep+//p:x"] {
-                assert!(repos.parse(input, "", "p").is_ok());
+                let bound = repos.resolution_size_bound(input, "", "p").unwrap();
+                assert!(bound >= repos.parse(input, "", "p").unwrap().to_string().len());
             }
+            assert!(repos.resolution_size_bound("//p:x", "dep+", "").is_ok());
             assert_eq!(repos.parse("//p:x", "dep+", "").unwrap().repository, "dep+");
             assert!(repos.state.resolved.get().is_none());
             assert!(repos.parse("@//p:x", "dep+", "").is_err());
@@ -766,6 +1144,143 @@ mod tests {
                 .contains("expected a frozen repository_rule")
         );
         assert!(!f.0.join("another-cache").exists());
+    }
+
+    #[test]
+    fn ordinary_import_aliases_are_metadata_only_and_owner_scoped() {
+        let f = Fixture::new();
+        let repos = f.registry();
+        f.write("main/MODULE.bazel", "module(name='main')\nbazel_dep(name='dep',version='1')\ne=use_extension('@dep//:absent.bzl','extension')\nuse_repo(e, local='generated')\nr=use_repo_rule('//:also_absent.bzl','r')\nr(name='direct')\n");
+        f.write("registry/modules/dep/1/MODULE.bazel", "module(name='dep',version='1')\ne=use_extension('//:absent.bzl','extension')\nuse_repo(e, own='generated')\n");
+        let label = repos.parse("@local//:file", "", "").unwrap();
+        assert_eq!(label.repository, "dep++extension+generated");
+        assert_eq!(repos.parse("@own//:file", "dep+", "").unwrap(), label);
+        assert_eq!(repos.mapping("").unwrap()["local"], label.repository);
+        assert_eq!(
+            repos.mapping("+r+direct").unwrap()["local"],
+            label.repository
+        );
+        assert!(
+            repos
+                .parse("@local//:file", "dep+", "")
+                .unwrap_err()
+                .contains("unknown apparent repository")
+        );
+        assert!(
+            repos
+                .parse("@own//:file", "", "")
+                .unwrap_err()
+                .contains("unknown apparent repository")
+        );
+        assert!(repos.state.registry_roots.get().is_none());
+        assert!(!f.0.join("main/bazel-rs-out").exists());
+    }
+
+    #[test]
+    fn ordinary_definition_failure_is_demanded_and_shared_by_root_and_mapping() {
+        let f = Fixture::new();
+        f.write(
+            "MODULE.bazel",
+            "e=use_extension('//:absent.bzl','extension')\nuse_repo(e,'generated')\n",
+        );
+        f.write("BUILD", "");
+        let repos = RepositorySet::new(f.0.clone());
+        let canonical = repos.parse("@generated//:file", "", "").unwrap().repository;
+        assert_eq!(canonical, "+extension+generated");
+        assert!(!f.0.join("bazel-rs-out").exists());
+        let error = repos.root(&canonical).unwrap_err();
+        assert!(error.contains("absent.bzl"), "{error}");
+        f.write("absent.bzl", "extension = 1\n");
+        assert_eq!(repos.mapping(&canonical).unwrap_err(), error);
+        assert_eq!(repos.clone().root(&canonical).unwrap_err(), error);
+        let fresh = repos.with_source_cache("fresh-cache".into());
+        assert!(
+            fresh
+                .root(&canonical)
+                .unwrap_err()
+                .contains("expected a frozen module_extension")
+        );
+        assert!(!f.0.join("fresh-cache").exists());
+    }
+
+    #[test]
+    fn unknown_ordinary_prefix_never_loads_or_executes_a_similar_extension() {
+        let f = Fixture::new();
+        f.write(
+            "MODULE.bazel",
+            "e=use_extension('//:extension.bzl','extension')\nuse_repo(e,'generated')\n",
+        );
+        f.write("BUILD", "");
+        f.write("extension.bzl", "def implementation(ctx):\n    fail('callback must not run')\nextension = module_extension(implementation=implementation)\n");
+        let repos = RepositorySet::new(f.0.clone());
+        for canonical in [
+            "+extension2+generated",
+            "+extension+generated+suffix",
+            "+extension+",
+            "+other+generated",
+        ] {
+            assert!(repos.root(canonical).is_err());
+            assert!(repos.mapping(canonical).is_err());
+        }
+        // Replacing the definition after unknown demands demonstrates that no
+        // preparation result was cached for the real exact-prefix route.
+        f.write("extension.bzl", "extension = 1\n");
+        let error = repos.root("+extension+generated").unwrap_err();
+        assert!(
+            error.contains("expected a frozen module_extension"),
+            "{error}"
+        );
+        assert!(!f.0.join("bazel-rs-out").exists());
+    }
+
+    #[test]
+    fn base_aliases_stay_lazy_and_isolated_imports_fail_only_on_demand() {
+        let f = Fixture::new();
+        f.write("MODULE.bazel", "module(name='main')\ne=use_extension('//:absent.bzl','extension',isolate=True)\nuse_repo(e,'generated')\n");
+        let repos = RepositorySet::new(f.0.clone());
+        assert!(repos.resolution_size_bound("@main//:file", "", "").is_ok());
+        assert_eq!(repos.parse("@main//:file", "", "").unwrap().repository, "");
+        assert!(repos.state.direct.get().is_none());
+        assert!(
+            repos
+                .resolution_size_bound("@unrelated//:file", "", "")
+                .is_ok()
+        );
+        assert!(
+            repos
+                .parse("@unrelated//:file", "", "")
+                .unwrap_err()
+                .contains("unknown apparent repository")
+        );
+        assert!(repos.state.direct.get().is_none());
+        assert!(
+            repos
+                .resolution_size_bound("@generated//:file", "", "")
+                .unwrap_err()
+                .contains("isolated module extensions unsupported")
+        );
+        assert!(
+            repos
+                .parse("@generated//:file", "", "")
+                .unwrap_err()
+                .contains("isolated module extensions unsupported")
+        );
+        assert!(repos.state.direct.get().is_none());
+        let ignored = RepositorySet::with_options(
+            f.0.clone(),
+            ResolverOptions {
+                ignore_dev_dependencies: true,
+                ..Default::default()
+            },
+        );
+        f.write("MODULE.bazel", "e=use_extension('//:absent.bzl','extension',isolate=True,dev_dependency=True)\nuse_repo(e,'generated')\n");
+        assert!(
+            ignored
+                .parse("@generated//:file", "", "")
+                .unwrap_err()
+                .contains("unknown apparent repository")
+        );
+        assert!(ignored.state.direct.get().is_none());
     }
 
     #[test]

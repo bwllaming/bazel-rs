@@ -790,6 +790,12 @@ fn check_yanked(source: &ModuleSource) -> Result<(), String> {
     Ok(())
 }
 
+/// Normalize declared module versions for extension module views without
+/// replacing them with the resolver's empty non-registry override version.
+pub(crate) fn normalize_declared_version(declared: &str) -> Result<String, String> {
+    Version::parse(declared).map(|version| version.normalized)
+}
+
 /// Bazel Version/Identifier ordering, not SemVer's numeric-only release rules:
 /// release identifiers may contain letters and the release length is unbounded.
 /// Build metadata is ignored; numeric identifier ties compare original spelling.
@@ -1178,6 +1184,21 @@ mod tests {
             "1+a+b",
         ] {
             assert!(Version::parse(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn declared_extension_versions_share_normalization_without_selection_rewriting() {
+        for (declared, normalized) in [
+            ("", ""),
+            ("1.2+build", "1.2"),
+            ("01.2-rc.3+meta", "01.2-rc.3"),
+            ("release.2", "release.2"),
+        ] {
+            assert_eq!(normalize_declared_version(declared).unwrap(), normalized);
+        }
+        for invalid in ["1..2", "1+", "1+a+b"] {
+            assert!(normalize_declared_version(invalid).is_err());
         }
     }
 

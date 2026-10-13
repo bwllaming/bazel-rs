@@ -52,25 +52,56 @@ pub(crate) fn repositories(eval: &Evaluator<'_, '_, '_>) -> Option<Arc<Repositor
         .or_else(|| crate::package::repository_context(eval))
         .or_else(|| crate::analysis::repository_context(eval))
         .or_else(|| crate::repository_ctx::repository_context(eval))
+        .or_else(|| crate::extension_ctx::repository_context(eval))
 }
 
 pub fn resolve_label(eval: &Evaluator<'_, '_, '_>, text: &str) -> anyhow::Result<Label> {
+    resolve_label_inner(eval, text, None)
+}
+
+/// Reserve lexical/mapped expansion before parsing copies the resolved parts.
+pub(crate) fn resolve_label_bounded(
+    eval: &Evaluator<'_, '_, '_>,
+    text: &str,
+    budget: &mut crate::repository_budget::HostBudget,
+) -> anyhow::Result<Label> {
+    resolve_label_inner(eval, text, Some(budget))
+}
+
+fn resolve_label_inner(
+    eval: &Evaluator<'_, '_, '_>,
+    text: &str,
+    mut budget: Option<&mut crate::repository_budget::HostBudget>,
+) -> anyhow::Result<Label> {
     if let Some(repositories) = repositories(eval) {
+        let mut resolve = |repository: &str, package: &str| -> anyhow::Result<Label> {
+            if let Some(budget) = budget.as_deref_mut() {
+                let bound = repositories
+                    .resolution_size_bound(text, repository, package)
+                    .map_err(anyhow::Error::msg)?;
+                budget.bytes(bound).map_err(anyhow::Error::msg)?;
+            }
+            repositories
+                .parse(text, repository, package)
+                .map_err(anyhow::Error::msg)
+        };
         if let Some(label) = definition_label(eval) {
-            return repositories
-                .parse(text, &label.repository, &label.package)
-                .map_err(anyhow::Error::msg);
+            return resolve(&label.repository, &label.package);
         }
         if let Ok((_, package)) = crate::package::custom_label_context(eval) {
-            return repositories
-                .parse(text, &package.repository, &package.package)
-                .map_err(anyhow::Error::msg);
+            return resolve(&package.repository, &package.package);
         }
         if let Some(package) = crate::repository_ctx::definition_package(eval) {
-            return repositories
-                .parse(text, &package.repository, &package.package)
-                .map_err(anyhow::Error::msg);
+            return resolve(&package.repository, &package.package);
         }
+        if let Some(package) = crate::extension_ctx::definition_package(eval) {
+            return resolve(&package.repository, &package.package);
+        }
+    }
+    if let Some(budget) = budget {
+        budget
+            .bytes(Label::resolution_size_bound(text, "", "", &BTreeMap::new()))
+            .map_err(anyhow::Error::msg)?;
     }
     Label::parse(text, "").map_err(anyhow::Error::msg)
 }
@@ -121,7 +152,28 @@ pub fn load_definition_in(
     symbol: &str,
     globals: &Globals,
 ) -> Result<LoadedDefinition, String> {
-    if symbol.starts_with('_') {
+    load_frozen_export_in(repositories, label, symbol, globals, true)
+}
+
+/// Module-extension identity is the requested label and global, not the first
+/// export of the value. Pinned Bazel permits private and imported globals here.
+pub fn load_module_extension_in(
+    repositories: Arc<RepositorySet>,
+    label: &Label,
+    symbol: &str,
+    globals: &Globals,
+) -> Result<LoadedDefinition, String> {
+    load_frozen_export_in(repositories, label, symbol, globals, false)
+}
+
+fn load_frozen_export_in(
+    repositories: Arc<RepositorySet>,
+    label: &Label,
+    symbol: &str,
+    globals: &Globals,
+    public_only: bool,
+) -> Result<LoadedDefinition, String> {
+    if public_only && symbol.starts_with('_') {
         return Err(format!(
             "cannot load private symbol {symbol:?} from {label}"
         ));
@@ -143,9 +195,12 @@ pub fn load_definition_in(
         .cache
         .get(label)
         .ok_or_else(|| format!("internal loader error: module {label} was not evaluated"))?;
-    let value = module
-        .get(symbol)
-        .map_err(|e| format!("cannot load {symbol:?} from {label}: {e}"))?;
+    let value = if public_only {
+        module.get(symbol)
+    } else {
+        module.get_any_visibility(symbol).map(|(value, _)| value)
+    }
+    .map_err(|e| format!("cannot load {symbol:?} from {label}: {e}"))?;
     Ok(LoadedDefinition {
         value,
         functions: loader.functions,
@@ -831,6 +886,26 @@ scalar = 42
             // The ordinary loader keeps its established behavior; the new
             // conservative source profile is attached only to demanded definitions.
             assert!(temp.load("load(':defs.bzl', 'value')\n").is_ok());
+        }
+    }
+
+    #[test]
+    fn module_extension_lookup_allows_private_and_imported_globals_without_changing_direct_exports()
+    {
+        let temp = Temp::new();
+        temp.file("MODULE.bazel", "module(name='main')\n");
+        temp.file(
+            "original.bzl",
+            "def _impl(ctx):\n    pass\n_private = module_extension(_impl)\next = _private\n",
+        );
+        temp.file("wrapper.bzl", "load(':original.bzl', 'ext')\n");
+        let repos = Arc::new(RepositorySet::new(temp.0.clone()));
+        let globals = crate::package::bzl_globals();
+        for (file, symbol) in [("//:original.bzl", "_private"), ("//:wrapper.bzl", "ext")] {
+            let label = Label::parse_canonical(file).unwrap();
+            let loaded = load_module_extension_in(repos.clone(), &label, symbol, &globals).unwrap();
+            assert!(crate::module_extension::unpack(&loaded.value).is_ok());
+            assert!(load_definition_in(repos.clone(), &label, symbol, &globals).is_err());
         }
     }
 

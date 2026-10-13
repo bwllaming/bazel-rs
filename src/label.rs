@@ -49,6 +49,38 @@ impl Label {
         Self::parse_in(input, "", "", &BTreeMap::new())
     }
 
+    /// Allocation-free upper bound for a resolved label's formatted payload.
+    /// Includes mapped repository names, relative package context, and the
+    /// duplicated basename in absolute shorthand. Charge before parse_in copies.
+    pub(crate) fn resolution_size_bound(
+        input: &str,
+        repository: &str,
+        current_package: &str,
+        mapping: &BTreeMap<String, String>,
+    ) -> usize {
+        let repository_len = if input.starts_with("@@") {
+            0 // Already included in input's byte count.
+        } else if let Some(apparent) = input.strip_prefix('@') {
+            apparent
+                .split_once("//")
+                .and_then(|(alias, _)| mapping.get(alias))
+                .map_or(0, String::len)
+        } else {
+            repository.len()
+        };
+        let package_len = if input.starts_with('@') || input.starts_with("//") {
+            0
+        } else {
+            current_package.len()
+        };
+        input
+            .len()
+            .saturating_mul(2)
+            .saturating_add(repository_len)
+            .saturating_add(package_len)
+            .saturating_add(5)
+    }
+
     pub fn parse_in(
         input: &str,
         repository: &str,
@@ -213,6 +245,31 @@ fn validate_path(value: &str, kind: &str, allow_empty: bool) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolution_reservation_includes_mapping_and_relative_package_expansion() {
+        let owner = "owner".repeat(1000);
+        let package = "package".repeat(1000);
+        let mapping = BTreeMap::from([("short".to_owned(), "mapped".repeat(1000))]);
+        for text in [
+            "@short//:x",
+            "//a/b",
+            ":x",
+            "x",
+            "@@explicit//a:b",
+            "@@//:main",
+            "//visibility:public",
+        ] {
+            let actual = Label::parse_in(text, &owner, &package, &mapping).unwrap();
+            assert!(
+                Label::resolution_size_bound(text, &owner, &package, &mapping)
+                    >= actual.to_string().len()
+            );
+        }
+        assert!(
+            Label::resolution_size_bound("@short//:x", "", "", &mapping) >= mapping["short"].len()
+        );
+    }
 
     #[test]
     fn absolute_and_main_repository_aliases() {

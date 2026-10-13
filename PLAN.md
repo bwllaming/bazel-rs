@@ -174,6 +174,22 @@ checkout is unchanged; no application query/build/test success is claimed.
 
 ## Remaining compatibility gates
 
+The bounded ordinary-extension increment adds real non-isolated callbacks and
+typed immutable module/tag views. It snapshots repository arguments at call time,
+binds their labels after complete sibling discovery and validates every generated
+spec/import before fetching a demanded repository. Private/imported requested
+symbols and cross-phase cycles are handled without fabricated repositories.
+Host-side expansion and provenance limits must reject default amplification before
+allocation; evaluator budgets alone are insufficient. Full extension APIs, SDKs,
+metadata/facts and actual application compatibility remain separate work.
+
+The ordinary increment is verified by 695 Rust tests, 306 Python tests, strict
+Clippy, formatting, release compilation and clean Rust Analyzer diagnostics.
+Eight genuine Bazel comparisons, eight native lifecycle cases, fourteen resource
+control/limit checks and all eight adjacent suites pass. Final review approved
+the bounded profile; the unchanged application still requires genuine builtin
+module closure before further SDK/analysis compatibility can be established.
+
 - [ ] Complete Bzlmod/repository compatibility beyond local selection/loading:
       complete downloader/archive/Git semantics, full patch semantics, lockfiles, built-in closure,
       module extensions and repository rules using pinned fixtures.

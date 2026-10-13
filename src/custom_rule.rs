@@ -96,6 +96,69 @@ fn label_value(value: Value<'_>, resolver: Option<&LabelResolver<'_>>) -> anyhow
 }
 
 impl AttrKind {
+    /// Inspect borrowed defaults before parse copies shared Starlark payloads.
+    /// Validate the complete type shape first, preserving ordinary type errors.
+    /// This raw-copy phase and lexical normalization each have a cumulative
+    /// per-descriptor budget; neither relies on later schema-wrapper checks.
+    fn preflight_default(&self, value: Value<'_>) -> anyhow::Result<()> {
+        let is_label = |value: Value<'_>| {
+            value.unpack_str().is_some() || crate::starlark_types::label_parts(value).is_some()
+        };
+        let expected = match self {
+            Self::String if value.unpack_str().is_none() => Some("a string"),
+            Self::StringList | Self::OutputList
+                if !ListRef::from_value(value)
+                    .is_some_and(|list| list.iter().all(|v| v.unpack_str().is_some())) =>
+            {
+                Some("a list of strings")
+            }
+            Self::Int if value.unpack_i32().is_none() => Some("a 32-bit int"),
+            Self::Bool if value.unpack_bool().is_none() => Some("a bool"),
+            Self::Label if !value.is_none() && !is_label(value) => Some("a string or Label"),
+            Self::LabelList
+                if !ListRef::from_value(value).is_some_and(|list| list.iter().all(is_label)) =>
+            {
+                Some("a list of strings or Labels")
+            }
+            Self::Output if !value.is_none() && value.unpack_str().is_none() => Some("a string"),
+            _ => None,
+        };
+        if let Some(expected) = expected {
+            bail!("expected {expected}");
+        }
+        let mut budget = crate::repository_budget::HostBudget::default();
+        let mut charge = |value: Value<'_>| -> Result<(), String> {
+            budget.node()?;
+            if let Some(text) = value.unpack_str() {
+                let bytes = if matches!(self, Self::Label | Self::LabelList) {
+                    // Covers canonical parsing/formatting even without a resolver.
+                    crate::label::Label::resolution_size_bound(text, "", "", &BTreeMap::new())
+                } else {
+                    text.len()
+                };
+                budget.bytes(bytes)?;
+            } else if let Some((repository, package, name)) =
+                crate::starlark_types::label_parts(value)
+            {
+                budget.bytes(
+                    repository
+                        .len()
+                        .saturating_add(package.len())
+                        .saturating_add(name.len())
+                        .saturating_add(5),
+                )?;
+            }
+            Ok(())
+        };
+        charge(value).map_err(anyhow::Error::msg)?;
+        if let Some(list) = ListRef::from_value(value) {
+            for value in list.iter() {
+                charge(value).map_err(anyhow::Error::msg)?;
+            }
+        }
+        Ok(())
+    }
+
     fn empty(&self) -> AttrValue {
         match self {
             Self::String => AttrValue::String(String::new()),
@@ -289,6 +352,11 @@ pub(crate) fn attribute_spec(value: Value<'_>) -> Option<AttrSpec> {
         .map(|value| value.0.clone())
 }
 
+/// Borrow a descriptor so host preparation can charge defaults before copying.
+pub(crate) fn attribute_spec_ref(value: Value<'_>) -> Option<&AttrSpec> {
+    value.downcast_ref::<Descriptor>().map(|value| &value.0)
+}
+
 fn descriptor(
     kind: AttrKind,
     default: Option<Value<'_>>,
@@ -314,6 +382,9 @@ fn descriptor_in_package(
     allow_single_file: bool,
     resolver: Option<&LabelResolver<'_>>,
 ) -> anyhow::Result<Descriptor> {
+    if let Some(value) = default {
+        kind.preflight_default(value)?;
+    }
     let default = default
         .map(|v| kind.parse(v, resolver))
         .transpose()?
@@ -374,7 +445,10 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
         if cfg != "target" {
             bail!("attr.label cfg={cfg:?} is unsupported; only target is supported");
         }
-        let resolve = |text: &str| crate::loading::resolve_label(eval, text);
+        let budget = std::cell::RefCell::new(crate::repository_budget::HostBudget::default());
+        let resolve = |text: &str| {
+            crate::loading::resolve_label_bounded(eval, text, &mut budget.borrow_mut())
+        };
         descriptor_in_package(
             AttrKind::Label,
             default,
@@ -396,7 +470,10 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
         if cfg != "target" {
             bail!("attr.label_list cfg={cfg:?} is unsupported; only target is supported");
         }
-        let resolve = |text: &str| crate::loading::resolve_label(eval, text);
+        let budget = std::cell::RefCell::new(crate::repository_budget::HostBudget::default());
+        let resolve = |text: &str| {
+            crate::loading::resolve_label_bounded(eval, text, &mut budget.borrow_mut())
+        };
         descriptor_in_package(
             AttrKind::LabelList,
             default,
@@ -534,6 +611,87 @@ mod tests {
             eval.extra = Some(&context);
             eval.eval_module(ast, &globals).unwrap_err().to_string()
         })
+    }
+
+    #[test]
+    fn descriptor_preflight_counts_shared_payloads_and_preserves_type_errors() {
+        for expression in [
+            "attr.string_list(default=['x'*(1024*1024)]*9)",
+            "attr.label_list(default=[Label('//:'+'x'*65536)]*129)",
+            "attr.label_list(default=['//:'+'x'*65536]*129)",
+            "attr.string_list(default=['']*100000)",
+        ] {
+            let error = definition_error(expression);
+            assert!(
+                error.contains("host preparation") && error.contains("limit"),
+                "{error}"
+            );
+        }
+        for (expression, expected) in [
+            (
+                "attr.string_list(default=['x'*(1024*1024)]*9+[1])",
+                "expected a list of strings",
+            ),
+            (
+                "attr.label_list(default=['//:'+'x'*65536]*129+[1])",
+                "expected a list of strings or Labels",
+            ),
+            ("attr.string(default=None)", "expected a string"),
+            (
+                "attr.label_list(default=None)",
+                "expected a list of strings or Labels",
+            ),
+        ] {
+            let error = definition_error(expression);
+            assert!(error.contains(expected), "{error}");
+            assert!(!error.contains("host preparation"), "{error}");
+        }
+    }
+
+    #[test]
+    fn descriptor_normalization_charges_mapped_labels_cumulatively() {
+        let root = tempfile::Builder::new()
+            .prefix("descriptor-mapping-")
+            .tempdir_in("/tmp/opencode")
+            .unwrap();
+        let symbol = "e".repeat(65_536);
+        std::fs::write(root.path().join("MODULE.bazel"), format!(
+            "module(name='main')\ne=use_extension('//:ext.bzl','{symbol}')\nuse_repo(e,chosen='made')\n"
+        )).unwrap();
+        let context = crate::loading::ExtensionContext {
+            label: crate::label::Label::parse("//:ext.bzl", "").unwrap(),
+            repositories: std::sync::Arc::new(crate::repository::RepositorySet::new(
+                root.path().to_owned(),
+            )),
+        };
+        let globals = GlobalsBuilder::standard().with(rule_globals).build();
+        for count in [1, 200] {
+            Module::with_temp_heap(|module| {
+                let ast = AstModule::parse(
+                    "//:ext.bzl",
+                    format!("x=attr.label_list(default=['@chosen//:data']*{count})"),
+                    &Dialect::Standard,
+                )
+                .unwrap();
+                let mut eval = Evaluator::new(&module);
+                eval.extra = Some(&context);
+                let result = eval.eval_module(ast, &globals);
+                if count == 1 {
+                    result.unwrap();
+                    let value = module.get("x").unwrap();
+                    assert_eq!(
+                        attribute_spec_ref(value).unwrap().default,
+                        AttrValue::Labels(vec![format!("@@+{symbol}+made//:data")])
+                    );
+                } else {
+                    let error = result.unwrap_err().to_string();
+                    assert!(
+                        error.contains("host preparation") && error.contains("limit"),
+                        "{error}"
+                    );
+                }
+            });
+        }
     }
 
     #[test]

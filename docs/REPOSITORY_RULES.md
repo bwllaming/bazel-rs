@@ -22,7 +22,8 @@ concurrent demands for the same in-flight slot in one library instance are
 explicitly unsupported rather than waiting. Separate CLI processes can publish
 to the same cache.
 
-Ordinary extension usages reserve names but do not execute. Recorded isolated
+Ordinary extension usages now have a separate bounded executor described in
+[MODULE_EXTENSIONS.md](MODULE_EXTENSIONS.md). Recorded isolated
 extension identities lack exported variable names; their reservations are skipped
 only where their underscore-prefixed namespace is disjoint from public direct
 rule symbols. Other ambiguous namespace combinations fail explicitly.
@@ -103,7 +104,7 @@ within a library invocation.
 
 ## Application boundary
 
-This executor is infrastructure for later module-extension support. It does not
+This executor also serves bounded ordinary module extensions. It does not
 execute `go_sdk`, generate nogo by substitution, or bypass transitive features.
 Successful application query/build/test and full Bazel 9.3 parity remain unproven.
 

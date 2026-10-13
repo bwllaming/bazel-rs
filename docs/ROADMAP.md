@@ -65,6 +65,13 @@ publication follows complete execution and checked snapshots. ASCII-only evaluat
 strings and the remaining API limits are explicit in `docs/REPOSITORY_RULES.md`.
 This is not ordinary module-extension execution or application compatibility.
 
+The next increment adds bounded non-isolated ordinary extension execution:
+immutable BFS module/tag projections, complete callbacks, call-time repository
+argument snapshots, deferred sibling label binding and complete import/spec
+validation before demanded repository execution. See `docs/MODULE_EXTENSIONS.md`.
+Metadata, facts, SDK operations and implicit built-in closure are still missing;
+application query/build/test and full compatibility remain unproven.
+
 The official 9.3.0 release was published 2026-10-07, with upstream tag commit
 `e89755babf3e941bc1e9d8120b1cd48854ab9dfa`. The main checkout's `.bazeliskrc` pins
 9.1.1. Changing that checkout's pin is outside this implementation.

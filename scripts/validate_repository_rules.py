@@ -21,6 +21,7 @@ import tempfile
 
 from validate import ROOT, Runner, reference_output_paths, require_success, write_report
 from validate_direct_repositories import (DirectReference, REFERENCE_SHA256,
+                                          BOUNDARY_INFRASTRUCTURE_ERROR, STALE_EXTENSION_ERROR,
                                           argument_parser as common_parser,
                                           validate_binaries)
 
@@ -127,7 +128,7 @@ CASES = [
     case('group.unused-unknown-attribute'),
     case('native.rollback', 'native_boundary'),
     case('native.path-containment', 'native_boundary', ('dotdot', 'absolute', 'source-symlink')),
-    case('native.unsupported', 'native_boundary', ('execute', 'metadata', 'integer', 'extension')),
+    case('native.unsupported', 'native_boundary', ('execute', 'metadata', 'integer', 'facts_version_unsupported')),
     case('native.ascii-profile', 'native_boundary', ('module-unicode', 'closure-unicode', 'octal', 'hex', 'u', 'U', 'chr')),
     case('native.template-cycle', 'native_boundary'),
     case('native.refresh-and-repair', 'native_boundary', ('cold', 'helper-change', 'input-change', 'repair')),
@@ -144,7 +145,7 @@ DIAGNOSTICS = {
     'symlink': r'(?:symlink|symbolic link)[^\n]*(?:unsupported|forbidden|not supported|unsafe|regular)|(?:unsupported|unsafe|not supported)[^\n]*(?:symlink|symbolic link)|must be a regular file, not a symlink',
     'execute': r'(?:execute[^\n]*(?:unsupported|not supported|not available)|(?:no (?:attribute|field|method)|has no)[^\n]*execute)',
     'return': r'(?:return|returned)[^\n]*(?:None|unsupported|not supported)|(?:only|must)[^\n]*None',
-    'extension': r'(?:name|variable|symbol|identifier)[^\n]*module_extension[^\n]*(?:not defined|not found|unknown)|module_extension[^\n]*(?:unsupported|not supported|not defined)',
+    'facts_version_unsupported': r'\bmodule_extension with nonzero facts_version is unsupported\b',
     'ascii': r'(?:ASCII|non.ASCII|Unicode|unicode|escape|chr)[^\n]*(?:unsupported|not supported|forbidden|invalid|only|reject)|(?:unsupported|invalid|non.ASCII)[^\n]*(?:string|literal|escape|chr)',
     'cycle': r'(?:repository|template|materializ)[^\n]*(?:cycle|cyclic)|(?:cycle|cyclic)[^\n]*(?:repository|template|made|other)',
     'ticks': r'\bticks?\b[^\n]*(?:limit|budget|exceed)|(?:limit|budget|exceed)[^\n]*\bticks?\b',
@@ -169,6 +170,8 @@ def require_rejection(record, diagnostic):
     if (type(code) is not int or not 0 < code < 128 or code == 101 or record['timed_out']
             or record.get('spawn_error') or record.get('interrupted') or record.get('output_truncated')
             or record['stdout'].strip() or UNRELATED.search(text)
+            or (diagnostic == 'facts_version_unsupported'
+                and (BOUNDARY_INFRASTRUCTURE_ERROR.search(text) or STALE_EXTENSION_ERROR.search(text)))
             or (diagnostic in ('missing', 'unknown') and LAZY_MARKER in text)
             or (diagnostic != 'ascii' and re.search(r'syntax error', text, re.I))
             or not re.search(DIAGNOSTICS[diagnostic], text, re.I)):
@@ -284,10 +287,10 @@ def fixture(name, probe='result', outside=None):
             diagnostic = 'path'
     elif name == 'native.unsupported':
         body = {'execute': 'ctx.execute(["/bin/true"])', 'metadata': 'return {"answer": "value"}',
-                'integer': 'return 42', 'extension': 'return None'}[probe]
+                'integer': 'return 42', 'facts_version_unsupported': 'return None'}[probe]
         files['defs.bzl'] = rule(build_file(['data']) + '\nctx.file("data", "partial")\n' + body)
-        if probe == 'extension':
-            files['defs.bzl'] += 'ordinary = module_extension(implementation = _impl)\n'
+        if probe == 'facts_version_unsupported':
+            files['defs.bzl'] += 'ordinary = module_extension(implementation = _impl, facts_version = 1)\n'
         diagnostic = 'return' if probe in ('metadata', 'integer') else probe
     elif name == 'native.ascii-profile':
         expression = {'module-unicode': 'str(len("é"))', 'closure-unicode': 'str(len("é"))',
@@ -812,7 +815,7 @@ def main(argv=None):
                   limitations=['16 cases: seven differential, nine native policy/lifecycle boundaries. No full Bazel parity.',
                                'Computed Starlark strings are strict ASCII; raw templates preserve arbitrary bytes.',
                                'Non-None callback returns are native-only unsupported, even when Bazel accepts them.',
-                               'Ordinary module_extension is absent at definition load, not a callback execution claim.',
+                               'Nonzero module_extension facts_version is unsupported at definition load; this native-only boundary is not differential parity or a callback execution claim.',
                                'Genuine reference built-ins may download from BCR; no fake platforms or bazel_tools.',
                                'Bytes and executable bits compared; read-only cache permission differences are recorded.',
                                'Elapsed subprocess durations are diagnostics, not performance measurements.',

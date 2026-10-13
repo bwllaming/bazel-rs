@@ -33,7 +33,7 @@ MESSAGES = {
     'symlink': 'template source symlinks are unsupported',
     'execute': "repository_ctx has no method 'execute'",
     'return': 'repository rule return value is unsupported; expected None',
-    'extension': "name 'module_extension' is not defined",
+    'facts_version_unsupported': 'module_extension with nonzero facts_version is unsupported',
     'ascii': 'non-ASCII string literals are unsupported',
     'cycle': 'repository template dependency cycle: made -> other -> made',
     'ticks': 'Maximum number of ticks exceeded',
@@ -179,17 +179,42 @@ class FixtureTests(unittest.TestCase):
         self.assertIn(b'INVALID_UNUSED_DEFINITION_EVALUATED', lazy['files']['defs.bzl'])
         self.assertEqual(lazy['target'], '//:data')
 
-    def test_policy_return_and_extension_are_not_differential_claims(self):
-        for probe in ('metadata', 'integer', 'extension'):
+    def test_policy_return_and_facts_version_are_not_differential_claims(self):
+        item = next(c for c in rules.CASES if c['name'] == 'native.unsupported')
+        self.assertEqual(item['kind'], 'native_boundary')
+        self.assertEqual(item['probes'], ['execute', 'metadata', 'integer', 'facts_version_unsupported'])
+        for probe in item['probes']:
             value = rules.fixture('native.unsupported', probe)
-            self.assertEqual(value['diagnostic'], 'extension' if probe == 'extension' else 'return')
+            self.assertEqual(value['diagnostic'], 'return' if probe in ('metadata', 'integer') else probe)
+            self.assertEqual(rules.steps_for(item, probe, 'native'), [('query', '@made//:data', [])])
+            if probe != 'facts_version_unsupported':
+                self.assertNotIn(b'module_extension', value['files']['defs.bzl'])
+        self.assertIn(b'ctx.execute(["/bin/true"])', rules.fixture('native.unsupported', 'execute')['files']['defs.bzl'])
+        self.assertIn(b'return {"answer": "value"}', rules.fixture('native.unsupported', 'metadata')['files']['defs.bzl'])
         self.assertIn(b'return 42', rules.fixture('native.unsupported', 'integer')['files']['defs.bzl'])
-        extension = rules.fixture('native.unsupported', 'extension')['files']['defs.bzl']
-        self.assertIn(b'ordinary = module_extension(implementation = _impl)', extension)
+        extension = rules.fixture('native.unsupported', 'facts_version_unsupported')['files']['defs.bzl']
+        self.assertIn(b'maker = repository_rule(implementation = _impl, attrs = {})', extension)
+        self.assertIn(b'ordinary = module_extension(implementation = _impl, facts_version = 1)', extension)
         self.assertNotIn(b'use_extension', extension)
 
 
 class DiagnosticTests(unittest.TestCase):
+    def test_actual_facts_version_diagnostic_and_stale_absence_rejection(self):
+        # Exact shared-file debug CLI output; no runtime artifact dependency.
+        from test_validate_direct_repositories import RECORDED_FACTS_VERSION
+        rules.require_rejection(record(stderr=RECORDED_FACTS_VERSION, returncode=1), 'facts_version_unsupported')
+        for stale in ("Variable `module_extension` not found", "name 'module_extension' is not defined",
+                      'module_extension is unsupported', 'module_extension constructor is not supported'):
+            for stderr in (stale, RECORDED_FACTS_VERSION + stale):
+                with self.subTest(stderr=stderr), self.assertRaises(ValueError):
+                    rules.require_rejection(record(stderr=stderr, returncode=1), 'facts_version_unsupported')
+        for wrong in ('module_extension with nonempty environ is unsupported',
+                      'module_extension facts_version must be a nonnegative 32-bit int',
+                      'module_extension with nonzero facts_version is supported',
+                      RECORDED_FACTS_VERSION + 'permission denied'):
+            with self.subTest(wrong=wrong), self.assertRaises(ValueError):
+                rules.require_rejection(record(stderr=wrong, returncode=1), 'facts_version_unsupported')
+
     def test_synthetic_classifiers_accept_only_expected_controlled_markers(self):
         for diagnostic, text in MESSAGES.items():
             with self.subTest(diagnostic=diagnostic):

@@ -92,7 +92,7 @@ fn selected_module_aliases_do_not_force_unrelated_extension_namespace_resolution
         b"existing selected source"
     );
     let unknown = f.run(&["query", "@ordinary//:data"]);
-    rejected(&unknown, "unknown apparent repository @ordinary");
+    rejected(&unknown, "unknown apparent repository @bazel_tools");
 }
 
 #[test]

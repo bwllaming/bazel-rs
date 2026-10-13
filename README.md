@@ -119,8 +119,9 @@ groups and license metadata remain unsupported. External loading supports the
 bounded verified registry/archive, text-patch and pinned Git profiles described
 in `docs/`. Direct `use_repo_rule` callbacks now have a bounded native file/template
 executor; see [its exact limits](docs/REPOSITORY_RULES.md), including ASCII
-Starlark strings and binary-preserving templates. Ordinary module extensions,
-full repository APIs and toolchains are not implemented. Implicit built-in
+Starlark strings and binary-preserving templates. [Ordinary module extensions](docs/MODULE_EXTENSIONS.md)
+support bounded non-isolated callbacks, typed tags and deferred repository
+declarations; full extension/repository APIs and toolchains remain incomplete. Implicit built-in
 modules are unsupported; active extension usages fail in `mod graph` even when
 hidden from output. Load caching is per package evaluation,
 not a persistent incremental graph.

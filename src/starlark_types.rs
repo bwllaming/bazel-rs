@@ -174,6 +174,12 @@ pub fn unpack_label(value: Value<'_>) -> Option<String> {
     )
 }
 
+/// Borrow components so bounded host consumers can charge before formatting.
+pub(crate) fn label_parts(value: Value<'_>) -> Option<(&str, &str, &str)> {
+    let label = LabelValue::from_value(value)?;
+    Some((&label.repository, &label.package, &label.name))
+}
+
 /// Allocate a canonical label without target analysis (for repository attributes).
 pub fn alloc_label<'v>(heap: Heap<'v>, canonical: &str) -> anyhow::Result<Value<'v>> {
     Ok(heap.alloc(LabelValue::parse(canonical)?))

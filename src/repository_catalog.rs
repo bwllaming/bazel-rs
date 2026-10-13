@@ -1,4 +1,4 @@
-//! Pure direct-repository declaration indexing; never loads or executes a rule.
+//! Pure repository declaration indexing; never loads or executes a rule or extension.
 //!
 //! Bazel 9.3 source contract: Selection.walk preserves root-first BFS order;
 //! ModuleThreadContext's dependency map is insertion-ordered, and
@@ -7,12 +7,15 @@
 //! resolved ordinary extension identities, and allocates globally unique prefixes.
 //! Innate identities remain opaque and MODULE-owned, NOT definition-file-owned.
 //!
-//! Ordinary extensions only reserve namespace here. Isolated usages cannot be
+//! Ordinary extensions record participants, import mappings, and exact prefix
+//! routes here, but never claim that generated repositories exist. Isolated usages cannot be
 //! named exactly from recording metadata (their exported variable is absent).
 //! Their prefixes have an underscore-prefixed extension component, disjoint from
 //! public direct-rule symbols. We skip those reservations only in that profile;
 //! otherwise catalog construction fails explicitly rather than inventing names.
-use crate::bzlmod::{ExtensionUsage, ModuleFile};
+use crate::bzlmod::{
+    ExtensionTag, ExtensionUsage, ModuleFile, RepositoryImport, validate_repo_name,
+};
 use crate::label::{Label, validate_repository_name};
 use crate::module_graph::ResolvedGraph;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -22,6 +25,35 @@ pub struct DirectCatalog {
     pub owner_mappings: BTreeMap<String, BTreeMap<String, String>>,
     pub groups: BTreeMap<String, DirectGroup>,
     pub repositories: BTreeMap<String, DirectRepository>,
+    pub ordinary_groups: BTreeMap<String, OrdinaryGroup>,
+    /// Exact allocated prefix -> ordinary group ID, not a materialization index.
+    /// A runtime must split a canonical repository at its LAST '+' and look up
+    /// the complete prefix, never select a group using string-prefix matching.
+    pub ordinary_routes: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OrdinaryGroup {
+    /// Requested public label, not the implementation object's defining label.
+    pub label: Label,
+    pub symbol: String,
+    pub prefix: String,
+    /// Root-first dependency BFS, including active users without any tags.
+    pub participants: Vec<OrdinaryParticipant>,
+    pub root_has_non_dev_dependency: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OrdinaryParticipant {
+    pub owner: String,
+    pub name: String,
+    /// Normalized declared version, including for non-registry overrides.
+    pub version: String,
+    pub is_root: bool,
+    /// Invocation order across all raw spellings of this public identity.
+    pub tags: Vec<ExtensionTag>,
+    pub imports: Vec<RepositoryImport>,
+    pub source_profile_error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -77,12 +109,14 @@ pub fn build(graph: &ResolvedGraph, ignore_root_dev: bool) -> Result<DirectCatal
     let owners = owner_order(graph, ignore_root_dev)?;
     let mut catalog = DirectCatalog::default();
     let mut prefixes = BTreeSet::new();
-    let mut ordinary = BTreeSet::new();
     let mut has_isolated = false;
+    let mut budget = crate::repository_budget::HostBudget::default();
 
     for owner in &owners {
         let (module, base_mapping) = owner_data(graph, owner)?;
         let ignore_dev = !owner.is_empty() || ignore_root_dev;
+        budget.string(owner)?;
+        charge_mapping(&mut budget, base_mapping)?;
         catalog
             .owner_mappings
             .insert(owner.clone(), base_mapping.clone());
@@ -90,6 +124,8 @@ pub fn build(graph: &ResolvedGraph, ignore_root_dev: bool) -> Result<DirectCatal
             if !active_usage(usage, ignore_dev) {
                 continue;
             }
+            budget.string(&usage.identity.label)?;
+            budget.string(&usage.identity.extension_name)?;
             if !usage.identity.is_repo_rule() {
                 if usage.identity.isolation.is_some() {
                     has_isolated = true;
@@ -97,14 +133,30 @@ pub fn build(graph: &ResolvedGraph, ignore_root_dev: bool) -> Result<DirectCatal
                 }
                 // Public extension identities use only bazel_dep mappings, not
                 // the full generated-repository mapping assembled below.
-                let label = Label::parse_in(&usage.identity.label, owner, "", base_mapping)
-                    .map_err(|e| {
+                // ModuleFileGlobals.normalizeLabelString (Bazel 9.3:486-519)
+                // stringifies even @@repo labels as APPARENT @repo labels before
+                // BazelDepGraphFunction resolves them. This MODULE-only step
+                // must not alter direct rule requests or general label parsing.
+                let raw_label = &usage.identity.label;
+                let apparent_label = if raw_label.starts_with("@@") {
+                    &raw_label[1..]
+                } else {
+                    raw_label
+                };
+                let label =
+                    Label::parse_in(apparent_label, owner, "", base_mapping).map_err(|e| {
                         format!("invalid ordinary extension label in MODULE owner {owner:?}: {e}")
                     })?;
-                let symbol = &usage.identity.extension_name;
-                if ordinary.insert((label.clone(), symbol.clone())) {
-                    allocate_prefix(&mut prefixes, &label.repository, symbol);
-                }
+                record_ordinary(
+                    &mut catalog,
+                    &mut prefixes,
+                    owner,
+                    module,
+                    usage,
+                    label,
+                    ignore_dev,
+                    &mut budget,
+                )?;
                 continue;
             }
 
@@ -133,6 +185,11 @@ pub fn build(graph: &ResolvedGraph, ignore_root_dev: bool) -> Result<DirectCatal
                     .filter(|name| !name.is_empty())
                     .ok_or_else(|| format!("direct repository declaration in {group_id} has no nonempty string name"))?;
                 validate_repository_name(name)?;
+                budget.string(&group.prefix)?;
+                for (key, value) in &tag.attributes {
+                    budget.string(key)?;
+                    budget.json(value, 0)?;
+                }
                 let canonical_name = format!("{}+{name}", group.prefix);
                 validate_repository_name(&canonical_name).map_err(|e| {
                     format!("unsupported direct repository canonical namespace for {raw:?}: {e}")
@@ -175,6 +232,8 @@ pub fn build(graph: &ResolvedGraph, ignore_root_dev: bool) -> Result<DirectCatal
                 let declaration = group.declarations.iter()
                     .find(|declaration| declaration.name == import.exported_name)
                     .ok_or_else(|| format!("direct repository import {:?} in MODULE owner {owner:?} names undeclared repository {:?}", import.local_name, import.exported_name))?;
+                budget.string(&import.local_name)?;
+                budget.string(&declaration.canonical_name)?;
                 if mapping
                     .insert(
                         import.local_name.clone(),
@@ -191,8 +250,14 @@ pub fn build(graph: &ResolvedGraph, ignore_root_dev: bool) -> Result<DirectCatal
         }
     }
 
+    for group in catalog.ordinary_groups.values_mut() {
+        for participant in &mut group.participants {
+            participant.tags.sort_by_key(|tag| tag.ordinal);
+        }
+    }
+
     if has_isolated
-        && catalog.groups.values().any(|group| {
+        && (catalog.groups.values().any(|group| {
             !public_identifier(
                 group
                     .raw_identity
@@ -200,17 +265,23 @@ pub fn build(graph: &ResolvedGraph, ignore_root_dev: bool) -> Result<DirectCatal
                     .expect("innate identity")
                     .1,
             )
-        })
+        }) || catalog
+            .ordinary_groups
+            .values()
+            .any(|group| !public_identifier(&group.symbol)))
     {
         return Err("isolated extension namespace not supported for direct execution with non-public or invalid rule symbols".to_owned());
     }
 
-    // Only after ALL direct imports have been installed do generated repos
+    // Only after ALL direct and ordinary imports have been installed do direct repos
     // inherit the complete MODULE-owner mapping. Internal sibling names win,
     // including self (ModuleExtensionRepoMappingEntriesFunction, lines 69-78).
     for (group_id, group) in &catalog.groups {
+        charge_mapping(&mut budget, &catalog.owner_mappings[&group.owner])?;
         let mut mapping = catalog.owner_mappings[&group.owner].clone();
         for declaration in &group.declarations {
+            budget.string(&declaration.name)?;
+            budget.string(&declaration.canonical_name)?;
             mapping.insert(declaration.name.clone(), declaration.canonical_name.clone());
         }
         for (declaration_index, declaration) in group.declarations.iter().enumerate() {
@@ -220,10 +291,142 @@ pub fn build(graph: &ResolvedGraph, ignore_root_dev: bool) -> Result<DirectCatal
                 .expect("declaration indexed above");
             debug_assert_eq!(repository.group_id, *group_id);
             debug_assert_eq!(repository.declaration_index, declaration_index);
+            charge_mapping(&mut budget, &mapping)?;
             repository.mapping = mapping.clone();
         }
     }
     Ok(catalog)
+}
+
+fn charge_mapping(
+    budget: &mut crate::repository_budget::HostBudget,
+    mapping: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    budget.node()?;
+    for (apparent, canonical) in mapping {
+        budget.string(apparent)?;
+        budget.string(canonical)?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_ordinary(
+    catalog: &mut DirectCatalog,
+    prefixes: &mut BTreeSet<String>,
+    owner: &str,
+    module: &ModuleFile,
+    usage: &ExtensionUsage,
+    label: Label,
+    ignore_dev: bool,
+    budget: &mut crate::repository_budget::HostBudget,
+) -> Result<(), String> {
+    let symbol = &usage.identity.extension_name;
+    let group_id =
+        serde_json::to_string(&(label.to_string(), symbol)).map_err(|e| e.to_string())?;
+    if !catalog.ordinary_groups.contains_key(&group_id) {
+        let prefix = allocate_prefix(prefixes, &label.repository, symbol);
+        validate_repository_name(&prefix).map_err(|e| {
+            format!("unsupported ordinary extension canonical namespace for {label} {symbol}: {e}")
+        })?;
+        catalog
+            .ordinary_routes
+            .insert(prefix.clone(), group_id.clone());
+        catalog.ordinary_groups.insert(
+            group_id.clone(),
+            OrdinaryGroup {
+                label,
+                symbol: symbol.clone(),
+                prefix,
+                participants: Vec::new(),
+                root_has_non_dev_dependency: false,
+            },
+        );
+    }
+    let group = catalog
+        .ordinary_groups
+        .get_mut(&group_id)
+        .expect("ordinary group inserted above");
+    group.root_has_non_dev_dependency |= owner.is_empty()
+        && usage
+            .declarations
+            .iter()
+            .any(|declaration| !declaration.dev_dependency);
+    let participant_index = match group.participants.iter().position(|p| p.owner == owner) {
+        Some(index) => index,
+        None => {
+            budget.string(owner)?;
+            if let Some(info) = &module.module {
+                budget.string(&info.name)?;
+                budget.string(&info.version)?;
+            }
+            let (name, version) = match &module.module {
+                Some(info) => (
+                    info.name.clone(),
+                    crate::module_graph::normalize_declared_version(&info.version)?,
+                ),
+                None => (String::new(), String::new()),
+            };
+            group.participants.push(OrdinaryParticipant {
+                owner: owner.to_owned(),
+                name,
+                version,
+                is_root: owner.is_empty(),
+                tags: Vec::new(),
+                imports: Vec::new(),
+                source_profile_error: module.source_profile_error.clone(),
+            });
+            group.participants.len() - 1
+        }
+    };
+    let participant = &mut group.participants[participant_index];
+    for tag in usage
+        .tags
+        .iter()
+        .filter(|tag| !tag.dev_dependency || !ignore_dev)
+    {
+        budget.string(&tag.name)?;
+        for (name, value) in &tag.attributes {
+            budget.string(name)?;
+            budget.json(value, 0)?;
+        }
+    }
+    participant.tags.extend(
+        usage
+            .tags
+            .iter()
+            .filter(|tag| !tag.dev_dependency || !ignore_dev)
+            .cloned(),
+    );
+    let mapping = catalog
+        .owner_mappings
+        .get_mut(owner)
+        .expect("owner inserted above");
+    for import in &usage.imports {
+        if import.dev_dependency && ignore_dev {
+            continue;
+        }
+        // User-provided import names have stricter rules than canonical names:
+        // '+' is forbidden, ensuring exact last-separator routing is unambiguous.
+        validate_repo_name(&import.local_name).map_err(|e| e.to_string())?;
+        validate_repo_name(&import.exported_name).map_err(|e| e.to_string())?;
+        // A short import can expand to a long extension prefix. Reserve that
+        // expansion before formatting or retaining each mapping entry.
+        budget.string(&import.local_name)?;
+        budget.string(&import.exported_name)?;
+        budget.string(&group.prefix)?;
+        let canonical = format!("{}+{}", group.prefix, import.exported_name);
+        validate_repository_name(&canonical)?;
+        if mapping.contains_key(&import.local_name) {
+            return Err(format!(
+                "ordinary repository import {:?} collides with an existing repository name in MODULE owner {owner:?}",
+                import.local_name
+            ));
+        }
+        mapping.insert(import.local_name.clone(), canonical);
+        participant.imports.push(import.clone());
+    }
+    Ok(())
 }
 
 fn active_usage(usage: &ExtensionUsage, ignore_dev: bool) -> bool {
@@ -308,6 +511,20 @@ fn owner_order(graph: &ResolvedGraph, ignore_root_dev: bool) -> Result<Vec<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_long_prefix_imports_respect_catalog_host_budget() {
+        let symbol = "e".repeat(65_536);
+        let imports = (0..256).map(|i| format!(", 'r{i}'")).collect::<String>();
+        let graph = graph(&format!(
+            "module(name='main')\ne=use_extension('//:ext.bzl','{symbol}')\nuse_repo(e{imports})\n"
+        ));
+        let error = match build(&graph, false) {
+            Err(error) => error,
+            Ok(_) => panic!("catalog must enforce a cumulative host budget"),
+        };
+        assert!(error.contains("host") && error.contains("limit"), "{error}");
+    }
     use crate::bzlmod::{self, EvaluationContext, ModuleRole};
     use crate::module_graph::{ModuleSource, ResolvedModule};
     use serde_json::json;
@@ -478,7 +695,14 @@ r(name="direct")
         let catalog = build(&graph, false).unwrap();
         assert_eq!(catalog.repositories.len(), 1);
         assert!(catalog.repositories.contains_key("+maker3+direct"));
-        assert!(!catalog.owner_mappings[""].contains_key("ordinary_output"));
+        assert_eq!(
+            catalog.owner_mappings[""]["ordinary_output"],
+            "+maker+ordinary_output"
+        );
+        assert_eq!(
+            catalog.repositories["+maker3+direct"].mapping["ordinary_output"],
+            "+maker+ordinary_output"
+        );
     }
 
     #[test]
@@ -516,19 +740,19 @@ r(name="direct")
             &mut graph,
             "z",
             "z+",
-            "module(name='z')\nbazel_dep(name='deep')\ne=use_extension('@@//:z.bzl','maker')",
+            "module(name='z')\nbazel_dep(name='deep')\nbazel_dep(name='main')\ne=use_extension('@main//:z.bzl','maker')",
         );
         dependency(
             &mut graph,
             "a",
             "a+",
-            "module(name='a')\ne=use_extension('@@//:a.bzl','maker')",
+            "module(name='a')\nbazel_dep(name='main')\ne=use_extension('@main//:a.bzl','maker')",
         );
         dependency(
             &mut graph,
             "deep",
             "deep+",
-            "module(name='deep')\nbazel_dep(name='main')\ne=use_extension('@@//:deep.bzl','maker')",
+            "module(name='deep')\nbazel_dep(name='main')\ne=use_extension('@main//:deep.bzl','maker')",
         );
         graph.root_mapping.remove("deep");
         graph
@@ -537,12 +761,16 @@ r(name="direct")
             .unwrap()
             .mapping
             .insert("deep".to_owned(), "deep+".to_owned());
-        graph
-            .modules
-            .get_mut("deep+")
-            .unwrap()
-            .mapping
-            .insert("main".to_owned(), String::new());
+        // Each external participant needs a real apparent dependency on main
+        // to reserve a root-owned prefix; @@// is not a canonical escape here.
+        for owner in ["z+", "a+", "deep+"] {
+            graph
+                .modules
+                .get_mut(owner)
+                .unwrap()
+                .mapping
+                .insert("main".to_owned(), String::new());
+        }
         assert_eq!(
             owner_order(&graph, false).unwrap(),
             ["", "z+", "a+", "deep+"]
@@ -555,12 +783,20 @@ r(name="direct")
             false,
         )
         .extension_usages;
-        assert!(
-            build(&graph, false)
-                .unwrap()
-                .repositories
-                .contains_key("+maker+direct")
-        );
+        let catalog = build(&graph, false).unwrap();
+        assert!(catalog.repositories.contains_key("+maker+direct"));
+        for (prefix, file) in [
+            ("+maker2", "z.bzl"),
+            ("+maker3", "a.bzl"),
+            ("+maker4", "deep.bzl"),
+        ] {
+            assert_eq!(
+                catalog.ordinary_groups[&catalog.ordinary_routes[prefix]]
+                    .label
+                    .name,
+                file
+            );
+        }
     }
 
     #[test]
@@ -740,5 +976,506 @@ r(name="kept")
                 .unwrap_err()
                 .contains("active dependency @dev")
         );
+    }
+
+    #[test]
+    fn ordinary_alias_spellings_merge_participants_in_global_tag_order() {
+        let graph = graph(
+            r#"
+module(name="root")
+a=use_extension("//:ext.bzl", "ext")
+b=use_extension("@root//:ext.bzl", "ext")
+values=["before"]
+a.first(values=values)
+b.second(value=2)
+a.third(value=3)
+use_repo(a, first_alias="one")
+use_repo(b, second_alias="two")
+values.append("after")
+"#,
+        );
+        let before = graph.clone();
+        let catalog = build(&graph, false).unwrap();
+        assert_eq!(graph, before);
+        assert_eq!(catalog.ordinary_groups.len(), 1);
+        let (id, group) = catalog.ordinary_groups.iter().next().unwrap();
+        assert_eq!(
+            serde_json::from_str::<(String, String)>(id).unwrap(),
+            ("//:ext.bzl".to_owned(), "ext".to_owned())
+        );
+        assert_eq!(group.participants.len(), 1);
+        let participant = &group.participants[0];
+        assert_eq!(
+            participant
+                .tags
+                .iter()
+                .map(|tag| tag.name.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second", "third"]
+        );
+        assert_eq!(
+            participant
+                .tags
+                .iter()
+                .map(|tag| tag.ordinal)
+                .collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+        assert_eq!(
+            participant.tags[0].attributes["values"],
+            json!(["before", "after"])
+        );
+        assert_eq!(
+            participant
+                .imports
+                .iter()
+                .map(|import| import.local_name.as_str())
+                .collect::<Vec<_>>(),
+            ["first_alias", "second_alias"]
+        );
+        assert_eq!(catalog.owner_mappings[""]["first_alias"], "+ext+one");
+        assert_eq!(catalog.owner_mappings[""]["second_alias"], "+ext+two");
+    }
+
+    #[test]
+    fn ordinary_module_label_double_at_requires_an_apparent_dependency_alias() {
+        let mut graph = graph("bazel_dep(name='z')\ne=use_extension('@@z+//:ext.bzl','ext')");
+        dependency(&mut graph, "z", "z+", "module(name='z')");
+        assert!(
+            build(&graph, false)
+                .unwrap_err()
+                .contains("unknown apparent repository @z+")
+        );
+
+        graph.root.extension_usages = evaluate(
+            "e=use_extension('@@z//:ext.bzl','ext')\nr=use_repo_rule('@@z+//:rules.bzl','maker')\nr(name='direct')",
+            ModuleRole::Root,
+            false,
+        )
+        .extension_usages;
+        let before = graph.clone();
+        let catalog = build(&graph, false).unwrap();
+        assert_eq!(graph, before);
+        let ordinary = catalog.ordinary_groups.values().next().unwrap();
+        assert_eq!(ordinary.label.repository, "z+");
+        assert_eq!(ordinary.prefix, "z++ext");
+        // MODULE use_extension normalization must not affect opaque direct
+        // requests or the canonical-label grammar used by their runtime loader.
+        let direct = catalog.groups.values().next().unwrap();
+        let (label, symbol) = direct.definition_request().unwrap();
+        assert_eq!((label, symbol), ("@@z+//:rules.bzl", "maker"));
+        assert_eq!(
+            Label::parse_in(label, "", "", &catalog.owner_mappings[""])
+                .unwrap()
+                .repository,
+            "z+"
+        );
+    }
+
+    #[test]
+    fn ordinary_module_label_double_at_empty_repo_is_visible_only_from_root() {
+        for module in ["", "module(name='root')\n"] {
+            let graph = graph(&format!("{module}e=use_extension('@@//:ext.bzl','ext')"));
+            let catalog = build(&graph, false).unwrap();
+            assert_eq!(catalog.ordinary_groups.len(), 1);
+            assert_eq!(
+                catalog
+                    .ordinary_groups
+                    .values()
+                    .next()
+                    .unwrap()
+                    .label
+                    .repository,
+                ""
+            );
+        }
+        let mut graph = graph("bazel_dep(name='z')");
+        dependency(
+            &mut graph,
+            "z",
+            "z+",
+            "module(name='z')\ne=use_extension('@@//:ext.bzl','ext')",
+        );
+        let error = build(&graph, false).unwrap_err();
+        assert!(error.contains("unknown apparent repository @ from"));
+        assert!(error.contains("z+"));
+    }
+
+    #[test]
+    fn ordinary_module_label_self_spellings_merge_without_mutating_raw_metadata() {
+        let mut graph = graph("bazel_dep(name='z')");
+        dependency(
+            &mut graph,
+            "z",
+            "z+",
+            r#"
+module(name="z", repo_name="self")
+a=use_extension("//:ext.bzl", "ext")
+b=use_extension("@@self//:ext.bzl", "ext")
+c=use_extension("@self//:ext.bzl", "ext")
+a.first()
+b.second()
+c.third()
+a.fourth()
+"#,
+        );
+        let before = graph.clone();
+        let catalog = build(&graph, false).unwrap();
+        assert_eq!(graph, before);
+        assert_eq!(graph.modules["z+"].module.extension_usages.len(), 3);
+        assert_eq!(
+            graph.modules["z+"].module.extension_usages[1]
+                .identity
+                .label,
+            "@@self//:ext.bzl"
+        );
+        assert_eq!(catalog.ordinary_groups.len(), 1);
+        let group = catalog.ordinary_groups.values().next().unwrap();
+        assert_eq!(group.label.repository, "z+");
+        assert_eq!(group.participants.len(), 1);
+        assert_eq!(
+            group.participants[0]
+                .tags
+                .iter()
+                .map(|tag| (tag.name.as_str(), tag.ordinal))
+                .collect::<Vec<_>>(),
+            [("first", 0), ("second", 1), ("third", 2), ("fourth", 3)]
+        );
+    }
+
+    #[test]
+    fn ordinary_participants_follow_bfs_include_zero_tags_and_preserve_profile_errors() {
+        let mut graph = graph(
+            r#"
+module(name="root")
+bazel_dep(name="z")
+bazel_dep(name="a")
+bazel_dep(name="nonparticipant")
+e=use_extension("@z//:ext.bzl", "ext")
+"#,
+        );
+        dependency(
+            &mut graph,
+            "z",
+            "z+",
+            "module(name='z')\ne=use_extension('//:ext.bzl','ext')\ne.tag(value='z')",
+        );
+        dependency(
+            &mut graph,
+            "a",
+            "a+",
+            "module(name='a')\nbazel_dep(name='z')\ne=use_extension('@@z//:ext.bzl','ext')",
+        );
+        dependency(
+            &mut graph,
+            "nonparticipant",
+            "nonparticipant+",
+            "module(name='nonparticipant')",
+        );
+        graph
+            .modules
+            .get_mut("a+")
+            .unwrap()
+            .mapping
+            .insert("z".to_owned(), "z+".to_owned());
+        graph.root.source_profile_error = Some("root deferred profile".to_owned());
+        graph
+            .modules
+            .get_mut("a+")
+            .unwrap()
+            .module
+            .source_profile_error = Some("a deferred profile".to_owned());
+        let catalog = build(&graph, false).unwrap();
+        let group = catalog.ordinary_groups.values().next().unwrap();
+        assert_eq!(catalog.ordinary_groups.len(), 1);
+        assert_eq!(
+            group
+                .participants
+                .iter()
+                .map(|p| p.owner.as_str())
+                .collect::<Vec<_>>(),
+            ["", "z+", "a+"]
+        );
+        assert_eq!(
+            group
+                .participants
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>(),
+            ["root", "z", "a"]
+        );
+        assert!(group.participants[0].is_root);
+        assert!(!group.participants[1].is_root);
+        assert!(group.participants[0].tags.is_empty());
+        assert!(group.participants[2].tags.is_empty());
+        assert_eq!(group.participants[1].tags[0].attributes["value"], "z");
+        assert_eq!(
+            group.participants[0].source_profile_error.as_deref(),
+            Some("root deferred profile")
+        );
+        assert_eq!(
+            group.participants[2].source_profile_error.as_deref(),
+            Some("a deferred profile")
+        );
+        assert!(group.root_has_non_dev_dependency);
+    }
+
+    #[test]
+    fn ordinary_root_non_dev_flag_uses_declarations_not_tags_or_imports() {
+        let dev = graph("e=use_extension('//:ext.bzl','ext',dev_dependency=True)");
+        let catalog = build(&dev, false).unwrap();
+        let group = catalog.ordinary_groups.values().next().unwrap();
+        assert!(!group.root_has_non_dev_dependency);
+        assert_eq!(group.participants.len(), 1);
+        assert!(build(&dev, true).unwrap().ordinary_groups.is_empty());
+
+        let mixed = graph(
+            "module(name='root')\ne=use_extension('//:ext.bzl','ext',dev_dependency=True)\nf=use_extension('@root//:ext.bzl','ext')",
+        );
+        for ignore_dev in [false, true] {
+            let catalog = build(&mixed, ignore_dev).unwrap();
+            let group = catalog.ordinary_groups.values().next().unwrap();
+            assert!(group.root_has_non_dev_dependency);
+            assert_eq!(group.participants.len(), 1);
+            assert!(group.participants[0].tags.is_empty());
+            assert!(group.participants[0].imports.is_empty());
+        }
+
+        let mut dep_only = graph("bazel_dep(name='dep')");
+        dependency(
+            &mut dep_only,
+            "dep",
+            "dep+",
+            "module(name='dep')\ne=use_extension('//:ext.bzl','ext')",
+        );
+        let catalog = build(&dep_only, false).unwrap();
+        assert!(
+            !catalog
+                .ordinary_groups
+                .values()
+                .next()
+                .unwrap()
+                .root_has_non_dev_dependency
+        );
+    }
+
+    #[test]
+    fn ordinary_participant_versions_use_normalized_declarations_not_selected_override_versions() {
+        let mut graph = graph(
+            "module(name='root',version='1.2+root.build')\nbazel_dep(name='dep')\ne=use_extension('@dep//:ext.bzl','ext')",
+        );
+        dependency(
+            &mut graph,
+            "dep",
+            "dep+",
+            "module(name='dep',version='3.4+dep.build')\ne=use_extension('//:ext.bzl','ext')",
+        );
+        assert_eq!(graph.modules["dep+"].version, "");
+        let catalog = build(&graph, false).unwrap();
+        let group = catalog.ordinary_groups.values().next().unwrap();
+        assert_eq!(group.participants[0].version, "1.2");
+        assert_eq!(group.participants[1].version, "3.4");
+
+        let anonymous = super::tests::graph("e=use_extension('//:ext.bzl','ext')");
+        let catalog = build(&anonymous, false).unwrap();
+        let participant = &catalog
+            .ordinary_groups
+            .values()
+            .next()
+            .unwrap()
+            .participants[0];
+        assert_eq!(participant.name, "");
+        assert_eq!(participant.version, "");
+        assert!(participant.is_root);
+    }
+
+    #[test]
+    fn ordinary_imports_are_routes_not_generated_repositories_and_direct_repos_inherit_them() {
+        let graph = graph(
+            r#"
+e=use_extension("//:ext.bzl", "ext")
+r=use_repo_rule("//:rule.bzl", "rule")
+r(name="direct")
+use_repo(e, local="exported")
+"#,
+        );
+        let catalog = build(&graph, false).unwrap();
+        assert_eq!(catalog.repositories.len(), 1);
+        assert_eq!(catalog.groups.len(), 1);
+        assert_eq!(catalog.owner_mappings[""]["local"], "+ext+exported");
+        assert_eq!(
+            catalog.repositories["+rule+direct"].mapping["local"],
+            "+ext+exported"
+        );
+        assert!(!catalog.repositories.contains_key("+ext+exported"));
+        assert!(!catalog.repositories.contains_key("+ext+computed_later"));
+        let (prefix, internal) = "+ext+computed_later".rsplit_once('+').unwrap();
+        assert_eq!(internal, "computed_later");
+        let group = &catalog.ordinary_groups[&catalog.ordinary_routes[prefix]];
+        assert_eq!(group.prefix, "+ext");
+        assert!(!catalog.ordinary_routes.contains_key("+ext_extra"));
+        assert!(!catalog.ordinary_routes.contains_key("+ext+computed_later"));
+        assert!(!catalog.ordinary_routes.contains_key("+rule"));
+    }
+
+    #[test]
+    fn different_public_labels_never_merge_reexports_and_all_prefixes_share_one_allocator() {
+        // Whether these public files re-export the same object is deliberately
+        // unknowable here; identity is always the requested public label.
+        let graph = graph(
+            r#"
+a=use_extension("//:one.bzl", "ext")
+r=use_repo_rule("//:rule.bzl", "ext")
+r(name="direct")
+b=use_extension("//:two.bzl", "ext")
+c=use_extension("//:other.bzl", "ext2")
+use_repo(a, first="out")
+use_repo(b, second="out")
+"#,
+        );
+        let catalog = build(&graph, false).unwrap();
+        assert_eq!(catalog.ordinary_groups.len(), 3);
+        assert_eq!(catalog.ordinary_routes.len(), 3);
+        assert!(catalog.ordinary_routes.contains_key("+ext"));
+        assert!(catalog.ordinary_routes.contains_key("+ext3"));
+        assert!(catalog.ordinary_routes.contains_key("+ext22"));
+        assert!(catalog.repositories.contains_key("+ext2+direct"));
+        assert_eq!(catalog.owner_mappings[""]["first"], "+ext+out");
+        assert_eq!(catalog.owner_mappings[""]["second"], "+ext3+out");
+        assert_ne!(
+            catalog.ordinary_routes["+ext"],
+            catalog.ordinary_routes["+ext3"]
+        );
+    }
+
+    #[test]
+    fn ordinary_dev_tags_and_imports_are_filtered_but_kept_tags_retain_dev_metadata() {
+        let source = r#"
+module(name="root")
+d=use_extension("//:ext.bzl", "ext", dev_dependency=True)
+n=use_extension("@root//:ext.bzl", "ext")
+d.tag(value="dev")
+n.tag(value="normal")
+use_repo(d, dev_alias="dev_repo")
+use_repo(n, normal_alias="normal_repo")
+"#;
+        let graph = graph(source);
+        let catalog = build(&graph, false).unwrap();
+        let tags = &catalog
+            .ordinary_groups
+            .values()
+            .next()
+            .unwrap()
+            .participants[0]
+            .tags;
+        assert_eq!(tags.len(), 2);
+        assert!(tags[0].dev_dependency);
+        assert!(!tags[1].dev_dependency);
+        let filtered = build(&graph, true).unwrap();
+        let participant = &filtered
+            .ordinary_groups
+            .values()
+            .next()
+            .unwrap()
+            .participants[0];
+        assert_eq!(participant.tags.len(), 1);
+        assert_eq!(participant.tags[0].attributes["value"], "normal");
+        assert_eq!(participant.imports.len(), 1);
+        assert!(!filtered.owner_mappings[""].contains_key("dev_alias"));
+
+        let mut dep_graph = super::tests::graph("bazel_dep(name='dep')");
+        dependency(
+            &mut dep_graph,
+            "dep",
+            "dep+",
+            &source.replace("root", "dep"),
+        );
+        let catalog = build(&dep_graph, false).unwrap();
+        let group = catalog.ordinary_groups.values().next().unwrap();
+        assert_eq!(group.participants.len(), 1);
+        assert_eq!(group.participants[0].tags.len(), 1);
+        assert_eq!(group.participants[0].imports.len(), 1);
+        assert!(!catalog.owner_mappings["dep+"].contains_key("dev_alias"));
+        assert!(!group.root_has_non_dev_dependency);
+    }
+
+    #[test]
+    fn ordinary_import_names_are_validated_and_cannot_overwrite_owner_aliases() {
+        let original = graph(
+            "module(name='root')\ne=use_extension('//:ext.bzl','ext')\nuse_repo(e,alias='exported')",
+        );
+        for field in ["local", "exported"] {
+            for invalid in ["", "contains+separator", "bad/name"] {
+                let mut graph = original.clone();
+                let import = &mut graph.root.extension_usages[0].imports[0];
+                if field == "local" {
+                    import.local_name = invalid.to_owned();
+                } else {
+                    import.exported_name = invalid.to_owned();
+                }
+                assert!(
+                    build(&graph, false).is_err(),
+                    "accepted {field} {invalid:?}"
+                );
+            }
+        }
+        let mut collision = original.clone();
+        collision.root.extension_usages[0].imports[0].local_name = "root".to_owned();
+        assert!(build(&collision, false).unwrap_err().contains("collides"));
+        assert_eq!(collision.root_mapping["root"], "");
+        let mut duplicate = original.clone();
+        let import = duplicate.root.extension_usages[0].imports[0].clone();
+        duplicate.root.extension_usages[0].imports.push(import);
+        assert!(build(&duplicate, false).unwrap_err().contains("collides"));
+    }
+
+    #[test]
+    fn isolated_imports_do_not_fabricate_ordinary_identities_or_routes() {
+        let source = r#"
+isolated=use_extension("//:ext.bzl", "ext", isolate=True)
+normal=use_extension("//:ext.bzl", "ext")
+use_repo(isolated, "hidden")
+use_repo(normal, "visible")
+r=use_repo_rule("//:rule.bzl", "ext")
+r(name="direct")
+"#;
+        let catalog = build(&graph(source), false).unwrap();
+        assert_eq!(catalog.ordinary_groups.len(), 1);
+        assert_eq!(catalog.ordinary_routes.len(), 1);
+        assert!(!catalog.owner_mappings[""].contains_key("hidden"));
+        assert_eq!(catalog.owner_mappings[""]["visible"], "+ext+visible");
+        assert!(catalog.repositories.contains_key("+ext2+direct"));
+        let private = source.replace(
+            "normal=use_extension(\"//:ext.bzl\", \"ext\")",
+            "normal=use_extension(\"//:ext.bzl\", \"_private\")",
+        );
+        assert!(
+            build(&graph(&private), false)
+                .unwrap_err()
+                .contains("isolated extension namespace not supported")
+        );
+    }
+
+    #[test]
+    fn ordinary_definitions_use_only_base_mappings_and_safe_canonical_prefixes() {
+        let generated_definition = graph(
+            "r=use_repo_rule('//:rule.bzl','rule')\nr(name='generated')\ne=use_extension('@generated//:ext.bzl','ext')",
+        );
+        assert!(
+            build(&generated_definition, false)
+                .unwrap_err()
+                .contains("invalid ordinary extension label")
+        );
+        let mut invalid = graph("e=use_extension('//:ext.bzl','ext')");
+        invalid.root.extension_usages[0].identity.extension_name = "bad symbol".to_owned();
+        assert!(
+            build(&invalid, false)
+                .unwrap_err()
+                .contains("ordinary extension canonical namespace")
+        );
+        let private = graph("e=use_extension('//:missing.bzl','_private')");
+        // Export visibility is a runtime preparation check unless it makes the
+        // isolated namespace omission unsafe. No definition file is opened here.
+        assert_eq!(build(&private, false).unwrap().ordinary_groups.len(), 1);
     }
 }

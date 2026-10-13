@@ -41,7 +41,7 @@ do not trigger definition loading or extension namespace allocation. Native
 `mod graph` continues to reject active innate usages under its bounded profile.
 
 Full compatibility still requires genuine built-in repository sources, complete
-repository contexts and byte-string semantics, ordinary extension execution,
+repository contexts and byte-string semantics, complete extension APIs,
 downstream configured analysis and toolchains. Recording `http_archive(...)` is
 **not** implementing `http_archive`.
 
@@ -63,8 +63,8 @@ probe executes repository implementations only in official Bazel: it is evidence
 for native MODULE metadata, not native repository execution.
 
 The current declaration harness retains 46 CLI differential cases, one separately
-classified lazy-loading probe, and one native-only ordinary-extension-definition
+classified lazy-loading probe, and one native-only nonzero-extension-facts-version
 boundary check. It retains fixture bytes, command diagnostics, binary hashes and
 cleanup receipts. The lazy-loading probe also passes against the reference;
-the unsupported ordinary-extension error is explicitly not execution parity. Adjacent module,
+the unsupported facts-version error is explicitly not execution parity. Adjacent module,
 local-repository and remote-archive reports pass 16, 20 and 17 checks respectively.
