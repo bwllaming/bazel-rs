@@ -1,0 +1,191 @@
+{
+  "status": "REFERENCE_ONLY_PASS",
+  "provenance": {
+    "artifact": "artifacts/starlark-set-integration-contract.json",
+    "artifact_sha256": "d777381c0bcbd5b6452e8529f4d2e518d5992233ae900ab6e8ac5485cf5e6cf9",
+    "recorded_utc": "2026-10-13T15:39:02.395700+00:00",
+    "reference_source_commit": "e89755babf3e941bc1e9d8120b1cd48854ab9dfa",
+    "reference_binary_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+    "embedded_build_label": "9.3.0",
+    "native": {
+      "status": "NOT_RUN",
+      "commands": 0,
+      "pass_claim": false
+    },
+    "scope": "Source and expected-output subset only; reference status is not a native pass receipt."
+  },
+  "cases": [
+    {
+      "name": "provider-generated-file-set",
+      "fixtures": {
+        "MODULE.bazel": {
+          "size_bytes": 29,
+          "sha256": "9f927de287fea15bbb2dcb9151767814c04df52d2e4424fc3e3b8711ac79647d",
+          "utf8": "module(name = \"h2_provider\")\n"
+        },
+        "BUILD.bazel": {
+          "size_bytes": 186,
+          "sha256": "26e5ae516a406f2f7c3c8897bb4f3ad3c0749aa51725204820c06a9a99b56890",
+          "utf8": "load(\":defs.bzl\", \"producer\", \"consumer\", \"bad\")\nproducer(name = \"producer\", a = \"a.txt\", b = \"b.txt\")\nconsumer(name = \"consume\", dep = \":producer\")\nbad(name = \"bad\", dep = \":producer\")\n"
+        },
+        "defs.bzl": {
+          "size_bytes": 1357,
+          "sha256": "44404d9e83e955dd94ee66c8bedb0c4693a9d597ade79e4c218d7be82b24c85d",
+          "utf8": "P = provider(fields = [\"files\"])\n\ndef _producer(ctx):\n    generated = ctx.actions.declare_file(ctx.label.name + \".generated\")\n    ctx.actions.run_shell(\n        inputs = [ctx.file.b],\n        outputs = [generated],\n        arguments = [ctx.file.b.path, generated.path],\n        command = 'cat \"$1\" > \"$2\"',\n        mnemonic = \"H2SetProducer\",\n    )\n    return [P(files = set([generated, ctx.file.a, generated, ctx.file.a]))]\n\nproducer = rule(implementation = _producer, attrs = {\n    \"a\": attr.label(allow_single_file = True),\n    \"b\": attr.label(allow_single_file = True),\n})\n\ndef _consumer(ctx):\n    files = list(ctx.attr.dep[P].files)\n    if len(files) != 2:\n        fail(\"provider set did not deduplicate Files\")\n    out = ctx.actions.declare_file(ctx.label.name + \".out\")\n    ctx.actions.run_shell(\n        inputs = files,\n        outputs = [out],\n        arguments = [out.path] + [f.path for f in files],\n        command = 'out=\"$1\"; shift; cat \"$@\" > \"$out\"',\n        mnemonic = \"H2SetConsumer\",\n    )\n    return [DefaultInfo(files = depset([out]))]\n\nconsumer = rule(implementation = _consumer, attrs = {\"dep\": attr.label(providers = [P])})\n\ndef _bad(ctx):\n    files = ctx.attr.dep[P].files\n    files.add(list(files)[0])\n    fail(\"unexpected mutable provider payload\")\n\nbad = rule(implementation = _bad, attrs = {\"dep\": attr.label(providers = [P])})\n"
+        },
+        "a.txt": {
+          "size_bytes": 2,
+          "sha256": "06f961b802bc46ee168555f066d28f4f0e9afdf3f88174c1ee6f9de004fc30a0",
+          "utf8": "A\n"
+        },
+        "b.txt": {
+          "size_bytes": 2,
+          "sha256": "c0cde77fa8fef97d476c10aad3d2d54fcc2f336140d073651c2dcccf1e379fd6",
+          "utf8": "B\n"
+        }
+      },
+      "phases": [
+        {
+          "name": "cold",
+          "output": {
+            "size_bytes": 4,
+            "sha256": "8142c36faec58713fe4a9867c5d7b3157e9f3c231f31416ce2dfe5c6dcc7b66d",
+            "utf8": "B\nA\n"
+          }
+        },
+        {
+          "name": "warm",
+          "output": {
+            "size_bytes": 4,
+            "sha256": "8142c36faec58713fe4a9867c5d7b3157e9f3c231f31416ce2dfe5c6dcc7b66d",
+            "utf8": "B\nA\n"
+          }
+        },
+        {
+          "name": "source-change",
+          "output": {
+            "size_bytes": 5,
+            "sha256": "c74e6f3103cc2a1b7182cc9170d301f8e034f4bfcd637581ff17d684114cb743",
+            "utf8": "B2\nA\n"
+          }
+        }
+      ]
+    },
+    {
+      "name": "cross-module-frozen-copy",
+      "fixtures": {
+        "MODULE.bazel": {
+          "size_bytes": 27,
+          "sha256": "a40408e174d09058de7ac71e93f5e884ff809fba96895207d09b769173d9b52e",
+          "utf8": "module(name = \"h2_frozen\")\n"
+        },
+        "BUILD.bazel": {
+          "size_bytes": 88,
+          "sha256": "37fe3e49669d18f8df53a884dadcd6e8ad0f111165281720627d084612c7f799",
+          "utf8": "load(\":defs.bzl\", \"frozen_copy\", \"bad\")\nfrozen_copy(name = \"consume\")\nbad(name = \"bad\")\n"
+        },
+        "base.bzl": {
+          "size_bytes": 67,
+          "sha256": "88c1e7d804609f03ff7785eda002bd6ab5b5a8181b93057187f73463033d5137",
+          "utf8": "BASE = set([\"b\", \"a\", \"b\"])\n\ndef copy_base():\n    return set(BASE)\n"
+        },
+        "defs.bzl": {
+          "size_bytes": 978,
+          "sha256": "47c6210b1877b8563c9d3677575d660d6049e285dc01e484b6d812ab3cf7cc9e",
+          "utf8": "load(\":base.bzl\", \"BASE\", \"copy_base\")\n\ndef _impl(ctx):\n    s = copy_base()\n    alias = s\n    pure = s | set([\"c\", \"b\"])\n    lines = [\"base=\" + \",\".join(list(BASE)), \"pure=\" + \",\".join(list(pure))]\n    s |= set([\"c\", \"b\"])\n    lines.append(\"union=\" + \",\".join(list(alias)))\n    s -= set([\"b\"])\n    lines.append(\"difference=\" + \",\".join(list(alias)))\n    s &= set([\"c\", \"a\", \"z\"])\n    lines.append(\"intersection=\" + \",\".join(list(alias)))\n    s ^= set([\"c\", \"d\"])\n    lines.append(\"symmetric=\" + \",\".join(list(s)))\n    lines.append(\"alias=\" + \",\".join(list(alias)))\n    lines.append(\"base_after=\" + \",\".join(list(BASE)))\n    out = ctx.actions.declare_file(ctx.label.name + \".out\")\n    ctx.actions.write(output = out, content = \"\\n\".join(lines) + \"\\n\", is_executable = False)\n    return [DefaultInfo(files = depset([out]))]\n\nfrozen_copy = rule(implementation = _impl)\n\ndef _bad(ctx):\n    BASE.add(\"z\")\n    fail(\"unexpected mutable loaded BASE\")\n\nbad = rule(implementation = _bad)\n"
+        }
+      },
+      "phases": [
+        {
+          "name": "cold",
+          "output": {
+            "size_bytes": 103,
+            "sha256": "46744d7ebe54c59b8b142aedfbb57a3dace1a92d52c9abdc2cf60a021d2adadd",
+            "utf8": "base=b,a\npure=b,a,c\nunion=b,a,c\ndifference=a,c\nintersection=a,c\nsymmetric=a,d\nalias=a,d\nbase_after=b,a\n"
+          }
+        },
+        {
+          "name": "warm",
+          "output": {
+            "size_bytes": 103,
+            "sha256": "46744d7ebe54c59b8b142aedfbb57a3dace1a92d52c9abdc2cf60a021d2adadd",
+            "utf8": "base=b,a\npure=b,a,c\nunion=b,a,c\ndifference=a,c\nintersection=a,c\nsymmetric=a,d\nalias=a,d\nbase_after=b,a\n"
+          }
+        },
+        {
+          "name": "source-change",
+          "output": {
+            "size_bytes": 109,
+            "sha256": "3f6d673da7b19211d621a5ec324218e07d84727654f69dd468bcf3a294ac0565",
+            "utf8": "base=q,a\npure=q,a,c,b\nunion=q,a,c,b\ndifference=q,a,c\nintersection=a,c\nsymmetric=a,d\nalias=a,d\nbase_after=q,a\n"
+          }
+        }
+      ],
+      "source_change": {
+        "after": {
+          "size_bytes": 67,
+          "sha256": "ed670bc0916b4949fc939d4f62bd67fac4478ede18c6dadbf773e7c54654a80e",
+          "utf8": "BASE = set([\"q\", \"a\", \"q\"])\n\ndef copy_base():\n    return set(BASE)\n"
+        }
+      }
+    },
+    {
+      "name": "module-extension-set-repository",
+      "fixtures": {
+        "MODULE.bazel": {
+          "size_bytes": 163,
+          "sha256": "322f87e964072ec707e373fc7eaff451a1eec2078d65e6a574027d4173c80de4",
+          "utf8": "module(name = \"h2_extension\")\ne = use_extension(\"//:defs.bzl\", \"ext\")\ne.values(items = [\"b\", \"c\", \"b\"])\ne.values(items = [\"d\", \"a\", \"d\"])\nuse_repo(e, \"generated\")\n"
+        },
+        "BUILD.bazel": {
+          "size_bytes": 84,
+          "sha256": "c3c92518748ad173d0adb19e9396fb011e866d7d263aa42e0cb7f080f9cbb95a",
+          "utf8": "load(\":defs.bzl\", \"consumer\")\nconsumer(name = \"consume\", src = \"@generated//:data\")\n"
+        },
+        "base.bzl": {
+          "size_bytes": 28,
+          "sha256": "ab11403c68cebcc8da9b993acd98aa4d70e45e19e452444728cb6026ccdb5bee",
+          "utf8": "BASE = set([\"b\", \"a\", \"b\"])\n"
+        },
+        "defs.bzl": {
+          "size_bytes": 1189,
+          "sha256": "9bfe72a63f931e7d8ea43ea5227d085f5169c8c9dd75d5d9bb4c825c9a53317b",
+          "utf8": "load(\":base.bzl\", \"BASE\")\n\ndef _repo_impl(ctx):\n    ctx.file(\"data\", \"\\n\".join(ctx.attr.items) + \"\\n\", executable = False)\n    ctx.file(\"BUILD.bazel\", 'exports_files([\"data\"], visibility = [\"//visibility:public\"])\\n', executable = False)\n\n_data_repo = repository_rule(implementation = _repo_impl, attrs = {\"items\": attr.string_list()})\n\ndef _extension_impl(ctx):\n    items = set(BASE)\n    for mod in ctx.modules:\n        for tag in mod.tags.values:\n            items.update(tag.items)\n    if list(BASE) != [\"b\", \"a\"]:\n        fail(\"frozen BASE changed\")\n    _data_repo(name = \"generated\", items = list(items))\n\next = module_extension(\n    implementation = _extension_impl,\n    tag_classes = {\"values\": tag_class(attrs = {\"items\": attr.string_list()})},\n)\n\ndef _consumer(ctx):\n    out = ctx.actions.declare_file(ctx.label.name + \".out\")\n    ctx.actions.run_shell(\n        inputs = [ctx.file.src], outputs = [out],\n        arguments = [ctx.file.src.path, out.path],\n        command = 'cat \"$1\" > \"$2\"', mnemonic = \"H2ExtensionConsumer\",\n    )\n    return [DefaultInfo(files = depset([out]))]\n\nconsumer = rule(implementation = _consumer, attrs = {\"src\": attr.label(allow_single_file = True)})\n"
+        }
+      },
+      "phases": [
+        {
+          "name": "cold",
+          "output": {
+            "size_bytes": 8,
+            "sha256": "6c56ec2233cb4e8c4767720496016c2c7cd8a2efa382599dd66a7f179e08357d",
+            "utf8": "b\na\nc\nd\n"
+          }
+        },
+        {
+          "name": "warm",
+          "output": {
+            "size_bytes": 8,
+            "sha256": "6c56ec2233cb4e8c4767720496016c2c7cd8a2efa382599dd66a7f179e08357d",
+            "utf8": "b\na\nc\nd\n"
+          }
+        },
+        {
+          "name": "source-change",
+          "output": {
+            "size_bytes": 10,
+            "sha256": "bf44cac49e11011cab1e0d2639bae8ed62c1dcdd83160958c7ad1f6ef757abae",
+            "utf8": "b\na\nc\nd\ne\n"
+          }
+        }
+      ],
+      "source_change": {
+        "after": {
+          "size_bytes": 163,
+          "sha256": "643839a7919e2880d21042cb8bc5c4e16cc12d302b64765ee26b3228c643d96a",
+          "utf8": "module(name = \"h2_extension\")\ne = use_extension(\"//:defs.bzl\", \"ext\")\ne.values(items = [\"b\", \"c\", \"b\"])\ne.values(items = [\"d\", \"a\", \"e\"])\nuse_repo(e, \"generated\")\n"
+        }
+      }
+    }
+  ]
+}

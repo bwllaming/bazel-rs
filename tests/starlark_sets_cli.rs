@@ -1,6 +1,7 @@
 //! Production integration, not another operator matrix. The three functional
 //! families use the exact pinned-reference fixtures and output bytes recorded in
-//! artifacts/starlark-set-integration-contract.json. No synthetic Files/providers.
+//! fixtures/starlark_sets/integration_reference.json, a source/output subset of
+//! the reference-only integration contract. No synthetic Files/providers.
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -71,7 +72,7 @@ impl Workspace {
 
     fn reference(name: &str) -> (Self, serde_json::Value) {
         let contract: serde_json::Value = serde_json::from_str(include_str!(
-            "../artifacts/starlark-set-integration-contract.json"
+            "fixtures/starlark_sets/integration_reference.json"
         ))
         .unwrap();
         assert_eq!(contract["status"], "REFERENCE_ONLY_PASS");
@@ -319,6 +320,8 @@ fn only_custom_provider_set_retains_generated_source_closure_and_cache_edges() {
     let (ws, case) = Workspace::reference("provider-generated-file-set");
     // This is a projection of the actual Target's synthesized DefaultInfo, not
     // an explicit empty DefaultInfo added to conceal an incorrect projection.
+    // Preserve the existing native assertion insertion; the reference fixture
+    // remains verbatim, and its provenance is not a native pass receipt.
     let defs = fs::read_to_string(ws.path().join("defs.bzl")).unwrap();
     ws.file("defs.bzl", defs.replace("    files = list(ctx.attr.dep[P].files)", "    if ctx.attr.dep[DefaultInfo].files.to_list() != []:\n        fail('implicit DefaultInfo files must be empty')\n    files = list(ctx.attr.dep[P].files)"));
     success(&ws.run(&["query", ":consume"]));
