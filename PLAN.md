@@ -174,6 +174,28 @@ checkout is unchanged; no application query/build/test success is claimed.
 
 ## Remaining compatibility gates
 
+### Run-environment metadata
+
+- [x] Pin constructor, snapshot, structural equality and direct/nested return
+      contracts against Bazel 9.3; approve the bounded metadata scope.
+- [x] Implement genuine native values, nested transport, explicit consumers and
+      ordinary top-level return rejection without run/test placeholders.
+- [x] Complete the bounded 96-phase native/reference matrix, 923 Rust/519 Python
+      tests, ten adjacent suites, application/analyzer probes and cleanup.
+- [x] Obtain unconditional bounded-profile final review; retain the separate
+      root-MODULE mismatch rather than claiming the original matrix passed.
+
+See `docs/RUN_ENVIRONMENT_INFO.md`; automatic execution environment handling and
+executable/test rule support remain outside this increment.
+
+### Root MODULE validation — next separate increment
+
+- [ ] Evaluate root MODULE for local CLI query/build before BUILD loading or
+      actions; preserve low-level repository laziness and unused dependency
+      laziness, and reuse the recorded root when graph resolution is demanded.
+- [ ] Reproduce and close the retained RunEnvironmentInfo local-query phase
+      mismatch with genuine-reference, caching, no-MODULE and regression checks.
+
 ### Native package specifications
 
 - [x] Pin real group/provider, constraint and visibility contracts against Bazel

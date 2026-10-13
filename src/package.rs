@@ -732,6 +732,7 @@ fn bzl_globals_for(phase: BzlPhase) -> Globals {
     crate::custom_rule::rule_globals(&mut bzl);
     crate::build_settings::install(&mut bzl);
     crate::template_variable_info::install(&mut bzl);
+    crate::run_environment_info::install(&mut bzl);
     package_specification::install(&mut bzl);
     crate::providers::globals(&mut bzl);
     crate::repository_rule::globals(&mut bzl);
@@ -945,6 +946,95 @@ fn validate_rules(declarations: Vec<Rule>) -> Result<BTreeMap<Label, Rule>, Stri
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn run_environment_available_in_both_bzl_modes() {
+        for globals in [super::bzl_globals(), super::module_bzl_globals()] {
+            starlark::environment::Module::with_temp_heap(|module| {
+                let ast = starlark::syntax::AstModule::parse(
+                    "defs.bzl",
+                    "R = RunEnvironmentInfo\nx = R({'x': 'v'}, ('HOME',))\n(type(R) == 'Provider' and x.environment == {'x': 'v'}) or fail('metadata')".into(),
+                    &starlark::syntax::Dialect::Standard,
+                ).unwrap();
+                starlark::eval::Evaluator::new(&module)
+                    .eval_module(ast, &globals)
+                    .unwrap();
+            });
+        }
+        rejected("x = RunEnvironmentInfo()", "RunEnvironmentInfo");
+        assert!(
+            crate::bzlmod::evaluate_source("MODULE.bazel", "x = RunEnvironmentInfo()".into())
+                .unwrap_err()
+                .contains("RunEnvironmentInfo")
+        );
+        custom_fixture("R = RunEnvironmentInfo\ndef check():\n    (R({'x': 'v'}).environment == {'x': 'v'}) or fail('BUILD callback')\n", "load(':defs.bzl', 'R', 'check')\nx = R({}, ['HOME'])\ncheck()\n(x.inherited_environment == ['HOME']) or fail('loaded alias')").unwrap();
+        let error = custom_fixture(
+            "m = macro(implementation=RunEnvironmentInfo)",
+            "load(':defs.bzl', 'm')",
+        )
+        .unwrap_err();
+        assert!(error.contains("Starlark function"), "{error}");
+        for key in [
+            "RunEnvironmentInfo()",
+            "'RunEnvironmentInfo'",
+            "'builtin:RunEnvironmentInfo'",
+        ] {
+            let error = custom_fixture(&format!("def impl(ctx):\n    pass\nr = rule(implementation=impl, attrs={{'dep': attr.label(providers=[{key}])}})"), "load(':defs.bzl', 'r')").unwrap_err();
+            assert!(error.contains("Provider constructors"), "{error}");
+        }
+    }
+
+    #[test]
+    fn run_environment_frozen_repository_and_extension_callbacks_keep_bzl_globals() {
+        let frozen = Module::with_temp_heap(|module| {
+            let context = crate::loading::ExtensionContext {
+                label: Label::parse("//:defs.bzl", "").unwrap(),
+                repositories: Arc::new(RepositorySet::new(".".into())),
+            };
+            let ast = AstModule::parse(
+                "defs.bzl",
+                r#"
+def impl(ctx):
+    return RunEnvironmentInfo({"x": "v"}, ["HOME"])
+e = module_extension(implementation=impl)
+r = repository_rule(implementation=impl)
+# Callable-native validation accepts this key without pretending it is a Def.
+native_callable = module_extension(implementation=RunEnvironmentInfo)
+"#
+                .into(),
+                &Dialect::Standard,
+            )
+            .unwrap();
+            {
+                let mut eval = Evaluator::new(&module);
+                eval.extra = Some(&context);
+                eval.eval_module(ast, &module_bzl_globals()).unwrap();
+            }
+            module.freeze().unwrap()
+        });
+        let extension = crate::module_extension::unpack(&frozen.get("e").unwrap()).unwrap();
+        let repository = crate::repository_rule::unpack(&frozen.get("r").unwrap()).unwrap();
+        let native =
+            crate::module_extension::unpack(&frozen.get("native_callable").unwrap()).unwrap();
+        assert!(crate::run_environment_info::is_constructor(
+            native.implementation.value()
+        ));
+        assert!(native.implementation.value().parameters_spec().is_none());
+        drop(frozen);
+        for implementation in [extension.implementation, repository.implementation] {
+            Module::with_temp_heap(|module| {
+                let callback = module.heap().access_owned_frozen_value(&implementation);
+                let result = Evaluator::new(&module)
+                    .eval_function(callback, &[Value::new_none()], &[])
+                    .unwrap();
+                assert!(crate::run_environment_info::is_instance(result));
+                assert_eq!(
+                    result.to_repr(),
+                    "struct(environment = {\"x\": \"v\"}, inherited_environment = [\"HOME\"])"
+                );
+            });
+        }
+    }
+
     use super::*;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};

@@ -136,6 +136,8 @@ checks and preserves genuine `maybe()` duplicate-declaration behavior.
 profile with real expansion, definition ownership and source/visibility checks.
 [Package specifications](docs/PACKAGE_SPECIFICATIONS.md) connect native groups,
 provider-constrained consumers, membership and visibility checks.
+[Run-environment metadata](docs/RUN_ENVIRONMENT_INFO.md) supports native snapshots
+and nested transport to explicit consumers, not automatic run/test environments.
 [Genuine built-in modules](docs/BUILTIN_MODULES.md) are available through the
 native-only `--experimental-builtin-modules` transition option, using complete
 verified Linux x86-64 resources; the default remains explicit modules only.

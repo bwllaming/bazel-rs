@@ -1,0 +1,123 @@
+# RunEnvironmentInfo metadata profile
+
+This bounded native profile implements the metadata behavior below. It is not
+operational run/test support or full Bazel parity.
+
+The scope is genuine metadata construction, snapshots, equality, nested provider
+transport and explicit action consumption. It does **not** add executable/test
+rule modes, executable/runfiles fields, `run`/`test` commands or automatic process
+environment handling.
+
+## Constructor and ownership
+
+`RunEnvironmentInfo(environment={}, inherited_environment=[])` accepts positional
+and named arguments. Environment keys and values must be strings; inherited names
+must be a string list or tuple. Explicit `None`, extra arguments and unknown
+keywords are rejected. There is no public `error_on_non_executable` parameter.
+
+The constructor is a genuine provider key in BUILD- and MODULE-loaded `.bzl`
+environments. It is not predeclared in top-level BUILD or MODULE files; a BUILD
+can load an explicitly exported `.bzl` alias.
+
+There is a separate, pre-existing loading-policy gap: local-only queries/builds
+can skip root `MODULE.bazel` evaluation entirely. When module resolution actually
+evaluates that file, the constructor is correctly undefined there. The original
+local-query differential failure is retained in
+`artifacts/run-environment-info-validation-first-attempt.json`; this metadata
+increment does not fix that broader root-validation policy.
+
+Instances own copies without freezing caller containers. Both fields return fresh
+mutable dictionaries/lists in the current evaluation context, even after the
+provider crosses a frozen module or target boundary. Dictionary insertion order,
+inherited-name order and duplicates remain observable. A property snapshot saved
+as a module global is itself subject to normal module freezing.
+
+Instances have structural equality and hashing. Environment insertion order does
+not affect equality; mapping contents and inherited-list order/duplicates do.
+Unicode, empty strings and NUL values are valid metadata. Whether a string can be
+used in an OS environment is a separate execution concern.
+
+The native provider's representation is part of this contract. The underlying
+interpreter still has general Unicode/container formatting differences outside
+that provider surface; this increment does not replace its general formatter.
+
+## Functional ordinary-rule use
+
+An ordinary rule may return a custom provider containing this native value:
+
+```starlark
+EnvironmentMetadata = provider(fields=["info"])
+
+def _produce(ctx):
+    return [EnvironmentMetadata(info=RunEnvironmentInfo(
+        {"EXAMPLE": "literal"}, ["EXAMPLE"],
+    ))]
+
+def _consume(ctx):
+    info = ctx.attr.dep[EnvironmentMetadata].info
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.run_shell(
+        outputs=[out],
+        command="printf '%s' \"$EXAMPLE\" > \"$1\"",
+        arguments=[out.path],
+        env=info.environment,
+    )
+    return [DefaultInfo(files=depset([out]))]
+
+produce = rule(implementation=_produce)
+consume = rule(implementation=_consume, attrs={
+    "dep": attr.label(providers=[EnvironmentMetadata]),
+})
+```
+
+This is explicit rule-authored environment application. Merely constructing the
+provider does not change ordinary build actions. Inherited names remain metadata;
+this profile neither reads host variables nor performs run/test merging.
+
+The wrapper target provides `EnvironmentMetadata`, **not** `RunEnvironmentInfo`.
+Native-key membership/indexing and required-provider predicates must not infer
+top-level provider presence from nested values.
+
+## Direct-return policy and remaining execution work
+
+Returning the regular `RunEnvironmentInfo` directly from an ordinary,
+non-executable, non-test rule is an analysis error in Bazel 9.3, even alongside
+`DefaultInfo`. Native rejection must occur after callback return and before action
+execution. Nesting the value in a custom provider is different and is allowed.
+
+Deprecated `testing.TestEnvironment` uses a private compatibility flag and has
+different warning/return behavior. It is not implemented here and is not used as
+a bypass. Standard top-level RunEnvironmentInfo transport requires real executable
+or test-rule plumbing, including a valid executable; those surfaces remain
+unsupported rather than accepted and ignored.
+
+The complete run/test behavior remains future work. In the reference, inherited
+values override literals only when present, otherwise literal fallbacks survive.
+That verified reference fact is not a claim of native execution support.
+
+## Evidence
+
+`artifacts/run-environment-contract.json` records 35 genuine reference cases,
+source pins, corrected exploratory attempts, preservation and cleanup receipts.
+The preserved application probe advances past this provider and stops at missing
+`set` in generated globals code. See
+`artifacts/mainrepo-run-environment-loading.json`; checkout contents and the
+required Git symlink are unchanged, and probe scratch is removed. Ten adjacent
+suites pass on the same frozen candidate, with a clean pinned analyzer scan.
+The final gate passes 923 Rust and 519 Python tests, including 14 real metadata
+CLI tests and 29 harness tests. Full gate and source/report bindings are recorded
+in `artifacts/run-environment-check.log` and
+`artifacts/run-environment-verification-manifest.json`.
+
+The bounded differential matrix evaluates MODULE through actual module demand.
+It passes seven families, 96 phases and 184 CLI commands in
+`artifacts/run-environment-info-validation.json`, with stable source, registry and
+executable bindings plus successful shutdown and scratch cleanup. A small tracked
+excerpt at `tests/fixtures/run_environment_info/module_gap.json` preserves the
+original mismatch's exact phase and command records; the full failed report
+remains unchanged. Harness unit tests do not require that ignored full report.
+Its acceptance must not be read as a pass for the original local-query mismatch:
+that failure remains explicitly recorded in required `known_parity_gaps` evidence.
+Root-only CLI MODULE validation is scheduled as a separate subsequent increment.
+Full Bazel parity, whole-application build/test success and broad performance
+claims remain unfinished.

@@ -1,0 +1,324 @@
+{
+  "checks": [
+    {
+      "name": "module",
+      "phases": [
+        {
+          "action_store_after": null,
+          "action_store_before": null,
+          "cache": "/tmp/opencode/run-environment-info-igzup2t5/cases/module/module-global/native-cache",
+          "engine": "reference",
+          "inputs_after": {
+            "/tmp/opencode/run-environment-info-igzup2t5/workspace/BUILD.bazel": {
+              "bytes_base64": "",
+              "kind": "file",
+              "mode": 420,
+              "path": "/tmp/opencode/run-environment-info-igzup2t5/workspace/BUILD.bazel",
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size_bytes": 0
+            },
+            "/tmp/opencode/run-environment-info-igzup2t5/workspace/MODULE.bazel": {
+              "bytes_base64": "bW9kdWxlKG5hbWU9InJ1bmVudl9jb250cmFjdCIpCng9UnVuRW52aXJvbm1lbnRJbmZvKCkK",
+              "kind": "file",
+              "mode": 420,
+              "path": "/tmp/opencode/run-environment-info-igzup2t5/workspace/MODULE.bazel",
+              "sha256": "ac8da08eacf4c2033b611feda4f552d83bad0b3425f45923a67a5f01d3085304",
+              "size_bytes": 54
+            },
+            "/tmp/opencode/run-environment-info-igzup2t5/workspace/app/BUILD.bazel": {
+              "bytes_base64": "bG9hZCgiLy9kZWZzOmNoZWNrLmJ6bCIsImNoZWNrIikKY2hlY2sobmFtZT0iY2hlY2siKQo=",
+              "kind": "file",
+              "mode": 420,
+              "path": "/tmp/opencode/run-environment-info-igzup2t5/workspace/app/BUILD.bazel",
+              "sha256": "6099d0901c36ffa4099cd42e6831dfadafe3a591a2ec1bb7d973f0fad1473328",
+              "size_bytes": 53
+            },
+            "/tmp/opencode/run-environment-info-igzup2t5/workspace/defs/BUILD.bazel": {
+              "bytes_base64": "",
+              "kind": "file",
+              "mode": 420,
+              "path": "/tmp/opencode/run-environment-info-igzup2t5/workspace/defs/BUILD.bazel",
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size_bytes": 0
+            },
+            "/tmp/opencode/run-environment-info-igzup2t5/workspace/defs/check.bzl": {
+              "bytes_base64": "UD1wcm92aWRlcigpCk90aGVyPXByb3ZpZGVyKCkKUj1SdW5FbnZpcm9ubWVudEluZm8KZGVmIF9pbXBsKGN0eCk6CiAgICBwcmludCgiUlVORU5WX0NPTlNVTUVSIikKICAgIG91dD1jdHguYWN0aW9ucy5kZWNsYXJlX2ZpbGUoY3R4LmxhYmVsLm5hbWUrIi5vdXQiKQogICAgY3R4LmFjdGlvbnMud3JpdGUob3V0LHJlcHIoUigpKSxpc19leGVjdXRhYmxlPVRydWUpCiAgICByZXR1cm4gW0RlZmF1bHRJbmZvKGZpbGVzPWRlcHNldChbb3V0XSkpXQpjaGVjaz1ydWxlKGltcGxlbWVudGF0aW9uPV9pbXBsLGF0dHJzPXt9KQpwcmludCgiUlVORU5WX1JFQURZIikK",
+              "kind": "file",
+              "mode": 420,
+              "path": "/tmp/opencode/run-environment-info-igzup2t5/workspace/defs/check.bzl",
+              "sha256": "7b4b24300a4fb3f584e09d82ce9440612fdf6689ce70d9e739090830f7df1006",
+              "size_bytes": 318
+            }
+          },
+          "inputs_before": {
+            "/tmp/opencode/run-environment-info-igzup2t5/workspace/BUILD.bazel": {
+              "bytes_base64": "",
+              "kind": "file",
+              "mode": 420,
+              "path": "/tmp/opencode/run-environment-info-igzup2t5/workspace/BUILD.bazel",
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size_bytes": 0
+            },
+            "/tmp/opencode/run-environment-info-igzup2t5/workspace/MODULE.bazel": {
+              "bytes_base64": "bW9kdWxlKG5hbWU9InJ1bmVudl9jb250cmFjdCIpCng9UnVuRW52aXJvbm1lbnRJbmZvKCkK",
+              "kind": "file",
+              "mode": 420,
+              "path": "/tmp/opencode/run-environment-info-igzup2t5/workspace/MODULE.bazel",
+              "sha256": "ac8da08eacf4c2033b611feda4f552d83bad0b3425f45923a67a5f01d3085304",
+              "size_bytes": 54
+            },
+            "/tmp/opencode/run-environment-info-igzup2t5/workspace/app/BUILD.bazel": {
+              "bytes_base64": "bG9hZCgiLy9kZWZzOmNoZWNrLmJ6bCIsImNoZWNrIikKY2hlY2sobmFtZT0iY2hlY2siKQo=",
+              "kind": "file",
+              "mode": 420,
+              "path": "/tmp/opencode/run-environment-info-igzup2t5/workspace/app/BUILD.bazel",
+              "sha256": "6099d0901c36ffa4099cd42e6831dfadafe3a591a2ec1bb7d973f0fad1473328",
+              "size_bytes": 53
+            },
+            "/tmp/opencode/run-environment-info-igzup2t5/workspace/defs/BUILD.bazel": {
+              "bytes_base64": "",
+              "kind": "file",
+              "mode": 420,
+              "path": "/tmp/opencode/run-environment-info-igzup2t5/workspace/defs/BUILD.bazel",
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size_bytes": 0
+            },
+            "/tmp/opencode/run-environment-info-igzup2t5/workspace/defs/check.bzl": {
+              "bytes_base64": "UD1wcm92aWRlcigpCk90aGVyPXByb3ZpZGVyKCkKUj1SdW5FbnZpcm9ubWVudEluZm8KZGVmIF9pbXBsKGN0eCk6CiAgICBwcmludCgiUlVORU5WX0NPTlNVTUVSIikKICAgIG91dD1jdHguYWN0aW9ucy5kZWNsYXJlX2ZpbGUoY3R4LmxhYmVsLm5hbWUrIi5vdXQiKQogICAgY3R4LmFjdGlvbnMud3JpdGUob3V0LHJlcHIoUigpKSxpc19leGVjdXRhYmxlPVRydWUpCiAgICByZXR1cm4gW0RlZmF1bHRJbmZvKGZpbGVzPWRlcHNldChbb3V0XSkpXQpjaGVjaz1ydWxlKGltcGxlbWVudGF0aW9uPV9pbXBsLGF0dHJzPXt9KQpwcmludCgiUlVORU5WX1JFQURZIikK",
+              "kind": "file",
+              "mode": 420,
+              "path": "/tmp/opencode/run-environment-info-igzup2t5/workspace/defs/check.bzl",
+              "sha256": "7b4b24300a4fb3f584e09d82ce9440612fdf6689ce70d9e739090830f7df1006",
+              "size_bytes": 318
+            }
+          },
+          "outputs": [],
+          "probe": "module-global",
+          "rejection_artifacts_after": [],
+          "rejection_artifacts_before": [],
+          "runs": [
+            142
+          ],
+          "stage": "loading",
+          "status": "PASS"
+        },
+        {
+          "action_store_after": {
+            "actions": {
+              "entries": [],
+              "exists": false,
+              "path": "/tmp/opencode/run-environment-info-igzup2t5/cases/module/module-global/native-cache/actions"
+            },
+            "work": {
+              "entries": [],
+              "exists": false,
+              "path": "/tmp/opencode/run-environment-info-igzup2t5/cases/module/module-global/native-cache/work"
+            }
+          },
+          "action_store_before": {
+            "actions": {
+              "entries": [],
+              "exists": false,
+              "path": "/tmp/opencode/run-environment-info-igzup2t5/cases/module/module-global/native-cache/actions"
+            },
+            "work": {
+              "entries": [],
+              "exists": false,
+              "path": "/tmp/opencode/run-environment-info-igzup2t5/cases/module/module-global/native-cache/work"
+            }
+          },
+          "cache": "/tmp/opencode/run-environment-info-igzup2t5/cases/module/module-global/native-cache",
+          "engine": "native",
+          "error": "ValueError: expected controlled RunEnvironmentInfo rejection: missing-global",
+          "inputs_after": {
+            "/tmp/opencode/run-environment-info-igzup2t5/workspace/BUILD.bazel": {
+              "bytes_base64": "",
+              "kind": "file",
+              "mode": 420,
+              "path": "/tmp/opencode/run-environment-info-igzup2t5/workspace/BUILD.bazel",
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size_bytes": 0
+            },
+            "/tmp/opencode/run-environment-info-igzup2t5/workspace/MODULE.bazel": {
+              "bytes_base64": "bW9kdWxlKG5hbWU9InJ1bmVudl9jb250cmFjdCIpCng9UnVuRW52aXJvbm1lbnRJbmZvKCkK",
+              "kind": "file",
+              "mode": 420,
+              "path": "/tmp/opencode/run-environment-info-igzup2t5/workspace/MODULE.bazel",
+              "sha256": "ac8da08eacf4c2033b611feda4f552d83bad0b3425f45923a67a5f01d3085304",
+              "size_bytes": 54
+            },
+            "/tmp/opencode/run-environment-info-igzup2t5/workspace/app/BUILD.bazel": {
+              "bytes_base64": "bG9hZCgiLy9kZWZzOmNoZWNrLmJ6bCIsImNoZWNrIikKY2hlY2sobmFtZT0iY2hlY2siKQo=",
+              "kind": "file",
+              "mode": 420,
+              "path": "/tmp/opencode/run-environment-info-igzup2t5/workspace/app/BUILD.bazel",
+              "sha256": "6099d0901c36ffa4099cd42e6831dfadafe3a591a2ec1bb7d973f0fad1473328",
+              "size_bytes": 53
+            },
+            "/tmp/opencode/run-environment-info-igzup2t5/workspace/defs/BUILD.bazel": {
+              "bytes_base64": "",
+              "kind": "file",
+              "mode": 420,
+              "path": "/tmp/opencode/run-environment-info-igzup2t5/workspace/defs/BUILD.bazel",
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size_bytes": 0
+            },
+            "/tmp/opencode/run-environment-info-igzup2t5/workspace/defs/check.bzl": {
+              "bytes_base64": "UD1wcm92aWRlcigpCk90aGVyPXByb3ZpZGVyKCkKUj1SdW5FbnZpcm9ubWVudEluZm8KZGVmIF9pbXBsKGN0eCk6CiAgICBwcmludCgiUlVORU5WX0NPTlNVTUVSIikKICAgIG91dD1jdHguYWN0aW9ucy5kZWNsYXJlX2ZpbGUoY3R4LmxhYmVsLm5hbWUrIi5vdXQiKQogICAgY3R4LmFjdGlvbnMud3JpdGUob3V0LHJlcHIoUigpKSxpc19leGVjdXRhYmxlPVRydWUpCiAgICByZXR1cm4gW0RlZmF1bHRJbmZvKGZpbGVzPWRlcHNldChbb3V0XSkpXQpjaGVjaz1ydWxlKGltcGxlbWVudGF0aW9uPV9pbXBsLGF0dHJzPXt9KQpwcmludCgiUlVORU5WX1JFQURZIikK",
+              "kind": "file",
+              "mode": 420,
+              "path": "/tmp/opencode/run-environment-info-igzup2t5/workspace/defs/check.bzl",
+              "sha256": "7b4b24300a4fb3f584e09d82ce9440612fdf6689ce70d9e739090830f7df1006",
+              "size_bytes": 318
+            }
+          },
+          "inputs_before": {
+            "/tmp/opencode/run-environment-info-igzup2t5/workspace/BUILD.bazel": {
+              "bytes_base64": "",
+              "kind": "file",
+              "mode": 420,
+              "path": "/tmp/opencode/run-environment-info-igzup2t5/workspace/BUILD.bazel",
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size_bytes": 0
+            },
+            "/tmp/opencode/run-environment-info-igzup2t5/workspace/MODULE.bazel": {
+              "bytes_base64": "bW9kdWxlKG5hbWU9InJ1bmVudl9jb250cmFjdCIpCng9UnVuRW52aXJvbm1lbnRJbmZvKCkK",
+              "kind": "file",
+              "mode": 420,
+              "path": "/tmp/opencode/run-environment-info-igzup2t5/workspace/MODULE.bazel",
+              "sha256": "ac8da08eacf4c2033b611feda4f552d83bad0b3425f45923a67a5f01d3085304",
+              "size_bytes": 54
+            },
+            "/tmp/opencode/run-environment-info-igzup2t5/workspace/app/BUILD.bazel": {
+              "bytes_base64": "bG9hZCgiLy9kZWZzOmNoZWNrLmJ6bCIsImNoZWNrIikKY2hlY2sobmFtZT0iY2hlY2siKQo=",
+              "kind": "file",
+              "mode": 420,
+              "path": "/tmp/opencode/run-environment-info-igzup2t5/workspace/app/BUILD.bazel",
+              "sha256": "6099d0901c36ffa4099cd42e6831dfadafe3a591a2ec1bb7d973f0fad1473328",
+              "size_bytes": 53
+            },
+            "/tmp/opencode/run-environment-info-igzup2t5/workspace/defs/BUILD.bazel": {
+              "bytes_base64": "",
+              "kind": "file",
+              "mode": 420,
+              "path": "/tmp/opencode/run-environment-info-igzup2t5/workspace/defs/BUILD.bazel",
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size_bytes": 0
+            },
+            "/tmp/opencode/run-environment-info-igzup2t5/workspace/defs/check.bzl": {
+              "bytes_base64": "UD1wcm92aWRlcigpCk90aGVyPXByb3ZpZGVyKCkKUj1SdW5FbnZpcm9ubWVudEluZm8KZGVmIF9pbXBsKGN0eCk6CiAgICBwcmludCgiUlVORU5WX0NPTlNVTUVSIikKICAgIG91dD1jdHguYWN0aW9ucy5kZWNsYXJlX2ZpbGUoY3R4LmxhYmVsLm5hbWUrIi5vdXQiKQogICAgY3R4LmFjdGlvbnMud3JpdGUob3V0LHJlcHIoUigpKSxpc19leGVjdXRhYmxlPVRydWUpCiAgICByZXR1cm4gW0RlZmF1bHRJbmZvKGZpbGVzPWRlcHNldChbb3V0XSkpXQpjaGVjaz1ydWxlKGltcGxlbWVudGF0aW9uPV9pbXBsLGF0dHJzPXt9KQpwcmludCgiUlVORU5WX1JFQURZIikK",
+              "kind": "file",
+              "mode": 420,
+              "path": "/tmp/opencode/run-environment-info-igzup2t5/workspace/defs/check.bzl",
+              "sha256": "7b4b24300a4fb3f584e09d82ce9440612fdf6689ce70d9e739090830f7df1006",
+              "size_bytes": 318
+            }
+          },
+          "outputs": [],
+          "probe": "module-global",
+          "rejection_artifacts_after": [],
+          "rejection_artifacts_before": [],
+          "runs": [
+            143
+          ],
+          "stage": "loading",
+          "status": "FAIL"
+        }
+      ],
+      "status": "FAIL"
+    }
+  ],
+  "kind": "retained_differential_excerpt",
+  "runs": {
+    "142": {
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--ignore_all_rc_files",
+        "--output_user_root=/tmp/opencode/run-environment-info-igzup2t5/run-environment-info-output-user-root",
+        "--output_base=/tmp/opencode/run-environment-info-igzup2t5/run-environment-info-output-base",
+        "--host_jvm_args=-Xmx512m",
+        "--host_jvm_args=-XX:ActiveProcessorCount=2",
+        "--max_idle_secs=30",
+        "query",
+        "--lockfile_mode=off",
+        "--repo_env=DO_NOT_TRACK=1",
+        "--remote_cache=",
+        "--remote_executor=",
+        "--bes_backend=",
+        "--remote_upload_local_results=false",
+        "--color=no",
+        "--curses=no",
+        "--repository_cache=/tmp/opencode/run-environment-info-igzup2t5/repository-cache",
+        "--repo_contents_cache=/tmp/opencode/run-environment-info-igzup2t5/repository-contents",
+        "--registry=file:///tmp/opencode/run-environment-info-igzup2t5/registry",
+        "--registry=https://bcr.bazel.build",
+        "--incompatible_autoload_externally=",
+        "--noshow_progress",
+        "//app:check"
+      ],
+      "cwd": "/tmp/opencode/run-environment-info-igzup2t5/workspace",
+      "elapsed_seconds": 0.034295327961444855,
+      "executable_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+      "id": 142,
+      "name": "module.module-global.reference.0",
+      "preflight_binding_sha256": "2781153874c81a434646c561c1fb9a1597e210aa8ccdb3b755071aec60b0d436",
+      "returncode": 48,
+      "stderr": "ERROR: /tmp/opencode/run-environment-info-igzup2t5/workspace/MODULE.bazel:2:3: name 'RunEnvironmentInfo' is not defined\nERROR: Error computing the main repository mapping: syntax error in MODULE.bazel file for <root>\n",
+      "stderr_base64": "RVJST1I6IC90bXAvb3BlbmNvZGUvcnVuLWVudmlyb25tZW50LWluZm8taWd6dXAydDUvd29ya3NwYWNlL01PRFVMRS5iYXplbDoyOjM6IG5hbWUgJ1J1bkVudmlyb25tZW50SW5mbycgaXMgbm90IGRlZmluZWQKRVJST1I6IEVycm9yIGNvbXB1dGluZyB0aGUgbWFpbiByZXBvc2l0b3J5IG1hcHBpbmc6IHN5bnRheCBlcnJvciBpbiBNT0RVTEUuYmF6ZWwgZmlsZSBmb3IgPHJvb3Q+Cg==",
+      "stderr_full_sha256": "39fee5761771d3adcd1efed14288a27ad766b6b943e1aadb3c232d1b4b5bcc7d",
+      "stderr_full_size_bytes": 217,
+      "stderr_sha256": "39fee5761771d3adcd1efed14288a27ad766b6b943e1aadb3c232d1b4b5bcc7d",
+      "stdout": "",
+      "stdout_base64": "",
+      "stdout_full_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_full_size_bytes": 0,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "synthetic_environment": {
+        "RUNENV_CONTRACT_LITERAL": "HOST_SYNTHETIC",
+        "RUNENV_CONTRACT_SECOND": "HOST_SECOND"
+      },
+      "timed_out": false,
+      "timeout_seconds": 180
+    },
+    "143": {
+      "argv": [
+        "/home/coder/bazel/target/release/bazel-rs",
+        "--ignore_all_rc_files",
+        "--cache-dir=/tmp/opencode/run-environment-info-igzup2t5/cases/module/module-global/native-cache",
+        "query",
+        "--lockfile_mode=off",
+        "--registry=file:///tmp/opencode/run-environment-info-igzup2t5/registry",
+        "//app:check"
+      ],
+      "cwd": "/tmp/opencode/run-environment-info-igzup2t5/workspace",
+      "elapsed_seconds": 0.0048997108824551105,
+      "executable_sha256": "b90ab24312fa4c41be2eda513888026f09fc1eabfc0bd123a8dfecc740d15947",
+      "id": 143,
+      "name": "module.module-global.native.0",
+      "preflight_binding_sha256": "2781153874c81a434646c561c1fb9a1597e210aa8ccdb3b755071aec60b0d436",
+      "returncode": 0,
+      "stderr": "RUNENV_READY\n",
+      "stderr_base64": "UlVORU5WX1JFQURZCg==",
+      "stderr_full_sha256": "b188546e8c87df2590bd3933f2a54fb11c50f9d7be707baed16976cb381fefa4",
+      "stderr_full_size_bytes": 13,
+      "stderr_sha256": "b188546e8c87df2590bd3933f2a54fb11c50f9d7be707baed16976cb381fefa4",
+      "stdout": "//app:check\n",
+      "stdout_base64": "Ly9hcHA6Y2hlY2sK",
+      "stdout_full_sha256": "36163f3dca10ff251cba39ed8decf79486aa3c741abd88621c0f852c637f0127",
+      "stdout_full_size_bytes": 12,
+      "stdout_sha256": "36163f3dca10ff251cba39ed8decf79486aa3c741abd88621c0f852c637f0127",
+      "synthetic_environment": {
+        "RUNENV_CONTRACT_LITERAL": "HOST_SYNTHETIC",
+        "RUNENV_CONTRACT_SECOND": "HOST_SECOND"
+      },
+      "timed_out": false,
+      "timeout_seconds": 180
+    }
+  },
+  "scratch_directory": "/tmp/opencode/run-environment-info-igzup2t5",
+  "source_receipt": {
+    "path": "artifacts/run-environment-info-validation-first-attempt.json",
+    "sha256": "1c8fff1a7b38b9f9fa62d7d1863fe3c69d23f6020480b4a82412e692cf9bda08"
+  },
+  "status": "FAIL"
+}

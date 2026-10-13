@@ -665,8 +665,8 @@ fn analyze_inner(
     for output in &rule.outs {
         context.declare(output)?;
     }
-    let (files, providers, provider_files) =
-        Module::with_temp_heap(|module| -> anyhow::Result<_> {
+    let (files, providers, provider_files) = Module::with_temp_heap(
+        |module| -> anyhow::Result<_> {
             let ctx = make_ctx(rule, &context, dependencies, module.heap())?;
             // Bazel's implicit DefaultInfo includes only predeclared outputs.
             let predeclared = context.declared.borrow().clone();
@@ -682,6 +682,15 @@ fn analyze_inner(
                 .map_err(|error| anyhow!(error.to_string()))?;
             let files = default_files(returned)?.unwrap_or(predeclared);
             let custom = crate::providers::returned_custom_providers(returned)?;
+            // All current custom rules are non-executable/non-test (true flags
+            // are rejected at definition). Future executable support MUST use
+            // real rule classification here. The regular constructor always
+            // has error_on_non_executable=true; no public bypass is supported.
+            if custom.contains_key(crate::run_environment_info::PROVIDER_ID) {
+                bail!(
+                    "Returning RunEnvironmentInfo from a non-executable, non-test target has no effect"
+                );
+            }
             let mut slots = Vec::new();
             let mut provider_files = BTreeSet::new();
             for (identity, provider) in custom {
@@ -710,7 +719,8 @@ fn analyze_inner(
                 providers,
                 provider_files.into_iter().collect::<Vec<_>>(),
             ))
-        })?;
+        },
+    )?;
     for file in files.iter().chain(&provider_files) {
         ensure!(
             context.known_file(file),
@@ -744,6 +754,152 @@ mod tests {
     use super::*;
     use starlark::environment::Globals;
     use starlark::syntax::{AstModule, Dialect};
+
+    #[test]
+    fn run_environment_direct_return_rejected_after_callback_before_action_handoff() {
+        let root = tempfile::Builder::new()
+            .prefix("run-environment-analysis-")
+            .tempdir_in("/tmp/opencode")
+            .unwrap();
+        std::fs::write(
+            root.path().join("defs.bzl"),
+            r#"
+P = provider()
+def impl(ctx):
+    ctx.actions.write(ctx.outputs.out, "registered, never executed")
+    info = RunEnvironmentInfo({"FLAG": "seed"}, ["HOME"])
+    if ctx.attr.mode == "callback_failure":
+        fail("callback reached after registration")
+    if ctx.attr.mode == "direct":
+        return info
+    if ctx.attr.mode == "list":
+        return [info]
+    if ctx.attr.mode == "with_default":
+        return [DefaultInfo(files=depset([ctx.outputs.out])), info]
+    if ctx.attr.mode == "nested":
+        return P(info=info, nested=[{"k": struct(info=(info,))}])
+    if ctx.attr.mode == "nested_default":
+        return [P(info=info), DefaultInfo()]
+    return [P(info=info), DefaultInfo(files=depset())]
+r = rule(implementation=impl, attrs={"mode": attr.string(), "out": attr.output()})
+"#,
+        )
+        .unwrap();
+        for mode in [
+            "direct",
+            "list",
+            "with_default",
+            "callback_failure",
+            "nested",
+            "nested_default",
+            "nested_empty",
+        ] {
+            std::fs::write(
+                root.path().join("BUILD.bazel"),
+                format!(
+                    "load(':defs.bzl', 'r')\nr(name='producer', mode='{mode}', out='output')\n"
+                ),
+            )
+            .unwrap();
+            let package = crate::package::evaluate(root.path(), "").unwrap();
+            let rule = &package[&Label::parse("//:producer", "").unwrap()];
+            let result = analyze(rule, &BTreeMap::new());
+            match mode {
+                "direct" | "list" | "with_default" => {
+                    let error = result.unwrap_err();
+                    assert!(error.contains("Returning RunEnvironmentInfo from a non-executable, non-test target has no effect"), "{mode}: {error}");
+                }
+                "callback_failure" => assert!(
+                    result
+                        .unwrap_err()
+                        .contains("callback reached after registration")
+                ),
+                _ => {
+                    let result = result.unwrap();
+                    assert_eq!(result.actions.len(), 1);
+                    assert!(result.actions[0].action.environment.is_empty());
+                    assert_eq!(
+                        result.actions[0].action.write.as_ref().unwrap().content,
+                        b"registered, never executed"
+                    );
+                    assert_eq!(result.declared.len(), 1);
+                    assert_eq!(result.files.len(), usize::from(mode != "nested_empty"));
+                    assert!(result.provider_files.is_empty());
+                    assert_eq!(result.providers.len(), 1);
+                    assert!(
+                        !result
+                            .providers
+                            .contains_key(crate::run_environment_info::PROVIDER_ID)
+                    );
+                }
+            }
+            assert!(
+                !root
+                    .path()
+                    .join("bazel-out/rust-fastbuild/bin/output")
+                    .exists()
+            );
+        }
+    }
+
+    #[test]
+    fn run_environment_nested_consumer_and_actual_provider_requirement_gate() {
+        let root = tempfile::Builder::new()
+            .prefix("run-environment-consumer-")
+            .tempdir_in("/tmp/opencode")
+            .unwrap();
+        std::fs::write(root.path().join("defs.bzl"), r#"
+P = provider()
+def producer_impl(ctx):
+    return P(info=RunEnvironmentInfo({"FLAG": "seed"}, ["HOME", "HOME"]))
+producer = rule(implementation=producer_impl)
+def consumer_impl(ctx):
+    if ctx.attr.strict:
+        fail("strict consumer callback must not execute")
+    target = ctx.attr.dep
+    (RunEnvironmentInfo not in target) or fail("nested native key leaked")
+    info = target[P].info
+    copy = info.environment
+    copy["FLAG"] = "local"
+    (info.environment == {"FLAG": "seed"}) or fail("snapshot")
+    out = ctx.actions.declare_file(ctx.label.name + ".out")
+    ctx.actions.run_shell(outputs=[out], command="printf '%s' \"$FLAG\"", env=info.environment)
+    return [DefaultInfo(files=depset([out]))]
+consumer = rule(implementation=consumer_impl, attrs={"dep": attr.label(providers=[P]), "strict": attr.bool()})
+strict = rule(implementation=consumer_impl, attrs={"dep": attr.label(providers=[RunEnvironmentInfo]), "strict": attr.bool(default=True)})
+"#).unwrap();
+        std::fs::write(root.path().join("BUILD.bazel"), "load(':defs.bzl', 'producer', 'consumer', 'strict')\nproducer(name='producer')\nconsumer(name='consumer', dep=':producer')\nstrict(name='strict', dep=':producer')\n").unwrap();
+        let package = crate::package::evaluate(root.path(), "").unwrap();
+        let producer = analyze(
+            &package[&Label::parse("//:producer", "").unwrap()],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let deps = BTreeMap::from([(
+            "//:producer".into(),
+            DependencyTarget {
+                label: "//:producer".into(),
+                files: producer.files,
+                is_source: false,
+                is_rule: true,
+                is_package_group: false,
+                providers: producer.providers,
+                provider_files: producer.provider_files,
+            },
+        )]);
+        let consumer = analyze(&package[&Label::parse("//:consumer", "").unwrap()], &deps).unwrap();
+        assert_eq!(consumer.actions.len(), 1);
+        assert_eq!(
+            consumer.actions[0].action.environment,
+            BTreeMap::from([("FLAG".into(), "seed".into())])
+        );
+        let error = analyze(&package[&Label::parse("//:strict", "").unwrap()], &deps).unwrap_err();
+        assert!(
+            error.contains("mandatory providers") && error.contains("RunEnvironmentInfo"),
+            "{error}"
+        );
+        assert!(!error.contains("strict consumer callback"), "{error}");
+    }
 
     fn provider_fixture() -> (
         BTreeMap<String, DependencyTarget>,
