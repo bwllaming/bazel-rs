@@ -174,6 +174,19 @@ checkout is unchanged; no application query/build/test success is claimed.
 
 ## Remaining compatibility gates
 
+### Native JSON codec
+
+- [x] Implement four JSON methods with exact integer/finite-float handling,
+      caller-owned decoding, typed fields and token-preserving indentation.
+- [x] Verify real provider/repository action outputs, 1,024 float cases and
+      bounded resource rejection before scans, sorting or integer conversion.
+- [x] Complete 1,104 Rust/645 Python tests, 82 comparison phases/127 commands,
+      fourteen adjacent suites and independent review.
+
+Nested diagnostic context, builtin NativeInfo and external File roots remain
+outside this profile. The preserved application advances to nonempty repository
+environment dependencies, not a successful application build/test.
+
 ### Scoped subrule execution
 
 - [x] Execute real zero-attribute subrules and declared nested calls with frozen

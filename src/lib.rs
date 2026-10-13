@@ -20,6 +20,7 @@ pub mod extension_ctx;
 pub mod git_process;
 pub mod git_source;
 pub mod glob;
+mod json;
 pub mod label;
 pub mod loading;
 pub mod materializer;

@@ -146,6 +146,8 @@ CLI target loading and reuses it without eagerly resolving unused declarations.
 including ordered File sets transported through custom providers.
 [Scoped subrules](docs/SUBRULES.md) execute declared zero-attribute helpers with
 real actions and guarded contexts; private dependency attributes remain unsupported.
+[Native JSON](docs/JSON.md) provides a dedicated bounded codec with exact numeric
+handling rather than the interpreter's incompatible generic serialization path.
 [Genuine built-in modules](docs/BUILTIN_MODULES.md) are available through the
 native-only `--experimental-builtin-modules` transition option, using complete
 verified Linux x86-64 resources; the default remains explicit modules only.

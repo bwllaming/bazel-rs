@@ -755,6 +755,7 @@ fn bzl_globals_for(phase: BzlPhase) -> Globals {
     crate::module_extension::globals(&mut bzl);
     crate::symbolic_macro::globals(&mut bzl);
     crate::subrule::globals(&mut bzl);
+    crate::json::install(&mut bzl);
     bzl.build()
 }
 
@@ -818,10 +819,11 @@ fn evaluate_at(
         }
         expr.visit_expr(|child| expressions.push(child));
     }
-    let globals = GlobalsBuilder::extended_by(&[LibraryExtension::SetType])
+    let mut globals = GlobalsBuilder::extended_by(&[LibraryExtension::SetType])
         .with(rule_globals)
-        .with(package_globals)
-        .build();
+        .with(package_globals);
+    crate::json::install(&mut globals);
+    let globals = globals.build();
     let bzl_globals = bzl_globals();
     let loaded = crate::loading::load_modules_with_functions_in(
         repositories.clone(),
@@ -973,6 +975,66 @@ fn validate_rules(declarations: Vec<Rule>) -> Result<BTreeMap<Label, Rule>, Stri
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn json_is_installed_in_build_without_unrelated_bzl_extensions() {
+        let rules = eval(r#"
+(type(json) == 'json' and dir(json) == ['decode', 'encode', 'encode_indent', 'indent']) or fail('json surface')
+(json.encode(json.decode('{"z":0,"a":[1]}')) == '{"a":[1],"z":0}') or fail('json round trip')
+(json.indent('{}') == '{}' and json.encode_indent({}) == '{}') or fail('json indentation')
+filegroup(name='json', srcs=json.decode('["a.txt","b.txt"]'))
+"#).unwrap();
+        assert_eq!(
+            rules[&Label::parse(":json", "pkg").unwrap()].srcs,
+            ["a.txt", "b.txt"]
+        );
+        rejected("x = struct()", "struct");
+        rejected("print('x')", "print");
+        rejected("x = native.json", "native");
+        let error = crate::bzlmod::evaluate_source("MODULE.bazel", "x = json.decode('{}')".into())
+            .unwrap_err();
+        assert!(error.contains("json"), "{error}");
+    }
+
+    #[test]
+    fn json_in_both_bzl_phases_survives_transitive_load_and_frozen_callback() {
+        let root = TempRoot::new();
+        std::fs::write(root.0.join("pkg/BUILD"), "").unwrap();
+        std::fs::write(
+            root.0.join("pkg/base.bzl"),
+            "JSON = json\nENCODE = json.encode\n",
+        )
+        .unwrap();
+        std::fs::write(root.0.join("pkg/defs.bzl"), r#"
+load(':base.bzl', 'JSON', 'ENCODE')
+(type(JSON) == 'json' and dir(JSON) == ['decode', 'encode', 'encode_indent', 'indent']) or fail('json surface')
+not hasattr(native, 'json') or fail('native.json')
+def callback():
+    result = JSON.decode('{"z":0,"a":[1]}')
+    result['callback'] = True
+    return ENCODE(result)
+"#).unwrap();
+        for globals in [bzl_globals(), module_bzl_globals()] {
+            let ast = AstModule::parse(
+                "pkg/BUILD",
+                "load(':defs.bzl', 'callback')".into(),
+                &Dialect::Standard,
+            )
+            .unwrap();
+            let loaded = crate::loading::load_modules(&root.0, "pkg", &ast, &globals).unwrap();
+            let callback = loaded[":defs.bzl"].get("callback").unwrap();
+            drop(loaded);
+            Module::with_temp_heap(|module| {
+                let result = Evaluator::new(&module)
+                    .eval_function(module.heap().access_owned_frozen_value(&callback), &[], &[])
+                    .unwrap();
+                assert_eq!(
+                    result.unpack_str(),
+                    Some("{\"a\":[1],\"callback\":true,\"z\":0}")
+                );
+            });
+        }
+    }
+
     #[test]
     fn sets_in_build_and_loaded_bzl_keep_order_aliases_and_sequence_boundaries() {
         let package = custom_fixture(

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "crate": "starlark",
   "version": "0.14.2",
-  "baseline": "H0 published archive anchored unchanged; H1 compatibility patches declared separately",
+  "baseline": "H0 published archive anchored unchanged; compatibility patches declared separately",
   "archive": {
     "scope": "Pristine upstream archive inventory; working-tree changes are recorded in declared_source_patches",
     "url": "https://crates.io/api/v1/crates/starlark/0.14.2/download",
@@ -41,9 +41,10 @@
     {"path": "src/values/types/set/set.rs", "original": {"size": 3203, "sha256": "a1968426c890e36fbe4e9be65852f77face7dcdb9e369bb356b5bc31f2b653df"}, "current": {"size": 7264, "sha256": "f6d25e0a1acad5764ac02ccde05e735250ec64823cba86b1382708d2f0cc747b"}},
     {"path": "src/values/types/set/value.rs", "original": {"size": 14488, "sha256": "5401efe4ecef1c0d2b8045b61098a6525085550a093fec2acb33497584c3a76d"}, "current": {"size": 18120, "sha256": "d264b3e89fffe4f86bf2bcf0ff19afe28c2a1defcabe1f380fde5bd675695a0f"}},
     {"path": "src/eval/runtime/profile/golden/bytecode.csv.golden", "original": {"size": 2043, "sha256": "15bfa6198e1d602c27ba190c5f3f50fbbc6c9994d6c12e42def7eebf92fd05e6"}, "current": {"size": 2115, "sha256": "de56b47adc7f86829be5d1dbada7b7e95a81608d0a646ee0638b50158e0750d9"}},
-    {"path": "src/values/types/string/iter.rs", "original": {"size": 2906, "sha256": "1bb0df2422a821e97eb205075d95bfd4189bfa64531b1b2425ee4e27b4829e09"}, "current": {"size": 3654, "sha256": "1a66a47789f41ffe26a1686b2070d6421f9bd578cbb1449d14076c21d1286d82"}}
+    {"path": "src/values/types/string/iter.rs", "original": {"size": 2906, "sha256": "1bb0df2422a821e97eb205075d95bfd4189bfa64531b1b2425ee4e27b4829e09"}, "current": {"size": 3654, "sha256": "1a66a47789f41ffe26a1686b2070d6421f9bd578cbb1449d14076c21d1286d82"}},
+    {"path": "src/values/layout/value.rs", "original": {"size": 53751, "sha256": "d9c73f07bf5fc16b23ec942902aadb74816850fa3a46f87835397b28718f910e"}, "current": {"size": 57632, "sha256": "423d1cc3b52b56a7793fac49eac1fc8e4c407c417123ac32c1744d785fba001c"}}
   ],
-  "patch_scope": "Bazel-compatible core set methods/constructor, assignment-specific mutation, scoped iterator error cleanup and regressions; production set globals remain disabled in H1",
+  "patch_scope": "Bazel-compatible core set methods/constructor, assignment-specific mutation, scoped iterator error cleanup and regressions; allocation-free typed BigInt inspection for native JSON preflight. Native feature installation remains separate from vendor changes.",
   "additional_files": [
     {
       "path": "LICENSE",

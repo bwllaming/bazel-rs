@@ -1,0 +1,43 @@
+{
+  "name": "corrected-string-source-functional",
+  "initial_native_probe": {
+    "binary_sha256": "a9879eebe5703cdc534dbc9eced9fac3f79a75426b38e7c50140efa555ea773a",
+    "command": "build :check",
+    "exit_code": 1,
+    "diagnostic": "Variable `json` not found",
+    "location": "//:defs.bzl:2:20",
+    "classification": "Actual original-source functional probe before CLI test implementation; private TempDir removed. Not a passing native result."
+  },
+  "provenance": {
+    "source": "artifacts/json-contract.json",
+    "sha256": "cc8d00ea849464637d3b9a4e8048d33801f7a2da5ea72496923f4eef090b1421",
+    "run_index": 38,
+    "selection": "Only the 19 outputs_generated_by_this_command from corrected run 38; no later stale output inventory."
+  },
+  "files": {
+    "MODULE.bazel": "module(name=\"json_contract\")\n",
+    "BUILD.bazel": "load(\":defs.bzl\", \"producer\", \"consumer\")\nprint(\"BUILD_META\",type(json),dir(json),json.encode(json.decode(\"[true,null]\")))\nproducer(name=\"producer\",data='{\"z\":[1,2],\"a\":{\"source\":\"dependency\"}}')\nconsumer(name=\"check\",dep=\":producer\")\n",
+    "defs.bzl": "P = provider(fields=[\"payload\"])\nFROZEN = P(payload=json.decode('{\"z\":[1],\"a\":true}'))\nFROZEN_JSON = json\nprint(\"BZL_META\",type(json),repr(json),str(json),dir(json),type(json.encode),repr(json.encode),repr(json.decode),repr(json.indent),repr(json.encode_indent))\ndef _producer(ctx):\n    return [P(payload=json.decode(ctx.attr.data))]\nproducer = rule(implementation=_producer,attrs={\"data\":attr.string()})\ndef _consumer(ctx):\n    results = {}\n    results[\"dependency.json\"] = json.encode(ctx.attr.dep[P].payload)\n    results[\"frozen_info.json\"] = json.encode(FROZEN)\n    results[\"metadata.json\"] = json.encode([type(json),dir(json),type(json.decode),json == FROZEN_JSON])\n    primitives = [json.decode(s) for s in [\"null\",\"true\",\"false\",\"0\",\"-0\",\"1.0\",\"1e3\",\"-0.0\",\"123456789123456789123456789\"]]\n    results[\"primitives.json\"] = json.encode(primitives)\n    results[\"primitive_types.json\"] = json.encode([type(x) for x in primitives])\n    d = json.decode('{\"z\":1,\"a\":2,\"z\":3,\"nested\":[{\"k\":null}]}')\n    results[\"order.json\"] = json.encode([d.keys(),d])\n    d[\"nested\"][0][\"k\"] = [\"mutable\"]\n    d[\"nested\"].append(4)\n    results[\"mutable.json\"] = json.encode(d)\n    d[\"nested\"].append(5)\n    json.encode_indent(d)\n    d[\"nested\"].append(6)\n    results[\"no_freeze.json\"] = json.encode(d)\n    results[\"struct.json\"] = json.encode(struct(z=(1,2),a=struct(k=[])))\n    results[\"strings.json\"] = json.encode([\"\", \"\\000\\001\\b\\f\\n\\r\\t\\\"\\\\/\", \"é😀\\177\", json.decode('\"\\\\u00e9\\\\ud83d\\\\ude00\"'), json.decode('\"\\\\ud800X\\\\udc00\"')])\n    fallback=[]\n    got=json.decode(\"!\",fallback)\n    got.append(\"same-default\")\n    results[\"fallback.json\"] = json.encode([fallback,json.decode(\"!\",None),json.decode(\"null\",default=42),json.decode(\"bad\",default={\"ok\":1})])\n    malformed=[\"\", \"[1,]\", '{\"x\":1,}', \"01\", \"+1\", \".1\", \"1.\", \"1e\", \"NaN\", \"Infinity\", '\"\\\\q\"', '\"\\\\uZZZZ\"', '\"raw\\ncontrol\"', \"null true\", \"/*x*/null\", \"{1:2}\", \"5.E1\", \"5.e1\"]\n    results[\"malformed_fallback.json\"] = json.encode([[s,json.decode(s,default=\"INVALID\")] for s in malformed])\n    results[\"overflow.json\"] = json.encode([str(json.decode(\"1e999\")),str(json.decode(\"-1e999\")),type(json.decode(\"1e999\"))])\n    results[\"indent_default.json\"] = json.encode_indent({\"z\":[],\"a\":[1,{\"k\":True}]})\n    results[\"indent_custom.json\"] = json.encode_indent({\"b\":{},\"a\":[1,2]},prefix=\">\",indent=\"..\")\n    results[\"indent_preserve.json\"] = json.indent(' {\"z\":1e+02,\"z\":2,\"a\":\"\\\\u0061\"} \\n',indent=\" \")\n    results[\"indent_empty.json\"] = json.encode([json.indent(\"{}\"),json.indent(\"[]\"),json.indent(\"true\"),json.indent(\"null\"),json.indent('\"x\"'),json.indent(\"1 \")])\n    results[\"indent_invalid_not_validator.json\"] = json.encode([json.indent(\"[}\"),json.indent(\"null trailing\")])\n    results[\"set.json\"] = json.encode(set([3,1,2]))\n    files=[]\n    for name,content in results.items():\n        f=ctx.actions.declare_file(name)\n        ctx.actions.write(f,content)\n        files.append(f)\n    return [DefaultInfo(files=depset(files))]\nconsumer=rule(implementation=_consumer,attrs={\"dep\":attr.label(providers=[P])})\nX=True\n"
+  },
+  "outputs": {
+    "mutable.json": "{\"a\":2,\"nested\":[{\"k\":[\"mutable\"]},4],\"z\":3}",
+    "dependency.json": "{\"a\":{\"source\":\"dependency\"},\"z\":[1,2]}",
+    "fallback.json": "[[\"same-default\"],null,null,{\"ok\":1}]",
+    "indent_custom.json": "{\n>..\"a\": [\n>....1,\n>....2\n>..],\n>..\"b\": {}\n>}",
+    "indent_default.json": "{\n\t\"a\": [\n\t\t1,\n\t\t{\n\t\t\t\"k\": true\n\t\t}\n\t],\n\t\"z\": []\n}",
+    "primitive_types.json": "[\"NoneType\",\"bool\",\"bool\",\"int\",\"int\",\"float\",\"float\",\"float\",\"int\"]",
+    "overflow.json": "[\"+inf\",\"-inf\",\"float\"]",
+    "no_freeze.json": "{\"a\":2,\"nested\":[{\"k\":[\"mutable\"]},4,5,6],\"z\":3}",
+    "indent_empty.json": "[\"{}\",\"[]\",\"true\",\"null\",\"\\\"x\\\"\",\"1\"]",
+    "order.json": "[[\"z\",\"a\",\"nested\"],{\"a\":2,\"nested\":[{\"k\":null}],\"z\":3}]",
+    "indent_preserve.json": "{\n \"z\": 1e+02,\n \"z\": 2,\n \"a\": \"\\u0061\"\n}",
+    "strings.json": "[\"\",\"\\u0000\\u0001\\b\\f\\n\\r\\t\\\"\\\\/\",\"é😀\",\"é😀\",\"�X�\"]",
+    "metadata.json": "[\"json\",[\"decode\",\"encode\",\"encode_indent\",\"indent\"],\"builtin_function_or_method\",true]",
+    "set.json": "[3,1,2]",
+    "indent_invalid_not_validator.json": "[\"[}\",\"null\"]",
+    "primitives.json": "[null,true,false,0,0,1.0,1000.0,-0.0,123456789123456789123456789]",
+    "malformed_fallback.json": "[[\"\",\"INVALID\"],[\"[1,]\",\"INVALID\"],[\"{\\\"x\\\":1,}\",\"INVALID\"],[\"01\",\"INVALID\"],[\"+1\",\"INVALID\"],[\".1\",\"INVALID\"],[\"1.\",\"INVALID\"],[\"1e\",\"INVALID\"],[\"NaN\",\"INVALID\"],[\"Infinity\",\"INVALID\"],[\"\\\"\\\\q\\\"\",\"INVALID\"],[\"\\\"\\\\uZZZZ\\\"\",\"INVALID\"],[\"\\\"raw\\ncontrol\\\"\",\"INVALID\"],[\"null true\",\"INVALID\"],[\"/*x*/null\",\"INVALID\"],[\"{1:2}\",\"INVALID\"],[\"5.E1\",50.0],[\"5.e1\",\"INVALID\"]]",
+    "frozen_info.json": "{\"payload\":{\"a\":true,\"z\":[1]}}",
+    "struct.json": "{\"a\":{\"k\":[]},\"z\":[1,2]}"
+  }
+}

@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 
+pub(crate) const GENERATED_EXEC_ROOT: &str = "bazel-out/rust-fastbuild/bin";
+
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct PackageId {
     pub repository: String,
@@ -194,7 +196,7 @@ impl Label {
     }
 
     pub fn generated_exec_path(&self) -> PathBuf {
-        PathBuf::from("bazel-out/rust-fastbuild/bin").join(self.source_exec_path())
+        PathBuf::from(GENERATED_EXEC_ROOT).join(self.source_exec_path())
     }
 }
 

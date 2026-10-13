@@ -1,0 +1,19 @@
+{
+  "name": "File-set-range-actual-encoding",
+  "provenance": {
+    "source_sha256": "cc8d00ea849464637d3b9a4e8048d33801f7a2da5ea72496923f4eef090b1421",
+    "run_index": 40
+  },
+  "files": {
+    "MODULE.bazel": "module(name=\"json_contract\")\n",
+    "BUILD.bazel": "load(\":defs.bzl\",\"r\")\nr(name=\"check\",src=\"input.txt\")\n",
+    "defs.bzl": "def _impl(ctx):\n    out=ctx.actions.declare_file(\"file_encoding.json\")\n    ctx.actions.write(out,json.encode([ctx.file.src,out,set([3,1,2]),range(3)]))\n    return [DefaultInfo(files=depset([out]))]\nr=rule(implementation=_impl,attrs={\"src\":attr.label(allow_single_file=True)})\n",
+    "input.txt": "x"
+  },
+  "reference_output": "[{\"path\":\"input.txt\",\"root\":\"\",\"short_path\":\"input.txt\"},{\"path\":\"bazel-out/k8-fastbuild/bin/file_encoding.json\",\"root\":\"bazel-out/k8-fastbuild/bin\",\"short_path\":\"file_encoding.json\"},[3,1,2],[0,1,2]]",
+  "native_profile": {
+    "generated_root": "bazel-out/rust-fastbuild/bin",
+    "source_root": "",
+    "classification": "engine-specific native configuration; NOT normalized byte parity with genuine k8-fastbuild File output"
+  }
+}

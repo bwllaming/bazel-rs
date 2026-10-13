@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for allocation-free integer inspection for native JSON compatibility.
+
 // Possible optimisations:
 // Avoid the Box duplication
 // Encode Int in the pointer too
@@ -125,6 +127,7 @@ use crate::values::string::str_type::StarlarkStr;
 use crate::values::structs::value::FrozenStruct;
 use crate::values::tuple::value::VALUE_EMPTY_TUPLE;
 use crate::values::type_repr::StarlarkTypeRepr;
+use crate::values::types::bigint::StarlarkBigInt;
 use crate::values::types::int::inline_int::InlineInt;
 use crate::values::types::int::int_or_big::StarlarkIntRef;
 use crate::values::types::list::value::FrozenListData;
@@ -411,6 +414,17 @@ impl<'v> Value<'v> {
         } else {
             self.unpack_inline_int().map(|i| i.to_i32())
         }
+    }
+
+    /// Borrow the underlying heap-allocated integer without allocating or cloning.
+    ///
+    /// Returns `None` for tagged small integers (use [`Value::unpack_i32`]) and
+    /// non-integer values, including floats. The reference has the same heap
+    /// lifetime as this value, like [`Value::unpack_str`].
+    #[inline]
+    pub fn unpack_bigint_ref(self) -> Option<&'v BigInt> {
+        self.downcast_ref::<StarlarkBigInt>()
+            .map(StarlarkBigInt::get)
     }
 
     #[inline]
@@ -1494,18 +1508,26 @@ where
 
 #[cfg(test)]
 mod tests {
+    use allocative::Allocative;
     use num_bigint::BigInt;
+    use starlark_derive::StarlarkPagable;
+    use starlark_derive::starlark_value;
 
+    use crate as starlark;
+    use crate::any::ProvidesStaticType;
     use crate::assert;
     use crate::environment::Globals;
     use crate::typing::Ty;
     use crate::values::Heap;
+    use crate::values::NoSerialize;
+    use crate::values::StarlarkValue;
     use crate::values::Value;
     use crate::values::ValueLike;
     use crate::values::int::pointer_i32::PointerI32;
     use crate::values::list::AllocList;
     use crate::values::none::NoneType;
     use crate::values::string::str_type::StarlarkStr;
+    use crate::values::types::bigint::StarlarkBigInt;
     use crate::values::unpack::UnpackValue;
 
     #[test]
@@ -1555,6 +1577,88 @@ mod tests {
                 Some(BigInt::from(i64::MAX)),
                 BigInt::unpack_value(value).unwrap()
             );
+        });
+    }
+
+    #[test]
+    fn test_unpack_bigint_ref_heap() {
+        Heap::temp(|heap| {
+            for sign in [1, -1] {
+                let expected: BigInt = ((BigInt::from(1) << 256usize) + 17) * sign;
+                let value = heap.alloc(expected.clone());
+                let stored = value.downcast_ref::<StarlarkBigInt>().unwrap().get();
+                // The borrow outlives the temporary Value, not its heap owner.
+                let borrowed = { value }.unpack_bigint_ref().unwrap();
+                assert_eq!(&expected, borrowed);
+                assert_eq!(257, borrowed.bits());
+                assert!(std::ptr::eq(stored, borrowed));
+                assert!(std::ptr::eq(borrowed, value.unpack_bigint_ref().unwrap()));
+            }
+        });
+    }
+
+    #[test]
+    fn test_unpack_bigint_ref_frozen() {
+        for sign in [1, -1] {
+            let owner = assert::pass(&format!("((1 << 256) + 17) * {sign}"));
+            // OwnedFrozenValue::value ties this borrow to the live owner.
+            let borrowed = owner.value().unpack_bigint_ref().unwrap();
+            let stored = owner
+                .value()
+                .downcast_ref::<StarlarkBigInt>()
+                .unwrap()
+                .get();
+            assert!(owner.value().unpack_frozen().is_some());
+            assert_eq!(&(((BigInt::from(1) << 256usize) + 17) * sign), borrowed);
+            assert_eq!(257, borrowed.bits());
+            assert!(std::ptr::eq(stored, borrowed));
+            assert!(std::ptr::eq(
+                borrowed,
+                owner.value().unpack_bigint_ref().unwrap()
+            ));
+        }
+    }
+
+    #[test]
+    fn test_unpack_bigint_ref_rejects_small_ints_and_non_ints() {
+        Heap::temp(|heap| {
+            for integer in [-17, 0, 17] {
+                let value = Value::testing_new_int(integer);
+                assert_eq!(Some(integer), value.unpack_i32());
+                assert!(value.unpack_bigint_ref().is_none());
+            }
+            for value in [
+                heap.alloc(1.0),
+                Value::new_bool(false),
+                Value::new_bool(true),
+                heap.alloc("12345678901234567890"),
+                Value::new_none(),
+            ] {
+                assert!(value.unpack_bigint_ref().is_none());
+            }
+        });
+    }
+
+    #[test]
+    fn test_unpack_bigint_ref_rejects_int_type_name_spoof() {
+        #[derive(
+            Debug,
+            derive_more::Display,
+            ProvidesStaticType,
+            NoSerialize,
+            Allocative,
+            StarlarkPagable,
+        )]
+        struct IntSpoof;
+
+        #[starlark_value(type = "int")]
+        impl<'v> StarlarkValue<'v> for IntSpoof {}
+
+        Heap::temp(|heap| {
+            let value = heap.alloc_simple(IntSpoof);
+            assert_eq!("int", value.get_type());
+            assert!(value.downcast_ref::<IntSpoof>().is_some());
+            assert!(value.unpack_bigint_ref().is_none());
         });
     }
 

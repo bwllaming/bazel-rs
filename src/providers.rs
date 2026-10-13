@@ -308,6 +308,20 @@ pub fn instance_identity(value: Value<'_>) -> Option<String> {
     Some(ProviderInstance::from_value(value)?.identity.clone())
 }
 
+/// Borrow genuine custom-provider fields, already sorted by name. The typed
+/// downcast covers mutable and frozen instances without reflecting attributes or
+/// copying names/values. Native providers and ordinary structs are not adapters.
+pub(crate) fn json_fields<'v>(
+    value: Value<'v>,
+) -> Option<impl ExactSizeIterator<Item = (&'v str, Value<'v>)> + 'v> {
+    Some(
+        ProviderInstance::from_value(value)?
+            .fields
+            .iter()
+            .map(|(name, value)| (name.as_str(), *value)),
+    )
+}
+
 fn sequence(value: Value<'_>) -> anyhow::Result<Vec<Value<'_>>> {
     if let Some(list) = ListRef::from_value(value) {
         Ok(list.iter().collect())
@@ -744,6 +758,136 @@ names.append("consumer")
         fail("P = provider()\nx = P(x=1)\nx.x = 2", "not supported");
         fail("P = provider()\nx = P().missing", "missing");
         fail("provider()()", "exported name");
+    }
+
+    #[test]
+    fn json_fields_borrow_sorted_live_values_and_retain_frozen_owners() {
+        fn check(value: Value<'_>, expected: &str) {
+            let provider = ProviderInstance::from_value(value).unwrap();
+            let mut fields = json_fields(value).unwrap();
+            assert_eq!(fields.len(), 2);
+            let (name, child) = fields.next().unwrap();
+            assert_eq!(name, "a");
+            assert!(std::ptr::eq(name.as_ptr(), provider.fields[0].0.as_ptr()));
+            assert_eq!(child.identity(), provider.fields[0].1.identity());
+            assert_eq!(child.to_repr(), expected);
+            assert_eq!(fields.len(), 1);
+            let (name, child) = fields.next().unwrap();
+            assert_eq!(name, "z");
+            assert_eq!(child.unpack_i32(), Some(7));
+            assert_eq!(fields.len(), 0);
+            assert!(fields.next().is_none());
+        }
+        let frozen = Module::with_temp_heap(|module| {
+            let context = context("//defs:json.bzl");
+            {
+                let mut eval = Evaluator::new(&module);
+                eval.extra = Some(&context);
+                let ast = AstModule::parse(
+                    "json.bzl",
+                    "P = provider()\npayload = [1]\nx = P(z=7, a=payload)\nempty = P()".into(),
+                    &Dialect::Standard,
+                )
+                .unwrap();
+                eval.eval_module(ast, &test_globals()).unwrap();
+                check(module.get("x").unwrap(), "[1]");
+                assert_eq!(json_fields(module.get("empty").unwrap()).unwrap().len(), 0);
+                let ast =
+                    AstModule::parse("mutate.bzl", "payload.append(2)".into(), &Dialect::Standard)
+                        .unwrap();
+                eval.eval_module(ast, &test_globals()).unwrap();
+                check(module.get("x").unwrap(), "[1, 2]");
+            }
+            module.freeze().unwrap()
+        });
+        let value = frozen.get("x").unwrap();
+        drop(frozen);
+        check(value.value(), "[1, 2]");
+        let reowned = Module::with_temp_heap(|module| {
+            module.set("x", module.heap().access_owned_frozen_value(&value));
+            module.freeze().unwrap()
+        });
+        drop(value);
+        let value = reowned.get("x").unwrap();
+        drop(reowned);
+        check(value.value(), "[1, 2]");
+        Module::with_temp_heap(|module| {
+            module.set("x", module.heap().access_owned_frozen_value(&value));
+            let ast =
+                AstModule::parse("mutate.bzl", "x.a.append(3)".into(), &Dialect::Standard).unwrap();
+            assert!(
+                Evaluator::new(&module)
+                    .eval_module(ast, &test_globals())
+                    .is_err()
+            );
+        });
+    }
+
+    #[test]
+    fn json_fields_reject_constructors_structs_and_native_info() {
+        let frozen = extension(
+            "//defs:json.bzl",
+            r#"
+P = provider()
+ordinary = struct(a=1)
+empty = struct()
+default = DefaultInfo()
+run_environment = RunEnvironmentInfo()
+template = platform_common.TemplateVariableInfo({})
+"#,
+        )
+        .unwrap();
+        for name in [
+            "P",
+            "ordinary",
+            "empty",
+            "default",
+            "run_environment",
+            "template",
+        ] {
+            assert!(
+                json_fields(frozen.get(name).unwrap().value()).is_none(),
+                "{name}"
+            );
+        }
+        Module::with_temp_heap(|module| {
+            for source in [
+                "provider()",
+                "struct()",
+                "DefaultInfo()",
+                "RunEnvironmentInfo()",
+                "platform_common.TemplateVariableInfo({})",
+                "PackageSpecificationInfo",
+                "len",
+                "None",
+            ] {
+                let context = context("//defs:json.bzl");
+                let mut eval = Evaluator::new(&module);
+                eval.extra = Some(&context);
+                let ast = AstModule::parse("json.bzl", source.into(), &Dialect::Standard).unwrap();
+                let value = eval.eval_module(ast, &test_globals()).unwrap();
+                assert!(json_fields(value).is_none(), "{source}");
+            }
+            let package = crate::label::PackageId {
+                repository: String::new(),
+                package: "groups".into(),
+            };
+            let contents = crate::package_specification::parse_specs(
+                &[],
+                &package,
+                &crate::repository::RepositorySet::new(".".into()),
+            )
+            .unwrap();
+            let node = std::sync::Arc::new(
+                crate::package_specification::GroupNode::new(std::sync::Arc::new(contents), vec![])
+                    .unwrap(),
+            );
+            let info = crate::package_specification::alloc_info(&module.heap(), node);
+            assert!(json_fields(info).is_none());
+            module.set("info", info);
+            let frozen = module.freeze().unwrap();
+            assert!(json_fields(frozen.get("info").unwrap().value()).is_none());
+        });
     }
 
     #[test]

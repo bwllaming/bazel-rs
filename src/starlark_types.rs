@@ -271,6 +271,53 @@ pub fn unpack_file(value: Value<'_>) -> anyhow::Result<File> {
         .ok_or_else(|| anyhow!("expected File, got {}", value.get_type()))
 }
 
+/// JSON supports only consistent main-repository artifacts. Validate metadata
+/// without deriving a root from dirname or changing any artifact paths. Callers
+/// must charge the owner-label parse before invoking this adapter.
+pub(crate) fn file_json_root(file: &File) -> anyhow::Result<&'static str> {
+    let owner = crate::label::Label::parse_canonical(&file.owner)
+        .map_err(|_| anyhow!("unsupported File JSON profile: invalid canonical owner"))?;
+    if !owner.repository.is_empty() {
+        bail!("unsupported File JSON profile: external repository");
+    }
+    if !file.short_path.split('/').all(|part| {
+        !part.is_empty()
+            && part != "."
+            && part != ".."
+            && part
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'+'))
+    }) {
+        bail!("unsupported File JSON profile: noncanonical short_path");
+    }
+    let relative = if owner.package.is_empty() {
+        Some(file.short_path.as_str())
+    } else {
+        file.short_path
+            .strip_prefix(owner.package.as_str())
+            .and_then(|suffix| suffix.strip_prefix('/'))
+            .filter(|suffix| !suffix.is_empty())
+    }
+    .ok_or_else(|| anyhow!("unsupported File JSON profile: owner package mismatch"))?;
+    if file.is_source {
+        if file.path != file.short_path || relative != owner.name {
+            bail!("unsupported File JSON profile: inconsistent source metadata");
+        }
+        Ok("")
+    } else {
+        let root = crate::label::GENERATED_EXEC_ROOT;
+        if file
+            .path
+            .strip_prefix(root)
+            .and_then(|s| s.strip_prefix('/'))
+            != Some(file.short_path.as_str())
+        {
+            bail!("unsupported File JSON profile: inconsistent generated metadata");
+        }
+        Ok(root)
+    }
+}
+
 fn sequence(value: Value<'_>) -> anyhow::Result<Vec<Value<'_>>> {
     if let Some(list) = ListRef::from_value(value) {
         Ok(list.iter().collect())
@@ -987,6 +1034,135 @@ mod tests {
         fail("a.path = 'changed'", "not supported");
         fail("Label(':relative')", "absolute");
         fail("Label('@external//p:x')", "absolute");
+    }
+
+    #[test]
+    fn json_file_roots_preserve_main_source_and_generated_paths() {
+        for (owner, name) in [
+            ("//:input.txt", "input.txt"),
+            ("//pkg:dir/input.txt", "dir/input.txt"),
+            ("@@//pkg:input.txt", "input.txt"),
+        ] {
+            let label = crate::label::Label::parse_canonical(owner).unwrap();
+            let source = File {
+                path: label.source_exec_path().to_string_lossy().into_owned(),
+                short_path: label.short_path().to_string_lossy().into_owned(),
+                owner: owner.into(),
+                is_source: true,
+            };
+            let before = source.clone();
+            assert_eq!(file_json_root(&source).unwrap(), "");
+            assert_eq!(source, before);
+            let output = label.with_name(&format!("generated/{name}")).unwrap();
+            let generated = File {
+                path: output.generated_exec_path().to_string_lossy().into_owned(),
+                short_path: output.short_path().to_string_lossy().into_owned(),
+                // A generated artifact is owned by its declaring rule, not by
+                // its output name. Only its package must match the owner.
+                owner: owner.into(),
+                is_source: false,
+            };
+            let before = generated.clone();
+            assert_eq!(
+                file_json_root(&generated).unwrap(),
+                "bazel-out/rust-fastbuild/bin"
+            );
+            assert_eq!(generated, before);
+        }
+    }
+
+    #[test]
+    fn json_file_roots_reject_unsupported_or_contradictory_profiles() {
+        for (path, short_path, owner, is_source) in [
+            (
+                "external/dep+/pkg/input",
+                "../dep+/pkg/input",
+                "@@dep+//pkg:input",
+                true,
+            ),
+            (
+                "bazel-out/rust-fastbuild/bin/external/dep+/pkg/out",
+                "../dep+/pkg/out",
+                "@@dep+//pkg:rule",
+                false,
+            ),
+            ("pkg/input", "pkg/input", "@@dep+//pkg:input", true),
+            ("pkg/input", "pkg/input", ":input", true),
+            ("pkg/input", "pkg/input", "@//pkg:input", true),
+            ("pkg/input", "pkg/input", "//pkg:../input", true),
+            ("pkg/input", "pkg/other", "//pkg:other", true),
+            ("pkg/input", "pkg/input", "//pkg:other", true),
+            ("pkg/input", "pkg/input", "//elsewhere:input", true),
+            ("pkg/../input", "pkg/../input", "//:input", true),
+            ("/pkg/input", "/pkg/input", "//pkg:input", true),
+            ("pkg//input", "pkg//input", "//pkg:input", true),
+            ("pkg/./input", "pkg/./input", "//pkg:input", true),
+            ("pkg/input/", "pkg/input/", "//pkg:input", true),
+            ("pkg/in\\put", "pkg/in\\put", "//pkg:input", true),
+            ("pkg/café", "pkg/café", "//pkg:input", true),
+            ("", "", "//:input", true),
+            (
+                "bazel-out/rust-fastbuild/bin/pkg/out",
+                "pkg/out",
+                "//elsewhere:rule",
+                false,
+            ),
+            (
+                "bazel-out/rust-fastbuild/bin/pkg2/out",
+                "pkg2/out",
+                "//pkg:rule",
+                false,
+            ),
+            (
+                "bazel-out/rust-fastbuild/bin/pkg",
+                "pkg",
+                "//pkg:rule",
+                false,
+            ),
+            (
+                "bazel-out/rust-fastbuild/bin/pkg/out",
+                "pkg/other",
+                "//pkg:rule",
+                false,
+            ),
+            (
+                "bazel-out/k8-fastbuild/bin/pkg/out",
+                "pkg/out",
+                "//pkg:rule",
+                false,
+            ),
+            (
+                "bazel-out/rust-fastbuild/bin2/pkg/out",
+                "pkg/out",
+                "//pkg:rule",
+                false,
+            ),
+            (
+                "bazel-out/rust-fastbuild/bin//pkg/out",
+                "pkg/out",
+                "//pkg:rule",
+                false,
+            ),
+            (
+                "bazel-out/rust-fastbuild/bin/pkg/out",
+                "pkg/out",
+                "//pkg:out",
+                true,
+            ),
+            ("pkg/out", "pkg/out", "//pkg:rule", false),
+        ] {
+            let file = File {
+                path: path.into(),
+                short_path: short_path.into(),
+                owner: owner.into(),
+                is_source,
+            };
+            let error = file_json_root(&file).unwrap_err().to_string();
+            assert!(
+                error.contains("unsupported File JSON profile"),
+                "{file:?}: {error}"
+            );
+        }
     }
 
     #[test]
