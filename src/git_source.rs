@@ -4,8 +4,12 @@
 //! Git database. Like the archive materializer, cache ancestors and the cache
 //! itself must be trusted against concurrent hostile filesystem replacement.
 //! Process isolation is not a sandbox against vulnerabilities in Git itself.
+//! Native relative file symlinks preserve literal UTF-8 targets, within the
+//! repository_links profile (4096-byte paths/targets, depth 64, 256 raw target
+//! components, 40 hops). Directory, external and dangling links are unsupported.
 use crate::git_process::GitRunner;
 use crate::patch_inputs::LocalPatchPlan;
+use crate::repository_links;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -15,10 +19,13 @@ use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const POLICY: &str = "native-git-source-v1";
+// v2 trusted checkout link strings, which Git can truncate at an embedded NUL.
+// Do not reuse those trees/manifests even if their filesystem snapshots match.
+const POLICY: &str = "native-git-source-v3";
 const MAX_ENTRIES: usize = 100_000;
 const MAX_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_DEPTH: usize = 64;
+const MAX_PATH_BYTES: usize = 4096;
 const MODULE_LIMIT: u64 = 16 * 1024 * 1024;
 const LISTING_LIMIT: usize = 1024 * 1024;
 const MANIFEST_LIMIT: u64 = 64 * 1024 * 1024;
@@ -283,11 +290,15 @@ fn fetch_export(spec: &GitSpec, commit: &str, cache: &Path, stage: &Path) -> Res
         verify_commit(&resolved.stdout, commit)?;
         let listing = run(&["ls-tree", "-rz", "--full-tree", commit])?;
         let entries = parse_listing(&listing.stdout)?;
-        // Validate every tracked leaf, including those outside strip_prefix,
-        // before checkout can create a symlink or encounter a gitlink.
+        let expected_links = committed_links(&entries, |args| Ok(run(args)?.stdout))?;
+        // Validate committed link bytes and the full namespace before checkout:
+        // Git may truncate malformed link blobs when creating native symlinks.
+        // Export also checks literal equality against these committed targets.
         run(&[
             "-c",
             "core.autocrlf=false",
+            "-c",
+            "core.symlinks=true",
             "checkout",
             "--detach",
             "--force",
@@ -295,7 +306,13 @@ fn fetch_export(spec: &GitSpec, commit: &str, cache: &Path, stage: &Path) -> Res
         ])?;
         let head = run(&["rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"])?;
         verify_commit(&head.stdout, commit)?;
-        export(checkout.path(), stage, &spec.strip_prefix, &entries)?;
+        export(
+            checkout.path(),
+            stage,
+            &spec.strip_prefix,
+            &entries,
+            &expected_links,
+        )?;
         return Ok(());
     }
     unreachable!("two fetch attempts always return")
@@ -314,7 +331,14 @@ fn verify_commit(bytes: &[u8], requested: &str) -> Result<(), String> {
 #[derive(Debug)]
 struct Tracked {
     path: String,
-    executable: bool,
+    kind: TrackedKind,
+    oid: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrackedKind {
+    Regular { executable: bool },
+    Symlink,
 }
 
 fn parse_listing(bytes: &[u8]) -> Result<Vec<Tracked>, String> {
@@ -338,15 +362,16 @@ fn parse_listing(bytes: &[u8]) -> Result<Vec<Tracked>, String> {
             .ok_or("malformed Git ls-tree record")?;
         let fields: Vec<_> = header.split(' ').collect();
         if fields.len() != 3 || fields[1] != "blob" || !full_sha(fields[2]) {
-            return Err("unsupported Git tree entry: expected regular blob (no gitlinks)".into());
+            return Err(
+                "unsupported Git tree entry: expected file or symlink blob (no gitlinks)".into(),
+            );
         }
-        let executable = match fields[0] {
-            "100644" => false,
-            "100755" => true,
+        let kind = match fields[0] {
+            "100644" => TrackedKind::Regular { executable: false },
+            "100755" => TrackedKind::Regular { executable: true },
+            "120000" => TrackedKind::Symlink,
             _ => {
-                return Err(
-                    "unsupported Git tree mode: symlinks and special entries are forbidden".into(),
-                );
+                return Err("unsupported Git tree mode: special entries are forbidden".into());
             }
         };
         safe_relative(path)?;
@@ -355,7 +380,8 @@ fn parse_listing(bytes: &[u8]) -> Result<Vec<Tracked>, String> {
         }
         entries.push(Tracked {
             path: path.into(),
-            executable,
+            kind,
+            oid: fields[2].into(),
         });
         if entries.len() > MAX_ENTRIES {
             return Err("Git tree exceeds 100000 entries".into());
@@ -364,8 +390,54 @@ fn parse_listing(bytes: &[u8]) -> Result<Vec<Tracked>, String> {
     Ok(entries)
 }
 
+fn committed_links(
+    entries: &[Tracked],
+    run: impl Fn(&[&str]) -> Result<Vec<u8>, String>,
+) -> Result<BTreeMap<String, String>, String> {
+    let mut regular_files = BTreeSet::new();
+    let mut links = BTreeMap::new();
+    for entry in entries {
+        if matches!(entry.kind, TrackedKind::Regular { .. }) {
+            regular_files.insert(entry.path.clone());
+            continue;
+        }
+        // OIDs were validated as full hex SHA-1s by parse_listing. Two commands
+        // per link trade throughput for simple bounded reads with closed stdin;
+        // all commands share fetch_export's 120-second deadline. Size-check
+        // before reading so the runner's 1 MiB cap cannot silently truncate a
+        // blob into a valid target. Git's fetched object integrity is trusted.
+        let size_bytes = run(&["cat-file", "-s", &entry.oid])?;
+        let size_text =
+            std::str::from_utf8(&size_bytes).map_err(|_| "invalid Git symlink blob size")?;
+        let size_text = size_text.strip_suffix('\n').unwrap_or(size_text);
+        if size_text.is_empty() || !size_text.bytes().all(|b| b.is_ascii_digit()) {
+            return Err("invalid Git symlink blob size".into());
+        }
+        let size = size_text
+            .parse::<usize>()
+            .map_err(|_| "Git symlink target exceeds 4096 bytes")?;
+        if size > MAX_PATH_BYTES {
+            return Err("Git symlink target exceeds 4096 bytes".into());
+        }
+        let bytes = run(&["cat-file", "blob", &entry.oid])?;
+        if bytes.len() != size {
+            return Err("Git symlink blob length does not match its declared size".into());
+        }
+        let target =
+            String::from_utf8(bytes).map_err(|_| "non-UTF-8 Git symlink target unsupported")?;
+        repository_links::target_path(&entry.path, &target)
+            .map_err(|e| format!("invalid committed Git symlink {:?}: {e}", entry.path))?;
+        links.insert(entry.path.clone(), target);
+    }
+    // Include links outside strip_prefix: checkout operates on the full tree.
+    repository_links::validate(&regular_files, &links)
+        .map_err(|e| format!("invalid complete committed Git symlink namespace: {e}"))?;
+    Ok(links)
+}
+
 fn safe_relative(text: &str) -> Result<(), String> {
     if text.is_empty()
+        || text.len() > MAX_PATH_BYTES
         || text.contains(['\\', ':', '?', '#', '%'])
         || text.chars().any(char::is_control)
         || text
@@ -377,17 +449,54 @@ fn safe_relative(text: &str) -> Result<(), String> {
         || text.split('/').count() > MAX_DEPTH
     {
         return Err(format!(
-            "unsafe Git relative path or strip_prefix {text:?} (maximum depth 64)"
+            "unsafe Git relative path or strip_prefix {text:?} (maximum 4096 bytes and depth 64)"
         ));
     }
     Ok(())
 }
 
-fn export(checkout: &Path, stage: &Path, prefix: &str, entries: &[Tracked]) -> Result<(), String> {
-    let source_root = checkout.join(prefix);
+fn export(
+    checkout: &Path,
+    stage: &Path,
+    prefix: &str,
+    entries: &[Tracked],
+    expected_links: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    let mut regular_files = BTreeSet::new();
+    let mut links = BTreeMap::new();
+    for entry in entries {
+        check_descendant_directories(
+            checkout,
+            Path::new(&entry.path).parent().unwrap_or(Path::new("")),
+        )?;
+        let source = checkout.join(&entry.path);
+        match entry.kind {
+            TrackedKind::Regular { .. } => {
+                regular_metadata(&source)?;
+                regular_files.insert(entry.path.clone());
+            }
+            TrackedKind::Symlink => {
+                let metadata = fs::symlink_metadata(&source).map_err(|e| e.to_string())?;
+                let target = link_target(&source, &metadata)?;
+                if expected_links.get(&entry.path) != Some(&target) {
+                    return Err(format!(
+                        "Git checkout symlink {:?} does not match committed blob target",
+                        entry.path
+                    ));
+                }
+                links.insert(entry.path.clone(), target);
+            }
+        }
+    }
+    repository_links::validate(&regular_files, &links)
+        .map_err(|e| format!("invalid complete Git symlink namespace: {e}"))?;
+
+    // strip_prefix must be a real directory, not a link, even if its target is
+    // otherwise valid. Revalidate literal targets relative to the published root.
     check_descendant_directories(checkout, Path::new(prefix))?;
-    let mut selected = 0;
-    let mut total = 0u64;
+    let mut selected = Vec::new();
+    let mut selected_files = BTreeSet::new();
+    let mut selected_links = BTreeMap::new();
     for entry in entries {
         let relative = if prefix.is_empty() {
             entry.path.as_str()
@@ -400,13 +509,33 @@ fn export(checkout: &Path, stage: &Path, prefix: &str, entries: &[Tracked]) -> R
         } else {
             continue;
         };
-        let source = source_root.join(relative);
-        check_descendant_directories(
-            &source_root,
-            Path::new(relative).parent().unwrap_or(Path::new("")),
-        )?;
+        match entry.kind {
+            TrackedKind::Regular { .. } => {
+                selected_files.insert(relative.to_owned());
+            }
+            TrackedKind::Symlink => {
+                selected_links.insert(relative.to_owned(), links[&entry.path].clone());
+            }
+        }
+        selected.push((entry, relative));
+    }
+    if !prefix.is_empty() && selected.is_empty() {
+        return Err("Git strip_prefix has no tracked descendant files".into());
+    }
+    repository_links::validate(&selected_files, &selected_links)
+        .map_err(|e| format!("invalid selected Git symlink namespace after strip_prefix: {e}"))?;
+    let mut total = selected_links.values().map(|s| s.len() as u64).sum::<u64>();
+    if total > MAX_BYTES {
+        return Err("Git export exceeds 1 GiB total file and link bytes".into());
+    }
+    // Copy regular files first. No link is ever opened, copied or chmodded.
+    for (entry, relative) in selected {
+        let TrackedKind::Regular { executable } = entry.kind else {
+            continue;
+        };
+        let source = checkout.join(&entry.path);
         if regular_metadata(&source)?.len() > MAX_BYTES - total {
-            return Err("Git export exceeds 1 GiB total file bytes".into());
+            return Err("Git export exceeds 1 GiB total file and link bytes".into());
         }
         let target = stage.join(relative);
         ensure_directory(target.parent().ok_or("Git export path has no parent")?)?;
@@ -422,13 +551,48 @@ fn export(checkout: &Path, stage: &Path, prefix: &str, entries: &[Tracked]) -> R
         if total > MAX_BYTES {
             return Err("Git export exceeds 1 GiB total file bytes".into());
         }
-        set_mode(&target, if entry.executable { 0o755 } else { 0o644 })?;
-        selected += 1;
+        set_mode(&target, if executable { 0o755 } else { 0o644 })?;
     }
-    if !prefix.is_empty() && selected == 0 {
-        return Err("Git strip_prefix has no tracked descendant files".into());
+    for (relative, raw_target) in selected_links {
+        let target = stage.join(relative);
+        ensure_directory(target.parent().ok_or("Git symlink path has no parent")?)?;
+        create_symlink(&raw_target, &target)?;
     }
     Ok(())
+}
+
+fn link_target(path: &Path, metadata: &fs::Metadata) -> Result<String, String> {
+    if !metadata.file_type().is_symlink() {
+        return Err(format!(
+            "Git symlink is not a native symlink: {}",
+            path.display()
+        ));
+    }
+    if metadata.len() > MAX_PATH_BYTES as u64 {
+        return Err("Git symlink target exceeds 4096 bytes".into());
+    }
+    let target = fs::read_link(path)
+        .map_err(|e| format!("cannot read Git symlink {}: {e}", path.display()))?
+        .into_os_string()
+        .into_string()
+        .map_err(|_| "non-UTF-8 Git symlink target unsupported")?;
+    if target.len() > MAX_PATH_BYTES {
+        return Err("Git symlink target exceeds 4096 bytes".into());
+    }
+    Ok(target)
+}
+
+fn create_symlink(raw_target: &str, path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(raw_target, path)
+            .map_err(|e| format!("cannot create native Git symlink {}: {e}", path.display()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (raw_target, path);
+        Err("native Git source symlinks require a Unix platform".into())
+    }
 }
 
 fn check_descendant_directories(root: &Path, relative: &Path) -> Result<(), String> {
@@ -583,10 +747,17 @@ struct Manifest {
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Entry {
-    directory: bool,
+    kind: EntryKind,
     mode: u32,
     size: u64,
     sha256: String,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+enum EntryKind {
+    Directory,
+    File,
+    Symlink { target: String },
 }
 
 fn snapshot(root: &Path, normalize: bool) -> Result<BTreeMap<String, Entry>, String> {
@@ -607,27 +778,41 @@ fn snapshot(root: &Path, normalize: bool) -> Result<BTreeMap<String, Entry>, Str
         if !name.is_empty() {
             safe_relative(&name)?;
         }
-        if files.len() > MAX_ENTRIES {
+        // The empty root entry is recorded but not counted as a descendant.
+        if !name.is_empty() && files.len() > MAX_ENTRIES {
             return Err("Git snapshot exceeds 100000 entries".into());
         }
-        if !metadata.is_dir() {
+        let kind = if metadata.file_type().is_symlink() {
+            EntryKind::Symlink {
+                target: link_target(path, &metadata)?,
+            }
+        } else if metadata.is_dir() {
+            EntryKind::Directory
+        } else {
             regular_metadata(path)?;
-        }
+            EntryKind::File
+        };
         let mut entry = Entry {
-            directory: metadata.is_dir(),
+            kind,
             mode: mode(&metadata),
             size: 0,
             sha256: String::new(),
         };
-        if normalize {
-            entry.mode = if entry.directory || entry.mode & 0o100 != 0 {
+        if normalize && !matches!(entry.kind, EntryKind::Symlink { .. }) {
+            entry.mode = if entry.kind == EntryKind::Directory || entry.mode & 0o100 != 0 {
                 0o755
             } else {
                 0o644
             };
             set_mode(path, entry.mode)?;
         }
-        if !entry.directory {
+        if let EntryKind::Symlink { target } = &entry.kind {
+            entry.size = target.len() as u64;
+            *total += entry.size;
+            if *total > MAX_BYTES {
+                return Err("Git snapshot exceeds 1 GiB total file and link bytes".into());
+            }
+        } else if entry.kind == EntryKind::File {
             if metadata.len() > MAX_BYTES - *total {
                 return Err("Git snapshot exceeds 1 GiB total file bytes".into());
             }
@@ -642,7 +827,7 @@ fn snapshot(root: &Path, normalize: bool) -> Result<BTreeMap<String, Entry>, Str
             }
             entry.sha256 = format!("{:x}", digest.finalize());
         }
-        let directory = entry.directory;
+        let directory = entry.kind == EntryKind::Directory;
         files.insert(name, entry);
         if directory {
             for child in fs::read_dir(path).map_err(|e| e.to_string())? {
@@ -660,6 +845,23 @@ fn snapshot(root: &Path, normalize: bool) -> Result<BTreeMap<String, Entry>, Str
     required_directory(root)?;
     let mut files = BTreeMap::new();
     visit(root, root, normalize, &mut files, &mut 0)?;
+    let mut regular_files = BTreeSet::new();
+    let mut links = BTreeMap::new();
+    for (name, entry) in &files {
+        match &entry.kind {
+            EntryKind::File => {
+                regular_files.insert(name.clone());
+            }
+            EntryKind::Symlink { target } => {
+                links.insert(name.clone(), target.clone());
+            }
+            EntryKind::Directory => {}
+        }
+    }
+    // Actual filesystem namespace, not the manifest or original Git listing:
+    // required both after patches and on every warm read, before the callback.
+    repository_links::validate(&regular_files, &links)
+        .map_err(|e| format!("invalid Git snapshot symlink namespace: {e}"))?;
     Ok(files)
 }
 
@@ -777,6 +979,20 @@ mod tests {
                 .unwrap()
                 .trim()
                 .into();
+        }
+
+        fn commit_link_blob(&mut self, path: &str, bytes: &[u8]) {
+            let blob = self.temp.path().join("link-blob");
+            fs::write(&blob, bytes).unwrap();
+            let oid = String::from_utf8(self.git(&["hash-object", "-w", blob.to_str().unwrap()]))
+                .unwrap();
+            self.git(&[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("120000,{},{}", oid.trim(), path),
+            ]);
+            self.commit_index();
         }
 
         fn tree(&self) -> GitTree {
@@ -1203,10 +1419,623 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn rejects_tracked_symlink_even_outside_strip_prefix_before_publication() {
+    fn rejects_malformed_committed_link_blobs_before_callback_or_publication() {
+        for (bytes, message) in [
+            (b"data\0../outside".to_vec(), "forbidden character"),
+            (b"data\0".to_vec(), "forbidden character"),
+            (b"data\xff".to_vec(), "non-UTF-8"),
+            (vec![b'a'; 4097], "4096 bytes"),
+        ] {
+            for prefix in ["", "pkg"] {
+                let mut fixture = Fixture::new(prefix);
+                // For pkg, this malformed link is outside the selected namespace.
+                fs::write(fixture.origin.join("data"), b"original\n").unwrap();
+                fixture.git(&["add", "data"]);
+                fixture.commit_link_blob("link", &bytes);
+                let calls = AtomicUsize::new(0);
+                for _ in 0..2 {
+                    let result = materialize(
+                        &fixture.spec,
+                        &LocalPatchPlan::default(),
+                        &fixture.cache,
+                        true,
+                        |_, _| {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            Ok(())
+                        },
+                    );
+                    assert!(result.is_err(), "malformed blob accepted: {bytes:?}");
+                    let error = result.unwrap_err();
+                    assert!(error.contains(message), "{error}");
+                    assert_eq!(calls.load(Ordering::SeqCst), 0);
+                    fixture.assert_no_publication();
+                    assert!(
+                        fs::read_dir(fixture.cache.join("git/manifests"))
+                            .unwrap()
+                            .next()
+                            .is_none()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn preserves_committed_raw_dot_and_parent_targets_cold_and_offline_warm() {
+        let mut fixture = Fixture::new("");
+        fs::create_dir(fixture.origin.join("dir")).unwrap();
+        fs::write(fixture.origin.join("dir/file"), b"tracked directory").unwrap();
+        fixture.git(&["add", "dir/file"]);
+        let target = "./dir/.././data";
+        fixture.commit_link_blob("link", target.as_bytes());
+        let tree = fixture.tree();
+        let verify = || {
+            assert_eq!(
+                fs::read_link(tree.root.join("link"))
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+                target
+            );
+            assert_eq!(fs::read(tree.root.join("link")).unwrap(), b"original\n");
+        };
+        verify();
+        fs::rename(&fixture.origin, fixture.temp.path().join("offline-origin")).unwrap();
+        assert_eq!(fixture.tree(), tree);
+        verify();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn never_reuses_v2_cache_with_a_truncated_committed_target() {
+        let mut fixture = Fixture::new("");
+        fixture.commit_link_blob("link", b"data\0../outside");
+        let patches = LocalPatchPlan::default();
+        let identity = serde_json::to_vec(&(
+            "native-git-source-v2",
+            (
+                &fixture.spec.remote,
+                &fixture.spec.commit,
+                &fixture.spec.strip_prefix,
+            ),
+            patches.cache_identity(),
+        ))
+        .unwrap();
+        let key = format!("{:x}", Sha256::digest(identity));
+        let root = fixture.cache.join("git/trees").join(&key);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("MODULE.bazel"), MODULE).unwrap();
+        fs::write(root.join("data"), b"original\n").unwrap();
+        create_symlink("data", &root.join("link")).unwrap();
+        let manifest = Manifest {
+            policy: "native-git-source-v2".into(),
+            key: key.clone(),
+            commit: fixture.spec.commit.clone(),
+            files: snapshot(&root, true).unwrap(),
+        };
+        let manifests = fixture.cache.join("git/manifests");
+        fs::create_dir_all(&manifests).unwrap();
+        fs::write(
+            manifests.join(format!("{key}.json")),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        let error = materialize(
+            &fixture.spec,
+            &patches,
+            &fixture.cache,
+            true,
+            |_, _| -> Result<(), String> { panic!("v2 truncated target reached callback") },
+        )
+        .unwrap_err();
+        assert!(error.contains("forbidden character"), "{error}");
+        assert!(root.is_dir());
+        assert_eq!(fs::read_dir(root.parent().unwrap()).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(manifests).unwrap().count(), 1);
+        fixture.assert_no_temporaries();
+    }
+
+    #[test]
+    fn committed_link_reads_reject_bad_sizes_and_inexact_bodies() {
+        let entries =
+            parse_listing(format!("120000 blob {}\tlink\0", "a".repeat(40)).as_bytes()).unwrap();
+        for size in ["4097\n", "999999999999999999999999\n", "-1\n", "4x\n", "\n"] {
+            let error = committed_links(&entries, |args| {
+                assert_eq!(args[1], "-s", "oversized/invalid blob must not be read");
+                Ok(size.as_bytes().to_vec())
+            })
+            .unwrap_err();
+            assert!(
+                error.contains("size") || error.contains("4096 bytes"),
+                "{error}"
+            );
+        }
+        for body in [b"dat".as_slice(), b"data\0".as_slice()] {
+            let error = committed_links(&entries, |args| {
+                Ok(if args[1] == "-s" { b"4\n" } else { body }.to_vec())
+            })
+            .unwrap_err();
+            assert!(error.contains("length does not match"), "{error}");
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn preserves_distroless_relative_link_and_chain_on_cold_and_offline_warm_hits() {
+        use std::os::unix::fs::symlink;
+        let mut fixture = Fixture::new("");
+        fs::write(fixture.origin.join(".bazelversion"), b"8.2.1\n").unwrap();
+        fs::create_dir_all(fixture.origin.join("e2e/smoke")).unwrap();
+        symlink(
+            "../../.bazelversion",
+            fixture.origin.join("e2e/smoke/.bazelversion"),
+        )
+        .unwrap();
+        symlink(
+            "e2e/smoke/.bazelversion",
+            fixture.origin.join("version-chain"),
+        )
+        .unwrap();
+        fixture.commit();
+        let tree = fixture.tree();
+        let verify = || {
+            for (name, target) in [
+                ("e2e/smoke/.bazelversion", "../../.bazelversion"),
+                ("version-chain", "e2e/smoke/.bazelversion"),
+            ] {
+                let path = tree.root.join(name);
+                let metadata = fs::symlink_metadata(&path).unwrap();
+                assert!(metadata.file_type().is_symlink());
+                assert_eq!(mode(&metadata), 0o777);
+                assert_eq!(fs::read_link(&path).unwrap().to_str().unwrap(), target);
+                assert_eq!(fs::read(path).unwrap(), b"8.2.1\n");
+            }
+        };
+        verify();
+        fs::rename(&fixture.origin, fixture.temp.path().join("offline-origin")).unwrap();
+        assert_eq!(fixture.tree(), tree);
+        verify();
+        fixture.assert_no_temporaries();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn safe_unselected_links_are_validated_but_not_exported() {
         use std::os::unix::fs::symlink;
         let mut fixture = Fixture::new("pkg");
-        symlink("pkg/data", fixture.origin.join("link")).unwrap();
+        symlink("pkg/data", fixture.origin.join("outside-link")).unwrap();
+        symlink("./data", fixture.origin.join("pkg/inside-link")).unwrap();
+        fixture.commit();
+        let tree = fixture.tree();
+        assert!(fs::symlink_metadata(tree.root.join("outside-link")).is_err());
+        assert_eq!(
+            fs::read_link(tree.root.join("inside-link"))
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "./data"
+        );
+        assert_eq!(
+            fs::read(tree.root.join("inside-link")).unwrap(),
+            b"original\n"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn repairs_link_spelling_kind_referent_and_added_links_to_exact_manifest() {
+        use std::os::unix::fs::symlink;
+        let mut fixture = Fixture::new("");
+        symlink("data", fixture.origin.join("link")).unwrap();
+        fs::write(fixture.origin.join("same-bytes"), b"original\n").unwrap();
+        // Same bytes as the raw link target exercises regular -> link kind changes.
+        fs::write(fixture.origin.join("raw-target"), b"data").unwrap();
+        fixture.commit();
+        let tree = fixture.tree();
+        let expected_manifest = fs::read(fixture.manifest(&tree)).unwrap();
+        let original = snapshot(&tree.root, false).unwrap();
+        assert_eq!(
+            original["link"].kind,
+            EntryKind::Symlink {
+                target: "data".into()
+            }
+        );
+        assert_eq!(original["link"].size, 4);
+        assert_eq!(original["link"].sha256, "");
+        for corruption in 0..7 {
+            let link = tree.root.join("link");
+            match corruption {
+                0 | 1 => {
+                    fs::remove_file(&link).unwrap();
+                    symlink(
+                        if corruption == 0 {
+                            "./data"
+                        } else {
+                            "same-bytes"
+                        },
+                        &link,
+                    )
+                    .unwrap();
+                    assert_eq!(fs::read(&link).unwrap(), b"original\n");
+                }
+                2 => {
+                    fs::remove_file(&link).unwrap();
+                    fs::write(&link, b"data").unwrap();
+                }
+                3 => fs::write(tree.root.join("data"), b"corrupted\n").unwrap(),
+                4 => symlink("data", tree.root.join("added-link")).unwrap(),
+                5 => {
+                    fs::remove_file(tree.root.join("raw-target")).unwrap();
+                    symlink("data", tree.root.join("raw-target")).unwrap();
+                }
+                6 => {
+                    fs::remove_file(&link).unwrap();
+                    symlink("../outside", &link).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let calls = AtomicUsize::new(0);
+            let repaired = materialize(
+                &fixture.spec,
+                &LocalPatchPlan::default(),
+                &fixture.cache,
+                true,
+                |root, _| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    assert_eq!(snapshot(root, false).unwrap(), original);
+                    Ok(())
+                },
+            )
+            .unwrap()
+            .0;
+            assert_eq!(repaired, tree);
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                fs::read(fixture.manifest(&tree)).unwrap(),
+                expected_manifest
+            );
+            assert!(
+                fs::symlink_metadata(&link)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            assert_eq!(fs::read_link(&link).unwrap(), Path::new("data"));
+            assert_eq!(fs::read(&link).unwrap(), b"original\n");
+            fixture.assert_no_temporaries();
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn rejects_unsafe_targets_without_callback_or_publication() {
+        use std::os::unix::fs::symlink;
+        for (target, message) in [
+            ("/etc/passwd", "absolute"),
+            ("../outside", "escapes"),
+            ("absent", "dangling"),
+            ("link", "cycle"),
+            ("dir", "directory target"),
+            ("missing/../data", "missing intermediate"),
+            ("data/../data", "intermediate file"),
+            (".git/config", "missing intermediate"),
+        ] {
+            let mut fixture = Fixture::new("");
+            fs::create_dir(fixture.origin.join("dir")).unwrap();
+            fs::write(fixture.origin.join("dir/file"), b"data").unwrap();
+            symlink(target, fixture.origin.join("link")).unwrap();
+            fixture.commit();
+            let error = materialize(
+                &fixture.spec,
+                &LocalPatchPlan::default(),
+                &fixture.cache,
+                true,
+                |_, _| -> Result<(), String> { panic!("unsafe link reached callback") },
+            )
+            .unwrap_err();
+            assert!(error.contains(message), "{target}: {error}");
+            fixture.assert_no_publication();
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn rejects_multiple_link_cycle_and_excessive_hops_but_preserves_forty_hops() {
+        use std::os::unix::fs::symlink;
+        for cycle in [false, true] {
+            let mut fixture = Fixture::new("");
+            for index in 0..40 {
+                let target = if index == 39 {
+                    "data".into()
+                } else {
+                    format!("link{}", index + 1)
+                };
+                symlink(target, fixture.origin.join(format!("link{index}"))).unwrap();
+            }
+            fixture.commit();
+            let tree = fixture.tree();
+            assert_eq!(fs::read(tree.root.join("link0")).unwrap(), b"original\n");
+            let rejected_cache = fixture.temp.path().join("rejected-cache");
+            if cycle {
+                fs::remove_file(fixture.origin.join("link39")).unwrap();
+                symlink("link0", fixture.origin.join("link39")).unwrap();
+            } else {
+                symlink("link0", fixture.origin.join("link40")).unwrap();
+            }
+            fixture.commit();
+            fixture.cache = rejected_cache;
+            let error = materialize(
+                &fixture.spec,
+                &LocalPatchPlan::default(),
+                &fixture.cache,
+                true,
+                |_, _| Ok(()),
+            )
+            .unwrap_err();
+            assert!(
+                error.contains(if cycle { "cycle" } else { "40 steps" }),
+                "{error}"
+            );
+            fixture.assert_no_publication();
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn selected_namespace_rejects_links_that_escape_the_stripped_root() {
+        use std::os::unix::fs::symlink;
+        let mut fixture = Fixture::new("pkg");
+        symlink("../outside", fixture.origin.join("pkg/link")).unwrap();
+        fixture.commit();
+        let error = materialize(
+            &fixture.spec,
+            &LocalPatchPlan::default(),
+            &fixture.cache,
+            true,
+            |_, _| Ok(()),
+        )
+        .unwrap_err();
+        assert!(error.contains("after strip_prefix"), "{error}");
+        assert!(error.contains("escapes"), "{error}");
+        fixture.assert_no_publication();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn symlink_strip_prefix_and_linked_module_remain_explicitly_unsupported() {
+        use std::os::unix::fs::symlink;
+        let mut fixture = Fixture::new("");
+        symlink("data", fixture.origin.join("prefix-link")).unwrap();
+        fixture.commit();
+        fixture.spec.strip_prefix = "prefix-link".into();
+        let error = materialize(
+            &fixture.spec,
+            &LocalPatchPlan::default(),
+            &fixture.cache,
+            true,
+            |_, _| Ok(()),
+        )
+        .unwrap_err();
+        assert!(error.contains("not a regular directory"), "{error}");
+        fixture.assert_no_publication();
+        fixture.spec.strip_prefix.clear();
+        fs::rename(
+            fixture.origin.join("MODULE.bazel"),
+            fixture.origin.join("module-source"),
+        )
+        .unwrap();
+        symlink("module-source", fixture.origin.join("MODULE.bazel")).unwrap();
+        fixture.commit();
+        let error = materialize(
+            &fixture.spec,
+            &LocalPatchPlan::default(),
+            &fixture.cache,
+            true,
+            |_, _| -> Result<(), String> { panic!("linked module reached callback") },
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("not regular") && error.contains("MODULE.bazel"),
+            "{error}"
+        );
+        fixture.assert_no_publication();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn patching_referent_preserves_link_and_warm_updated_contents() {
+        use std::os::unix::fs::symlink;
+        let mut fixture = Fixture::new("");
+        symlink("./data", fixture.origin.join("link")).unwrap();
+        fixture.commit();
+        let plan = patch_plan(fixture.temp.path(), &change("data", "original", "patched"));
+        let validate = |root: &Path, _: &[u8]| {
+            assert_eq!(fs::read(root.join("link")).unwrap(), b"patched\n");
+            assert_eq!(
+                fs::read_link(root.join("link")).unwrap().to_str().unwrap(),
+                "./data"
+            );
+            Ok(())
+        };
+        let tree = materialize(&fixture.spec, &plan, &fixture.cache, true, validate)
+            .unwrap()
+            .0;
+        fs::rename(&fixture.origin, fixture.temp.path().join("offline-origin")).unwrap();
+        assert_eq!(
+            materialize(&fixture.spec, &plan, &fixture.cache, true, validate)
+                .unwrap()
+                .0,
+            tree
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn patch_deleting_referent_is_rejected_by_post_patch_snapshot() {
+        use std::os::unix::fs::symlink;
+        let mut fixture = Fixture::new("");
+        symlink("data", fixture.origin.join("link")).unwrap();
+        fixture.commit();
+        let plan = patch_plan(
+            fixture.temp.path(),
+            "diff --git a/data b/data\n--- a/data\n+++ /dev/null\n@@ -1 +0,0 @@\n-original\n",
+        );
+        let error = materialize(
+            &fixture.spec,
+            &plan,
+            &fixture.cache,
+            true,
+            |_, _| -> Result<(), String> { panic!("dangling post-patch link reached callback") },
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("snapshot") && error.contains("dangling"),
+            "{error}"
+        );
+        fixture.assert_no_publication();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn patches_reject_links_in_both_old_and_unused_new_paths() {
+        use std::os::unix::fs::symlink;
+        for text in [
+            change("link", "original", "patched"),
+            "diff --git a/data b/link\n--- a/data\n+++ b/link\n@@ -1 +1 @@\n-original\n+patched\n"
+                .into(),
+        ] {
+            let mut fixture = Fixture::new("");
+            symlink("data", fixture.origin.join("link")).unwrap();
+            fixture.commit();
+            let plan = patch_plan(fixture.temp.path(), &text);
+            let error =
+                materialize(&fixture.spec, &plan, &fixture.cache, true, |_, _| Ok(())).unwrap_err();
+            assert!(error.contains("patch symlink"), "{error}");
+            fixture.assert_no_publication();
+            assert_eq!(
+                fs::read(fixture.origin.join("data")).unwrap(),
+                b"original\n"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn post_patch_empty_intermediate_directory_fails_closed_with_implicit_directory_helper() {
+        use std::os::unix::fs::symlink;
+        let mut fixture = Fixture::new("");
+        fs::create_dir(fixture.origin.join("dir")).unwrap();
+        fs::write(fixture.origin.join("dir/only-file"), b"delete\n").unwrap();
+        symlink("dir/../data", fixture.origin.join("link")).unwrap();
+        fixture.commit();
+        let plan = patch_plan(
+            fixture.temp.path(),
+            "diff --git a/dir/only-file b/dir/only-file\n--- a/dir/only-file\n+++ /dev/null\n@@ -1 +0,0 @@\n-delete\n",
+        );
+        let error =
+            materialize(&fixture.spec, &plan, &fixture.cache, true, |_, _| Ok(())).unwrap_err();
+        assert!(
+            error.contains("snapshot") && error.contains("missing intermediate directory"),
+            "{error}"
+        );
+        fixture.assert_no_publication();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn export_rejects_changed_or_missing_expected_literal_targets_before_copying() {
+        let temp = tempfile::tempdir().unwrap();
+        let checkout = temp.path().join("checkout");
+        let stage = temp.path().join("stage");
+        fs::create_dir(&checkout).unwrap();
+        fs::create_dir(&stage).unwrap();
+        fs::write(checkout.join("data"), b"original").unwrap();
+        create_symlink("./data", &checkout.join("link")).unwrap();
+        let oid = "a".repeat(40);
+        let entries = parse_listing(
+            format!("100644 blob {oid}\tdata\x00120000 blob {oid}\tlink\0").as_bytes(),
+        )
+        .unwrap();
+        for expected in [
+            BTreeMap::new(),
+            BTreeMap::from([("link".into(), "data".into())]),
+        ] {
+            let error = export(&checkout, &stage, "", &entries, &expected).unwrap_err();
+            assert!(error.contains("does not match committed blob"), "{error}");
+            assert!(fs::read_dir(&stage).unwrap().next().is_none());
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn export_checks_expected_native_kind_and_never_follows_link_parents() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let checkout = temp.path().join("checkout");
+        let stage = temp.path().join("stage");
+        fs::create_dir(&checkout).unwrap();
+        fs::create_dir(&stage).unwrap();
+        fs::write(checkout.join("data"), b"original").unwrap();
+        let entries = [Tracked {
+            path: "data".into(),
+            kind: TrackedKind::Symlink,
+            oid: "a".repeat(40),
+        }];
+        assert!(
+            export(&checkout, &stage, "", &entries, &BTreeMap::new())
+                .unwrap_err()
+                .contains("not a native symlink")
+        );
+        symlink("data", checkout.join("link")).unwrap();
+        let entries = [Tracked {
+            path: "link".into(),
+            kind: TrackedKind::Regular { executable: false },
+            oid: "a".repeat(40),
+        }];
+        assert!(
+            export(&checkout, &stage, "", &entries, &BTreeMap::new())
+                .unwrap_err()
+                .contains("not regular")
+        );
+        let entries = [Tracked {
+            path: "link/child".into(),
+            kind: TrackedKind::Regular { executable: false },
+            oid: "a".repeat(40),
+        }];
+        assert!(
+            export(&checkout, &stage, "", &entries, &BTreeMap::new())
+                .unwrap_err()
+                .contains("not a regular directory")
+        );
+        assert!(fs::read_dir(&stage).unwrap().next().is_none());
+        assert_eq!(fs::read(checkout.join("data")).unwrap(), b"original");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn snapshot_rejects_non_utf8_symlink_targets_without_following_them() {
+        use std::os::unix::ffi::OsStringExt;
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        symlink(
+            std::ffi::OsString::from_vec(vec![255]),
+            temp.path().join("link"),
+        )
+        .unwrap();
+        assert!(
+            snapshot(temp.path(), true)
+                .unwrap_err()
+                .contains("non-UTF-8 Git symlink target")
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn rejects_unsafe_tracked_symlink_even_outside_strip_prefix_before_publication() {
+        use std::os::unix::fs::symlink;
+        let mut fixture = Fixture::new("pkg");
+        symlink("../outside", fixture.origin.join("link")).unwrap();
         fixture.commit();
         assert!(
             materialize(
@@ -1217,7 +2046,7 @@ mod tests {
                 |_, _| Ok(())
             )
             .unwrap_err()
-            .contains("symlinks")
+            .contains("escapes")
         );
         fixture.assert_no_publication();
     }
@@ -1248,7 +2077,7 @@ mod tests {
     fn listing_parser_rejects_unsafe_modes_paths_and_truncation() {
         let sha = "a".repeat(40);
         for (mode, kind, path) in [
-            ("120000", "blob", "link"),
+            ("100600", "blob", "special"),
             ("160000", "commit", "sub"),
             ("040000", "tree", "dir"),
             ("100644", "blob", "../outside"),
@@ -1270,6 +2099,23 @@ mod tests {
         assert!(safe_relative(&vec!["x"; 65].join("/")).is_err());
         assert!(verify_commit(format!("{}\n", "b".repeat(40)).as_bytes(), &sha).is_err());
         assert!(remaining(Instant::now() - DEADLINE).is_err());
+    }
+
+    #[test]
+    fn listing_parser_recognizes_regular_executable_and_symlink_kinds() {
+        let sha = "a".repeat(40);
+        for (mode, expected) in [
+            ("100644", TrackedKind::Regular { executable: false }),
+            ("100755", TrackedKind::Regular { executable: true }),
+            ("120000", TrackedKind::Symlink),
+        ] {
+            let entries = parse_listing(format!("{mode} blob {sha}\tpath\0").as_bytes()).unwrap();
+            assert_eq!(entries[0].kind, expected);
+            assert_eq!(entries[0].path, "path");
+            assert_eq!(entries[0].oid, sha);
+        }
+        assert!(parse_listing(b"120000 blob bad-oid\tlink\0").is_err());
+        assert!(safe_relative(&"x".repeat(MAX_PATH_BYTES + 1)).is_err());
     }
 
     #[test]
@@ -1385,7 +2231,7 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn snapshot_rejects_hardlinks_symlinks_non_utf8_metadata_and_size_overflows() {
+    fn snapshot_rejects_hardlinks_dangling_symlinks_non_utf8_metadata_and_size_overflows() {
         use std::os::unix::ffi::OsStringExt;
         use std::os::unix::fs::symlink;
         let temp = tempfile::tempdir().unwrap();
@@ -1394,7 +2240,7 @@ mod tests {
         fs::hard_link(root.join("file"), root.join("hard")).unwrap();
         assert!(snapshot(root, false).unwrap_err().contains("hardlinked"));
         fs::remove_file(root.join("hard")).unwrap();
-        symlink("file", root.join("link")).unwrap();
+        symlink("missing", root.join("link")).unwrap();
         assert!(snapshot(root, false).is_err());
         fs::remove_file(root.join("link")).unwrap();
         let non_utf8 = root.join(std::ffi::OsString::from_vec(vec![255]));

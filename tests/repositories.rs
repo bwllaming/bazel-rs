@@ -448,3 +448,101 @@ fn relative_library_cache_reuses_discovery_tree_when_origin_goes_offline() {
         "relative cache must not switch to process cwd"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn git_internal_build_and_unselected_file_links_survive_cold_and_offline_warm_builds() {
+    use std::os::unix::fs::symlink;
+    let f = Fixture::new();
+    let origin = f.0.join("repos/alpha");
+    fs::rename(origin.join("p/BUILD.bazel"), origin.join("p/BUILD.real")).unwrap();
+    symlink("BUILD.real", origin.join("p/BUILD.bazel")).unwrap();
+    f.file("repos/alpha/.bazelversion", "9.3.0\n");
+    fs::create_dir_all(origin.join("e2e/smoke")).unwrap();
+    symlink(
+        "../../.bazelversion",
+        origin.join("e2e/smoke/.bazelversion"),
+    )
+    .unwrap();
+    f.git_override();
+    let source = files(&f.run(&["--cache-dir=chosen", "build", "@first//p:data.txt"]));
+    let root = source[0].1.parent().unwrap().parent().unwrap();
+    for (name, target) in [
+        ("p/BUILD.bazel", "BUILD.real"),
+        ("e2e/smoke/.bazelversion", "../../.bazelversion"),
+    ] {
+        assert!(
+            fs::symlink_metadata(root.join(name))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::read_link(root.join(name)).unwrap(),
+            PathBuf::from(target)
+        );
+    }
+    assert_eq!(
+        fs::read(root.join("e2e/smoke/.bazelversion")).unwrap(),
+        b"9.3.0\n"
+    );
+    let cold = f.run(&["--cache-dir=chosen", "build", "@first//p:copy"]);
+    assert_eq!(fs::read(&files(&cold)[0].1).unwrap(), b"alpha");
+    fs::rename(&origin, f.0.join("offline-alpha")).unwrap();
+    let warm = f.run(&["--cache-dir=chosen", "build", "@first//p:copy"]);
+    assert_eq!(files(&cold), files(&warm));
+    assert!(stderr(&warm).contains("0 actions executed, 1 cache hits"));
+    assert_eq!(
+        fs::read_link(root.join("e2e/smoke/.bazelversion")).unwrap(),
+        PathBuf::from("../../.bazelversion")
+    );
+    assert!(!f.0.join("bazel-rs-out").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn git_preserved_links_do_not_relax_source_load_or_glob_boundaries() {
+    use std::os::unix::fs::symlink;
+    for (kind, build, command, target, diagnostic) in [
+        (
+            "source",
+            "exports_files(['linked'])\n",
+            "build",
+            "@first//p:linked",
+            "source symlinks are not supported",
+        ),
+        (
+            "load",
+            "load(':linked.bzl','VALUE')\nfilegroup(name='probe')\n",
+            "query",
+            "@first//p:probe",
+            "symlink load sources are unsupported",
+        ),
+        (
+            "glob",
+            "filegroup(name='probe',srcs=glob(['linked']))\n",
+            "query",
+            "@first//p:probe",
+            "glob could match unsupported symlink",
+        ),
+    ] {
+        let f = Fixture::new();
+        f.file("repos/alpha/p/BUILD.bazel", build);
+        let origin = f.0.join("repos/alpha/p");
+        if kind == "load" {
+            f.file("repos/alpha/p/real.bzl", "VALUE=1\n");
+            symlink("real.bzl", origin.join("linked.bzl")).unwrap();
+        } else {
+            symlink("data.txt", origin.join("linked")).unwrap();
+        }
+        f.git_override();
+        let result = f.run(&["--cache-dir=chosen", command, target]);
+        assert!(!result.status.success(), "{kind}");
+        assert!(
+            stderr(&result).contains(diagnostic),
+            "{kind}: {}",
+            stderr(&result)
+        );
+        assert!(result.stdout.is_empty());
+    }
+}

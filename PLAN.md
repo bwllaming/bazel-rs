@@ -133,6 +133,23 @@ application query/build/test compatibility.
 
 ## Remaining compatibility gates
 
+The preserved Git file-link implementation retains literal internal file
+symlinks and records their kind/target in verified manifests. Committed blob
+bytes are bounded and validated before checkout, then compared to native link
+targets; policy v3 invalidates earlier unchecked link caches. Complete and
+stripped namespaces plus post-patch/warm snapshots share safety validation.
+Directory/external links and general source/action/load symlinks remain outside
+this subset (`docs/GIT_SYMLINKS.md`).
+
+The full check passes 497 Rust tests, with the final Python suite at 240 tests,
+plus formatting, strict Clippy
+and release compilation. The reviewed CLI report passes four genuine Bazel
+differentials and 15 native-only checks; all six adjacent suites pass against
+the same release binary with recorded cleanup.
+The application probe preserves the required `rules_distroless` link but still
+fails on the unmaterialized `@io_bazel_rules_nogo` extension repository. The
+checkout is unchanged; no application query/build/test success is claimed.
+
 - [ ] Complete Bzlmod/repository compatibility beyond local selection/loading:
       complete downloader/archive/Git semantics, full patch semantics, lockfiles, built-in closure,
       module extensions and repository rules using pinned fixtures.

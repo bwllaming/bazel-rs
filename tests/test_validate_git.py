@@ -76,6 +76,17 @@ RECORDED_SOURCE_FILES = 'external/opencode_gitcheck_dep+/data\nexternal/opencode
 
 
 class RecordedRegressionTests(unittest.TestCase):
+    def test_committed_directory_link_prefix_rejection(self):
+        # Captured after file-link support: the fixture's linked -> . prefix is
+        # rejected from its committed blob before checkout can follow it.
+        text = 'bazel-rs: invalid committed Git symlink "linked": directory target is unsupported: repository root\n'
+        gitcheck.require_rejection(record(stderr=text, returncode=1), 'prefix_symlink')
+        for wrong in [text.replace('directory target', 'file target'),
+                      text.replace('invalid committed Git symlink', 'invalid cache'),
+                      text + 'permission denied\n']:
+            with self.assertRaises(ValueError):
+                gitcheck.require_rejection(record(stderr=wrong, returncode=1), 'prefix_symlink')
+
     def test_captured_native_diagnostics_and_unrelated_failure_guards(self):
         selectors = {'tag', 'branch', 'submodules'}
         for diagnostic, message in RECORDED_DIAGNOSTICS.items():

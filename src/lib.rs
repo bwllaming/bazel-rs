@@ -20,6 +20,7 @@ pub mod patching;
 pub mod providers;
 pub mod registry;
 pub mod repository;
+pub mod repository_links;
 pub mod scheduler;
 pub mod starlark_types;
 pub mod visibility;

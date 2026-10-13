@@ -45,10 +45,18 @@ override, without changing the checkout (`artifacts/mainrepo-patch-loading.json`
 
 Commit-pinned Git overrides now use an isolated system-Git process and a verified
 private source cache; final patched MODULE bytes drive discovery. Mutable refs,
-submodules and symlinks remain unsupported. The application Git fetch reaches a
+submodules and unrestricted symlinks remain unsupported. The initial Git fetch reached a
 tracked internal symlink in `rules_distroless` and fails explicitly rather than
 omitting it (`artifacts/mainrepo-git-loading.json`). Full source and build/test
 compatibility therefore remain incomplete. See `docs/GIT_OVERRIDES.md`.
+
+The preserved-file-link increment retains and validates internal relative Git
+symlinks, including committed target bytes and cold/warm manifest identity.
+The read-only application probe now preserves the required `rules_distroless`
+link and advances to `@io_bazel_rules_nogo`, whose module extension has not been
+executed. No extension repository is fabricated and the application query still
+fails. See `docs/GIT_SYMLINKS.md` and
+`artifacts/mainrepo-git-links-loading.json`.
 
 The official 9.3.0 release was published 2026-10-07, with upstream tag commit
 `e89755babf3e941bc1e9d8120b1cd48854ab9dfa`. The main checkout's `.bazeliskrc` pins

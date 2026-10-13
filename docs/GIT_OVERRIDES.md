@@ -31,8 +31,9 @@ tree **before evaluating MODULE**:
 2. Fetch the requested commit into a private disposable Git repository. Try a
    shallow fetch first, then one fresh non-shallow attempt if necessary.
 3. Verify both fetched revision and checked-out HEAD against the full commit ID.
-4. Reject unsupported tracked entries before checkout, select `strip_prefix`,
-   and copy tracked regular files into a private publication stage.
+4. Reject unsupported tracked entry types, then validate preserved internal
+   file symlinks, select `strip_prefix`, and export regular files and literal
+   symlinks into a private publication stage. See `docs/GIT_SYMLINKS.md`.
 5. Apply the complete ordered local patches once, using `docs/PATCHES.md`.
 6. Validate the final MODULE before publishing the tree or discovering dependencies.
 
@@ -59,8 +60,10 @@ sandbox.
 Exported trees are limited to 100000 entries, 1 GiB of file contents and depth 64.
 MODULE is limited to 16 MiB, and Git's tracked-file listing must be smaller than
 1 MiB. These are export/validation bounds, not a network-pack or checkout-disk
-quota. Symlinks, gitlinks, special files, hardlinks and unsafe/non-UTF-8 paths are
-rejected, including tracked unsupported entries outside the selected prefix.
+quota. Directory/external/dangling/cyclic symlinks, gitlinks, special files,
+hardlinks and unsafe/non-UTF-8 paths are rejected, including tracked unsupported
+entries outside the selected prefix. Internal relative file links have the
+separate validation and cache-identity contract in `docs/GIT_SYMLINKS.md`.
 Published files use mode 0644 or 0755, and directories use 0755.
 
 ## Subprocess isolation
@@ -82,7 +85,8 @@ This is not a sandbox against Git vulnerabilities or arbitrary hostile executabl
 
 ## Compatibility status
 
-The full check passes 452 Rust tests, 216 Python tests, formatting, strict Clippy
+The prior regular-file Git increment passed 452 Rust tests, 216 Python tests,
+formatting, strict Clippy
 and release compilation. `artifacts/git-validation.json` passes four genuine
 Bazel graph/source/build differentials and 15 native-only boundary/cache/isolation
 checks, retaining command evidence, exact bytes, executable hashes and cleanup.
@@ -90,10 +94,10 @@ The separate uppercase-pin and relative-library-cache regressions have real CLI
 or public-API evidence in `artifacts/git-uppercase-qa.json` and
 `artifacts/git-relative-cache-qa.json`.
 
-The real application fetch reaches the pinned `rules_distroless` tree but rejects
-its preserved internal symlink requirement; no Git source tree is published and
-the application query does not succeed. The checkout is unchanged and the probe
-cache is removed (`artifacts/mainrepo-git-loading.json`).
+That increment's application fetch reached the pinned `rules_distroless` tree
+but rejected its internal symlink requirement. The preserved-link increment
+records its own subsequent validation; the earlier failure evidence remains in
+`artifacts/mainrepo-git-loading.json`.
 
 Git fetching alone does not implement repository rules, extensions, built-in
 module closure, configured analysis or application builds/tests. Full Bazel 9.3

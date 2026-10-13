@@ -89,7 +89,8 @@ DIAGNOSTICS = {
     'external_patches': r'(?:git|patch)[^\n]*(?:external[^\n]*(?:unsupported|not supported|main repository)|(?:unsupported|not supported|main repository)[^\n]*external)',
     'prefix_path': r'(?:strip_prefix|strip prefix)[^\n]*(?:unsafe|traversal|parent|\.\.)',
     'prefix_symlink': (r'(?:strip_prefix|strip prefix)[^\n]*symlink|symlink[^\n]*(?:strip_prefix|strip prefix)'
-                       r'|unsupported Git tree mode: symlinks and special entries are forbidden'),
+                       r'|unsupported Git tree mode: symlinks and special entries are forbidden'
+                       r'|invalid committed Git symlink "linked": directory target is unsupported: repository root'),
 }
 UNRELATED = re.compile(r'panicked|internal error|crashed|falling back|fallback to|SSLHandshake|'
                        r'certificate|connection refused|network unreachable|could not resolve|'
