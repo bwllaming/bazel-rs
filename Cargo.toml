@@ -23,6 +23,9 @@ tar = { version = "=0.4.46", default-features = false }
 tempfile = "=3.27.0"
 zip = { version = "=9.0.2", default-features = false, features = ["deflate-flate2"] }
 
+[patch.crates-io]
+starlark = { path = "vendor/starlark-0.14.2" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

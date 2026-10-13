@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "crate": "starlark",
+  "version": "0.14.2",
+  "baseline": "H0 unchanged published archive contents",
+  "archive": {
+    "url": "https://crates.io/api/v1/crates/starlark/0.14.2/download",
+    "sha256": "9062e866918dc4c9701c98ac99f7f4fa9e4b3b4edce306e147393bc75458c4fc",
+    "root": "starlark-0.14.2",
+    "regular_members": 685,
+    "uncompressed_regular_file_bytes": 3535949,
+    "omitted_members": [],
+    "modified_members": [],
+    "archive_member_inventory": {
+      "kind": "reproducible aggregate inventory digest",
+      "reconstruction": "Recursively enumerate every regular file under path_base except additional_files paths; reject symlinks and special files; sort entries lexically by relative POSIX path",
+      "optional_expanded_receipt": "artifacts/starlark-set-vendor-baseline.json#/archive_members",
+      "canonical_json_sha256": "0af6657ae6516d614ecdd46728a28c862042e9c9cae66a539c4e32f183f752f7",
+      "canonicalization": "UTF-8 json.dumps(archive_members, sort_keys=True, separators=(',', ':')) without trailing newline",
+      "fields": ["path", "size", "sha256"],
+      "path_base": "vendor/starlark-0.14.2"
+    }
+  },
+  "upstream": {
+    "repository": "https://github.com/facebook/starlark-rust",
+    "commit": "0c8d107ab963362ba47ee3ab9e0173bc39bd101d",
+    "commit_receipt": "starlark-0.14.2/.cargo_vcs_info.json"
+  },
+  "declared_source_patches": [],
+  "additional_files": [
+    {
+      "path": "LICENSE",
+      "size": 11324,
+      "sha256": "50e6751797c50dedd75ef1b8a0d9e42f5f8472e9fbce91f34718e9f97b0c780a",
+      "url": "https://raw.githubusercontent.com/facebook/starlark-rust/0c8d107ab963362ba47ee3ab9e0173bc39bd101d/LICENSE",
+      "upstream_commit": "0c8d107ab963362ba47ee3ab9e0173bc39bd101d",
+      "source_artifact": "artifacts/starlark-upstream-LICENSE",
+      "reason": "Authentic pinned upstream license omitted from published crate archive"
+    }
+  ],
+  "notice": {
+    "url": "https://raw.githubusercontent.com/facebook/starlark-rust/0c8d107ab963362ba47ee3ab9e0173bc39bd101d/NOTICE",
+    "http_status": 404,
+    "absent_from_complete_pinned_upstream_tree": true,
+    "added": false
+  },
+  "license_acquisition_receipt": "artifacts/starlark-set-edge-contract.json#/licensing",
+  "cargo": {
+    "patch_table": "patch.crates-io",
+    "path": "vendor/starlark-0.14.2",
+    "expected_lockfile_transition": "Remove only starlark 0.14.2 registry source and checksum",
+    "dependency_version_changes": []
+  }
+}

@@ -174,6 +174,18 @@ checkout is unchanged; no application query/build/test success is claimed.
 
 ## Remaining compatibility gates
 
+### Starlark set execution
+
+- [x] Preserve the exact pinned interpreter as a licensed, provenance-verified
+      vendor baseline; verify unchanged dependency resolution and native behavior.
+- [ ] Repair real set methods, constructor metadata and assignment-specific
+      mutation semantics without changing ordinary binary operations.
+- [ ] Enable genuine sets in BUILD/MODULE/.bzl and retain generated File
+      dependencies through provider-contained sets; verify actual action outputs.
+
+Each stage is separately verified and committed. Default-enabled core set support
+does not establish general-value formatting, disabled-flag or full Bazel parity.
+
 ### Run-environment metadata
 
 - [x] Pin constructor, snapshot, structural equality and direct/nested return
@@ -188,7 +200,7 @@ checkout is unchanged; no application query/build/test success is claimed.
 See `docs/RUN_ENVIRONMENT_INFO.md`; automatic execution environment handling and
 executable/test rule support remain outside this increment.
 
-### Root MODULE validation — next separate increment
+### Root MODULE validation
 
 - [x] Evaluate root MODULE for local CLI query/build before BUILD loading or
       actions; preserve low-level repository laziness and unused dependency

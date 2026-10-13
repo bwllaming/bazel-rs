@@ -22,7 +22,9 @@ Rust **1.99.0**, rustfmt, Clippy, rust-analyzer and rust-src are pinned in
 `rust-toolchain.toml`. Rustup and Cargo live under `.direnv/`; installation checks
 the official rustup-init SHA256 and does not change shell startup files. `.envrc`
 only sets paths and variables; entering the directory does not run installers.
-Dependencies are locked in `Cargo.lock`. Linux is the supported execution host.
+Dependencies are locked in `Cargo.lock`. The pinned interpreter is preserved as
+an [unchanged, licensed vendor baseline](docs/STARLARK_VENDOR.md). Linux is the
+supported execution host.
 After a release build, direnv also exposes `bazel-rs` on PATH. It never installs
 a `bazel` alias or replaces the main repo's launcher.
 
