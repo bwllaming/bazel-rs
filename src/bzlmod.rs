@@ -25,6 +25,8 @@ pub struct ModuleFile {
     /// None means no module() directive; legal for an anonymous root module.
     pub module: Option<ModuleInfo>,
     pub dependencies: Vec<Dependency>,
+    /// Resolver-profile additions, separate from the unchanged source declarations.
+    pub implicit_dependencies: Vec<Dependency>,
     /// Keyed by module name, with at most one override of any kind per module.
     pub overrides: BTreeMap<String, ModuleOverride>,
     pub extension_usages: Vec<ExtensionUsage>,
@@ -32,6 +34,22 @@ pub struct ModuleFile {
     /// Captured before evaluation, but enforced only when executing a direct
     /// repository declaration. Metadata-only evaluation remains unchanged.
     pub source_profile_error: Option<String>,
+}
+
+impl ModuleFile {
+    /// Declaration order followed by profile additions; nodep/dev filtering is
+    /// the resolver's responsibility, not a mutation of recorded metadata.
+    pub fn effective_dependencies(&self) -> impl Iterator<Item = &Dependency> {
+        self.dependencies.iter().chain(&self.implicit_dependencies)
+    }
+}
+
+/// Chosen from the discovery key, never from the source's module() declaration.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum BuiltinInjection {
+    Disabled,
+    AppendBazelTools,
+    ActualBazelTools,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -393,9 +411,17 @@ pub fn evaluate_with_context(
     path: &Path,
     context: EvaluationContext,
 ) -> Result<ModuleFile, String> {
+    evaluate_with_builtins(path, context, BuiltinInjection::Disabled)
+}
+
+pub(crate) fn evaluate_with_builtins(
+    path: &Path,
+    context: EvaluationContext,
+    injection: BuiltinInjection,
+) -> Result<ModuleFile, String> {
     let source = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read MODULE file {}: {e}", path.display()))?;
-    evaluate_source_with_context(&path.to_string_lossy(), source, context)
+    evaluate_source_with_builtins(&path.to_string_lossy(), source, context, injection)
 }
 
 pub fn evaluate_source(filename: &str, source: String) -> Result<ModuleFile, String> {
@@ -423,6 +449,20 @@ pub fn evaluate_source_with_context(
     filename: &str,
     source: String,
     evaluation_context: EvaluationContext,
+) -> Result<ModuleFile, String> {
+    evaluate_source_with_builtins(
+        filename,
+        source,
+        evaluation_context,
+        BuiltinInjection::Disabled,
+    )
+}
+
+pub(crate) fn evaluate_source_with_builtins(
+    filename: &str,
+    source: String,
+    evaluation_context: EvaluationContext,
+    injection: BuiltinInjection,
 ) -> Result<ModuleFile, String> {
     let dialect = Dialect {
         enable_def: false,
@@ -471,7 +511,17 @@ pub fn evaluate_source_with_context(
             .map_err(|e| format!("cannot record MODULE attributes in {filename}: {e}"))?;
         Ok::<_, String>(())
     })?;
-    let mut file = collector.state.into_inner().file;
+    let mut state = collector.state.into_inner();
+    if let BuiltinInjection::AppendBazelTools = injection {
+        reserve_repo(&mut state, "bazel_tools")
+            .map_err(|e| format!("cannot finalize MODULE file {filename}: {e}"))?;
+        state.file.implicit_dependencies.push(Dependency {
+            name: "bazel_tools".to_owned(),
+            repo_name: DependencyRepoName::Explicit("bazel_tools".to_owned()),
+            ..Default::default()
+        });
+    }
+    let mut file = state.file;
     file.source_profile_error = source_profile_error;
     Ok(file)
 }
@@ -1223,6 +1273,128 @@ mod tests {
     use super::*;
     fn run(s: &str) -> ModuleFile {
         evaluate_source("MODULE.bazel", s.to_owned()).unwrap()
+    }
+
+    #[test]
+    fn builtin_finalization_preserves_declared_metadata_and_appends_in_order() {
+        for source in [
+            "",
+            "module(name='root')",
+            "module(name='root')\nbazel_dep(name='z',version='1')\nbazel_dep(name='a',repo_name=None)\nbazel_dep(name='dev',dev_dependency=True)",
+        ] {
+            for context in contexts() {
+                let declared = in_context(source, context).unwrap();
+                assert!(declared.implicit_dependencies.is_empty());
+                let mut file = evaluate_source_with_builtins(
+                    "MODULE.bazel",
+                    source.to_owned(),
+                    context,
+                    BuiltinInjection::AppendBazelTools,
+                )
+                .unwrap();
+                assert_eq!(file.dependencies, declared.dependencies);
+                assert_eq!(
+                    file.effective_dependencies().count(),
+                    declared.dependencies.len() + 1
+                );
+                let builtin = file.effective_dependencies().last().unwrap();
+                assert_eq!(builtin.name, "bazel_tools");
+                assert_eq!(builtin.version, "");
+                assert_eq!(
+                    builtin.repo_name,
+                    DependencyRepoName::Explicit("bazel_tools".to_owned())
+                );
+                assert_eq!(builtin.max_compatibility_level, -1);
+                assert!(!builtin.dev_dependency);
+                assert_eq!(
+                    file.effective_dependencies()
+                        .take(declared.dependencies.len())
+                        .collect::<Vec<_>>(),
+                    declared.dependencies.iter().collect::<Vec<_>>()
+                );
+                file.implicit_dependencies.clear();
+                assert_eq!(file, declared);
+            }
+        }
+    }
+
+    #[test]
+    fn builtin_finalization_reserves_names_including_ignored_declarations() {
+        for source in [
+            "module(name='bazel_tools')",
+            "module(name='root',repo_name='bazel_tools')",
+            "bazel_dep(name='bazel_tools',version='1')",
+            "bazel_dep(name='other',repo_name='bazel_tools',dev_dependency=True)",
+            "e=use_extension('//:e.bzl','e')\nuse_repo(e,'bazel_tools')",
+            "e=use_extension('//:e.bzl','e',dev_dependency=True)\nuse_repo(e,bazel_tools='exported')",
+            "r=use_repo_rule('//:r.bzl','r')\nr(name='bazel_tools')",
+        ] {
+            for context in contexts() {
+                let error = evaluate_source_with_builtins(
+                    "MODULE.bazel",
+                    source.to_owned(),
+                    context,
+                    BuiltinInjection::AppendBazelTools,
+                )
+                .unwrap_err();
+                assert!(
+                    error.contains("repository name \"bazel_tools\" is already used"),
+                    "{source}: {error}"
+                );
+                // Legacy recording still permits these names without injecting anything.
+                assert!(
+                    in_context(source, context)
+                        .unwrap()
+                        .implicit_dependencies
+                        .is_empty()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn actual_builtin_has_no_implicit_self_dependency() {
+        let source = "module(name='bazel_tools')\nbazel_dep(name='rules_license',version='1.0.0')";
+        let context = EvaluationContext {
+            role: ModuleRole::Dependency,
+            ignore_dev_dependencies: false,
+        };
+        let actual = evaluate_source_with_builtins(
+            "@bazel_tools//:MODULE.bazel",
+            source.to_owned(),
+            context,
+            BuiltinInjection::ActualBazelTools,
+        )
+        .unwrap();
+        assert_eq!(actual, in_context(source, context).unwrap());
+        assert!(actual.implicit_dependencies.is_empty());
+        // A root with the same declaration is not the actual builtin key.
+        assert!(
+            evaluate_source_with_builtins(
+                "MODULE.bazel",
+                source.to_owned(),
+                EvaluationContext::default(),
+                BuiltinInjection::AppendBazelTools,
+            )
+            .unwrap_err()
+            .contains("already used")
+        );
+    }
+
+    #[test]
+    fn builtin_finalization_follows_deferred_attribute_validation() {
+        let source = "module(name='bazel_tools')\ne=use_extension('//:e.bzl','e')\ne.tag(value=e)";
+        let error = evaluate_source_with_builtins(
+            "MODULE.bazel",
+            source.to_owned(),
+            EvaluationContext::default(),
+            BuiltinInjection::AppendBazelTools,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("unsupported extension tag attribute"),
+            "{error}"
+        );
     }
 
     #[test]

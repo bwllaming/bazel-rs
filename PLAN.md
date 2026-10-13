@@ -174,6 +174,33 @@ checkout is unchanged; no application query/build/test success is claimed.
 
 ## Remaining compatibility gates
 
+### Genuine builtin transition
+
+- [x] Package all 421 official Bazel 9.3 Linux x86-64 embedded-tools files with
+      reproducible bytes, trusted manifest, provenance and licenses.
+- [x] Add an explicit native profile with implicit `bazel_tools` edges before
+      discovery/selection, key-based identity, shared ordering and normal closure.
+- [x] Preserve MODULE-override metadata independently of canonical builtin
+      filesystem precedence; implement native checked lazy tree publication.
+- [x] Match two official 28-module selections from captured genuine registry
+      metadata, including the older explicit platforms request upgrade.
+- [x] Query/build through an unmodified builtin helper; provide the real Starlark
+      `print` global required when loading that helper.
+- [x] Correct the genuinely observed action-output permission mismatch: all
+      completed regular outputs now normalize to `0555`, with v5 cache checks.
+- [x] Pass 725 Rust tests, 360 Python tests, strict Clippy and release compilation.
+- [x] Pass two genuine builtin CLI comparisons and six native boundary/cache
+      checks, including a standalone executable process trace and cleanup.
+- [x] Retry the unchanged application: now fails on genuine missing
+      `platform_common` in `bazel_skylib`'s `common_settings.bzl`, not a fabricated
+      builtin repository. Scratch removed and required Git link preserved.
+- [x] Complete builtin/adjacent CLI reports, final-delta checks, Python suite and
+      unconditional review of the bounded profile and action-permission fix.
+
+This is an opt-in transition, not complete default builtin/registry/lockfile or
+application compatibility. Default migration and functional build settings,
+platform providers, SDKs and toolchains remain required work.
+
 The bounded ordinary-extension increment adds real non-isolated callbacks and
 typed immutable module/tag views. It snapshots repository arguments at call time,
 binds their labels after complete sibling discovery and validates every generated

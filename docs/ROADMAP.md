@@ -72,6 +72,13 @@ validation before demanded repository execution. See `docs/MODULE_EXTENSIONS.md`
 Metadata, facts, SDK operations and implicit built-in closure are still missing;
 application query/build/test and full compatibility remain unproven.
 
+Genuine built-in discovery is now available as an opt-in native profile. It
+injects only `bazel_tools` before selection, evaluates its unchanged official
+MODULE and normal dependency closure, and publishes the complete official tools
+tree through a native verified cache. The default transition, graph presentation,
+registry/lockfile defaults and SDK APIs remain unfinished. See
+`docs/BUILTIN_MODULES.md`; this is not full application or performance parity.
+
 The official 9.3.0 release was published 2026-10-07, with upstream tag commit
 `e89755babf3e941bc1e9d8120b1cd48854ab9dfa`. The main checkout's `.bazeliskrc` pins
 9.1.1. Changing that checkout's pin is outside this implementation.

@@ -484,7 +484,7 @@ fn owner_order(graph: &ResolvedGraph, ignore_root_dev: bool) -> Result<Vec<Strin
     let mut result = Vec::new();
     while let Some(owner) = queue.pop_front() {
         let (module, mapping) = owner_data(graph, &owner)?;
-        for dependency in &module.dependencies {
+        for dependency in module.effective_dependencies() {
             if dependency.dev_dependency && (!owner.is_empty() || ignore_root_dev) {
                 continue;
             }
@@ -796,6 +796,51 @@ r(name="direct")
                     .name,
                 file
             );
+        }
+    }
+
+    #[test]
+    fn module_bfs_includes_implicit_builtin_after_declared_deps() {
+        let mut graph = graph("bazel_dep(name='z')\nbazel_dep(name='a')");
+        for name in ["z", "a"] {
+            dependency(
+                &mut graph,
+                name,
+                &format!("{name}+"),
+                &format!("module(name='{name}')"),
+            );
+        }
+        dependency(
+            &mut graph,
+            "bazel_tools",
+            "bazel_tools",
+            "module(name='bazel_tools')",
+        );
+        let implicit = bzlmod::evaluate_source_with_builtins(
+            "MODULE.bazel",
+            String::new(),
+            EvaluationContext::default(),
+            bzlmod::BuiltinInjection::AppendBazelTools,
+        )
+        .unwrap()
+        .implicit_dependencies;
+        graph.root.implicit_dependencies = implicit.clone();
+        for name in ["z+", "a+"] {
+            let module = graph.modules.get_mut(name).unwrap();
+            module.module.implicit_dependencies = implicit.clone();
+            module
+                .mapping
+                .insert("bazel_tools".to_owned(), "bazel_tools".to_owned());
+        }
+        for ignore_dev in [false, true] {
+            assert_eq!(
+                owner_order(&graph, ignore_dev).unwrap(),
+                ["", "z+", "a+", "bazel_tools"]
+            );
+            let catalog = build(&graph, ignore_dev).unwrap();
+            for owner in ["", "z+", "a+", "bazel_tools"] {
+                assert_eq!(catalog.owner_mappings[owner]["bazel_tools"], "bazel_tools");
+            }
         }
     }
 

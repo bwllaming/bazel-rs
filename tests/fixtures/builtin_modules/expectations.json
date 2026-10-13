@@ -1,0 +1,253 @@
+{
+  "canonical_names": "not projected: mod graph JSON supplies apparentName only",
+  "cases": [
+    {
+      "graph_sha256": "3bef89f4453770c8f7f0dfbdfcbb55ac210b6788f41e26ba1e9f17c76c142027",
+      "lockfile_sha256": "b740de99469ec391a88b4893c923fa754e0967281e46628f071f50fa69442297",
+      "name": "empty-root",
+      "reference_graph": "cases/empty-root/graph.json",
+      "reference_lockfile": "cases/empty-root/MODULE.bazel.lock",
+      "root_module": "module(name = \"opencode_builtin_fixture\", version = \"1.0\")\n",
+      "selected": [
+        {
+          "name": "abseil-cpp",
+          "version": "20250814.1"
+        },
+        {
+          "name": "apple_support",
+          "version": "2.5.2"
+        },
+        {
+          "name": "bazel_features",
+          "version": "1.42.1"
+        },
+        {
+          "name": "bazel_skylib",
+          "version": "1.8.2"
+        },
+        {
+          "name": "bazel_tools",
+          "version": ""
+        },
+        {
+          "name": "buildozer",
+          "version": "8.5.1"
+        },
+        {
+          "name": "googletest",
+          "version": "1.17.0"
+        },
+        {
+          "name": "jsoncpp",
+          "version": "1.9.6"
+        },
+        {
+          "name": "nlohmann_json",
+          "version": "3.6.1"
+        },
+        {
+          "name": "platforms",
+          "version": "1.0.0"
+        },
+        {
+          "name": "protobuf",
+          "version": "33.4"
+        },
+        {
+          "name": "pybind11_bazel",
+          "version": "2.12.0"
+        },
+        {
+          "name": "re2",
+          "version": "2024-07-02.bcr.1"
+        },
+        {
+          "name": "rules_android",
+          "version": "0.1.1"
+        },
+        {
+          "name": "rules_apple",
+          "version": "4.1.0"
+        },
+        {
+          "name": "rules_cc",
+          "version": "0.2.17"
+        },
+        {
+          "name": "rules_java",
+          "version": "9.1.0"
+        },
+        {
+          "name": "rules_jvm_external",
+          "version": "6.7"
+        },
+        {
+          "name": "rules_kotlin",
+          "version": "1.9.6"
+        },
+        {
+          "name": "rules_license",
+          "version": "1.0.0"
+        },
+        {
+          "name": "rules_pkg",
+          "version": "1.0.1"
+        },
+        {
+          "name": "rules_proto",
+          "version": "7.1.0"
+        },
+        {
+          "name": "rules_python",
+          "version": "1.7.0"
+        },
+        {
+          "name": "rules_shell",
+          "version": "0.6.1"
+        },
+        {
+          "name": "rules_swift",
+          "version": "3.1.2"
+        },
+        {
+          "name": "stardoc",
+          "version": "0.7.2"
+        },
+        {
+          "name": "swift_argument_parser",
+          "version": "1.3.1.2"
+        },
+        {
+          "name": "zlib",
+          "version": "1.3.1.bcr.5"
+        }
+      ]
+    },
+    {
+      "graph_sha256": "1fd011f6a3b1235ef853b4820e43dbbec18ce3421bac4f3286b9d6fe4d1140a2",
+      "lockfile_sha256": "b740de99469ec391a88b4893c923fa754e0967281e46628f071f50fa69442297",
+      "name": "older-platforms",
+      "reference_graph": "cases/older-platforms/graph.json",
+      "reference_lockfile": "cases/older-platforms/MODULE.bazel.lock",
+      "root_module": "module(name = \"opencode_builtin_fixture\", version = \"1.0\")\nbazel_dep(name = \"platforms\", version = \"0.0.10\")\n",
+      "selected": [
+        {
+          "name": "abseil-cpp",
+          "version": "20250814.1"
+        },
+        {
+          "name": "apple_support",
+          "version": "2.5.2"
+        },
+        {
+          "name": "bazel_features",
+          "version": "1.42.1"
+        },
+        {
+          "name": "bazel_skylib",
+          "version": "1.8.2"
+        },
+        {
+          "name": "bazel_tools",
+          "version": ""
+        },
+        {
+          "name": "buildozer",
+          "version": "8.5.1"
+        },
+        {
+          "name": "googletest",
+          "version": "1.17.0"
+        },
+        {
+          "name": "jsoncpp",
+          "version": "1.9.6"
+        },
+        {
+          "name": "nlohmann_json",
+          "version": "3.6.1"
+        },
+        {
+          "name": "platforms",
+          "version": "1.0.0"
+        },
+        {
+          "name": "protobuf",
+          "version": "33.4"
+        },
+        {
+          "name": "pybind11_bazel",
+          "version": "2.12.0"
+        },
+        {
+          "name": "re2",
+          "version": "2024-07-02.bcr.1"
+        },
+        {
+          "name": "rules_android",
+          "version": "0.1.1"
+        },
+        {
+          "name": "rules_apple",
+          "version": "4.1.0"
+        },
+        {
+          "name": "rules_cc",
+          "version": "0.2.17"
+        },
+        {
+          "name": "rules_java",
+          "version": "9.1.0"
+        },
+        {
+          "name": "rules_jvm_external",
+          "version": "6.7"
+        },
+        {
+          "name": "rules_kotlin",
+          "version": "1.9.6"
+        },
+        {
+          "name": "rules_license",
+          "version": "1.0.0"
+        },
+        {
+          "name": "rules_pkg",
+          "version": "1.0.1"
+        },
+        {
+          "name": "rules_proto",
+          "version": "7.1.0"
+        },
+        {
+          "name": "rules_python",
+          "version": "1.7.0"
+        },
+        {
+          "name": "rules_shell",
+          "version": "0.6.1"
+        },
+        {
+          "name": "rules_swift",
+          "version": "3.1.2"
+        },
+        {
+          "name": "stardoc",
+          "version": "0.7.2"
+        },
+        {
+          "name": "swift_argument_parser",
+          "version": "1.3.1.2"
+        },
+        {
+          "name": "zlib",
+          "version": "1.3.1.bcr.5"
+        }
+      ]
+    }
+  ],
+  "reference_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "reference_version": "9.3.0",
+  "schema_version": 1,
+  "selection_order": "lexicographic name; not source declaration order"
+}

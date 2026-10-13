@@ -102,8 +102,9 @@ Isolation, metadata construction/returns, facts, OS/environment inspection,
 module-context reads/downloads, and SDK APIs are unsupported. No placeholder
 metadata, facts, platform or SDK repository is substituted. `mod graph` retains
 its existing explicit-module profile and does not execute active extensions.
-Implicit built-in module closure and complete language/rule/toolchain support
-remain unfinished. Successful whole-application query/build/test and performance
+Genuine built-in module closure is now available through the separate opt-in
+[built-in profile](BUILTIN_MODULES.md); default semantics and complete
+language/rule/toolchain support remain unfinished. Successful whole-application query/build/test and performance
 improvements have not been established by this increment.
 
 ## Verification

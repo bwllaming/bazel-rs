@@ -8,12 +8,14 @@
 //! This graph projects root-owned patches onto registry MODULE files, but never
 //! materializes registry sources or executes patch commands.
 //! Remote registry reads require explicit lockfile-off opt-in; no lockfiles are read
-//! or written. Implicit built-in
-//! bazel_tools is not injected or fabricated: this graph covers explicit deps.
+//! or written. The default profile covers explicit deps; the opt-in Bazel 9.3
+//! profile evaluates the genuine embedded bazel_tools MODULE and its full closure.
 //!
 //! Semantics: https://bazel.build/external/module#version-selection
 //! Relaxed versions: https://bazel.build/external/module#version_format
-use crate::bzlmod::{self, Dependency, EvaluationContext, ModuleFile, ModuleOverride, ModuleRole};
+use crate::bzlmod::{
+    self, BuiltinInjection, Dependency, EvaluationContext, ModuleFile, ModuleOverride, ModuleRole,
+};
 use crate::git_source::{self, GitSpec, GitTree};
 use crate::patch_inputs::{self, LocalPatchPlan};
 use crate::registry::Registry;
@@ -23,11 +25,31 @@ use std::path::{Path, PathBuf};
 
 const MAX_DISCOVERED_MODULES: usize = 10_000;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BuiltinProfile {
+    #[default]
+    ExplicitModules,
+    Bazel93Builtins,
+}
+
+impl BuiltinProfile {
+    fn injection(self, key: &Key) -> BuiltinInjection {
+        match (self, key) {
+            (Self::ExplicitModules, _) => BuiltinInjection::Disabled,
+            (Self::Bazel93Builtins, Key::Module { name, .. }) if name == "bazel_tools" => {
+                BuiltinInjection::ActualBazelTools
+            }
+            (Self::Bazel93Builtins, _) => BuiltinInjection::AppendBazelTools,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ResolverOptions {
     /// Explicit registry roots, searched in order. No implicit remote registry.
     pub registries: Vec<Registry>,
     pub ignore_dev_dependencies: bool,
+    pub builtin_profile: BuiltinProfile,
     /// Remote CLI resolution requires explicitly disabling unsupported lockfiles.
     pub allow_remote: bool,
 }
@@ -75,6 +97,7 @@ pub struct ResolvedModule {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModuleSource {
+    Embedded(crate::builtin_tools::BuiltinId),
     LocalPath(PathBuf),
     Git {
         spec: GitSpec,
@@ -119,12 +142,13 @@ pub fn resolve_with_source_cache(
         ));
     }
     let source_cache = root_path.join(cache);
-    let root = bzlmod::evaluate_with_context(
+    let root = bzlmod::evaluate_with_builtins(
         &root_path.join("MODULE.bazel"),
         EvaluationContext {
             role: ModuleRole::Root,
             ignore_dev_dependencies: options.ignore_dev_dependencies,
         },
+        options.builtin_profile.injection(&Key::Root),
     )?;
     let no_overrides = BTreeMap::new();
     // Bazel 9.3 ModuleThreadContext.addOverride ignores all MODULE overrides
@@ -134,6 +158,16 @@ pub fn resolve_with_source_cache(
     } else {
         &root.overrides
     };
+    let use_embedded_builtin = options.builtin_profile == BuiltinProfile::Bazel93Builtins
+        && !overrides.contains_key("bazel_tools");
+    if use_embedded_builtin
+        && root
+            .module
+            .as_ref()
+            .is_some_and(|info| info.name == "bazel_tools")
+    {
+        return Err("overriding the root module \"bazel_tools\" is unsupported".to_owned());
+    }
     for (name, value) in overrides {
         if root
             .module
@@ -148,8 +182,7 @@ pub fn resolve_with_source_cache(
             // Match Bazel 9.3 ModuleFileFunction: this check looks up the root's
             // apparent dependency name, not the dependency's module name.
             if let Some(dep) = root
-                .dependencies
-                .iter()
+                .effective_dependencies()
                 .find(|d| d.effective_repo_name() == Some(name.as_str()))
             {
                 let requested = Version::parse(&dep.version)?;
@@ -168,6 +201,7 @@ pub fn resolve_with_source_cache(
         options,
         root: &root,
         overrides,
+        use_embedded_builtin,
     };
     let nodes = discovery.collect()?;
     for name in overrides.keys() {
@@ -185,7 +219,7 @@ pub fn resolve_with_source_cache(
     // though those nodes must not appear in the final repository graph.
     selected_reachable(&nodes, &selected, false)?;
     let reachable = selected_reachable(&nodes, &selected, true)?;
-    let canonical_names = canonical_names(&reachable)?;
+    let canonical_names = canonical_names(&reachable, options.builtin_profile)?;
     let mut modules = BTreeMap::new();
     for key in &reachable {
         let Key::Module { name, version } = key else {
@@ -229,6 +263,8 @@ struct Node {
     source: Option<ModuleSource>,
     /// Apparent repository name -> originally requested (override-adjusted) key.
     dependencies: BTreeMap<String, Key>,
+    /// Same edges in effective declaration order, for discovery and selection BFS.
+    ordered_dependencies: Vec<(String, Key)>,
     /// Fulfilled nodep requests influence selection but never create mappings.
     nodep_dependencies: Vec<Key>,
 }
@@ -246,6 +282,8 @@ struct Discovery<'a> {
     options: &'a ResolverOptions,
     root: &'a ModuleFile,
     overrides: &'a BTreeMap<String, ModuleOverride>,
+    /// Internal default override, deliberately not representable in MODULE syntax.
+    use_embedded_builtin: bool,
 }
 impl Discovery<'_> {
     fn collect(&self) -> Result<BTreeMap<Key, Node>, String> {
@@ -302,14 +340,16 @@ impl Discovery<'_> {
             }
             let (module, source) = loaded[&key].clone();
             let mut dependencies = BTreeMap::new();
+            let mut ordered_dependencies = Vec::new();
             let mut nodep_dependencies = Vec::new();
-            for dep in &module.dependencies {
+            for dep in module.effective_dependencies() {
                 if dep.dev_dependency && (key != Key::Root || self.options.ignore_dev_dependencies)
                 {
                     continue;
                 }
                 let target = self.dependency_key(dep)?;
                 if let Some(alias) = dep.effective_repo_name() {
+                    ordered_dependencies.push((alias.to_owned(), target.clone()));
                     dependencies.insert(alias.to_owned(), target);
                 } else {
                     nodep_dependencies.push(target);
@@ -317,9 +357,9 @@ impl Discovery<'_> {
             }
             // Ordinary deps always introduce requested versions. A nodep may
             // introduce a version only when its name existed in the prior round.
-            for (target, is_nodep) in dependencies
-                .values()
-                .map(|key| (key, false))
+            for (target, is_nodep) in ordered_dependencies
+                .iter()
+                .map(|(_, key)| (key, false))
                 .chain(nodep_dependencies.iter().map(|key| (key, true)))
             {
                 if is_nodep
@@ -345,6 +385,7 @@ impl Discovery<'_> {
                     module,
                     source,
                     dependencies,
+                    ordered_dependencies,
                     nodep_dependencies,
                 },
             );
@@ -362,20 +403,26 @@ impl Discovery<'_> {
         {
             return Ok(Key::Root);
         }
-        let version = match self.overrides.get(&dep.name) {
-            Some(
-                ModuleOverride::LocalPath { .. }
-                | ModuleOverride::Git { .. }
-                | ModuleOverride::Archive { .. },
-            ) => Version::default(),
-            Some(ModuleOverride::SingleVersion { version, .. }) => {
-                Version::parse(if version.is_empty() {
-                    &dep.version
-                } else {
-                    version
-                })?
+        let version = if self.use_embedded_builtin && dep.name == "bazel_tools" {
+            Version::default()
+        } else {
+            match self.overrides.get(&dep.name) {
+                Some(
+                    ModuleOverride::LocalPath { .. }
+                    | ModuleOverride::Git { .. }
+                    | ModuleOverride::Archive { .. },
+                ) => Version::default(),
+                Some(ModuleOverride::SingleVersion { version, .. }) => {
+                    Version::parse(if version.is_empty() {
+                        &dep.version
+                    } else {
+                        version
+                    })?
+                }
+                Some(ModuleOverride::MultipleVersion { .. }) | None => {
+                    Version::parse(&dep.version)?
+                }
             }
-            Some(ModuleOverride::MultipleVersion { .. }) | None => Version::parse(&dep.version)?,
         };
         Ok(Key::Module {
             name: dep.name.clone(),
@@ -384,8 +431,32 @@ impl Discovery<'_> {
     }
 
     fn load(&self, name: &str, version: &Version) -> Result<(ModuleFile, ModuleSource), String> {
-        if name == "bazel_tools" {
+        if name == "bazel_tools" && self.options.builtin_profile == BuiltinProfile::ExplicitModules
+        {
             return Err("built-in bazel_tools is unavailable in the local module resolver; no built-in repository is fabricated".to_owned());
+        }
+        let injection = self.options.builtin_profile.injection(&Key::Module {
+            name: name.to_owned(),
+            version: version.clone(),
+        });
+        if name == "bazel_tools" && self.use_embedded_builtin {
+            let path = "@bazel_tools//:MODULE.bazel";
+            let source = std::str::from_utf8(crate::builtin_tools::module_bytes())
+                .map_err(|error| format!("embedded MODULE file {path} is not UTF-8: {error}"))?;
+            let module = bzlmod::evaluate_source_with_builtins(
+                path,
+                source.to_owned(),
+                EvaluationContext {
+                    role: ModuleRole::Dependency,
+                    ignore_dev_dependencies: self.options.ignore_dev_dependencies,
+                },
+                injection,
+            )?;
+            validate_declared_module(&module, name, None, path)?;
+            return Ok((
+                module,
+                ModuleSource::Embedded(crate::builtin_tools::BuiltinId::BazelTools93),
+            ));
         }
         match self.overrides.get(name) {
             Some(ModuleOverride::Git {
@@ -420,13 +491,14 @@ impl Discovery<'_> {
                         let source = String::from_utf8(bytes.to_vec()).map_err(|error| {
                             format!("Git MODULE file {path} is not UTF-8: {error}")
                         })?;
-                        let module = bzlmod::evaluate_source_with_context(
+                        let module = bzlmod::evaluate_source_with_builtins(
                             &path,
                             source,
                             EvaluationContext {
                                 role: ModuleRole::Dependency,
                                 ignore_dev_dependencies: self.options.ignore_dev_dependencies,
                             },
+                            injection,
                         )?;
                         validate_declared_module(&module, name, None, &path)?;
                         Ok(module)
@@ -453,12 +525,13 @@ impl Discovery<'_> {
             let path = std::fs::canonicalize(self.root_path.join(path)).map_err(|e| {
                 format!("cannot resolve local override for {name:?} at {path:?}: {e}")
             })?;
-            let module = bzlmod::evaluate_with_context(
+            let module = bzlmod::evaluate_with_builtins(
                 &path.join("MODULE.bazel"),
                 EvaluationContext {
                     role: ModuleRole::Dependency,
                     ignore_dev_dependencies: self.options.ignore_dev_dependencies,
                 },
+                injection,
             )?;
             validate_declared_module(&module, name, None, &path.display().to_string())?;
             return Ok((module, ModuleSource::LocalPath(path)));
@@ -495,13 +568,14 @@ impl Discovery<'_> {
             let evaluated_module_file = local_patches.apply_module(&module_file)?;
             let source = String::from_utf8(evaluated_module_file.clone())
                 .map_err(|error| format!("patched MODULE file {path} is not UTF-8: {error}"))?;
-            let module = bzlmod::evaluate_source_with_context(
+            let module = bzlmod::evaluate_source_with_builtins(
                 &path,
                 source,
                 EvaluationContext {
                     role: ModuleRole::Dependency,
                     ignore_dev_dependencies: self.options.ignore_dev_dependencies,
                 },
+                injection,
             )?;
             validate_declared_module(&module, name, Some(version), &path)?;
             return Ok((
@@ -665,7 +739,7 @@ fn selected_reachable(
         // Selection.java:454-471 checks ordinary dependencies, even on nodes
         // reachable only through nodep edges. Nodeps themselves have no aliases.
         let mut dependency_targets = BTreeMap::new();
-        for (alias, target) in &node.dependencies {
+        for (alias, target) in &node.ordered_dependencies {
             let target = selected_key(target, selected)?;
             if let Some(previous) = dependency_targets.insert(target, alias) {
                 return Err(format!(
@@ -683,7 +757,10 @@ fn selected_reachable(
     Ok(reachable)
 }
 
-fn canonical_names(reachable: &BTreeSet<Key>) -> Result<BTreeMap<Key, String>, String> {
+fn canonical_names(
+    reachable: &BTreeSet<Key>,
+    profile: BuiltinProfile,
+) -> Result<BTreeMap<Key, String>, String> {
     let mut counts = BTreeMap::new();
     for key in reachable {
         if let Key::Module { name, .. } = key {
@@ -696,7 +773,12 @@ fn canonical_names(reachable: &BTreeSet<Key>) -> Result<BTreeMap<Key, String>, S
         let canonical = match key {
             Key::Root => String::new(),
             // ModuleKey.java:45-55,97-127: well-known repos keep fixed names.
-            Key::Module { name, .. } if name == "platforms" => name.clone(),
+            Key::Module { name, .. }
+                if name == "platforms"
+                    || (name == "bazel_tools" && profile == BuiltinProfile::Bazel93Builtins) =>
+            {
+                name.clone()
+            }
             Key::Module { name, version } if counts[name] > 1 => {
                 format!("{name}+{}", version.normalized)
             }
@@ -1577,6 +1659,295 @@ mod tests {
     fn explicit_builtin_dependency_reports_missing_capability() {
         let f = Fixture::new("bazel_dep(name='bazel_tools')");
         f.fails("built-in bazel_tools is unavailable");
+    }
+
+    fn builtin_options(f: &Fixture) -> ResolverOptions {
+        ResolverOptions {
+            builtin_profile: BuiltinProfile::Bazel93Builtins,
+            ..f.options()
+        }
+    }
+
+    #[test]
+    fn builtin_profile_discovers_genuine_closure_without_extracting_sources() {
+        let f = Fixture::new("");
+        let error = resolve(&f.root, &builtin_options(&f)).unwrap_err();
+        assert!(
+            error.contains("module rules_license@1.0.0 was not found"),
+            "{error}"
+        );
+        assert!(!f.root.join("bazel-rs-out").exists());
+        assert!(f.resolve().modules.is_empty());
+    }
+
+    #[test]
+    fn embedded_builtin_metadata_is_the_full_module_not_a_synthetic_stub() {
+        let f = Fixture::new("");
+        let options = builtin_options(&f);
+        let root = ModuleFile::default();
+        let overrides = BTreeMap::new();
+        let discovery = Discovery {
+            root_path: f.root.clone(),
+            source_cache: &f.base,
+            options: &options,
+            root: &root,
+            overrides: &overrides,
+            use_embedded_builtin: true,
+        };
+        let (module, source) = discovery.load("bazel_tools", &Version::default()).unwrap();
+        assert_eq!(
+            source,
+            ModuleSource::Embedded(crate::builtin_tools::BuiltinId::BazelTools93)
+        );
+        assert_eq!(module.module.as_ref().unwrap().name, "bazel_tools");
+        assert!(module.implicit_dependencies.is_empty());
+        assert_eq!(
+            module
+                .dependencies
+                .iter()
+                .filter(|d| d.effective_repo_name().is_some())
+                .map(|d| (d.name.as_str(), d.version.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("rules_license", "1.0.0"),
+                ("buildozer", "8.5.1"),
+                ("platforms", "1.0.0"),
+                ("zlib", "1.3.1.bcr.5"),
+                ("protobuf", "33.4"),
+                ("rules_java", "9.1.0"),
+                ("rules_cc", "0.2.17"),
+                ("rules_python", "1.7.0"),
+                ("rules_shell", "0.6.1"),
+                ("apple_support", "2.5.2"),
+            ]
+        );
+        assert_eq!(
+            module
+                .dependencies
+                .iter()
+                .filter(|d| d.effective_repo_name().is_none())
+                .map(|d| d.name.as_str())
+                .collect::<Vec<_>>(),
+            ["bazel_features", "rules_apple", "rules_swift", "abseil-cpp"]
+        );
+        assert_eq!(module.extension_usages.len(), 5);
+        let declared = bzlmod::evaluate_source(
+            "@bazel_tools//:MODULE.bazel",
+            std::str::from_utf8(crate::builtin_tools::module_bytes())
+                .unwrap()
+                .to_owned(),
+        )
+        .unwrap();
+        assert_eq!(module, declared);
+        assert!(!f.root.join("bazel-rs-out").exists());
+    }
+
+    #[test]
+    fn builtin_default_key_translation_does_not_rewrite_user_registry_overrides() {
+        let f = Fixture::new("");
+        let options = builtin_options(&f);
+        let root = ModuleFile::default();
+        let dependency = Dependency {
+            name: "bazel_tools".to_owned(),
+            version: "7".to_owned(),
+            ..Default::default()
+        };
+        for (override_value, expected) in [
+            (None, ""),
+            (
+                Some(ModuleOverride::SingleVersion {
+                    version: "9".to_owned(),
+                    registry: String::new(),
+                    patches: Default::default(),
+                }),
+                "9",
+            ),
+            (
+                Some(ModuleOverride::SingleVersion {
+                    version: String::new(),
+                    registry: "file:///unused".to_owned(),
+                    patches: Default::default(),
+                }),
+                "7",
+            ),
+            (
+                Some(ModuleOverride::MultipleVersion {
+                    versions: vec!["7".to_owned(), "9".to_owned()],
+                    registry: String::new(),
+                }),
+                "7",
+            ),
+            (
+                Some(ModuleOverride::LocalPath {
+                    path: "unused".to_owned(),
+                }),
+                "",
+            ),
+        ] {
+            let overrides: BTreeMap<_, _> = override_value
+                .into_iter()
+                .map(|v| ("bazel_tools".to_owned(), v))
+                .collect();
+            let discovery = Discovery {
+                root_path: f.root.clone(),
+                source_cache: &f.base,
+                options: &options,
+                root: &root,
+                use_embedded_builtin: !overrides.contains_key("bazel_tools"),
+                overrides: &overrides,
+            };
+            assert_eq!(
+                discovery.dependency_key(&dependency).unwrap(),
+                Key::Module {
+                    name: "bazel_tools".to_owned(),
+                    version: Version::parse(expected).unwrap()
+                }
+            );
+            let ordinary = Dependency {
+                name: "ordinary".to_owned(),
+                ..dependency.clone()
+            };
+            assert_eq!(
+                discovery.dependency_key(&ordinary).unwrap(),
+                Key::Module {
+                    name: "ordinary".to_owned(),
+                    version: Version::parse("7").unwrap()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn builtin_user_overrides_use_normal_registry_and_local_evaluation() {
+        for registry in [false, true] {
+            let override_source = if registry {
+                "single_version_override(module_name='bazel_tools',version='9')"
+            } else {
+                "local_path_override(module_name='bazel_tools',path='tools')"
+            };
+            let source = format!("bazel_dep(name='a',version='1')\n{override_source}");
+            let f = Fixture::new(&source);
+            f.module("a", "1", "");
+            // An explicit user override may supply its own MODULE. Production
+            // default discovery above always evaluates the genuine bundled one.
+            f.local("tools", "module(name='bazel_tools',version='9')");
+            f.module("bazel_tools", "9", "");
+            let graph = resolve(&f.root, &builtin_options(&f)).unwrap();
+            assert_eq!(graph.root_mapping["bazel_tools"], "bazel_tools");
+            assert_eq!(graph.modules["a+"].mapping["bazel_tools"], "bazel_tools");
+            let builtin = &graph.modules["bazel_tools"];
+            assert_eq!(builtin.mapping["bazel_tools"], "bazel_tools");
+            assert!(builtin.module.implicit_dependencies.is_empty());
+            assert_eq!(builtin.version, if registry { "9" } else { "" });
+            assert_eq!(
+                graph.root.dependencies,
+                bzlmod::evaluate(&f.root.join("MODULE.bazel"))
+                    .unwrap()
+                    .dependencies
+            );
+            assert_eq!(graph.modules["a+"].module.implicit_dependencies.len(), 1);
+            if let ModuleSource::Registry {
+                module_file,
+                evaluated_module_file,
+                ..
+            } = &graph.modules["a+"].source
+            {
+                assert_eq!(module_file, evaluated_module_file);
+                assert_eq!(module_file, b"module(name=\"a\",version=\"1\")\n");
+            } else {
+                panic!("a must retain registry source provenance");
+            }
+        }
+    }
+
+    #[test]
+    fn builtin_ignore_dev_drops_user_override_but_not_internal_default() {
+        let f =
+            Fixture::new("local_path_override(module_name='bazel_tools',path='does-not-exist')");
+        let options = ResolverOptions {
+            ignore_dev_dependencies: true,
+            ..builtin_options(&f)
+        };
+        let error = resolve(&f.root, &options).unwrap_err();
+        assert!(
+            error.contains("module rules_license@1.0.0 was not found"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn builtin_root_declared_name_does_not_exempt_injection_or_default_override() {
+        for (source, expected) in [
+            ("module(name='bazel_tools')", "already used"),
+            (
+                "module(name='bazel_tools',repo_name='other')",
+                "overriding the root module",
+            ),
+        ] {
+            let f = Fixture::new(source);
+            let error = resolve(&f.root, &builtin_options(&f)).unwrap_err();
+            assert!(error.contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn discovery_bfs_preserves_declared_order_before_builtin_and_nodeps() {
+        let f = Fixture::new("bazel_dep(name='z',version='1')\nbazel_dep(name='a',version='1')");
+        let error = resolve(&f.root, &builtin_options(&f)).unwrap_err();
+        assert!(error.contains("module z@1 was not found"), "{error}");
+        f.module("z", "1", "");
+        let error = resolve(&f.root, &builtin_options(&f)).unwrap_err();
+        assert!(error.contains("module a@1 was not found"), "{error}");
+
+        let root = bzlmod::evaluate_source_with_builtins("MODULE.bazel", "bazel_dep(name='z',version='1')\nbazel_dep(name='a',version='1')\nlocal_path_override(module_name='bazel_tools',path='tools')".to_owned(), EvaluationContext::default(), BuiltinInjection::AppendBazelTools).unwrap();
+        f.module("a", "1", "");
+        f.local("tools", "module(name='bazel_tools')");
+        let options = builtin_options(&f);
+        let discovery = Discovery {
+            root_path: f.root.clone(),
+            source_cache: &f.base,
+            options: &options,
+            root: &root,
+            overrides: &root.overrides,
+            use_embedded_builtin: false,
+        };
+        let nodes = discovery.collect().unwrap();
+        assert_eq!(
+            nodes[&Key::Root]
+                .ordered_dependencies
+                .iter()
+                .map(|(alias, _)| alias.as_str())
+                .collect::<Vec<_>>(),
+            ["z", "a", "bazel_tools"]
+        );
+        assert_eq!(
+            nodes[&Key::Root]
+                .dependencies
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["a", "bazel_tools", "z"]
+        );
+    }
+
+    #[test]
+    fn builtin_multiple_selected_versions_keep_well_known_canonical_collision_error() {
+        let keys = BTreeSet::from([
+            Key::Root,
+            Key::Module {
+                name: "bazel_tools".to_owned(),
+                version: Version::parse("1").unwrap(),
+            },
+            Key::Module {
+                name: "bazel_tools".to_owned(),
+                version: Version::parse("2").unwrap(),
+            },
+        ]);
+        assert!(
+            canonical_names(&keys, BuiltinProfile::Bazel93Builtins)
+                .unwrap_err()
+                .contains("canonical repository name collision")
+        );
     }
 
     #[test]

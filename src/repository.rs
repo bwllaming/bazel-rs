@@ -218,7 +218,28 @@ impl RepositorySet {
                 self.ordinary_root(repository)
             };
         };
+        // MODULE overrides affect discovery metadata, not the upstream special
+        // repository filesystem precedence for the canonical built-in name.
+        if repository == "bazel_tools"
+            && self.state.options.builtin_profile == module_graph::BuiltinProfile::Bazel93Builtins
+        {
+            let roots = self.state.registry_roots.get_or_init(|| {
+                graph
+                    .modules
+                    .keys()
+                    .map(|name| (name.clone(), OnceLock::new()))
+                    .collect()
+            });
+            return roots[repository]
+                .get_or_init(|| {
+                    crate::builtin_tools::materialize(&self.source_cache_path()?.join("builtins"))
+                })
+                .as_ref()
+                .map(PathBuf::as_path)
+                .map_err(Clone::clone);
+        }
         match &module.source {
+            ModuleSource::Embedded(_) => Err("embedded module source requires the genuine built-in profile and canonical bazel_tools repository".to_owned()),
             ModuleSource::LocalPath(root) => Ok(root),
             ModuleSource::Git {
                 spec,

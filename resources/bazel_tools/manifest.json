@@ -1,0 +1,2539 @@
+{
+  "archive_sha256": "fc337c509408ed055d31ef530a0082a9b3ddddf2696981f8a2fcb3d0ac67c8b1",
+  "bazel_version": "9.3.0",
+  "distribution_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "distribution_url": "https://releases.bazel.build/9.3.0/release/bazel-9.3.0-linux-x86_64",
+  "file_count": 421,
+  "files": [
+    {
+      "mode": 493,
+      "path": "MODULE.bazel",
+      "sha256": "a0fab7d7a9314cfba6d73f33c50643ba26dac9be28700ff35e88306dbd69fecd",
+      "size": 2385
+    },
+    {
+      "mode": 493,
+      "path": "WORKSPACE",
+      "sha256": "bd262d6f225233cb1172d90570ab36d502bc1388f05ebf37645840dad6056195",
+      "size": 32
+    },
+    {
+      "mode": 493,
+      "path": "jdk/ASSEMBLY_EXCEPTION",
+      "sha256": "75292f03bf23d3db7c985aecc191029b93883200721ed23ed34a2e601463df33",
+      "size": 1514
+    },
+    {
+      "mode": 493,
+      "path": "jdk/DISCLAIMER",
+      "sha256": "d83d865ecf5cdbc8fe11c279a7f00876027f0f1eb8b521c76075480496db4ffb",
+      "size": 2765
+    },
+    {
+      "mode": 493,
+      "path": "jdk/bin/java",
+      "sha256": "89686531da3a4b84b66ced22d0642c930bc113a8ba70453bdffa452faa14eedf",
+      "size": 13104
+    },
+    {
+      "mode": 493,
+      "path": "jdk/bin/keytool",
+      "sha256": "c5ab3787c694e3e374c05f0a50ecf0c41ea02012b53d3dd5f5795d53d123b039",
+      "size": 13176
+    },
+    {
+      "mode": 493,
+      "path": "jdk/conf/jaxp-strict.properties.template",
+      "sha256": "3cc9b87633769414b22c24c97ecded8a15df630fe5ab12abca2398d88e31b32b",
+      "size": 4937
+    },
+    {
+      "mode": 493,
+      "path": "jdk/conf/jaxp.properties",
+      "sha256": "d4f45052a100e5aef02b6638a3b9c69b2bdd46155ceb58a52671e5d594c30100",
+      "size": 8222
+    },
+    {
+      "mode": 493,
+      "path": "jdk/conf/logging.properties",
+      "sha256": "8590633e1e8a7d88ffe74cc04189c5c61b1ed4703180cbc851dcd5575efcce74",
+      "size": 2740
+    },
+    {
+      "mode": 493,
+      "path": "jdk/conf/net.properties",
+      "sha256": "f0093906820c30e079cbf79bd744d761aaf32ae917598c7ce71fac7eae16f86d",
+      "size": 7341
+    },
+    {
+      "mode": 493,
+      "path": "jdk/conf/sdp/sdp.conf.template",
+      "sha256": "e9441e51f0d29e25313d33a9005640f11ad93c27f01bc46a34bf02f2a98ffd6b",
+      "size": 1455
+    },
+    {
+      "mode": 493,
+      "path": "jdk/conf/security/java.security",
+      "sha256": "5e3460d88a5e34ece8e1af291547c8c023c306bac853a9d660a058a9334bc4e4",
+      "size": 70015
+    },
+    {
+      "mode": 493,
+      "path": "jdk/conf/security/policy/README.txt",
+      "sha256": "6da0747334b0fea7592fd92614b2bbc8b126535e129b1fee483774d914e98eb5",
+      "size": 2390
+    },
+    {
+      "mode": 493,
+      "path": "jdk/conf/security/policy/limited/default_US_export.policy",
+      "sha256": "758b930a526fc670ab7537f8c26321527050a31f5f42149a2dda623c56a0a1a9",
+      "size": 146
+    },
+    {
+      "mode": 493,
+      "path": "jdk/conf/security/policy/limited/default_local.policy",
+      "sha256": "2b2627548e61316150d47ffc3e6cad465ca05b3cccd4785eb7d21aa7baa0f441",
+      "size": 647
+    },
+    {
+      "mode": 493,
+      "path": "jdk/conf/security/policy/limited/exempt_local.policy",
+      "sha256": "8c3d7648abcd95a272ce12db870082937f4d7f6878d730d83cb7fbb31eb8b2c9",
+      "size": 566
+    },
+    {
+      "mode": 493,
+      "path": "jdk/conf/security/policy/unlimited/default_US_export.policy",
+      "sha256": "758b930a526fc670ab7537f8c26321527050a31f5f42149a2dda623c56a0a1a9",
+      "size": 146
+    },
+    {
+      "mode": 493,
+      "path": "jdk/conf/security/policy/unlimited/default_local.policy",
+      "sha256": "8d8a318e6d90dfd7e26612d2b6385aa704f686ca6134c551f8928418d92b851a",
+      "size": 193
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.base/ADDITIONAL_LICENSE_INFO",
+      "sha256": "a69bce275ba7a3570af6579cb0f55682cd75fedfcd49e0e8e9022270c447c916",
+      "size": 2114
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.base/ASSEMBLY_EXCEPTION",
+      "sha256": "75292f03bf23d3db7c985aecc191029b93883200721ed23ed34a2e601463df33",
+      "size": 1514
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.base/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "size": 19274
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.base/aes.md",
+      "sha256": "45c6d4da48325edfbff3dcf71c704e504c057904435ed23c6d57046d551eb69d",
+      "size": 1444
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.base/c-libutl.md",
+      "sha256": "bef40679922d6fdfb7e4ddb223ad6722300f6054ba737bbf6188d60fcec517f9",
+      "size": 1556
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.base/cldr.md",
+      "sha256": "472e341c36efc1136860ed7a6461a2af4a53ae95d55d1126726340f5ba62b06a",
+      "size": 8790
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.base/icu.md",
+      "sha256": "be23ad20a8231d2241b37fcf401548febd8597de8373f89268882020cb7c8818",
+      "size": 4147
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.base/public_suffix.md",
+      "sha256": "861de1e4992a7d28f1de25c73cd50d26a94779ebd749c0643fecfa56442c3429",
+      "size": 17783
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.base/siphash.md",
+      "sha256": "5a792b5a74ad2a5f3d6a7ad8b7a841116e58a772c18bc6e392320a365b222c76",
+      "size": 8256
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.base/unicode.md",
+      "sha256": "5194d6760f2e7eccc07804196cc619f84e730fa9d10c0529b71416186f4d12dc",
+      "size": 15098
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.compiler/ADDITIONAL_LICENSE_INFO",
+      "sha256": "a69bce275ba7a3570af6579cb0f55682cd75fedfcd49e0e8e9022270c447c916",
+      "size": 2114
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.compiler/ASSEMBLY_EXCEPTION",
+      "sha256": "75292f03bf23d3db7c985aecc191029b93883200721ed23ed34a2e601463df33",
+      "size": 1514
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.compiler/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "size": 19274
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.instrument/ADDITIONAL_LICENSE_INFO",
+      "sha256": "a69bce275ba7a3570af6579cb0f55682cd75fedfcd49e0e8e9022270c447c916",
+      "size": 2114
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.instrument/ASSEMBLY_EXCEPTION",
+      "sha256": "75292f03bf23d3db7c985aecc191029b93883200721ed23ed34a2e601463df33",
+      "size": 1514
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.instrument/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "size": 19274
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.logging/ADDITIONAL_LICENSE_INFO",
+      "sha256": "a69bce275ba7a3570af6579cb0f55682cd75fedfcd49e0e8e9022270c447c916",
+      "size": 2114
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.logging/ASSEMBLY_EXCEPTION",
+      "sha256": "75292f03bf23d3db7c985aecc191029b93883200721ed23ed34a2e601463df33",
+      "size": 1514
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.logging/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "size": 19274
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.management/ADDITIONAL_LICENSE_INFO",
+      "sha256": "a69bce275ba7a3570af6579cb0f55682cd75fedfcd49e0e8e9022270c447c916",
+      "size": 2114
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.management/ASSEMBLY_EXCEPTION",
+      "sha256": "75292f03bf23d3db7c985aecc191029b93883200721ed23ed34a2e601463df33",
+      "size": 1514
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.management/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "size": 19274
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.naming/ADDITIONAL_LICENSE_INFO",
+      "sha256": "a69bce275ba7a3570af6579cb0f55682cd75fedfcd49e0e8e9022270c447c916",
+      "size": 2114
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.naming/ASSEMBLY_EXCEPTION",
+      "sha256": "75292f03bf23d3db7c985aecc191029b93883200721ed23ed34a2e601463df33",
+      "size": 1514
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.naming/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "size": 19274
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.security.sasl/ADDITIONAL_LICENSE_INFO",
+      "sha256": "a69bce275ba7a3570af6579cb0f55682cd75fedfcd49e0e8e9022270c447c916",
+      "size": 2114
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.security.sasl/ASSEMBLY_EXCEPTION",
+      "sha256": "75292f03bf23d3db7c985aecc191029b93883200721ed23ed34a2e601463df33",
+      "size": 1514
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.security.sasl/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "size": 19274
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.sql/ADDITIONAL_LICENSE_INFO",
+      "sha256": "a69bce275ba7a3570af6579cb0f55682cd75fedfcd49e0e8e9022270c447c916",
+      "size": 2114
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.sql/ASSEMBLY_EXCEPTION",
+      "sha256": "75292f03bf23d3db7c985aecc191029b93883200721ed23ed34a2e601463df33",
+      "size": 1514
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.sql/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "size": 19274
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.transaction.xa/ADDITIONAL_LICENSE_INFO",
+      "sha256": "a69bce275ba7a3570af6579cb0f55682cd75fedfcd49e0e8e9022270c447c916",
+      "size": 2114
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.transaction.xa/ASSEMBLY_EXCEPTION",
+      "sha256": "75292f03bf23d3db7c985aecc191029b93883200721ed23ed34a2e601463df33",
+      "size": 1514
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.transaction.xa/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "size": 19274
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.xml/ADDITIONAL_LICENSE_INFO",
+      "sha256": "a69bce275ba7a3570af6579cb0f55682cd75fedfcd49e0e8e9022270c447c916",
+      "size": 2114
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.xml/ASSEMBLY_EXCEPTION",
+      "sha256": "75292f03bf23d3db7c985aecc191029b93883200721ed23ed34a2e601463df33",
+      "size": 1514
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.xml/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "size": 19274
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.xml/bcel.md",
+      "sha256": "853a1e7ce397bb10de0e2b3bde0844bcc651f17d983decd07d2d003c0304c311",
+      "size": 11195
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.xml/dom.md",
+      "sha256": "6686e8877667584a3a7c07344baadca1a03e29f677162d87c3c0811e990d1148",
+      "size": 3761
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.xml/jcup.md",
+      "sha256": "8d5dcfdf50455a3c34c753a98f21e953248af200415a9084e3f102cb6c43b8bf",
+      "size": 1448
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.xml/schema10part1.md",
+      "sha256": "b220f891e5bfa3aa4b2a4b34dfab53a291553c2ae0fd0b15a4cb1116d4e97770",
+      "size": 2138
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.xml/schema10part2.md",
+      "sha256": "2350e35e91866d5ee5bd7ee7c303b3e424bbca335d36c71452588aac494eaa3e",
+      "size": 2136
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.xml/xalan.md",
+      "sha256": "02bd013fc3f438dbb8fa41fa57888177e015efa6431d37fce6e794c6f353a6a1",
+      "size": 13477
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.xml/xerces.md",
+      "sha256": "4a6bf6b367193ee68681cb2d9fed30ffc5d62dd2d477bd62e0271707d71b3244",
+      "size": 11848
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.xml/xhtml10.md",
+      "sha256": "9a5cde47073ca80cf59127891420f4aed603eb65070738ad027bb19e76fb9319",
+      "size": 2634
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.xml/xhtml10schema.md",
+      "sha256": "7bc51d884aaae6ef27551ee78d404ba3116356790da3d06b665679eb2e1cc002",
+      "size": 7521
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.xml/xhtml11.md",
+      "sha256": "4f99a390896f0f55a0b78376de89bfd2ac845713de85e67e37f884b77e0c3122",
+      "size": 3258
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.xml/xhtml11schema.md",
+      "sha256": "8cd69b1392e286538008f4cb003f85caea3a375c619e697813d820b69857cf74",
+      "size": 3224
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.xml/xmlspec.md",
+      "sha256": "afec263bf5dc67697ee33734ee243f86a878161335ef6298273e4041673b0544",
+      "size": 2719
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/java.xml/xmlxsd.md",
+      "sha256": "498a5fec63509a8f3949983bb6878ac5c95aaf1d5e3679272d93314371aa0211",
+      "size": 1951
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/jdk.crypto.ec/ADDITIONAL_LICENSE_INFO",
+      "sha256": "a69bce275ba7a3570af6579cb0f55682cd75fedfcd49e0e8e9022270c447c916",
+      "size": 2114
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/jdk.crypto.ec/ASSEMBLY_EXCEPTION",
+      "sha256": "75292f03bf23d3db7c985aecc191029b93883200721ed23ed34a2e601463df33",
+      "size": 1514
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/jdk.crypto.ec/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "size": 19274
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/jdk.management/ADDITIONAL_LICENSE_INFO",
+      "sha256": "a69bce275ba7a3570af6579cb0f55682cd75fedfcd49e0e8e9022270c447c916",
+      "size": 2114
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/jdk.management/ASSEMBLY_EXCEPTION",
+      "sha256": "75292f03bf23d3db7c985aecc191029b93883200721ed23ed34a2e601463df33",
+      "size": 1514
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/jdk.management/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "size": 19274
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/jdk.net/ADDITIONAL_LICENSE_INFO",
+      "sha256": "a69bce275ba7a3570af6579cb0f55682cd75fedfcd49e0e8e9022270c447c916",
+      "size": 2114
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/jdk.net/ASSEMBLY_EXCEPTION",
+      "sha256": "75292f03bf23d3db7c985aecc191029b93883200721ed23ed34a2e601463df33",
+      "size": 1514
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/jdk.net/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "size": 19274
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/jdk.unsupported/ADDITIONAL_LICENSE_INFO",
+      "sha256": "a69bce275ba7a3570af6579cb0f55682cd75fedfcd49e0e8e9022270c447c916",
+      "size": 2114
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/jdk.unsupported/ASSEMBLY_EXCEPTION",
+      "sha256": "75292f03bf23d3db7c985aecc191029b93883200721ed23ed34a2e601463df33",
+      "size": 1514
+    },
+    {
+      "mode": 493,
+      "path": "jdk/legal/jdk.unsupported/LICENSE",
+      "sha256": "4b9abebc4338048a7c2dc184e9f800deb349366bdf28eb23c2677a77b4c87726",
+      "size": 19274
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/classlist",
+      "sha256": "5eff05c92c49a0a9a7f70f114ff58069edf257d2abd03d3c8816746db6753a12",
+      "size": 84952
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/jexec",
+      "sha256": "537cf2ff22f6799d1f9cdc1e14c94aff8ed6eee897c4aca929ed191b8259c280",
+      "size": 12568
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/jrt-fs.jar",
+      "sha256": "e07c6b7d456e59612ee97b552eeee60ace86b9fa4671177151c01c51150ef5e2",
+      "size": 109853
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/jspawnhelper",
+      "sha256": "5c0f00c09bff61e6664fc09880262dd8f1a4164e0b57a86c7c865cfa6fb62c0f",
+      "size": 17664
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/jvm.cfg",
+      "sha256": "91e6531363501d02f9abc6522d440891b096313a6e45aa3d18fdd923da0561b0",
+      "size": 14
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/libdt_socket.so",
+      "sha256": "7e929a7c6fd6f64cb729504ca97ba22233dca9c75e1e097e353ef2efefcb17f0",
+      "size": 27648
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/libextnet.so",
+      "sha256": "9f489e01c261e7f33bf400141953c73e76c34d0b2c436e281fd16011c163b034",
+      "size": 13736
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/libinstrument.so",
+      "sha256": "8e42ab56737df699218ac2663d09902bd536d7faf7ca5bb2733cd6b9977ad2ea",
+      "size": 55352
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/libjava.so",
+      "sha256": "669561b652211c99a4534e253184332c7cf7272fdf91461a5bb7f9f59d560639",
+      "size": 169328
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/libjdwp.so",
+      "sha256": "d186c342d5f1fdb9bb66d154d47ca4d54100b323e9ae4816a8fe2e4d6ef9460c",
+      "size": 306600
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/libjimage.so",
+      "sha256": "369370655f8507a77e6c6b190c15a1804e93a5384fa6e62ca097f756c3cf8000",
+      "size": 146448
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/libjli.so",
+      "sha256": "c839f5dde4ea4365cb5b52e7d57c3771c1b6b9e2979bed095cea959383b93703",
+      "size": 78504
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/libjsig.so",
+      "sha256": "4aa5da69b1e457a3b4bda85bbc7ee111a46a8358455f75406b0f160447777174",
+      "size": 13568
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/libmanagement.so",
+      "sha256": "d090d8d39b206b582747406e7c424a387e1223fffd99dc0d5286bed4f0794260",
+      "size": 26136
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/libmanagement_ext.so",
+      "sha256": "886924d1c5224639159a644f0d2a5a177c0b540be10fc13a40590eeb72168235",
+      "size": 33760
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/libnet.so",
+      "sha256": "44c31f28ca41f03de6bb41ddda555b2a0233200b9888b3bb5e0e5d5ca806733b",
+      "size": 62184
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/libnio.so",
+      "sha256": "1b79a2908d56a611364ba5d114752ffc3fc7c13704a9a6c098ea9c6e4a740cff",
+      "size": 105768
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/libsimdsort.so",
+      "sha256": "bb4e9b0bdad1a1829fad60c38ce600b4b2a9dceee6449ca5fdf7581ee1093d72",
+      "size": 263496
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/libsyslookup.so",
+      "sha256": "5f7fc63a7e83209bf0e0031aba9cacbce60a7fa42c784cd357032e2e61678441",
+      "size": 8224
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/libverify.so",
+      "sha256": "8e47a1acdf14efdca15be8ef52da42271edfda9823e36092d101d045b9a4d9b2",
+      "size": 68696
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/libzip.so",
+      "sha256": "410b64fe433f4565833f1f1dc8d70741ab83daaf544680cd42453a9517b1c79f",
+      "size": 41816
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/modules",
+      "sha256": "8e3e7d236fe557ee4b2bb6ad4c74064e7b291ad9412bc4f80affc3c7d0bdbe96",
+      "size": 39658744
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/security/blocked.certs",
+      "sha256": "96572f243f31c2ef81a6e627542e596f6a9295cff3c7ae095c1b595cb1457ded",
+      "size": 2488
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/security/cacerts",
+      "sha256": "707312d3e8018928f53d108e4534f628cbbfad18196df1a2e72884300be1a69f",
+      "size": 132316
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/security/public_suffix_list.dat",
+      "sha256": "16b42002aa6f83a7763c4cdbd399ecf738460377d447e362884495545afd60a3",
+      "size": 227396
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/server/libjsig.so",
+      "sha256": "4aa5da69b1e457a3b4bda85bbc7ee111a46a8358455f75406b0f160447777174",
+      "size": 13568
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/server/libjvm.so",
+      "sha256": "54a8f464135524f5de1690ff7ddd019d64547ac2436825e0e069406431d428fa",
+      "size": 28952800
+    },
+    {
+      "mode": 493,
+      "path": "jdk/lib/tzdb.dat",
+      "sha256": "7be2a3adf10ff841579629f7725b15f0db41e8856527ec72847b5477073a3d29",
+      "size": 102492
+    },
+    {
+      "mode": 493,
+      "path": "jdk/readme.txt",
+      "sha256": "422e50fded96695e1318dd35e78d325cb9bfb06bbc4ef2fb75cc384e2592f4eb",
+      "size": 837
+    },
+    {
+      "mode": 493,
+      "path": "jdk/release",
+      "sha256": "5ada88cef61bcd1848a288d1d8709477744ce239eb75fc09b646b99ede24cac1",
+      "size": 223
+    },
+    {
+      "mode": 493,
+      "path": "src/BUILD",
+      "sha256": "8dfd8a3832a17ebce48a2bccb9708b79562ca578d14d250e0de8017dfcff2dbe",
+      "size": 413
+    },
+    {
+      "mode": 493,
+      "path": "src/conditions/BUILD",
+      "sha256": "7a2d956c2c38092b93276b6cb11492f0ef7ce401c879d68a57e40b45f9163f16",
+      "size": 4424
+    },
+    {
+      "mode": 493,
+      "path": "src/java_tools/buildjar/java/com/google/devtools/build/buildjar/jarhelper/BUILD",
+      "sha256": "c2be4a3f4765a4cf6ffaf6a143acbbd6bc4506f9b9960a757048bc8269a9361f",
+      "size": 812
+    },
+    {
+      "mode": 493,
+      "path": "src/java_tools/buildjar/java/com/google/devtools/build/buildjar/jarhelper/JarCreator.java",
+      "sha256": "f53a78f6f397fdf689556090a53a29aa16c7c94c1d298a28262dfc6b28ea3a1e",
+      "size": 8771
+    },
+    {
+      "mode": 493,
+      "path": "src/java_tools/buildjar/java/com/google/devtools/build/buildjar/jarhelper/JarHelper.java",
+      "sha256": "00083b9911a60dadd01d5f2f82b043365114870620bc133de9bbfc95feb56c05",
+      "size": 9501
+    },
+    {
+      "mode": 493,
+      "path": "src/java_tools/import_deps_checker/java/com/google/devtools/build/importdeps/BUILD",
+      "sha256": "10b63622866553548fc064bc9e4ae794eb9f4a7c565985b50dfc7a9e8c4bbbf2",
+      "size": 735
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/BUILD",
+      "sha256": "a3a34814341ca7bdaeb929bff0b93d8c1ff452f62a8435dc1dc79c328e06bd23",
+      "size": 4414
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/bazel_log_handler.cc",
+      "sha256": "15dc469c19d8da0bfe50091819f8655f678000fdc7f636902ebefa3c245cdf2f",
+      "size": 6955
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/bazel_log_handler.h",
+      "sha256": "b7d55e5265b181067bc1c127e71e24b450dd5d5ebed6ae2c94b624fd9ed9c802",
+      "size": 2500
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/errors.h",
+      "sha256": "1a9b8534646408a17306ddbe4f64d4d6b505006128d960ae0603d9cb5834998a",
+      "size": 1236
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/errors_posix.cc",
+      "sha256": "8a6da044f371d95d8a70923b295975393857f1501dbebbfeb130f9d5ad01e01b",
+      "size": 1008
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/errors_windows.cc",
+      "sha256": "c84d35ac449ede8f654e1de4e41b7ce373d0b6d697b37d67be8a922e8f9a3d2a",
+      "size": 1429
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/exit_code.h",
+      "sha256": "2cc02a3d59b66fcefb2f14d6b6aeb76b092b85d40d5e6edd0320e607be2ac164",
+      "size": 1805
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/file.cc",
+      "sha256": "e3288ed888ae817b1cd2914f33d68291bc3f75d45268e8c1d1c00a1c69003397",
+      "size": 3181
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/file.h",
+      "sha256": "d677208ede65ee8ccac2a66022152155a425616986a83ad16cc781fa78b2202e",
+      "size": 2953
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/file_platform.h",
+      "sha256": "557a110f3ddd93dbade00066a19f478962e1abb405cee5782bb00f6941a98e98",
+      "size": 10318
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/file_posix.cc",
+      "sha256": "2832ef796f65f06e9606210df0c5bb772a069d79d23d0d8193487fefea176a80",
+      "size": 16148
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/file_windows.cc",
+      "sha256": "6272b40edfecbd819a32e92127c8fe0615ab2d03d992aad18b27d323936b071a",
+      "size": 27060
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/logging.cc",
+      "sha256": "53b0781db77f3eded40defa08d257a5ee5344eb31709fc3ad3403a3e2455541e",
+      "size": 3625
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/logging.h",
+      "sha256": "817d2a43cfb7f2eefd691a7d2589a637cb90628b3dce64cd55f75183ab40473e",
+      "size": 6165
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/md5.cc",
+      "sha256": "44dd1a7e776fe4a77d8b5fef4a115b2e2101dcc30fc03d810ec55c43dec547ad",
+      "size": 11718
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/md5.h",
+      "sha256": "17aca560fbc1f8dba88374e5ce80479d19fd23082cddb909fd69f6c3a54d3b82",
+      "size": 2543
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/numbers.cc",
+      "sha256": "f4bbbee50d648132943f0734c81af056477eb12d414992358b01635b250e5950",
+      "size": 6182
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/numbers.h",
+      "sha256": "3d2d79c62e854d625a7260b63c0014fe21bdddd8a4d2c27e41febe59a6781217",
+      "size": 955
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/path.cc",
+      "sha256": "3aef7bbc08db81e67b32ea838b56602aee2a4061b2c54ed8dc7cb532e9ff9da8",
+      "size": 1465
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/path.h",
+      "sha256": "4b185de9a7c27bb53403fa29347207e8719b20e493f201bf7487604a657ce168",
+      "size": 1384
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/path_platform.h",
+      "sha256": "a45fc6813bd962ebc51ebab301965dd6fead3498ab63601102a1b193fddd93f9",
+      "size": 8072
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/path_posix.cc",
+      "sha256": "2a6b0f04f1244c40ed8d5884c56218a8194b179b3877e9d17a1651e72d7021a3",
+      "size": 5086
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/path_windows.cc",
+      "sha256": "a1c15862eb1c17f6329b6934f7b12b4dc0fde7c01abbcc7a3c7f6b77913e2e70",
+      "size": 17955
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/port.cc",
+      "sha256": "cacffae8fd030532f5f03a6d69b9a6bc169ecff75bf4a6870ffc2f59a97d5296",
+      "size": 1020
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/port.h",
+      "sha256": "d3e6109b5164e61a49fbb26a6a9c8e3eaedfd21fa2f3ed8bdf2c9cd4a513bfa7",
+      "size": 5108
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/strings.cc",
+      "sha256": "1fe81c160162b65cb7f8a177a568002bd1c1e19d5d3a48eb8eaac12e0184dc0a",
+      "size": 11295
+    },
+    {
+      "mode": 493,
+      "path": "src/main/cpp/util/strings.h",
+      "sha256": "3c0e10f147f0072df95a74673e651e64b5dc8ed6b7bd44f9dc36baca64098bba",
+      "size": 5662
+    },
+    {
+      "mode": 493,
+      "path": "src/main/native/BUILD",
+      "sha256": "5d223819fb98e0d08e1e84a90cf8e2abf55b4606e059a5e6783b851375c0e923",
+      "size": 3988
+    },
+    {
+      "mode": 493,
+      "path": "src/main/native/windows/BUILD",
+      "sha256": "c853097efb3940b8954c57a06656fe69303e8740bb014020366cea3245785557",
+      "size": 2507
+    },
+    {
+      "mode": 493,
+      "path": "src/main/native/windows/file-jni.cc",
+      "sha256": "cf1a195181476e7ec4c19b5a1e850e11463ab3ad274a9d60a7d7613ad19965fc",
+      "size": 7631
+    },
+    {
+      "mode": 493,
+      "path": "src/main/native/windows/file.cc",
+      "sha256": "9bc1b96ac90dd9f865929f58408c0908404deed9abf5f41784d4161d46b85bbf",
+      "size": 36384
+    },
+    {
+      "mode": 493,
+      "path": "src/main/native/windows/file.h",
+      "sha256": "2242668dffb1852c13e35c07c286e8f4a3a18bf64def090761f85ab09e346cf3",
+      "size": 9293
+    },
+    {
+      "mode": 493,
+      "path": "src/main/native/windows/jni-util.cc",
+      "sha256": "9ca25539098477610bc8f0466f287a563af288b290f9f741c6e71a85298db719",
+      "size": 1838
+    },
+    {
+      "mode": 493,
+      "path": "src/main/native/windows/jni-util.h",
+      "sha256": "97c5f0141f404ccd7f8a06a74bba0362b4d125623aad00e7cb4693ddc7052af4",
+      "size": 1018
+    },
+    {
+      "mode": 493,
+      "path": "src/main/native/windows/process.cc",
+      "sha256": "66296f3e99e574aea1ca65405e692c4b64f31e866cc207a60be2036966adfe14",
+      "size": 16808
+    },
+    {
+      "mode": 493,
+      "path": "src/main/native/windows/process.h",
+      "sha256": "ce5a4a2eeb6c06e0a474592541991ee975eea8a1959a3ea650364458e9ff7220",
+      "size": 2622
+    },
+    {
+      "mode": 493,
+      "path": "src/main/native/windows/processes-jni.cc",
+      "sha256": "1d2b1a81b49668c9b57ac50386d99f1380eae626f3db3786d977a54c75d70b76",
+      "size": 21056
+    },
+    {
+      "mode": 493,
+      "path": "src/main/native/windows/sleep_prevention_jni.cc",
+      "sha256": "ce267f10f40f10770996f60a0b7a84e308c4a51af9ec3b7f83dd22c9aeda2169",
+      "size": 1792
+    },
+    {
+      "mode": 493,
+      "path": "src/main/native/windows/system_cpu_speed_monitor_jni.cc",
+      "sha256": "b7c3af6203eeb6fc05bdaec7a3a69adeb51870eb4209c033c697c528cc518c71",
+      "size": 1437
+    },
+    {
+      "mode": 493,
+      "path": "src/main/native/windows/system_disk_space_monitor_jni.cc",
+      "sha256": "bcce649d07c3c3e1cd22c0dfde1417297d25836d7251c16d2a4d1415e7256c84",
+      "size": 1055
+    },
+    {
+      "mode": 493,
+      "path": "src/main/native/windows/system_load_advisory_monitor_jni.cc",
+      "sha256": "82995884831d5d036aaa91014a0a51b5721626b2fe866f01eaa1c3d68a78c466",
+      "size": 1413
+    },
+    {
+      "mode": 493,
+      "path": "src/main/native/windows/system_memory_pressure_jni.cc",
+      "sha256": "a04491162b8faf6a2335d0ac8d162f913ec7914fa9bbca7e285aa6ce7a07e3eb",
+      "size": 1528
+    },
+    {
+      "mode": 493,
+      "path": "src/main/native/windows/system_network_stats.cc",
+      "sha256": "3b947bdf9e9c17d728579fc74548fc407a2a928298c20f31c965462d4dfad3d2",
+      "size": 910
+    },
+    {
+      "mode": 493,
+      "path": "src/main/native/windows/system_suspension_monitor_jni.cc",
+      "sha256": "9abe269cc2d28bd88b911daec03c4c7ac3d7796308c93de32c2394faab9ff34a",
+      "size": 1056
+    },
+    {
+      "mode": 493,
+      "path": "src/main/native/windows/system_thermal_monitor_jni.cc",
+      "sha256": "3c2bcc73117bd5465c8002c5bd5bbc3467afc30a7e88e274206d6928a1ccfb07",
+      "size": 1379
+    },
+    {
+      "mode": 493,
+      "path": "src/main/native/windows/util.cc",
+      "sha256": "134fca626ded07397c68be6e0e1798d6665ae507b1cd88ea850226677e40620c",
+      "size": 12256
+    },
+    {
+      "mode": 493,
+      "path": "src/main/native/windows/util.h",
+      "sha256": "080d4bcbc50844e1e92b9bb5cf02ce9d50b6efc52d2f2b8b39f7227dd19f5ba6",
+      "size": 6279
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/BUILD",
+      "sha256": "4b0ffd9f80d83517c9385821894c67715a28f282018864097488c4f5a9273cbf",
+      "size": 4507
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/action_cache.proto",
+      "sha256": "9eeff48f357ec2dc07617a0a326fdd89ef6108d6b93bc9eea5592ecb7ff849b3",
+      "size": 2638
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/analysis_v2.proto",
+      "sha256": "2dc3deb978de08a4cd6b95b824b4c2d1801dbf945ab332877c419495b59e908c",
+      "size": 9625
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/bazel_flags.proto",
+      "sha256": "aee4973b51aada206445aa28c0fcc1871595cd6594d63e8f3be465bcb587890a",
+      "size": 2602
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/bazel_output_service.proto",
+      "sha256": "91a6b7f0b4a8bddfcdacfec098ca2a4ed7c72ada60246b458c3c9a66973199d4",
+      "size": 14122
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/bazel_output_service_rev2.proto",
+      "sha256": "47e2c068ba5946a91bd37be2cbab70ff7df08533d86365ee5e75f87b68363002",
+      "size": 2765
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/build.proto",
+      "sha256": "5041f18adb0507f0d85ddb2c8ecf62d0cf148c8506dd4cdaff051a40cc4ecd96",
+      "size": 22263
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/builtin.proto",
+      "sha256": "f0895f979398ca9035ebfa901b5583aa9b3711db550e97e02ec1f3ed728303f9",
+      "size": 3084
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/cache_salt.proto",
+      "sha256": "8f86fe3ac4e3711ee2537d701c66d0ec03a12387dc90926eabbeada79339b57d",
+      "size": 1612
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/command_line.proto",
+      "sha256": "bad4d1fc43be92cd7a70ff3414d4e4c7c3f1843ed57eca75db84b4ae30c7fa33",
+      "size": 4336
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/command_server.proto",
+      "sha256": "ed5790dcc77d2b9998bf78df0187c7a70ca13925a42d2a4f48297b7c58aaa21f",
+      "size": 9784
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/crash_debugging.proto",
+      "sha256": "7d32320a9b349e0638cd993aa6da170175ebdd65118f835e5f5cc49a60de0e6a",
+      "size": 1383
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/crosstool_config.proto",
+      "sha256": "e331057d25ce6e8c7814690cf539322bbdc1186b5720b092e75775ab0a41158b",
+      "size": 21979
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/deps.proto",
+      "sha256": "b861dbce04177df9e4b7204876b2f27e18f40eb6d20b3dffefecdd2baf3cfe92",
+      "size": 2177
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/desugar_deps.proto",
+      "sha256": "b733512e402c6368c10ecf361fe525b285ebb6fbd602d1f95449f157a8cd451e",
+      "size": 2035
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/execution_graph.proto",
+      "sha256": "d199a5f03d15ddb6000298a76e720be12a0a3d1f979bcdeb96c06fbddd383ac7",
+      "size": 3821
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/execution_statistics.proto",
+      "sha256": "a1eddf0a4d5e7857a30d9d8ad5c89377ceea54580b05a1c48e1f15676bdf3c3d",
+      "size": 2033
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/extra_actions_base.proto",
+      "sha256": "5744ccf432fb03006c5683cc940e774b2fe29243352ca2e7fd360d33eb6da633",
+      "size": 6430
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/failure_details.proto",
+      "sha256": "ca96ed36af5ba3e8477397b8756fc269880fa0aa34e5e3f6d492332604120959",
+      "size": 58509
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/file_invalidation_data.proto",
+      "sha256": "1bfb8d88eb66bfde55f5172404d919d83f1dff84914d49a1be4b1fddc4577dce",
+      "size": 7870
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/invocation_policy.proto",
+      "sha256": "bed0008e69fbc537bc912753bbf23895d9cffd4a1c97adbf41f29082274f523b",
+      "size": 9519
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/java_compilation.proto",
+      "sha256": "9848056d3ec24aa0ecb2d996d7146233aefdd8603a49ea392bd615f4110cada0",
+      "size": 1325
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/memory_pressure.proto",
+      "sha256": "94cbf37263c02daa4baee0031a9daacac8d18d11eec972aad13d0d66815809b6",
+      "size": 2119
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/option_filters.proto",
+      "sha256": "c8e92a8a5be45484f705e4abe4f2a3d4b5c77c99477b5ce2286add87ed64f2cc",
+      "size": 1849
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/project/BUILD",
+      "sha256": "2baa1e66357b1d0821d0b98a0311e1ba039cd2cfd300c639b727d365592d927b",
+      "size": 627
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/project/buildable_unit.proto",
+      "sha256": "b5767f29d86b1d355eaaa3bc630def1c04941acd4611163a00f939a1aa21b869",
+      "size": 2715
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/project/enforcement_policy.proto",
+      "sha256": "d194be5c0bc7680f662a167246237d1bf15e787f726ca0dacb2fe17b89e5fa4c",
+      "size": 2200
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/project/project.proto",
+      "sha256": "72a735f24b69ee9f5cd8d57bff459fe1bbd8e46b58a2a6fa317d86731e9733d6",
+      "size": 1937
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/project/project_proto.scl",
+      "sha256": "2f609938211a21df26d5d4f97ed3f38390a843266873303cc1286dc49369d100",
+      "size": 2442
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/remote_execution_log.proto",
+      "sha256": "b657311f7c1aba74fb3c664621889dc6e7d981595c3f68948718aea944d144a1",
+      "size": 7586
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/remote_scrubbing.proto",
+      "sha256": "315f079c44713cfee18f13e7b0dcd8e2279b96bc9cba9fa28d5015125f19d96b",
+      "size": 3390
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/spawn.proto",
+      "sha256": "110f4b5e020b72fe3d51f6aa69d6ecc31d6f20ee57c194827da48a8184675e7a",
+      "size": 15857
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/stardoc_output.proto",
+      "sha256": "4bd566b8efae83ae84cc96467d682a7760d2a1b03e635642eaab9d5db76dd80c",
+      "size": 15145
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/strategy_policy.proto",
+      "sha256": "0068e23223be68f55ddc36d63916efae9b8f64f1cbae5b02bac6059b5b032d4d",
+      "size": 2534
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/test_status.proto",
+      "sha256": "ee3c6da8b7fa4ae05d69b9e5ff80540a701b42c67f354e838ffd5539c431dab6",
+      "size": 3479
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/worker_protocol.proto",
+      "sha256": "42f9f225188d1ecdcfdab18ccb2377f99dd4ff5a79e168583f92d9ea8d0cd152",
+      "size": 4459
+    },
+    {
+      "mode": 493,
+      "path": "src/main/protobuf/xcode_config.proto",
+      "sha256": "846c2b18c01e3cbab99a89ba32a8c80612daacd18f8e35c0255e135df86308cb",
+      "size": 2179
+    },
+    {
+      "mode": 493,
+      "path": "src/tools/launcher/BUILD",
+      "sha256": "7804acf6eaed395a97d316cb14176632fecc7cb97359723b290de953e7de3212",
+      "size": 2142
+    },
+    {
+      "mode": 493,
+      "path": "src/tools/launcher/bash_launcher.cc",
+      "sha256": "fdbd84b0563defe83f73ebf0eeda648cca47b560c6cb7149f681a01030242bf5",
+      "size": 2933
+    },
+    {
+      "mode": 493,
+      "path": "src/tools/launcher/bash_launcher.h",
+      "sha256": "124b479382848c8d3ba41e986420e2487cd2d16e4c77c4256e133ba1e5d640f8",
+      "size": 1365
+    },
+    {
+      "mode": 493,
+      "path": "src/tools/launcher/dummy.cc",
+      "sha256": "bd0b0d9441b8f60d1cd52a6f96db34da57210014491d7adc15af788e823c0567",
+      "size": 641
+    },
+    {
+      "mode": 493,
+      "path": "src/tools/launcher/java_launcher.cc",
+      "sha256": "ec96edfefddce375053583d669b0f5f943a18f1d8aaebbb9c9c5d6c8732f6704",
+      "size": 16793
+    },
+    {
+      "mode": 493,
+      "path": "src/tools/launcher/java_launcher.h",
+      "sha256": "127e14f30ef99301966133192b30c0891ed7dd6e77882a23e7919a1ede5f7850",
+      "size": 5058
+    },
+    {
+      "mode": 493,
+      "path": "src/tools/launcher/launcher.cc",
+      "sha256": "2643cc9044ef1cf2458127033b8283e6534ff09f8f97a869d82e1fb5613f7c7b",
+      "size": 10619
+    },
+    {
+      "mode": 493,
+      "path": "src/tools/launcher/launcher.h",
+      "sha256": "e052389698c0862fee610769945f749a70a2c6da08cbfe027383c25d8fd8acc8",
+      "size": 5780
+    },
+    {
+      "mode": 493,
+      "path": "src/tools/launcher/launcher_main.cc",
+      "sha256": "09c7e588471adc7bf6047fcc339c175a538e2c267ebaadb053152978aa733d98",
+      "size": 4044
+    },
+    {
+      "mode": 493,
+      "path": "src/tools/launcher/launcher_maker.cc",
+      "sha256": "622320eddc3029ad7efc379edb8e4642a4a9539c73c7818dcbccd3f171b44f0f",
+      "size": 3100
+    },
+    {
+      "mode": 493,
+      "path": "src/tools/launcher/launcher_maker_test.bzl",
+      "sha256": "95a2448e9b703697d8dbbd4e22bb6f10961d58def53ff4992f6766f39ef54de2",
+      "size": 2185
+    },
+    {
+      "mode": 493,
+      "path": "src/tools/launcher/launcher_maker_test.cc",
+      "sha256": "f462c72a1a1afcaa1cf1ecfcc96d3280bd31638bcbb94bef7f74eda88ada0d1b",
+      "size": 2419
+    },
+    {
+      "mode": 493,
+      "path": "src/tools/launcher/python_launcher.cc",
+      "sha256": "1f2695479a7051c89df2539893b25e5092682f62d76b5d7864a4c7b93251d3c3",
+      "size": 2974
+    },
+    {
+      "mode": 493,
+      "path": "src/tools/launcher/python_launcher.h",
+      "sha256": "961a88392eff53fe40336a41bd2025b20b62e33c2f3f57b005febb8d5750f0d7",
+      "size": 1340
+    },
+    {
+      "mode": 493,
+      "path": "src/tools/launcher/util/BUILD",
+      "sha256": "d63b7a3415138b146544bd8668c85167f4c0fca07189fce6473cf9a9f0f80655",
+      "size": 908
+    },
+    {
+      "mode": 493,
+      "path": "src/tools/launcher/util/data_parser.cc",
+      "sha256": "4f275c213e972098e088c9408315f74e4c2b63bf601d897dde17351aab338ffb",
+      "size": 3811
+    },
+    {
+      "mode": 493,
+      "path": "src/tools/launcher/util/data_parser.h",
+      "sha256": "77734550a9aee4d69b4de2f39ba4f5ef31029df5fecf68f30aec153cda40bb0c",
+      "size": 1723
+    },
+    {
+      "mode": 493,
+      "path": "src/tools/launcher/util/data_parser_test.cc",
+      "sha256": "3b20cddd936cb18ef84bb81647028c82d00e96e4dd4ee7f8bd37c8cb174381be",
+      "size": 6770
+    },
+    {
+      "mode": 493,
+      "path": "src/tools/launcher/util/dummy.cc",
+      "sha256": "18d57d23cb6f3452f42c4c8bbbb0ad7f727fd97393be2b7ad7fff8c13677551a",
+      "size": 630
+    },
+    {
+      "mode": 493,
+      "path": "src/tools/launcher/util/launcher_util.cc",
+      "sha256": "a39ca0494d648fcaa3c77e2ddee09008d81f5232048a13bcf1dde0c3a6983f28",
+      "size": 9080
+    },
+    {
+      "mode": 493,
+      "path": "src/tools/launcher/util/launcher_util.h",
+      "sha256": "393572ac5dab25df17b06a3cad74e10244f3e9ce354cd330589caa8e1ca7e247",
+      "size": 4120
+    },
+    {
+      "mode": 493,
+      "path": "src/tools/launcher/util/launcher_util_test.cc",
+      "sha256": "cb6821df161226ef517bf1fa03a41150eaccb6e82c9525878a7defccead4c259",
+      "size": 7560
+    },
+    {
+      "mode": 493,
+      "path": "src/tools/launcher/win_manifest.xml",
+      "sha256": "cc2f6dfeaac5395643f8056c098d2b4fd82c1352d35fcf77c0229d5d3aee7cd9",
+      "size": 491
+    },
+    {
+      "mode": 493,
+      "path": "src/tools/launcher/win_resources.rc",
+      "sha256": "063baa5b722fde9a7ac1d086a02994286950c490acfd5119bc2eb78f56c5acc2",
+      "size": 92
+    },
+    {
+      "mode": 493,
+      "path": "src/tools/launcher/win_rules.bzl",
+      "sha256": "04e42889b0b7a9f12685def9e12bfa182aca513ffcc5707d1da14dd507a9e186",
+      "size": 2186
+    },
+    {
+      "mode": 493,
+      "path": "third_party/def_parser/BUILD",
+      "sha256": "bf44bdb2a315299ef43501aa9f894bda6664fa4f10361cba2c6ca82a1f7bdec5",
+      "size": 1238
+    },
+    {
+      "mode": 493,
+      "path": "third_party/def_parser/Copyright.txt",
+      "sha256": "e5ae2504f996c6cff4a717682290778f1be97b24a12f1c12e213683e5a99476d",
+      "size": 5034
+    },
+    {
+      "mode": 493,
+      "path": "third_party/def_parser/def_parser.cc",
+      "sha256": "34c430df685dfba612f4f1c229b8b5661eeec6079c3dc73c7e292d4511bd656e",
+      "size": 18475
+    },
+    {
+      "mode": 493,
+      "path": "third_party/def_parser/def_parser.h",
+      "sha256": "fe9fe5d102567cb40b53947cb297dceb09416f44783adedfd1bd7be886bef167",
+      "size": 1338
+    },
+    {
+      "mode": 493,
+      "path": "third_party/def_parser/def_parser.patch",
+      "sha256": "3186a7f0d0428ed6d438cee7c0a766f8aae7c144825d986330ee4ea3e8126b51",
+      "size": 8600
+    },
+    {
+      "mode": 493,
+      "path": "third_party/def_parser/def_parser_main.cc",
+      "sha256": "d00e6a6e391361358932c34fa46f7637fbc5308a280db8010ba9bb02d2c25dee",
+      "size": 2618
+    },
+    {
+      "mode": 493,
+      "path": "third_party/def_parser/def_parser_test.py",
+      "sha256": "427c4f8aa93065f7204b0cdf87f91f2199dcf90b73d1125120888c7e87ba6083",
+      "size": 4223
+    },
+    {
+      "mode": 493,
+      "path": "third_party/def_parser/empty_test.py",
+      "sha256": "6825bee8a072a6173fe8301e25540cf2b94ba64feae18d3b5e6f3d02741972ec",
+      "size": 810
+    },
+    {
+      "mode": 493,
+      "path": "third_party/ijar/BUILD",
+      "sha256": "6a60f57c57c6fb44edc91007475c71461f09ee4ad0c3ff8eaefb1b9d7a13c864",
+      "size": 3452
+    },
+    {
+      "mode": 493,
+      "path": "third_party/ijar/common.h",
+      "sha256": "5c259e86d571fab62460f7b890d128a1759107a006069c3cf71ec4fab378db2f",
+      "size": 2482
+    },
+    {
+      "mode": 493,
+      "path": "third_party/ijar/mapped_file.h",
+      "sha256": "886ba472992c0081654e0f8744716da7537038b40419099b255d193e9c872791",
+      "size": 2143
+    },
+    {
+      "mode": 493,
+      "path": "third_party/ijar/mapped_file_unix.cc",
+      "sha256": "1f5d3105240d5fd22c8c5d5040bfaf54b4ba01e0be8cd87630102234dc7dcedd",
+      "size": 3981
+    },
+    {
+      "mode": 493,
+      "path": "third_party/ijar/mapped_file_windows.cc",
+      "sha256": "fa13732e36190fa7a62279b1de8b1573e8557681ac3e0e80efa74e1905c85d75",
+      "size": 6619
+    },
+    {
+      "mode": 493,
+      "path": "third_party/ijar/platform_utils.cc",
+      "sha256": "f1c1081183402e3212342d7f8f9e80d6cf0cc725b781ee8cfb33e36c1c1420f6",
+      "size": 4216
+    },
+    {
+      "mode": 493,
+      "path": "third_party/ijar/platform_utils.h",
+      "sha256": "4beac8d79d765e1d305dac63d84a0ce9f84cca72532a4a860b3f283947a93fcc",
+      "size": 3079
+    },
+    {
+      "mode": 493,
+      "path": "third_party/ijar/zip.cc",
+      "sha256": "657c422ba13d97ef6901bb8533ad35a609b3934eab983aaad9b899d989739862",
+      "size": 39115
+    },
+    {
+      "mode": 493,
+      "path": "third_party/ijar/zip.h",
+      "sha256": "43991fd25cb422072c87de8cafddd85e0f97f4f151c5b4a6893bfb523728f178",
+      "size": 6769
+    },
+    {
+      "mode": 493,
+      "path": "third_party/ijar/zip_main.cc",
+      "sha256": "e235ad029f7b455288068d689c33df46f247ededb24013c59f3c49d2b6ec1422",
+      "size": 14491
+    },
+    {
+      "mode": 493,
+      "path": "third_party/ijar/zlib_client.cc",
+      "sha256": "df5f703c910122fc86fad5933ee82d7e58b92c5a80b6d9bfea29ff9abffd1ce0",
+      "size": 4914
+    },
+    {
+      "mode": 493,
+      "path": "third_party/ijar/zlib_client.h",
+      "sha256": "c2ab7d6db034b49df72027652a648f5f49b8a99871af8060a87a197e5e185e01",
+      "size": 2524
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/AUTHORS",
+      "sha256": "6282ee76cca569083b5b998b9f816ba1032e127b8dc7c46942b86477fc6fbfa5",
+      "size": 296
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/BUILD",
+      "sha256": "8341c48a2eb02e19d90163de6b98aeb389575b71fd1a49c908c43f29952346fe",
+      "size": 330
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "size": 11358
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/MANIFEST.in",
+      "sha256": "ff7157a19d43c458aae5102117bdab1eb614ea7fde5fbeaa75d71988150c82c3",
+      "size": 16
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/PKG-INFO",
+      "sha256": "a1269e005dde9ad7a11e1098d190092f9b13b6f2e39617a02f61c14f9b8b02a4",
+      "size": 2310
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/README.md",
+      "sha256": "9d484c35a06a7f1949d68a3130f7fa22b2643d4b49cf8981d7ccfe19f3390b09",
+      "size": 1355
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/absl/__init__.py",
+      "sha256": "edc339eecc24d93d47739c319adf89a5c691eb17dd3c9c8bfe5c91aa0383bee3",
+      "size": 584
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/absl/app.py",
+      "sha256": "56d9976f8b306e135ae62c673b35648dc76662996c73c44c42079a8d680936c5",
+      "size": 15352
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/absl/command_name.py",
+      "sha256": "9a7f861c215f2ddb8e30c5b927eb19f3e3a2c0dc74e271235d74fc56a8882087",
+      "size": 2262
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/absl/flags/__init__.py",
+      "sha256": "13014ad8eed42a8202eee8d5075c104b33ebc9ac536e5a0662d2a1642ea23d8c",
+      "size": 7665
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/absl/flags/_argument_parser.py",
+      "sha256": "0a2120b2565566f80a363cbacd9a67d2671bcba2433282ddfd94f854a8511fc8",
+      "size": 20534
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/absl/flags/_defines.py",
+      "sha256": "e26d32d6acf35b82c7cf8c01fd06bc8fcaf81e1df8c946b7b58d83bd2ea70cb5",
+      "size": 31800
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/absl/flags/_exceptions.py",
+      "sha256": "2f0b3b659ae52c91bcdd51ee381e19e0235f712a0a5f9a499ec3510ada7e74cc",
+      "size": 3657
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/absl/flags/_flag.py",
+      "sha256": "e34467e0525e6ed55ce94059bef3e3ed6cf8fb476f4482af654a1ebae347970e",
+      "size": 17271
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/absl/flags/_flagvalues.py",
+      "sha256": "63aae69ce85a47ed2fe60ea43812ac93f2abb209bb4dbd56a737a16742c24caa",
+      "size": 51333
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/absl/flags/_helpers.py",
+      "sha256": "448e1a1d6b9abb6064b19ecd21ac3518adad3217bb4d3b2085b919f68762439f",
+      "size": 13430
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/absl/flags/_validators.py",
+      "sha256": "fe1a55c138574212fa3c5380f7e2f665123eef32eed94c54fe14492565d8a07c",
+      "size": 14144
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/absl/flags/_validators_classes.py",
+      "sha256": "28b04984902df02d7c832d94abeabb6d414d4bf0213c19719701a2366e605975",
+      "size": 6157
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/absl/flags/argparse_flags.py",
+      "sha256": "a875f161d7cc96ce89380e5b8727c606961cd27e351f89c834bfd0ceddb36ff4",
+      "size": 14437
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/absl/logging/__init__.py",
+      "sha256": "21d1834ab68b2bd034992b958b4bbc361da9bcfad85184241dd3a25c5ffbf1ab",
+      "size": 41407
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/absl/logging/converter.py",
+      "sha256": "793b9cc753a38b1ed858c414c962b33d14ebc462ee0a436c4e625ad465ba93de",
+      "size": 6353
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/absl/testing/__init__.py",
+      "sha256": "edc339eecc24d93d47739c319adf89a5c691eb17dd3c9c8bfe5c91aa0383bee3",
+      "size": 584
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/absl/testing/_bazelize_command.py",
+      "sha256": "478ad5e23e40392a773cd91540a3f523e48a63341b5f27ae88e4f7776ddc4cb0",
+      "size": 2302
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/absl/testing/_pretty_print_reporter.py",
+      "sha256": "9cbe6a4ac61617a3bf0ba2fd3dec701523f1b3af1673ce5185d85104dd80813c",
+      "size": 3140
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/absl/testing/absltest.py",
+      "sha256": "255b373e6c17d2fa600691524fc7bda27b2361935088fbb5e4f6a18bd538049f",
+      "size": 95906
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/absl/testing/flagsaver.py",
+      "sha256": "ded3e6a9359ccf4e2ca98985b7699489c7ed750f359bb18320ddb4dfecbf94bd",
+      "size": 6552
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/absl/testing/parameterized.py",
+      "sha256": "3ca84fe415a7883153696869bad91c2e65f900a2a27a5613017c80786fd2aeb4",
+      "size": 27120
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/absl/testing/xml_reporter.py",
+      "sha256": "4316fdf1c2e1f5bf2e9847ec7fba1e643d004585af469c685b515fa82ec6512e",
+      "size": 21358
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/absl_py.egg-info/PKG-INFO",
+      "sha256": "a1269e005dde9ad7a11e1098d190092f9b13b6f2e39617a02f61c14f9b8b02a4",
+      "size": 2310
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/absl_py.egg-info/SOURCES.txt",
+      "sha256": "da0980aee53914741ea1d0a04c082c9091bb3553d8d9994470bcb3253074f555",
+      "size": 740
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/absl_py.egg-info/dependency_links.txt",
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "size": 1
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/absl_py.egg-info/top_level.txt",
+      "sha256": "d0cff5cf6ec78b906c8f51214df13f6a3749745c5e3ff6b0d315e74780575e12",
+      "size": 5
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/setup.cfg",
+      "sha256": "1c473cbaee8da5fc46e7f0158794af5cea4414c34a3cf3f180c2001f5e38bd3e",
+      "size": 38
+    },
+    {
+      "mode": 493,
+      "path": "third_party/py/abseil/setup.py",
+      "sha256": "2a4f3f92fcaaf1796fce309ffd3c97a3d289a9728df3462ae34bcadb3cf2c920",
+      "size": 2533
+    },
+    {
+      "mode": 493,
+      "path": "tools/BUILD",
+      "sha256": "b0fbb2f8eb70acce9a307cca3d487a360f32a89d412e22a39c38346b979fc1a6",
+      "size": 1639
+    },
+    {
+      "mode": 493,
+      "path": "tools/allowlists/BUILD",
+      "sha256": "eb542aff3f75192dc682e965106a423f2508ddde11c38a7dc9e614bd104ef91f",
+      "size": 612
+    },
+    {
+      "mode": 493,
+      "path": "tools/allowlists/config_feature_flag/BUILD",
+      "sha256": "685dbe7e7bee619eb655da8a59bf4e8dfccafc43a9e3e567262abee05f9df5e8",
+      "size": 441
+    },
+    {
+      "mode": 493,
+      "path": "tools/allowlists/dormant_dependency_allowlist/BUILD",
+      "sha256": "e4d4090dae36ffb142ab307ca5f8b5d9101117f18621f88eef488adb49e52948",
+      "size": 254
+    },
+    {
+      "mode": 493,
+      "path": "tools/allowlists/extend_rule_allowlist/BUILD",
+      "sha256": "2a8c0d988c0ecae3058ab4ae8e842f823a4be26a62e4fd54796eb3ed7669d817",
+      "size": 229
+    },
+    {
+      "mode": 493,
+      "path": "tools/allowlists/function_transition_allowlist/BUILD",
+      "sha256": "28ba77597c529ea11281c8247a3bcfb55d440de6299cc517831573efdac538eb",
+      "size": 281
+    },
+    {
+      "mode": 493,
+      "path": "tools/allowlists/initializer_allowlist/BUILD",
+      "sha256": "79e67fd466f4a6b5be2ffdf925f784374de51dd9584e45f09355c1933c9d4bcb",
+      "size": 145
+    },
+    {
+      "mode": 493,
+      "path": "tools/allowlists/skip_validations_allowlist/BUILD",
+      "sha256": "c9a739a32923be4ef54c7491812f1096bf420b82db3abcecf933e3ba44367e51",
+      "size": 251
+    },
+    {
+      "mode": 493,
+      "path": "tools/allowlists/subrules_allowlist/BUILD",
+      "sha256": "41206a98fc8266ba7e188a6959778f8ffa6688fe6aff6d0ca10ade4ab70d129c",
+      "size": 142
+    },
+    {
+      "mode": 493,
+      "path": "tools/android/BUILD",
+      "sha256": "9a40104c1a243ab3ca8508cbd0e4f32150a80326905be1830dff6017a6f0c5f1",
+      "size": 102
+    },
+    {
+      "mode": 493,
+      "path": "tools/android/android_extensions.bzl",
+      "sha256": "606cce2373f2adc757001c37f7a6b00153b8a92b96cbbce6ca16b9aba0fb3fc8",
+      "size": 4834
+    },
+    {
+      "mode": 493,
+      "path": "tools/bash/runfiles/BUILD",
+      "sha256": "4bb534512223b45e9f75f2ef138cf84df26f4e469906ccc3e3a453679fc2736e",
+      "size": 119
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs.bzl",
+      "sha256": "d5f935c4e72a365438711f08a2640094cbf0a03392eebb06d8cecdc58b8ab19c",
+      "size": 3576
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/BUILD",
+      "sha256": "d82be5587184a65f2f8bb89b0db8a6b649961f3178ad35960477c5ef04956f98",
+      "size": 1588
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/build_info/BUILD",
+      "sha256": "91db40a0a2ecc4eb8aaed489dd4ce117af5a0e5d64ed7d9d6f21417e4873bb1a",
+      "size": 996
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/build_info/bazel_cc_build_info.bzl",
+      "sha256": "72cc98ddc39e4c7c66d23541c7b18e10b70fde6008e2883144554b7487e97514",
+      "size": 3384
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/build_info/bazel_java_build_info.bzl",
+      "sha256": "2ca911d9ab6b426cd120294a09148de8b641d14ebf6d9b3faaeaa86b3f4fc6bb",
+      "size": 4675
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/build_info/templates/BUILD",
+      "sha256": "569d06599fc494e6c7385a110f9f2c1c7806f471f66dda60c66969b95456f470",
+      "size": 958
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/build_info/templates/non_volatile_file.h.template",
+      "sha256": "4d014ba8408a9a1e5cc9aca57183dee8bda0561ee92d4732bf174d0392218269",
+      "size": 116
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/build_info/templates/non_volatile_file.properties.template",
+      "sha256": "c0ca85d3db416d3be5c68662b893e720bd817fb60c2b8405b41ecd51909a8f53",
+      "size": 26
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/build_info/templates/redacted_file.h.template",
+      "sha256": "2e00a18d90e804f52af2079fdcdad7d78ec7e04790f9173c20dc2cb7a4092db0",
+      "size": 190
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/build_info/templates/redacted_file.properties.template",
+      "sha256": "6ae3ee07bd3c4686ec4086678ce999cbc1720929ed1fa0ddeff605e96d01160a",
+      "size": 114
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/build_info/templates/volatile_file.h.template",
+      "sha256": "83f47681c317f7b1249b6dcc9fa23a089233cf2f3a3801fedaca82869def8807",
+      "size": 138
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/build_info/templates/volatile_file.properties.template",
+      "sha256": "0dd90374e26f9c19b9ade0de574a64733dac9c9371bb9feda2ebcab66948b483",
+      "size": 106
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/cc/BUILD",
+      "sha256": "a24f1afcd5bfaaf9fc88ae3455213c83d61988bac5a80e58dd9f954281f6009d",
+      "size": 838
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/cc/action_names.bzl",
+      "sha256": "ede4d3bd51a2a772180a0f3a47cf083e898d4104ec8de27f30ca36a5b8c13951",
+      "size": 5400
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/cc/cc_import.bzl",
+      "sha256": "a11736b1cf82a1216b62b6c8af280d739721c6dde470ff83cd939112a0a84093",
+      "size": 889
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/cc/whitelists/parse_headers_and_layering_check/BUILD",
+      "sha256": "cce7a8a7321bdcd332d89d01581a3023bc7d73765e8e303419b91f890ebda583",
+      "size": 241
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/cc/whitelists/starlark_hdrs_check/BUILD",
+      "sha256": "98e4caac8a88ddac358c1ef45b7a18970f7e992718966bf1ea9a5312f37622eb",
+      "size": 230
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/hash/BUILD",
+      "sha256": "58dab4b613f4b9e6703666fb931e03b41e31f8d695da5abd58eba10bbbd57ca0",
+      "size": 274
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/hash/hash.bzl",
+      "sha256": "a7ca66e06ce6531f260014979cf0f830b2f1a525512319d9e8e0cc1a140ed0c8",
+      "size": 1526
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/hash/sha256.py",
+      "sha256": "0b93e182e2fc9386c93944949320feb0103b9f0611fadfc653ccd0f04676af0b",
+      "size": 1335
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/pkg/BUILD",
+      "sha256": "b58f5f7983dc79a29e34a0fcd72ff18ecbad8f3e5fea9f5607e64b325ad95eec",
+      "size": 545
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/pkg/archive.py",
+      "sha256": "9012833444066bf099b1231d7cba22fb1b44318559b04cee8bcc98653cc13ede",
+      "size": 7410
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/pkg/build_tar.py",
+      "sha256": "b042a398e40de452b36aef36df3d399777c06c7f5a73480ac39875681f4f7340",
+      "size": 3478
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/pkg/path.bzl",
+      "sha256": "c5787afa27b707062f641d478263a0b283a4909b37565be27c72548002014da5",
+      "size": 2340
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/pkg/pkg.bzl",
+      "sha256": "047aea55610b6ace2aab726290c1f8698ae46fae33a48ef5a530745cabb2bdde",
+      "size": 2309
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/repo/BUILD",
+      "sha256": "58fc51781cf26bfbcbd2c615f4cd0bd64892c3f7332e403eb1a885fea27ff3ca",
+      "size": 145
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/repo/cache.bzl",
+      "sha256": "119c3fb281fcb02ce8aa0cd2f4fa315830ab160b483e4e041986422d2294d15b",
+      "size": 2870
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/repo/git.bzl",
+      "sha256": "c4f89658b4465dc4e42f87312b74d549fb434197bf0ade88fc4276550f68811b",
+      "size": 11135
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/repo/git_worker.bzl",
+      "sha256": "0bf607d50370d151bba1b541e8023ff040527f50f8fa8884157002ed9c63c339",
+      "size": 12957
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/repo/http.bzl",
+      "sha256": "9e908b9d6491cb950a9713d8b758b7b6f83871adbc768eb4997ca12e06ac240a",
+      "size": 24948
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/repo/java.bzl",
+      "sha256": "94fa09f776bb93a5ed3de1fccdb3a8f22c8792d01e5d7df6d588817b2cf02d7d",
+      "size": 7362
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/repo/jvm.bzl",
+      "sha256": "b3e2ff70d3706171123636248d7175dcb0046bbedea776016d49befc7a810309",
+      "size": 11040
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/repo/local.bzl",
+      "sha256": "f41d310ee3fcef8a637ddff5b21eb05724ad377bbb1b679d146327478613e4db",
+      "size": 5752
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_defs/repo/utils.bzl",
+      "sha256": "e572bb45c469d4b971763f61a0bb9704251277d4eaa379e835dfa3dc116128ed",
+      "size": 20372
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_rules/BUILD",
+      "sha256": "9a40104c1a243ab3ca8508cbd0e4f32150a80326905be1830dff6017a6f0c5f1",
+      "size": 102
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_rules/java_rules_skylark.bzl",
+      "sha256": "ffac1ef73a131687618be089b51f520f73d6ca5d5bdd42efb84d447e102e3f9b",
+      "size": 10790
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_rules/test_rules.bzl",
+      "sha256": "9fb623d9f343e0f79a36ec0c7f45336b05b64056c828148500ddd42b99acef1e",
+      "size": 13281
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_rules/test_rules_private.bzl",
+      "sha256": "ad2ebb5c65ff0506c72955bc0d6f7f8fcbbd8a42637156266ebab632cd962dc2",
+      "size": 2200
+    },
+    {
+      "mode": 493,
+      "path": "tools/build_rules/utilities.bzl",
+      "sha256": "0310942e5deef48cec8b1769c7d0aba347da75f92f04c840451196451ef44f00",
+      "size": 1465
+    },
+    {
+      "mode": 493,
+      "path": "tools/buildstamp/BUILD",
+      "sha256": "2c57ca193da84442aff6cbaf9c3e2fd3af44f916eba59f951a4d42e5bf6eea47",
+      "size": 196
+    },
+    {
+      "mode": 493,
+      "path": "tools/buildstamp/get_workspace_status",
+      "sha256": "cca09482d26df4b15ed9adbbae48c560977531900a86095bb6d4b5b8c429189e",
+      "size": 704
+    },
+    {
+      "mode": 493,
+      "path": "tools/coverage/BUILD",
+      "sha256": "42dc1691fa4369526a4a72e8c7ba5af1125a2d333918ff80a28eb17d23d7d10c",
+      "size": 294
+    },
+    {
+      "mode": 493,
+      "path": "tools/coverage/collect-coverage.sh",
+      "sha256": "df3b0aa9666e95811a9a9b7e8ee8d59718b0e3761caf34923ae6f82c8ade3c31",
+      "size": 662
+    },
+    {
+      "mode": 493,
+      "path": "tools/coverage/dummy_coverage_report_generator",
+      "sha256": "900604dbf557c3e3995e1ae34744e9b5e80120b07dd7f24277fc8a2e2d908f6a",
+      "size": 147
+    },
+    {
+      "mode": 493,
+      "path": "tools/cpp/BUILD",
+      "sha256": "0e3fdd3293d39a64f3fbda755d8a3c0bbd3b6ffd5fb0717ab594bc1f1e29a535",
+      "size": 4102
+    },
+    {
+      "mode": 493,
+      "path": "tools/cpp/build_info_entry_set.cc",
+      "sha256": "91197357aea548f2802d214dc4934997b4bcd9c27fbbfb368da1c8a00ab2a383",
+      "size": 2429
+    },
+    {
+      "mode": 493,
+      "path": "tools/cpp/build_info_entry_set.h",
+      "sha256": "37b00bb524ea74ef63e090d9679198eb88006c15650463e1537ed100dc613891",
+      "size": 2749
+    },
+    {
+      "mode": 493,
+      "path": "tools/cpp/build_info_translation_helper.cc",
+      "sha256": "9344419b00ffae34f8d4fb8c283a4c8db36f06cc1729025822bf1c982b0daa42",
+      "size": 2483
+    },
+    {
+      "mode": 493,
+      "path": "tools/cpp/build_info_translation_helper.h",
+      "sha256": "6563faf06849f82c03f99df06e6a72e8feebf5517522e29a87fd0a520975fb23",
+      "size": 2002
+    },
+    {
+      "mode": 493,
+      "path": "tools/cpp/build_info_translation_helper_test.cc",
+      "sha256": "e1b3bb34ff05de9b47ae6af930aa03222ede3c24a6e8c95d919495240bf6c8df",
+      "size": 4426
+    },
+    {
+      "mode": 493,
+      "path": "tools/cpp/cc_configure.bzl",
+      "sha256": "f1264cd4a6552eba7368729212aba64031ecd4330923d2bef61a20791ee2b4c5",
+      "size": 934
+    },
+    {
+      "mode": 493,
+      "path": "tools/cpp/cc_flags_supplier.bzl",
+      "sha256": "e0150e4e012bbc2a6464d04ca7893c5da22fbf628c3e043e5d0bfb57a0baa1c9",
+      "size": 775
+    },
+    {
+      "mode": 493,
+      "path": "tools/cpp/cc_toolchain_config_lib.bzl",
+      "sha256": "8df69d2032049acaafedd3feab3c5dbd36335de2ff76013e99c0815611a0c5d5",
+      "size": 1536
+    },
+    {
+      "mode": 493,
+      "path": "tools/cpp/compiler_flag.bzl",
+      "sha256": "23c0c595ff86daf7e4b7a9ffaff88ec4b79f060ee6db8d1121112e60c4efee75",
+      "size": 774
+    },
+    {
+      "mode": 493,
+      "path": "tools/cpp/lib_cc_configure.bzl",
+      "sha256": "da7e4ae162120582a7a703b5657286dffe61fdf37cc489a4fc7625608517370c",
+      "size": 784
+    },
+    {
+      "mode": 493,
+      "path": "tools/cpp/modules_tools/BUILD",
+      "sha256": "6f0727f09faaee782e8cf2219586243f767c7c4cb6dc3b9024f8c4c3aba9dad3",
+      "size": 489
+    },
+    {
+      "mode": 493,
+      "path": "tools/cpp/modules_tools/aggregate-ddi",
+      "sha256": "f12eb5bb2b0d8634745ff88deeed1c038f903e4d6058caf8c60db1de126c1f28",
+      "size": 104888
+    },
+    {
+      "mode": 493,
+      "path": "tools/cpp/modules_tools/generate-modmap",
+      "sha256": "222b381da1faf69abf68f5763ad0531aa7aef110d3b16917ddb27e7f57165f70",
+      "size": 105576
+    },
+    {
+      "mode": 493,
+      "path": "tools/cpp/runfiles/BUILD",
+      "sha256": "01ee7f179dc5dfd9aacc6ac240651226ee32d9734e82d4c19830328758685997",
+      "size": 197
+    },
+    {
+      "mode": 493,
+      "path": "tools/cpp/runfiles/runfiles.h",
+      "sha256": "80cbdbdb3662b12de206f854bb35184396de328620ea3d6a4c1578bde5836900",
+      "size": 1213
+    },
+    {
+      "mode": 493,
+      "path": "tools/cpp/test_data/correct_file_format.txt",
+      "sha256": "bedfd368810a367a8123c04e98b507be10d2e9986f5d744e48f6445db04e5baf",
+      "size": 51
+    },
+    {
+      "mode": 493,
+      "path": "tools/cpp/test_data/duplicated_key.txt",
+      "sha256": "dd7ee6d5f171d9aa9f853bedf596fbd856ab023773709eb0d49faa938411ef50",
+      "size": 35
+    },
+    {
+      "mode": 493,
+      "path": "tools/cpp/test_data/no_separator.txt",
+      "sha256": "bd3371ca692f27fd8be94199bfab700a373834b47fc78477e26633e6d00b2384",
+      "size": 34
+    },
+    {
+      "mode": 493,
+      "path": "tools/cpp/toolchain_utils.bzl",
+      "sha256": "feedbafb1be793c3e7710ece67e1ffb349d55ed726a358ee8d1dd8a68118cb7a",
+      "size": 817
+    },
+    {
+      "mode": 493,
+      "path": "tools/cpp/unix_cc_toolchain_config.bzl",
+      "sha256": "1226e7f37ff91b55a3cf8eaddb60343cef7c71fc9bdd04ef6d372b27314bce37",
+      "size": 954
+    },
+    {
+      "mode": 493,
+      "path": "tools/cpp/windows_cc_configure.bzl",
+      "sha256": "7d1b13bdc2b1f5b8cbfded820664fa7265087ac58909a7df33dad6878ace0bf3",
+      "size": 855
+    },
+    {
+      "mode": 493,
+      "path": "tools/def_parser/BUILD",
+      "sha256": "891d56515113353a675db4f62e51380f3816b703b18585361e02de84e16e95ca",
+      "size": 971
+    },
+    {
+      "mode": 493,
+      "path": "tools/def_parser/no_op.bat",
+      "sha256": "4ebf44828201a3228a0521723c48d26db87565e44ef862fb65d5ead92840f64d",
+      "size": 710
+    },
+    {
+      "mode": 493,
+      "path": "tools/genrule/BUILD",
+      "sha256": "a72df30c877a85ba2b6efb37d9da3e8213ba9dd14b595943c1e494670e9a0ab0",
+      "size": 172
+    },
+    {
+      "mode": 493,
+      "path": "tools/genrule/genrule-setup.sh",
+      "sha256": "2138ccc4608e0a41291680587baced12bb80379b6924c3c4c2d9ef272f99139f",
+      "size": 866
+    },
+    {
+      "mode": 493,
+      "path": "tools/java/BUILD",
+      "sha256": "d8764396f74b1040da34b8b3e9c0500e60009e2beca835ddc2a5771c273a73e5",
+      "size": 526
+    },
+    {
+      "mode": 493,
+      "path": "tools/java/runfiles/BUILD",
+      "sha256": "4beb7a4606d166a48c74952c3f90ad075154d968950d414939f00ea6a8d37b79",
+      "size": 117
+    },
+    {
+      "mode": 493,
+      "path": "tools/jdk/BUILD",
+      "sha256": "0ea0dae7e42fdfb3f2fbe945fae3e84e57e263ac6affd4dc6a74b351868832a6",
+      "size": 5438
+    },
+    {
+      "mode": 493,
+      "path": "tools/jdk/BUILD.java_tools",
+      "sha256": "dffe53e6c4c3445fdcf14965ffdd104f439727185c34cfe7c3f9c6ea9b4f116a",
+      "size": 17361
+    },
+    {
+      "mode": 493,
+      "path": "tools/jdk/BUILD.java_tools_prebuilt",
+      "sha256": "aebb48b76036e56140be4559504d5b3f8ca054ab673eff08ba1ba4d73f38c42e",
+      "size": 1168
+    },
+    {
+      "mode": 493,
+      "path": "tools/jdk/default_java_toolchain.bzl",
+      "sha256": "94baf15d9c6998411a211630cc56a421b6d4b99415850b422be0371e431443fb",
+      "size": 1832
+    },
+    {
+      "mode": 493,
+      "path": "tools/jdk/java_toolchain_alias.bzl",
+      "sha256": "96f7baca9fc31f01ebe780d3e94169b57542424f3a851215348565935e6cfaee",
+      "size": 1016
+    },
+    {
+      "mode": 493,
+      "path": "tools/jdk/launcher_flag_alias.bzl",
+      "sha256": "9c4f1a4656abb69476f0b1f3f39c06a28d7115342ee65598285e208d67a8c545",
+      "size": 1521
+    },
+    {
+      "mode": 493,
+      "path": "tools/jdk/local_java_repository.bzl",
+      "sha256": "0fb433f59ccc627f52313c12e8ea0607bc5539ddee98f310decaf787b1024c76",
+      "size": 1124
+    },
+    {
+      "mode": 493,
+      "path": "tools/jdk/nosystemjdk/README",
+      "sha256": "1df3fa40d06cd46928f7b7046d47eca8a278b38034e87946685d4492a1cf4ba8",
+      "size": 91
+    },
+    {
+      "mode": 493,
+      "path": "tools/jdk/proguard_allowlister.py",
+      "sha256": "665481fd85cf41360680b9b7b1c136eb9eee56132f936f0e983bb51f54560bcb",
+      "size": 3830
+    },
+    {
+      "mode": 493,
+      "path": "tools/jdk/proguard_allowlister_test.py",
+      "sha256": "433ad2fb428f361523915a8c94c97ea6963e906a9b9ee708356249fdc9adb1d6",
+      "size": 2767
+    },
+    {
+      "mode": 493,
+      "path": "tools/jdk/proguard_allowlister_test_input.pgcfg",
+      "sha256": "cdcee843bedc114f941a3eed56938e4c8c1ec82a576ef857a188da90d3e021b3",
+      "size": 2012
+    },
+    {
+      "mode": 493,
+      "path": "tools/jdk/remote_java_repository.bzl",
+      "sha256": "ae5ca42c5d33cfb988221e578273f53f83846786296a488604c6877cb4217f88",
+      "size": 951
+    },
+    {
+      "mode": 493,
+      "path": "tools/jdk/toolchain_utils.bzl",
+      "sha256": "f8979c720fcdc1cb62fbf184aa6e667abc1343fdc22302c7d37c329f6d0b7b09",
+      "size": 953
+    },
+    {
+      "mode": 493,
+      "path": "tools/launcher/BUILD",
+      "sha256": "aa1b943956b6a7c3044f73583f5bc972bfc658607f7a3b745d51c7e7d016aab7",
+      "size": 2773
+    },
+    {
+      "mode": 493,
+      "path": "tools/launcher/BUILD.bootstrap",
+      "sha256": "9780d503898e6903ff16e9a55ccafe11d4163b7e507847b1cb143cc63fe9f622",
+      "size": 469
+    },
+    {
+      "mode": 493,
+      "path": "tools/launcher/empty.sh",
+      "sha256": "f3840c1e7a239cca9e5b2967c5e4a32e1c34c51a6f23f3cbafae08313e6ff55c",
+      "size": 666
+    },
+    {
+      "mode": 493,
+      "path": "tools/objc/BUILD",
+      "sha256": "51350e7dfec0b35a170a78ef74187ff3cd1bfe4a6d82e9eeb3200a98a8ac9db7",
+      "size": 653
+    },
+    {
+      "mode": 493,
+      "path": "tools/objc/dummy.c",
+      "sha256": "1d8f5dcc1518f10b8cb021c70f31713c9310e3530f2d80c04d5dfc1d4ffb61d8",
+      "size": 1043
+    },
+    {
+      "mode": 493,
+      "path": "tools/objc/gcov_stub",
+      "sha256": "3ab0b72e8a0f9fbf564aa8252cc555775bc0af5bc708876816af5a6722ab8156",
+      "size": 79
+    },
+    {
+      "mode": 493,
+      "path": "tools/objc/mcov_stub",
+      "sha256": "3ab0b72e8a0f9fbf564aa8252cc555775bc0af5bc708876816af5a6722ab8156",
+      "size": 79
+    },
+    {
+      "mode": 493,
+      "path": "tools/objc/objc_dummy.mm",
+      "sha256": "1d8f5dcc1518f10b8cb021c70f31713c9310e3530f2d80c04d5dfc1d4ffb61d8",
+      "size": 1043
+    },
+    {
+      "mode": 493,
+      "path": "tools/osx/BUILD",
+      "sha256": "955b355420ab0565d97cb59ac49c7d896429c3a6aca9f19209e8487b68caff4a",
+      "size": 2145
+    },
+    {
+      "mode": 493,
+      "path": "tools/osx/xcode_configure.bzl",
+      "sha256": "26d758318e481f8971dabd43e24d0b4e85c30eb074da39d3b63c778f39ebd942",
+      "size": 12993
+    },
+    {
+      "mode": 493,
+      "path": "tools/osx/xcode_locator.m",
+      "sha256": "b7c25f0390587721e2373f4ee72936cc9d4035cdb396e0ca55ccb981c954a490",
+      "size": 10817
+    },
+    {
+      "mode": 493,
+      "path": "tools/osx/xcode_locator_stub.sh",
+      "sha256": "b7414bcd65f830a0136b2ba20b104b5f60ebb48a23915342335da2b41194805c",
+      "size": 706
+    },
+    {
+      "mode": 493,
+      "path": "tools/osx/xcode_version_flag.bzl",
+      "sha256": "e1c695fbe087328a69f037cb884a3ab6084bef6587f336068b301409152e1656",
+      "size": 7888
+    },
+    {
+      "mode": 493,
+      "path": "tools/proto/BUILD",
+      "sha256": "7283bb1f4ffcd05a8da8931fc902c1e2f1ea207242fe5c3258da92da6ce14f4c",
+      "size": 666
+    },
+    {
+      "mode": 493,
+      "path": "tools/python/BUILD",
+      "sha256": "a9989e4f44dec38e493508e4db75419471f1f6fd87c532454d25921ba40ca79f",
+      "size": 4088
+    },
+    {
+      "mode": 493,
+      "path": "tools/python/private/py_test_alias.bzl",
+      "sha256": "e16604aa92e5d4d82745f6353e41d1bab11992926f8d3a48bb15db25a1719b9b",
+      "size": 966
+    },
+    {
+      "mode": 493,
+      "path": "tools/python/python_bootstrap_template.txt",
+      "sha256": "b5146d4eb484e8e30905d9a51adae93a21c6f951f549ae9e043e266b0fb90c3b",
+      "size": 21925
+    },
+    {
+      "mode": 493,
+      "path": "tools/python/python_version.bzl",
+      "sha256": "8568edfc1b408d4640be1f1b4f3f52136b1ac17d17f3f05cbfe218e3e9fe5e38",
+      "size": 1830
+    },
+    {
+      "mode": 493,
+      "path": "tools/python/pywrapper_template.txt",
+      "sha256": "81f0358b276cbe181c8aa1ab0c8b2d5e9b51c55806838a34821711c8ec4fe7f0",
+      "size": 3632
+    },
+    {
+      "mode": 493,
+      "path": "tools/python/pywrapper_test.py",
+      "sha256": "9b0bfa42e267dd8d848de7ccb655d00a72df3f5125d7577e2358064709120cd1",
+      "size": 6150
+    },
+    {
+      "mode": 493,
+      "path": "tools/python/runfiles/BUILD",
+      "sha256": "ab8bc29d83a25a3e338a4eb48668d96e56fc82f519ac815f0e4c2f478358cbba",
+      "size": 238
+    },
+    {
+      "mode": 493,
+      "path": "tools/python/runfiles/runfiles.py",
+      "sha256": "44ee152d3334fa3ca299171a8491472e81f1e7f12b81b0a79a1eb1b4b373165d",
+      "size": 997
+    },
+    {
+      "mode": 493,
+      "path": "tools/python/srcs_version.bzl",
+      "sha256": "95498780651a61714a1e8a08fef234d8d3860f5fac714f74ed02b40e1eae5b79",
+      "size": 11311
+    },
+    {
+      "mode": 493,
+      "path": "tools/python/toolchain.bzl",
+      "sha256": "d9b9101682acde3cff1437ca31ab45631c4b94eb360b0ecfa3a2d72307d69ee4",
+      "size": 852
+    },
+    {
+      "mode": 493,
+      "path": "tools/python/utils.bzl",
+      "sha256": "e28cdc0fbf6e6a2f862c5afdf0561d5ba1d118b4bf56327c92d32bd681d92761",
+      "size": 2168
+    },
+    {
+      "mode": 493,
+      "path": "tools/res/BUILD",
+      "sha256": "bef477365d864eab46fcfe73c635bafd11a7300e4e47c158abe20d269e07e8ac",
+      "size": 845
+    },
+    {
+      "mode": 493,
+      "path": "tools/res/win_res.bzl",
+      "sha256": "d78b202e5609bc322f99990897a8e5e01a44e645b0f4e1c19b4677a3ea1bc275",
+      "size": 3326
+    },
+    {
+      "mode": 493,
+      "path": "tools/res/winsdk_configure.bzl",
+      "sha256": "f6463d7e0a136ffff7e9099532f11f9fe7db91bd93e423b5e7101b104d035375",
+      "size": 5209
+    },
+    {
+      "mode": 493,
+      "path": "tools/res/winsdk_toolchain.bzl",
+      "sha256": "a19f04238ee0b76dcbaa7aed4d4356fa03db805b6cf7ace179bc358a4cd63938",
+      "size": 2210
+    },
+    {
+      "mode": 493,
+      "path": "tools/sh/BUILD",
+      "sha256": "e80e71184c9819ee287f415668d59ea3f9eab67dcb5e706528a7ddc4cb64a750",
+      "size": 278
+    },
+    {
+      "mode": 493,
+      "path": "tools/sh/sh_toolchain.bzl",
+      "sha256": "b5b50c1e5837aa5a45f2ac59acf204826e6c5c8c0056c56fbd2953bdef6debce",
+      "size": 765
+    },
+    {
+      "mode": 493,
+      "path": "tools/test/BUILD",
+      "sha256": "81db88f41f7a9a07af246a42cfa7a8b6e118012b4f41830aaee9ffe4a4a9ee17",
+      "size": 5107
+    },
+    {
+      "mode": 493,
+      "path": "tools/test/CoverageOutputGenerator/java/com/google/devtools/coverageoutputgenerator/BUILD",
+      "sha256": "40c45a652ca973add7b84c526f8fb4843bbc46d29238f931dcf875455045ad3e",
+      "size": 124
+    },
+    {
+      "mode": 493,
+      "path": "tools/test/collect_cc_coverage.sh",
+      "sha256": "431ced8469afcab417f93837f529591da4801bd167480363da2058ebe93cc552",
+      "size": 9482
+    },
+    {
+      "mode": 493,
+      "path": "tools/test/collect_coverage.sh",
+      "sha256": "e1df052dd355295d7e9418c5e01797dc50132c27b714e3ec316d49d74b106fb9",
+      "size": 9960
+    },
+    {
+      "mode": 493,
+      "path": "tools/test/default_test_toolchain.bzl",
+      "sha256": "c013158dde96f9b4699af24806fab64e4574e398fe94f612e25a16b1fa4f16f6",
+      "size": 958
+    },
+    {
+      "mode": 493,
+      "path": "tools/test/dummy.sh",
+      "sha256": "14a80dd0456a276c4707b36d8fb39cd180bb436c965fe13c79541fc8613d397c",
+      "size": 631
+    },
+    {
+      "mode": 493,
+      "path": "tools/test/extensions.bzl",
+      "sha256": "ab2c246fcbb7626ee8e35b51cec528ecb0e751ffb5c4ac52a35ec647684dbf7e",
+      "size": 1610
+    },
+    {
+      "mode": 493,
+      "path": "tools/test/generate-xml.sh",
+      "sha256": "7bb14e89332d75a08c166a749e24e23c0e9a95ff4b56f6dd6fc272562f159b13",
+      "size": 5114
+    },
+    {
+      "mode": 493,
+      "path": "tools/test/test-setup.sh",
+      "sha256": "49ba08927c3c556c52c6f771eaca362a0dbd1b6e19fd2667c61d92c33a32278a",
+      "size": 14949
+    },
+    {
+      "mode": 493,
+      "path": "tools/whitelists/BUILD",
+      "sha256": "8e1dcb700fe1d3a9632b8628770ca760d15cedfd4ea9b03d88b61b0a3930ea37",
+      "size": 294
+    },
+    {
+      "mode": 493,
+      "path": "tools/whitelists/config_feature_flag/BUILD",
+      "sha256": "ac46409c3f076c35312ab7b0b86b9b9f47c79744200b91ddb5f7fdb43c9a505b",
+      "size": 387
+    },
+    {
+      "mode": 493,
+      "path": "tools/whitelists/function_transition_whitelist/BUILD",
+      "sha256": "6a30b243bedfb441c916744f96c347d4f6eb8fa8fa09de97c32f7428bd51e5de",
+      "size": 390
+    },
+    {
+      "mode": 493,
+      "path": "tools/zip/BUILD",
+      "sha256": "c47ebb4741b20f416c961eb631f0a4912609dfe453b9487e353506b00811a6ac",
+      "size": 499
+    },
+    {
+      "mode": 493,
+      "path": "tools/zip/zipper/zipper",
+      "sha256": "2be7ef9e062fa1611d8f3f03307330d87b1d1e857e516e7659455f622cff260c",
+      "size": 148400
+    }
+  ],
+  "platform": "linux-x86_64",
+  "schema_version": 1,
+  "source_revision": "e89755babf3e941bc1e9d8120b1cd48854ab9dfa",
+  "total_size": 73326972
+}

@@ -121,8 +121,11 @@ in `docs/`. Direct `use_repo_rule` callbacks now have a bounded native file/temp
 executor; see [its exact limits](docs/REPOSITORY_RULES.md), including ASCII
 Starlark strings and binary-preserving templates. [Ordinary module extensions](docs/MODULE_EXTENSIONS.md)
 support bounded non-isolated callbacks, typed tags and deferred repository
-declarations; full extension/repository APIs and toolchains remain incomplete. Implicit built-in
-modules are unsupported; active extension usages fail in `mod graph` even when
+declarations; full extension/repository APIs and toolchains remain incomplete.
+[Genuine built-in modules](docs/BUILTIN_MODULES.md) are available through the
+native-only `--experimental-builtin-modules` transition option, using complete
+verified Linux x86-64 resources; the default remains explicit modules only.
+Active extension usages fail in `mod graph` even when
 hidden from output. Load caching is per package evaluation,
 not a persistent incremental graph.
 Action logs spool to temporary files and bounded tails are replayed to stderr.

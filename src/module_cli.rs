@@ -32,6 +32,9 @@ pub fn run_with_source_cache(root: &Path, args: &[String], cache: &Path) -> Resu
     for module in graph.modules.values() {
         reject_extensions(&module.module, true, &module.name)?;
     }
+    if options.resolver.builtin_profile == module_graph::BuiltinProfile::Bazel93Builtins {
+        return Err("builtin module graph presentation is unsupported; the genuine builtin profile currently supports query/build repository access only".to_owned());
+    }
     let output = format_graph(
         &graph,
         options.resolver.ignore_dev_dependencies,
@@ -59,6 +62,10 @@ impl Options {
         let mut output_json = false;
         let mut args = args[1..].iter();
         while let Some(arg) = args.next() {
+            if let Some(profile) = builtin_profile_argument(arg)? {
+                options.resolver.builtin_profile = profile;
+                continue;
+            }
             let (flag, inline) = arg
                 .split_once('=')
                 .map_or((arg.as_str(), None), |(a, b)| (a, Some(b)));
@@ -121,6 +128,21 @@ pub fn registry_path(uri: &str) -> Result<Registry, String> {
     Registry::parse(uri)
 }
 
+/// Native-only transition switch, independent of graph display/registry policy.
+pub fn builtin_profile_argument(arg: &str) -> Result<Option<module_graph::BuiltinProfile>, String> {
+    use module_graph::BuiltinProfile;
+    match arg {
+        "--experimental-builtin-modules" | "--experimental-builtin-modules=true" => {
+            Ok(Some(BuiltinProfile::Bazel93Builtins))
+        }
+        "--experimental-builtin-modules=false" => Ok(Some(BuiltinProfile::ExplicitModules)),
+        _ if arg.starts_with("--experimental-builtin-modules=") => {
+            Err("--experimental-builtin-modules expects true or false".to_owned())
+        }
+        _ => Ok(None),
+    }
+}
+
 fn reject_extensions(module: &ModuleFile, ignore_dev: bool, name: &str) -> Result<(), String> {
     for usage in &module.extension_usages {
         if usage
@@ -169,7 +191,7 @@ fn direct_edges(
 ) -> Result<Vec<Edge>, String> {
     let (module, mapping) = module_data(graph, canonical);
     let mut edges = Vec::new();
-    for dependency in &module.dependencies {
+    for dependency in module.effective_dependencies() {
         if dependency.dev_dependency && (!canonical.is_empty() || ignore_dev) {
             continue;
         }
@@ -507,6 +529,43 @@ mod tests {
         ] {
             assert_eq!(compare_versions(a, b), Ordering::Less);
         }
+    }
+
+    #[test]
+    fn builtin_profile_is_explicit_and_separate_from_graph_display() {
+        use module_graph::BuiltinProfile;
+        let selected = Options::parse(&args(&[
+            "graph",
+            "--output=json",
+            "--experimental-builtin-modules",
+        ]))
+        .unwrap();
+        assert_eq!(
+            selected.resolver.builtin_profile,
+            BuiltinProfile::Bazel93Builtins
+        );
+        let reset = Options::parse(&args(&[
+            "graph",
+            "--output=json",
+            "--experimental-builtin-modules=true",
+            "--experimental-builtin-modules=false",
+        ]))
+        .unwrap();
+        assert_eq!(
+            reset.resolver.builtin_profile,
+            BuiltinProfile::ExplicitModules
+        );
+        assert!(builtin_profile_argument("--experimental-builtin-modules=maybe").is_err());
+        assert_eq!(builtin_profile_argument("--include_builtin"), Ok(None));
+        assert!(
+            Options::parse(&args(&[
+                "graph",
+                "--output=json",
+                "--experimental-builtin-modules",
+                "--include_builtin"
+            ]))
+            .is_err()
+        );
     }
 
     #[test]

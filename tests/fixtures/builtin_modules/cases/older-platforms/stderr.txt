@@ -1,0 +1,21 @@
+Extracting Bazel installation...
+Starting local Bazel server (9.3.0) and connecting to it...
+ no actions running
+ no actions running
+ no actions running
+ no actions running
+ no actions running
+ no actions running
+ no actions running
+ no actions running
+ no actions running
+ no actions running
+ no actions running
+ no actions running
+ no actions running
+ no actions running
+ no actions running
+WARNING: For repository 'platforms', the root module requires module version platforms@0.0.10, but got platforms@1.0.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off
+ no actions running
+ no actions running
+ no actions running

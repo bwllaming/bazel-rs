@@ -3,6 +3,7 @@ pub mod action;
 pub mod analysis;
 pub mod archive;
 pub mod args;
+pub mod builtin_tools;
 pub mod bzlmod;
 pub mod custom_rule;
 pub mod engine;

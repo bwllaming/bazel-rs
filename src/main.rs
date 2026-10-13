@@ -13,12 +13,14 @@ Usage:
 Patterns: //..., //package/..., //package:all, //package:target, :target
 Build options: --jobs=N or --jobs N (positive integer; default: available CPUs, max 32)
 Repository options: --registry=URL (file/http/https, repeatable), --ignore_dev_dependency
+Native transition: --experimental-builtin-modules[=true|false] opts into genuine Bazel 9.3 built-ins.
 Remote registries require explicit --lockfile_mode=off; other lockfile modes are unsupported.
 External sources: local_path_override, registry local_path entries and verified archives.
 Native rules: filegroup(name, srcs), genrule(name, srcs, outs, cmd)
 Loading: local .bzl legacy macros, glob, package defaults and exports_files.
 Analysis: custom rules/attributes/providers, declared files, write/run/run_shell actions.
-No upstream fallback. No test command, arbitrary repository rules, module extensions, toolchains,
+No upstream fallback. Repository rules and module extensions have bounded native profiles.
+No test command, complete repository/extension APIs, toolchains,
 remote execution, rc expansion, sandbox or full query language yet.
 Builds execute trusted shell commands locally; this is not a security sandbox.
 ";
@@ -76,7 +78,11 @@ fn run() -> Result<(), String> {
         let mut positional = Vec::new();
         let mut args = rest.into_iter();
         while let Some(arg) = args.next() {
-            if arg == "--registry" {
+            if let Some(profile) = bazel_rs::module_cli::builtin_profile_argument(&arg)? {
+                resolver_options.builtin_profile = profile;
+            } else if arg == "--override_repository" || arg.starts_with("--override_repository=") {
+                return Err("unsupported option --override_repository; MODULE overrides do not replace the built-in repository filesystem".to_owned());
+            } else if arg == "--registry" {
                 let value = args.next().ok_or("--registry requires a URL")?;
                 resolver_options
                     .registries
@@ -161,7 +167,7 @@ fn run() -> Result<(), String> {
             bazel_rs::module_cli::run_with_source_cache(&root, &rest, &cache.join("repositories"))?;
         print!("{output}");
         eprintln!(
-            "bazel-rs: explicit module graph only; built-in dependency closure and extension execution are not implemented"
+            "bazel-rs: bounded module graph profile; graph commands do not execute module extensions"
         );
         return Ok(());
     }

@@ -364,7 +364,8 @@ pub fn bzl_globals() -> Globals {
         .with(rule_globals)
         .with(package_globals)
         .build();
-    let mut bzl = GlobalsBuilder::extended_by(&[LibraryExtension::StructType]);
+    let mut bzl =
+        GlobalsBuilder::extended_by(&[LibraryExtension::StructType, LibraryExtension::Print]);
     bzl.frozen_heap().add_reference(native.heap());
     bzl.set("native", AllocStruct(native.iter()));
     crate::custom_rule::rule_globals(&mut bzl);
