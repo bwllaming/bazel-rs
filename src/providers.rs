@@ -15,11 +15,12 @@ use starlark::values::none::NoneType;
 use starlark::values::set::SetRef;
 use starlark::values::structs::StructRef;
 use starlark::values::tuple::TupleRef;
+use starlark::values::typing::StarlarkCallable;
 use starlark::values::{
     Coerce, Freeze, Heap, NoSerialize, ProvidesStaticType, StarlarkPagable, StarlarkPagablePanic,
     StarlarkValue, Trace, UnpackValue, Value, ValueLike, starlark_value,
 };
-use starlark::{starlark_complex_value, starlark_module, starlark_simple_value};
+use starlark::{starlark_complex_value, starlark_module};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 use std::hash::Hash;
@@ -96,15 +97,54 @@ pub(crate) fn requirement_info(value: Value<'_>) -> anyhow::Result<ProviderRequi
 mod values {
     use super::*;
 
-    #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
-    pub(super) struct ProviderConstructor {
+    #[derive(
+        Debug,
+        ProvidesStaticType,
+        NoSerialize,
+        Allocative,
+        Trace,
+        Freeze,
+        Coerce,
+        StarlarkPagablePanic,
+    )]
+    #[repr(C)]
+    pub(super) struct ProviderConstructorGen<V> {
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
         pub extension: String,
         // Written once by export_as, never changed by later aliases/re-exports.
         // OnceLock is Sync, so freezing this owned value is safe and preserves
         // the exact identity without a mutable Starlark-heap reference.
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
         pub exported: OnceLock<String>,
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
         pub fields: Option<BTreeSet<String>>,
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
         pub _doc: Option<String>,
+        // Bazel StarlarkProvider.init: None, or a callable invoked with the
+        // caller's exact positional and keyword arguments. (Option is not
+        // Coerce, so None is the absent sentinel, exactly as in provider().)
+        pub init: V,
+    }
+
+    /// Bazel StarlarkProvider.RawConstructor: bypasses `init` and shares the
+    /// provider's identity, schema and instance type.
+    #[derive(
+        Debug,
+        ProvidesStaticType,
+        NoSerialize,
+        Allocative,
+        Trace,
+        Freeze,
+        Coerce,
+        StarlarkPagablePanic,
+    )]
+    #[repr(C)]
+    pub(super) struct RawConstructorGen<V> {
+        pub provider: V,
     }
 
     #[derive(
@@ -118,12 +158,13 @@ mod values {
         pub fields: Vec<(String, V)>,
     }
 }
-use values::{ProviderConstructor, ProviderInstanceGen};
+use values::{ProviderConstructorGen, ProviderInstanceGen, RawConstructorGen};
 
-starlark_simple_value!(ProviderConstructor);
+starlark_complex_value!(ProviderConstructor);
 starlark_complex_value!(ProviderInstance);
+starlark_complex_value!(RawConstructor);
 
-impl ProviderConstructor {
+impl<V> ProviderConstructorGen<V> {
     fn identity(&self) -> Option<String> {
         self.exported
             .get()
@@ -131,7 +172,7 @@ impl ProviderConstructor {
     }
 }
 
-impl fmt::Display for ProviderConstructor {
+impl<V> fmt::Display for ProviderConstructorGen<V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.identity() {
             Some(identity) => write!(f, "<provider {identity}>"),
@@ -140,8 +181,123 @@ impl fmt::Display for ProviderConstructor {
     }
 }
 
+impl<'v, V: ValueLike<'v>> ProviderConstructorGen<V> {
+    /// Native instances carry the exported key, so construction still requires
+    /// export (Bazel would name an unexported provider `<no name>`).
+    fn exported_key(&self) -> starlark::Result<(String, String)> {
+        match (self.identity(), self.exported.get()) {
+            (Some(identity), Some(name)) => Ok((identity, name.clone())),
+            _ => Err(starlark::Error::new_other(anyhow!(
+                "provider must be assigned to a global exported name before constructing instances"
+            ))),
+        }
+    }
+
+    /// Bazel RawArgumentProcessor: the default constructor `c(**kwargs)`.
+    /// `callable` is the provider's or raw constructor's getName().
+    fn raw_call(
+        &self,
+        callable: &str,
+        args: &Arguments<'v, '_>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<Value<'v>> {
+        let (identity, name) = self.exported_key()?;
+        if args.positions(eval.heap())?.next().is_some() {
+            return Err(starlark::Error::new_other(anyhow!(
+                "{callable}: unexpected positional arguments"
+            )));
+        }
+        let named = args.names_map()?;
+        let entries = named
+            .iter()
+            .map(|(name, value)| (name.as_str().to_owned(), *value))
+            .collect();
+        self.instantiate(identity, name, entries, eval.heap())
+    }
+
+    /// Bazel ArgumentProcessorWithInit: forward the exact arguments to init,
+    /// cast its result to dict<string, unknown> and build as if by `c(**d)`.
+    fn init_call(
+        &self,
+        init: Value<'v>,
+        args: &Arguments<'v, '_>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<Value<'v>> {
+        let (identity, name) = self.exported_key()?;
+        let positional = args.positions(eval.heap())?.collect::<Vec<_>>();
+        let named = args.names_map()?;
+        let named = named
+            .iter()
+            .map(|(name, value)| (name.as_str(), *value))
+            .collect::<Vec<_>>();
+        let result = eval.eval_function(init, &positional, &named)?;
+        const WHAT: &str = "return value of provider init()";
+        let dict = DictRef::from_value(result).ok_or_else(|| {
+            starlark::Error::new_other(anyhow!("got {} for '{WHAT}', want dict", result.get_type()))
+        })?;
+        let mut entries = Vec::with_capacity(dict.len());
+        for (key, value) in dict.iter() {
+            let Some(key) = key.unpack_str() else {
+                return Err(starlark::Error::new_other(anyhow!(
+                    "got dict<{}, {}> for '{WHAT}', want dict<string, unknown>",
+                    key.get_type(),
+                    value.get_type()
+                )));
+            };
+            entries.push((key.to_owned(), value));
+        }
+        drop(dict);
+        self.instantiate(identity, name, entries, eval.heap())
+    }
+
+    /// Bazel StarlarkInfoFactory addNamedArg + createFromArgs/createFromMap.
+    fn instantiate(
+        &self,
+        identity: String,
+        name: String,
+        entries: Vec<(String, Value<'v>)>,
+        heap: Heap<'v>,
+    ) -> starlark::Result<Value<'v>> {
+        let mut seen = BTreeSet::new();
+        let mut unexpected = Vec::new();
+        let mut fields = Vec::with_capacity(entries.len());
+        for (field, value) in entries {
+            if !seen.insert(field.clone()) {
+                return Err(starlark::Error::new_other(anyhow!(
+                    "got multiple values for parameter {field} in call to instantiate provider {name}"
+                )));
+            }
+            if self
+                .fields
+                .as_ref()
+                .is_some_and(|allowed| !allowed.contains(&field))
+            {
+                unexpected.push(field);
+            } else {
+                fields.push((field, value));
+            }
+        }
+        if !unexpected.is_empty() {
+            return Err(starlark::Error::new_other(anyhow!(
+                "got unexpected field{} '{}' in call to instantiate provider {name}",
+                if unexpected.len() > 1 { "s" } else { "" },
+                unexpected.join("', '")
+            )));
+        }
+        fields.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(heap.alloc(ProviderInstanceGen {
+            identity,
+            name,
+            fields,
+        }))
+    }
+}
+
 #[starlark_value(type = "Provider")]
-impl<'v> StarlarkValue<'v> for ProviderConstructor {
+impl<'v, V: ValueLike<'v>> StarlarkValue<'v> for ProviderConstructorGen<V>
+where
+    Self: ProvidesStaticType<'v>,
+{
     fn export_as(&self, name: &str, eval: &mut Evaluator<'v, '_, '_>) -> starlark::Result<()> {
         if self.exported.get().is_none() {
             let context = eval
@@ -164,36 +320,13 @@ impl<'v> StarlarkValue<'v> for ProviderConstructor {
         args: &Arguments<'v, '_>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
-        let identity = self.identity().ok_or_else(|| {
-            starlark::Error::new_other(anyhow!(
-                "provider must be assigned to a global exported name before constructing instances"
-            ))
-        })?;
-        args.no_positional_args(eval.heap())?;
-        let mut fields = Vec::new();
-        for (name, value) in args.names_map()?.iter() {
-            let name = name.as_str();
-            if self
-                .fields
-                .as_ref()
-                .is_some_and(|allowed| !allowed.contains(name))
-            {
-                return Err(starlark::Error::new_other(anyhow!(
-                    "provider {identity}: unknown field {name:?}"
-                )));
-            }
-            fields.push((name.to_owned(), *value));
+        let init = self.init.to_value();
+        if init.is_none() {
+            let name = self.exported.get().map_or("<no name>", String::as_str);
+            self.raw_call(name, args, eval)
+        } else {
+            self.init_call(init, args, eval)
         }
-        fields.sort_by(|a, b| a.0.cmp(&b.0));
-        Ok(eval.heap().alloc(ProviderInstanceGen {
-            identity,
-            name: self
-                .exported
-                .get()
-                .expect("export identity checked")
-                .clone(),
-            fields,
-        }))
     }
 
     fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
@@ -209,6 +342,38 @@ impl<'v> StarlarkValue<'v> for ProviderConstructor {
             })?
             .hash(hasher);
         Ok(())
+    }
+}
+
+/// Bazel's RawConstructor has no StarlarkBuiltin annotation or repr override,
+/// so type() is its Java simple name and repr() is StarlarkValue's default.
+impl<V> fmt::Display for RawConstructorGen<V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(
+            "<unknown object com.google.devtools.build.lib.packages.StarlarkProvider$RawConstructor>",
+        )
+    }
+}
+
+#[starlark_value(type = "RawConstructor")]
+impl<'v, V: ValueLike<'v>> StarlarkValue<'v> for RawConstructorGen<V>
+where
+    Self: ProvidesStaticType<'v>,
+{
+    fn invoke(
+        &self,
+        _me: Value<'v>,
+        args: &Arguments<'v, '_>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<Value<'v>> {
+        let provider = ProviderConstructor::from_value(self.provider.to_value())
+            .expect("raw constructor always wraps its provider");
+        // Bazel RawConstructor.getName(), derived from the provider's export.
+        let callable = match provider.exported.get() {
+            Some(name) => format!("<raw constructor for {name}>"),
+            None => "<raw constructor>".to_owned(),
+        };
+        provider.raw_call(&callable, args, eval)
     }
 }
 
@@ -503,9 +668,6 @@ pub fn globals(builder: &mut GlobalsBuilder) {
     ) -> anyhow::Result<Value<'v>> {
         let context = eval.extra.and_then(|extra| extra.downcast_ref::<ExtensionContext>())
             .ok_or_else(|| anyhow!("provider() may only be defined while loading a .bzl extension; BUILD macros and analysis are unsupported"))?;
-        if !init.is_none() {
-            bail!("provider(init=...) is unsupported");
-        }
         let doc = if doc.is_none() {
             None
         } else {
@@ -515,12 +677,37 @@ pub fn globals(builder: &mut GlobalsBuilder) {
                     .to_owned(),
             )
         };
-        Ok(eval.heap().alloc(ProviderConstructor {
+        // Bazel binds and type-checks every parameter (doc, fields, init)
+        // before provider() validates field names, so a non-callable init is
+        // reported before element-level schema errors.
+        if !(fields.is_none()
+            || DictRef::from_value(fields).is_some()
+            || ListRef::from_value(fields).is_some()
+            || TupleRef::from_value(fields).is_some())
+        {
+            bail!(
+                "provider fields must be a list/tuple of strings or a string-to-documentation dict"
+            );
+        }
+        if !init.is_none() && <StarlarkCallable<'v>>::unpack_value_opt(init).is_none() {
+            bail!(
+                "in call to provider(), parameter 'init' got value of type '{}', want 'callable or NoneType'",
+                init.get_type()
+            );
+        }
+        let provider = eval.heap().alloc(ProviderConstructorGen {
             extension: context.label.to_string(),
             exported: OnceLock::new(),
             fields: field_schema(fields)?,
             _doc: doc,
-        }))
+            init,
+        });
+        if init.is_none() {
+            return Ok(provider);
+        }
+        // StarlarkRuleClassFunctions.provider: Tuple.of(provider, raw constructor).
+        let raw = eval.heap().alloc(RawConstructorGen { provider });
+        Ok(eval.heap().alloc((provider, raw)))
     }
 }
 
@@ -714,7 +901,12 @@ names.append("consumer")
         Module::with_temp_heap(|module| {
             module.set("file", alloc_file(module.heap(), file()));
             let context = context(label);
-            let ast = AstModule::parse(label, source.to_owned(), &Dialect::Standard).unwrap();
+            // The .bzl loading dialect (src/loading.rs): keyword-only parameters.
+            let dialect = Dialect {
+                enable_keyword_only_arguments: true,
+                ..Dialect::Standard
+            };
+            let ast = AstModule::parse(label, source.to_owned(), &dialect).unwrap();
             {
                 let mut eval = Evaluator::new(&module);
                 eval.extra = Some(&context);
@@ -753,12 +945,216 @@ names.append("consumer")
             "P = provider(fields=('a', 'b'))\nx = P()\nQ = provider(fields={'a': 'documentation'})\ny = Q(a=[])\ny.a.append(1)\n(y.a == [1]) or fail('analysis payload mutation')",
         );
         pass("P = provider()\nx = P(arbitrary=42)\n(x.arbitrary == 42) or fail('open schema')");
-        fail("P = provider(fields=['x'])\nx = P(y=1)", "unknown field");
-        fail("P = provider(fields=[])\nx = P(x=1)", "unknown field");
-        fail("P = provider()\nx = P(1)", "positional");
+        fail(
+            "P = provider(fields=['x'])\nx = P(y=1)",
+            "got unexpected field 'y' in call to instantiate provider P",
+        );
+        fail(
+            "P = provider(fields=[])\nx = P(x=1, z=2)",
+            "got unexpected fields 'x', 'z' in call to instantiate provider P",
+        );
+        fail(
+            "P = provider()\nx = P(1)",
+            "P: unexpected positional arguments",
+        );
         fail("P = provider()\nx = P(x=1)\nx.x = 2", "not supported");
         fail("P = provider()\nx = P().missing", "missing");
         fail("provider()()", "exported name");
+    }
+
+    const INIT_PROVIDER: &str = r#"
+def _init(name, *, extra = None, **unused):
+    out = {"name": name, "upper": name.upper()}
+    if extra != None:
+        out["extra"] = extra
+    return out
+
+P, _new_p = provider(
+    doc = "Provider with a custom initializer.",
+    fields = {"name": "Name.", "upper": "Derived.", "extra": "Optional."},
+    init = _init,
+)
+a = P("x")
+b = P(name = "y", extra = [1])
+args = ["z"]
+kwargs = {"extra": 3}
+d = P(*args, **kwargs)
+c = _new_p(name = "raw")
+"#;
+
+    #[test]
+    fn provider_init_forwards_arguments_and_raw_constructor_bypasses_it() {
+        let definitions = extension(
+            "//defs:providers.bzl",
+            &format!(
+                "{INIT_PROVIDER}{}",
+                r#"
+(a.name == "x" and a.upper == "X" and not hasattr(a, "extra")) or fail("positional init")
+(b.name == "y" and b.upper == "Y" and b.extra == [1]) or fail("keyword init")
+(d.name == "z" and d.upper == "Z" and d.extra == 3) or fail("star arguments")
+(c.name == "raw" and not hasattr(c, "upper")) or fail("raw bypass")
+(type(P) == "Provider" and type(_new_p) == "RawConstructor") or fail("types")
+(repr(_new_p) == "<unknown object com.google.devtools.build.lib.packages.StarlarkProvider$RawConstructor>") or fail("raw repr")
+(str(_new_p) == repr(_new_p)) or fail("raw str")
+(type(a) == "struct" and type(c) == "struct") or fail("instance types")
+(a == _new_p(name = "x", upper = "X") and a != c) or fail("shared instance type")
+(_new_p == _new_p and _new_p != P) or fail("raw identity")
+[Q, _new_q] = provider(init = lambda **kw: dict(kw, computed = len(kw)))
+q = Q(one = 1, two = 2)
+(q.one == 1 and q.two == 2 and q.computed == 2 and not hasattr(_new_q(one = 1), "computed")) or fail("schemaless init")
+RAW_P = _new_p
+RAW_Q = _new_q
+"#
+            ),
+        )
+        .unwrap();
+        let identity = "//defs:providers.bzl%P";
+        assert_eq!(
+            provider_identity(definitions.get("P").unwrap().value()).as_deref(),
+            Some(identity)
+        );
+        assert_eq!(
+            requirement_info(definitions.get("P").unwrap().value()).unwrap(),
+            ProviderRequirement {
+                id: identity.into(),
+                display_name: "P".into(),
+            }
+        );
+        assert_eq!(
+            provider_identity(definitions.get("Q").unwrap().value()).as_deref(),
+            Some("//defs:providers.bzl%Q")
+        );
+        for raw in ["RAW_P", "RAW_Q"] {
+            let value = definitions.get(raw).unwrap();
+            assert!(provider_identity(value.value()).is_none(), "{raw}");
+            assert!(instance_identity(value.value()).is_none(), "{raw}");
+            assert!(requirement_info(value.value()).is_err(), "{raw}");
+        }
+        for instance in ["a", "b", "c", "d"] {
+            assert_eq!(
+                instance_identity(definitions.get(instance).unwrap().value()).as_deref(),
+                Some(identity),
+                "{instance}"
+            );
+        }
+        // Both construction paths are found by the same exported key, also
+        // after the defining module is dropped and the values are reowned.
+        let instance = definitions.get("c").unwrap();
+        let p = definitions.get("P").unwrap();
+        let raw = definitions.get("RAW_P").unwrap();
+        drop(definitions);
+        Module::with_temp_heap(|module| {
+            module.set("P", module.heap().access_owned_frozen_value(&p));
+            module.set("raw", module.heap().access_owned_frozen_value(&raw));
+            module.set(
+                "target",
+                alloc_target_with_providers(
+                    module.heap(),
+                    "//pkg:target",
+                    vec![],
+                    BTreeMap::from([(identity.to_owned(), instance)]),
+                ),
+            );
+            let ast = AstModule::parse(
+                "use.star",
+                "(P in target and target[P].name == 'raw') or fail('lookup')
+raw(name = 'later').name == 'later' or fail('frozen raw')
+P('w').upper == 'W' or fail('frozen init')"
+                    .into(),
+                &Dialect::Standard,
+            )
+            .unwrap();
+            Evaluator::new(&module)
+                .eval_module(ast, &test_globals())
+                .unwrap();
+            for source in ["raw in target", "target[raw]"] {
+                let ast = AstModule::parse("use.star", source.into(), &Dialect::Standard).unwrap();
+                let error = Evaluator::new(&module)
+                    .eval_module(ast, &test_globals())
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    error.contains("exported provider constructor"),
+                    "{source}: {error}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn provider_init_errors_match_bazel() {
+        const WHAT: &str = "for 'return value of provider init()'";
+        for (source, message) in [
+            (
+                "def _i():\n    return 1\nP, _r = provider(init = _i)\nP()",
+                format!("got int {WHAT}, want dict"),
+            ),
+            (
+                "def _i():\n    return [('a', 1)]\nP, _r = provider(init = _i)\nP()",
+                format!("got list {WHAT}, want dict"),
+            ),
+            (
+                "def _i():\n    return {'ok': 1, 2: 'v'}\nP, _r = provider(init = _i)\nP()",
+                format!("got dict<int, string> {WHAT}, want dict<string, unknown>"),
+            ),
+            (
+                "def _i():\n    return {'a': 1, 'b': 2, 'c': 3}\nP, _r = provider(fields = ['a'], init = _i)\nP()",
+                "got unexpected fields 'b', 'c' in call to instantiate provider P".to_owned(),
+            ),
+            (
+                "def _i(**kw):\n    return kw\nP, _r = provider(fields = {'a': 'doc'}, init = _i)\n_r(b = 1)",
+                "got unexpected field 'b' in call to instantiate provider P".to_owned(),
+            ),
+            (
+                "def _i(*args):\n    return {}\nP, _r = provider(init = _i)\nP(1)\n_r(1)",
+                "<raw constructor for P>: unexpected positional arguments".to_owned(),
+            ),
+            (
+                "def _i(x):\n    return {}\nP, _r = provider(init = _i)\nP()",
+                "x".to_owned(),
+            ),
+            (
+                "def _i(x):\n    fail('bad init ' + x)\nP, _r = provider(init = _i)\nP('value')",
+                "bad init value".to_owned(),
+            ),
+            (
+                "P = provider(fields = [1], init = 1)",
+                "parameter 'init' got value of type 'int'".to_owned(),
+            ),
+            (
+                "P = provider(fields = 'x', init = 1)",
+                "list/tuple".to_owned(),
+            ),
+            (
+                "P = provider(init = 'callable')",
+                "got value of type 'string', want 'callable or NoneType'".to_owned(),
+            ),
+            (
+                "def _i():\n    return {}\ndef f():\n    return provider(init = _i)\nBOX = [f()]\nBOX[0][0]()",
+                "exported name".to_owned(),
+            ),
+            (
+                "def _i():\n    return {}\ndef f():\n    return provider(init = _i)\nBOX = [f()]\nBOX[0][1]()",
+                "exported name".to_owned(),
+            ),
+        ] {
+            fail(source, &message);
+        }
+        // Tuple-unpacked definitions export only the provider; the raw
+        // constructor is not exportable and is unhashable like Bazel's.
+        pass(
+            "def _i():\n    return {}\nP, _r = provider(init = _i)\nP()\n_r()\n(len(provider(init = _i)) == 2) or fail('tuple')",
+        );
+        fail(
+            "def _i():\n    return {}\nP, _r = provider(init = _i)\nx = {_r: 1}",
+            "hash",
+        );
+        // Any callable is a legal init; a provider init returns an instance,
+        // which then fails the dict cast.
+        fail(
+            "Inner = provider()\nOuter, _o = provider(init = Inner)\nx = Outer(a = 1)",
+            "got struct for 'return value of provider init()', want dict",
+        );
     }
 
     #[test]
@@ -894,7 +1290,10 @@ template = platform_common.TemplateVariableInfo({})
     #[test]
     fn invalid_definitions_and_non_extension_calls_fail() {
         for (source, message) in [
-            ("P = provider(init=len)", "unsupported"),
+            (
+                "P = provider(init=1)",
+                "in call to provider(), parameter 'init' got value of type 'int', want 'callable or NoneType'",
+            ),
             ("P = provider(unknown=True)", "unknown"),
             ("P = provider(fields=[1])", "strings"),
             ("P = provider(fields={'x': 1})", "documentation"),
@@ -1021,6 +1420,7 @@ template = platform_common.TemplateVariableInfo({})
                 exported: OnceLock::from("Name".to_owned()),
                 fields: None,
                 _doc: None,
+                init: Value::new_none(),
             });
             assert!(
                 requirement_info(huge)

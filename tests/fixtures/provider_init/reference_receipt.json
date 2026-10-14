@@ -1,0 +1,351 @@
+{
+  "capability": "N9 provider(init=...)",
+  "reference": {
+    "binary": "bazel-9.3.0-linux-x86_64",
+    "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8"
+  },
+  "native": {
+    "binary": "target/debug/bazel-rs (uncommitted N9 worktree build)",
+    "sha256": "41beb63ac219bcf4cc835f1a9916366503cf47bac29bd12aa0fda7b5838ac94f"
+  },
+  "capture_script_sha256": "e39d5360a3eb17041cee4082b64c10f6ad16c3f0798b09f85fa29c2a1cd6676b",
+  "receipt_script_sha256": "d79923dac60fde4a6495a54db7ab2789454239bbce1ce7889e7e4f726e073c5f",
+  "platforms_distfile_sha256": "3384eb1c30762704fbe38e440204e114154086c8fc8a8c2e3e28441028c019a8",
+  "scratch_removed": true,
+  "method": "identical workspaces per scenario (test constants verified verbatim against tests/provider_init.rs); reference: --batch --ignore_all_rc_files private output_user_root/output_base/repository_cache, private registry copy, distdir platforms-1.0.0, --repository_disable_download --lockfile_mode=off --incompatible_autoload_externally= --spawn_strategy=local; native: --ignore_all_rc_files --cache-dir=cache build; env -i PATH=/usr/bin:/bin LANG/LC_ALL=C.UTF-8, private HOME/TMPDIR, umask 022",
+  "labels": "EXACT = equal exit class and equal output bytes / asserted diagnostic present verbatim in both stderrs; KNOWN_DIVERGENCE = implementer-declared in docs/PROVIDER_INIT.md; UNDECLARED_DIVERGENCE = not declared; MIXED = per-field labels",
+  "scenarios": {
+    "test-success-check": {
+      "source": "public_init_and_raw_constructor_instances_share_the_provider_key",
+      "target": "//:check",
+      "reference_exit": 0,
+      "native_exit": 0,
+      "exit_class_equal": true,
+      "label": "EXACT",
+      "outputs_equal": true,
+      "reference_output_sha256": "7db6a9277fb27b422d9b77b711aed9fccfa52cfe50289fa4d19c1f95fc03d9f6",
+      "native_output_sha256": "7db6a9277fb27b422d9b77b711aed9fccfa52cfe50289fa4d19c1f95fc03d9f6",
+      "native_matches_test_expectation": true
+    },
+    "test-err-init-fail-purl": {
+      "source": "init_validation_and_schema_errors_fail_analysis[0]",
+      "target": "//:check",
+      "reference_exit": 1,
+      "native_exit": 1,
+      "exit_class_equal": true,
+      "label": "EXACT",
+      "diagnostic": "purl must start with 'pkg:', got bad",
+      "diagnostic_in_reference_stderr": true,
+      "diagnostic_in_native_stderr": true
+    },
+    "test-err-init-positional": {
+      "source": "init_validation_and_schema_errors_fail_analysis[1]",
+      "target": "//:check",
+      "reference_exit": 1,
+      "native_exit": 1,
+      "exit_class_equal": true,
+      "label": "KNOWN_DIVERGENCE",
+      "diagnostic": "parameter `metadata` for call to `//providers:package_metadata_info.bzl._init`",
+      "diagnostic_in_reference_stderr": false,
+      "diagnostic_in_native_stderr": true,
+      "reference_error_lines": [
+        "Error: _init() does not accept positional arguments, but got 1"
+      ],
+      "native_error_lines": [
+        "error: Missing named-only parameter `metadata` for call to `//providers:package_metadata_info.bzl._init`"
+      ],
+      "divergence": "init signature-mismatch wording comes from the Starlark interpreter",
+      "reference_message": "_init() does not accept positional arguments, but got 1"
+    },
+    "test-err-raw-unexpected-field": {
+      "source": "init_validation_and_schema_errors_fail_analysis[2]",
+      "target": "//:check",
+      "reference_exit": 1,
+      "native_exit": 1,
+      "exit_class_equal": true,
+      "label": "EXACT",
+      "diagnostic": "got unexpected field 'license' in call to instantiate provider PackageMetadataInfo",
+      "diagnostic_in_reference_stderr": true,
+      "diagnostic_in_native_stderr": true
+    },
+    "test-err-raw-positional": {
+      "source": "init_validation_and_schema_errors_fail_analysis[3]",
+      "target": "//:check",
+      "reference_exit": 1,
+      "native_exit": 1,
+      "exit_class_equal": true,
+      "label": "EXACT",
+      "diagnostic": "<raw constructor for PackageMetadataInfo>: unexpected positional arguments",
+      "diagnostic_in_reference_stderr": true,
+      "diagnostic_in_native_stderr": true
+    },
+    "test-err-init-returns-list": {
+      "source": "init_return_and_definition_errors_are_reported[0]",
+      "target": "//:check",
+      "reference_exit": 1,
+      "native_exit": 1,
+      "exit_class_equal": true,
+      "label": "EXACT",
+      "diagnostic": "got list for 'return value of provider init()', want dict",
+      "diagnostic_in_reference_stderr": true,
+      "diagnostic_in_native_stderr": true
+    },
+    "test-err-init-not-callable": {
+      "source": "init_return_and_definition_errors_are_reported[1]",
+      "target": "//:check",
+      "reference_exit": 1,
+      "native_exit": 1,
+      "exit_class_equal": true,
+      "label": "EXACT",
+      "diagnostic": "in call to provider(), parameter 'init' got value of type 'string', want 'callable or NoneType'",
+      "diagnostic_in_reference_stderr": true,
+      "diagnostic_in_native_stderr": true
+    },
+    "probe-values": {
+      "source": "probe",
+      "target": "//:probe",
+      "reference_exit": 0,
+      "native_exit": 0,
+      "exit_class_equal": true,
+      "label": "MIXED",
+      "outputs_equal": false,
+      "reference_output_sha256": "40adb33097c8363b0c467c2c08a146833a00c76c743a72ff2522b76021ee9211",
+      "native_output_sha256": "0eb1a859879d074b49533b09f0b274d9cadba32e97cdaf6bedbe5e7b434ee55d",
+      "reference_error_lines": [],
+      "native_error_lines": [],
+      "fields": {
+        "type(_create)": {
+          "reference": "RawConstructor",
+          "label": "EXACT"
+        },
+        "repr(_create)": {
+          "reference": "<unknown object com.google.devtools.build.lib.packages.StarlarkProvider$RawConstructor>",
+          "label": "EXACT"
+        },
+        "str(_create)": {
+          "reference": "<unknown object com.google.devtools.build.lib.packages.StarlarkProvider$RawConstructor>",
+          "label": "EXACT"
+        },
+        "type(PackageMetadataInfo)": {
+          "reference": "Provider",
+          "label": "EXACT"
+        },
+        "str(PackageMetadataInfo)": {
+          "reference": "<provider>",
+          "native": "<provider //providers:package_metadata_info.bzl%PackageMetadataInfo>",
+          "label": "KNOWN_DIVERGENCE",
+          "divergence": "repr/str of the provider: native `<provider label%Name>` vs Bazel `<provider>`"
+        },
+        "repr(PackageMetadataInfo)": {
+          "reference": "<provider>",
+          "native": "<provider //providers:package_metadata_info.bzl%PackageMetadataInfo>",
+          "label": "KNOWN_DIVERGENCE",
+          "divergence": "repr/str of the provider: native `<provider label%Name>` vs Bazel `<provider>`"
+        },
+        "type(init_instance)": {
+          "reference": "struct",
+          "label": "EXACT"
+        },
+        "type(raw_instance)": {
+          "reference": "struct",
+          "label": "EXACT"
+        },
+        "init.metadata": {
+          "reference": "metadata.json",
+          "label": "EXACT"
+        },
+        "init.purl": {
+          "reference": "\"pkg:x\"",
+          "label": "EXACT"
+        },
+        "init.files": {
+          "reference": "[\"metadata.json\"]",
+          "label": "EXACT"
+        },
+        "init_default.purl": {
+          "reference": "None",
+          "label": "EXACT"
+        },
+        "raw.metadata": {
+          "reference": "metadata.json",
+          "label": "EXACT"
+        },
+        "raw.purl": {
+          "reference": "\"pkg:x\"",
+          "label": "EXACT"
+        },
+        "hasattr(init,'files')": {
+          "reference": "True",
+          "label": "EXACT"
+        },
+        "hasattr(raw,'files')": {
+          "reference": "False",
+          "label": "EXACT"
+        },
+        "getattr(raw,'files',MISSING)": {
+          "reference": "\"MISSING\"",
+          "label": "EXACT"
+        },
+        "dir(init)": {
+          "reference": "[\"files\", \"metadata\", \"purl\"]",
+          "label": "EXACT"
+        },
+        "dir(raw)": {
+          "reference": "[\"metadata\", \"purl\"]",
+          "label": "EXACT"
+        },
+        "raw==raw2": {
+          "reference": "True",
+          "label": "EXACT"
+        },
+        "init==raw": {
+          "reference": "False",
+          "label": "EXACT"
+        },
+        "_create==_create": {
+          "reference": "True",
+          "label": "EXACT"
+        },
+        "repr(raw_instance)": {
+          "reference": "struct(metadata = <source file metadata.json>, purl = \"pkg:x\")",
+          "native": "PackageMetadataInfo(metadata = <File metadata.json>, purl = \"pkg:x\")",
+          "label": "UNDECLARED_DIVERGENCE",
+          "divergence": "instance repr: native prints the provider name and `<File x>`; Bazel prints `struct(...)` and `<source file x>`. Pre-existing (not touched by the N9 diff to src/providers.rs)."
+        },
+        "str(raw_instance)": {
+          "reference": "struct(metadata = <source file metadata.json>, purl = \"pkg:x\")",
+          "native": "PackageMetadataInfo(metadata = <File metadata.json>, purl = \"pkg:x\")",
+          "label": "UNDECLARED_DIVERGENCE",
+          "divergence": "instance repr: native prints the provider name and `<File x>`; Bazel prints `struct(...)` and `<source file x>`. Pre-existing (not touched by the N9 diff to src/providers.rs)."
+        }
+      }
+    },
+    "probe-err-dict-nonstring-key": {
+      "source": "probe",
+      "target": "//:check",
+      "reference_exit": 1,
+      "native_exit": 1,
+      "exit_class_equal": true,
+      "label": "EXACT",
+      "diagnostic": "got dict<int, File> for 'return value of provider init()', want dict<string, unknown>",
+      "diagnostic_in_reference_stderr": true,
+      "diagnostic_in_native_stderr": true
+    },
+    "probe-err-raw-two-unexpected-fields": {
+      "source": "probe",
+      "target": "//:check",
+      "reference_exit": 1,
+      "native_exit": 1,
+      "exit_class_equal": true,
+      "label": "EXACT",
+      "diagnostic": "got unexpected fields 'zeta', 'alpha' in call to instantiate provider PackageMetadataInfo",
+      "diagnostic_in_reference_stderr": true,
+      "diagnostic_in_native_stderr": true
+    },
+    "probe-err-no-init-positional": {
+      "source": "probe",
+      "target": "//:check",
+      "reference_exit": 1,
+      "native_exit": 1,
+      "exit_class_equal": true,
+      "label": "EXACT",
+      "diagnostic": "Plain: unexpected positional arguments",
+      "diagnostic_in_reference_stderr": true,
+      "diagnostic_in_native_stderr": true
+    },
+    "probe-err-raw-as-provider-key": {
+      "source": "probe",
+      "target": "//:check",
+      "reference_exit": 1,
+      "native_exit": 1,
+      "exit_class_equal": true,
+      "label": "UNDECLARED_DIVERGENCE",
+      "reference_error_lines": [
+        "Error in label_list: at index 0 of providers, got element of type RawConstructor, want sequence",
+        "ERROR: error loading package '': initialization of module 'defs/rules.bzl' failed"
+      ],
+      "native_error_lines": [
+        "error: providers: required providers must be exported Provider constructors, got RawConstructor"
+      ],
+      "divergence": "wording only: both reject at load time; native wording differs"
+    },
+    "probe-err-raw-unhashable": {
+      "source": "probe",
+      "target": "//:check",
+      "reference_exit": 1,
+      "native_exit": 1,
+      "exit_class_equal": true,
+      "label": "UNDECLARED_DIVERGENCE",
+      "diagnostic": "unhashable type: 'RawConstructor'",
+      "diagnostic_in_reference_stderr": true,
+      "diagnostic_in_native_stderr": false,
+      "reference_error_lines": [
+        "Error: unhashable type: 'RawConstructor'",
+        "ERROR: error loading package '': at <SCRATCH>/reference/probe-err-raw-unhashable/ws/defs/rules.bzl:2:6: initialization of module 'providers/package_metadata_info.bzl' failed"
+      ],
+      "native_error_lines": [
+        "bazel-rs: cannot evaluate //providers:package_metadata_info.bzl: error: Value of type `RawConstructor` is not hashable"
+      ],
+      "divergence": "wording only: both reject; native message is the Starlark interpreter wording"
+    },
+    "probe-unexported-init": {
+      "source": "probe",
+      "target": "//:unexported",
+      "reference_exit": 0,
+      "native_exit": 1,
+      "exit_class_equal": false,
+      "label": "KNOWN_DIVERGENCE",
+      "reference_error_lines": [],
+      "native_error_lines": [
+        "error: provider must be assigned to a global exported name before constructing instances"
+      ],
+      "divergence": "native requires an exported provider before construction; Bazel constructs instances",
+      "reference_output": "type=struct\nx=1\nrepr(provider)=<provider>\n"
+    },
+    "probe-unexported-raw": {
+      "source": "probe",
+      "target": "//:unexported",
+      "reference_exit": 0,
+      "native_exit": 1,
+      "exit_class_equal": false,
+      "label": "KNOWN_DIVERGENCE",
+      "reference_error_lines": [],
+      "native_error_lines": [
+        "error: provider must be assigned to a global exported name before constructing instances"
+      ],
+      "divergence": "native requires an exported provider before construction; Bazel constructs instances",
+      "reference_output": "type=struct\nx=2\nrepr(provider)=<provider>\n"
+    },
+    "probe-unexported-plain": {
+      "source": "probe",
+      "target": "//:unexported",
+      "reference_exit": 0,
+      "native_exit": 1,
+      "exit_class_equal": false,
+      "label": "KNOWN_DIVERGENCE",
+      "reference_error_lines": [],
+      "native_error_lines": [
+        "error: provider must be assigned to a global exported name before constructing instances"
+      ],
+      "divergence": "native requires an exported provider before construction; Bazel constructs instances",
+      "reference_output": "type=struct\nx=3\nrepr(provider)=<provider>\n"
+    }
+  },
+  "traceback": {
+    "label": "KNOWN_DIVERGENCE",
+    "divergence": "extra <builtin> traceback frame(s) where the provider calls init",
+    "reference_frames": "rules.bzl _public -> package_metadata_info.bzl:<provider() call line> \"in PackageMetadataInfo\" -> _init",
+    "native_frames": "rules.bzl _public -> <builtin> \"in <provider //providers:package_metadata_info.bzl%PackageMetadataInfo>\" -> <builtin> \"in None\" -> _init"
+  },
+  "declared_divergences": [
+    "repr/str of the provider: native `<provider label%Name>` vs Bazel `<provider>`",
+    "init signature-mismatch wording comes from the Starlark interpreter",
+    "extra <builtin> traceback frame(s) where the provider calls init",
+    "native requires an exported provider before construction; Bazel constructs instances"
+  ],
+  "undeclared_divergences": [
+    "repr/str of provider instances (pre-existing): native `PackageMetadataInfo(metadata = <File metadata.json>, purl = \"pkg:x\")` vs Bazel `struct(metadata = <source file metadata.json>, purl = \"pkg:x\")`",
+    "unhashable RawConstructor wording: native `Value of type `RawConstructor` is not hashable` vs Bazel `unhashable type: 'RawConstructor'`",
+    "RawConstructor in providers=[...] wording: native `providers: required providers must be exported Provider constructors, got RawConstructor` vs Bazel `at index 0 of providers, got element of type RawConstructor, want sequence`"
+  ]
+}

@@ -147,6 +147,8 @@ and nested transport to explicit consumers, not automatic run/test environments.
 CLI target loading and reuses it without eagerly resolving unused declarations.
 [Native sets](docs/STARLARK_SETS.md) are available in BUILD, MODULE and `.bzl`,
 including ordered File sets transported through custom providers.
+[Provider initializers](docs/PROVIDER_INIT.md) run `provider(init=...)` callbacks
+and expose raw constructors that bypass them under the same provider key.
 [Scoped subrules](docs/SUBRULES.md) execute declared zero-attribute helpers with
 real actions and guarded contexts; private dependency attributes remain unsupported.
 [String methods](docs/STRING_METHODS.md) follow Bazel's UTF-8 byte-string case,
