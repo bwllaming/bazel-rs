@@ -3,8 +3,12 @@
 `repository_rule(local=True)` is retained as owned definition metadata through
 freezing, aliases, reexports and ordinary-extension call recording. The explicit
 boolean participates in both direct and ordinary repository provenance, including
-`false`. It is not an attribute exposed in `ctx.attr`. `configure=True` remains
-unsupported. Declared and dynamic named environment inputs have a separate
+`false`. It is not an attribute exposed in `ctx.attr`. `configure` (default
+`False`) is retained the same way; in Bazel it only selects repositories for
+`fetch --configure` and excludes them from vendoring
+(RepositoryFetchFunction.java:511-527), none of which native supports, so ordinary
+fetches are unaffected. It enters provenance only when `True`, keeping existing
+keys unchanged. Declared and dynamic named environment inputs have a separate
 [bounded profile](REPOSITORY_ENVIRONMENT.md), independent of the local flag.
 
 ## Native lifecycle bounds
@@ -24,7 +28,7 @@ not callback caching.
 
 The local flag grants no additional filesystem or network permissions. Existing
 path, symlink, template-input, ASCII and resource guards remain in force. General
-watch tracking, legacy `os.environ`, CLI environment overrides, fetch-disabled behavior, configure handling,
+watch tracking, legacy `os.environ`, CLI environment overrides, fetch-disabled behavior, `fetch --configure` handling,
 reproducible repository-content caches and vendoring are not implemented here.
 
 ## Version binding is phase-specific

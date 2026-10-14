@@ -36,8 +36,8 @@ Both direct and generated repository fingerprints always include the captured
 host name/architecture, introducing a documented one-time publication rekey.
 
 `repository_rule` supports callable implementations, `attrs`, `doc` and retained
-`local` metadata and snapshotted list/tuple `environ` declarations; `configure`
-must be false. See
+`local`/`configure` metadata and snapshotted list/tuple `environ` declarations
+(`configure=True` affects only unsupported `fetch --configure` and vendoring). See
 [LOCAL_REPOSITORIES.md](LOCAL_REPOSITORIES.md) for the bounded serverless lifecycle
 and MODULE-only `native.bazel_version` binding. Attribute kinds are string,
 string-list, ordered scalar string dictionary, ordered string-list dictionary,

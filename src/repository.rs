@@ -78,11 +78,18 @@ impl serde::Serialize for OrdinaryRepository {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
         let has_environ = !self.definition.environ.is_empty();
-        let mut value =
-            serializer.serialize_struct("RepositorySpec", 6 + usize::from(has_environ))?;
+        let configure = self.definition.configure;
+        let mut value = serializer.serialize_struct(
+            "RepositorySpec",
+            6 + usize::from(has_environ) + usize::from(configure),
+        )?;
         value.serialize_field("definition_identity", &self.definition.identity)?;
         value.serialize_field("schema", &self.definition.schema)?;
         value.serialize_field("local", &self.definition.local)?;
+        // Omitted when false so pre-existing provenance bytes/keys are unchanged.
+        if configure {
+            value.serialize_field("configure", &true)?;
+        }
         value.serialize_field("attributes", &self.attributes)?;
         value.serialize_field("canonical_name", &self.canonical_name)?;
         value.serialize_field("original_name", &self.original_name)?;
@@ -573,6 +580,13 @@ impl RepositorySet {
                     "owner_mapping": runtime.catalog.owner_mappings[&group.owner],
                     "repository_mapping": entry.mapping,
                 });
+                if prepared.definition.configure {
+                    // Omitted when false so pre-existing provenance keys are unchanged.
+                    provenance
+                        .as_object_mut()
+                        .expect("provenance object")
+                        .insert("configure".to_owned(), serde_json::Value::Bool(true));
+                }
                 if !prepared.definition.environ.is_empty() {
                     provenance
                         .as_object_mut()
@@ -1465,7 +1479,21 @@ mod tests {
             assert!(!repository.attributes.contains_key("local"));
             assert!(repository.definition.schema.is_empty());
             assert_eq!(provenance["repositories"][name]["local"], local);
+            // configure=False (default) is omitted, keeping legacy bytes/keys.
+            assert!(provenance["repositories"][name].get("configure").is_none());
         }
+        let mut configured = OrdinaryRepository {
+            definition: enabled.definition.clone(),
+            attributes: enabled.attributes.clone(),
+            original_name: enabled.original_name.clone(),
+            canonical_name: enabled.canonical_name.clone(),
+            root: DemandSlot::new(),
+        };
+        let unconfigured = serde_json::to_string(&configured).unwrap();
+        configured.definition.configure = true;
+        let with_configure: serde_json::Value = serde_json::to_value(&configured).unwrap();
+        assert_eq!(with_configure["configure"], serde_json::Value::Bool(true));
+        assert_ne!(serde_json::to_string(&configured).unwrap(), unconfigured);
         // Hold all source, identity, schema and call metadata constant: only the
         // retained local flag changes serialized provenance, including false.
         let mut toggled = OrdinaryRepository {

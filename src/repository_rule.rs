@@ -28,6 +28,10 @@ pub struct RuleDefinition {
     pub schema: BTreeMap<String, AttrSpec>,
     pub identity: String,
     pub local: bool,
+    /// Bazel `repository_rule(configure=...)`: only selects repositories for
+    /// `fetch --configure` and vendoring exclusion
+    /// (RepositoryFetchFunction.java:511-527); no effect on ordinary fetches.
+    pub configure: bool,
     pub environ: DeclaredEnvironment,
 }
 
@@ -67,6 +71,9 @@ mod values {
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
         pub local: bool,
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        pub configure: bool,
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
         pub environ: DeclaredEnvironment,
@@ -184,6 +191,7 @@ pub fn unpack(value: &OwnedFrozenValue) -> Result<RuleDefinition, String> {
         schema: definition.schema.clone(),
         identity,
         local: definition.local,
+        configure: definition.configure,
         environ: definition.environ.clone(),
     })
 }
@@ -206,9 +214,6 @@ pub fn globals(builder: &mut GlobalsBuilder) {
             .ok_or_else(|| anyhow!(
                 "repository_rule() definitions are only allowed during .bzl extension initialization, not BUILD evaluation"
             ))?;
-        if configure {
-            bail!("repository_rule(configure=True) is unsupported");
-        }
         let mut budget = HostBudget::default();
         let string = |value: Value<'v>| {
             value.unpack_str().ok_or_else(|| {
@@ -279,6 +284,7 @@ pub fn globals(builder: &mut GlobalsBuilder) {
             implementation,
             schema,
             local,
+            configure,
             environ,
             // The initializing extension owns the rule's export. Attribute
             // defaults independently use the innermost helper's lexical label.
@@ -1074,6 +1080,7 @@ mod tests {
             .unwrap();
             for name in ["R", "Alias"] {
                 assert_eq!(unpack(&original.get(name).unwrap()).unwrap().local, local);
+                assert!(!unpack(&original.get(name).unwrap()).unwrap().configure);
             }
             let value = reexport.get("Renamed").unwrap();
             drop(helper);
@@ -1234,13 +1241,44 @@ mod tests {
     }
 
     #[test]
+    fn configure_flag_is_retained_metadata_through_aliases_and_reexports() {
+        for (option, configure) in [
+            ("", false),
+            (", configure=False", false),
+            (", configure=True", true),
+        ] {
+            let original = extension_in(
+                "//defs:repos.bzl",
+                &format!("def impl(ctx):\n    return None\nR = repository_rule(impl, environ=['CC']{option})\nAlias = R"),
+                &HashMap::new(),
+            )
+            .unwrap();
+            let reexport = extension_in(
+                "//other:alias.bzl",
+                "load('//defs:repos.bzl', 'Alias')\nRenamed = Alias",
+                &HashMap::from([("//defs:repos.bzl", &original)]),
+            )
+            .unwrap();
+            for name in ["R", "Alias"] {
+                let definition = unpack(&original.get(name).unwrap()).unwrap();
+                assert_eq!(definition.configure, configure);
+                assert!(!definition.local);
+            }
+            let renamed = unpack(&reexport.get("Renamed").unwrap()).unwrap();
+            assert_eq!(renamed.clone().configure, configure);
+            assert_eq!(renamed.identity, "//defs:repos.bzl%R");
+        }
+    }
+
+    #[test]
     fn constructor_rejects_unsupported_options_and_bad_signatures() {
         for (expression, expected) in [
             ("repository_rule(impl, local=1)", "bool"),
             ("repository_rule(impl, local=0)", "bool"),
             ("repository_rule(impl, local=None)", "bool"),
             ("repository_rule(impl, local='True')", "bool"),
-            ("repository_rule(impl, configure=True)", "configure=True"),
+            ("repository_rule(impl, configure=1)", "bool"),
+            ("repository_rule(impl, configure=None)", "bool"),
             (
                 "repository_rule(impl, environ=None)",
                 "list or tuple of strings",

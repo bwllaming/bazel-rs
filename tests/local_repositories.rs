@@ -97,7 +97,13 @@ fn local_repository_transitive_version_bindings_are_phase_isolated() {
 
 #[test]
 fn local_repository_cold_warm_callbacks_execute_once_per_demanded_repository() {
-    for option in ["", ", local=False", ", local=True"] {
+    for option in [
+        "",
+        ", local=False",
+        ", local=True",
+        ", configure=True",
+        ", local=True, configure=True",
+    ] {
         let f = Fixture::new();
         f.file("repo.bzl",&format!("def _impl(ctx):\n    print('LOCAL_CALLBACK_EXECUTED')\n    ctx.file('BUILD.bazel',\"exports_files(['one','two'])\\n\")\n    ctx.file('one',native.bazel_version)\n    ctx.file('two',native.bazel_version)\nr=repository_rule(_impl{option})\n"));
         f.file(
@@ -112,6 +118,27 @@ fn local_repository_cold_warm_callbacks_execute_once_per_demanded_repository() {
         assert_eq!(first.len(), 2);
         assert!(first.iter().all(|(_, bytes)| bytes == b"9.3.0"));
     }
+}
+
+#[test]
+fn configure_repository_rule_from_extension_builds_like_rules_cc_autoconf() {
+    // rules_cc cc_configure.bzl shape: environ + configure=True, created by a
+    // module extension. configure only affects fetch --configure and
+    // vendoring in Bazel, so an ordinary build behaves like any repository.
+    let f = Fixture::new();
+    f.file("repo.bzl", "def _impl(ctx):\n    ctx.file('BUILD.bazel',\"exports_files(['one'])\\n\")\n    ctx.file('one','configured')\nr=repository_rule(environ=['BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN'],implementation=_impl,configure=True)\n");
+    f.file(
+        "ext.bzl",
+        "load(':repo.bzl','r')\ndef _impl(ctx):\n    r(name='made')\ne=module_extension(_impl)\n",
+    );
+    f.file(
+        "MODULE.bazel",
+        "module(name='main')\nx=use_extension('//:ext.bzl','e')\nuse_repo(x,'made')\n",
+    );
+    let (first, _) = f.build(&["@made//:one"]);
+    let (second, _) = f.build(&["@made//:one"]);
+    assert_eq!(first, second);
+    assert!(first.iter().all(|(_, bytes)| bytes == b"configured"));
 }
 
 #[test]
