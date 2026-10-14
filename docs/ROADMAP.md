@@ -26,8 +26,8 @@ Successful fixture or filegroup builds do not establish application parity.
 
 The progression below records historical increment boundaries, not the current
 application blocker. The later N3 runtime-pinned query reaches the existing JSON
-resource budget. Isolated JSON-capacity commit `ac9d646` is not integrated into
-this I/O worktree; successful application query/build/test remains unproven.
+resource budget. This combined tree includes the decode-only JSON capacity
+profile (`ac9d646`); the query must be rerun, and application query/build/test remains unproven.
 
 The previously captured native query of `//src/beyondwork.ai/utils/str:str` failed
 before application analysis because `aspect_bazel_lib@2.22.5` is unavailable in

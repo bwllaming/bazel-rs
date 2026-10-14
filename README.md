@@ -208,8 +208,8 @@ Module graph evidence is in `artifacts/module-validation.json`. Local external
 repository differential validation passes 20 scoped checks and is not implied by
 module JSON parity. Its historical native application query failed on unavailable
 registry metadata for `aspect_bazel_lib@2.22.5`. The later N3 runtime-pinned query
-reached the existing JSON resource budget; isolated JSON-capacity commit
-`ac9d646` is not integrated into this I/O worktree. Successful application query,
+reached the earlier JSON resource budget; this combined tree includes the
+decode-only JSON capacity profile (`ac9d646`), so that query must be rerun. Successful application query,
 Go build/test parity and full-repository performance remain unestablished. See
 [`docs/REPOSITORY_VALIDATION.md`](docs/REPOSITORY_VALIDATION.md) for implementation
 scope, the source-preserving application probe and evidence boundaries.

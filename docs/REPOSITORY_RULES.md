@@ -93,8 +93,9 @@ Original literal spellings are checked: high-byte octal escapes are unsupported,
 and hex/Unicode escapes are invalid in the pinned Bazel grammar. ASCII octal,
 escaped backslashes, raw ASCII strings and Unicode comments remain allowed.
 Because executed sources are ASCII-literal-only and `chr`-free, non-ASCII runtime
-strings can arise only from data such as module-extension reads/downloads, where
-each byte maps to U+0000..U+00FF exactly as Bazel's internal Latin-1 strings do.
+strings can arise only from runtime data, such as module-extension reads/downloads
+(each byte maps to U+0000..U+00FF exactly as Bazel's internal Latin-1 strings do)
+and `json.decode` `\u` escape runs (decoded to UTF-8 bytes exactly as Bazel does).
 Repository snapshots, string-valued repository attributes (including dictionary
 keys) and `ctx.file` contents therefore accept U+0000..U+00FF; `ctx.file` writes
 one byte per character. Characters above U+00FF are rejected explicitly (Bazel

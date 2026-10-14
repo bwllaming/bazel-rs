@@ -60,10 +60,10 @@ attributes and `ctx.file` contents accept U+0000..U+00FF and write one byte per
 character, matching Bazel. Source literals, names, labels and tag attributes stay
 ASCII. In extension and repository evaluation `json.decode` turns each `\u` escape
 run into its UTF-8 bytes (malformed surrogates become U+FFFD bytes), as Bazel does.
-Known divergence and promotion blocker: string methods that Bazel implements with
-ASCII-only rules (`upper`, `lower`, `capitalize`, `title`, `strip`, `split`,
-`isspace`, `repr`) follow starlark-rust Unicode rules on high characters and may
-silently produce different bytes. `print`/stderr of high characters is UTF-8 here
+Known divergence and promotion blocker: on high characters, string methods such as
+`upper`, `lower`, `capitalize`, `title`, `strip`, `split`, `isspace` and `repr`
+follow starlark-rust Unicode rules and may silently produce different bytes from
+Bazel (whose `upper`/`lower`/whitespace rules are ASCII-only). `print`/stderr of high characters is UTF-8 here
 but raw bytes in Bazel; validators compare logical values, not stderr bytes.
 `watch="auto"` does not watch these owned files; `"no"` explicitly disables watching.
 Neither establishes external-file watching or persistent watch-based reuse.

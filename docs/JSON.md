@@ -114,6 +114,10 @@ unchanged; all J-owned scratch and reference processes are cleaned. See
 `artifacts/json-validation.json`, `artifacts/j-json-verification-manifest.json`
 and `artifacts/mainrepo-json-loading.json` for the bound evidence.
 
-This I/O worktree still uses the pre-capacity JSON profile. The separately reviewed
-decode-only capacity experiment is committed as `ac9d646`, but has not been
-integrated here. Its isolated tests do not establish application build/test success.
+This combined tree uses the decode-only capacity profile above together with
+module-extension I/O. `module_ctx.read` returns one character per byte (U+0000..U+00FF),
+and the 8 MiB decode input ceiling counts UTF-8 bytes, so each byte >= 0x80 counts
+twice: a read file of roughly 4 to 8 MiB with many high bytes can exceed the decode
+ceiling although the read itself succeeds. In repository/extension evaluation,
+`\u` escape runs decode to UTF-8 bytes like Bazel (see MODULE_EXTENSION_IO.md).
+Application query, build and test remain unproven until rerun on this tree.
