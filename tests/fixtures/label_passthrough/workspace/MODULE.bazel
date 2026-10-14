@@ -1,0 +1,5 @@
+module(name="root_contract", version="1.0", repo_name="root_self")
+bazel_dep(name="dep", version="1.0", repo_name="shared")
+bazel_dep(name="other", version="1.0", repo_name="other_root")
+local_path_override(module_name="dep", path="dep")
+local_path_override(module_name="other", path="other")

@@ -1,0 +1,2 @@
+module(name="dep", version="1.0", repo_name="self_dep")
+bazel_dep(name="other", version="1.0", repo_name="shared")

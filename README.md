@@ -156,6 +156,8 @@ snapshot semantics through rule, tag and repository attribute consumers.
 name/architecture view and explicit host-dependent repository fingerprints.
 [Resolved Label repository names](docs/LABEL_REPO_NAME.md) expose canonical
 identity without changing owner mappings or hiding invalid-label timing limits.
+[Label passthrough](docs/LABEL_PASSTHROUGH.md) preserves existing Label identity
+across lexical contexts while retaining explicit invalid-label timing limits.
 [Genuine built-in modules](docs/BUILTIN_MODULES.md) are available through the
 native-only `--experimental-builtin-modules` transition option, using complete
 verified Linux x86-64 resources; the default remains explicit modules only.

@@ -9,9 +9,10 @@ use starlark::eval::{Arguments, Evaluator};
 use starlark::values::list::ListRef;
 use starlark::values::starlark_value;
 use starlark::values::tuple::TupleRef;
+use starlark::values::type_repr::StarlarkTypeRepr;
 use starlark::values::{
     Heap, NoSerialize, OwnedFrozenValue, ProvidesStaticType, StarlarkPagable, StarlarkPagablePanic,
-    StarlarkValue, Value,
+    StarlarkValue, UnpackValue, Value, ValueTyped,
 };
 use starlark::{starlark_module, starlark_simple_value};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -932,21 +933,58 @@ pub fn alloc_target_with_providers<'v>(
     })
 }
 
+// Typed unpacking keeps the builtin's argument errors in the macro binder.
+// ValueTyped retains the original (possibly frozen) Label without allocating.
+enum LabelInput<'v> {
+    Label(ValueTyped<'v, LabelValue>),
+    String(&'v str),
+}
+
+impl StarlarkTypeRepr for LabelInput<'_> {
+    type Canonical = Self;
+
+    fn starlark_type_repr() -> starlark::typing::Ty {
+        starlark::typing::Ty::union2(
+            LabelValue::starlark_type_repr(),
+            <&str>::starlark_type_repr(),
+        )
+    }
+}
+
+impl<'v> UnpackValue<'v> for LabelInput<'v> {
+    type Error = std::convert::Infallible;
+
+    fn unpack_value_impl(value: Value<'v>) -> Result<Option<Self>, Self::Error> {
+        Ok(if let Some(label) = ValueTyped::new(value) {
+            Some(Self::Label(label))
+        } else {
+            value.unpack_str().map(Self::String)
+        })
+    }
+}
+
 #[starlark_module]
 pub fn analysis_globals(builder: &mut GlobalsBuilder) {
     const DefaultInfo: DefaultInfoConstructor = DefaultInfoConstructor;
 
-    fn Label(label_string: &str, eval: &mut Evaluator<'_, '_, '_>) -> anyhow::Result<LabelValue> {
+    fn Label<'v>(
+        #[starlark(require = pos)] input: LabelInput<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let label_string = match input {
+            LabelInput::Label(label) => return Ok(label.to_value()),
+            LabelInput::String(text) => text,
+        };
         if crate::loading::repositories(eval).is_some() {
-            return LabelValue::parse(
+            return Ok(eval.heap().alloc(LabelValue::parse(
                 &crate::loading::resolve_label(eval, label_string)?.to_string(),
-            );
+            )?));
         }
-        LabelValue::parse(
+        Ok(eval.heap().alloc(LabelValue::parse(
             label_string
                 .strip_prefix("@//")
                 .map_or(label_string, |_| &label_string[1..]),
-        )
+        )?))
     }
 
     fn depset<'v>(
@@ -1117,6 +1155,69 @@ names = [main.repo_name, external.repo_name]
     }
 
     #[test]
+    fn label_passthrough_preserves_pointer_hash_and_heap_usage() {
+        Module::with_temp_heap(|module| {
+            let globals = globals();
+            let mut evaluator = Evaluator::new(&module);
+            let constructor = evaluator
+                .eval_module(
+                    AstModule::parse("ctor.star", "Label".into(), &Dialect::Standard).unwrap(),
+                    &globals,
+                )
+                .unwrap();
+            for canonical in [
+                "//pkg:main",
+                "@@dep+//pkg:external",
+                "@@dep++extension+made//pkg:generated",
+            ] {
+                let original = alloc_label(module.heap(), canonical).unwrap();
+                let copied = evaluator
+                    .eval_function(constructor, &[original], &[])
+                    .unwrap();
+                assert!(original.ptr_eq(copied), "{canonical}");
+                assert_eq!(
+                    original.get_hashed().unwrap().hash(),
+                    copied.get_hashed().unwrap().hash()
+                );
+                let before = (
+                    module.heap().allocated_bytes(),
+                    module.heap().available_bytes(),
+                );
+                for _ in 0..32 {
+                    assert!(
+                        evaluator
+                            .eval_function(constructor, &[original], &[])
+                            .unwrap()
+                            .ptr_eq(original)
+                    );
+                }
+                assert_eq!(
+                    before,
+                    (
+                        module.heap().allocated_bytes(),
+                        module.heap().available_bytes(),
+                    ),
+                    "passthrough must not consume Starlark heap space"
+                );
+                module.set("original", original);
+                module.set("copied", copied);
+                let result = evaluator
+                    .eval_module(
+                        AstModule::parse(
+                            "keys.star",
+                            "d = {original: 1}\nd[copied] = 2\nlen(d) == 1 and d[original] == 2 and str(original) == str(copied)".into(),
+                            &Dialect::Standard,
+                        )
+                        .unwrap(),
+                        &globals,
+                    )
+                    .unwrap();
+                assert_eq!(result.unpack_bool(), Some(true));
+            }
+        });
+    }
+
+    #[test]
     fn label_repo_name_getters_survive_freeze_and_owner_drop() {
         for repository in ["", "dep+", "dep++observe+made"] {
             let canonical = format!("@@{repository}//pkg:rule");
@@ -1157,6 +1258,174 @@ names = [main.repo_name, external.repo_name]
                 assert_eq!(result.unpack_bool(), Some(true));
             });
         }
+    }
+
+    #[test]
+    fn label_passthrough_frozen_helper_and_input_outlive_original_owners() {
+        let origin = Module::with_temp_heap(|module| {
+            module.set(
+                "original",
+                alloc_label(module.heap(), "@@dep++extension+made//pkg:item").unwrap(),
+            );
+            module.freeze().unwrap()
+        });
+        let helper = Module::with_temp_heap(|module| {
+            Evaluator::new(&module)
+                .eval_module(
+                    AstModule::parse(
+                        "helper.star",
+                        "def copy(value):\n    return Label(value)\n".into(),
+                        &Dialect::Standard,
+                    )
+                    .unwrap(),
+                    &globals(),
+                )
+                .unwrap();
+            module.freeze().unwrap()
+        });
+        let original = origin.get("original").unwrap();
+        let copy = helper.get("copy").unwrap();
+        drop(origin);
+        drop(helper);
+        let caller = Module::with_temp_heap(|module| {
+            let value = module.heap().access_owned_frozen_value(&original);
+            let function = module.heap().access_owned_frozen_value(&copy);
+            drop(original);
+            drop(copy);
+            let result = Evaluator::new(&module)
+                .eval_function(function, &[value], &[])
+                .unwrap();
+            assert!(value.ptr_eq(result));
+            assert_eq!(
+                value.get_hashed().unwrap().hash(),
+                result.get_hashed().unwrap().hash()
+            );
+            module.set("result", result);
+            module.freeze().unwrap()
+        });
+        let result = caller.get("result").unwrap();
+        drop(caller);
+        Module::with_temp_heap(|module| {
+            let value = module.heap().access_owned_frozen_value(&result);
+            drop(result);
+            module.set("value", value);
+            let ast = AstModule::parse(
+                "reader.star",
+                "copy = Label(value)\ncopy == value and {value: 7}[copy] == 7 and str(copy) == '@@dep++extension+made//pkg:item' and copy.workspace_name == 'dep++extension+made'".into(),
+                &Dialect::Standard,
+            )
+            .unwrap();
+            let copied = Evaluator::new(&module)
+                .eval_module(ast, &globals())
+                .unwrap();
+            assert_eq!(copied.unpack_bool(), Some(true));
+            assert!(module.get("copy").unwrap().ptr_eq(value));
+        });
+    }
+
+    #[test]
+    fn label_passthrough_typed_union_rejects_nonlabels_without_coercion() {
+        use starlark::environment::LibraryExtension;
+
+        Module::with_temp_heap(|module| {
+            let globals = GlobalsBuilder::extended_by(&[LibraryExtension::StructType])
+                .with(analysis_globals)
+                .build();
+            let mut evaluator = Evaluator::new(&module);
+            let constructor = evaluator
+                .eval_module(
+                    AstModule::parse("ctor.star", "Label".into(), &Dialect::Standard).unwrap(),
+                    &globals,
+                )
+                .unwrap();
+            for expression in [
+                "None",
+                "True",
+                "1",
+                "[]",
+                "{}",
+                "struct(type='Label', workspace_name='dep+', package='pkg', name='item')",
+            ] {
+                let value = evaluator
+                    .eval_module(
+                        AstModule::parse("arg.star", expression.into(), &Dialect::Standard)
+                            .unwrap(),
+                        &globals,
+                    )
+                    .unwrap();
+                assert!(LabelInput::unpack_value(value).unwrap().is_none());
+                let error = evaluator
+                    .eval_function(constructor, &[value], &[])
+                    .unwrap_err()
+                    .to_string();
+                assert!(error.contains("Type of parameter"), "{expression}: {error}");
+                assert!(
+                    error.contains("expected `") && error.contains("Label"),
+                    "{error}"
+                );
+                assert!(!error.contains("absolute canonical"), "{error}");
+            }
+        });
+    }
+
+    #[test]
+    fn label_passthrough_signature_is_required_positional_only() {
+        Module::with_temp_heap(|module| {
+            let mut evaluator = Evaluator::new(&module);
+            let constructor = evaluator
+                .eval_module(
+                    AstModule::parse("ctor.star", "Label".into(), &Dialect::Standard).unwrap(),
+                    &globals(),
+                )
+                .unwrap();
+            let string = module.heap().alloc("//pkg:item");
+            for (positional, named) in [
+                (vec![], vec![]),
+                (vec![string, string], vec![]),
+                (vec![], vec![("input", string)]),
+                (vec![], vec![("label_string", string)]),
+                (vec![string], vec![("input", string)]),
+                (vec![string], vec![("label_string", string)]),
+            ] {
+                let error = evaluator
+                    .eval_function(constructor, &positional, &named)
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    error.contains("positional") || error.contains("named"),
+                    "{error}"
+                );
+                assert!(!error.contains("absolute canonical"), "{error}");
+            }
+        });
+    }
+
+    #[test]
+    fn label_passthrough_does_not_change_contextless_string_parsing() {
+        pass("Label('@//pkg:item') == Label('@@//pkg:item')");
+        pass("str(Label('//pkg')) == '@@//pkg:pkg'");
+        pass("str(Label('@@dep++ext+made//pkg:item')) == '@@dep++ext+made//pkg:item'");
+        for source in ["Label(':relative')", "Label('@unknown//pkg:item')"] {
+            fail(source, "Label requires an absolute canonical label");
+        }
+        fail("Label('//pkg:café')", "ASCII");
+        fail("Label('//pkg:../item')", "path components are not allowed");
+    }
+
+    #[test]
+    fn label_repo_name_and_passthrough_compose_without_remapping() {
+        pass(
+            r#"
+main = Label("//pkg:rule")
+external = Label("@@dep++observe+made//pkg:rule")
+copies = [Label(main), Label(external)]
+(copies[0].repo_name == "" and copies[1].repo_name == "dep++observe+made" and
+ copies[0].workspace_name == copies[0].repo_name and
+ copies[1].workspace_name == copies[1].repo_name and
+ {main: "main", external: "external"}[copies[1]] == "external" and
+ str(copies[0]) == "@@//pkg:rule" and "repo_name" in dir(copies[1]))
+"#,
+        );
     }
 
     #[test]

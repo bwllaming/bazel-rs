@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "preparation_status": "READY_FOR_REFERENCE_AFTER_PARENT_FREEZE",
+  "current_fixture_execution": "NOT_RUN; contract-derived fixtures and portable harness tests only",
+  "native_diagnostics": "UNOBSERVED on the pending frozen candidate; category checks fail closed on different wording and require parent review, never arbitrary-nonzero acceptance",
+  "contract": "Label(input, /): string or Label; existing Label returned before context/visibility",
+  "reference_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "reference_version": "9.3.0",
+  "official_commit": "e89755babf3e941bc1e9d8120b1cd48854ab9dfa",
+  "platforms": {
+    "url": "https://github.com/bazelbuild/platforms/releases/download/1.0.0/platforms-1.0.0.tar.gz",
+    "sha256": "3384eb1c30762704fbe38e440204e114154086c8fc8a8c2e3e28441028c019a8",
+    "size": 7879,
+    "encoding": "base64",
+    "origin": "Verified genuine distfile retained by earlier starlark-sets/subrules reference preparation; runtime reads only platforms-1.0.0.tar.gz.base64 in this fixture."
+  },
+  "positive_origin": "N2 contract positive query, pinned genuine 9.3.0, 2026-10-14; fixtures derived from retained inputs/positive, not a new paired execution",
+  "new_cases_unexecuted": ["wrong-type-struct", "keyword-unknown", "custom", "extension"],
+  "scope": [
+    "Value equality and dictionary/hash compatibility only; numeric cross-engine hashes and pointer/loader ownership are not CLI claims.",
+    "Reference invalid Label construction/passthrough success and subsequent workspace_name visibility failure are separate from intentional native early-construction divergence.",
+    "No N1 repo_name getter dependency.",
+    "Preparation only: all execution remains gated on parent core freeze; source bindings include Rust."
+  ]
+}

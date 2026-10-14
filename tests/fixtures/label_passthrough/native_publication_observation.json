@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "origin": {
+    "report": "artifacts/label-passthrough-native-preparation-calibrated.json",
+    "report_sha256": "75c7eefc6a9d5247c30ebdf6651221256c24c43a83c66fd1c6e5f23758fe85fa",
+    "run_id": 25,
+    "step": ["extension", "native", "cold", "build"],
+    "returncode": 0,
+    "native_sha256": "6e6bdf3d13d9a2970a6a47c3eb5edd48d072fa6b282b8b382ec77e095a7d2ed2",
+    "repository_store_sha256": "1d0a0f1564f3eb757564e849f78614b72028206541ca208bb4d1f3194e24673a",
+    "scope": "Exact publication field from the retained cold extension row. The original 30-command report remains FAIL; no warm observation or full-preparation acceptance is implied."
+  },
+  "publication": {
+    "identity": "2fb9dd9d4dde0b8250fdfc72e06d22fb1337bc17151e94d15654883236b8a964",
+    "roots": ["2fb9dd9d4dde0b8250fdfc72e06d22fb1337bc17151e94d15654883236b8a964"],
+    "manifests": {
+      "2fb9dd9d4dde0b8250fdfc72e06d22fb1337bc17151e94d15654883236b8a964.json": {
+        "mode": 384,
+        "raw": {
+          "base64": "eyJmb3JtYXQiOjEsInByb2ZpbGUiOiJkaXJlY3QtZmlsZS10ZW1wbGF0ZS12MSIsImlkZW50aXR5IjoiMmZiOWRkOWQ0ZGRlMGI4MjUwZmRmYzcyZTA2ZDIyZmIxMzM3YmMxNzE1MWU5NGQxNTY1NDg4MzIzNmI4YTk2NCIsImZpbGVzIjp7IiI6eyJkaXJlY3RvcnkiOnRydWUsIm1vZGUiOjQ5Mywic2l6ZSI6MCwic2hhMjU2IjoiIn0sIkJVSUxELmJhemVsIjp7ImRpcmVjdG9yeSI6ZmFsc2UsIm1vZGUiOjQyMCwic2l6ZSI6MjgsInNoYTI1NiI6ImY2OGQ1NGNmMGM5NDk5MzcxYzg5YWVjNTU3MjVhZDZhNWQzZDIwOThlNDk5MTc5YmMyNTMxZTlhMzkyZjc3MTAifSwiUkVQTy5iYXplbCI6eyJkaXJlY3RvcnkiOmZhbHNlLCJtb2RlIjo0MjAsInNpemUiOjAsInNoYTI1NiI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifSwiZGF0YS50eHQiOnsiZGlyZWN0b3J5IjpmYWxzZSwibW9kZSI6NDIwLCJzaXplIjoyOSwic2hhMjU2IjoiNWNjM2Y2MDI1YTM1NTRjOWZhNTg0NjFmOWM1N2JkN2MwZmUzMDg3NTZiYzU5NGY0ZDkzOGFmZGQ3ODlhNDFmYyJ9fX0=",
+          "size": 578,
+          "sha256": "c6152455538a6170868d15b1ca9f983702efaa580d6436586bb3bb7dfb31dc62"
+        }
+      }
+    },
+    "inventory": {
+      "BUILD.bazel": {
+        "mode": 420,
+        "raw": {
+          "base64": "ZXhwb3J0c19maWxlcyhbImRhdGEudHh0Il0pCg==",
+          "size": 28,
+          "sha256": "f68d54cf0c9499371c89aec55725ad6a5d3d2098e499179bc2531e9a392f7710"
+        }
+      },
+      "REPO.bazel": {
+        "mode": 420,
+        "raw": {
+          "base64": "",
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "data.txt": {
+        "mode": 420,
+        "raw": {
+          "base64": "QEAvLzpzYW1lCkBAZGVwKy8vOnNhbWUKZGVwKwo=",
+          "size": 29,
+          "sha256": "5cc3f6025a3554c9fa58461f9c57bd7c0fe308756bc594f4d938afdd789a41fc"
+        }
+      }
+    }
+  }
+}

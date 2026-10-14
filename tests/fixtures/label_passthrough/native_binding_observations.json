@@ -1,0 +1,152 @@
+{
+  "schema": 1,
+  "origin": {
+    "report": "artifacts/label-passthrough-native-negative-diagnostic-preparation.json",
+    "report_sha256": "630620c1d40bfe0b6877ff1894086b5c45c29c896bb7977ff554d1e4995c8aca",
+    "native_sha256": "6e6bdf3d13d9a2970a6a47c3eb5edd48d072fa6b282b8b382ec77e095a7d2ed2",
+    "manifest_sha256": "77f9c9856f72e1d92e5b598e7563aab5add2ad289ccaa08defb7c987f87bf0b7",
+    "scope": "Mechanical raw-field excerpts from the seven UNMATCHED rows. Not new executions; original report/status/pins remain immutable."
+  },
+  "observations": {
+    "missing": {
+      "id": 11,
+      "step": ["missing", "native", "query", "query"],
+      "cwd": "/tmp/opencode/bazel-parity-label-passthrough/artifacts/label-passthrough-negative-diagnostics-0utmyiry/cases/missing/native/workspace",
+      "returncode": 1,
+      "stdout": {"base64": "", "size": 0, "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+      "stderr": {
+        "base64": "QkVGT1JFX0NBTEwKYmF6ZWwtcnM6IFRyYWNlYmFjayAobW9zdCByZWNlbnQgY2FsbCBsYXN0KToKICAqIC90bXAvb3BlbmNvZGUvYmF6ZWwtcGFyaXR5LWxhYmVsLXBhc3N0aHJvdWdoL2FydGlmYWN0cy9sYWJlbC1wYXNzdGhyb3VnaC1uZWdhdGl2ZS1kaWFnbm9zdGljcy0wdXRteWlyeS9jYXNlcy9taXNzaW5nL25hdGl2ZS93b3Jrc3BhY2UvQlVJTEQuYmF6ZWw6MiwgaW4gPG1vZHVsZT4KICAgICAgcnVuX3Byb2JlKCkKICAqIC8vOnByb2JlLmJ6bDozLCBpbiBydW5fcHJvYmUKICAgICAgcmVzdWx0ID0gTGFiZWwoKQplcnJvcjogV3JvbmcgbnVtYmVyIG9mIHBvc2l0aW9uYWwgYXJndW1lbnRzLCBleHBlY3RlZCAxLCBnb3QgMAogLS0+IC8vOnByb2JlLmJ6bDozOjE0CiAgfAozIHwgICAgIHJlc3VsdCA9IExhYmVsKCkKICB8ICAgICAgICAgICAgICBeXl5eXl5eCiAgfAoKU3VwcG9ydGVkIHJ1bGVzOiBmaWxlZ3JvdXAsIGdlbnJ1bGUsIGFuZCBsb2NhbCBjdXN0b20gcnVsZXMuIHNlbGVjdCBhbmQgbm9uLWxvY2FsIHJlcG9zaXRvcmllcyByZW1haW4gdW5zdXBwb3J0ZWQuCg==",
+        "size": 556,
+        "sha256": "c9f7ab93fd45cd590784055c4fd54af6b0b2ae962673c42f2176481f9667afe0"
+      },
+      "probe": {
+        "mode": 420,
+        "raw": {
+          "base64": "ZGVmIHJ1bl9wcm9iZSgpOgogICAgcHJpbnQoIkJFRk9SRV9DQUxMIikKICAgIHJlc3VsdCA9IExhYmVsKCkKICAgIHByaW50KCJVTkVYUEVDVEVEX0FGVEVSX0NBTEwiLCByZXN1bHQpCiAgICBuYXRpdmUuZmlsZWdyb3VwKG5hbWU9Im9rIikK",
+          "size": 138,
+          "sha256": "ba07587d28db3ceff86e339d7365fd5892706b46aada9b4ea1117cfc6b93e37e"
+        }
+      }
+    },
+    "extra": {
+      "id": 12,
+      "step": ["extra", "native", "query", "query"],
+      "cwd": "/tmp/opencode/bazel-parity-label-passthrough/artifacts/label-passthrough-negative-diagnostics-0utmyiry/cases/extra/native/workspace",
+      "returncode": 1,
+      "stdout": {"base64": "", "size": 0, "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+      "stderr": {
+        "base64": "QkVGT1JFX0NBTEwKYmF6ZWwtcnM6IFRyYWNlYmFjayAobW9zdCByZWNlbnQgY2FsbCBsYXN0KToKICAqIC90bXAvb3BlbmNvZGUvYmF6ZWwtcGFyaXR5LWxhYmVsLXBhc3N0aHJvdWdoL2FydGlmYWN0cy9sYWJlbC1wYXNzdGhyb3VnaC1uZWdhdGl2ZS1kaWFnbm9zdGljcy0wdXRteWlyeS9jYXNlcy9leHRyYS9uYXRpdmUvd29ya3NwYWNlL0JVSUxELmJhemVsOjIsIGluIDxtb2R1bGU+CiAgICAgIHJ1bl9wcm9iZSgpCiAgKiAvLzpwcm9iZS5iemw6MywgaW4gcnVuX3Byb2JlCiAgICAgIHJlc3VsdCA9IExhYmVsKCIvLzpvbmUiLCAiLy86dHdvIikKZXJyb3I6IFdyb25nIG51bWJlciBvZiBwb3NpdGlvbmFsIGFyZ3VtZW50cywgZXhwZWN0ZWQgMSwgZ290IDIKIC0tPiAvLzpwcm9iZS5iemw6MzoxNAogIHwKMyB8ICAgICByZXN1bHQgPSBMYWJlbCgiLy86b25lIiwgIi8vOnR3byIpCiAgfCAgICAgICAgICAgICAgXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXgogIHwKClN1cHBvcnRlZCBydWxlczogZmlsZWdyb3VwLCBnZW5ydWxlLCBhbmQgbG9jYWwgY3VzdG9tIHJ1bGVzLiBzZWxlY3QgYW5kIG5vbi1sb2NhbCByZXBvc2l0b3JpZXMgcmVtYWluIHVuc3VwcG9ydGVkLgo=",
+        "size": 608,
+        "sha256": "ec96cf84f98a92781c5212eeefff5a1e148fac633b10ba2dd1c87471e878faca"
+      },
+      "probe": {
+        "mode": 420,
+        "raw": {
+          "base64": "ZGVmIHJ1bl9wcm9iZSgpOgogICAgcHJpbnQoIkJFRk9SRV9DQUxMIikKICAgIHJlc3VsdCA9IExhYmVsKCIvLzpvbmUiLCAiLy86dHdvIikKICAgIHByaW50KCJVTkVYUEVDVEVEX0FGVEVSX0NBTEwiLCByZXN1bHQpCiAgICBuYXRpdmUuZmlsZWdyb3VwKG5hbWU9Im9rIikK",
+          "size": 156,
+          "sha256": "2b494d301dea2ea82e2c94a8516d95abd30b0b0fb6ff499f6b87e78fa4204908"
+        }
+      }
+    },
+    "keyword-string": {
+      "id": 13,
+      "step": ["keyword-string", "native", "query", "query"],
+      "cwd": "/tmp/opencode/bazel-parity-label-passthrough/artifacts/label-passthrough-negative-diagnostics-0utmyiry/cases/keyword-string/native/workspace",
+      "returncode": 1,
+      "stdout": {"base64": "", "size": 0, "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+      "stderr": {
+        "base64": "QkVGT1JFX0NBTEwKYmF6ZWwtcnM6IFRyYWNlYmFjayAobW9zdCByZWNlbnQgY2FsbCBsYXN0KToKICAqIC90bXAvb3BlbmNvZGUvYmF6ZWwtcGFyaXR5LWxhYmVsLXBhc3N0aHJvdWdoL2FydGlmYWN0cy9sYWJlbC1wYXNzdGhyb3VnaC1uZWdhdGl2ZS1kaWFnbm9zdGljcy0wdXRteWlyeS9jYXNlcy9rZXl3b3JkLXN0cmluZy9uYXRpdmUvd29ya3NwYWNlL0JVSUxELmJhemVsOjIsIGluIDxtb2R1bGU+CiAgICAgIHJ1bl9wcm9iZSgpCiAgKiAvLzpwcm9iZS5iemw6MywgaW4gcnVuX3Byb2JlCiAgICAgIHJlc3VsdCA9IExhYmVsKGlucHV0PSIvLzpzYW1lIikKZXJyb3I6IEZvdW5kIGBpbnB1dGAgZXh0cmEgbmFtZWQgcGFyYW1ldGVyKHMpIGZvciBjYWxsIHRvIGZ1bmN0aW9uCiAtLT4gLy86cHJvYmUuYnpsOjM6MTQKICB8CjMgfCAgICAgcmVzdWx0ID0gTGFiZWwoaW5wdXQ9Ii8vOnNhbWUiKQogIHwgICAgICAgICAgICAgIF5eXl5eXl5eXl5eXl5eXl5eXl5eXl4KICB8CgpTdXBwb3J0ZWQgcnVsZXM6IGZpbGVncm91cCwgZ2VucnVsZSwgYW5kIGxvY2FsIGN1c3RvbSBydWxlcy4gc2VsZWN0IGFuZCBub24tbG9jYWwgcmVwb3NpdG9yaWVzIHJlbWFpbiB1bnN1cHBvcnRlZC4K",
+        "size": 612,
+        "sha256": "7bf0330d46015e714878372b1b97ab0af03903c5976ce3eacd3f17f08f899c8a"
+      },
+      "probe": {
+        "mode": 420,
+        "raw": {
+          "base64": "ZGVmIHJ1bl9wcm9iZSgpOgogICAgcHJpbnQoIkJFRk9SRV9DQUxMIikKICAgIHJlc3VsdCA9IExhYmVsKGlucHV0PSIvLzpzYW1lIikKICAgIHByaW50KCJVTkVYUEVDVEVEX0FGVEVSX0NBTEwiLCByZXN1bHQpCiAgICBuYXRpdmUuZmlsZWdyb3VwKG5hbWU9Im9rIikK",
+          "size": 153,
+          "sha256": "ae0bd6eba501ca26464ec3a1cd6b2e524943f6d5e7d3616bfb6ae865a2a13534"
+        }
+      }
+    },
+    "keyword-label": {
+      "id": 14,
+      "step": ["keyword-label", "native", "query", "query"],
+      "cwd": "/tmp/opencode/bazel-parity-label-passthrough/artifacts/label-passthrough-negative-diagnostics-0utmyiry/cases/keyword-label/native/workspace",
+      "returncode": 1,
+      "stdout": {"base64": "", "size": 0, "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+      "stderr": {
+        "base64": "QkVGT1JFX0NBTEwKYmF6ZWwtcnM6IFRyYWNlYmFjayAobW9zdCByZWNlbnQgY2FsbCBsYXN0KToKICAqIC90bXAvb3BlbmNvZGUvYmF6ZWwtcGFyaXR5LWxhYmVsLXBhc3N0aHJvdWdoL2FydGlmYWN0cy9sYWJlbC1wYXNzdGhyb3VnaC1uZWdhdGl2ZS1kaWFnbm9zdGljcy0wdXRteWlyeS9jYXNlcy9rZXl3b3JkLWxhYmVsL25hdGl2ZS93b3Jrc3BhY2UvQlVJTEQuYmF6ZWw6MiwgaW4gPG1vZHVsZT4KICAgICAgcnVuX3Byb2JlKCkKICAqIC8vOnByb2JlLmJ6bDozLCBpbiBydW5fcHJvYmUKICAgICAgcmVzdWx0ID0gTGFiZWwoaW5wdXQ9TGFiZWwoIi8vOnNhbWUiKSkKZXJyb3I6IEZvdW5kIGBpbnB1dGAgZXh0cmEgbmFtZWQgcGFyYW1ldGVyKHMpIGZvciBjYWxsIHRvIGZ1bmN0aW9uCiAtLT4gLy86cHJvYmUuYnpsOjM6MTQKICB8CjMgfCAgICAgcmVzdWx0ID0gTGFiZWwoaW5wdXQ9TGFiZWwoIi8vOnNhbWUiKSkKICB8ICAgICAgICAgICAgICBeXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXgogIHwKClN1cHBvcnRlZCBydWxlczogZmlsZWdyb3VwLCBnZW5ydWxlLCBhbmQgbG9jYWwgY3VzdG9tIHJ1bGVzLiBzZWxlY3QgYW5kIG5vbi1sb2NhbCByZXBvc2l0b3JpZXMgcmVtYWluIHVuc3VwcG9ydGVkLgo=",
+        "size": 632,
+        "sha256": "12c5528be0dac2945a358a7c6b6b85998a202aa486c8459034b5a3bf9157fd72"
+      },
+      "probe": {
+        "mode": 420,
+        "raw": {
+          "base64": "ZGVmIHJ1bl9wcm9iZSgpOgogICAgcHJpbnQoIkJFRk9SRV9DQUxMIikKICAgIHJlc3VsdCA9IExhYmVsKGlucHV0PUxhYmVsKCIvLzpzYW1lIikpCiAgICBwcmludCgiVU5FWFBFQ1RFRF9BRlRFUl9DQUxMIiwgcmVzdWx0KQogICAgbmF0aXZlLmZpbGVncm91cChuYW1lPSJvayIpCg==",
+          "size": 160,
+          "sha256": "397f7000c879315117d283197e3fe977326cb06c688393b42b93e4f734c78a84"
+        }
+      }
+    },
+    "keyword-native-name": {
+      "id": 15,
+      "step": ["keyword-native-name", "native", "query", "query"],
+      "cwd": "/tmp/opencode/bazel-parity-label-passthrough/artifacts/label-passthrough-negative-diagnostics-0utmyiry/cases/keyword-native-name/native/workspace",
+      "returncode": 1,
+      "stdout": {"base64": "", "size": 0, "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+      "stderr": {
+        "base64": "QkVGT1JFX0NBTEwKYmF6ZWwtcnM6IFRyYWNlYmFjayAobW9zdCByZWNlbnQgY2FsbCBsYXN0KToKICAqIC90bXAvb3BlbmNvZGUvYmF6ZWwtcGFyaXR5LWxhYmVsLXBhc3N0aHJvdWdoL2FydGlmYWN0cy9sYWJlbC1wYXNzdGhyb3VnaC1uZWdhdGl2ZS1kaWFnbm9zdGljcy0wdXRteWlyeS9jYXNlcy9rZXl3b3JkLW5hdGl2ZS1uYW1lL25hdGl2ZS93b3Jrc3BhY2UvQlVJTEQuYmF6ZWw6MiwgaW4gPG1vZHVsZT4KICAgICAgcnVuX3Byb2JlKCkKICAqIC8vOnByb2JlLmJ6bDozLCBpbiBydW5fcHJvYmUKICAgICAgcmVzdWx0ID0gTGFiZWwobGFiZWxfc3RyaW5nPSIvLzpzYW1lIikKZXJyb3I6IEZvdW5kIGBsYWJlbF9zdHJpbmdgIGV4dHJhIG5hbWVkIHBhcmFtZXRlcihzKSBmb3IgY2FsbCB0byBmdW5jdGlvbgogLS0+IC8vOnByb2JlLmJ6bDozOjE0CiAgfAozIHwgICAgIHJlc3VsdCA9IExhYmVsKGxhYmVsX3N0cmluZz0iLy86c2FtZSIpCiAgfCAgICAgICAgICAgICAgXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl4KICB8CgpTdXBwb3J0ZWQgcnVsZXM6IGZpbGVncm91cCwgZ2VucnVsZSwgYW5kIGxvY2FsIGN1c3RvbSBydWxlcy4gc2VsZWN0IGFuZCBub24tbG9jYWwgcmVwb3NpdG9yaWVzIHJlbWFpbiB1bnN1cHBvcnRlZC4K",
+        "size": 645,
+        "sha256": "1778c13e8abe08b639282e48325ad6f572a59b792cf6f29fabc939d83fbb8964"
+      },
+      "probe": {
+        "mode": 420,
+        "raw": {
+          "base64": "ZGVmIHJ1bl9wcm9iZSgpOgogICAgcHJpbnQoIkJFRk9SRV9DQUxMIikKICAgIHJlc3VsdCA9IExhYmVsKGxhYmVsX3N0cmluZz0iLy86c2FtZSIpCiAgICBwcmludCgiVU5FWFBFQ1RFRF9BRlRFUl9DQUxMIiwgcmVzdWx0KQogICAgbmF0aXZlLmZpbGVncm91cChuYW1lPSJvayIpCg==",
+          "size": 160,
+          "sha256": "a2fad60472788243479587315c5b5c4b31457a329a95c9040251206e47484b4c"
+        }
+      }
+    },
+    "keyword-unknown": {
+      "id": 16,
+      "step": ["keyword-unknown", "native", "query", "query"],
+      "cwd": "/tmp/opencode/bazel-parity-label-passthrough/artifacts/label-passthrough-negative-diagnostics-0utmyiry/cases/keyword-unknown/native/workspace",
+      "returncode": 1,
+      "stdout": {"base64": "", "size": 0, "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+      "stderr": {
+        "base64": "QkVGT1JFX0NBTEwKYmF6ZWwtcnM6IFRyYWNlYmFjayAobW9zdCByZWNlbnQgY2FsbCBsYXN0KToKICAqIC90bXAvb3BlbmNvZGUvYmF6ZWwtcGFyaXR5LWxhYmVsLXBhc3N0aHJvdWdoL2FydGlmYWN0cy9sYWJlbC1wYXNzdGhyb3VnaC1uZWdhdGl2ZS1kaWFnbm9zdGljcy0wdXRteWlyeS9jYXNlcy9rZXl3b3JkLXVua25vd24vbmF0aXZlL3dvcmtzcGFjZS9CVUlMRC5iYXplbDoyLCBpbiA8bW9kdWxlPgogICAgICBydW5fcHJvYmUoKQogICogLy86cHJvYmUuYnpsOjMsIGluIHJ1bl9wcm9iZQogICAgICByZXN1bHQgPSBMYWJlbCh1bmtub3duPSIvLzpzYW1lIikKZXJyb3I6IEZvdW5kIGB1bmtub3duYCBleHRyYSBuYW1lZCBwYXJhbWV0ZXIocykgZm9yIGNhbGwgdG8gZnVuY3Rpb24KIC0tPiAvLzpwcm9iZS5iemw6MzoxNAogIHwKMyB8ICAgICByZXN1bHQgPSBMYWJlbCh1bmtub3duPSIvLzpzYW1lIikKICB8ICAgICAgICAgICAgICBeXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl4KICB8CgpTdXBwb3J0ZWQgcnVsZXM6IGZpbGVncm91cCwgZ2VucnVsZSwgYW5kIGxvY2FsIGN1c3RvbSBydWxlcy4gc2VsZWN0IGFuZCBub24tbG9jYWwgcmVwb3NpdG9yaWVzIHJlbWFpbiB1bnN1cHBvcnRlZC4K",
+        "size": 621,
+        "sha256": "447b6155a074973376e8fb1d1b9ff05139b01024a4083b58aed117bb4a8171b2"
+      },
+      "probe": {
+        "mode": 420,
+        "raw": {
+          "base64": "ZGVmIHJ1bl9wcm9iZSgpOgogICAgcHJpbnQoIkJFRk9SRV9DQUxMIikKICAgIHJlc3VsdCA9IExhYmVsKHVua25vd249Ii8vOnNhbWUiKQogICAgcHJpbnQoIlVORVhQRUNURURfQUZURVJfQ0FMTCIsIHJlc3VsdCkKICAgIG5hdGl2ZS5maWxlZ3JvdXAobmFtZT0ib2siKQo=",
+          "size": 155,
+          "sha256": "1aed0d890be202a45510cf84d5b36bf5b55177d6caabdefb0eda1d97f6935369"
+        }
+      }
+    },
+    "positional-plus-keyword": {
+      "id": 17,
+      "step": ["positional-plus-keyword", "native", "query", "query"],
+      "cwd": "/tmp/opencode/bazel-parity-label-passthrough/artifacts/label-passthrough-negative-diagnostics-0utmyiry/cases/positional-plus-keyword/native/workspace",
+      "returncode": 1,
+      "stdout": {"base64": "", "size": 0, "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+      "stderr": {
+        "base64": "QkVGT1JFX0NBTEwKYmF6ZWwtcnM6IFRyYWNlYmFjayAobW9zdCByZWNlbnQgY2FsbCBsYXN0KToKICAqIC90bXAvb3BlbmNvZGUvYmF6ZWwtcGFyaXR5LWxhYmVsLXBhc3N0aHJvdWdoL2FydGlmYWN0cy9sYWJlbC1wYXNzdGhyb3VnaC1uZWdhdGl2ZS1kaWFnbm9zdGljcy0wdXRteWlyeS9jYXNlcy9wb3NpdGlvbmFsLXBsdXMta2V5d29yZC9uYXRpdmUvd29ya3NwYWNlL0JVSUxELmJhemVsOjIsIGluIDxtb2R1bGU+CiAgICAgIHJ1bl9wcm9iZSgpCiAgKiAvLzpwcm9iZS5iemw6MywgaW4gcnVuX3Byb2JlCiAgICAgIHJlc3VsdCA9IExhYmVsKCIvLzpvbmUiLCBpbnB1dD0iLy86dHdvIikKZXJyb3I6IEZvdW5kIGBpbnB1dGAgZXh0cmEgbmFtZWQgcGFyYW1ldGVyKHMpIGZvciBjYWxsIHRvIGZ1bmN0aW9uCiAtLT4gLy86cHJvYmUuYnpsOjM6MTQKICB8CjMgfCAgICAgcmVzdWx0ID0gTGFiZWwoIi8vOm9uZSIsIGlucHV0PSIvLzp0d28iKQogIHwgICAgICAgICAgICAgIF5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl4KICB8CgpTdXBwb3J0ZWQgcnVsZXM6IGZpbGVncm91cCwgZ2VucnVsZSwgYW5kIGxvY2FsIGN1c3RvbSBydWxlcy4gc2VsZWN0IGFuZCBub24tbG9jYWwgcmVwb3NpdG9yaWVzIHJlbWFpbiB1bnN1cHBvcnRlZC4K",
+        "size": 648,
+        "sha256": "744007f93260a35ae7aa4d8c2d8fb56b5cdd8501c9da57a4b066dd3f0dcad43e"
+      },
+      "probe": {
+        "mode": 420,
+        "raw": {
+          "base64": "ZGVmIHJ1bl9wcm9iZSgpOgogICAgcHJpbnQoIkJFRk9SRV9DQUxMIikKICAgIHJlc3VsdCA9IExhYmVsKCIvLzpvbmUiLCBpbnB1dD0iLy86dHdvIikKICAgIHByaW50KCJVTkVYUEVDVEVEX0FGVEVSX0NBTEwiLCByZXN1bHQpCiAgICBuYXRpdmUuZmlsZWdyb3VwKG5hbWU9Im9rIikK",
+          "size": 162,
+          "sha256": "3aa2d50e022ba03aec01469f2eecc593029c6a063cf855a86a49f94a1226c2aa"
+        }
+      }
+    }
+  }
+}
