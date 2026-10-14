@@ -88,6 +88,7 @@ mod values {
     #[repr(C)]
     pub(super) struct RepositoryCtxGen<V> {
         pub attrs: V,
+        pub os: V,
         pub name: String,
         pub original_name: String,
     }
@@ -112,6 +113,7 @@ mod values {
         fn get_attr(&self, name: &str, heap: Heap<'v>) -> Option<Value<'v>> {
             match name {
                 "attr" => Some(self.attrs.to_value()),
+                "os" => Some(self.os.to_value()),
                 "name" => Some(heap.alloc(self.name.as_str())),
                 "original_name" => Some(heap.alloc(self.original_name.as_str())),
                 _ => None,
@@ -119,7 +121,7 @@ mod values {
         }
 
         fn dir_attr(&self) -> Vec<String> {
-            ["attr", "name", "original_name"]
+            ["attr", "name", "original_name", "os"]
                 .map(str::to_owned)
                 .to_vec()
         }
@@ -615,6 +617,10 @@ pub fn execute(
             let heap = module.heap();
             let ctx = heap.alloc(RepositoryCtxGen {
                 attrs: alloc_attrs(heap, attrs, canonical_name)?,
+                os: crate::host_os::alloc(
+                    heap,
+                    context.repositories.host().map_err(anyhow::Error::msg)?,
+                )?,
                 name: canonical_name.to_owned(),
                 original_name: original_name.to_owned(),
             });
@@ -787,6 +793,65 @@ mod tests {
     }
 
     #[test]
+    fn host_metadata_on_actual_repository_context_is_stable_without_environment_reads() {
+        use crate::repository_environment::tests::Reader;
+        let mut fixture = Fixture::new();
+        let reader = Reader::new(Ok(Some("SyntheticSecret".into())));
+        fixture.repositories = Arc::new(
+            (*fixture.repositories)
+                .clone()
+                .with_environment_reader(reader.clone()),
+        );
+        let inputs = fixture.run("host = ctx.os\n(host == ctx.os and {host:42}[ctx.os] == 42) or fail('identity')\n(type(host) == 'repository_os' and host.name == 'linux' and host.arch == 'amd64') or fail('metadata')\n(dir(host) == ['arch', 'environ', 'name'] and hasattr(host, 'environ')) or fail('surface')\nctx.file('metadata', json.encode([host.name, host.arch]))").unwrap();
+        assert_eq!(fixture.bytes("metadata"), br#"["linux","amd64"]"#);
+        assert!(inputs.watched_env.is_none());
+        assert_eq!(reader.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        for body in ["ctx.os.environ", "getattr(ctx.os, 'environ', {})"] {
+            fixture.error(body, "repository_os.environ is unsupported");
+        }
+        fixture.error(
+            "json.encode(ctx.os)",
+            "cannot encode unsupported value as JSON",
+        );
+        fixture.error("ctx.os.name = 'changed'", "repository_os");
+    }
+
+    #[test]
+    fn frozen_repository_context_retains_its_single_host_value_after_owner_drop() {
+        let owner = Module::with_temp_heap(|module| {
+            let heap = module.heap();
+            module.set(
+                "ctx",
+                heap.alloc(RepositoryCtxGen {
+                    attrs: Value::new_none(),
+                    os: crate::host_os::alloc(heap, RepositorySet::new(".".into()).host().unwrap())
+                        .unwrap(),
+                    name: "repo".into(),
+                    original_name: "original".into(),
+                }),
+            );
+            module.freeze().unwrap()
+        });
+        let ctx = owner.get("ctx").unwrap();
+        drop(owner);
+        Module::with_temp_heap(|module| {
+            let heap = module.heap();
+            let value = heap.access_owned_frozen_value(&ctx);
+            let first = value.get_attr("os", heap).unwrap().unwrap();
+            let second = value.get_attr("os", heap).unwrap().unwrap();
+            assert!(first.ptr_eq(second));
+            assert_eq!(
+                first.get_attr("name", heap).unwrap().unwrap().unpack_str(),
+                Some("linux")
+            );
+            assert_eq!(
+                first.get_attr("arch", heap).unwrap().unwrap().unpack_str(),
+                Some("amd64")
+            );
+        });
+    }
+
+    #[test]
     fn getenv_present_empty_absent_defaults_and_template_flow() {
         use crate::repository_environment::tests::Reader;
         use std::sync::atomic::Ordering;
@@ -921,6 +986,7 @@ mod tests {
         Module::with_temp_heap(|module| {
             let ctx = module.heap().alloc(RepositoryCtxGen {
                 attrs: Value::new_none(),
+                os: crate::host_os::alloc(module.heap(), repositories.host().unwrap()).unwrap(),
                 name: "repo".into(),
                 original_name: "repo".into(),
             });

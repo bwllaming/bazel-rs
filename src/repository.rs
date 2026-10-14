@@ -37,6 +37,7 @@ struct RepositoryState {
     registry_roots: OnceLock<BTreeMap<String, OnceLock<Result<PathBuf, String>>>>,
     direct: OnceLock<Result<DirectRuntime, String>>,
     environment: Arc<crate::repository_environment::Snapshot>,
+    host: Arc<crate::host_os::HostSnapshot>,
 }
 
 #[derive(Debug)]
@@ -147,7 +148,7 @@ impl RepositorySet {
     }
 
     fn configured(root: PathBuf, options: ResolverOptions, source_cache: PathBuf) -> Self {
-        Self::configured_environment(root, options, source_cache, Arc::default())
+        Self::configured_environment(root, options, source_cache, Arc::default(), Arc::default())
     }
 
     fn configured_environment(
@@ -155,6 +156,7 @@ impl RepositorySet {
         options: ResolverOptions,
         source_cache: PathBuf,
         environment: Arc<crate::repository_environment::Snapshot>,
+        host: Arc<crate::host_os::HostSnapshot>,
     ) -> Self {
         Self {
             state: Arc::new(RepositoryState {
@@ -168,6 +170,7 @@ impl RepositorySet {
                 registry_roots: OnceLock::new(),
                 direct: OnceLock::new(),
                 environment,
+                host,
             }),
         }
     }
@@ -178,11 +181,28 @@ impl RepositorySet {
             self.state.options.clone(),
             cache,
             self.state.environment.clone(),
+            self.state.host.clone(),
         )
     }
 
     pub(crate) fn environment(&self) -> &crate::repository_environment::Snapshot {
         &self.state.environment
+    }
+
+    pub(crate) fn host(&self) -> Result<Arc<crate::host_os::HostMetadata>, String> {
+        self.state.host.get()
+    }
+
+    #[cfg(test)]
+    fn with_host(self, host: Result<Arc<crate::host_os::HostMetadata>, String>) -> Self {
+        // Never rewrite prepared handles or root/environment memoized values.
+        Self::configured_environment(
+            self.state.root.clone(),
+            self.state.options.clone(),
+            self.state.source_cache.clone(),
+            self.state.environment.clone(),
+            Arc::new(crate::host_os::HostSnapshot::fixture(host)),
+        )
     }
 
     #[cfg(test)]
@@ -195,6 +215,7 @@ impl RepositorySet {
             self.state.options.clone(),
             self.state.source_cache.clone(),
             Arc::new(crate::repository_environment::Snapshot::with_reader(reader)),
+            self.state.host.clone(),
         )
     }
 
@@ -546,9 +567,7 @@ impl RepositorySet {
                             &prepared.label,
                             stage,
                         )?;
-                        serde_json::to_vec(&inputs).map_err(|error| {
-                            format!("cannot serialize repository execution inputs: {error}")
-                        })
+                        crate::host_os::repository_inputs(self.host()?.as_ref(), &inputs)
                     },
                 )
             },
@@ -588,6 +607,8 @@ impl RepositorySet {
             }
             let definition = crate::module_extension::unpack(&loaded.value)
                 .map_err(|error| format!("module extension {}%{}: {error}", group.label, group.symbol))?;
+            let host = self.host()?;
+            let host_factors = host.factors(definition.os_dependent, definition.arch_dependent, &mut preparation_budget)?;
             let execution = crate::extension_ctx::execute(
                 Arc::new(self.clone()), &definition, &loaded.functions, &group.label,
                 &group.participants, group.root_has_non_dev_dependency,
@@ -690,6 +711,8 @@ impl RepositorySet {
                 generated_mapping: &'a BTreeMap<String, String>,
                 repositories: &'a BTreeMap<String, OrdinaryRepository>,
                 imports: &'a [serde_json::Value],
+                #[serde(skip_serializing_if = "crate::host_os::HostFactors::is_empty")]
+                host_factors: crate::host_os::HostFactors<'a>,
             }
             let provenance = bounded_provenance(&Provenance {
                 profile: "ordinary-file-template-v1",
@@ -700,6 +723,7 @@ impl RepositorySet {
                 root_has_non_dev_dependency: group.root_has_non_dev_dependency,
                 generated_mapping: &generated_mapping, repositories: &repositories,
                 imports: &imports,
+                host_factors,
             }, 64 * 1024 * 1024)?;
             Ok(PreparedOrdinary { loaded, generated_mapping, repositories, provenance })
         })
@@ -780,9 +804,7 @@ impl RepositorySet {
                                 &definition_label,
                                 stage,
                             )?;
-                            serde_json::to_vec(&inputs).map_err(|error| {
-                                format!("cannot serialize repository execution inputs: {error}")
-                            })
+                            crate::host_os::repository_inputs(self.host()?.as_ref(), &inputs)
                         },
                     )
                 },
@@ -1447,6 +1469,195 @@ mod tests {
                 .environment
         ));
         assert!(!format!("{original:?}").contains("SyntheticSecret"));
+    }
+
+    #[test]
+    fn host_snapshot_is_shared_but_test_injection_starts_fresh_demand_state() {
+        use crate::host_os::HostMetadata;
+        use crate::repository_environment::tests::Reader;
+        let f = environment_fixture(true, "[]", "ctx.file('value', 'constant')");
+        let reader = Reader::new(Ok(Some("SyntheticSecret".into())));
+        let original = RepositorySet::new(f.0.clone()).with_environment_reader(reader.clone());
+        let canonical = original.parse("@repo//:value", "", "").unwrap().repository;
+        let (prepared, _) = original.ordinary_repository(&canonical).unwrap();
+        let bytes = prepared.provenance.clone();
+        let configured = original.clone().with_source_cache("another-cache".into());
+        let replacement_reader = original.clone().with_environment_reader(reader.clone());
+        for owner in [original.clone(), configured, replacement_reader] {
+            assert!(Arc::ptr_eq(&original.state.host, &owner.state.host));
+            assert!(Arc::ptr_eq(
+                &original.host().unwrap(),
+                &owner.host().unwrap()
+            ));
+        }
+        let injected = original.clone().with_host(Ok(HostMetadata::fixture(
+            "native-only",
+            "test-arch",
+            "test-os",
+        )));
+        assert!(!Arc::ptr_eq(&original.state.host, &injected.state.host));
+        assert!(Arc::ptr_eq(
+            &original.state.environment,
+            &injected.state.environment
+        ));
+        assert!(injected.state.direct.get().is_none());
+        assert!(injected.state.root_module.get().is_none());
+        assert_ne!(original.state.runtime_id, injected.state.runtime_id);
+        assert_eq!(
+            original
+                .ordinary_repository(&canonical)
+                .unwrap()
+                .0
+                .provenance,
+            bytes
+        );
+        assert_eq!(reader.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn native_only_host_factor_matrix_is_checked_before_materialization() {
+        use crate::host_os::HostMetadata;
+        use crate::repository_environment::tests::Reader;
+        for os in [false, true] {
+            for arch in [false, true] {
+                let f = environment_fixture(true, "[]", "fail('repository callback must not run')");
+                f.write("extension.bzl", &format!("load(':rules.bzl', 'R')\ndef implementation(ctx):\n    R(name='repo')\n    R(name='other')\nextension=module_extension(implementation, os_dependent={}, arch_dependent={})\n", if os { "True" } else { "False" }, if arch { "True" } else { "False" }));
+                let reader = Reader::new(Ok(Some("SyntheticSecret".into())));
+                let run = |name, host_arch, factor| {
+                    let repos = RepositorySet::new(f.0.clone())
+                        .with_environment_reader(reader.clone())
+                        .with_host(Ok(HostMetadata::fixture(name, host_arch, factor)));
+                    let canonical = repos.parse("@repo//:value", "", "").unwrap().repository;
+                    let (prepared, _) = repos.ordinary_repository(&canonical).unwrap();
+                    assert!(!f.0.join("bazel-rs-out").exists());
+                    prepared.provenance.clone()
+                };
+                let base = run("getter", "arch-a", "os-a");
+                assert_eq!(base != run("getter", "arch-a", "os-b"), os);
+                assert_eq!(base != run("getter", "arch-b", "os-a"), arch);
+                assert_eq!(base != run("getter", "arch-b", "os-b"), os || arch);
+                assert_eq!(base, run("another getter", "arch-a", "os-a"));
+                let json: serde_json::Value = serde_json::from_slice(&base).unwrap();
+                if !os && !arch {
+                    assert_eq!(json.as_object().unwrap().len(), 12);
+                    assert!(json.get("host_factors").is_none());
+                } else {
+                    let factors = json["host_factors"].as_object().unwrap();
+                    assert_eq!(factors.len(), usize::from(os) + usize::from(arch));
+                    assert_eq!(
+                        factors.get("os").and_then(|v| v.as_str()),
+                        os.then_some("os-a")
+                    );
+                    assert_eq!(
+                        factors.get("arch").and_then(|v| v.as_str()),
+                        arch.then_some("arch-a")
+                    );
+                }
+                assert_eq!(reader.calls.load(Ordering::SeqCst), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn native_only_unread_host_rekeys_direct_and_generated_repositories_and_restores() {
+        use crate::host_os::HostMetadata;
+        use crate::repository_environment::tests::Reader;
+        for ordinary in [false, true] {
+            let f = environment_fixture(ordinary, "[]", "ctx.file('value', 'constant')");
+            let reader = Reader::new(Ok(Some("SyntheticSecret".into())));
+            let run = |name, arch, factor| {
+                let repos = RepositorySet::new(f.0.clone())
+                    .with_environment_reader(reader.clone())
+                    .with_host(Ok(HostMetadata::fixture(name, arch, factor)));
+                let canonical = repos.parse("@repo//:value", "", "").unwrap().repository;
+                let root = repos.root(&canonical).unwrap().to_owned();
+                assert_eq!(std::fs::read(root.join("value")).unwrap(), b"constant");
+                assert_eq!(repos.clone().root(&canonical).unwrap(), root);
+                root
+            };
+            let base = run("getter-a", "arch-a", "os-a");
+            assert_ne!(base, run("getter-b", "arch-a", "os-a"));
+            assert_ne!(base, run("getter-a", "arch-b", "os-a"));
+            // Canonical factor is not an unconditional repository host input.
+            assert_eq!(base, run("getter-a", "arch-a", "os-b"));
+            assert_eq!(base, run("getter-a", "arch-a", "os-a"));
+            assert_eq!(reader.calls.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[test]
+    fn host_getter_reads_never_enable_flags_but_selected_attributes_remain_inputs() {
+        use crate::host_os::HostMetadata;
+        for select in [false, true] {
+            let f = Fixture::new();
+            f.write("BUILD", "");
+            f.write(
+                "MODULE.bazel",
+                "e=use_extension('//:extension.bzl','extension')\nuse_repo(e,'repo')\n",
+            );
+            f.write("rules.bzl", "def implementation(ctx):\n    fail('must not materialize')\nR=repository_rule(implementation, attrs={'selected':attr.string()})\n");
+            f.write("extension.bzl", &format!("load(':rules.bzl','R')\ndef implementation(ctx):\n    host = ctx.os\n    name = host.name\n    arch = host.arch\n    R(name='repo', selected={})\nextension=module_extension(implementation)\n", if select { "name + '/' + arch" } else { "'constant'" }));
+            let run =
+                |name, arch| {
+                    let repos = RepositorySet::new(f.0.clone())
+                        .with_host(Ok(HostMetadata::fixture(name, arch, "canonical")));
+                    let canonical = repos.parse("@repo//:value", "", "").unwrap().repository;
+                    let (prepared, repository) = repos.ordinary_repository(&canonical).unwrap();
+                    let json: serde_json::Value =
+                        serde_json::from_slice(&prepared.provenance).unwrap();
+                    assert!(json.get("host_factors").is_none());
+                    assert!(!repository.attributes.contains_key("host_factors"));
+                    assert!(!f.0.join("bazel-rs-out").exists());
+                    prepared.provenance.clone()
+                };
+            let base = run("getter-a", "arch-a");
+            assert_eq!(base != run("getter-b", "arch-a"), select);
+            assert_eq!(base != run("getter-a", "arch-b"), select);
+        }
+    }
+
+    #[test]
+    fn unsupported_host_stays_lazy_then_fails_before_callbacks_and_publication() {
+        use crate::repository_environment::tests::Reader;
+        for ordinary in [false, true] {
+            let f = environment_fixture(ordinary, "['SYNTHETIC']", "fail('callback ran')");
+            let reader = Reader::new(Ok(Some("SyntheticSecret".into())));
+            let repos = RepositorySet::new(f.0.clone())
+                .with_environment_reader(reader.clone())
+                .with_host(Err("synthetic unsupported host".into()));
+            repos.validate_root_module().unwrap();
+            let canonical = repos.parse("@repo//:value", "", "").unwrap().repository;
+            for _ in 0..2 {
+                let error = repos.root(&canonical).unwrap_err();
+                assert!(error.contains("synthetic unsupported host"), "{error}");
+                assert!(!error.contains("callback ran"));
+            }
+            assert_eq!(reader.calls.load(Ordering::SeqCst), 0);
+            let trees = f.0.join("bazel-rs-out/repositories/direct/trees");
+            assert!(!trees.exists() || std::fs::read_dir(trees).unwrap().next().is_none());
+        }
+    }
+
+    #[test]
+    fn versioned_host_envelope_intentionally_migrates_old_constant_repository_identity() {
+        let cache = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let inputs = crate::repository_ctx::ExecutionInputs::default();
+        let legacy = serde_json::to_vec(&inputs).unwrap();
+        assert_eq!(legacy, br#"{"templates":[]}"#);
+        let host = crate::host_os::HostMetadata::fixture("linux", "amd64", "linux");
+        let current = crate::host_os::repository_inputs(&host, &inputs).unwrap();
+        let run = |bytes: &[u8]| {
+            crate::repository_store::materialize(cache.path(), b"same-provenance", |stage| {
+                std::fs::write(stage.join("constant"), b"same-content").unwrap();
+                Ok(bytes.to_vec())
+            })
+            .unwrap()
+        };
+        let old_root = run(&legacy);
+        let new_root = run(&current);
+        assert_ne!(old_root, new_root);
+        assert_eq!(new_root, run(&current));
+        assert_eq!(old_root, run(&legacy));
     }
 
     fn environment_fixture(ordinary: bool, declaration: &str, body: &str) -> Fixture {

@@ -165,6 +165,7 @@ mod values {
     #[repr(C)]
     pub(super) struct ModuleCtxGen<V> {
         pub modules: V,
+        pub os: V,
         pub root_has_non_dev_dependency: bool,
     }
 
@@ -188,6 +189,7 @@ mod values {
         fn get_attr(&self, name: &str, heap: Heap<'v>) -> Option<Value<'v>> {
             match name {
                 "modules" => Some(self.modules.to_value()),
+                "os" => Some(self.os.to_value()),
                 "root_module_has_non_dev_dependency" => {
                     Some(heap.alloc(self.root_has_non_dev_dependency))
                 }
@@ -197,7 +199,7 @@ mod values {
         }
 
         fn dir_attr(&self) -> Vec<String> {
-            ["modules", "root_module_has_non_dev_dependency"]
+            ["modules", "os", "root_module_has_non_dev_dependency"]
                 .map(str::to_owned)
                 .to_vec()
         }
@@ -474,6 +476,10 @@ pub fn execute(
             let heap = module.heap();
             let ctx = heap.alloc(ModuleCtxGen {
                 modules: heap.access_owned_frozen_value(&projected),
+                os: crate::host_os::alloc(
+                    heap,
+                    context.repositories.host().map_err(anyhow::Error::msg)?,
+                )?,
                 root_has_non_dev_dependency,
             });
             for function in functions {
@@ -942,6 +948,11 @@ ctx.is_dev_dependency(t) or fail('hidden dev flag')
                 "ctx",
                 heap.alloc(ModuleCtxGen {
                     modules: heap.access_owned_frozen_value(&own),
+                    os: crate::host_os::alloc(
+                        heap,
+                        crate::host_os::HostSnapshot::default().get().unwrap(),
+                    )
+                    .unwrap(),
                     root_has_non_dev_dependency: false,
                 }),
             );
@@ -1030,7 +1041,6 @@ words.append('after')
         for field in [
             "extension_metadata",
             "facts",
-            "os",
             "read",
             "download",
             "tag_sort_key",
@@ -1041,11 +1051,78 @@ words.append('after')
             fixture.error(&format!("ctx.{field}"), "{}", &[], field);
         }
         fixture.error(
+            "ctx.os.environ",
+            "{}",
+            &[],
+            "repository_os.environ is unsupported",
+        );
+        fixture.error(
             "ctx.modules[0].repo_name",
             "{}",
             &[participant(Vec::new())],
             "repo_name",
         );
+    }
+
+    #[test]
+    fn actual_module_context_host_reads_do_not_require_flags_or_capture_environment() {
+        use crate::repository_environment::tests::Reader;
+        let mut fixture = Fixture::new();
+        let reader = Reader::new(Ok(Some("SyntheticSecret".into())));
+        fixture.repositories = Arc::new(
+            (*fixture.repositories)
+                .clone()
+                .with_environment_reader(reader.clone()),
+        );
+        let result = fixture.run("host = ctx.os\n(host == ctx.os and {host:42}[ctx.os] == 42) or fail('identity')\n(type(host) == 'repository_os' and host.name == 'linux' and host.arch == 'amd64') or fail('metadata')\n(dir(host) == ['arch', 'environ', 'name'] and hasattr(host, 'environ')) or fail('surface')\nr(name='metadata', words=[host.name, host.arch])", "{}", &[]).unwrap();
+        assert_eq!(result.repositories.len(), 1);
+        assert_eq!(reader.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        fixture.error(
+            "getattr(ctx.os, 'environ', {})",
+            "{}",
+            &[],
+            "repository_os.environ is unsupported",
+        );
+        fixture.error(
+            "json.encode(ctx.os)",
+            "{}",
+            &[],
+            "cannot encode unsupported value as JSON",
+        );
+        fixture.error("ctx.getenv('SYNTHETIC')", "{}", &[], "getenv");
+    }
+
+    #[test]
+    fn frozen_module_context_retains_single_host_value_and_distinct_context_identity() {
+        let owner = Module::with_temp_heap(|module| {
+            let heap = module.heap();
+            let metadata = RepositorySet::new(".".into()).host().unwrap();
+            for name in ["first", "second"] {
+                module.set(
+                    name,
+                    heap.alloc(ModuleCtxGen {
+                        modules: Value::new_none(),
+                        os: crate::host_os::alloc(heap, metadata.clone()).unwrap(),
+                        root_has_non_dev_dependency: false,
+                    }),
+                );
+            }
+            module.freeze().unwrap()
+        });
+        let first = owner.get("first").unwrap();
+        let second = owner.get("second").unwrap();
+        drop(owner);
+        Module::with_temp_heap(|module| {
+            let heap = module.heap();
+            module.set("first", heap.access_owned_frozen_value(&first));
+            module.set("second", heap.access_owned_frozen_value(&second));
+            drop(first);
+            drop(second);
+            Evaluator::new(&module).eval_module(
+                starlark::syntax::AstModule::parse("host.star", "(first.os.name == 'linux' and first.os.arch == 'amd64' and first.os == first.os and first.os != second.os and {first.os:42}[first.os] == 42) or fail('frozen host')".to_owned(), &starlark::syntax::Dialect::Standard).unwrap(),
+                &crate::package::bzl_globals(),
+            ).unwrap();
+        });
     }
 
     #[test]

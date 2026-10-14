@@ -368,7 +368,7 @@ fn fresh_runtime_observes_tags_callback_sources_and_binary_templates() {
 fn unsupported_context_operations_and_invalid_names_never_publish() {
     for (operation, marker) in [
         ("ctx.extension_metadata()", "extension_metadata"),
-        ("ctx.os.name", "os"),
+        ("ctx.os.environ", "repository_os.environ is unsupported"),
         ("ctx.read('x')", "read"),
         ("maker(name='a+b',text='bad')", "invalid repository name"),
     ] {

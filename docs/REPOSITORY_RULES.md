@@ -30,6 +30,11 @@ rule symbols. Other ambiguous namespace combinations fail explicitly.
 
 ## Supported surface
 
+Callbacks expose immutable `ctx.os.name` and `ctx.os.arch` under the bounded
+[host metadata profile](HOST_OS.md). `ctx.os.environ` remains an explicit error.
+Both direct and generated repository fingerprints always include the captured
+host name/architecture, introducing a documented one-time publication rekey.
+
 `repository_rule` supports callable implementations, `attrs`, `doc` and retained
 `local` metadata and snapshotted list/tuple `environ` declarations; `configure`
 must be false. See

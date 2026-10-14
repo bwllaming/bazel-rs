@@ -185,6 +185,18 @@ Safe loaded-BUILD constructor behavior intentionally differs from a reference
 crash. Configurable/select/macro and repository Unicode boundaries remain explicit;
 combined host-metadata integration is a separate verification gate.
 
+### Callback host metadata (isolated branch verified)
+
+- [x] Provide immutable Linux/x86_64 callback metadata with freeze-stable identity,
+      explicit unsupported environment access, and retained extension host flags.
+- [x] Verify selected extension factors and unconditional versioned repository
+      host fingerprints, including the intentional one-time publication rekey.
+- [x] Verify 1,181 Rust/720 Python tests, 52 phases/124 commands, native factor
+      proofs and four repository/environment regression matrices.
+
+This branch still requires combined integration verification with scalar dictionary
+attributes. No runtime host detection, emulation or full platform parity is claimed.
+
 ### Repository environment dependencies
 
 - [x] Observe declared and dynamic repository environment inputs lazily, with

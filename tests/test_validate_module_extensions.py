@@ -39,7 +39,11 @@ MESSAGES = {
     'ticks': 'Maximum number of ticks exceeded',
     'extension_metadata': "module_ctx has no attribute 'extension_metadata'",
     'facts': "module_ctx has no attribute 'facts'",
-    'os': "module_ctx has no attribute 'os'",
+    'os-environ': ('bazel-rs: module extension //:ext.bzl: Traceback (most recent call last):\n'
+                   '  File <builtin>, in <module>\n'
+                   'error: repository_os.environ is unsupported in the native host metadata profile\n'
+                   ' --> //:ext.bzl:4:11\n'
+                   '  |\n4 |     value=ctx.os.environ\n  |           ^^^^^^^^^^^^^^\n  |\n'),
     'read': "module_ctx has no attribute 'read'",
 }
 
@@ -216,13 +220,28 @@ class FixtureTests(unittest.TestCase):
     def test_native_contexts_and_non_none_returns_are_not_parity(self):
         item = next(c for c in extensions.CASES if c['name'] == 'native.context-and-return')
         self.assertEqual(item['kind'], 'native_boundary')
-        self.assertEqual(item['probes'], ['metadata', 'facts', 'os', 'read', 'integer', 'dict'])
+        self.assertEqual(item['probes'], ['metadata', 'facts', 'os-environ', 'read', 'integer', 'dict'])
         for probe in item['probes']:
             value = extensions.fixture(item['name'], probe)
             self.assertIn(b'maker(name="made")', value['files']['ext.bzl'])
             self.assertEqual(extensions.steps_for(item, probe, 'native'), [('query', '@chosen//:data', [])])
         self.assertIn(b'return 42', extensions.fixture(item['name'], 'integer')['files']['ext.bzl'])
         self.assertIn(b'return {}', extensions.fixture(item['name'], 'dict')['files']['ext.bzl'])
+
+    def test_os_environ_reaches_host_property_after_recording_without_repo_execution(self):
+        value = extensions.fixture('native.context-and-return', 'os-environ')
+        source = value['files']['ext.bzl']
+        self.assertEqual(value['diagnostic'], 'os-environ')
+        self.assertIn(b'maker(name="made")\n    value=ctx.os.environ\n', source)
+        self.assertLess(source.index(b'value=ctx.os.environ'), source.index(extensions.FAIL_MARKER.encode()))
+        self.assertIn(extensions.LAZY_MARKER.encode(), value['files']['rules.bzl'])
+        self.assertNotIn(b'ctx.file', value['files']['rules.bzl'])
+        self.assertNotIn(b'ctx.os.name', source)
+        self.assertNotIn(b'print(', value['files']['BUILD.bazel'])
+        item = next(c for c in extensions.CASES if c['name'] == 'native.context-and-return')
+        self.assertNotIn(('os-environ', 'reference'), extensions.phases_for(item))
+        with self.assertRaisesRegex(ValueError, 'unknown planned'):
+            extensions.fixture(item['name'], 'os')
 
     def test_isolation_demand_boundary_does_not_force_unused_definition(self):
         for probe in ('demanded', 'unused'):
@@ -325,6 +344,38 @@ class DiagnosticTests(unittest.TestCase):
                 with self.subTest(diagnostic=diagnostic, change=change), self.assertRaises(ValueError):
                     extensions.require_rejection(dict(good, **change), diagnostic)
 
+    def test_os_environ_rejects_obsolete_missing_os_and_other_field_type_errors(self):
+        text = MESSAGES['os-environ']
+        for wrong in ("module_ctx has no attribute 'os'", "module_ctx has no attribute 'name'",
+                      "repository_os has no attribute 'environ'", "repository_os has no attribute 'name'",
+                      text.replace('repository_os.environ', 'module_ctx.environ'),
+                      text.replace('repository_os.environ', 'repository_os.name'),
+                      text.replace('repository_os.environ', 'repository_os.arch'),
+                      text.replace('error: repository_os', 'note: repository_os'),
+                      text.replace('is unsupported', 'is Unsupported'),
+                      text.replace('metadata profile', 'metadata profile extra'),
+                      text+'error: Other\n'):
+            with self.subTest(wrong=wrong), self.assertRaises(ValueError):
+                extensions.require_rejection(record(stderr=wrong, returncode=1), 'os-environ')
+
+    def test_os_environ_requires_extension_getter_site_not_another_callback(self):
+        text = MESSAGES['os-environ']
+        for wrong in (text.replace('//:ext.bzl', '//:rules.bzl'),
+                      text.replace(' --> //:ext.bzl:4:11', ' --> //:ext.bzl:3:11'),
+                      text.replace(' --> //:ext.bzl:4:11', ' --> //:ext.bzl:4:5'),
+                      text.replace('4 |     value=ctx.os.environ', '4 |     value=ctx.os.name'),
+                      text.replace('4 |     value=ctx.os.environ\n', ''),
+                      text.replace('module extension //:ext.bzl', 'repository made (//:rules.bzl%maker)'),
+                      text+'HOST_REPO_CALLBACK\n', text+'HOST_AFTER_GETTER\n',
+                      text+'1 actions executed, 0 cache hits\n',
+                      text+'0 actions executed, 1 cache hits\n',
+                      text+extensions.FAIL_MARKER+'\n'):
+            with self.subTest(wrong=wrong), self.assertRaises(ValueError):
+                extensions.require_rejection(record(stderr=wrong, returncode=1), 'os-environ')
+        for output in ('@@+files+made//:data\n', ' ', '\n'):
+            with self.subTest(output=output), self.assertRaises(ValueError):
+                extensions.require_rejection(record(stdout=output, stderr=text, returncode=1), 'os-environ')
+
     def test_frozen_list_diagnostic_and_no_generic_evaluation_limit(self):
         extensions.require_rejection(record(stderr='trying to mutate a frozen list value', returncode=1), 'immutable')
         for text in ('evaluation limit exceeded', 'memory exhausted', 'ticks: 1000000', 'timeout'):
@@ -340,6 +391,27 @@ class DiagnosticTests(unittest.TestCase):
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_os_environ_failure_cannot_leave_a_published_repository(self):
+        # Mocked record only; no native/reference invocation or ambient lookup.
+        with tempfile.TemporaryDirectory(dir='/tmp/opencode') as directory:
+            scratch = Path(directory)
+            workspace = scratch / 'workspace'
+            root = scratch / 'case'
+            value = extensions.materialize(root, workspace, 'native.context-and-return', 'os-environ')
+            cache = root / 'native-cache'
+            (extensions.direct.trees_directory(cache) / ('a'*64)).mkdir(parents=True)
+            runner = mock.Mock()
+            runner.run.return_value = record(stderr=MESSAGES['os-environ'], returncode=1)
+            item = next(c for c in extensions.CASES if c['name'] == 'native.context-and-return')
+            phase = dict(probe='os-environ', engine='native', status='FAIL', runs=[], cache=str(cache),
+                         registry=str(value['registry']), inputs_before=extensions.snapshot(value['paths']))
+            extensions.run_phase(extensions.argument_parser().parse_args([]), runner, scratch, workspace,
+                                 None, item, phase, value)
+            self.assertEqual(phase['status'], 'FAIL')
+            self.assertIn('rejection published', phase['error'])
+            self.assertNotIn('artifacts', phase)
+            self.assertNotIn('copy', phase)
+
     def test_real_materialization_has_private_registry_and_no_fabricated_builtins(self):
         with tempfile.TemporaryDirectory(dir='/tmp/opencode') as directory:
             root = Path(directory)

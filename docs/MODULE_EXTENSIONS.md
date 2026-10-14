@@ -37,8 +37,11 @@ See [EXISTING_RULES.md](EXISTING_RULES.md); this does not implement BUILD rule
 introspection or skip duplicate repository declarations.
 
 `module_extension` accepts a callable implementation and `tag_classes`, plus
-`doc`. It accepts only empty `environ`, false `os_dependent`/`arch_dependent`, and
-zero `facts_version` in this profile. Unsupported nondefault options fail explicitly.
+`doc`. Named boolean `os_dependent` and `arch_dependent` flags retain only their
+selected host factors in preparation identity, independently of `ctx.os` reads.
+Only empty `environ` and zero `facts_version` are supported. See
+[HOST_OS.md](HOST_OS.md) for the Linux/x86_64 compile-target profile and repository
+fingerprint migration. Other unsupported options fail explicitly.
 `tag_class(attrs={}, *, doc=None)` owns a frozen descriptor schema and is unhashable.
 
 Supported attribute kinds are string, string-list, ordered scalar string dictionary,
@@ -106,7 +109,7 @@ projections, rather than claiming an exact process-memory bound. Provenance is
 streamed from borrowed values into a separately bounded 64 MiB buffer; serialized
 bytes are length-framed rather than expanded into another JSON number array.
 
-Isolation, metadata construction/returns, facts, OS/environment inspection,
+Isolation, metadata construction/returns, facts, OS environment inspection,
 module-context reads/downloads, and SDK APIs are unsupported. No placeholder
 metadata, facts, platform or SDK repository is substituted. `mod graph` retains
 its existing explicit-module profile and does not execute active extensions.

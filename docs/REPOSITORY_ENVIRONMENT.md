@@ -28,7 +28,9 @@ Only requested names are read; the process environment is never enumerated.
 Observation-state Debug output and getenv diagnostics redact captured values.
 Successful callback watch sets produce a framed, merged SHA-256 digest; raw values
 and named per-variable hashes are not serialized as environment inputs. An empty
-watch set preserves the existing environment-free serialization and identity.
+watch set preserves the existing environment-free inner serialization. The later
+[host fingerprint envelope](HOST_OS.md) intentionally rekeys all repositories once;
+within that profile, environment-relative identity behavior remains unchanged.
 
 The digest is an identity hash, not encryption or protection against guessing
 low-entropy values. Explicit Starlark `print`, `fail` or requested file output is

@@ -4,6 +4,8 @@
 Explicit execution uses a native ELF and genuine pinned Bazel 9.3.0. Only
 non-isolated None-returning extension callbacks are positive parity claims.
 Unit tests exercise this harness, never either CLI or a fake Starlark runtime.
+The native os-environ boundary requires the supported host value to be reached;
+it replaces the pre-host-metadata missing-os expectation, not its saved results.
 """
 
 import base64
@@ -75,7 +77,7 @@ CASES = [
     case('labels.owners-and-forward-sibling'),
     case('identity.private-and-public-alias', probes=('private', 'public')),
     case('native.preparation-cycles', 'native_boundary', ('ordinary', 'direct')),
-    case('native.context-and-return', 'native_boundary', ('metadata', 'facts', 'os', 'read', 'integer', 'dict')),
+    case('native.context-and-return', 'native_boundary', ('metadata', 'facts', 'os-environ', 'read', 'integer', 'dict')),
     case('native.isolated-on-demand', 'native_boundary', ('demanded', 'unused')),
     case('native.immutable-projections', 'native_boundary', ('modules', 'tags', 'words')),
     case('native.refresh-and-repair', 'native_boundary', ('cold', 'tag-change', 'callback-change', 'input-change', 'repair')),
@@ -97,8 +99,9 @@ DIAGNOSTICS = {
     'name': r'invalid repository name[^\n]*a\+b|a\+b[^\n]*(?:invalid|valid repository name)',
     'canonical': r'(?:unknown|not found|not visible|not defined|unavailable|unrecognized)[^\n]*\+unknown\+made|\+unknown\+made[^\n]*(?:unknown|not found|not visible|not defined|unavailable|unrecognized)',
     'ticks': direct.DIAGNOSTICS['ticks'],
+    'os-environ': r'(?m)^error: repository_os\.environ is unsupported in the native host metadata profile$',
 }
-for _member in ('extension_metadata', 'facts', 'os', 'read'):
+for _member in ('extension_metadata', 'facts', 'read'):
     DIAGNOSTICS[_member] = (r'(?:no (?:attribute|field|method)|has no|not supported|unsupported)[^\n]*\b'
                             + _member + r'\b|\b' + _member
                             + r'\b[^\n]*(?:not supported|unsupported|not available|not found)')
@@ -121,6 +124,25 @@ def require_rejection(record, diagnostic):
             or LAZY_MARKER in text or LOAD_MARKER in text
             or not re.search(DIAGNOSTICS[diagnostic], text, re.I)):
         raise ValueError('expected controlled module-extension rejection: ' + diagnostic)
+    if diagnostic == 'os-environ':
+        # The host object exists. Only its deliberately unsupported environ
+        # property may fail, after RepoSpec recording and before repo execution.
+        # Missing ctx.os/name, a fake empty environ, or a different callback are
+        # not substitutes for reaching this exact property getter.
+        planned = fixture('native.context-and-return', 'os-environ')['files']['ext.bzl'].decode().splitlines()
+        statement = '    value=ctx.os.environ'
+        if planned.count(statement) != 1:
+            raise ValueError('ambiguous planned os-environ getter')
+        line = planned.index(statement)+1
+        error = 'error: repository_os.environ is unsupported in the native host metadata profile'
+        if (planned[line-2] != '    maker(name="made")'
+                or re.findall(r'(?m)^error: [^\n]*$', text) != [error]
+                or not re.search(r'(?m)^bazel-rs: module extension //:ext\.bzl: Traceback \(most recent call last\):$', text)
+                or not re.search(r'(?m)^ --> //:ext\.bzl:'+str(line)+r':11$', text)
+                or not re.search(r'(?m)^'+str(line)+r' \| '+re.escape(statement)+r'$', text)
+                or FAIL_MARKER in text or record['stdout']
+                or re.search(r'\d+ (?:actions executed|cache hits)|(?m:^HOST_[A-Z_]+\s*$)', text)):
+            raise ValueError('expected exact native os-environ property failure after declaration')
 
 
 def participants(files):
@@ -263,9 +285,12 @@ def fixture(name, probe='result'):
         target, diagnostic = '@a_repo//:data', 'cycle'
     elif name == 'native.context-and-return':
         operation = {'metadata': 'ctx.extension_metadata()', 'facts': 'value=ctx.facts',
-                     'os': 'value=ctx.os.name', 'read': 'ctx.read("x")',
+                     'os-environ': 'value=ctx.os.environ', 'read': 'ctx.read("x")',
                      'integer': 'return 42', 'dict': 'return {}'}[probe]
         files['ext.bzl'] = extension('maker(name="made")\n' + operation)
+        if probe == 'os-environ':
+            files['ext.bzl'] = extension('maker(name="made")\n'+operation+'\nfail('+quote(FAIL_MARKER)+')')
+            files['rules.bzl'] = direct.rule('fail('+quote(LAZY_MARKER)+')')
         diagnostic = 'return' if probe in ('integer', 'dict') else 'extension_metadata' if probe == 'metadata' else probe
     elif name == 'native.isolated-on-demand':
         files['MODULE.bazel'] = ROOT_MODULE + USAGE.replace('"files")', '"files",isolate=True)')
@@ -559,6 +584,9 @@ def validate_check(check, report, args, workspace, reference):
                 raise ValueError('wrong rejection class')
             if phase['engine'] == 'native' and phase['publication_entries'] != []:
                 raise ValueError('negative phase published repositories')
+            if value['diagnostic'] == 'os-environ' and (phase['engine'] != 'native'
+                    or any(key in phase for key in ('artifacts', 'copy', 'canonical'))):
+                raise ValueError('os-environ boundary cannot publish outputs or claim reference parity')
             continue
         if value['main_only']:
             if success(records[0]).splitlines() != ['//:data'] or phase['publication_entries'] != []:

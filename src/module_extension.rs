@@ -25,6 +25,8 @@ use crate::repository_budget::HostBudget;
 pub struct ExtensionDefinition {
     pub implementation: OwnedFrozenValue,
     pub tag_classes: BTreeMap<String, BTreeMap<String, AttrSpec>>,
+    pub os_dependent: bool,
+    pub arch_dependent: bool,
 }
 
 const _: fn() = || {
@@ -74,6 +76,8 @@ mod values {
     #[repr(C)]
     pub(super) struct ModuleExtensionGen<V> {
         pub implementation: V,
+        pub os_dependent: bool,
+        pub arch_dependent: bool,
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
         pub tag_classes: BTreeMap<String, TagClass>,
@@ -119,6 +123,8 @@ pub fn unpack(value: &OwnedFrozenValue) -> Result<ExtensionDefinition, String> {
     });
     Ok(ExtensionDefinition {
         implementation,
+        os_dependent: definition.os_dependent,
+        arch_dependent: definition.arch_dependent,
         tag_classes: definition
             .tag_classes
             .iter()
@@ -223,12 +229,6 @@ pub fn globals(builder: &mut GlobalsBuilder) {
         if !environ.is_empty() {
             bail!("module_extension with nonempty environ is unsupported");
         }
-        if os_dependent {
-            bail!("module_extension(os_dependent=True) is unsupported");
-        }
-        if arch_dependent {
-            bail!("module_extension(arch_dependent=True) is unsupported");
-        }
         if facts_version < 0 {
             bail!("module_extension facts_version must be a nonnegative 32-bit int");
         }
@@ -257,6 +257,8 @@ pub fn globals(builder: &mut GlobalsBuilder) {
         }
         Ok(eval.heap().alloc(ModuleExtensionGen {
             implementation,
+            os_dependent,
+            arch_dependent,
             tag_classes,
             doc,
         }))
@@ -856,14 +858,8 @@ mod tests {
                 "module_extension(impl, environ=['HOME'])",
                 "nonempty environ is unsupported",
             ),
-            (
-                "module_extension(impl, os_dependent=True)",
-                "os_dependent=True",
-            ),
-            (
-                "module_extension(impl, arch_dependent=True)",
-                "arch_dependent=True",
-            ),
+            ("module_extension(impl, os_dependent=None)", "bool"),
+            ("module_extension(impl, arch_dependent=None)", "bool"),
             ("module_extension(impl, os_dependent=1)", "bool"),
             ("module_extension(impl, arch_dependent='yes')", "bool"),
             ("module_extension(impl, facts_version=-1)", "nonnegative"),
@@ -885,6 +881,52 @@ mod tests {
             .unwrap_err();
             assert!(error.contains(expected), "{expression}: {error}");
         }
+    }
+
+    #[test]
+    fn host_flags_survive_private_factory_alias_freeze_and_owner_drop() {
+        for os in [false, true] {
+            for arch in [false, true] {
+                let helper = extension_in("//helper:factory.bzl", &format!(
+                    "def _impl(ctx):\n    return None\ndef make():\n    return module_extension(_impl, os_dependent={}, arch_dependent={})\n",
+                    if os { "True" } else { "False" }, if arch { "True" } else { "False" }
+                ), &HashMap::new()).unwrap();
+                let original = extension_in(
+                    "//defs:extensions.bzl",
+                    "load('//helper:factory.bzl', 'make')\n_private = make()\nAlias = _private\n",
+                    &HashMap::from([("//helper:factory.bzl", &helper)]),
+                )
+                .unwrap();
+                let alias = extension_in(
+                    "//other:alias.bzl",
+                    "load('//defs:extensions.bzl', 'Alias')\nRenamed = Alias\n",
+                    &HashMap::from([("//defs:extensions.bzl", &original)]),
+                )
+                .unwrap();
+                let definition = unpack(&alias.get("Renamed").unwrap()).unwrap();
+                drop(alias);
+                drop(original);
+                drop(helper);
+                assert_eq!(
+                    (definition.os_dependent, definition.arch_dependent),
+                    (os, arch)
+                );
+                Module::with_temp_heap(|module| {
+                    let implementation = module
+                        .heap()
+                        .access_owned_frozen_value(&definition.implementation);
+                    assert!(
+                        Evaluator::new(&module)
+                            .eval_function(implementation, &[Value::new_none()], &[])
+                            .unwrap()
+                            .is_none()
+                    );
+                });
+            }
+        }
+        let default = extension("E = module_extension(len)").unwrap();
+        let definition = unpack(&default.get("E").unwrap()).unwrap();
+        assert!(!definition.os_dependent && !definition.arch_dependent);
     }
 
     #[test]
