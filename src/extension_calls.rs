@@ -181,8 +181,11 @@ impl SnapshotBudget {
 
     fn string(&mut self, text: &str) -> anyhow::Result<()> {
         self.add_bytes(text.len())?;
-        if !text.is_ascii() {
-            bail!("non-ASCII strings in repository snapshots are unsupported");
+        if !repository_rule::is_latin1(text) {
+            bail!(
+                "repository snapshot strings above U+00FF are unsupported \
+                 (Bazel strings are Latin-1 byte strings)"
+            );
         }
         Ok(())
     }
@@ -310,6 +313,7 @@ mod tests {
     fn rule() -> OwnedFrozenValue {
         Module::with_temp_heap(|module| {
             let context = crate::loading::ExtensionContext {
+                byte_strings: false,
                 label: crate::label::Label::parse_canonical("//defs:repos.bzl").unwrap(),
                 repositories: std::sync::Arc::new(crate::repository::RepositorySet::new(
                     std::path::PathBuf::from("."),
@@ -509,10 +513,10 @@ mod tests {
             ("1267650600228229401496703205376", "32-bit int"),
             ("1.5", "type float"),
             ("capture", "unsupported repository snapshot"),
-            ("'é'", "non-ASCII"),
-            ("{'k': ['é']}", "non-ASCII"),
-            ("{'k': ('é',)}", "non-ASCII"),
-            ("{'é': 'ok'}", "non-ASCII"),
+            ("'Ā'", "above U+00FF"),
+            ("{'k': ['Ā']}", "above U+00FF"),
+            ("{'k': ('Ā',)}", "above U+00FF"),
+            ("{'Ā': 'ok'}", "above U+00FF"),
             ("{1: 'ok'}", "dict keys"),
             ("{main_label(): 'ok'}", "label-keyed dicts"),
         ] {
@@ -520,8 +524,11 @@ mod tests {
             let error = capture(&source).unwrap_err();
             assert!(error.contains(message), "{source}: {error}");
         }
-        let error = capture("capture(**{'name': 'made', 'é': None})").unwrap_err();
-        assert!(error.contains("non-ASCII"), "{error}");
+        let error = capture("capture(**{'name': 'made', 'Ā': None})").unwrap_err();
+        assert!(error.contains("above U+00FF"), "{error}");
+        // Latin-1 runtime byte data (U+0000..U+00FF) is representable.
+        capture("capture(name='made', value={'k' + chr(255): [chr(0) + chr(233) + chr(255)]})")
+            .unwrap();
     }
 
     #[test]

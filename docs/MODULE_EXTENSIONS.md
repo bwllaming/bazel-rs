@@ -109,18 +109,20 @@ projections, rather than claiming an exact process-memory bound. Provenance is
 streamed from borrowed values into a separately bounded 64 MiB buffer; serialized
 bytes are length-framed rather than expanded into another JSON number array.
 
-Isolation, metadata construction/returns, facts, OS environment inspection,
-module-context reads/downloads, and SDK APIs are unsupported. No placeholder
-metadata, facts, platform or SDK repository is substituted. `mod graph` retains
-its existing explicit-module profile and does not execute active extensions.
+The candidate [bounded module-context download/read profile](MODULE_EXTENSION_IO.md)
+adds owned synchronous I/O; final acceptance and release remain pending. Isolation,
+metadata construction/returns, facts, OS environment inspection, path/delete/execute
+and SDK APIs remain unsupported. No placeholder metadata, facts, platform or SDK
+repository is substituted. `mod graph` retains its existing explicit-module profile
+and does not execute active extensions.
 Genuine built-in module closure is now available through the separate opt-in
 [built-in profile](BUILTIN_MODULES.md); default semantics and complete
 language/rule/toolchain support remain unfinished. Successful whole-application query/build/test and performance
 improvements have not been established by this increment.
 
-## Verification
+## Historical ordinary-extension verification
 
-The candidate passes 695 Rust tests, 306 Python tests, formatting, strict all-target
+At that increment, the candidate passed 695 Rust tests, 306 Python tests, formatting, strict all-target
 Clippy, release compilation and error-level Rust Analyzer diagnostics. The actual
 CLI report `artifacts/module-extensions-validation.json` passes eight genuine
 Bazel 9.3 differential cases and eight native-only boundary/lifecycle cases.
@@ -131,8 +133,8 @@ All eight adjacent validation suites pass against the same binary. Final review
 approved this bounded deliverable; the verification manifest binds its source,
 release and reports without claiming unrestricted compatibility.
 
-The read-only application probe still fails during nogo repository demand because
-the implicit `bazel_tools` dependency closure is absent. The required Git symlink
+That increment's read-only application probe failed during nogo repository demand
+because the implicit `bazel_tools` dependency closure was absent. The required Git symlink
 is preserved, checkout fingerprints are unchanged, and scratch is removed:
 `artifacts/mainrepo-module-extension-loading.json`. This is an observed remaining
 boundary, not an application query/build/test or performance success.

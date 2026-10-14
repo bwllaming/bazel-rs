@@ -1,0 +1,19 @@
+{
+  "source_commit": "e89755babf3e941bc1e9d8120b1cd48854ab9dfa",
+  "registry_relative_root": "tests/fixtures/builtin_modules/registry",
+  "module": "platforms/1.0.0",
+  "source_json_sha256": "f4ff1fd412e0246fd38c82328eb209130ead81d62dcd5a9e40910f867f733d96",
+  "archive_integrity": "sha256-M4TrHDB2JwT7445EAgThFBVAhsj8iowuPihEECjAGag=",
+  "module_file_sha256": "f05feb42b48f1b3c225e4ccf351f367be0371411a803198ec34a389fb22aa580",
+  "module_file_integrity": "sha256-8F/rQrSPGzwiXkzPNR82e+A3FBGoAxmOw0o4n7IqpYA=",
+  "module_file_size": 286,
+  "declared_patches": {},
+  "declared_overlays": {},
+  "implicit_module_source": "IndexRegistry creates remote_module_file_urls and integrity from the registry MODULE.bazel SHA256; utils.bzl deletes the packaged module and downloads these exact bytes at243, after registry patches.",
+  "official_files": {
+    "tools/build_defs/repo/http.bzl": "9e908b9d6491cb950a9713d8b758b7b6f83871adbc768eb4997ca12e06ac240a",
+    "tools/build_defs/repo/utils.bzl": "e572bb45c469d4b971763f61a0bb9704251277d4eaa379e835dfa3dc116128ed",
+    "src/main/java/com/google/devtools/build/lib/bazel/bzlmod/IndexRegistry.java": "a89a0a56189dd75036189c80fa4fe3151d8d0bea92280db83e8e3f3f6ad9b05c",
+    "src/main/java/com/google/devtools/build/lib/bazel/bzlmod/RegistryFileDownloadEvent.java": "d02b790bb1c06fd4ab8c74504f3648c07907ccdff0978b4211bcbc2dfeaf421e"
+  }
+}

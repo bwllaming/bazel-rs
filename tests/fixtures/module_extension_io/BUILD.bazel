@@ -1,0 +1,6 @@
+load(":consumer.bzl", "consume_observation")
+
+consume_observation(
+    name = "consume",
+    src = "@observed//:data.json",
+)

@@ -49,6 +49,7 @@ pub fn run_with_source_cache(root: &Path, args: &[String], cache: &Path) -> Resu
 struct Options {
     resolver: ResolverOptions,
     cycles: bool,
+    repository_downloads_enabled: bool,
 }
 impl Options {
     fn parse(args: &[String]) -> Result<Self, String> {
@@ -61,10 +62,17 @@ impl Options {
         let mut options = Self {
             resolver: ResolverOptions::default(),
             cycles: true,
+            repository_downloads_enabled: true,
         };
         let mut output_json = false;
         let mut args = args[1..].iter();
         while let Some(arg) = args.next() {
+            if let Some(disabled) = repository_disable_download_argument(arg)? {
+                // Graph discovery only reads metadata and may execute Git. Neither
+                // route is governed by repository download policy.
+                options.repository_downloads_enabled = !disabled;
+                continue;
+            }
             if let Some(profile) = builtin_profile_argument(arg)? {
                 options.resolver.builtin_profile = profile;
                 continue;
@@ -125,6 +133,32 @@ fn boolean(flag: &str, value: Option<&str>) -> Result<bool, String> {
         Some(other) => return Err(format!("{flag} expects true or false, got {other:?}")),
     };
     Ok(value != flag.starts_with("--no"))
+}
+
+/// Bazel 9.3 RepositoryOptions and BooleanConverter syntax. Boolean flags are
+/// nullary unless the value follows '='; negated flags never accept a value.
+/// Return the disable setting (not the enabled policy) for either option name.
+pub fn repository_disable_download_argument(arg: &str) -> Result<Option<bool>, String> {
+    let (flag, value) = arg
+        .split_once('=')
+        .map_or((arg, None), |(flag, value)| (flag, Some(value)));
+    match flag {
+        "--norepository_disable_download" | "--noexperimental_repository_disable_download" => {
+            if value.is_some() {
+                return Err(format!("unexpected value after boolean option: {arg}"));
+            }
+            Ok(Some(false))
+        }
+        "--repository_disable_download" | "--experimental_repository_disable_download" => {
+            let disabled = match value.map(str::to_ascii_lowercase).as_deref() {
+                None | Some("true" | "1" | "yes" | "t" | "y") => true,
+                Some("false" | "0" | "no" | "f" | "n") => false,
+                _ => return Err(format!("{arg}: expected a boolean")),
+            };
+            Ok(Some(disabled))
+        }
+        _ => Ok(None),
+    }
 }
 
 pub fn registry_path(uri: &str) -> Result<Registry, String> {
@@ -546,6 +580,108 @@ mod tests {
         ] {
             assert_eq!(compare_versions(a, b), Ordering::Less);
         }
+    }
+
+    #[test]
+    fn repository_download_boolean_matches_pinned_bazel_syntax() {
+        for name in [
+            "repository_disable_download",
+            "experimental_repository_disable_download",
+        ] {
+            let positive = format!("--{name}");
+            let negative = format!("--no{name}");
+            assert_eq!(
+                repository_disable_download_argument(&positive),
+                Ok(Some(true))
+            );
+            assert_eq!(
+                repository_disable_download_argument(&negative),
+                Ok(Some(false))
+            );
+            for (values, expected) in [
+                (["true", "1", "yes", "t", "y"], true),
+                (["false", "0", "no", "f", "n"], false),
+            ] {
+                for value in values {
+                    for value in [value.to_owned(), value.to_ascii_uppercase()] {
+                        assert_eq!(
+                            repository_disable_download_argument(&format!("{positive}={value}")),
+                            Ok(Some(expected))
+                        );
+                        assert!(
+                            repository_disable_download_argument(&format!("{negative}={value}"))
+                                .is_err()
+                        );
+                    }
+                }
+            }
+            for value in [
+                "",
+                " true",
+                "false ",
+                "2",
+                "on",
+                "off",
+                "true=false",
+                "trüe",
+            ] {
+                assert!(
+                    repository_disable_download_argument(&format!("{positive}={value}")).is_err()
+                );
+            }
+        }
+        for unrelated in [
+            "--repository_disable_downloads",
+            "--repository-disable-download",
+            "--nonoexperimental_repository_disable_download",
+            "false",
+        ] {
+            assert_eq!(repository_disable_download_argument(unrelated), Ok(None));
+        }
+    }
+
+    #[test]
+    fn graph_download_policy_defaults_and_last_option_wins_without_split_values() {
+        assert!(
+            Options::parse(&args(&["graph", "--output=json"]))
+                .unwrap()
+                .repository_downloads_enabled
+        );
+        for (flags, enabled) in [
+            (vec!["--repository_disable_download"], false),
+            (vec!["--repository_disable_download=false"], true),
+            (
+                vec![
+                    "--experimental_repository_disable_download",
+                    "--norepository_disable_download",
+                ],
+                true,
+            ),
+            (
+                vec![
+                    "--noexperimental_repository_disable_download",
+                    "--repository_disable_download=YES",
+                ],
+                false,
+            ),
+        ] {
+            let mut input = args(&["graph", "--output=json"]);
+            input.extend(args(&flags));
+            assert_eq!(
+                Options::parse(&input).unwrap().repository_downloads_enabled,
+                enabled
+            );
+        }
+        assert!(
+            Options::parse(&args(&[
+                "graph",
+                "--output=json",
+                "--repository_disable_download",
+                "false"
+            ]))
+            .unwrap_err()
+            .contains("argument: false")
+        );
     }
 
     #[test]

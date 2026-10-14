@@ -1,0 +1,24 @@
+{
+  "classification": "immutable historical BUILD rows, not a new execution",
+  "capture_root": "/tmp/opencode/module-extension-io-closure-capture-01",
+  "origin": "http://127.0.0.1:47463",
+  "reference": "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+  "reference_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "freeze_sha256": "368c94bbb33f1227741df3549e45f93827b6caed35da5f9247bad3b81a6d6b7c",
+  "report_sha256": "299e2643194ea048109f08fe8069c57deefdda856954d4bff68f767c97a73f39",
+  "archive_sha256": "a9d388d9a046368db59c149a00881299c273c943c681fe46383f6290b6d0a1ed",
+  "historical_counts": {"matched": 24, "unmatched": 9},
+  "stdout_size": 0,
+  "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "rows": [
+    {"case": "http-filter-false", "ordinal": 55, "status": 1, "stderr_size": 1465, "stderr_sha256": "08d4272c3663901d2a1aefe074c5cc0bfa728346086def6cc646ef7e3400f7fa", "source_size": 963, "source_sha256": "8f990322f4e139c659c00feb3fd314b78a626f78ca6cdfb7524675fef1540f2c"},
+    {"case": "allfail-false", "ordinal": 59, "status": 1, "stderr_size": 1919, "stderr_sha256": "9234ced6693559ff7aeed6420987fda70137f7a62cdfd39e7cac2eb4dfbe13d4", "source_size": 1106, "source_sha256": "ba600acb92a07b4a53eb7f7b27f41a1b6ee4456050781d05bb31665b7cbc7248"},
+    {"case": "disabled-miss-false", "ordinal": 63, "status": 1, "stderr_size": 1578, "stderr_sha256": "062293d51ec87c0345b8db71b4129f8af91b5c357dbc46ed49e94bb449388d0a", "source_size": 1122, "source_sha256": "24940912b2b591cbfc9af029399c06b64e5ed628bcafaf53f5650f16e7b22e4f"},
+    {"case": "empty-list-false", "ordinal": 67, "status": 1, "stderr_size": 1408, "stderr_sha256": "af90abb05912e4bc69ff9ed7e2dcc00a33da87a1a18be859fea94564dca3f6aa", "source_size": 1032, "source_sha256": "d83395353808a75b742d1b152a737be870cd532d4717d2d4d9c2d30593dd27d9"},
+    {"case": "empty-list-existing-false", "ordinal": 71, "status": 1, "stderr_size": 2231, "stderr_sha256": "c8dfdb4e7bbdc72c6b20c68bfc5478444c7d60efc9fdffdafd16d48ad4dc6112", "source_size": 1753, "source_sha256": "7ea79bb77cf7020ed8cf0fe8b5b7882c4e9e61429ac8a7e3e515c0241dc2c320"},
+    {"case": "malformed-sha-transfer-success", "ordinal": 187, "status": 1, "stderr_size": 1519, "stderr_sha256": "5d8d69ee836e6485c2c29406e7f3b678e66d6572bbecb8c9c2d76bb18273fa5e", "source_size": 1028, "source_sha256": "246b13dd2dc52b1f9fd5c834b76d328dddba13b8b21d8cc83ac3081fec7675a3"},
+    {"case": "read-watch-yes", "ordinal": 207, "status": 1, "stderr_size": 1946, "stderr_sha256": "ed1633a2e8958659e38db13f332b189db21cdfde5114ba2f6aeb1f8793485cb5", "source_size": 1432, "source_sha256": "2d936876eec87cef227e0409e7c4fe098a223a4422a51038bb5a2c777f63ce8e"},
+    {"case": "read-missing", "ordinal": 211, "status": 1, "stderr_size": 1299, "stderr_sha256": "87dc89dcf1a7157c0dedf020aa114d4a68ea3e3713375099b869f7b30707af95", "source_size": 726, "source_sha256": "88837615be97c7a8f479ae549148620f8e6e8f9b5d48a204d964aa8e58df56d6"},
+    {"case": "read-invalid-watch", "ordinal": 215, "status": 1, "stderr_size": 1256, "stderr_sha256": "56559ac46a82cd011378ae82787db27eed707865939a5619ac75868dc9f7bd99", "source_size": 744, "source_sha256": "e81dc74f6b39213966620a194a782393eb303ccf06d6ca009865999f97a9839d"}
+  ]
+}

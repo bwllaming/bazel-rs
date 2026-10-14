@@ -109,12 +109,15 @@ must be trusted against hostile concurrent mutation; local actions are still
 unsandboxed. There is no promise of offline operation, crash-durable extracted
 file contents, or compatibility with Bazel's on-disk cache format.
 
-Neither `--repository_disable_download` nor `--nofetch` is implemented. In upstream
-Bazel these do **not** prohibit registry requests, so neither is advertised as an
-offline mode here. Full lockfile, extension/repository-rule, toolchain, configured
+Downloads default to enabled. `--repository_disable_download` gates module-context
+and archive/overlay/patch acquisition after eligible verified reuse; it also gates
+the materializer's file acquisition. Registry metadata/configuration and Git
+subprocess fetching remain outside its scope. `--nofetch` remains unsupported;
+the download-disable flag is not an offline mode. Full lockfile,
+extension/repository-rule, toolchain, configured
 analysis and application build/test compatibility remain separate requirements.
 
-## Captured validation
+## Historical archive-increment validation
 
 `artifacts/remote-validation.json` passes 17 checks: three differential groups
 (tar, tar.gz, ZIP query/source build/genrule artifacts) against SHA256-pinned
@@ -124,12 +127,12 @@ integrity/path failures and the two reviewer regressions. They are not negative
 diagnostic parity claims. HTTP request logs, raw command results, artifact hashes
 and HTTP/reference/scratch cleanup receipts are retained in that report.
 
-The full check passes 328 Rust tests and 143 Python harness tests, strict Clippy,
+At that increment, the full check passed 328 Rust tests and 143 Python harness tests, strict Clippy,
 formatting, release compilation and rust-analyzer error diagnostics. The existing
 local/custom/loading/module suites remain passing; their reports record their own
 binary hashes rather than implying all were rerun after archive-only fixes.
 
-The source-preserving HTTPS application probe reaches `rules_swift@3.1.2` and
-fails at unsupported `use_repo_rule`. See `artifacts/mainrepo-remote-loading.json`.
+That increment's source-preserving HTTPS application probe reached `rules_swift@3.1.2` and
+failed at unsupported `use_repo_rule`. See `artifacts/mainrepo-remote-loading.json`.
 This is progress past missing remote registries, not application build/test
 compatibility or evidence of a whole-application speedup.

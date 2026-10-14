@@ -19,10 +19,16 @@ differential covers 20 scoped checks. Explicit HTTP registries and verified
 tar/tar.gz/ZIP source materialization now have an implementation, including
 mirrors, overlays, private staging and cache validation. See
 `docs/REMOTE_REPOSITORIES.md` for its strict limits and verification profile.
-These are portions of milestones 1–3, not complete gates: Git sources, archive
-overrides, complete patch semantics, lockfiles, extensions, configured analysis, toolchains and the
-production execution/test stack remain missing.
+These are portions of milestones 1–3, not complete gates: full Git/extension
+semantics, archive overrides, complete patch semantics, lockfiles, configured
+analysis, toolchains and the production execution/test stack remain incomplete.
 Successful fixture or filegroup builds do not establish application parity.
+
+The progression below records historical increment boundaries, not the current
+application blocker. The later N3 runtime-pinned query reaches the existing JSON
+resource budget. Isolated JSON-capacity commit `ac9d646` is not integrated into
+this I/O worktree; successful application query/build/test remains unproven.
+
 The previously captured native query of `//src/beyondwork.ai/utils/str:str` failed
 before application analysis because `aspect_bazel_lib@2.22.5` is unavailable in
 the supplied local registries (none); remote fetching was then unsupported. See

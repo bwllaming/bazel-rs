@@ -1,0 +1,17 @@
+{
+  "source_commit": "e89755babf3e941bc1e9d8120b1cd48854ab9dfa",
+  "scope": "Immutable original genuine capture source copies; NOT current native source",
+  "sha256": {
+    "UrlRewriter.java": "f5f124b0e4d2751ce97519a6e48e25721b03b4df1fde86b27070ac179868788f",
+    "UrlRewriterConfig.java": "16e969ed5e442e6a518c5044a97462b236a63fc7a7dc7e68f192eb95852f2468",
+    "Checksum.java": "54998575f90bc5f4b2af78f891448c3c138a32814e743ef192ee31794774de53",
+    "DownloadManager.java": "47de6e154f22f1178824179e5e0ee044eb72968a5c888536b92a46cdc0818e01",
+    "HttpConnector.java": "0355c15e29f1d607d27f8783ef412f0e3c180982c2f053888ad2ce7869605b48",
+    "HttpDownloader.java": "bfc2ac0ff32b2a207da951a0e60733e28eaf367b65134cf2a207c74ecb14a1c5",
+    "HttpStream.java": "3ed069fa6ea33472f7652ea4cdda16650ab4567c1e3e2e3cd7265fcc3fc2d757",
+    "ModuleExtensionContext.java": "f13e010a9ce255e1c7b47847aa458e68c7f4288aac1ba5e14150de188e32a3b6",
+    "RegularRunnableExtension.java": "54978dc8dc76652fdf8050ed256d40e16394ad5fbcfa7d0bfd6f39a7cf464abb",
+    "StarlarkBaseExternalContext.java": "dcdc9a92b48523146b2870b87d06c9c9d40efcf15d10f86853c9fe128204a231",
+    "rules_go-sdk.bzl": "4ea2504b5c5884a2027be277cd087ae3cd03c072d44bd7d82e8ff4f5fa51fadd"
+  }
+}

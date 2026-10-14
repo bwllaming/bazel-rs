@@ -23,6 +23,10 @@ mod extension_context {
     pub struct ExtensionContext {
         pub label: crate::label::Label,
         pub repositories: std::sync::Arc<crate::repository::RepositorySet>,
+        /// Repository/extension execution profile: Bazel's internal Latin-1
+        /// byte strings apply (e.g. json.decode `\u` escapes become UTF-8
+        /// bytes). False for BUILD/analysis loading, which keeps Unicode text.
+        pub byte_strings: bool,
     }
 }
 pub use extension_context::ExtensionContext;
@@ -374,6 +378,7 @@ impl<'a> Loader<'a> {
                             let context = ExtensionContext {
                                 label: label.clone(),
                                 repositories: self.repositories.clone(),
+                                byte_strings: self.provenance_capture,
                             };
                             let mut eval = Evaluator::new(&module);
                             eval.extra = Some(&context);

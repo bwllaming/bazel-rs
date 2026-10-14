@@ -702,6 +702,7 @@ names.append("consumer")
 
     fn context(label: &str) -> ExtensionContext {
         ExtensionContext {
+            byte_strings: false,
             label: crate::label::Label::parse(label, "").unwrap(),
             repositories: std::sync::Arc::new(crate::repository::RepositorySet::new(
                 std::path::PathBuf::from("."),

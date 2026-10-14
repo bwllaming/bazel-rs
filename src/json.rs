@@ -285,7 +285,15 @@ mod values {
                     let [x, default] = spec.collect_into::<2>(args, heap)?;
                     let x = string_arg(required(x).map_err(starlark::Error::new_other)?)
                         .map_err(starlark::Error::new_other)?;
-                    match decode(x, heap, &mut budget) {
+                    let byte_strings = crate::extension_ctx::evaluating_callback(eval)
+                        || crate::repository_ctx::evaluating_callback(eval)
+                        || eval
+                            .extra
+                            .and_then(|extra| {
+                                extra.downcast_ref::<crate::loading::ExtensionContext>()
+                            })
+                            .is_some_and(|context| context.byte_strings);
+                    match decode(x, heap, &mut budget, byte_strings) {
                         Err(Error::Syntax(..) | Error::Depth) if default.is_some() => Ok(default
                             .ok_or(Error::Internal("missing default"))
                             .map_err(starlark::Error::new_other)?),
@@ -650,8 +658,16 @@ struct Parser<'a, 'b, 'v> {
     pos: usize,
     heap: Heap<'v>,
     budget: &'b mut JsonBudget,
+    /// Bazel byte-string profile (repository/extension execution): `\u` escape
+    /// runs become UTF-8 bytes, each represented as a U+0000..U+00FF char.
+    byte_strings: bool,
 }
-fn decode<'v>(text: &str, heap: Heap<'v>, budget: &mut JsonBudget) -> Result<Value<'v>> {
+fn decode<'v>(
+    text: &str,
+    heap: Heap<'v>,
+    budget: &mut JsonBudget,
+    byte_strings: bool,
+) -> Result<Value<'v>> {
     // O(1) effective UTF-8 length check, before scanning or reserving any input.
     if text.len() > DECODE_MAX_INPUT {
         return Err(Error::Resource);
@@ -662,6 +678,7 @@ fn decode<'v>(text: &str, heap: Heap<'v>, budget: &mut JsonBudget) -> Result<Val
         pos: 0,
         heap,
         budget,
+        byte_strings,
     };
     let value = parser.value(0)?;
     parser.space();
@@ -815,6 +832,24 @@ impl<'v> Parser<'_, '_, 'v> {
                 b'\\' => {
                     let escape = self.peek().ok_or_else(|| self.error("incomplete escape"))?;
                     self.pos += 1;
+                    if escape == b'u' && self.byte_strings {
+                        // Pinned Json.java parseString: gather the whole run of
+                        // `\uXXXX` code units, encode as UTF-8 replacing malformed
+                        // surrogates with U+FFFD bytes, append bytes as Latin-1.
+                        let mut units = vec![self.hex4()?];
+                        while self.text[self.pos..].starts_with("\\u") {
+                            self.pos += 2;
+                            units.push(self.hex4()?);
+                        }
+                        for decoded in char::decode_utf16(units) {
+                            let mut bytes = [0u8; 4];
+                            let encoded = decoded.unwrap_or('\u{fffd}').encode_utf8(&mut bytes);
+                            for byte in encoded.bytes() {
+                                self.push_char(&mut out, char::from(byte))?;
+                            }
+                        }
+                        continue;
+                    }
                     let character = match escape {
                         b'"' => '"',
                         b'\\' => '\\',
@@ -1098,7 +1133,7 @@ mod tests {
             Module::with_temp_heap(|module| {
                 let text = format!("[{}null]", "null,".repeat(count - 1));
                 let mut budget = decode_budget();
-                let value = decode(&text, module.heap(), &mut budget);
+                let value = decode(&text, module.heap(), &mut budget, false);
                 if count == 249_999 {
                     assert_eq!(ListRef::from_value(value.unwrap()).unwrap().len(), count);
                 } else {
@@ -1131,7 +1166,7 @@ mod tests {
             Module::with_temp_heap(|module| {
                 let text = format!("[{}[]]", "[],".repeat(count - 1));
                 let mut budget = decode_budget();
-                let value = decode(&text, module.heap(), &mut budget);
+                let value = decode(&text, module.heap(), &mut budget, false);
                 if count == 112_220 {
                     assert_eq!(ListRef::from_value(value.unwrap()).unwrap().len(), count);
                     assert_eq!(budget.host.usage(), (3208 + count * 2392, count + 1));
@@ -1165,6 +1200,7 @@ mod tests {
                 pos: 0,
                 heap: module.heap(),
                 budget: &mut budget,
+                byte_strings: false,
             };
             assert!(matches!(parser.value(0), Err(Error::Resource)));
             let (bytes, nodes) = parser.budget.host.usage();
@@ -1187,7 +1223,7 @@ mod tests {
                 let text = format!("null{}", " ".repeat(DECODE_MAX_INPUT - 4 + extra));
                 let mut budget = decode_budget();
                 let before = module.heap().allocated_bytes();
-                let value = decode(&text, module.heap(), &mut budget);
+                let value = decode(&text, module.heap(), &mut budget, false);
                 if extra == 0 {
                     assert!(value.unwrap().is_none());
                     assert_eq!(budget.host.usage(), (1024 + DECODE_MAX_INPUT * 8 + 128, 1));
@@ -1201,7 +1237,7 @@ mod tests {
             assert_eq!(text.len(), DECODE_MAX_INPUT + 1);
             let mut budget = decode_budget();
             assert!(matches!(
-                decode(&text, module.heap(), &mut budget),
+                decode(&text, module.heap(), &mut budget, false),
                 Err(Error::Resource)
             ));
             assert_eq!(budget.host.usage(), (1024, 0));
@@ -1227,7 +1263,7 @@ mod tests {
         Module::with_temp_heap(|module| {
             let text = format!("{{{}}}", vec!["\"x\":[]"; 40_000].join(","));
             let mut budget = decode_budget();
-            let value = decode(&text, module.heap(), &mut budget).unwrap();
+            let value = decode(&text, module.heap(), &mut budget, false).unwrap();
             assert_eq!(DictRef::from_value(value).unwrap().len(), 1);
             let (bytes, nodes) = budget.host.usage();
             assert_eq!(nodes, 80_001);
@@ -1259,7 +1295,7 @@ mod tests {
                 let mut budget = decode_budget();
                 let before = module.heap().allocated_bytes();
                 assert!(matches!(
-                    decode(&text, module.heap(), &mut budget),
+                    decode(&text, module.heap(), &mut budget, false),
                     Err(Error::Resource)
                 ));
                 assert_eq!(budget.observed.numeric_conversions, 0);
@@ -1276,6 +1312,7 @@ mod tests {
                 pos: 0,
                 heap: module.heap(),
                 budget: &mut budget,
+                byte_strings: false,
             };
             assert!(matches!(parser.value(0), Err(Error::Resource)));
             let (bytes, nodes) = parser.budget.host.usage();
@@ -1467,8 +1504,28 @@ x['nested'].append(4)
                 (r#""\ud800\u0041""#, "�A"),
                 (r#""\"\\\/\b\f\n\r\t""#, "\"\\/\u{8}\u{c}\n\r\t"),
             ] {
-                let value = decode(source, heap, &mut JsonBudget::default()).unwrap();
+                let value = decode(source, heap, &mut JsonBudget::default(), false).unwrap();
                 assert_eq!(value.unpack_str(), Some(expected));
+            }
+            // Repository/extension byte-string profile (pinned Json.java): each
+            // `\u` run becomes UTF-8 bytes (U+FFFD bytes for malformed
+            // surrogates), each byte one U+0000..U+00FF char; raw input
+            // characters and ASCII escapes are unchanged.
+            for (source, expected) in [
+                (
+                    r#""\u00e9\ud83d\ude00""#,
+                    "\u{c3}\u{a9}\u{f0}\u{9f}\u{98}\u{80}",
+                ),
+                (
+                    r#""\ud800X\udc00""#,
+                    "\u{ef}\u{bf}\u{bd}X\u{ef}\u{bf}\u{bd}",
+                ),
+                (r#""\ud800\u0041""#, "\u{ef}\u{bf}\u{bd}A"),
+                (r#""A\u0041\u007f""#, "AA\u{7f}"),
+                ("\"\u{e9}\\n\"", "\u{e9}\n"),
+            ] {
+                let value = decode(source, heap, &mut JsonBudget::default(), true).unwrap();
+                assert_eq!(value.unpack_str(), Some(expected), "{source}");
             }
             let text = "\0\u{1}\u{8}\u{c}\n\r\t\"\\/\u{7f}é😀";
             assert_eq!(
@@ -1479,6 +1536,7 @@ x['nested'].append(4)
                 "{\"😀\":1,\"\u{e000}\":2,\"é\":3,\"A\":4}",
                 heap,
                 &mut JsonBudget::default(),
+                false,
             )
             .unwrap();
             assert_eq!(
@@ -1494,7 +1552,7 @@ x['nested'].append(4)
             let heap = module.heap();
             for (text, offset) in [("[\"é\",]", 6), ("[\"😀\",]", 8), (r#"["\u00e9",]"#, 10)] {
                 assert!(
-                    matches!(decode(text, heap, &mut JsonBudget::default()), Err(Error::Syntax(n, _)) if n == offset)
+                    matches!(decode(text, heap, &mut JsonBudget::default(), false), Err(Error::Syntax(n, _)) if n == offset)
                 );
             }
             for text in [
@@ -1520,13 +1578,13 @@ x['nested'].append(4)
             ] {
                 assert!(
                     matches!(
-                        decode(text, heap, &mut JsonBudget::default()),
+                        decode(text, heap, &mut JsonBudget::default(), false),
                         Err(Error::Syntax(..))
                     ),
                     "{text:?}"
                 );
             }
-            let value = decode("5.E1", heap, &mut JsonBudget::default()).unwrap();
+            let value = decode("5.E1", heap, &mut JsonBudget::default(), false).unwrap();
             assert_eq!(
                 value.downcast_ref::<StarlarkFloat>().unwrap().0.to_bits(),
                 50.0f64.to_bits()
@@ -1572,7 +1630,7 @@ x['nested'].append(4)
             let heap = module.heap();
             for depth in [64, 65] {
                 let text = format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
-                let decoded = decode(&text, heap, &mut JsonBudget::default());
+                let decoded = decode(&text, heap, &mut JsonBudget::default(), false);
                 if depth == 64 {
                     assert_eq!(
                         encode(decoded.unwrap(), heap, &mut JsonBudget::default()).unwrap(),
@@ -1641,7 +1699,7 @@ x['nested'].append(4)
             // this still rejects the old fixture. Candidate acceptance is tested
             // above without resetting or weakening any charge.
             assert!(matches!(
-                decode(&duplicates, heap, &mut JsonBudget::default()),
+                decode(&duplicates, heap, &mut JsonBudget::default(), false),
                 Err(Error::Resource)
             ));
         });
@@ -1869,7 +1927,7 @@ x['nested'].append(4)
             ] {
                 let encoded = encode(heap.alloc(value), heap, &mut JsonBudget::default()).unwrap();
                 assert_eq!(encoded, expected);
-                let decoded = decode(&encoded, heap, &mut JsonBudget::default()).unwrap();
+                let decoded = decode(&encoded, heap, &mut JsonBudget::default(), false).unwrap();
                 assert_eq!(
                     decoded.downcast_ref::<StarlarkFloat>().unwrap().0.to_bits(),
                     value.to_bits()
@@ -1914,7 +1972,7 @@ x['nested'].append(4)
             )
             .unwrap();
             assert_eq!(encoded, format!("[{}]", expected.join(",")));
-            let decoded = decode(&encoded, heap, &mut JsonBudget::default()).unwrap();
+            let decoded = decode(&encoded, heap, &mut JsonBudget::default(), false).unwrap();
             let decoded = ListRef::from_value(decoded).unwrap();
             assert_eq!(decoded.len(), 1024);
             for (value, bits) in decoded.iter().zip(bits) {

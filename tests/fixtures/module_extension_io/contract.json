@@ -1,0 +1,24 @@
+{
+  "classification": "immutable-reference-facts-not-native-acceptance",
+  "source_commit": "e89755babf3e941bc1e9d8120b1cd48854ab9dfa",
+  "reference_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "versions_sha256": "9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb",
+  "versions_size": 620,
+  "receipts": [
+    {"path": "REPORT.md", "sha256": "e285570ab54e95e482274a5599f5b79561aa2902ec6e2306893df5ca0b98c721", "manifest_sha256": "ae8d947d5572a7ecdc9867e94e5d163f955bd0995ff8e6ab0d7cc385ef6a8839", "accepted": 10, "executed": 11, "planned": 22},
+    {"path": "continuation/REPORT.md", "sha256": "c4dee68eac713b8ec47d27f6982c6a0846640568fe8a2fd5418bf36c04f3e7ab", "manifest_sha256": "ae8a271eed0e554f86ab5a4424f6e4c0f8fa90da9024f0ac720e148ff34755d1", "accepted": 15, "executed": 15, "planned": 15},
+    {"path": "supplemental/EXECUTED-BLOCKER.md", "sha256": "898a23abfe9852c287c8be937620c84db79bf67d153bd1acbb53729239623516", "manifest_sha256": "9474d70a8a95608b244e502c87b1622c48cd6d0bf0e3ca6376baca95ec72cfcb", "accepted": 3, "executed": 4, "planned": 19},
+    {"path": "supplemental-continuation/REPORT.md", "sha256": "4732b318b3f29fa16513b961522db13ef8603eaa2668013062fd7d6ff87e1bda", "manifest_sha256": "647a4422ed2033d5a906156560db34624545916b68013b19c30c6ade54d7051b", "accepted": 15, "executed": 15, "planned": 15}
+  ],
+  "small_failed_overwrite": {"bytes": 620, "mode": "0644", "retained": "old", "universal_atomicity": false},
+  "owned_seed": {"text": "owned old destination\n", "size": 22, "mode": "0640", "sha256": "8d0650ffea8a9fa41136886f15c73af6401a4821aa28abd7d1db464ab9ee7f90"},
+  "checksum_boundary": [
+    {"served": 32767, "retained": "old", "size": 22, "mode": "0640", "sha256": "8d0650ffea8a9fa41136886f15c73af6401a4821aa28abd7d1db464ab9ee7f90"},
+    {"served": 32768, "retained": "new", "size": 32768, "mode": "0640", "sha256": "09fed9cbfb98b6ab0f3e8ff63b7b1f9b0e07d58b225295c78fdc023cc4985a72"},
+    {"served": 32769, "retained": "new", "size": 32769, "mode": "0640", "sha256": "346e2310c7233f7723048e8289ba7a299d635ded9723dfea5248773f5b7684b8"}
+  ],
+  "truncation_failed_expectation": {"requests": 1, "success": false, "size": 33000, "mode": "0640", "sha256": "2c40f737972f90afe037b64ca1f1224d320ee12053a6d4be4844143b0b7064d5", "retry_proven": false},
+  "empty_urls": {"allow_false_before_matching_reuse": true, "allow_true_matching_reuse": true},
+  "disabled": {"matching_reuse": true, "metadata_and_git_blocked": false},
+  "root_manifest": {"path": "", "kind": "directory", "mode": "0755", "size": 0, "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+}

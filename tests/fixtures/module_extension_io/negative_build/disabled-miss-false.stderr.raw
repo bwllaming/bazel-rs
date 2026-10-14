@@ -1,0 +1,11 @@
+OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.
+DEBUG: /tmp/opencode/module-extension-io-closure-capture-01/scratch/workspace/disabled-miss-false/extension.bzl:4:10: MODULE_IO_JSON {"case":"disabled-miss-false","event":"begin"}
+DEBUG: /tmp/opencode/module-extension-io-closure-capture-01/scratch/workspace/disabled-miss-false/extension.bzl:5:10: MODULE_IO_JSON {"case":"disabled-miss-false","event":"pre","index":0,"operation":{"args":["/versions?mode=json&include=all"],"kwargs":{"allow_fail":false,"output":"metadata.json","sha256":"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb"},"method":"download"}}
+ERROR: /tmp/opencode/module-extension-io-closure-capture-01/scratch/workspace/disabled-miss-false/extension.bzl:6:25: Traceback (most recent call last):
+	File "/tmp/opencode/module-extension-io-closure-capture-01/scratch/workspace/disabled-miss-false/extension.bzl", line 6, column 25, in _impl
+		value = ctx.download("http://127.0.0.1:47463/versions?mode=json&include=all", output = "metadata.json", sha256 = "9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb", allow_fail = False)
+Error in download: java.io.IOException: Failed to download module extension @@//:extension.bzl%io: download is disabled.
+ERROR: Analysis of target '//:consume' failed; build aborted: error evaluating module extension @@//:extension.bzl%io
+INFO: Elapsed time: 1.313s, Critical Path: 0.02s
+INFO: 1 process: 1 internal.
+ERROR: Build did NOT complete successfully

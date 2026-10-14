@@ -136,7 +136,7 @@ from `/home/coder/code`:
 ```
 
 It exits **1**, with empty stdout, because `aspect_bazel_lib@2.22.5` was not found
-in local registries `[]`; remote fetching is unsupported. The report sets
+in local registries `[]`; remote fetching was unsupported at that capture. The report sets
 `application_compatible: false`. Even query/loading did not complete: no Go
 compilation, build/test success or application parity follows from this probe.
 

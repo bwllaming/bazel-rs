@@ -172,6 +172,7 @@ mod tests {
     ) -> Result<FrozenModule, String> {
         Module::with_temp_heap(|module| {
             let context = ExtensionContext {
+                byte_strings: false,
                 label: crate::label::Label::parse_canonical(label).unwrap(),
                 repositories: std::sync::Arc::new(crate::repository::RepositorySet::new(
                     ".".into(),

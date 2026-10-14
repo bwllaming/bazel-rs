@@ -13,6 +13,8 @@ Usage:
 Patterns: //..., //package/..., //package:all, //package:target, :target
 Build options: --jobs=N or --jobs N (positive integer; default: available CPUs, max 32)
 Repository options: --registry=URL (file/http/https, repeatable), --ignore_dev_dependency
+  --repository_disable_download[=BOOL] blocks uncached archive/overlay/patch acquisition.
+  Verified caches, registry metadata and Git execution are unaffected (not an offline mode).
 Native transition: --experimental-builtin-modules[=true|false] opts into genuine Bazel 9.3 built-ins.
 Remote registries require explicit --lockfile_mode=off; other lockfile modes are unsupported.
 External sources: local_path_override, registry local_path entries and verified archives.
@@ -88,11 +90,16 @@ fn run() -> Result<(), String> {
         .unwrap_or(1)
         .min(32);
     let mut resolver_options = bazel_rs::module_graph::ResolverOptions::default();
+    let mut repository_downloads_enabled = true;
     if matches!(command.as_str(), "build" | "query") {
         let mut positional = Vec::new();
         let mut args = rest.into_iter();
         while let Some(arg) = args.next() {
-            if let Some(profile) = bazel_rs::module_cli::builtin_profile_argument(&arg)? {
+            if let Some(disabled) =
+                bazel_rs::module_cli::repository_disable_download_argument(&arg)?
+            {
+                repository_downloads_enabled = !disabled;
+            } else if let Some(profile) = bazel_rs::module_cli::builtin_profile_argument(&arg)? {
                 resolver_options.builtin_profile = profile;
             } else if arg == "--override_repository" || arg.starts_with("--override_repository=") {
                 return Err("unsupported option --override_repository; MODULE overrides do not replace the built-in repository filesystem".to_owned());
@@ -188,6 +195,7 @@ fn run() -> Result<(), String> {
     let current_package = current_package(&root, &cwd)?;
     let repositories = Arc::new(
         bazel_rs::repository::RepositorySet::with_options(root.clone(), resolver_options)
+            .with_repository_downloads_enabled(repository_downloads_enabled)
             .with_source_cache(cache.join("repositories")),
     );
     repositories.validate_root_module()?;

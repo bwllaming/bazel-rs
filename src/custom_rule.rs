@@ -928,6 +928,7 @@ mod tests {
             .build();
         Module::with_temp_heap(|module| {
             let context = crate::loading::ExtensionContext {
+                byte_strings: false,
                 label: crate::label::Label::parse(label, "").unwrap(),
                 repositories: std::sync::Arc::new(crate::repository::RepositorySet::new(
                     std::path::PathBuf::from("."),
@@ -1106,6 +1107,7 @@ d = attr.label_list(providers=((P,), ()))
             let source = format!("def impl(ctx):\n    return []\nx = {expression}");
             let ast = AstModule::parse("defs.bzl", source, &Dialect::Standard).unwrap();
             let context = crate::loading::ExtensionContext {
+                byte_strings: false,
                 label: crate::label::Label::parse("//definitions:defs.bzl", "").unwrap(),
                 repositories: std::sync::Arc::new(crate::repository::RepositorySet::new(
                     std::path::PathBuf::from("."),
@@ -1673,6 +1675,7 @@ z = attr.string_dict()
             "module(name='main')\ne=use_extension('//:ext.bzl','{symbol}')\nuse_repo(e,chosen='made')\n"
         )).unwrap();
         let context = crate::loading::ExtensionContext {
+            byte_strings: false,
             label: crate::label::Label::parse("//:ext.bzl", "").unwrap(),
             repositories: std::sync::Arc::new(crate::repository::RepositorySet::new(
                 root.path().to_owned(),
@@ -1823,6 +1826,7 @@ z = attr.string_dict()
         ] {
             Module::with_temp_heap(|module| {
                 let context = crate::loading::ExtensionContext {
+                    byte_strings: false,
                     label: crate::label::Label::parse(extension, "").unwrap(),
                     repositories: std::sync::Arc::new(crate::repository::RepositorySet::new(
                         std::path::PathBuf::from("."),

@@ -369,13 +369,63 @@ fn unsupported_context_operations_and_invalid_names_never_publish() {
     for (operation, marker) in [
         ("ctx.extension_metadata()", "extension_metadata"),
         ("ctx.os.environ", "repository_os.environ is unsupported"),
-        ("ctx.read('x')", "read"),
+        (
+            "ctx.read(\"x\",watch=\"yes\")",
+            "unsupported module I/O profile: watch=yes on extension-owned files",
+        ),
         ("maker(name='a+b',text='bad')", "invalid repository name"),
     ] {
         let f = Fixture::new();
         f.plain_usage();
         f.file("ext.bzl", format!("load(':rules.bzl','maker')\ndef _impl(ctx):\n    {operation}\n    maker(name='made',text='never')\nfiles=module_extension(_impl)\n"));
-        reject(&f.run(&["query", "@chosen//:data.txt"]), marker);
+        if operation.starts_with("ctx.read(") {
+            // Match the legacy validator's read-watch fixture byte for byte.
+            f.file("MODULE.bazel", "module(name=\"main\", version=\"1.0\")\ne=use_extension(\"//:ext.bzl\", \"files\")\nuse_repo(e, chosen=\"made\")\n");
+            f.file("BUILD.bazel", "");
+            f.file("ext.bzl", "load(\":rules.bzl\", \"maker\")\ndef _impl(ctx):\n    maker(name=\"made\")\n    ctx.read(\"x\",watch=\"yes\")\n    fail(\"EXTENSION_AFTER_RECORD_SENTINEL\")\nfiles=module_extension(_impl, tag_classes={}, doc=None, environ=[], os_dependent=False, arch_dependent=False, facts_version=0)\n");
+            f.file("rules.bzl", "def _impl(ctx):\n    fail(\"UNUSED_REPOSITORY_CALLBACK_SENTINEL\")\nmaker = repository_rule(implementation = _impl, attrs = {})\n");
+        }
+        let target = if operation.starts_with("ctx.read(") {
+            "@chosen//:data"
+        } else {
+            "@chosen//:data.txt"
+        };
+        let output = f.run(&["query", target]);
+        if operation.starts_with("ctx.read(") {
+            eprintln!(
+                "READ_WATCH_FIXTURE_BEGIN\n{}READ_WATCH_FIXTURE_END\nREAD_WATCH_STDERR_BEGIN\n{}READ_WATCH_STDERR_END",
+                fs::read_to_string(f.0.path().join("ext.bzl")).unwrap(),
+                error(&output)
+            );
+            assert_eq!(output.status.code(), Some(1), "{}", error(&output));
+            assert_eq!(
+                error(&output)
+                    .lines()
+                    .filter(|line| line.starts_with("error: "))
+                    .collect::<Vec<_>>(),
+                [format!("error: {marker}")]
+            );
+            assert!(!error(&output).contains("EXTENSION_AFTER_RECORD_SENTINEL"));
+            assert!(!error(&output).contains("UNUSED_REPOSITORY_CALLBACK_SENTINEL"));
+            assert!(
+                error(&output)
+                    .lines()
+                    .any(|line| line == " --> //:ext.bzl:4:5")
+            );
+            assert!(
+                error(&output)
+                    .lines()
+                    .any(|line| line == "4 |     ctx.read(\"x\",watch=\"yes\")")
+            );
+            assert!(!f.0.path().join("cache").exists());
+            for name in ["MODULE.bazel", "BUILD.bazel", "rules.bzl"] {
+                eprintln!(
+                    "READ_WATCH_INPUT_BEGIN {name}\n{}READ_WATCH_INPUT_END {name}",
+                    fs::read_to_string(f.0.path().join(name)).unwrap()
+                );
+            }
+        }
+        reject(&output, marker);
         assert!(f.roots().is_empty());
     }
 }

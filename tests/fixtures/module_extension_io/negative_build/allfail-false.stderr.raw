@@ -1,0 +1,13 @@
+OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.
+DEBUG: /tmp/opencode/module-extension-io-closure-capture-01/scratch/workspace/allfail-false/extension.bzl:4:10: MODULE_IO_JSON {"case":"allfail-false","event":"begin"}
+DEBUG: /tmp/opencode/module-extension-io-closure-capture-01/scratch/workspace/allfail-false/extension.bzl:5:10: MODULE_IO_JSON {"case":"allfail-false","event":"pre","index":0,"operation":{"args":[["/404","/also404"]],"kwargs":{"allow_fail":false,"output":"metadata.json","sha256":"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb"},"method":"download"}}
+WARNING: Download from http://127.0.0.1:47463/404 failed: class java.io.FileNotFoundException GET returned 404 Not Found
+WARNING: Download from http://127.0.0.1:47463/also404 failed: class java.io.FileNotFoundException GET returned 404 Not Found
+ERROR: /tmp/opencode/module-extension-io-closure-capture-01/scratch/workspace/allfail-false/extension.bzl:6:25: Traceback (most recent call last):
+	File "/tmp/opencode/module-extension-io-closure-capture-01/scratch/workspace/allfail-false/extension.bzl", line 6, column 25, in _impl
+		value = ctx.download(["http://127.0.0.1:47463/404", "http://127.0.0.1:47463/also404"], output = "metadata.json", sha256 = "9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb", allow_fail = False)
+Error in download: java.io.IOException: Error downloading [http://127.0.0.1:47463/404, http://127.0.0.1:47463/also404] to /tmp/opencode/module-extension-io-closure-capture-01/scratch/base/allfail-false/modextwd/+io/metadata.json: GET returned 404 Not Found
+ERROR: Analysis of target '//:consume' failed; build aborted: error evaluating module extension @@//:extension.bzl%io
+INFO: Elapsed time: 1.504s, Critical Path: 0.02s
+INFO: 1 process: 1 internal.
+ERROR: Build did NOT complete successfully

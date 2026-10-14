@@ -1,0 +1,13 @@
+OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.
+DEBUG: /tmp/opencode/module-extension-io-closure-capture-01/scratch/workspace/read-watch-yes/extension.bzl:4:10: MODULE_IO_JSON {"case":"read-watch-yes","event":"begin"}
+DEBUG: /tmp/opencode/module-extension-io-closure-capture-01/scratch/workspace/read-watch-yes/extension.bzl:5:10: MODULE_IO_JSON {"case":"read-watch-yes","event":"pre","index":0,"operation":{"args":["/versions?mode=json&include=all"],"kwargs":{"output":"metadata.json","sha256":"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb"},"method":"download"}}
+DEBUG: /tmp/opencode/module-extension-io-closure-capture-01/scratch/workspace/read-watch-yes/extension.bzl:9:10: MODULE_IO_JSON {"event":"post","index":0,"value":{"fields":{"integrity":"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=","sha256":"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb","size_bytes":620,"success":true},"type":"struct"}}
+DEBUG: /tmp/opencode/module-extension-io-closure-capture-01/scratch/workspace/read-watch-yes/extension.bzl:10:10: MODULE_IO_JSON {"case":"read-watch-yes","event":"pre","index":1,"operation":{"args":["metadata.json"],"kwargs":{"watch":"yes"},"method":"read"}}
+ERROR: /tmp/opencode/module-extension-io-closure-capture-01/scratch/workspace/read-watch-yes/extension.bzl:11:21: Traceback (most recent call last):
+	File "/tmp/opencode/module-extension-io-closure-capture-01/scratch/workspace/read-watch-yes/extension.bzl", line 11, column 21, in _impl
+		value = ctx.read("metadata.json", watch = "yes")
+Error in read: attempted to watch path under working directory
+ERROR: Analysis of target '//:consume' failed; build aborted: error evaluating module extension @@//:extension.bzl%io
+INFO: Elapsed time: 4.919s, Critical Path: 0.10s
+INFO: 1 process: 1 internal.
+ERROR: Build did NOT complete successfully

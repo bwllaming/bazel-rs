@@ -1,0 +1,56 @@
+{
+  "state": "planned-not-executed; these are mandatory separate lanes, not skipped passing cases",
+  "reference_instrumentation": {
+    "native_cli_equivalent": false,
+    "reason": "ctx.path/execute absent in native profile; do not add them to portable callbacks",
+    "cases": [
+      {"name": "owned-mode-0640", "seed": "old", "mode": "0640", "reuse": true, "requests": 0},
+      {"name": "disabled-matching-reuse", "seed": "old", "mode": "0640", "flag": "--repository_disable_download", "requests": 0, "success": true},
+      {"name": "checksum-boundary-32767", "body_size": 32767, "seed": "old", "allow_fail": true, "requests": 1, "retained": "old", "mode": "0640"},
+      {"name": "checksum-boundary-32768", "body_size": 32768, "seed": "old", "allow_fail": true, "requests": 1, "retained": "new", "mode": "0640"},
+      {"name": "checksum-boundary-32769", "body_size": 32769, "seed": "old", "allow_fail": true, "requests": 1, "retained": "new", "mode": "0640"},
+      {"name": "truncation-not-recovery", "declared_size": 40000, "sent_size": 33000, "seed": "old", "allow_fail": true, "requests": 1, "success": false, "visible_size": 33000, "mode": "0640", "original_frozen_expectation_remains_failed": true}
+    ]
+  },
+  "native_zero_effect_rejections": {
+    "status": "diagnostic/source binding pending frozen core; no native execution authorized",
+    "allow_fail": true,
+    "requests": 0,
+    "filesystem_effects": [],
+    "publication": [],
+    "cases": [
+      {"name": "auth", "kwargs": {"auth": {"http://127.0.0.1:18080/versions": {"type": "basic", "login": "fixture", "password": "synthetic-not-a-secret"}}}},
+      {"name": "headers", "kwargs": {"headers": {"X-Fixture": "1"}}},
+      {"name": "async", "kwargs": {"block": false}},
+      {"name": "executable", "kwargs": {"executable": true}},
+      {"name": "canonical", "kwargs": {"canonical_id": "fixture-id"}},
+      {"name": "escape", "kwargs": {"output": "../outside"}},
+      {"name": "absolute", "kwargs": {"output": "/MODULE_IO_OWNED/outside"}},
+      {"name": "label", "kwargs": {"output": {"starlark_type": "Label", "expression": "Label(\"//:owned\")"}}},
+      {"name": "path", "proof_lane": "core-unit/context-injection-only", "kwargs": {"output": {"starlark_type": "path", "native_cli_constructor": null}}},
+      {"name": "file-scheme", "args": ["file:///MODULE_IO_OWNED/owned"]}
+    ]
+  },
+  "tls": {
+    "reference": "private JVM truststore + trusted/untrusted loopback HTTPS, no global trust edits",
+    "native_cli": "BLOCKED: no local test-trust injection; no invented CA flag",
+    "native_unit": "SEPARATE: real transport CA injected through unit/context setup, never CLI-equivalent",
+    "public_application_https": "parent-only later probe",
+    "forbidden": ["TLS bypass", "global trust edits", "ambient proxy", "ambient credentials"]
+  },
+  "core_unit_only": [
+    "resource decoded/encoded size and total time/attempt budgets; never allow_fail fallback",
+    "private scratch cleanup success/error/unwind; no scratch/credential leakage in provenance",
+    "expired/cross-context capability lifetime",
+    "callback failure and failed import publish no repositories",
+    "injected owned existing destination 0640 and disabled matching reuse",
+    "32KiB source/integrity failure visibility, distinct fresh/seeded destination cases"
+  ],
+  "freeze_blockers": [
+    "parent authorization and executable/source hashes",
+    "native source-bound diagnostics and exact CLI footer only if a frozen negative requires it",
+    "native callback replay/cache and publication behavior must be bound after core freeze",
+    "native time/resource limits and real-transport TLS proof remain separate from reference capture"
+  ],
+  "not_required": ["SDK archives", "toolchains", "extension facts", "persistent watches", "API completeness"]
+}

@@ -1,0 +1,11 @@
+OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.
+DEBUG: /tmp/opencode/module-extension-io-closure-capture-01/scratch/workspace/read-invalid-watch/extension.bzl:4:10: MODULE_IO_JSON {"case":"read-invalid-watch","event":"begin"}
+DEBUG: /tmp/opencode/module-extension-io-closure-capture-01/scratch/workspace/read-invalid-watch/extension.bzl:5:10: MODULE_IO_JSON {"case":"read-invalid-watch","event":"pre","index":0,"operation":{"args":["missing"],"kwargs":{"watch":"invalid"},"method":"read"}}
+ERROR: /tmp/opencode/module-extension-io-closure-capture-01/scratch/workspace/read-invalid-watch/extension.bzl:6:21: Traceback (most recent call last):
+	File "/tmp/opencode/module-extension-io-closure-capture-01/scratch/workspace/read-invalid-watch/extension.bzl", line 6, column 21, in _impl
+		value = ctx.read("missing", watch = "invalid")
+Error in read: bad value for 'watch' parameter; want 'yes', 'no', or 'auto', got invalid
+ERROR: Analysis of target '//:consume' failed; build aborted: error evaluating module extension @@//:extension.bzl%io
+INFO: Elapsed time: 1.533s, Critical Path: 0.03s
+INFO: 1 process: 1 internal.
+ERROR: Build did NOT complete successfully

@@ -383,6 +383,7 @@ mod tests {
     fn extension(source: &str, globals: &Globals) -> Result<FrozenModule, String> {
         Module::with_temp_heap(|module| {
             let context = ExtensionContext {
+                byte_strings: false,
                 label: crate::label::Label::parse_canonical("//:defs.bzl").unwrap(),
                 repositories: Arc::new(crate::repository::RepositorySet::new(".".into())),
             };

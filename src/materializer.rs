@@ -121,6 +121,32 @@ pub fn materialize_with_patches(
     cache: &Path,
     local_patches: &LocalPatchPlan,
 ) -> Result<PathBuf, String> {
+    materialize_with_download_policy(
+        registry,
+        name,
+        version,
+        module_file,
+        source,
+        cache,
+        local_patches,
+        true,
+    )
+}
+
+/// Apply repository download policy only to archive, overlay and patch acquisition.
+/// Metadata/configuration reads and verified cache reuse are unaffected. Existing
+/// library entrypoints retain enabled-by-default behavior.
+#[allow(clippy::too_many_arguments)]
+pub fn materialize_with_download_policy(
+    registry: &Registry,
+    name: &str,
+    version: &str,
+    module_file: &[u8],
+    source: &Map<String, Value>,
+    cache: &Path,
+    local_patches: &LocalPatchPlan,
+    downloads_enabled: bool,
+) -> Result<PathBuf, String> {
     local_patches.validate_materialization()?;
     for key in source.keys() {
         if !matches!(
@@ -259,7 +285,7 @@ pub fn materialize_with_patches(
     {
         return Ok(destination);
     }
-    let bytes = cached_download(&cache, &urls, &integrity, DOWNLOAD_LIMIT)?;
+    let bytes = cached_download(&cache, &urls, &integrity, DOWNLOAD_LIMIT, downloads_enabled)?;
     let staging = tempfile::Builder::new()
         .prefix(".stage-")
         .tempdir_in(&trees)
@@ -270,7 +296,13 @@ pub fn materialize_with_patches(
         let integrity = Integrity::parse(value.as_str().expect("validated overlay integrity"))?;
         let location =
             registry.download_location(&format!("modules/{name}/{version}/overlay/{path}"))?;
-        let bytes = cached_download(&cache, &[location], &integrity, OVERLAY_LIMIT)?;
+        let bytes = cached_download(
+            &cache,
+            &[location],
+            &integrity,
+            OVERLAY_LIMIT,
+            downloads_enabled,
+        )?;
         write_source_file(staging.path(), &relative, &bytes, true)?;
     }
     // Preserve descriptor insertion order, not lexical patch-name order.
@@ -278,7 +310,13 @@ pub fn materialize_with_patches(
         let integrity = Integrity::parse(value.as_str().expect("validated patch integrity"))?;
         let location =
             registry.download_location(&format!("modules/{name}/{version}/patches/{path}"))?;
-        let bytes = cached_download(&cache, &[location], &integrity, OVERLAY_LIMIT)?;
+        let bytes = cached_download(
+            &cache,
+            &[location],
+            &integrity,
+            OVERLAY_LIMIT,
+            downloads_enabled,
+        )?;
         crate::patching::parse(&bytes, patch_strip)
             .and_then(|patch| patch.apply_tree(staging.path()))
             .map_err(|e| format!("cannot apply registry patch {path:?}: {e}"))?;
@@ -355,6 +393,7 @@ fn cached_download(
     urls: &[String],
     integrity: &Integrity,
     limit: u64,
+    downloads_enabled: bool,
 ) -> Result<Vec<u8>, String> {
     let directory = cache.join("downloads").join(&integrity.algorithm);
     ensure_directory(&directory)?;
@@ -367,6 +406,9 @@ fn cached_download(
         && integrity.verify(&bytes).is_ok()
     {
         return Ok(bytes);
+    }
+    if !downloads_enabled {
+        return Err("repository downloads are disabled by --repository_disable_download; no verified cached blob is available".into());
     }
     let mut failures = Vec::new();
     for url in urls {
@@ -572,6 +614,98 @@ mod tests {
         fs::write(&path, &archive).unwrap();
         let source = json!({ "url": reqwest::Url::from_file_path(path).unwrap().as_str(), "integrity": sri(&archive), "strip_prefix": "pkg" }).as_object().unwrap().clone();
         (Registry::LocalPath(registry), source)
+    }
+
+    #[test]
+    fn disabled_download_policy_reuses_genuine_tree_and_blob_with_exact_legacy_identity() {
+        let temp = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let registry = Registry::LocalPath(temp.path().join("registry"));
+        fs::create_dir(registry.local_path().unwrap()).unwrap();
+        let archive = include_bytes!("../tests/fixtures/build_settings/bazel-skylib-1.8.2.tar.gz");
+        let module = include_bytes!(
+            "../tests/fixtures/builtin_modules/registry/modules/bazel_skylib/1.8.2/MODULE.bazel"
+        );
+        let mut source: Map<String, Value> = serde_json::from_slice(include_bytes!(
+            "../tests/fixtures/builtin_modules/registry/modules/bazel_skylib/1.8.2/source.json"
+        ))
+        .unwrap();
+        let archive_path = temp.path().join("source.tar.gz");
+        fs::write(&archive_path, archive).unwrap();
+        source.insert(
+            "url".into(),
+            json!(
+                reqwest::Url::from_file_path(&archive_path)
+                    .unwrap()
+                    .as_str()
+            ),
+        );
+        let cache = temp.path().join("cache");
+        let patches = LocalPatchPlan::default();
+        let disabled = || {
+            materialize_with_download_policy(
+                &registry,
+                "bazel_skylib",
+                "1.8.2",
+                module,
+                &source,
+                &cache,
+                &patches,
+                false,
+            )
+        };
+        assert!(
+            disabled()
+                .unwrap_err()
+                .contains("--repository_disable_download")
+        );
+        let first =
+            materialize(&registry, "bazel_skylib", "1.8.2", module, &source, &cache).unwrap();
+        let identity = serde_json::to_vec(&(
+            FORMAT,
+            registry.to_string(),
+            "bazel_skylib",
+            "1.8.2",
+            &source,
+            Option::<Value>::None,
+            module.as_slice(),
+            patches.cache_identity(),
+        ))
+        .unwrap();
+        assert_eq!(
+            first,
+            cache.join("trees").join(hex(&Sha256::digest(identity)))
+        );
+        let manifest = first.with_extension("json");
+        let before = fs::read(&manifest).unwrap();
+        let blob = cache
+            .join("downloads/sha256")
+            .join(hex(&Sha256::digest(archive)));
+        fs::remove_file(&blob).unwrap();
+        assert_eq!(
+            disabled().unwrap(),
+            first,
+            "valid tree does not need its blob"
+        );
+        assert_eq!(fs::read(&manifest).unwrap(), before);
+        fs::remove_dir_all(&first).unwrap();
+        fs::write(&blob, archive).unwrap();
+        fs::remove_file(&archive_path).unwrap();
+        assert_eq!(
+            disabled().unwrap(),
+            first,
+            "verified blob can rebuild without file acquisition"
+        );
+        assert_eq!(fs::read(first.join("MODULE.bazel")).unwrap(), module);
+        assert_eq!(fs::read(&manifest).unwrap(), before);
+        fs::write(&blob, b"corrupt").unwrap();
+        fs::remove_dir_all(&first).unwrap();
+        assert!(
+            disabled()
+                .unwrap_err()
+                .contains("--repository_disable_download")
+        );
+        assert_eq!(fs::read(blob).unwrap(), b"corrupt");
+        assert!(!first.exists());
     }
 
     #[test]

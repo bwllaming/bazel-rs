@@ -1,0 +1,11 @@
+OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.
+DEBUG: /tmp/opencode/module-extension-io-closure-capture-01/scratch/workspace/malformed-sha-transfer-success/extension.bzl:4:10: MODULE_IO_JSON {"case":"malformed-sha-transfer-success","event":"begin"}
+DEBUG: /tmp/opencode/module-extension-io-closure-capture-01/scratch/workspace/malformed-sha-transfer-success/extension.bzl:5:10: MODULE_IO_JSON {"case":"malformed-sha-transfer-success","event":"pre","index":0,"operation":{"args":["/versions?mode=json&include=all"],"kwargs":{"allow_fail":true,"output":"metadata.json","sha256":"not-hex"},"method":"download"}}
+ERROR: /tmp/opencode/module-extension-io-closure-capture-01/scratch/workspace/malformed-sha-transfer-success/extension.bzl:6:25: Traceback (most recent call last):
+	File "/tmp/opencode/module-extension-io-closure-capture-01/scratch/workspace/malformed-sha-transfer-success/extension.bzl", line 6, column 25, in _impl
+		value = ctx.download("http://127.0.0.1:47463/versions?mode=json&include=all", output = "metadata.json", sha256 = "not-hex", allow_fail = True)
+Error in download: Checksum error in module extension @@//:extension.bzl%io: Invalid SHA-256 checksum 'not-hex'
+ERROR: Analysis of target '//:consume' failed; build aborted: error evaluating module extension @@//:extension.bzl%io
+INFO: Elapsed time: 1.296s, Critical Path: 0.02s
+INFO: 1 process: 1 internal.
+ERROR: Build did NOT complete successfully

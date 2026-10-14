@@ -2,6 +2,9 @@
 //! MODULE projection. Repository calls only record declarations: publication,
 //! sibling mapping, schema binding and materialization belong to the caller.
 
+// The generated native wrapper preserves Bazel's ten-parameter download API.
+#![allow(clippy::too_many_arguments)]
+
 use allocative::Allocative;
 use anyhow::{anyhow, bail, ensure};
 use serde::Serialize;
@@ -28,6 +31,7 @@ use crate::starlark_types::alloc_label;
 pub struct ExtensionExecution {
     pub repositories: Vec<RecordedRepository>,
     pub modules: Vec<BoundModule>,
+    pub(crate) io_observations: Vec<crate::extension_io::Observation>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -62,6 +66,7 @@ mod values {
         pub repositories: Arc<RepositorySet>,
         pub public_label: Label,
         pub calls: CallRecorder,
+        pub io: RefCell<crate::extension_io::ScratchExecutionIo>,
     }
 
     #[derive(
@@ -167,6 +172,9 @@ mod values {
         pub modules: V,
         pub os: V,
         pub root_has_non_dev_dependency: bool,
+        // Inert, never reused; no path, client, file handle or authority survives
+        // freezing. I/O additionally requires this live receiver's active Context.
+        pub execution_identity: u64,
     }
 
     impl<V> fmt::Display for ModuleCtxGen<V> {
@@ -199,16 +207,40 @@ mod values {
         }
 
         fn dir_attr(&self) -> Vec<String> {
-            ["modules", "os", "root_module_has_non_dev_dependency"]
-                .map(str::to_owned)
-                .to_vec()
+            [
+                "modules",
+                "os",
+                "root_module_has_non_dev_dependency",
+                "download",
+                "read",
+            ]
+            .map(str::to_owned)
+            .to_vec()
         }
     }
 }
 use values::{BazelModuleGen, Context, FrozenTag, ModuleCtxGen, Tag, TagGen};
 
+fn io_receiver(this: Value<'_>, eval: &Evaluator<'_, '_, '_>) -> anyhow::Result<u64> {
+    use crate::extension_download::TypedIoError;
+    let receiver = this
+        .downcast_ref::<values::ModuleCtx>()
+        .ok_or(TypedIoError::Lifetime)?;
+    let context = context(eval).ok_or(TypedIoError::Lifetime)?;
+    context
+        .io
+        .borrow()
+        .check_receiver(receiver.execution_identity)?;
+    Ok(receiver.execution_identity)
+}
+
 fn context<'a>(eval: &'a Evaluator<'_, '_, '_>) -> Option<&'a Context> {
     eval.extra.and_then(|extra| extra.downcast_ref::<Context>())
+}
+
+/// True while evaluating a module-extension callback (byte-string profile).
+pub(crate) fn evaluating_callback(eval: &Evaluator<'_, '_, '_>) -> bool {
+    context(eval).is_some()
 }
 
 /// Bazel's extension-evaluation no-op marker is dynamic, not a property of the
@@ -259,6 +291,103 @@ starlark::methods_static!(MODULE_METHODS = module_methods);
 
 #[starlark_module]
 fn module_methods(builder: &mut MethodsBuilder) {
+    fn download<'v>(
+        this: Value<'v>,
+        url: Value<'v>,
+        #[starlark(default = "")] output: &str,
+        #[starlark(default = "")] sha256: &str,
+        #[starlark(default = false)] executable: bool,
+        #[starlark(default = false)] allow_fail: bool,
+        #[starlark(default = "")] canonical_id: &str,
+        auth: Option<Value<'v>>,
+        headers: Option<Value<'v>>,
+        #[starlark(require = named, default = "")] integrity: &str,
+        #[starlark(require = named, default = true)] block: bool,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        use crate::extension_download::TypedIoError;
+        let identity = io_receiver(this, eval)?;
+        // All unsupported controls and all sequence elements are checked before
+        // scratch creation, destination reuse, policy gating or transport.
+        if executable || !block || !canonical_id.is_empty() {
+            return Err(TypedIoError::Unsupported(
+                "executable, async block=False, or canonical_id cache",
+            )
+            .into());
+        }
+        for option in [auth, headers].into_iter().flatten() {
+            let dict = starlark::values::dict::DictRef::from_value(option).ok_or(
+                TypedIoError::Validation("auth and headers must be dictionaries"),
+            )?;
+            if !dict.is_empty() {
+                return Err(TypedIoError::Unsupported("nonempty auth or headers").into());
+            }
+        }
+        let strings = if let Some(text) = url.unpack_str() {
+            vec![text]
+        } else {
+            let values = if let Some(list) = starlark::values::list::ListRef::from_value(url) {
+                list.content()
+            } else if let Some(tuple) = starlark::values::tuple::TupleRef::from_value(url) {
+                tuple.content()
+            } else {
+                return Err(TypedIoError::Validation(
+                    "url must be a string, list, or tuple of strings",
+                )
+                .into());
+            };
+            if values.len() > 8 {
+                return Err(TypedIoError::Resource("8 mirrors per call").into());
+            }
+            values
+                .iter()
+                .map(|v| {
+                    v.unpack_str()
+                        .ok_or(TypedIoError::Validation("every URL must be a string"))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let context = context(eval).ok_or(TypedIoError::Lifetime)?;
+        let mut io = context.io.borrow_mut();
+        let result = io.download(
+            identity,
+            context.repositories.repository_downloads_enabled(),
+            crate::extension_io::Download {
+                urls: &strings,
+                output,
+                sha256,
+                integrity,
+                allow_fail,
+            },
+        )?;
+        let heap = eval.heap();
+        let mut fields = vec![("success", heap.alloc(result.success))];
+        if let Some(integrity) = &result.integrity {
+            fields.push(("integrity", heap.alloc(integrity.as_str())));
+        }
+        if let Some(sha256) = &result.sha256 {
+            fields.push(("sha256", heap.alloc(sha256.as_str())));
+        }
+        if let Some(size) = result.size_bytes {
+            fields.push(("size_bytes", heap.alloc(size as i64)));
+        }
+        Ok(heap.alloc(AllocStruct(fields)))
+    }
+
+    fn read<'v>(
+        this: Value<'v>,
+        path: &str,
+        #[starlark(require = named, default = "auto")] watch: &str,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<String> {
+        let identity = io_receiver(this, eval)?;
+        Ok(context(eval)
+            .ok_or(crate::extension_download::TypedIoError::Lifetime)?
+            .io
+            .borrow_mut()
+            .read(identity, path, watch)?)
+    }
+
     fn is_dev_dependency<'v>(
         this: Value<'v>,
         #[starlark(require = pos)] tag: Value<'v>,
@@ -471,6 +600,7 @@ pub fn execute(
             repositories,
             public_label: public_label.clone(),
             calls: CallRecorder::default(),
+            io: RefCell::new(crate::extension_io::ScratchExecutionIo::new()?),
         };
         let repositories = Module::with_temp_heap(|module| -> anyhow::Result<_> {
             let heap = module.heap();
@@ -481,6 +611,7 @@ pub fn execute(
                     context.repositories.host().map_err(anyhow::Error::msg)?,
                 )?,
                 root_has_non_dev_dependency,
+                execution_identity: context.io.borrow().identity(),
             });
             for function in functions {
                 heap.access_owned_frozen_value(function);
@@ -491,9 +622,12 @@ pub fn execute(
             eval.set_max_tick_count(1_000_000)?;
             eval.set_max_heap_size(128 * 1024 * 1024)?;
             eval.extra = Some(&context);
-            let returned = eval
-                .eval_function(implementation, &[ctx], &[])
-                .map_err(|error| anyhow!(error.to_string()))?;
+            let evaluated = eval.eval_function(implementation, &[ctx], &[]);
+            // No live HTTP/file handle remains in the synchronous authority.
+            // Close even when evaluation failed, BEFORE success or heap freeze.
+            let observations = context.io.borrow_mut().close();
+            let returned = evaluated.map_err(|error| anyhow!(error.to_string()))?;
+            let observations = observations?;
             ensure!(
                 returned.is_none(),
                 "module extension implementation return values other than None are unsupported"
@@ -504,11 +638,15 @@ pub fn execute(
                     "ordinary extension callback:{public_label}"
                 ))))
                 .map_err(|error| anyhow!("cannot freeze module extension callback: {error:?}"))?;
-            context.calls.finish(&frozen).map_err(anyhow::Error::msg)
+            Ok((
+                context.calls.finish(&frozen).map_err(anyhow::Error::msg)?,
+                observations,
+            ))
         })?;
         Ok(ExtensionExecution {
-            repositories,
+            repositories: repositories.0,
             modules,
+            io_observations: repositories.1,
         })
     };
     run().map_err(|error| format!("module extension {public_label}: {error:#}"))
@@ -517,6 +655,9 @@ pub fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+    include!("../tests/support/extension_io_callback_budget.rs");
+    include!("../tests/support/extension_io_preflight_cases.rs");
+    include!("../tests/support/extension_io_boundary_context.rs");
     use crate::bzlmod::ExtensionTag;
     use crate::extension_calls::RecordedValue;
     use crate::loading::{LoadedDefinition, load_definition_in};
@@ -954,6 +1095,7 @@ ctx.is_dev_dependency(t) or fail('hidden dev flag')
                     )
                     .unwrap(),
                     root_has_non_dev_dependency: false,
+                    execution_identity: 0,
                 }),
             );
             let source = "ctx.is_dev_dependency(foreign[0].tags.t[0]) or fail('foreign genuine tag rejected')";
@@ -1041,8 +1183,8 @@ words.append('after')
         for field in [
             "extension_metadata",
             "facts",
-            "read",
-            "download",
+            "path",
+            "delete",
             "tag_sort_key",
             "is_isolated",
             "file",
@@ -1062,6 +1204,177 @@ words.append('after')
             &[participant(Vec::new())],
             "repo_name",
         );
+    }
+
+    #[test]
+    fn json_unicode_escapes_in_extension_callback_are_bazel_byte_strings() {
+        let fixture = Fixture::new();
+        fixture
+            .run(
+                r#"
+value = json.decode('"\\u00e9"')
+len(value) == 2 or fail('expected two UTF-8 byte chars, got %r' % value)
+json.decode('"\\u0041"') == 'A' or fail('ascii escape changed')
+"#,
+                "{}",
+                &[],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn module_download_real_signature_result_read_and_tuple_urls() {
+        use crate::extension_io::tests::{Server, response};
+        let body = b"{\"versions\": [\"1.99.1\"]}";
+        let server = Server::new(vec![response(200, body, "")]);
+        let sha = crate::extension_download::sha256(body);
+        let fixture = Fixture::new();
+        let result = fixture.run(&format!(r#"
+hasattr(ctx, 'download') or fail('download absent')
+hasattr(ctx, 'read') or fail('read absent')
+'download' in dir(ctx) or fail('dir download absent')
+'read' in dir(ctx) or fail('dir read absent')
+result = ctx.download(({url:?},), 'data', {sha:?}, False, False, '', {{}}, {{}}, integrity='', block=True)
+type(result) == 'struct' or fail('not a struct')
+sorted(dir(result)) == ['integrity', 'sha256', 'size_bytes', 'success'] or fail(dir(result))
+result.success and result.sha256 == {sha:?} and result.size_bytes == {size} or fail(result)
+json.decode(ctx.read(path='data', watch='auto'))['versions'][0] == '1.99.1' or fail('not actual JSON')
+ctx.download([], 'data', {sha:?}, allow_fail=True).success or fail('reuse failed')
+r(name='actual', words=[ctx.read('data', watch='no')])
+"#, url=server.url, size=body.len()), "{}", &[]).unwrap();
+        assert_eq!(server.count(), 1);
+        assert_eq!(result.io_observations.len(), 4);
+        assert_eq!(result.repositories.len(), 1);
+    }
+
+    #[test]
+    fn module_download_preflight_types_and_unsupported_controls_make_no_requests() {
+        use crate::extension_io::tests::{Server, response};
+        let server = Server::new(vec![response(200, b"unused", "")]);
+        let fixture = Fixture::new();
+        let base = format!(
+            "ctx.download({:?}, sha256={:?}",
+            server.url,
+            "00".repeat(32)
+        );
+        for suffix in [
+            ", executable=True)",
+            ", block=False)",
+            ", canonical_id='cache')",
+            ", auth={'x': {}})",
+            ", headers={'x': 'y'})",
+            ", auth=None)",
+            ", headers=[])",
+            ", executable=1)",
+            ", allow_fail=1)",
+            ", block='yes')",
+            ", output=Label('//:file'))",
+            ", integrity='sha256-AAAA')",
+        ] {
+            assert!(
+                fixture.run(&(base.clone() + suffix), "{}", &[]).is_err(),
+                "{suffix}"
+            );
+        }
+        for body in [
+            "ctx.download([\"https://localhost\", 1], allow_fail=True)",
+            "ctx.download(1, allow_fail=True)",
+            "ctx.download({'https://localhost': 1}, allow_fail=True)",
+            "ctx.download([], '', '', False, True, '', {}, {}, 'sha256-AAAA')",
+            "ctx.download([], unknown=True)",
+            "ctx.read('file', 'no')",
+            "ctx.read('file', watch=1)",
+            "ctx.read('file', watch='invalid')",
+            "ctx.read(Label('//:file'))",
+        ] {
+            assert!(fixture.run(body, "{}", &[]).is_err(), "{body}");
+        }
+        assert_eq!(server.count(), 0);
+        fixture.run("result = ctx.download([], allow_fail=True)\ndir(result) == ['success'] and result.success == False or fail(result)", "{}", &[]).unwrap();
+    }
+
+    #[test]
+    fn foreign_frozen_and_expired_module_receivers_cannot_borrow_authority() {
+        let fixture = Fixture::new();
+        let io = crate::extension_io::ScratchExecutionIo::new().unwrap();
+        let id = io.identity();
+        let context = Context {
+            repositories: fixture.repositories.clone(),
+            public_label: label(),
+            calls: CallRecorder::default(),
+            io: RefCell::new(io),
+        };
+        let frozen = Module::with_temp_heap(|module| {
+            module.set(
+                "ctx",
+                module.heap().alloc(ModuleCtxGen {
+                    modules: Value::new_none(),
+                    os: Value::new_none(),
+                    root_has_non_dev_dependency: false,
+                    execution_identity: id,
+                }),
+            );
+            module.freeze().unwrap().get("ctx").unwrap()
+        });
+        Module::with_temp_heap(|module| {
+            let heap = module.heap();
+            let foreign = heap.alloc(ModuleCtxGen {
+                modules: Value::new_none(),
+                os: Value::new_none(),
+                root_has_non_dev_dependency: false,
+                execution_identity: id + 1,
+            });
+            let own = heap.alloc(ModuleCtxGen {
+                modules: Value::new_none(),
+                os: Value::new_none(),
+                root_has_non_dev_dependency: false,
+                execution_identity: id,
+            });
+            let mut eval = Evaluator::new(&module);
+            assert!(io_receiver(own, &eval).is_err());
+            eval.extra = Some(&context);
+            assert!(io_receiver(foreign, &eval).is_err());
+            assert!(io_receiver(heap.access_owned_frozen_value(&frozen), &eval).is_err());
+            assert_eq!(io_receiver(own, &eval).unwrap(), id);
+            context.io.borrow_mut().close().unwrap();
+            assert!(io_receiver(own, &eval).is_err());
+        });
+    }
+
+    #[test]
+    fn actual_context_checksumless_private_tls_reads_real_json_and_cleans_before_freeze() {
+        let server = crate::extension_io::tests::TlsServer::new();
+        let fixture = Fixture::new();
+        let io = crate::extension_io::ScratchExecutionIo::new()
+            .unwrap()
+            .with_client(crate::extension_download::trusted_client(&server.pem));
+        let identity = io.identity();
+        let context = Context {
+            repositories: fixture.repositories.clone(),
+            public_label: label(),
+            calls: CallRecorder::default(),
+            io: RefCell::new(io),
+        };
+        Module::with_temp_heap(|module| {
+            let heap = module.heap();
+            module.set(
+                "ctx",
+                heap.alloc(ModuleCtxGen {
+                    modules: Value::new_none(),
+                    os: Value::new_none(),
+                    root_has_non_dev_dependency: false,
+                    execution_identity: identity,
+                }),
+            );
+            let mut eval = Evaluator::new(&module);
+            eval.extra = Some(&context);
+            eval.eval_module(starlark::syntax::AstModule::parse("tls.star", format!("r = ctx.download({:?}, 'data')\nr.success and r.size_bytes == 20 or fail(r)\njson.decode(ctx.read('data'))['real'] == 'tls bytes' or fail('not real data')\n", server.url), &starlark::syntax::Dialect::Standard).unwrap(), &crate::package::bzl_globals()).unwrap();
+            drop(eval);
+            let observations = context.io.borrow_mut().close().unwrap();
+            assert_eq!(observations.len(), 2);
+            assert!(context.io.borrow().check_receiver(identity).is_err());
+            module.freeze().unwrap();
+        });
     }
 
     #[test]
@@ -1104,6 +1417,7 @@ words.append('after')
                         modules: Value::new_none(),
                         os: crate::host_os::alloc(heap, metadata.clone()).unwrap(),
                         root_has_non_dev_dependency: false,
+                        execution_identity: 0,
                     }),
                 );
             }
@@ -1201,6 +1515,7 @@ words.append('after')
         fixture.run_loaded(loaded, &[], true).unwrap();
         Module::with_temp_heap(|module| {
             let context = crate::loading::ExtensionContext {
+                byte_strings: false,
                 repositories: fixture.repositories.clone(),
                 label: label(),
             };

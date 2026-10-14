@@ -135,6 +135,11 @@ fn context<'a>(eval: &'a Evaluator<'_, '_, '_>) -> anyhow::Result<&'a Context> {
         .ok_or_else(|| anyhow!("repository_ctx is only available during repository execution"))
 }
 
+/// True while evaluating a repository-rule callback (byte-string profile).
+pub(crate) fn evaluating_callback(eval: &Evaluator<'_, '_, '_>) -> bool {
+    context(eval).is_ok()
+}
+
 pub(crate) fn repository_context(eval: &Evaluator<'_, '_, '_>) -> Option<Arc<RepositorySet>> {
     context(eval)
         .ok()
@@ -478,11 +483,12 @@ fn repository_methods(builder: &mut MethodsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let _ = (this, legacy_utf8);
-        ensure!(
-            content.is_ascii(),
-            "repository file content must be ASCII; non-ASCII strings are unsupported"
-        );
-        context(eval)?.write(path, content.as_bytes(), executable)?;
+        // Bazel writes its internal Latin-1 string bytes; characters above
+        // U+00FF are not representable there and are rejected explicitly.
+        let bytes = crate::repository_rule::latin1_bytes(content).ok_or_else(|| {
+            anyhow!("repository file content above U+00FF is unsupported (Latin-1 byte strings)")
+        })?;
+        context(eval)?.write(path, &bytes, executable)?;
         Ok(NoneType)
     }
 
@@ -529,6 +535,10 @@ fn repository_methods(builder: &mut MethodsBuilder) {
     }
 }
 
+fn latin1(text: &str) -> bool {
+    crate::repository_rule::is_latin1(text)
+}
+
 fn alloc_attrs<'v>(
     heap: Heap<'v>,
     attrs: &BTreeMap<String, AttrValue>,
@@ -539,15 +549,15 @@ fn alloc_attrs<'v>(
         let value = match attr {
             AttrValue::String(value) => {
                 ensure!(
-                    value.is_ascii(),
-                    "repository string attributes must be ASCII"
+                    latin1(value),
+                    "repository string attributes must be Latin-1 (U+0000..U+00FF)"
                 );
                 heap.alloc(value.as_str())
             }
             AttrValue::Strings(value) => {
                 ensure!(
-                    value.iter().all(|value| value.is_ascii()),
-                    "repository string attributes must be ASCII"
+                    value.iter().all(|value| latin1(value)),
+                    "repository string attributes must be Latin-1 (U+0000..U+00FF)"
                 );
                 heap.alloc(value.clone())
             }
@@ -556,8 +566,8 @@ fn alloc_attrs<'v>(
                 ensure!(
                     entries
                         .iter()
-                        .all(|(key, value)| key.is_ascii() && value.is_ascii()),
-                    "repository string attributes must be ASCII"
+                        .all(|(key, value)| latin1(key) && latin1(value)),
+                    "repository string attributes must be Latin-1 (U+0000..U+00FF)"
                 );
                 crate::attribute_values::alloc_string_dict(heap, entries)?
             }
@@ -565,8 +575,8 @@ fn alloc_attrs<'v>(
                 ensure!(
                     entries
                         .iter()
-                        .all(|(key, values)| key.is_ascii() && values.iter().all(|v| v.is_ascii())),
-                    "repository string attributes must be ASCII"
+                        .all(|(key, values)| latin1(key) && values.iter().all(|v| latin1(v))),
+                    "repository string attributes must be Latin-1 (U+0000..U+00FF)"
                 );
                 crate::attribute_values::alloc_string_list_dict(heap, entries)?
             }
@@ -782,11 +792,18 @@ mod tests {
                     "d".into(),
                     AttrValue::StringDict(vec![(key.into(), value.into())]),
                 )]);
+                alloc_attrs(module.heap(), &attrs, "repo").unwrap();
+            }
+            for (key, value) in [("\u{100}", "ok"), ("k", "\u{100}")] {
+                let attrs = BTreeMap::from([(
+                    "d".into(),
+                    AttrValue::StringDict(vec![(key.into(), value.into())]),
+                )]);
                 assert!(
                     alloc_attrs(module.heap(), &attrs, "repo")
                         .unwrap_err()
                         .to_string()
-                        .contains("ASCII")
+                        .contains("Latin-1")
                 );
             }
         });
@@ -992,6 +1009,7 @@ mod tests {
             });
             let method = ctx.get_attr("getenv", module.heap()).unwrap().unwrap();
             let loading = crate::loading::ExtensionContext {
+                byte_strings: false,
                 repositories,
                 label: Label::parse_canonical("//:defs.bzl").unwrap(),
             };
@@ -1146,22 +1164,73 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unicode_host_attributes_at_binder_and_executor_boundaries() {
+    fn json_unicode_escapes_use_bazel_byte_strings_in_definition_and_callback() {
+        let fixture = Fixture::new();
+        fixture.file(
+            "defs.bzl",
+            r#"TOP = json.decode('"\\u00e9\\ud83d\\ude00"')
+def _impl(ctx):
+    ctx.file("top", TOP, executable = False)
+    ctx.file("inner", json.decode('"\\u00e9A"'), executable = False)
+R = repository_rule(implementation = _impl)
+"#,
+        );
+        let loaded = load_definition_in(
+            fixture.repositories.clone(),
+            &Label::parse_canonical("//:defs.bzl").unwrap(),
+            "R",
+            &crate::package::bzl_globals(),
+        )
+        .unwrap();
+        fixture.run_loaded(loaded, BTreeMap::new()).unwrap();
+        // Bazel writes UTF-8 bytes of escape runs, never U+00E9 as byte E9.
+        assert_eq!(fixture.bytes("top"), b"\xc3\xa9\xf0\x9f\x98\x80");
+        assert_eq!(fixture.bytes("inner"), b"\xc3\xa9A");
+    }
+
+    #[test]
+    fn latin1_attributes_write_bytes_and_wider_unicode_is_rejected_at_both_boundaries() {
         let fixture = Fixture::new();
         let loaded = fixture.load("ctx.file('x', ctx.attr.text)", "{'text': attr.string()}");
         let definition = unpack(&loaded.value).unwrap();
+        // Runtime byte data maps to U+0000..U+00FF; Bazel writes those bytes.
+        let all: String = (0u8..=255).map(char::from).collect();
+        let bound = bind_attributes(
+            &definition,
+            &BTreeMap::from([("text".to_owned(), serde_json::json!(all))]),
+            "canonical+repo",
+            |text| fixture.repositories.parse(text, "", ""),
+        )
+        .unwrap();
+        execute(
+            fixture.repositories.clone(),
+            &definition,
+            &loaded.functions,
+            &bound,
+            "canonical+repo",
+            "original",
+            &Label::parse_canonical("//:defs.bzl").unwrap(),
+            fixture.stage.path(),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read(fixture.stage.path().join("x")).unwrap(),
+            (0u8..=255).collect::<Vec<_>>()
+        );
+        fs::remove_file(fixture.stage.path().join("x")).unwrap();
+
         let error = bind_attributes(
             &definition,
-            &BTreeMap::from([("text".to_owned(), serde_json::json!("é"))]),
+            &BTreeMap::from([("text".to_owned(), serde_json::json!("\u{100}"))]),
             "canonical+repo",
             |text| fixture.repositories.parse(text, "", ""),
         )
         .unwrap_err();
-        assert!(error.contains("ASCII"), "{error}");
+        assert!(error.contains("Latin-1"), "{error}");
 
         // Deliberately bypass the binder with a typed host value to exercise
         // the executor's defense. The loaded Starlark source remains ASCII.
-        let attrs = BTreeMap::from([("text".to_owned(), AttrValue::String("é".to_owned()))]);
+        let attrs = BTreeMap::from([("text".to_owned(), AttrValue::String("\u{100}".to_owned()))]);
         let error = execute(
             fixture.repositories.clone(),
             &definition,
@@ -1173,7 +1242,7 @@ mod tests {
             fixture.stage.path(),
         )
         .unwrap_err();
-        assert!(error.contains("ASCII"), "{error}");
+        assert!(error.contains("Latin-1"), "{error}");
         assert!(!fixture.stage.path().join("x").exists());
     }
 

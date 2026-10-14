@@ -113,3 +113,7 @@ which was unsupported at that checkpoint. Checkout contents and the required Git
 unchanged; all J-owned scratch and reference processes are cleaned. See
 `artifacts/json-validation.json`, `artifacts/j-json-verification-manifest.json`
 and `artifacts/mainrepo-json-loading.json` for the bound evidence.
+
+This I/O worktree still uses the pre-capacity JSON profile. The separately reviewed
+decode-only capacity experiment is committed as `ac9d646`, but has not been
+integrated here. Its isolated tests do not establish application build/test success.

@@ -627,6 +627,7 @@ strict = rule(implementation=consumer_impl, attrs={"dep": attr.label(providers=[
     ) {
         let frozen = Module::with_temp_heap(|module| {
             let context = crate::loading::ExtensionContext {
+                byte_strings: false,
                 label: Label::parse("//defs:providers.bzl", "").unwrap(),
                 repositories: Arc::new(RepositorySet::new(std::path::PathBuf::from("."))),
             };

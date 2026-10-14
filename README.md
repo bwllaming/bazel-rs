@@ -125,6 +125,9 @@ executor; see [its exact limits](docs/REPOSITORY_RULES.md), including ASCII
 Starlark strings and binary-preserving templates. [Ordinary module extensions](docs/MODULE_EXTENSIONS.md)
 support bounded non-isolated callbacks, typed tags and deferred repository
 declarations; full extension/repository APIs and toolchains remain incomplete.
+[Bounded module-extension I/O](docs/MODULE_EXTENSION_IO.md) documents the candidate
+`module_ctx.download`/`read` implementation and `--repository_disable_download`
+policy (not an offline flag); final acceptance and release remain pending.
 [Build-setting defaults](docs/BUILD_SETTINGS.md) execute genuine implementations
 and propagate native template-variable providers to explicit consumers; CLI
 setting overrides, configured analysis and implicit Make expansion remain unsupported.
@@ -203,9 +206,11 @@ timing caveats and its historical milestone capture.
 
 Module graph evidence is in `artifacts/module-validation.json`. Local external
 repository differential validation passes 20 scoped checks and is not implied by
-module JSON parity. The native application query
-`//src/beyondwork.ai/utils/str:str` still fails on unavailable registry metadata
-for `aspect_bazel_lib@2.22.5`; no Go build/test parity is established. See
+module JSON parity. Its historical native application query failed on unavailable
+registry metadata for `aspect_bazel_lib@2.22.5`. The later N3 runtime-pinned query
+reached the existing JSON resource budget; isolated JSON-capacity commit
+`ac9d646` is not integrated into this I/O worktree. Successful application query,
+Go build/test parity and full-repository performance remain unestablished. See
 [`docs/REPOSITORY_VALIDATION.md`](docs/REPOSITORY_VALIDATION.md) for implementation
 scope, the source-preserving application probe and evidence boundaries.
 

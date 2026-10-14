@@ -333,29 +333,47 @@ pub fn bind_attributes(
         AttrValue::String(canonical_name.to_owned()),
     );
     for (name, value) in &attrs {
-        let ascii = match value {
-            AttrValue::String(value) => value.is_ascii(),
-            AttrValue::Strings(values) | AttrValue::Labels(values) | AttrValue::Outputs(values) => {
+        // String-valued attributes may carry runtime byte data (U+0000..U+00FF),
+        // matching Bazel's Latin-1 internal strings. Executed sources are already
+        // ASCII-literal-only, so such values cannot originate from UTF-8 literals.
+        let representable = match value {
+            AttrValue::String(value) => is_latin1(value),
+            AttrValue::Strings(values) => values.iter().all(|value| is_latin1(value)),
+            AttrValue::Labels(values) | AttrValue::Outputs(values) => {
                 values.iter().all(|value| value.is_ascii())
             }
             AttrValue::StringDict(entries) => entries
                 .iter()
-                .all(|(key, value)| key.is_ascii() && value.is_ascii()),
+                .all(|(key, value)| is_latin1(key) && is_latin1(value)),
             AttrValue::StringListDict(entries) => entries
                 .iter()
-                .all(|(key, values)| key.is_ascii() && values.iter().all(|value| value.is_ascii())),
+                .all(|(key, values)| is_latin1(key) && values.iter().all(|value| is_latin1(value))),
             AttrValue::Label(value) | AttrValue::Output(value) => {
                 value.as_ref().is_none_or(|value| value.is_ascii())
             }
             AttrValue::Int(_) | AttrValue::Bool(_) => true,
         };
-        if !name.is_ascii() || !ascii {
+        if !name.is_ascii() || !representable {
             return Err(format!(
-                "non-ASCII repository attribute {name:?} is unsupported in direct repository execution"
+                "repository attribute {name:?} requires ASCII names/labels and Latin-1 \
+                 (U+0000..U+00FF) string values in direct repository execution"
             ));
         }
     }
     Ok(attrs)
+}
+
+/// Bazel represents Starlark strings internally as Latin-1 byte strings. Native
+/// runtime byte data (module reads/downloads) maps each byte to U+0000..U+00FF.
+pub(crate) fn is_latin1(text: &str) -> bool {
+    text.chars().all(|c| u32::from(c) <= 0xFF)
+}
+
+/// Encode a Latin-1-representable native string as Bazel's internal bytes.
+pub(crate) fn latin1_bytes(text: &str) -> Option<Vec<u8>> {
+    text.chars()
+        .map(|c| u8::try_from(u32::from(c)).ok())
+        .collect()
 }
 
 /// Bind call-time snapshots without erasing the distinction between genuine
@@ -540,6 +558,7 @@ mod tests {
 
     fn context(label: &str) -> ExtensionContext {
         ExtensionContext {
+            byte_strings: false,
             label: Label::parse_canonical(label).unwrap(),
             repositories: std::sync::Arc::new(crate::repository::RepositorySet::new(
                 std::path::PathBuf::from("."),
@@ -713,20 +732,20 @@ mod tests {
                     .contains("expected")
             );
         }
-        for value in [json!({"é":"ok"}), json!({"k":"é"})] {
+        for value in [json!({"Ā":"ok"}), json!({"k":"Ā"})] {
             assert!(
                 bind(&definition, json!({"d":value}))
                     .unwrap_err()
-                    .contains("non-ASCII repository attribute")
+                    .contains("Latin-1 (U+0000..U+00FF) string values")
             );
         }
-        for default in ["{'é':'ok'}", "{'k':'é'}"] {
+        for default in ["{'Ā':'ok'}", "{'k':'Ā'}"] {
             let definition =
                 self::definition(&format!("{{'d':attr.string_dict(default={default})}}"));
             assert!(
                 bind(&definition, json!({}))
                     .unwrap_err()
-                    .contains("non-ASCII repository attribute")
+                    .contains("Latin-1 (U+0000..U+00FF) string values")
             );
         }
     }
@@ -760,7 +779,7 @@ mod tests {
                     .is_err()
             );
         }
-        for (key, value) in [("é", "ok"), ("k", "é")] {
+        for (key, value) in [("Ā", "ok"), ("k", "Ā")] {
             let raw = BTreeMap::from([(
                 "d".into(),
                 RecordedValue::Dict(vec![(key.into(), RecordedValue::String(value.into()))]),
@@ -768,7 +787,7 @@ mod tests {
             assert!(
                 bind_recorded_attributes(&definition, &raw, "repo", |_| panic!("not a label"))
                     .unwrap_err()
-                    .contains("non-ASCII")
+                    .contains("Latin-1")
             );
         }
     }
@@ -840,20 +859,20 @@ mod tests {
                 AttrValue::StringListDict(vec![])
             );
         }
-        for value in [json!({"é":[]}), json!({"k":["ascii","é"]})] {
+        for value in [json!({"Ā":[]}), json!({"k":["ascii","Ā"]})] {
             assert!(
                 bind(&definition, json!({"z":value}))
                     .unwrap_err()
-                    .contains("non-ASCII repository attribute \"z\"")
+                    .contains("repository attribute \"z\" requires")
             );
         }
-        for default in ["{'é':[]}", "{'k':('ascii', 'é')}"] {
+        for default in ["{'Ā':[]}", "{'k':('ascii', 'Ā')}"] {
             let definition =
                 self::definition(&format!("{{'d':attr.string_list_dict(default={default})}}"));
             assert!(
                 bind(&definition, json!({}))
                     .unwrap_err()
-                    .contains("non-ASCII repository attribute \"d\"")
+                    .contains("repository attribute \"d\" requires")
             );
         }
     }
@@ -901,7 +920,7 @@ mod tests {
                 "{error}"
             );
         }
-        for (key, value) in [("é", "ascii"), ("ascii", "é")] {
+        for (key, value) in [("Ā", "ascii"), ("ascii", "Ā")] {
             let raw = BTreeMap::from([(
                 "d".to_owned(),
                 RecordedValue::Dict(vec![(
@@ -912,7 +931,7 @@ mod tests {
             assert!(
                 bind_recorded_attributes(&definition, &raw, "repo", |_| panic!("not a label"))
                     .unwrap_err()
-                    .contains("non-ASCII repository attribute \"d\"")
+                    .contains("repository attribute \"d\" requires")
             );
         }
     }
@@ -935,20 +954,20 @@ mod tests {
     #[test]
     fn execution_boundary_rejects_host_supplied_or_default_unicode_attributes() {
         let strings = definition("{'text':attr.string(), 'items':attr.string_list()}");
-        for supplied in [json!({"text":"é"}), json!({"items":["ascii","é"]})] {
+        for supplied in [json!({"text":"Ā"}), json!({"items":["ascii","Ā"]})] {
             assert!(
                 bind(&strings, supplied)
                     .unwrap_err()
-                    .contains("non-ASCII repository attribute")
+                    .contains("Latin-1 (U+0000..U+00FF) string values")
             );
         }
         // Definitions loaded through ordinary APIs can bypass the dedicated
         // source profile. The binding boundary still checks their defaults.
-        let unicode_default = definition("{'text':attr.string(default='é')}");
+        let unicode_default = definition("{'text':attr.string(default='Ā')}");
         assert!(
             bind(&unicode_default, json!({}))
                 .unwrap_err()
-                .contains("non-ASCII repository attribute")
+                .contains("Latin-1 (U+0000..U+00FF) string values")
         );
         assert!(bind(&strings, json!({"text":"hello", "items":["one"]})).is_ok());
     }
@@ -1531,7 +1550,7 @@ mod tests {
         for (name, value, message) in [
             ("required", RecordedValue::None, "missing mandatory"),
             ("text", RecordedValue::Dict(vec![]), "expected a string"),
-            ("text", RecordedValue::String("é".to_owned()), "non-ASCII"),
+            ("text", RecordedValue::String("Ā".to_owned()), "Latin-1"),
             (
                 "unknown",
                 RecordedValue::Bool(false),

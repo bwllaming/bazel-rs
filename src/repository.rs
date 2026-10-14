@@ -30,6 +30,7 @@ struct RepositoryState {
     runtime_id: u64,
     root: PathBuf,
     options: ResolverOptions,
+    repository_downloads_enabled: bool,
     source_cache: PathBuf,
     absolute_source_cache: OnceLock<Result<PathBuf, String>>,
     root_module: OnceLock<Result<module_graph::RootModuleSnapshot, String>>,
@@ -148,7 +149,14 @@ impl RepositorySet {
     }
 
     fn configured(root: PathBuf, options: ResolverOptions, source_cache: PathBuf) -> Self {
-        Self::configured_environment(root, options, source_cache, Arc::default(), Arc::default())
+        Self::configured_environment(
+            root,
+            options,
+            source_cache,
+            Arc::default(),
+            Arc::default(),
+            true,
+        )
     }
 
     fn configured_environment(
@@ -157,6 +165,7 @@ impl RepositorySet {
         source_cache: PathBuf,
         environment: Arc<crate::repository_environment::Snapshot>,
         host: Arc<crate::host_os::HostSnapshot>,
+        repository_downloads_enabled: bool,
     ) -> Self {
         Self {
             state: Arc::new(RepositoryState {
@@ -165,6 +174,7 @@ impl RepositorySet {
                 absolute_source_cache: OnceLock::new(),
                 root,
                 options,
+                repository_downloads_enabled,
                 root_module: OnceLock::new(),
                 resolved: OnceLock::new(),
                 registry_roots: OnceLock::new(),
@@ -182,7 +192,27 @@ impl RepositorySet {
             cache,
             self.state.environment.clone(),
             self.state.host.clone(),
+            self.state.repository_downloads_enabled,
         )
+    }
+
+    /// Configure source acquisition, not registry metadata or Git execution.
+    /// Verified completed trees and download blobs remain reusable when disabled.
+    /// Like other configuration builders, this starts fresh demand memoization;
+    /// the policy is deliberately absent from persistent content identities.
+    pub fn with_repository_downloads_enabled(self, enabled: bool) -> Self {
+        Self::configured_environment(
+            self.state.root.clone(),
+            self.state.options.clone(),
+            self.state.source_cache.clone(),
+            self.state.environment.clone(),
+            self.state.host.clone(),
+            enabled,
+        )
+    }
+
+    pub fn repository_downloads_enabled(&self) -> bool {
+        self.state.repository_downloads_enabled
     }
 
     pub(crate) fn environment(&self) -> &crate::repository_environment::Snapshot {
@@ -202,6 +232,7 @@ impl RepositorySet {
             self.state.source_cache.clone(),
             self.state.environment.clone(),
             Arc::new(crate::host_os::HostSnapshot::fixture(host)),
+            self.state.repository_downloads_enabled,
         )
     }
 
@@ -216,6 +247,7 @@ impl RepositorySet {
             self.state.source_cache.clone(),
             Arc::new(crate::repository_environment::Snapshot::with_reader(reader)),
             self.state.host.clone(),
+            self.state.repository_downloads_enabled,
         )
     }
 
@@ -377,6 +409,7 @@ impl RepositorySet {
                             module_file,
                             self.source_cache_path()?,
                             local_patches,
+                            self.repository_downloads_enabled(),
                         )
                         .map_err(|error| {
                             format!("repository @@{repository} is not materialized: {error}")
@@ -713,6 +746,13 @@ impl RepositorySet {
                 imports: &'a [serde_json::Value],
                 #[serde(skip_serializing_if = "crate::host_os::HostFactors::is_empty")]
                 host_factors: crate::host_os::HostFactors<'a>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                extension_io: Option<ExtensionIo<'a>>,
+            }
+            #[derive(serde::Serialize)]
+            struct ExtensionIo<'a> {
+                version: u8,
+                observations: &'a [crate::extension_io::Observation],
             }
             let provenance = bounded_provenance(&Provenance {
                 profile: "ordinary-file-template-v1",
@@ -724,6 +764,9 @@ impl RepositorySet {
                 generated_mapping: &generated_mapping, repositories: &repositories,
                 imports: &imports,
                 host_factors,
+                extension_io: (!execution.io_observations.is_empty()).then_some(ExtensionIo {
+                    version: 1, observations: &execution.io_observations,
+                }),
             }, 64 * 1024 * 1024)?;
             Ok(PreparedOrdinary { loaded, generated_mapping, repositories, provenance })
         })
@@ -898,6 +941,7 @@ fn registry_source_root(
     module_file: &[u8],
     cache: &Path,
     local_patches: &LocalPatchPlan,
+    downloads_enabled: bool,
 ) -> Result<PathBuf, String> {
     let relative = format!("modules/{name}/{version}/source.json");
     let descriptor = registry.location(&relative);
@@ -907,7 +951,7 @@ fn registry_source_root(
     match source.get("type") {
         Some(serde_json::Value::String(kind)) if kind == "local_path" => {}
         None => {
-            return crate::materializer::materialize_with_patches(
+            return crate::materializer::materialize_with_download_policy(
                 registry,
                 name,
                 version,
@@ -915,10 +959,11 @@ fn registry_source_root(
                 &source,
                 cache,
                 local_patches,
+                downloads_enabled,
             );
         }
         Some(serde_json::Value::String(kind)) if kind == "archive" => {
-            return crate::materializer::materialize_with_patches(
+            return crate::materializer::materialize_with_download_policy(
                 registry,
                 name,
                 version,
@@ -926,6 +971,7 @@ fn registry_source_root(
                 &source,
                 cache,
                 local_patches,
+                downloads_enabled,
             );
         }
         Some(kind) => return Err(format!("unsupported source type {kind} in {descriptor}")),
@@ -1005,6 +1051,7 @@ fn registry_source_root(
 #[cfg(test)]
 mod tests {
     use super::*;
+    include!("../tests/support/extension_io_boundary_provenance.rs");
 
     #[test]
     fn provenance_budget_counts_serialized_bytes_and_rejects_before_growth() {
@@ -1428,6 +1475,194 @@ mod tests {
         );
         assert_eq!(before, after);
         assert!(!f.0.join("bazel-rs-out").exists());
+    }
+
+    #[test]
+    fn download_policy_is_immutable_and_preserved_by_every_rebuilding_builder() {
+        use crate::repository_environment::tests::Reader;
+        let f = Fixture::new();
+        let original = f.registry();
+        assert!(original.repository_downloads_enabled());
+        original.validate_root_module().unwrap();
+        original.mapping("").unwrap();
+        let disabled = original.clone().with_repository_downloads_enabled(false);
+        assert!(original.repository_downloads_enabled());
+        assert!(!disabled.clone().repository_downloads_enabled());
+        assert!(Arc::ptr_eq(&disabled.state, &disabled.clone().state));
+        let reader = Reader::new(Ok(None));
+        for rebuilt in [
+            disabled.clone(),
+            disabled.clone().with_source_cache("other-cache".into()),
+            disabled.clone().with_environment_reader(reader.clone()),
+            disabled.clone().with_host(Err("test host".into())),
+        ] {
+            assert!(!rebuilt.repository_downloads_enabled());
+            assert_ne!(original.state.runtime_id, rebuilt.state.runtime_id);
+            assert_eq!(original.state.options, rebuilt.state.options);
+            assert!(rebuilt.state.root_module.get().is_none());
+            assert!(rebuilt.state.resolved.get().is_none());
+            assert!(rebuilt.state.registry_roots.get().is_none());
+            assert!(rebuilt.state.direct.get().is_none());
+            assert!(rebuilt.state.absolute_source_cache.get().is_none());
+        }
+        assert!(Arc::ptr_eq(
+            &original.state.environment,
+            &disabled.state.environment
+        ));
+        assert!(Arc::ptr_eq(&original.state.host, &disabled.state.host));
+        let enabled = disabled.with_repository_downloads_enabled(true);
+        assert!(enabled.repository_downloads_enabled());
+        assert_ne!(original.state.runtime_id, enabled.state.runtime_id);
+        assert_eq!(reader.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn changing_download_policy_does_not_reuse_demand_success_or_failure() {
+        for failure in [false, true] {
+            let f = environment_fixture(
+                false,
+                "[]",
+                if failure {
+                    "fail('old demand failure')"
+                } else {
+                    "ctx.file('value', 'old')"
+                },
+            );
+            let original = RepositorySet::new(f.0.clone());
+            let canonical = original.parse("@repo//:value", "", "").unwrap().repository;
+            let old = original.root(&canonical).map(Path::to_owned);
+            assert_eq!(old.is_err(), failure);
+            let replacement = "def implementation(ctx):\n    ctx.file('value', 'new')\nR = repository_rule(implementation, environ=[])\n";
+            f.write("rules.bzl", replacement);
+            let fresh = original.clone().with_repository_downloads_enabled(false);
+            assert_ne!(fresh.state.runtime_id, original.state.runtime_id);
+            assert!(fresh.state.direct.get().is_none());
+            let root = fresh.root(&canonical).unwrap();
+            assert_eq!(std::fs::read(root.join("value")).unwrap(), b"new");
+            assert_eq!(original.clone().root(&canonical).map(Path::to_owned), old);
+            if let Ok(old) = old {
+                assert_eq!(std::fs::read(old.join("value")).unwrap(), b"old");
+            }
+        }
+    }
+
+    #[test]
+    fn download_policy_leaves_no_source_io_provenance_and_persistent_keys_unchanged() {
+        for ordinary in [false, true] {
+            let f = environment_fixture(ordinary, "[]", "ctx.file('value', 'constant')");
+            let original = RepositorySet::new(f.0.clone());
+            let canonical = original.parse("@repo//:value", "", "").unwrap().repository;
+            let disabled = original.clone().with_repository_downloads_enabled(false);
+            if ordinary {
+                let before = &original
+                    .ordinary_repository(&canonical)
+                    .unwrap()
+                    .0
+                    .provenance;
+                let after = &disabled
+                    .ordinary_repository(&canonical)
+                    .unwrap()
+                    .0
+                    .provenance;
+                assert_eq!(before, after);
+            }
+            let root = original.root(&canonical).unwrap();
+            assert_eq!(root, disabled.root(&canonical).unwrap());
+            assert_eq!(std::fs::read(root.join("value")).unwrap(), b"constant");
+        }
+    }
+
+    #[test]
+    fn extension_io_zero_operations_omit_entire_field_and_preserve_legacy_key_order() {
+        let f = environment_fixture(true, "[]", "ctx.file('value', 'constant')");
+        let mut baseline = None;
+        for enabled in [true, false] {
+            let repos = RepositorySet::new(f.0.clone()).with_repository_downloads_enabled(enabled);
+            let canonical = repos.parse("@repo//:value", "", "").unwrap().repository;
+            let (prepared, _) = repos.ordinary_repository(&canonical).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&prepared.provenance).unwrap();
+            let keys: Vec<_> = value
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            assert_eq!(
+                keys,
+                [
+                    "profile",
+                    "public_label",
+                    "symbol",
+                    "prefix",
+                    "sources",
+                    "tag_classes",
+                    "modules",
+                    "source_guards",
+                    "root_has_non_dev_dependency",
+                    "generated_mapping",
+                    "repositories",
+                    "imports"
+                ]
+            );
+            assert_eq!(value["profile"], "ordinary-file-template-v1");
+            assert!(!String::from_utf8_lossy(&prepared.provenance).contains("extension_io"));
+            let root = repos.root(&canonical).unwrap().to_owned();
+            let snapshot = (prepared.provenance.clone(), root);
+            if let Some(baseline) = &baseline {
+                assert_eq!(&snapshot, baseline);
+            } else {
+                baseline = Some(snapshot);
+            }
+        }
+    }
+
+    #[test]
+    fn unused_failed_download_overwrite_and_reads_rekey_fresh_runtime_not_demand_memoization() {
+        use crate::extension_io::tests::{Server, response};
+        let a = vec![b'a'; 33000];
+        let b = vec![b'b'; 33000];
+        let server = Server::new(
+            [&a, &a, &b, &b, &a, &a]
+                .into_iter()
+                .map(|bytes| response(200, bytes, ""))
+                .collect(),
+        );
+        let f = environment_fixture(true, "[]", "ctx.file('value', 'constant')");
+        f.write("extension.bzl", &format!("load(':rules.bzl', 'R')\ndef implementation(ctx):\n    ctx.download({url:?}, 'same', {sha:?}, allow_fail=True)\n    ctx.read('same', watch='no')\n    ctx.download({url:?}, 'same', {sha:?}, allow_fail=True)\n    R(name='repo')\n    R(name='other')\nextension=module_extension(implementation)\n", url=server.url, sha="00".repeat(32)));
+        let mut roots = Vec::new();
+        let mut observations = Vec::new();
+        for index in 0..3 {
+            let repos = RepositorySet::new(f.0.clone());
+            let canonical = repos.parse("@repo//:value", "", "").unwrap().repository;
+            let root = repos.root(&canonical).unwrap().to_owned();
+            assert_eq!(std::fs::read(root.join("value")).unwrap(), b"constant");
+            assert_eq!(server.count(), (index + 1) * 2);
+            assert_eq!(repos.root(&canonical).unwrap(), root);
+            let other = repos.parse("@other//:value", "", "").unwrap().repository;
+            repos.root(&other).unwrap();
+            assert_eq!(server.count(), (index + 1) * 2);
+            let prepared = &repos.ordinary_repository(&canonical).unwrap().0;
+            let value: serde_json::Value = serde_json::from_slice(&prepared.provenance).unwrap();
+            let io = &value["extension_io"];
+            assert_eq!(io["version"], 1);
+            assert_eq!(io["observations"].as_array().unwrap().len(), 3);
+            assert_eq!(
+                io["observations"][0]["result"],
+                serde_json::json!({"success":false})
+            );
+            assert_eq!(io["observations"][0]["state"]["generation"], 1);
+            assert_eq!(io["observations"][1]["operation"], "read");
+            assert_eq!(io["observations"][2]["state"]["generation"], 2);
+            let receipt = serde_json::to_string(io).unwrap();
+            assert!(!receipt.contains(&server.url));
+            assert!(!receipt.contains("bazel-extension-io-"));
+            observations.push(receipt);
+            roots.push(root);
+        }
+        assert_ne!(roots[0], roots[1]);
+        assert_eq!(roots[0], roots[2]);
+        assert_ne!(observations[0], observations[1]);
+        assert_eq!(observations[0], observations[2]);
     }
 
     #[test]

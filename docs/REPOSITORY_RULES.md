@@ -92,9 +92,20 @@ MODULE constant can therefore block a demanded direct repository.
 Original literal spellings are checked: high-byte octal escapes are unsupported,
 and hex/Unicode escapes are invalid in the pinned Bazel grammar. ASCII octal,
 escaped backslashes, raw ASCII strings and Unicode comments remain allowed.
-File contents and template substitution strings are ASCII; template file bytes
-never become Starlark strings and are not subject to that restriction. This does
-not establish complete Starlark language parity.
+Because executed sources are ASCII-literal-only and `chr`-free, non-ASCII runtime
+strings can arise only from data such as module-extension reads/downloads, where
+each byte maps to U+0000..U+00FF exactly as Bazel's internal Latin-1 strings do.
+Repository snapshots, string-valued repository attributes (including dictionary
+keys) and `ctx.file` contents therefore accept U+0000..U+00FF; `ctx.file` writes
+one byte per character. Characters above U+00FF are rejected explicitly (Bazel
+cannot write them either). Repository names, labels, outputs, tag attributes and
+template substitutions remain ASCII. In repository and extension evaluation
+`json.decode` maps `\u` escape runs to UTF-8 bytes like Bazel. String methods
+whose Bazel implementations are ASCII-only (`upper`, `lower`, `strip`, `split`,
+etc.) use Unicode rules here on high characters; this known divergence blocks main
+promotion until fixed. Template file bytes never become Starlark
+strings and are not subject to that restriction. This does not establish complete
+Starlark language parity.
 
 Callbacks and each demanded definition-file evaluation are bounded to 128 call
 frames, one million evaluator ticks and a 128 MiB evaluator heap. Ordinary BUILD

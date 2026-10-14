@@ -1161,6 +1161,7 @@ def mutate():
     fn run_environment_frozen_repository_and_extension_callbacks_keep_bzl_globals() {
         let frozen = Module::with_temp_heap(|module| {
             let context = crate::loading::ExtensionContext {
+                byte_strings: false,
                 label: Label::parse("//:defs.bzl", "").unwrap(),
                 repositories: Arc::new(RepositorySet::new(".".into())),
             };
@@ -1950,6 +1951,7 @@ def legacy():
         ] {
             let repositories = Arc::new(RepositorySet::new(PathBuf::from(".")));
             let extension = crate::loading::ExtensionContext {
+                byte_strings: false,
                 label: Label::parse("//defs:macro.bzl", "").unwrap(),
                 repositories: repositories.clone(),
             };

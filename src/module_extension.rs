@@ -426,6 +426,7 @@ mod tests {
 
     fn context(label: &str) -> ExtensionContext {
         ExtensionContext {
+            byte_strings: false,
             label: Label::parse_canonical(label).unwrap(),
             repositories: std::sync::Arc::new(crate::repository::RepositorySet::new(
                 std::path::PathBuf::from("."),
