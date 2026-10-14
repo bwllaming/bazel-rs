@@ -113,7 +113,8 @@ bytes are length-framed rather than expanded into another JSON number array.
 The candidate [bounded module-context download/read profile](MODULE_EXTENSION_IO.md)
 adds owned synchronous I/O; final acceptance and release remain pending. The
 [source-input profile](MODULE_SOURCE_INPUTS.md) adds Label `path`/`read`, empty
-`facts` and inert `extension_metadata` (direct-deps fixups unsupported). Isolation,
+`facts` and `extension_metadata` (validated direct-deps lists and root `use_repo`
+fixup warnings; no `bazel mod tidy`). Isolation,
 persisted facts, OS environment inspection, string paths, delete/execute and SDK
 APIs remain unsupported. No placeholder platform or SDK repository is substituted. `mod graph` retains its existing explicit-module profile
 and does not execute active extensions.

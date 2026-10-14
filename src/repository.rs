@@ -656,6 +656,8 @@ impl RepositorySet {
             }
             let mut generated_mapping = host_mapping.clone();
             let mut names = BTreeSet::new();
+            // generatedRepoSpecs.keySet(): creation order, for metadata fixups.
+            let mut generated_order = Vec::new();
             for recorded in &execution.repositories {
                 preparation_budget.string(&recorded.name)?;
                 preparation_budget.bytes(group.prefix.len())?;
@@ -675,6 +677,7 @@ impl RepositorySet {
                     return Err(format!("generated repository canonical name collision: @@{canonical}"));
                 }
                 generated_mapping.insert(recorded.name.clone(), canonical);
+                generated_order.push(recorded.name.clone());
             }
             let mut repositories = BTreeMap::new();
             let resolution_budget = std::cell::RefCell::new(crate::repository_budget::HostBudget::default());
@@ -702,6 +705,19 @@ impl RepositorySet {
                     canonical_name,
                     root: DemandSlot::new(),
                 });
+            }
+            // SingleExtensionEvalFunction.createSingleExtensionValue (Bazel
+            // 9.3:455-487) then SingleExtensionFunction.java:53: metadata errors
+            // fail the evaluation; the fixup warning precedes the import check.
+            if let (Some(metadata), Some(root_usage)) = (&execution.metadata, &group.root_usage) {
+                match crate::extension_metadata::generate_fixup(metadata, root_usage, &generated_order) {
+                    Ok(Some(fixup)) => eprintln!("{}", fixup.warning()),
+                    Ok(None) => {}
+                    Err(message) => return Err(format!(
+                        "{message}\nerror evaluating module extension {} in {}",
+                        group.symbol, group.label,
+                    )),
+                }
             }
             // Missing imports invalidate the complete usage even if that alias
             // was never requested. Nothing from this group is published yet.

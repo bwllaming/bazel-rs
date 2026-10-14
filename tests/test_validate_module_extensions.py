@@ -37,8 +37,6 @@ MESSAGES = {
     'name': 'invalid repository name "a+b"',
     'canonical': 'unknown canonical repository @@+unknown+made; extension repository not materialized',
     'ticks': 'Maximum number of ticks exceeded',
-    'extension_metadata': ('extension_metadata: non-None root_module_direct_deps/root_module_direct_dev_deps'
-                           ' are unsupported in the native profile (no use_repo fixup metadata)'),
     'facts': 'Facts has no key "missing": persisted facts are unsupported (native lockfile mode is off)',
     'os-environ': ('bazel-rs: module extension //:ext.bzl: Traceback (most recent call last):\n'
                    '  File <builtin>, in <module>\n'
@@ -70,10 +68,10 @@ class FixtureTests(unittest.TestCase):
                 steps = extensions.steps_for(item, probe, engine)
                 self.assertTrue(steps)
                 self.assertFalse(any(s[0] in ('test', 'run') for s in steps))
-        self.assertEqual(sum(len(c['probes']) for c in extensions.CASES), 38)
-        self.assertEqual(sum(len(extensions.phases_for(c)) for c in extensions.CASES), 51)
+        self.assertEqual(sum(len(c['probes']) for c in extensions.CASES), 37)
+        self.assertEqual(sum(len(extensions.phases_for(c)) for c in extensions.CASES), 50)
         self.assertEqual(sum(len(extensions.steps_for(c, probe, engine)) for c in extensions.CASES
-                             for probe, engine in extensions.phases_for(c)), 107)
+                             for probe, engine in extensions.phases_for(c)), 106)
 
     def test_unknown_fixture_names_or_probe_never_fall_back_to_baseline(self):
         for name, probe in [('made-up', 'result'), (extensions.CASES[0]['name'], 'made-up')]:
@@ -230,12 +228,13 @@ class FixtureTests(unittest.TestCase):
     def test_native_contexts_and_non_none_returns_are_not_parity(self):
         item = next(c for c in extensions.CASES if c['name'] == 'native.context-and-return')
         self.assertEqual(item['kind'], 'native_boundary')
-        self.assertEqual(item['probes'], ['metadata', 'facts', 'os-environ', 'read-watch', 'integer', 'dict'])
+        self.assertEqual(item['probes'], ['facts', 'os-environ', 'read-watch', 'integer', 'dict'])
         for probe in item['probes']:
             value = extensions.fixture(item['name'], probe)
             self.assertIn(b'maker(name="made")', value['files']['ext.bzl'])
             self.assertEqual(extensions.steps_for(item, probe, 'native'), [('query', '@chosen//:data', [])])
-        self.assertIn(b'root_module_direct_deps=["made"]', extensions.fixture(item['name'], 'metadata')['files']['ext.bzl'])
+        with self.assertRaisesRegex(ValueError, 'unknown planned'):
+            extensions.fixture(item['name'], 'metadata')
         self.assertIn(b'value=ctx.facts["missing"]', extensions.fixture(item['name'], 'facts')['files']['ext.bzl'])
         self.assertIn(b'return 42', extensions.fixture(item['name'], 'integer')['files']['ext.bzl'])
         self.assertIn(b'return {}', extensions.fixture(item['name'], 'dict')['files']['ext.bzl'])
@@ -671,7 +670,7 @@ class LifecycleTests(unittest.TestCase):
     def test_counts_and_pass_strings_never_substitute_for_genuine_evidence(self):
         synthetic = dict(checks=[dict(name=c['name'], kind=c['kind'], status='PASS') for c in extensions.CASES],
             planned_checks=copy.deepcopy(extensions.CASES), completed_checks=16, completed_differential_cases=8,
-            completed_phases=51, errors=[], cleanup=[], scratch_cleaned=True, sources_unchanged=True,
+            completed_phases=50, errors=[], cleanup=[], scratch_cleaned=True, sources_unchanged=True,
             reference_shutdown_attempted=True, reference_shutdown_succeeded=True)
         self.assertFalse(extensions.report_passes(synthetic))
         for mutation in ('missing', 'duplicate', 'reorder', 'unexpected', 'kind', 'reference-unavailable'):

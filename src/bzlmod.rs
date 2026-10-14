@@ -190,6 +190,11 @@ impl ExtensionIdentity {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ExtensionDeclaration {
     pub dev_dependency: bool,
+    /// Module-wide order of use_extension/repository-rule declarations.
+    pub ordinal: usize,
+    /// Bazel `thread.getCallerLocation()` text: `file:line:col` of the call's
+    /// left parenthesis (1-based line and column, columns in characters).
+    pub location: String,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ExtensionUsage {
@@ -236,6 +241,7 @@ struct State {
     non_module_called: bool,
     repo_names: BTreeSet<String>,
     next_isolation: usize,
+    next_declaration: usize,
     pending_attributes: Vec<PendingAttributes>,
 }
 
@@ -775,9 +781,15 @@ fn invoke<'v>(
                 state.file.extension_usages.len() - 1
             }
         };
+        let ordinal = state.next_declaration;
+        state.next_declaration += 1;
         let declarations = &mut state.file.extension_usages[usage].declarations;
         let declaration = declarations.len();
-        declarations.push(ExtensionDeclaration { dev_dependency });
+        declarations.push(ExtensionDeclaration {
+            dev_dependency,
+            ordinal,
+            location: caller_location(eval),
+        });
         return Ok(eval.heap().alloc(ExtensionProxy { usage, declaration }));
     }
     if name == "use_repo" {
@@ -1088,12 +1100,16 @@ fn record_repo_rule<'v>(
         }
     };
     let ordinal = state.pending_attributes.len();
+    let declaration_ordinal = state.next_declaration;
+    state.next_declaration += 1;
     let usage = &mut state.file.extension_usages[index];
     let declaration = usage.declarations.len();
     let tag = usage.tags.len();
-    usage
-        .declarations
-        .push(ExtensionDeclaration { dev_dependency });
+    usage.declarations.push(ExtensionDeclaration {
+        dev_dependency,
+        ordinal: declaration_ordinal,
+        location: caller_location(eval),
+    });
     usage.tags.push(ExtensionTag {
         name: "repo".to_owned(),
         ordinal,
@@ -1109,6 +1125,31 @@ fn record_repo_rule<'v>(
     });
     retain_tag_attributes(eval, &mut state, index, tag, kwargs.0);
     Ok(Value::new_none())
+}
+
+/// Bazel's StarlarkThread.getCallerLocation for a builtin call is the call's
+/// left-parenthesis location (Eval.java:714-715), rendered `file:line:col`.
+fn caller_location(eval: &Evaluator<'_, '_, '_>) -> String {
+    let Some(call) = eval.call_stack_top_location() else {
+        return String::new();
+    };
+    // The recorded span covers the entire call expression. MODULE callees are
+    // parenthesis-free names, so the first '(' is the call's own parenthesis.
+    let offset = call.source_span().find('(').unwrap_or(0);
+    let begin = call.span.begin().get() + offset as u32;
+    let position = call
+        .file
+        .resolve_span(starlark::codemap::Span::new(
+            starlark::codemap::Pos::new(begin),
+            starlark::codemap::Pos::new(begin),
+        ))
+        .begin;
+    format!(
+        "{}:{}:{}",
+        call.filename(),
+        position.line + 1,
+        position.column + 1
+    )
 }
 
 fn reserve_repo(state: &mut State, name: &str) -> anyhow::Result<()> {
@@ -1599,6 +1640,28 @@ use_repo(x, "pkg", local="other")
         fails(
             "x=use_extension('//:e.bzl','e')\nx.tag(**{'x' * (16 * 1024 * 1024): None})",
             "host preparation weighted byte limit",
+        );
+    }
+
+    #[test]
+    fn declarations_record_module_wide_order_and_left_paren_locations() {
+        let f = run(
+            "module(name='m')\ne = use_extension('//:a.bzl', 'a')\nr = use_repo_rule('//:r.bzl', 'rule')\nr (name = 'x')\nd  =  use_extension ( '@m//:b.bzl', 'b', dev_dependency = True)\nf=use_extension('//:a.bzl','a',dev_dependency=True)\n",
+        );
+        let declarations: Vec<_> = f
+            .extension_usages
+            .iter()
+            .flat_map(|usage| &usage.declarations)
+            .map(|declaration| (declaration.ordinal, declaration.location.as_str()))
+            .collect();
+        assert_eq!(
+            declarations,
+            [
+                (0, "MODULE.bazel:2:18"),
+                (3, "MODULE.bazel:6:16"),
+                (1, "MODULE.bazel:4:3"),
+                (2, "MODULE.bazel:5:21"),
+            ]
         );
     }
 

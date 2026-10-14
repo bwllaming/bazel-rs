@@ -41,6 +41,10 @@ pub struct OrdinaryGroup {
     /// Root-first dependency BFS, including active users without any tags.
     pub participants: Vec<OrdinaryParticipant>,
     pub root_has_non_dev_dependency: bool,
+    /// The root module's non-ignored proxies/imports for use_repo fixups
+    /// (SingleExtensionEvalFunction.java:465-487); None if the root module
+    /// does not use this extension.
+    pub root_usage: Option<crate::extension_metadata::RootExtensionUsage>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -254,6 +258,16 @@ pub fn build(graph: &ResolvedGraph, ignore_root_dev: bool) -> Result<DirectCatal
         for participant in &mut group.participants {
             participant.tags.sort_by_key(|tag| tag.ordinal);
         }
+        if let Some(root) = &mut group.root_usage {
+            root.proxies.sort_by_key(|proxy| proxy.ordinal);
+        }
+        if group
+            .root_usage
+            .as_ref()
+            .is_some_and(|root| root.proxies.is_empty())
+        {
+            group.root_usage = None;
+        }
     }
 
     if has_isolated
@@ -340,6 +354,7 @@ fn record_ordinary(
                 prefix,
                 participants: Vec::new(),
                 root_has_non_dev_dependency: false,
+                root_usage: None,
             },
         );
     }
@@ -379,6 +394,9 @@ fn record_ordinary(
             group.participants.len() - 1
         }
     };
+    if owner.is_empty() {
+        record_root_usage(group, module, usage, ignore_dev);
+    }
     let participant = &mut group.participants[participant_index];
     for tag in usage
         .tags
@@ -427,6 +445,51 @@ fn record_ordinary(
         participant.imports.push(import.clone());
     }
     Ok(())
+}
+
+/// Bazel's root ModuleExtensionUsage: ignored dev proxies are detached no-op
+/// proxies (ModuleFileGlobals.java:474-479), so they and their imports are
+/// absent. Several raw label spellings of one identity merge here; proxies are
+/// later ordered by their module-wide declaration order.
+fn record_root_usage(
+    group: &mut OrdinaryGroup,
+    module: &ModuleFile,
+    usage: &ExtensionUsage,
+    ignore_dev: bool,
+) {
+    let own_repo_name = module
+        .module
+        .as_ref()
+        .map(|info| info.effective_repo_name())
+        .unwrap_or("");
+    let extension_bzl_file = crate::extension_metadata::normalize_root_extension_bzl_file(
+        &usage.identity.label,
+        own_repo_name,
+    );
+    let root =
+        group
+            .root_usage
+            .get_or_insert_with(|| crate::extension_metadata::RootExtensionUsage {
+                extension_name: usage.identity.extension_name.clone(),
+                proxies: Vec::new(),
+            });
+    for (index, declaration) in usage.declarations.iter().enumerate() {
+        if declaration.dev_dependency && ignore_dev {
+            continue;
+        }
+        root.proxies.push(crate::extension_metadata::RootProxy {
+            ordinal: declaration.ordinal,
+            dev_dependency: declaration.dev_dependency,
+            location: declaration.location.clone(),
+            extension_bzl_file: extension_bzl_file.clone(),
+            imports: usage
+                .imports
+                .iter()
+                .filter(|import| import.declaration == index)
+                .map(|import| import.exported_name.clone())
+                .collect(),
+        });
+    }
 }
 
 fn active_usage(usage: &ExtensionUsage, ignore_dev: bool) -> bool {
@@ -1263,6 +1326,64 @@ e=use_extension("@z//:ext.bzl", "ext")
             Some("a deferred profile")
         );
         assert!(group.root_has_non_dev_dependency);
+    }
+
+    #[test]
+    fn root_usage_merges_spellings_in_call_order_and_drops_ignored_dev_proxies() {
+        use crate::extension_metadata::RootProxy;
+        let source = "module(name='root', repo_name='self')\nd=use_extension('@self//:ext.bzl','ext',dev_dependency=True)\nuse_repo(d,'dev_repo')\ne=use_extension('//:ext.bzl','ext')\nuse_repo(e,'a',alias='b')\nother=use_extension('//:other.bzl','other')\nf=use_extension(':ext.bzl','ext')\nuse_repo(f,'c')\n";
+        let full = graph(source);
+        let catalog = build(&full, false).unwrap();
+        let group = catalog
+            .ordinary_groups
+            .values()
+            .find(|group| group.symbol == "ext")
+            .unwrap();
+        let root = group.root_usage.as_ref().unwrap();
+        assert_eq!(root.extension_name, "ext");
+        let proxy = |ordinal, dev, location: &str, imports: &[&str]| RootProxy {
+            ordinal,
+            dev_dependency: dev,
+            location: location.to_owned(),
+            extension_bzl_file: "@self//:ext.bzl".to_owned(),
+            imports: imports.iter().map(|s| (*s).to_owned()).collect(),
+        };
+        assert_eq!(
+            root.proxies,
+            [
+                proxy(0, true, "MODULE.bazel:2:16", &["dev_repo"]),
+                proxy(1, false, "MODULE.bazel:4:16", &["a", "b"]),
+                proxy(3, false, "MODULE.bazel:7:16", &["c"]),
+            ]
+        );
+        let ignored = build(&full, true).unwrap();
+        let group = ignored
+            .ordinary_groups
+            .values()
+            .find(|group| group.symbol == "ext")
+            .unwrap();
+        let ordinals: Vec<_> = group
+            .root_usage
+            .as_ref()
+            .unwrap()
+            .proxies
+            .iter()
+            .map(|proxy| proxy.ordinal)
+            .collect();
+        assert_eq!(ordinals, [1, 3]);
+
+        // Only the root owner contributes a root usage.
+        let mut nested = graph("module(name='root')\nbazel_dep(name='dep')");
+        dependency(
+            &mut nested,
+            "dep",
+            "dep+",
+            "module(name='dep')\ne=use_extension('//:ext.bzl','ext')\nuse_repo(e,'x')",
+        );
+        let catalog = build(&nested, false).unwrap();
+        let group = catalog.ordinary_groups.values().next().unwrap();
+        assert_eq!(group.participants.len(), 1);
+        assert_eq!(group.root_usage, None);
     }
 
     #[test]

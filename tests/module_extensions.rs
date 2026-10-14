@@ -368,8 +368,8 @@ fn fresh_runtime_observes_tags_callback_sources_and_binary_templates() {
 fn unsupported_context_operations_and_invalid_names_never_publish() {
     for (operation, marker) in [
         (
-            "ctx.extension_metadata(root_module_direct_deps=['made'],root_module_direct_dev_deps=[])",
-            "extension_metadata: non-None root_module_direct_deps/root_module_direct_dev_deps are unsupported",
+            "ctx.extension_metadata(root_module_direct_deps=['a+b'],root_module_direct_dev_deps=[])",
+            "in root_module_direct_deps: invalid user-provided repo name 'a+b'",
         ),
         ("ctx.os.environ", "repository_os.environ is unsupported"),
         (
@@ -431,4 +431,188 @@ fn unsupported_context_operations_and_invalid_names_never_publish() {
         reject(&output, marker);
         assert!(f.roots().is_empty());
     }
+}
+
+/// Extension creating `made`, `b`, `dev1`, `extra` and returning `metadata`.
+fn metadata_extension(f: &Fixture, metadata: &str) {
+    f.file("ext.bzl", format!("load(':rules.bzl','maker')\ndef _impl(ctx):\n    for n in ['made', 'b', 'dev1', 'extra']:\n        maker(name=n, text=n)\n    return {metadata}\nfiles=module_extension(_impl)\n"));
+}
+
+fn module_path(f: &Fixture) -> String {
+    fs::canonicalize(f.0.path().join("MODULE.bazel"))
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn warnings(result: &Output) -> usize {
+    error(result).matches("WARNING: ").count()
+}
+
+#[test]
+fn extension_metadata_use_repo_fixup_warning_is_exact_and_build_succeeds() {
+    let f = Fixture::new();
+    f.file("MODULE.bazel", "module(name='main',version='1.0')\nbazel_dep(name='unrelated',version='1',repo_name=None)\ne = use_extension('//:ext.bzl', 'files')\nuse_repo(e, chosen='made', other='extra')\nd = use_extension('//:ext.bzl', 'files', dev_dependency = True)\nuse_repo(d, 'dev1')\n");
+    metadata_extension(
+        &f,
+        "ctx.extension_metadata(root_module_direct_deps=['made', 'b'], root_module_direct_dev_deps=('dev1',))",
+    );
+    let result = f.run(&["build", "//:copy"]);
+    assert!(result.status.success(), "{}", error(&result));
+    let expected = format!(
+        "WARNING: {}:3:18: The module extension files defined in @main//:ext.bzl reported incorrect imports of repositories via use_repo():\n\n\
+Not imported, but reported as direct dependencies by the extension (may cause the build to fail):\n    b\n\n\
+Imported, but reported as indirect dependencies by the extension:\n    extra\n\n\
+Fix the use_repo calls by running 'bazel mod tidy'.\n",
+        module_path(&f)
+    );
+    assert!(error(&result).contains(&expected), "{}", error(&result));
+    assert_eq!(warnings(&result), 1, "{}", error(&result));
+    let (_, path) = String::from_utf8(result.stdout.clone())
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .split_once('\t')
+        .map(|(a, b)| (a.to_owned(), b.to_owned()))
+        .unwrap();
+    assert_eq!(fs::read(path).unwrap(), b"hello made\n");
+    // Every invocation re-evaluates the extension and repeats the warning,
+    // while the already-published repository tree is reused unchanged.
+    let roots = f.roots();
+    let again = f.run(&["build", "//:copy"]);
+    assert!(again.status.success(), "{}", error(&again));
+    assert!(error(&again).contains(&expected), "{}", error(&again));
+    assert_eq!(warnings(&again), 1, "{}", error(&again));
+    assert_eq!(f.roots(), roots);
+
+    // Correct imports for "all" (REGULAR), explicit lists, and DEV mode: no warning.
+    for (module, metadata) in [
+        (
+            "use_repo(e, chosen='made', b='b', dev1='dev1', extra='extra')\n",
+            "ctx.extension_metadata(root_module_direct_deps='all', root_module_direct_dev_deps=[])",
+        ),
+        (
+            "use_repo(e, chosen='made', b='b', extra='extra')\nuse_repo(d, 'dev1')\n",
+            "ctx.extension_metadata(root_module_direct_deps=['made', 'b', 'extra'], root_module_direct_dev_deps=['dev1'], reproducible=True)",
+        ),
+        (
+            "use_repo(d, chosen='made', b='b', dev1='dev1', extra='extra')\n",
+            "ctx.extension_metadata(root_module_direct_deps=[], root_module_direct_dev_deps='all')",
+        ),
+    ] {
+        f.file("MODULE.bazel", format!("module(name='main',version='1.0')\ne = use_extension('//:ext.bzl', 'files')\nd = use_extension('//:ext.bzl', 'files', dev_dependency = True)\n{module}"));
+        metadata_extension(&f, metadata);
+        let result = f.run(&["build", "//:copy"]);
+        assert!(result.status.success(), "{metadata}: {}", error(&result));
+        assert_eq!(warnings(&result), 0, "{metadata}: {}", error(&result));
+    }
+
+    // "all" REGULAR with dev imports: every section, located at the FIRST proxy
+    // (here the dev proxy), sorted names, then the import check still runs.
+    f.file("MODULE.bazel", "module(name='main',version='1.0')\nd = use_extension('//:ext.bzl', 'files', dev_dependency = True)\nuse_repo(d, 'dev1', 'b')\ne = use_extension(\"@main//:ext.bzl\", 'files')\nuse_repo(e, chosen='made', ghost='ghost')\n");
+    metadata_extension(
+        &f,
+        "ctx.extension_metadata(root_module_direct_deps='all', root_module_direct_dev_deps=[])",
+    );
+    let result = f.run(&["build", "//:copy"]);
+    let expected = format!(
+        "WARNING: {}:2:18: The module extension files defined in @main//:ext.bzl reported incorrect imports of repositories via use_repo():\n\n\
+Imported, but not created by the extension (will cause the build to fail):\n    ghost\n\n\
+Not imported, but reported as direct dependencies by the extension (may cause the build to fail):\n    extra\n\n\
+Imported as a dev dependency, but reported as a regular dependency by the extension (may cause the build to fail when used by other modules):\n    b, dev1\n\n\
+Fix the use_repo calls by running 'bazel mod tidy'.\n",
+        module_path(&f)
+    );
+    assert!(error(&result).contains(&expected), "{}", error(&result));
+    let warning = error(&result).find("WARNING: ").unwrap();
+    let import = error(&result)
+        .find("did not declare imported repository \"ghost\"")
+        .unwrap_or_else(|| panic!("{}", error(&result)));
+    assert!(warning < import);
+    reject(&result, "ghost");
+}
+
+#[test]
+fn extension_metadata_errors_fail_root_extension_evaluation() {
+    for (module, metadata, marker) in [
+        (
+            "",
+            "ctx.extension_metadata(root_module_direct_deps=['made', 'missing', 'gone'], root_module_direct_dev_deps=[])",
+            "root_module_direct_deps contained the following repositories not generated by the extension: missing, gone",
+        ),
+        (
+            "",
+            "ctx.extension_metadata(root_module_direct_deps=['made'], root_module_direct_dev_deps=['nope'])",
+            "root_module_direct_dev_deps contained the following repositories not generated by the extension: nope",
+        ),
+        (
+            "",
+            "ctx.extension_metadata(root_module_direct_deps=[], root_module_direct_dev_deps='all')",
+            "root_module_direct_dev_deps must be empty if the root module contains no usages with dev_dependency = True",
+        ),
+        (
+            "d = use_extension('//:ext.bzl', 'files', dev_dependency=True)\n",
+            "ctx.extension_metadata(root_module_direct_deps=['made'], root_module_direct_dev_deps=[])",
+            "root_module_direct_deps must be empty if the root module contains no usages with dev_dependency = False",
+        ),
+        (
+            "",
+            "ctx.extension_metadata(root_module_direct_deps='all', root_module_direct_dev_deps=())",
+            "if one of root_module_direct_deps and root_module_direct_dev_deps is \"all\", the other must be an empty list",
+        ),
+    ] {
+        let f = Fixture::new();
+        let usage = if module.is_empty() {
+            "e = use_extension('//:ext.bzl', 'files')\nuse_repo(e, chosen='made')\n"
+        } else {
+            "d = use_extension('//:ext.bzl', 'files', dev_dependency=True)\nuse_repo(d, chosen='made')\n"
+        };
+        f.file("MODULE.bazel", format!("module(name='main')\n{usage}"));
+        metadata_extension(&f, metadata);
+        let result = f.run(&["build", "//:copy"]);
+        reject(&result, marker);
+        if !metadata.contains("()") {
+            assert!(
+                error(&result).contains("error evaluating module extension files in //:ext.bzl"),
+                "{}",
+                error(&result)
+            );
+        }
+        assert_eq!(warnings(&result), 0, "{}", error(&result));
+        assert!(f.roots().is_empty());
+    }
+}
+
+#[test]
+fn skylib_use_all_repos_pattern_from_a_non_root_module_never_warns() {
+    let f = Fixture::new();
+    f.file("MODULE.bazel", "module(name='main')\nbazel_dep(name='dep',version='1')\nlocal_path_override(module_name='dep',path='dep')\n");
+    f.file(
+        "BUILD.bazel",
+        "genrule(name='copy',srcs=['@dep//:copy.txt'],outs=['copy.txt'],cmd='cat $(SRCS) > $@')\n",
+    );
+    f.file("dep/MODULE.bazel", "module(name='dep',version='1')\ne=use_extension('//:ext.bzl','files')\nuse_repo(e,'made')\n");
+    f.file("dep/BUILD.bazel", "genrule(name='copy',srcs=['@made//:data.txt'],outs=['copy.txt'],cmd='cat $(SRCS) > $@',visibility=['//visibility:public'])\n");
+    f.file("dep/rules.bzl", "def _impl(ctx):\n    ctx.file('BUILD.bazel', \"exports_files(['data.txt'])\\n\")\n    ctx.file('data.txt', ctx.attr.text + '\\n')\nmaker=repository_rule(_impl,attrs={'text':attr.string()})\n");
+    // bazel_skylib lib/modules.bzl _use_all_repos, verbatim control flow.
+    let skylib = fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/build_settings/skylib/lib/modules.bzl"),
+    )
+    .unwrap();
+    f.file("dep/modules.bzl", &skylib);
+    f.file("dep/ext.bzl", "load(':rules.bzl','maker')\nload(':modules.bzl','modules')\ndef _impl(ctx):\n    maker(name='made', text='root=' + str(ctx.root_module_has_non_dev_dependency))\n    maker(name='unimported', text='x')\n    return modules.use_all_repos(ctx, reproducible=True)\nfiles=module_extension(_impl)\n");
+    let result = f.run(&["build", "//:copy"]);
+    assert!(result.status.success(), "{}", error(&result));
+    assert_eq!(warnings(&result), 0, "{}", error(&result));
+    let output = String::from_utf8(result.stdout).unwrap();
+    let (_, path) = output.lines().next().unwrap().split_once('\t').unwrap();
+    assert_eq!(fs::read(path).unwrap(), b"root=False\n");
+    // Without a root usage even invalid explicit lists are never checked
+    // (SingleExtensionEvalFunction.java:465-466).
+    f.file("dep/ext.bzl", "load(':rules.bzl','maker')\ndef _impl(ctx):\n    maker(name='made', text='explicit')\n    return ctx.extension_metadata(root_module_direct_deps=['missing'], root_module_direct_dev_deps=[])\nfiles=module_extension(_impl)\n");
+    let result = f.run(&["build", "//:copy"]);
+    assert!(result.status.success(), "{}", error(&result));
+    assert_eq!(warnings(&result), 0, "{}", error(&result));
 }

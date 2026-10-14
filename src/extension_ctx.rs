@@ -8,11 +8,13 @@
 use allocative::Allocative;
 use anyhow::{anyhow, bail, ensure};
 use serde::Serialize;
+use starlark::collections::SmallMap;
 use starlark::collections::StarlarkHasher;
 use starlark::environment::{Methods, MethodsBuilder, Module};
 use starlark::eval::{Arguments, Evaluator};
 use starlark::starlark_module;
 use starlark::values::structs::AllocStruct;
+use starlark::values::tuple::UnpackTuple;
 use starlark::values::{FrozenHeapName, Heap, OwnedFrozenValue, Value, ValueLike};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -35,6 +37,8 @@ pub struct ExtensionExecution {
     pub repositories: Vec<RecordedRepository>,
     pub modules: Vec<BoundModule>,
     pub(crate) io_observations: Vec<crate::extension_io::Observation>,
+    /// None when the callback returned None (ModuleExtensionMetadata.DEFAULT).
+    pub metadata: Option<crate::extension_metadata::ExtensionMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -317,11 +321,12 @@ mod values {
         }
     }
 
-    /// Inert Bazel `extension_metadata` (ModuleExtensionMetadata.java). The
-    /// native profile has no lockfile or use_repo fixups, so it is discarded.
+    /// Opaque Bazel `extension_metadata` (ModuleExtensionMetadata.java). Its
+    /// validated direct-dependency payload drives the root use_repo fixup
+    /// after the callback; facts are validated and discarded (no lockfile).
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
     pub(super) struct ExtensionMetadata {
-        pub reproducible: bool,
+        pub metadata: crate::extension_metadata::ExtensionMetadata,
     }
     starlark::starlark_simple_value!(ExtensionMetadata);
 
@@ -541,27 +546,13 @@ fn module_methods(builder: &mut MethodsBuilder) {
 
     fn extension_metadata<'v>(
         this: Value<'v>,
-        #[starlark(require = named)] root_module_direct_deps: Option<Value<'v>>,
-        #[starlark(require = named)] root_module_direct_dev_deps: Option<Value<'v>>,
-        #[starlark(require = named, default = false)] reproducible: bool,
-        #[starlark(require = named)] facts: Option<Value<'v>>,
+        #[starlark(args)] args: UnpackTuple<Value<'v>>,
+        #[starlark(kwargs)] kwargs: SmallMap<String, Value<'v>>,
     ) -> anyhow::Result<ExtensionMetadata> {
         let _ = this;
-        // ModuleExtensionContext.java:207-321 -> ModuleExtensionMetadata.create:
-        // facts are validated before the direct-dependency arguments.
-        if let Some(facts) = facts {
-            validate_facts(facts)?;
-        }
-        if [root_module_direct_deps, root_module_direct_dev_deps]
-            .into_iter()
-            .flatten()
-            .any(|value| !value.is_none())
-        {
-            bail!(
-                "extension_metadata: non-None root_module_direct_deps/root_module_direct_dev_deps are unsupported in the native profile (no use_repo fixup metadata)"
-            );
-        }
-        Ok(ExtensionMetadata { reproducible })
+        Ok(ExtensionMetadata {
+            metadata: extension_metadata_call(&args.items, &kwargs)?,
+        })
     }
 
     fn is_dev_dependency<'v>(
@@ -594,6 +585,229 @@ fn facts_methods(builder: &mut MethodsBuilder) {
         let _ = (this, key);
         Ok(default.unwrap_or_else(Value::new_none))
     }
+}
+
+/// ModuleExtensionContext.java:207-321 parameter order. All are named-only.
+const METADATA_PARAMS: [&str; 4] = [
+    "root_module_direct_deps",
+    "root_module_direct_dev_deps",
+    "reproducible",
+    "facts",
+];
+
+/// BuiltinFunction.ArgumentProcessor for extension_metadata, then
+/// ModuleExtensionContext.extensionMetadata: named arguments are matched and
+/// type-checked in CALL order, unexpected positionals are reported afterwards
+/// (BuiltinFunction.java:310-430), then Dict.cast(facts), then create().
+fn extension_metadata_call(
+    positional: &[Value<'_>],
+    named: &SmallMap<String, Value<'_>>,
+) -> anyhow::Result<crate::extension_metadata::ExtensionMetadata> {
+    let mut values: [Option<Value<'_>>; 4] = [None; 4];
+    for (name, value) in named.iter() {
+        let Some(index) = METADATA_PARAMS.iter().position(|param| param == name) else {
+            bail!(
+                "extension_metadata() got unexpected keyword argument '{name}'{}",
+                did_you_mean(name, &METADATA_PARAMS)
+            );
+        };
+        let (ok, want) = match index {
+            0 | 1 => (
+                value.is_none() || value.unpack_str().is_some() || is_sequence(*value),
+                "sequence, string, or NoneType",
+            ),
+            2 => (value.unpack_bool().is_some(), "bool"),
+            _ => (
+                starlark::values::dict::DictRef::from_value(*value).is_some(),
+                "dict",
+            ),
+        };
+        ensure!(
+            ok,
+            "in call to extension_metadata(), parameter '{}' got value of type '{}', want '{want}'",
+            METADATA_PARAMS[index],
+            value.get_type()
+        );
+        // Duplicate keywords are rejected by the evaluator before the call.
+        values[index] = Some(*value);
+    }
+    ensure!(
+        positional.is_empty(),
+        "extension_metadata() got unexpected positional argument"
+    );
+    let none = Value::new_none();
+    let reproducible = values[2].and_then(|value| value.unpack_bool()) == Some(true);
+    // ModuleExtensionMetadata.create: facts are validated before the
+    // direct-dependency arguments (Dict.cast precedes create()).
+    if let Some(facts) = values[3] {
+        validate_facts(facts)?;
+    }
+    create_metadata(
+        values[0].unwrap_or(none),
+        values[1].unwrap_or(none),
+        reproducible,
+    )
+}
+
+/// Java Sequence implementations reachable from Starlark: list, tuple, range.
+fn is_sequence(value: Value<'_>) -> bool {
+    use starlark::values::list::ListRef;
+    use starlark::values::tuple::TupleRef;
+    ListRef::from_value(value).is_some()
+        || TupleRef::from_value(value).is_some()
+        || value.get_type() == "range"
+}
+
+/// StarlarkList.equals(StarlarkList.immutableOf()): lists only, never tuples.
+fn is_empty_list(value: Value<'_>) -> bool {
+    starlark::values::list::ListRef::from_value(value).is_some_and(|list| list.is_empty())
+}
+
+/// Sequence.cast(x, String.class, what) (Sequence.java:132-150).
+fn cast_strings(value: Value<'_>, what: &str) -> anyhow::Result<Vec<String>> {
+    use starlark::values::list::ListRef;
+    use starlark::values::tuple::TupleRef;
+    let items: Vec<Value<'_>> = if let Some(list) = ListRef::from_value(value) {
+        list.content().to_vec()
+    } else if let Some(tuple) = TupleRef::from_value(value) {
+        tuple.content().to_vec()
+    } else if value.get_type() == "range" {
+        // Every element of a range is an int: only an empty range casts.
+        if value.length().map_err(|error| anyhow!(error.to_string()))? > 0 {
+            bail!("at index 0 of {what}, got element of type int, want string");
+        }
+        Vec::new()
+    } else {
+        bail!("for {what}, got {}, want sequence", value.get_type());
+    };
+    items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            item.unpack_str().map(str::to_owned).ok_or_else(|| {
+                anyhow!(
+                    "at index {index} of {what}, got element of type {}, want string",
+                    item.get_type()
+                )
+            })
+        })
+        .collect()
+}
+
+/// ModuleExtensionMetadata.create(Object, Object, boolean, Dict) after facts
+/// (ModuleExtensionMetadata.java:96-174).
+fn create_metadata(
+    deps: Value<'_>,
+    dev_deps: Value<'_>,
+    reproducible: bool,
+) -> anyhow::Result<crate::extension_metadata::ExtensionMetadata> {
+    use crate::extension_metadata::{
+        ExtensionMetadata, UseAllRepos, validate_user_provided_repo_name,
+    };
+    let mode = |use_all_repos| ExtensionMetadata {
+        explicit_root_module_direct_deps: None,
+        explicit_root_module_direct_dev_deps: None,
+        use_all_repos,
+        reproducible,
+    };
+    if deps.is_none() && dev_deps.is_none() {
+        return Ok(mode(UseAllRepos::No));
+    }
+    let all = |value: Value<'_>| value.unpack_str() == Some("all");
+    if all(deps) && is_empty_list(dev_deps) {
+        return Ok(mode(UseAllRepos::Regular));
+    }
+    if all(dev_deps) && is_empty_list(deps) {
+        return Ok(mode(UseAllRepos::Dev));
+    }
+    ensure!(
+        !all(deps) && !all(dev_deps),
+        "if one of root_module_direct_deps and root_module_direct_dev_deps is \"all\", the other must be an empty list"
+    );
+    ensure!(
+        deps.unpack_str().is_none() && dev_deps.unpack_str().is_none(),
+        "root_module_direct_deps and root_module_direct_dev_deps must be None, \"all\", or a list of strings"
+    );
+    ensure!(
+        deps.is_none() == dev_deps.is_none(),
+        "root_module_direct_deps and root_module_direct_dev_deps must both be specified or both be unspecified"
+    );
+    let deps = cast_strings(deps, "root_module_direct_deps")?;
+    let dev_deps = cast_strings(dev_deps, "root_module_direct_dev_deps")?;
+    let mut explicit_deps: Vec<String> = Vec::new();
+    for dep in deps {
+        validate_user_provided_repo_name(&dep)
+            .map_err(|error| anyhow!("in root_module_direct_deps: {error}"))?;
+        ensure!(
+            !explicit_deps.contains(&dep),
+            "in root_module_direct_deps: duplicate entry '{dep}'"
+        );
+        explicit_deps.push(dep);
+    }
+    let mut explicit_dev_deps: Vec<String> = Vec::new();
+    for dep in dev_deps {
+        validate_user_provided_repo_name(&dep)
+            .map_err(|error| anyhow!("in root_module_direct_dev_deps: {error}"))?;
+        ensure!(
+            !explicit_deps.contains(&dep),
+            "in root_module_direct_dev_deps: entry '{dep}' is also in root_module_direct_deps"
+        );
+        ensure!(
+            !explicit_dev_deps.contains(&dep),
+            "in root_module_direct_dev_deps: duplicate entry '{dep}'"
+        );
+        explicit_dev_deps.push(dep);
+    }
+    Ok(ExtensionMetadata {
+        explicit_root_module_direct_deps: Some(explicit_deps),
+        explicit_root_module_direct_dev_deps: Some(explicit_dev_deps),
+        use_all_repos: UseAllRepos::No,
+        reproducible,
+    })
+}
+
+/// SpellChecker.didYouMean (net/starlark/java/spelling/SpellChecker.java).
+fn did_you_mean(input: &str, words: &[&str]) -> String {
+    fn edit_distance(s1: &[char], s2: &[char], max: usize) -> Option<usize> {
+        if s1 == s2 {
+            return Some(0);
+        }
+        if s1.len().abs_diff(s2.len()) > max {
+            return None;
+        }
+        let mut row: Vec<usize> = (0..=s2.len()).collect();
+        for i in 1..=s1.len() {
+            row[0] = i;
+            let mut best_in_row = row[0];
+            let mut previous = i - 1;
+            for j in 1..=s2.len() {
+                let old = row[j];
+                row[j] = (previous + usize::from(s1[i - 1] != s2[j - 1]))
+                    .min(1 + row[j - 1].min(row[j]));
+                previous = old;
+                best_in_row = best_in_row.min(row[j]);
+            }
+            if best_in_row > max {
+                return None;
+            }
+        }
+        let result = row[s2.len()];
+        (result <= max).then_some(result)
+    }
+    let mut best = None;
+    let mut best_distance = 5.min(input.chars().count().div_ceil(2));
+    let lower: Vec<char> = input.to_lowercase().chars().collect();
+    for candidate in words {
+        let other: Vec<char> = candidate.to_lowercase().chars().collect();
+        if let Some(distance) = edit_distance(&lower, &other, best_distance)
+            && distance < best_distance
+        {
+            best_distance = distance;
+            best = Some(*candidate);
+        }
+    }
+    best.map(|word| format!(" (did you mean '{word}'?)"))
+        .unwrap_or_default()
 }
 
 /// Facts.java MAX_FACTS_DEPTH.
@@ -1019,14 +1233,16 @@ pub fn execute(
             let observations = context.io.borrow_mut().close();
             let returned = evaluated.map_err(|error| anyhow!(error.to_string()))?;
             let observations = observations?;
-            // RegularRunnableExtension.java:298-304. The metadata itself is
-            // discarded: there is no lockfile or use_repo fixup in this profile.
+            // RegularRunnableExtension.java:298-318: None is DEFAULT metadata.
             ensure!(
                 returned.is_none() || returned.downcast_ref::<ExtensionMetadata>().is_some(),
                 "expected module extension {}%{extension_name} to return None or extension_metadata, got {}",
                 public_label.canonical_starlark(),
                 returned.get_type()
             );
+            let metadata = returned
+                .downcast_ref::<ExtensionMetadata>()
+                .map(|value| value.metadata.clone());
             drop(eval);
             let frozen = module
                 .freeze_named(FrozenHeapName::User(Box::new(format!(
@@ -1036,12 +1252,14 @@ pub fn execute(
             Ok((
                 context.calls.finish(&frozen).map_err(anyhow::Error::msg)?,
                 observations,
+                metadata,
             ))
         })?;
         Ok(ExtensionExecution {
             repositories: repositories.0,
             modules,
             io_observations: repositories.1,
+            metadata: repositories.2,
         })
     };
     run().map_err(|error| format!("module extension {public_label}: {error:#}"))
@@ -1847,15 +2065,13 @@ return m
                 "got dict<int, int> for 'facts'",
             ),
             (
-                "ctx.extension_metadata(root_module_direct_deps=['made'], root_module_direct_dev_deps=[])",
-                "extension_metadata: non-None root_module_direct_deps/root_module_direct_dev_deps are unsupported",
+                "ctx.extension_metadata(None)",
+                "extension_metadata() got unexpected positional argument",
             ),
             (
-                "ctx.extension_metadata(root_module_direct_deps='all', root_module_direct_dev_deps=[])",
-                "are unsupported in the native profile",
+                "ctx.extension_metadata(reproducible=1)",
+                "in call to extension_metadata(), parameter 'reproducible' got value of type 'int', want 'bool'",
             ),
-            ("ctx.extension_metadata(None)", "extension_metadata"),
-            ("ctx.extension_metadata(reproducible=1)", "reproducible"),
             (
                 "{ctx.extension_metadata(): 1}",
                 "unhashable type: 'extension_metadata'",
@@ -1867,6 +2083,180 @@ return m
         ] {
             fixture.error(body, "{}", &[], expected);
         }
+    }
+
+    fn metadata_of(
+        fixture: &Fixture,
+        body: &str,
+    ) -> Option<crate::extension_metadata::ExtensionMetadata> {
+        fixture
+            .run(body, "{}", &[])
+            .unwrap_or_else(|error| panic!("{body}: {error}"))
+            .metadata
+    }
+
+    #[test]
+    fn extension_metadata_direct_dependency_modes_are_carried_out_of_execute() {
+        use crate::extension_metadata::{ExtensionMetadata, UseAllRepos};
+        let fixture = Fixture::new();
+        let mode = |use_all_repos, reproducible| ExtensionMetadata {
+            use_all_repos,
+            reproducible,
+            ..Default::default()
+        };
+        let explicit = |deps: &[&str], dev: &[&str]| ExtensionMetadata {
+            explicit_root_module_direct_deps: Some(deps.iter().map(|s| (*s).to_owned()).collect()),
+            explicit_root_module_direct_dev_deps: Some(
+                dev.iter().map(|s| (*s).to_owned()).collect(),
+            ),
+            ..Default::default()
+        };
+        assert_eq!(metadata_of(&fixture, "r(name='made')"), None);
+        assert_eq!(
+            metadata_of(
+                &fixture,
+                "ctx.extension_metadata(root_module_direct_deps='all', root_module_direct_dev_deps=[])"
+            ),
+            None
+        );
+        for (body, expected) in [
+            (
+                "return ctx.extension_metadata()",
+                mode(UseAllRepos::No, false),
+            ),
+            (
+                "return ctx.extension_metadata(root_module_direct_deps=None, root_module_direct_dev_deps=None, reproducible=True)",
+                mode(UseAllRepos::No, true),
+            ),
+            (
+                "return ctx.extension_metadata(root_module_direct_deps='all', root_module_direct_dev_deps=[], reproducible=True)",
+                mode(UseAllRepos::Regular, true),
+            ),
+            (
+                "return ctx.extension_metadata(root_module_direct_dev_deps=[], root_module_direct_deps='all')",
+                mode(UseAllRepos::Regular, false),
+            ),
+            (
+                "return ctx.extension_metadata(root_module_direct_deps=[], root_module_direct_dev_deps='all')",
+                mode(UseAllRepos::Dev, false),
+            ),
+            (
+                "return ctx.extension_metadata(**{'root_module_direct_deps': 'all', 'root_module_direct_dev_deps': []})",
+                mode(UseAllRepos::Regular, false),
+            ),
+            // bazel_skylib modules.bzl:111-114 use_all_repos (root non-dev flag is True here).
+            (
+                "h = ctx.root_module_has_non_dev_dependency\nreturn ctx.extension_metadata(root_module_direct_deps='all' if h else [], root_module_direct_dev_deps=[] if h else 'all', **{'reproducible': True})",
+                mode(UseAllRepos::Regular, true),
+            ),
+            (
+                "return ctx.extension_metadata(root_module_direct_deps=['b', 'a'], root_module_direct_dev_deps=('c', 'd-1.x_y'))",
+                explicit(&["b", "a"], &["c", "d-1.x_y"]),
+            ),
+            (
+                "return ctx.extension_metadata(root_module_direct_deps=[], root_module_direct_dev_deps=[])",
+                explicit(&[], &[]),
+            ),
+            (
+                "return ctx.extension_metadata(root_module_direct_deps=range(0), root_module_direct_dev_deps=())",
+                explicit(&[], &[]),
+            ),
+        ] {
+            assert_eq!(metadata_of(&fixture, body), Some(expected), "{body}");
+        }
+        // Dev projection: root_module_has_non_dev_dependency False selects DEV.
+        let loaded = fixture.load("h = ctx.root_module_has_non_dev_dependency\nreturn ctx.extension_metadata(root_module_direct_deps='all' if h else [], root_module_direct_dev_deps=[] if h else 'all')", "{}");
+        assert_eq!(
+            fixture.run_loaded(loaded, &[], false).unwrap().metadata,
+            Some(mode(UseAllRepos::Dev, false))
+        );
+    }
+
+    #[test]
+    fn extension_metadata_direct_dependency_validation_matches_bazel_text_and_order() {
+        let fixture = Fixture::new();
+        let either_all = "if one of root_module_direct_deps and root_module_direct_dev_deps is \"all\", the other must be an empty list";
+        let strings = "root_module_direct_deps and root_module_direct_dev_deps must be None, \"all\", or a list of strings";
+        let both = "root_module_direct_deps and root_module_direct_dev_deps must both be specified or both be unspecified";
+        let repo = "valid names may contain only A-Z, a-z, 0-9, '-', '_', '.', and must start with a letter or a number";
+        for (args, expected) in [
+            // StarlarkList.equals: a tuple or range never pairs with "all".
+            ("root_module_direct_deps='all', root_module_direct_dev_deps=()", either_all.to_owned()),
+            ("root_module_direct_deps=(), root_module_direct_dev_deps='all'", either_all.to_owned()),
+            ("root_module_direct_deps='all', root_module_direct_dev_deps=range(0)", either_all.to_owned()),
+            ("root_module_direct_deps='all', root_module_direct_dev_deps=None", either_all.to_owned()),
+            ("root_module_direct_deps='all'", either_all.to_owned()),
+            ("root_module_direct_dev_deps='all'", either_all.to_owned()),
+            ("root_module_direct_deps='all', root_module_direct_dev_deps='all'", either_all.to_owned()),
+            ("root_module_direct_deps='all', root_module_direct_dev_deps=['x']", either_all.to_owned()),
+            ("root_module_direct_deps='some', root_module_direct_dev_deps=[]", strings.to_owned()),
+            ("root_module_direct_deps=[], root_module_direct_dev_deps='ALL'", strings.to_owned()),
+            ("root_module_direct_deps='x'", strings.to_owned()),
+            ("root_module_direct_deps=['a']", both.to_owned()),
+            ("root_module_direct_dev_deps=()", both.to_owned()),
+            ("root_module_direct_deps=1", "in call to extension_metadata(), parameter 'root_module_direct_deps' got value of type 'int', want 'sequence, string, or NoneType'".to_owned()),
+            ("root_module_direct_dev_deps={}", "in call to extension_metadata(), parameter 'root_module_direct_dev_deps' got value of type 'dict', want 'sequence, string, or NoneType'".to_owned()),
+            ("root_module_direct_deps=True, root_module_direct_dev_deps=[]", "parameter 'root_module_direct_deps' got value of type 'bool'".to_owned()),
+            // Named arguments are type-checked in call order.
+            ("facts=[], root_module_direct_deps=1", "parameter 'facts' got value of type 'list', want 'dict'".to_owned()),
+            ("root_module_direct_deps=1, facts=[]", "parameter 'root_module_direct_deps' got value of type 'int'".to_owned()),
+            ("reproducible='yes', root_module_direct_dev_deps=1", "parameter 'reproducible' got value of type 'string', want 'bool'".to_owned()),
+            // Facts (Dict.cast + validateAndCreate) precede create()'s checks.
+            ("root_module_direct_deps='bogus', facts={'a': struct()}", "'struct()' (struct) is not supported in facts".to_owned()),
+            ("root_module_direct_deps=[1], root_module_direct_dev_deps=[]", "at index 0 of root_module_direct_deps, got element of type int, want string".to_owned()),
+            ("root_module_direct_deps=['a'], root_module_direct_dev_deps=('b', None)", "at index 1 of root_module_direct_dev_deps, got element of type NoneType, want string".to_owned()),
+            ("root_module_direct_deps=range(2), root_module_direct_dev_deps=[]", "at index 0 of root_module_direct_deps, got element of type int, want string".to_owned()),
+            // Both casts precede every per-entry repository-name check.
+            ("root_module_direct_deps=['a+b'], root_module_direct_dev_deps=[1]", "at index 0 of root_module_direct_dev_deps, got element of type int, want string".to_owned()),
+            ("root_module_direct_deps=['a+b'], root_module_direct_dev_deps=[]", format!("in root_module_direct_deps: invalid user-provided repo name 'a+b': {repo}")),
+            ("root_module_direct_deps=[''], root_module_direct_dev_deps=[]", format!("in root_module_direct_deps: invalid user-provided repo name '': {repo}")),
+            ("root_module_direct_deps=[], root_module_direct_dev_deps=['_x']", format!("in root_module_direct_dev_deps: invalid user-provided repo name '_x': {repo}")),
+            ("root_module_direct_deps=['a\\nb'], root_module_direct_dev_deps=[]", format!("in root_module_direct_deps: invalid user-provided repo name 'a<?>b': {repo}")),
+            ("root_module_direct_deps=['a', 'b', 'a'], root_module_direct_dev_deps=[]", "in root_module_direct_deps: duplicate entry 'a'".to_owned()),
+            ("root_module_direct_deps=['a'], root_module_direct_dev_deps=['b', 'a']", "in root_module_direct_dev_deps: entry 'a' is also in root_module_direct_deps".to_owned()),
+            ("root_module_direct_deps=['a'], root_module_direct_dev_deps=('b', 'b')", "in root_module_direct_dev_deps: duplicate entry 'b'".to_owned()),
+            ("root_module_direct_deps=['a', '-'], root_module_direct_dev_deps=['a']", format!("in root_module_direct_deps: invalid user-provided repo name '-': {repo}")),
+            // ArgumentProcessor: unknown keywords fail immediately, positionals last.
+            ("fact={}", "extension_metadata() got unexpected keyword argument 'fact' (did you mean 'facts'?)".to_owned()),
+            ("reproducable=True", "extension_metadata() got unexpected keyword argument 'reproducable' (did you mean 'reproducible'?)".to_owned()),
+            ("[], []", "extension_metadata() got unexpected positional argument".to_owned()),
+            ("None, reproducible=1", "parameter 'reproducible' got value of type 'int', want 'bool'".to_owned()),
+            ("None, unknown=1", "extension_metadata() got unexpected keyword argument 'unknown'".to_owned()),
+        ] {
+            let body = format!("return ctx.extension_metadata({args})");
+            let error = fixture.run(&body, "{}", &[]).unwrap_err();
+            assert!(error.contains(&expected), "{args}: expected {expected:?}: {error}");
+        }
+        let error = fixture
+            .run("ctx.extension_metadata(zzz=1)", "{}", &[])
+            .unwrap_err();
+        assert!(
+            error.contains("extension_metadata() got unexpected keyword argument 'zzz'")
+                && !error.contains("did you mean"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn spell_checker_matches_starlark_java() {
+        assert_eq!(
+            did_you_mean("fact", &METADATA_PARAMS),
+            " (did you mean 'facts'?)"
+        );
+        assert_eq!(
+            did_you_mean("FACTS", &METADATA_PARAMS),
+            " (did you mean 'facts'?)"
+        );
+        assert_eq!(
+            did_you_mean("root_module_direct_dep", &METADATA_PARAMS),
+            " (did you mean 'root_module_direct_deps'?)"
+        );
+        assert_eq!(
+            did_you_mean("root_module_dev_deps", &METADATA_PARAMS),
+            " (did you mean 'root_module_direct_deps'?)"
+        );
+        assert_eq!(did_you_mean("x", &METADATA_PARAMS), "");
+        assert_eq!(did_you_mean("", &METADATA_PARAMS), "");
     }
 
     #[test]

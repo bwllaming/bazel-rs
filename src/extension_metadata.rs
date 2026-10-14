@@ -1,0 +1,559 @@
+//! Bazel 9.3 module-extension metadata: the validated `extension_metadata`
+//! payload (ModuleExtensionMetadata.java) and the root-module `use_repo`
+//! fixup computation (LockfileModuleExtensionMetadata.generateFixup).
+//!
+//! Everything here is a pure function of owned data. Metadata never changes
+//! generated repositories, their provenance, or any published identity: it only
+//! produces a warning (or an explicit evaluation error) after the callback.
+
+use allocative::Allocative;
+use std::collections::BTreeSet;
+
+/// ModuleExtensionMetadata.UseAllRepos (ModuleExtensionMetadata.java:176-180).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Allocative)]
+pub enum UseAllRepos {
+    #[default]
+    No,
+    Regular,
+    Dev,
+}
+
+/// Owned ModuleExtensionMetadata minus facts (native facts are discarded:
+/// there is no lockfile). Explicit lists keep LinkedHashSet insertion order
+/// and are duplicate-free by construction (ModuleExtensionMetadata.java:139-166).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Allocative)]
+pub struct ExtensionMetadata {
+    pub explicit_root_module_direct_deps: Option<Vec<String>>,
+    pub explicit_root_module_direct_dev_deps: Option<Vec<String>>,
+    pub use_all_repos: UseAllRepos,
+    pub reproducible: bool,
+}
+
+/// RepositoryName.VALID_USER_PROVIDED_NAME `[a-zA-Z0-9][-.\w]*` with
+/// Matcher.matches(); Java `\w` is ASCII `[a-zA-Z_0-9]`.
+pub fn validate_user_provided_repo_name(name: &str) -> Result<(), String> {
+    let bytes = name.as_bytes();
+    let valid = bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes[1..]
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_'));
+    if valid {
+        return Ok(());
+    }
+    // RepositoryName.java:201-208.
+    Err(format!(
+        "invalid user-provided repo name '{}': valid names may contain only A-Z, a-z, 0-9, '-', '_', '.', and must start with a letter or a number",
+        sanitize_control_chars(name)
+    ))
+}
+
+/// StringUtilities.sanitizeControlChars: `\r` -> `\\r`; other C0 controls
+/// (including `\t` and `\n`) and DEL -> `<?>`.
+pub fn sanitize_control_chars(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\r' => out.push_str("\\r"),
+            '\0'..='\u{1f}' | '\u{7f}' => out.push_str("<?>"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// One `use_extension` proxy of the root module's (non-ignored) usage.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RootProxy {
+    /// Module-wide `use_extension` call order; proxies are sorted by it.
+    pub ordinal: usize,
+    pub dev_dependency: bool,
+    /// Bazel Location text `file:line:col` of the call's left parenthesis.
+    pub location: String,
+    /// Normalized `extension_bzl_file` of the usage this proxy belongs to.
+    pub extension_bzl_file: String,
+    /// Exported names imported via `use_repo` on this proxy, in call order.
+    pub imports: Vec<String>,
+}
+
+/// The root module's ModuleExtensionUsage for one extension identity.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RootExtensionUsage {
+    pub extension_name: String,
+    /// Sorted by `ordinal`; never empty once recorded.
+    pub proxies: Vec<RootProxy>,
+}
+
+impl RootExtensionUsage {
+    fn has_non_dev_use_extension(&self) -> bool {
+        self.proxies.iter().any(|proxy| !proxy.dev_dependency)
+    }
+
+    fn has_dev_use_extension(&self) -> bool {
+        self.proxies.iter().any(|proxy| proxy.dev_dependency)
+    }
+}
+
+/// RootModuleFileFixup's user-visible part: Event.warn(location, message).
+/// The `bazel mod tidy` command list is not computed (mod tidy is unsupported).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fixup {
+    pub location: String,
+    pub message: String,
+}
+
+impl Fixup {
+    /// Bazel's terminal rendering of a located warning event.
+    pub fn warning(&self) -> String {
+        format!("WARNING: {}: {}", self.location, self.message)
+    }
+}
+
+fn invalid_repos<'a>(explicit: &'a [String], all: &BTreeSet<&str>) -> Vec<&'a str> {
+    // Sets.difference iterates the FIRST set in its insertion order.
+    explicit
+        .iter()
+        .map(String::as_str)
+        .filter(|repo| !all.contains(repo))
+        .collect()
+}
+
+impl ExtensionMetadata {
+    /// LockfileModuleExtensionMetadata.getRootModuleDirectDeps (lines 247-265).
+    fn root_module_direct_deps(&self, all: &[String]) -> Result<Option<Vec<String>>, String> {
+        Ok(match self.use_all_repos {
+            UseAllRepos::No => {
+                if let Some(explicit) = &self.explicit_root_module_direct_deps {
+                    let set = all.iter().map(String::as_str).collect();
+                    let invalid = invalid_repos(explicit, &set);
+                    if !invalid.is_empty() {
+                        return Err(format!(
+                            "root_module_direct_deps contained the following repositories not generated by the extension: {}",
+                            invalid.join(", ")
+                        ));
+                    }
+                }
+                self.explicit_root_module_direct_deps.clone()
+            }
+            UseAllRepos::Regular => Some(all.to_vec()),
+            UseAllRepos::Dev => Some(Vec::new()),
+        })
+    }
+
+    /// LockfileModuleExtensionMetadata.getRootModuleDirectDevDeps (267-286).
+    fn root_module_direct_dev_deps(&self, all: &[String]) -> Result<Option<Vec<String>>, String> {
+        Ok(match self.use_all_repos {
+            UseAllRepos::No => {
+                if let Some(explicit) = &self.explicit_root_module_direct_dev_deps {
+                    let set = all.iter().map(String::as_str).collect();
+                    let invalid = invalid_repos(explicit, &set);
+                    if !invalid.is_empty() {
+                        return Err(format!(
+                            "root_module_direct_dev_deps contained the following repositories not generated by the extension: {}",
+                            invalid.join(", ")
+                        ));
+                    }
+                }
+                self.explicit_root_module_direct_dev_deps.clone()
+            }
+            UseAllRepos::Regular => Some(Vec::new()),
+            UseAllRepos::Dev => Some(all.to_vec()),
+        })
+    }
+}
+
+fn joined(set: &BTreeSet<&str>) -> String {
+    set.iter().copied().collect::<Vec<_>>().join(", ")
+}
+
+/// LockfileModuleExtensionMetadata.generateFixup (lines 79-237). `all_repos`
+/// is the generated repository names in creation order. Err is the EvalException
+/// message; the caller wraps it as an extension evaluation failure.
+pub fn generate_fixup(
+    metadata: &ExtensionMetadata,
+    root: &RootExtensionUsage,
+    all_repos: &[String],
+) -> Result<Option<Fixup>, String> {
+    // Dev deps are computed (and may fail) before regular deps (lines 81-82).
+    let dev_deps = metadata.root_module_direct_dev_deps(all_repos)?;
+    let deps = metadata.root_module_direct_deps(all_repos)?;
+    let (deps, dev_deps) = match (deps, dev_deps) {
+        (None, None) => return Ok(None),
+        (Some(deps), Some(dev_deps)) => (deps, dev_deps),
+        // Preconditions.checkState: create() admits only both or neither.
+        _ => return Err("internal error: inconsistent extension_metadata".to_owned()),
+    };
+    if !root.has_non_dev_use_extension() && !deps.is_empty() {
+        return Err("root_module_direct_deps must be empty if the root module contains no usages with dev_dependency = False".to_owned());
+    }
+    if !root.has_dev_use_extension() && !dev_deps.is_empty() {
+        return Err("root_module_direct_dev_deps must be empty if the root module contains no usages with dev_dependency = True".to_owned());
+    }
+    let Some(first) = root.proxies.first() else {
+        return Ok(None);
+    };
+
+    // All derived sets are ImmutableSortedSet (natural String order); every
+    // name is a validated ASCII repository name, so byte order is identical.
+    let imports = |dev: bool| -> BTreeSet<&str> {
+        root.proxies
+            .iter()
+            .filter(|proxy| proxy.dev_dependency == dev)
+            .flat_map(|proxy| proxy.imports.iter().map(String::as_str))
+            .collect()
+    };
+    let actual_dev_imports = imports(true);
+    let actual_imports = imports(false);
+    let expected_imports: BTreeSet<&str> = deps.iter().map(String::as_str).collect();
+    let expected_dev_imports: BTreeSet<&str> = dev_deps.iter().map(String::as_str).collect();
+    let all: BTreeSet<&str> = all_repos.iter().map(String::as_str).collect();
+
+    let unchanged =
+        expected_imports == actual_imports && expected_dev_imports == actual_dev_imports;
+    if unchanged {
+        return Ok(None);
+    }
+
+    let mut message = format!(
+        "The module extension {} defined in {} reported incorrect imports of repositories via use_repo():\n\n",
+        root.extension_name, first.extension_bzl_file
+    );
+    let all_actual: BTreeSet<&str> = actual_imports.union(&actual_dev_imports).copied().collect();
+    let all_expected: BTreeSet<&str> = expected_imports
+        .union(&expected_dev_imports)
+        .copied()
+        .collect();
+
+    let mut section = |set: BTreeSet<&str>, heading: &str| {
+        if !set.is_empty() {
+            message.push_str(heading);
+            message.push_str(":\n    ");
+            message.push_str(&joined(&set));
+            message.push_str("\n\n");
+        }
+    };
+    section(
+        all_actual.difference(&all).copied().collect(),
+        "Imported, but not created by the extension (will cause the build to fail)",
+    );
+    section(
+        all_expected.difference(&all_actual).copied().collect(),
+        "Not imported, but reported as direct dependencies by the extension (may cause the build to fail)",
+    );
+    section(
+        expected_dev_imports
+            .intersection(&actual_imports)
+            .copied()
+            .collect(),
+        "Imported as a regular dependency, but reported as a dev dependency by the extension (may cause the build to fail when used by other modules)",
+    );
+    section(
+        expected_imports
+            .intersection(&actual_dev_imports)
+            .copied()
+            .collect(),
+        "Imported as a dev dependency, but reported as a regular dependency by the extension (may cause the build to fail when used by other modules)",
+    );
+    section(
+        all_actual
+            .intersection(&all)
+            .copied()
+            .filter(|repo| !all_expected.contains(repo))
+            .collect(),
+        "Imported, but reported as indirect dependencies by the extension",
+    );
+    message.push_str("Fix the use_repo calls by running 'bazel mod tidy'.");
+    Ok(Some(Fixup {
+        location: first.location.clone(),
+        message,
+    }))
+}
+
+/// ModuleFileGlobals.normalizeLabelString (Bazel 9.3:486-519) for the ROOT
+/// module: the main repository (empty name, `//` or relative labels) becomes the
+/// module's own repo name; every other repository keeps its apparent spelling,
+/// and `@@canonical` drops one `@`. The result is `@repo//package:name`.
+pub fn normalize_root_extension_bzl_file(raw: &str, own_repo_name: &str) -> String {
+    let (repository, rest) = if let Some(explicit) = raw.strip_prefix("@@") {
+        match explicit.split_once("//") {
+            Some((repository, rest)) => (repository, rest),
+            None => return raw.to_owned(),
+        }
+    } else if let Some(apparent) = raw.strip_prefix('@') {
+        match apparent.split_once("//") {
+            Some(("", rest)) => (own_repo_name, rest),
+            Some((repository, rest)) => (repository, rest),
+            None => return raw.to_owned(),
+        }
+    } else if let Some(rest) = raw.strip_prefix("//") {
+        (own_repo_name, rest)
+    } else {
+        // Relative to the root package of the module's own repository.
+        let name = raw.strip_prefix(':').unwrap_or(raw);
+        return format!("@{own_repo_name}//:{name}");
+    };
+    let (package, name) = match rest.split_once(':') {
+        Some((package, name)) => (package, name),
+        None => (rest, rest.rsplit('/').next().unwrap_or(rest)),
+    };
+    format!("@{repository}//{package}:{name}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn proxy(ordinal: usize, dev: bool, imports: &[&str]) -> RootProxy {
+        RootProxy {
+            ordinal,
+            dev_dependency: dev,
+            location: format!("/ws/MODULE.bazel:{}:20", ordinal + 1),
+            extension_bzl_file: "@main//:ext.bzl".to_owned(),
+            imports: imports.iter().map(|s| (*s).to_owned()).collect(),
+        }
+    }
+
+    fn usage(proxies: Vec<RootProxy>) -> RootExtensionUsage {
+        RootExtensionUsage {
+            extension_name: "ext".to_owned(),
+            proxies,
+        }
+    }
+
+    fn names(values: &[&str]) -> Vec<String> {
+        values.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    fn explicit(deps: &[&str], dev: &[&str]) -> ExtensionMetadata {
+        ExtensionMetadata {
+            explicit_root_module_direct_deps: Some(names(deps)),
+            explicit_root_module_direct_dev_deps: Some(names(dev)),
+            ..Default::default()
+        }
+    }
+
+    fn mode(use_all_repos: UseAllRepos) -> ExtensionMetadata {
+        ExtensionMetadata {
+            use_all_repos,
+            ..Default::default()
+        }
+    }
+
+    const HEADER: &str = "The module extension ext defined in @main//:ext.bzl reported incorrect imports of repositories via use_repo():\n\n";
+    const FOOTER: &str = "Fix the use_repo calls by running 'bazel mod tidy'.";
+
+    #[test]
+    fn repo_name_validation_matches_repository_name_java() {
+        for ok in ["a", "A1", "0x", "a-b.c_d", "a__", "9"] {
+            validate_user_provided_repo_name(ok).unwrap();
+        }
+        for (bad, shown) in [
+            ("", ""),
+            ("_a", "_a"),
+            ("-a", "-a"),
+            (".a", ".a"),
+            ("a+b", "a+b"),
+            ("a/b", "a/b"),
+            ("a b", "a b"),
+            ("é", "é"),
+            ("a\nb", "a<?>b"),
+            ("a\tb", "a<?>b"),
+            ("a\rb", "a\\rb"),
+            ("a\u{7f}", "a<?>"),
+            ("a\n", "a<?>"),
+        ] {
+            assert_eq!(
+                validate_user_provided_repo_name(bad).unwrap_err(),
+                format!(
+                    "invalid user-provided repo name '{shown}': valid names may contain only A-Z, a-z, 0-9, '-', '_', '.', and must start with a letter or a number"
+                ),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn default_and_reproducible_metadata_never_fix_up() {
+        let root = usage(vec![proxy(0, false, &["unrelated"])]);
+        for metadata in [
+            ExtensionMetadata::default(),
+            ExtensionMetadata {
+                reproducible: true,
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(
+                generate_fixup(&metadata, &root, &names(&["a"])).unwrap(),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_lists_must_name_generated_repositories_in_list_order() {
+        let root = usage(vec![proxy(0, false, &[]), proxy(1, true, &[])]);
+        let all = names(&["a", "b"]);
+        assert_eq!(
+            generate_fixup(&explicit(&["z", "a", "y"], &[]), &root, &all).unwrap_err(),
+            "root_module_direct_deps contained the following repositories not generated by the extension: z, y"
+        );
+        assert_eq!(
+            generate_fixup(&explicit(&[], &["q", "p"]), &root, &all).unwrap_err(),
+            "root_module_direct_dev_deps contained the following repositories not generated by the extension: q, p"
+        );
+        // Dev deps are evaluated first (LockfileModuleExtensionMetadata:81-82).
+        assert_eq!(
+            generate_fixup(&explicit(&["z"], &["q"]), &root, &all).unwrap_err(),
+            "root_module_direct_dev_deps contained the following repositories not generated by the extension: q"
+        );
+    }
+
+    #[test]
+    fn emptiness_follows_root_usage_kinds() {
+        let all = names(&["a"]);
+        let dev_only = usage(vec![proxy(0, true, &["a"])]);
+        let non_dev_only = usage(vec![proxy(0, false, &["a"])]);
+        let non_dev = "root_module_direct_deps must be empty if the root module contains no usages with dev_dependency = False";
+        let dev = "root_module_direct_dev_deps must be empty if the root module contains no usages with dev_dependency = True";
+        assert_eq!(
+            generate_fixup(&explicit(&["a"], &[]), &dev_only, &all).unwrap_err(),
+            non_dev
+        );
+        assert_eq!(
+            generate_fixup(&mode(UseAllRepos::Regular), &dev_only, &all).unwrap_err(),
+            non_dev
+        );
+        assert_eq!(
+            generate_fixup(&explicit(&[], &["a"]), &non_dev_only, &all).unwrap_err(),
+            dev
+        );
+        assert_eq!(
+            generate_fixup(&mode(UseAllRepos::Dev), &non_dev_only, &all).unwrap_err(),
+            dev
+        );
+        // "all" over zero generated repositories is empty and never errors.
+        assert_eq!(
+            generate_fixup(&mode(UseAllRepos::Regular), &dev_only, &[]).unwrap(),
+            Some(Fixup {
+                location: "/ws/MODULE.bazel:1:20".to_owned(),
+                message: format!(
+                    "{HEADER}Imported, but not created by the extension (will cause the build to fail):\n    a\n\n{FOOTER}"
+                ),
+            })
+        );
+    }
+
+    #[test]
+    fn matching_imports_produce_no_warning() {
+        let all = names(&["a", "b", "c"]);
+        let root = usage(vec![
+            proxy(0, false, &["b"]),
+            proxy(1, true, &["c"]),
+            proxy(2, false, &["a"]),
+        ]);
+        assert_eq!(
+            generate_fixup(&explicit(&["a", "b"], &["c"]), &root, &all).unwrap(),
+            None
+        );
+        let regular = usage(vec![proxy(0, false, &["c", "a", "b"])]);
+        assert_eq!(
+            generate_fixup(&mode(UseAllRepos::Regular), &regular, &all).unwrap(),
+            None
+        );
+        let dev = usage(vec![proxy(0, true, &["a", "b", "c"])]);
+        assert_eq!(
+            generate_fixup(&mode(UseAllRepos::Dev), &dev, &all).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn every_section_is_sorted_and_located_at_the_first_proxy() {
+        let all = names(&[
+            "zeta",
+            "indirect",
+            "dev_wrong",
+            "reg_wrong",
+            "missing",
+            "ok",
+        ]);
+        let root = usage(vec![
+            proxy(0, true, &["reg_wrong", "ok_dev"]),
+            proxy(1, false, &["phantom", "indirect", "dev_wrong", "ok"]),
+        ]);
+        let metadata = explicit(&["zeta", "missing", "reg_wrong", "ok"], &["dev_wrong"]);
+        let fixup = generate_fixup(&metadata, &root, &all).unwrap().unwrap();
+        assert_eq!(fixup.location, "/ws/MODULE.bazel:1:20");
+        assert_eq!(
+            fixup.message,
+            format!(
+                "{HEADER}Imported, but not created by the extension (will cause the build to fail):\n    ok_dev, phantom\n\n\
+Not imported, but reported as direct dependencies by the extension (may cause the build to fail):\n    missing, zeta\n\n\
+Imported as a regular dependency, but reported as a dev dependency by the extension (may cause the build to fail when used by other modules):\n    dev_wrong\n\n\
+Imported as a dev dependency, but reported as a regular dependency by the extension (may cause the build to fail when used by other modules):\n    reg_wrong\n\n\
+Imported, but reported as indirect dependencies by the extension:\n    indirect\n\n{FOOTER}"
+            )
+        );
+        assert_eq!(
+            fixup.warning(),
+            format!("WARNING: /ws/MODULE.bazel:1:20: {}", fixup.message)
+        );
+    }
+
+    #[test]
+    fn use_all_modes_cover_generated_set() {
+        let all = names(&["b", "a"]);
+        let root = usage(vec![proxy(0, false, &["a"]), proxy(1, true, &[])]);
+        let fixup = generate_fixup(&mode(UseAllRepos::Regular), &root, &all)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            fixup.message,
+            format!(
+                "{HEADER}Not imported, but reported as direct dependencies by the extension (may cause the build to fail):\n    b\n\n{FOOTER}"
+            )
+        );
+        let fixup = generate_fixup(&mode(UseAllRepos::Dev), &root, &all)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            fixup.message,
+            format!(
+                "{HEADER}Not imported, but reported as direct dependencies by the extension (may cause the build to fail):\n    b\n\n\
+Imported as a regular dependency, but reported as a dev dependency by the extension (may cause the build to fail when used by other modules):\n    a\n\n{FOOTER}"
+            )
+        );
+        // Removal-only differences still warn, even with no message section
+        // other than the footer (an imported indirect dependency here).
+        let extra = usage(vec![proxy(0, false, &["a", "b"])]);
+        let fixup = generate_fixup(&explicit(&["a"], &[]), &extra, &all)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            fixup.message,
+            format!(
+                "{HEADER}Imported, but reported as indirect dependencies by the extension:\n    b\n\n{FOOTER}"
+            )
+        );
+    }
+
+    #[test]
+    fn root_extension_labels_normalize_like_module_file_globals() {
+        for (raw, own, expected) in [
+            ("//:ext.bzl", "main", "@main//:ext.bzl"),
+            (":ext.bzl", "main", "@main//:ext.bzl"),
+            ("ext.bzl", "main", "@main//:ext.bzl"),
+            ("@//pkg:ext.bzl", "main", "@main//pkg:ext.bzl"),
+            ("//pkg/sub", "main", "@main//pkg/sub:sub"),
+            ("@dep//:ext.bzl", "main", "@dep//:ext.bzl"),
+            ("@@dep+//p:ext.bzl", "main", "@dep+//p:ext.bzl"),
+            ("@main//:ext.bzl", "main", "@main//:ext.bzl"),
+            ("//:ext.bzl", "", "@//:ext.bzl"),
+        ] {
+            assert_eq!(
+                normalize_root_extension_bzl_file(raw, own),
+                expected,
+                "{raw}"
+            );
+        }
+    }
+}

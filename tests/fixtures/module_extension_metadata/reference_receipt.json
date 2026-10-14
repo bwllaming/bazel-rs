@@ -1,0 +1,70 @@
+{
+  "status": "GENUINE_BAZEL_9_3_PAIRED_FIXUP_CAPTURE",
+  "reference_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "native_debug_sha256": "6984cf5b664aa643b10fabd9d39b8557afb91e05f5e4cc37ed64fdb6988803c5",
+  "capture_script_sha256": "2a337ad473c617a7a46725ecd788012de6d612595990bc8f2b157e3d2d53d1af",
+  "scenarios": {
+    "warn-explicit": {
+      "reference_exit": 0,
+      "native_exit": 0,
+      "warning_blocks": 1,
+      "warnings_byte_equal_path_normalized": true,
+      "inner_error_messages_equal": true
+    },
+    "ok-all": {
+      "reference_exit": 0,
+      "native_exit": 0,
+      "warning_blocks": 0,
+      "warnings_byte_equal_path_normalized": true,
+      "inner_error_messages_equal": true
+    },
+    "ok-dev-all": {
+      "reference_exit": 0,
+      "native_exit": 0,
+      "warning_blocks": 0,
+      "warnings_byte_equal_path_normalized": true,
+      "inner_error_messages_equal": true
+    },
+    "warn-all-sections": {
+      "reference_exit": 1,
+      "native_exit": 1,
+      "warning_blocks": 1,
+      "warnings_byte_equal_path_normalized": true,
+      "inner_error_messages_equal": true
+    },
+    "err-missing": {
+      "reference_exit": 1,
+      "native_exit": 1,
+      "warning_blocks": 0,
+      "warnings_byte_equal_path_normalized": true,
+      "inner_error_messages_equal": true
+    },
+    "err-dev-empty": {
+      "reference_exit": 1,
+      "native_exit": 1,
+      "warning_blocks": 0,
+      "warnings_byte_equal_path_normalized": true,
+      "inner_error_messages_equal": true
+    },
+    "err-all-tuple": {
+      "reference_exit": 1,
+      "native_exit": 1,
+      "warning_blocks": 0,
+      "warnings_byte_equal_path_normalized": true,
+      "inner_error_messages_equal": true
+    },
+    "err-bad-name": {
+      "reference_exit": 1,
+      "native_exit": 1,
+      "warning_blocks": 0,
+      "warnings_byte_equal_path_normalized": true,
+      "inner_error_messages_equal": true
+    }
+  },
+  "all_exit_classes_equal": true,
+  "all_warnings_equal": true,
+  "all_inner_errors_equal": true,
+  "known_framing_divergence": "Bazel ERROR: events/Java tracebacks and 'error evaluating module extension @@//:ext.bzl%files' wrapper for Starlark errors vs native bazel-rs:/starlark-rust traceback; inner messages identical",
+  "invocation": "reference --batch --ignore_all_rc_files private roots build --registry=file://<tracked registry copy> --repository_disable_download --incompatible_autoload_externally= --lockfile_mode=off --distdir=<platforms> --spawn_strategy=local --shell_executable=/bin/bash //:copy; native --ignore_all_rc_files --cache-dir=cache build //:copy",
+  "scratch_removed": true
+}

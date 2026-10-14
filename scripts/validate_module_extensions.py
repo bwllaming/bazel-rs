@@ -77,7 +77,7 @@ CASES = [
     case('labels.owners-and-forward-sibling'),
     case('identity.private-and-public-alias', probes=('private', 'public')),
     case('native.preparation-cycles', 'native_boundary', ('ordinary', 'direct')),
-    case('native.context-and-return', 'native_boundary', ('metadata', 'facts', 'os-environ', 'read-watch', 'integer', 'dict')),
+    case('native.context-and-return', 'native_boundary', ('facts', 'os-environ', 'read-watch', 'integer', 'dict')),
     case('native.isolated-on-demand', 'native_boundary', ('demanded', 'unused')),
     case('native.immutable-projections', 'native_boundary', ('modules', 'tags', 'words')),
     case('native.refresh-and-repair', 'native_boundary', ('cold', 'tag-change', 'callback-change', 'input-change', 'repair')),
@@ -102,10 +102,8 @@ DIAGNOSTICS = {
     'os-environ': r'(?m)^error: repository_os\.environ is unsupported in the native host metadata profile$',
     'read-watch': r'(?m)^error: unsupported module I/O profile: watch=yes on extension-owned files$',
 }
-for _member in ('extension_metadata', 'facts'):
-    DIAGNOSTICS[_member] = (r'(?:no (?:attribute|field|method)|has no|not supported|unsupported)[^\n]*\b'
-                            + _member + r'\b|\b' + _member
-                            + r'\b[^\n]*(?:not supported|unsupported|not available|not found)')
+DIAGNOSTICS['facts'] = (r'(?:no (?:attribute|field|method)|has no|not supported|unsupported)[^\n]*\bfacts\b'
+                        r'|\bfacts\b[^\n]*(?:not supported|unsupported|not available|not found)')
 UNRELATED = re.compile(direct.UNRELATED.pattern + r'|permission denied|access denied|syntax error|connection reset|'
                        r'failed to (?:download|fetch)|error downloading', re.I)
 
@@ -305,17 +303,17 @@ def fixture(name, probe='result'):
             files['b.bzl'] = direct.rule('pass', prefix='load("@a_repo//:helper.bzl","value")\n')
         target, diagnostic = '@a_repo//:data', 'cycle'
     elif name == 'native.context-and-return':
-        # Supported extension_metadata()/ctx.facts surfaces moved to unit/CLI
-        # tests; these probes keep the remaining explicit native boundaries.
-        operation = {'metadata': 'ctx.extension_metadata(root_module_direct_deps=["made"],root_module_direct_dev_deps=[])',
-                     'facts': 'value=ctx.facts["missing"]',
+        # Supported extension_metadata() (including root_module_direct_deps
+        # use_repo fixups) and ctx.facts surfaces moved to unit/CLI tests;
+        # these probes keep the remaining explicit native boundaries.
+        operation = {'facts': 'value=ctx.facts["missing"]',
                      'os-environ': 'value=ctx.os.environ', 'read-watch': 'ctx.read("x",watch="yes")',
                      'integer': 'return 42', 'dict': 'return {}'}[probe]
         files['ext.bzl'] = extension('maker(name="made")\n' + operation)
         if probe in ('os-environ', 'read-watch'):
             files['ext.bzl'] = extension('maker(name="made")\n'+operation+'\nfail('+quote(FAIL_MARKER)+')')
             files['rules.bzl'] = direct.rule('fail('+quote(LAZY_MARKER)+')')
-        diagnostic = 'return' if probe in ('integer', 'dict') else 'extension_metadata' if probe == 'metadata' else probe
+        diagnostic = 'return' if probe in ('integer', 'dict') else probe
     elif name == 'native.isolated-on-demand':
         files['MODULE.bazel'] = ROOT_MODULE + USAGE.replace('"files")', '"files",isolate=True)')
         # Native MODULE metadata accepts the option; demand must reject, not invent ctx values.
@@ -791,7 +789,7 @@ def main(argv=None):
         started_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
         limitations=[
             '16 cases: eight differential, eight native boundaries; not full Bazel or application compatibility.',
-            'Only bounded non-isolated callbacks returning None or inert extension_metadata; empty facts, no use_repo fixups, OS or filesystem context fiction.',
+            'Only bounded non-isolated callbacks returning None or extension_metadata (root use_repo fixup warnings, no mod tidy); empty facts, no OS or filesystem context fiction.',
             'Call-time mutable string-list snapshot is observable; unsupported nested dict/int-list attrs are not claimed.',
             'Genuine pinned Bazel built-in closure may download from BCR; no fake builtins or user workspace.',
             'Negative cases compare specific controlled diagnostics, not exact error strings or in-memory RepoSpec state.',
