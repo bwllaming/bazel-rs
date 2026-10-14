@@ -1,0 +1,27 @@
+{
+  "status": "GENUINE_BAZEL_9_3_STRING_METHOD_CAPTURE_MATCHES_ALL_BAZEL_ROWS",
+  "reference_bazel": "9.3.0",
+  "reference_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "fixture_defs_sha256": "3f411c52d8261e3cadc802ad97fb861246d05e2f9f5048db3b9088711f32675f",
+  "expected_sha256": "5ced6ed85760097faa1a2d74a71fcaa924e04ab04aea9daf32a60c0df08210aa",
+  "reference_build_txt_sha256": "32cae73c65429d94637f4c0eb6fef7b92a74be2e384a8f0b28654c398cf85185",
+  "reference_impl_txt_sha256": "32cae73c65429d94637f4c0eb6fef7b92a74be2e384a8f0b28654c398cf85185",
+  "rows": 630,
+  "mismatch_line_indices": [
+    112,
+    116,
+    117,
+    146,
+    152,
+    153,
+    156,
+    157,
+    158,
+    624,
+    625
+  ],
+  "mismatches_exactly_declared_divergent": true,
+  "invocation": "--batch --ignore_all_rc_files private output roots; build --registry=file://<private 216-file tracked registry copy> --repository_disable_download --incompatible_autoload_externally= --lockfile_mode=off --distdir=<verified platforms-1.0.0.tar.gz> --spawn_strategy=local //:check; exit 0",
+  "fixture_build": "load(':defs.bzl', 'check', 'report')\ncheck(name = 'check', build_report = report())\n",
+  "note": "Divergent rows: Bazel output is invalid UTF-8 (byte-wise case mapping of multibyte chars / explicit non-ASCII strip chars); bazel-rs keeps chars unchanged by design."
+}

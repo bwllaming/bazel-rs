@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 string repr compatibility; see vendor provenance.
+
 //! Implementation of `repr()`.
 
 use std::mem;
@@ -28,104 +30,60 @@ use crate::values::types::string::simd::Vector;
 #[allow(dead_code)]
 unsafe fn chunk_non_ascii_or_need_escape<V: Vector>(chunk: V) -> bool {
     unsafe {
-        #[allow(clippy::many_single_char_names)]
-        unsafe fn or4<V: Vector>(a: V, b: V, c: V, d: V) -> V {
-            unsafe {
-                let ab = V::or(a, b);
-                let cd = V::or(c, d);
-                V::or(ab, cd)
-            }
-        }
-
         // Note `cmplt` is signed comparison.
         let any_control_or_non_ascii = chunk.cmplt(V::splat(32));
-        let any_7f = chunk.cmpeq(V::splat(0x7f));
         let any_double_quote = chunk.cmpeq(V::splat(b'"'));
         let any_backslash = chunk.cmpeq(V::splat(b'\\'));
 
-        let need_escape = or4(
-            any_control_or_non_ascii,
-            any_7f,
-            any_double_quote,
+        // Modified: Bazel does not escape 0x7f.
+        let need_escape = V::or(
+            V::or(any_control_or_non_ascii, any_double_quote),
             any_backslash,
         );
         need_escape.movemask() != 0
     }
 }
 
+// Modified: match Bazel 9.3 `Printer.escapeCharacter` over UTF-8 bytes:
+// `"`, `\`, `\r`, `\n` and `\t` use named escapes, other bytes below 0x20 use
+// lowercase `\xNN`, and every other byte (including 0x7f and all non-ASCII
+// bytes) is emitted unchanged.
 #[inline(always)]
-fn push_escape(to_escape: char, buffer: &mut String) {
-    // Starlark behavior of `repr` is underspecified,
-    // so use mix of Starlark spec and PEP-3138.
-
+fn push_escape(to_escape: u8, buffer: &mut String) {
     use std::fmt::Write;
 
     match to_escape {
-        '\n' => buffer.push_str("\\n"),
-        '\r' => buffer.push_str("\\r"),
-        '\t' => buffer.push_str("\\t"),
-        '\\' => buffer.push_str("\\\\"),
-        '"' => buffer.push_str("\\\""),
-        // `write!` is slow, but these branches are rare.
-        c if (c as u32) < 0x100 => write!(buffer, "\\x{:02x}", c as u32).unwrap(),
-        c if (c as u32) < 0x10000 => write!(buffer, "\\u{:04x}", c as u32).unwrap(),
-        c => write!(buffer, "\\U{:08x}", c as u32).unwrap(),
+        b'\n' => buffer.push_str("\\n"),
+        b'\r' => buffer.push_str("\\r"),
+        b'\t' => buffer.push_str("\\t"),
+        b'\\' => buffer.push_str("\\\\"),
+        b'"' => buffer.push_str("\\\""),
+        // `write!` is slow, but this branch is rare.
+        c => write!(buffer, "\\x{c:02x}").unwrap(),
     }
 }
 
 #[inline(always)]
-fn need_escape(c: char) -> bool {
-    match c {
-        c if (c as u32) < 0x20 => true,
-        '"' => true,
-        '\\' => true,
-        // Note 0x7f needs to be escaped.
-        c if (c as u32) < 0x7f => false,
-        // Now all 8bit characters are covered:
-        c if (c as u32) <= 0xff => true,
-        // Rust does not expose `is_printable`.
-        // PEP-3138 goes long way defining precisely the Unicode groups which need escaping.
-        // We could pick more character groups here,
-        // but `is_alphanumeric` is practically enough for now.
-        c => !c.is_alphanumeric(),
-    }
+fn need_escape(b: u8) -> bool {
+    b < 0x20 || b == b'"' || b == b'\\'
 }
 
 pub(crate) fn string_repr(str: &str, buffer: &mut String) {
     // this method is surprisingly hot
-    // so we first try and do a fast pass that only works for ASCII-only
+    // so we first try and do a SIMD pass over chunks without special bytes
 
-    // Simple but definitely correct version
-    fn loop_unicode(val: &str, buffer: &mut String) {
-        for x in val.chars() {
-            if need_escape(x) {
-                push_escape(x, buffer);
-            } else {
-                buffer.push(x);
-            }
-        }
-    }
-
-    // Process the ASCII prefix, bailing out to loop_unicode if we fail
+    // Copy unescaped runs and escape the remaining (always ASCII) bytes.
     fn loop_ascii(val: &str, buffer: &mut String) {
-        for (done, x) in val.as_bytes().iter().enumerate() {
-            let x = *x;
-            // Note 0x7f is ASCII, but it is rarely used, so handle it common case
-            // to do fewer branches in common case.
-            if unlikely(x >= 0x7f) {
-                // bail out into a unicode-aware version
-                loop_unicode(&val[done..], buffer);
-                return;
-            }
-
-            if unlikely(need_escape(x as char)) {
-                push_escape(x as char, buffer);
-            } else {
-                // safe because we know the following values are all lower-ascii bytes
-                let byte_buffer = unsafe { buffer.as_mut_vec() };
-                byte_buffer.push(x);
+        let mut start = 0;
+        for (i, x) in val.as_bytes().iter().enumerate() {
+            if unlikely(need_escape(*x)) {
+                // `*x` is ASCII, so `start..i` and `i + 1..` are char boundaries.
+                buffer.push_str(&val[start..i]);
+                push_escape(*x, buffer);
+                start = i + 1;
             }
         }
+        buffer.push_str(&val[start..]);
     }
 
     #[inline(always)]
@@ -262,17 +220,59 @@ mod tests {
             assert_eq!(expected, &repr);
         }
         test(r#""\x12""#, "\x12");
-        test(r#""\x7f""#, "\x7f");
+        test("\"\x7f\"", "\x7f");
         test(r#""\n""#, "\n");
         // Do not escape single quotes because repr in Starlark uses double quotes.
         test(r#""'""#, "'");
         test(r#""\"""#, "\"");
         test(r#""\\""#, "\\");
-        // Non-printable whitespace.
-        test(r#""\u200b""#, "\u{200b}");
+        // Bazel emits non-ASCII characters unchanged, including non-printable ones.
+        test("\"\u{200b}\"", "\u{200b}");
         test(r#""Hello, 世界""#, "Hello, 世界");
         // Largest unicode number.
-        test(r#""\U0010ffff""#, "\u{10ffff}");
+        test("\"\u{10ffff}\"", "\u{10ffff}");
+    }
+
+    #[test]
+    fn test_string_repr_bazel_bytes() {
+        fn test(expected: &str, input: &str) {
+            assert_eq!(expected, string_repr_for_test(input));
+        }
+        test(
+            r#""\x00\x01\x08\x0b\x0c\x1b\x1c\x1f""#,
+            "\x00\x01\x08\x0b\x0c\x1b\x1c\x1f",
+        );
+        test(r#""\r\n\t\\\"'""#, "\r\n\t\\\"'");
+        test(
+            "\"\x7f \u{80} \u{85} \u{a0} \u{ad} \u{ff}\"",
+            "\x7f \u{80} \u{85} \u{a0} \u{ad} \u{ff}",
+        );
+        test(
+            "\"é õ ß µa ºa aÉ Éa élan 中x \u{3000} \u{feff} \u{1f600}\"",
+            "é õ ß µa ºa aÉ Éa élan 中x \u{3000} \u{feff} \u{1f600}",
+        );
+        test("\"é\\n中\\x1c\x7f\"", "é\n中\x1c\x7f");
+        // Long inputs exercise the SIMD chunk and tail paths.
+        let long = "0123456789abcdef\x7fé中\u{a0}0123456789abcdef\x1f\"\\".repeat(5);
+        let expected = format!(
+            "\"{}\"",
+            "0123456789abcdef\x7fé中\u{a0}0123456789abcdef\\x1f\\\"\\\\".repeat(5)
+        );
+        test(&expected, &long);
+        let long_raw = "0123456789abcdef\x7f0123456789abcdef\x7f".repeat(3);
+        test(&format!("\"{long_raw}\""), &long_raw);
+    }
+
+    #[test]
+    fn test_repr_bazel_bytes_in_starlark() {
+        assert::all_true(
+            r#"
+repr("\x7f") == "\"\x7f\""
+repr("\x1c") == "\"\\x1c\""
+repr("é\u00a0中") == "\"é\u00a0中\""
+str(["\x00", "µ"]) == "[\"\\x00\", \"µ\"]"
+"#,
+        );
     }
 
     #[test]
@@ -353,7 +353,7 @@ mod tests {
             assert!(!chunk_non_ascii_or_need_escape(load("0123456789abcde ")));
             assert!(chunk_non_ascii_or_need_escape(load("0123456789ab\x19def")));
             assert!(chunk_non_ascii_or_need_escape(load("0123456789abcde\n")));
-            assert!(chunk_non_ascii_or_need_escape(load("0123456789ab\x7fdef")));
+            assert!(!chunk_non_ascii_or_need_escape(load("0123456789ab\x7fdef")));
             assert!(chunk_non_ascii_or_need_escape(load(
                 "0123\x0456789ab\x02def"
             )));

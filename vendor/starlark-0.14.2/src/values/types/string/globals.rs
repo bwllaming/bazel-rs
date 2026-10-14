@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 string repr compatibility; see vendor provenance.
+
 use starlark_derive::starlark_module;
 
 use crate as starlark;
@@ -110,7 +112,8 @@ pub(crate) fn register_str(globals: &mut GlobalsBuilder) {
     /// https://github.com/bazelbuild/starlark/blob/master/spec.md#repr
     /// ): formats its argument as a string.
     ///
-    /// All strings in the result are double-quoted.
+    /// All strings in the result are double-quoted. As in Bazel 9.3, only `"`, `\`
+    /// and characters below U+0020 are escaped; other characters are emitted as is.
     ///
     /// ```
     /// # starlark::assert::all_true(r#"
@@ -118,7 +121,8 @@ pub(crate) fn register_str(globals: &mut GlobalsBuilder) {
     /// repr("x")               == "\"x\""
     /// repr([1, "x"])          == "[1, \"x\"]"
     /// repr("test \"'")        == "\"test \\\"'\""
-    /// repr("x\"y😿 \\'")      == "\"x\\\"y\\U0001f63f \\\\'\""
+    /// repr("x\"y😿 \\'")      == "\"x\\\"y😿 \\\\'\""
+    /// repr("\x1f\x7f\u00a0")   == "\"\\x1f\x7f\u00a0\""
     /// # "#);
     /// ```
     #[starlark(speculative_exec_safe)]

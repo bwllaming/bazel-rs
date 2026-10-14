@@ -149,6 +149,8 @@ CLI target loading and reuses it without eagerly resolving unused declarations.
 including ordered File sets transported through custom providers.
 [Scoped subrules](docs/SUBRULES.md) execute declared zero-attribute helpers with
 real actions and guarded contexts; private dependency attributes remain unsupported.
+[String methods](docs/STRING_METHODS.md) follow Bazel's UTF-8 byte-string case,
+whitespace and `repr` rules, with invalid-UTF-8 result rows documented.
 [Native JSON](docs/JSON.md) provides a dedicated bounded codec with exact numeric
 handling rather than the interpreter's incompatible generic serialization path.
 [Repository environment inputs](docs/REPOSITORY_ENVIRONMENT.md) track declared

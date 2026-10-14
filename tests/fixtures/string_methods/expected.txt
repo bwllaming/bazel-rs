@@ -1,0 +1,630 @@
+bazel lower 0 ""
+bazel lower 1 "abc"
+bazel lower 2 "abc"
+bazel lower 3 "hello world"
+bazel lower 4 "hello world"
+bazel lower 5 "a1b"
+bazel lower 6 "catch-22"
+bazel lower 7 "hal-9000"
+bazel lower 8 "123"
+bazel lower 9 " \t\n\x0b\x0c\r "
+bazel lower 10 "\x1c"
+bazel lower 11 "\x1f"
+bazel lower 12 ""
+bazel lower 13 "\x1ca\x1f"
+bazel lower 14 " a "
+bazel lower 15 "é"
+bazel lower 16 "õ"
+bazel lower 17 "õa"
+bazel lower 18 "ß"
+bazel lower 19 "ßa"
+bazel lower 20 "µa"
+bazel lower 21 "ºa"
+bazel lower 22 "ªa"
+bazel lower 23 "aÉ"
+bazel lower 24 "Éa"
+bazel lower 25 "Éa"
+bazel lower 26 "élan"
+bazel lower 27 "Élan"
+bazel lower 28 "Élan"
+bazel lower 29 "straße"
+bazel lower 30 "中x"
+bazel lower 31 "x中"
+bazel lower 32 " "
+bazel lower 33 " a "
+bazel lower 34 "　"
+bazel lower 35 "　a"
+bazel lower 36 "a　"
+bazel lower 37 ""
+bazel lower 38 "²"
+bazel lower 39 "١"
+bazel lower 40 "\"q\\\""
+bazel upper 0 ""
+bazel upper 1 "ABC"
+bazel upper 2 "ABC"
+bazel upper 3 "HELLO WORLD"
+bazel upper 4 "HELLO WORLD"
+bazel upper 5 "A1B"
+bazel upper 6 "CATCH-22"
+bazel upper 7 "HAL-9000"
+bazel upper 8 "123"
+bazel upper 9 " \t\n\x0b\x0c\r "
+bazel upper 10 "\x1c"
+bazel upper 11 "\x1f"
+bazel upper 12 ""
+bazel upper 13 "\x1cA\x1f"
+bazel upper 14 " A "
+bazel upper 15 "é"
+bazel upper 16 "õ"
+bazel upper 17 "õA"
+bazel upper 18 "ß"
+bazel upper 19 "ßA"
+bazel upper 20 "µA"
+bazel upper 21 "ºA"
+bazel upper 22 "ªA"
+bazel upper 23 "AÉ"
+bazel upper 24 "ÉA"
+bazel upper 25 "ÉA"
+bazel upper 26 "éLAN"
+bazel upper 27 "ÉLAN"
+bazel upper 28 "ÉLAN"
+bazel upper 29 "STRAßE"
+bazel upper 30 "中X"
+bazel upper 31 "X中"
+bazel upper 32 " "
+bazel upper 33 " A "
+bazel upper 34 "　"
+bazel upper 35 "　A"
+bazel upper 36 "A　"
+bazel upper 37 ""
+bazel upper 38 "²"
+bazel upper 39 "١"
+bazel upper 40 "\"Q\\\""
+bazel capitalize 0 ""
+bazel capitalize 1 "Abc"
+bazel capitalize 2 "Abc"
+bazel capitalize 3 "Hello world"
+bazel capitalize 4 "Hello world"
+bazel capitalize 5 "A1b"
+bazel capitalize 6 "Catch-22"
+bazel capitalize 7 "Hal-9000"
+bazel capitalize 8 "123"
+bazel capitalize 9 " \t\n\x0b\x0c\r "
+bazel capitalize 10 "\x1c"
+bazel capitalize 11 "\x1f"
+bazel capitalize 12 ""
+bazel capitalize 13 "\x1ca\x1f"
+bazel capitalize 14 " a "
+bazel capitalize 15 "é"
+bazel capitalize 16 "õ"
+bazel capitalize 17 "õa"
+bazel capitalize 18 "ß"
+bazel capitalize 19 "ßa"
+bazel capitalize 20 "µa"
+bazel capitalize 21 "ºa"
+bazel capitalize 22 "ªa"
+bazel capitalize 23 "AÉ"
+bazel capitalize 24 "Éa"
+bazel capitalize 25 "Éa"
+bazel capitalize 26 "élan"
+bazel capitalize 27 "Élan"
+bazel capitalize 28 "Élan"
+bazel capitalize 29 "Straße"
+divergent capitalize 30 "中x"
+bazel capitalize 31 "X中"
+bazel capitalize 32 " "
+bazel capitalize 33 " a "
+divergent capitalize 34 "　"
+divergent capitalize 35 "　a"
+bazel capitalize 36 "A　"
+bazel capitalize 37 ""
+bazel capitalize 38 "²"
+bazel capitalize 39 "١"
+bazel capitalize 40 "\"q\\\""
+bazel title 0 ""
+bazel title 1 "Abc"
+bazel title 2 "Abc"
+bazel title 3 "Hello World"
+bazel title 4 "Hello World"
+bazel title 5 "A1B"
+bazel title 6 "Catch-22"
+bazel title 7 "Hal-9000"
+bazel title 8 "123"
+bazel title 9 " \t\n\x0b\x0c\r "
+bazel title 10 "\x1c"
+bazel title 11 "\x1f"
+bazel title 12 ""
+bazel title 13 "\x1cA\x1f"
+bazel title 14 " A "
+bazel title 15 "é"
+bazel title 16 "õ"
+bazel title 17 "õa"
+bazel title 18 "ß"
+bazel title 19 "ßA"
+bazel title 20 "µa"
+bazel title 21 "ºa"
+bazel title 22 "ªa"
+divergent title 23 "AÉ"
+bazel title 24 "ÉA"
+bazel title 25 "ÉA"
+bazel title 26 "éLan"
+bazel title 27 "ÉLan"
+bazel title 28 "ÉLan"
+divergent title 29 "StraßE"
+divergent title 30 "中X"
+bazel title 31 "X中"
+bazel title 32 " "
+divergent title 33 " A "
+divergent title 34 "　"
+divergent title 35 "　A"
+bazel title 36 "A　"
+bazel title 37 ""
+bazel title 38 "²"
+bazel title 39 "١"
+bazel title 40 "\"Q\\\""
+bazel isalpha 0 False
+bazel isalpha 1 True
+bazel isalpha 2 True
+bazel isalpha 3 False
+bazel isalpha 4 False
+bazel isalpha 5 False
+bazel isalpha 6 False
+bazel isalpha 7 False
+bazel isalpha 8 False
+bazel isalpha 9 False
+bazel isalpha 10 False
+bazel isalpha 11 False
+bazel isalpha 12 False
+bazel isalpha 13 False
+bazel isalpha 14 False
+bazel isalpha 15 False
+bazel isalpha 16 False
+bazel isalpha 17 False
+bazel isalpha 18 False
+bazel isalpha 19 False
+bazel isalpha 20 False
+bazel isalpha 21 False
+bazel isalpha 22 False
+bazel isalpha 23 False
+bazel isalpha 24 False
+bazel isalpha 25 False
+bazel isalpha 26 False
+bazel isalpha 27 False
+bazel isalpha 28 False
+bazel isalpha 29 False
+bazel isalpha 30 False
+bazel isalpha 31 False
+bazel isalpha 32 False
+bazel isalpha 33 False
+bazel isalpha 34 False
+bazel isalpha 35 False
+bazel isalpha 36 False
+bazel isalpha 37 False
+bazel isalpha 38 False
+bazel isalpha 39 False
+bazel isalpha 40 False
+bazel isalnum 0 False
+bazel isalnum 1 True
+bazel isalnum 2 True
+bazel isalnum 3 False
+bazel isalnum 4 False
+bazel isalnum 5 True
+bazel isalnum 6 False
+bazel isalnum 7 False
+bazel isalnum 8 True
+bazel isalnum 9 False
+bazel isalnum 10 False
+bazel isalnum 11 False
+bazel isalnum 12 False
+bazel isalnum 13 False
+bazel isalnum 14 False
+bazel isalnum 15 False
+bazel isalnum 16 False
+bazel isalnum 17 False
+bazel isalnum 18 False
+bazel isalnum 19 False
+bazel isalnum 20 False
+bazel isalnum 21 False
+bazel isalnum 22 False
+bazel isalnum 23 False
+bazel isalnum 24 False
+bazel isalnum 25 False
+bazel isalnum 26 False
+bazel isalnum 27 False
+bazel isalnum 28 False
+bazel isalnum 29 False
+bazel isalnum 30 False
+bazel isalnum 31 False
+bazel isalnum 32 False
+bazel isalnum 33 False
+bazel isalnum 34 False
+bazel isalnum 35 False
+bazel isalnum 36 False
+bazel isalnum 37 False
+bazel isalnum 38 False
+bazel isalnum 39 False
+bazel isalnum 40 False
+bazel isdigit 0 False
+bazel isdigit 1 False
+bazel isdigit 2 False
+bazel isdigit 3 False
+bazel isdigit 4 False
+bazel isdigit 5 False
+bazel isdigit 6 False
+bazel isdigit 7 False
+bazel isdigit 8 True
+bazel isdigit 9 False
+bazel isdigit 10 False
+bazel isdigit 11 False
+bazel isdigit 12 False
+bazel isdigit 13 False
+bazel isdigit 14 False
+bazel isdigit 15 False
+bazel isdigit 16 False
+bazel isdigit 17 False
+bazel isdigit 18 False
+bazel isdigit 19 False
+bazel isdigit 20 False
+bazel isdigit 21 False
+bazel isdigit 22 False
+bazel isdigit 23 False
+bazel isdigit 24 False
+bazel isdigit 25 False
+bazel isdigit 26 False
+bazel isdigit 27 False
+bazel isdigit 28 False
+bazel isdigit 29 False
+bazel isdigit 30 False
+bazel isdigit 31 False
+bazel isdigit 32 False
+bazel isdigit 33 False
+bazel isdigit 34 False
+bazel isdigit 35 False
+bazel isdigit 36 False
+bazel isdigit 37 False
+bazel isdigit 38 False
+bazel isdigit 39 False
+bazel isdigit 40 False
+bazel isspace 0 False
+bazel isspace 1 False
+bazel isspace 2 False
+bazel isspace 3 False
+bazel isspace 4 False
+bazel isspace 5 False
+bazel isspace 6 False
+bazel isspace 7 False
+bazel isspace 8 False
+bazel isspace 9 True
+bazel isspace 10 False
+bazel isspace 11 False
+bazel isspace 12 False
+bazel isspace 13 False
+bazel isspace 14 False
+bazel isspace 15 False
+bazel isspace 16 False
+bazel isspace 17 False
+bazel isspace 18 False
+bazel isspace 19 False
+bazel isspace 20 False
+bazel isspace 21 False
+bazel isspace 22 False
+bazel isspace 23 False
+bazel isspace 24 False
+bazel isspace 25 False
+bazel isspace 26 False
+bazel isspace 27 False
+bazel isspace 28 False
+bazel isspace 29 False
+bazel isspace 30 False
+bazel isspace 31 False
+bazel isspace 32 False
+bazel isspace 33 False
+bazel isspace 34 False
+bazel isspace 35 False
+bazel isspace 36 False
+bazel isspace 37 False
+bazel isspace 38 False
+bazel isspace 39 False
+bazel isspace 40 False
+bazel islower 0 False
+bazel islower 1 True
+bazel islower 2 False
+bazel islower 3 False
+bazel islower 4 False
+bazel islower 5 True
+bazel islower 6 False
+bazel islower 7 False
+bazel islower 8 False
+bazel islower 9 False
+bazel islower 10 False
+bazel islower 11 False
+bazel islower 12 False
+bazel islower 13 True
+bazel islower 14 True
+bazel islower 15 False
+bazel islower 16 False
+bazel islower 17 True
+bazel islower 18 False
+bazel islower 19 True
+bazel islower 20 True
+bazel islower 21 True
+bazel islower 22 True
+bazel islower 23 True
+bazel islower 24 True
+bazel islower 25 False
+bazel islower 26 True
+bazel islower 27 True
+bazel islower 28 False
+bazel islower 29 False
+bazel islower 30 True
+bazel islower 31 True
+bazel islower 32 False
+bazel islower 33 True
+bazel islower 34 False
+bazel islower 35 True
+bazel islower 36 True
+bazel islower 37 False
+bazel islower 38 False
+bazel islower 39 False
+bazel islower 40 True
+bazel isupper 0 False
+bazel isupper 1 False
+bazel isupper 2 True
+bazel isupper 3 False
+bazel isupper 4 False
+bazel isupper 5 False
+bazel isupper 6 False
+bazel isupper 7 True
+bazel isupper 8 False
+bazel isupper 9 False
+bazel isupper 10 False
+bazel isupper 11 False
+bazel isupper 12 False
+bazel isupper 13 False
+bazel isupper 14 False
+bazel isupper 15 False
+bazel isupper 16 False
+bazel isupper 17 False
+bazel isupper 18 False
+bazel isupper 19 False
+bazel isupper 20 False
+bazel isupper 21 False
+bazel isupper 22 False
+bazel isupper 23 False
+bazel isupper 24 False
+bazel isupper 25 True
+bazel isupper 26 False
+bazel isupper 27 False
+bazel isupper 28 True
+bazel isupper 29 False
+bazel isupper 30 False
+bazel isupper 31 False
+bazel isupper 32 False
+bazel isupper 33 False
+bazel isupper 34 False
+bazel isupper 35 False
+bazel isupper 36 False
+bazel isupper 37 False
+bazel isupper 38 False
+bazel isupper 39 False
+bazel isupper 40 False
+bazel istitle 0 False
+bazel istitle 1 False
+bazel istitle 2 False
+bazel istitle 3 True
+bazel istitle 4 False
+bazel istitle 5 False
+bazel istitle 6 True
+bazel istitle 7 False
+bazel istitle 8 False
+bazel istitle 9 False
+bazel istitle 10 False
+bazel istitle 11 False
+bazel istitle 12 False
+bazel istitle 13 False
+bazel istitle 14 False
+bazel istitle 15 False
+bazel istitle 16 False
+bazel istitle 17 False
+bazel istitle 18 False
+bazel istitle 19 False
+bazel istitle 20 False
+bazel istitle 21 False
+bazel istitle 22 False
+bazel istitle 23 False
+bazel istitle 24 False
+bazel istitle 25 True
+bazel istitle 26 False
+bazel istitle 27 False
+bazel istitle 28 False
+bazel istitle 29 False
+bazel istitle 30 False
+bazel istitle 31 False
+bazel istitle 32 False
+bazel istitle 33 False
+bazel istitle 34 False
+bazel istitle 35 False
+bazel istitle 36 False
+bazel istitle 37 False
+bazel istitle 38 False
+bazel istitle 39 False
+bazel istitle 40 False
+bazel strip 0 ""
+bazel strip 1 "abc"
+bazel strip 2 "ABC"
+bazel strip 3 "Hello World"
+bazel strip 4 "hELLO wORLD"
+bazel strip 5 "a1b"
+bazel strip 6 "Catch-22"
+bazel strip 7 "HAL-9000"
+bazel strip 8 "123"
+bazel strip 9 ""
+bazel strip 10 ""
+bazel strip 11 ""
+bazel strip 12 ""
+bazel strip 13 "a"
+bazel strip 14 "a"
+bazel strip 15 "é"
+bazel strip 16 "õ"
+bazel strip 17 "õa"
+bazel strip 18 "ß"
+bazel strip 19 "ßa"
+bazel strip 20 "µa"
+bazel strip 21 "ºa"
+bazel strip 22 "ªa"
+bazel strip 23 "aÉ"
+bazel strip 24 "Éa"
+bazel strip 25 "ÉA"
+bazel strip 26 "élan"
+bazel strip 27 "Élan"
+bazel strip 28 "ÉLAN"
+bazel strip 29 "Straße"
+bazel strip 30 "中x"
+bazel strip 31 "x中"
+bazel strip 32 " "
+bazel strip 33 " a "
+bazel strip 34 "　"
+bazel strip 35 "　a"
+bazel strip 36 "a　"
+bazel strip 37 ""
+bazel strip 38 "²"
+bazel strip 39 "١"
+bazel strip 40 "\"q\\\""
+bazel lstrip 0 ""
+bazel lstrip 1 "abc"
+bazel lstrip 2 "ABC"
+bazel lstrip 3 "Hello World"
+bazel lstrip 4 "hELLO wORLD"
+bazel lstrip 5 "a1b"
+bazel lstrip 6 "Catch-22"
+bazel lstrip 7 "HAL-9000"
+bazel lstrip 8 "123"
+bazel lstrip 9 ""
+bazel lstrip 10 ""
+bazel lstrip 11 ""
+bazel lstrip 12 ""
+bazel lstrip 13 "a\x1f"
+bazel lstrip 14 "a "
+bazel lstrip 15 "é"
+bazel lstrip 16 "õ"
+bazel lstrip 17 "õa"
+bazel lstrip 18 "ß"
+bazel lstrip 19 "ßa"
+bazel lstrip 20 "µa"
+bazel lstrip 21 "ºa"
+bazel lstrip 22 "ªa"
+bazel lstrip 23 "aÉ"
+bazel lstrip 24 "Éa"
+bazel lstrip 25 "ÉA"
+bazel lstrip 26 "élan"
+bazel lstrip 27 "Élan"
+bazel lstrip 28 "ÉLAN"
+bazel lstrip 29 "Straße"
+bazel lstrip 30 "中x"
+bazel lstrip 31 "x中"
+bazel lstrip 32 " "
+bazel lstrip 33 " a "
+bazel lstrip 34 "　"
+bazel lstrip 35 "　a"
+bazel lstrip 36 "a　"
+bazel lstrip 37 ""
+bazel lstrip 38 "²"
+bazel lstrip 39 "١"
+bazel lstrip 40 "\"q\\\""
+bazel rstrip 0 ""
+bazel rstrip 1 "abc"
+bazel rstrip 2 "ABC"
+bazel rstrip 3 "Hello World"
+bazel rstrip 4 "hELLO wORLD"
+bazel rstrip 5 "a1b"
+bazel rstrip 6 "Catch-22"
+bazel rstrip 7 "HAL-9000"
+bazel rstrip 8 "123"
+bazel rstrip 9 ""
+bazel rstrip 10 ""
+bazel rstrip 11 ""
+bazel rstrip 12 ""
+bazel rstrip 13 "\x1ca"
+bazel rstrip 14 " a"
+bazel rstrip 15 "é"
+bazel rstrip 16 "õ"
+bazel rstrip 17 "õa"
+bazel rstrip 18 "ß"
+bazel rstrip 19 "ßa"
+bazel rstrip 20 "µa"
+bazel rstrip 21 "ºa"
+bazel rstrip 22 "ªa"
+bazel rstrip 23 "aÉ"
+bazel rstrip 24 "Éa"
+bazel rstrip 25 "ÉA"
+bazel rstrip 26 "élan"
+bazel rstrip 27 "Élan"
+bazel rstrip 28 "ÉLAN"
+bazel rstrip 29 "Straße"
+bazel rstrip 30 "中x"
+bazel rstrip 31 "x中"
+bazel rstrip 32 " "
+bazel rstrip 33 " a "
+bazel rstrip 34 "　"
+bazel rstrip 35 "　a"
+bazel rstrip 36 "a　"
+bazel rstrip 37 ""
+bazel rstrip 38 "²"
+bazel rstrip 39 "١"
+bazel rstrip 40 "\"q\\\""
+bazel repr 0 "\"\""
+bazel repr 1 "\"abc\""
+bazel repr 2 "\"ABC\""
+bazel repr 3 "\"Hello World\""
+bazel repr 4 "\"hELLO wORLD\""
+bazel repr 5 "\"a1b\""
+bazel repr 6 "\"Catch-22\""
+bazel repr 7 "\"HAL-9000\""
+bazel repr 8 "\"123\""
+bazel repr 9 "\" \\t\\n\\x0b\\x0c\\r \""
+bazel repr 10 "\"\\x1c\""
+bazel repr 11 "\"\\x1f\""
+bazel repr 12 "\"\""
+bazel repr 13 "\"\\x1ca\\x1f\""
+bazel repr 14 "\" a \""
+bazel repr 15 "\"é\""
+bazel repr 16 "\"õ\""
+bazel repr 17 "\"õa\""
+bazel repr 18 "\"ß\""
+bazel repr 19 "\"ßa\""
+bazel repr 20 "\"µa\""
+bazel repr 21 "\"ºa\""
+bazel repr 22 "\"ªa\""
+bazel repr 23 "\"aÉ\""
+bazel repr 24 "\"Éa\""
+bazel repr 25 "\"ÉA\""
+bazel repr 26 "\"élan\""
+bazel repr 27 "\"Élan\""
+bazel repr 28 "\"ÉLAN\""
+bazel repr 29 "\"Straße\""
+bazel repr 30 "\"中x\""
+bazel repr 31 "\"x中\""
+bazel repr 32 "\" \""
+bazel repr 33 "\" a \""
+bazel repr 34 "\"　\""
+bazel repr 35 "\"　a\""
+bazel repr 36 "\"a　\""
+bazel repr 37 "\"\""
+bazel repr 38 "\"²\""
+bazel repr 39 "\"١\""
+bazel repr 40 "\"\\\"q\\\\\\\"\""
+bazel strip_chars 0 "a"
+bazel lstrip_chars 0 "axx"
+bazel rstrip_chars 0 "xxa"
+bazel strip_chars 1 " \x1ca\x1c "
+bazel lstrip_chars 1 " \x1ca\x1c "
+bazel rstrip_chars 1 " \x1ca\x1c "
+bazel strip_chars 2 "a"
+bazel lstrip_chars 2 "aé"
+bazel rstrip_chars 2 "éa"
+divergent strip_chars 3 "ê"
+divergent lstrip_chars 3 "ê"
+bazel rstrip_chars 3 "ê"
+bazel strip_chars 4 " a"
+bazel lstrip_chars 4 " a\x1f "
+bazel rstrip_chars 4 " \x1c a"

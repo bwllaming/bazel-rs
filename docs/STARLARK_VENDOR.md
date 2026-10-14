@@ -14,6 +14,10 @@ patch and tests are recorded separately in the same provenance. The root crate
 also adds a direct dependency on the already-resolved `num-bigint = "=0.4.8"`;
 dependency versions and enabled features remain unchanged.
 
+[String-method and `repr` patches](STRING_METHODS.md) for Bazel 9.3 byte-string
+semantics modify `src/values/types/string/{methods,repr,globals}.rs`; they are
+declared in the same provenance with their original archive hashes.
+
 ## Original published contents
 
 The source archive is

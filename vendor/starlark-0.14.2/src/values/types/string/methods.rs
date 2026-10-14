@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 string method compatibility; see vendor provenance.
+
 //! Methods for the `string` type.
 
 use std::cmp;
@@ -98,6 +100,25 @@ fn rsplitn_whitespace(s: &str, maxsplit: usize) -> Vec<String> {
     v
 }
 
+// Modified: Bazel 9.3 represents strings as UTF-8 byte strings, so its case
+// mappings and character classes only recognise ASCII. `strip()` without
+// arguments uses Bazel's `ASCII_WHITESPACE`; `isspace()` uses Guava's
+// whitespace over single bytes, which only matches these ASCII bytes.
+fn is_bazel_strip_whitespace(c: char) -> bool {
+    matches!(c, '\t'..='\r' | '\x1c'..='\x1f' | ' ')
+}
+
+fn is_bazel_space(b: u8) -> bool {
+    matches!(b, b'\t' | b'\n' | b'\x0b' | b'\x0c' | b'\r' | b' ')
+}
+
+/// Whether Bazel's byte-wise `title()` treats the last UTF-8 byte of the
+/// non-ASCII character `c` as a Latin-1 letter (`ª`, `µ` or `º`).
+fn bazel_title_ends_with_letter(c: char) -> bool {
+    // The last byte of a multi-byte UTF-8 sequence is `0x80 | (c & 0x3f)`.
+    matches!(c as u32 & 0x3f, 0x2a | 0x35 | 0x3a)
+}
+
 #[derive(StarlarkTypeRepr, UnpackValue)]
 enum StringOrTuple<'v> {
     String(&'v str),
@@ -131,7 +152,7 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// [string.capitalize](
     /// https://github.com/bazelbuild/starlark/blob/master/spec.md#string%C2%B7capitalize
     /// ): returns a copy of string S, where the first character (if any) is converted to uppercase;
-    /// all other characters are converted to lowercase.
+    /// all other characters are converted to lowercase. Only ASCII letters are converted.
     ///
     /// ```
     /// # starlark::assert::all_true(r#"
@@ -142,13 +163,11 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// ```
     #[starlark(speculative_exec_safe)]
     fn capitalize(this: &str) -> anyhow::Result<String> {
+        let mut chars = this.chars();
         let mut result = String::with_capacity(this.len());
-        for (i, c) in this.chars().enumerate() {
-            if i == 0 {
-                result.extend(c.to_uppercase())
-            } else {
-                result.extend(c.to_lowercase())
-            }
+        if let Some(first) = chars.next() {
+            result.push(first.to_ascii_uppercase());
+            result.push_str(&chars.as_str().to_ascii_lowercase());
         }
         Ok(result)
     }
@@ -397,7 +416,7 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// ): test if a string is composed only of letters and digits.
     ///
     /// `S.isalnum()` reports whether the string S is non-empty and consists
-    /// only Unicode letters and digits.
+    /// only of ASCII letters and digits (`[a-zA-Z0-9]`).
     ///
     /// ```
     /// # starlark::assert::all_true(r#"
@@ -407,15 +426,7 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// ```
     #[starlark(speculative_exec_safe)]
     fn isalnum(this: &str) -> anyhow::Result<bool> {
-        if this.is_empty() {
-            return Ok(false);
-        }
-        for c in this.chars() {
-            if !c.is_alphanumeric() {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        Ok(!this.is_empty() && this.bytes().all(|b| b.is_ascii_alphanumeric()))
     }
 
     /// [string.isalpha](
@@ -423,7 +434,7 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// ): test if a string is composed only of letters.
     ///
     /// `S.isalpha()` reports whether the string S is non-empty and consists
-    /// only of Unicode letters.
+    /// only of ASCII letters (`[a-zA-Z]`).
     ///
     /// ```
     /// # starlark::assert::all_true(r#"
@@ -434,15 +445,7 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// ```
     #[starlark(speculative_exec_safe)]
     fn isalpha(this: &str) -> anyhow::Result<bool> {
-        if this.is_empty() {
-            return Ok(false);
-        }
-        for c in this.chars() {
-            if !c.is_alphabetic() {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        Ok(!this.is_empty() && this.bytes().all(|b| b.is_ascii_alphabetic()))
     }
 
     /// [string.isdigit](
@@ -450,7 +453,7 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// ): test if a string is composed only of digits.
     ///
     /// `S.isdigit()` reports whether the string S is non-empty and consists
-    /// only of Unicode digits.
+    /// only of ASCII digits (`[0-9]`).
     ///
     /// ```
     /// # starlark::assert::all_true(r#"
@@ -461,15 +464,7 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// ```
     #[starlark(speculative_exec_safe)]
     fn isdigit(this: &str) -> anyhow::Result<bool> {
-        if this.is_empty() {
-            return Ok(false);
-        }
-        for c in this.chars() {
-            if !c.is_numeric() {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        Ok(!this.is_empty() && this.bytes().all(|b| b.is_ascii_digit()))
     }
 
     /// [string.islower](
@@ -477,7 +472,7 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// ): test if all letters of a string are lowercase.
     ///
     /// `S.islower()` reports whether the string S contains at least one cased
-    /// Unicode letter, and all such letters are lowercase.
+    /// ASCII letter, and all such letters are lowercase.
     ///
     /// ```
     /// # starlark::assert::all_true(r#"
@@ -489,10 +484,10 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     #[starlark(speculative_exec_safe)]
     fn islower(this: &str) -> anyhow::Result<bool> {
         let mut result = false;
-        for c in this.chars() {
-            if c.is_uppercase() {
+        for b in this.bytes() {
+            if b.is_ascii_uppercase() {
                 return Ok(false);
-            } else if c.is_lowercase() {
+            } else if b.is_ascii_lowercase() {
                 result = true;
             }
         }
@@ -504,7 +499,7 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// ): test if all characters of a string are whitespaces.
     ///
     /// `S.isspace()` reports whether the string S is non-empty and consists
-    /// only of Unicode spaces.
+    /// only of the ASCII spaces `\t`, `\n`, `\x0b`, `\x0c`, `\r` and ` `.
     ///
     /// ```
     /// # starlark::assert::all_true(r#"
@@ -515,15 +510,7 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// ```
     #[starlark(speculative_exec_safe)]
     fn isspace(this: &str) -> anyhow::Result<bool> {
-        if this.is_empty() {
-            return Ok(false);
-        }
-        for c in this.chars() {
-            if !c.is_whitespace() {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        Ok(!this.is_empty() && this.bytes().all(is_bazel_space))
     }
 
     /// [string.istitle](
@@ -531,8 +518,8 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// ): test if the string is title cased.
     ///
     /// `S.istitle()` reports whether the string S contains at least one cased
-    /// Unicode letter, and all such letters that begin a word are in title
-    /// case.
+    /// ASCII letter, every uppercase letter follows an uncased character and
+    /// every lowercase letter follows a cased one.
     ///
     /// ```
     /// # starlark::assert::all_true(r#"
@@ -544,27 +531,27 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// ```
     #[starlark(speculative_exec_safe)]
     fn istitle(this: &str) -> anyhow::Result<bool> {
-        let mut last_space = true;
-        let mut result = false;
-
-        for c in this.chars() {
-            if !c.is_alphabetic() {
-                last_space = true;
+        // Bazel's right-to-left algorithm over bytes; non-ASCII bytes are uncased.
+        // `left_must_be_cased`: None accepts anything; Some(b) requires the left
+        // neighbour to be (b = true) or not to be (b = false) an ASCII letter.
+        let mut left_must_be_cased: Option<bool> = None;
+        let mut left_most_cased = b' ';
+        for &b in this.as_bytes().iter().rev() {
+            if left_must_be_cased.is_some_and(|cased| b.is_ascii_alphabetic() != cased) {
+                return Ok(false);
+            }
+            left_must_be_cased = if b.is_ascii_lowercase() {
+                Some(true)
+            } else if b.is_ascii_uppercase() {
+                Some(false)
             } else {
-                if last_space {
-                    if c.is_lowercase() {
-                        return Ok(false);
-                    }
-                } else if c.is_uppercase() {
-                    return Ok(false);
-                }
-                if c.is_alphabetic() {
-                    result = true;
-                }
-                last_space = false;
+                None
+            };
+            if b.is_ascii_alphabetic() {
+                left_most_cased = b;
             }
         }
-        Ok(result)
+        Ok(left_most_cased.is_ascii_uppercase())
     }
 
     /// [string.isupper](
@@ -572,7 +559,7 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// ): test if all letters of a string are uppercase.
     ///
     /// `S.isupper()` reports whether the string S contains at least one cased
-    /// Unicode letter, and all such letters are uppercase.
+    /// ASCII letter, and all such letters are uppercase.
     ///
     /// ```
     /// # starlark::assert::all_true(r#"
@@ -584,10 +571,10 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     #[starlark(speculative_exec_safe)]
     fn isupper(this: &str) -> anyhow::Result<bool> {
         let mut result = false;
-        for c in this.chars() {
-            if c.is_lowercase() {
+        for b in this.bytes() {
+            if b.is_ascii_lowercase() {
                 return Ok(false);
-            } else if c.is_uppercase() {
+            } else if b.is_ascii_uppercase() {
                 result = true;
             }
         }
@@ -598,8 +585,8 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// https://github.com/bazelbuild/starlark/blob/master/spec.md#string·lower
     /// ): convert a string to all lowercase.
     ///
-    /// `S.lower()` returns a copy of the string S with letters converted to
-    /// lowercase.
+    /// `S.lower()` returns a copy of the string S with ASCII letters converted
+    /// to lowercase. Non-ASCII characters are unchanged.
     ///
     /// ```
     /// # starlark::assert::all_true(r#"
@@ -608,7 +595,7 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// ```
     #[starlark(speculative_exec_safe)]
     fn lower(this: &str) -> anyhow::Result<String> {
-        Ok(this.to_lowercase())
+        Ok(this.to_ascii_lowercase())
     }
 
     /// [string.join](
@@ -675,7 +662,8 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// https://github.com/bazelbuild/starlark/blob/master/spec.md#string·lstrip
     /// ): trim leading whitespaces.
     ///
-    /// `S.lstrip()` returns a copy of the string S with leading whitespace removed.
+    /// `S.lstrip()` returns a copy of the string S with leading ASCII whitespace
+    /// (`\t` to `\r`, `\x1c` to `\x1f` and ` `) removed.
     /// In most cases instead of passing an argument you should use `removeprefix`.
     ///
     /// ```
@@ -687,11 +675,12 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     #[starlark(speculative_exec_safe)]
     fn lstrip<'v>(
         this: StringValue<'v>,
-        #[starlark(require = pos)] chars: Option<&str>,
+        #[starlark(require = pos, default = NoneOr::None)] chars: NoneOr<&str>,
         heap: Heap<'v>,
     ) -> anyhow::Result<StringValue<'v>> {
-        let res = match chars {
-            None => this.trim_start(),
+        // Modified: Bazel accepts an explicit `None` for the default whitespace.
+        let res = match chars.into_option() {
+            None => this.trim_start_matches(is_bazel_strip_whitespace),
             Some(s) => this.trim_start_matches(|c| s.contains(c)),
         };
         if res.len() == this.len() {
@@ -966,7 +955,8 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// https://github.com/bazelbuild/starlark/blob/master/spec.md#string·rstrip
     /// ): trim trailing whitespace.
     ///
-    /// `S.rstrip()` returns a copy of the string S with trailing whitespace removed.
+    /// `S.rstrip()` returns a copy of the string S with trailing ASCII whitespace
+    /// (`\t` to `\r`, `\x1c` to `\x1f` and ` `) removed.
     /// In most cases instead of passing an argument you should use `removesuffix`.
     ///
     /// ```
@@ -978,11 +968,12 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     #[starlark(speculative_exec_safe)]
     fn rstrip<'v>(
         this: StringValue<'v>,
-        #[starlark(require = pos)] chars: Option<&str>,
+        #[starlark(require = pos, default = NoneOr::None)] chars: NoneOr<&str>,
         heap: Heap<'v>,
     ) -> anyhow::Result<StringValue<'v>> {
-        let res = match chars {
-            None => this.trim_end(),
+        // Modified: Bazel accepts an explicit `None` for the default whitespace.
+        let res = match chars.into_option() {
+            None => this.trim_end_matches(is_bazel_strip_whitespace),
             Some(s) => this.trim_end_matches(|c| s.contains(c)),
         };
         if res.len() == this.len() {
@@ -1167,7 +1158,7 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// ): trim leading and trailing whitespaces.
     ///
     /// `S.strip()` returns a copy of the string S with leading and trailing
-    /// whitespace removed.
+    /// ASCII whitespace (`\t` to `\r`, `\x1c` to `\x1f` and ` `) removed.
     ///
     /// ```
     /// # starlark::assert::all_true(r#"
@@ -1178,11 +1169,12 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     #[starlark(speculative_exec_safe)]
     fn strip<'v>(
         this: StringValue<'v>,
-        #[starlark(require = pos)] chars: Option<&str>,
+        #[starlark(require = pos, default = NoneOr::None)] chars: NoneOr<&str>,
         heap: Heap<'v>,
     ) -> anyhow::Result<StringValue<'v>> {
-        let res = match chars {
-            None => this.trim(),
+        // Modified: Bazel accepts an explicit `None` for the default whitespace.
+        let res = match chars.into_option() {
+            None => this.trim_matches(is_bazel_strip_whitespace),
             Some(s) => this.trim_matches(|c| s.contains(c)),
         };
         if res.len() == this.len() {
@@ -1199,8 +1191,10 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// `S.title()` returns a copy of the string S with letters converted to
     /// titlecase.
     ///
-    /// Letters are converted to uppercase at the start of words, lowercase
-    /// elsewhere.
+    /// ASCII letters are converted to uppercase at the start of words, lowercase
+    /// elsewhere. Non-ASCII characters are unchanged; as in Bazel's byte-wise
+    /// implementation, one whose last UTF-8 byte encodes Latin-1 `ª`, `µ` or `º`
+    /// counts as a letter for the following character.
     ///
     /// ```
     /// # starlark::assert::all_true(r#"
@@ -1209,19 +1203,21 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// ```
     #[starlark(speculative_exec_safe)]
     fn title(this: &str) -> anyhow::Result<String> {
-        let mut last_space = true;
+        let mut previous_was_letter = false;
         let mut result = String::with_capacity(this.len());
         for c in this.chars() {
-            if !c.is_alphabetic() {
-                last_space = true;
-                result.extend(c.to_lowercase());
-            } else {
-                if last_space {
-                    result.extend(c.to_uppercase())
+            if c.is_ascii() {
+                if previous_was_letter && c.is_ascii_uppercase() {
+                    result.push(c.to_ascii_lowercase());
+                } else if !previous_was_letter && c.is_ascii_lowercase() {
+                    result.push(c.to_ascii_uppercase());
                 } else {
-                    result.extend(c.to_lowercase())
+                    result.push(c);
                 }
-                last_space = false;
+                previous_was_letter = c.is_ascii_alphabetic();
+            } else {
+                result.push(c);
+                previous_was_letter = bazel_title_ends_with_letter(c);
             }
         }
         Ok(result)
@@ -1231,8 +1227,8 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// https://github.com/bazelbuild/starlark/blob/master/spec.md#string·upper
     /// ): convert a string to all uppercase.
     ///
-    /// `S.upper()` returns a copy of the string S with letters converted to
-    /// uppercase.
+    /// `S.upper()` returns a copy of the string S with ASCII letters converted
+    /// to uppercase. Non-ASCII characters are unchanged.
     ///
     /// ```
     /// # starlark::assert::all_true(r#"
@@ -1241,7 +1237,7 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// ```
     #[starlark(speculative_exec_safe)]
     fn upper(this: &str) -> anyhow::Result<String> {
-        Ok(this.to_uppercase())
+        Ok(this.to_ascii_uppercase())
     }
 
     /// [string.removeprefix](
@@ -1338,6 +1334,137 @@ mod tests {
 "hello".startswith("ell", 2, 4) == False
 "hello".startswith("hel", -5) == True
 "hello".startswith(("he", "wo"), 0, 3) == True
+"#,
+        );
+    }
+
+    // Modified: Bazel 9.3 UTF-8 byte-string semantics; expected values follow
+    // StringModule.java applied to each UTF-8 byte.
+    #[test]
+    fn test_bazel_ascii_case_mapping() {
+        assert::all_true(
+            r#"
+"Hello, World!".lower() == "hello, world!"
+"aÉ ÉLAN Õ".lower() == "aÉ Élan Õ"
+"é õ ß µa ºa élan 中x".upper() == "é õ ß µA ºA éLAN 中X"
+"\u00a0\u3000\x1c\x7f".upper() == "\u00a0\u3000\x1c\x7f"
+"".capitalize() == ""
+"hELLO wORLD".capitalize() == "Hello world"
+"élan".capitalize() == "élan"
+"aÉ".capitalize() == "AÉ"
+"ÉLAN".capitalize() == "Élan"
+"ßA".capitalize() == "ßa"
+"µA".capitalize() == "µa"
+"中X".capitalize() == "中x"
+"#,
+        );
+    }
+
+    #[test]
+    fn test_bazel_title_letter_state() {
+        assert::all_true(
+            r#"
+"hElLo, WoRlD!".title() == "Hello, World!"
+"a1b c_d".title() == "A1B C_D"
+"é".title() == "é"
+"õa".title() == "õa"
+"µa".title() == "µa"
+"ºa".title() == "ºa"
+"ªa".title() == "ªa"
+"ßa".title() == "ßA"
+"Éa".title() == "ÉA"
+"élan".title() == "éLan"
+"ÉLAN".title() == "ÉLan"
+"aÉ".title() == "AÉ"
+"中x".title() == "中X"
+"x中".title() == "X中"
+"\u00a0a".title() == "\u00a0A"
+"\u3000a".title() == "\u3000A"
+"\x1ca\x7fb".title() == "\x1cA\x7fB"
+"#,
+        );
+    }
+
+    #[test]
+    fn test_bazel_ascii_predicates() {
+        assert::all_true(
+            r#"
+"abcXYZ".isalpha() == True
+"é".isalpha() == False
+"aÉ".isalpha() == False
+"".isalpha() == False
+"a1".isalnum() == True
+"é1".isalnum() == False
+"µa".isalnum() == False
+"0123456789".isdigit() == True
+"²".isdigit() == False
+"١".isdigit() == False
+"".isdigit() == False
+" \t\n\x0b\x0c\r".isspace() == True
+"".isspace() == False
+"\x1c".isspace() == False
+"\x7f".isspace() == False
+"\u00a0".isspace() == False
+"\u0085".isspace() == False
+"\u3000".isspace() == False
+"é".islower() == False
+"ß".islower() == False
+"élan".islower() == True
+"aÉ".islower() == True
+"Éa".islower() == True
+"µa".islower() == True
+"ABC".islower() == False
+"É".isupper() == False
+"ÉA".isupper() == True
+"ÉLAN".isupper() == True
+"aÉ".isupper() == False
+"中X".isupper() == True
+"#,
+        );
+    }
+
+    #[test]
+    fn test_bazel_istitle() {
+        assert::all_true(
+            r#"
+"".istitle() == False
+"123".istitle() == False
+"Hello, World!".istitle() == True
+"Catch-22".istitle() == True
+"HAL-9000".istitle() == False
+"Hello world".istitle() == False
+"aB".istitle() == False
+"é".istitle() == False
+"ÉA".istitle() == True
+"Éa".istitle() == False
+"Élan".istitle() == False
+"aÉ".istitle() == False
+"é Hello".istitle() == True
+"中X".istitle() == True
+"X中y".istitle() == False
+"#,
+        );
+    }
+
+    #[test]
+    fn test_bazel_strip_whitespace() {
+        assert::all_true(
+            r#"
+" \t\n\x0b\x0c\r\x1c\x1d\x1e\x1fa\x1f\x1e\x1d\x1c\r\x0c\x0b\n\t ".strip() == "a"
+"\x1ca\x1f".lstrip() == "a\x1f"
+"\x1ca\x1f".rstrip() == "\x1ca"
+"\x1ca\x1f".strip(None) == "a"
+"\x1ca\x1f".lstrip(None) == "a\x1f"
+"\x1ca\x1f".rstrip(None) == "\x1ca"
+" a\x7f ".strip() == "a\x7f"
+"\x7fa\x7f".strip() == "\x7fa\x7f"
+"\u00a0a\u00a0".strip() == "\u00a0a\u00a0"
+"\u0085a".lstrip() == "\u0085a"
+"\u3000a\u3000".rstrip() == "\u3000a\u3000"
+"\u2028a".strip() == "\u2028a"
+"xxaxx".strip("x") == "a"
+"éaé".strip("é") == "a"
+" \x1ca\x1c ".strip("\x1c") == " \x1ca\x1c "
 "#,
         );
     }
