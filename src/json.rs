@@ -13,6 +13,11 @@
 //! Bounded native JSON. Limits are a native capacity profile, not JVM limits,
 //! an absolute process-memory limit, or a CPU sandbox. One operation owns one
 //! cumulative HostBudget, including encode_indent's intermediate and final text.
+//! Decode's candidate metadata profile is 256 MiB weighted / 250,000 nodes with
+//! an 8 MiB effective UTF-8 input ceiling. Encoding/formatting keep the legacy
+//! 64 MiB / 100,000 profile. All weights, charges and depth 64 remain shared;
+//! decoding a value does not promise it fits the encoding profile. These candidate
+//! ceilings require measurement and parent review before production approval.
 use allocative::Allocative;
 use starlark::environment::GlobalsBuilder;
 use starlark::eval::{Arguments, Evaluator, ParametersSpec, ParametersSpecParam};
@@ -44,7 +49,7 @@ impl fmt::Display for Error {
         match self {
             Self::Syntax(offset, message) => write!(f, "at offset {offset}, {message}"),
             Self::Depth => f.write_str("JSON maximum open container depth exceeded (64)"),
-            Self::Resource => f.write_str("JSON host preparation resource limit exceeded (64 MiB weighted bytes / 100000 nodes)"),
+            Self::Resource => f.write_str("JSON host preparation resource limit exceeded"),
             Self::Internal(message) => write!(f, "JSON internal error: {message}"),
             Self::Unsupported(message) => f.write_str(message),
         }
@@ -52,6 +57,10 @@ impl fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 type Result<T> = std::result::Result<T, Error>;
+
+const DECODE_MAX_BYTES: usize = 256 * 1024 * 1024;
+const DECODE_MAX_NODES: usize = 250_000;
+const DECODE_MAX_INPUT: usize = 8 * 1024 * 1024;
 
 #[derive(Default)]
 struct JsonBudget {
@@ -68,8 +77,24 @@ struct EncoderWork {
     key_visits: usize,
     sort_comparisons: usize,
     quoted_bytes_scanned: usize,
+    numeric_conversions: usize,
 }
 impl JsonBudget {
+    fn for_method(method: Method) -> Self {
+        if matches!(method, Method::Decode) {
+            Self {
+                host: crate::repository_budget::HostBudget::with_ceilings(
+                    DECODE_MAX_BYTES,
+                    DECODE_MAX_NODES,
+                ),
+                #[cfg(test)]
+                observed: EncoderWork::default(),
+            }
+        } else {
+            Self::default()
+        }
+    }
+
     fn bytes(&mut self, bytes: usize) -> Result<()> {
         self.host.bytes(bytes).map_err(|_| Error::Resource)
     }
@@ -238,7 +263,9 @@ mod values {
             args: &Arguments<'v, '_>,
             eval: &mut Evaluator<'v, '_, '_>,
         ) -> starlark::Result<Value<'v>> {
-            let mut budget = JsonBudget::default();
+            // Select once, before argument charges. Helpers never reset this
+            // cumulative budget, in particular encode_indent's two stages.
+            let mut budget = JsonBudget::for_method(self.0);
             budget
                 .array(args.len()?, 128)
                 .map_err(starlark::Error::new_other)?;
@@ -625,6 +652,10 @@ struct Parser<'a, 'b, 'v> {
     budget: &'b mut JsonBudget,
 }
 fn decode<'v>(text: &str, heap: Heap<'v>, budget: &mut JsonBudget) -> Result<Value<'v>> {
+    // O(1) effective UTF-8 length check, before scanning or reserving any input.
+    if text.len() > DECODE_MAX_INPUT {
+        return Err(Error::Resource);
+    }
     budget.bytes(text.len())?;
     let mut parser = Parser {
         text,
@@ -875,6 +906,10 @@ impl<'v> Parser<'_, '_, 'v> {
                 .checked_add(64)
                 .ok_or(Error::Resource)?,
         )?;
+        #[cfg(test)]
+        {
+            self.budget.observed.numeric_conversions += 1;
+        }
         if floating {
             let value = token
                 .parse::<f64>()
@@ -1049,6 +1084,244 @@ mod tests {
     }
     fn pass(source: &str) {
         evaluate(source).unwrap();
+    }
+
+    fn decode_budget() -> JsonBudget {
+        let mut budget = JsonBudget::for_method(Method::Decode);
+        budget.array(1, 128).unwrap();
+        budget
+    }
+
+    #[test]
+    fn json_decode_candidate_node_boundary_independent_of_bytes() {
+        for count in [249_999, 250_000] {
+            Module::with_temp_heap(|module| {
+                let text = format!("[{}null]", "null,".repeat(count - 1));
+                let mut budget = decode_budget();
+                let value = decode(&text, module.heap(), &mut budget);
+                if count == 249_999 {
+                    assert_eq!(ListRef::from_value(value.unwrap()).unwrap().len(), count);
+                } else {
+                    assert!(matches!(value, Err(Error::Resource)));
+                }
+                let (bytes, nodes) = budget.host.usage();
+                assert_eq!(nodes, 250_000);
+                assert!(bytes < DECODE_MAX_BYTES);
+                eprintln!(
+                    "null array count={count} weighted={bytes} nodes={nodes} heap_allocated={} heap_available={}",
+                    module.heap().allocated_bytes(),
+                    module.heap().available_bytes()
+                );
+            });
+        }
+        pass("len(json.decode('['+'null,'*249998+'null]')) == 249999 or fail('node boundary')");
+        assert!(
+            evaluate("json.decode('['+'null,'*249999+'null]', default=[])")
+                .unwrap_err()
+                .to_string()
+                .contains("resource limit")
+        );
+    }
+
+    #[test]
+    fn json_decode_empty_arrays_weighted_boundary_is_not_node_failure() {
+        // Each child costs 2392 including its input and final heap slot. The
+        // exact largest accepted count is 112220 for a one-argument invocation.
+        for count in [112_220, 112_221] {
+            Module::with_temp_heap(|module| {
+                let text = format!("[{}[]]", "[],".repeat(count - 1));
+                let mut budget = decode_budget();
+                let value = decode(&text, module.heap(), &mut budget);
+                if count == 112_220 {
+                    assert_eq!(ListRef::from_value(value.unwrap()).unwrap().len(), count);
+                    assert_eq!(budget.host.usage(), (3208 + count * 2392, count + 1));
+                } else {
+                    assert!(matches!(value, Err(Error::Resource)));
+                    // All children parsed; final root heap-slot charge fails.
+                    let (bytes, nodes) = budget.host.usage();
+                    assert_eq!(nodes, count + 1);
+                    assert_eq!(bytes, 3208 + count * (2392 - 64));
+                    assert!(bytes + count * 64 > DECODE_MAX_BYTES);
+                }
+                eprintln!(
+                    "empty-array boundary count={count} usage={:?} heap_allocated={} heap_available={}",
+                    budget.host.usage(),
+                    module.heap().allocated_bytes(),
+                    module.heap().available_bytes()
+                );
+            });
+        }
+        Module::with_temp_heap(|module| {
+            // Source order: input, root node/open, then slot/node/open per child.
+            // At 120000 children the first failure is a temporary slot reservation,
+            // before the final root-list heap-slot reservation is reached.
+            let text = format!("[{}[]]", "[],".repeat(119_999));
+            let mut budget = decode_budget();
+            budget.bytes(text.len()).unwrap();
+            let base = budget.host.usage().0 + 128 + 2048;
+            let complete_children = (DECODE_MAX_BYTES - base) / (128 + 128 + 2048);
+            let mut parser = Parser {
+                text: &text,
+                pos: 0,
+                heap: module.heap(),
+                budget: &mut budget,
+            };
+            assert!(matches!(parser.value(0), Err(Error::Resource)));
+            let (bytes, nodes) = parser.budget.host.usage();
+            assert_eq!(parser.pos, 1 + complete_children * 3);
+            assert_eq!(nodes, complete_children + 1);
+            assert_eq!(bytes, base + complete_children * 2304);
+            assert!(bytes <= DECODE_MAX_BYTES && bytes + 128 > DECODE_MAX_BYTES);
+            assert!(nodes < DECODE_MAX_NODES);
+            eprintln!(
+                "empty-array first failure: operation=temporary-array-slots offset={} weighted={bytes} nodes={nodes} requested=128",
+                parser.pos
+            );
+        });
+    }
+
+    #[test]
+    fn json_decode_input_ceiling_counts_utf8_before_syntax_or_heap_allocation() {
+        Module::with_temp_heap(|module| {
+            for extra in [0, 1] {
+                let text = format!("null{}", " ".repeat(DECODE_MAX_INPUT - 4 + extra));
+                let mut budget = decode_budget();
+                let before = module.heap().allocated_bytes();
+                let value = decode(&text, module.heap(), &mut budget);
+                if extra == 0 {
+                    assert!(value.unwrap().is_none());
+                    assert_eq!(budget.host.usage(), (1024 + DECODE_MAX_INPUT * 8 + 128, 1));
+                } else {
+                    assert!(matches!(value, Err(Error::Resource)));
+                    assert_eq!(budget.host.usage(), (1024, 0));
+                }
+                assert_eq!(module.heap().allocated_bytes(), before);
+            }
+            let text = format!("!{}", "é".repeat(DECODE_MAX_INPUT / 2));
+            assert_eq!(text.len(), DECODE_MAX_INPUT + 1);
+            let mut budget = decode_budget();
+            assert!(matches!(
+                decode(&text, module.heap(), &mut budget),
+                Err(Error::Resource)
+            ));
+            assert_eq!(budget.host.usage(), (1024, 0));
+        });
+        pass(
+            "json.decode('!'+' '*(8388608-1), default='fallback') == 'fallback' or fail('syntax default')",
+        );
+        for source in [
+            "json.decode('!'+' '*8388608, default='FALLBACK_RETURNED')",
+            "json.decode('!'+'é'*4194304, default='FALLBACK_RETURNED')",
+        ] {
+            assert!(
+                evaluate(source)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("resource limit")
+            );
+        }
+    }
+
+    #[test]
+    fn json_decode_duplicates_keep_all_charges_and_old_cases_now_fit() {
+        Module::with_temp_heap(|module| {
+            let text = format!("{{{}}}", vec!["\"x\":[]"; 40_000].join(","));
+            let mut budget = decode_budget();
+            let value = decode(&text, module.heap(), &mut budget).unwrap();
+            assert_eq!(DictRef::from_value(value).unwrap().len(), 1);
+            let (bytes, nodes) = budget.host.usage();
+            assert_eq!(nodes, 80_001);
+            assert_eq!(
+                bytes,
+                1024 + text.len() * 8 + 2176 + 40_000 * (256 + 2048 + 1024 + 16)
+            );
+            assert!(bytes > 64 * 1024 * 1024);
+            eprintln!(
+                "duplicate array members: weighted={bytes} nodes={nodes} heap_allocated={} heap_available={}",
+                module.heap().allocated_bytes(),
+                module.heap().available_bytes()
+            );
+        });
+        pass("len(json.decode('['+'0,'*100001+'0]')) == 100002 or fail('old zero array now fits')");
+        pass("json.decode('{'+ '\"x\":[],'*40000+'\"x\":[7]}') == {'x':[7]} or fail('overwrite')");
+        assert!(
+            evaluate("json.decode('{'+ '\"x\":[],'*80000+'\"x\":[]}', default=[])")
+                .unwrap_err()
+                .to_string()
+                .contains("resource limit")
+        );
+    }
+
+    #[test]
+    fn json_decode_numeric_work_is_still_nonlinear_and_preconversion() {
+        Module::with_temp_heap(|module| {
+            for text in ["9".repeat(24_000), format!("1.{}", "9".repeat(24_000))] {
+                let mut budget = decode_budget();
+                let before = module.heap().allocated_bytes();
+                assert!(matches!(
+                    decode(&text, module.heap(), &mut budget),
+                    Err(Error::Resource)
+                ));
+                assert_eq!(budget.observed.numeric_conversions, 0);
+                assert_eq!(module.heap().allocated_bytes(), before);
+                assert_eq!(budget.host.usage(), (1024 + text.len() * 8 + 128, 1));
+            }
+            // Numeric-heavy valid input fails the byte reservation, not nodes.
+            let token = "12345678901234567890123456789012";
+            let text = format!("[{}{token}]", format!("{token},").repeat(179_999));
+            let mut budget = decode_budget();
+            budget.bytes(text.len()).unwrap();
+            let mut parser = Parser {
+                text: &text,
+                pos: 0,
+                heap: module.heap(),
+                budget: &mut budget,
+            };
+            assert!(matches!(parser.value(0), Err(Error::Resource)));
+            let (bytes, nodes) = parser.budget.host.usage();
+            assert!(nodes < DECODE_MAX_NODES);
+            assert!(bytes <= DECODE_MAX_BYTES && bytes + 1024 > DECODE_MAX_BYTES);
+            assert_eq!(parser.budget.observed.numeric_conversions + 2, nodes);
+            eprintln!(
+                "numeric-heavy first failure: operation=numeric-work offset={} weighted={bytes} nodes={nodes} conversions={}",
+                parser.pos, parser.budget.observed.numeric_conversions
+            );
+        });
+        for source in [
+            "json.decode('9'*24000, default=[])",
+            "json.decode('1.'+'9'*24000, default=[])",
+        ] {
+            assert!(
+                evaluate(source)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("resource limit")
+            );
+        }
+    }
+
+    #[test]
+    fn json_non_decode_profiles_stay_legacy_and_decode_does_not_promise_encode() {
+        for method in [Method::Encode, Method::Indent, Method::EncodeIndent] {
+            let mut budget = JsonBudget::for_method(method);
+            budget.bytes(8 * 1024 * 1024).unwrap();
+            assert!(matches!(budget.bytes(1), Err(Error::Resource)));
+            let mut budget = JsonBudget::for_method(method);
+            for _ in 0..100_000 {
+                budget.node().unwrap();
+            }
+            assert!(matches!(budget.node(), Err(Error::Resource)));
+        }
+        assert!(
+            evaluate("json.encode(json.decode('['+'null,'*100000+'null]'))")
+                .unwrap_err()
+                .to_string()
+                .contains("resource limit")
+        );
+        assert_eq!(
+            Error::Resource.to_string(),
+            "JSON host preparation resource limit exceeded"
+        );
     }
 
     #[allow(unsafe_code)]
@@ -1364,6 +1637,9 @@ x['nested'].append(4)
                 Err(Error::Resource)
             ));
             let duplicates = format!("{{{}}}", vec!["\"x\":[]"; 40_000].join(","));
+            // Explicit legacy helper budget: unlike the public Decode method,
+            // this still rejects the old fixture. Candidate acceptance is tested
+            // above without resetting or weakening any charge.
             assert!(matches!(
                 decode(&duplicates, heap, &mut JsonBudget::default()),
                 Err(Error::Resource)

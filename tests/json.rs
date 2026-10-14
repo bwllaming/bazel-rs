@@ -14,7 +14,7 @@ impl Workspace {
         let ws = Self(
             tempfile::Builder::new()
                 .prefix("json-cli-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir()
                 .unwrap(),
         );
         ws.file("MODULE.bazel", "module(name='json_fixture')\n");
@@ -42,7 +42,16 @@ impl Workspace {
     }
 
     fn run(&self, args: &[&str]) -> Output {
+        let home = self.path().join("private-home");
+        let tmp = self.path().join("private-tmp");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&tmp).unwrap();
         let output = Command::new("timeout")
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", home)
+            .env("TMPDIR", tmp)
+            .env("LC_ALL", "C")
             .args(["--kill-after=5s", "60s", env!("CARGO_BIN_EXE_bazel-rs")])
             .arg("--ignore_all_rc_files")
             .arg(format!(
@@ -691,15 +700,93 @@ fn resource_dag_huge_range_prefix_and_repeated_alias_output_are_bounded() {
 
 #[test]
 fn decode_resource_node_duplicate_and_bigint_limits_never_return_default() {
-    // At most ~1 MB input each; never ask the process to manufacture GBs.
+    // At most ~1.3 MB input each; never ask the process to manufacture GBs.
     // Discarded duplicate values must still consume cumulative work/nodes.
     for body in [
-        "x=json.decode('['+'0,'*100001+'0]',default='FALLBACK_RETURNED')",
-        "x=json.decode('{'+ '\"x\":0,'*100001+'\"x\":0}',default='FALLBACK_RETURNED')",
+        "x=json.decode('['+'null,'*249999+'null]',default='FALLBACK_RETURNED')",
+        "x=json.decode('{'+ '\"x\":[],'*80000+'\"x\":[]}',default='FALLBACK_RETURNED')",
         "x=json.decode('9'*1000000,default='FALLBACK_RETURNED')",
     ] {
         Workspace::rejects(body, "resource limit");
     }
+    expect(
+        "a=json.decode('['+'0,'*100001+'0]')\nb=json.decode('{'+ '\"x\":[],'*40000+'\"x\":[7]}')\ntext=json.encode([len(a),b])",
+        "[100002,{\"x\":[7]}]",
+    );
+}
+
+#[test]
+fn generated_metadata_candidate_decode_produces_real_consumer_summary() {
+    // Generated, deterministic public-metadata-shaped data, not captured network
+    // bytes. The JSON is a bzl literal, never a large attribute/schema payload.
+    // 120 releases * 80 files * 13 nodes/file + 7/release + root = 125641 nodes.
+    // Member storage alone: (120*3 + 9600*6)*1024 = 59351040 weighted bytes;
+    // file container openings alone add 19660800, already above the legacy cap.
+    let releases = (0..120).map(|release| {
+        let files = (0..80).map(|file| {
+            let index = release * 80 + file;
+            serde_json::json!({
+                "filename": format!("sdk-{release}.{file}.linux-amd64.tar.gz"),
+                "os": "linux", "arch": "amd64", "kind": "archive",
+                "sha256": format!("{index:064x}"), "size": 1_000_000 + index,
+            })
+        }).collect::<Vec<_>>();
+        serde_json::json!({"version": format!("sdk1.{release}"), "stable": release % 2 == 0, "files": files})
+    }).collect::<Vec<_>>();
+    let input = serde_json::to_string(&releases).unwrap();
+    assert!(input.len() < 8 * 1024 * 1024);
+    let defs = format!(
+        "PAYLOAD={}\n{}",
+        serde_json::to_string(&input).unwrap(),
+        r#"
+def _producer(ctx):
+    releases=json.decode(PAYLOAD)
+    total=0
+    size=0
+    stable=0
+    for release in releases:
+        if sorted(release.keys())!=['files','stable','version']:
+            fail('release fields')
+        if release['stable']:
+            stable+=1
+        for f in release['files']:
+            if sorted(f.keys())!=['arch','filename','kind','os','sha256','size']:
+                fail('file fields')
+            if f['os']!='linux' or f['arch']!='amd64' or f['kind']!='archive':
+                fail('file values')
+            total+=1
+            size+=f['size']
+    first=releases[0]['files'][0]
+    last=releases[-1]['files'][-1]
+    summary={'releases':len(releases),'files':total,'size':size,'stable':stable,'first_version':releases[0]['version'],'last_version':releases[-1]['version'],'first':first,'last':last}
+    out=ctx.actions.declare_file('metadata-summary.json')
+    ctx.actions.write(out,json.encode(summary))
+    return [DefaultInfo(files=depset([out]))]
+producer=rule(implementation=_producer)
+"#,
+    );
+    let ws = Workspace::new(
+        &defs,
+        "load(':defs.bzl','producer')\nproducer(name='metadata')\ngenrule(name='check',srcs=[':metadata'],outs=['consumer-summary.json'],cmd='cat $(SRCS) > $@')\n",
+    );
+    let output = ws.run(&["build", ":check"]);
+    counts(&output, 2, 0);
+    let bytes = content(&output);
+    assert_eq!(bytes.len(), 1);
+    let summary: serde_json::Value = serde_json::from_slice(&bytes[0]).unwrap();
+    assert_eq!(
+        summary,
+        serde_json::json!({
+            "releases": 120, "files": 9600, "stable": 60,
+            "size": 9600u64 * 1_000_000 + 9599u64 * 9600 / 2,
+            "first_version": "sdk1.0", "last_version": "sdk1.119",
+            "first": releases[0]["files"][0], "last": releases[119]["files"][79],
+        })
+    );
+    eprintln!(
+        "generated metadata: input_bytes={} nodes=125641 summary={summary}",
+        input.len()
+    );
 }
 
 #[test]

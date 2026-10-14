@@ -137,6 +137,7 @@ def synthetic(reference_only=False):
 class PlanTests(unittest.TestCase):
     def test_eight_families_complete_and_syntax(self):
         self.assertEqual((len(s.CASEPLAN),s.plan_receipt(True)['phases'],s.plan_receipt(True)['commands']),(8,37,69))
+        self.assertEqual((s.plan_receipt(False)['probes'],s.plan_receipt(False)['phases'],s.plan_receipt(False)['commands']),(45,82,127))
         for c in s.CASEPLAN:
             self.assertEqual(len(c['probes']),len(set(c['probes'])))
             for p in c['probes']:
@@ -150,6 +151,30 @@ class PlanTests(unittest.TestCase):
     def test_isolated_shared_engine_does_not_mutate_subrule_suite(self):
         self.assertEqual(s.infrastructure.SUITE,'subrules')
         self.assertNotEqual(s.engine.CASEPLAN,s.infrastructure.CASEPLAN)
+        self.assertNotIn('native_capacity',s.infrastructure.plan_receipt(True))
+
+    def test_method_specific_capacity_is_bound_in_plan(self):
+        legacy=dict(weighted_bytes=64*1024*1024,nodes=100000,max_open_containers=64,
+            budget_scope='per_invocation_shared_cumulative')
+        expected={m:legacy.copy() for m in ('encode','indent','encode_indent')}
+        expected['decode']=dict(legacy,weighted_bytes=256*1024*1024,nodes=250000,effective_utf8_input_bytes=8*1024*1024)
+        self.assertEqual(s.NATIVE_CAPACITY,expected)
+        for reference_only in (False,True):
+            plan=s.plan_receipt(reference_only)
+            self.assertEqual(plan['native_capacity'],expected)
+            self.assertEqual(plan['fixture_plan_sha256'],s._base_plan_receipt(reference_only)['sha256'])
+            sha=plan.pop('sha256')
+            self.assertEqual(sha,s.digest(json.dumps(plan,sort_keys=True).encode()))
+            plan['native_capacity']['decode']['nodes']=1
+            self.assertEqual(s.NATIVE_CAPACITY,expected)
+
+    def test_only_decode_quota_uses_new_node_boundary_and_never_default_success(self):
+        v=s.fixture('profile','default-quota')
+        self.assertIn(b'json.decode("["+"null,"*249999+"null]",default=[])',v['files']['defs.bzl'])
+        self.assertEqual((v['diagnostic'],v['expected'],v['actions'],v['markers'],v['native_only']),
+            ('default-quota',{},0,['JSON_CALLBACK'],True))
+        self.assertEqual(s.steps_for('profile','default-quota','native'),[('reject','build','//:consume',[])])
+        self.assertIn(b'json.encode(range(100001))',s.fixture('profile','range-quota')['files']['defs.bzl'])
 
     def test_current_float_api_exact_golden_and_bit_binding(self):
         rows=s.float_rows();self.assertEqual(len(rows),1024)
@@ -244,7 +269,7 @@ class PlanTests(unittest.TestCase):
 
     def test_complete_source_bindings(self):
         names={str(p.relative_to(s.ROOT)) for p in s.source_paths()}
-        for n in ('src/package.rs','src/providers.rs','src/starlark_types.rs','Cargo.lock','tests/test_validate_json.py','tests/fixtures/json/float_reference.json'):
+        for n in ('src/package.rs','src/providers.rs','src/starlark_types.rs','src/json.rs','src/repository_budget.rs','tests/json.rs','Cargo.lock','scripts/validate_json.py','tests/test_validate_json.py','tests/fixtures/json/float_reference.json'):
             self.assertIn(n,names)
         self.assertTrue(any(n.startswith('vendor/') and n.endswith('.rs') for n in names))
 
@@ -274,7 +299,7 @@ class DiagnosticTests(unittest.TestCase):
     def test_native_projection_never_weakens_reference_diagnostics(self):
         for d,message in s.NATIVE_MESSAGES.items():
             s.require_rejection(record('error: '+message,1),d,'native')
-            if d not in ('native-info','external-file','depth65'):
+            if d not in ('native-info','external-file','depth65','range-quota','default-quota'):
                 with self.assertRaises(ValueError):s.require_rejection(record('Error: '+message,1),d,'reference')
             for wrong in (message+' unrelated', 'unrelated '+message, '    error: '+message):
                 with self.assertRaises(ValueError):s.require_rejection(record('error: '+wrong if not wrong.startswith('    ') else wrong,1),d,'native')
@@ -283,6 +308,16 @@ class DiagnosticTests(unittest.TestCase):
         text="ERROR: MODULE.bazel:2:3: name 'json' is not defined\nERROR: Error computing the main repository mapping: syntax error in MODULE.bazel file for <root>\n"
         s.require_rejection(record(text,48),'module-global','reference')
         with self.assertRaises(ValueError):s.require_rejection(record(text,1),'module-global','reference')
+
+    def test_resource_message_is_exact_neutral_and_never_fallback(self):
+        for probe in ('range-quota','default-quota'):
+            message='JSON host preparation resource limit exceeded'
+            self.assertEqual(s.NATIVE_MESSAGES[probe],message)
+            s.require_rejection(record('Error: '+message,1),probe,'native')
+            for wrong in ('JSON host preparation resource limit exceeded (64 MiB)',
+                    'JSON resource budget exceeded','JSON maximum open container depth exceeded (64)'):
+                with self.assertRaises(ValueError):s.require_rejection(record('Error: '+wrong,1),probe,'native')
+            with self.assertRaises(ValueError):s.require_rejection(record('JSON_ACTION_READY',0),probe,'native')
 
 
 class ReplayTests(unittest.TestCase):
@@ -303,6 +338,27 @@ class ReplayTests(unittest.TestCase):
 
     def test_synthetic_replay_is_complete_but_not_engine_evidence(self):
         self.assertTrue(self.passes(self.full));self.assertTrue(self.passes(self.reference))
+
+    def test_valid_plan_hash_cannot_authorize_wrong_method_profile(self):
+        mutations=[('decode','weighted_bytes',64*1024*1024),('decode','nodes',100000),
+            ('decode','effective_utf8_input_bytes',16*1024*1024),('encode','weighted_bytes',256*1024*1024),
+            ('indent','nodes',250000),('encode_indent','budget_scope','per_helper')]
+        for original in (self.full,self.reference):
+            for method,key,value in mutations:
+                r=copy.deepcopy(original);plan=r['plan']
+                plan['native_capacity'][method][key]=value
+                plan.pop('sha256');plan['sha256']=s.digest(json.dumps(plan,sort_keys=True).encode())
+                self.assertFalse(self.passes(r),(method,key,value))
+
+    def test_rehashed_old_decode_quota_input_cannot_replay_new_plan(self):
+        r=copy.deepcopy(self.full);p=self.phase(r,'profile','default-quota')
+        for files in [*p['input_snapshots'].values(),p['inputs_after']]:
+            for path,e in list(files.items()):
+                if path.endswith('/defs.bzl'):
+                    raw=base64.b64decode(e['bytes_base64']).replace(b'"null,"*249999+"null]"',b'"0,"*100001+"0]"')
+                    self.assertNotEqual(raw,base64.b64decode(e['bytes_base64']))
+                    files[path]=entry(path,raw,e['mode'])
+        self.assertFalse(self.passes(r))
 
     def test_missing_extra_duplicate_reordered_phases_and_reference_waiver(self):
         for kind in ('missing','extra','duplicate','reorder','waiver','unexecuted'):

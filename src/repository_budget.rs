@@ -17,13 +17,36 @@ const MAX_DEPTH: usize = 64;
 const COPY_WEIGHT: usize = 8;
 const NODE_BYTES: usize = 128;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct HostBudget {
     bytes: usize,
     nodes: usize,
+    max_bytes: usize,
+    max_nodes: usize,
+}
+
+impl Default for HostBudget {
+    fn default() -> Self {
+        Self::with_ceilings(MAX_BYTES, MAX_NODES)
+    }
 }
 
 impl HostBudget {
+    /// Change ceilings only; weights, depth, and reservation semantics stay fixed.
+    pub(crate) fn with_ceilings(max_bytes: usize, max_nodes: usize) -> Self {
+        Self {
+            bytes: 0,
+            nodes: 0,
+            max_bytes,
+            max_nodes,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn usage(&self) -> (usize, usize) {
+        (self.bytes, self.nodes)
+    }
+
     /// Commit compound reservations only after every component succeeds.
     pub(crate) fn transaction(
         &mut self,
@@ -39,8 +62,15 @@ impl HostBudget {
         self.bytes = self
             .bytes
             .checked_add(bytes)
-            .filter(|n| *n <= MAX_BYTES)
-            .ok_or_else(|| "host preparation weighted byte limit exceeded (64 MiB)".to_owned())?;
+            .filter(|n| *n <= self.max_bytes)
+            .ok_or_else(|| {
+                let ceiling = if self.max_bytes.is_multiple_of(1024 * 1024) {
+                    format!("{} MiB", self.max_bytes / (1024 * 1024))
+                } else {
+                    format!("{} bytes", self.max_bytes)
+                };
+                format!("host preparation weighted byte limit exceeded ({ceiling})")
+            })?;
         Ok(())
     }
 
@@ -56,8 +86,13 @@ impl HostBudget {
         self.nodes = self
             .nodes
             .checked_add(1)
-            .filter(|n| *n <= MAX_NODES)
-            .ok_or_else(|| "host preparation node limit exceeded (100000 nodes)".to_owned())?;
+            .filter(|n| *n <= self.max_nodes)
+            .ok_or_else(|| {
+                format!(
+                    "host preparation node limit exceeded ({} nodes)",
+                    self.max_nodes
+                )
+            })?;
         self.add_bytes(NODE_BYTES)
     }
 
@@ -181,6 +216,99 @@ impl HostBudget {
 mod tests {
     use super::*;
     use crate::custom_rule::AttrKind;
+
+    #[test]
+    fn ceilings_change_only_limits_and_preserve_exact_default_diagnostics() {
+        for (max_bytes, max_nodes, byte_error, node_error) in [
+            (
+                MAX_BYTES,
+                MAX_NODES,
+                "host preparation weighted byte limit exceeded (64 MiB)",
+                "host preparation node limit exceeded (100000 nodes)",
+            ),
+            (
+                256 * 1024 * 1024,
+                250_000,
+                "host preparation weighted byte limit exceeded (256 MiB)",
+                "host preparation node limit exceeded (250000 nodes)",
+            ),
+        ] {
+            let mut bytes = HostBudget::with_ceilings(max_bytes, max_nodes);
+            bytes.bytes(max_bytes / COPY_WEIGHT).unwrap();
+            assert_eq!(bytes.usage(), (max_bytes, 0));
+            assert_eq!(bytes.add_bytes(1).unwrap_err(), byte_error);
+            assert_eq!(bytes.usage(), (max_bytes, 0));
+            let mut nodes = HostBudget::with_ceilings(max_bytes, max_nodes);
+            for _ in 0..max_nodes {
+                nodes.node().unwrap();
+            }
+            assert_eq!(nodes.usage(), (max_nodes * NODE_BYTES, max_nodes));
+            assert_eq!(nodes.node().unwrap_err(), node_error);
+            assert_eq!(nodes.usage(), (max_nodes * NODE_BYTES, max_nodes));
+        }
+        // The actual non-JSON default path, not just an equivalent constructor.
+        let mut default = HostBudget::default();
+        default.bytes(MAX_BYTES / COPY_WEIGHT).unwrap();
+        assert_eq!(
+            default.bytes(1).unwrap_err(),
+            "host preparation weighted byte limit exceeded (64 MiB)"
+        );
+        let mut default = HostBudget::default();
+        for _ in 0..MAX_NODES {
+            default.json(&serde_json::Value::Null, 0).unwrap();
+        }
+        assert_eq!(
+            default.json(&serde_json::Value::Null, 0).unwrap_err(),
+            "host preparation node limit exceeded (100000 nodes)"
+        );
+        assert_eq!(
+            HostBudget::with_ceilings(129, 2)
+                .add_bytes(130)
+                .unwrap_err(),
+            "host preparation weighted byte limit exceeded (129 bytes)"
+        );
+    }
+
+    #[test]
+    fn custom_ceilings_preserve_overflow_and_transaction_reservation_semantics() {
+        let mut budget = HostBudget::with_ceilings(usize::MAX, usize::MAX);
+        budget.add_bytes(1).unwrap();
+        assert!(budget.bytes(usize::MAX).unwrap_err().contains("overflow"));
+        assert_eq!(budget.usage(), (1, 0));
+        assert!(budget.add_bytes(usize::MAX).is_err());
+        assert_eq!(budget.usage(), (1, 0));
+        budget.nodes = usize::MAX;
+        assert!(budget.node().is_err());
+        assert_eq!(budget.usage(), (1, usize::MAX));
+
+        let mut budget = HostBudget::with_ceilings(NODE_BYTES, 3);
+        budget.node().unwrap();
+        // Existing node() commits the node count before its byte reservation.
+        assert!(budget.node().is_err());
+        assert_eq!(budget.usage(), (NODE_BYTES, 2));
+        let before = budget.usage();
+        assert!(budget.transaction(|candidate| candidate.node()).is_err());
+        assert_eq!(budget.usage(), before);
+        assert_eq!((budget.max_bytes, budget.max_nodes), (NODE_BYTES, 3));
+        let mut budget = HostBudget::with_ceilings(512, 3);
+        budget
+            .transaction(|candidate| candidate.string("x"))
+            .unwrap();
+        assert_eq!(budget.usage(), (NODE_BYTES + COPY_WEIGHT, 1));
+        let before = budget.usage();
+        assert!(
+            budget
+                .transaction(|candidate| candidate.string(&"x".repeat(64)))
+                .is_err()
+        );
+        assert_eq!(budget.usage(), before);
+        assert_eq!((budget.max_bytes, budget.max_nodes), (512, 3));
+        assert_eq!(
+            budget.json(&serde_json::Value::Null, 65).unwrap_err(),
+            "host preparation maximum depth limit exceeded (64)"
+        );
+        assert_eq!(budget.usage(), before);
+    }
 
     #[test]
     fn string_dict_charges_root_keys_and_scalar_values_without_sequence_nodes() {

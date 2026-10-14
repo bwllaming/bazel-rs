@@ -57,10 +57,11 @@ LIMITATIONS = [
     'Corrected run38 nineteen action outputs are bound exactly. Named derivative replaces unsupported BUILD print with a tuple assignment evaluating the same JSON expressions; original tracked fixture remains unchanged. Source edit changes only producer string attr; only dependency.json output/action changes (native 1 execution, 18 hits).',
     'File main source/generated profile only. Exact native rust-fastbuild and reference k8-fastbuild triples are checked independently, NOT byte parity via path normalization.',
     'Builtin NativeInfo and external File are EXPLICIT_OUT_OF_PROFILE native boundaries, not reference error claims and not empty-object encoding.',
-    'Native 64 containers/64MiB weighted/100knodes are safety bounds, not JVM thresholds or RSS guarantees. Host tests must independently cover preexisting BigInt, preclone checks, fake NativeSlot types, DAG/quota/internal errors; this CLI matrix does not replace them.',
+    'Native depth 64 remains shared. Decode alone uses 256 MiB weighted/250000 nodes and an 8 MiB effective UTF-8 input ceiling. Encode/Indent/EncodeIndent retain 64 MiB weighted/100000 nodes, one cumulative budget per invocation including all helper stages. HostBudget Default and non-JSON profiles are unchanged; decoded values need not fit encoding. These are safety bounds, not JVM thresholds or RSS guarantees. Rust tests independently cover capacity/adversarial/producer-consumer behavior, preexisting BigInt, preclone checks, fake NativeSlot types, DAG/quota/internal errors; this CLI matrix does not replace them.',
     'Byte-string default UTF8 key order only; nondefault UTF16 semantics excluded. Indentation preserves harmless observed quirks, not strict JSON validation.',
-    'Diagnostic categories/offsets are checked using separate exact observed native and reference messages. Native unsupported values omit reference type names and nested key/index context; NO rich diagnostic-text/context parity claim. Bound fixture inputs and callback markers establish the actual rejected types.',
+    'Diagnostic categories/offsets use separate native and reference messages. Native resource text is bound to the current candidate source, pending frozen CLI execution; other exact projections retain observed messages. Native unsupported values omit reference type names and nested key/index context; NO rich diagnostic-text/context parity claim. Bound fixture inputs and callback markers establish the actual rejected types.',
     'All execution receipts require unchanged start/end and pre-command production/binary/source/registry pins; concurrent edits invalidate preparation acceptance.',
+    'Earlier JSON acceptance receipts retain their historical capacity profile and are not execution evidence for this candidate.',
 ]
 KNOWN_REFERENCE_DEFECTS = []  # Harmless formatter quirks are ordinary tested results, not crash waivers.
 DEFECTS = ()
@@ -76,6 +77,15 @@ CASEPLAN = [
     common.case('profile', ('main-files', 'depth64', 'depth65-default', 'depth65', 'cycle', 'range-quota', 'default-quota', 'native-info', 'external-file')),
 ]
 NATIVE_ONLY = {'depth64', 'depth65-default', 'depth65', 'cycle', 'range-quota', 'default-quota', 'native-info', 'external-file'}
+# Candidate policy metadata, not an execution/approval claim or a Bazel contract.
+# No effective-input ceiling is imposed separately on encoding/formatting.
+NATIVE_CAPACITY = {
+    method: dict(weighted_bytes=(256 if method == 'decode' else 64) * 1024 * 1024,
+        nodes=250000 if method == 'decode' else 100000, max_open_containers=64,
+        budget_scope='per_invocation_shared_cumulative',
+        **({'effective_utf8_input_bytes': 8 * 1024 * 1024} if method == 'decode' else {}))
+    for method in ('decode', 'encode', 'indent', 'encode_indent')
+}
 
 
 def source_paths():
@@ -189,7 +199,9 @@ def fixture(family, probe):
         'nested':'json.encode({"a":[Label("//:consume")]})', 'numeric-eof':'json.indent("1")',
         'encode-numeric-eof':'json.encode_indent(1)', 'option-type':'json.indent("[]",indent=None)',
         'native-info':'json.encode(DefaultInfo())', 'range-quota':'json.encode(range(100001))',
-        'default-quota':'json.decode("["+"0,"*100001+"0]",default=[])',
+        # Root + 250000 nulls exceeds Decode's node ceiling, below its byte/input
+        # ceilings (Rust boundary proof). Numeric tokens can hit bytes first.
+        'default-quota':'json.decode("["+"null,"*249999+"null]",default=[])',
         'depth65':'json.decode("["*65+"0"+"]"*65)',
     }
     if family == 'api' and probe in ('metadata','build'):
@@ -311,9 +323,10 @@ DIAGNOSTICS = {
     'external-file':r'(?:external|main.repository|MAIN)[^\n]*(?:File|file|JSON|unsupported)|(?:File|file)[^\n]*(?:external|main.repository|MAIN)',
 }
 
-# Exact messages from the preserved first frozen run, not a catch-all "nonzero"
-# waiver. Reference patterns above remain unchanged. Fixture/phase/argument and
-# source bindings are mandatory when this per-engine projection is used.
+# Exact messages from the preserved first frozen run, except the ceiling-neutral
+# resource message bound to the current candidate source (not yet CLI evidence).
+# No catch-all "nonzero" waiver. Reference patterns above remain unchanged.
+# Fixture/phase/argument and source bindings are mandatory for this projection.
 NATIVE_MESSAGES = {
     'immutable': 'Operation `.encode=` not supported on type `json`',
     'frozen': 'Immutable',
@@ -324,6 +337,7 @@ NATIVE_MESSAGES = {
     **{p: 'cannot encode unsupported value as JSON' for p in ('label','module','callable','nested')},
     **{p: 'at offset 1, unexpected end of number' for p in ('numeric-eof','encode-numeric-eof')},
     'depth65': 'JSON maximum open container depth exceeded (64)',
+    **{p: 'JSON host preparation resource limit exceeded' for p in ('range-quota','default-quota')},
     'native-info': 'cannot encode native Info as JSON',
     'external-file': 'cannot encode unsupported File profile as JSON',
 }
@@ -511,9 +525,20 @@ def executable_evidence(args):
     return common.executable_evidence(args)
 
 
+_base_plan_receipt=engine.plan_receipt
+
+
+def plan_receipt(reference_only):
+    plan = _base_plan_receipt(reference_only)
+    plan['fixture_plan_sha256'] = plan.pop('sha256')
+    plan['native_capacity'] = {method: profile.copy() for method,profile in NATIVE_CAPACITY.items()}
+    plan['sha256'] = digest(json.dumps(plan,sort_keys=True).encode())
+    return plan
+
+
 _base_run_phase=engine.run_phase
 for _name in ('SUITE','OLD_NATIVE','ORIGINS','OFFICIAL_FILES','LIMITATIONS','KNOWN_REFERENCE_DEFECTS','DEFECTS','CASEPLAN',
-        'source_paths','fixture','require_rejection','phases_for','steps_for','argument_parser','executable_evidence','check_spawns','run_phase','validate_phase'):
+        'source_paths','fixture','require_rejection','phases_for','steps_for','plan_receipt','argument_parser','executable_evidence','check_spawns','run_phase','validate_phase'):
     setattr(engine,_name,globals()[_name])
 plan_receipt, command_argv, source_bindings = engine.plan_receipt, engine.command_argv, engine.source_bindings
 source_evidence, RecordingRunner = engine.source_evidence, engine.RecordingRunner
