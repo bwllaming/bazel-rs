@@ -305,7 +305,10 @@ def fixture(name, probe='result'):
             files['b.bzl'] = direct.rule('pass', prefix='load("@a_repo//:helper.bzl","value")\n')
         target, diagnostic = '@a_repo//:data', 'cycle'
     elif name == 'native.context-and-return':
-        operation = {'metadata': 'ctx.extension_metadata()', 'facts': 'value=ctx.facts',
+        # Supported extension_metadata()/ctx.facts surfaces moved to unit/CLI
+        # tests; these probes keep the remaining explicit native boundaries.
+        operation = {'metadata': 'ctx.extension_metadata(root_module_direct_deps=["made"],root_module_direct_dev_deps=[])',
+                     'facts': 'value=ctx.facts["missing"]',
                      'os-environ': 'value=ctx.os.environ', 'read-watch': 'ctx.read("x",watch="yes")',
                      'integer': 'return 42', 'dict': 'return {}'}[probe]
         files['ext.bzl'] = extension('maker(name="made")\n' + operation)
@@ -788,7 +791,7 @@ def main(argv=None):
         started_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
         limitations=[
             '16 cases: eight differential, eight native boundaries; not full Bazel or application compatibility.',
-            'Only bounded non-isolated None-returning callbacks; no metadata, facts, OS or filesystem context fiction.',
+            'Only bounded non-isolated callbacks returning None or inert extension_metadata; empty facts, no use_repo fixups, OS or filesystem context fiction.',
             'Call-time mutable string-list snapshot is observable; unsupported nested dict/int-list attrs are not claimed.',
             'Genuine pinned Bazel built-in closure may download from BCR; no fake builtins or user workspace.',
             'Negative cases compare specific controlled diagnostics, not exact error strings or in-memory RepoSpec state.',

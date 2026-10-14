@@ -1,0 +1,10 @@
+{
+  "status": "GENUINE_BAZEL_9_3_E2E_MATCHES_NATIVE_EXPECTED",
+  "reference_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "fixture": "tests/module_path.rs Fixture::new files extracted verbatim",
+  "test_source_sha256": "bf3b7a272b7f67e20b874deb172e48ef8cdd96c93b7e97245380f381a854bbaf",
+  "output_sha256": "c5b8461232f743219e8971a3eaa1e4fb8cf09fc250aa94db85174389e923f24a",
+  "exact": true,
+  "invocation": "--batch --ignore_all_rc_files private roots; build --registry=file://<private tracked 216 registry> --repository_disable_download --incompatible_autoload_externally= --lockfile_mode=off --distdir=<verified platforms> --spawn_strategy=local --shell_executable=/bin/bash //:copy; exit 0",
+  "covers": "ctx.path(Label) root+local_path_override module, ctx.read(path), dir/getattr/struct(**d) on tags, ctx.facts.get -> None, return ctx.extension_metadata(reproducible=True, facts=...), generated repo consumed by genrule"
+}

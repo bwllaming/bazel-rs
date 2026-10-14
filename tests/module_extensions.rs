@@ -367,7 +367,10 @@ fn fresh_runtime_observes_tags_callback_sources_and_binary_templates() {
 #[test]
 fn unsupported_context_operations_and_invalid_names_never_publish() {
     for (operation, marker) in [
-        ("ctx.extension_metadata()", "extension_metadata"),
+        (
+            "ctx.extension_metadata(root_module_direct_deps=['made'],root_module_direct_dev_deps=[])",
+            "extension_metadata: non-None root_module_direct_deps/root_module_direct_dev_deps are unsupported",
+        ),
         ("ctx.os.environ", "repository_os.environ is unsupported"),
         (
             "ctx.read(\"x\",watch=\"yes\")",

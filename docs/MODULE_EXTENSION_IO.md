@@ -3,8 +3,9 @@
 This is the **candidate native implementation**, not final acceptance or a released
 feature. It executes real synchronous HTTP(S) downloads and reads their owned bytes
 inside [ordinary module callbacks](MODULE_EXTENSIONS.md). It does not add
-`repository_ctx.download`, module `path`, `delete`, `execute`, `file`, facts or
-metadata APIs. The [repository-rule profile](REPOSITORY_RULES.md) is unchanged.
+`repository_ctx.download`, `delete`, `execute` or `file`. Label/`path` source reads,
+`module_ctx.path`, empty facts and inert metadata are a separate
+[source-input profile](MODULE_SOURCE_INPUTS.md). The [repository-rule profile](REPOSITORY_RULES.md) is unchanged.
 No upstream fallback, fabricated download result or SDK map is substituted.
 
 ## Signatures and supported arguments
@@ -22,7 +23,7 @@ Arguments before `*` accept positional or keyword binding. Omitted `auth` and
 | Argument | Native profile |
 |---|---|
 | `url` | Required string, or ordered list/tuple of strings; every entry is validated before I/O or reuse. |
-| `output`, `path` | Strings naming owned working paths only; not Label or path objects. |
+| `output`, `path` | Strings naming owned working paths. `read` also accepts Label/`path` source inputs ([source profile](MODULE_SOURCE_INPUTS.md)); `output` does not. |
 | `sha256`, `integrity` | Strings, default empty; at most one may be nonempty. See checksum grammar below. |
 | `executable` | Boolean; only `False`. No executable output mode. |
 | `allow_fail` | Boolean, default `False`; only completion failures may return a failure struct. |
@@ -241,6 +242,8 @@ the previous serialization bytes, field order and persistent keys.
 Observations are ordered: downloads record relative output, reuse, public result
 and resulting missing/directory/file state; reads record relative path, watch
 choice and file state. File state includes generation, byte SHA-256 and size.
+Label/`path` source reads record `read_source` with canonical label, watch choice,
+SHA-256 and size ([source profile](MODULE_SOURCE_INPUTS.md)).
 Overwrites and tolerated partial-failure states therefore contribute, even if
 the caller ignores the response or emits constant generated content. This is a
 conservative overapproximation of dependencies, not minimal dataflow tracking.

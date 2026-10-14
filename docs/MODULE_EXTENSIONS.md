@@ -68,7 +68,8 @@ callee values are rooted in a traced callback module, then retained by owned
 frozen values after evaluation. Private/transitive helpers survive owner drops.
 
 The complete callback runs before any of its repository implementations execute.
-Only `None` returns are accepted. Then every recorded repository's attributes and
+Only `None` or inert [`extension_metadata`](MODULE_SOURCE_INPUTS.md) returns are
+accepted; metadata is discarded. Then every recorded repository's attributes and
 every participating usage's imports are checked. A missing unused import or an
 invalid unused declaration invalidates the whole prepared group. Valid unused
 repository implementations are not executed.
@@ -110,10 +111,11 @@ streamed from borrowed values into a separately bounded 64 MiB buffer; serialize
 bytes are length-framed rather than expanded into another JSON number array.
 
 The candidate [bounded module-context download/read profile](MODULE_EXTENSION_IO.md)
-adds owned synchronous I/O; final acceptance and release remain pending. Isolation,
-metadata construction/returns, facts, OS environment inspection, path/delete/execute
-and SDK APIs remain unsupported. No placeholder metadata, facts, platform or SDK
-repository is substituted. `mod graph` retains its existing explicit-module profile
+adds owned synchronous I/O; final acceptance and release remain pending. The
+[source-input profile](MODULE_SOURCE_INPUTS.md) adds Label `path`/`read`, empty
+`facts` and inert `extension_metadata` (direct-deps fixups unsupported). Isolation,
+persisted facts, OS environment inspection, string paths, delete/execute and SDK
+APIs remain unsupported. No placeholder platform or SDK repository is substituted. `mod graph` retains its existing explicit-module profile
 and does not execute active extensions.
 Genuine built-in module closure is now available through the separate opt-in
 [built-in profile](BUILTIN_MODULES.md); default semantics and complete

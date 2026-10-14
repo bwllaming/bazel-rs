@@ -644,7 +644,7 @@ impl RepositorySet {
             let host_factors = host.factors(definition.os_dependent, definition.arch_dependent, &mut preparation_budget)?;
             let execution = crate::extension_ctx::execute(
                 Arc::new(self.clone()), &definition, &loaded.functions, &group.label,
-                &group.participants, group.root_has_non_dev_dependency,
+                &group.symbol, &group.participants, group.root_has_non_dev_dependency,
             )?;
 
             // The requested extension host owns this mapping, not its first

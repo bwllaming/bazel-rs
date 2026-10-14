@@ -61,6 +61,15 @@ pub enum Observation {
         watch: String,
         state: FileState,
     },
+    /// Source file read through a Label or `path` value. Canonical label only:
+    /// no absolute host path enters provenance. The digest is recorded for
+    /// every watch mode, so changed bytes always rekey the extension.
+    ReadSource {
+        label: String,
+        watch: String,
+        sha256: String,
+        size_bytes: usize,
+    },
 }
 #[derive(Debug)]
 struct OwnedFile {
@@ -561,6 +570,85 @@ impl ScratchExecutionIo {
             return Err(TypedIoError::Completion("checksum mismatch".into()));
         }
         Ok(())
+    }
+    /// Read a resolved source-repository file (never an owned scratch path).
+    /// The caller resolved the label and rejected symlinks, directories and
+    /// special files; this re-checks the opened file's identity and size and
+    /// charges the shared call/work budgets exactly like owned reads.
+    pub(crate) fn read_source(
+        &mut self,
+        identity: u64,
+        label: &str,
+        watch: &str,
+        path: &Path,
+    ) -> IoResult<String> {
+        self.check_receiver(identity)?;
+        self.budget.borrow_mut().call()?;
+        let before = fs::symlink_metadata(path).map_err(io_error)?;
+        if !before.file_type().is_file() {
+            return Err(TypedIoError::Policy(
+                "source read requires a regular non-symlink file",
+            ));
+        }
+        let size = usize::try_from(before.len()).unwrap_or(usize::MAX);
+        if size > FILE_LIMIT {
+            return Err(TypedIoError::Resource("8MiB file"));
+        }
+        self.budget.borrow_mut().work(size.saturating_mul(4))?;
+        let mut options = OpenOptions::new();
+        options.read(true);
+        // A final component swapped for a symlink or FIFO after the check
+        // must neither be followed nor block past the deadline.
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            const O_NONBLOCK: i32 = 0o4000;
+            const O_NOFOLLOW: i32 = 0o400000;
+            options.custom_flags(O_NOFOLLOW | O_NONBLOCK);
+        }
+        let mut file = options.open(path).map_err(io_error)?;
+        let same = |metadata: &Metadata| -> IoResult<()> {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                if (metadata.dev(), metadata.ino()) != (before.dev(), before.ino()) {
+                    return Err(TypedIoError::Policy("source file identity changed"));
+                }
+            }
+            if !metadata.is_file() || metadata.len() != size as u64 {
+                return Err(TypedIoError::Policy("source file changed while reading"));
+            }
+            Ok(())
+        };
+        same(&file.metadata().map_err(io_error)?)?;
+        let mut bytes = vec![0; size];
+        let mut offset = 0;
+        while offset < size {
+            self.budget.borrow().remaining()?;
+            let n = file
+                .read(&mut bytes[offset..size.min(offset + PRECHECK)])
+                .map_err(io_error)?;
+            if n == 0 {
+                return Err(TypedIoError::Policy("source file changed while reading"));
+            }
+            offset += n;
+        }
+        if file.read(&mut [0u8]).map_err(io_error)? != 0 {
+            return Err(TypedIoError::Policy("source file changed while reading"));
+        }
+        same(&file.metadata().map_err(io_error)?)?;
+        // Latin-1 can expand each byte to two UTF-8 bytes in the evaluator.
+        self.budget
+            .borrow_mut()
+            .work(bytes.len().saturating_mul(2))?;
+        let text = bytes.iter().map(|byte| char::from(*byte)).collect();
+        self.observations.push(Observation::ReadSource {
+            label: label.into(),
+            watch: watch.into(),
+            sha256: transport::sha256(&bytes),
+            size_bytes: bytes.len(),
+        });
+        Ok(text)
     }
     fn write(&mut self, file: &mut File, relative: &str, bytes: &[u8]) -> IoResult<()> {
         let live: usize = self.files.values().map(|f| f.size).sum();

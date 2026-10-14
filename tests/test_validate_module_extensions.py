@@ -31,14 +31,15 @@ MESSAGES = {
     'import': 'extension does not generate repository "missing_repo", yet it is imported as "unused"',
     'extension-label': "invalid label for module extension: no repo visible as '@shared+' here",
     'cycle': 'repository preparation cycle: a_repo -> b_repo -> a_repo',
-    'return': 'module extension implementation return values other than None are unsupported',
+    'return': 'expected module extension @@//:ext.bzl%files to return None or extension_metadata, got int',
     'isolated': 'isolated extension usage is not supported',
     'immutable': 'Immutable',
     'name': 'invalid repository name "a+b"',
     'canonical': 'unknown canonical repository @@+unknown+made; extension repository not materialized',
     'ticks': 'Maximum number of ticks exceeded',
-    'extension_metadata': "module_ctx has no attribute 'extension_metadata'",
-    'facts': "module_ctx has no attribute 'facts'",
+    'extension_metadata': ('extension_metadata: non-None root_module_direct_deps/root_module_direct_dev_deps'
+                           ' are unsupported in the native profile (no use_repo fixup metadata)'),
+    'facts': 'Facts has no key "missing": persisted facts are unsupported (native lockfile mode is off)',
     'os-environ': ('bazel-rs: module extension //:ext.bzl: Traceback (most recent call last):\n'
                    '  File <builtin>, in <module>\n'
                    'error: repository_os.environ is unsupported in the native host metadata profile\n'
@@ -234,6 +235,8 @@ class FixtureTests(unittest.TestCase):
             value = extensions.fixture(item['name'], probe)
             self.assertIn(b'maker(name="made")', value['files']['ext.bzl'])
             self.assertEqual(extensions.steps_for(item, probe, 'native'), [('query', '@chosen//:data', [])])
+        self.assertIn(b'root_module_direct_deps=["made"]', extensions.fixture(item['name'], 'metadata')['files']['ext.bzl'])
+        self.assertIn(b'value=ctx.facts["missing"]', extensions.fixture(item['name'], 'facts')['files']['ext.bzl'])
         self.assertIn(b'return 42', extensions.fixture(item['name'], 'integer')['files']['ext.bzl'])
         self.assertIn(b'return {}', extensions.fixture(item['name'], 'dict')['files']['ext.bzl'])
 

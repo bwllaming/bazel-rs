@@ -8,6 +8,7 @@
 use allocative::Allocative;
 use anyhow::{anyhow, bail, ensure};
 use serde::Serialize;
+use starlark::collections::StarlarkHasher;
 use starlark::environment::{Methods, MethodsBuilder, Module};
 use starlark::eval::{Arguments, Evaluator};
 use starlark::starlark_module;
@@ -16,6 +17,8 @@ use starlark::values::{FrozenHeapName, Heap, OwnedFrozenValue, Value, ValueLike}
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::hash::Hash;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::custom_rule::AttrValue;
@@ -201,25 +204,148 @@ mod values {
                 "root_module_has_non_dev_dependency" => {
                     Some(heap.alloc(self.root_has_non_dev_dependency))
                 }
+                "facts" => Some(heap.alloc(EmptyFacts)),
                 // Unsupported context facilities are absent, never dummy values.
                 _ => None,
             }
         }
 
         fn dir_attr(&self) -> Vec<String> {
+            // Methods (download, extension_metadata, is_dev_dependency, path,
+            // read) are listed by Value::dir_attr from MODULE_METHODS.
             [
                 "modules",
                 "os",
                 "root_module_has_non_dev_dependency",
-                "download",
-                "read",
+                "facts",
             ]
             .map(str::to_owned)
             .to_vec()
         }
     }
+
+    /// Bazel `path` (StarlarkPath.java) for a resolved source label only:
+    /// immutable, hashable, equal by host path. str() is the absolute host
+    /// path, repr() its quoted form. No basename/exists/readdir/... members.
+    #[derive(
+        Debug,
+        Clone,
+        PartialEq,
+        Eq,
+        Hash,
+        ProvidesStaticType,
+        NoSerialize,
+        Allocative,
+        StarlarkPagablePanic,
+    )]
+    pub(super) struct SourcePath {
+        /// Canonical label text (`//pkg:name` or `@@repo//pkg:name`).
+        pub label: String,
+        /// Absolute host path of the canonical repository root.
+        pub root: String,
+        /// Slash-separated repository-relative path (package/name).
+        pub relative: String,
+        /// Absolute host path of the resolved source file.
+        pub display: String,
+    }
+    starlark::starlark_simple_value!(SourcePath);
+
+    impl fmt::Display for SourcePath {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str(&starlark::values::string::StarlarkStr::repr(&self.display))
+        }
+    }
+
+    #[starlark_value(type = "path")]
+    impl<'v> StarlarkValue<'v> for SourcePath {
+        fn collect_str(&self, collector: &mut String) {
+            collector.push_str(&self.display);
+        }
+
+        fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
+            Ok(other
+                .downcast_ref::<Self>()
+                .is_some_and(|other| other.display == self.display))
+        }
+
+        fn write_hash(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
+            self.display.hash(hasher);
+            Ok(())
+        }
+    }
+
+    /// Bazel `Facts` (Facts.java). The native profile has no lockfile, so it is
+    /// always Facts.EMPTY (SingleExtensionEvalFunction.java:145-150).
+    #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
+    pub(super) struct EmptyFacts;
+    starlark::starlark_simple_value!(EmptyFacts);
+
+    impl fmt::Display for EmptyFacts {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            // Facts.java repr: contents are not leaked to Starlark.
+            f.write_str("Facts(<opaque, inspect with print()>)")
+        }
+    }
+
+    #[starlark_value(type = "Facts")]
+    impl<'v> StarlarkValue<'v> for EmptyFacts {
+        fn get_methods() -> Option<&'static Methods> {
+            Some(FACTS_METHODS.methods())
+        }
+
+        fn at(&self, index: Value<'v>, _heap: Heap<'v>) -> starlark::Result<Value<'v>> {
+            // Bazel's getIndex yields Java null for a missing key; fail explicitly.
+            Err(starlark::Error::new_other(anyhow!(
+                "Facts has no key {}: persisted facts are unsupported (native lockfile mode is off)",
+                index.to_repr()
+            )))
+        }
+
+        fn is_in(&self, _other: Value<'v>) -> starlark::Result<bool> {
+            Ok(false)
+        }
+
+        fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
+            // Facts.equals compares contents; every native Facts is Facts.EMPTY.
+            Ok(other.downcast_ref::<EmptyFacts>().is_some())
+        }
+
+        fn write_hash(&self, _hasher: &mut StarlarkHasher) -> starlark::Result<()> {
+            Err(starlark::Error::new_other(anyhow!(
+                "unhashable type: 'Facts'"
+            )))
+        }
+    }
+
+    /// Inert Bazel `extension_metadata` (ModuleExtensionMetadata.java). The
+    /// native profile has no lockfile or use_repo fixups, so it is discarded.
+    #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
+    pub(super) struct ExtensionMetadata {
+        pub reproducible: bool,
+    }
+    starlark::starlark_simple_value!(ExtensionMetadata);
+
+    impl fmt::Display for ExtensionMetadata {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            // No repr override in Bazel: StarlarkValue's default for AutoValue.
+            f.write_str(
+                "<unknown object com.google.devtools.build.lib.bazel.bzlmod.AutoValue_ModuleExtensionMetadata>",
+            )
+        }
+    }
+
+    #[starlark_value(type = "extension_metadata")]
+    impl<'v> StarlarkValue<'v> for ExtensionMetadata {
+        fn write_hash(&self, _hasher: &mut StarlarkHasher) -> starlark::Result<()> {
+            Err(starlark::Error::new_other(anyhow!(
+                "unhashable type: 'extension_metadata'"
+            )))
+        }
+    }
 }
-use values::{BazelModuleGen, Context, FrozenTag, ModuleCtxGen, Tag, TagGen};
+use values::{
+    BazelModuleGen, Context, ExtensionMetadata, FrozenTag, ModuleCtxGen, SourcePath, Tag, TagGen,
+};
 
 fn io_receiver(this: Value<'_>, eval: &Evaluator<'_, '_, '_>) -> anyhow::Result<u64> {
     use crate::extension_download::TypedIoError;
@@ -376,16 +502,66 @@ fn module_methods(builder: &mut MethodsBuilder) {
 
     fn read<'v>(
         this: Value<'v>,
-        path: &str,
+        path: Value<'v>,
         #[starlark(require = named, default = "auto")] watch: &str,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<String> {
         let identity = io_receiver(this, eval)?;
-        Ok(context(eval)
-            .ok_or(crate::extension_download::TypedIoError::Lifetime)?
+        let context = context(eval).ok_or(crate::extension_download::TypedIoError::Lifetime)?;
+        if let Some(path) = path.unpack_str() {
+            // Strings keep the owned scratch-path profile unchanged.
+            return Ok(context.io.borrow_mut().read(identity, path, watch)?);
+        }
+        // Bazel 9.3 StarlarkBaseExternalContext.java:1631-1647: getPath, then
+        // watch validation, then the directory check, then the byte read.
+        let source = source_path_argument(context, path, "read")?;
+        validate_watch(watch)?;
+        let host = checked_source_file(&source)?;
+        Ok(context
             .io
             .borrow_mut()
-            .read(identity, path, watch)?)
+            .read_source(identity, &source.label, watch, &host)?)
+    }
+
+    fn path<'v>(
+        this: Value<'v>,
+        path: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        io_receiver(this, eval)?;
+        // Bazel 9.3 StarlarkBaseExternalContext.java:1567-1600: a path value
+        // passes through unchanged; a Label resolves to its source file.
+        if path.downcast_ref::<SourcePath>().is_some() {
+            return Ok(path);
+        }
+        let context = context(eval).ok_or(crate::extension_download::TypedIoError::Lifetime)?;
+        let source = source_path_argument(context, path, "path")?;
+        Ok(eval.heap().alloc(source))
+    }
+
+    fn extension_metadata<'v>(
+        this: Value<'v>,
+        #[starlark(require = named)] root_module_direct_deps: Option<Value<'v>>,
+        #[starlark(require = named)] root_module_direct_dev_deps: Option<Value<'v>>,
+        #[starlark(require = named, default = false)] reproducible: bool,
+        #[starlark(require = named)] facts: Option<Value<'v>>,
+    ) -> anyhow::Result<ExtensionMetadata> {
+        let _ = this;
+        // ModuleExtensionContext.java:207-321 -> ModuleExtensionMetadata.create:
+        // facts are validated before the direct-dependency arguments.
+        if let Some(facts) = facts {
+            validate_facts(facts)?;
+        }
+        if [root_module_direct_deps, root_module_direct_dev_deps]
+            .into_iter()
+            .flatten()
+            .any(|value| !value.is_none())
+        {
+            bail!(
+                "extension_metadata: non-None root_module_direct_deps/root_module_direct_dev_deps are unsupported in the native profile (no use_repo fixup metadata)"
+            );
+        }
+        Ok(ExtensionMetadata { reproducible })
     }
 
     fn is_dev_dependency<'v>(
@@ -403,6 +579,220 @@ fn module_methods(builder: &mut MethodsBuilder) {
             bail!("is_dev_dependency expects a tag, got {}", tag.get_type())
         }
     }
+}
+
+starlark::methods_static!(FACTS_METHODS = facts_methods);
+
+#[starlark_module]
+fn facts_methods(builder: &mut MethodsBuilder) {
+    /// Facts.java `get(key, default=None)`; native facts are always empty.
+    fn get<'v>(
+        this: Value<'v>,
+        key: &str,
+        default: Option<Value<'v>>,
+    ) -> anyhow::Result<Value<'v>> {
+        let _ = (this, key);
+        Ok(default.unwrap_or_else(Value::new_none))
+    }
+}
+
+/// Facts.java MAX_FACTS_DEPTH.
+const MAX_FACTS_DEPTH: i32 = 7;
+
+/// Facts.validateAndCreate (Facts.java), preceded by its Dict.cast of the
+/// `facts` parameter. The validated value is discarded (lockfile mode off).
+fn validate_facts(value: Value<'_>) -> anyhow::Result<()> {
+    use starlark::values::dict::DictRef;
+    let dict = DictRef::from_value(value).ok_or_else(|| {
+        anyhow!(
+            "in call to extension_metadata(), parameter 'facts' got value of type '{}', want 'dict'",
+            value.get_type()
+        )
+    })?;
+    for (key, entry) in dict.iter() {
+        if key.unpack_str().is_none() {
+            bail!(
+                "got dict<{}, {}> for 'facts', want dict<string, unknown>",
+                key.get_type(),
+                entry.get_type()
+            );
+        }
+    }
+    drop(dict);
+    validate_fact(value, MAX_FACTS_DEPTH)
+}
+
+fn validate_fact(value: Value<'_>, remaining: i32) -> anyhow::Result<()> {
+    use starlark::values::dict::DictRef;
+    use starlark::values::list::ListRef;
+    use starlark::values::tuple::TupleRef;
+    if remaining < 0 {
+        bail!("Facts cannot be nested more than {MAX_FACTS_DEPTH} levels deep");
+    }
+    if value.is_none()
+        || value.unpack_str().is_some()
+        || value.unpack_bool().is_some()
+        || matches!(value.get_type(), "int" | "float")
+    {
+        return Ok(());
+    }
+    if let Some(list) = ListRef::from_value(value) {
+        return list
+            .iter()
+            .try_for_each(|item| validate_fact(item, remaining - 1));
+    }
+    if let Some(tuple) = TupleRef::from_value(value) {
+        return tuple
+            .iter()
+            .try_for_each(|item| validate_fact(item, remaining - 1));
+    }
+    if let Some(dict) = DictRef::from_value(value) {
+        for (key, entry) in dict.iter() {
+            if key.unpack_str().is_none() {
+                bail!(
+                    "Facts keys must be strings, got '{}: {}' ({})",
+                    key.to_repr(),
+                    entry.to_repr(),
+                    key.get_type()
+                );
+            }
+            validate_fact(entry, remaining - 1)?;
+        }
+        return Ok(());
+    }
+    bail!(
+        "'{}' ({}) is not supported in facts",
+        value.to_repr(),
+        value.get_type()
+    )
+}
+
+/// Bazel's ShouldWatch.fromString (StarlarkBaseExternalContext.java:1709-1718).
+fn validate_watch(watch: &str) -> anyhow::Result<()> {
+    ensure!(
+        matches!(watch, "yes" | "no" | "auto"),
+        "bad value for 'watch' parameter; want 'yes', 'no', or 'auto', got {watch}"
+    );
+    Ok(())
+}
+
+/// Accept a genuine `path` or Label for module_ctx.path/read. Strings are a
+/// different (working-directory) profile and fail explicitly in path().
+fn source_path_argument(
+    context: &Context,
+    value: Value<'_>,
+    method: &str,
+) -> anyhow::Result<SourcePath> {
+    if let Some(path) = value.downcast_ref::<SourcePath>() {
+        return Ok(path.clone());
+    }
+    if let Some((repository, package, name)) = crate::starlark_types::label_parts(value) {
+        return resolve_source_label(&context.repositories, repository, package, name);
+    }
+    if value.unpack_str().is_some() {
+        bail!(
+            "module_ctx.path() of a string (a path relative to the extension working directory) is unsupported in the native profile; pass a Label"
+        );
+    }
+    bail!(
+        "in call to {method}(), parameter 'path' got value of type '{}', want 'string, Label, or path'",
+        value.get_type()
+    )
+}
+
+/// Bazel 9.3 getPathFromLabel (StarlarkBaseExternalContext.java:2386-2412)
+/// and RepositoryUtils.getRootedPathFromLabel: the package must exist; the file
+/// itself need not. Only the main repository and resolved module-graph
+/// repositories are admitted; extension-generated and use_repo_rule
+/// repositories would require re-entrant extension evaluation here.
+/// With --incompatible_no_implicit_watch_label (default true) path() records
+/// no watch, so no provenance observation is added here.
+fn resolve_source_label(
+    repositories: &RepositorySet,
+    repository: &str,
+    package: &str,
+    name: &str,
+) -> anyhow::Result<SourcePath> {
+    let label = Label {
+        repository: repository.to_owned(),
+        package: package.to_owned(),
+        name: name.to_owned(),
+    };
+    if !repository.is_empty()
+        && !repositories
+            .resolve_graph()
+            .map_err(anyhow::Error::msg)?
+            .modules
+            .contains_key(repository)
+    {
+        bail!(
+            "module_ctx.path({label}): only the main repository and resolved module-graph repositories are supported; extension-generated and use_repo_rule repositories are unsupported"
+        );
+    }
+    let root = repositories.root(repository).map_err(anyhow::Error::msg)?;
+    crate::workspace::package_build_file(root, package)
+        .map_err(|message| anyhow!("Unable to load package for {label}: {message}"))?;
+    let root = std::fs::canonicalize(root)
+        .map_err(|error| anyhow!("cannot resolve repository root for {label}: {error}"))?;
+    let root = root
+        .to_str()
+        .ok_or_else(|| anyhow!("non-UTF-8 repository root for {label} is unsupported"))?
+        .to_owned();
+    let relative = if package.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{package}/{name}")
+    };
+    let display = Path::new(&root)
+        .join(&relative)
+        .to_str()
+        .expect("UTF-8 root and ASCII label")
+        .to_owned();
+    Ok(SourcePath {
+        label: label.to_string(),
+        root,
+        relative,
+        display,
+    })
+}
+
+/// Walk the repository-relative components without following symlinks and
+/// return the regular file's host path. Bazel follows symlinks; this profile
+/// rejects them explicitly rather than resolving outside the repository.
+fn checked_source_file(source: &SourcePath) -> anyhow::Result<PathBuf> {
+    let mut current = PathBuf::from(&source.root);
+    let components: Vec<&str> = source.relative.split('/').collect();
+    for (index, component) in components.iter().enumerate() {
+        current.push(component);
+        let metadata = match std::fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                bail!("cannot read {}: No such file or directory", source.display)
+            }
+            Err(error) => bail!("cannot read {}: {error}", source.display),
+        };
+        if metadata.file_type().is_symlink() {
+            bail!(
+                "module_ctx.read() through a symlink is unsupported in the native profile: {}",
+                source.display
+            );
+        }
+        let last = index + 1 == components.len();
+        if metadata.is_dir() {
+            if last {
+                // StarlarkBaseExternalContext.java:1639-1641.
+                bail!("attempting to read() a directory: {}", source.display);
+            }
+        } else if !last {
+            bail!("cannot read {}: Not a directory", source.display);
+        } else if !metadata.is_file() {
+            bail!(
+                "module_ctx.read() of a special file is unsupported: {}",
+                source.display
+            );
+        }
+    }
+    Ok(current)
 }
 
 fn bind_modules(
@@ -589,6 +979,7 @@ pub fn execute(
     definition: &ExtensionDefinition,
     functions: &[OwnedFrozenValue],
     public_label: &Label,
+    extension_name: &str,
     participants: &[OrdinaryParticipant],
     root_has_non_dev_dependency: bool,
 ) -> Result<ExtensionExecution, String> {
@@ -628,9 +1019,13 @@ pub fn execute(
             let observations = context.io.borrow_mut().close();
             let returned = evaluated.map_err(|error| anyhow!(error.to_string()))?;
             let observations = observations?;
+            // RegularRunnableExtension.java:298-304. The metadata itself is
+            // discarded: there is no lockfile or use_repo fixup in this profile.
             ensure!(
-                returned.is_none(),
-                "module extension implementation return values other than None are unsupported"
+                returned.is_none() || returned.downcast_ref::<ExtensionMetadata>().is_some(),
+                "expected module extension {}%{extension_name} to return None or extension_metadata, got {}",
+                public_label.canonical_starlark(),
+                returned.get_type()
             );
             drop(eval);
             let frozen = module
@@ -721,6 +1116,7 @@ mod tests {
                 &definition,
                 &functions,
                 &label(),
+                "ext",
                 participants,
                 non_dev,
             )
@@ -1158,12 +1554,17 @@ words.append('after')
             &[],
             "late failure",
         );
-        for returned in ["42", "{}", "struct(root_module_direct_deps=[])"] {
+        for (returned, kind) in [
+            ("42", "int"),
+            ("{}", "dict"),
+            ("struct(root_module_direct_deps=[])", "struct"),
+            ("ctx.facts", "Facts"),
+        ] {
             fixture.error(
                 &format!("r(name='first')\nreturn {returned}"),
                 "{}",
                 &[],
-                "other than None",
+                &format!("expected module extension @@//:defs.bzl%ext to return None or extension_metadata, got {kind}"),
             );
         }
         fixture.error(
@@ -1180,16 +1581,7 @@ words.append('after')
     #[test]
     fn unsupported_context_facilities_are_absent_not_fabricated() {
         let fixture = Fixture::new();
-        for field in [
-            "extension_metadata",
-            "facts",
-            "path",
-            "delete",
-            "tag_sort_key",
-            "is_isolated",
-            "file",
-            "execute",
-        ] {
+        for field in ["delete", "tag_sort_key", "is_isolated", "file", "execute"] {
             fixture.error(&format!("ctx.{field}"), "{}", &[], field);
         }
         fixture.error(
@@ -1220,6 +1612,261 @@ json.decode('"\\u0041"') == 'A' or fail('ascii escape changed')
                 &[],
             )
             .unwrap();
+    }
+
+    fn observations(result: &ExtensionExecution) -> Vec<serde_json::Value> {
+        result
+            .io_observations
+            .iter()
+            .map(|o| serde_json::to_value(o).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn module_path_and_read_resolve_source_labels_with_byte_provenance() {
+        let fixture = Fixture::new();
+        let bytes = b"module example.com/app\n\ngo 1.27.1\n// \xe9\x00\n";
+        fs::write(fixture.root.path().join("go.mod"), bytes).unwrap();
+        fixture.file("sub/BUILD.bazel", "");
+        fixture.file("sub/nested/data.txt", "nested");
+        let root = fs::canonicalize(fixture.root.path()).unwrap();
+        let expected = root.join("go.mod").to_str().unwrap().to_owned();
+        let nested = root
+            .join("sub/nested/data.txt")
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let result = fixture
+            .run(
+                &format!(
+                    r#"
+p = ctx.path(Label('//:go.mod'))
+type(p) == 'path' or fail(type(p))
+str(p) == {expected:?} or fail(str(p))
+repr(p) == repr({expected:?}) or fail(repr(p))
+ctx.path(p) == p or fail('path passthrough')
+ctx.path(Label('//:go.mod')) == p or fail('path equality')
+{{p: 1}}[ctx.path(Label('//:go.mod'))] == 1 or fail('path hash')
+dir(p) == [] or fail(dir(p))
+(not hasattr(p, 'basename') and not hasattr(p, 'exists')) or fail('fabricated path members')
+str(ctx.path(Label('//sub:nested/data.txt'))) == {nested:?} or fail('nested')
+str(ctx.path(Label('//:never_created'))) or fail('missing files resolve')
+text = ctx.read(p)
+len(text) == {size} or fail(len(text))
+[ord(c) for c in text[-3:].elems()] == [233, 0, 10] or fail('not Latin-1 byte chars')
+text == ctx.read(Label('//:go.mod'), watch='yes') or fail('label read')
+text == ctx.read(path=p, watch='no') or fail('watch no')
+ctx.read(Label('//sub:nested/data.txt')) == 'nested' or fail('nested read')
+version = [l for l in text.split('\n') if l.startswith('go ')][0][3:]
+r(name='sdk', words=[version])
+"#,
+                    size = bytes.len()
+                ),
+                "{}",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(
+            result.repositories[0].attributes["words"],
+            RecordedValue::List(vec![RecordedValue::String("1.27.1".to_owned())])
+        );
+        let sha = crate::extension_download::sha256(bytes);
+        let observed = observations(&result);
+        assert_eq!(observed.len(), 4);
+        for (observation, watch) in observed[..3].iter().zip(["auto", "yes", "no"]) {
+            assert_eq!(
+                observation,
+                &json!({"operation": "read_source", "label": "//:go.mod", "watch": watch,
+                        "sha256": sha, "size_bytes": bytes.len()})
+            );
+        }
+        assert_eq!(observed[3]["label"], "//sub:nested/data.txt");
+        // Provenance never carries the absolute host path.
+        assert!(
+            !serde_json::to_string(&observed)
+                .unwrap()
+                .contains(root.to_str().unwrap())
+        );
+        assert!(!fixture.root.path().join("cache").exists());
+    }
+
+    #[test]
+    fn module_path_and_read_fail_explicitly_outside_the_source_profile() {
+        let fixture = Fixture::new();
+        fixture.file("go.mod", "go 1.27.1\n");
+        fixture.file("dir/file", "");
+        std::os::unix::fs::symlink("go.mod", fixture.root.path().join("link")).unwrap();
+        fs::write(
+            fixture.root.path().join("large"),
+            vec![b'x'; crate::extension_download::FILE_LIMIT + 1],
+        )
+        .unwrap();
+        let root = fs::canonicalize(fixture.root.path()).unwrap();
+        for (body, expected) in [
+            (
+                "ctx.path(Label('//missing:go.mod'))".to_owned(),
+                "Unable to load package for //missing:go.mod: ".to_owned(),
+            ),
+            (
+                "ctx.read(Label('//missing:go.mod'), watch='bad')".to_owned(),
+                "Unable to load package for //missing:go.mod: ".to_owned(),
+            ),
+            (
+                "ctx.path('go.mod')".to_owned(),
+                "module_ctx.path() of a string".to_owned(),
+            ),
+            (
+                "ctx.path(1)".to_owned(),
+                "in call to path(), parameter 'path' got value of type 'int', want 'string, Label, or path'".to_owned(),
+            ),
+            (
+                "ctx.read(None)".to_owned(),
+                "in call to read(), parameter 'path' got value of type 'NoneType'".to_owned(),
+            ),
+            (
+                "ctx.path(Label('@@other+//:go.mod'))".to_owned(),
+                "extension-generated and use_repo_rule repositories are unsupported".to_owned(),
+            ),
+            (
+                "ctx.read(Label('//:go.mod'), watch='bad')".to_owned(),
+                "bad value for 'watch' parameter; want 'yes', 'no', or 'auto', got bad".to_owned(),
+            ),
+            (
+                "ctx.read(Label('//:absent'))".to_owned(),
+                format!("cannot read {}/absent: No such file or directory", root.display()),
+            ),
+            (
+                "ctx.read(Label('//:dir'))".to_owned(),
+                format!("attempting to read() a directory: {}/dir", root.display()),
+            ),
+            (
+                "ctx.read(ctx.path(Label('//:link')))".to_owned(),
+                "through a symlink is unsupported".to_owned(),
+            ),
+            (
+                "ctx.read(Label('//:go.mod/x'))".to_owned(),
+                "Not a directory".to_owned(),
+            ),
+            (
+                "ctx.read(Label('//:large'))".to_owned(),
+                "module I/O resource limit: 8MiB file".to_owned(),
+            ),
+            (
+                "ctx.read(Label('//:go.mod'), 'no')".to_owned(),
+                "extra positional argument".to_owned(),
+            ),
+        ] {
+            fixture.error(&body, "{}", &[], &expected);
+        }
+        // Each source read counts against the shared 32-call I/O budget.
+        fixture.error(
+            "for i in range(33):\n    ctx.read(Label('//:go.mod'))",
+            "{}",
+            &[],
+            "32 download/read calls",
+        );
+        assert!(!fixture.root.path().join("cache").exists());
+    }
+
+    #[test]
+    fn module_facts_are_empty_opaque_and_unhashable() {
+        let fixture = Fixture::new();
+        let result = fixture
+            .run(
+                r#"
+f = ctx.facts
+type(f) == 'Facts' or fail(type(f))
+repr(f) == 'Facts(<opaque, inspect with print()>)' or fail(repr(f))
+str(f) == repr(f) or fail(str(f))
+(f.get('k') == None and f.get('k', 3) == 3 and f.get(key='k', default=4) == 4) or fail('get')
+('k' not in f and not ('k' in f)) or fail('in')
+dir(f) == ['get'] or fail(dir(f))
+hasattr(ctx, 'facts') or fail('hasattr')
+(ctx.facts == ctx.facts and f == ctx.facts and f != None) or fail('facts equality')
+sorted(dir(ctx)) == ['download', 'extension_metadata', 'facts', 'is_dev_dependency', 'modules', 'os', 'path', 'read', 'root_module_has_non_dev_dependency'] or fail(sorted(dir(ctx)))
+dir(ctx) == sorted(dir(ctx)) or fail('dir order')
+"#,
+                "{}",
+                &[],
+            )
+            .unwrap();
+        assert!(result.io_observations.is_empty());
+        for (body, expected) in [
+            ("{ctx.facts: 1}", "unhashable type: 'Facts'"),
+            ("ctx.facts['k']", "Facts has no key \"k\""),
+            ("len(ctx.facts)", "len"),
+            ("[x for x in ctx.facts]", "iter"),
+            ("ctx.facts.get(1)", "get"),
+            ("ctx.facts.keys()", "keys"),
+        ] {
+            fixture.error(body, "{}", &[], expected);
+        }
+    }
+
+    #[test]
+    fn extension_metadata_validates_facts_and_is_the_only_non_none_return() {
+        let fixture = Fixture::new();
+        let result = fixture
+            .run(
+                r#"
+r(name='made')
+m = ctx.extension_metadata(reproducible=True, facts={'a': [1, 2.5, None, True, ('x',)], 'b': {'c': {'d': 'e'}}, 'deep': [[[[[[1]]]]]]})
+type(m) == 'extension_metadata' or fail(type(m))
+type(ctx.extension_metadata()) == 'extension_metadata' or fail('default')
+type(ctx.extension_metadata(root_module_direct_deps=None, root_module_direct_dev_deps=None, facts={})) == 'extension_metadata' or fail('none')
+return m
+"#,
+                "{}",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(result.repositories.len(), 1);
+        for (body, expected) in [
+            (
+                "ctx.extension_metadata(facts=[])",
+                "in call to extension_metadata(), parameter 'facts' got value of type 'list', want 'dict'",
+            ),
+            (
+                "ctx.extension_metadata(facts={1: 'x'})",
+                "got dict<int, string> for 'facts', want dict<string, unknown>",
+            ),
+            (
+                "ctx.extension_metadata(facts={'a': {'b': {1: 'x'}}})",
+                "Facts keys must be strings, got '1: \"x\"' (int)",
+            ),
+            (
+                "ctx.extension_metadata(facts={'a': struct()})",
+                "'struct()' (struct) is not supported in facts",
+            ),
+            (
+                "ctx.extension_metadata(facts={'a': [[[[[[[1]]]]]]]})",
+                "Facts cannot be nested more than 7 levels deep",
+            ),
+            (
+                "ctx.extension_metadata(root_module_direct_deps=['made'], root_module_direct_dev_deps=[], facts={1: 2})",
+                "got dict<int, int> for 'facts'",
+            ),
+            (
+                "ctx.extension_metadata(root_module_direct_deps=['made'], root_module_direct_dev_deps=[])",
+                "extension_metadata: non-None root_module_direct_deps/root_module_direct_dev_deps are unsupported",
+            ),
+            (
+                "ctx.extension_metadata(root_module_direct_deps='all', root_module_direct_dev_deps=[])",
+                "are unsupported in the native profile",
+            ),
+            ("ctx.extension_metadata(None)", "extension_metadata"),
+            ("ctx.extension_metadata(reproducible=1)", "reproducible"),
+            (
+                "{ctx.extension_metadata(): 1}",
+                "unhashable type: 'extension_metadata'",
+            ),
+            (
+                "return [ctx.extension_metadata()]",
+                "expected module extension @@//:defs.bzl%ext to return None or extension_metadata, got list",
+            ),
+        ] {
+            fixture.error(body, "{}", &[], expected);
+        }
     }
 
     #[test]
