@@ -339,9 +339,15 @@ fn analyze_inner(
             let custom = crate::providers::returned_custom_providers(returned)?;
             // All current custom rules are non-executable/non-test (true flags
             // are rejected at definition). Future executable support MUST use
-            // real rule classification here. The regular constructor always
-            // has error_on_non_executable=true; no public bypass is supported.
-            if custom.contains_key(crate::run_environment_info::PROVIDER_ID) {
+            // real rule classification here. The regular constructor sets
+            // error_on_non_executable=true; testing.TestEnvironment sets it to
+            // false (StarlarkRuleConfiguredTargetUtil: ruleWarning, provider kept).
+            if custom
+                .get(crate::run_environment_info::PROVIDER_ID)
+                .is_some_and(|info| {
+                    crate::run_environment_info::errors_on_non_executable_rule(*info)
+                })
+            {
                 bail!(
                     "Returning RunEnvironmentInfo from a non-executable, non-test target has no effect"
                 );
@@ -496,6 +502,8 @@ def impl(ctx):
         return [info]
     if ctx.attr.mode == "with_default":
         return [DefaultInfo(files=depset([ctx.outputs.out])), info]
+    if ctx.attr.mode == "test_environment":
+        return [DefaultInfo(files=depset([ctx.outputs.out])), testing.TestEnvironment({"FLAG": "seed"}, ["HOME"])]
     if ctx.attr.mode == "nested":
         return P(info=info, nested=[{"k": struct(info=(info,))}])
     if ctx.attr.mode == "nested_default":
@@ -513,6 +521,7 @@ r = rule(implementation=impl, attrs={"mode": attr.string(), "out": attr.output()
             "nested",
             "nested_default",
             "nested_empty",
+            "test_environment",
         ] {
             std::fs::write(
                 root.path().join("BUILD.bazel"),
@@ -528,6 +537,18 @@ r = rule(implementation=impl, attrs={"mode": attr.string(), "out": attr.output()
                 "direct" | "list" | "with_default" => {
                     let error = result.unwrap_err();
                     assert!(error.contains("Returning RunEnvironmentInfo from a non-executable, non-test target has no effect"), "{mode}: {error}");
+                }
+                // StarlarkRuleConfiguredTargetUtil: TestEnvironment instances
+                // only warn (shouldErrorOnNonExecutableRule=false) and are kept.
+                "test_environment" => {
+                    let result = result.unwrap();
+                    assert_eq!(result.files.len(), 1);
+                    assert_eq!(result.providers.len(), 1);
+                    assert!(
+                        result
+                            .providers
+                            .contains_key(crate::run_environment_info::PROVIDER_ID)
+                    );
                 }
                 "callback_failure" => assert!(
                     result

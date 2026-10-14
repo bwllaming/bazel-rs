@@ -208,6 +208,12 @@ impl AttrKind {
         let is_label = |value: Value<'_>| {
             value.unpack_str().is_some() || crate::starlark_types::label_parts(value).is_some()
         };
+        if matches!(self, Self::Label) && crate::language_modules::is_late_bound_default(value) {
+            bail!(
+                "late-bound label defaults (configuration_field) are {} (analysis-time configuration API)",
+                crate::language_modules::NOT_IMPLEMENTED.trim_start_matches("is ")
+            );
+        }
         let expected = match self {
             Self::String if value.unpack_str().is_none() => Some("a string"),
             Self::StringList | Self::OutputList

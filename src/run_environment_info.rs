@@ -28,6 +28,10 @@ struct InfoData {
     // Dict keys are unique. Sort only this index, preserving insertion order in
     // projections and enabling allocation-free linear equality and hashing.
     canonical: Vec<usize>,
+    // RunEnvironmentInfo.shouldErrorOnNonExecutableRule: true for the public
+    // constructor, false for testing.TestEnvironment. Not part of equality
+    // (Bazel's NativeInfo equality compares provider fields only).
+    error_on_non_executable: bool,
 }
 
 // Only derive-generated markers require this exception. No owned value contains
@@ -49,6 +53,24 @@ starlark_simple_value!(RunEnvironmentInfo);
 
 pub(crate) fn install(builder: &mut GlobalsBuilder) {
     builder.set("RunEnvironmentInfo", Constructor);
+}
+
+/// `testing.TestEnvironment(environment, inherited_environment)`:
+/// StarlarkTestingModule.testEnvironment builds a RunEnvironmentInfo with
+/// shouldErrorOnNonExecutableRule=false.
+pub(crate) fn alloc_test_environment<'v>(
+    heap: Heap<'v>,
+    environment: Value<'v>,
+    inherited: Option<Value<'v>>,
+) -> anyhow::Result<Value<'v>> {
+    let data = snapshot(Some(environment), inherited, false)?;
+    Ok(heap.alloc(RunEnvironmentInfo(Arc::new(data))))
+}
+
+/// Whether returning this instance from a non-executable, non-test rule is
+/// an error (public constructor) rather than a warning (TestEnvironment).
+pub(crate) fn errors_on_non_executable_rule(value: Value<'_>) -> bool {
+    RunEnvironmentInfo::from_value(value).is_none_or(|info| info.0.error_on_non_executable)
 }
 
 pub(crate) fn is_constructor(value: Value<'_>) -> bool {
@@ -99,7 +121,7 @@ impl<'v> StarlarkValue<'v> for Constructor {
                 )));
             }
         }
-        let data = snapshot(environment, inherited).map_err(starlark::Error::new_other)?;
+        let data = snapshot(environment, inherited, true).map_err(starlark::Error::new_other)?;
         Ok(eval.heap().alloc(RunEnvironmentInfo(Arc::new(data))))
     }
 
@@ -116,6 +138,7 @@ impl<'v> StarlarkValue<'v> for Constructor {
 fn snapshot(
     environment: Option<Value<'_>>,
     inherited: Option<Value<'_>>,
+    error_on_non_executable: bool,
 ) -> anyhow::Result<InfoData> {
     let environment = environment
         .map(|value| {
@@ -179,6 +202,7 @@ fn snapshot(
         environment,
         inherited_environment,
         canonical,
+        error_on_non_executable,
     })
 }
 
@@ -447,7 +471,7 @@ keys[y] = "replacement"
             let inherited = module
                 .heap()
                 .alloc(AllocList([input.as_str(), input.as_str()]));
-            let data = snapshot(Some(environment), Some(inherited)).unwrap();
+            let data = snapshot(Some(environment), Some(inherited), true).unwrap();
             let info = module.heap().alloc(RunEnvironmentInfo(Arc::new(data)));
             let expected = format!(
                 "struct(environment = {{{quoted}: {quoted}}}, inherited_environment = [{quoted}, {quoted}])"
@@ -517,15 +541,15 @@ copy_names.append("local")
             let env = module.heap().alloc(AllocDict([("k", large_value)]));
             let inherited = module.heap().alloc(AllocList([large_value]));
             // Either field alone fits, but together exceed the weighted limit.
-            assert!(snapshot(Some(env), None).is_ok());
-            assert!(snapshot(None, Some(inherited)).is_ok());
-            let error = snapshot(Some(env), Some(inherited))
+            assert!(snapshot(Some(env), None, true).is_ok());
+            assert!(snapshot(None, Some(inherited), true).is_ok());
+            let error = snapshot(Some(env), Some(inherited), true)
                 .unwrap_err()
                 .to_string();
             assert!(error.contains("weighted byte limit"), "{error}");
             let repeated = module.heap().alloc(AllocList([large_value, large_value]));
             assert!(
-                snapshot(None, Some(repeated))
+                snapshot(None, Some(repeated), true)
                     .unwrap_err()
                     .to_string()
                     .contains("weighted byte limit")
@@ -533,7 +557,7 @@ copy_names.append("local")
             let huge = module.heap().alloc("x".repeat(8 * 1024 * 1024));
             let huge_env = module.heap().alloc(AllocDict([(huge, "v")]));
             assert!(
-                snapshot(Some(huge_env), None)
+                snapshot(Some(huge_env), None, true)
                     .unwrap_err()
                     .to_string()
                     .contains("weighted byte limit")
@@ -542,7 +566,7 @@ copy_names.append("local")
                 .heap()
                 .alloc(AllocList(std::iter::repeat_n("", 100_001)));
             assert!(
-                snapshot(None, Some(repeated))
+                snapshot(None, Some(repeated), true)
                     .unwrap_err()
                     .to_string()
                     .contains("node limit")

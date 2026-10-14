@@ -151,6 +151,8 @@ CLI target loading and reuses it without eagerly resolving unused declarations.
 including ordered File sets transported through custom providers.
 [Provider initializers](docs/PROVIDER_INIT.md) run `provider(init=...)` callbacks
 and expose raw constructors that bypass them under the same provider key.
+[Language-module globals](docs/CC_COMMON_LOADING.md) give `.bzl` loading Bazel's
+`cc_common`/`apple_common`/`platform_common` shapes; C++ analysis is unsupported.
 [Scoped subrules](docs/SUBRULES.md) execute declared zero-attribute helpers with
 real actions and guarded contexts; private dependency attributes remain unsupported.
 [String methods](docs/STRING_METHODS.md) follow Bazel's UTF-8 byte-string case,

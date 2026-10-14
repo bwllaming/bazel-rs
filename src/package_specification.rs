@@ -385,6 +385,13 @@ pub(crate) fn install(builder: &mut GlobalsBuilder) {
     builder.set("PackageSpecificationInfo", Constructor);
 }
 
+/// The same provider key, for `py_internal.PackageSpecificationInfo`.
+pub(crate) fn alloc_frozen_constructor(
+    heap: &starlark::values::FrozenHeap,
+) -> starlark::values::FrozenValue {
+    heap.alloc(Constructor)
+}
+
 pub(crate) fn is_constructor(value: Value<'_>) -> bool {
     Constructor::from_value(value).is_some()
 }

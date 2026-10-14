@@ -380,6 +380,7 @@ impl<'a> Loader<'a> {
                         crate::repository_text::validate_execution_source(&ast)?;
                     }
                     validate_bzl_load_order(&ast)?;
+                    crate::guarded_globals::check(&label, &ast)?;
                     let dependencies = dependencies(&self.repositories, &label.package_id(), &ast)?;
                     active.push(label.clone());
                     work.push(Work::Finish(label, path, Box::new(ast)));

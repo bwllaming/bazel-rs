@@ -1,0 +1,1222 @@
+{
+  "schema": "n11-cc-common-loading-reference-receipt/v1",
+  "purpose": "Paired genuine Bazel 9.3.0 vs native bazel-rs capture of language-module globals (cc_common, apple_common, ...) at .bzl load time. Mirrors every step of tests/cc_common_loading.rs on byte-identical workspaces plus value/error probes.",
+  "reference": {
+    "binary": "bazel-9.3.0-linux-x86_64",
+    "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+    "startup": "--batch --ignore_all_rc_files --output_user_root=<private> --output_base=<private> --host_jvm_args=-Xmx512m",
+    "command_flags": "--registry=file://<private copy of tests/fixtures/builtin_modules/registry> --repository_disable_download --incompatible_autoload_externally= --lockfile_mode=off --noshow_progress --color=no --curses=no --repository_cache=<private> --distdir=<platforms-1.0.0.tar.gz sha256 3384eb1c30762704fbe38e440204e114154086c8fc8a8c2e3e28441028c019a8>",
+    "build_only_flags": "--spawn_strategy=local --shell_executable=/bin/bash",
+    "registry_note": "Fake local_path_override rules_cc/rules_python (no deps) shrink MVS so versions without source.json in the fixture registry are selected (e.g. bazel_skylib 1.8.1); the private copy gets stub source.json files copied from each module's tracked version (repo specs only; downloads disabled; nothing fetched). Stub count: 124"
+  },
+  "native": {
+    "binary": "target/debug/bazel-rs",
+    "sha256": "eb0bd9bacc5a01b2d937cf120813ab39d1b9155c70461f185a67ad3902848b04",
+    "argv": "--ignore_all_rc_files --cache-dir=cache <cmd> <targets>",
+    "worktree": {
+      "head": "58ee1991eb00b96b73521e9cdd47ff05d022d536",
+      "src_diff_plus_untracked_src_sha256": "6be24e6a1ad369b1d3192b3e8031642697e16798364f63564681474b44c794d8",
+      "untracked_src": [
+        "src/cc_common.rs",
+        "src/guarded_globals.rs",
+        "src/language_modules.rs"
+      ]
+    }
+  },
+  "script": {
+    "path": "artifacts/n11-capture.py (ignored)",
+    "sha256": "039f27cf72c50c5ffe9aaf4e439f6254d15c348c9603988a38b4f3864a1695ad"
+  },
+  "test_source_sha256": "8af848cce95b44fa6bdbe11b461906be8da30623a5e49e848aaaed58e267db85",
+  "environment": "env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 HOME/TMPDIR private, umask 022; scratch under /tmp/opencode removed=True",
+  "verdicts": {
+    "EXACT": "written value bytes / query stdout identical",
+    "EXACT_MESSAGE": "both fail; Bazel message text appears verbatim in native stderr; framing/columns differ (pre-existing)",
+    "KNOWN_DIVERGENCE": "difference fully explained by a pre-existing native formatting difference (see divergence)",
+    "MISMATCH": "unexplained difference"
+  },
+  "counts": {
+    "EXACT": 18,
+    "EXACT_MESSAGE": 13,
+    "KNOWN_DIVERGENCE": 11
+  },
+  "scenarios": {
+    "mirror/rules_cc_shaped_closure": {
+      "verdict": "EXACT",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "ref_matches_test": true,
+      "native_matches_test": true
+    },
+    "mirror/private_api_cc": {
+      "verdict": "EXACT_MESSAGE",
+      "exit_ref": 7,
+      "exit_native": 1,
+      "exit_class_equal": true,
+      "ref_matches_test": false,
+      "ref_matches_test_except_exit_code": true,
+      "native_matches_test": true,
+      "exit_code_divergence": "query exit 7 (Bazel) vs 1 (native; test asserts 1)",
+      "ref_location": "4:44",
+      "native_location": "4:15",
+      "location_line_col_equal": false,
+      "divergence": "diagnostic framing (bazel-rs:/starlark-rust traceback vs Bazel ERROR:/Java traceback) is pre-existing; message text identical; reported line:col 4:15 vs Bazel 4:44",
+      "ref_message": "file '@@other_rules+//:internal.bzl' cannot use private API",
+      "native_message_line": "file '@@other_rules+//:internal.bzl' cannot use private API",
+      "native_contains_ref_message": true
+    },
+    "mirror/private_api_java": {
+      "verdict": "EXACT_MESSAGE",
+      "exit_ref": 7,
+      "exit_native": 1,
+      "exit_class_equal": true,
+      "ref_matches_test": false,
+      "ref_matches_test_except_exit_code": true,
+      "native_matches_test": true,
+      "exit_code_divergence": "query exit 7 (Bazel) vs 1 (native; test asserts 1)",
+      "ref_location": "2:43",
+      "native_location": "2:12",
+      "location_line_col_equal": false,
+      "divergence": "diagnostic framing (bazel-rs:/starlark-rust traceback vs Bazel ERROR:/Java traceback) is pre-existing; message text identical; reported line:col 2:12 vs Bazel 2:43",
+      "ref_message": "file '@@other_rules+//:java.bzl' cannot use private API",
+      "native_message_line": "file '@@other_rules+//:java.bzl' cannot use private API",
+      "native_contains_ref_message": true
+    },
+    "mirror/removed_ccinfo": {
+      "verdict": "EXACT_MESSAGE",
+      "exit_ref": 7,
+      "exit_native": 1,
+      "exit_class_equal": true,
+      "ref_matches_test": false,
+      "ref_matches_test_except_exit_code": true,
+      "native_matches_test": true,
+      "exit_code_divergence": "query exit 7 (Bazel) vs 1 (native; test asserts 1)",
+      "ref_location": "2:19",
+      "native_location": "2:19",
+      "location_line_col_equal": true,
+      "divergence": "diagnostic framing (bazel-rs:/starlark-rust traceback vs Bazel ERROR:/Java traceback) is pre-existing; message text identical",
+      "ref_message": "The CcInfo symbol has been removed, add the following to your BUILD/bzl file:\n\nload(\"@rules_cc//cc/common:cc_info.bzl\", \"CcInfo\")",
+      "native_message_line": "The CcInfo symbol has been removed, add the following to your BUILD/bzl file:",
+      "native_contains_ref_message": true
+    },
+    "mirror/py_internal_guard": {
+      "verdict": "EXACT_MESSAGE",
+      "exit_ref": 7,
+      "exit_native": 1,
+      "exit_class_equal": true,
+      "ref_matches_test": false,
+      "ref_matches_test_except_exit_code": true,
+      "native_matches_test": true,
+      "exit_code_divergence": "query exit 7 (Bazel) vs 1 (native; test asserts 1)",
+      "ref_location": "1:23",
+      "native_location": "1:23",
+      "location_line_col_equal": true,
+      "divergence": "diagnostic framing (bazel-rs:/starlark-rust traceback vs Bazel ERROR:/Java traceback) is pre-existing; message text identical",
+      "ref_message": "py_internal may only be used from one of the following repositories or prefixes: @@_builtins//, @@bazel_tools//, @@rules_python//, tools/build_defs/python",
+      "native_message_line": "py_internal may only be used from one of the following repositories or prefixes: @@_builtins//, @@bazel_tools//, @@rules_python//, tools/build_defs/python",
+      "native_contains_ref_message": true
+    },
+    "probe/cc_common_dir": {
+      "verdict": "EXACT",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "ref_value_sha256": "ae9ddd39426fda52d2b00ab14560212aa9ac885cf96dd4090c119ac2a9a87e2b",
+      "native_value_sha256": "ae9ddd39426fda52d2b00ab14560212aa9ac885cf96dd4090c119ac2a9a87e2b",
+      "value": "type=struct\nsorted_dir=[\"action_is_enabled\", \"add_go_exec_groups_to_binary_rules\", \"check_experimental_cc_shared_library\", \"do_not_use_tools_cpp_compiler_present\", \"empty_variables\", \"get_environment_variables\", \"get_execution_requirements\", \"get_memory_inefficient_command_line\", \"get_tool_for_action\", \"get_tool_requirement_for_action\", \"implementation_deps_allowed_by_allowlist\", \"incompatible_disable_objc_library_transition\", \"internal_DO_NOT_USE\", \"legacy_cc_flags_make_variable_do_not_use\"]\ndir=[\"action_is_enabled\", \"add_go_exec_groups_to_binary_rules\", \"check_experimental_cc_shared_library\", \"do_not_use_tools_cpp_compiler_present\", \"empty_variables\", \"get_environment_variables\", \"get_execution_requirements\", \"get_memory_inefficient_command_line\", \"get_tool_for_action\", \"get_tool_requirement_for_action\", \"implementation_deps_allowed_by_allowlist\", \"incompatible_disable_objc_library_transition\", \"internal_DO_NOT_USE\", \"legacy_cc_flags_make_variable_do_not_use\"]\ndir_is_sorted=True\n"
+    },
+    "probe/cc_common_type": {
+      "verdict": "EXACT",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "ref_value_sha256": "3a5b01cdf5e726066216532f8ef550fc1877b13502ede743b79d89790154ae15",
+      "native_value_sha256": "3a5b01cdf5e726066216532f8ef550fc1877b13502ede743b79d89790154ae15",
+      "value": "struct\n"
+    },
+    "probe/cc_common_members": {
+      "verdict": "EXACT",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "ref_value_sha256": "91f09014891f2526465b618f315e78f2d1f640e0f00cf2c4ff714ad1ac470825",
+      "native_value_sha256": "91f09014891f2526465b618f315e78f2d1f640e0f00cf2c4ff714ad1ac470825",
+      "value": "action_is_enabled type=function repr=<function _action_is_enabled from @@_builtins//:common/cc/cc_common_bazel.bzl>\nadd_go_exec_groups_to_binary_rules type=function repr=<function _add_go_exec_groups_to_binary_rules from @@_builtins//:common/cc/cc_common_bazel.bzl>\ncheck_experimental_cc_shared_library type=function repr=<function _check_experimental_cc_shared_library from @@_builtins//:common/cc/cc_common_bazel.bzl>\ndo_not_use_tools_cpp_compiler_present type=NoneType repr=None\nempty_variables type=function repr=<function _empty_variables from @@_builtins//:common/cc/cc_common_bazel.bzl>\nget_environment_variables type=function repr=<function _get_environment_variables from @@_builtins//:common/cc/cc_common_bazel.bzl>\nget_execution_requirements type=function repr=<function _get_execution_requirements from @@_builtins//:common/cc/cc_common_bazel.bzl>\nget_memory_inefficient_command_line type=function repr=<function _get_memory_inefficient_command_line from @@_builtins//:common/cc/cc_common_bazel.bzl>\nget_tool_for_action type=function repr=<function _get_tool_for_action from @@_builtins//:common/cc/cc_common_bazel.bzl>\nget_tool_requirement_for_action type=function repr=<function _get_tool_requirement_for_action from @@_builtins//:common/cc/cc_common_bazel.bzl>\nimplementation_deps_allowed_by_allowlist type=function repr=<function _implementation_deps_allowed_by_allowlist from @@_builtins//:common/cc/cc_common_bazel.bzl>\nincompatible_disable_objc_library_transition type=function repr=<function _incompatible_disable_objc_library_transition from @@_builtins//:common/cc/cc_common_bazel.bzl>\ninternal_DO_NOT_USE type=function repr=<function _internal_exports from @@_builtins//:common/cc/cc_common_bazel.bzl>\nlegacy_cc_flags_make_variable_do_not_use type=function repr=<function _legacy_cc_flags_make_variable_do_not_use from @@_builtins//:common/cc/cc_common_bazel.bzl>\n"
+    },
+    "probe/cc_common_member_fn_repr": {
+      "verdict": "EXACT",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "ref_value_sha256": "e233993aa54e7f8cb9207ab43829723e8f9dd7e9e3a9ef7cb6af3f30abf723e5",
+      "native_value_sha256": "e233993aa54e7f8cb9207ab43829723e8f9dd7e9e3a9ef7cb6af3f30abf723e5",
+      "value": "<function _get_tool_for_action from @@_builtins//:common/cc/cc_common_bazel.bzl>\nfunction\n<function _internal_exports from @@_builtins//:common/cc/cc_common_bazel.bzl>\nfunction\nTrue\n"
+    },
+    "probe/cc_common_repr": {
+      "verdict": "KNOWN_DIVERGENCE",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "divergence": "struct repr spacing: Bazel `struct(a = 1)` vs native `struct(a=1)` (control_struct_repr)",
+      "ref_value_sha256": "e4299c6b0ee60c17f588d7e21078bda9328aa9999e5218e09133140a0d719576",
+      "native_value_sha256": "bdbdada829f10054d760c210dbde9671f5c852c5bc5222ec44099745d27cf0c9",
+      "differing_lines": [
+        {
+          "ref": "struct(action_is_enabled = <function _action_is_enabled from @@_builtins//:common/cc/cc_common_bazel.bzl>, add_go_exec_groups_to_binary_rules = <function _add_go_exec_groups_to_binary_rules from @@_builtins//:common/cc/cc_common_bazel.bzl>, check_experimental_cc_shared_library = <function _check_experimental_cc_shared_library from @@_builtins//:common/cc/cc_common_bazel.bzl>, do_not_use_tools_cpp_compiler_present = None, empty_variables = <function _empty_variables from @@_builtins//:common/cc/cc_common_bazel.bzl>, get_environment_variables = <function _get_environment_variables from @@_builtins//:common/cc/cc_common_bazel.bzl>, get_execution_requirements = <function _get_execution_requirements from @@_builtins//:common/cc/cc_common_bazel.bzl>, get_memory_inefficient_command_line = <function _get_memory_inefficient_command_line from @@_builtins//:common/cc/cc_common_bazel.bzl>, get_tool_for_action = <function _get_tool_for_action from @@_builtins//:common/cc/cc_common_bazel.bzl>, get_tool_requirement_for_action = <function _get_tool_requirement_for_action from @@_builtins//:common/cc/cc_common_bazel.bzl>, implementation_deps_allowed_by_allowlist = <function _implementation_deps_allowed_by_allowlist from @@_builtins//:common/cc/cc_common_bazel.bzl>, incompatible_disable_objc_library_transition = <function _incompatible_disable_objc_library_transition from @@_builtins//:common/cc/cc_common_bazel.bzl>, internal_DO_NOT_USE = <function _internal_exports from @@_builtins//:common/cc/cc_common_bazel.bzl>, legacy_cc_flags_make_variable_do_not_use = <function _legacy_cc_flags_make_variable_do_not_use from @@_builtins//:common/cc/cc_common_bazel.bzl>)",
+          "native": "struct(action_is_enabled=<function _action_is_enabled from @@_builtins//:common/cc/cc_common_bazel.bzl>, add_go_exec_groups_to_binary_rules=<function _add_go_exec_groups_to_binary_rules from @@_builtins//:common/cc/cc_common_bazel.bzl>, check_experimental_cc_shared_library=<function _check_experimental_cc_shared_library from @@_builtins//:common/cc/cc_common_bazel.bzl>, do_not_use_tools_cpp_compiler_present=None, empty_variables=<function _empty_variables from @@_builtins//:common/cc/cc_common_bazel.bzl>, get_environment_variables=<function _get_environment_variables from @@_builtins//:common/cc/cc_common_bazel.bzl>, get_execution_requirements=<function _get_execution_requirements from @@_builtins//:common/cc/cc_common_bazel.bzl>, get_memory_inefficient_command_line=<function _get_memory_inefficient_command_line from @@_builtins//:common/cc/cc_common_bazel.bzl>, get_tool_for_action=<function _get_tool_for_action from @@_builtins//:common/cc/cc_common_bazel.bzl>, get_tool_requirement_for_action=<function _get_tool_requirement_for_action from @@_builtins//:common/cc/cc_common_bazel.bzl>, implementation_deps_allowed_by_allowlist=<function _implementation_deps_allowed_by_allowlist from @@_builtins//:common/cc/cc_common_bazel.bzl>, incompatible_disable_objc_library_transition=<function _incompatible_disable_objc_library_transition from @@_builtins//:common/cc/cc_common_bazel.bzl>, internal_DO_NOT_USE=<function _internal_exports from @@_builtins//:common/cc/cc_common_bazel.bzl>, legacy_cc_flags_make_variable_do_not_use=<function _legacy_cc_flags_make_variable_do_not_use from @@_builtins//:common/cc/cc_common_bazel.bzl>)"
+        }
+      ]
+    },
+    "probe/cc_common_hasattr": {
+      "verdict": "EXACT",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "ref_value_sha256": "3502d2519787ef50b6ddb3b3583b12606d9065b430dc85ba86ffe78d227450e5",
+      "native_value_sha256": "3502d2519787ef50b6ddb3b3583b12606d9065b430dc85ba86ffe78d227450e5",
+      "value": "True\nFalse\nFalse\nFalse\n"
+    },
+    "probe/cc_common_compiler_present": {
+      "verdict": "EXACT",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "ref_value_sha256": "c23f89c416cd01c203b69c8a2ed605843c22189fdd56f80819c44696e6d1cfb8",
+      "native_value_sha256": "c23f89c416cd01c203b69c8a2ed605843c22189fdd56f80819c44696e6d1cfb8",
+      "value": "None\nNoneType\n"
+    },
+    "probe/cc_internal_rules_cc": {
+      "verdict": "EXACT",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "ref_value_sha256": "2c2a128755302756f20a87b72b3ab650a4bbd2466311f8791393aa70f3f87730",
+      "native_value_sha256": "2c2a128755302756f20a87b72b3ab650a4bbd2466311f8791393aa70f3f87730",
+      "value": "type=cc_internal\nrepr=<unknown object com.google.devtools.build.lib.rules.cpp.CcStarlarkInternal>\ndir=[\"absolute_symlink\", \"actions2ctx_cheat\", \"aspect_class\", \"cc_toolchain_features\", \"cc_toolchain_variables\", \"check_private_api\", \"check_toplevel\", \"collect_per_file_lto_backend_opts\", \"combine_cc_toolchain_variables\", \"compute_output_name_prefix_dir\", \"create_cc_compile_action\", \"create_cc_compile_action_template\", \"create_header_info\", \"create_header_info_with_deps\", \"create_lto_backend_action\", \"create_lto_backend_action_template\", \"declare_compile_output_file\", \"declare_other_output_file\", \"dynamic_library_soname\", \"dynamic_library_symlink\", \"dynamic_library_symlink2\", \"exec_os\", \"expand_and_tokenize\", \"freeze\", \"get_artifact_name_extension_for_category\", \"get_artifact_name_for_category\", \"get_link_args\", \"intern_seq\", \"intern_string_sequence_variable_value\", \"is_package_headers_checking_mode_set\", \"is_package_headers_checking_mode_set_for_aspect\", \"is_tree_artifact\", \"package_headers_checking_mode\", \"package_headers_checking_mode_for_aspect\", \"per_file_copts\", \"rule_class\", \"solib_symlink_action\", \"stl_computed_default\", \"wrap_link_actions\"]\nlen=39\nabsolute_symlink type=builtin_function_or_method\nactions2ctx_cheat type=builtin_function_or_method\naspect_class type=builtin_function_or_method\ncc_toolchain_features type=builtin_function_or_method\ncc_toolchain_variables type=builtin_function_or_method\ncheck_private_api type=builtin_function_or_method\ncheck_toplevel type=builtin_function_or_method\ncollect_per_file_lto_backend_opts type=builtin_function_or_method\ncombine_cc_toolchain_variables type=builtin_function_or_method\ncompute_output_name_prefix_dir type=builtin_function_or_method\ncreate_cc_compile_action type=builtin_function_or_method\ncreate_cc_compile_action_template type=builtin_function_or_method\ncreate_header_info type=builtin_function_or_method\ncreate_header_info_with_deps type=builtin_function_or_method\ncreate_lto_backend_action type=builtin_function_or_method\ncreate_lto_backend_action_template type=builtin_function_or_method\ndeclare_compile_output_file type=builtin_function_or_method\ndeclare_other_output_file type=builtin_function_or_method\ndynamic_library_soname type=builtin_function_or_method\ndynamic_library_symlink type=builtin_function_or_method\ndynamic_library_symlink2 type=builtin_function_or_method\nexec_os type=builtin_function_or_method\nexpand_and_tokenize type=builtin_function_or_method\nfreeze type=builtin_function_or_method\nget_artifact_name_extension_for_category type=builtin_function_or_method\nget_artifact_name_for_category type=builtin_function_or_method\nget_link_args type=builtin_function_or_method\nintern_seq type=builtin_function_or_method\nintern_string_sequence_variable_value type=builtin_function_or_method\nis_package_headers_checking_mode_set type=builtin_function_or_method\nis_package_headers_checking_mode_set_for_aspect type=builtin_function_or_method\nis_tree_artifact type=builtin_function_or_method\npackage_headers_checking_mode type=builtin_function_or_method\npackage_headers_checking_mode_for_aspect type=builtin_function_or_method\nper_file_copts type=builtin_function_or_method\nrule_class type=builtin_function_or_method\nsolib_symlink_action type=builtin_function_or_method\nstl_computed_default type=builtin_function_or_method\nwrap_link_actions type=builtin_function_or_method\ncheck_private_api repr=<built-in method check_private_api of cc_internal value>\n"
+    },
+    "probe/cc_internal_via_fixture": {
+      "verdict": "EXACT",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "ref_value_sha256": "6dd8ce794c67229fef9970d0fed85d00140a09d6e9e3a0d6a52a83d5ae34f174",
+      "native_value_sha256": "6dd8ce794c67229fef9970d0fed85d00140a09d6e9e3a0d6a52a83d5ae34f174",
+      "value": "cc_internal\n"
+    },
+    "probe/header_info": {
+      "verdict": "EXACT",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "ref_value_sha256": "c3e6c1a6ca17bf84e4b908b9840c53760d49d9a5160140b347745053fe17e0a4",
+      "native_value_sha256": "c3e6c1a6ca17bf84e4b908b9840c53760d49d9a5160140b347745053fe17e0a4",
+      "value": "type=HeaderInfo\nrepr=<unknown object com.google.devtools.build.lib.rules.cpp.CcCompilationContext$HeaderInfo>\ndir=[\"header_module\", \"modular_private_headers\", \"modular_public_headers\", \"pic_header_module\", \"separate_module\", \"separate_module_headers\", \"separate_pic_module\", \"textual_headers\"]\nself_eq=True\nfresh_eq=False\nin_dict=1\n"
+    },
+    "probe/apple_common": {
+      "verdict": "KNOWN_DIVERGENCE",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "divergence": "struct repr spacing: Bazel `struct(a = 1)` vs native `struct(a=1)` (control_struct_repr)",
+      "ref_value_sha256": "c2c5db768597a68f6ea68feaebfaea177526fb344caaa9b7e8a807a94a47ea4a",
+      "native_value_sha256": "fcb73584eb69497323ba9144de0122ec00c9b1b7aff69bdd77c3c4d8329350c1",
+      "differing_lines": [
+        {
+          "ref": "repr=struct(Objc = <provider>, XcodeProperties = None, XcodeVersionConfig = <provider>, apple_host_system_env = <function apple_host_system_env from @@_builtins//:common/objc/apple_env.bzl>, apple_toolchain = <function lambda from @@_builtins//:common/objc/apple_common.bzl>, dotted_version = <function lambda from @@_builtins//:common/objc/apple_common.bzl>, new_objc_provider = <provider>, platform = struct(catalyst = struct(is_device = True, name = \"catalyst\", name_in_plist = \"MacOSX\", platform_type = \"catalyst\"), ios_device = struct(is_device = True, name = \"ios_device\", name_in_plist = \"iPhoneOS\", platform_type = \"ios\"), ios_simulator = struct(is_device = False, name = \"ios_simulator\", name_in_plist = \"iPhoneSimulator\", platform_type = \"ios\"), macos = struct(is_device = True, name = \"macos\", name_in_plist = \"MacOSX\", platform_type = \"macos\"), tvos_device = struct(is_device = True, name = \"tvos_device\", name_in_plist = \"AppleTVOS\", platform_type = \"tvos\"), tvos_simulator = struct(is_device = False, name = \"tvos_simulator\", name_in_plist = \"AppleTVSimulator\", platform_type = \"tvos\"), visionos_device = struct(is_device = True, name = \"visionos_device\", name_in_plist = \"XROS\", platform_type = \"visionos\"), visionos_simulator = struct(is_device = False, name = \"visionos_simulator\", name_in_plist = \"XRSimulator\", platform_type = \"visionos\"), watchos_device = struct(is_device = True, name = \"watchos_device\", name_in_plist = \"WatchOS\", platform_type = \"watchos\"), watchos_simulator = struct(is_device = False, name = \"watchos_simulator\", name_in_plist = \"WatchSimulator\", platform_type = \"watchos\")), platform_type = struct(catalyst = \"catalyst\", ios = \"ios\", macos = \"macos\", tvos = \"tvos\", visionos = \"visionos\", watchos = \"watchos\"), target_apple_env = <function target_apple_env from @@_builtins//:common/objc/apple_env.bzl>)",
+          "native": "repr=struct(Objc=<provider>, XcodeProperties=None, XcodeVersionConfig=<provider>, apple_host_system_env=<function apple_host_system_env from @@_builtins//:common/objc/apple_env.bzl>, apple_toolchain=<function lambda from @@_builtins//:common/objc/apple_common.bzl>, dotted_version=<function lambda from @@_builtins//:common/objc/apple_common.bzl>, new_objc_provider=<provider>, platform=struct(catalyst=struct(is_device=True, name=\"catalyst\", name_in_plist=\"MacOSX\", platform_type=\"catalyst\"), ios_device=struct(is_device=True, name=\"ios_device\", name_in_plist=\"iPhoneOS\", platform_type=\"ios\"), ios_simulator=struct(is_device=False, name=\"ios_simulator\", name_in_plist=\"iPhoneSimulator\", platform_type=\"ios\"), macos=struct(is_device=True, name=\"macos\", name_in_plist=\"MacOSX\", platform_type=\"macos\"), tvos_device=struct(is_device=True, name=\"tvos_device\", name_in_plist=\"AppleTVOS\", platform_type=\"tvos\"), tvos_simulator=struct(is_device=False, name=\"tvos_simulator\", name_in_plist=\"AppleTVSimulator\", platform_type=\"tvos\"), visionos_device=struct(is_device=True, name=\"visionos_device\", name_in_plist=\"XROS\", platform_type=\"visionos\"), visionos_simulator=struct(is_device=False, name=\"visionos_simulator\", name_in_plist=\"XRSimulator\", platform_type=\"visionos\"), watchos_device=struct(is_device=True, name=\"watchos_device\", name_in_plist=\"WatchOS\", platform_type=\"watchos\"), watchos_simulator=struct(is_device=False, name=\"watchos_simulator\", name_in_plist=\"WatchSimulator\", platform_type=\"watchos\")), platform_type=struct(catalyst=\"catalyst\", ios=\"ios\", macos=\"macos\", tvos=\"tvos\", visionos=\"visionos\", watchos=\"watchos\"), target_apple_env=<function target_apple_env from @@_builtins//:common/objc/apple_env.bzl>)"
+        },
+        {
+          "ref": "platform type=struct repr=struct(catalyst = struct(is_device = True, name = \"catalyst\", name_in_plist = \"MacOSX\", platform_type = \"catalyst\"), ios_device = struct(is_device = True, name = \"ios_device\", name_in_plist = \"iPhoneOS\", platform_type = \"ios\"), ios_simulator = struct(is_device = False, name = \"ios_simulator\", name_in_plist = \"iPhoneSimulator\", platform_type = \"ios\"), macos = struct(is_device = True, name = \"macos\", name_in_plist = \"MacOSX\", platform_type = \"macos\"), tvos_device = struct(is_device = True, name = \"tvos_device\", name_in_plist = \"AppleTVOS\", platform_type = \"tvos\"), tvos_simulator = struct(is_device = False, name = \"tvos_simulator\", name_in_plist = \"AppleTVSimulator\", platform_type = \"tvos\"), visionos_device = struct(is_device = True, name = \"visionos_device\", name_in_plist = \"XROS\", platform_type = \"visionos\"), visionos_simulator = struct(is_device = False, name = \"visionos_simulator\", name_in_plist = \"XRSimulator\", platform_type = \"visionos\"), watchos_device = struct(is_device = True, name = \"watchos_device\", name_in_plist = \"WatchOS\", platform_type = \"watchos\"), watchos_simulator = struct(is_device = False, name = \"watchos_simulator\", name_in_plist = \"WatchSimulator\", platform_type = \"watchos\"))",
+          "native": "platform type=struct repr=struct(catalyst=struct(is_device=True, name=\"catalyst\", name_in_plist=\"MacOSX\", platform_type=\"catalyst\"), ios_device=struct(is_device=True, name=\"ios_device\", name_in_plist=\"iPhoneOS\", platform_type=\"ios\"), ios_simulator=struct(is_device=False, name=\"ios_simulator\", name_in_plist=\"iPhoneSimulator\", platform_type=\"ios\"), macos=struct(is_device=True, name=\"macos\", name_in_plist=\"MacOSX\", platform_type=\"macos\"), tvos_device=struct(is_device=True, name=\"tvos_device\", name_in_plist=\"AppleTVOS\", platform_type=\"tvos\"), tvos_simulator=struct(is_device=False, name=\"tvos_simulator\", name_in_plist=\"AppleTVSimulator\", platform_type=\"tvos\"), visionos_device=struct(is_device=True, name=\"visionos_device\", name_in_plist=\"XROS\", platform_type=\"visionos\"), visionos_simulator=struct(is_device=False, name=\"visionos_simulator\", name_in_plist=\"XRSimulator\", platform_type=\"visionos\"), watchos_device=struct(is_device=True, name=\"watchos_device\", name_in_plist=\"WatchOS\", platform_type=\"watchos\"), watchos_simulator=struct(is_device=False, name=\"watchos_simulator\", name_in_plist=\"WatchSimulator\", platform_type=\"watchos\"))"
+        },
+        {
+          "ref": "platform_type type=struct repr=struct(catalyst = \"catalyst\", ios = \"ios\", macos = \"macos\", tvos = \"tvos\", visionos = \"visionos\", watchos = \"watchos\")",
+          "native": "platform_type type=struct repr=struct(catalyst=\"catalyst\", ios=\"ios\", macos=\"macos\", tvos=\"tvos\", visionos=\"visionos\", watchos=\"watchos\")"
+        }
+      ]
+    },
+    "probe/platform_common": {
+      "verdict": "EXACT",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "ref_value_sha256": "358ff7d8c65c90bccf7c145f75dac24bd798a80ee07242f7a7a8d3498520e348",
+      "native_value_sha256": "358ff7d8c65c90bccf7c145f75dac24bd798a80ee07242f7a7a8d3498520e348",
+      "value": "type=platform_common\nrepr=<unknown object com.google.devtools.build.lib.rules.platform.PlatformCommon>\ndir=[\"ConstraintSettingInfo\", \"ConstraintValueInfo\", \"PlatformInfo\", \"TemplateVariableInfo\", \"ToolchainInfo\"]\nConstraintSettingInfo type=Provider repr=<function ConstraintSettingInfo>\nConstraintValueInfo type=Provider repr=<function ConstraintValueInfo>\nPlatformInfo type=Provider repr=<function PlatformInfo>\nTemplateVariableInfo type=Provider repr=<function TemplateVariableInfo>\nToolchainInfo type=Provider repr=<function ToolchainInfo>\n"
+    },
+    "probe/config_common": {
+      "verdict": "EXACT",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "ref_value_sha256": "ac3c02777174cd79ca2ecadec240e070b5efe0ab20de58332044abaae2e2f084",
+      "native_value_sha256": "ac3c02777174cd79ca2ecadec240e070b5efe0ab20de58332044abaae2e2f084",
+      "value": "type=config_common\nrepr=<unknown object com.google.devtools.build.lib.rules.config.ConfigStarlarkCommon>\ndir=[\"FeatureFlagInfo\", \"config_feature_flag_transition\", \"toolchain_type\"]\nFeatureFlagInfo type=FeatureFlagInfo repr=<function FeatureFlagInfo>\nconfig_feature_flag_transition type=builtin_function_or_method repr=<built-in method config_feature_flag_transition of config_common value>\ntoolchain_type type=builtin_function_or_method repr=<built-in method toolchain_type of config_common value>\n"
+    },
+    "probe/coverage_common": {
+      "verdict": "EXACT",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "ref_value_sha256": "95e17c27831a0e29fec323965b2170e372b8e59a74d61a09ef23116135abc4db",
+      "native_value_sha256": "95e17c27831a0e29fec323965b2170e372b8e59a74d61a09ef23116135abc4db",
+      "value": "type=coverage_common\nrepr=<coverage_common>\ndir=[\"instrumented_files_info\"]\ninstrumented_files_info type=builtin_function_or_method repr=<built-in method instrumented_files_info of coverage_common value>\n"
+    },
+    "probe/testing": {
+      "verdict": "EXACT",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "ref_value_sha256": "b467a332773ebbf1f2a410e5420a46ab576b77ea30b77c031f0178683bc8bfc8",
+      "native_value_sha256": "b467a332773ebbf1f2a410e5420a46ab576b77ea30b77c031f0178683bc8bfc8",
+      "value": "type=testing\nrepr=<unknown object com.google.devtools.build.lib.rules.test.StarlarkTestingModule>\ndir=[\"ExecutionInfo\", \"TestEnvironment\", \"analysis_test\"]\nExecutionInfo type=Provider repr=<function ExecutionInfo>\nTestEnvironment type=builtin_function_or_method repr=<built-in method TestEnvironment of testing value>\nanalysis_test type=builtin_function_or_method repr=<built-in method analysis_test of testing value>\n"
+    },
+    "probe/java_common": {
+      "verdict": "KNOWN_DIVERGENCE",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "divergence": "struct repr spacing: Bazel `struct(a = 1)` vs native `struct(a=1)` (control_struct_repr)",
+      "ref_value_sha256": "656f5534fb4b526c644216236d793a40c41aa793a46c601de79a6119c5ac06bd",
+      "native_value_sha256": "2c470b4ea31b5581b191740baaf04e0e93409972bd1fd5c601258d8c81f4ee40",
+      "differing_lines": [
+        {
+          "ref": "repr=struct(internal_DO_NOT_USE = <function _internal_exports from @@_builtins//:common/java/java_common.bzl>)",
+          "native": "repr=struct(internal_DO_NOT_USE=<function _internal_exports from @@_builtins//:common/java/java_common.bzl>)"
+        }
+      ]
+    },
+    "probe/proto_common_do_not_use": {
+      "verdict": "KNOWN_DIVERGENCE",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "divergence": "struct repr spacing: Bazel `struct(a = 1)` vs native `struct(a=1)` (control_struct_repr)",
+      "ref_value_sha256": "01dc01875d90eb877a620742ac88b0afde0823d0b0e122259776d47acc0d860b",
+      "native_value_sha256": "3fb02c15b8aa3dd06b0a89031a515371850f0eb5b331504e457df86b2d3b334c",
+      "differing_lines": [
+        {
+          "ref": "repr=struct(INCOMPATIBLE_ENABLE_PROTO_TOOLCHAIN_RESOLUTION = True)",
+          "native": "repr=struct(INCOMPATIBLE_ENABLE_PROTO_TOOLCHAIN_RESOLUTION=True)"
+        }
+      ]
+    },
+    "probe/apple_platform_values": {
+      "verdict": "KNOWN_DIVERGENCE",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "divergence": "struct repr spacing: Bazel `struct(a = 1)` vs native `struct(a=1)` (control_struct_repr)",
+      "ref_value_sha256": "a89b0cea53472841e25704b8b59e7c9cb251036e46a5535865257031dab4486c",
+      "native_value_sha256": "35a20e8892cffdd88fdb2bb7eefda4e62a28bb7be226b31f4f76f83c275f3bce",
+      "differing_lines": [
+        {
+          "ref": "platform_type=struct(catalyst = \"catalyst\", ios = \"ios\", macos = \"macos\", tvos = \"tvos\", visionos = \"visionos\", watchos = \"watchos\")",
+          "native": "platform_type=struct(catalyst=\"catalyst\", ios=\"ios\", macos=\"macos\", tvos=\"tvos\", visionos=\"visionos\", watchos=\"watchos\")"
+        },
+        {
+          "ref": "platform=struct(catalyst = struct(is_device = True, name = \"catalyst\", name_in_plist = \"MacOSX\", platform_type = \"catalyst\"), ios_device = struct(is_device = True, name = \"ios_device\", name_in_plist = \"iPhoneOS\", platform_type = \"ios\"), ios_simulator = struct(is_device = False, name = \"ios_simulator\", name_in_plist = \"iPhoneSimulator\", platform_type = \"ios\"), macos = struct(is_device = True, name = \"macos\", name_in_plist = \"MacOSX\", platform_type = \"macos\"), tvos_device = struct(is_device = True, name = \"tvos_device\", name_in_plist = \"AppleTVOS\", platform_type = \"tvos\"), tvos_simulator = struct(is_device = False, name = \"tvos_simulator\", name_in_plist = \"AppleTVSimulator\", platform_type = \"tvos\"), visionos_device = struct(is_device = True, name = \"visionos_device\", name_in_plist = \"XROS\", platform_type = \"visionos\"), visionos_simulator = struct(is_device = False, name = \"visionos_simulator\", name_in_plist = \"XRSimulator\", platform_type = \"visionos\"), watchos_device = struct(is_device = True, name = \"watchos_device\", name_in_plist = \"WatchOS\", platform_type = \"watchos\"), watchos_simulator = struct(is_device = False, name = \"watchos_simulator\", name_in_plist = \"WatchSimulator\", platform_type = \"watchos\"))",
+          "native": "platform=struct(catalyst=struct(is_device=True, name=\"catalyst\", name_in_plist=\"MacOSX\", platform_type=\"catalyst\"), ios_device=struct(is_device=True, name=\"ios_device\", name_in_plist=\"iPhoneOS\", platform_type=\"ios\"), ios_simulator=struct(is_device=False, name=\"ios_simulator\", name_in_plist=\"iPhoneSimulator\", platform_type=\"ios\"), macos=struct(is_device=True, name=\"macos\", name_in_plist=\"MacOSX\", platform_type=\"macos\"), tvos_device=struct(is_device=True, name=\"tvos_device\", name_in_plist=\"AppleTVOS\", platform_type=\"tvos\"), tvos_simulator=struct(is_device=False, name=\"tvos_simulator\", name_in_plist=\"AppleTVSimulator\", platform_type=\"tvos\"), visionos_device=struct(is_device=True, name=\"visionos_device\", name_in_plist=\"XROS\", platform_type=\"visionos\"), visionos_simulator=struct(is_device=False, name=\"visionos_simulator\", name_in_plist=\"XRSimulator\", platform_type=\"visionos\"), watchos_device=struct(is_device=True, name=\"watchos_device\", name_in_plist=\"WatchOS\", platform_type=\"watchos\"), watchos_simulator=struct(is_device=False, name=\"watchos_simulator\", name_in_plist=\"WatchSimulator\", platform_type=\"watchos\"))"
+        },
+        {
+          "ref": "p.catalyst=struct(is_device = True, name = \"catalyst\", name_in_plist = \"MacOSX\", platform_type = \"catalyst\")",
+          "native": "p.catalyst=struct(is_device=True, name=\"catalyst\", name_in_plist=\"MacOSX\", platform_type=\"catalyst\")"
+        },
+        {
+          "ref": "p.ios_device=struct(is_device = True, name = \"ios_device\", name_in_plist = \"iPhoneOS\", platform_type = \"ios\")",
+          "native": "p.ios_device=struct(is_device=True, name=\"ios_device\", name_in_plist=\"iPhoneOS\", platform_type=\"ios\")"
+        },
+        {
+          "ref": "p.ios_simulator=struct(is_device = False, name = \"ios_simulator\", name_in_plist = \"iPhoneSimulator\", platform_type = \"ios\")",
+          "native": "p.ios_simulator=struct(is_device=False, name=\"ios_simulator\", name_in_plist=\"iPhoneSimulator\", platform_type=\"ios\")"
+        },
+        {
+          "ref": "p.macos=struct(is_device = True, name = \"macos\", name_in_plist = \"MacOSX\", platform_type = \"macos\")",
+          "native": "p.macos=struct(is_device=True, name=\"macos\", name_in_plist=\"MacOSX\", platform_type=\"macos\")"
+        },
+        {
+          "ref": "p.tvos_device=struct(is_device = True, name = \"tvos_device\", name_in_plist = \"AppleTVOS\", platform_type = \"tvos\")",
+          "native": "p.tvos_device=struct(is_device=True, name=\"tvos_device\", name_in_plist=\"AppleTVOS\", platform_type=\"tvos\")"
+        },
+        {
+          "ref": "p.tvos_simulator=struct(is_device = False, name = \"tvos_simulator\", name_in_plist = \"AppleTVSimulator\", platform_type = \"tvos\")",
+          "native": "p.tvos_simulator=struct(is_device=False, name=\"tvos_simulator\", name_in_plist=\"AppleTVSimulator\", platform_type=\"tvos\")"
+        },
+        {
+          "ref": "p.visionos_device=struct(is_device = True, name = \"visionos_device\", name_in_plist = \"XROS\", platform_type = \"visionos\")",
+          "native": "p.visionos_device=struct(is_device=True, name=\"visionos_device\", name_in_plist=\"XROS\", platform_type=\"visionos\")"
+        },
+        {
+          "ref": "p.visionos_simulator=struct(is_device = False, name = \"visionos_simulator\", name_in_plist = \"XRSimulator\", platform_type = \"visionos\")",
+          "native": "p.visionos_simulator=struct(is_device=False, name=\"visionos_simulator\", name_in_plist=\"XRSimulator\", platform_type=\"visionos\")"
+        },
+        {
+          "ref": "p.watchos_device=struct(is_device = True, name = \"watchos_device\", name_in_plist = \"WatchOS\", platform_type = \"watchos\")",
+          "native": "p.watchos_device=struct(is_device=True, name=\"watchos_device\", name_in_plist=\"WatchOS\", platform_type=\"watchos\")"
+        },
+        {
+          "ref": "p.watchos_simulator=struct(is_device = False, name = \"watchos_simulator\", name_in_plist = \"WatchSimulator\", platform_type = \"watchos\")",
+          "native": "p.watchos_simulator=struct(is_device=False, name=\"watchos_simulator\", name_in_plist=\"WatchSimulator\", platform_type=\"watchos\")"
+        }
+      ]
+    },
+    "probe/apple_toolchain": {
+      "verdict": "KNOWN_DIVERGENCE",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "divergence": "struct repr spacing: Bazel `struct(a = 1)` vs native `struct(a=1)` (control_struct_repr)",
+      "ref_value_sha256": "09598410b8a73a0757befc3fb9273396112634f8f20469d57b140367645ca5a6",
+      "native_value_sha256": "4741171e372c1e2e17d31900890e3410b413c1149ae9d6374924d676da8781c9",
+      "differing_lines": [
+        {
+          "ref": "repr=struct(developer_dir = <function _developer_dir from @@_builtins//:common/objc/apple_toolchain.bzl>, platform_developer_framework_dir = <function _platform_developer_framework_dir from @@_builtins//:common/objc/apple_toolchain.bzl>, sdk_dir = <function _sdk_dir from @@_builtins//:common/objc/apple_toolchain.bzl>)",
+          "native": "repr=struct(developer_dir=<function _developer_dir from @@_builtins//:common/objc/apple_toolchain.bzl>, platform_developer_framework_dir=<function _platform_developer_framework_dir from @@_builtins//:common/objc/apple_toolchain.bzl>, sdk_dir=<function _sdk_dir from @@_builtins//:common/objc/apple_toolchain.bzl>)"
+        }
+      ]
+    },
+    "probe/toolchain_type": {
+      "verdict": "KNOWN_DIVERGENCE",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "divergence": "Label repr: Bazel `Label(\"//x:t\")` vs native `@@//x:t` (control_label_repr)",
+      "ref_value_sha256": "a49d0690cdb9699065c14d259dbb6bac7a8ae334d6acefb05c2f8410966206a5",
+      "native_value_sha256": "61f962a63332af9ae5dc749cc67d327fd693b3d23b0986b112f817c753df94e7",
+      "differing_lines": [
+        {
+          "ref": "label=Label(\"//x:t\")",
+          "native": "label=@@//x:t"
+        }
+      ]
+    },
+    "probe/exec_group": {
+      "verdict": "EXACT",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "ref_value_sha256": "f747d1e33f56161a6724b4c3ba2bb43c53f08d701a39f6d90b785fe702685974",
+      "native_value_sha256": "f747d1e33f56161a6724b4c3ba2bb43c53f08d701a39f6d90b785fe702685974",
+      "value": "type=exec_group\nrepr=<unknown object com.google.devtools.build.lib.packages.DeclaredExecGroup>\ndir=[]\neq=True\nfull type=exec_group\nfull repr=<unknown object com.google.devtools.build.lib.packages.DeclaredExecGroup>\n"
+    },
+    "probe/configuration_field": {
+      "verdict": "EXACT",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "ref_value_sha256": "766bcc32557f106b3d49fc470e9fed0a26a88b5f01bc0f71c2a6233f77d5d377",
+      "native_value_sha256": "766bcc32557f106b3d49fc470e9fed0a26a88b5f01bc0f71c2a6233f77d5d377",
+      "value": "type=LateBoundDefault\nrepr=<late-bound default>\nstr=<late-bound default>\ndir=[]\nkw type=LateBoundDefault\nkw repr=<late-bound default>\n"
+    },
+    "probe/cc_toolchain_config_info": {
+      "verdict": "EXACT",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "ref_value_sha256": "d51d61def78846eb55f5add7573cf1f5ee2b38c321c04a4fc3dc395736085496",
+      "native_value_sha256": "d51d61def78846eb55f5add7573cf1f5ee2b38c321c04a4fc3dc395736085496",
+      "value": "type=NoneType\nrepr=None\n"
+    },
+    "probe/control_struct_repr": {
+      "verdict": "KNOWN_DIVERGENCE",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "divergence": "struct repr spacing: Bazel `struct(a = 1)` vs native `struct(a=1)` (control_struct_repr)",
+      "ref_value_sha256": "981579692788c02a1752353edd5c816926e7e9e0ff04f7a95aac04f6f66d03a5",
+      "native_value_sha256": "c71f8f95fcb1a644eb0c529cbab532a8ba295c724281c30c12caab0596bdb2ad",
+      "differing_lines": [
+        {
+          "ref": "struct(a = 1, b = \"x\")",
+          "native": "struct(a=1, b=\"x\")"
+        }
+      ]
+    },
+    "probe/control_label_repr": {
+      "verdict": "KNOWN_DIVERGENCE",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "divergence": "Label repr: Bazel `Label(\"//x:t\")` vs native `@@//x:t` (control_label_repr)",
+      "ref_value_sha256": "f483f595c59caa3fe4e6036dfb1676e8da98237c1306e1478d3fb3c25716fa17",
+      "native_value_sha256": "7bbe2eae629d1b76333cb197b777edda76ade21c957c82d500e46aa66cdced88",
+      "differing_lines": [
+        {
+          "ref": "Label(\"//x:t\")",
+          "native": "@@//x:t"
+        }
+      ]
+    },
+    "probe/bazel_version_build_bzl": {
+      "verdict": "KNOWN_DIVERGENCE",
+      "exit_ref": 1,
+      "exit_native": 1,
+      "exit_class_equal": true,
+      "ref_location": "1:20",
+      "native_location": "1:14",
+      "location_line_col_equal": false,
+      "divergence": "both reject the missing attribute; native uses starlark-rust's generic text (Object of type `struct` has no attribute `bazel_version`) vs Bazel's \"no native function or rule 'bazel_version'\" (pre-existing)",
+      "ref_message": "no native function or rule 'bazel_version'",
+      "native_message_line": "cannot evaluate //probe_bazel_version_build_bzl:defs.bzl: error: Object of type `struct` has no attribute `bazel_version`",
+      "native_contains_ref_message": false
+    },
+    "probe/bazel_version_repo_rule": {
+      "verdict": "EXACT",
+      "exit_ref": 0,
+      "exit_native": 0,
+      "exit_class_equal": true,
+      "ref_value_sha256": "9128363588fac23a371b9d49fa41f88a2b34d1e56b3a49b9e189f32fed5828f6",
+      "native_value_sha256": "9128363588fac23a371b9d49fa41f88a2b34d1e56b3a49b9e189f32fed5828f6",
+      "value": "\"9.3.0\"\n"
+    },
+    "error/err_configuration_field_fragment": {
+      "verdict": "EXACT_MESSAGE",
+      "exit_ref": 1,
+      "exit_native": 1,
+      "exit_class_equal": true,
+      "ref_location": "1:24",
+      "native_location": "1:5",
+      "location_line_col_equal": false,
+      "divergence": "diagnostic framing (bazel-rs:/starlark-rust traceback vs Bazel ERROR:/Java traceback) is pre-existing; message text identical; reported line:col 1:5 vs Bazel 1:24",
+      "ref_message": "invalid configuration fragment name 'nope'",
+      "native_message_line": "invalid configuration fragment name 'nope'",
+      "native_contains_ref_message": true
+    },
+    "error/err_configuration_field_name": {
+      "verdict": "EXACT_MESSAGE",
+      "exit_ref": 1,
+      "exit_native": 1,
+      "exit_class_equal": true,
+      "ref_location": "1:24",
+      "native_location": "1:5",
+      "location_line_col_equal": false,
+      "divergence": "diagnostic framing (bazel-rs:/starlark-rust traceback vs Bazel ERROR:/Java traceback) is pre-existing; message text identical; reported line:col 1:5 vs Bazel 1:24",
+      "ref_message": "invalid configuration field name 'nope' on fragment 'cpp'",
+      "native_message_line": "invalid configuration field name 'nope' on fragment 'cpp'",
+      "native_contains_ref_message": true
+    },
+    "error/err_removed_DebugPackageInfo": {
+      "verdict": "EXACT_MESSAGE",
+      "exit_ref": 1,
+      "exit_native": 1,
+      "exit_class_equal": true,
+      "ref_location": "2:14",
+      "native_location": "2:14",
+      "location_line_col_equal": true,
+      "divergence": "diagnostic framing (bazel-rs:/starlark-rust traceback vs Bazel ERROR:/Java traceback) is pre-existing; message text identical",
+      "ref_message": "The DebugPackageInfo symbol has been removed, add the following to your BUILD/bzl file:\n\nload(\"@rules_cc//cc/common:debug_package_info.bzl\", \"DebugPackageInfo\")",
+      "native_message_line": "The DebugPackageInfo symbol has been removed, add the following to your BUILD/bzl file:",
+      "native_contains_ref_message": true
+    },
+    "error/err_removed_CcSharedLibraryInfo": {
+      "verdict": "EXACT_MESSAGE",
+      "exit_ref": 1,
+      "exit_native": 1,
+      "exit_class_equal": true,
+      "ref_location": "2:14",
+      "native_location": "2:14",
+      "location_line_col_equal": true,
+      "divergence": "diagnostic framing (bazel-rs:/starlark-rust traceback vs Bazel ERROR:/Java traceback) is pre-existing; message text identical",
+      "ref_message": "The CcSharedLibraryInfo symbol has been removed, add the following to your BUILD/bzl file:\n\nload(\"@rules_cc//cc/common:cc_shared_library_info.bzl\", \"CcSharedLibraryInfo\")",
+      "native_message_line": "The CcSharedLibraryInfo symbol has been removed, add the following to your BUILD/bzl file:",
+      "native_contains_ref_message": true
+    },
+    "error/err_removed_CcSharedLibraryHintInfo": {
+      "verdict": "EXACT_MESSAGE",
+      "exit_ref": 1,
+      "exit_native": 1,
+      "exit_class_equal": true,
+      "ref_location": "2:14",
+      "native_location": "2:14",
+      "location_line_col_equal": true,
+      "divergence": "diagnostic framing (bazel-rs:/starlark-rust traceback vs Bazel ERROR:/Java traceback) is pre-existing; message text identical",
+      "ref_message": "The CcSharedLibraryHintInfo symbol has been removed, add the following to your BUILD/bzl file:\n\nload(\"@rules_cc//cc/common:cc_shared_library_hint_info.bzl\", \"CcSharedLibraryHintInfo\")",
+      "native_message_line": "The CcSharedLibraryHintInfo symbol has been removed, add the following to your BUILD/bzl file:",
+      "native_contains_ref_message": true
+    },
+    "error/err_removed_CcInfo_toplevel": {
+      "verdict": "EXACT_MESSAGE",
+      "exit_ref": 1,
+      "exit_native": 1,
+      "exit_class_equal": true,
+      "ref_location": "1:5",
+      "native_location": "1:5",
+      "location_line_col_equal": true,
+      "divergence": "diagnostic framing (bazel-rs:/starlark-rust traceback vs Bazel ERROR:/Java traceback) is pre-existing; message text identical",
+      "ref_message": "The CcInfo symbol has been removed, add the following to your BUILD/bzl file:\n\nload(\"@rules_cc//cc/common:cc_info.bzl\", \"CcInfo\")",
+      "native_message_line": "The CcInfo symbol has been removed, add the following to your BUILD/bzl file:",
+      "native_contains_ref_message": true
+    },
+    "error/err_py_internal_main_repo": {
+      "verdict": "EXACT_MESSAGE",
+      "exit_ref": 1,
+      "exit_native": 1,
+      "exit_class_equal": true,
+      "ref_location": "1:5",
+      "native_location": "1:5",
+      "location_line_col_equal": true,
+      "divergence": "diagnostic framing (bazel-rs:/starlark-rust traceback vs Bazel ERROR:/Java traceback) is pre-existing; message text identical",
+      "ref_message": "py_internal may only be used from one of the following repositories or prefixes: @@_builtins//, @@bazel_tools//, @@rules_python//, tools/build_defs/python",
+      "native_message_line": "py_internal may only be used from one of the following repositories or prefixes: @@_builtins//, @@bazel_tools//, @@rules_python//, tools/build_defs/python",
+      "native_contains_ref_message": true
+    },
+    "error/err_private_api_main_repo": {
+      "verdict": "EXACT_MESSAGE",
+      "exit_ref": 1,
+      "exit_native": 1,
+      "exit_class_equal": true,
+      "ref_location": "1:34",
+      "native_location": "1:5",
+      "location_line_col_equal": false,
+      "divergence": "diagnostic framing (bazel-rs:/starlark-rust traceback vs Bazel ERROR:/Java traceback) is pre-existing; message text identical; reported line:col 1:5 vs Bazel 1:34",
+      "ref_message": "file '//probe_err_private_api_main_repo:defs.bzl' cannot use private API",
+      "native_message_line": "file '//probe_err_private_api_main_repo:defs.bzl' cannot use private API",
+      "native_contains_ref_message": true
+    },
+    "error/err_private_api_java_main_repo": {
+      "verdict": "EXACT_MESSAGE",
+      "exit_ref": 1,
+      "exit_native": 1,
+      "exit_class_equal": true,
+      "ref_location": "1:36",
+      "native_location": "1:5",
+      "location_line_col_equal": false,
+      "divergence": "diagnostic framing (bazel-rs:/starlark-rust traceback vs Bazel ERROR:/Java traceback) is pre-existing; message text identical; reported line:col 1:5 vs Bazel 1:36",
+      "ref_message": "file '//probe_err_private_api_java_main_repo:defs.bzl' cannot use private API",
+      "native_message_line": "file '//probe_err_private_api_java_main_repo:defs.bzl' cannot use private API",
+      "native_contains_ref_message": true
+    },
+    "error/err_cc_common_compile_called": {
+      "verdict": "KNOWN_DIVERGENCE",
+      "exit_ref": 1,
+      "exit_native": 1,
+      "exit_class_equal": true,
+      "ref_location": "1:14",
+      "native_location": "1:5",
+      "location_line_col_equal": false,
+      "divergence": "both reject the missing attribute; native uses starlark-rust's generic text (Object of type `struct` has no attribute `compile`) vs Bazel's \"'struct' value has no field or method 'compile'\" (pre-existing)",
+      "ref_message": "'struct' value has no field or method 'compile'",
+      "native_message_line": "cannot evaluate //probe_err_cc_common_compile_called:defs.bzl: error: Object of type `struct` has no attribute `compile`",
+      "native_contains_ref_message": false
+    }
+  },
+  "history": [
+    {
+      "schema": "n11-cc-common-loading-reference-receipt/v1",
+      "purpose": "Paired genuine Bazel 9.3.0 vs native bazel-rs capture of language-module globals (cc_common, apple_common, ...) at .bzl load time. Mirrors every step of tests/cc_common_loading.rs on byte-identical workspaces plus value/error probes.",
+      "reference": {
+        "binary": "bazel-9.3.0-linux-x86_64",
+        "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+        "startup": "--batch --ignore_all_rc_files --output_user_root=<private> --output_base=<private> --host_jvm_args=-Xmx512m",
+        "command_flags": "--registry=file://<private copy of tests/fixtures/builtin_modules/registry> --repository_disable_download --incompatible_autoload_externally= --lockfile_mode=off --noshow_progress --color=no --curses=no --repository_cache=<private> --distdir=<platforms-1.0.0.tar.gz sha256 3384eb1c30762704fbe38e440204e114154086c8fc8a8c2e3e28441028c019a8>",
+        "build_only_flags": "--spawn_strategy=local --shell_executable=/bin/bash",
+        "registry_note": "Fake local_path_override rules_cc/rules_python (no deps) shrink MVS so versions without source.json in the fixture registry are selected (e.g. bazel_skylib 1.8.1); the private copy gets stub source.json files copied from each module's tracked version (repo specs only; downloads disabled; nothing fetched). Stub count: 124"
+      },
+      "native": {
+        "binary": "target/debug/bazel-rs",
+        "sha256": "54f4ca5f6f53d27e648dec402ea97a1583b94d953f4ef7ccda0cd345217de70b",
+        "argv": "--ignore_all_rc_files --cache-dir=cache <cmd> <targets>",
+        "worktree": {
+          "head": "58ee1991eb00b96b73521e9cdd47ff05d022d536",
+          "src_diff_plus_untracked_src_sha256": "75d40e1a06fe295cc1b7c4abd450186fb798f34f991ab0bb857b8b49dade19c2",
+          "untracked_src": [
+            "src/cc_common.rs",
+            "src/guarded_globals.rs",
+            "src/language_modules.rs"
+          ]
+        }
+      },
+      "script": {
+        "path": "artifacts/n11-capture.py (ignored)",
+        "sha256": "0171edce25a740b845a9546cf4c8c1dfb27e600a801435f1681aa30f8ae6941b"
+      },
+      "test_source_sha256": "8af848cce95b44fa6bdbe11b461906be8da30623a5e49e848aaaed58e267db85",
+      "environment": "env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 HOME/TMPDIR private, umask 022; scratch under /tmp/opencode removed=True",
+      "verdicts": {
+        "EXACT": "written value bytes / query stdout identical",
+        "EXACT_MESSAGE": "both fail; Bazel message text appears verbatim in native stderr; framing/columns differ (pre-existing)",
+        "KNOWN_DIVERGENCE": "difference fully explained by a pre-existing native formatting difference (see divergence)",
+        "MISMATCH": "unexplained difference"
+      },
+      "counts": {
+        "EXACT": 16,
+        "EXACT_MESSAGE": 13,
+        "KNOWN_DIVERGENCE": 11,
+        "MISMATCH": 2
+      },
+      "scenarios": {
+        "mirror/rules_cc_shaped_closure": {
+          "verdict": "EXACT",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "ref_matches_test": true,
+          "native_matches_test": true
+        },
+        "mirror/private_api_cc": {
+          "verdict": "EXACT_MESSAGE",
+          "exit_ref": 7,
+          "exit_native": 1,
+          "exit_class_equal": true,
+          "ref_matches_test": false,
+          "ref_matches_test_except_exit_code": true,
+          "native_matches_test": true,
+          "exit_code_divergence": "query exit 7 (Bazel) vs 1 (native; test asserts 1)",
+          "ref_location": "4:44",
+          "native_location": "4:15",
+          "location_line_col_equal": false,
+          "divergence": "diagnostic framing (bazel-rs:/starlark-rust traceback vs Bazel ERROR:/Java traceback) is pre-existing; message text identical; reported line:col 4:15 vs Bazel 4:44",
+          "ref_message": "file '@@other_rules+//:internal.bzl' cannot use private API",
+          "native_message_line": "file '@@other_rules+//:internal.bzl' cannot use private API",
+          "native_contains_ref_message": true
+        },
+        "mirror/private_api_java": {
+          "verdict": "EXACT_MESSAGE",
+          "exit_ref": 7,
+          "exit_native": 1,
+          "exit_class_equal": true,
+          "ref_matches_test": false,
+          "ref_matches_test_except_exit_code": true,
+          "native_matches_test": true,
+          "exit_code_divergence": "query exit 7 (Bazel) vs 1 (native; test asserts 1)",
+          "ref_location": "2:43",
+          "native_location": "2:12",
+          "location_line_col_equal": false,
+          "divergence": "diagnostic framing (bazel-rs:/starlark-rust traceback vs Bazel ERROR:/Java traceback) is pre-existing; message text identical; reported line:col 2:12 vs Bazel 2:43",
+          "ref_message": "file '@@other_rules+//:java.bzl' cannot use private API",
+          "native_message_line": "file '@@other_rules+//:java.bzl' cannot use private API",
+          "native_contains_ref_message": true
+        },
+        "mirror/removed_ccinfo": {
+          "verdict": "EXACT_MESSAGE",
+          "exit_ref": 7,
+          "exit_native": 1,
+          "exit_class_equal": true,
+          "ref_matches_test": false,
+          "ref_matches_test_except_exit_code": true,
+          "native_matches_test": true,
+          "exit_code_divergence": "query exit 7 (Bazel) vs 1 (native; test asserts 1)",
+          "ref_location": "2:19",
+          "native_location": "2:19",
+          "location_line_col_equal": true,
+          "divergence": "diagnostic framing (bazel-rs:/starlark-rust traceback vs Bazel ERROR:/Java traceback) is pre-existing; message text identical",
+          "ref_message": "The CcInfo symbol has been removed, add the following to your BUILD/bzl file:\n\nload(\"@rules_cc//cc/common:cc_info.bzl\", \"CcInfo\")",
+          "native_message_line": "The CcInfo symbol has been removed, add the following to your BUILD/bzl file:",
+          "native_contains_ref_message": true
+        },
+        "mirror/py_internal_guard": {
+          "verdict": "EXACT_MESSAGE",
+          "exit_ref": 7,
+          "exit_native": 1,
+          "exit_class_equal": true,
+          "ref_matches_test": false,
+          "ref_matches_test_except_exit_code": true,
+          "native_matches_test": true,
+          "exit_code_divergence": "query exit 7 (Bazel) vs 1 (native; test asserts 1)",
+          "ref_location": "1:23",
+          "native_location": "1:23",
+          "location_line_col_equal": true,
+          "divergence": "diagnostic framing (bazel-rs:/starlark-rust traceback vs Bazel ERROR:/Java traceback) is pre-existing; message text identical",
+          "ref_message": "py_internal may only be used from one of the following repositories or prefixes: @@_builtins//, @@bazel_tools//, @@rules_python//, tools/build_defs/python",
+          "native_message_line": "py_internal may only be used from one of the following repositories or prefixes: @@_builtins//, @@bazel_tools//, @@rules_python//, tools/build_defs/python",
+          "native_contains_ref_message": true
+        },
+        "probe/cc_common_dir": {
+          "verdict": "EXACT",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "ref_value_sha256": "ae9ddd39426fda52d2b00ab14560212aa9ac885cf96dd4090c119ac2a9a87e2b",
+          "native_value_sha256": "ae9ddd39426fda52d2b00ab14560212aa9ac885cf96dd4090c119ac2a9a87e2b",
+          "value": "type=struct\nsorted_dir=[\"action_is_enabled\", \"add_go_exec_groups_to_binary_rules\", \"check_experimental_cc_shared_library\", \"do_not_use_tools_cpp_compiler_present\", \"empty_variables\", \"get_environment_variables\", \"get_execution_requirements\", \"get_memory_inefficient_command_line\", \"get_tool_for_action\", \"get_tool_requirement_for_action\", \"implementation_deps_allowed_by_allowlist\", \"incompatible_disable_objc_library_transition\", \"internal_DO_NOT_USE\", \"legacy_cc_flags_make_variable_do_not_use\"]\ndir=[\"action_is_enabled\", \"add_go_exec_groups_to_binary_rules\", \"check_experimental_cc_shared_library\", \"do_not_use_tools_cpp_compiler_present\", \"empty_variables\", \"get_environment_variables\", \"get_execution_requirements\", \"get_memory_inefficient_command_line\", \"get_tool_for_action\", \"get_tool_requirement_for_action\", \"implementation_deps_allowed_by_allowlist\", \"incompatible_disable_objc_library_transition\", \"internal_DO_NOT_USE\", \"legacy_cc_flags_make_variable_do_not_use\"]\ndir_is_sorted=True\n"
+        },
+        "probe/cc_common_type": {
+          "verdict": "EXACT",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "ref_value_sha256": "3a5b01cdf5e726066216532f8ef550fc1877b13502ede743b79d89790154ae15",
+          "native_value_sha256": "3a5b01cdf5e726066216532f8ef550fc1877b13502ede743b79d89790154ae15",
+          "value": "struct\n"
+        },
+        "probe/cc_common_members": {
+          "verdict": "EXACT",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "ref_value_sha256": "91f09014891f2526465b618f315e78f2d1f640e0f00cf2c4ff714ad1ac470825",
+          "native_value_sha256": "91f09014891f2526465b618f315e78f2d1f640e0f00cf2c4ff714ad1ac470825",
+          "value": "action_is_enabled type=function repr=<function _action_is_enabled from @@_builtins//:common/cc/cc_common_bazel.bzl>\nadd_go_exec_groups_to_binary_rules type=function repr=<function _add_go_exec_groups_to_binary_rules from @@_builtins//:common/cc/cc_common_bazel.bzl>\ncheck_experimental_cc_shared_library type=function repr=<function _check_experimental_cc_shared_library from @@_builtins//:common/cc/cc_common_bazel.bzl>\ndo_not_use_tools_cpp_compiler_present type=NoneType repr=None\nempty_variables type=function repr=<function _empty_variables from @@_builtins//:common/cc/cc_common_bazel.bzl>\nget_environment_variables type=function repr=<function _get_environment_variables from @@_builtins//:common/cc/cc_common_bazel.bzl>\nget_execution_requirements type=function repr=<function _get_execution_requirements from @@_builtins//:common/cc/cc_common_bazel.bzl>\nget_memory_inefficient_command_line type=function repr=<function _get_memory_inefficient_command_line from @@_builtins//:common/cc/cc_common_bazel.bzl>\nget_tool_for_action type=function repr=<function _get_tool_for_action from @@_builtins//:common/cc/cc_common_bazel.bzl>\nget_tool_requirement_for_action type=function repr=<function _get_tool_requirement_for_action from @@_builtins//:common/cc/cc_common_bazel.bzl>\nimplementation_deps_allowed_by_allowlist type=function repr=<function _implementation_deps_allowed_by_allowlist from @@_builtins//:common/cc/cc_common_bazel.bzl>\nincompatible_disable_objc_library_transition type=function repr=<function _incompatible_disable_objc_library_transition from @@_builtins//:common/cc/cc_common_bazel.bzl>\ninternal_DO_NOT_USE type=function repr=<function _internal_exports from @@_builtins//:common/cc/cc_common_bazel.bzl>\nlegacy_cc_flags_make_variable_do_not_use type=function repr=<function _legacy_cc_flags_make_variable_do_not_use from @@_builtins//:common/cc/cc_common_bazel.bzl>\n"
+        },
+        "probe/cc_common_member_fn_repr": {
+          "verdict": "EXACT",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "ref_value_sha256": "e233993aa54e7f8cb9207ab43829723e8f9dd7e9e3a9ef7cb6af3f30abf723e5",
+          "native_value_sha256": "e233993aa54e7f8cb9207ab43829723e8f9dd7e9e3a9ef7cb6af3f30abf723e5",
+          "value": "<function _get_tool_for_action from @@_builtins//:common/cc/cc_common_bazel.bzl>\nfunction\n<function _internal_exports from @@_builtins//:common/cc/cc_common_bazel.bzl>\nfunction\nTrue\n"
+        },
+        "probe/cc_common_repr": {
+          "verdict": "KNOWN_DIVERGENCE",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "divergence": "struct repr spacing: Bazel `struct(a = 1)` vs native `struct(a=1)` (control_struct_repr)",
+          "ref_value_sha256": "e4299c6b0ee60c17f588d7e21078bda9328aa9999e5218e09133140a0d719576",
+          "native_value_sha256": "bdbdada829f10054d760c210dbde9671f5c852c5bc5222ec44099745d27cf0c9",
+          "differing_lines": [
+            {
+              "ref": "struct(action_is_enabled = <function _action_is_enabled from @@_builtins//:common/cc/cc_common_bazel.bzl>, add_go_exec_groups_to_binary_rules = <function _add_go_exec_groups_to_binary_rules from @@_builtins//:common/cc/cc_common_bazel.bzl>, check_experimental_cc_shared_library = <function _check_experimental_cc_shared_library from @@_builtins//:common/cc/cc_common_bazel.bzl>, do_not_use_tools_cpp_compiler_present = None, empty_variables = <function _empty_variables from @@_builtins//:common/cc/cc_common_bazel.bzl>, get_environment_variables = <function _get_environment_variables from @@_builtins//:common/cc/cc_common_bazel.bzl>, get_execution_requirements = <function _get_execution_requirements from @@_builtins//:common/cc/cc_common_bazel.bzl>, get_memory_inefficient_command_line = <function _get_memory_inefficient_command_line from @@_builtins//:common/cc/cc_common_bazel.bzl>, get_tool_for_action = <function _get_tool_for_action from @@_builtins//:common/cc/cc_common_bazel.bzl>, get_tool_requirement_for_action = <function _get_tool_requirement_for_action from @@_builtins//:common/cc/cc_common_bazel.bzl>, implementation_deps_allowed_by_allowlist = <function _implementation_deps_allowed_by_allowlist from @@_builtins//:common/cc/cc_common_bazel.bzl>, incompatible_disable_objc_library_transition = <function _incompatible_disable_objc_library_transition from @@_builtins//:common/cc/cc_common_bazel.bzl>, internal_DO_NOT_USE = <function _internal_exports from @@_builtins//:common/cc/cc_common_bazel.bzl>, legacy_cc_flags_make_variable_do_not_use = <function _legacy_cc_flags_make_variable_do_not_use from @@_builtins//:common/cc/cc_common_bazel.bzl>)",
+              "native": "struct(action_is_enabled=<function _action_is_enabled from @@_builtins//:common/cc/cc_common_bazel.bzl>, add_go_exec_groups_to_binary_rules=<function _add_go_exec_groups_to_binary_rules from @@_builtins//:common/cc/cc_common_bazel.bzl>, check_experimental_cc_shared_library=<function _check_experimental_cc_shared_library from @@_builtins//:common/cc/cc_common_bazel.bzl>, do_not_use_tools_cpp_compiler_present=None, empty_variables=<function _empty_variables from @@_builtins//:common/cc/cc_common_bazel.bzl>, get_environment_variables=<function _get_environment_variables from @@_builtins//:common/cc/cc_common_bazel.bzl>, get_execution_requirements=<function _get_execution_requirements from @@_builtins//:common/cc/cc_common_bazel.bzl>, get_memory_inefficient_command_line=<function _get_memory_inefficient_command_line from @@_builtins//:common/cc/cc_common_bazel.bzl>, get_tool_for_action=<function _get_tool_for_action from @@_builtins//:common/cc/cc_common_bazel.bzl>, get_tool_requirement_for_action=<function _get_tool_requirement_for_action from @@_builtins//:common/cc/cc_common_bazel.bzl>, implementation_deps_allowed_by_allowlist=<function _implementation_deps_allowed_by_allowlist from @@_builtins//:common/cc/cc_common_bazel.bzl>, incompatible_disable_objc_library_transition=<function _incompatible_disable_objc_library_transition from @@_builtins//:common/cc/cc_common_bazel.bzl>, internal_DO_NOT_USE=<function _internal_exports from @@_builtins//:common/cc/cc_common_bazel.bzl>, legacy_cc_flags_make_variable_do_not_use=<function _legacy_cc_flags_make_variable_do_not_use from @@_builtins//:common/cc/cc_common_bazel.bzl>)"
+            }
+          ]
+        },
+        "probe/cc_common_hasattr": {
+          "verdict": "EXACT",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "ref_value_sha256": "3502d2519787ef50b6ddb3b3583b12606d9065b430dc85ba86ffe78d227450e5",
+          "native_value_sha256": "3502d2519787ef50b6ddb3b3583b12606d9065b430dc85ba86ffe78d227450e5",
+          "value": "True\nFalse\nFalse\nFalse\n"
+        },
+        "probe/cc_common_compiler_present": {
+          "verdict": "EXACT",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "ref_value_sha256": "c23f89c416cd01c203b69c8a2ed605843c22189fdd56f80819c44696e6d1cfb8",
+          "native_value_sha256": "c23f89c416cd01c203b69c8a2ed605843c22189fdd56f80819c44696e6d1cfb8",
+          "value": "None\nNoneType\n"
+        },
+        "probe/cc_internal_rules_cc": {
+          "verdict": "EXACT",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "ref_value_sha256": "2c2a128755302756f20a87b72b3ab650a4bbd2466311f8791393aa70f3f87730",
+          "native_value_sha256": "2c2a128755302756f20a87b72b3ab650a4bbd2466311f8791393aa70f3f87730",
+          "value": "type=cc_internal\nrepr=<unknown object com.google.devtools.build.lib.rules.cpp.CcStarlarkInternal>\ndir=[\"absolute_symlink\", \"actions2ctx_cheat\", \"aspect_class\", \"cc_toolchain_features\", \"cc_toolchain_variables\", \"check_private_api\", \"check_toplevel\", \"collect_per_file_lto_backend_opts\", \"combine_cc_toolchain_variables\", \"compute_output_name_prefix_dir\", \"create_cc_compile_action\", \"create_cc_compile_action_template\", \"create_header_info\", \"create_header_info_with_deps\", \"create_lto_backend_action\", \"create_lto_backend_action_template\", \"declare_compile_output_file\", \"declare_other_output_file\", \"dynamic_library_soname\", \"dynamic_library_symlink\", \"dynamic_library_symlink2\", \"exec_os\", \"expand_and_tokenize\", \"freeze\", \"get_artifact_name_extension_for_category\", \"get_artifact_name_for_category\", \"get_link_args\", \"intern_seq\", \"intern_string_sequence_variable_value\", \"is_package_headers_checking_mode_set\", \"is_package_headers_checking_mode_set_for_aspect\", \"is_tree_artifact\", \"package_headers_checking_mode\", \"package_headers_checking_mode_for_aspect\", \"per_file_copts\", \"rule_class\", \"solib_symlink_action\", \"stl_computed_default\", \"wrap_link_actions\"]\nlen=39\nabsolute_symlink type=builtin_function_or_method\nactions2ctx_cheat type=builtin_function_or_method\naspect_class type=builtin_function_or_method\ncc_toolchain_features type=builtin_function_or_method\ncc_toolchain_variables type=builtin_function_or_method\ncheck_private_api type=builtin_function_or_method\ncheck_toplevel type=builtin_function_or_method\ncollect_per_file_lto_backend_opts type=builtin_function_or_method\ncombine_cc_toolchain_variables type=builtin_function_or_method\ncompute_output_name_prefix_dir type=builtin_function_or_method\ncreate_cc_compile_action type=builtin_function_or_method\ncreate_cc_compile_action_template type=builtin_function_or_method\ncreate_header_info type=builtin_function_or_method\ncreate_header_info_with_deps type=builtin_function_or_method\ncreate_lto_backend_action type=builtin_function_or_method\ncreate_lto_backend_action_template type=builtin_function_or_method\ndeclare_compile_output_file type=builtin_function_or_method\ndeclare_other_output_file type=builtin_function_or_method\ndynamic_library_soname type=builtin_function_or_method\ndynamic_library_symlink type=builtin_function_or_method\ndynamic_library_symlink2 type=builtin_function_or_method\nexec_os type=builtin_function_or_method\nexpand_and_tokenize type=builtin_function_or_method\nfreeze type=builtin_function_or_method\nget_artifact_name_extension_for_category type=builtin_function_or_method\nget_artifact_name_for_category type=builtin_function_or_method\nget_link_args type=builtin_function_or_method\nintern_seq type=builtin_function_or_method\nintern_string_sequence_variable_value type=builtin_function_or_method\nis_package_headers_checking_mode_set type=builtin_function_or_method\nis_package_headers_checking_mode_set_for_aspect type=builtin_function_or_method\nis_tree_artifact type=builtin_function_or_method\npackage_headers_checking_mode type=builtin_function_or_method\npackage_headers_checking_mode_for_aspect type=builtin_function_or_method\nper_file_copts type=builtin_function_or_method\nrule_class type=builtin_function_or_method\nsolib_symlink_action type=builtin_function_or_method\nstl_computed_default type=builtin_function_or_method\nwrap_link_actions type=builtin_function_or_method\ncheck_private_api repr=<built-in method check_private_api of cc_internal value>\n"
+        },
+        "probe/cc_internal_via_fixture": {
+          "verdict": "EXACT",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "ref_value_sha256": "6dd8ce794c67229fef9970d0fed85d00140a09d6e9e3a0d6a52a83d5ae34f174",
+          "native_value_sha256": "6dd8ce794c67229fef9970d0fed85d00140a09d6e9e3a0d6a52a83d5ae34f174",
+          "value": "cc_internal\n"
+        },
+        "probe/header_info": {
+          "verdict": "MISMATCH",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "ref_value_sha256": "c3e6c1a6ca17bf84e4b908b9840c53760d49d9a5160140b347745053fe17e0a4",
+          "native_value_sha256": "875f4afa4c15c4fe054c2ae3b0d644fddfa89ab2d3dbcceb05c2fe0ef7c12f5c",
+          "differing_lines": [
+            {
+              "ref": "dir=[\"header_module\", \"modular_private_headers\", \"modular_public_headers\", \"pic_header_module\", \"separate_module\", \"separate_module_headers\", \"separate_pic_module\", \"textual_headers\"]",
+              "native": "dir=[]"
+            }
+          ]
+        },
+        "probe/apple_common": {
+          "verdict": "KNOWN_DIVERGENCE",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "divergence": "struct repr spacing: Bazel `struct(a = 1)` vs native `struct(a=1)` (control_struct_repr)",
+          "ref_value_sha256": "c2c5db768597a68f6ea68feaebfaea177526fb344caaa9b7e8a807a94a47ea4a",
+          "native_value_sha256": "fcb73584eb69497323ba9144de0122ec00c9b1b7aff69bdd77c3c4d8329350c1",
+          "differing_lines": [
+            {
+              "ref": "repr=struct(Objc = <provider>, XcodeProperties = None, XcodeVersionConfig = <provider>, apple_host_system_env = <function apple_host_system_env from @@_builtins//:common/objc/apple_env.bzl>, apple_toolchain = <function lambda from @@_builtins//:common/objc/apple_common.bzl>, dotted_version = <function lambda from @@_builtins//:common/objc/apple_common.bzl>, new_objc_provider = <provider>, platform = struct(catalyst = struct(is_device = True, name = \"catalyst\", name_in_plist = \"MacOSX\", platform_type = \"catalyst\"), ios_device = struct(is_device = True, name = \"ios_device\", name_in_plist = \"iPhoneOS\", platform_type = \"ios\"), ios_simulator = struct(is_device = False, name = \"ios_simulator\", name_in_plist = \"iPhoneSimulator\", platform_type = \"ios\"), macos = struct(is_device = True, name = \"macos\", name_in_plist = \"MacOSX\", platform_type = \"macos\"), tvos_device = struct(is_device = True, name = \"tvos_device\", name_in_plist = \"AppleTVOS\", platform_type = \"tvos\"), tvos_simulator = struct(is_device = False, name = \"tvos_simulator\", name_in_plist = \"AppleTVSimulator\", platform_type = \"tvos\"), visionos_device = struct(is_device = True, name = \"visionos_device\", name_in_plist = \"XROS\", platform_type = \"visionos\"), visionos_simulator = struct(is_device = False, name = \"visionos_simulator\", name_in_plist = \"XRSimulator\", platform_type = \"visionos\"), watchos_device = struct(is_device = True, name = \"watchos_device\", name_in_plist = \"WatchOS\", platform_type = \"watchos\"), watchos_simulator = struct(is_device = False, name = \"watchos_simulator\", name_in_plist = \"WatchSimulator\", platform_type = \"watchos\")), platform_type = struct(catalyst = \"catalyst\", ios = \"ios\", macos = \"macos\", tvos = \"tvos\", visionos = \"visionos\", watchos = \"watchos\"), target_apple_env = <function target_apple_env from @@_builtins//:common/objc/apple_env.bzl>)",
+              "native": "repr=struct(Objc=<provider>, XcodeProperties=None, XcodeVersionConfig=<provider>, apple_host_system_env=<function apple_host_system_env from @@_builtins//:common/objc/apple_env.bzl>, apple_toolchain=<function lambda from @@_builtins//:common/objc/apple_common.bzl>, dotted_version=<function lambda from @@_builtins//:common/objc/apple_common.bzl>, new_objc_provider=<provider>, platform=struct(catalyst=struct(is_device=True, name=\"catalyst\", name_in_plist=\"MacOSX\", platform_type=\"catalyst\"), ios_device=struct(is_device=True, name=\"ios_device\", name_in_plist=\"iPhoneOS\", platform_type=\"ios\"), ios_simulator=struct(is_device=False, name=\"ios_simulator\", name_in_plist=\"iPhoneSimulator\", platform_type=\"ios\"), macos=struct(is_device=True, name=\"macos\", name_in_plist=\"MacOSX\", platform_type=\"macos\"), tvos_device=struct(is_device=True, name=\"tvos_device\", name_in_plist=\"AppleTVOS\", platform_type=\"tvos\"), tvos_simulator=struct(is_device=False, name=\"tvos_simulator\", name_in_plist=\"AppleTVSimulator\", platform_type=\"tvos\"), visionos_device=struct(is_device=True, name=\"visionos_device\", name_in_plist=\"XROS\", platform_type=\"visionos\"), visionos_simulator=struct(is_device=False, name=\"visionos_simulator\", name_in_plist=\"XRSimulator\", platform_type=\"visionos\"), watchos_device=struct(is_device=True, name=\"watchos_device\", name_in_plist=\"WatchOS\", platform_type=\"watchos\"), watchos_simulator=struct(is_device=False, name=\"watchos_simulator\", name_in_plist=\"WatchSimulator\", platform_type=\"watchos\")), platform_type=struct(catalyst=\"catalyst\", ios=\"ios\", macos=\"macos\", tvos=\"tvos\", visionos=\"visionos\", watchos=\"watchos\"), target_apple_env=<function target_apple_env from @@_builtins//:common/objc/apple_env.bzl>)"
+            },
+            {
+              "ref": "platform type=struct repr=struct(catalyst = struct(is_device = True, name = \"catalyst\", name_in_plist = \"MacOSX\", platform_type = \"catalyst\"), ios_device = struct(is_device = True, name = \"ios_device\", name_in_plist = \"iPhoneOS\", platform_type = \"ios\"), ios_simulator = struct(is_device = False, name = \"ios_simulator\", name_in_plist = \"iPhoneSimulator\", platform_type = \"ios\"), macos = struct(is_device = True, name = \"macos\", name_in_plist = \"MacOSX\", platform_type = \"macos\"), tvos_device = struct(is_device = True, name = \"tvos_device\", name_in_plist = \"AppleTVOS\", platform_type = \"tvos\"), tvos_simulator = struct(is_device = False, name = \"tvos_simulator\", name_in_plist = \"AppleTVSimulator\", platform_type = \"tvos\"), visionos_device = struct(is_device = True, name = \"visionos_device\", name_in_plist = \"XROS\", platform_type = \"visionos\"), visionos_simulator = struct(is_device = False, name = \"visionos_simulator\", name_in_plist = \"XRSimulator\", platform_type = \"visionos\"), watchos_device = struct(is_device = True, name = \"watchos_device\", name_in_plist = \"WatchOS\", platform_type = \"watchos\"), watchos_simulator = struct(is_device = False, name = \"watchos_simulator\", name_in_plist = \"WatchSimulator\", platform_type = \"watchos\"))",
+              "native": "platform type=struct repr=struct(catalyst=struct(is_device=True, name=\"catalyst\", name_in_plist=\"MacOSX\", platform_type=\"catalyst\"), ios_device=struct(is_device=True, name=\"ios_device\", name_in_plist=\"iPhoneOS\", platform_type=\"ios\"), ios_simulator=struct(is_device=False, name=\"ios_simulator\", name_in_plist=\"iPhoneSimulator\", platform_type=\"ios\"), macos=struct(is_device=True, name=\"macos\", name_in_plist=\"MacOSX\", platform_type=\"macos\"), tvos_device=struct(is_device=True, name=\"tvos_device\", name_in_plist=\"AppleTVOS\", platform_type=\"tvos\"), tvos_simulator=struct(is_device=False, name=\"tvos_simulator\", name_in_plist=\"AppleTVSimulator\", platform_type=\"tvos\"), visionos_device=struct(is_device=True, name=\"visionos_device\", name_in_plist=\"XROS\", platform_type=\"visionos\"), visionos_simulator=struct(is_device=False, name=\"visionos_simulator\", name_in_plist=\"XRSimulator\", platform_type=\"visionos\"), watchos_device=struct(is_device=True, name=\"watchos_device\", name_in_plist=\"WatchOS\", platform_type=\"watchos\"), watchos_simulator=struct(is_device=False, name=\"watchos_simulator\", name_in_plist=\"WatchSimulator\", platform_type=\"watchos\"))"
+            },
+            {
+              "ref": "platform_type type=struct repr=struct(catalyst = \"catalyst\", ios = \"ios\", macos = \"macos\", tvos = \"tvos\", visionos = \"visionos\", watchos = \"watchos\")",
+              "native": "platform_type type=struct repr=struct(catalyst=\"catalyst\", ios=\"ios\", macos=\"macos\", tvos=\"tvos\", visionos=\"visionos\", watchos=\"watchos\")"
+            }
+          ]
+        },
+        "probe/platform_common": {
+          "verdict": "EXACT",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "ref_value_sha256": "358ff7d8c65c90bccf7c145f75dac24bd798a80ee07242f7a7a8d3498520e348",
+          "native_value_sha256": "358ff7d8c65c90bccf7c145f75dac24bd798a80ee07242f7a7a8d3498520e348",
+          "value": "type=platform_common\nrepr=<unknown object com.google.devtools.build.lib.rules.platform.PlatformCommon>\ndir=[\"ConstraintSettingInfo\", \"ConstraintValueInfo\", \"PlatformInfo\", \"TemplateVariableInfo\", \"ToolchainInfo\"]\nConstraintSettingInfo type=Provider repr=<function ConstraintSettingInfo>\nConstraintValueInfo type=Provider repr=<function ConstraintValueInfo>\nPlatformInfo type=Provider repr=<function PlatformInfo>\nTemplateVariableInfo type=Provider repr=<function TemplateVariableInfo>\nToolchainInfo type=Provider repr=<function ToolchainInfo>\n"
+        },
+        "probe/config_common": {
+          "verdict": "MISMATCH",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "ref_value_sha256": "ac3c02777174cd79ca2ecadec240e070b5efe0ab20de58332044abaae2e2f084",
+          "native_value_sha256": "1bc4926b4c0f05f57ba5b3d6ad25dd59a2454ac7d4269f410b66a26bc247f8b6",
+          "differing_lines": [
+            {
+              "ref": "FeatureFlagInfo type=FeatureFlagInfo repr=<function FeatureFlagInfo>",
+              "native": "FeatureFlagInfo type=Provider repr=<function FeatureFlagInfo>"
+            }
+          ]
+        },
+        "probe/coverage_common": {
+          "verdict": "EXACT",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "ref_value_sha256": "95e17c27831a0e29fec323965b2170e372b8e59a74d61a09ef23116135abc4db",
+          "native_value_sha256": "95e17c27831a0e29fec323965b2170e372b8e59a74d61a09ef23116135abc4db",
+          "value": "type=coverage_common\nrepr=<coverage_common>\ndir=[\"instrumented_files_info\"]\ninstrumented_files_info type=builtin_function_or_method repr=<built-in method instrumented_files_info of coverage_common value>\n"
+        },
+        "probe/testing": {
+          "verdict": "EXACT",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "ref_value_sha256": "b467a332773ebbf1f2a410e5420a46ab576b77ea30b77c031f0178683bc8bfc8",
+          "native_value_sha256": "b467a332773ebbf1f2a410e5420a46ab576b77ea30b77c031f0178683bc8bfc8",
+          "value": "type=testing\nrepr=<unknown object com.google.devtools.build.lib.rules.test.StarlarkTestingModule>\ndir=[\"ExecutionInfo\", \"TestEnvironment\", \"analysis_test\"]\nExecutionInfo type=Provider repr=<function ExecutionInfo>\nTestEnvironment type=builtin_function_or_method repr=<built-in method TestEnvironment of testing value>\nanalysis_test type=builtin_function_or_method repr=<built-in method analysis_test of testing value>\n"
+        },
+        "probe/java_common": {
+          "verdict": "KNOWN_DIVERGENCE",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "divergence": "struct repr spacing: Bazel `struct(a = 1)` vs native `struct(a=1)` (control_struct_repr)",
+          "ref_value_sha256": "656f5534fb4b526c644216236d793a40c41aa793a46c601de79a6119c5ac06bd",
+          "native_value_sha256": "2c470b4ea31b5581b191740baaf04e0e93409972bd1fd5c601258d8c81f4ee40",
+          "differing_lines": [
+            {
+              "ref": "repr=struct(internal_DO_NOT_USE = <function _internal_exports from @@_builtins//:common/java/java_common.bzl>)",
+              "native": "repr=struct(internal_DO_NOT_USE=<function _internal_exports from @@_builtins//:common/java/java_common.bzl>)"
+            }
+          ]
+        },
+        "probe/proto_common_do_not_use": {
+          "verdict": "KNOWN_DIVERGENCE",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "divergence": "struct repr spacing: Bazel `struct(a = 1)` vs native `struct(a=1)` (control_struct_repr)",
+          "ref_value_sha256": "01dc01875d90eb877a620742ac88b0afde0823d0b0e122259776d47acc0d860b",
+          "native_value_sha256": "3fb02c15b8aa3dd06b0a89031a515371850f0eb5b331504e457df86b2d3b334c",
+          "differing_lines": [
+            {
+              "ref": "repr=struct(INCOMPATIBLE_ENABLE_PROTO_TOOLCHAIN_RESOLUTION = True)",
+              "native": "repr=struct(INCOMPATIBLE_ENABLE_PROTO_TOOLCHAIN_RESOLUTION=True)"
+            }
+          ]
+        },
+        "probe/apple_platform_values": {
+          "verdict": "KNOWN_DIVERGENCE",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "divergence": "struct repr spacing: Bazel `struct(a = 1)` vs native `struct(a=1)` (control_struct_repr)",
+          "ref_value_sha256": "a89b0cea53472841e25704b8b59e7c9cb251036e46a5535865257031dab4486c",
+          "native_value_sha256": "35a20e8892cffdd88fdb2bb7eefda4e62a28bb7be226b31f4f76f83c275f3bce",
+          "differing_lines": [
+            {
+              "ref": "platform_type=struct(catalyst = \"catalyst\", ios = \"ios\", macos = \"macos\", tvos = \"tvos\", visionos = \"visionos\", watchos = \"watchos\")",
+              "native": "platform_type=struct(catalyst=\"catalyst\", ios=\"ios\", macos=\"macos\", tvos=\"tvos\", visionos=\"visionos\", watchos=\"watchos\")"
+            },
+            {
+              "ref": "platform=struct(catalyst = struct(is_device = True, name = \"catalyst\", name_in_plist = \"MacOSX\", platform_type = \"catalyst\"), ios_device = struct(is_device = True, name = \"ios_device\", name_in_plist = \"iPhoneOS\", platform_type = \"ios\"), ios_simulator = struct(is_device = False, name = \"ios_simulator\", name_in_plist = \"iPhoneSimulator\", platform_type = \"ios\"), macos = struct(is_device = True, name = \"macos\", name_in_plist = \"MacOSX\", platform_type = \"macos\"), tvos_device = struct(is_device = True, name = \"tvos_device\", name_in_plist = \"AppleTVOS\", platform_type = \"tvos\"), tvos_simulator = struct(is_device = False, name = \"tvos_simulator\", name_in_plist = \"AppleTVSimulator\", platform_type = \"tvos\"), visionos_device = struct(is_device = True, name = \"visionos_device\", name_in_plist = \"XROS\", platform_type = \"visionos\"), visionos_simulator = struct(is_device = False, name = \"visionos_simulator\", name_in_plist = \"XRSimulator\", platform_type = \"visionos\"), watchos_device = struct(is_device = True, name = \"watchos_device\", name_in_plist = \"WatchOS\", platform_type = \"watchos\"), watchos_simulator = struct(is_device = False, name = \"watchos_simulator\", name_in_plist = \"WatchSimulator\", platform_type = \"watchos\"))",
+              "native": "platform=struct(catalyst=struct(is_device=True, name=\"catalyst\", name_in_plist=\"MacOSX\", platform_type=\"catalyst\"), ios_device=struct(is_device=True, name=\"ios_device\", name_in_plist=\"iPhoneOS\", platform_type=\"ios\"), ios_simulator=struct(is_device=False, name=\"ios_simulator\", name_in_plist=\"iPhoneSimulator\", platform_type=\"ios\"), macos=struct(is_device=True, name=\"macos\", name_in_plist=\"MacOSX\", platform_type=\"macos\"), tvos_device=struct(is_device=True, name=\"tvos_device\", name_in_plist=\"AppleTVOS\", platform_type=\"tvos\"), tvos_simulator=struct(is_device=False, name=\"tvos_simulator\", name_in_plist=\"AppleTVSimulator\", platform_type=\"tvos\"), visionos_device=struct(is_device=True, name=\"visionos_device\", name_in_plist=\"XROS\", platform_type=\"visionos\"), visionos_simulator=struct(is_device=False, name=\"visionos_simulator\", name_in_plist=\"XRSimulator\", platform_type=\"visionos\"), watchos_device=struct(is_device=True, name=\"watchos_device\", name_in_plist=\"WatchOS\", platform_type=\"watchos\"), watchos_simulator=struct(is_device=False, name=\"watchos_simulator\", name_in_plist=\"WatchSimulator\", platform_type=\"watchos\"))"
+            },
+            {
+              "ref": "p.catalyst=struct(is_device = True, name = \"catalyst\", name_in_plist = \"MacOSX\", platform_type = \"catalyst\")",
+              "native": "p.catalyst=struct(is_device=True, name=\"catalyst\", name_in_plist=\"MacOSX\", platform_type=\"catalyst\")"
+            },
+            {
+              "ref": "p.ios_device=struct(is_device = True, name = \"ios_device\", name_in_plist = \"iPhoneOS\", platform_type = \"ios\")",
+              "native": "p.ios_device=struct(is_device=True, name=\"ios_device\", name_in_plist=\"iPhoneOS\", platform_type=\"ios\")"
+            },
+            {
+              "ref": "p.ios_simulator=struct(is_device = False, name = \"ios_simulator\", name_in_plist = \"iPhoneSimulator\", platform_type = \"ios\")",
+              "native": "p.ios_simulator=struct(is_device=False, name=\"ios_simulator\", name_in_plist=\"iPhoneSimulator\", platform_type=\"ios\")"
+            },
+            {
+              "ref": "p.macos=struct(is_device = True, name = \"macos\", name_in_plist = \"MacOSX\", platform_type = \"macos\")",
+              "native": "p.macos=struct(is_device=True, name=\"macos\", name_in_plist=\"MacOSX\", platform_type=\"macos\")"
+            },
+            {
+              "ref": "p.tvos_device=struct(is_device = True, name = \"tvos_device\", name_in_plist = \"AppleTVOS\", platform_type = \"tvos\")",
+              "native": "p.tvos_device=struct(is_device=True, name=\"tvos_device\", name_in_plist=\"AppleTVOS\", platform_type=\"tvos\")"
+            },
+            {
+              "ref": "p.tvos_simulator=struct(is_device = False, name = \"tvos_simulator\", name_in_plist = \"AppleTVSimulator\", platform_type = \"tvos\")",
+              "native": "p.tvos_simulator=struct(is_device=False, name=\"tvos_simulator\", name_in_plist=\"AppleTVSimulator\", platform_type=\"tvos\")"
+            },
+            {
+              "ref": "p.visionos_device=struct(is_device = True, name = \"visionos_device\", name_in_plist = \"XROS\", platform_type = \"visionos\")",
+              "native": "p.visionos_device=struct(is_device=True, name=\"visionos_device\", name_in_plist=\"XROS\", platform_type=\"visionos\")"
+            },
+            {
+              "ref": "p.visionos_simulator=struct(is_device = False, name = \"visionos_simulator\", name_in_plist = \"XRSimulator\", platform_type = \"visionos\")",
+              "native": "p.visionos_simulator=struct(is_device=False, name=\"visionos_simulator\", name_in_plist=\"XRSimulator\", platform_type=\"visionos\")"
+            },
+            {
+              "ref": "p.watchos_device=struct(is_device = True, name = \"watchos_device\", name_in_plist = \"WatchOS\", platform_type = \"watchos\")",
+              "native": "p.watchos_device=struct(is_device=True, name=\"watchos_device\", name_in_plist=\"WatchOS\", platform_type=\"watchos\")"
+            },
+            {
+              "ref": "p.watchos_simulator=struct(is_device = False, name = \"watchos_simulator\", name_in_plist = \"WatchSimulator\", platform_type = \"watchos\")",
+              "native": "p.watchos_simulator=struct(is_device=False, name=\"watchos_simulator\", name_in_plist=\"WatchSimulator\", platform_type=\"watchos\")"
+            }
+          ]
+        },
+        "probe/apple_toolchain": {
+          "verdict": "KNOWN_DIVERGENCE",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "divergence": "struct repr spacing: Bazel `struct(a = 1)` vs native `struct(a=1)` (control_struct_repr)",
+          "ref_value_sha256": "09598410b8a73a0757befc3fb9273396112634f8f20469d57b140367645ca5a6",
+          "native_value_sha256": "4741171e372c1e2e17d31900890e3410b413c1149ae9d6374924d676da8781c9",
+          "differing_lines": [
+            {
+              "ref": "repr=struct(developer_dir = <function _developer_dir from @@_builtins//:common/objc/apple_toolchain.bzl>, platform_developer_framework_dir = <function _platform_developer_framework_dir from @@_builtins//:common/objc/apple_toolchain.bzl>, sdk_dir = <function _sdk_dir from @@_builtins//:common/objc/apple_toolchain.bzl>)",
+              "native": "repr=struct(developer_dir=<function _developer_dir from @@_builtins//:common/objc/apple_toolchain.bzl>, platform_developer_framework_dir=<function _platform_developer_framework_dir from @@_builtins//:common/objc/apple_toolchain.bzl>, sdk_dir=<function _sdk_dir from @@_builtins//:common/objc/apple_toolchain.bzl>)"
+            }
+          ]
+        },
+        "probe/toolchain_type": {
+          "verdict": "KNOWN_DIVERGENCE",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "divergence": "Label repr: Bazel `Label(\"//x:t\")` vs native `@@//x:t` (control_label_repr)",
+          "ref_value_sha256": "a49d0690cdb9699065c14d259dbb6bac7a8ae334d6acefb05c2f8410966206a5",
+          "native_value_sha256": "61f962a63332af9ae5dc749cc67d327fd693b3d23b0986b112f817c753df94e7",
+          "differing_lines": [
+            {
+              "ref": "label=Label(\"//x:t\")",
+              "native": "label=@@//x:t"
+            }
+          ]
+        },
+        "probe/exec_group": {
+          "verdict": "EXACT",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "ref_value_sha256": "f747d1e33f56161a6724b4c3ba2bb43c53f08d701a39f6d90b785fe702685974",
+          "native_value_sha256": "f747d1e33f56161a6724b4c3ba2bb43c53f08d701a39f6d90b785fe702685974",
+          "value": "type=exec_group\nrepr=<unknown object com.google.devtools.build.lib.packages.DeclaredExecGroup>\ndir=[]\neq=True\nfull type=exec_group\nfull repr=<unknown object com.google.devtools.build.lib.packages.DeclaredExecGroup>\n"
+        },
+        "probe/configuration_field": {
+          "verdict": "EXACT",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "ref_value_sha256": "766bcc32557f106b3d49fc470e9fed0a26a88b5f01bc0f71c2a6233f77d5d377",
+          "native_value_sha256": "766bcc32557f106b3d49fc470e9fed0a26a88b5f01bc0f71c2a6233f77d5d377",
+          "value": "type=LateBoundDefault\nrepr=<late-bound default>\nstr=<late-bound default>\ndir=[]\nkw type=LateBoundDefault\nkw repr=<late-bound default>\n"
+        },
+        "probe/cc_toolchain_config_info": {
+          "verdict": "EXACT",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "ref_value_sha256": "d51d61def78846eb55f5add7573cf1f5ee2b38c321c04a4fc3dc395736085496",
+          "native_value_sha256": "d51d61def78846eb55f5add7573cf1f5ee2b38c321c04a4fc3dc395736085496",
+          "value": "type=NoneType\nrepr=None\n"
+        },
+        "probe/control_struct_repr": {
+          "verdict": "KNOWN_DIVERGENCE",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "divergence": "struct repr spacing: Bazel `struct(a = 1)` vs native `struct(a=1)` (control_struct_repr)",
+          "ref_value_sha256": "981579692788c02a1752353edd5c816926e7e9e0ff04f7a95aac04f6f66d03a5",
+          "native_value_sha256": "c71f8f95fcb1a644eb0c529cbab532a8ba295c724281c30c12caab0596bdb2ad",
+          "differing_lines": [
+            {
+              "ref": "struct(a = 1, b = \"x\")",
+              "native": "struct(a=1, b=\"x\")"
+            }
+          ]
+        },
+        "probe/control_label_repr": {
+          "verdict": "KNOWN_DIVERGENCE",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "divergence": "Label repr: Bazel `Label(\"//x:t\")` vs native `@@//x:t` (control_label_repr)",
+          "ref_value_sha256": "f483f595c59caa3fe4e6036dfb1676e8da98237c1306e1478d3fb3c25716fa17",
+          "native_value_sha256": "7bbe2eae629d1b76333cb197b777edda76ade21c957c82d500e46aa66cdced88",
+          "differing_lines": [
+            {
+              "ref": "Label(\"//x:t\")",
+              "native": "@@//x:t"
+            }
+          ]
+        },
+        "probe/bazel_version_build_bzl": {
+          "verdict": "KNOWN_DIVERGENCE",
+          "exit_ref": 1,
+          "exit_native": 1,
+          "exit_class_equal": true,
+          "ref_location": "1:20",
+          "native_location": "1:14",
+          "location_line_col_equal": false,
+          "divergence": "both reject the missing attribute; native uses starlark-rust's generic text (Object of type `struct` has no attribute `bazel_version`) vs Bazel's \"no native function or rule 'bazel_version'\" (pre-existing)",
+          "ref_message": "no native function or rule 'bazel_version'",
+          "native_message_line": "cannot evaluate //probe_bazel_version_build_bzl:defs.bzl: error: Object of type `struct` has no attribute `bazel_version`",
+          "native_contains_ref_message": false
+        },
+        "probe/bazel_version_repo_rule": {
+          "verdict": "EXACT",
+          "exit_ref": 0,
+          "exit_native": 0,
+          "exit_class_equal": true,
+          "ref_value_sha256": "9128363588fac23a371b9d49fa41f88a2b34d1e56b3a49b9e189f32fed5828f6",
+          "native_value_sha256": "9128363588fac23a371b9d49fa41f88a2b34d1e56b3a49b9e189f32fed5828f6",
+          "value": "\"9.3.0\"\n"
+        },
+        "error/err_configuration_field_fragment": {
+          "verdict": "EXACT_MESSAGE",
+          "exit_ref": 1,
+          "exit_native": 1,
+          "exit_class_equal": true,
+          "ref_location": "1:24",
+          "native_location": "1:5",
+          "location_line_col_equal": false,
+          "divergence": "diagnostic framing (bazel-rs:/starlark-rust traceback vs Bazel ERROR:/Java traceback) is pre-existing; message text identical; reported line:col 1:5 vs Bazel 1:24",
+          "ref_message": "invalid configuration fragment name 'nope'",
+          "native_message_line": "invalid configuration fragment name 'nope'",
+          "native_contains_ref_message": true
+        },
+        "error/err_configuration_field_name": {
+          "verdict": "EXACT_MESSAGE",
+          "exit_ref": 1,
+          "exit_native": 1,
+          "exit_class_equal": true,
+          "ref_location": "1:24",
+          "native_location": "1:5",
+          "location_line_col_equal": false,
+          "divergence": "diagnostic framing (bazel-rs:/starlark-rust traceback vs Bazel ERROR:/Java traceback) is pre-existing; message text identical; reported line:col 1:5 vs Bazel 1:24",
+          "ref_message": "invalid configuration field name 'nope' on fragment 'cpp'",
+          "native_message_line": "invalid configuration field name 'nope' on fragment 'cpp'",
+          "native_contains_ref_message": true
+        },
+        "error/err_removed_DebugPackageInfo": {
+          "verdict": "EXACT_MESSAGE",
+          "exit_ref": 1,
+          "exit_native": 1,
+          "exit_class_equal": true,
+          "ref_location": "2:14",
+          "native_location": "2:14",
+          "location_line_col_equal": true,
+          "divergence": "diagnostic framing (bazel-rs:/starlark-rust traceback vs Bazel ERROR:/Java traceback) is pre-existing; message text identical",
+          "ref_message": "The DebugPackageInfo symbol has been removed, add the following to your BUILD/bzl file:\n\nload(\"@rules_cc//cc/common:debug_package_info.bzl\", \"DebugPackageInfo\")",
+          "native_message_line": "The DebugPackageInfo symbol has been removed, add the following to your BUILD/bzl file:",
+          "native_contains_ref_message": true
+        },
+        "error/err_removed_CcSharedLibraryInfo": {
+          "verdict": "EXACT_MESSAGE",
+          "exit_ref": 1,
+          "exit_native": 1,
+          "exit_class_equal": true,
+          "ref_location": "2:14",
+          "native_location": "2:14",
+          "location_line_col_equal": true,
+          "divergence": "diagnostic framing (bazel-rs:/starlark-rust traceback vs Bazel ERROR:/Java traceback) is pre-existing; message text identical",
+          "ref_message": "The CcSharedLibraryInfo symbol has been removed, add the following to your BUILD/bzl file:\n\nload(\"@rules_cc//cc/common:cc_shared_library_info.bzl\", \"CcSharedLibraryInfo\")",
+          "native_message_line": "The CcSharedLibraryInfo symbol has been removed, add the following to your BUILD/bzl file:",
+          "native_contains_ref_message": true
+        },
+        "error/err_removed_CcSharedLibraryHintInfo": {
+          "verdict": "EXACT_MESSAGE",
+          "exit_ref": 1,
+          "exit_native": 1,
+          "exit_class_equal": true,
+          "ref_location": "2:14",
+          "native_location": "2:14",
+          "location_line_col_equal": true,
+          "divergence": "diagnostic framing (bazel-rs:/starlark-rust traceback vs Bazel ERROR:/Java traceback) is pre-existing; message text identical",
+          "ref_message": "The CcSharedLibraryHintInfo symbol has been removed, add the following to your BUILD/bzl file:\n\nload(\"@rules_cc//cc/common:cc_shared_library_hint_info.bzl\", \"CcSharedLibraryHintInfo\")",
+          "native_message_line": "The CcSharedLibraryHintInfo symbol has been removed, add the following to your BUILD/bzl file:",
+          "native_contains_ref_message": true
+        },
+        "error/err_removed_CcInfo_toplevel": {
+          "verdict": "EXACT_MESSAGE",
+          "exit_ref": 1,
+          "exit_native": 1,
+          "exit_class_equal": true,
+          "ref_location": "1:5",
+          "native_location": "1:5",
+          "location_line_col_equal": true,
+          "divergence": "diagnostic framing (bazel-rs:/starlark-rust traceback vs Bazel ERROR:/Java traceback) is pre-existing; message text identical",
+          "ref_message": "The CcInfo symbol has been removed, add the following to your BUILD/bzl file:\n\nload(\"@rules_cc//cc/common:cc_info.bzl\", \"CcInfo\")",
+          "native_message_line": "The CcInfo symbol has been removed, add the following to your BUILD/bzl file:",
+          "native_contains_ref_message": true
+        },
+        "error/err_py_internal_main_repo": {
+          "verdict": "EXACT_MESSAGE",
+          "exit_ref": 1,
+          "exit_native": 1,
+          "exit_class_equal": true,
+          "ref_location": "1:5",
+          "native_location": "1:5",
+          "location_line_col_equal": true,
+          "divergence": "diagnostic framing (bazel-rs:/starlark-rust traceback vs Bazel ERROR:/Java traceback) is pre-existing; message text identical",
+          "ref_message": "py_internal may only be used from one of the following repositories or prefixes: @@_builtins//, @@bazel_tools//, @@rules_python//, tools/build_defs/python",
+          "native_message_line": "py_internal may only be used from one of the following repositories or prefixes: @@_builtins//, @@bazel_tools//, @@rules_python//, tools/build_defs/python",
+          "native_contains_ref_message": true
+        },
+        "error/err_private_api_main_repo": {
+          "verdict": "EXACT_MESSAGE",
+          "exit_ref": 1,
+          "exit_native": 1,
+          "exit_class_equal": true,
+          "ref_location": "1:34",
+          "native_location": "1:5",
+          "location_line_col_equal": false,
+          "divergence": "diagnostic framing (bazel-rs:/starlark-rust traceback vs Bazel ERROR:/Java traceback) is pre-existing; message text identical; reported line:col 1:5 vs Bazel 1:34",
+          "ref_message": "file '//probe_err_private_api_main_repo:defs.bzl' cannot use private API",
+          "native_message_line": "file '//probe_err_private_api_main_repo:defs.bzl' cannot use private API",
+          "native_contains_ref_message": true
+        },
+        "error/err_private_api_java_main_repo": {
+          "verdict": "EXACT_MESSAGE",
+          "exit_ref": 1,
+          "exit_native": 1,
+          "exit_class_equal": true,
+          "ref_location": "1:36",
+          "native_location": "1:5",
+          "location_line_col_equal": false,
+          "divergence": "diagnostic framing (bazel-rs:/starlark-rust traceback vs Bazel ERROR:/Java traceback) is pre-existing; message text identical; reported line:col 1:5 vs Bazel 1:36",
+          "ref_message": "file '//probe_err_private_api_java_main_repo:defs.bzl' cannot use private API",
+          "native_message_line": "file '//probe_err_private_api_java_main_repo:defs.bzl' cannot use private API",
+          "native_contains_ref_message": true
+        },
+        "error/err_cc_common_compile_called": {
+          "verdict": "KNOWN_DIVERGENCE",
+          "exit_ref": 1,
+          "exit_native": 1,
+          "exit_class_equal": true,
+          "ref_location": "1:14",
+          "native_location": "1:5",
+          "location_line_col_equal": false,
+          "divergence": "both reject the missing attribute; native uses starlark-rust's generic text (Object of type `struct` has no attribute `compile`) vs Bazel's \"'struct' value has no field or method 'compile'\" (pre-existing)",
+          "ref_message": "'struct' value has no field or method 'compile'",
+          "native_message_line": "cannot evaluate //probe_err_cc_common_compile_called:defs.bzl: error: Object of type `struct` has no attribute `compile`",
+          "native_contains_ref_message": false
+        }
+      },
+      "run": 1
+    }
+  ]
+}

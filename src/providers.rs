@@ -77,6 +77,15 @@ pub(crate) fn requirement_info(value: Value<'_>) -> anyhow::Result<ProviderRequi
         )
     } else if crate::starlark_types::is_default_info_constructor(value) {
         (DEFAULT_INFO_PROVIDER_ID, "DefaultInfo")
+    } else if let Some((id, display_name)) =
+        crate::language_modules::builtin_provider_requirement(value)
+    {
+        budget.string(&id).map_err(anyhow::Error::msg)?;
+        budget.string(display_name).map_err(anyhow::Error::msg)?;
+        return Ok(ProviderRequirement {
+            id,
+            display_name: display_name.to_owned(),
+        });
     } else {
         bail!(
             "required providers must be exported Provider constructors, got {}",

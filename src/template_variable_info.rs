@@ -11,7 +11,6 @@ use starlark::environment::GlobalsBuilder;
 use starlark::eval::{Arguments, Evaluator};
 use starlark::starlark_simple_value;
 use starlark::values::dict::{AllocDict, DictRef};
-use starlark::values::structs::AllocStruct;
 use starlark::values::{
     Heap, NoSerialize, ProvidesStaticType, StarlarkPagablePanic, StarlarkValue, Value,
     starlark_value,
@@ -44,12 +43,17 @@ use owned::{Constructor, TemplateVariableInfo};
 starlark_simple_value!(Constructor);
 starlark_simple_value!(TemplateVariableInfo);
 
-/// Install only the implemented platform_common field, not placeholder APIs.
+/// Install Bazel's `platform_common` namespace. Only TemplateVariableInfo is
+/// implemented; the other providers exist and fail explicitly when called.
 pub fn install(globals: &mut GlobalsBuilder) {
     globals.set(
         "platform_common",
-        AllocStruct([("TemplateVariableInfo", Constructor)]),
+        crate::language_modules::platform_common(),
     );
+}
+
+pub(crate) fn alloc_constructor(heap: Heap<'_>) -> Value<'_> {
+    heap.alloc(Constructor)
 }
 
 pub fn is_constructor(value: Value<'_>) -> bool {
@@ -198,7 +202,9 @@ mod tests {
         pass(
             r#"
 T = platform_common.TemplateVariableInfo
-(type(T) == "Provider" and dir(platform_common) == ["TemplateVariableInfo"]) or fail("namespace")
+(type(T) == "Provider" and type(platform_common) == "platform_common") or fail("namespace")
+(dir(platform_common) == ["ConstraintSettingInfo", "ConstraintValueInfo", "PlatformInfo", "TemplateVariableInfo", "ToolchainInfo"]) or fail("dir")
+(T == platform_common.TemplateVariableInfo and {T: 1}[platform_common.TemplateVariableInfo] == 1) or fail("key identity")
 (T({}).variables == {} and T(vars={"x": "y"}).variables == {"x": "y"}) or fail("arguments")
 (T(*[{"x": "y"}]).variables == T(**{"vars": {"x": "y"}}).variables) or fail("expanded arguments")
 (type(T({})) == "TemplateVariableInfo" and type(T({}).variables) == "dict") or fail("types")
@@ -222,8 +228,10 @@ T = platform_common.TemplateVariableInfo
             "T(**{1: {}})",
             "T({}).variables = {}",
             "T({}).unknown",
-            "platform_common.ToolchainInfo",
-            "platform_common.ConstraintValueInfo",
+            // Present (Bazel's namespace) but analysis-time only in the native profile.
+            "platform_common.ToolchainInfo()",
+            "platform_common.ConstraintValueInfo()",
+            "platform_common.Unknown",
         ] {
             assert!(
                 evaluate(&format!(
