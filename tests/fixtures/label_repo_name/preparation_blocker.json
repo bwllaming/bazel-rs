@@ -1,0 +1,27 @@
+{
+  "purpose": "Exact selected infrastructure failure from the single allowed preparation; no getter success or native execution.",
+  "report_sha256": "e427c162f9913c21cc10fe94a0635aaebedafc4873542143b53495fc09cc508f",
+  "case": "pipeline",
+  "run_name": "reference.pipeline.cold.build",
+  "returncode": 1,
+  "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Repo platforms defined by rule http_archive in @@bazel_tools//tools/build_defs/repo:http.bzl\nERROR: /tmp/opencode/label-repo-name-22flroz1/reference/pipeline/output/external/bazel_tools/tools/build_defs/repo/http.bzl:203:45: An error occurred during the fetch of repository 'platforms':\n   Traceback (most recent call last):\n\tFile \"/tmp/opencode/label-repo-name-22flroz1/reference/pipeline/output/external/bazel_tools/tools/build_defs/repo/http.bzl\", line 203, column 45, in _http_archive_impl\n\t\tdownload_info = ctx.download_and_extract(\nError in download_and_extract: java.io.IOException: Failed to download repository @@platforms: download is disabled.\nERROR: com.google.devtools.build.lib.packages.RepositoryFetchException: no such package '@@platforms//host': java.io.IOException: Failed to download repository @@platforms: download is disabled.\nINFO: Elapsed time: 2.202s, Critical Path: 0.00s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\n",
+  "stderr_sha256": "aec41ac5cd9a0bde73db1814b7b43fae2b332735f5c9d80b05f8e0ee450155e2",
+  "input_sha256": {
+    "BUILD.bazel": "ceae4cb3f6bad0c9dfb4eb06a4ec027d98d2f2ad8aecb6b015c2bbcbca2347ba",
+    "MODULE.bazel": "92044fbe9c56654bfc45ea07ce725cb1dd846ec50ac5aa5ef33bee35d83348d0",
+    "dep/BUILD.bazel": "3942161c9406184a577ef7b59a653f257adae454036bcf5f5e1fb28c54344ef5",
+    "dep/MODULE.bazel": "23235843a44ae521db83d8530a7710184ca958d864c0f6a5c3c4d3fd5a7f3b4d",
+    "dep/dep.txt": "a8a3ea3ddbea6b521e4c0e8f2cca8405e75c042b2a7ed848baaa03e867355bc2",
+    "dep/extension.bzl": "0c6dd7094e4d9ff60a077ac8083e6b4c2e3a55ea4fecc780184f7a839c696a39",
+    "dep/helper.bzl": "19702142d7820508cb43e2b730b7d8eab171619100f011a05dd09a91557337ee",
+    "other/BUILD.bazel": "f0bf1a48c340bddde18ab62b4723a7dbabeffa6ddaeef3aed2149e4d53729f13",
+    "other/MODULE.bazel": "f350627ecaf55ff1799d436b023540456fa632bbf840bcae942ae018673d98b8",
+    "other/other.txt": "7e4fa2eb8c7ac089739d5defc4489fad68a100d92082ca35c6b40a4524821f87",
+    "root.bzl": "06a7c8bfd321236b2e8dec914c27eafbad7ae3f58aa0dcf34853972c9ae1d3aa",
+    "root.txt": "53175bcc0524f37b47062fafdda28e3f8eb91d519ca0a184ca71bbebe72f969a"
+  },
+  "command_count": 6,
+  "before_after_pins_equal": true,
+  "scratch_removed": true,
+  "reference_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8"
+}

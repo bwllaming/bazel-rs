@@ -1,0 +1,95 @@
+{
+  "purpose": "Exact selected genuine cold-analysis evidence from failed preparation; not a complete reference PASS.",
+  "report_sha256": "cd18124b58bcfedfa0e6b262faa6436e8ede9ac2b021d63e9b3153a9783cf076",
+  "original_status": "FAIL",
+  "original_errors": [
+    "ValueError: wrong output file/mode",
+    "replay: failed run or pin drift"
+  ],
+  "scratch": "/tmp/opencode/label-repo-name-t70c0yl_",
+  "command": {
+    "id": 8,
+    "name": "reference.analysis.cold.cquery",
+    "argv": [
+      "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+      "--batch",
+      "--ignore_all_rc_files",
+      "--output_user_root=/tmp/opencode/label-repo-name-t70c0yl_/reference/analysis/user",
+      "--output_base=/tmp/opencode/label-repo-name-t70c0yl_/reference/analysis/output",
+      "--host_jvm_args=-XX:ActiveProcessorCount=2",
+      "cquery",
+      "--registry=file:///tmp/opencode/label-repo-name-t70c0yl_/registry",
+      "--repository_cache=/tmp/opencode/label-repo-name-t70c0yl_/reference/analysis/repo-cache",
+      "--repo_contents_cache=/tmp/opencode/label-repo-name-t70c0yl_/reference/analysis/contents",
+      "--repository_disable_download",
+      "--lockfile_mode=off",
+      "--incompatible_autoload_externally=",
+      "--distdir=/tmp/opencode/label-repo-name-t70c0yl_/distdir",
+      "--noshow_progress",
+      "--color=no",
+      "--curses=no",
+      "--jobs=2",
+      "--experimental_convenience_symlinks=ignore",
+      "--output=files",
+      "//:result"
+    ],
+    "cwd": "/tmp/opencode/label-repo-name-t70c0yl_/reference/analysis/workspace",
+    "returncode": 0,
+    "stdout": "bazel-out/k8-fastbuild/bin/result.txt\n",
+    "executable_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8"
+  },
+  "preceding_build": {
+    "id": 7,
+    "name": "reference.analysis.cold.build",
+    "returncode": 0,
+    "argv_sha256": "61cbcd52d53dec784803ed03554d62a87b8d73516333b962b793cbec64f1083d",
+    "stderr_sha256": "4e655df6f9eed21ef52500fb26599d0175851e1b26b3cc5bd162a2c7e8e56903"
+  },
+  "input_sha256": {
+    "BUILD.bazel": "6e5e972f5a61c7ec345029c600563bc3f21ecc8ba62092d5ffabe4bcfc2d080c",
+    "MODULE.bazel": "92044fbe9c56654bfc45ea07ce725cb1dd846ec50ac5aa5ef33bee35d83348d0",
+    "consumer.bzl": "3b81c19870de32296ad9271e4c3669e6bd53358e37a66c465fc92ccfd4494d68",
+    "dep/BUILD.bazel": "3942161c9406184a577ef7b59a653f257adae454036bcf5f5e1fb28c54344ef5",
+    "dep/MODULE.bazel": "23235843a44ae521db83d8530a7710184ca958d864c0f6a5c3c4d3fd5a7f3b4d",
+    "dep/dep.txt": "a8a3ea3ddbea6b521e4c0e8f2cca8405e75c042b2a7ed848baaa03e867355bc2",
+    "dep/extension.bzl": "0c6dd7094e4d9ff60a077ac8083e6b4c2e3a55ea4fecc780184f7a839c696a39",
+    "dep/helper.bzl": "19702142d7820508cb43e2b730b7d8eab171619100f011a05dd09a91557337ee",
+    "other/BUILD.bazel": "f0bf1a48c340bddde18ab62b4723a7dbabeffa6ddaeef3aed2149e4d53729f13",
+    "other/MODULE.bazel": "f350627ecaf55ff1799d436b023540456fa632bbf840bcae942ae018673d98b8",
+    "other/other.txt": "7e4fa2eb8c7ac089739d5defc4489fad68a100d92082ca35c6b40a4524821f87",
+    "root.bzl": "06a7c8bfd321236b2e8dec914c27eafbad7ae3f58aa0dcf34853972c9ae1d3aa",
+    "root.txt": "53175bcc0524f37b47062fafdda28e3f8eb91d519ca0a184ca71bbebe72f969a"
+  },
+  "inputs_before_after_equal": true,
+  "source_pins": {
+    "scripts/validate_label_repo_name.py": {
+      "mode": 420,
+      "sha256": "1e16cd72777aa6011ab89c9e7e36d482f480eb3082db9ca2a63589d33aeac79e"
+    },
+    "src/action.rs": {
+      "mode": 420,
+      "sha256": "18084fd1f3b2ff8405e6697899c24388ded2f2e501078350242868caf570008d"
+    },
+    "src/starlark_types.rs": {
+      "mode": 420,
+      "sha256": "e6946196ce68c8628807dd3d8949793ad37fc85cbeef0c3176cfc2b5e346b766"
+    },
+    "tests/test_validate_label_repo_name.py": {
+      "mode": 420,
+      "sha256": "c87c3af50c7c223efa393ca35625e56fdaae25cb277dad3d9d4c6110832f4652"
+    }
+  },
+  "official": {
+    "src/main/java/com/google/devtools/build/lib/cmdline/Label.java": "9845de146667f32459dd693dd7eb7197e5dc3b640ff497891874c629c7d14417"
+  },
+  "pins_before_after_equal": true,
+  "output": {
+    "bytes_base64": "eyJhbmFseXNpcyI6W1siQEAvLzpyZXN1bHQiLCIiLCIiLCJMYWJlbCIsInN0cmluZyIsIiIsdHJ1ZSx0cnVlLCJERUZBVUxUIixmYWxzZV0sWyJAQGRlcCsrb2JzZXJ2ZSttYWRlLy86ZGF0YS50eHQiLCJkZXArK29ic2VydmUrbWFkZSIsImRlcCsrb2JzZXJ2ZSttYWRlIiwiTGFiZWwiLCJzdHJpbmciLCJkZXArK29ic2VydmUrbWFkZSIsdHJ1ZSx0cnVlLCJERUZBVUxUIixmYWxzZV0sWyJAQGRlcCsrb2JzZXJ2ZSttYWRlLy86ZGF0YS50eHQiLCJkZXArK29ic2VydmUrbWFkZSIsImRlcCsrb2JzZXJ2ZSttYWRlIiwiTGFiZWwiLCJzdHJpbmciLCJkZXArK29ic2VydmUrbWFkZSIsdHJ1ZSx0cnVlLCJERUZBVUxUIixmYWxzZV0sWyJAQGRlcCsrb2JzZXJ2ZSttYWRlLy86ZGF0YS50eHQiLCJkZXArK29ic2VydmUrbWFkZSIsImRlcCsrb2JzZXJ2ZSttYWRlIiwiTGFiZWwiLCJzdHJpbmciLCJkZXArK29ic2VydmUrbWFkZSIsdHJ1ZSx0cnVlLCJERUZBVUxUIixmYWxzZV1dLCJlcXVhbCI6W3RydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlXSwicm9vdCI6W1siQEAvLzpyb290LnR4dCIsIiIsIiIsIkxhYmVsIiwic3RyaW5nIiwiIix0cnVlLHRydWUsIkRFRkFVTFQiLGZhbHNlXSxbIkBALy86cm9vdC50eHQiLCIiLCIiLCJMYWJlbCIsInN0cmluZyIsIiIsdHJ1ZSx0cnVlLCJERUZBVUxUIixmYWxzZV0sWyJAQC8vOnJvb3QudHh0IiwiIiwiIiwiTGFiZWwiLCJzdHJpbmciLCIiLHRydWUsdHJ1ZSwiREVGQVVMVCIsZmFsc2VdLFsiQEAvLzpyb290LnR4dCIsIiIsIiIsIkxhYmVsIiwic3RyaW5nIiwiIix0cnVlLHRydWUsIkRFRkFVTFQiLGZhbHNlXSxbIkBAZGVwKy8vOmRlcC50eHQiLCJkZXArIiwiZGVwKyIsIkxhYmVsIiwic3RyaW5nIiwiZGVwKyIsdHJ1ZSx0cnVlLCJERUZBVUxUIixmYWxzZV0sWyJAQG90aGVyKy8vOm90aGVyLnR4dCIsIm90aGVyKyIsIm90aGVyKyIsIkxhYmVsIiwic3RyaW5nIiwib3RoZXIrIix0cnVlLHRydWUsIkRFRkFVTFQiLGZhbHNlXSxbIkBAdW5mZXRjaGVkK3NlZ21lbnRzK25hbWUvL25vL3BhY2thZ2U6bm9fdGFyZ2V0IiwidW5mZXRjaGVkK3NlZ21lbnRzK25hbWUiLCJ1bmZldGNoZWQrc2VnbWVudHMrbmFtZSIsIkxhYmVsIiwic3RyaW5nIiwidW5mZXRjaGVkK3NlZ21lbnRzK25hbWUiLHRydWUsdHJ1ZSwiREVGQVVMVCIsZmFsc2VdXX0K",
+    "kind": "file",
+    "logical_path": "/tmp/opencode/label-repo-name-t70c0yl_/reference/analysis/output/execroot/_main/bazel-out/k8-fastbuild/bin/result.txt",
+    "mode": 365,
+    "path": "/tmp/opencode/label-repo-name-t70c0yl_/reference/analysis/output/execroot/_main/bazel-out/k8-fastbuild/bin/result.txt",
+    "sha256": "36e52e79f5ec4302188f29ca6921ce75dd27d4f82a40816a888f90ed25afa5d5",
+    "size_bytes": 1179
+  }
+}

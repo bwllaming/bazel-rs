@@ -154,6 +154,8 @@ and dynamic named reads without exposing a fabricated OS environment dictionary.
 snapshot semantics through rule, tag and repository attribute consumers.
 [Callback host metadata](docs/HOST_OS.md) provides the verified Linux/x86_64
 name/architecture view and explicit host-dependent repository fingerprints.
+[Resolved Label repository names](docs/LABEL_REPO_NAME.md) expose canonical
+identity without changing owner mappings or hiding invalid-label timing limits.
 [Genuine built-in modules](docs/BUILTIN_MODULES.md) are available through the
 native-only `--experimental-builtin-modules` transition option, using complete
 verified Linux x86-64 resources; the default remains explicit modules only.

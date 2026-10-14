@@ -200,7 +200,7 @@ impl<'v> StarlarkValue<'v> for LabelValue {
         Some(match name {
             "name" => heap.alloc(self.name.as_str()),
             "package" => heap.alloc(self.package.as_str()),
-            "workspace_name" => heap.alloc(self.repository.as_str()),
+            "repo_name" | "workspace_name" => heap.alloc(self.repository.as_str()),
             "workspace_root" => heap.alloc(if self.repository.is_empty() {
                 String::new()
             } else {
@@ -211,9 +211,15 @@ impl<'v> StarlarkValue<'v> for LabelValue {
     }
 
     fn dir_attr(&self) -> Vec<String> {
-        ["name", "package", "workspace_name", "workspace_root"]
-            .map(String::from)
-            .to_vec()
+        [
+            "name",
+            "package",
+            "repo_name",
+            "workspace_name",
+            "workspace_root",
+        ]
+        .map(String::from)
+        .to_vec()
     }
 }
 
@@ -1034,6 +1040,123 @@ mod tests {
         fail("a.path = 'changed'", "not supported");
         fail("Label(':relative')", "absolute");
         fail("Label('@external//p:x')", "absolute");
+    }
+
+    #[test]
+    fn label_repo_name_surface_preserves_existing_fields() {
+        for (input, repository) in [
+            ("//pkg:rule", ""),
+            ("@@//pkg:rule", ""),
+            ("@@dep+//pkg:rule", "dep+"),
+            ("@@dep++observe+made//pkg:rule", "dep++observe+made"),
+        ] {
+            pass(&format!(
+                r#"
+x = Label({input:?})
+(type(x.repo_name) == "string" and x.repo_name == {repository:?} and
+ x.repo_name == x.workspace_name and getattr(x, "repo_name", "DEFAULT") == {repository:?} and
+ hasattr(x, "repo_name") and "repo_name" in dir(x) and
+ all([field in dir(x) for field in ["name", "package", "workspace_name", "workspace_root"]]) and
+ x.name == "rule" and x.package == "pkg" and
+ x.workspace_root == ("external/" + {repository:?} if {repository:?} else "") and
+ getattr(x, "missing_field", "DEFAULT") == "DEFAULT" and not hasattr(x, "missing_field"))
+"#
+            ));
+        }
+        pass(r#"a.owner.repo_name == "" and target.label.repo_name == """#);
+    }
+
+    #[test]
+    fn label_repo_name_is_immutable_and_unknown_fields_still_fail() {
+        for field in ["repo_name", "workspace_name"] {
+            fail(
+                &format!("x = Label('//pkg:rule'); x.{field} = 'changed'"),
+                "not supported",
+            );
+        }
+        fail("Label('//pkg:rule').missing_field", "missing_field");
+    }
+
+    #[test]
+    fn label_repo_name_does_not_change_string_equality_or_hash() {
+        pass(
+            r#"
+main = Label("//pkg:rule")
+external = Label("@@dep+//pkg:rule")
+keys = {main: "main", external: "external"}
+names = [main.repo_name, external.repo_name]
+(names == ["", "dep+"] and str(main) == "@@//pkg:rule" and
+ str(external) == "@@dep+//pkg:rule" and main != external and
+ main == Label("@@//pkg:rule") and keys[Label("@@//pkg:rule")] == "main" and
+ keys[Label("@@" + external.repo_name + "//pkg:rule")] == "external" and len(keys) == 2)
+"#,
+        );
+        Module::with_temp_heap(|module| {
+            let label = alloc_label(module.heap(), "@@dep++observe+made//pkg:rule").unwrap();
+            let before = label.get_hashed().unwrap().hash();
+            let value = LabelValue::from_value(label).unwrap();
+            let mut legacy = StarlarkHasher::default();
+            value.repository.hash(&mut legacy);
+            value.package.hash(&mut legacy);
+            value.name.hash(&mut legacy);
+            let mut actual = StarlarkHasher::default();
+            value.write_hash(&mut actual).unwrap();
+            assert_eq!(
+                std::hash::Hasher::finish(&actual),
+                std::hash::Hasher::finish(&legacy)
+            );
+            assert_eq!(
+                value
+                    .get_attr("repo_name", module.heap())
+                    .unwrap()
+                    .unpack_str(),
+                Some("dep++observe+made")
+            );
+            assert_eq!(label.get_hashed().unwrap().hash(), before);
+        });
+    }
+
+    #[test]
+    fn label_repo_name_getters_survive_freeze_and_owner_drop() {
+        for repository in ["", "dep+", "dep++observe+made"] {
+            let canonical = format!("@@{repository}//pkg:rule");
+            let (label, file, target, hash) = Module::with_temp_heap(|module| {
+                let label = alloc_label(module.heap(), &canonical).unwrap();
+                let hash = label.get_hashed().unwrap().hash();
+                let mut owned_file = file("pkg/input");
+                owned_file.owner = canonical.clone();
+                module.set("label", label);
+                module.set("file", alloc_file(module.heap(), owned_file.clone()));
+                module.set(
+                    "target",
+                    alloc_target(module.heap(), &canonical, vec![owned_file]),
+                );
+                let frozen = module.freeze().unwrap();
+                (
+                    frozen.get("label").unwrap(),
+                    frozen.get("file").unwrap(),
+                    frozen.get("target").unwrap(),
+                    hash,
+                )
+            });
+            Module::with_temp_heap(|module| {
+                for (name, owned) in [("label", label), ("file", file), ("target", target)] {
+                    module.set(name, module.heap().access_owned_frozen_value(&owned));
+                    drop(owned);
+                }
+                assert_eq!(
+                    module.get("label").unwrap().get_hashed().unwrap().hash(),
+                    hash
+                );
+                let ast = AstModule::parse("owner-drop.star", format!(
+                    "label.repo_name == {repository:?} and file.owner.repo_name == {repository:?} and target.label.repo_name == {repository:?} and label.workspace_name == label.repo_name and label == file.owner and label == target.label and {{label: 7}}[file.owner] == 7"
+                ), &Dialect::Standard).unwrap();
+                let result = Evaluator::new(&module)
+                    .eval_module(ast, &globals())
+                    .unwrap();
+                assert_eq!(result.unpack_bool(), Some(true));
+            });
+        }
     }
 
     #[test]
