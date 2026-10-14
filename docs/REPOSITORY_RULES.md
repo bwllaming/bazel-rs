@@ -101,10 +101,9 @@ keys) and `ctx.file` contents therefore accept U+0000..U+00FF; `ctx.file` writes
 one byte per character. Characters above U+00FF are rejected explicitly (Bazel
 cannot write them either). Repository names, labels, outputs, tag attributes and
 template substitutions remain ASCII. In repository and extension evaluation
-`json.decode` maps `\u` escape runs to UTF-8 bytes like Bazel. String methods
-whose Bazel implementations are ASCII-only (`upper`, `lower`, `strip`, `split`,
-etc.) use Unicode rules here on high characters; this known divergence blocks main
-promotion until fixed. Template file bytes never become Starlark
+`json.decode` maps `\u` escape runs to UTF-8 bytes like Bazel. String methods follow
+Bazel's byte-string rules (`docs/STRING_METHODS.md`); non-UTF-8 byte data can
+still differ for `title`, `capitalize` and `isspace`. Template file bytes never become Starlark
 strings and are not subject to that restriction. This does not establish complete
 Starlark language parity.
 
