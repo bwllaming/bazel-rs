@@ -1,0 +1,1176 @@
+{
+  "contract": "N8 .bzl load visibility() paired genuine-Bazel capture",
+  "reference": {
+    "binary": "bazel-9.3.0-linux-x86_64",
+    "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+    "flags": "--batch --ignore_all_rc_files --output_user_root/--output_base private --host_jvm_args=-Xmx512m <cmd> --registry=file://<private copy of tests/fixtures/builtin_modules/registry> --repository_disable_download --incompatible_autoload_externally= --lockfile_mode=off --noshow_progress --color=no --curses=no --repository_cache=<private> --distdir=<platforms-1.0.0.tar.gz> [build: --spawn_strategy=local --shell_executable=/bin/bash]",
+    "platforms_distfile_sha256": "3384eb1c30762704fbe38e440204e114154086c8fc8a8c2e3e28441028c019a8"
+  },
+  "native": {
+    "binary": "target/debug/bazel-rs (uncommitted N8 worktree, cargo build --locked --offline)",
+    "sha256": "20cd61db7266976e9257bd5cc0f7684c84a66adc18bb091a956ece005cb40097",
+    "flags": "--ignore_all_rc_files --cache-dir=cache <cmd> <target>"
+  },
+  "script": {
+    "path": "artifacts/n8-capture.py (ignored)",
+    "sha256": "9ce6b3616cdc064f6e342c0e68280d160680e528396a10465a52dcd3e06f220c"
+  },
+  "environment": "env -i PATH=/usr/bin:/bin LANG=LC_ALL=C.UTF-8, private HOME/TMPDIR, umask 022, scratch under /tmp/opencode removed",
+  "scratch_removed": true,
+  "labels": {
+    "EXACT": "identical exit class and output bytes/artifact",
+    "KNOWN_DIVERGENCE": "inner messages and native-test asserts match reference; only framing differs",
+    "MISMATCH": "behavior, inner message text, or a native-test-asserted string absent from reference stderr"
+  },
+  "step_label_counts": {
+    "EXACT": 16,
+    "KNOWN_DIVERGENCE": 28,
+    "MISMATCH": 2
+  },
+  "findings": {
+    "rerun_note": "Second run against the rebuilt native binary after the N8 fixes. The 'first_capture_*' entries record the mismatches found by the first run (prior native binary) and are kept for history; step labels/counts in this receipt come from this run's data only. Only the native-test location assert strings in S were updated to the genuine '<WS>/<file>:L:C: ' form; no comparison was weakened.",
+    "fixes_applied": [
+      "violation location now '<absolute requesting file path>:L:C:' (1-based line, Latin-1 byte column of the load string, no end column) for BUILD and .bzl requesters",
+      "bzl visibility() spec label syntax/errors ported from LabelParser/LabelValidator/RepositoryName.validate/Label.parseWithRepoContext (src/bazel_label.rs)"
+    ],
+    "remaining_divergences": [
+      "BUILD-file undefined name: native generic starlark-rust 'Variable `visibility` not found' vs Bazel \"name 'visibility' is not defined\" (applies to every undefined name, not N8-specific)",
+      "query failure exit 1 (native) vs 7 (Bazel)",
+      "framing: native joins violations + summary in one error without ERROR:/'error loading package'/'Target parsing failed' wrappers; .bzl init failures wrapped as 'cannot evaluate <label>:' with starlark-rust traceback",
+      "build success output: native stdout label<TAB>path vs Bazel stderr 'Target ... up-to-date'"
+    ],
+    "first_capture_mismatch_location_render": "Mirrored tests private_external/private_and_listed(c/sub)/bzl_to_bzl/module_extension(step 2) assert '<file>:L:C-ENDCOL: Starlark file ...' (e.g. 'BUILD.bazel:1:6-49:', '//b:user.bzl:1:6-23:', '//ext:ext.bzl:2:6-33:'); genuine Bazel 9.3 prints 'ERROR: <abs path>:L:C: Starlark file ...' with no end column, and for .bzl requesters the absolute file path (<WS>/b/user.bzl:1:6) instead of the label. The violation text after the location and the summary lines are verbatim equal; violation order equal.",
+    "first_capture_mismatch_build_file_visibility_undefined": "BUILD-file visibility(): Bazel 'ERROR: <WS>/a/BUILD.bazel:1:1: name 'visibility' is not defined' (then no such target); native 'error: Variable `visibility` not found' (generic starlark-rust text). Exit class equal; native test only asserts substring 'visibility' and absence of 'load visibility', both true in reference.",
+    "first_capture_mismatch_spec_parse_text": {
+      "//b:foo": [
+        "Bazel: invalid package name '//b:foo': invalid target name 'foo:__pkg__': target names may not contain ':'",
+        "native: invalid package name '//b:foo': unsupported target name \"foo:__pkg__\": this implementation accepts only ASCII letters, digits, '_', '-', '.', '+' and '/' (a stricter subset of Bazel label syntax)"
+      ],
+      "//b/../c": [
+        "Bazel: invalid package name '//b/../c': invalid package name 'b/../c': package name component contains only '.' characters",
+        "native: invalid package name '//b/../c': invalid package path \"b/../c\": empty, '.' and '..' path components are not allowed"
+      ],
+      "@package_metadata": [
+        "Bazel: invalid package name '@package_metadata': invalid repository name 'package_metadata:__pkg__': repo names may contain only A-Z, a-z, 0-9, '-', '_', '.' and '+'",
+        "native: invalid package name '@package_metadata': repository-only label shorthand is unsupported: \"@package_metadata:__pkg__\"; use @repository//:target"
+      ]
+    },
+    "first_capture_framing_only": [
+      "query failure exit code 7 (Bazel) vs 1 (native)",
+      "native joins violation lines + summary without ERROR: prefixes; Bazel wraps summary as \"error loading package '<pkg>': <summary>\" or, for the module extension, \"Target parsing failed due to unexpected exception: Error loading '//ext:ext.bzl' for module extensions, requested by <WS>/MODULE.bazel:4:16: <summary>: <summary>\"",
+      "native wraps .bzl init failures as 'cannot evaluate //a:defs.bzl: Traceback ...' with label paths and 'error: <msg>' + caret; Bazel 'Traceback ... File \"<abs>\", line N, column C ... Error in visibility: <msg>' then \"error loading package 'a': initialization of module 'a/defs.bzl' failed\"",
+      "build success: Bazel prints 'Target ... up-to-date' on stderr, native prints label<TAB>path on stdout; artifact bytes equal"
+    ],
+    "verbatim_matches": [
+      "all 7 visibility() call-error inner messages (top-level, set-once, tuple type, list element type, negative pattern, 'a' package name, post-init call from BUILD)",
+      "sorted(['public'], key=visibility) at top level -> 'load visibility may only be set at the top level, not inside a function' in both",
+      "list comprehension at top level may call visibility() in both; private enforced",
+      "unknown @nonexistent//b spec accepted at declaration in both; same-package load ok, //b denied",
+      "@//b, @@//c/..., @main//d:__pkg__, @main//f:__subpackages__ grant in both; //e and //d/z denied; @package_metadata//b and @@package_metadata+//b do not grant main //b",
+      "visibility([]) behaves as private; ['public'] and ['private', '//b'] accepted and //b may load; ['//b', '-//c'] -> 'Cannot use negative package patterns here'",
+      "private use_extension entry file //ext:ext.bzl not checked from MODULE.bazel (build ok, artifact 'made by helper' both); its transitive private load is checked in both"
+    ]
+  },
+  "scenarios": {
+    "public_external_provider_file_loads_from_build_and_bzl": {
+      "origin": "tests/bzl_visibility.rs",
+      "label": "KNOWN_DIVERGENCE",
+      "steps": [
+        {
+          "command": "query //pkg:m",
+          "mutations": [],
+          "label": "EXACT",
+          "reference_exit": 0,
+          "native_exit": 0,
+          "flags": {
+            "exit_class_equal": true,
+            "expected_success": true,
+            "stdout_bytes_equal": true,
+            "stdout_matches_test": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": []
+        },
+        {
+          "command": "build //pkg:m",
+          "mutations": [],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 0,
+          "native_exit": 0,
+          "flags": {
+            "exit_class_equal": true,
+            "expected_success": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "build_output_render(ref stderr \"Target ... up-to-date\"; native stdout label<TAB>path)"
+          ]
+        }
+      ]
+    },
+    "private_external_file_rejected_from_main_build_with_exact_text": {
+      "origin": "tests/bzl_visibility.rs",
+      "label": "KNOWN_DIVERGENCE",
+      "steps": [
+        {
+          "command": "query //:g",
+          "mutations": [],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "asserts_in_reference": true,
+            "asserts_in_native": true,
+            "stdout_empty_both": true,
+            "inner_messages_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)",
+            "native_joins_messages_without_ERROR_prefix_or_'error loading package'/'Target parsing failed' wrapper",
+            "location_render(ref <path>:line:col; native <path-or-label>:line:col-endcol)"
+          ],
+          "reference_inner_messages": [
+            "Starlark file @@package_metadata+//providers:internal.bzl is not visible for loading from package //. Check the file's `visibility()` declaration.",
+            "file //:BUILD.bazel contains .bzl load visibility violations"
+          ],
+          "inner_missing_in_native": [],
+          "inner_extra_in_native": []
+        }
+      ]
+    },
+    "private_and_listed_visibility_between_main_packages": {
+      "origin": "tests/bzl_visibility.rs",
+      "label": "KNOWN_DIVERGENCE",
+      "steps": [
+        {
+          "command": "query //a:same",
+          "mutations": [],
+          "label": "EXACT",
+          "reference_exit": 0,
+          "native_exit": 0,
+          "flags": {
+            "exit_class_equal": true,
+            "expected_success": true,
+            "stdout_bytes_equal": true,
+            "stdout_matches_test": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": []
+        },
+        {
+          "command": "query //b:ok",
+          "mutations": [
+            "b/BUILD.bazel"
+          ],
+          "label": "EXACT",
+          "reference_exit": 0,
+          "native_exit": 0,
+          "flags": {
+            "exit_class_equal": true,
+            "expected_success": true,
+            "stdout_bytes_equal": true,
+            "stdout_matches_test": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": []
+        },
+        {
+          "command": "query //b/sub:ok",
+          "mutations": [
+            "b/sub/BUILD.bazel"
+          ],
+          "label": "EXACT",
+          "reference_exit": 0,
+          "native_exit": 0,
+          "flags": {
+            "exit_class_equal": true,
+            "expected_success": true,
+            "stdout_bytes_equal": true,
+            "stdout_matches_test": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": []
+        },
+        {
+          "command": "query //c:ok",
+          "mutations": [
+            "c/BUILD.bazel"
+          ],
+          "label": "EXACT",
+          "reference_exit": 0,
+          "native_exit": 0,
+          "flags": {
+            "exit_class_equal": true,
+            "expected_success": true,
+            "stdout_bytes_equal": true,
+            "stdout_matches_test": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": []
+        },
+        {
+          "command": "query //c/sub:bad",
+          "mutations": [
+            "c/sub/BUILD.bazel"
+          ],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "asserts_in_reference": true,
+            "asserts_in_native": true,
+            "stdout_empty_both": true,
+            "order_reference": true,
+            "order_native": true,
+            "inner_messages_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)",
+            "native_joins_messages_without_ERROR_prefix_or_'error loading package'/'Target parsing failed' wrapper",
+            "location_render(ref <path>:line:col; native <path-or-label>:line:col-endcol)"
+          ],
+          "reference_inner_messages": [
+            "Starlark file //a:listed.bzl is not visible for loading from package //c/sub. Check the file's `visibility()` declaration.",
+            "Starlark file //a:private.bzl is not visible for loading from package //c/sub. Check the file's `visibility()` declaration.",
+            "file //c/sub:BUILD.bazel contains .bzl load visibility violations"
+          ],
+          "inner_missing_in_native": [],
+          "inner_extra_in_native": []
+        }
+      ]
+    },
+    "bzl_to_bzl_violation_names_the_requesting_module": {
+      "origin": "tests/bzl_visibility.rs",
+      "label": "KNOWN_DIVERGENCE",
+      "steps": [
+        {
+          "command": "query //b:g",
+          "mutations": [],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "asserts_in_reference": true,
+            "asserts_in_native": true,
+            "stdout_empty_both": true,
+            "inner_messages_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)",
+            "native_joins_messages_without_ERROR_prefix_or_'error loading package'/'Target parsing failed' wrapper",
+            "location_render(ref <path>:line:col; native <path-or-label>:line:col-endcol)"
+          ],
+          "reference_inner_messages": [
+            "Starlark file //a:private.bzl is not visible for loading from package //b. Check the file's `visibility()` declaration.",
+            "module //b:user.bzl contains .bzl load visibility violations"
+          ],
+          "inner_missing_in_native": [],
+          "inner_extra_in_native": []
+        }
+      ]
+    },
+    "module_extension_bzl_with_visibility_runs_and_checks_transitive_loads": {
+      "origin": "tests/bzl_visibility.rs",
+      "label": "KNOWN_DIVERGENCE",
+      "steps": [
+        {
+          "command": "build //:copy",
+          "mutations": [],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 0,
+          "native_exit": 0,
+          "flags": {
+            "exit_class_equal": true,
+            "expected_success": true,
+            "artifact_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "build_output_render(ref stderr \"Target ... up-to-date\"; native stdout label<TAB>path)"
+          ]
+        },
+        {
+          "command": "query @made//:data.txt",
+          "mutations": [
+            "ext/internal/helper.bzl"
+          ],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "asserts_in_reference": true,
+            "asserts_in_native": true,
+            "stdout_empty_both": true,
+            "inner_messages_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)",
+            "native_joins_messages_without_ERROR_prefix_or_'error loading package'/'Target parsing failed' wrapper",
+            "location_render(ref <path>:line:col; native <path-or-label>:line:col-endcol)"
+          ],
+          "reference_inner_messages": [
+            "Starlark file //ext/internal:helper.bzl is not visible for loading from package //ext. Check the file's `visibility()` declaration.",
+            "module //ext:ext.bzl contains .bzl load visibility violations"
+          ],
+          "inner_missing_in_native": [],
+          "inner_extra_in_native": []
+        }
+      ]
+    },
+    "visibility_call_errors_through_cli": {
+      "origin": "tests/bzl_visibility.rs",
+      "label": "MISMATCH",
+      "steps": [
+        {
+          "command": "query //a:g",
+          "mutations": [
+            "a/defs.bzl"
+          ],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "asserts_in_reference": true,
+            "asserts_in_native": true,
+            "stdout_empty_both": true,
+            "inner_messages_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)",
+            "native_wraps_'cannot evaluate <label>:'",
+            "traceback_render(ref File \"<path>\", line, column / Error in visibility:)"
+          ],
+          "reference_inner_messages": [
+            "load visibility may only be set at the top level, not inside a function"
+          ],
+          "inner_missing_in_native": [],
+          "inner_extra_in_native": []
+        },
+        {
+          "command": "query //a:g",
+          "mutations": [
+            "a/defs.bzl"
+          ],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "asserts_in_reference": true,
+            "asserts_in_native": true,
+            "stdout_empty_both": true,
+            "inner_messages_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)",
+            "native_wraps_'cannot evaluate <label>:'",
+            "traceback_render(ref File \"<path>\", line, column / Error in visibility:)"
+          ],
+          "reference_inner_messages": [
+            "load visibility may not be set more than once"
+          ],
+          "inner_missing_in_native": [],
+          "inner_extra_in_native": []
+        },
+        {
+          "command": "query //a:g",
+          "mutations": [
+            "a/defs.bzl"
+          ],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "asserts_in_reference": true,
+            "asserts_in_native": true,
+            "stdout_empty_both": true,
+            "inner_messages_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)",
+            "native_wraps_'cannot evaluate <label>:'",
+            "traceback_render(ref File \"<path>\", line, column / Error in visibility:)"
+          ],
+          "reference_inner_messages": [
+            "Invalid visibility: got 'tuple', want string or list of strings"
+          ],
+          "inner_missing_in_native": [],
+          "inner_extra_in_native": []
+        },
+        {
+          "command": "query //a:g",
+          "mutations": [
+            "a/defs.bzl"
+          ],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "asserts_in_reference": true,
+            "asserts_in_native": true,
+            "stdout_empty_both": true,
+            "inner_messages_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)",
+            "native_wraps_'cannot evaluate <label>:'",
+            "traceback_render(ref File \"<path>\", line, column / Error in visibility:)"
+          ],
+          "reference_inner_messages": [
+            "at index 1 of visibility list, got element of type int, want string"
+          ],
+          "inner_missing_in_native": [],
+          "inner_extra_in_native": []
+        },
+        {
+          "command": "query //a:g",
+          "mutations": [
+            "a/defs.bzl"
+          ],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "asserts_in_reference": true,
+            "asserts_in_native": true,
+            "stdout_empty_both": true,
+            "inner_messages_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)",
+            "native_wraps_'cannot evaluate <label>:'",
+            "traceback_render(ref File \"<path>\", line, column / Error in visibility:)"
+          ],
+          "reference_inner_messages": [
+            "Cannot use negative package patterns here"
+          ],
+          "inner_missing_in_native": [],
+          "inner_extra_in_native": []
+        },
+        {
+          "command": "query //a:g",
+          "mutations": [
+            "a/defs.bzl"
+          ],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "asserts_in_reference": true,
+            "asserts_in_native": true,
+            "stdout_empty_both": true,
+            "inner_messages_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)",
+            "native_wraps_'cannot evaluate <label>:'",
+            "traceback_render(ref File \"<path>\", line, column / Error in visibility:)"
+          ],
+          "reference_inner_messages": [
+            "invalid package name 'a': must start with '//', '@', or be 'public' or 'private'"
+          ],
+          "inner_missing_in_native": [],
+          "inner_extra_in_native": []
+        },
+        {
+          "command": "query //a:g",
+          "mutations": [
+            "a/BUILD.bazel",
+            "a/defs.bzl"
+          ],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "asserts_in_reference": true,
+            "asserts_in_native": true,
+            "stdout_empty_both": true,
+            "inner_messages_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)",
+            "traceback_render(ref File \"<path>\", line, column / Error in visibility:)"
+          ],
+          "reference_inner_messages": [
+            "visibility() can only be used during .bzl initialization (top-level evaluation)"
+          ],
+          "inner_missing_in_native": [],
+          "inner_extra_in_native": []
+        },
+        {
+          "command": "query //a:g",
+          "mutations": [
+            "a/BUILD.bazel"
+          ],
+          "label": "MISMATCH",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "asserts_in_reference": true,
+            "asserts_in_native": true,
+            "stdout_empty_both": true,
+            "inner_messages_equal": false
+          },
+          "mismatch_reasons": [
+            "inner_message_text"
+          ],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)"
+          ],
+          "reference_inner_messages": [
+            "name 'visibility' is not defined"
+          ],
+          "inner_missing_in_native": [
+            "name 'visibility' is not defined"
+          ],
+          "inner_extra_in_native": []
+        }
+      ]
+    },
+    "extra_build_file_visibility_undefined": {
+      "origin": "extra",
+      "label": "MISMATCH",
+      "steps": [
+        {
+          "command": "query //:g",
+          "mutations": [],
+          "label": "MISMATCH",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "asserts_in_reference": true,
+            "asserts_in_native": true,
+            "stdout_empty_both": true,
+            "inner_messages_equal": false
+          },
+          "mismatch_reasons": [
+            "inner_message_text"
+          ],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)"
+          ],
+          "reference_inner_messages": [
+            "name 'visibility' is not defined"
+          ],
+          "inner_missing_in_native": [
+            "name 'visibility' is not defined"
+          ],
+          "inner_extra_in_native": []
+        }
+      ]
+    },
+    "extra_unknown_apparent_repo_spec": {
+      "origin": "extra",
+      "label": "KNOWN_DIVERGENCE",
+      "steps": [
+        {
+          "command": "query //a:g",
+          "mutations": [],
+          "label": "EXACT",
+          "reference_exit": 0,
+          "native_exit": 0,
+          "flags": {
+            "exit_class_equal": true,
+            "expected_success": true,
+            "stdout_bytes_equal": true,
+            "stdout_matches_test": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": []
+        },
+        {
+          "command": "query //b:g",
+          "mutations": [],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "asserts_in_reference": true,
+            "asserts_in_native": true,
+            "stdout_empty_both": true,
+            "inner_messages_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)",
+            "native_joins_messages_without_ERROR_prefix_or_'error loading package'/'Target parsing failed' wrapper",
+            "location_render(ref <path>:line:col; native <path-or-label>:line:col-endcol)"
+          ],
+          "reference_inner_messages": [
+            "Starlark file //a:defs.bzl is not visible for loading from package //b. Check the file's `visibility()` declaration.",
+            "file //b:BUILD.bazel contains .bzl load visibility violations"
+          ],
+          "inner_missing_in_native": [],
+          "inner_extra_in_native": []
+        }
+      ]
+    },
+    "extra_sorted_key_visibility_top_level": {
+      "origin": "extra",
+      "label": "KNOWN_DIVERGENCE",
+      "steps": [
+        {
+          "command": "query //a:g",
+          "mutations": [],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "asserts_in_reference": true,
+            "asserts_in_native": true,
+            "stdout_empty_both": true,
+            "inner_messages_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)",
+            "native_wraps_'cannot evaluate <label>:'",
+            "traceback_render(ref File \"<path>\", line, column / Error in visibility:)"
+          ],
+          "reference_inner_messages": [
+            "load visibility may only be set at the top level, not inside a function"
+          ],
+          "inner_missing_in_native": [],
+          "inner_extra_in_native": []
+        }
+      ]
+    },
+    "extra_comprehension_top_level": {
+      "origin": "extra",
+      "label": "KNOWN_DIVERGENCE",
+      "steps": [
+        {
+          "command": "query //a:g",
+          "mutations": [],
+          "label": "EXACT",
+          "reference_exit": 0,
+          "native_exit": 0,
+          "flags": {
+            "exit_class_equal": true,
+            "expected_success": true,
+            "stdout_bytes_equal": true,
+            "stdout_matches_test": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": []
+        },
+        {
+          "command": "query //b:g",
+          "mutations": [],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "asserts_in_reference": true,
+            "asserts_in_native": true,
+            "stdout_empty_both": true,
+            "inner_messages_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)",
+            "native_joins_messages_without_ERROR_prefix_or_'error loading package'/'Target parsing failed' wrapper",
+            "location_render(ref <path>:line:col; native <path-or-label>:line:col-endcol)"
+          ],
+          "reference_inner_messages": [
+            "Starlark file //a:defs.bzl is not visible for loading from package //b. Check the file's `visibility()` declaration.",
+            "file //b:BUILD.bazel contains .bzl load visibility violations"
+          ],
+          "inner_missing_in_native": [],
+          "inner_extra_in_native": []
+        }
+      ]
+    },
+    "extra_repo_qualified_specs": {
+      "origin": "extra",
+      "label": "KNOWN_DIVERGENCE",
+      "steps": [
+        {
+          "command": "query //b:g",
+          "mutations": [],
+          "label": "EXACT",
+          "reference_exit": 0,
+          "native_exit": 0,
+          "flags": {
+            "exit_class_equal": true,
+            "expected_success": true,
+            "stdout_bytes_equal": true,
+            "stdout_matches_test": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": []
+        },
+        {
+          "command": "query //c/x:g",
+          "mutations": [],
+          "label": "EXACT",
+          "reference_exit": 0,
+          "native_exit": 0,
+          "flags": {
+            "exit_class_equal": true,
+            "expected_success": true,
+            "stdout_bytes_equal": true,
+            "stdout_matches_test": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": []
+        },
+        {
+          "command": "query //d:g",
+          "mutations": [],
+          "label": "EXACT",
+          "reference_exit": 0,
+          "native_exit": 0,
+          "flags": {
+            "exit_class_equal": true,
+            "expected_success": true,
+            "stdout_bytes_equal": true,
+            "stdout_matches_test": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": []
+        },
+        {
+          "command": "query //f/y:g",
+          "mutations": [],
+          "label": "EXACT",
+          "reference_exit": 0,
+          "native_exit": 0,
+          "flags": {
+            "exit_class_equal": true,
+            "expected_success": true,
+            "stdout_bytes_equal": true,
+            "stdout_matches_test": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": []
+        },
+        {
+          "command": "query //e:g",
+          "mutations": [],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "asserts_in_reference": true,
+            "asserts_in_native": true,
+            "stdout_empty_both": true,
+            "inner_messages_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)",
+            "native_joins_messages_without_ERROR_prefix_or_'error loading package'/'Target parsing failed' wrapper",
+            "location_render(ref <path>:line:col; native <path-or-label>:line:col-endcol)"
+          ],
+          "reference_inner_messages": [
+            "Starlark file //a:defs.bzl is not visible for loading from package //e. Check the file's `visibility()` declaration.",
+            "file //e:BUILD.bazel contains .bzl load visibility violations"
+          ],
+          "inner_missing_in_native": [],
+          "inner_extra_in_native": []
+        },
+        {
+          "command": "query //d/z:g",
+          "mutations": [],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "asserts_in_reference": true,
+            "asserts_in_native": true,
+            "stdout_empty_both": true,
+            "inner_messages_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)",
+            "native_joins_messages_without_ERROR_prefix_or_'error loading package'/'Target parsing failed' wrapper",
+            "location_render(ref <path>:line:col; native <path-or-label>:line:col-endcol)"
+          ],
+          "reference_inner_messages": [
+            "Starlark file //a:defs.bzl is not visible for loading from package //d/z. Check the file's `visibility()` declaration.",
+            "file //d/z:BUILD.bazel contains .bzl load visibility violations"
+          ],
+          "inner_missing_in_native": [],
+          "inner_extra_in_native": []
+        }
+      ]
+    },
+    "extra_external_spec_does_not_grant_main": {
+      "origin": "extra",
+      "label": "KNOWN_DIVERGENCE",
+      "steps": [
+        {
+          "command": "query //b:g",
+          "mutations": [],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "asserts_in_reference": true,
+            "asserts_in_native": true,
+            "stdout_empty_both": true,
+            "inner_messages_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)",
+            "native_joins_messages_without_ERROR_prefix_or_'error loading package'/'Target parsing failed' wrapper",
+            "location_render(ref <path>:line:col; native <path-or-label>:line:col-endcol)"
+          ],
+          "reference_inner_messages": [
+            "Starlark file //a:defs.bzl is not visible for loading from package //b. Check the file's `visibility()` declaration.",
+            "file //b:BUILD.bazel contains .bzl load visibility violations"
+          ],
+          "inner_missing_in_native": [],
+          "inner_extra_in_native": []
+        }
+      ]
+    },
+    "extra_empty_list_is_private": {
+      "origin": "extra",
+      "label": "KNOWN_DIVERGENCE",
+      "steps": [
+        {
+          "command": "query //a:g",
+          "mutations": [],
+          "label": "EXACT",
+          "reference_exit": 0,
+          "native_exit": 0,
+          "flags": {
+            "exit_class_equal": true,
+            "expected_success": true,
+            "stdout_bytes_equal": true,
+            "stdout_matches_test": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": []
+        },
+        {
+          "command": "query //b:g",
+          "mutations": [],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "asserts_in_reference": true,
+            "asserts_in_native": true,
+            "stdout_empty_both": true,
+            "inner_messages_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)",
+            "native_joins_messages_without_ERROR_prefix_or_'error loading package'/'Target parsing failed' wrapper",
+            "location_render(ref <path>:line:col; native <path-or-label>:line:col-endcol)"
+          ],
+          "reference_inner_messages": [
+            "Starlark file //a:defs.bzl is not visible for loading from package //b. Check the file's `visibility()` declaration.",
+            "file //b:BUILD.bazel contains .bzl load visibility violations"
+          ],
+          "inner_missing_in_native": [],
+          "inner_extra_in_native": []
+        }
+      ]
+    },
+    "extra_spec_public_in_list": {
+      "origin": "extra",
+      "label": "EXACT",
+      "steps": [
+        {
+          "command": "query //a:g",
+          "mutations": [],
+          "label": "EXACT",
+          "reference_exit": 0,
+          "native_exit": 0,
+          "flags": {
+            "exit_class_equal": true,
+            "expected_success": true,
+            "stdout_bytes_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": []
+        },
+        {
+          "command": "query //b:g",
+          "mutations": [],
+          "label": "EXACT",
+          "reference_exit": 0,
+          "native_exit": 0,
+          "flags": {
+            "exit_class_equal": true,
+            "expected_success": true,
+            "stdout_bytes_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": []
+        }
+      ]
+    },
+    "extra_spec_private_in_list": {
+      "origin": "extra",
+      "label": "EXACT",
+      "steps": [
+        {
+          "command": "query //a:g",
+          "mutations": [],
+          "label": "EXACT",
+          "reference_exit": 0,
+          "native_exit": 0,
+          "flags": {
+            "exit_class_equal": true,
+            "expected_success": true,
+            "stdout_bytes_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": []
+        },
+        {
+          "command": "query //b:g",
+          "mutations": [],
+          "label": "EXACT",
+          "reference_exit": 0,
+          "native_exit": 0,
+          "flags": {
+            "exit_class_equal": true,
+            "expected_success": true,
+            "stdout_bytes_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": []
+        }
+      ]
+    },
+    "extra_spec_target_label_spec": {
+      "origin": "extra",
+      "label": "KNOWN_DIVERGENCE",
+      "steps": [
+        {
+          "command": "query //a:g",
+          "mutations": [],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "inner_messages_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)",
+            "native_wraps_'cannot evaluate <label>:'",
+            "traceback_render(ref File \"<path>\", line, column / Error in visibility:)"
+          ],
+          "reference_inner_messages": [
+            "invalid package name '//b:foo': invalid target name 'foo:__pkg__': target names may not contain ':'"
+          ],
+          "inner_missing_in_native": [],
+          "inner_extra_in_native": []
+        },
+        {
+          "command": "query //b:g",
+          "mutations": [],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "inner_messages_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)",
+            "native_wraps_'cannot evaluate <label>:'",
+            "traceback_render(ref File \"<path>\", line, column / Error in visibility:)"
+          ],
+          "reference_inner_messages": [
+            "invalid package name '//b:foo': invalid target name 'foo:__pkg__': target names may not contain ':'"
+          ],
+          "inner_missing_in_native": [],
+          "inner_extra_in_native": []
+        }
+      ]
+    },
+    "extra_spec_dotdot_spec": {
+      "origin": "extra",
+      "label": "KNOWN_DIVERGENCE",
+      "steps": [
+        {
+          "command": "query //a:g",
+          "mutations": [],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "inner_messages_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)",
+            "native_wraps_'cannot evaluate <label>:'",
+            "traceback_render(ref File \"<path>\", line, column / Error in visibility:)"
+          ],
+          "reference_inner_messages": [
+            "invalid package name '//b/../c': invalid package name 'b/../c': package name component contains only '.' characters"
+          ],
+          "inner_missing_in_native": [],
+          "inner_extra_in_native": []
+        },
+        {
+          "command": "query //b:g",
+          "mutations": [],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "inner_messages_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)",
+            "native_wraps_'cannot evaluate <label>:'",
+            "traceback_render(ref File \"<path>\", line, column / Error in visibility:)"
+          ],
+          "reference_inner_messages": [
+            "invalid package name '//b/../c': invalid package name 'b/../c': package name component contains only '.' characters"
+          ],
+          "inner_missing_in_native": [],
+          "inner_extra_in_native": []
+        }
+      ]
+    },
+    "extra_spec_repo_only_spec": {
+      "origin": "extra",
+      "label": "KNOWN_DIVERGENCE",
+      "steps": [
+        {
+          "command": "query //a:g",
+          "mutations": [],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "inner_messages_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)",
+            "native_wraps_'cannot evaluate <label>:'",
+            "traceback_render(ref File \"<path>\", line, column / Error in visibility:)"
+          ],
+          "reference_inner_messages": [
+            "invalid package name '@package_metadata': invalid repository name 'package_metadata:__pkg__': repo names may contain only A-Z, a-z, 0-9, '-', '_', '.' and '+'"
+          ],
+          "inner_missing_in_native": [],
+          "inner_extra_in_native": []
+        },
+        {
+          "command": "query //b:g",
+          "mutations": [],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "inner_messages_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)",
+            "native_wraps_'cannot evaluate <label>:'",
+            "traceback_render(ref File \"<path>\", line, column / Error in visibility:)"
+          ],
+          "reference_inner_messages": [
+            "invalid package name '@package_metadata': invalid repository name 'package_metadata:__pkg__': repo names may contain only A-Z, a-z, 0-9, '-', '_', '.' and '+'"
+          ],
+          "inner_missing_in_native": [],
+          "inner_extra_in_native": []
+        }
+      ]
+    },
+    "extra_spec_neg_in_list": {
+      "origin": "extra",
+      "label": "KNOWN_DIVERGENCE",
+      "steps": [
+        {
+          "command": "query //a:g",
+          "mutations": [],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "inner_messages_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)",
+            "native_wraps_'cannot evaluate <label>:'",
+            "traceback_render(ref File \"<path>\", line, column / Error in visibility:)"
+          ],
+          "reference_inner_messages": [
+            "Cannot use negative package patterns here"
+          ],
+          "inner_missing_in_native": [],
+          "inner_extra_in_native": []
+        },
+        {
+          "command": "query //b:g",
+          "mutations": [],
+          "label": "KNOWN_DIVERGENCE",
+          "reference_exit": 7,
+          "native_exit": 1,
+          "flags": {
+            "exit_class_equal": true,
+            "inner_messages_equal": true
+          },
+          "mismatch_reasons": [],
+          "framing_differences": [
+            "exit_code_value(ref=7,native=1)",
+            "native_wraps_'cannot evaluate <label>:'",
+            "traceback_render(ref File \"<path>\", line, column / Error in visibility:)"
+          ],
+          "reference_inner_messages": [
+            "Cannot use negative package patterns here"
+          ],
+          "inner_missing_in_native": [],
+          "inner_extra_in_native": []
+        }
+      ]
+    }
+  }
+}

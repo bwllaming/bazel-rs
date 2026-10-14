@@ -141,6 +141,8 @@ checks and preserves genuine `maybe()` duplicate-declaration behavior.
 profile with real expansion, definition ownership and source/visibility checks.
 [Package specifications](docs/PACKAGE_SPECIFICATIONS.md) connect native groups,
 provider-constrained consumers, membership and visibility checks.
+[`.bzl` load visibility](docs/BZL_VISIBILITY.md) emulates `visibility()` and
+per-requesting-package load checks with Bazel's exact diagnostics.
 [Run-environment metadata](docs/RUN_ENVIRONMENT_INFO.md) supports native snapshots
 and nested transport to explicit consumers, not automatic run/test environments.
 [Root MODULE validation](docs/ROOT_MODULE_VALIDATION.md) records the root before

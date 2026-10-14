@@ -25,7 +25,7 @@ pub(crate) const PROVIDER_ID: &str = "builtin:PackageSpecificationInfo";
 const MAX_PATH_NODES: usize = 256;
 
 #[derive(Clone, Debug, Allocative)]
-enum Specification {
+pub(crate) enum Specification {
     Public,
     Private,
     Package {
@@ -36,7 +36,7 @@ enum Specification {
 }
 
 impl Specification {
-    fn contains(&self, target: &PackageId) -> bool {
+    pub(crate) fn contains(&self, target: &PackageId) -> bool {
         match self {
             Self::Public => true,
             Self::Private => false,
@@ -168,6 +168,128 @@ pub(crate) fn parse_specs(
         }
     }
     Ok(contents)
+}
+
+/// `PackageSpecification.fromStringForBzlVisibility` (PackageSpecification.java
+/// 233-252): `fromString` with `allowPublicPrivate` and
+/// `repoRootMeansCurrentRepo` both true, then negative patterns rejected.
+/// `repository` is the canonical repository of the `.bzl` being initialized;
+/// apparent names use that repository's mapping. Label syntax and its error
+/// text follow Bazel's own grammar (`crate::bazel_label`), not the stricter
+/// native label profile.
+pub(crate) fn from_string_for_bzl_visibility(
+    repos: &RepositorySet,
+    repository: &str,
+    raw: &str,
+) -> Result<Specification, String> {
+    // PackageSpecification.java:142-150: a "-" prefix is stripped before the
+    // positive parse; negated public/private fail first with their own text.
+    let (negative, spec) = raw.strip_prefix('-').map_or((false, raw), |s| (true, s));
+    if negative && matches!(spec, "public" | "private") {
+        return Err(format!("Cannot negate \"{spec}\" package specification"));
+    }
+    let positive = bzl_spec_positive(repos, repository, spec)?;
+    if negative {
+        // PackageSpecification.java:248-250.
+        return Err("Cannot use negative package patterns here".to_owned());
+    }
+    Ok(positive)
+}
+
+/// Bazel's `LabelSyntaxException` (caught or wrapped) versus a native
+/// repository-resolution failure, which Bazel's infallible mapping lookup
+/// cannot produce and which is therefore always propagated unchanged.
+enum SpecLabelError {
+    Syntax(String),
+    Resolution(String),
+}
+
+/// `fromStringPositive` (PackageSpecification.java:155-214).
+fn bzl_spec_positive(
+    repos: &RepositorySet,
+    repository: &str,
+    spec: &str,
+) -> Result<Specification, String> {
+    match spec {
+        "public" => return Ok(Specification::Public),
+        "private" => return Ok(Specification::Private),
+        _ => {}
+    }
+    if !spec.starts_with("//") && !spec.starts_with('@') {
+        return Err(format!(
+            "invalid package name '{spec}': must start with '//', '@', or be 'public' or 'private'"
+        ));
+    }
+    // A label naming a sentinel target wins; syntax errors fall through.
+    match bzl_spec_label(repos, repository, spec) {
+        Ok((resolved, name)) if name == "__pkg__" => return Ok(bzl_spec_package(resolved, false)),
+        Ok((resolved, name)) if name == "__subpackages__" => {
+            return Ok(bzl_spec_package(resolved, true));
+        }
+        Ok(_) | Err(SpecLabelError::Syntax(_)) => {}
+        Err(SpecLabelError::Resolution(error)) => return Err(error),
+    }
+    let (path, subtree) = match spec.strip_suffix("/...") {
+        // "//..." means the current repository's root and everything beneath.
+        Some("/") => ("//".to_owned(), true),
+        // "@repo//..." keeps the "//" separator.
+        Some(prefix) if spec.ends_with("//...") => (format!("{prefix}/"), true),
+        Some(prefix) => (prefix.to_owned(), true),
+        None => (spec.to_owned(), false),
+    };
+    match bzl_spec_label(repos, repository, &format!("{path}:__pkg__")) {
+        Ok((resolved, _)) => Ok(bzl_spec_package(resolved, subtree)),
+        Err(SpecLabelError::Syntax(error)) => {
+            Err(format!("invalid package name '{spec}': {error}"))
+        }
+        Err(SpecLabelError::Resolution(error)) => Err(error),
+    }
+}
+
+/// `Label.parseWithRepoContext` with the declaring repository's mapping
+/// (Label.java:177-208). An unknown apparent repository never fails in Bazel:
+/// `RepositoryMapping.get` returns an invisible RepositoryName equal to no real
+/// package's repository. `None` models that.
+fn bzl_spec_label(
+    repos: &RepositorySet,
+    repository: &str,
+    text: &str,
+) -> Result<(Option<PackageId>, String), SpecLabelError> {
+    let parts =
+        crate::bazel_label::Parts::parse_with_repo_context(text).map_err(SpecLabelError::Syntax)?;
+    let resolved = match parts.repo {
+        // ABSOLUTE_PACKAGE_NAMES stay in the main repository.
+        None if matches!(parts.pkg, "conditions" | "visibility") => Some(String::new()),
+        None => Some(repository.to_owned()),
+        Some(canonical) if parts.repo_is_canonical => Some(canonical.to_owned()),
+        Some(apparent) => match repos.parse(&format!("@{apparent}//:x"), repository, "") {
+            Ok(label) => Some(label.repository),
+            Err(error) if error.starts_with("unknown apparent repository") => None,
+            Err(error) => return Err(SpecLabelError::Resolution(error)),
+        },
+    };
+    Ok((
+        resolved.map(|repository| PackageId {
+            repository,
+            package: parts.pkg.to_owned(),
+        }),
+        parts.target.to_owned(),
+    ))
+}
+
+fn bzl_spec_package(package: Option<PackageId>, subtree: bool) -> Specification {
+    match package {
+        Some(PackageId {
+            repository,
+            package,
+        }) => Specification::Package {
+            repository,
+            package,
+            subtree,
+        },
+        // An invisible repository contains no package: identical membership.
+        None => Specification::Private,
+    }
 }
 
 /// Shared nodes preserve group boundaries: an included positive can re-add a

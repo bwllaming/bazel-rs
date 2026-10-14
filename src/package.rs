@@ -756,6 +756,8 @@ fn bzl_globals_for(phase: BzlPhase) -> Globals {
     crate::symbolic_macro::globals(&mut bzl);
     crate::subrule::globals(&mut bzl);
     crate::json::install(&mut bzl);
+    // BazelBuildApiGlobals (Environment.BZL): every .bzl context, never BUILD.
+    crate::bzl_visibility::globals(&mut bzl);
     bzl.build()
 }
 

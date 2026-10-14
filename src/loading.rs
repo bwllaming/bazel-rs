@@ -1,6 +1,7 @@
 //! Repository-aware `.bzl` loading. Package BUILD files establish boundaries;
 //! they are never evaluated as a side effect of loading an extension.
 
+use crate::bzl_visibility::{BzlVisibility, InitGuard, check_load_visibilities};
 use crate::label::{Label, PackageId};
 use crate::repository::RepositorySet;
 use crate::workspace::{has_marker, package_build_file};
@@ -243,6 +244,19 @@ pub fn load_modules_with_functions_in(
     for label in labels {
         loader.load(label)?;
     }
+    // PackageFunction.java:1134-1154: BUILD loads are checked against the
+    // package with the description "file <canonical BUILD label>".
+    let file_span = ast.file_span(ast.statement().span);
+    let build_name = Path::new(file_span.filename())
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("BUILD");
+    let build = Label {
+        repository: package.repository.clone(),
+        package: package.package.clone(),
+        name: build_name.to_owned(),
+    };
+    loader.check_load_visibilities(package, &format!("file {build}"), file_span.filename(), ast)?;
     Ok(LoadedModules {
         modules: loader.imports(package, ast)?,
         functions: loader.functions,
@@ -290,6 +304,8 @@ struct Loader<'a> {
     repositories: Arc<RepositorySet>,
     globals: &'a Globals,
     cache: HashMap<Label, FrozenModule>,
+    /// Stored with each frozen module; checks are per requesting package.
+    visibilities: HashMap<Label, BzlVisibility>,
     functions: Vec<OwnedFrozenValue>,
     provenance_capture: bool,
     sources: BTreeMap<String, SourceProvenance>,
@@ -297,7 +313,7 @@ struct Loader<'a> {
 
 enum Work {
     Enter(Label),
-    Finish(Label, Box<AstModule>),
+    Finish(Label, PathBuf, Box<AstModule>),
 }
 
 impl<'a> Loader<'a> {
@@ -310,6 +326,7 @@ impl<'a> Loader<'a> {
             repositories,
             globals,
             cache: HashMap::new(),
+            visibilities: HashMap::new(),
             functions: Vec::new(),
             provenance_capture,
             sources: BTreeMap::new(),
@@ -365,21 +382,30 @@ impl<'a> Loader<'a> {
                     validate_bzl_load_order(&ast)?;
                     let dependencies = dependencies(&self.repositories, &label.package_id(), &ast)?;
                     active.push(label.clone());
-                    work.push(Work::Finish(label, Box::new(ast)));
+                    work.push(Work::Finish(label, path, Box::new(ast)));
                     work.extend(dependencies.into_iter().rev().map(Work::Enter));
                 }
-                Work::Finish(label, ast) => {
+                Work::Finish(label, path, ast) => {
                     let function_names = top_level_function_names(&ast);
+                    // BzlLoadFunction.java:845-856: after the direct loads are
+                    // computed, before this file executes.
+                    self.check_load_visibilities(
+                        &label.package_id(),
+                        &format!("module {label}"),
+                        &path.to_string_lossy(),
+                        &ast,
+                    )?;
                     let imports = self.imports(&label.package_id(), &ast)?;
                     let modules = imports.iter().map(|(id, m)| (id.as_str(), m)).collect();
                     let file_loader = ReturnFileLoader { modules: &modules };
-                    let frozen = Module::with_temp_heap(|module| {
-                        {
+                    let (frozen, visibility) = Module::with_temp_heap(|module| {
+                        let visibility = {
                             let context = ExtensionContext {
                                 label: label.clone(),
                                 repositories: self.repositories.clone(),
                                 byte_strings: self.provenance_capture,
                             };
+                            let initialization = InitGuard::begin(&context);
                             let mut eval = Evaluator::new(&module);
                             eval.extra = Some(&context);
                             eval.set_max_callstack_size(128)
@@ -396,10 +422,13 @@ impl<'a> Loader<'a> {
                             eval.set_loader(&file_loader);
                             eval.eval_module(*ast, self.globals)
                                 .map_err(|e| format!("cannot evaluate {label}: {e}"))?;
-                        }
+                            drop(eval);
+                            initialization.finish()
+                        };
                         module
                             .freeze_named(FrozenHeapName::User(Box::new(label.to_string())))
                             .map_err(|e| format!("cannot freeze {label}: {e:?}"))
+                            .map(|frozen| (frozen, visibility))
                     })?;
                     for name in function_names {
                         let (function, _) = frozen.get_any_visibility(&name).map_err(|e| {
@@ -408,12 +437,33 @@ impl<'a> Loader<'a> {
                         self.functions.push(function);
                     }
                     self.cache.insert(label.clone(), frozen);
+                    self.visibilities.insert(label.clone(), visibility);
                     let finished = active.pop();
                     debug_assert_eq!(finished.as_ref(), Some(&label));
                 }
             }
         }
         Ok(())
+    }
+
+    fn check_load_visibilities(
+        &self,
+        package: &PackageId,
+        description: &str,
+        path: &str,
+        ast: &AstModule,
+    ) -> Result<(), String> {
+        let mut loads = Vec::new();
+        for load in ast.loads() {
+            let label =
+                self.repositories
+                    .parse(load.module_id, &package.repository, &package.package)?;
+            let visibility = self.visibilities.get(&label).ok_or_else(|| {
+                format!("internal loader error: module {label} was not evaluated")
+            })?;
+            loads.push((label, visibility));
+        }
+        check_load_visibilities(package, description, path, ast, loads)
     }
 
     fn imports(
