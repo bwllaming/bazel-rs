@@ -550,6 +550,15 @@ fn alloc_attrs<'v>(
                 heap.alloc(value.clone())
             }
             AttrValue::Int(value) => heap.alloc(*value),
+            AttrValue::StringDict(entries) => {
+                ensure!(
+                    entries
+                        .iter()
+                        .all(|(key, value)| key.is_ascii() && value.is_ascii()),
+                    "repository string attributes must be ASCII"
+                );
+                crate::attribute_values::alloc_string_dict(heap, entries)?
+            }
             AttrValue::StringListDict(entries) => {
                 ensure!(
                     entries
@@ -743,6 +752,38 @@ mod tests {
             serde_json::to_string(&ExecutionInputs::default()).unwrap(),
             r#"{"templates":[]}"#
         );
+    }
+
+    #[test]
+    fn string_dict_repository_projection_drives_ordered_template_and_is_frozen() {
+        let fixture = Fixture::new();
+        let schema = "{'d':attr.string_dict(default={'AB':'Z', 'Z':'Q'})}";
+        let loaded = fixture.load("(ctx.attr.d.keys() == ['AB','Z'] and type(ctx.attr.d['AB']) == 'string') or fail('projection')\nctx.file('in', 'AB')\nctx.template('out', 'in', ctx.attr.d)", schema);
+        fixture.run_loaded(loaded, BTreeMap::new()).unwrap();
+        assert_eq!(fixture.bytes("out"), b"Q");
+        let loaded = fixture.load("ctx.attr.d['AB']='changed'", schema);
+        let error = fixture
+            .run_loaded(loaded, BTreeMap::new())
+            .unwrap_err()
+            .to_lowercase();
+        assert!(
+            error.contains("frozen") || error.contains("immutable"),
+            "{error}"
+        );
+        Module::with_temp_heap(|module| {
+            for (key, value) in [("é", "ok"), ("k", "é")] {
+                let attrs = BTreeMap::from([(
+                    "d".into(),
+                    AttrValue::StringDict(vec![(key.into(), value.into())]),
+                )]);
+                assert!(
+                    alloc_attrs(module.heap(), &attrs, "repo")
+                        .unwrap_err()
+                        .to_string()
+                        .contains("ASCII")
+                );
+            }
+        });
     }
 
     #[test]

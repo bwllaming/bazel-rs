@@ -174,6 +174,17 @@ checkout is unchanged; no application query/build/test success is claimed.
 
 ## Remaining compatibility gates
 
+### Scalar string dictionaries (isolated branch verified)
+
+- [x] Add ordered scalar `attr.string_dict` values across declaration, binding,
+      snapshots, frozen projections and real rule/repository/tag consumers.
+- [x] Verify 1,183 Rust/700 Python tests, 140 comparison phases/369 commands and
+      five targeted regression matrices with independent bounded-profile review.
+
+Safe loaded-BUILD constructor behavior intentionally differs from a reference
+crash. Configurable/select/macro and repository Unicode boundaries remain explicit;
+combined host-metadata integration is a separate verification gate.
+
 ### Repository environment dependencies
 
 - [x] Observe declared and dynamic repository environment inputs lazily, with

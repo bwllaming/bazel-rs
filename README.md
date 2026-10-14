@@ -150,6 +150,8 @@ real actions and guarded contexts; private dependency attributes remain unsuppor
 handling rather than the interpreter's incompatible generic serialization path.
 [Repository environment inputs](docs/REPOSITORY_ENVIRONMENT.md) track declared
 and dynamic named reads without exposing a fabricated OS environment dictionary.
+[Scalar string dictionaries](docs/STRING_DICT.md) preserve insertion order and
+snapshot semantics through rule, tag and repository attribute consumers.
 [Genuine built-in modules](docs/BUILTIN_MODULES.md) are available through the
 native-only `--experimental-builtin-modules` transition option, using complete
 verified Linux x86-64 resources; the default remains explicit modules only.

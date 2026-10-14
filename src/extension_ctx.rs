@@ -383,6 +383,15 @@ fn alloc_attrs<'v>(
         let value = match attr {
             AttrValue::String(value) => heap.alloc(value.as_str()),
             AttrValue::Strings(values) => heap.alloc(values.clone()),
+            AttrValue::StringDict(entries) => {
+                ensure!(
+                    entries
+                        .iter()
+                        .all(|(key, value)| key.is_ascii() && value.is_ascii()),
+                    "tag string attributes must be ASCII"
+                );
+                crate::attribute_values::alloc_string_dict(heap, entries)?
+            }
             AttrValue::StringListDict(entries) => {
                 crate::attribute_values::alloc_string_list_dict(heap, entries)?
             }
@@ -705,6 +714,45 @@ ctx.is_dev_dependency(t) or fail('hidden dev flag')
             result.modules[0].tags["t"][0].attributes["src"],
             AttrValue::Label(Some("//:supplied".to_owned()))
         );
+    }
+
+    #[test]
+    fn string_dict_tag_projection_is_ordered_scalar_and_frozen() {
+        let fixture = Fixture::new();
+        let participants = [participant(vec![tag(
+            "t",
+            0,
+            json!({"d":{"z":"@missing//p:t", "a":""}}),
+            false,
+        )])];
+        let schema = "{'t':tag_class({'d':attr.string_dict(allow_empty=False)})}";
+        fixture.run("d=ctx.modules[0].tags.t[0].d\n(d.keys() == ['z','a'] and d.values() == ['@missing//p:t',''] and type(d['z']) == 'string') or fail('projection')", schema, &participants).unwrap();
+        let error = fixture
+            .run(
+                "ctx.modules[0].tags.t[0].d['z']='changed'",
+                schema,
+                &participants,
+            )
+            .unwrap_err()
+            .to_lowercase();
+        assert!(
+            error.contains("frozen") || error.contains("immutable"),
+            "{error}"
+        );
+        Module::with_temp_heap(|module| {
+            for (key, value) in [("é", "ok"), ("k", "é")] {
+                let attrs = BTreeMap::from([(
+                    "d".into(),
+                    AttrValue::StringDict(vec![(key.into(), value.into())]),
+                )]);
+                assert!(
+                    alloc_attrs(module.heap(), &attrs)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("ASCII")
+                );
+            }
+        });
     }
 
     #[test]

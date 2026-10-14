@@ -126,6 +126,9 @@ fn make_ctx<'v>(
         let attr = match value {
             AttrValue::String(value) => heap.alloc(value.as_str()),
             AttrValue::Strings(value) => heap.alloc(value.clone()),
+            AttrValue::StringDict(entries) => {
+                crate::attribute_values::alloc_string_dict(heap, entries)?
+            }
             AttrValue::StringListDict(entries) => {
                 crate::attribute_values::alloc_string_list_dict(heap, entries)?
             }
@@ -286,7 +289,11 @@ fn analyze_inner(
         .ok_or_else(|| anyhow!("not a custom rule"))?;
     for (name, spec) in &invocation.schema {
         if spec.non_empty
-            && matches!(invocation.attrs.get(name), Some(AttrValue::StringListDict(entries)) if entries.is_empty())
+            && match invocation.attrs.get(name) {
+                Some(AttrValue::StringListDict(entries)) => entries.is_empty(),
+                Some(AttrValue::StringDict(entries)) => entries.is_empty(),
+                _ => false,
+            }
         {
             return Err(anyhow!("attribute {name}: attribute must be non empty"));
         }
@@ -403,6 +410,70 @@ mod tests {
     use crate::label::Label;
     use starlark::environment::Globals;
     use starlark::syntax::{AstModule, Dialect};
+
+    #[test]
+    fn string_dict_analysis_nonempty_freeze_unicode_and_action_environment() {
+        let root = tempfile::Builder::new()
+            .prefix("string-dict-analysis-")
+            .tempdir_in("/tmp/opencode")
+            .unwrap();
+        std::fs::write(
+            root.path().join("defs.bzl"),
+            r#"
+def impl(ctx):
+    d = ctx.attr.d
+    if ctx.attr.mutate:
+        d["new"] = "changed"
+    out = ctx.actions.declare_file(ctx.label.name + ".out")
+    ctx.actions.run_shell(outputs=[out], command="unused", env=d)
+    return [DefaultInfo(files=depset([out]))]
+r = rule(implementation=impl, attrs={"d":attr.string_dict(allow_empty=False), "mutate":attr.bool()})
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("BUILD.bazel"),
+            r#"
+load(":defs.bzl", "r")
+r(name="omitted")
+r(name="empty", d={})
+r(name="blank", d={"z":""})
+r(name="good", d={"z":"café☃", "a":"@missing//p:t"})
+r(name="mutate", d={"z":"v"}, mutate=True)
+"#,
+        )
+        .unwrap();
+        // Loading/query succeeds for both omitted and explicit empty values.
+        let package = crate::package::evaluate(root.path(), "").unwrap();
+        for name in ["omitted", "empty"] {
+            let rule = &package[&Label::parse(&format!("//:{name}"), "").unwrap()];
+            assert!(
+                analyze(rule, &BTreeMap::new())
+                    .unwrap_err()
+                    .contains("attribute must be non empty")
+            );
+        }
+        let rule = &package[&Label::parse("//:good", "").unwrap()];
+        assert!(rule.srcs.is_empty());
+        let result = analyze(rule, &BTreeMap::new()).unwrap();
+        assert_eq!(result.actions[0].action.environment["z"], "café☃");
+        assert_eq!(result.actions[0].action.environment["a"], "@missing//p:t");
+        analyze(
+            &package[&Label::parse("//:blank", "").unwrap()],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let error = analyze(
+            &package[&Label::parse("//:mutate", "").unwrap()],
+            &BTreeMap::new(),
+        )
+        .unwrap_err()
+        .to_lowercase();
+        assert!(
+            error.contains("frozen") || error.contains("immutable"),
+            "{error}"
+        );
+    }
 
     #[test]
     fn run_environment_direct_return_rejected_after_callback_before_action_handoff() {

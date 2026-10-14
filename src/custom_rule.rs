@@ -24,6 +24,7 @@ pub enum AttrKind {
     String,
     StringList,
     StringListDict,
+    StringDict,
     Int,
     Bool,
     Label,
@@ -36,6 +37,7 @@ pub enum AttrValue {
     String(String),
     Strings(Vec<String>),
     StringListDict(Vec<(String, Vec<String>)>),
+    StringDict(Vec<(String, String)>),
     Int(i32),
     Bool(bool),
     Label(Option<String>),
@@ -226,6 +228,15 @@ impl AttrKind {
             {
                 Some("a dict of strings to a list of strings (or tuple of strings)")
             }
+            Self::StringDict
+                if !DictRef::from_value(value).is_some_and(|dict| {
+                    dict.iter().all(|(key, value)| {
+                        key.unpack_str().is_some() && value.unpack_str().is_some()
+                    })
+                }) =>
+            {
+                Some("a dict of strings to strings")
+            }
             Self::Int if value.unpack_i32().is_none() => Some("a 32-bit int"),
             Self::Bool if value.unpack_bool().is_none() => Some("a bool"),
             Self::Label if !value.is_none() && !is_label(value) => Some("a string or Label"),
@@ -274,8 +285,10 @@ impl AttrKind {
                 charge(key).map_err(anyhow::Error::msg)?;
                 charge(values).map_err(anyhow::Error::msg)?;
                 // The complete shape was checked above, before any budget errors.
-                for &value in sequence_ref(values).expect("validated attribute sequence") {
-                    charge(value).map_err(anyhow::Error::msg)?;
+                if matches!(self, Self::StringListDict) {
+                    for &value in sequence_ref(values).expect("validated attribute sequence") {
+                        charge(value).map_err(anyhow::Error::msg)?;
+                    }
                 }
             }
         }
@@ -287,6 +300,7 @@ impl AttrKind {
             Self::String => AttrValue::String(String::new()),
             Self::StringList => AttrValue::Strings(Vec::new()),
             Self::StringListDict => AttrValue::StringListDict(Vec::new()),
+            Self::StringDict => AttrValue::StringDict(Vec::new()),
             Self::Int => AttrValue::Int(0),
             Self::Bool => AttrValue::Bool(false),
             Self::Label => AttrValue::Label(None),
@@ -309,6 +323,21 @@ impl AttrKind {
         Ok(match self {
             Self::String => AttrValue::String(string()?),
             Self::StringList => AttrValue::Strings(string_list(value)?),
+            Self::StringDict => AttrValue::StringDict(
+                DictRef::from_value(value)
+                    .ok_or_else(|| anyhow!("expected a dict of strings to strings"))?
+                    .iter()
+                    .map(|(key, value)| {
+                        let key = key
+                            .unpack_str()
+                            .ok_or_else(|| anyhow!("expected dict keys to be strings"))?;
+                        let value = value
+                            .unpack_str()
+                            .ok_or_else(|| anyhow!("expected dict values to be strings"))?;
+                        Ok((key.to_owned(), value.to_owned()))
+                    })
+                    .collect::<anyhow::Result<_>>()?,
+            ),
             Self::StringListDict => AttrValue::StringListDict(
                 DictRef::from_value(value)
                     .ok_or_else(|| anyhow!("expected a dict of strings to a list of strings"))?
@@ -610,6 +639,23 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
     ) -> anyhow::Result<Descriptor> {
         let _ = doc;
         descriptor(AttrKind::StringList, default, mandatory, false, false)
+    }
+    fn string_dict(
+        #[starlark(default = true)] allow_empty: bool,
+        #[starlark(require = named)] default: Option<Value<'_>>,
+        #[starlark(require = named)] configurable: Option<Value<'_>>,
+        #[starlark(require = named, default = false)] mandatory: bool,
+        #[starlark(require = named, default = NoneType)] doc: Value<'_>,
+    ) -> anyhow::Result<Descriptor> {
+        if configurable.is_some() {
+            bail!("attr.string_dict configurable is unsupported");
+        }
+        if !doc.is_none() && doc.unpack_str().is_none() {
+            bail!("attr.string_dict doc must be a string or None");
+        }
+        let mut descriptor = descriptor(AttrKind::StringDict, default, mandatory, false, false)?;
+        descriptor.0.non_empty = !allow_empty;
+        Ok(descriptor)
     }
     fn string_list_dict(
         #[starlark(default = true)] allow_empty: bool,
@@ -1118,6 +1164,249 @@ z = attr.string_list_dict()
             );
             assert_eq!(sequence_ref(module.get("items").unwrap()).unwrap().len(), 3);
         });
+    }
+
+    #[test]
+    fn string_dict_snapshots_ordered_defaults_without_phase_guard() {
+        let globals = GlobalsBuilder::standard().with(rule_globals).build();
+        Module::with_temp_heap(|module| {
+            let ast = AstModule::parse(
+                "defs.bzl",
+                r#"
+defaults = {"z": "before", "a": "café☃", "literal": "@missing//pkg:target"}
+x = attr.string_dict(False, default=defaults, mandatory=True, doc=None)
+defaults["z"] = "after"
+defaults["new"] = "later"
+y = attr.string_dict(allow_empty=False, doc="documented")
+z = attr.string_dict()
+"#
+                .into(),
+                &Dialect::Standard,
+            )
+            .unwrap();
+            // Like neighboring constructors, pure metadata does not need eval.extra.
+            Evaluator::new(&module).eval_module(ast, &globals).unwrap();
+            let spec = attribute_spec(module.get("x").unwrap()).unwrap();
+            assert_eq!(spec.kind, AttrKind::StringDict);
+            assert!(spec.non_empty && spec.mandatory);
+            assert_eq!(
+                spec.default,
+                AttrValue::StringDict(vec![
+                    ("z".into(), "before".into()),
+                    ("a".into(), "café☃".into()),
+                    ("literal".into(), "@missing//pkg:target".into()),
+                ])
+            );
+            let empty = attribute_spec_ref(module.get("y").unwrap()).unwrap();
+            assert!(empty.non_empty);
+            assert_eq!(empty.default, AttrValue::StringDict(vec![]));
+            assert!(
+                !attribute_spec_ref(module.get("z").unwrap())
+                    .unwrap()
+                    .non_empty
+            );
+            assert_eq!(
+                DictRef::from_value(module.get("defaults").unwrap())
+                    .unwrap()
+                    .len(),
+                4
+            );
+            assert_eq!(
+                serde_json::to_string(&empty.default).unwrap(),
+                r#"{"StringDict":[]}"#
+            );
+            assert_eq!(
+                serde_json::to_value(spec.clone()).unwrap(),
+                serde_json::to_value(spec).unwrap()
+            );
+        });
+        // Loaded constructor aliases and helpers may construct unused BUILD metadata.
+        build_fixture("r = attr.string_dict", "unused = r(default={'z':'v'})").unwrap();
+        build_fixture(
+            "def r():\n    return attr.string_dict(default={'z':'v'})",
+            "unused = r()",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn string_dict_rejects_invalid_shapes_and_parameters() {
+        for default in [
+            "None",
+            "[]",
+            "()",
+            "'text'",
+            "{1: 's'}",
+            "{False: 's'}",
+            "{'x': []}",
+            "{'x': ()}",
+            "{'x': 1}",
+            "{'x': False}",
+            "{'x': None}",
+            "{'x': {}}",
+            "{'x': Label('//:x')}",
+            "{Label('//:x'): 's'}",
+            "{'x': DefaultInfo()}",
+        ] {
+            let error = definition_error(&format!("attr.string_dict(default={default})"));
+            assert!(
+                error.contains("expected a dict of strings to strings"),
+                "{default}: {error}"
+            );
+        }
+        for value in ["None", "True", "False", "1"] {
+            let error = definition_error(&format!("attr.string_dict(configurable={value})"));
+            assert!(error.contains("configurable is unsupported"), "{error}");
+        }
+        for (expression, expected) in [
+            ("attr.string_dict(doc=1)", "doc must be a string or None"),
+            ("attr.string_dict(allow_empty=None)", "bool"),
+            ("attr.string_dict(allow_empty=1)", "bool"),
+            ("attr.string_dict(mandatory=1)", "bool"),
+            ("attr.string_dict(True, {})", "positional"),
+            ("attr.string_dict(values=[])", "values"),
+        ] {
+            let error = definition_error(expression);
+            assert!(error.contains(expected), "{expression}: {error}");
+        }
+    }
+
+    #[allow(unsafe_code)]
+    mod string_dict_spoof {
+        use super::*;
+        use starlark::values::{
+            NoSerialize, ProvidesStaticType, StarlarkPagablePanic, StarlarkValue, starlark_value,
+        };
+        #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
+        pub(super) struct FakeString;
+        starlark::starlark_simple_value!(FakeString);
+        impl fmt::Display for FakeString {
+            fn fmt(&self, _: &mut fmt::Formatter<'_>) -> fmt::Result {
+                panic!("attribute preflight must not format arbitrary values")
+            }
+        }
+        #[starlark_value(type = "string")]
+        impl<'v> StarlarkValue<'v> for FakeString {
+            fn dir_attr(&self) -> Vec<String> {
+                panic!("attribute preflight must not reflect arbitrary values")
+            }
+            fn get_attr(&self, _: &str, _: starlark::values::Heap<'v>) -> Option<Value<'v>> {
+                panic!("attribute preflight must not call arbitrary attributes")
+            }
+        }
+    }
+
+    #[test]
+    fn string_dict_preflight_rejects_spoofed_string_type_without_reflection() {
+        Module::with_temp_heap(|module| {
+            let fake = module.heap().alloc(string_dict_spoof::FakeString);
+            assert_eq!(fake.get_type(), "string");
+            let value = module
+                .heap()
+                .alloc(starlark::values::dict::AllocDict([("k", fake)]));
+            let error = AttrKind::StringDict.preflight_default(value).unwrap_err();
+            assert_eq!(error.to_string(), "expected a dict of strings to strings");
+            assert!(AttrKind::StringDict.preflight_default(fake).is_err());
+        });
+    }
+
+    #[test]
+    fn string_dict_preflight_bounds_shared_payloads_before_copying() {
+        for expression in [
+            "attr.string_dict(default={'x'*(9*1024*1024): ''})",
+            "attr.string_dict(default={'x': 'x'*(9*1024*1024)})",
+            "attr.string_dict(default={str(i): 'x'*(1024*1024) for i in range(9)})",
+            "attr.string_dict(default={str(i): '' for i in range(50000)})",
+            "attr.string_dict(default={'x': 'x'*(3*1024*1024)})\nr = rule(implementation=impl, attrs={name:x for name in ['a','b','c']})",
+        ] {
+            let error = definition_error(expression);
+            assert!(
+                error.contains("host preparation") && error.contains("limit"),
+                "{error}"
+            );
+        }
+        // Validate the entire shape before reporting a resource error, without printing keys.
+        for default in [
+            "{'x': 'x'*(9*1024*1024), 'bad': []}",
+            "{'x'*(9*1024*1024): []}",
+        ] {
+            let error = definition_error(&format!("attr.string_dict(default={default})"));
+            assert!(
+                error.contains("expected a dict of strings to strings"),
+                "{error}"
+            );
+            assert!(!error.contains("host preparation"), "{error}");
+            assert!(error.len() < 4096);
+        }
+        for (definition, call) in [
+            (
+                "r = rule(implementation=impl, attrs={'x':attr.string_dict()})",
+                "s='x'*(1024*1024)\nr(name='x', x={str(i):s for i in range(9)})",
+            ),
+            (
+                "r = rule(implementation=impl, attrs={'a':attr.string_dict(), 'b':attr.string_dict()})",
+                "s='x'*(5*1024*1024)\nr(name='x', a={'k':s}, b={'k':s})",
+            ),
+            (
+                "r = rule(implementation=impl, attrs={'x':attr.string_dict(default={'k':'x'*(5*1024*1024)})})",
+                "r(name='x')",
+            ),
+        ] {
+            assert!(
+                build_fixture(definition, call)
+                    .unwrap_err()
+                    .contains("host preparation")
+            );
+        }
+    }
+
+    #[test]
+    fn string_dict_build_snapshots_none_mandatory_and_literal_values() {
+        let definition = "d={'z':'before', 'a':'alpha'}\nspec=attr.string_dict(default=d)\nd['z']='between'\nr=rule(implementation=impl, attrs={'x':spec})\nd['z']='after'";
+        let package = build_fixture(definition, "d={'z':'café☃', 'a':'@missing//p:t'}\nr(name='x', x=d)\nd['z']='late'\nd['new']='later'\nr(name='none', x=None)").unwrap();
+        let rule = &package[&crate::label::Label::parse("//:x", "").unwrap()];
+        assert!(rule.srcs.is_empty());
+        assert_eq!(
+            rule.custom.as_ref().unwrap().attrs["x"],
+            AttrValue::StringDict(vec![
+                ("z".into(), "café☃".into()),
+                ("a".into(), "@missing//p:t".into()),
+            ])
+        );
+        assert_eq!(
+            package[&crate::label::Label::parse("//:none", "").unwrap()]
+                .custom
+                .as_ref()
+                .unwrap()
+                .attrs["x"],
+            AttrValue::StringDict(vec![
+                ("z".into(), "before".into()),
+                ("a".into(), "alpha".into())
+            ])
+        );
+        let required = "r=rule(implementation=impl, attrs={'x':attr.string_dict(default={'k':'v'}, mandatory=True)})";
+        for call in ["r(name='x')", "r(name='x', x=None)"] {
+            assert!(
+                build_fixture(required, call)
+                    .unwrap_err()
+                    .contains("missing mandatory attribute")
+            );
+        }
+        build_fixture(required, "r(name='x', x={})").unwrap();
+        for input in [
+            "{1:'s'}",
+            "{'x':[]}",
+            "{'x':()}",
+            "{'x':False}",
+            "{'x':None}",
+            "{'x':{}}",
+        ] {
+            assert!(
+                build_fixture(definition, &format!("r(name='x', x={input})"))
+                    .unwrap_err()
+                    .contains("expected a dict of strings to strings")
+            );
+        }
     }
 
     #[test]

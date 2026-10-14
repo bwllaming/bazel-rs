@@ -102,6 +102,12 @@ impl HostBudget {
                     self.string(value)?;
                 }
             }
+            AttrValue::StringDict(entries) => {
+                for (key, value) in entries {
+                    self.string(key)?;
+                    self.string(value)?;
+                }
+            }
             AttrValue::StringListDict(entries) => {
                 for (key, values) in entries {
                     self.string(key)?;
@@ -175,6 +181,43 @@ impl HostBudget {
 mod tests {
     use super::*;
     use crate::custom_rule::AttrKind;
+
+    #[test]
+    fn string_dict_charges_root_keys_and_scalar_values_without_sequence_nodes() {
+        let value =
+            AttrValue::StringDict(vec![("z".into(), "first".into()), ("a".into(), "".into())]);
+        let mut budget = HostBudget::default();
+        budget.attr_value(&value).unwrap();
+        assert_eq!(budget.nodes, 5);
+        assert_eq!(budget.bytes, 5 * NODE_BYTES + COPY_WEIGHT * 7);
+        let mut budget = HostBudget::default();
+        budget.attr_value(&AttrValue::StringDict(vec![])).unwrap();
+        assert_eq!((budget.nodes, budget.bytes), (1, NODE_BYTES));
+        for value in [
+            AttrValue::StringDict(vec![("x".repeat(1024 * 1024), "".into())]),
+            AttrValue::StringDict(vec![("k".into(), "x".repeat(1024 * 1024))]),
+        ] {
+            let mut budget = HostBudget::default();
+            for _ in 0..7 {
+                budget.attr_value(&value).unwrap();
+            }
+            assert!(
+                budget
+                    .attr_value(&value)
+                    .unwrap_err()
+                    .contains("weighted byte limit")
+            );
+        }
+        assert!(
+            HostBudget::default()
+                .attr_value(&AttrValue::StringDict(vec![
+                    (String::new(), String::new());
+                    50000
+                ]))
+                .unwrap_err()
+                .contains("node limit")
+        );
+    }
 
     #[test]
     fn provider_metadata_is_charged_with_defaults_and_repeated_schemas() {

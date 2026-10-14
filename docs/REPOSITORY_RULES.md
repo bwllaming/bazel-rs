@@ -35,7 +35,9 @@ rule symbols. Other ambiguous namespace combinations fail explicitly.
 must be false. See
 [LOCAL_REPOSITORIES.md](LOCAL_REPOSITORIES.md) for the bounded serverless lifecycle
 and MODULE-only `native.bazel_version` binding. Attribute kinds are string,
-string-list, ordered string-list dictionary, int32, bool, label and label-list.
+string-list, ordered scalar string dictionary, ordered string-list dictionary,
+int32, bool, label and label-list. Scalar dictionary behavior is documented in
+[STRING_DICT.md](STRING_DICT.md); repository ASCII restrictions remain unchanged.
 Dictionary values and nested lists are frozen; their full typing, tuple,
 ordering and snapshot contract is in [STRING_LIST_DICT.md](STRING_LIST_DICT.md).
 Defaults, mandatory attributes,

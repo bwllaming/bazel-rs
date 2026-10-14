@@ -41,12 +41,97 @@ pub(crate) fn alloc_string_list_dict<'v>(
     Ok(heap.access_owned_frozen_value(&owned))
 }
 
+/// Scalar dictionary projection owns only its fresh dictionary and strings.
+pub(crate) fn alloc_string_dict<'v>(
+    heap: Heap<'v>,
+    entries: &[(String, String)],
+) -> anyhow::Result<Value<'v>> {
+    let mut budget = crate::repository_budget::HostBudget::default();
+    budget.node().map_err(anyhow::Error::msg)?;
+    for (key, value) in entries {
+        budget.string(key).map_err(anyhow::Error::msg)?;
+        budget.string(value).map_err(anyhow::Error::msg)?;
+    }
+    let owned = Module::with_temp_heap(|module| -> anyhow::Result<_> {
+        module.set(
+            "attribute",
+            module.heap().alloc(AllocDict(
+                entries
+                    .iter()
+                    .map(|(key, value)| (key.as_str(), value.as_str())),
+            )),
+        );
+        let frozen = module
+            .freeze_named(FrozenHeapName::User(Box::new(
+                "string_dict attribute".to_owned(),
+            )))
+            .map_err(|error| anyhow!("cannot freeze dictionary attribute: {error:?}"))?;
+        frozen
+            .get("attribute")
+            .map_err(|error| anyhow!(error.to_string()))
+    })?;
+    Ok(heap.access_owned_frozen_value(&owned))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use starlark::environment::Globals;
     use starlark::eval::Evaluator;
     use starlark::syntax::{AstModule, Dialect};
+
+    #[test]
+    fn string_dict_projection_is_frozen_ordered_and_independent_of_owners() {
+        Module::with_temp_heap(|module| {
+            let mut original = vec![
+                ("z".to_owned(), "café☃".to_owned()),
+                ("a".to_owned(), "".to_owned()),
+            ];
+            module.set(
+                "value",
+                alloc_string_dict(module.heap(), &original).unwrap(),
+            );
+            original[0].1 = "after".into();
+            original.reverse();
+            drop(original);
+            let mut eval = Evaluator::new(&module);
+            let ast = AstModule::parse("test.bzl", "(value.keys() == ['z', 'a'] and value.values() == ['café☃', ''] and type(value['a']) == 'string') or fail('snapshot lost')".into(), &Dialect::Standard).unwrap();
+            eval.eval_module(ast, &Globals::standard()).unwrap();
+            let ast = AstModule::parse(
+                "mutation.bzl",
+                "value['z'] = 'changed'".into(),
+                &Dialect::Standard,
+            )
+            .unwrap();
+            let error = eval
+                .eval_module(ast, &Globals::standard())
+                .unwrap_err()
+                .to_string()
+                .to_lowercase();
+            assert!(
+                error.contains("frozen") || error.contains("immutable"),
+                "{error}"
+            );
+        });
+    }
+
+    #[test]
+    fn string_dict_projection_precharges_standalone_payloads() {
+        Module::with_temp_heap(|module| {
+            for entries in [
+                vec![("x".repeat(9 * 1024 * 1024), "".into())],
+                vec![("k".into(), "x".repeat(9 * 1024 * 1024))],
+                vec![("".into(), "".into()); 50000],
+            ] {
+                assert!(
+                    alloc_string_dict(module.heap(), &entries)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("limit")
+                );
+            }
+        });
+    }
 
     #[test]
     fn string_list_dict_frozen_projection_retains_order_and_owner() {

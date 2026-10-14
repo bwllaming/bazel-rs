@@ -300,6 +300,9 @@ pub fn bind_tag(
             AttrValue::Strings(values) | AttrValue::Labels(values) | AttrValue::Outputs(values) => {
                 values.iter().all(|value| value.is_ascii())
             }
+            AttrValue::StringDict(entries) => entries
+                .iter()
+                .all(|(key, value)| key.is_ascii() && value.is_ascii()),
             AttrValue::StringListDict(entries) => entries
                 .iter()
                 .all(|(key, values)| key.is_ascii() && values.iter().all(|value| value.is_ascii())),
@@ -339,6 +342,25 @@ fn parse_attribute(
     Ok(match kind {
         AttrKind::String => AttrValue::String(string()?.to_owned()),
         AttrKind::StringList => AttrValue::Strings(strings()?),
+        AttrKind::StringDict => {
+            let entries = value
+                .as_object()
+                .ok_or_else(|| "expected a dict of strings to strings".to_owned())?;
+            if !entries.values().all(|value| value.as_str().is_some()) {
+                return Err("expected dict values to be strings".to_owned());
+            }
+            AttrValue::StringDict(
+                entries
+                    .iter()
+                    .map(|(key, value)| {
+                        let value = value
+                            .as_str()
+                            .ok_or_else(|| "expected dict values to be strings".to_owned())?;
+                        Ok((key.clone(), value.to_owned()))
+                    })
+                    .collect::<Result<_, String>>()?,
+            )
+        }
         AttrKind::StringListDict => AttrValue::StringListDict(
             value
                 .as_object()
@@ -503,6 +525,90 @@ mod tests {
     }
 
     #[test]
+    fn string_dict_tag_schema_snapshot_survives_mutation_and_owner_drop() {
+        let module = extension("d={'z':'before', 'a':'alpha'}\ns=attr.string_dict(default=d, allow_empty=False)\nd['z']='between'\nT=tag_class({'d':s})\ndef impl(ctx):\n    return ctx\nE=module_extension(impl, tag_classes={'t':T})\nd['z']='after'\nd['new']='later'").unwrap();
+        let definition = unpack(&module.get("E").unwrap()).unwrap();
+        drop(module);
+        let schema = &definition.tag_classes["t"];
+        let expected = AttrValue::StringDict(vec![
+            ("z".into(), "before".into()),
+            ("a".into(), "alpha".into()),
+        ]);
+        assert_eq!(schema["d"].kind, AttrKind::StringDict);
+        assert!(schema["d"].non_empty);
+        assert_eq!(schema["d"].default, expected);
+        assert_eq!(bind(schema, json!({})).unwrap()["d"], expected);
+        assert_eq!(bind(schema, json!({"d":null})).unwrap()["d"], expected);
+        assert_eq!(
+            serde_json::to_value(&schema["d"]).unwrap()["default"],
+            json!({"StringDict":[["z","before"],["a","alpha"]]})
+        );
+    }
+
+    #[test]
+    fn string_dict_tag_binding_order_none_mandatory_nonempty_and_ascii() {
+        let schema = schema("{'d':attr.string_dict(allow_empty=False)}");
+        let supplied = raw(json!({"d":{"z":"@missing//p:t", "a":""}}));
+        assert_eq!(
+            bind_tag(&schema, &supplied, |_| panic!("not a label")).unwrap()["d"],
+            AttrValue::StringDict(vec![
+                ("z".into(), "@missing//p:t".into()),
+                ("a".into(), "".into())
+            ])
+        );
+        for value in [json!({}), json!({"d":null}), json!({"d":{}})] {
+            assert_eq!(
+                bind(&schema, value).unwrap()["d"],
+                AttrValue::StringDict(vec![])
+            );
+        }
+        let required = self::schema(
+            "{'d':attr.string_dict(default={'z':'fallback'}, mandatory=True, allow_empty=False)}",
+        );
+        for value in [json!({}), json!({"d":null})] {
+            assert!(
+                bind(&required, value)
+                    .unwrap_err()
+                    .contains("missing mandatory tag attribute")
+            );
+        }
+        assert_eq!(
+            bind(&required, json!({"d":{}})).unwrap()["d"],
+            AttrValue::StringDict(vec![])
+        );
+        for value in [
+            json!([]),
+            json!("text"),
+            json!({"k":[]}),
+            json!({"k":1}),
+            json!({"k":false}),
+            json!({"k":null}),
+            json!({"k":{}}),
+        ] {
+            assert!(
+                bind(&schema, json!({"d":value}))
+                    .unwrap_err()
+                    .contains("expected")
+            );
+        }
+        for value in [json!({"é":"ok"}), json!({"k":"é"})] {
+            assert!(
+                bind(&schema, json!({"d":value}))
+                    .unwrap_err()
+                    .contains("non-ASCII tag attribute")
+            );
+        }
+        for default in ["{'é':'ok'}", "{'k':'é'}"] {
+            let schema = self::schema(&format!("{{'d':attr.string_dict(default={default})}}"));
+            assert!(
+                bind(&schema, json!({}))
+                    .unwrap_err()
+                    .contains("non-ASCII tag attribute")
+            );
+        }
+    }
+
+    #[test]
     fn string_list_dict_binding_preserves_order_and_ignores_non_empty() {
         let schema = schema("{'d':attr.string_list_dict(allow_empty=False)}");
         assert_eq!(
@@ -587,6 +693,8 @@ mod tests {
             "T = tag_class({}, doc='x' * 1048576)\nE = module_extension(len, tag_classes={'t' + str(i):T for i in range(600)})",
             "d = attr.string_list_dict(default={'z':['x' * 1048576], 'a':[]})\nT = tag_class({'a' + str(i):d for i in range(600)})",
             "T = tag_class({'d':attr.string_list_dict(default={'z':['x' * 1048576], 'a':[]})})\nE = module_extension(len, tag_classes={'t' + str(i):T for i in range(600)})",
+            "d = attr.string_dict(default={'z':'x' * 1048576, 'a':''})\nT = tag_class({'a' + str(i):d for i in range(600)})",
+            "T = tag_class({'d':attr.string_dict(default={'z':'x' * 1048576, 'a':''})})\nE = module_extension(len, tag_classes={'t' + str(i):T for i in range(600)})",
         ] {
             let error = extension(source).unwrap_err();
             assert!(
