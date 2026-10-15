@@ -130,7 +130,8 @@ retains the full check receipt.
 
 This section records an earlier capture, not the current state. On the current
 tree the native query of `//src/beyondwork.ai/utils/str:str` succeeds and a native
-build stops at the first analysis gap; see the evidence note in `docs/ROADMAP.md`.
+build stops at an analysis gap (currently `go_library`'s toolchain requirement); see
+the evidence note in `docs/ROADMAP.md`.
 
 
 `artifacts/mainrepo-application-loading.json` records this explicit native query

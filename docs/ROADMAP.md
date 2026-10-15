@@ -38,7 +38,12 @@ receipt `artifacts/mainrepo-n13-n15-promoted-loading.json` (sha256 `64213a66…`
 the same probe with `build` exits 1 at the `label_flag` analysis gap, receipt
 `artifacts/mainrepo-n13-n15-promoted-build.json` (sha256 `24a46217…`). Both receipts
 live in the main checkout's ignored `artifacts/` directory and are referenced from
-`artifacts/n13-n15-promotion.json`; no genuine Bazel capture of this query exists. This
+`artifacts/n13-n15-promotion.json`; no genuine Bazel capture of this query exists. With the configuration and `select()` increment (N16a) on this tree, the same
+build gets past that `label_flag` boundary and first stops at `go_library`'s own
+toolchain requirement (`rule(toolchains=[@@rules_go+//go:toolchain,
+@@bazel_tools//tools/cpp:toolchain_type])`, toolchain resolution is not yet
+implemented); its evidence receipt is recorded in `artifacts/n16a-m1-promotion.json`
+at promotion. This
 is a query and loading result only: application build/test and performance
 remain unproven.
 
