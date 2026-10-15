@@ -4,7 +4,9 @@
 Reference preparation never executes native. Full scoped CLI execution requires
 an explicit frozen candidate and an independently pinned K binary for migration.
 Cross-host injections and frozen loader ownership are separate native unit gates.
-No reference environ getter, ambient environment enumeration, or host override.
+repository_ctx.os.environ and module_ctx.os.environ/getenv/environ= are a
+single-state differential over the controlled client environment. No ambient
+environment enumeration or host override.
 """
 
 import base64
@@ -64,10 +66,9 @@ CASEPLAN = [
     common.case('binding', tuple(BINDINGS)),
     common.case('cache', ROUTES),
     common.case('getenv-control', ROUTES),
-    common.case('native-boundary', tuple(r+'.'+p for r in ROUTES for p in
-        ('environ', 'environ-default', 'whole-json')) +
-        ('extension.environ', 'extension.environ-default', 'extension.whole-json',
-         'extension.getenv', 'ctor.environ', 'proxy.os', 'analysis.os', 'build.os'), 'native_boundary'),
+    common.case('environ', ROUTES + ('extension', 'ctor')),
+    common.case('native-boundary', tuple(r+'.whole-json' for r in ROUTES) +
+        ('extension.whole-json', 'proxy.os', 'analysis.os', 'build.os'), 'native_boundary'),
     common.case('migration', ROUTES, 'native_version_migration'),
 ]
 UNIT_GATES = [
@@ -80,7 +81,7 @@ LIMITATIONS = [
     'Linux/x86_64 compile-target view linux/amd64 only; not runtime/emulation detection or all-platform support.',
     'Same-host outputs do not prove cross-host flag keying; required native-unit receipts are separate.',
     'Reference whole-object JSON is source-derived only and UNPROBED; whole-json is NATIVE_BOUNDARY.',
-    'Reference ctx.os.environ getter/map is UNPROBED/EXCLUDED, including getattr with a default.',
+    'repository_ctx.os.environ is ONE cold state per route: Bazel records no dependency for it (StarlarkOS.java:49-54) and may serve a cached repository while native re-executes every invocation, so cross-invocation environment transitions are not differential; module_ctx.os.environ, module_ctx.getenv and module_extension(environ=...) are differential probes (extension, ctor).',
     'K-to-L migration is NATIVE_VERSION_MIGRATION, never reference parity; every repository intentionally rekeys.',
     'A new repository ID with equal logical bytes may hit the consumer action cache.',
     'No ambient names/values, JVM property overrides, public host injection, SDK/application or full acceptance claim.',
@@ -225,20 +226,34 @@ def fixture(name, probe):
     if name == 'getenv-control':
         repository_ctor = ',environ=['+repr(A)+']'
         expression = 'ctx.getenv('+repr(A)+',"DEFAULT")+":"+ctx.os.name+"/"+ctx.os.arch+"\\n"'
+    if name == 'environ':
+        # StarlarkOS.environ is the command repoEnv: the whole client environment,
+        # for repository_ctx and module_ctx alike; module_ctx.getenv and
+        # module_extension(environ=...) are extension environment inputs.
+        observed = ('[ctx.os.environ.get('+repr(A)+',"DEFAULT"),sorted(ctx.os.environ.keys()),'
+                    'getattr(ctx.os,"environ",{})==ctx.os.environ,type(ctx.os.environ)')
+        getenv = 'ctx.getenv('+repr(A)+',"DEFAULT")'
+        if route == 'extension':
+            ordinary = True
+            extension_body = 'observed=json.encode('+observed+','+getenv+'])\n'
+            repository_args = 'text=observed'
+            expression = 'ctx.attr.text+"\\n"'
+        elif route == 'ctor':
+            ordinary = True
+            ctor = ',environ=['+repr(A)+']'
+            extension_body = 'observed='+getenv+'\n'
+            repository_args = 'text=observed'
+            expression = 'ctx.attr.text+"\\n"'
+        else:
+            expression = 'json.encode('+observed+'])+"\\n"'
     if name == 'native-boundary':
         diagnostic = variant
-        if variant in ('environ', 'environ-default', 'whole-json', 'getenv'):
-            body = {'environ': 'value=ctx.os.environ\n',
-                    'environ-default': 'value=getattr(ctx.os,"environ",{})\n',
-                    'whole-json': 'value=json.encode(ctx.os)\n',
-                    'getenv': 'value=ctx.getenv("'+A+'")\n'}[variant]
+        if variant == 'whole-json':
+            body = 'value=json.encode(ctx.os)\n'
             if route == 'extension':
                 extension_body = body
             else:
                 repository_body = body
-        if route == 'ctor':
-            ctor = ',environ=["'+A+'"]'
-            diagnostic = 'ctor-environ'
     body = 'print("HOST_REPO_CALLBACK")\n'+repository_body
     if name == 'cache':
         body += 'ctx.template("data.txt",ctx.attr.src,{"@HOST@":selected},executable=False)\n'
@@ -280,6 +295,8 @@ def states(name):
     if name == 'cache':
         return [('cold', {}, False), ('warm', {}, False), ('source-change', {}, True),
                 ('source-warm', {}, True), ('restore', {}, False)]
+    if name == 'environ':
+        return [('cold', {A: 'alpha'}, False)]
     if name == 'getenv-control':
         return [('cold', {A: 'alpha'}, False), ('warm', {A: 'alpha'}, False),
                 ('watched', {A: 'beta'}, False), ('unrelated', {A: 'beta', UNUSED: 'unused'}, False),
@@ -295,6 +312,14 @@ def expected_bytes(value, env, changed):
         return b'linux/amd64source-v2\n' if changed else b'linux/amd64source-v1\n'
     if value['name'] == 'getenv-control':
         return (env.get(A, 'DEFAULT')+':linux/amd64\n').encode()
+    if value['name'] == 'environ':
+        if value['probe'] == 'ctor':
+            return (env.get(A, 'DEFAULT')+'\n').encode()
+        keys = sorted(controlled.controlled_environment(Path('/unused'), env))
+        observed = [env.get(A, 'DEFAULT'), keys, True, 'dict']
+        if value['probe'] == 'extension':
+            observed.append(env.get(A, 'DEFAULT'))
+        return (json.dumps(observed, separators=(',', ':'))+'\n').encode()
     return b'CONST\n'
 
 
@@ -338,11 +363,7 @@ def require_rejection(row, value, engine):
             or re.search(r'panicked|FATAL:|parse error|unexpected token|permission denied|failed to download', text, re.I)):
         raise ValueError('uncontrolled rejection')
     patterns = {
-        'environ': r'repository_os\.environ is unsupported in the native host metadata profile',
-        'environ-default': r'repository_os\.environ is unsupported in the native host metadata profile',
         'whole-json': r'cannot encode unsupported value as JSON',
-        'getenv': r'(?:module_ctx|module context)[^\n]*(?:getenv|attribute)|getenv[^\n]*(?:unsupported|not supported)',
-        'ctor-environ': r'module_extension[^\n]*environ[^\n]*(?:unsupported|not supported)',
         'proxy-os': r'(?:os[^\n]*(?:method|tag)|(?:method|tag)[^\n]*os)',
         'analysis-os': r'(?:[Aa]ttribute|field)[^\n]*os|os[^\n]*(?:attribute|field)',
         'build-os': r'(?:Variable [`\'"]?os|\bos\b)[^\n]*(?:not found|not defined)|undefined[^\n]*\bos\b',

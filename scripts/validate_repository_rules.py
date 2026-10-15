@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sixteen scoped direct repository-rule checks, NOT full Bazel byte parity.
+"""Seventeen scoped direct repository-rule checks, NOT full Bazel byte parity.
 
 Explicit execution only: real native ELF and pinned genuine Bazel 9.3.0, private
 registries/caches, real built-in closure. Unit tests never launch either CLI.
@@ -109,6 +109,16 @@ OWNER_DEFS = rule(build_file(['data']) + '\n'
                   'ctx.file("data", ctx.name + "|" + ctx.attr.name + "|" + ctx.original_name + "\\n", executable = False)')
 GENERATED_CHILD = rule('ctx.template("data", ctx.attr._source, substitutions = {"A": "B", "B": "C"}, executable = False)\n'
                        + build_file(['data']), '{"_source": attr.label(default = Label("//:seed"))}')
+# repository_ctx.execute/which (StarlarkBaseExternalContext.java:1970-2108,
+# 2323-2383): no shell is inserted, environment overrides apply, and the
+# exec_result carries the exit code and both streams. Bazel accepts this.
+EXECUTE_DEFS = rule(
+    build_file(['data']) + '\n'
+    'result = ctx.execute(["/bin/sh", "-c", ' + quote('printf "%s|%s" "$1" "$EXEC_VALUE"; printf err >&2; exit 3')
+    + ', "sh", "one"], environment = {"EXEC_VALUE": "two"}, quiet = True)\n'
+    'found = ctx.which("sh")\n'
+    'ctx.file("data", "%d|%s|%s|%s|%s\\n" % (result.return_code, result.stdout, result.stderr, found != None, '
+    'ctx.path("data").basename), executable = False)')
 GENERATED_SEED = rule(build_file(['defs.bzl', 'seed']) + '\n'
                       'ctx.file("defs.bzl", ' + quote(GENERATED_CHILD) + ', executable = False)\n'
                       'ctx.file("seed", "A B\\n", executable = False)')
@@ -126,9 +136,10 @@ CASES = [
     case('lazy.unused-callback'),
     case('group.unused-missing-attribute'),
     case('group.unused-unknown-attribute'),
+    case('execute.host-process'),
     case('native.rollback', 'native_boundary'),
     case('native.path-containment', 'native_boundary', ('dotdot', 'absolute', 'source-symlink')),
-    case('native.unsupported', 'native_boundary', ('execute', 'metadata', 'integer', 'facts_version_unsupported')),
+    case('native.unsupported', 'native_boundary', ('metadata', 'integer', 'facts_version_unsupported')),
     case('native.ascii-profile', 'native_boundary', ('module-unicode', 'closure-unicode', 'octal', 'hex', 'u', 'U', 'chr')),
     case('native.template-cycle', 'native_boundary'),
     case('native.refresh-and-repair', 'native_boundary', ('cold', 'helper-change', 'input-change', 'repair')),
@@ -143,7 +154,6 @@ DIAGNOSTICS = {
     'rollback': r'(?:Error in fail:|\bfail(?:ed)?[: (]|error:)[^\n]*' + FAIL_MARKER,
     'path': r'(?:path|file)[^\n]*(?:relative|escap|outside|parent|absolute|unsafe|clean)|(?:unsafe|absolute)[^\n]*path',
     'symlink': r'(?:symlink|symbolic link)[^\n]*(?:unsupported|forbidden|not supported|unsafe|regular)|(?:unsupported|unsafe|not supported)[^\n]*(?:symlink|symbolic link)|must be a regular file, not a symlink',
-    'execute': r'(?:execute[^\n]*(?:unsupported|not supported|not available)|(?:no (?:attribute|field|method)|has no)[^\n]*execute)',
     'return': r'(?:return|returned)[^\n]*(?:None|unsupported|not supported)|(?:only|must)[^\n]*None',
     'facts_version_unsupported': r'\bmodule_extension with nonzero facts_version is unsupported\b',
     'ascii': r'(?:ASCII|non.ASCII|Unicode|unicode|escape|chr)[^\n]*(?:unsupported|not supported|forbidden|invalid|only|reject)|(?:unsupported|invalid|non.ASCII)[^\n]*(?:string|literal|escape|chr)',
@@ -286,12 +296,15 @@ def fixture(name, probe='result', outside=None):
             files['defs.bzl'] = rule('ctx.file(' + quote(output) + ', "ESCAPED")\n' + build_file(['data']))
             diagnostic = 'path'
     elif name == 'native.unsupported':
-        body = {'execute': 'ctx.execute(["/bin/true"])', 'metadata': 'return {"answer": "value"}',
+        body = {'metadata': 'return {"answer": "value"}',
                 'integer': 'return 42', 'facts_version_unsupported': 'return None'}[probe]
         files['defs.bzl'] = rule(build_file(['data']) + '\nctx.file("data", "partial")\n' + body)
         if probe == 'facts_version_unsupported':
             files['defs.bzl'] += 'ordinary = module_extension(implementation = _impl, facts_version = 1)\n'
         diagnostic = 'return' if probe in ('metadata', 'integer') else probe
+    elif name == 'execute.host-process':
+        files['defs.bzl'] = EXECUTE_DEFS
+        expected = {'data': (b'3|one|two|err|True|data\n', False)}
     elif name == 'native.ascii-profile':
         expression = {'module-unicode': 'str(len("é"))', 'closure-unicode': 'str(len("é"))',
                       'octal': 'str(len("\\377"))', 'hex': 'str(len("\\x41"))',
@@ -720,7 +733,7 @@ def report_passes(report):
                 or not all(valid_evidence(v) for v in report['sources_before'].values())
                 or report['reference_release'] != 'bazel 9.3.0'
                 or report['executables']['reference']['sha256'] != REFERENCE_SHA256
-                or report['completed_checks'] != 16 or report['completed_differential_cases'] != 7):
+                or report['completed_checks'] != 17 or report['completed_differential_cases'] != 8):
             return False
         args = argument_parser().parse_args([])
         args.native = Path(report['configuration']['native'])
@@ -812,7 +825,7 @@ def main(argv=None):
                   case_inputs_sha256=digest(json.dumps(CASES, sort_keys=True).encode()),
                   configuration={k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
                   started_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                  limitations=['16 cases: seven differential, nine native policy/lifecycle boundaries. No full Bazel parity.',
+                  limitations=['17 cases: eight differential, nine native policy/lifecycle boundaries. No full Bazel parity.',
                                'Computed Starlark strings are strict ASCII; raw templates preserve arbitrary bytes.',
                                'Non-None callback returns are native-only unsupported, even when Bazel accepts them.',
                                'Nonzero module_extension facts_version is unsupported at definition load; this native-only boundary is not differential parity or a callback execution claim.',

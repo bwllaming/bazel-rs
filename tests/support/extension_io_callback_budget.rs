@@ -21,6 +21,7 @@ fn n3_actual_context_allow_fail_cannot_tolerate_deadline_or_request_cap() {
             public_label: label(),
             calls: CallRecorder::default(),
             io: RefCell::new(io),
+            environment: RefCell::default(),
         };
         let error = n3_eval_in_context(&context, &format!(
             "r = ctx.download({:?}, 'fresh', {:?}, allow_fail=True)\nfail('N3_BUDGET_TOLERATED')",

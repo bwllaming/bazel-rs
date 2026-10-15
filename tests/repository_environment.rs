@@ -676,31 +676,40 @@ fn callback_failure_after_getenv_and_file_write_rolls_back_only_private_stage() 
 }
 
 #[test]
-fn os_environ_extension_environ_and_module_ctx_getenv_remain_unsupported() {
+fn repository_environ_untracked_and_extension_environ_and_module_getenv_supported() {
+    // repository_ctx.os.environ is the whole client environment and records
+    // no dependency (StarlarkOS.java:49-54); only the declared name is watched.
     let os = Fixture::new(
         Route::Direct,
-        "    ctx.os.environ\n",
-        "'unreachable'",
+        "",
+        "ctx.os.environ.get('BAZEL_RS_ENV_B','none')+'|'+','.join(ctx.os.environ.keys())",
         DECLARED,
     );
-    rejected(&os.run(&["build", "//:copy"], &[(A, "alpha")]), "os");
-    os.clean_failure();
-    for source in [
-        "load(':defs.bzl','make')\ndef _impl(ctx):\n    make(name='made')\next=module_extension(_impl,environ=['BAZEL_RS_ENV_A'])\n",
-        "load(':defs.bzl','make')\ndef _impl(ctx):\n    ctx.getenv('BAZEL_RS_ENV_A')\n    make(name='made')\next=module_extension(_impl)\n",
+    let first = os.generated(&[(A, "alpha"), (B, "beta")]);
+    assert_eq!(
+        first.bytes[os.made_label()],
+        b"beta|BAZEL_RS_ENV_A,BAZEL_RS_ENV_B,PATH"
+    );
+    let manifest = os.manifest(first.path(os.made_label()));
+    assert!(!serde_json::to_string(&manifest).unwrap().contains("beta"));
+    let second = os.generated(&[(A, "alpha")]);
+    assert_eq!(second.bytes[os.made_label()], b"none|BAZEL_RS_ENV_A,PATH");
+    // module_extension(environ=...) and module_ctx.getenv are supported
+    // extension environment inputs (StarlarkBaseExternalContext.java:1535-1565).
+    for (source, expected) in [
+        (
+            "load(':defs.bzl','make')\ndef _impl(ctx):\n    make(name='made')\next=module_extension(_impl,environ=['BAZEL_RS_ENV_A'])\n",
+            "unreachable",
+        ),
+        (
+            "load(':defs.bzl','make')\ndef _impl(ctx):\n    ctx.getenv('BAZEL_RS_ENV_A')\n    make(name='made')\next=module_extension(_impl)\n",
+            "unreachable",
+        ),
     ] {
         let f = Fixture::new(Route::Extension, "", "'unreachable'", "");
         f.file("ext.bzl", source);
-        let output = f.run(&["build", "//:copy"], &[(A, SECRET)]);
-        rejected(
-            &output,
-            if source.contains("environ=") {
-                "environ"
-            } else {
-                "getenv"
-            },
-        );
-        assert!(!errors(&output).contains(SECRET));
-        f.clean_failure();
+        let built = f.build(&["//:copy"], &[(A, SECRET)]);
+        assert_eq!(built.bytes["//:copy"], expected.as_bytes());
+        assert!(!built.stderr.contains(SECRET));
     }
 }

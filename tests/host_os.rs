@@ -17,7 +17,6 @@ use std::process::{Command, Output};
 const A: &str = "BAZEL_RS_HOST_A";
 const UNUSED: &str = "BAZEL_RS_HOST_UNUSED";
 const SECRET: &str = "SYNTHETIC_SECRET_42";
-const ENVIRON_ERROR: &str = "repository_os.environ is unsupported";
 const METADATA: &str = include_str!("fixtures/host_os/metadata.bzl");
 // Exact field projection from genuine output, with only context_type substituted.
 const GOLDEN: &str = r#"{"arch":"amd64","arch_json":"\"amd64\"","arch_repr":"\"amd64\"","arch_spellings":[true,false],"arch_str":"amd64","arch_type":"string","context_type":"CONTEXT","dir":["arch","environ","name"],"hashable_lookup":"safe-key","lower_platform":"linux","name":"linux","name_json":"\"linux\"","name_repr":"\"linux\"","name_str":"linux","name_type":"string","repr":"<unknown object com.google.devtools.build.lib.bazel.repository.starlark.StarlarkOS>","same_context_object":true,"short_ascii_name_ops":[true,true,true,false],"str":"<unknown object com.google.devtools.build.lib.bazel.repository.starlark.StarlarkOS>","type":"repository_os"}"#;
@@ -424,30 +423,48 @@ fn unknown_os_field_is_a_callback_attribute_error_not_missing_os_global() {
 }
 
 #[test]
-fn unsupported_environ_after_output_declaration_publishes_nothing_and_is_private() {
-    for route in ROUTES {
-        for operation in [
-            "ctx.os.environ",
-            "getattr(ctx.os,'environ',{})",
-            "ctx.os.environ.get('SYNTHETIC_SECRET','fallback')",
-        ] {
-            let f = Fixture::new(route);
-            match route {
-                Route::Direct => f.repository(
-                    &format!("    ctx.file('partial','not published')\n    {operation}\n"),
-                    "'unreachable'",
-                    "",
-                ),
-                Route::Extension => f.extension(
-                    &format!("    make(name='made',text='not published')\n    {operation}\n"),
-                    "module_extension(_impl)",
-                ),
-            }
-            let output = f.run(&["build", "//:copy"], &[("SYNTHETIC_SECRET", SECRET)]);
-            reject(&output, ENVIRON_ERROR);
-            f.clean_failure();
+fn repository_environ_is_the_client_environment_and_never_a_recorded_dependency() {
+    // repository_ctx.os.environ is the command's repoEnv: the complete client
+    // environment (StarlarkOS.java:44-58, CommandEnvironment.java:342-416).
+    let f = Fixture::new(Route::Direct);
+    f.repository(
+        "",
+        &format!(
+            "json.encode([ctx.os.environ.get('{A}','fallback'), ctx.os.environ.keys()])+'\\n'"
+        ),
+        "",
+    );
+    let keys = |with_a: bool| {
+        let mut keys = vec!["HOME", "LC_ALL", "PATH", "TMPDIR"];
+        if with_a {
+            keys.insert(0, A);
         }
-    }
+        serde_json::to_string(&keys).unwrap()
+    };
+    let alpha = f.build(&[(A, "alpha")]);
+    alpha.assert_bytes(format!("[\"alpha\",{}]\n", keys(true)).as_bytes());
+    // No dependency is recorded, yet every invocation re-executes the rule.
+    let beta = f.build(&[(A, "beta")]);
+    beta.assert_bytes(format!("[\"beta\",{}]\n", keys(true)).as_bytes());
+    assert_ne!(f.identity(&alpha), f.identity(&beta));
+    let absent = f.build(&[]);
+    absent.assert_bytes(format!("[\"fallback\",{}]\n", keys(false)).as_bytes());
+    let restored = f.build(&[(A, "alpha")]);
+    assert_eq!(f.identity(&alpha), f.identity(&restored));
+}
+
+#[test]
+fn module_ctx_environ_is_the_client_environment_too() {
+    // module_ctx.os is the same StarlarkOS over repoEnv
+    // (StarlarkBaseExternalContext.java:194-196); environ records nothing.
+    let f = Fixture::new(Route::Extension);
+    f.extension(
+        &format!("    e=ctx.os.environ\n    e['MUTATED']='x'\n    make(name='made',text=json.encode([getattr(ctx.os,'environ',{{}}).get('{A}','fallback'), ctx.os.environ.keys()])+'\\n')\n"),
+        "module_extension(_impl)",
+    );
+    let keys = serde_json::to_string(&[A, "HOME", "LC_ALL", "PATH", "TMPDIR"]).unwrap();
+    f.build(&[(A, "alpha")])
+        .assert_bytes(format!("[\"alpha\",{keys}]\n").as_bytes());
 }
 
 #[test]
@@ -522,35 +539,27 @@ fn dependency_flags_are_named_only_not_new_positional_parameters() {
 }
 
 #[test]
-fn extension_environment_facts_and_getenv_remain_unsupported() {
-    for (body, options, marker) in [
-        (
-            "    make(name='made')\n",
-            ",environ=['SYNTHETIC_SECRET']",
-            "environ",
-        ),
-        (
-            "    make(name='made')\n",
-            ",facts_versions={'1':{}}",
-            "facts_versions",
-        ),
-        (
-            "    ctx.getenv('SYNTHETIC_SECRET')\n    make(name='made')\n",
-            "",
-            "getenv",
-        ),
-    ] {
-        let f = Fixture::new(Route::Extension);
-        f.extension(
-            body,
-            &format!("module_extension(_impl,os_dependent=True,arch_dependent=True{options})"),
-        );
-        reject(
-            &f.run(&["build", "//:copy"], &[("SYNTHETIC_SECRET", SECRET)]),
-            marker,
-        );
-        f.clean_failure();
-    }
+fn extension_facts_versions_stay_unsupported_but_environ_and_getenv_execute() {
+    let f = Fixture::new(Route::Extension);
+    f.extension(
+        "    make(name='made')\n",
+        "module_extension(_impl,os_dependent=True,arch_dependent=True,facts_versions={'1':{}})",
+    );
+    reject(
+        &f.run(&["build", "//:copy"], &[("SYNTHETIC_SECRET", SECRET)]),
+        "facts_versions",
+    );
+    f.clean_failure();
+    // module_extension(environ=[...]) and module_ctx.getenv succeed in Bazel
+    // 9.3 and are recorded extension environment inputs.
+    let f = Fixture::new(Route::Extension);
+    f.extension(
+        &format!("    make(name='made',text=ctx.getenv('{A}','unset'))\n"),
+        &format!("module_extension(_impl,os_dependent=True,arch_dependent=True,environ=['{A}'])"),
+    );
+    f.build(&[(A, "alpha")]).assert_bytes(b"alpha");
+    f.build(&[(A, "beta")]).assert_bytes(b"beta");
+    f.build(&[]).assert_bytes(b"unset");
 }
 
 #[test]

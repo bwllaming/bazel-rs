@@ -27,6 +27,9 @@ pub struct ExtensionDefinition {
     pub tag_classes: BTreeMap<String, BTreeMap<String, AttrSpec>>,
     pub os_dependent: bool,
     pub arch_dependent: bool,
+    /// `module_extension(environ=...)`: names observed (recorded) before the
+    /// callback, like repository_rule environ (ModuleExtension.getEnvVariables).
+    pub environ: crate::repository_environment::DeclaredEnvironment,
 }
 
 const _: fn() = || {
@@ -84,6 +87,9 @@ mod values {
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
         pub doc: Option<String>,
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        pub environ: crate::repository_environment::DeclaredEnvironment,
     }
 
     impl<V> fmt::Display for ModuleExtensionGen<V> {
@@ -115,6 +121,7 @@ pub fn unpack(value: &OwnedFrozenValue) -> Result<ExtensionDefinition, String> {
         budget.string(name)?;
         budget.schema(&class.schema)?;
     }
+    definition.environ.charge(&mut budget)?;
     let implementation = value.map(|value| {
         value
             .downcast_ref::<FrozenModuleExtension>()
@@ -125,6 +132,7 @@ pub fn unpack(value: &OwnedFrozenValue) -> Result<ExtensionDefinition, String> {
         implementation,
         os_dependent: definition.os_dependent,
         arch_dependent: definition.arch_dependent,
+        environ: definition.environ.clone(),
         tag_classes: definition
             .tag_classes
             .iter()
@@ -233,9 +241,13 @@ pub fn globals(builder: &mut GlobalsBuilder) {
         if environ.iter().any(|value| value.unpack_str().is_none()) {
             bail!("module_extension environ must be a list of strings");
         }
-        if !environ.is_empty() {
-            bail!("module_extension with nonempty environ is unsupported");
-        }
+        let environ = crate::repository_environment::DeclaredEnvironment::from_names(
+            environ
+                .iter()
+                .map(|value| Ok(value.unpack_str().expect("checked above"))),
+            &mut budget,
+        )
+        .map_err(anyhow::Error::msg)?;
         if facts_version < 0 {
             bail!("module_extension facts_version must be a nonnegative 32-bit int");
         }
@@ -268,6 +280,7 @@ pub fn globals(builder: &mut GlobalsBuilder) {
             arch_dependent,
             tag_classes,
             doc,
+            environ,
         }))
     }
 }
@@ -949,6 +962,7 @@ mod tests {
     #[test]
     fn signatures_and_bounded_options_are_explicit() {
         extension("def impl(ctx):\n    return None\nT = tag_class(attrs={}, doc=None)\nEmpty = tag_class()\nE = module_extension(implementation=impl, tag_classes={}, doc=None, environ=[], os_dependent=False, arch_dependent=False, facts_version=0)").unwrap();
+        extension("def impl(ctx):\n    return None\nE = module_extension(impl, environ=['HOME', 'PATH', 'HOME'])").unwrap();
         for (expression, expected) in [
             ("tag_class(None)", "dict"),
             ("tag_class({}, 'doc')", "positional"),
@@ -961,8 +975,8 @@ mod tests {
             ("module_extension(impl, environ=())", "list of strings"),
             ("module_extension(impl, environ=[1])", "list of strings"),
             (
-                "module_extension(impl, environ=['HOME'])",
-                "nonempty environ is unsupported",
+                "module_extension(impl, environ=['x' * 4097])",
+                "repository environment name exceeds 4096 bytes",
             ),
             ("module_extension(impl, os_dependent=None)", "bool"),
             ("module_extension(impl, arch_dependent=None)", "bool"),

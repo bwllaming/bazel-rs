@@ -70,9 +70,9 @@ def native_build_os_record(workspace='/private/workspace'):
 
 
 class PlanTests(unittest.TestCase):
-    def test_seven_unique_families_and_valid_generated_sources(self):
-        self.assertEqual(len(suite.CASEPLAN), 7)
-        self.assertEqual(len({c['name'] for c in suite.CASEPLAN}), 7)
+    def test_eight_unique_families_and_valid_generated_sources(self):
+        self.assertEqual(len(suite.CASEPLAN), 8)
+        self.assertEqual(len({c['name'] for c in suite.CASEPLAN}), 8)
         for item in suite.CASEPLAN:
             self.assertEqual(len(set(item['probes'])), len(item['probes']))
             for probe in item['probes']:
@@ -118,24 +118,63 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(suite.FACTORS, dict(default='general', **{'00': 'general', '10': 'os:linux',
             '01': 'arch:amd64', '11': 'os:linux,arch:amd64'}))
 
-    def test_reference_never_reads_environ_or_whole_object_json(self):
+    def test_reference_reads_repository_environ_only_in_its_single_state_family(self):
         for item in suite.CASEPLAN:
             pairs = suite.phases_for(item, True)
             if item['kind'] != 'differential':
                 self.assertEqual(pairs, [])
             for probe, engine in pairs:
                 self.assertEqual(engine, 'reference')
-                source = b'\n'.join(suite.fixture(item['name'], probe)['files'].values())
-                self.assertNotIn(b'ctx.os.environ', source)
-                self.assertNotIn(b'getattr(ctx.os,"environ"', source)
+                value = suite.fixture(item['name'], probe)
+                source = b'\n'.join(value['files'].values())
                 self.assertNotIn(b'json.encode(ctx.os)', source)
+                if item['name'] == 'environ':
+                    # The repository (direct/ordinary) or the extension
+                    # (extension/ctor) reads the client environment; one state.
+                    reader = 'defs.bzl' if probe in suite.ROUTES else 'ext.bzl'
+                    other = 'ext.bzl' if probe in suite.ROUTES else 'defs.bzl'
+                    self.assertIn(b'ctx.os.environ' if probe != 'ctor' else b'ctx.getenv(', value['files'][reader])
+                    self.assertNotIn(b'ctx.os.environ', value['files'][other])
+                    self.assertEqual(len(suite.states('environ')), 1)
+                else:
+                    self.assertNotIn(b'ctx.os.environ', source)
+                    self.assertNotIn(b'getattr(ctx.os,"environ"', source)
 
-    def test_environ_default_is_real_unsupported_getter_not_fake_map(self):
-        for route in ('direct', 'ordinary', 'extension'):
-            value = suite.fixture('native-boundary', route+'.environ-default')
-            source = b'\n'.join(value['files'].values())
-            self.assertIn(b'getattr(ctx.os,"environ",{})', source)
-            self.assertEqual(value['diagnostic'], 'environ-default')
+    def test_repository_environ_is_the_whole_controlled_client_environment(self):
+        for route in suite.ROUTES:
+            value = suite.fixture('environ', route)
+            source = value['files']['defs.bzl']
+            self.assertIn(b'getattr(ctx.os,"environ",{})==ctx.os.environ', source)
+            self.assertIn(b'sorted(ctx.os.environ.keys())', source)
+            self.assertIsNone(value['diagnostic'])
+            self.assertEqual(value['ordinary'], route == 'ordinary')
+            [(label, env, changed)] = suite.states('environ')
+            self.assertEqual(json.loads(suite.expected_bytes(value, env, changed)),
+                             ['alpha', sorted(['PATH', 'HOME', 'TMPDIR', 'LC_ALL', suite.A]), True, 'dict'])
+            self.assertEqual(json.loads(suite.expected_bytes(value, {}, False))[:2],
+                             ['DEFAULT', ['HOME', 'LC_ALL', 'PATH', 'TMPDIR']])
+        item = next(c for c in suite.CASEPLAN if c['name'] == 'environ')
+        self.assertEqual(item['kind'], 'differential')
+        boundary = next(c for c in suite.CASEPLAN if c['name'] == 'native-boundary')['probes']
+        for probe in ('direct.environ', 'direct.environ-default', 'ordinary.environ', 'ordinary.environ-default'):
+            self.assertNotIn(probe, boundary)
+            with self.assertRaisesRegex(ValueError, 'unknown planned'):
+                suite.fixture('native-boundary', probe)
+
+    def test_module_ctx_environ_getenv_and_declared_environ_are_differential(self):
+        extension = suite.fixture('environ', 'extension')
+        self.assertIn(b'getattr(ctx.os,"environ",{})==ctx.os.environ', extension['files']['ext.bzl'])
+        self.assertIn(b"ctx.getenv('"+suite.A.encode()+b"',\"DEFAULT\")", extension['files']['ext.bzl'])
+        self.assertEqual(json.loads(suite.expected_bytes(extension, {suite.A: 'alpha'}, False))[-1], 'alpha')
+        ctor = suite.fixture('environ', 'ctor')
+        self.assertIn(("ext=module_extension(_ext,environ=["+repr(suite.A)+"])").encode(), ctor['files']['ext.bzl'])
+        self.assertEqual(suite.expected_bytes(ctor, {suite.A: 'alpha'}, False), b'alpha\n')
+        self.assertEqual(suite.expected_bytes(ctor, {}, False), b'DEFAULT\n')
+        boundary = next(c for c in suite.CASEPLAN if c['name'] == 'native-boundary')['probes']
+        for probe in ('extension.environ', 'extension.environ-default', 'extension.getenv', 'ctor.environ'):
+            self.assertNotIn(probe, boundary)
+            with self.assertRaisesRegex(ValueError, 'unknown planned'):
+                suite.fixture('native-boundary', probe)
 
     def test_version_migration_callbacks_never_read_host(self):
         item = next(c for c in suite.CASEPLAN if c['name'] == 'migration')
@@ -244,21 +283,15 @@ class PrivacyAndPinsTests(unittest.TestCase):
 
 
 class DiagnosticsTests(unittest.TestCase):
-    def test_default_environ_rejection_requires_real_model_and_callback(self):
-        value = suite.fixture('native-boundary', 'direct.environ-default')
-        text = 'HOST_REPO_CALLBACK\nerror: repository_os.environ is unsupported in the native host metadata profile\n'
+    def test_extension_whole_json_rejection_requires_extension_callback(self):
+        value = suite.fixture('native-boundary', 'extension.whole-json')
+        text = 'HOST_EXT_CALLBACK\nerror: cannot encode unsupported value as JSON\n'
         suite.require_rejection(record(text), value, 'native')
-        for wrong in (text.replace('HOST_REPO_CALLBACK\n', ''), text.replace('environ', 'name'),
-                      'HOST_REPO_CALLBACK\nerror: Object has no attribute os\n', text+'panicked\n'):
+        for wrong in (text.replace('HOST_EXT_CALLBACK\n', ''),
+                      text.replace('HOST_EXT_CALLBACK', 'HOST_REPO_CALLBACK'),
+                      text.replace('cannot encode', 'can encode'), text+'panicked\n'):
             with self.assertRaises(ValueError):
                 suite.require_rejection(record(wrong), value, 'native')
-
-    def test_extension_phase_cannot_be_repository_phase(self):
-        value = suite.fixture('native-boundary', 'extension.environ')
-        error = 'error: repository_os.environ is unsupported in the native host metadata profile\n'
-        suite.require_rejection(record('HOST_EXT_CALLBACK\n'+error), value, 'native')
-        with self.assertRaises(ValueError):
-            suite.require_rejection(record('HOST_REPO_CALLBACK\n'+error), value, 'native')
 
     def test_whole_json_is_native_boundary_not_genuine_observation(self):
         value = suite.fixture('native-boundary', 'direct.whole-json')
@@ -354,7 +387,7 @@ class DiagnosticsTests(unittest.TestCase):
         for engine in ('reference', 'baseline', 'unknown'):
             with self.subTest(engine=engine), self.assertRaises(ValueError):
                 suite.require_rejection(row, value, engine)
-        for probe in ('direct.environ', 'direct.environ-default', 'direct.whole-json'):
+        for probe in ('extension.whole-json', 'ordinary.whole-json', 'direct.whole-json'):
             with self.subTest(probe=probe), self.assertRaises(ValueError):
                 suite.require_rejection(row, suite.fixture('native-boundary', probe), 'native')
 
@@ -435,7 +468,7 @@ class DiagnosticsTests(unittest.TestCase):
         for engine in ('reference', 'baseline', 'unknown'):
             with self.subTest(engine=engine), self.assertRaises(ValueError):
                 suite.require_rejection(row, value, engine)
-        for probe in ('direct.environ', 'direct.environ-default', 'direct.whole-json'):
+        for probe in ('extension.whole-json', 'ordinary.whole-json', 'direct.whole-json'):
             with self.subTest(probe=probe), self.assertRaises(ValueError):
                 suite.require_rejection(row, suite.fixture('native-boundary', probe), 'native')
 
@@ -538,8 +571,8 @@ class DiagnosticsTests(unittest.TestCase):
             suite.require_rejection(record('HOST_EXT_CALLBACK\n'+text), value, 'reference')
 
     def test_process_failure_never_passes_as_rejection(self):
-        value = suite.fixture('native-boundary', 'direct.environ')
-        text = 'HOST_REPO_CALLBACK\nrepository_os.environ is unsupported in the native host metadata profile\n'
+        value = suite.fixture('native-boundary', 'extension.whole-json')
+        text = 'HOST_EXT_CALLBACK\ncannot encode unsupported value as JSON\n'
         for code in (0, -9, 101, 124, 125, 126, 127):
             with self.assertRaises(ValueError):
                 suite.require_rejection(record(text, code), value, 'native')

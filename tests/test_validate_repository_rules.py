@@ -31,7 +31,6 @@ MESSAGES = {
     'rollback': 'Error in fail: RULE_ROLLBACK_SENTINEL',
     'path': 'repository output path must be relative and clean',
     'symlink': 'template source symlinks are unsupported',
-    'execute': "repository_ctx has no method 'execute'",
     'return': 'repository rule return value is unsupported; expected None',
     'facts_version_unsupported': 'module_extension with nonzero facts_version is unsupported',
     'ascii': 'non-ASCII string literals are unsupported',
@@ -41,16 +40,16 @@ MESSAGES = {
 
 
 class FixtureTests(unittest.TestCase):
-    def test_fixed_plan_has_seven_differentials_and_nine_boundaries(self):
-        self.assertEqual(len(rules.CASES), 16)
-        self.assertEqual(len(set(name for name, _ in rules.PLAN)), 16)
-        self.assertEqual(sum(c['kind'] == 'differential' for c in rules.CASES), 7)
-        self.assertEqual([c['name'] for c in rules.CASES[:7]], [
+    def test_fixed_plan_has_eight_differentials_and_nine_boundaries(self):
+        self.assertEqual(len(rules.CASES), 17)
+        self.assertEqual(len(set(name for name, _ in rules.PLAN)), 17)
+        self.assertEqual(sum(c['kind'] == 'differential' for c in rules.CASES), 8)
+        self.assertEqual([c['name'] for c in rules.CASES[:8]], [
             'file.transitive-attrs-overwrite', 'template.binary-label-and-stage',
             'identity.root-and-dependency', 'generated.definition-and-template',
             'lazy.unused-callback', 'group.unused-missing-attribute',
-            'group.unused-unknown-attribute'])
-        self.assertTrue(all(c['kind'] == 'native_boundary' for c in rules.CASES[7:]))
+            'group.unused-unknown-attribute', 'execute.host-process'])
+        self.assertTrue(all(c['kind'] == 'native_boundary' for c in rules.CASES[8:]))
         for item in rules.CASES:
             self.assertEqual(len(item['probes']), len(set(item['probes'])))
             for probe, engine in rules.phases_for(item):
@@ -182,14 +181,23 @@ class FixtureTests(unittest.TestCase):
     def test_policy_return_and_facts_version_are_not_differential_claims(self):
         item = next(c for c in rules.CASES if c['name'] == 'native.unsupported')
         self.assertEqual(item['kind'], 'native_boundary')
-        self.assertEqual(item['probes'], ['execute', 'metadata', 'integer', 'facts_version_unsupported'])
+        self.assertEqual(item['probes'], ['metadata', 'integer', 'facts_version_unsupported'])
         for probe in item['probes']:
             value = rules.fixture('native.unsupported', probe)
             self.assertEqual(value['diagnostic'], 'return' if probe in ('metadata', 'integer') else probe)
             self.assertEqual(rules.steps_for(item, probe, 'native'), [('query', '@made//:data', [])])
             if probe != 'facts_version_unsupported':
                 self.assertNotIn(b'module_extension', value['files']['defs.bzl'])
-        self.assertIn(b'ctx.execute(["/bin/true"])', rules.fixture('native.unsupported', 'execute')['files']['defs.bzl'])
+        # Bazel accepts repository_ctx.execute; it is a differential, never a boundary.
+        with self.assertRaises(KeyError):
+            rules.fixture('native.unsupported', 'execute')
+        self.assertNotIn('execute', rules.DIAGNOSTICS)
+        execute = rules.fixture('execute.host-process')
+        self.assertIsNone(execute['diagnostic'])
+        self.assertIn(b'ctx.execute(["/bin/sh", "-c", ', execute['files']['defs.bzl'])
+        self.assertIn(b'environment = {"EXEC_VALUE": "two"}', execute['files']['defs.bzl'])
+        self.assertIn(b'ctx.which("sh")', execute['files']['defs.bzl'])
+        self.assertEqual(execute['expected'], {'data': (b'3|one|two|err|True|data\n', False)})
         self.assertIn(b'return {"answer": "value"}', rules.fixture('native.unsupported', 'metadata')['files']['defs.bzl'])
         self.assertIn(b'return 42', rules.fixture('native.unsupported', 'integer')['files']['defs.bzl'])
         extension = rules.fixture('native.unsupported', 'facts_version_unsupported')['files']['defs.bzl']
@@ -397,8 +405,8 @@ class InvocationAndReportTests(unittest.TestCase):
 
     def test_counts_and_pass_strings_are_not_cli_evidence(self):
         synthetic = dict(checks=[dict(name=c['name'], kind=c['kind'], status='PASS') for c in rules.CASES],
-                         planned_checks=copy.deepcopy(rules.CASES), completed_checks=16,
-                         completed_differential_cases=7, errors=[], cleanup=[], scratch_cleaned=True,
+                         planned_checks=copy.deepcopy(rules.CASES), completed_checks=17,
+                         completed_differential_cases=8, errors=[], cleanup=[], scratch_cleaned=True,
                          sources_unchanged=True, reference_shutdown_succeeded=True)
         self.assertFalse(rules.report_passes(synthetic))
         for mutation in ('missing', 'duplicate', 'unexpected', 'reordered', 'wrong-kind'):

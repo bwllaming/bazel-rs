@@ -96,6 +96,13 @@ pub(crate) struct ReadError;
 
 pub(crate) trait EnvironmentReader: Send + Sync {
     fn read(&self, name: &str) -> Result<Option<OsString>, ReadError>;
+
+    /// The whole client environment (Bazel `--client_env`, see
+    /// runtime/CommandEnvironment.java:333-416). Only `repository_ctx.os.environ`
+    /// and `repository_ctx.execute` enumerate it; `getenv` stays name-scoped.
+    fn all(&self) -> Result<Vec<(OsString, OsString)>, ReadError> {
+        Ok(std::env::vars_os().collect())
+    }
 }
 
 struct ProcessReader;
@@ -144,6 +151,7 @@ struct Retained {
 pub(crate) struct Snapshot {
     retained: Mutex<Retained>,
     reader: Arc<dyn EnvironmentReader>,
+    client: OnceLock<Result<Arc<ClientEnvironment>, EnvError>>,
 }
 impl fmt::Debug for Snapshot {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -176,7 +184,23 @@ impl Snapshot {
         Self {
             retained: Mutex::new(Retained::default()),
             reader,
+            client: OnceLock::new(),
         }
+    }
+
+    /// Bazel's `repoEnv` for this command: the complete client environment,
+    /// since `--repo_env`/`--action_env` overrides are rejected by the native
+    /// CLI and `--experimental_strict_repo_env` defaults to false
+    /// (CommonCommandOptions.java:624-651). Snapshotted once per repository
+    /// set on first use, so every repository of one invocation observes the
+    /// same map, like one Bazel command. Failures are cached, never partial.
+    pub(crate) fn client_environment(&self) -> Result<Arc<ClientEnvironment>, EnvError> {
+        self.client
+            .get_or_init(|| {
+                ClientEnvironment::from_entries(self.reader.all().map_err(|_| EnvError::Read)?)
+                    .map(Arc::new)
+            })
+            .clone()
     }
 
     fn observe(&self, name: &str) -> Result<Arc<Entry>, EnvError> {
@@ -255,6 +279,78 @@ impl Snapshot {
         }
         let text = raw.to_str().ok_or(EnvError::ValueEncoding)?;
         Ok(Captured::Value(Arc::from(text)))
+    }
+}
+
+const CLIENT_ENTRIES: usize = 10_000;
+const CLIENT_BYTES: usize = 16 * 1024 * 1024;
+
+/// The client environment as Bazel's internal bytes (UTF-8 after replacement
+/// decoding, see `from_entries`), ordered like Bazel's `TreeMap` (Java UTF-16
+/// order equals byte order for Bazel's Latin-1 internal strings). Starlark sees
+/// each byte as one U+0000..U+00FF character. Values are never serialized, logged, or formatted by `Debug`.
+#[derive(Clone, PartialEq, Eq, Allocative)]
+pub(crate) struct ClientEnvironment(BTreeMap<Vec<u8>, Vec<u8>>);
+
+impl fmt::Debug for ClientEnvironment {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ClientEnvironment(<redacted>)")
+    }
+}
+
+impl ClientEnvironment {
+    pub(crate) fn from_entries(
+        entries: impl IntoIterator<Item = (OsString, OsString)>,
+    ) -> Result<Self, EnvError> {
+        let mut map = BTreeMap::new();
+        let mut total = 0usize;
+        for (name, value) in entries {
+            // Bazel receives the client environment as `--client_env=NAME=VALUE`
+            // JVM arguments that the JVM decodes as UTF-8, replacing malformed
+            // bytes with U+FFFD, before platformToInternal re-encodes them
+            // (BlazeRuntime.java:915-916, StringEncoding.java:116-120). A raw
+            // 0xff therefore reaches Starlark as the three bytes EF BF BD.
+            let (name, value) = (
+                String::from_utf8_lossy(name.as_encoded_bytes())
+                    .into_owned()
+                    .into_bytes(),
+                String::from_utf8_lossy(value.as_encoded_bytes())
+                    .into_owned()
+                    .into_bytes(),
+            );
+            // An environ entry cannot have an empty name or contain '=' in it;
+            // never fabricate such keys from a test or platform reader either.
+            if name.is_empty() || name.contains(&b'=') || name.contains(&0) || value.contains(&0) {
+                continue;
+            }
+            if name.len() > MAX_NAME {
+                return Err(EnvError::NameLimit);
+            }
+            if value.len() > MAX_VALUE {
+                return Err(EnvError::ValueLimit);
+            }
+            total = total
+                .checked_add(name.len() + value.len())
+                .filter(|total| *total <= CLIENT_BYTES)
+                .ok_or(EnvError::Budget)?;
+            map.insert(name, value);
+            if map.len() > CLIENT_ENTRIES {
+                return Err(EnvError::Budget);
+            }
+        }
+        Ok(Self(map))
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&[u8], &[u8])> {
+        self.0.iter().map(|(k, v)| (k.as_slice(), v.as_slice()))
+    }
+
+    pub(crate) fn get(&self, name: &[u8]) -> Option<&[u8]> {
+        self.0.get(name).map(Vec::as_slice)
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
     }
 }
 
@@ -360,6 +456,32 @@ pub(crate) mod tests {
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.value.clone()
         }
+    }
+
+    #[test]
+    fn client_environment_decodes_like_the_jvm_and_keeps_byte_order() {
+        use std::os::unix::ffi::OsStringExt;
+        let environment = ClientEnvironment::from_entries([
+            (
+                OsString::from("Z"),
+                OsString::from_vec(b"\xff\x01z".to_vec()),
+            ),
+            (OsString::from_vec(b"K\xff".to_vec()), OsString::from("v")),
+            (
+                OsString::from("A"),
+                OsString::from_vec(b"caf\xc3\xa9".to_vec()),
+            ),
+            (OsString::from(""), OsString::from("dropped")),
+        ])
+        .unwrap();
+        assert_eq!(
+            environment.iter().collect::<Vec<_>>(),
+            vec![
+                (b"A".as_slice(), b"caf\xc3\xa9".as_slice()),
+                (b"K\xef\xbf\xbd".as_slice(), b"v".as_slice()),
+                (b"Z".as_slice(), b"\xef\xbf\xbd\x01z".as_slice()),
+            ]
+        );
     }
 
     #[test]

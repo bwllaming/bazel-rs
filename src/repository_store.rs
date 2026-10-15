@@ -37,6 +37,11 @@ struct Entry {
     mode: u32,
     size: u64,
     sha256: String,
+    /// Symbolic link target bytes (UTF-8), never followed. Created only by
+    /// `repository_ctx.symlink` / executed tools (StarlarkRepositoryContext.java:
+    /// 196-256). Omitted for files and directories, keeping legacy manifests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    symlink: Option<String>,
 }
 
 /// Execute into a private stage, then verify and publish its complete tree.
@@ -354,11 +359,44 @@ fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
                 return Err("direct repository exceeds 10000 entries".into());
             }
         }
+        if before.file_type().is_symlink() {
+            if name.is_empty() {
+                return Err("direct repository root must not be a symlink".into());
+            }
+            let target = fs::read_link(path).map_err(|e| e.to_string())?;
+            let target = target
+                .to_str()
+                .filter(|target| {
+                    !target.is_empty() && target.len() <= PATH_LIMIT && !target.contains('\0')
+                })
+                .ok_or(
+                    "direct repository symlink target must be nonempty UTF-8 within the path limit",
+                )?
+                .to_owned();
+            if !stable(
+                &before,
+                &fs::symlink_metadata(path).map_err(|e| e.to_string())?,
+            ) {
+                return Err("direct repository changed during snapshot".into());
+            }
+            files.insert(
+                name,
+                Entry {
+                    directory: false,
+                    mode: 0,
+                    size: target.len() as u64,
+                    sha256: format!("{:x}", Sha256::digest(target.as_bytes())),
+                    symlink: Some(target),
+                },
+            );
+            return Ok(());
+        }
         let mut entry = Entry {
             directory: before.is_dir(),
             mode: mode(&before)?,
             size: 0,
             sha256: String::new(),
+            symlink: None,
         };
         if !entry.directory {
             regular_metadata(&before)?;
@@ -635,30 +673,83 @@ mod tests {
         no_stages(cache.path());
     }
 
+    #[test]
+    fn retained_legacy_manifest_bytes_round_trip_without_a_symlink_field() {
+        // The label-passthrough publication evidence pins a manifest written
+        // before symlink entries existed; it must parse and re-serialize to
+        // the identical bytes, so non-symlink identities are unchanged.
+        use base64::Engine;
+        let fixture: serde_json::Value = serde_json::from_slice(
+            &fs::read(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures/label_passthrough/native_publication_observation.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let manifests = fixture["publication"]["manifests"].as_object().unwrap();
+        assert!(!manifests.is_empty());
+        for item in manifests.values() {
+            let raw = base64::engine::general_purpose::STANDARD
+                .decode(item["raw"]["base64"].as_str().unwrap())
+                .unwrap();
+            let manifest: Manifest = serde_json::from_slice(&raw).unwrap();
+            assert!(manifest.files.values().all(|entry| entry.symlink.is_none()));
+            assert_eq!(serde_json::to_vec(&manifest).unwrap(), raw);
+        }
+    }
+
     #[cfg(unix)]
     #[test]
-    fn links_and_special_files_are_rejected_without_touching_outside() {
+    fn symlinks_are_recorded_unfollowed_but_hard_links_and_special_files_are_rejected() {
         use std::os::unix::fs::symlink;
         let cache = temp();
         let outside = temp();
         fs::write(outside.path().join("precious"), b"keep").unwrap();
+        let mut trees = Vec::new();
         for directory in [false, true] {
-            assert!(
-                materialize(cache.path(), b"", |stage| {
-                    symlink(
-                        if directory {
-                            outside.path().to_owned()
-                        } else {
-                            outside.path().join("precious")
-                        },
-                        stage.join("link"),
-                    )
+            let target = if directory {
+                outside.path().to_owned()
+            } else {
+                outside.path().join("precious")
+            };
+            let tree = materialize(cache.path(), b"", |stage| {
+                symlink(&target, stage.join("link")).unwrap();
+                symlink("missing/dangling", stage.join("dangling")).unwrap();
+                Ok(vec![])
+            })
+            .unwrap();
+            // Published as links (never followed, copied, or rewritten).
+            assert_eq!(fs::read_link(tree.join("link")).unwrap(), target);
+            assert_eq!(
+                fs::read_link(tree.join("dangling")).unwrap(),
+                Path::new("missing/dangling")
+            );
+            let manifest: Manifest =
+                serde_json::from_slice(&fs::read(metadata_path(cache.path(), &tree)).unwrap())
                     .unwrap();
+            assert_eq!(manifest.files["link"].symlink.as_deref(), target.to_str());
+            assert!(manifest.files["link"].sha256.len() == 64);
+            // Warm reuse re-verifies the same link entries.
+            assert_eq!(
+                tree,
+                materialize(cache.path(), b"", |stage| {
+                    symlink(&target, stage.join("link")).unwrap();
+                    symlink("missing/dangling", stage.join("dangling")).unwrap();
                     Ok(vec![])
                 })
-                .is_err()
+                .unwrap()
             );
+            trees.push(tree);
         }
+        // Distinct link targets are distinct content identities.
+        assert_ne!(trees[0], trees[1]);
+        let tree = materialize(cache.path(), b"", |stage| {
+            fs::write(stage.join("link"), b"file").unwrap();
+            Ok(vec![])
+        })
+        .unwrap();
+        assert!(!trees.contains(&tree));
         assert!(
             materialize(cache.path(), b"", |stage| {
                 fs::hard_link(outside.path().join("precious"), stage.join("hardlink")).unwrap();

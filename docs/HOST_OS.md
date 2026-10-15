@@ -9,11 +9,35 @@ a separate gate.
 Repository and ordinary module-extension callbacks receive `ctx.os`, a real
 immutable `repository_os` value retained once per context. Its identity/hash
 survives freezing; equal metadata does not merge distinct context objects.
-`name` and `arch` return actual captured metadata. `environ` remains present in
-structural introspection but reading it raises an explicit unsupported error;
-`getattr(..., default)` cannot substitute a fake empty dictionary.
+`name` and `arch` return actual captured metadata.
 
-No process environment, subprocess or JVM is consulted to provide this verified
+`repository_ctx.os.environ` and `module_ctx.os.environ` are Bazel's `repoEnv`
+(StarlarkOS.java:44-58, StarlarkBaseExternalContext.java:194-196): every access
+returns a NEW mutable dictionary of the complete client environment (assignment
+and `pop()` succeed and are invisible to the next access, as captured), keys in
+byte (Java `TreeMap`) order. Names and values are decoded the way the JVM decodes
+Bazel's `--client_env` arguments: UTF-8 with malformed bytes replaced by U+FFFD,
+re-encoded as Bazel's internal Latin-1 bytes (BlazeRuntime.java:915-916,
+StringEncoding.java:116-120), so a raw `0xff` reaches Starlark, files, `execute`
+arguments and child environments as the three bytes `EF BF BD`; valid UTF-8 is
+unchanged. This is the captured `--batch`/JVM-argv behavior; a persistent Bazel
+server receives the same arguments over gRPC as raw Latin-1 bytes
+(GrpcServerImpl.java:601-605,784-786) and would keep `0xff`; the native CLI is
+serverless and follows the JVM-argv form. The native CLI rejects `--repo_env`/`--action_env`
+overrides and `--experimental_strict_repo_env` defaults to false
+(CommonCommandOptions.java:624-651, CommandEnvironment.java:342-416), so the map
+is exactly the process environment, snapshotted once per invocation on first use
+and shared by every repository of that invocation. A snapshot failure (bounds:
+10,000 entries, 1 MiB per value, 16 MiB total) is cached and reported only when
+`environ`, `which` or `execute` needs it. Like Bazel, reading `environ` records no
+dependency; the native store re-executes every repository in every invocation, so
+a changed environment is still observed (Bazel may instead serve a cached
+repository until a recorded input changes). `module_ctx.getenv` and
+`module_extension(environ=[...])` record extension environment inputs exactly like
+`repository_ctx.getenv` and `repository_rule(environ=...)` (a value-free digest in
+the extension provenance; values are never persisted).
+
+No subprocess or JVM is consulted to provide this verified
 compile-target view. Unsupported compile targets reject when metadata is needed.
 Synthetic host injection is private test machinery, not evidence of parity on
 other platforms or a user override.
@@ -45,8 +69,9 @@ synthetic factor and migration tests; those do not establish other-host runtime
 parity. Whole-object JSON rejection was initially source-derived and must not be
 advertised as an executed reference result without a matching probe.
 
-This adds no BUILD/native/analysis globals, OS environment dictionary, execution
-or download SDK, module-context getenv, or CLI host overrides. Repository getenv
+This adds no BUILD/native/analysis globals, module-context environment dictionary,
+module-context getenv, or CLI host overrides. Repository execution, `which` and
+downloads are described in [REPOSITORY_RULES.md](REPOSITORY_RULES.md). Repository getenv
 and its privacy/resource boundaries remain independent. Full Bazel compatibility,
 application build/test success and performance goals are unfinished.
 
@@ -62,8 +87,15 @@ Fifteen named, executed native-unit proofs cover the separate injected factor
 matrix, unconditional unread host inputs, identity/freeze ownership, legacy inner
 serialization, resource bounds and lazy errors. Synthetic alternate hosts are not
 runtime evidence on other platforms. Four repository/environment regression
-matrices pass; the superseded `ctx.os.name` negative is now the intentionally
-unsupported `ctx.os.environ` boundary, with publication barriers retained.
+matrices pass; the superseded `ctx.os.name` negative was later the
+`module_ctx.os.environ` boundary, now supported (N21).
+
+N21 adds an eighth validator family, `environ`, a single cold differential state
+per probe over the controlled client environment: `direct`/`ordinary` read
+`repository_ctx.os.environ`, `extension` reads `module_ctx.os.environ` and
+`module_ctx.getenv`, `ctor` declares `module_extension(environ=[...])`. The former
+environ/getenv/ctor native-boundary probes were removed. Its genuine reference
+phases and the full scoped matrix need recapture; the receipts above predate it.
 
 Analyzer results retain the exact twelve known dependency diagnostics and no new
 root-source errors. Failed fixture/classifier attempts are preserved. The primary

@@ -904,6 +904,13 @@ impl RepositorySet {
                 host_factors: crate::host_os::HostFactors<'a>,
                 #[serde(skip_serializing_if = "Option::is_none")]
                 extension_io: Option<ExtensionIo<'a>>,
+                /// module_extension(environ=...) declarations and the digest of
+                /// declared/module_ctx.getenv observations; omitted when empty
+                /// so existing extension identities are unchanged.
+                #[serde(skip_serializing_if = "crate::repository_environment::DeclaredEnvironment::is_empty")]
+                environ: &'a crate::repository_environment::DeclaredEnvironment,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                watched_env: Option<&'a crate::repository_environment::WatchedEnvironment>,
             }
             #[derive(serde::Serialize)]
             struct ExtensionIo<'a> {
@@ -923,6 +930,8 @@ impl RepositorySet {
                 extension_io: (!execution.io_observations.is_empty()).then_some(ExtensionIo {
                     version: 1, observations: &execution.io_observations,
                 }),
+                environ: &definition.environ,
+                watched_env: execution.watched_env.as_ref(),
             }, 64 * 1024 * 1024)?;
             Ok(PreparedOrdinary { loaded, generated_mapping, repositories, provenance })
         })

@@ -38,11 +38,6 @@ MESSAGES = {
     'canonical': 'unknown canonical repository @@+unknown+made; extension repository not materialized',
     'ticks': 'Maximum number of ticks exceeded',
     'facts': 'Facts has no key "missing": persisted facts are unsupported (native lockfile mode is off)',
-    'os-environ': ('bazel-rs: module extension //:ext.bzl: Traceback (most recent call last):\n'
-                   '  File <builtin>, in <module>\n'
-                   'error: repository_os.environ is unsupported in the native host metadata profile\n'
-                   ' --> //:ext.bzl:4:11\n'
-                   '  |\n4 |     value=ctx.os.environ\n  |           ^^^^^^^^^^^^^^\n  |\n'),
     # Literal stderr captured by the owned Rust read-watch fixture. These
     # synthetic unit records replay its classifier contract, not execution.
     'read-watch': ('bazel-rs: module extension //:ext.bzl: Traceback (most recent call last):\n'
@@ -68,10 +63,10 @@ class FixtureTests(unittest.TestCase):
                 steps = extensions.steps_for(item, probe, engine)
                 self.assertTrue(steps)
                 self.assertFalse(any(s[0] in ('test', 'run') for s in steps))
-        self.assertEqual(sum(len(c['probes']) for c in extensions.CASES), 37)
-        self.assertEqual(sum(len(extensions.phases_for(c)) for c in extensions.CASES), 50)
+        self.assertEqual(sum(len(c['probes']) for c in extensions.CASES), 36)
+        self.assertEqual(sum(len(extensions.phases_for(c)) for c in extensions.CASES), 49)
         self.assertEqual(sum(len(extensions.steps_for(c, probe, engine)) for c in extensions.CASES
-                             for probe, engine in extensions.phases_for(c)), 106)
+                             for probe, engine in extensions.phases_for(c)), 105)
 
     def test_unknown_fixture_names_or_probe_never_fall_back_to_baseline(self):
         for name, probe in [('made-up', 'result'), (extensions.CASES[0]['name'], 'made-up')]:
@@ -228,7 +223,11 @@ class FixtureTests(unittest.TestCase):
     def test_native_contexts_and_non_none_returns_are_not_parity(self):
         item = next(c for c in extensions.CASES if c['name'] == 'native.context-and-return')
         self.assertEqual(item['kind'], 'native_boundary')
-        self.assertEqual(item['probes'], ['facts', 'os-environ', 'read-watch', 'integer', 'dict'])
+        self.assertEqual(item['probes'], ['facts', 'read-watch', 'integer', 'dict'])
+        # module_ctx.os.environ is supported; the former boundary is gone.
+        with self.assertRaisesRegex(ValueError, 'unknown planned'):
+            extensions.fixture(item['name'], 'os-environ')
+        self.assertNotIn('os-environ', extensions.DIAGNOSTICS)
         for probe in item['probes']:
             value = extensions.fixture(item['name'], probe)
             self.assertIn(b'maker(name="made")', value['files']['ext.bzl'])
@@ -238,21 +237,6 @@ class FixtureTests(unittest.TestCase):
         self.assertIn(b'value=ctx.facts["missing"]', extensions.fixture(item['name'], 'facts')['files']['ext.bzl'])
         self.assertIn(b'return 42', extensions.fixture(item['name'], 'integer')['files']['ext.bzl'])
         self.assertIn(b'return {}', extensions.fixture(item['name'], 'dict')['files']['ext.bzl'])
-
-    def test_os_environ_reaches_host_property_after_recording_without_repo_execution(self):
-        value = extensions.fixture('native.context-and-return', 'os-environ')
-        source = value['files']['ext.bzl']
-        self.assertEqual(value['diagnostic'], 'os-environ')
-        self.assertIn(b'maker(name="made")\n    value=ctx.os.environ\n', source)
-        self.assertLess(source.index(b'value=ctx.os.environ'), source.index(extensions.FAIL_MARKER.encode()))
-        self.assertIn(extensions.LAZY_MARKER.encode(), value['files']['rules.bzl'])
-        self.assertNotIn(b'ctx.file', value['files']['rules.bzl'])
-        self.assertNotIn(b'ctx.os.name', source)
-        self.assertNotIn(b'print(', value['files']['BUILD.bazel'])
-        item = next(c for c in extensions.CASES if c['name'] == 'native.context-and-return')
-        self.assertNotIn(('os-environ', 'reference'), extensions.phases_for(item))
-        with self.assertRaisesRegex(ValueError, 'unknown planned'):
-            extensions.fixture(item['name'], 'os')
 
     def test_read_watch_reaches_option_after_recording_without_repo_execution(self):
         value = extensions.fixture('native.context-and-return', 'read-watch')
@@ -368,38 +352,6 @@ class DiagnosticTests(unittest.TestCase):
             for change in changes:
                 with self.subTest(diagnostic=diagnostic, change=change), self.assertRaises(ValueError):
                     extensions.require_rejection(dict(good, **change), diagnostic)
-
-    def test_os_environ_rejects_obsolete_missing_os_and_other_field_type_errors(self):
-        text = MESSAGES['os-environ']
-        for wrong in ("module_ctx has no attribute 'os'", "module_ctx has no attribute 'name'",
-                      "repository_os has no attribute 'environ'", "repository_os has no attribute 'name'",
-                      text.replace('repository_os.environ', 'module_ctx.environ'),
-                      text.replace('repository_os.environ', 'repository_os.name'),
-                      text.replace('repository_os.environ', 'repository_os.arch'),
-                      text.replace('error: repository_os', 'note: repository_os'),
-                      text.replace('is unsupported', 'is Unsupported'),
-                      text.replace('metadata profile', 'metadata profile extra'),
-                      text+'error: Other\n'):
-            with self.subTest(wrong=wrong), self.assertRaises(ValueError):
-                extensions.require_rejection(record(stderr=wrong, returncode=1), 'os-environ')
-
-    def test_os_environ_requires_extension_getter_site_not_another_callback(self):
-        text = MESSAGES['os-environ']
-        for wrong in (text.replace('//:ext.bzl', '//:rules.bzl'),
-                      text.replace(' --> //:ext.bzl:4:11', ' --> //:ext.bzl:3:11'),
-                      text.replace(' --> //:ext.bzl:4:11', ' --> //:ext.bzl:4:5'),
-                      text.replace('4 |     value=ctx.os.environ', '4 |     value=ctx.os.name'),
-                      text.replace('4 |     value=ctx.os.environ\n', ''),
-                      text.replace('module extension //:ext.bzl', 'repository made (//:rules.bzl%maker)'),
-                      text+'HOST_REPO_CALLBACK\n', text+'HOST_AFTER_GETTER\n',
-                      text+'1 actions executed, 0 cache hits\n',
-                      text+'0 actions executed, 1 cache hits\n',
-                      text+extensions.FAIL_MARKER+'\n'):
-            with self.subTest(wrong=wrong), self.assertRaises(ValueError):
-                extensions.require_rejection(record(stderr=wrong, returncode=1), 'os-environ')
-        for output in ('@@+files+made//:data\n', ' ', '\n'):
-            with self.subTest(output=output), self.assertRaises(ValueError):
-                extensions.require_rejection(record(stdout=output, stderr=text, returncode=1), 'os-environ')
 
     def test_read_watch_requires_exact_typed_error_site_and_recording_phase(self):
         text = MESSAGES['read-watch']
@@ -531,19 +483,19 @@ class EvidenceTests(unittest.TestCase):
                 with self.subTest(change=change), self.assertRaises(ValueError):
                     extensions.validate_check(altered, report, args, workspace, None)
 
-    def test_os_environ_failure_cannot_leave_a_published_repository(self):
+    def test_read_watch_failure_cannot_leave_a_published_repository(self):
         # Mocked record only; no native/reference invocation or ambient lookup.
         with tempfile.TemporaryDirectory(dir='/tmp/opencode') as directory:
             scratch = Path(directory)
             workspace = scratch / 'workspace'
             root = scratch / 'case'
-            value = extensions.materialize(root, workspace, 'native.context-and-return', 'os-environ')
+            value = extensions.materialize(root, workspace, 'native.context-and-return', 'read-watch')
             cache = root / 'native-cache'
             (extensions.direct.trees_directory(cache) / ('a'*64)).mkdir(parents=True)
             runner = mock.Mock()
-            runner.run.return_value = record(stderr=MESSAGES['os-environ'], returncode=1)
+            runner.run.return_value = record(stderr=MESSAGES['read-watch'], returncode=1)
             item = next(c for c in extensions.CASES if c['name'] == 'native.context-and-return')
-            phase = dict(probe='os-environ', engine='native', status='FAIL', runs=[], cache=str(cache),
+            phase = dict(probe='read-watch', engine='native', status='FAIL', runs=[], cache=str(cache),
                          registry=str(value['registry']), inputs_before=extensions.snapshot(value['paths']))
             extensions.run_phase(extensions.argument_parser().parse_args([]), runner, scratch, workspace,
                                  None, item, phase, value)

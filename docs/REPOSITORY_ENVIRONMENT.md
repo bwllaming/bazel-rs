@@ -51,10 +51,12 @@ or a process memory sandbox.
 
 ## Explicit exclusions
 
-`os.environ` is not fabricated as an empty or partial dictionary. Repository
-execution/download, CLI environment overrides, module-extension environment
-declarations and extension-context getenv remain unsupported. A repository rule
-called by a module extension is distinct from the extension callback itself.
+`os.environ` is the whole client environment (see [HOST_OS.md](HOST_OS.md)),
+never an empty or partial dictionary. `module_extension(environ=[...])` and
+`module_ctx.getenv` use this same bounded observation profile; their digest is
+part of the extension provenance. CLI environment overrides remain unsupported.
+A repository rule called by a module extension is distinct from the extension
+callback itself.
 
 Unsupported `--repo_env` forms are rejected with a fixed value-free message before
 startup, command or argument errors can echo an inline or split value, including

@@ -293,7 +293,7 @@ fn helper_command(kill: &Path, group: u32) -> Command {
     command
 }
 
-fn kill_group(kill: &Path, group: u32) -> Result<(), String> {
+pub(crate) fn kill_group(kill: &Path, group: u32) -> Result<(), String> {
     // Child::id is a positive PID; never signal the caller's group or all PIDs.
     if group <= 1 {
         return Err(format!("invalid Git process group {group}"));

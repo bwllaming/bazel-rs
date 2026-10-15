@@ -41,6 +41,7 @@ fn n3_actual_context_preflight_allocates_no_scratch_or_client() {
             public_label: label(),
             calls: CallRecorder::default(),
             io: RefCell::new(crate::extension_io::ScratchExecutionIo::new().unwrap()),
+            environment: RefCell::default(),
         };
         let error = n3_eval_in_context(&context, call).unwrap_err();
         assert!(error.contains(*diagnostic), "{name}: {error}");
@@ -74,6 +75,7 @@ fn n3_actual_context_checksumless_untrusted_tls_allow_fail_boundary() {
             public_label: label(),
             calls: CallRecorder::default(),
             io: RefCell::new(n3_private_io(fixture.root.path()).with_client(client)),
+            environment: RefCell::default(),
         };
         let source = format!(
             "r = ctx.download({:?}, 'fresh', allow_fail={})\n{}",

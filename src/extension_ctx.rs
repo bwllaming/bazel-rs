@@ -37,6 +37,8 @@ pub struct ExtensionExecution {
     pub repositories: Vec<RecordedRepository>,
     pub modules: Vec<BoundModule>,
     pub(crate) io_observations: Vec<crate::extension_io::Observation>,
+    /// Digest of declared/getenv environment observations (values never kept).
+    pub(crate) watched_env: Option<crate::repository_environment::WatchedEnvironment>,
     /// None when the callback returned None (ModuleExtensionMetadata.DEFAULT).
     pub metadata: Option<crate::extension_metadata::ExtensionMetadata>,
 }
@@ -74,6 +76,8 @@ mod values {
         pub public_label: Label,
         pub calls: CallRecorder,
         pub io: RefCell<crate::extension_io::ScratchExecutionIo>,
+        /// Declared `environ` and `module_ctx.getenv` observations.
+        pub environment: RefCell<crate::repository_environment::Watch>,
     }
 
     #[derive(
@@ -422,6 +426,27 @@ starlark::methods_static!(MODULE_METHODS = module_methods);
 
 #[starlark_module]
 fn module_methods(builder: &mut MethodsBuilder) {
+    /// StarlarkBaseExternalContext.getEnvironmentValue (java:1535-1565):
+    /// recorded as an extension environment input, like repository_ctx.getenv.
+    fn getenv<'v>(
+        this: Value<'v>,
+        args: &Arguments<'v, '_>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        use crate::repository_ctx::GetenvError;
+        if this.downcast_ref::<values::ModuleCtx>().is_none() {
+            return Err(anyhow::Error::new(GetenvError::Receiver));
+        }
+        let context = context(eval).ok_or_else(|| anyhow::Error::new(GetenvError::Phase))?;
+        crate::repository_ctx::getenv_observed(
+            &context.environment,
+            context.repositories.environment(),
+            args,
+            eval.heap(),
+        )
+        .map_err(anyhow::Error::new)
+    }
+
     fn download<'v>(
         this: Value<'v>,
         url: Value<'v>,
@@ -1230,15 +1255,31 @@ pub fn execute(
             public_label: public_label.clone(),
             calls: CallRecorder::default(),
             io: RefCell::new(crate::extension_io::ScratchExecutionIo::new()?),
+            environment: RefCell::new(crate::repository_environment::Watch::default()),
         };
+        for name in definition.environ.names() {
+            context
+                .environment
+                .borrow_mut()
+                .observe(context.repositories.environment(), name)?;
+        }
         let repositories = Module::with_temp_heap(|module| -> anyhow::Result<_> {
             let heap = module.heap();
             let ctx = heap.alloc(ModuleCtxGen {
                 modules: heap.access_owned_frozen_value(&projected),
-                os: crate::host_os::alloc(
-                    heap,
-                    context.repositories.host().map_err(anyhow::Error::msg)?,
-                )?,
+                // module_ctx.os.environ is the same repoEnv (StarlarkBaseExternalContext
+                // .java:194-196); reading it records no dependency.
+                os: {
+                    let host = context.repositories.host().map_err(anyhow::Error::msg)?;
+                    match context.repositories.environment().client_environment() {
+                        Ok(environment) => {
+                            crate::host_os::alloc_with_environ(heap, host, environment)?
+                        }
+                        Err(error) => {
+                            crate::host_os::alloc_with_environ_error(heap, host, error.to_string())?
+                        }
+                    }
+                },
                 root_has_non_dev_dependency,
                 execution_identity: context.io.borrow().identity(),
             });
@@ -1255,7 +1296,7 @@ pub fn execute(
             // No live HTTP/file handle remains in the synchronous authority.
             // Close even when evaluation failed, BEFORE success or heap freeze.
             let observations = context.io.borrow_mut().close();
-            let returned = evaluated.map_err(|error| anyhow!(error.to_string()))?;
+            let returned = evaluated.map_err(crate::repository_ctx::callback_error)?;
             let observations = observations?;
             // RegularRunnableExtension.java:298-318: None is DEFAULT metadata.
             ensure!(
@@ -1273,10 +1314,12 @@ pub fn execute(
                     "ordinary extension callback:{public_label}"
                 ))))
                 .map_err(|error| anyhow!("cannot freeze module extension callback: {error:?}"))?;
+            let watched_env = context.environment.borrow().inputs()?;
             Ok((
                 context.calls.finish(&frozen).map_err(anyhow::Error::msg)?,
                 observations,
                 metadata,
+                watched_env,
             ))
         })?;
         Ok(ExtensionExecution {
@@ -1284,6 +1327,7 @@ pub fn execute(
             modules,
             io_observations: repositories.1,
             metadata: repositories.2,
+            watched_env: repositories.3,
         })
     };
     run().map_err(|error| format!("module extension {public_label}: {error:#}"))
@@ -1827,12 +1871,6 @@ words.append('after')
             fixture.error(&format!("ctx.{field}"), "{}", &[], field);
         }
         fixture.error(
-            "ctx.os.environ",
-            "{}",
-            &[],
-            "repository_os.environ is unsupported",
-        );
-        fixture.error(
             "ctx.modules[0].repo_name",
             "{}",
             &[participant(Vec::new())],
@@ -2025,7 +2063,7 @@ str(f) == repr(f) or fail(str(f))
 dir(f) == ['get'] or fail(dir(f))
 hasattr(ctx, 'facts') or fail('hasattr')
 (ctx.facts == ctx.facts and f == ctx.facts and f != None) or fail('facts equality')
-sorted(dir(ctx)) == ['download', 'extension_metadata', 'facts', 'is_dev_dependency', 'modules', 'os', 'path', 'read', 'root_module_has_non_dev_dependency'] or fail(sorted(dir(ctx)))
+sorted(dir(ctx)) == ['download', 'extension_metadata', 'facts', 'getenv', 'is_dev_dependency', 'modules', 'os', 'path', 'read', 'root_module_has_non_dev_dependency'] or fail(sorted(dir(ctx)))
 dir(ctx) == sorted(dir(ctx)) or fail('dir order')
 "#,
                 "{}",
@@ -2364,6 +2402,7 @@ r(name='actual', words=[ctx.read('data', watch='no')])
             public_label: label(),
             calls: CallRecorder::default(),
             io: RefCell::new(io),
+            environment: RefCell::default(),
         };
         let frozen = Module::with_temp_heap(|module| {
             module.set(
@@ -2415,6 +2454,7 @@ r(name='actual', words=[ctx.read('data', watch='no')])
             public_label: label(),
             calls: CallRecorder::default(),
             io: RefCell::new(io),
+            environment: RefCell::default(),
         };
         Module::with_temp_heap(|module| {
             let heap = module.heap();
@@ -2452,18 +2492,64 @@ r(name='actual', words=[ctx.read('data', watch='no')])
         assert_eq!(result.repositories.len(), 1);
         assert_eq!(reader.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
         fixture.error(
-            "getattr(ctx.os, 'environ', {})",
-            "{}",
-            &[],
-            "repository_os.environ is unsupported",
-        );
-        fixture.error(
             "json.encode(ctx.os)",
             "{}",
             &[],
             "cannot encode unsupported value as JSON",
         );
-        fixture.error("ctx.getenv('SYNTHETIC')", "{}", &[], "getenv");
+        assert_eq!(reader.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn module_ctx_environ_getenv_and_declared_environ_are_bazel_repo_env_inputs() {
+        use crate::repository_environment::tests::Reader;
+        let mut fixture = Fixture::new();
+        let reader = Reader::new(Ok(Some("SyntheticSecret".into())));
+        fixture.repositories = Arc::new(
+            (*fixture.repositories)
+                .clone()
+                .with_environment_reader(reader.clone()),
+        );
+        // module_ctx.os.environ: a fresh mutable dict of the client environment
+        // that records no dependency; module_ctx.getenv records the variable.
+        let unread = fixture
+            .run("e = ctx.os.environ\n(type(e) == 'dict' and getattr(ctx.os, 'environ', {}) == e) or fail('environ')\ne['X'] = 'y'\n('X' not in ctx.os.environ) or fail('fresh')\nr(name='m', words=[])", "{}", &[])
+            .unwrap();
+        assert!(unread.watched_env.is_none());
+        assert_eq!(reader.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let read = fixture
+            .run("r(name='m', words=[ctx.getenv('SYNTHETIC', 'default'), str(ctx.getenv('SYNTHETIC'))])", "{}", &[])
+            .unwrap();
+        assert!(read.watched_env.is_some());
+        assert!(!format!("{:?}", read.watched_env).contains("SyntheticSecret"));
+        assert!(
+            !serde_json::to_string(&read.watched_env)
+                .unwrap()
+                .contains("SyntheticSecret")
+        );
+        assert_eq!(reader.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        for body in [
+            "ctx.getenv(1)",
+            "ctx.getenv('SYNTHETIC', 1)",
+            "ctx.getenv(name='SYNTHETIC')",
+            "ctx.getenv()",
+        ] {
+            let error = fixture.run(body, "{}", &[]).unwrap_err();
+            assert!(error.contains("getenv"), "{error}");
+            assert!(!error.contains("SyntheticSecret"), "{error}");
+        }
+        // module_extension(environ=[...]) observes declared names before the
+        // callback even when unread (ModuleExtension environ).
+        fixture.file("defs.bzl", "def _impl(ctx):\n    pass\next = module_extension(implementation=_impl, environ=['DECLARED'])\n");
+        let loaded = load_definition_in(
+            fixture.repositories.clone(),
+            &label(),
+            "ext",
+            &crate::package::bzl_globals(),
+        )
+        .unwrap();
+        let declared = fixture.run_loaded(loaded, &[], true).unwrap();
+        assert!(declared.watched_env.is_some());
     }
 
     #[test]

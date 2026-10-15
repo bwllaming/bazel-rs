@@ -41,6 +41,25 @@ impl Fixture {
     fn run(&self, args: &[&str]) -> Output {
         self.command(args).output().unwrap()
     }
+    /// Run with an exact client environment (Bazel `--client_env`).
+    fn run_env(&self, args: &[&str], environment: &[(&str, String)]) -> Output {
+        let mut command = Command::new("/usr/bin/timeout");
+        command
+            .args([
+                "30s",
+                env!("CARGO_BIN_EXE_bazel-rs"),
+                "--ignore_all_rc_files",
+                "--cache-dir=cache",
+            ])
+            .args(args)
+            .current_dir(self.0.path())
+            .env_clear()
+            .env("LC_ALL", "C");
+        for (name, value) in environment {
+            command.env(name, value);
+        }
+        command.output().unwrap()
+    }
     fn build(&self, target: &str) -> Vec<(String, PathBuf)> {
         outputs(&self.run(&["build", target]))
     }
@@ -217,8 +236,18 @@ fn callback_failure_unsupported_operations_and_paths_never_publish() {
     for (operation, marker) in [
         ("fail('rollback-sentinel')", "rollback-sentinel"),
         ("ctx.file('../outside', 'bad')", "path"),
-        ("ctx.execute(['echo','bad'])", "execute"),
-        ("ctx.symlink('a','b')", "symlink"),
+        (
+            "ctx.download('https://example.invalid/x','x')",
+            "repository_ctx.download() is not implemented by the native profile",
+        ),
+        (
+            "ctx.symlink('a','../outside')",
+            "Cannot write outside of the repository directory",
+        ),
+        (
+            "ctx.execute(['sh','-c','echo should-not-publish'])\n    fail('after-execute')",
+            "after-execute",
+        ),
         ("return {'suggested':'value'}", "return"),
     ] {
         let f = Fixture::new();
@@ -272,4 +301,123 @@ fn cache_corruption_is_repaired_and_concurrent_cli_publication_is_complete() {
     for output in [a.wait_with_output().unwrap(), b.wait_with_output().unwrap()] {
         assert_eq!(bytes(&outputs(&output)[0].1), b"hello Ada\n");
     }
+}
+
+fn tool(path: &Path, script: &str) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, script).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+const CC_CONFIGURE: &str = r##"def _impl(ctx):
+    env = ctx.os.environ
+    if env.get("BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN") == "1":
+        ctx.file("BUILD.bazel", "exports_files(['data.txt'])\n")
+        ctx.file("data.txt", "disabled\n", executable = False)
+        return
+    cc = ctx.which(env.get("CC", "gcc"))
+    if cc == None:
+        fail("Cannot find gcc")
+    result = ctx.execute([cc, "--version"])
+    if result.return_code != 0:
+        fail("cc --version failed: " + result.stderr)
+    paths = dict([(l, ctx.path(Label(l))) for l in ["//toolchain:BUILD.tpl", "//toolchain:cc_toolchain_config.bzl"]])
+    ctx.symlink(paths["//toolchain:cc_toolchain_config.bzl"], "cc_toolchain_config.bzl")
+    ctx.template("BUILD.bazel", paths["//toolchain:BUILD.tpl"], {"%{name}": "k8" if ctx.os.arch == "amd64" else ctx.os.arch})
+    ctx.file("data.txt", "cc=%s\nversion=%s\n" % (cc.basename, result.stdout.strip()), executable = False)
+make = repository_rule(_impl, attrs = {"text": attr.string()}, configure = True, local = True)
+"##;
+
+#[test]
+fn cc_configure_shaped_rule_runs_real_tools_from_client_path_and_publishes_links() {
+    let f = Fixture::new();
+    let bin = f.0.path().join("bin");
+    tool(&bin.join("gcc"), "#!/bin/sh\necho 'gcc (Fake) 13.2.0'\n");
+    tool(
+        &bin.join("clang-n21"),
+        "#!/bin/sh\necho 'clang version 18.1.0'\n",
+    );
+    f.file("toolchain/BUILD.bazel", "");
+    f.file(
+        "toolchain/BUILD.tpl",
+        "exports_files(['data.txt'])\n# cpu %{name}\n",
+    );
+    f.file("toolchain/cc_toolchain_config.bzl", "CONFIG = 1\n");
+    f.file("defs.bzl", CC_CONFIGURE);
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    let base = [
+        ("PATH", path.clone()),
+        ("HOME", f.0.path().display().to_string()),
+    ];
+    let first = outputs(&f.run_env(&["build", "//:copy", "@made//:data.txt"], &base));
+    let generated = first
+        .iter()
+        .find(|(label, _)| label == "@@+make+made//:data.txt")
+        .unwrap();
+    assert_eq!(bytes(&generated.1), b"cc=gcc\nversion=gcc (Fake) 13.2.0\n");
+    let copy = first.iter().find(|(label, _)| label == "//:copy").unwrap();
+    assert_eq!(bytes(&copy.1), b"cc=gcc\nversion=gcc (Fake) 13.2.0\n");
+    let root = generated.1.parent().unwrap();
+    assert_eq!(
+        fs::read_link(root.join("cc_toolchain_config.bzl")).unwrap(),
+        fs::canonicalize(f.0.path())
+            .unwrap()
+            .join("toolchain/cc_toolchain_config.bzl")
+    );
+    assert_eq!(
+        bytes(&root.join("BUILD.bazel")),
+        b"exports_files(['data.txt'])\n# cpu k8\n"
+    );
+    // Every invocation re-executes the rule: a changed client environment is
+    // observed without any recorded dependency (Bazel refetches local rules).
+    let mut clang = base.to_vec();
+    clang.push(("CC", "clang-n21".to_owned()));
+    let second = outputs(&f.run_env(&["build", "@made//:data.txt"], &clang));
+    assert_eq!(
+        bytes(&second[0].1),
+        b"cc=clang-n21\nversion=clang version 18.1.0\n"
+    );
+    assert_ne!(second[0].1, generated.1);
+    let mut disabled = base.to_vec();
+    disabled.push(("BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN", "1".to_owned()));
+    let third = outputs(&f.run_env(&["build", "@made//:data.txt"], &disabled));
+    assert_eq!(bytes(&third[0].1), b"disabled\n");
+    let missing = f.run_env(
+        &["build", "@made//:data.txt"],
+        &[("PATH", "/n21-missing".to_owned())],
+    );
+    rejected(&missing, "Cannot find gcc");
+}
+
+#[test]
+fn sh_config_shaped_rule_reads_bazel_sh_or_searches_path() {
+    let f = Fixture::new();
+    f.file("defs.bzl", "def _impl(ctx):\n    sh = ctx.os.environ.get('BAZEL_SH')\n    if not sh:\n        found = ctx.which('sh')\n        sh = str(found) if found else 'none'\n    ctx.file('BUILD.bazel', \"exports_files(['data.txt'])\\n\")\n    ctx.file('data.txt', sh + '\\n', executable=False)\nmake=repository_rule(_impl,attrs={'text':attr.string()},local=True)\n");
+    let set = f.run_env(
+        &["build", "@made//:data.txt"],
+        &[
+            ("PATH", "/usr/bin:/bin".to_owned()),
+            ("BAZEL_SH", "/opt/n21/bash".to_owned()),
+        ],
+    );
+    assert_eq!(bytes(&outputs(&set)[0].1), b"/opt/n21/bash\n");
+    let searched = f.run_env(
+        &["build", "@made//:data.txt"],
+        &[("PATH", "/n21-missing:/bin".to_owned())],
+    );
+    assert_eq!(bytes(&outputs(&searched)[0].1), b"/bin/sh\n");
+}
+
+#[test]
+fn multitool_shaped_rule_decodes_lockfile_read_through_a_label() {
+    let f = Fixture::new();
+    f.file(
+        "multitool.lock.json",
+        r#"{"$schema": "https://example.invalid/schema", "tool": {"binaries": [{"kind": "file", "url": "https://example.invalid/tool", "os": "linux", "cpu": "x86_64"}]}}"#,
+    );
+    f.file("defs.bzl", "def _impl(ctx):\n    lock = json.decode(ctx.read(ctx.attr.lockfile))\n    names = sorted([k for k in lock.keys() if not k.startswith('$')])\n    ctx.file('BUILD.bazel', \"exports_files(['data.txt'])\\n\")\n    ctx.file('data.txt', ','.join(names) + ':' + lock['tool']['binaries'][0]['url'] + '\\n', executable=False)\nmake=repository_rule(_impl,attrs={'text':attr.string(),'lockfile':attr.label(default='//:multitool.lock.json')})\n");
+    assert_eq!(
+        bytes(&f.build("@made//:data.txt")[0].1),
+        b"tool:https://example.invalid/tool\n"
+    );
 }

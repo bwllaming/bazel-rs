@@ -1017,7 +1017,13 @@ class NativePublicationRootTests(unittest.TestCase):
         self.assertEqual((origin['run_id'], origin['step'], origin['returncode']),
                          (25, ['extension', 'native', 'cold', 'build'], 0))
         self.assertEqual(origin['native_sha256'], '6e6bdf3d13d9a2970a6a47c3eb5edd48d072fa6b282b8b382ec77e095a7d2ed2')
-        self.assertEqual(suite.sha((suite.ROOT / 'src/repository_store.rs').read_bytes()), origin['repository_store_sha256'])
+        # origin pins the store source of run 25 (provenance, never rewritten);
+        # the current store is bound separately by the legacy-manifest
+        # round-trip unit proof (repository_store.rs retained_legacy_manifest_*).
+        self.assertEqual(origin['repository_store_sha256'], '1d0a0f1564f3eb757564e849f78614b72028206541ca208bb4d1f3194e24673a')
+        compatibility = PUBLICATION_OBSERVATION['store_compatibility']
+        self.assertEqual(compatibility['basis'], 'retained_legacy_manifest_bytes_round_trip_without_a_symlink_field')
+        self.assertEqual(suite.sha((suite.ROOT / 'src/repository_store.rs').read_bytes()), compatibility['repository_store_sha256'])
         item = self.observed['manifests'][self.manifest_name]
         raw = suite.unblob(item['raw'])
         self.assertEqual((len(raw), suite.sha(raw)), (578, 'c6152455538a6170868d15b1ca9f983702efaa580d6436586bb3bb7dfb31dc62'))

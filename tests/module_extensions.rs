@@ -374,7 +374,6 @@ fn unsupported_context_operations_and_invalid_names_never_publish() {
             "ctx.extension_metadata(root_module_direct_deps=['a+b'],root_module_direct_dev_deps=[])",
             "in root_module_direct_deps: invalid user-provided repo name 'a+b'",
         ),
-        ("ctx.os.environ", "repository_os.environ is unsupported"),
         (
             "ctx.read(\"x\",watch=\"yes\")",
             "unsupported module I/O profile: watch=yes on extension-owned files",

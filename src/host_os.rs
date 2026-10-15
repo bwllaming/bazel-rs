@@ -164,6 +164,7 @@ mod values {
     pub(super) struct RepositoryOs {
         pub metadata: Arc<HostMetadata>,
         pub id: u64,
+        pub environ: Environ,
     }
     starlark::starlark_simple_value!(RepositoryOs);
 
@@ -190,6 +191,18 @@ mod values {
 }
 use values::RepositoryOs;
 
+/// `environ` of one repository_os value.
+#[derive(Debug, Clone, Allocative)]
+pub(crate) enum Environ {
+    /// The client environment could not be snapshotted (bounded error text).
+    Failed(String),
+    /// The command's repoEnv. StarlarkOS.java:56-58 returns an ImmutableMap,
+    /// which the Starlark method-call boundary converts into a NEW mutable dict
+    /// on every `environ` access (captured: assignment and pop() succeed and
+    /// are invisible to the next access).
+    Present(Arc<crate::repository_environment::ClientEnvironment>),
+}
+
 starlark::methods_static!(OS_METHODS = properties);
 
 #[starlark_module]
@@ -215,21 +228,74 @@ fn properties(builder: &mut MethodsBuilder) {
         Ok(heap.alloc(host.metadata.arch.as_str()))
     }
     #[starlark(attribute)]
-    fn environ<'v>(this: Value<'v>) -> anyhow::Result<Value<'v>> {
-        let _ = this
+    fn environ<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        let host = this
             .downcast_ref::<RepositoryOs>()
             .ok_or_else(|| anyhow!("expected repository_os"))?;
-        bail!("repository_os.environ is unsupported in the native host metadata profile")
+        match &host.environ {
+            Environ::Present(environment) => {
+                let mut entries = Vec::with_capacity(environment.len());
+                for (name, value) in environment.iter() {
+                    entries.push((
+                        heap.alloc(latin1_text(name)),
+                        heap.alloc(latin1_text(value)),
+                    ));
+                }
+                Ok(heap.alloc(starlark::values::dict::AllocDict(entries)))
+            }
+            Environ::Failed(error) => bail!("repository_os.environ is unavailable: {error}"),
+        }
     }
 }
 
+/// Test helper: a repository_os over a fixed synthetic client environment.
+#[cfg(test)]
 pub(crate) fn alloc<'v>(heap: Heap<'v>, metadata: Arc<HostMetadata>) -> anyhow::Result<Value<'v>> {
+    let environment = crate::repository_environment::ClientEnvironment::from_entries([(
+        std::ffi::OsString::from("SYNTHETIC_KEY"),
+        std::ffi::OsString::from("synthetic"),
+    )])
+    .map_err(|error| anyhow!("{error}"))?;
+    alloc_os(heap, metadata, Environ::Present(Arc::new(environment)))
+}
+
+/// repository_ctx.os whose client-environment snapshot failed: name/arch
+/// work; reading environ reports the cached snapshot error.
+pub(crate) fn alloc_with_environ_error<'v>(
+    heap: Heap<'v>,
+    metadata: Arc<HostMetadata>,
+    error: String,
+) -> anyhow::Result<Value<'v>> {
+    alloc_os(heap, metadata, Environ::Failed(error))
+}
+
+/// repository_ctx.os (StarlarkBaseExternalContext.java:194-196): `environ` is
+/// the command's repoEnv. Reading it records no dependency (StarlarkOS.java:49-54).
+pub(crate) fn alloc_with_environ<'v>(
+    heap: Heap<'v>,
+    metadata: Arc<HostMetadata>,
+    environment: Arc<crate::repository_environment::ClientEnvironment>,
+) -> anyhow::Result<Value<'v>> {
+    alloc_os(heap, metadata, Environ::Present(environment))
+}
+
+/// Bazel's internal strings carry one byte per char (Latin-1).
+pub(crate) fn latin1_text(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| char::from(*byte)).collect()
+}
+
+fn alloc_os<'v>(
+    heap: Heap<'v>,
+    metadata: Arc<HostMetadata>,
+    environ: Environ,
+) -> anyhow::Result<Value<'v>> {
     metadata
         .charge(&mut HostBudget::default())
         .map_err(anyhow::Error::msg)?;
     Ok(heap.alloc(RepositoryOs {
         metadata,
         id: next_identity(&NEXT_ID)?,
+        environ,
     }))
 }
 
@@ -277,14 +343,19 @@ hasattr(x, 'environ') or fail('structural presence')
     }
 
     #[test]
-    fn unsupported_property_does_not_fall_back_or_serialize() {
-        for source in ["x.environ", "getattr(x, 'environ', {})"] {
-            let error = evaluate(source).unwrap_err();
-            assert!(
-                error.contains("repository_os.environ is unsupported"),
-                "{error}"
-            );
-        }
+    fn environ_is_a_fresh_mutable_dict_per_access_and_object_is_not_serializable() {
+        // StarlarkOS.java:56-58 returns an ImmutableMap converted to a new
+        // mutable dict at every access (captured with genuine Bazel 9.3).
+        evaluate(
+            r#"
+e = x.environ
+(type(e) == 'dict' and e == {'SYNTHETIC_KEY': 'synthetic'} and e == getattr(x, 'environ', {})) or fail('value')
+e['SYNTHETIC_KEY'] = 'changed'
+(e.pop('SYNTHETIC_KEY') == 'changed' and x.environ['SYNTHETIC_KEY'] == 'synthetic') or fail('fresh')
+(x.environ.pop('SYNTHETIC_KEY') == 'synthetic' and 'SYNTHETIC_KEY' in x.environ) or fail('isolated')
+"#,
+        )
+        .unwrap();
         for source in [
             "x.name = 'changed'",
             "x.arch = 'changed'",
