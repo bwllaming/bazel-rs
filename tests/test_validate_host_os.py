@@ -48,7 +48,7 @@ def native_proxy_record(workspace=None):
     transcript to the retained actual row before the parent rebinds QA sources.
     """
     workspace = str(workspace or (suite.ROOT / 'artifacts/host-os-s4jrw22c/workspace'))
-    text = ('bazel-rs: error: Object of type `module_extension_tag` has no attribute `name`\n'
+    text = ('bazel-rs: error: Object of type `TagCallable` has no attribute `name`\n'
             ' --> '+workspace+'/MODULE.bazel:4:7\n'
             '  |\n'
             '4 | value=e.os.name\n'
@@ -405,8 +405,9 @@ class DiagnosticsTests(unittest.TestCase):
         value = suite.fixture('native-boundary', 'proxy.os')
         row = native_proxy_record()
         text = row['stderr']
-        for wrong in (text.replace('`module_extension_tag`', '`module_ctx`'),
-                      text.replace('`module_extension_tag`', '`repository_os`'),
+        for wrong in (text.replace('`TagCallable`', '`module_ctx`'),
+                      text.replace('`TagCallable`', '`repository_os`'),
+                      text.replace('`TagCallable`', '`module_extension_tag`'),
                       text.replace('`name`', '`os`'), text.replace('`name`', '`arch`'),
                       text.replace('error: Object', 'note: Object'),
                       text.replace('has no attribute `name`', 'has no attribute `name` extra'),

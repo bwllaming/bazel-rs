@@ -407,7 +407,7 @@ def require_rejection(row, value, engine):
         required_source = 'value=e.os.name'
         line = planned['files'][source].decode().splitlines().index(required_source)+1
         workspace = Path(row.get('cwd', ''))
-        error = 'bazel-rs: error: Object of type `module_extension_tag` has no attribute `name`'
+        error = 'bazel-rs: error: Object of type `TagCallable` has no attribute `name`'
         pattern = r'(?m)^'+re.escape(error)+r'$'
         if (not workspace.is_absolute() or '..' in workspace.parts or workspace.name != 'workspace'
                 or re.findall(r'(?m)^(?:bazel-rs: )?error: [^\n]*$', text) != [error]
