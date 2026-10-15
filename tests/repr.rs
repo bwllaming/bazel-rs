@@ -409,10 +409,14 @@ fn returned_ctx_outputs_freeze_as_immutable_outputs() {
         "{}",
         String::from_utf8_lossy(&built.stderr)
     );
-    // Bazel: "cannot access outputs of rule '//:p' outside of its own rule
-    // implementation function"; natively the immutable value has no fields.
+    // Outputs.checkMutable (StarlarkRuleContext.java:440-447): Bazel's text.
     let failed = ws.run(&["build", "//:d"]);
     assert!(!failed.status.success());
     let stderr = String::from_utf8_lossy(&failed.stderr);
-    assert!(stderr.contains("has no attribute `o`"), "{stderr}");
+    assert!(
+        stderr.contains(
+            "cannot access outputs of rule '//:p' outside of its own rule implementation function"
+        ),
+        "{stderr}"
+    );
 }

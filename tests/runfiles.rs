@@ -954,3 +954,57 @@ tools(name = "binary_tool", tool = ":bin")
         assert_eq!(fs::read(&built[0].1).unwrap(), b"", "{target}");
     }
 }
+
+/// Runfiles and FilesToRunProvider debugPrint (Runfiles.java:935-945,
+/// FilesToRunProvider.java:112-120) with the N22 hook; repr stays the
+/// StarlarkValue default. An executable attribute with cfg="exec" is the
+/// exec-configured dependency's executable, below its exec output root.
+#[test]
+fn runfiles_debug_print_and_exec_configured_executables() {
+    let ws = Workspace::new(&[
+        (
+            "defs.bzl",
+            r##"def _tool(ctx):
+    out = ctx.actions.declare_file(ctx.label.name)
+    ctx.actions.write(out, "#!/bin/sh\n", is_executable = True)
+    return [DefaultInfo(executable = out)]
+tool = rule(implementation = _tool, executable = True)
+def _check(ctx):
+    f = ctx.file.src
+    r = ctx.runfiles(files = [f], symlinks = {"a/b": f}, root_symlinks = {"r": f})
+    print("RF", r)
+    print("RFREPR", repr(r))
+    print("FTR", ctx.attr._tool[DefaultInfo].files_to_run)
+    print("SYM", r.symlinks.to_list()[0])
+    out = ctx.actions.declare_file("check.out")
+    ctx.actions.write(out, ctx.executable._tool.path + "\n")
+    return [DefaultInfo(files = depset([out]))]
+check = rule(implementation = _check, attrs = {
+    "src": attr.label(allow_single_file = True),
+    "_tool": attr.label(default = ":tool", cfg = "exec", executable = True),
+})
+"##,
+        ),
+        (
+            "BUILD.bazel",
+            "load(':defs.bzl', 'check', 'tool')\nplatform(name = 'host')\ntool(name = 'tool')\ncheck(name = 'check', src = 'src.txt')\n",
+        ),
+        ("src.txt", "s\n"),
+    ]);
+    let output = ws.run(&["build", "--host_platform=//:host", "//:check"]);
+    let stderr = errors(&output);
+    let built = outputs(&output);
+    for line in [
+        "RF Runfiles(empty_files = depset([]), files = depset([<source file src.txt>], order = \"postorder\"), root_symlinks = depset([SymlinkEntry(path = \"r\", target_file = <source file src.txt>)]), symlinks = depset([SymlinkEntry(path = \"a/b\", target_file = <source file src.txt>)]))\n",
+        "RFREPR <unknown object com.google.devtools.build.lib.analysis.Runfiles>\n",
+        "FTR FilesToRunProvider(executable = <generated file tool>, repo_mapping_manifest = <generated file tool.repo_mapping>, runfiles_manifest = <generated file tool.runfiles/MANIFEST>)\n",
+        "SYM SymlinkEntry(path = \"a/b\", target_file = <source file src.txt>)\n",
+    ] {
+        assert!(stderr.contains(line), "{line}\n{stderr}");
+    }
+    assert_eq!(built.len(), 1);
+    assert_eq!(
+        fs::read_to_string(&built[0].1).unwrap(),
+        "bazel-out/rust-opt-exec/bin/tool\n"
+    );
+}
