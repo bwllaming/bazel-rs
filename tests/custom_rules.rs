@@ -61,7 +61,7 @@ write = rule(implementation=_impl, attrs={"content": attr.string(mandatory=True)
 fn custom_write_is_native_binary_safe_and_cached() {
     let ws = Workspace::new(
         WRITE,
-        "load(':defs.bzl','write')\nwrite(name='greeting',content='hello\\x00世界\\n')\n",
+        "load(':defs.bzl','write')\nwrite(name='greeting',content='hello\\000世界\\n')\n",
     );
     let query = ws.run(&["query", "//:all"]);
     assert!(query.status.success(), "{}", errors(&query));

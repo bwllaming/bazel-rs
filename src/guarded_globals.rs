@@ -10,7 +10,12 @@
 //!   .onlyInAllowedRepos): enabled only for allowlisted repositories.
 //!
 //! starlark-rust globals are file-independent, so this pass performs the
-//! file-dependent scope resolution for those names only. It is conservative:
+//! file-dependent scope resolution for those names only.
+//!
+//! The same resolution reports starlark-rust universe builtins that Bazel's
+//! universe lacks (`chr`, `ord`): Bazel resolves a free reference to them at
+//! compile time as `name 'chr' is not defined` (Module.java:250-256,
+//! Resolver.java:941-953), whether or not the code runs. It is conservative:
 //! a name bound anywhere in an enclosing function, lambda or comprehension is
 //! treated as local, so it never rejects a legitimately bound reference.
 
@@ -104,25 +109,92 @@ fn py_internal_message() -> String {
     )
 }
 
+/// starlark-rust `GlobalsBuilder::standard` functions that are not in
+/// Bazel 9.3's `Starlark.UNIVERSE` (net/starlark/java/eval/MethodLibrary.java
+/// has neither `chr` nor `ord`; bazel_lib's strings.bzl defines both).
+const NATIVE_ONLY_UNIVERSALS: [&str; 2] = ["chr", "ord"];
+
+/// The first free reference to one of `names` that no module binding
+/// shadows, with the names visible at that point (spelling candidates).
+fn first_free(ast: &AstModule, names: &[&str]) -> Option<(String, Span, Vec<String>)> {
+    let mut module_bound = HashSet::new();
+    collect_bindings(ast.statement(), &mut module_bound, true);
+    let guarded: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|name| !module_bound.contains(*name))
+        .collect();
+    if guarded.is_empty() {
+        return None;
+    }
+    let mut finder = Finder {
+        guarded: &guarded,
+        scopes: vec![module_bound],
+        found: None,
+    };
+    finder.stmt(ast.statement());
+    finder.found
+}
+
+/// SpellChecker.editDistance (net/starlark/java/spelling/SpellChecker.java)
+/// without the early cut-off, which does not change results below the bound.
+fn edit_distance(left: &[char], right: &[char]) -> usize {
+    let mut row: Vec<usize> = (0..=right.len()).collect();
+    for (i, a) in left.iter().enumerate() {
+        let mut previous = row[0];
+        row[0] = i + 1;
+        for (j, b) in right.iter().enumerate() {
+            let old = row[j + 1];
+            row[j + 1] = (previous + usize::from(a != b)).min(1 + row[j].min(row[j + 1]));
+            previous = old;
+        }
+    }
+    row[right.len()]
+}
+
+/// SpellChecker.didYouMean/suggest: case-insensitive edit distance below
+/// min(5, (len + 1) / 2); the first strictly better candidate wins. Bazel
+/// iterates a HashSet of every visible name; ties are broken here by sorted
+/// order. Predeclared and universe names are not candidates here: none is
+/// within the bound of `chr` or `ord`.
+fn did_you_mean(input: &str, mut candidates: Vec<String>) -> String {
+    candidates.sort();
+    candidates.dedup();
+    let lowered: Vec<char> = input.to_lowercase().chars().collect();
+    let mut best = None;
+    let mut best_distance = 5.min(input.chars().count().div_ceil(2));
+    for candidate in candidates {
+        let other: Vec<char> = candidate.to_lowercase().chars().collect();
+        let distance = edit_distance(&lowered, &other);
+        if distance < best_distance {
+            best_distance = distance;
+            best = Some(candidate);
+        }
+    }
+    best.map(|name| format!(" (did you mean '{name}'?)"))
+        .unwrap_or_default()
+}
+
+/// Bazel's resolver error for a free `chr`/`ord` reference in a `.bzl`,
+/// BUILD or MODULE file: `name 'chr' is not defined`.
+pub(crate) fn check_universe(ast: &AstModule) -> Result<(), String> {
+    let Some((name, span, candidates)) = first_free(ast, &NATIVE_ONLY_UNIVERSALS) else {
+        return Ok(());
+    };
+    Err(format!(
+        "{}: name '{name}' is not defined{}",
+        ast.file_span(span),
+        did_you_mean(&name, candidates)
+    ))
+}
+
 /// Reject the first free reference to a disabled guarded predeclared.
 pub(crate) fn check(label: &Label, ast: &AstModule) -> Result<(), String> {
     let mut guarded: Vec<&str> = REMOVED.iter().map(|(name, _)| *name).collect();
     if !py_internal_allowed(label) {
         guarded.push("py_internal");
     }
-    let mut module_bound = HashSet::new();
-    collect_bindings(ast.statement(), &mut module_bound, true);
-    guarded.retain(|name| !module_bound.contains(*name));
-    if guarded.is_empty() {
-        return Ok(());
-    }
-    let mut finder = Finder {
-        guarded: &guarded,
-        scopes: Vec::new(),
-        found: None,
-    };
-    finder.stmt(ast.statement());
-    let Some((name, span)) = finder.found else {
+    let Some((name, span, _)) = first_free(ast, &guarded) else {
         return Ok(());
     };
     let message = REMOVED
@@ -171,8 +243,9 @@ fn collect_bindings(stmt: &AstStmt, out: &mut HashSet<String>, module: bool) {
 
 struct Finder<'a> {
     guarded: &'a [&'a str],
+    /// Visible bindings, outermost (module) first.
     scopes: Vec<HashSet<String>>,
-    found: Option<(String, Span)>,
+    found: Option<(String, Span, Vec<String>)>,
 }
 
 impl Finder<'_> {
@@ -245,7 +318,8 @@ impl Finder<'_> {
         match &expr.node {
             Expr::Identifier(ident) => {
                 if self.is_free(&ident.node.ident) {
-                    self.found = Some((ident.node.ident.clone(), ident.span));
+                    let visible = self.scopes.iter().flatten().cloned().collect();
+                    self.found = Some((ident.node.ident.clone(), ident.span, visible));
                 }
             }
             Expr::Lambda(lambda) => {
@@ -419,5 +493,68 @@ mod tests {
         assert!(!word_bounded_contains("my_rules_python+", "rules_python"));
         assert!(!word_bounded_contains("rules_python2", "rules_python"));
         assert!(!word_bounded_contains("", "rules_python"));
+    }
+
+    fn universe(source: &str) -> Result<(), String> {
+        let dialect = Dialect {
+            enable_keyword_only_arguments: true,
+            ..Dialect::Standard
+        };
+        check_universe(&AstModule::parse(FILE, source.to_owned(), &dialect).unwrap())
+    }
+
+    #[test]
+    fn free_chr_and_ord_are_bazel_resolver_errors_even_when_unreached() {
+        assert_eq!(
+            universe("x = 1\ndef f():\n    return chr(1)\n").unwrap_err(),
+            "@@other+//pkg:defs.bzl:3:12-15: name 'chr' is not defined"
+        );
+        for (source, name) in [
+            ("alias = chr\n", "chr"),
+            ("x = [ord('a')]\n", "ord"),
+            ("x = lambda: ord\n", "ord"),
+            ("def f(x = chr):\n    pass\n", "chr"),
+            ("x = {k: chr for k in []}\n", "chr"),
+            ("def f():\n    if False:\n        return ord\n", "ord"),
+        ] {
+            let error = universe(source).unwrap_err();
+            assert!(
+                error.ends_with(&format!("name '{name}' is not defined")),
+                "{source}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn bound_chr_and_ord_are_ordinary_identifiers() {
+        for source in [
+            "load(':strings.bzl', 'chr', 'ord')\nx = chr(ord('a'))\n",
+            "load(':strings.bzl', chr = 'my_chr')\ndef f():\n    return chr(1)\n",
+            "def chr(i):\n    return str(i)\ndef ord(c):\n    return 0\nx = [chr, ord]\n",
+            "def f(chr, ord = 1):\n    return chr(ord)\n",
+            "def f():\n    ord = 1\n    return ord\n",
+            "x = [chr for chr in []]\n",
+            "x = lambda chr: chr\n",
+            "chr = 'chr'\nord = 'ord'\n",
+            "x = 'chr(1)'\n# chr ord\n",
+        ] {
+            universe(source).unwrap_or_else(|error| panic!("{source}: {error}"));
+        }
+    }
+
+    #[test]
+    fn spelling_suggestions_follow_spell_checker_over_visible_names() {
+        assert_eq!(
+            universe("char = 1\nx = chr\n").unwrap_err(),
+            "@@other+//pkg:defs.bzl:2:5-8: name 'chr' is not defined (did you mean 'char'?)"
+        );
+        let error = universe("def f(word):\n    return ord\n").unwrap_err();
+        assert!(error.ends_with(" (did you mean 'word'?)"), "{error}");
+        // A local of another function is not visible; distance 2 is too far.
+        for source in ["def g(word):\n    pass\nx = ord\n", "abc = 1\nx = ord\n"] {
+            assert!(universe(source).unwrap_err().ends_with("is not defined"));
+        }
+        assert_eq!(edit_distance(&['c', 'h', 'r'], &['c', 'h', 'a', 'r']), 1);
+        assert_eq!(edit_distance(&['o', 'r', 'd'], &['d', 'i', 'r']), 3);
     }
 }

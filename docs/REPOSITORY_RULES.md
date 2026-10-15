@@ -113,11 +113,14 @@ the published location (relative symlinks into it are replanted, below).
   contents. Other targets stay absolute. The store records link targets without
   following them. Archive links from `ctx.extract`/`ctx.download_and_extract`
   follow N19's extraction semantics (docs/ARCHIVE_SYMLINKS.md). When a file of
-  the published repository is used as a source artifact, N19 source resolution
-  follows these links inside the repository root; a link leaving the root (for
-  example to a main-workspace file) is the explicit `points outside its
-  repository root` error where Bazel would read the target, and `.bzl` loads,
-  globs and package directories through links stay unsupported.
+  the published repository is used as a source artifact or loaded as a `.bzl`,
+  source resolution follows these links inside the repository root and, since
+  N26, into the root of any repository already materialized in the current
+  invocation (main workspace, a module, the rules_cc `local_config_cc` link from
+  `unix_cc_configure.bzl:362-370` into `rules_cc`); see
+  docs/ARCHIVE_SYMLINKS.md "Cross-repository links". Other host paths remain the
+  explicit `points outside its repository root` error where Bazel would read the
+  target; globs and package directories through links stay unsupported.
 * `path.realpath` resolves component by component; a dangling link fails naming
   the missing target: `[unix_jni.cc:382] TARGET (No such file or directory)`.
 * `ctx.extract(archive, output="", strip_prefix="", ...)` and
@@ -155,6 +158,43 @@ the published location (relative symlinks into it are replanted, below).
   PARENT: ...`. A repository that still contains an extracted hard link when the
   callback returns fails at the store snapshot with `hard-linked direct
   repository files are unsupported` (Bazel keeps the hard link).
+* `ctx.patch(patch_file, strip=0, *, directory="", watch_patch="auto")`
+  (SRC:475-567): `patch_file` (positional-only) and `directory` take a string,
+  Label or path; `directory` must be inside the repository directory (`Cannot
+  write outside of the repository directory for path ...`); a directory patch
+  file fails with `attempting to use a directory as patch file: PATH`; the patch
+  file is watched like `ctx.read` (`watch_patch`); a missing file fails with
+  `Error applying patch PATH: Cannot find patch file: PATH`
+  (PatchUtil.java:451-453). The patch is applied by the PatchUtil port shared
+  with registry, override and Git patches (`patching.rs`, docs/PATCHES.md:
+  `applyFuzzy(..., 2)` hunks, Git renames and modes, PatchUtil's error texts)
+  and failures read `Error applying patch PATH: REASON`; patches that crash
+  genuine Bazel are explicit native errors. A negative `strip` strips nothing
+  (PatchUtil.stripPath). Label patch files keep the strict Label read profile.
+  This is what `@bazel_tools` `http_archive(patches=..., patch_args=["-pN"])`
+  uses (`tools/build_defs/repo/utils.bzl:250-257`).
+* `ctx.repo_metadata(*, reproducible=False, attrs_for_reproducibility={})`
+  (SRC:611-656) returns the opaque `repo_metadata` value (repr `<unknown object
+  com.google.devtools.build.lib.bazel.repository.starlark.RepoMetadata>`, no
+  fields, record equality, unhashable). `reproducible=True` with a non-empty dict
+  fails with `attrs_for_reproducibility can only be specified if reproducible is
+  False`; non-string keys fail with Dict.cast's `got dict<K, V> for
+  'attrs_for_reproducibility', want dict<string, unknown>`.
+* Implementation return values follow RepositoryFetchFunction.java:681-695 under
+  the default `--incompatible_require_repo_extension_metadata=false`: a
+  `repo_metadata`, `None` or any other non-dict value is accepted, and a dict must
+  have string keys (`got dict<K, V> for 'return value', want dict<string,
+  unknown>`). In Bazel a reproducible result only allows storing the repository
+  in the repo contents cache; the native store re-executes every demanded
+  repository per invocation and has no repo contents cache, so reproducibility
+  has no native effect. A dict or `attrs_for_reproducibility` that changes
+  attributes prints Bazel's two lines (RepositoryResolvedEvent.java:33-136,
+  RepositoryFetchFunction.java:697-703): `DEBUG: Repo 'NAME' indicated that a
+  canonical reproducible form can be obtained by modifying arguments k = REPR,
+  ... [and dropping [a, b]]` (or `by dropping arguments [a, b]`), then `DEBUG:
+  Repo NAME defined by rule RULE in @@//pkg:file.bzl`. Attributes are compared in
+  declaration order against their defaults; `name` and `_private` attributes are
+  ignored. Bazel prints them once per fetch, native on every invocation.
 * `ctx.watch(path)` and `watch=`/`watch_template=`/`watch_archive=` use Bazel's
   `yes`/`no`/`auto` rules (SBEC:1656-1755): watching the repository directory
   fails with `attempted to watch path under working directory` for `yes` and is
@@ -234,11 +274,9 @@ inputs keep the strict source profile: a regular BUILD file and no symlinks.
 
 ### Not implemented
 
-`ctx.download`, `ctx.patch`, `ctx.watch_tree` and `ctx.repo_metadata` exist (so
-`hasattr` matches Bazel) but fail with `repository_ctx.<method>() is not
-implemented by the native profile`. Only an implicit or explicit `None` callback
-return is supported; other returns fail explicitly even where upstream accepts
-them as repository metadata. `module_ctx` keeps its narrower profile (no
+`ctx.download` and `ctx.watch_tree` exist (so `hasattr` matches Bazel) but fail
+with `repository_ctx.<method>() is not implemented by the native profile`.
+`module_ctx` keeps its narrower profile (no
 `execute`/`which`/`file`), but shares `os.environ`, `getenv` and
 `module_extension(environ=...)` with repository rules. `ctx.attr` has type
 `RepoDefinition` and `repr(ctx)` is Bazel's `<unknown object
@@ -249,7 +287,7 @@ invocations unless a recorded input changed, while native re-runs every demanded
 repository in every invocation (unrecorded `os.environ` changes are therefore
 seen natively but not by Bazel); Starlark interpreter wording differs (`in call
 to F(), parameter 'P' got value of type ...`, `has no field or method`, ...);
-download, patch, watch_tree, repo_metadata, `rename_files`, `strip_components`,
+download, watch_tree, `rename_files`, `strip_components`,
 xz/bz2/gz/zst/ar/7z formats, `auth`/`headers` and `delete()` outside the
 repository directory are native-explicit errors; the four write restrictions
 above (symlinked parents, store-representable names, strict Label inputs,
@@ -272,24 +310,66 @@ above (symlinked parents, store-representable names, strict Label inputs,
 * The process-wrapper timeout path was probed (EXACT); `timeout=0` crashes
   genuine Bazel and is an explicit native error.
 
+### Release notes (N26)
+
+* `repository_ctx.patch` and `repository_ctx.repo_metadata` are implemented, so
+  `@bazel_tools` `http_archive` (which returns `ctx.repo_metadata(...)` at
+  `tools/build_defs/repo/http.bzl:191`) and native-patch `patches` work.
+  Implementation return values follow Bazel instead of failing.
+* Octal escapes `\200`..`\377` and user-defined `chr`/`ord` run in repository
+  and extension code. A free `chr`/`ord` reference is now Bazel's `name 'chr' is
+  not defined` in every `.bzl`, BUILD and MODULE file; previously ordinary BUILD
+  loading accepted the interpreter's builtins.
+* `.bzl` files are loaded through symlinks that resolve inside their repository
+  or into a repository materialized in the same invocation.
+* Patches follow Bazel's PatchUtil exactly (fuzz, Git renames/modes, error
+  texts) for every patch consumer (docs/PATCHES.md).
+* Invalid string escapes are lexer errors in every BUILD, `.bzl`, MODULE and
+  REPO.bazel file at the escape's column; MODULE.bazel errors are no longer
+  deferred. Raw strings keep backslashes; `split()`/`rsplit()` require `sep` and
+  `elems()` returns a list, as in Bazel 9.3 (docs/STRING_METHODS.md).
+* Repository rules print Bazel's `DEBUG:` reproducibility lines.
+
 ## String and resource bounds
 
-Bazel strings are byte-oriented; Rust Starlark uses Unicode strings. To avoid
-silently computing different contents, direct execution currently requires ASCII
-string literals and attributes. Every definition's transitive source is checked
-before evaluation, including unused expressions. MODULE violations are captured
-before evaluation and enforced only when its direct repository usage is demanded;
-metadata-only operations keep their existing behavior. Even an unrelated Unicode
-MODULE constant can therefore block a demanded direct repository.
+Bazel 9.3 strings are byte-oriented: the lexer reads a file's UTF-8 bytes as
+Latin-1 `char`s (`--internal_starlark_utf_8_byte_strings`), and repository and
+extension evaluation here models each such `char` as one Rust character
+U+0000..U+00FF that `ctx.file` writes back as one byte. Rust Starlark decodes a
+raw non-ASCII source character as one Unicode scalar instead, so direct execution
+still requires the literal *spelling* to be ASCII. Every definition's transitive
+source is checked before evaluation, including unused expressions. Raw
+non-ASCII MODULE literals are captured before evaluation and enforced only when
+its direct repository usage is demanded; metadata-only operations keep their
+existing behavior. Even an unrelated Unicode MODULE constant can therefore block
+a demanded direct repository. Lexer errors (invalid escapes) are not deferred:
+like Bazel (exit 48) they fail every command.
 
-`chr` references, including aliases and shadowed uses, are rejected conservatively.
-Original literal spellings are checked: high-byte octal escapes are unsupported,
-and hex/Unicode escapes are invalid in the pinned Bazel grammar. ASCII octal,
-escaped backslashes, raw ASCII strings and Unicode comments remain allowed.
-Because executed sources are ASCII-literal-only and `chr`-free, non-ASCII runtime
-strings can arise only from runtime data, such as module-extension reads/downloads
-(each byte maps to U+0000..U+00FF exactly as Bazel's internal Latin-1 strings do)
-and `json.decode` `\u` escape runs (decoded to UTF-8 bytes exactly as Bazel does).
+Original literal spellings are checked against Bazel's lexer
+(`net/starlark/java/syntax/Lexer.java:372-403`). Octal escapes `\0`..`\377`
+denote the char `NNN & 0xff`, the same scalar the native lexer decodes, so since
+N26 they are accepted, including `\200`..`\377` (bazel_lib's
+`lib/private/strings.bzl:262-518` byte tables; aspect_rules_aws). `\400` and above
+fail with `octal escape sequence out of range (maximum is \377)`; `\x`, `\u`,
+`\U`, `\N` and every other unknown escape fail with Bazel's `invalid escape
+sequence: \x. Use '\\' to insert '\'.`, even when the native lexer accepts
+them. These lexer errors apply to every BUILD, `.bzl`, MODULE and REPO.bazel file
+and point at the escape (`V = "\x41"` reports column 7, `"\400"` column 9).
+Escaped backslashes, raw ASCII strings and Unicode comments remain allowed.
+`chr` and `ord` are not Bazel builtins (MethodLibrary.java has neither): a free
+reference anywhere in a `.bzl`, BUILD or MODULE file fails at compile time with
+Bazel's resolver error `name 'chr' is not defined` (Module.java:250-256,
+Resolver.java:941-953, with SpellChecker suggestions over visible names), whether
+or not it runs. A loaded or locally defined `chr`/`ord` (bazel_lib's
+`strings.bzl` and the `base64.bzl` that loads it, rules_oci/aspect_bazel_lib
+toolchains) is an ordinary function and executes normally; `decode()` of a
+non-ASCII payload yields one char per byte and `ctx.file` writes those bytes.
+Non-ASCII runtime strings therefore arise from octal escapes, user `chr` tables and
+runtime data, such as module-extension reads/downloads (each byte maps to
+U+0000..U+00FF exactly as Bazel's internal Latin-1 strings do) and `json.decode`
+`\u` escape runs (decoded to UTF-8 bytes exactly as Bazel does). String methods
+use Bazel's char semantics in this model (`"\240".isspace()` is True,
+`"a\351b".title() == "A\351b"`; docs/STRING_METHODS.md).
 Repository snapshots, string-valued repository attributes (including dictionary
 keys) and `ctx.file` contents therefore accept U+0000..U+00FF; `ctx.file` writes
 one byte per character. Characters above U+00FF are rejected explicitly (Bazel
@@ -343,7 +423,12 @@ all-target Clippy, release compilation and error-level Rust Analyzer diagnostics
 `artifacts/repository-rules-validation.json` records seven genuine Bazel 9.3
 differentials and nine native-only boundary/lifecycle checks. N21 replaced the
 `native.unsupported` `execute` boundary with an eighth differential,
-`execute.host-process`; that report predates it and needs recapture. Seven adjacent
+`execute.host-process`; N26 added four more (`literal.latin1-octal`,
+`return.metadata-and-values`, `patch.label-strip-directory` and the rejection
+differential `resolver.free-chr`) and removed the `octal`/`chr` ascii-profile
+and `metadata`/`integer` return probes from the native boundaries (21 cases:
+twelve differential, nine boundaries). That report predates both and needs
+recapture. Seven adjacent
 Git-link, Git, local-repository, declaration, patch, remote and module reports
 pass against the same release binary. Reports retain hashes, actual output
 bytes/modes, reference shutdown and scratch-removal evidence.

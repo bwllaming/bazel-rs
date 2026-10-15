@@ -40,16 +40,18 @@ MESSAGES = {
 
 
 class FixtureTests(unittest.TestCase):
-    def test_fixed_plan_has_eight_differentials_and_nine_boundaries(self):
-        self.assertEqual(len(rules.CASES), 17)
-        self.assertEqual(len(set(name for name, _ in rules.PLAN)), 17)
-        self.assertEqual(sum(c['kind'] == 'differential' for c in rules.CASES), 8)
-        self.assertEqual([c['name'] for c in rules.CASES[:8]], [
+    def test_fixed_plan_has_twelve_differentials_and_nine_boundaries(self):
+        self.assertEqual(len(rules.CASES), 21)
+        self.assertEqual(len(set(name for name, _ in rules.PLAN)), 21)
+        self.assertEqual(sum(c['kind'] == 'differential' for c in rules.CASES), 12)
+        self.assertEqual([c['name'] for c in rules.CASES[:12]], [
             'file.transitive-attrs-overwrite', 'template.binary-label-and-stage',
             'identity.root-and-dependency', 'generated.definition-and-template',
             'lazy.unused-callback', 'group.unused-missing-attribute',
-            'group.unused-unknown-attribute', 'execute.host-process'])
-        self.assertTrue(all(c['kind'] == 'native_boundary' for c in rules.CASES[8:]))
+            'group.unused-unknown-attribute', 'execute.host-process',
+            'literal.latin1-octal', 'return.metadata-and-values',
+            'patch.label-strip-directory', 'resolver.free-chr'])
+        self.assertTrue(all(c['kind'] == 'native_boundary' for c in rules.CASES[12:]))
         for item in rules.CASES:
             self.assertEqual(len(item['probes']), len(set(item['probes'])))
             for probe, engine in rules.phases_for(item):
@@ -172,22 +174,26 @@ class FixtureTests(unittest.TestCase):
         self.assertIn('str(len("é"))'.encode(), module['files']['MODULE.bazel'])
         self.assertIn('str(len("é"))'.encode(), closure['files']['leaf.bzl'])
         self.assertIn(b'load(":leaf.bzl", "value")', closure['files']['helper.bzl'])
-        self.assertIn(b'def unused():\n    return str(chr)', rules.fixture('native.ascii-profile', 'chr')['files']['leaf.bzl'])
+        ascii_profile = next(c for c in rules.CASES if c['name'] == 'native.ascii-profile')
+        self.assertEqual(ascii_profile['probes'], ['module-unicode', 'closure-unicode', 'hex', 'u', 'U'])
+        for probe in ('octal', 'chr'):
+            with self.assertRaises(KeyError):
+                rules.fixture('native.ascii-profile', probe)
         lazy = rules.fixture('native.main-query-lazy')
         self.assertIn('é'.encode(), lazy['files']['MODULE.bazel'])
         self.assertIn(b'INVALID_UNUSED_DEFINITION_EVALUATED', lazy['files']['defs.bzl'])
         self.assertEqual(lazy['target'], '//:data')
 
-    def test_policy_return_and_facts_version_are_not_differential_claims(self):
+    def test_facts_version_is_the_only_unsupported_policy_boundary(self):
         item = next(c for c in rules.CASES if c['name'] == 'native.unsupported')
         self.assertEqual(item['kind'], 'native_boundary')
-        self.assertEqual(item['probes'], ['metadata', 'integer', 'facts_version_unsupported'])
-        for probe in item['probes']:
-            value = rules.fixture('native.unsupported', probe)
-            self.assertEqual(value['diagnostic'], 'return' if probe in ('metadata', 'integer') else probe)
-            self.assertEqual(rules.steps_for(item, probe, 'native'), [('query', '@made//:data', [])])
-            if probe != 'facts_version_unsupported':
-                self.assertNotIn(b'module_extension', value['files']['defs.bzl'])
+        self.assertEqual(item['probes'], ['facts_version_unsupported'])
+        value = rules.fixture('native.unsupported', 'facts_version_unsupported')
+        self.assertEqual(value['diagnostic'], 'facts_version_unsupported')
+        self.assertEqual(rules.steps_for(item, 'facts_version_unsupported', 'native'), [('query', '@made//:data', [])])
+        for probe in ('metadata', 'integer'):
+            with self.assertRaises(KeyError):
+                rules.fixture('native.unsupported', probe)
         # Bazel accepts repository_ctx.execute; it is a differential, never a boundary.
         with self.assertRaises(KeyError):
             rules.fixture('native.unsupported', 'execute')
@@ -198,12 +204,55 @@ class FixtureTests(unittest.TestCase):
         self.assertIn(b'environment = {"EXEC_VALUE": "two"}', execute['files']['defs.bzl'])
         self.assertIn(b'ctx.which("sh")', execute['files']['defs.bzl'])
         self.assertEqual(execute['expected'], {'data': (b'3|one|two|err|True|data\n', False)})
-        self.assertIn(b'return {"answer": "value"}', rules.fixture('native.unsupported', 'metadata')['files']['defs.bzl'])
-        self.assertIn(b'return 42', rules.fixture('native.unsupported', 'integer')['files']['defs.bzl'])
         extension = rules.fixture('native.unsupported', 'facts_version_unsupported')['files']['defs.bzl']
         self.assertIn(b'maker = repository_rule(implementation = _impl, attrs = {})', extension)
         self.assertIn(b'ordinary = module_extension(implementation = _impl, facts_version = 1)', extension)
         self.assertNotIn(b'use_extension', extension)
+
+
+class BazelFaithfulN26Tests(unittest.TestCase):
+    def test_returns_are_bazel_accepted_differentials(self):
+        item = next(c for c in rules.CASES if c['name'] == 'return.metadata-and-values')
+        self.assertEqual(item['kind'], 'differential')
+        self.assertEqual(item['probes'], ['repo-metadata', 'attrs-metadata', 'dict', 'integer'])
+        bodies = {'repo-metadata': b'return ctx.repo_metadata(reproducible = True)',
+                  'attrs-metadata': b'return ctx.repo_metadata(attrs_for_reproducibility = {"name": ctx.name})',
+                  'dict': b'return {"answer": "value"}', 'integer': b'return 42'}
+        for probe in item['probes']:
+            value = rules.fixture(item['name'], probe)
+            self.assertIsNone(value['diagnostic'])
+            self.assertIn(bodies[probe], value['files']['defs.bzl'])
+            self.assertEqual(value['expected'], {'data': (b'hello Ada\n', False)})
+            self.assertEqual([step[0] for step in rules.steps_for(item, probe, 'reference')],
+                             ['build', 'cquery', 'build', 'cquery'])
+        self.assertNotIn('return', [rules.fixture(c['name'], p)['diagnostic']
+                                    for c in rules.CASES for p in c['probes']])
+
+    def test_octal_bytes_and_patch_are_exact_byte_differentials(self):
+        octal = rules.fixture('literal.latin1-octal')
+        self.assertEqual(octal['files']['leaf.bzl'], b'value = "\\377\\200A" + str(len("\\377")) + "\\n"\n')
+        self.assertIn(b'load(":leaf.bzl", _value = "value")', octal['files']['helper.bzl'])
+        self.assertEqual(octal['expected'], {'data': (b'\xff\x80A1\n', False)})
+        patch = rules.fixture('patch.label-strip-directory')
+        self.assertTrue(patch['files']['private/fix.patch'].startswith(b'--- a/data\t2024-05-14'))
+        self.assertIn(b'ctx.patch(Label("//private:fix.patch"), strip = 1)', patch['files']['defs.bzl'])
+        self.assertIn(b'directory = "sub", watch_patch = "no"', patch['files']['defs.bzl'])
+        self.assertEqual(patch['expected'], {'data': (b'patched Ada\n', False), 'sub/data': (b'patched Ada\n', False)})
+
+    def test_free_chr_is_a_resolver_rejection_on_both_engines(self):
+        item = next(c for c in rules.CASES if c['name'] == 'resolver.free-chr')
+        self.assertEqual(item['kind'], 'differential')
+        self.assertEqual(rules.phases_for(item), [('result', 'reference'), ('result', 'native')])
+        value = rules.fixture(item['name'])
+        self.assertEqual(value['diagnostic'], 'undefined_chr')
+        self.assertIn(b'def unused():\n    return str(chr)', value['files']['leaf.bzl'])
+        self.assertEqual(rules.steps_for(item, 'result', 'native'), [('query', '@made//:data', [])])
+        rules.require_rejection(record(stderr="ERROR: /w/leaf.bzl:3:16: name 'chr' is not defined\n",
+                                       returncode=1), 'undefined_chr')
+        for stale in ('chr references are unsupported in direct repository execution',
+                      "name 'chrx' is not defined", "Variable `chr` not found"):
+            with self.assertRaises(ValueError):
+                rules.require_rejection(record(stderr=stale, returncode=1), 'undefined_chr')
 
 
 class DiagnosticTests(unittest.TestCase):
@@ -405,8 +454,8 @@ class InvocationAndReportTests(unittest.TestCase):
 
     def test_counts_and_pass_strings_are_not_cli_evidence(self):
         synthetic = dict(checks=[dict(name=c['name'], kind=c['kind'], status='PASS') for c in rules.CASES],
-                         planned_checks=copy.deepcopy(rules.CASES), completed_checks=17,
-                         completed_differential_cases=8, errors=[], cleanup=[], scratch_cleaned=True,
+                         planned_checks=copy.deepcopy(rules.CASES), completed_checks=21,
+                         completed_differential_cases=12, errors=[], cleanup=[], scratch_cleaned=True,
                          sources_unchanged=True, reference_shutdown_succeeded=True)
         self.assertFalse(rules.report_passes(synthetic))
         for mutation in ('missing', 'duplicate', 'unexpected', 'reordered', 'wrong-kind'):

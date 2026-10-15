@@ -450,6 +450,63 @@ impl RepositorySet {
             .map_err(Clone::clone)
     }
 
+    /// Canonical repository roots already materialized by this repository set
+    /// (the current invocation): main, local_path modules of a resolved graph,
+    /// published registry/Git/built-in trees and generated repositories whose
+    /// demand completed. Never resolves, fetches or executes anything; stale
+    /// trees and private stages are never listed.
+    pub fn materialized_roots(&self) -> Vec<(String, PathBuf)> {
+        let mut roots = vec![(String::new(), self.state.root.clone())];
+        if let Some(Ok(graph)) = self.state.resolved.get() {
+            for (name, module) in &graph.modules {
+                if let ModuleSource::LocalPath(root) = &module.source {
+                    roots.push((name.clone(), root.clone()));
+                }
+            }
+        }
+        if let Some(registry_roots) = self.state.registry_roots.get() {
+            for (name, slot) in registry_roots {
+                if let Some(Ok(root)) = slot.get() {
+                    roots.push((name.clone(), root.clone()));
+                }
+            }
+        }
+        if let Some(Ok(runtime)) = self.state.direct.get() {
+            for (name, slot) in &runtime.roots {
+                if let Some(root) = slot.ready() {
+                    roots.push((name.clone(), root.clone()));
+                }
+            }
+            for slot in runtime.ordinary.values() {
+                if let Some(prepared) = slot.ready() {
+                    for repository in prepared.repositories.values() {
+                        if let Some(root) = repository.root.ready() {
+                            roots.push((repository.canonical_name.clone(), root.clone()));
+                        }
+                    }
+                }
+            }
+        }
+        roots
+    }
+
+    /// Host prefixes no shorter materialized root may claim for links: the
+    /// repository store (stale trees, private stages and trash) and, with the
+    /// CLI layout `--cache-dir/repositories`, the whole `--cache-dir` root
+    /// (action outputs and downloads too).
+    pub fn link_blocked_prefixes(&self) -> Vec<PathBuf> {
+        let Ok(store) = self.source_cache_path() else {
+            return Vec::new();
+        };
+        let mut blocked = vec![store.to_path_buf()];
+        if store.file_name().is_some_and(|name| name == "repositories")
+            && let Some(root) = store.parent()
+        {
+            blocked.push(root.to_path_buf());
+        }
+        blocked
+    }
+
     pub fn root(&self, repository: &str) -> Result<&Path, String> {
         validate_repository_name(repository)?;
         if repository.is_empty() {
@@ -2959,5 +3016,19 @@ mod tests {
                 .unwrap_err()
                 .contains("symlink registry paths")
         );
+    }
+
+    #[test]
+    fn link_blocked_prefixes_cover_the_store_and_the_cli_cache_root() {
+        let temp = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let cli =
+            RepositorySet::new(root.clone()).with_source_cache(root.join("cache/repositories"));
+        assert_eq!(
+            cli.link_blocked_prefixes(),
+            [root.join("cache/repositories"), root.join("cache")]
+        );
+        let other = RepositorySet::new(root.clone()).with_source_cache(root.join("store"));
+        assert_eq!(other.link_blocked_prefixes(), [root.join("store")]);
     }
 }

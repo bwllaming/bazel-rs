@@ -1775,16 +1775,30 @@ mod tests {
             "bazel_dep(name='a',version='1')\nsingle_version_override(module_name='a',patches=[':fix.patch'],patch_strip=1)",
         );
         f.module("a", "1", "");
-        for patch in [
-            "--- a/src/file\n+++ b/src/file\n@@ -1,2 +1 @@\n-old\n+new\n",
-            "--- a/../escape\n+++ b/../escape\n@@ -1 +1 @@\n-old\n+new\n",
-            "diff --git a/src/file b/src/file\nold mode 100644\nnew mode 100755\n",
+        // PatchUtil.applyToSingleFile checks every section's format and paths
+        // (ModuleFileFunction.java:944-951).
+        for (patch, message) in [
+            (
+                "--- a/src/file\n+++ b/src/file\n@@ -1,2 +1 @@\n-old\n+new\n",
+                "to module file: Expecting more chunk line at line 6",
+            ),
+            (
+                "--- a/../escape\n+++ b/../escape\n@@ -1 +1 @@\n-old\n+new\n",
+                "to module file: Cannot patch file outside of external repository (/module), file path = \"../escape\" at line 1",
+            ),
         ] {
             f.patch("fix.patch", patch);
-            f.fails("cannot parse patch");
+            f.fails("error applying single_version_override patch ");
+            f.fails(message);
         }
-        f.patch("fix.patch", "--- a/MODULE.bazel\n+++ b/MODULE.bazel\n@@ -1 +1 @@\n-not the original\n+module(name='a',version='1')\n");
-        f.fails("cannot apply MODULE projection");
+        // Mode changes of other files are skipped, as in Bazel.
+        f.patch(
+            "fix.patch",
+            "diff --git a/src/file b/src/file\nold mode 100644\nnew mode 100755\n",
+        );
+        f.resolve();
+        f.patch("fix.patch", "--- a/MODULE.bazel\n+++ b/MODULE.bazel\n@@ -1,3 +1,3 @@\n x\n-not the original\n+module(name='a',version='1')\n y\n");
+        f.fails("to module file: in patch applied to /module/MODULE.bazel: Index 1 out of bounds for length 1, error applying change near line 1");
     }
 
     #[test]

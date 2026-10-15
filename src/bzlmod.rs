@@ -489,6 +489,10 @@ pub(crate) fn evaluate_source_with_builtins(
     };
     let ast = AstModule::parse(filename, source, &dialect).map_err(|e| e.to_string())?;
     validate_module_syntax(&ast)?;
+    // MODULE.bazel lexer errors fail every command (Bazel exit 48), not only
+    // a later demanded repository.
+    crate::repository_text::validate_source(&ast)?;
+    crate::guarded_globals::check_universe(&ast)?;
     let source_profile_error = crate::repository_text::validate_execution_source(&ast).err();
     let mut globals =
         GlobalsBuilder::extended_by(&[LibraryExtension::Print, LibraryExtension::SetType]);
@@ -523,7 +527,10 @@ pub(crate) fn evaluate_source_with_builtins(
         eval.extra = Some(&collector);
         eval.set_max_callstack_size(128)
             .map_err(|e| e.to_string())?;
+        // MODULE strings flow into repository attributes (Latin-1 chars).
+        let model = starlark::values::string::enter_latin1_char_model(true);
         eval.eval_module(ast, &globals).map_err(|e| e.to_string())?;
+        drop(model);
         finish_tag_attributes(&module, &mut collector.state.borrow_mut())
             .map_err(|e| format!("cannot record MODULE attributes in {filename}: {e}"))?;
         Ok::<_, String>(())
@@ -1532,15 +1539,42 @@ e.tag(names=list(names))
 
     #[test]
     fn repository_source_profile_is_deferred_and_captured_from_evaluated_module() {
-        for expression in ["str(len('é'))", "str(len(chr(233)))", "'\\377'", "'\\x41'"] {
-            let file = run(&format!("module(name='main')\nunused = {expression}\n"));
-            assert_eq!(file.module.unwrap().name, "main");
-            assert!(file.source_profile_error.is_some(), "{expression}");
+        let file = run("module(name='main')\nunused = str(len('é'))\n");
+        assert_eq!(file.module.unwrap().name, "main");
+        assert!(file.source_profile_error.is_some());
+        // Lexer errors are eager (Bazel fails every command, exit 48).
+        for (expression, message) in [
+            (
+                "'\\x41'",
+                "MODULE.bazel:2:12-13: invalid escape sequence: \\x.",
+            ),
+            (
+                "'\\400'",
+                "MODULE.bazel:2:14-15: octal escape sequence out of range",
+            ),
+        ] {
+            let error = evaluate_source(
+                "MODULE.bazel",
+                format!("module(name='main')\nunused = {expression}\n"),
+            )
+            .unwrap_err();
+            assert!(error.contains(message), "{expression}: {error}");
         }
+        // Octal escapes denote the same Latin-1 char in Bazel and natively.
         let file = run(
-            "module(name='main')\n# Unicode café comment is not a value\nx = r'\\377'\ny = '\\\\377'\n",
+            "module(name='main')\n# Unicode café comment is not a value\nx = r'\\377'\ny = '\\\\377'\nz = '\\377'\n",
         );
         assert!(file.source_profile_error.is_none());
+        // Bazel's MODULE universe has no chr: a resolver error, not deferred.
+        let error = evaluate_source(
+            "MODULE.bazel",
+            "module(name='main')\nunused = str(len(chr(233)))\n".to_owned(),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("MODULE.bazel:2:18") && error.contains("name 'chr' is not defined"),
+            "{error}"
+        );
     }
     fn fails(s: &str, expected: &str) {
         let error = evaluate_source("MODULE.bazel", s.to_owned()).unwrap_err();

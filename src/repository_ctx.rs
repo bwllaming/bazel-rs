@@ -335,6 +335,54 @@ mod values {
 
     starlark_complex_value!(pub(super) RepoDefinition);
 
+    /// Bazel `repo_metadata` (bazel/repository/starlark/RepoMetadata.java:
+    /// 23-44): the opaque record built by `repository_ctx.repo_metadata`
+    /// (StarlarkRepositoryContext.java:611-656). No fields or methods; repr
+    /// is StarlarkValue's default (StarlarkValue.java:50-52); Java record
+    /// equality compares the reproducibility and the dict contents
+    /// (Dict.java:208-211); not hashable (mutable, StarlarkValue.java:92-94).
+    #[derive(
+        Debug,
+        ProvidesStaticType,
+        NoSerialize,
+        Allocative,
+        Trace,
+        Freeze,
+        Coerce,
+        StarlarkPagablePanic,
+    )]
+    #[repr(C)]
+    pub(super) struct RepoMetadataGen<V> {
+        pub reproducible: bool,
+        pub attrs: V,
+    }
+
+    impl<V> fmt::Display for RepoMetadataGen<V> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str(
+                "<unknown object com.google.devtools.build.lib.bazel.repository.starlark.RepoMetadata>",
+            )
+        }
+    }
+
+    starlark_complex_value!(pub(super) RepoMetadata);
+
+    #[starlark_value(type = "repo_metadata")]
+    impl<'v, V: ValueLike<'v>> StarlarkValue<'v> for RepoMetadataGen<V>
+    where
+        Self: ProvidesStaticType<'v>,
+    {
+        fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
+            let Some(other) = RepoMetadata::from_value(other) else {
+                return Ok(false);
+            };
+            if other.reproducible != self.reproducible {
+                return Ok(false);
+            }
+            self.attrs.to_value().equals(other.attrs.to_value())
+        }
+    }
+
     #[starlark_value(type = "RepoDefinition")]
     impl<'v, V: ValueLike<'v>> StarlarkValue<'v> for RepoDefinitionGen<V>
     where
@@ -353,7 +401,10 @@ mod values {
         }
     }
 }
-use values::{Context, ExecResult, RepoDefinitionGen, RepositoryCtxGen, RepositoryPath};
+use values::{
+    Context, ExecResult, RepoDefinitionGen, RepoMetadata, RepoMetadataGen, RepositoryCtxGen,
+    RepositoryPath,
+};
 
 fn context<'a>(eval: &'a Evaluator<'_, '_, '_>) -> anyhow::Result<&'a Context> {
     eval.extra
@@ -1528,6 +1579,23 @@ pub(crate) fn callback_error(error: starlark::Error) -> anyhow::Error {
     anyhow!(error.to_string())
 }
 
+/// Dict.cast(x, String.class, Object.class, what) (Dict.java:659-684): the
+/// first entry whose key is not a string fails; values are unrestricted.
+fn dict_cast_error(value: Value<'_>, what: &str) -> Option<String> {
+    let Some(dict) = DictRef::from_value(value) else {
+        return Some(format!("got {} for '{what}', want dict", value.get_type()));
+    };
+    dict.iter()
+        .find(|(key, _)| key.unpack_str().is_none())
+        .map(|(key, value)| {
+            format!(
+                "got dict<{}, {}> for '{what}', want dict<string, unknown>",
+                key.get_type(),
+                value.get_type()
+            )
+        })
+}
+
 fn not_implemented(method: &str) -> anyhow::Error {
     anyhow!("repository_ctx.{method}() is not implemented by the native profile")
 }
@@ -2232,13 +2300,76 @@ fn repository_methods(builder: &mut MethodsBuilder) {
         Err(not_implemented("download"))
     }
 
+    /// StarlarkRepositoryContext.patch (java:475-567): resolve the patch file
+    /// and directory, require the directory inside the repository
+    /// (checkInOutputDirectory), reject a directory patch file, watch it,
+    /// then apply it with PatchUtil (patching.rs, the port shared with
+    /// registry, override and Git patches).
     fn patch<'v>(
         this: Value<'v>,
-        #[starlark(args)] args: UnpackTuple<Value<'v>>,
-        #[starlark(kwargs)] kwargs: starlark::collections::SmallMap<String, Value<'v>>,
+        #[starlark(require = pos)] patch_file: Value<'v>,
+        #[starlark(default = 0)] strip: i32,
+        #[starlark(require = named)] directory: Option<Value<'v>>,
+        #[starlark(require = named, default = "auto")] watch_patch: &str,
+        eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
-        let _ = (this, args, kwargs);
-        Err(not_implemented("patch"))
+        let _ = this;
+        let context = context(eval)?;
+        let patch_path = context.path_of(patch_file, "patch", "patch_file")?;
+        let directory_path = match directory {
+            Some(directory) => context.path_of(directory, "patch", "directory")?,
+            None => context.stage_bytes().to_vec(),
+        };
+        let relative = context.output(&directory_path)?;
+        let host = path_buf(&patch_path);
+        if fs::metadata(&host).is_ok_and(|metadata| metadata.is_dir()) {
+            bail!(
+                "attempting to use a directory as patch file: {}",
+                display(&patch_path)
+            );
+        }
+        let watch = ShouldWatch::parse(watch_patch)?;
+        let failed = |message: &dyn fmt::Display| {
+            anyhow!("Error applying patch {}: {message}", display(&patch_path))
+        };
+        // PatchUtil.applyInternal (PatchUtil.java:451-453).
+        let missing = || failed(&format!("Cannot find patch file: {}", display(&patch_path)));
+        let bytes = if let Some(canonical) = unpack_label(patch_file) {
+            // Labels keep the strict native source profile of read()/template().
+            if fs::symlink_metadata(&host).is_err() {
+                if watch != ShouldWatch::No {
+                    context.record(canonical, "file", "missing".to_owned())?;
+                }
+                return Err(missing());
+            }
+            let bytes = context.read_label(&canonical)?;
+            context.charge_read(bytes.len())?;
+            if watch != ShouldWatch::No {
+                context.record(canonical, "file", format!("file:{}", sha256(&bytes)))?;
+            }
+            bytes
+        } else {
+            context.watch(&patch_path, watch)?;
+            if fs::metadata(&host).is_err() {
+                return Err(missing());
+            }
+            let bytes = read_limited(&host, MAX_FILE_BYTES, "patch file")?;
+            context.charge_read(bytes.len())?;
+            bytes
+        };
+        // A negative strip strips nothing (stripPath, PatchUtil.java:270-279)
+        // but is shown in messages.
+        let report = |error: crate::patching::PatchError| match error {
+            crate::patching::PatchError::Failed(message) => failed(&message),
+            other => anyhow!("{other}"),
+        };
+        let parsed = crate::patching::parse_signed(&bytes, i64::from(strip)).map_err(report)?;
+        // PatchUtil writes create missing parents (writeLinesAs); existing
+        // ancestors must be real directories (no symlinked parents).
+        let root = context.stage.join(&relative);
+        context.mark_created();
+        parsed.apply_tree_detailed(&root).map_err(report)?;
+        Ok(NoneType)
     }
 
     fn watch_tree<'v>(
@@ -2250,13 +2381,48 @@ fn repository_methods(builder: &mut MethodsBuilder) {
         Err(not_implemented("watch_tree"))
     }
 
+    /// StarlarkRepositoryContext.repoMetadata (java:611-656). Both parameters
+    /// are named-only; the result is only meaningful as the implementation's
+    /// return value (RepositoryFetchFunction.java:681-695).
     fn repo_metadata<'v>(
         this: Value<'v>,
-        #[starlark(args)] args: UnpackTuple<Value<'v>>,
-        #[starlark(kwargs)] kwargs: starlark::collections::SmallMap<String, Value<'v>>,
-    ) -> anyhow::Result<NoneType> {
-        let _ = (this, args, kwargs);
-        Err(not_implemented("repo_metadata"))
+        #[starlark(require = named)] reproducible: Option<Value<'v>>,
+        #[starlark(require = named)] attrs_for_reproducibility: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let _ = this;
+        let reproducible = match reproducible {
+            None => false,
+            Some(value) => value.unpack_bool().ok_or_else(|| {
+                anyhow!(
+                    "in call to repo_metadata(), parameter 'reproducible' got value of type '{}', want 'bool'",
+                    value.get_type()
+                )
+            })?,
+        };
+        let attrs = match attrs_for_reproducibility {
+            None => eval.heap().alloc(starlark::values::dict::AllocDict::EMPTY),
+            Some(value) => {
+                ensure!(
+                    DictRef::from_value(value).is_some(),
+                    "in call to repo_metadata(), parameter 'attrs_for_reproducibility' got value of type '{}', want 'dict'",
+                    value.get_type()
+                );
+                value
+            }
+        };
+        let empty = DictRef::from_value(attrs).is_some_and(|dict| dict.is_empty());
+        ensure!(
+            !reproducible || empty,
+            "attrs_for_reproducibility can only be specified if reproducible is False"
+        );
+        if let Some(error) = dict_cast_error(attrs, "attrs_for_reproducibility") {
+            bail!(error);
+        }
+        Ok(eval.heap().alloc(RepoMetadataGen {
+            reproducible,
+            attrs,
+        }))
     }
 }
 
@@ -2440,6 +2606,67 @@ fn is_latin1(text: &str) -> bool {
     crate::repository_rule::is_latin1(text)
 }
 
+fn alloc_attr_value<'v>(heap: Heap<'v>, name: &str, attr: &AttrValue) -> anyhow::Result<Value<'v>> {
+    Ok(match attr {
+        AttrValue::String(value) => {
+            ensure!(
+                is_latin1(value),
+                "repository string attributes must be Latin-1 (U+0000..U+00FF)"
+            );
+            heap.alloc(value.as_str())
+        }
+        AttrValue::Strings(value) => {
+            ensure!(
+                value.iter().all(|value| is_latin1(value)),
+                "repository string attributes must be Latin-1 (U+0000..U+00FF)"
+            );
+            heap.alloc(value.clone())
+        }
+        AttrValue::Int(value) => heap.alloc(*value),
+        AttrValue::Ints(_) | AttrValue::LabelKeyedStringDict(_) => {
+            anyhow::bail!(
+                "attribute {name:?} kind is not supported for repository rules by the native profile"
+            )
+        }
+        AttrValue::StringKeyedLabelDict(entries) => {
+            crate::attribute_values::alloc_string_keyed_label_dict(heap, entries)?
+        }
+        AttrValue::LabelListDict(entries) => {
+            crate::attribute_values::alloc_label_dict(heap, entries, true)?
+        }
+        AttrValue::StringDict(entries) => {
+            ensure!(
+                entries
+                    .iter()
+                    .all(|(key, value)| is_latin1(key) && is_latin1(value)),
+                "repository string attributes must be Latin-1 (U+0000..U+00FF)"
+            );
+            crate::attribute_values::alloc_string_dict(heap, entries)?
+        }
+        AttrValue::StringListDict(entries) => {
+            ensure!(
+                entries
+                    .iter()
+                    .all(|(key, values)| is_latin1(key) && values.iter().all(|v| is_latin1(v))),
+                "repository string attributes must be Latin-1 (U+0000..U+00FF)"
+            );
+            crate::attribute_values::alloc_string_list_dict(heap, entries)?
+        }
+        AttrValue::Bool(value) => heap.alloc(*value),
+        AttrValue::Label(None) => Value::new_none(),
+        AttrValue::Label(Some(label)) => alloc_label(heap, label)?,
+        AttrValue::Labels(labels) => heap.alloc(
+            labels
+                .iter()
+                .map(|label| alloc_label(heap, label))
+                .collect::<anyhow::Result<Vec<_>>>()?,
+        ),
+        AttrValue::Output(_) | AttrValue::Outputs(_) => {
+            bail!("output attributes are unsupported for repository rules")
+        }
+    })
+}
+
 fn alloc_attrs<'v>(
     heap: Heap<'v>,
     attrs: &BTreeMap<String, AttrValue>,
@@ -2447,69 +2674,85 @@ fn alloc_attrs<'v>(
 ) -> anyhow::Result<Value<'v>> {
     let mut values = BTreeMap::new();
     for (name, attr) in attrs {
-        let value = match attr {
-            AttrValue::String(value) => {
-                ensure!(
-                    is_latin1(value),
-                    "repository string attributes must be Latin-1 (U+0000..U+00FF)"
-                );
-                heap.alloc(value.as_str())
-            }
-            AttrValue::Strings(value) => {
-                ensure!(
-                    value.iter().all(|value| is_latin1(value)),
-                    "repository string attributes must be Latin-1 (U+0000..U+00FF)"
-                );
-                heap.alloc(value.clone())
-            }
-            AttrValue::Int(value) => heap.alloc(*value),
-            AttrValue::Ints(_) | AttrValue::LabelKeyedStringDict(_) => {
-                anyhow::bail!(
-                    "attribute {name:?} kind is not supported for repository rules by the native profile"
-                )
-            }
-            AttrValue::StringKeyedLabelDict(entries) => {
-                crate::attribute_values::alloc_string_keyed_label_dict(heap, entries)?
-            }
-            AttrValue::LabelListDict(entries) => {
-                crate::attribute_values::alloc_label_dict(heap, entries, true)?
-            }
-            AttrValue::StringDict(entries) => {
-                ensure!(
-                    entries
-                        .iter()
-                        .all(|(key, value)| is_latin1(key) && is_latin1(value)),
-                    "repository string attributes must be Latin-1 (U+0000..U+00FF)"
-                );
-                crate::attribute_values::alloc_string_dict(heap, entries)?
-            }
-            AttrValue::StringListDict(entries) => {
-                ensure!(
-                    entries
-                        .iter()
-                        .all(|(key, values)| is_latin1(key) && values.iter().all(|v| is_latin1(v))),
-                    "repository string attributes must be Latin-1 (U+0000..U+00FF)"
-                );
-                crate::attribute_values::alloc_string_list_dict(heap, entries)?
-            }
-            AttrValue::Bool(value) => heap.alloc(*value),
-            AttrValue::Label(None) => Value::new_none(),
-            AttrValue::Label(Some(label)) => alloc_label(heap, label)?,
-            AttrValue::Labels(labels) => heap.alloc(
-                labels
-                    .iter()
-                    .map(|label| alloc_label(heap, label))
-                    .collect::<anyhow::Result<Vec<_>>>()?,
-            ),
-            AttrValue::Output(_) | AttrValue::Outputs(_) => {
-                bail!("output attributes are unsupported for repository rules")
-            }
-        };
-        values.insert(name.clone(), value);
+        values.insert(name.clone(), alloc_attr_value(heap, name, attr)?);
     }
     values.insert("name".to_owned(), heap.alloc(canonical_name));
     let fields = heap.alloc(AllocStruct(values));
     Ok(heap.alloc(RepoDefinitionGen { fields }))
+}
+
+/// RepositoryResolvedEvent (bazel/repository/RepositoryResolvedEvent.java:
+/// 33-110) for the attributes a repository returned for reproducibility.
+/// Returns the DEBUG message when it carries new information. Attributes are
+/// visited in declaration order (RepoDefinition.getFieldNames).
+fn resolved_event<'v>(
+    definition: &RuleDefinition,
+    attr: Value<'v>,
+    result: Value<'v>,
+    canonical_name: &str,
+    heap: Heap<'v>,
+) -> anyhow::Result<Option<String>> {
+    let Some(result) = DictRef::from_value(result) else {
+        return Ok(None);
+    };
+    if result.is_empty() {
+        return Ok(None);
+    }
+    let mut modified = Vec::new();
+    let mut dropped = Vec::new();
+    for name in &definition.attribute_order {
+        let Some(spec) = definition.schema.get(name) else {
+            continue;
+        };
+        if name == "name" || name.starts_with('_') {
+            continue;
+        }
+        let default = alloc_attr_value(heap, name, &spec.default)?;
+        let current = attr
+            .get_attr(name, heap)
+            .map_err(|e| anyhow!("{e}"))?
+            .unwrap_or_else(Value::new_none);
+        let new = result.get_str(name).unwrap_or(default);
+        if new.equals(current).map_err(|e| anyhow!("{e}"))? {
+            continue;
+        }
+        if new.equals(default).map_err(|e| anyhow!("{e}"))? {
+            dropped.push(name.clone());
+        } else {
+            modified.push(format!("{name} = {}", new.to_repr()));
+        }
+    }
+    if modified.is_empty() && dropped.is_empty() {
+        return Ok(None);
+    }
+    let prefix = format!(
+        "Repo '{canonical_name}' indicated that a canonical reproducible form can be obtained by"
+    );
+    // `Starlark.repr` of the dropped key set prints Java's Set.toString().
+    let dropped = format!("[{}]", dropped.join(", "));
+    Ok(Some(if modified.is_empty() {
+        format!("{prefix} dropping arguments {dropped}")
+    } else if dropped == "[]" {
+        format!("{prefix} modifying arguments {}", modified.join(", "))
+    } else {
+        format!(
+            "{prefix} modifying arguments {} and dropping {dropped}",
+            modified.join(", ")
+        )
+    }))
+}
+
+/// RepositoryResolvedEvent.getRuleDefinitionInformation (java:124-136).
+fn rule_definition_information(definition: &RuleDefinition, canonical_name: &str) -> String {
+    let (bzl, rule) = definition
+        .identity
+        .split_once('%')
+        .unwrap_or((definition.identity.as_str(), ""));
+    let bzl = Label::parse_canonical(bzl).map_or_else(
+        |_| bzl.to_owned(),
+        |label| format!("@@{}//{}:{}", label.repository, label.package, label.name),
+    );
+    format!("Repo {canonical_name} defined by rule {rule} in {bzl}")
 }
 
 /// Execute only into the caller's precreated private stage. Failures may leave
@@ -2556,8 +2799,9 @@ pub fn execute(
                     crate::host_os::alloc_with_environ_error(heap, host, error.to_string())?
                 }
             };
+            let attr_value = alloc_attrs(heap, attrs, canonical_name)?;
             let ctx = heap.alloc(RepositoryCtxGen {
-                attrs: alloc_attrs(heap, attrs, canonical_name)?,
+                attrs: attr_value,
                 os,
                 name: canonical_name.to_owned(),
                 original_name: original_name.to_owned(),
@@ -2578,13 +2822,39 @@ pub fn execute(
                     .borrow_mut()
                     .observe(context.repositories.environment(), name)?;
             }
+            let _model = starlark::values::string::enter_latin1_char_model(true);
             let returned = eval
                 .eval_function(implementation, &[ctx], &[])
                 .map_err(callback_error)?;
-            ensure!(
-                returned.is_none(),
-                "repository implementation return values other than None are unsupported"
-            );
+            // RepositoryFetchFunction.java:681-695: a dict must have string
+            // keys ("return value"), repo_metadata is taken as is, and every
+            // other value (None, ints, ...) means NONREPRODUCIBLE under the
+            // default --incompatible_require_repo_extension_metadata=false
+            // (RepositoryOptions.java:346-347). Reproducibility only selects
+            // Bazel's repo contents cache; the native store re-executes every
+            // demanded repository per invocation, so it has no effect here.
+            let reproducibility = if let Some(metadata) = RepoMetadata::from_value(returned) {
+                Some(metadata.attrs.to_value())
+            } else if DictRef::from_value(returned).is_some() {
+                if let Some(error) = dict_cast_error(returned, "return value") {
+                    bail!(error);
+                }
+                Some(returned)
+            } else {
+                None
+            };
+            // RepositoryFetchFunction.java:697-703: Event.debug lines. Native
+            // re-executes per invocation, so they repeat on every invocation.
+            if let Some(result) = reproducibility
+                && let Some(message) =
+                    resolved_event(definition, attr_value, result, canonical_name, heap)?
+            {
+                eprintln!("DEBUG: {message}");
+                eprintln!(
+                    "DEBUG: {}",
+                    rule_definition_information(definition, canonical_name)
+                );
+            }
             Ok(())
         })?;
         replant_symlinks(&context.stage)?;
@@ -4388,7 +4658,7 @@ d = {r: 1, s: 2}
     fn unimplemented_bazel_methods_fail_explicitly_and_attr_is_exact() {
         let fixture = Fixture::new();
         fixture.ok("(hasattr(ctx, 'download') and hasattr(ctx, 'execute') and not hasattr(ctx.attr, 'undeclared')) or fail('surface')\n(ctx.report_progress('status') == None and ctx.report_progress() == None) or fail('progress')");
-        for method in ["download", "patch", "watch_tree", "repo_metadata"] {
+        for method in ["download", "watch_tree"] {
             fixture.error(
                 &format!("ctx.file('partial', 'private')\nctx.{method}('x')"),
                 &format!("repository_ctx.{method}() is not implemented by the native profile"),
@@ -4396,7 +4666,6 @@ d = {r: 1, s: 2}
             assert_eq!(fixture.bytes("partial"), b"private");
         }
         fixture.error("ctx.report_progress(1)", "report_progress");
-        fixture.error("ctx.file('partial')\nreturn {}", "other than None");
         fixture.error("ctx.template('out', 'partial', None)", "dict");
         fixture.error(
             "ctx.template('out', 'partial', watch_template = 'maybe')",
@@ -4407,5 +4676,232 @@ d = {r: 1, s: 2}
             "ctx.template('out', 'partial', watch_template = 'yes')",
             "attempted to watch path under working directory",
         );
+    }
+
+    #[test]
+    fn repo_metadata_is_an_opaque_record_with_bazel_argument_checks() {
+        let fixture = Fixture::new();
+        fixture.ok(
+            r#"m = ctx.repo_metadata(reproducible = True)
+type(m) == "repo_metadata" or fail(type(m))
+repr(m) == "<unknown object com.google.devtools.build.lib.bazel.repository.starlark.RepoMetadata>" or fail(repr(m))
+str(m) == repr(m) or fail(str(m))
+dir(m) == [] or fail(dir(m))
+(not hasattr(m, "reproducible")) or fail("fields")
+m == ctx.repo_metadata(reproducible = True) or fail("record equality")
+m != ctx.repo_metadata() or fail("reproducibility participates")
+d = ctx.repo_metadata(attrs_for_reproducibility = {"integrity": "sha256-x", "n": 1})
+d == ctx.repo_metadata(attrs_for_reproducibility = {"n": 1, "integrity": "sha256-x"}) or fail("dict contents")
+d != ctx.repo_metadata(attrs_for_reproducibility = {"n": 2}) or fail("dict values")
+ctx.repo_metadata() == ctx.repo_metadata(reproducible = False, attrs_for_reproducibility = {}) or fail("defaults")
+bool(m) or fail("truth")
+return m"#,
+        );
+        for (call, message) in [
+            (
+                "ctx.repo_metadata(reproducible = True, attrs_for_reproducibility = {'a': 1})",
+                "attrs_for_reproducibility can only be specified if reproducible is False",
+            ),
+            (
+                "ctx.repo_metadata(attrs_for_reproducibility = {1: 'a'})",
+                "got dict<int, string> for 'attrs_for_reproducibility', want dict<string, unknown>",
+            ),
+            (
+                "ctx.repo_metadata(reproducible = 1)",
+                "in call to repo_metadata(), parameter 'reproducible' got value of type 'int', want 'bool'",
+            ),
+            (
+                "ctx.repo_metadata(attrs_for_reproducibility = [])",
+                "in call to repo_metadata(), parameter 'attrs_for_reproducibility' got value of type 'list', want 'dict'",
+            ),
+            ("ctx.repo_metadata(True)", "repo_metadata"),
+            ("{ctx.repo_metadata(): 1}", "repo_metadata"),
+        ] {
+            fixture.error(call, message);
+        }
+    }
+
+    #[test]
+    fn implementation_return_values_follow_repository_fetch_function() {
+        let fixture = Fixture::new();
+        // RepositoryFetchFunction.java:681-695: dicts with string keys, any
+        // repo_metadata and every other value are accepted.
+        for body in [
+            "return None",
+            "return ctx.repo_metadata(reproducible = True)",
+            "return ctx.repo_metadata(attrs_for_reproducibility = {'name': 'x', 'n': [1]})",
+            "return {}",
+            "return {'name': 'changed', 'text': 1, 'list': [None]}",
+            "return 42",
+            "return 'text'",
+            "return [1]",
+            "return True",
+        ] {
+            fixture.ok(&format!("ctx.file('data', 'x')\n{body}"));
+        }
+        fixture.error(
+            "return {1: 'a'}",
+            "got dict<int, string> for 'return value', want dict<string, unknown>",
+        );
+        fixture.error(
+            "return {'ok': 1, None: [1]}",
+            "got dict<NoneType, list> for 'return value', want dict<string, unknown>",
+        );
+    }
+
+    #[test]
+    fn patch_applies_unified_diffs_with_bazel_paths_strip_directory_and_watch() {
+        let fixture = Fixture::new();
+        fixture.file(
+            "fixes/BUILD.bazel",
+            "exports_files(['proto_gazelle.patch'])\n",
+        );
+        // build_stack_rules_proto-shaped: a/b prefixes with timestamps, -p1.
+        fixture.file(
+            "fixes/proto_gazelle.patch",
+            "--- a/rules/proto_gazelle.bzl\t2024-05-14 13:52:59.000000000 +0000\n+++ b/rules/proto_gazelle.bzl\t2026-06-04 19:22:29.815049510 +0000\n@@ -1,3 +1,4 @@\n load(\"@bazel_skylib//lib:shell.bzl\", \"shell\")\n+load(\"@rules_shell//shell:sh_binary.bzl\", \"sh_binary\")\n \n-native.sh_binary(name = \"x\")\n+sh_binary(name = \"x\")\n",
+        );
+        fixture.file(
+            "host.patch",
+            "--- old.txt\n+++ old.txt\n@@ -1 +1 @@\n-a\n+b\n",
+        );
+        let root = fixture.root_text();
+        let inputs = fixture.ok(&format!(
+            r#"ctx.file("rules/proto_gazelle.bzl", 'load("@bazel_skylib//lib:shell.bzl", "shell")\n\nnative.sh_binary(name = "x")\n')
+ctx.patch(Label("//fixes:proto_gazelle.patch"), 1)
+ctx.file("sub/old.txt", "a\n")
+ctx.patch("{root}/host.patch", directory = "sub", watch_patch = "no")
+ctx.file("old.txt", "a\n")
+ctx.patch(ctx.path("{root}/host.patch"), strip = -3)
+ctx.file("local.patch", "--- /dev/null\n+++ x/new.txt\n@@ -0,0 +1 @@\n+created\n")
+ctx.patch("local.patch", strip = 1)
+ctx.read("old.txt") == "b\n" or fail("strip <= 0")
+ctx.read("sub/old.txt") == "b\n" or fail("directory")"#
+        ));
+        assert_eq!(
+            fixture.bytes("rules/proto_gazelle.bzl"),
+            b"load(\"@bazel_skylib//lib:shell.bzl\", \"shell\")\nload(\"@rules_shell//shell:sh_binary.bzl\", \"sh_binary\")\n\nsh_binary(name = \"x\")\n"
+        );
+        assert_eq!(fixture.bytes("new.txt"), b"created\n");
+        // watch_patch='auto' records host/label patch files (maybeWatch), never
+        // files inside the repository; 'no' records nothing.
+        let recorded: Vec<_> = inputs.files.iter().map(|f| f.path.as_str()).collect();
+        assert!(
+            recorded.contains(&"//fixes:proto_gazelle.patch"),
+            "{recorded:?}"
+        );
+        assert_eq!(
+            recorded
+                .iter()
+                .filter(|path| path.ends_with("host.patch"))
+                .count(),
+            1,
+            "{recorded:?}"
+        );
+        assert!(!recorded.iter().any(|path| path.contains("local.patch")));
+    }
+
+    #[test]
+    fn patch_failures_use_bazel_messages() {
+        let fixture = Fixture::new();
+        let stage = fixture.stage_text();
+        let root = fixture.root_text();
+        fs::create_dir(fixture.root.path().join("dir")).unwrap();
+        fixture.file("bad.patch", "--- a.txt\n+++ a.txt\n@@ -1 +1 @@\n-x\n+y\n");
+        fixture.file(
+            "ctx.patch",
+            "--- a.txt\n+++ a.txt\n@@ -1,5 +1,5 @@\n u\n v\n-x\n+y\n w\n t\n",
+        );
+        for (body, message) in [
+            (
+                "ctx.patch('missing.patch')".to_owned(),
+                format!(
+                    "Error applying patch {stage}/missing.patch: Cannot find patch file: {stage}/missing.patch"
+                ),
+            ),
+            (
+                format!("ctx.patch('{root}/dir')"),
+                format!("attempting to use a directory as patch file: {root}/dir"),
+            ),
+            (
+                format!("ctx.patch('{root}/bad.patch', directory = '{root}')"),
+                format!("Cannot write outside of the repository directory for path {root}"),
+            ),
+            (
+                format!("ctx.file('a.txt', 'z\\n')\nctx.patch('{root}/bad.patch')"),
+                // A one-line hunk only "matching" with fuzz 1 crashes Bazel 9.3
+                // (captured B4/mismatch_context, exit 37).
+                "genuine Bazel 9.3 crashes applying this patch".to_owned(),
+            ),
+            (
+                format!("ctx.file('a.txt', 'u\\nz\\nw\\n')\nctx.patch('{root}/ctx.patch')"),
+                format!(
+                    "Error applying patch {root}/ctx.patch: in patch applied to {stage}/a.txt: could not apply patch due to CONTENT_DOES_NOT_MATCH_TARGET, error applying change near line 1"
+                ),
+            ),
+
+            (
+                format!("ctx.patch('{root}/bad.patch', watch_patch = 'maybe')"),
+                "bad value for 'watch' parameter; want 'yes', 'no', or 'auto', got maybe"
+                    .to_owned(),
+            ),
+            (
+                "ctx.file('in.patch', '')\nctx.patch('in.patch', watch_patch = 'yes')".to_owned(),
+                "attempted to watch path under working directory".to_owned(),
+            ),
+            (
+                "ctx.patch(1)".to_owned(),
+                "in call to patch(), parameter 'patch_file' got value of type 'int', want 'string, Label, or path'".to_owned(),
+            ),
+            (
+                format!("ctx.patch(patch_file = '{root}/bad.patch')"),
+                "patch_file".to_owned(),
+            ),
+            (
+                format!("ctx.patch('{root}/bad.patch', 0, '')"),
+                "patch".to_owned(),
+            ),
+        ] {
+            fixture.error(&body, &message);
+        }
+        // An empty patch is a no-op, also for a fresh repository directory.
+        fixture.file("empty.patch", "");
+        fixture.ok(&format!("ctx.patch('{root}/empty.patch')"));
+    }
+
+    #[test]
+    fn base64_and_strings_shaped_helpers_write_latin1_bytes() {
+        // bazel_lib lib/private/strings.bzl:262-555 and base64.bzl:9-35: a
+        // user-defined chr/ord over octal-escape tables; decode() of a
+        // non-ASCII payload yields one char per byte, written as that byte.
+        let fixture = Fixture::new();
+        let table = (0..=255)
+            .map(|i| format!("\"\\{i:03o}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        fixture.file(
+            "strings.bzl",
+            format!(
+                "INT_TO_CHAR = [{table}]\nCHAR_TO_INT = {{c: i for i, c in enumerate(INT_TO_CHAR)}}\ndef chr(i):\n    if i < 0 or i > 255:\n        fail(\"expected a int between 0 and 255 (inclusive)\")\n    return INT_TO_CHAR[i]\ndef ord(c):\n    if len(c) != 1:\n        fail(\"expected a string with a single character\")\n    return CHAR_TO_INT.get(c)\n"
+            ),
+        );
+        fixture.file(
+            "base64.bzl",
+            "load(\":strings.bzl\", \"chr\", \"ord\")\nB = \"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/\"\ndef encode(data):\n    bits = \"\".join([\"\".join([str((ord(c) >> (7 - k)) & 1) for k in range(8)]) for c in data.elems()])\n    bits += \"0\" * ((6 - len(bits) % 6) % 6)\n    out = \"\".join([B[int(bits[i:i + 6], 2)] for i in range(0, len(bits), 6)])\n    return out + \"=\" * ((4 - len(out) % 4) % 4)\ndef decode(data):\n    padding = data.count(\"=\")\n    data = data.replace(\"=\", \"A\")\n    bits = \"\".join([\"\".join([str((B.find(c) >> (5 - k)) & 1) for k in range(6)]) for c in data.elems()])\n    out = \"\".join([chr(int(bits[i:i + 8], 2)) for i in range(0, len(bits) - len(bits) % 8, 8)])\n    return out if padding == 0 else out[:-padding]\n",
+        );
+        fixture.file(
+            "defs.bzl",
+            "load(\":base64.bzl\", \"decode\", \"encode\")\nload(\":strings.bzl\", \"chr\", \"ord\")\ndef _impl(ctx):\n    raw = decode(\"/wDpw6k=\")\n    len(raw) == 5 or fail(len(raw))\n    [ord(c) for c in raw.elems()] == [255, 0, 233, 195, 169] or fail(\"bytes\")\n    encode(raw) == \"/wDpw6k=\" or fail(encode(raw))\n    ctx.file(\"decoded\", raw)\n    ctx.file(\"literal\", \"\\377\\200\" + chr(65) + chr(233))\nR = repository_rule(implementation=_impl)\n",
+        );
+        let loaded = load_definition_in(
+            fixture.repositories.clone(),
+            &Label::parse_canonical("//:defs.bzl").unwrap(),
+            "R",
+            &crate::package::bzl_globals(),
+        )
+        .unwrap();
+        fixture.run_loaded(loaded, BTreeMap::new()).unwrap();
+        assert_eq!(fixture.bytes("decoded"), [0xff, 0x00, 0xe9, 0xc3, 0xa9]);
+        assert_eq!(fixture.bytes("literal"), [0xff, 0x80, b'A', 0xe9]);
     }
 }

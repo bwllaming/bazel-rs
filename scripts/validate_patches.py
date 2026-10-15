@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scoped UTF-8 unified-patch graph/source differential, not full patch parity.
+"""Scoped unified-patch graph/source differential, not full patch parity.
 
 Private file-URI fixtures, one genuine pinned Bazel 9.3 server, no wrappers or
 fake built-ins. Native-only safety/capability probes are explicitly not parity.
@@ -88,11 +88,13 @@ CASES = [
     case("negative.unknown-apparent-label", expected="reject", diagnostic="unknown_label", unknown=True),
     case("native.nonmodule-no-source", source_patch=True, no_source_descriptor=True),
     case("native.malformed-skipped-source", expected="reject", diagnostic="structure", malformed=True),
-    case("native.adjacent-plain-sections", expected="reject", diagnostic="section_boundary", adjacent_plain=True),
     case("native.traversal-skipped-source", expected="reject", diagnostic="path", traversal=True),
-    case("native.git-binary", expected="reject", diagnostic="unsupported", binary=True),
-    case("native.rename", expected="reject", diagnostic="unsupported", rename=True),
-    case("native.mode-change", expected="reject", diagnostic="unsupported", mode_change=True),
+    # N26: Bazel's PatchUtil.applyToSingleFile skips these non-MODULE sections
+    # (PatchUtil.java:448-660); they are differentials, no longer native rejections.
+    case("graph.adjacent-plain-sections-skipped", adjacent_plain=True),
+    case("graph.git-binary-skipped", binary=True),
+    case("graph.rename-skipped", rename=True),
+    case("graph.mode-change-skipped", mode_change=True),
     case("materialize.transform-order", "source"),
     case("native.cache-local-patch-edit", "cache"),
     case("native.invalid-local-no-publication", "source", expected="reject", diagnostic="context", invalid_local=True),
@@ -613,7 +615,7 @@ def main(argv=None):
               "reference_version_required": "9.3.0", "reference_sha256_required": REFERENCE_SHA256,
               "test_commands_executed": False,
               "limitations": ["Scoped UTF-8 unified text modifications/create/delete only; not general Git patch parity.",
-                              "Exact context with offset search, no fuzz; binary, rename and mode-change patches unsupported.",
+                              "PatchUtil port (java-diff-utils applyFuzzy(..., 2)); non-MODULE adjacent-plain, binary, rename and mode-change sections are skipped during discovery like Bazel.",
                               "Discovery patches only old==new==root MODULE.bazel; validates skipped paths/structure too.",
                               "Graph parity supplies valid source descriptors with nonexistent archives; no claim that official graph skips source.json.",
                               "Missing dependency source.json is a separate native-only graph laziness probe.",

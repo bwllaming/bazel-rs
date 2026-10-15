@@ -26,6 +26,9 @@ use crate::repository_environment::DeclaredEnvironment;
 pub struct RuleDefinition {
     pub implementation: OwnedFrozenValue,
     pub schema: BTreeMap<String, AttrSpec>,
+    /// Attribute names in declaration order (the `attrs` dict order;
+    /// RepoRule.Builder.addAttribute, RepoRule.java:147-152).
+    pub attribute_order: Vec<String>,
     pub identity: String,
     pub local: bool,
     /// Bazel `repository_rule(configure=...)`: only selects repositories for
@@ -68,6 +71,9 @@ mod values {
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
         pub schema: BTreeMap<String, AttrSpec>,
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        pub attribute_order: Vec<String>,
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
         pub local: bool,
@@ -193,6 +199,7 @@ pub fn unpack(value: &OwnedFrozenValue) -> Result<RuleDefinition, String> {
     Ok(RuleDefinition {
         implementation,
         schema: definition.schema.clone(),
+        attribute_order: definition.attribute_order.clone(),
         identity,
         local: definition.local,
         configure: definition.configure,
@@ -252,6 +259,7 @@ pub fn globals(builder: &mut GlobalsBuilder) {
                 anyhow!("repository_rule implementation must be callable with ctx: {e}")
             })?;
         let mut schema = BTreeMap::new();
+        let mut attribute_order = Vec::new();
         if !attrs.is_none() {
             let attrs = DictRef::from_value(attrs).ok_or_else(|| {
                 anyhow!("repository_rule attrs must be a dict of attribute descriptors")
@@ -285,6 +293,9 @@ pub fn globals(builder: &mut GlobalsBuilder) {
                 }
                 budget.string(name).map_err(anyhow::Error::msg)?;
                 budget.spec(spec).map_err(anyhow::Error::msg)?;
+                if !schema.contains_key(name) {
+                    attribute_order.push(name.to_owned());
+                }
                 schema.insert(
                     name.to_owned(),
                     attribute_spec(descriptor).expect("descriptor checked and charged above"),
@@ -294,6 +305,7 @@ pub fn globals(builder: &mut GlobalsBuilder) {
         Ok(eval.heap().alloc(RepoDefinitionGen {
             implementation,
             schema,
+            attribute_order,
             local,
             configure,
             environ,

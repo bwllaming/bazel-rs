@@ -323,7 +323,7 @@ fn unicode_empty_and_nul_are_metadata_bytes_not_operating_system_environment() {
     let ws = Workspace::new(
         r#"
 def _check(ctx):
-    p=RunEnvironmentInfo({'Z':'last','A':'first','':'','é':'☃','nul':'a\x00b'},('Z','Z','','☃'))
+    p=RunEnvironmentInfo({'Z':'last','A':'first','':'','é':'☃','nul':'a\000b'},('Z','Z','','☃'))
     representation=ctx.actions.declare_file('representation.txt')
     raw=ctx.actions.declare_file('raw.txt')
     ctx.actions.write(representation,repr(p))

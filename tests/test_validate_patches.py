@@ -83,7 +83,13 @@ class FixtureTests(unittest.TestCase):
     def test_inventory_and_native_only_boundaries(self):
         self.assertEqual(len(patches.CASES), 27)
         self.assertEqual(len(set(name for name, _ in patches.PLAN)), 27)
-        self.assertEqual(sum(kind == "differential" for _, kind in patches.PLAN), 14)
+        self.assertEqual(sum(kind == "differential" for _, kind in patches.PLAN), 18)
+        # N26: Bazel skips these sections during discovery; native agrees.
+        for name in ("graph.adjacent-plain-sections-skipped", "graph.git-binary-skipped",
+                     "graph.rename-skipped", "graph.mode-change-skipped"):
+            self.assertEqual(item(name)["kind"], "differential")
+            self.assertEqual(item(name)["expected"], "success")
+            self.assertIsNone(item(name)["diagnostic"])
         for value in patches.CASES:
             self.assertEqual(value["kind"] == "native_only", value["name"].startswith("native."))
         self.assertEqual(item("graph.ordered-module-patches")["leaf"], "3.0")
@@ -99,15 +105,15 @@ class FixtureTests(unittest.TestCase):
     def test_adjacent_plain_boundary_has_two_valid_sections_and_no_git_separator(self):
         with tempfile.TemporaryDirectory(dir="/tmp/opencode") as temporary:
             root = Path(temporary)
-            value = item("native.adjacent-plain-sections")
+            value = item("graph.adjacent-plain-sections-skipped")
             fixture = patches.materialize(root / "case", root / "workspace", value)
             text = fixture["patches"][0].read_text()
             self.assertEqual(text, "--- a/data\n+++ b/data\n@@ -1 +1 @@\n-old\n+new\n"
                              "--- a/nested/MODULE.bazel\n+++ b/nested/MODULE.bazel\n"
                              "@@ -1 +1 @@\n-nested old\n+nested new\n")
             self.assertNotIn("diff --git", text)
-            self.assertEqual(value["kind"], "native_only")
-            self.assertEqual(value["diagnostic"], "section_boundary")
+            self.assertEqual(value["kind"], "differential")
+            self.assertIsNone(value["diagnostic"])
 
     def test_tar_is_deterministic_regular_ustar_and_integrity_pinned(self):
         first = patches.archive_bytes()
@@ -493,7 +499,7 @@ class MainTests(unittest.TestCase):
             if o["name"] == "graph.mixed-root-source-nested":
                 assert_sections(self, (o["cwd"] / "local-0.patch").read_text(),
                                 ["MODULE.bazel", "data", "nested/MODULE.bazel"])
-            if o["name"] == "native.adjacent-plain-sections":
+            if o["name"] == "graph.adjacent-plain-sections-skipped":
                 text = (o["cwd"] / "local-0.patch").read_text()
                 self.assertNotIn("diff --git", text)
                 self.assertEqual(text.count("\n@@ -1 +1 @@\n"), 2)
@@ -505,7 +511,7 @@ class MainTests(unittest.TestCase):
             code, report, seen = self.run_main(temporary, observe=observe)
         self.assertEqual(code, 0, [(c["name"], c.get("error")) for c in report["checks"] if c["status"] != "PASS"])
         self.assertEqual(report["status"], "PASS")
-        self.assertEqual(report["completed_differential_cases"], 14)
+        self.assertEqual(report["completed_differential_cases"], 18)
         self.assertTrue(report["build_commands_executed"])
         self.assertFalse(report["test_commands_executed"])
         self.assertEqual(len({o["registry"] for o in seen}), 27)
@@ -521,10 +527,9 @@ class MainTests(unittest.TestCase):
         self.assertEqual(set(native_only["run_ids"]), {"native.result"})
         self.assertFalse(native_only["parity_claim"])
         self.assertTrue(native_only["source_json_absent"])
-        boundary = next(c for c in report["checks"] if c["name"] == "native.adjacent-plain-sections")
-        self.assertEqual(set(boundary["run_ids"]), {"native.result"})
-        self.assertFalse(boundary["parity_claim"])
-        self.assertTrue(boundary["no_publication"])
+        boundary = next(c for c in report["checks"] if c["name"] == "graph.adjacent-plain-sections-skipped")
+        self.assertEqual(set(boundary["run_ids"]), {"native.result", "reference.result"})
+        self.assertTrue(boundary["parity_claim"])
         self.assertEqual(len({o["cwd"] for o in seen}), 1)
         roots = {arg for o in seen for arg in o["argv"] if arg.startswith("--output_base=")}
         self.assertEqual(len(roots), 1)

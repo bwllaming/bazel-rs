@@ -300,7 +300,11 @@ fn callback_failure_unsupported_operations_and_paths_never_publish() {
             "ctx.execute(['sh','-c','echo should-not-publish'])\n    fail('after-execute')",
             "after-execute",
         ),
-        ("return {'suggested':'value'}", "return"),
+        // RepositoryFetchFunction.java:681-695 accepts string-keyed dicts.
+        (
+            "return {1:'value'}",
+            "got dict<int, string> for 'return value', want dict<string, unknown>",
+        ),
     ] {
         let f = Fixture::new();
         f.file("defs.bzl", format!("def _impl(ctx):\n    ctx.file('partial', 'private')\n    {operation}\nmake=repository_rule(_impl,attrs={{'text':attr.string()}})\n"));
@@ -327,7 +331,7 @@ fn direct_source_profile_rejects_hidden_unicode_computation_but_metadata_stays_l
         "helper.bzl",
         "alias = chr\ndef greeting(x):\n    return str(len(alias(233)))\n",
     );
-    rejected(&f.run(&["build", "//:copy"]), "chr references");
+    rejected(&f.run(&["build", "//:copy"]), "name 'chr' is not defined");
     assert!(f.roots().is_empty());
 }
 
@@ -490,12 +494,9 @@ fn direct_repository_source_symlinks_resolve_like_archive_links() {
         fs::read_link(root.join("linked.txt")).unwrap(),
         Path::new("data.txt")
     );
-    // A link leaving the repository root is N19's explicit native limit
-    // (Bazel would read the main-repository file).
-    rejected(
-        &f.run(&["build", "//:escape"]),
-        "points outside its repository root",
-    );
+    // A link into another repository materialized in this invocation (here
+    // the main repository) is read through, as Bazel reads it (N26).
+    assert_eq!(bytes(&f.build("//:escape")[0].1), b"main\n");
 }
 
 /// N19 extracts real tar hard links, but the direct-repository store rejects

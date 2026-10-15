@@ -240,10 +240,11 @@ fn dangling_escaping_and_globbed_archive_links_fail_explicitly() {
         &fixture.run(&["build", "@linked//:dangling"]),
         "missing input file '@@linked+//:dangling.txt'",
     );
-    // Bazel would read outside the repository; native resolution refuses.
+    // The escaping link's target does not exist: a missing input file, as in
+    // Bazel (an existing outside target is the native restriction).
     failed(
         &fixture.run(&["build", "@linked//:escape"]),
-        "outside its repository root",
+        "missing input file '@@linked+//:escape.txt'",
     );
     // Bazel's glob follows links; the native glob policy still rejects them.
     failed(

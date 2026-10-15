@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Seventeen scoped direct repository-rule checks, NOT full Bazel byte parity.
+"""Twenty-one scoped direct repository-rule checks, NOT full Bazel byte parity.
 
 Explicit execution only: real native ELF and pinned genuine Bazel 9.3.0, private
 registries/caches, real built-in closure. Unit tests never launch either CLI.
@@ -137,10 +137,15 @@ CASES = [
     case('group.unused-missing-attribute'),
     case('group.unused-unknown-attribute'),
     case('execute.host-process'),
+    # N26: Bazel-faithful behavior that used to be native boundaries.
+    case('literal.latin1-octal'),
+    case('return.metadata-and-values', probes=('repo-metadata', 'attrs-metadata', 'dict', 'integer')),
+    case('patch.label-strip-directory'),
+    case('resolver.free-chr'),
     case('native.rollback', 'native_boundary'),
     case('native.path-containment', 'native_boundary', ('dotdot', 'absolute', 'source-symlink')),
-    case('native.unsupported', 'native_boundary', ('metadata', 'integer', 'facts_version_unsupported')),
-    case('native.ascii-profile', 'native_boundary', ('module-unicode', 'closure-unicode', 'octal', 'hex', 'u', 'U', 'chr')),
+    case('native.unsupported', 'native_boundary', ('facts_version_unsupported',)),
+    case('native.ascii-profile', 'native_boundary', ('module-unicode', 'closure-unicode', 'hex', 'u', 'U')),
     case('native.template-cycle', 'native_boundary'),
     case('native.refresh-and-repair', 'native_boundary', ('cold', 'helper-change', 'input-change', 'repair')),
     case('native.parallel-publication', 'native_boundary', ('parallel-1', 'parallel-2')),
@@ -157,6 +162,8 @@ DIAGNOSTICS = {
     'return': r'(?:return|returned)[^\n]*(?:None|unsupported|not supported)|(?:only|must)[^\n]*None',
     'facts_version_unsupported': r'\bmodule_extension with nonzero facts_version is unsupported\b',
     'ascii': r'(?:ASCII|non.ASCII|Unicode|unicode|escape|chr)[^\n]*(?:unsupported|not supported|forbidden|invalid|only|reject)|(?:unsupported|invalid|non.ASCII)[^\n]*(?:string|literal|escape|chr)',
+    # Resolver.java:941-953 / Module.java:250-256: Bazel has no chr builtin.
+    'undefined_chr': r"\bname 'chr' is not defined\b",
     'cycle': r'(?:repository|template|materializ)[^\n]*(?:cycle|cyclic)|(?:cycle|cyclic)[^\n]*(?:repository|template|made|other)',
     'ticks': r'\bticks?\b[^\n]*(?:limit|budget|exceed)|(?:limit|budget|exceed)[^\n]*\bticks?\b',
 }
@@ -183,7 +190,7 @@ def require_rejection(record, diagnostic):
             or (diagnostic == 'facts_version_unsupported'
                 and (BOUNDARY_INFRASTRUCTURE_ERROR.search(text) or STALE_EXTENSION_ERROR.search(text)))
             or (diagnostic in ('missing', 'unknown') and LAZY_MARKER in text)
-            or (diagnostic != 'ascii' and re.search(r'syntax error', text, re.I))
+            or (diagnostic not in ('ascii', 'undefined_chr') and re.search(r'syntax error', text, re.I))
             or not re.search(DIAGNOSTICS[diagnostic], text, re.I)):
         raise ValueError('expected controlled repository-rule rejection: ' + diagnostic)
 
@@ -296,26 +303,53 @@ def fixture(name, probe='result', outside=None):
             files['defs.bzl'] = rule('ctx.file(' + quote(output) + ', "ESCAPED")\n' + build_file(['data']))
             diagnostic = 'path'
     elif name == 'native.unsupported':
-        body = {'metadata': 'return {"answer": "value"}',
-                'integer': 'return 42', 'facts_version_unsupported': 'return None'}[probe]
+        body = {'facts_version_unsupported': 'return None'}[probe]
         files['defs.bzl'] = rule(build_file(['data']) + '\nctx.file("data", "partial")\n' + body)
-        if probe == 'facts_version_unsupported':
-            files['defs.bzl'] += 'ordinary = module_extension(implementation = _impl, facts_version = 1)\n'
-        diagnostic = 'return' if probe in ('metadata', 'integer') else probe
+        files['defs.bzl'] += 'ordinary = module_extension(implementation = _impl, facts_version = 1)\n'
+        diagnostic = probe
+    elif name == 'literal.latin1-octal':
+        # Lexer.java:372-395: an octal escape is the char NNN & 0xff, which
+        # repository_ctx.file writes as that single byte.
+        files['defs.bzl'] = rule(build_file(['data']) + '\nctx.file("data", value, executable = False)',
+                                 prefix='load(":helper.bzl", "value")\n')
+        files['helper.bzl'] = 'load(":leaf.bzl", _value = "value")\nvalue = _value\n'
+        files['leaf.bzl'] = 'value = "\\377\\200A" + str(len("\\377")) + "\\n"\n'
+        expected = {'data': (b'\xff\x80A1\n', False)}
+    elif name == 'return.metadata-and-values':
+        # RepositoryFetchFunction.java:681-695; StarlarkRepositoryContext.java:611-656.
+        body = {'repo-metadata': 'return ctx.repo_metadata(reproducible = True)',
+                'attrs-metadata': 'return ctx.repo_metadata(attrs_for_reproducibility = {"name": ctx.name})',
+                'dict': 'return {"answer": "value"}', 'integer': 'return 42'}[probe]
+        files['defs.bzl'] = rule(build_file(['data']) + '\nctx.file("data", "hello Ada\\n", executable = False)\n' + body)
+    elif name == 'patch.label-strip-directory':
+        # StarlarkRepositoryContext.java:475-567 with PatchUtil (a/b prefixes, -p1).
+        files['private/fix.patch'] = ('--- a/data\t2024-05-14 13:52:59.000000000 +0000\n'
+                                      '+++ b/data\t2026-06-04 19:22:29.815049510 +0000\n'
+                                      '@@ -1 +1 @@\n-hello Ada\n+patched Ada\n')
+        files['defs.bzl'] = rule(build_file(['data', 'sub/data']) + '\n'
+                                 'ctx.file("data", "hello Ada\\n", executable = False)\n'
+                                 'ctx.patch(Label("//private:fix.patch"), strip = 1)\n'
+                                 'ctx.file("sub/data", "hello Ada\\n", executable = False)\n'
+                                 'ctx.patch(Label("//private:fix.patch"), 1, directory = "sub", watch_patch = "no")')
+        expected = {'data': (b'patched Ada\n', False), 'sub/data': (b'patched Ada\n', False)}
+    elif name == 'resolver.free-chr':
+        files['defs.bzl'] = rule(build_file(['data']) + '\nctx.file("data", value)', prefix='load(":helper.bzl", "value")\n')
+        files['helper.bzl'] = 'load(":leaf.bzl", "value")\n'
+        files['leaf.bzl'] = 'value = "ASCII output"\ndef unused():\n    return str(chr)\n'
+        diagnostic = 'undefined_chr'
     elif name == 'execute.host-process':
         files['defs.bzl'] = EXECUTE_DEFS
         expected = {'data': (b'3|one|two|err|True|data\n', False)}
     elif name == 'native.ascii-profile':
         expression = {'module-unicode': 'str(len("é"))', 'closure-unicode': 'str(len("é"))',
-                      'octal': 'str(len("\\377"))', 'hex': 'str(len("\\x41"))',
-                      'u': 'str(len("\\u0041"))', 'U': 'str(len("\\U00000041"))', 'chr': 'str(chr)'}[probe]
+                      'hex': 'str(len("\\x41"))',
+                      'u': 'str(len("\\u0041"))', 'U': 'str(len("\\U00000041"))'}[probe]
         if probe == 'module-unicode':
             files['MODULE.bazel'] += 'unused = ' + expression + '\n'
         else:
             files['defs.bzl'] = rule(build_file(['data']) + '\nctx.file("data", value)', prefix='load(":helper.bzl", "value")\n')
             files['helper.bzl'] = 'load(":leaf.bzl", "value")\n'
-            files['leaf.bzl'] = ('value = "ASCII output"\ndef unused():\n    return ' + expression + '\n'
-                                 if probe == 'chr' else 'value = ' + expression + '\n')
+            files['leaf.bzl'] = 'value = ' + expression + '\n'
         diagnostic = 'ascii'
     elif name == 'native.template-cycle':
         files['defs.bzl'] = rule('ctx.template("data", ctx.attr.source)\n' + build_file(['data']), '{"source": attr.label(mandatory = True)}')
@@ -733,7 +767,7 @@ def report_passes(report):
                 or not all(valid_evidence(v) for v in report['sources_before'].values())
                 or report['reference_release'] != 'bazel 9.3.0'
                 or report['executables']['reference']['sha256'] != REFERENCE_SHA256
-                or report['completed_checks'] != 17 or report['completed_differential_cases'] != 8):
+                or report['completed_checks'] != 21 or report['completed_differential_cases'] != 12):
             return False
         args = argument_parser().parse_args([])
         args.native = Path(report['configuration']['native'])
@@ -825,9 +859,9 @@ def main(argv=None):
                   case_inputs_sha256=digest(json.dumps(CASES, sort_keys=True).encode()),
                   configuration={k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
                   started_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                  limitations=['17 cases: eight differential, nine native policy/lifecycle boundaries. No full Bazel parity.',
-                               'Computed Starlark strings are strict ASCII; raw templates preserve arbitrary bytes.',
-                               'Non-None callback returns are native-only unsupported, even when Bazel accepts them.',
+                  limitations=['21 cases: twelve differential, nine native policy/lifecycle boundaries. No full Bazel parity.',
+                               'Raw non-ASCII source literals are a native boundary; octal escapes denote Latin-1 chars written as single bytes; raw templates preserve arbitrary bytes.',
+                               'Callback returns follow RepositoryFetchFunction (dict keys checked, repo_metadata/other values accepted); reproducibility has no native caching effect.',
                                'Nonzero module_extension facts_version is unsupported at definition load; this native-only boundary is not differential parity or a callback execution claim.',
                                'Genuine reference built-ins may download from BCR; no fake platforms or bazel_tools.',
                                'Bytes and executable bits compared; read-only cache permission differences are recorded.',

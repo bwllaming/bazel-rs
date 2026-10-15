@@ -1603,6 +1603,8 @@ fn repo_file_value(
     };
     let ast = AstModule::parse(&path.to_string_lossy(), source, &dialect)
         .map_err(|e| format!("error parsing REPO.bazel file for {display}: {e:#}"))?;
+    crate::repository_text::validate_source(&ast)
+        .map_err(|e| format!("error parsing REPO.bazel file for {display}: {e}"))?;
     let context = RepoFile {
         repositories: repositories.clone(),
         repository: repository.to_owned(),
@@ -1871,6 +1873,9 @@ fn evaluate_at(
         }
         expr.visit_expr(|child| expressions.push(child));
     }
+    // Lexer errors (invalid escapes) fail the BUILD file like Bazel's parser.
+    crate::repository_text::validate_source(&ast)?;
+    crate::guarded_globals::check_universe(&ast)?;
     let mut globals = GlobalsBuilder::extended_by(&[LibraryExtension::SetType])
         .with(rule_globals)
         .with(native_rule_globals)

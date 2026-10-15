@@ -376,11 +376,15 @@ impl<'a> Loader<'a> {
                     };
                     let ast = AstModule::parse(&label.to_string(), source, &dialect)
                         .map_err(|e| format!("cannot parse {label}: {e}"))?;
+                    // Bazel's lexer rejects invalid escapes in every .bzl
+                    // (Lexer.java:389-403), whether or not the code runs.
+                    crate::repository_text::validate_source(&ast)?;
                     if self.provenance_capture {
                         crate::repository_text::validate_execution_source(&ast)?;
                     }
                     validate_bzl_load_order(&ast)?;
                     crate::guarded_globals::check(&label, &ast)?;
+                    crate::guarded_globals::check_universe(&ast)?;
                     let dependencies = dependencies(&self.repositories, &label.package_id(), &ast)?;
                     active.push(label.clone());
                     work.push(Work::Finish(label, path, Box::new(ast)));
@@ -421,6 +425,11 @@ impl<'a> Loader<'a> {
                                     .map_err(|e| e.to_string())?;
                             }
                             eval.set_loader(&file_loader);
+                            // Repository/extension definitions evaluate in the
+                            // Latin-1 char model; BUILD/analysis loads do not.
+                            let _model = starlark::values::string::enter_latin1_char_model(
+                                self.provenance_capture,
+                            );
                             eval.eval_module(*ast, self.globals)
                                 .map_err(|e| format!("cannot evaluate {label}: {e}"))?;
                             drop(eval);
@@ -508,25 +517,63 @@ impl<'a> Loader<'a> {
         let mut path = root.join(&label.package);
         let mut relative = label.package.clone();
         let mut components = label.name.split('/').peekable();
+        // Bazel reads a .bzl through symlinks (its FileValue follows them);
+        // package boundaries stay checked on the logical label path, as for
+        // source artifacts (engine.rs). Links resolve inside the repository or
+        // into a repository already materialized in this invocation
+        // (source_links::resolve_across); the label keeps its logical identity
+        // and only the resolved file's bytes are read.
+        let mut linked: Option<PathBuf> = None;
+        // BzlCompileFunction.java:109-136.
+        let no_such_file = || format!("cannot load '{label}': no such file");
         while let Some(component) = components.next() {
             path.push(component);
             if !relative.is_empty() {
                 relative.push('/');
             }
             relative.push_str(component);
-            let metadata = fs::symlink_metadata(&path)
-                .map_err(|e| format!("cannot inspect load {label} ({}): {e}", path.display()))?;
-            if metadata.file_type().is_symlink() {
-                return Err(format!(
-                    "symlink load sources are unsupported: {label} ({})",
-                    path.display()
-                ));
+            let inspect = |e: std::io::Error| {
+                format!("cannot inspect load {label} ({}): {e}", path.display())
+            };
+            let mut metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::NotFound
+                        || e.kind() == std::io::ErrorKind::NotADirectory =>
+                {
+                    return Err(no_such_file());
+                }
+                Err(e) => return Err(inspect(e)),
+            };
+            if metadata.file_type().is_symlink() || linked.is_some() {
+                let others = self.repositories.materialized_roots();
+                let blocked = self.repositories.link_blocked_prefixes();
+                match crate::source_links::resolve_across(
+                    root,
+                    Path::new(&relative),
+                    &others,
+                    &blocked,
+                ) {
+                    Err(error) if error.starts_with("circular symlinks detected") => {
+                        return Err(error);
+                    }
+                    Err(error) => return Err(format!("load {label}: {error}")),
+                    Ok(crate::source_links::Resolution::Missing(_)) => {
+                        return Err(no_such_file());
+                    }
+                    Ok(crate::source_links::Resolution::Resolved(resolved)) => {
+                        metadata = fs::metadata(&resolved).map_err(inspect)?;
+                        linked = Some(resolved);
+                    }
+                }
             }
             if components.peek().is_none() {
+                if metadata.is_dir() {
+                    return Err(format!("cannot load '{label}': is a directory"));
+                }
                 if !metadata.is_file() {
                     return Err(format!(
-                        "load {label} is not a regular file: {}",
-                        path.display()
+                        "cannot load '{label}': not a regular file (dangling link?)"
                     ));
                 }
             } else {
@@ -564,7 +611,7 @@ impl<'a> Loader<'a> {
                 }
             }
         }
-        Ok(path)
+        Ok(linked.unwrap_or(path))
     }
 }
 
@@ -1002,19 +1049,29 @@ scalar = 42
             "defs.bzl",
             "load(':helper.bzl', 'compute')\nvalue = compute()\n",
         );
-        for source in [
-            "def compute():\n    return str(len('é'))\n",
+        temp.file("helper.bzl", "def compute():\n    return str(len('é'))\n");
+        let error = temp.definition("//:defs.bzl", "value").unwrap_err();
+        assert!(
+            error.contains("helper.bzl") && error.contains("direct repository execution"),
+            "{error}"
+        );
+        // The ordinary loader keeps its established behavior; the
+        // conservative source profile is attached only to demanded definitions.
+        assert!(temp.load("load(':defs.bzl', 'value')\n").is_ok());
+        // Bazel's universe has no `chr`: a free reference is a resolver error
+        // in every .bzl (Module.java:250-256), demanded or not.
+        temp.file(
+            "helper.bzl",
             "alias = chr\ndef compute():\n    return str(len(alias(233)))\n",
+        );
+        for error in [
+            temp.definition("//:defs.bzl", "value").unwrap_err(),
+            temp.load("load(':defs.bzl', 'value')\n").unwrap_err(),
         ] {
-            temp.file("helper.bzl", source);
-            let error = temp.definition("//:defs.bzl", "value").unwrap_err();
             assert!(
-                error.contains("helper.bzl") && error.contains("direct repository execution"),
+                error.contains("helper.bzl:1:9") && error.contains("name 'chr' is not defined"),
                 "{error}"
             );
-            // The ordinary loader keeps its established behavior; the new
-            // conservative source profile is attached only to demanded definitions.
-            assert!(temp.load("load(':defs.bzl', 'value')\n").is_ok());
         }
     }
 
@@ -1409,7 +1466,10 @@ lambda_mapper = lambda value: value
     #[test]
     fn missing_private_external_and_non_bzl_imports_fail() {
         let temp = Temp::new();
-        temp.error("load(':missing.bzl', 'x')", "cannot inspect load");
+        temp.error(
+            "load(':missing.bzl', 'x')",
+            "cannot load '//:missing.bzl': no such file",
+        );
         temp.error("load('@other//:defs.bzl', 'x')", "external repository");
         temp.error("load(':defs.star', 'x')", ".bzl suffix");
         temp.file("defs.bzl", "_private = 1\npublic = 2\n");
@@ -1530,27 +1590,56 @@ lambda_mapper = lambda value: value
         temp.file("bad.bzl", "x = unknown_name\n");
         temp.error("load(':bad.bzl', 'x')", "unknown_name");
         fs::create_dir(temp.0.join("directory.bzl")).unwrap();
-        temp.error("load(':directory.bzl', 'x')", "not a regular file");
+        temp.error(
+            "load(':directory.bzl', 'x')",
+            "cannot load '//:directory.bzl': is a directory",
+        );
         temp.file("plain", "");
         temp.error("load(':plain/defs.bzl', 'x')", "not a directory");
     }
 
     #[cfg(unix)]
     #[test]
-    fn rejects_file_directory_package_and_dangling_symlinks() {
+    fn follows_in_root_bzl_symlinks_but_rejects_dangling_escaping_and_package_links() {
         use std::os::unix::fs::symlink;
         let temp = Temp::new();
+        let outside = Temp::new();
         temp.file("real/defs.bzl", "x = 1\n");
+        outside.file("defs.bzl", "x = 2\n");
         symlink("real/defs.bzl", temp.0.join("alias.bzl")).unwrap();
+        symlink(temp.0.join("real/defs.bzl"), temp.0.join("absolute.bzl")).unwrap();
         symlink("missing", temp.0.join("dangling.bzl")).unwrap();
         symlink("real", temp.0.join("alias")).unwrap();
+        symlink(outside.0.join("defs.bzl"), temp.0.join("escape.bzl")).unwrap();
+        // Bazel reads .bzl content through symlinks (FileValue); native
+        // follows links that resolve inside the repository (source_links).
         for source in [
             "load(':alias.bzl', 'x')",
-            "load(':dangling.bzl', 'x')",
+            "load(':absolute.bzl', 'x')",
             "load(':alias/defs.bzl', 'x')",
         ] {
-            temp.error(source, "symlink");
+            let modules = temp.load(source).unwrap();
+            assert_eq!(
+                evaluate(&format!("{source}\nx"), &modules, &Globals::standard()),
+                1
+            );
         }
+        temp.error(
+            "load(':dangling.bzl', 'x')",
+            "cannot load '//:dangling.bzl': no such file",
+        );
+        symlink("real", temp.0.join("dirlink.bzl")).unwrap();
+        temp.error(
+            "load(':dirlink.bzl', 'x')",
+            "cannot load '//:dirlink.bzl': is a directory",
+        );
+        symlink("cyc2.bzl", temp.0.join("cyc1.bzl")).unwrap();
+        symlink("cyc1.bzl", temp.0.join("cyc2.bzl")).unwrap();
+        temp.error(
+            "load(':cyc1.bzl', 'x')",
+            "circular symlinks detected\n[start of symlink cycle]\n",
+        );
+        temp.error("load(':escape.bzl', 'x')", "outside its repository root");
         temp.file("real/BUILD", "");
         temp.error(
             "load('//alias:defs.bzl', 'x')",

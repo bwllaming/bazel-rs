@@ -7,11 +7,14 @@ symlink inputs, generated patch targets and external patch materialization are
 not supported. Canonical external patch labels are skipped during MODULE discovery,
 as in Bazel 9.3, but fail explicitly if materialization is requested.
 
-All local patch bytes are snapshotted and parsed before use. Discovery validates
-every section, including paths and hunk counts in source-file sections, then
-applies only changes whose old and new paths both identify root `MODULE.bazel`.
-Nested MODULE files and MODULE creation/deletion sections are not applied in this
-projection. The projected MODULE is evaluated before dependency discovery and MVS.
+All local patch bytes are snapshotted before use. Discovery applies them with
+Bazel's `PatchUtil.applyToSingleFile` semantics (ModuleFileFunction.java:935-955):
+every section is scanned and format/path errors anywhere fail discovery
+(`error applying single_version_override patch PATH to module file: MESSAGE`), but
+only sections whose old and new file both are the root `MODULE.bazel` are applied.
+Nested MODULE files, MODULE creation/deletion, renames, mode-only and binary
+sections and concatenated plain sections ending in another file are skipped.
+The projected MODULE is evaluated before dependency discovery and MVS.
 `patch_cmds` do not affect discovery and are never executed by this implementation.
 
 Materialization retains the original registry MODULE independently of the projected
@@ -30,51 +33,62 @@ to patch files affect a fresh resolution, not a plan already captured in memory.
 Commands and external patch inputs are rejected before source downloads/cache reuse.
 Live `local_path` sources with transformations are rejected rather than modified.
 
-## Supported text semantics and limits
+## Patch semantics (N26: PatchUtil port)
 
-The native parser accepts UTF-8 unified text diffs, ordinary Git preambles and
-index records, multiple files/hunks, and `/dev/null` creation/deletion. File
-sections must have explicit boundaries such as `diff --git` headers; adjacent
-plain `---`/`+++` sections are rejected. Bazel 9.3 does not reliably apply that
-ambiguous form and can crash after a resulting context mismatch; retained
-reference evidence is `artifacts/patch-order-followup-report.json` and
-`artifacts/patch-order-firstonly-report.json`. No crash-equivalence is claimed.
-File sections run in input order; hunks run in reverse order. Matching is exact with
-nearest-offset search and earlier-position tie breaking. There is **no fuzz**:
-fuzz-dependent or mismatched patches fail explicitly. Bazel's full fuzzy matcher,
-Git rename/copy, explicit mode metadata, binary/combined diffs and quoted Git
-paths are not implemented.
+`src/patching.rs` is a line-for-line port of Bazel 9.3
+`bazel/repository/decompressor/PatchUtil.java` and of the java-diff-utils 4.12
+code it calls (`UnifiedDiffUtils.parseUnifiedDiff`, `Patch.applyFuzzy`,
+`Chunk.verifyChunk`, `ChangeDelta.applyFuzzyToAt`). It backs every native patch
+consumer: single-version-override discovery and materialization, registry
+`patches`, Git override patches and `repository_ctx.patch` (and therefore
+`http_archive(patches=..., patch_args=["-pN"])`).
 
-CR, CRLF and LF input lines are accepted; modified files are written with LF
-after each line, including when a no-final-newline marker is present. Invalid
-UTF-8 and NUL text fail explicitly. Strict path validation rejects absolute paths,
-parent traversal, backslashes and ambiguous paths even in skipped sections; this
-is stricter than Bazel's path normalization. Stripping counts lexical slash
-components **before** normalizing `.` or empty components, so a prefix cannot
-silently redirect a patch to a different file. Sources are checked for special
-files and symlinked ancestors before modification. As in Bazel's PatchUtil, a
-patched leaf that is a symlink resolving inside the tree, or a hard-linked file,
-is read through and then replaced by a fresh regular file, so the referent and
-other hard-link names keep their bytes (docs/ARCHIVE_SYMLINKS.md); a leaf link
-escaping the tree is rejected.
+* Patch files and patched files are read as UTF-8 lines (Guava `readLines`:
+  `\n`, `\r\n`, `\r`; malformed bytes become U+FFFD) and written back as UTF-8
+  with `\n` after every line (`writeLinesAs`).
+* Sections are applied while the patch is scanned; a new section starts at
+  `diff --git` or any other unknown line. Two plain sections without a separator
+  form one section for the second file, whose hunks then include the first
+  section's lines (captured: the first file stays unchanged).
+* Hunks of one section are applied separately, last hunk first, with
+  `applyFuzzy(..., 2)` (PatchUtil.java:221-235): a hunk is retried at increasing
+  offsets ignoring up to two leading and trailing hunk lines. A two-line hunk that
+  matches nothing is therefore skipped without error, and a hunk with wrong
+  context lines can apply. A hunk that matches at no offset fails with
+  `in patch applied to FILE: could not apply patch due to
+  CONTENT_DOES_NOT_MATCH_TARGET, error applying change near line N`; index errors
+  of java-diff-utils report the JDK text (`Index 3 out of bounds for length 3`).
+* Errors use PatchUtil's texts: `Cannot find file to patch (near line N), old file
+  name (X) doesn't exist, new file name (Y) doesn't exist.`, `Cannot determine file
+  name with strip = S at line N:\nLINE`, `Expecting more chunk line at line N`,
+  `Looks like a unified diff at line N, but no patch chunk was found.`, `The patch
+  content must start with ---/+++ prelude lines at line N.`, `Wrong chunk detected
+  near line N: LINE, does not expect ... line here.`, `Cannot patch file outside of
+  external repository (DIR), file path = "P" at line N`, `Cannot rename file ...`,
+  `Wrong file mode format at line N: LINE` and the module a/b prefix hint.
+* Creation into a missing directory creates it; creation over an existing file
+  prepends the new lines (as Bazel does); deletion removes the file.
+* Git headers: `diff --git a/x b/y` names, `rename from/to` (renames), `new mode`
+  and `new file mode` owner digits (read 0400, write 0200, execute 0111); other
+  Git lines (`index`, `similarity index`, ...) are ignored; binary sections apply
+  nothing. Existing permissions are preserved.
+* Cases that crash genuine Bazel 9.3 (exit 37), such as a one-line hunk that only
+  "matches" with fuzz 1 (`subList(1, 0)`), an out-of-range hunk size or a short
+  `new mode` line, are explicit native errors (`genuine Bazel 9.3 crashes applying
+  this patch (...)`).
 
-Limits are 16 MiB per patch/text file, 100000 lines/hunks, 64 MiB of snapshotted
-local patches, 256 MiB of patched-tree working data and 100 million context-line
-comparisons per section. Existing file modes normalize to 0755 when owner-executable,
-otherwise 0644; created files use 0644. These are explicit subset limits, not full
-PatchUtil compatibility.
+Native safety profile, stricter than Bazel: the tree root's existing ancestors
+must be real directories; symlinked directories inside the tree are never
+traversed; a leaf symlink is read through only when it resolves inside the tree
+and is then replaced by a regular file (the referent is unchanged); modes are
+normalized to 0644/0755 for the store. Limits are 16 MiB per patch or file,
+100000 lines, a 256 MiB working set per patch and 100 million context comparisons
+per hunk. Tree patches run only in caller-owned staging; a failing patch may leave
+earlier sections applied (as in Bazel), and callers discard the stage.
 
-Tree patches run only in caller-owned staging. A complete patch is checked before
-writes, but I/O errors still require discarding the stage. No source checkout is
-modified, and failed transformations never publish a completed repository. Cache
-and staging ancestors remain trusted against hostile concurrent mutation; this
-is not a sandbox.
-
-Contract sources are Bazel 9.3 commit `e89755babf3e941bc1e9d8120b1cd48854ab9dfa`:
-`ModuleFileFunction.maybePatchModuleFile`, `PatchUtil.applyToSingleFile`, and the
-remote/original-MODULE/local ordering in `tools/build_defs/repo/utils.bzl`.
-Full repository-rule execution, Git overrides, built-ins, configurations and
-application build/test compatibility remain incomplete.
+Contract sources are Bazel 9.3 commit `e89755babf3e941bc1e9d8120b1cd48854ab9dfa`
+and java-diff-utils 4.12. Full repository-rule execution, built-ins, configurations
+and application build/test compatibility remain incomplete.
 
 ## Verification
 

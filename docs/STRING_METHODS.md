@@ -10,6 +10,58 @@ and original hashes are declared in `vendor/starlark-0.14.2.provenance.json`.
 Pinned sources: `net/starlark/java/eval/StringModule.java` and `Printer.java`
 of Bazel 9.3.0.
 
+## Two native string models (N26)
+
+Bazel keeps every string as Latin-1 Java chars. The native interpreter stores
+Unicode text and uses one of two models per evaluation thread
+(`starlark::values::string::enter_latin1_char_model`):
+
+* **BUILD/.bzl analysis (default)**: a native string is the UTF-8 decoding of
+  Bazel's bytes, and methods emulate Bazel byte by byte over the UTF-8 encoding
+  (the table below).
+* **Repository and extension evaluation** (definition `.bzl` loads, MODULE.bazel,
+  `repository_ctx`/`module_ctx` callbacks): each Bazel char is stored as one
+  character U+0000..U+00FF and written back as one byte, so methods apply
+  Bazel's char semantics directly: `isspace` uses Guava `CharMatcher.whitespace()`
+  (StringModule.java:878; `\205` and `\240` are whitespace), `title` uses
+  `Character.isLetter/isUpperCase/isLowerCase` and single-char case mappings
+  (java:535-560, so `"a\351b".title() == "A\351b"`), and `capitalize`
+  `Character.toUpperCase` of the first char (java:526-532).
+
+In both models, as in Bazel 9.3:
+
+* `split(sep, maxsplit)`/`rsplit(sep, maxsplit)` require a string `sep`
+  (java:387-468): `split()` fails with `split() missing 1 required positional
+  argument: sep`, `split(None)` with `in call to split(), parameter 'sep' got
+  value of type 'NoneType', want 'string'`, `split('')` with `Empty separator`.
+  There is no whitespace splitting.
+* `elems()` returns a list of one-char strings (java:926-940), so `len()` and
+  indexing work (`type` is `list`).
+
+String literal values (vendored `eval.rs`, Lexer.java:280-430): raw strings keep
+every backslash with its following character (`r"\""` is backslash + quote);
+invalid escapes (`\x`, `\u`, `\U`, `\N`, unknown) and octal escapes above
+`\377` are lexer errors in every BUILD, `.bzl`, MODULE and REPO.bazel file,
+reported at the escape's column. In the repository model `\NNN` is the char
+U+00NN (written as byte NNN). In the analysis model a literal with a byte escape
+`\200`..`\377` denotes raw bytes; Bazel converts them at its boundaries:
+process arguments and environments via `StringEncoding.internalToPlatform`
+(UTF-8 decoding with U+FFFD replacement under a UTF-8 `sun.jnu.encoding`, so a
+genrule `cmd` with `'\377'` passes `ef bf bd`, captured), while
+`FileWriteAction` writes the internal bytes unchanged
+(`StringUnsafe.getInternalStringBytes`, analysis/actions/FileWriteAction.java:272).
+Native strings cannot hold lone bytes, so in the analysis model bytes that form
+valid UTF-8 decode to their characters (`'\303\251' == 'é'`) and every other
+byte `b` becomes the private-use character U+10FF00 + b
+(`starlark::eval::bazel_byte_char`), keeping lone bytes distinct (bazel_lib's
+`CHAR_TO_INT` tables load in BUILD code). Native action boundaries map them back
+(`src/bazel_bytes.rs`): process arguments, commands and environments decode the
+bytes as UTF-8 with replacement like `internalToPlatform` (a genrule `cmd` with
+`'\377'` passes `ef bf bd`), and `ctx.actions.write` writes the raw bytes like
+`FileWriteAction`. Other sinks (messages, `repr`, template substitutions,
+parameter files) show the private-use character, a documented divergence; `len`
+of a literal mixing valid UTF-8 and bytes counts characters, not bytes.
+
 | Method | Bazel 9.3 behaviour now implemented |
 | --- | --- |
 | `lower`, `upper` | ASCII letters only (`Ascii.toLowerCase/toUpperCase`); all other characters unchanged |
@@ -42,11 +94,16 @@ bazel-rs leaves the non-ASCII character unchanged instead:
 
 Not changed by this patch (structural differences remain):
 
-- `len`, indexing, slicing, `find`/`index`/`count` offsets, `elems()` and
-  `codepoints()` use characters, not bytes.
-- `split()`/`rsplit()` without a separator still split on Unicode whitespace.
+- In the analysis model, `len`, indexing, slicing, `find`/`index`/`count`
+  offsets and `elems()` use characters, not bytes. `codepoints()` exists natively
+  but not in Bazel.
 - `strip(chars = ...)` by keyword is rejected (positional only).
-- Octal escapes `\200`–`\377` in literals denote U+0080–U+00FF, not raw bytes.
+- Ordering differs for analysis-model lone bytes: Bazel compares Java chars
+  (bytes), so `'\200' < 'é'` is True (0x80 < 0xC3), while natively the
+  private-use character U+10FF80 sorts after `é` (False); `sorted`, `min`/`max`
+  and comparisons over such strings can therefore differ.
+- Byte-escape literals that only form UTF-8 together (`'\303' + '\251'`) stay
+  two private-use characters until an action boundary decodes them.
 
 ## Tests
 

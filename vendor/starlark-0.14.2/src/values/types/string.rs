@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 string model selection; see vendor provenance.
+
 //! The string type. All strings must be valid UTF8.
 
 mod alloc_unpack;
@@ -30,3 +32,7 @@ pub(crate) mod str_type;
 
 pub use crate::values::types::string::str_type::STRING_TYPE;
 pub use crate::values::types::string::str_type::StarlarkStr;
+// Modified: the per-thread Bazel string model (see methods.rs).
+pub use crate::values::types::string::methods::Latin1CharModelGuard;
+pub use crate::values::types::string::methods::enter_latin1_char_model;
+pub use crate::values::types::string::methods::latin1_char_model;

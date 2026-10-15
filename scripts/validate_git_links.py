@@ -72,9 +72,6 @@ DIAGNOSTICS = {
     'directory': r'(?:symlink|symbolic link)[^\n]*(?:directory target|targets? (?:a )?director|resolves? to (?:a )?director)',
     'module_link': (r'(?<![\w./])MODULE\.bazel[^\n]*(?:symlink|symbolic link)[^\n]*(?:unsupported|not supported|forbidden|refus|cannot)'
                     r'|(?m:^bazel-rs: Git file is not regular \(symlinks/special files forbidden\): /[^\n]*/MODULE\.bazel$)'),
-    'bzl_link': (r'(?<![\w./])(?:native\.bzl|\.bzl file)[^\n]*(?:symlink|symbolic link)[^\n]*(?:unsupported|not supported|forbidden|refus|cannot)'
-                 r'|(?m:^bazel-rs: symlink load sources are unsupported: @@opencode_gitcheck_dep\+//bzl:native\.bzl '
-                 r'\(/[^\n]*/bzl/native\.bzl\)$)'),
     # New native-only contract: require the malformed committed entry identity,
     # target semantics and explicit unsafe/control/NUL reason on the SAME line.
     'malformed_target': (r'(?m:^(?=[^\n]*(?:symlink|symbolic link))(?=[^\n]*\btarget\b)'
@@ -497,6 +494,17 @@ def invocation(phase):
 
 
 ARTIFACT = '@gitdep//artifact:selected'
+BZL_TARGETS = ['@gitdep//bzl:selected']
+
+
+def bzl_result(record, native=False):
+    """N26: a .bzl loaded through an internal Git link (bzl/native.bzl ->
+    ../defs.real.bzl) loads in Bazel (its FileValue follows links) and natively
+    (in-root source_links resolution), so the package query must succeed."""
+    labels = shared.success(record).splitlines()
+    if (sorted(map(shared.canonical, labels)) != list(map(shared.canonical, BZL_TARGETS))
+            or (native and labels != list(map(shared.canonical, labels)))):
+        raise ValueError('query through the linked .bzl did not return exactly the fixture target')
 
 
 def artifact_path_ok(engine, path, scratch, item, output_base):
@@ -607,10 +615,11 @@ def run_case(args, runner, scratch, workspace, reference, item):
                         if repaired != root:
                             raise ValueError('repair did not restore the same immutable cache tree')
                 if item['mode'] == 'consumers':
-                    require_rejection(invoke(engine, 'bzl'), 'bzl_link')
+                    bzl_result(invoke(engine, 'bzl'), native=engine == 'native')
                     artifact(engine)
             if item['mode'] == 'consumers' and item['kind'] != 'differential':
-                # Reference comparison for the source-artifact phase only.
+                # Reference comparison for the linked .bzl and source-artifact phases.
+                bzl_result(invoke('reference', 'bzl'))
                 artifact('reference')
         check.update(status='PASS', parity_claim=item['kind'] == 'differential')
     except (OSError, ValueError) as exc:
@@ -745,7 +754,7 @@ def report_passes(report):
                 wanted.update(('reference.sources.files', 'reference.copy.files'))
             link_artifacts = set()
             if item['mode'] == 'consumers':
-                wanted.update(('reference.artifact', 'reference.artifact.files'))
+                wanted.update(('reference.bzl', 'reference.artifact', 'reference.artifact.files'))
                 link_artifacts = {'native.artifact', 'reference.artifact'}
             if set(check['run_ids']) != wanted:
                 return False
@@ -753,9 +762,11 @@ def report_passes(report):
             for key, index in check['run_ids'].items():
                 record = linked(index, item['name'] + '.' + key, expected_argv(report, item, key), workspace)
                 records[key] = record
-                diagnostic = item['diagnostic'] or ('bzl_link' if key.endswith('.bzl') else None)
+                diagnostic = item['diagnostic']
                 if diagnostic:
                     require_rejection(record, diagnostic)
+                elif key.endswith('.bzl'):
+                    bzl_result(record, native=key.startswith('native.'))
                 else:
                     shared.success(record)
                     if key.endswith('.query'):
@@ -848,7 +859,7 @@ def main(argv=None):
                                'Real private file-URL origins; genuine Bazel 9.3.0 may use BCR only for its built-in closure.',
                                'Reference trees come from regular cquery sources in private reference caches, never native caches.',
                                'Complete lstat/readlink inventory precedes positive link reads; malicious origins are never followed.',
-                               'Directory links, root MODULE links and selected .bzl links remain unsupported. A source artifact through an internal link builds and is compared with the reference; a patched link leaf becomes a regular file (PatchUtil), see docs/ARCHIVE_SYMLINKS.md.',
+                               'Directory links and root MODULE links remain unsupported. A source artifact and a .bzl load (N26) through an internal link work and are compared with the reference; a patched link leaf becomes a regular file (PatchUtil), see docs/ARCHIVE_SYMLINKS.md.',
                                'A real mode-120000 NUL-target blob is committed via the Git index, never created as an OS link; raw blob bytes and both commits are proven.',
                                'Archive links, other unsafe-character permutations, 40-hop limits and old/new patch-path matrices need native unit coverage.',
                                'MODULE/load and committed-NUL-target diagnostic classes have captured CLI regressions; only this report records actual invocation outcomes.'])

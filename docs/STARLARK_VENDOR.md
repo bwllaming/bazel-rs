@@ -84,6 +84,23 @@ Bazel's `Structure.getErrorMessageForUnknownField` texts
 ordinary message. `src/eval/compiler/expr.rs` is declared with its original
 archive hash in the same provenance.
 
+The [N26 string increment](STRING_METHODS.md) patches `src/eval.rs`,
+`src/values/types/string.rs` and `src/values/types/string/methods.rs`:
+`Evaluator::eval_module` rewrites string literal values per Bazel 9.3's lexer
+(`net/starlark/java/syntax/Lexer.java:280-430`) before compilation (raw strings
+keep the backslash before a quote; in the default analysis model a literal with a
+`\200`..`\377` byte escape keeps lone bytes as private-use characters
+U+10FF00 + byte, `eval::bazel_byte_char`), a per-thread
+Latin-1 char model (`enter_latin1_char_model`, re-exported from
+`values::string`) selects Bazel's Java char semantics for `isspace`, `title` and
+`capitalize`, and `split`/`rsplit` require a string `sep`
+(`StringModule.java:387-468`) while `elems()` returns a list (`:926-940`).
+Upstream doc examples and one unit test that asserted the replaced behaviour were
+updated with modification notices; three tests were added. The isolated vendored
+test run (frozen h1 test-graph lock, direct 1.99.0 binaries, offline;
+`/tmp/opencode/n26v-scratch/receipt.json`) shows the same five pre-existing lib
+failures as the unmodified HEAD tree and no new failure; doc tests pass.
+
 ## Original published contents
 
 The source archive is

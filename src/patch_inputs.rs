@@ -22,6 +22,8 @@ const MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 enum Input {
     Main {
         label: Label,
+        /// The patch file read from the root module's checkout.
+        path: std::path::PathBuf,
         bytes: Vec<u8>,
         patch: Patch,
     },
@@ -98,6 +100,7 @@ pub fn snapshot(
             .map_err(|e| format!("cannot parse patch {label}: {e}"))?;
         plan.inputs.push(Input::Main {
             label,
+            path,
             bytes,
             patch,
         });
@@ -111,10 +114,14 @@ impl LocalPatchPlan {
     pub fn apply_module(&self, original: &[u8]) -> Result<Vec<u8>, String> {
         let mut bytes = original.to_vec();
         for input in &self.inputs {
-            if let Input::Main { label, patch, .. } = input {
-                bytes = patch
-                    .apply_module(&bytes)
-                    .map_err(|e| format!("cannot apply MODULE projection of patch {label}: {e}"))?;
+            if let Input::Main { path, patch, .. } = input {
+                // ModuleFileFunction.java:946-951.
+                bytes = patch.apply_module(&bytes).map_err(|e| {
+                    format!(
+                        "error applying single_version_override patch {} to module file: {e}",
+                        path.display()
+                    )
+                })?;
             }
         }
         Ok(bytes)
@@ -170,9 +177,14 @@ impl LocalPatchPlan {
                 }),
             })
             .collect();
-        serde_json::json!({
+        let mut identity = serde_json::json!({
             "inputs": inputs, "commands": self.commands, "strip": self.strip,
-        })
+        });
+        if !self.inputs.is_empty() {
+            // Patched trees never reuse the earlier engine's caches.
+            identity["engine"] = serde_json::Value::from(crate::patching::ENGINE);
+        }
+        identity
     }
 }
 
@@ -723,5 +735,26 @@ mod tests {
         fs::write(&path, b"12345").unwrap();
         assert_eq!(read_patch(&path, 5).unwrap(), b"12345");
         assert!(read_patch(&path, 4).unwrap_err().contains("64 MiB total"));
+    }
+
+    #[test]
+    fn patch_engine_marker_only_for_nonempty_inputs() {
+        // An empty plan keeps the exact earlier identity (unpatched trees).
+        assert_eq!(
+            LocalPatchPlan::default().cache_identity(),
+            serde_json::json!({"inputs": [], "commands": [], "strip": 0})
+        );
+        let plan = LocalPatchPlan {
+            inputs: vec![Input::External(
+                Label::parse_canonical("@@other+//:fix.patch").unwrap(),
+            )],
+            commands: Vec::new(),
+            strip: 1,
+        };
+        let identity = plan.cache_identity();
+        assert_eq!(identity["engine"], crate::patching::ENGINE);
+        let mut legacy = identity.clone();
+        legacy.as_object_mut().unwrap().remove("engine");
+        assert_ne!(identity, legacy);
     }
 }

@@ -1355,7 +1355,10 @@ pub fn execute(
             eval.set_max_tick_count(1_000_000)?;
             eval.set_max_heap_size(128 * 1024 * 1024)?;
             eval.extra = Some(&context);
-            let evaluated = eval.eval_function(implementation, &[ctx], &[]);
+            let evaluated = {
+                let _model = starlark::values::string::enter_latin1_char_model(true);
+                eval.eval_function(implementation, &[ctx], &[])
+            };
             // No live HTTP/file handle remains in the synchronous authority.
             // Close even when evaluation failed, BEFORE success or heap freeze.
             let observations = context.io.borrow_mut().close();
@@ -1996,7 +1999,7 @@ str(ctx.path(Label('//sub:nested/data.txt'))) == {nested:?} or fail('nested')
 str(ctx.path(Label('//:never_created'))) or fail('missing files resolve')
 text = ctx.read(p)
 len(text) == {size} or fail(len(text))
-[ord(c) for c in text[-3:].elems()] == [233, 0, 10] or fail('not Latin-1 byte chars')
+text[-3:] == '\351\000\n' or fail('not Latin-1 byte chars')
 text == ctx.read(Label('//:go.mod'), watch='yes') or fail('label read')
 text == ctx.read(path=p, watch='no') or fail('watch no')
 ctx.read(Label('//sub:nested/data.txt')) == 'nested' or fail('nested read')

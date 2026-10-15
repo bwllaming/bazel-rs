@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 string literal values; see vendor provenance.
+
 //! Evaluate some code, typically done by creating an [`Evaluator`], then calling
 //! [`eval_module`](Evaluator::eval_module).
 
@@ -73,7 +75,9 @@ impl<'v, 'a, 'e> Evaluator<'v, 'a, 'e> {
         #[cfg(not(target_arch = "wasm32"))]
         let start = Instant::now();
 
-        let (codemap, statement, dialect, typecheck) = ast.into_parts();
+        let (codemap, mut statement, dialect, typecheck) = ast.into_parts();
+        // Modified: Bazel 9.3 string literal values (raw strings; byte escapes).
+        bazel_string_literals(&mut statement, &codemap);
 
         let codemap = self
             .module_env
@@ -192,4 +196,149 @@ impl<'v, 'a, 'e> Evaluator<'v, 'a, 'e> {
 
         res
     }
+}
+
+// Modified: Bazel 9.3 string literal values
+// (net/starlark/java/syntax/Lexer.java:280-430).
+//
+// * Raw strings keep every backslash with the following character; inside
+//   triple quotes or after a backslash-CRLF the line break after a backslash
+//   becomes `\n` (Lexer.java:305-320, 463-473). The native lexer drops the
+//   backslash before a quote.
+// * Outside the Latin-1 char model (BUILD/.bzl analysis evaluation), a literal
+//   with an octal escape `\200`..`\377` denotes raw bytes. Bytes that form
+//   valid UTF-8 decode to their characters; every other byte `b` becomes the
+//   private-use character U+10FF00 + `b` (`bazel_byte_char`), which native
+//   action boundaries map back to the byte (Bazel decodes UTF-8 with
+//   replacement for process arguments, `StringEncoding.internalToPlatform`, and
+//   writes the raw byte for file writes).
+fn bazel_string_literals(
+    statement: &mut starlark_syntax::syntax::ast::AstStmt,
+    codemap: &CodeMap,
+) {
+    use starlark_syntax::syntax::ast::AstExpr;
+    use starlark_syntax::syntax::ast::AstLiteral;
+    use starlark_syntax::syntax::ast::ExprP;
+    let latin1 = crate::values::types::string::methods::latin1_char_model();
+    fn visit(expr: &mut AstExpr, codemap: &CodeMap, latin1: bool) {
+        if let ExprP::Literal(AstLiteral::String(literal)) = &mut expr.node {
+            if let Some(value) = bazel_string_value(codemap.source_span(literal.span), latin1) {
+                literal.node = value;
+            }
+        }
+        expr.visit_expr_mut(|child| visit(child, codemap, latin1));
+    }
+    statement.visit_expr_mut(|expr| visit(expr, codemap, latin1));
+}
+
+/// Bazel's value of one string token, or `None` to keep the native value.
+fn bazel_string_value(spelling: &str, latin1: bool) -> Option<String> {
+    let (raw, quoted) = match spelling.as_bytes().first() {
+        Some(b'r' | b'R') => (true, &spelling[1..]),
+        _ => (false, spelling),
+    };
+    let delimiter = ["'''", "\"\"\"", "'", "\""]
+        .into_iter()
+        .find(|delimiter| quoted.starts_with(delimiter))?;
+    let body = quoted.strip_prefix(delimiter)?.strip_suffix(delimiter)?;
+    if raw {
+        if delimiter.len() == 1 && !body.contains("\\\r\n") {
+            return Some(body.to_owned());
+        }
+        let mut out = String::with_capacity(body.len());
+        let mut chars = body.chars().peekable();
+        while let Some(c) = chars.next() {
+            out.push(c);
+            if c == '\\' {
+                match chars.next() {
+                    Some('\r') => {
+                        if chars.peek() == Some(&'\n') {
+                            chars.next();
+                        }
+                        out.push('\n');
+                    }
+                    Some(next) => out.push(next),
+                    None => {}
+                }
+            }
+        }
+        return Some(out);
+    }
+    if latin1 || !body.contains('\\') {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(body.len());
+    let mut high = false;
+    let mut chars = body.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            let mut buffer = [0u8; 4];
+            bytes.extend_from_slice(c.encode_utf8(&mut buffer).as_bytes());
+            continue;
+        }
+        match chars.next()? {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+            }
+            '\n' => {}
+            'a' => bytes.push(7),
+            'b' => bytes.push(8),
+            'f' => bytes.push(12),
+            'n' => bytes.push(b'\n'),
+            'r' => bytes.push(b'\r'),
+            't' => bytes.push(b'\t'),
+            'v' => bytes.push(11),
+            '\\' => bytes.push(b'\\'),
+            '\'' => bytes.push(b'\''),
+            '"' => bytes.push(b'"'),
+            first @ '0'..='7' => {
+                let mut value = first as u32 - '0' as u32;
+                for _ in 0..2 {
+                    match chars.peek() {
+                        Some(digit @ '0'..='7') => {
+                            value = value * 8 + (*digit as u32 - '0' as u32);
+                            chars.next();
+                        }
+                        _ => break,
+                    }
+                }
+                if value > 0xff {
+                    return None;
+                }
+                high |= value >= 0x80;
+                bytes.push(value as u8);
+            }
+            _ => return None,
+        }
+    }
+    high.then(|| {
+        let mut out = String::with_capacity(bytes.len());
+        let mut rest = &bytes[..];
+        while !rest.is_empty() {
+            match std::str::from_utf8(rest) {
+                Ok(valid) => {
+                    out.push_str(valid);
+                    break;
+                }
+                Err(error) => {
+                    let (valid, after) = rest.split_at(error.valid_up_to());
+                    out.push_str(std::str::from_utf8(valid).unwrap_or_default());
+                    let invalid = error.error_len().unwrap_or(after.len());
+                    for byte in &after[..invalid] {
+                        out.push(bazel_byte_char(*byte));
+                    }
+                    rest = &after[invalid..];
+                }
+            }
+        }
+        out
+    })
+}
+
+/// The private-use character standing for the lone byte `byte` of a Bazel
+/// analysis-model string (U+10FF00 + byte).
+pub fn bazel_byte_char(byte: u8) -> char {
+    char::from_u32(0x10_ff00 + u32::from(byte)).unwrap_or(char::REPLACEMENT_CHARACTER)
 }

@@ -250,17 +250,16 @@ pub fn materialize_with_download_policy(
     let locks = cache.join("locks");
     ensure_directory(&trees)?;
     ensure_directory(&locks)?;
-    let identity = serde_json::to_vec(&(
-        FORMAT,
-        registry.to_string(),
+    let identity = registry_identity(
+        registry,
         name,
         version,
         source,
-        config,
+        config.as_ref(),
         module_file,
-        local_patches.cache_identity(),
-    ))
-    .map_err(|e| e.to_string())?;
+        local_patches,
+        !patches.is_empty(),
+    )?;
     let key = hex(&Sha256::digest(identity));
     let lock_path = locks.join(&key);
     reject_symlink(&lock_path)?;
@@ -640,6 +639,37 @@ fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
     let mut result = BTreeMap::new();
     walk(root, root, &mut result)?;
     Ok(result)
+}
+
+/// The repository cache identity. Registry patches add the patch-engine marker
+/// (`patching::ENGINE`); an unpatched module keeps its exact earlier identity.
+#[allow(clippy::too_many_arguments)]
+fn registry_identity(
+    registry: &Registry,
+    name: &str,
+    version: &str,
+    source: &Map<String, Value>,
+    config: Option<&Map<String, Value>>,
+    module_file: &[u8],
+    local_patches: &LocalPatchPlan,
+    registry_patches: bool,
+) -> Result<Vec<u8>, String> {
+    let base = (
+        FORMAT,
+        registry.to_string(),
+        name,
+        version,
+        source,
+        config,
+        module_file,
+        local_patches.cache_identity(),
+    );
+    if registry_patches {
+        serde_json::to_vec(&(base, crate::patching::ENGINE))
+    } else {
+        serde_json::to_vec(&base)
+    }
+    .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -1132,20 +1162,63 @@ mod tests {
         let second = change("data", "first", "second");
         fs::write(entry.join("patches/z-first.patch"), &first).unwrap();
         fs::write(entry.join("patches/a-second.patch"), &second).unwrap();
+        // Identity of the earlier engine: the same tuple without the marker.
+        let config = registry.read_object("bazel_registry.json").unwrap();
+        let legacy = |source: &Map<String, Value>| {
+            hex(&Sha256::digest(
+                serde_json::to_vec(&(
+                    FORMAT,
+                    registry.to_string(),
+                    "dep",
+                    "1",
+                    source,
+                    &config,
+                    b"authoritative\n".as_slice(),
+                    LocalPatchPlan::default().cache_identity(),
+                ))
+                .unwrap(),
+            ))
+        };
+        let cache = temp.path().join("cache");
+        // An unpatched module keeps its exact earlier identity.
+        let unpatched = source.clone();
+        let plain = materialize(
+            &registry,
+            "dep",
+            "1",
+            b"authoritative\n",
+            &unpatched,
+            &cache,
+        )
+        .unwrap();
+        assert_eq!(
+            plain.file_name().unwrap().to_str().unwrap(),
+            legacy(&unpatched)
+        );
         let mut patches = Map::new();
         patches.insert("z-first.patch".into(), json!(sri(&first)));
         patches.insert("a-second.patch".into(), json!(sri(&second)));
         source.insert("patches".into(), Value::Object(patches));
         source.insert("patch_strip".into(), json!(1));
-        let root = materialize(
-            &registry,
-            "dep",
-            "1",
-            b"authoritative\n",
-            &source,
-            &temp.path().join("cache"),
-        )
+        let root = materialize(&registry, "dep", "1", b"authoritative\n", &source, &cache).unwrap();
+        // A patched module never reuses a tree published by the old engine.
+        let key = root.file_name().unwrap().to_str().unwrap().to_owned();
+        assert_ne!(key, legacy(&source));
+        let marked = serde_json::to_vec(&(
+            (
+                FORMAT,
+                registry.to_string(),
+                "dep",
+                "1",
+                &source,
+                &config,
+                b"authoritative\n".as_slice(),
+                LocalPatchPlan::default().cache_identity(),
+            ),
+            crate::patching::ENGINE,
+        ))
         .unwrap();
+        assert_eq!(key, hex(&Sha256::digest(marked)));
         assert_eq!(fs::read(root.join("data")).unwrap(), b"second\n");
         assert_eq!(
             fs::read(root.join("MODULE.bazel")).unwrap(),
@@ -1236,7 +1309,7 @@ mod tests {
         assert!(
             materialize(&registry, "dep", "1", b"module", &source, &cache)
                 .unwrap_err()
-                .contains("mismatched context")
+                .contains("cannot apply registry patch")
         );
         assert!(fs::read_dir(cache.join("trees")).unwrap().next().is_none());
         source.insert(

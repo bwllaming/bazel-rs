@@ -1,690 +1,1422 @@
-//! Bounded native UTF-8 unified text patches, not full PatchUtil parity.
+//! Bazel 9.3 native patch (`PatchUtil.java`) with java-diff-utils 4.12 hunks.
 //!
-//! Sections run in input order, hunks in reverse source order. Matching uses
-//! exact context with nearest-offset search (earlier wins ties), never fuzz.
-//! Java-style CR/LF/CRLF input lines become LF-terminated output lines. Empty
-//! patches are no-ops. Git mail preambles and ordinary index records work;
-//! rename/copy, binary, combined diffs, quoted Git paths, and all explicit Git
-//! mode changes (including new/deleted file mode) are explicitly unsupported.
-//! Creation/deletion instead use ordinary /dev/null unified headers.
+//! This is a line-for-line port of
+//! `bazel/repository/decompressor/PatchUtil.java` (pinned Bazel 9.3.0,
+//! `src/main/java/com/google/devtools/build/lib/`) and of the java-diff-utils
+//! 4.12 pieces it calls (`UnifiedDiffUtils.parseUnifiedDiff`,
+//! `Patch.applyFuzzy`, `Chunk.verifyChunk`, `ChangeDelta.applyFuzzyToAt`):
 //!
-//! Paths are checked before and after stripping, even for skipped sections.
-//! This intentionally rejects more paths than upstream. Limits: 16 MiB per
-//! patch or file, 100000 lines/hunks, 256 MiB tree working set, and 100 million
-//! context-line comparisons per section. Non-UTF-8 and NUL text are unsupported.
+//! * The patch file and every patched file are read as UTF-8 text lines
+//!   (Guava `CharSource.readLines`: `\n`, `\r\n` and `\r` terminate lines,
+//!   malformed bytes decode to U+FFFD) and patched files are written back as
+//!   UTF-8 with `\n` after every line (`FileSystemUtils.writeLinesAs`).
+//! * Sections are applied one after the other while the file is scanned;
+//!   hunks of one section are applied separately in reverse order with
+//!   `applyFuzzy(…, 2)` (PatchUtil.java:221-235): context mismatches are
+//!   retried ignoring up to two leading and trailing hunk lines at every
+//!   offset, so a hunk may apply partially or not at all without an error.
+//! * Git headers: `diff --git` file names, `rename from/to`, `new mode` and
+//!   `new file mode` owner digits; other Git lines are ignored.
 //!
-//! Tree roots and their ancestors must be private and trusted against concurrent
-//! mutation. All affected paths and contents are preflighted before any writes;
-//! this does NOT publish a repository or promise rollback on filesystem errors.
-//! The caller must discard its staging tree on failure. Like Bazel's PatchUtil
-//! (`applyPatchToFile`, PatchUtil.java:200-260: read the old file following
-//! links, `oldFile.delete()`, then write a fresh file), a patched path that is a
-//! symlink or a hard-linked file is read through the link and then replaced by
-//! a new regular file: the referent and other hard-link names are never
-//! written. Native reads follow only links resolving inside the tree; a leaf
-//! link escaping it, symlinked ancestor directories and special files are
-//! rejected. Existing permissions (of the referent) become 0755 if
-//! owner-executable, otherwise 0644; new files are 0644, directories 0755.
-//! File-to-directory transitions within one patch are unsupported.
+//! Java runtime failures that Bazel catches (`IndexOutOfBoundsException`) are
+//! reproduced with the JDK's message; failures that crash Bazel 9.3 (an
+//! uncaught `IllegalArgumentException`/`NumberFormatException`/
+//! `StringIndexOutOfBoundsException`, e.g. a one-line hunk that only matches
+//! with fuzz 1) are explicit native errors ([`PatchError::Crash`]).
+//!
+//! Native safety profile of the on-disk tree ([`TreeFs`]): the root and its
+//! ancestors must be real directories; symlinked ancestor directories inside
+//! the tree are rejected (Bazel would write through them); a leaf symlink is
+//! read through only when it resolves inside the tree (source_links) and is
+//! replaced, never written through; created files are 0644 and modes are
+//! normalized to 0644/0755 like the rest of the store. Inputs are limited to
+//! 16 MiB per patch or file, 100000 lines and a 256 MiB working set.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const MAX_BYTES: usize = 16 * 1024 * 1024;
 const MAX_LINES: usize = 100_000;
 const MAX_TREE_BYTES: usize = 256 * 1024 * 1024;
 const MAX_COMPARISONS: usize = 100_000_000;
 
+/// Cache-identity marker of the patch engine. Identities of patched trees
+/// include it so caches written by the earlier exact-context engine are never
+/// served; unpatched identities are unchanged.
+pub const ENGINE: &str = "patchutil-java-diff-utils-4.12";
+
+/// A decoded patch file plus its strip count (`PatchUtil.apply`'s arguments).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Patch {
-    sections: Vec<Section>,
-    strip: usize,
+    lines: Vec<String>,
+    strip: i64,
 }
 
+/// How a patch application failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Section {
-    old: Option<String>,
-    new: Option<String>,
-    hunks: Vec<Hunk>,
+pub enum PatchError {
+    /// `PatchFailedException` (also wrapped `IndexOutOfBoundsException`).
+    Failed(String),
+    /// `IOException` while reading or writing files, or a native limit.
+    Io(String),
+    /// An exception that crashes genuine Bazel 9.3; reported explicitly.
+    Crash(String),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Hunk {
-    position: usize,
-    old: Vec<String>,
-    new: Vec<String>,
+impl fmt::Display for PatchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Failed(message) | Self::Io(message) => f.write_str(message),
+            Self::Crash(message) => write!(
+                f,
+                "genuine Bazel 9.3 crashes applying this patch ({message}); the native profile rejects it explicitly"
+            ),
+        }
+    }
 }
 
-fn text_lines(bytes: &[u8]) -> Result<Vec<&str>, String> {
+impl From<PatchError> for String {
+    fn from(error: PatchError) -> Self {
+        error.to_string()
+    }
+}
+
+type PResult<T> = Result<T, PatchError>;
+
+fn failed<T>(message: impl Into<String>) -> PResult<T> {
+    Err(PatchError::Failed(message.into()))
+}
+
+/// Guava `CharSource.readLines` over UTF-8 decoded bytes.
+fn text_lines(bytes: &[u8]) -> PResult<Vec<String>> {
     if bytes.len() > MAX_BYTES {
-        return Err("patch/text exceeds 16 MiB limit".into());
+        return Err(PatchError::Io("patch/text exceeds 16 MiB limit".into()));
     }
-    let text = std::str::from_utf8(bytes).map_err(|_| "unsupported non-UTF-8 patch/text")?;
-    if text.contains('\0') {
-        return Err("unsupported NUL/binary patch/text".into());
-    }
+    let text = String::from_utf8_lossy(bytes);
     let mut lines = Vec::new();
-    let mut start = 0;
-    let mut i = 0;
-    while i < bytes.len() {
-        if matches!(bytes[i], b'\r' | b'\n') {
-            lines.push(&text[start..i]);
-            if bytes[i] == b'\r' && bytes.get(i + 1) == Some(&b'\n') {
-                i += 1;
+    let mut current = String::new();
+    let mut chars = text.chars().peekable();
+    let mut pending = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '\n' | '\r' => {
+                if c == '\r' && chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                lines.push(std::mem::take(&mut current));
+                pending = false;
+                if lines.len() > MAX_LINES {
+                    return Err(PatchError::Io(
+                        "patch/text exceeds 100000 line limit".into(),
+                    ));
+                }
             }
-            start = i + 1;
-            if lines.len() > MAX_LINES {
-                return Err("patch/text exceeds 100000 line limit".into());
+            _ => {
+                current.push(c);
+                pending = true;
             }
         }
-        i += 1;
     }
-    if start < bytes.len() {
-        lines.push(&text[start..]);
+    if pending {
+        lines.push(current);
     }
     if lines.len() > MAX_LINES {
-        return Err("patch/text exceeds 100000 line limit".into());
+        return Err(PatchError::Io(
+            "patch/text exceeds 100000 line limit".into(),
+        ));
     }
     Ok(lines)
 }
 
-fn safe_path(path: &str) -> Result<Vec<&str>, String> {
-    if path.is_empty()
-        || path.starts_with('/')
-        || path.contains(['\\', '\0', ':', '"'])
-        || path.split('/').any(|part| part == "..")
-    {
-        return Err(format!("unsafe or unsupported patch path: {path:?}"));
+/// `FileSystemUtils.writeLinesAs(file, UTF_8, lines)`: `\n` after every line.
+fn encode_lines(lines: &[String]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for line in lines {
+        out.extend_from_slice(line.as_bytes());
+        out.push(b'\n');
     }
-    let parts: Vec<_> = path
-        .split('/')
-        .filter(|p| !p.is_empty() && *p != ".")
-        .collect();
-    if parts.is_empty() {
-        return Err("empty normalized patch path".into());
-    }
-    Ok(parts)
+    out
 }
 
-fn filename(raw: &str, strip: usize) -> Result<Option<String>, String> {
-    let path = raw.split('\t').next().unwrap_or("").trim();
-    if path == "/dev/null" {
-        return Ok(None);
-    }
-    // Strip lexical slash-separated components first. Normalizing away `./`
-    // or empty components first can redirect a patch to a different file.
-    safe_path(path)?;
-    let stripped = if strip == 0 {
-        path
-    } else {
-        path.match_indices('/')
-            .nth(strip - 1)
-            .map_or("", |(at, _)| &path[at + 1..])
-    };
-    if stripped.is_empty() {
-        return Err(format!(
-            "cannot determine patch file name with strip = {strip}: {path:?}"
-        ));
-    }
-    Ok(Some(safe_path(stripped)?.join("/")))
+/// Decode a patch file. Every structural check happens while applying, as in
+/// `PatchUtil.applyInternal`.
+pub fn parse(bytes: &[u8], strip: usize) -> Result<Patch, String> {
+    parse_signed(bytes, i64::try_from(strip).unwrap_or(i64::MAX)).map_err(String::from)
 }
 
-fn range(raw: &str, sign: char) -> Result<(usize, usize), String> {
-    let raw = raw.strip_prefix(sign).ok_or("malformed hunk range")?;
-    let (start, count) = raw.split_once(',').unwrap_or((raw, "1"));
-    let number = |s: &str| -> Result<usize, String> {
-        if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
-            return Err("malformed hunk range number".into());
+/// Like [`parse`], keeping a negative Starlark `strip` (it strips nothing but
+/// appears in Bazel's messages).
+pub fn parse_signed(bytes: &[u8], strip: i64) -> PResult<Patch> {
+    Ok(Patch {
+        lines: text_lines(bytes)?,
+        strip,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// java.util.ArrayList / AbstractList behaviour used by java-diff-utils.
+
+enum Java {
+    /// IndexOutOfBoundsException (caught by PatchUtil.applyPatchToFile).
+    IndexOutOfBounds(String),
+    /// Any other RuntimeException: crashes Bazel.
+    Crash(String),
+    Failed(String),
+}
+
+fn check_index(index: i64, length: usize) -> Result<usize, Java> {
+    if index < 0 || index as u64 >= length as u64 {
+        return Err(Java::IndexOutOfBounds(format!(
+            "Index {index} out of bounds for length {length}"
+        )));
+    }
+    Ok(index as usize)
+}
+
+fn sub_list(lines: &[String], from: i64, to: i64) -> Result<&[String], Java> {
+    // AbstractList.subListRangeCheck.
+    if from < 0 {
+        return Err(Java::IndexOutOfBounds(format!("fromIndex = {from}")));
+    }
+    if to > lines.len() as i64 {
+        return Err(Java::IndexOutOfBounds(format!("toIndex = {to}")));
+    }
+    if from > to {
+        return Err(Java::Crash(format!(
+            "java.lang.IllegalArgumentException: fromIndex({from}) > toIndex({to})"
+        )));
+    }
+    Ok(&lines[from as usize..to as usize])
+}
+
+// ---------------------------------------------------------------------------
+// java-diff-utils 4.12.
+
+#[derive(Clone, Debug)]
+struct Delta {
+    /// Chunk position (0-based; -1 when the hunk header was never matched).
+    position: i64,
+    source: Vec<String>,
+    target: Vec<String>,
+}
+
+/// The `UnifiedDiffUtils` hunk regex, matched against a whole string:
+/// `^@@\s+-(?:(\d+)(?:,(\d+))?)\s+\+(?:(\d+)(?:,(\d+))?)\s+@@$`.
+/// Returns the four groups (absent optional counts are None).
+type HeaderGroups<'a> = (&'a str, Option<&'a str>, &'a str, Option<&'a str>);
+
+fn chunk_header_groups(text: &str) -> Option<HeaderGroups<'_>> {
+    fn java_space(b: u8) -> bool {
+        matches!(b, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
+    }
+    fn spaces(s: &str) -> Option<&str> {
+        let rest = s.trim_start_matches(|c: char| c.is_ascii() && java_space(c as u8));
+        (rest.len() < s.len()).then_some(rest)
+    }
+    fn digits(s: &str) -> Option<(&str, &str)> {
+        let end = s.bytes().take_while(u8::is_ascii_digit).count();
+        (end > 0).then(|| s.split_at(end))
+    }
+    fn range(s: &str) -> Option<(&str, Option<&str>, &str)> {
+        let (start, rest) = digits(s)?;
+        if let Some(after) = rest.strip_prefix(',')
+            && let Some((count, rest)) = digits(after)
+        {
+            return Some((start, Some(count), rest));
         }
-        s.parse().map_err(|_| "hunk range number overflow".into())
-    };
-    let (start, count) = (number(start)?, number(count)?);
-    if count > MAX_LINES || start > i32::MAX as usize || start.checked_add(count).is_none() {
-        return Err("hunk range exceeds supported limits".into());
+        Some((start, None, rest))
     }
-    if start == 0 && count != 0 {
-        return Err("hunk start zero requires count zero".into());
-    }
-    Ok((start, count))
+    let rest = text.strip_prefix("@@")?;
+    let rest = spaces(rest)?.strip_prefix('-')?;
+    let (old_start, old_count, rest) = range(rest)?;
+    let rest = spaces(rest)?.strip_prefix('+')?;
+    let (new_start, new_count, rest) = range(rest)?;
+    let rest = spaces(rest)?;
+    // `$` also matches before one final line terminator; lines have none.
+    (rest == "@@").then_some((old_start, old_count, new_start, new_count))
 }
 
-fn hunk(lines: &[&str], i: &mut usize) -> Result<(Hunk, usize, usize), String> {
-    let header = lines[*i];
-    let rest = header.strip_prefix("@@").ok_or("malformed hunk header")?;
-    let end = rest.find("@@").ok_or("malformed hunk header")?;
-    let fields: Vec<_> = rest[..end].split_whitespace().collect();
-    if fields.len() != 2
-        || !rest.starts_with(char::is_whitespace)
-        || !rest[..end].ends_with(char::is_whitespace)
-    {
-        return Err("malformed hunk header".into());
-    }
-    let (old_start, old_count) = range(fields[0], '-')?;
-    let (new_start, new_count) = range(fields[1], '+')?;
-    let mut result = Hunk {
-        position: if old_count == 0 {
-            old_start
-        } else {
-            old_start - 1
-        },
-        old: Vec::new(),
-        new: Vec::new(),
-    };
-    *i += 1;
-    let mut marker_allowed = false;
-    loop {
-        if lines.get(*i) == Some(&"\\ No newline at end of file") {
-            if !marker_allowed {
-                return Err("misplaced no-newline marker".into());
+fn parse_int(text: &str) -> Result<i64, Java> {
+    text.parse::<i32>().map(i64::from).map_err(|_| {
+        Java::Crash(format!(
+            "java.lang.NumberFormatException: For input string: \"{text}\""
+        ))
+    })
+}
+
+/// `UnifiedDiffUtils.parseUnifiedDiff` (4.12): every hunk becomes a
+/// `ChangeDelta`; lines before the first `+++` are prelude.
+fn parse_unified_diff(diff: &[String]) -> Result<Vec<Delta>, Java> {
+    let mut in_prelude = true;
+    let mut raw: Vec<(char, String)> = Vec::new();
+    let mut deltas = Vec::new();
+    let mut old_ln: i64 = 0;
+    let mut new_ln: i64 = 0;
+    fn flush(raw: &mut Vec<(char, String)>, deltas: &mut Vec<Delta>, old_ln: i64, new_ln: i64) {
+        if raw.is_empty() {
+            return;
+        }
+        let mut source = Vec::new();
+        let mut target = Vec::new();
+        for (tag, rest) in raw.drain(..) {
+            if tag == ' ' || tag == '-' {
+                source.push(rest.clone());
             }
-            marker_allowed = false;
-            *i += 1;
+            if tag == ' ' || tag == '+' {
+                target.push(rest);
+            }
+        }
+        let _ = new_ln;
+        deltas.push(Delta {
+            position: old_ln - 1,
+            source,
+            target,
+        });
+    }
+    for line in diff {
+        if in_prelude {
+            if line.starts_with("+++") {
+                in_prelude = false;
+            }
             continue;
         }
-        if result.old.len() == old_count && result.new.len() == new_count {
-            break;
-        }
-        let line = *lines
-            .get(*i)
-            .ok_or("truncated hunk: expecting more lines")?;
-        let kind = line.as_bytes().first().copied().unwrap_or(b' ');
-        // Slice only ASCII prefixes, never an arbitrary first UTF-8 byte.
-        let content = if line.is_empty() {
-            ""
-        } else if matches!(kind, b' ' | b'-' | b'+') {
-            &line[1..]
-        } else {
-            return Err("malformed/truncated hunk body".into());
-        };
-        match kind {
-            b' ' => {
-                result.old.push(content.into());
-                result.new.push(content.into());
+        if let Some((old_start, _, new_start, _)) = chunk_header_groups(line) {
+            flush(&mut raw, &mut deltas, old_ln, new_ln);
+            old_ln = parse_int(old_start)?;
+            new_ln = parse_int(new_start)?;
+            if old_ln == 0 {
+                old_ln = 1;
             }
-            b'-' => result.old.push(content.into()),
-            b'+' => result.new.push(content.into()),
-            _ => unreachable!(),
+            if new_ln == 0 {
+                new_ln = 1;
+            }
+        } else if let Some(tag) = line.chars().next() {
+            if matches!(tag, ' ' | '+' | '-') {
+                raw.push((tag, line[1..].to_owned()));
+            }
+        } else {
+            raw.push((' ', String::new()));
         }
-        if result.old.len() > old_count || result.new.len() > new_count {
-            return Err("hunk line count overflow".into());
-        }
-        marker_allowed = true;
-        *i += 1;
     }
-    Ok((result, new_start, new_count))
+    flush(&mut raw, &mut deltas, old_ln, new_ln);
+    // Patch.getDeltas(): stable sort by source position.
+    deltas.sort_by_key(|delta| delta.position);
+    Ok(deltas)
 }
 
-fn metadata(line: &str) -> Result<(), String> {
-    if [
-        "rename ",
-        "copy ",
-        "similarity index ",
-        "dissimilarity index ",
-        "old mode ",
-        "new mode ",
-        "new file mode ",
-        "deleted file mode ",
-        "GIT binary patch",
-        "Binary files ",
-        "diff --cc ",
-        "diff --combined ",
-        "*** ",
-    ]
-    .iter()
-    .any(|prefix| line.starts_with(prefix) || line == prefix.trim_end())
-    {
-        return Err(format!(
-            "unsupported Git rename/copy/mode/binary/combined patch metadata: {line}"
+#[derive(PartialEq, Eq)]
+enum Verify {
+    Ok,
+    PositionOutOfTarget,
+    ContentDoesNotMatchTarget,
+}
+
+/// `Chunk.verifyChunk(target, fuzz, position)`.
+fn verify_chunk(
+    source: &[String],
+    target: &[String],
+    fuzz: i64,
+    position: i64,
+    comparisons: &mut usize,
+) -> Result<Verify, Java> {
+    let size = source.len() as i64;
+    let last_index = size - fuzz;
+    let last = position + size - 1;
+    let length = target.len() as i64;
+    if position + fuzz > length || last - fuzz > length {
+        return Ok(Verify::PositionOutOfTarget);
+    }
+    let mut i = fuzz;
+    while i < last_index {
+        *comparisons += 1;
+        if *comparisons > MAX_COMPARISONS {
+            return Err(Java::Failed(
+                "patch context search exceeds the native comparison limit".into(),
+            ));
+        }
+        let actual = &target[check_index(position + i, target.len())?];
+        if *actual != source[i as usize] {
+            return Ok(Verify::ContentDoesNotMatchTarget);
+        }
+        i += 1;
+    }
+    Ok(Verify::Ok)
+}
+
+/// `Patch.applyFuzzy(target, 2)` for the single-delta patches PatchUtil
+/// builds (`lastPatchEnd` = -1, `lastPatchDelta` = 0).
+fn apply_fuzzy(target: &mut Vec<String>, delta: &Delta) -> Result<(), Java> {
+    const MAX_FUZZ: i64 = 2;
+    const LAST_PATCH_END: i64 = -1;
+    let default = delta.position;
+    let size = delta.source.len() as i64;
+    let mut comparisons = 0usize;
+    for fuzz in 0..=MAX_FUZZ {
+        // findPositionWithFuzz.
+        let mut found = None;
+        if verify_chunk(&delta.source, target, fuzz, default, &mut comparisons)? == Verify::Ok {
+            found = Some(default);
+        } else {
+            let mut before_out = false;
+            let mut after_out = false;
+            let mut more: i64 = 0;
+            loop {
+                // findPositionWithFuzzAndMoreDelta.
+                if !before_out && default - more + fuzz <= LAST_PATCH_END {
+                    before_out = true;
+                }
+                if !after_out && (target.len() as i64) < default + more + size - fuzz {
+                    after_out = true;
+                }
+                if !before_out
+                    && verify_chunk(
+                        &delta.source,
+                        target,
+                        fuzz,
+                        default - more,
+                        &mut comparisons,
+                    )? == Verify::Ok
+                {
+                    found = Some(default - more);
+                    break;
+                }
+                if !after_out
+                    && verify_chunk(
+                        &delta.source,
+                        target,
+                        fuzz,
+                        default + more,
+                        &mut comparisons,
+                    )? == Verify::Ok
+                {
+                    found = Some(default + more);
+                    break;
+                }
+                if before_out && after_out {
+                    break;
+                }
+                more += 1;
+            }
+        }
+        if let Some(position) = found {
+            return apply_fuzzy_to_at(target, delta, fuzz, position);
+        }
+    }
+    // CONFLICT_PRODUCES_EXCEPTION.
+    Err(Java::Failed(
+        "could not apply patch due to CONTENT_DOES_NOT_MATCH_TARGET".into(),
+    ))
+}
+
+/// `ChangeDelta.applyFuzzyToAt`.
+fn apply_fuzzy_to_at(
+    target: &mut Vec<String>,
+    delta: &Delta,
+    fuzz: i64,
+    position: i64,
+) -> Result<(), Java> {
+    let size = delta.source.len() as i64;
+    let mut i = fuzz;
+    while i < size - fuzz {
+        let index = check_index(position + fuzz, target.len())?;
+        target.remove(index);
+        i += 1;
+    }
+    let lines = sub_list(&delta.target, fuzz, delta.target.len() as i64 - fuzz)?.to_vec();
+    if target.len() + lines.len() > MAX_LINES {
+        return Err(Java::Failed(
+            "patched text exceeds the native 100000 line limit".into(),
         ));
     }
-    if line == "index" {
-        return Err("malformed Git index record".into());
+    for (i, line) in (fuzz..).zip(lines) {
+        let index = position + i;
+        if index < 0 || index as u64 > target.len() as u64 {
+            return Err(Java::IndexOutOfBounds(format!(
+                "Index: {index}, Size: {}",
+                target.len()
+            )));
+        }
+        target.insert(index as usize, line);
     }
-    if let Some(index) = line.strip_prefix("index ") {
-        let fields: Vec<_> = index.split_whitespace().collect();
-        if fields.is_empty() || fields.len() > 2 {
-            return Err("malformed Git index record".into());
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// PatchUtil.java.
+
+/// A file system view rooted at the patch output directory. Paths are
+/// normalized, root-relative ('' is the directory itself).
+pub trait PatchFs {
+    /// `outputDirectory.getPathString()`.
+    fn root_display(&self) -> String;
+    /// `Path.exists()` (follows symlinks).
+    fn exists(&mut self, path: &str) -> PResult<bool>;
+    /// `FileSystemUtils.readLines(file, UTF_8)`.
+    fn read_lines(&mut self, path: &str) -> PResult<Vec<String>>;
+    /// `getFilePermissionValue`: 4 (0400) + 2 (0200) + 1 (0100).
+    fn permission(&mut self, path: &str) -> PResult<i32>;
+    /// `Path.delete()`.
+    fn delete(&mut self, path: &str) -> PResult<()>;
+    /// `writeLinesAs` (creating parents), then `setFilePermission` unless -1.
+    fn write(&mut self, path: &str, lines: &[String], permission: i32) -> PResult<()>;
+
+    fn display(&self, path: &str) -> String {
+        let root = self.root_display();
+        if path.is_empty() {
+            root
+        } else if root == "/" {
+            format!("/{path}")
+        } else {
+            format!("{root}/{path}")
         }
-        let (old, new) = fields[0]
-            .split_once("..")
-            .ok_or("malformed Git index hashes")?;
-        if [old, new]
-            .iter()
-            .any(|s| s.is_empty() || !s.bytes().all(|b| b.is_ascii_hexdigit()))
-        {
-            return Err("malformed Git index hashes".into());
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LineType {
+    OldFile,
+    NewFile,
+    ChunkHead,
+    ChunkAdd,
+    ChunkDel,
+    ChunkEql,
+    GitHeader,
+    RenameFrom,
+    RenameTo,
+    NewMode,
+    NewFileMode,
+    OtherGitLine,
+    ChunkNoNewline,
+    Unknown,
+}
+
+const GIT_LINE_PREFIXES: [&str; 11] = [
+    "old mode ",
+    "new mode ",
+    "deleted file mode ",
+    "new file mode ",
+    "copy from ",
+    "copy to ",
+    "rename old ",
+    "rename new ",
+    "similarity index ",
+    "dissimilarity index ",
+    "index ",
+];
+
+/// PatchUtil.getLineType (java:107-158).
+fn line_type(line: &str, reading_chunk: bool, git: bool) -> LineType {
+    if line.starts_with('\\') {
+        return LineType::ChunkNoNewline;
+    }
+    if reading_chunk {
+        if line.starts_with('+') {
+            return LineType::ChunkAdd;
         }
-        if fields.len() == 2 && !matches!(fields[1], "100644" | "100755") {
-            return Err("unsupported Git index mode (only 100644/100755)".into());
+        if line.starts_with('-') {
+            return LineType::ChunkDel;
+        }
+        if line.starts_with(' ') || line.is_empty() {
+            return LineType::ChunkEql;
+        }
+    } else {
+        if line.starts_with("--- ") {
+            return LineType::OldFile;
+        }
+        if line.starts_with("+++ ") {
+            return LineType::NewFile;
+        }
+        if line.starts_with("diff --git ") {
+            return LineType::GitHeader;
+        }
+        if git {
+            if line.starts_with("rename from ") {
+                return LineType::RenameFrom;
+            }
+            if line.starts_with("rename to ") {
+                return LineType::RenameTo;
+            }
+            if line.starts_with("new mode ") {
+                return LineType::NewMode;
+            }
+            if line.starts_with("new file mode ") {
+                return LineType::NewFileMode;
+            }
+            if GIT_LINE_PREFIXES.iter().any(|p| line.starts_with(p)) {
+                return LineType::OtherGitLine;
+            }
+        }
+    }
+    if line.starts_with("@@")
+        && line.rfind("@@") != Some(0)
+        && let Some(pos) = line[2..].find("@@").map(|p| p + 2)
+        && chunk_header_groups(&line[..pos + 2]).is_some()
+    {
+        return LineType::ChunkHead;
+    }
+    LineType::Unknown
+}
+
+#[derive(Clone, Copy)]
+struct ChunkHeader {
+    old_size: i64,
+    new_size: i64,
+}
+
+#[derive(PartialEq, Eq)]
+enum Check {
+    Complete,
+    Continue,
+    Error,
+}
+
+impl ChunkHeader {
+    fn new(header: &str) -> PResult<Self> {
+        let Some((_, old, _, new)) = chunk_header_groups(header) else {
+            return failed(format!("Wrong chunk header: {header}"));
+        };
+        let size = |group: Option<&str>| match group {
+            None => Ok(1),
+            Some(text) => parse_int(text).map_err(java_error),
+        };
+        Ok(Self {
+            old_size: size(old)?,
+            new_size: size(new)?,
+        })
+    }
+
+    fn check(&self, old: i64, new: i64) -> Check {
+        if old == self.old_size && new == self.new_size {
+            Check::Complete
+        } else if old <= self.old_size && new <= self.new_size {
+            Check::Continue
+        } else {
+            Check::Error
+        }
+    }
+}
+
+fn java_error(error: Java) -> PatchError {
+    match error {
+        Java::IndexOutOfBounds(message) | Java::Failed(message) => PatchError::Failed(message),
+        Java::Crash(message) => PatchError::Crash(message),
+    }
+}
+
+/// PatchUtil.stripPath (java:270-279).
+fn strip_path(path: &str, strip: i64) -> &str {
+    let mut strip = strip;
+    let mut pos = 0;
+    let bytes = path.as_bytes();
+    while pos < bytes.len() && strip > 0 {
+        if bytes[pos] == b'/' {
+            strip -= 1;
+        }
+        pos += 1;
+    }
+    &path[pos..]
+}
+
+/// Java `String.trim()`: strips chars <= U+0020 at both ends.
+fn java_trim(text: &str) -> &str {
+    text.trim_matches(|c: char| c <= ' ')
+}
+
+/// PatchUtil.extractPath (java:286-307).
+fn extract_path(line: &str, strip: i64, loc: usize) -> PResult<Option<String>> {
+    let line = line.split('\t').next().unwrap_or("");
+    if line.chars().count() > 4 {
+        let path = java_trim(&line[4..]);
+        if path == "/dev/null" {
+            return Ok(None);
+        }
+        let path = strip_path(path, strip);
+        if !path.is_empty() {
+            return Ok(Some(path.to_owned()));
+        }
+    }
+    failed(format!(
+        "Cannot determine file name with strip = {strip} at line {loc}:\n{line}"
+    ))
+}
+
+/// PatchUtil.getFilePath (java:309-323): `outputDirectory.getRelative(path)`
+/// must stay below the output directory. Returns the normalized relative path.
+fn file_path(fs: &dyn PatchFs, path: Option<&str>, loc: usize) -> PResult<Option<String>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let root = fs.root_display();
+    let root_parts: Vec<&str> = root.split('/').filter(|p| !p.is_empty()).collect();
+    let mut parts: Vec<&str> = if path.starts_with('/') {
+        Vec::new()
+    } else {
+        root_parts.clone()
+    };
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            other => parts.push(other),
+        }
+    }
+    if parts.len() < root_parts.len() || parts[..root_parts.len()] != root_parts[..] {
+        return failed(format!(
+            "Cannot patch file outside of external repository ({root}), file path = \"{path}\" at line {loc}"
+        ));
+    }
+    Ok(Some(parts[root_parts.len()..].join("/")))
+}
+
+fn check_patch_content_is_complete(
+    content: &[String],
+    header: Option<ChunkHeader>,
+    old: i64,
+    new: i64,
+    loc: usize,
+) -> PResult<()> {
+    if !content.is_empty() {
+        if content.len() < 2 || !content[0].starts_with("---") || !content[1].starts_with("+++") {
+            return failed(format!(
+                "The patch content must start with ---/+++ prelude lines at line {loc}."
+            ));
+        }
+        let Some(header) = header else {
+            return failed(format!(
+                "Looks like a unified diff at line {loc}, but no patch chunk was found."
+            ));
+        };
+        if header.check(old, new) == Check::Continue {
+            return failed(format!(
+                "Expecting more chunk line at line {}",
+                loc + content.len()
+            ));
         }
     }
     Ok(())
 }
 
-/// Parse and validate every section before any single-file filtering.
-pub fn parse(bytes: &[u8], strip: usize) -> Result<Patch, String> {
-    let lines = text_lines(bytes)?;
-    let mut patch = Patch {
-        sections: Vec::new(),
-        strip,
+fn check_files_status_for_renaming(
+    fs: &mut dyn PatchFs,
+    old: &Option<String>,
+    new: &Option<String>,
+    old_str: &Option<String>,
+    new_str: &Option<String>,
+    loc: usize,
+) -> PResult<()> {
+    let old_error = match old {
+        None => ", old file name is not specified".to_owned(),
+        Some(path) if !fs.exists(path)? => format!(
+            ", old file name ({}) doesn't exist",
+            old_str.as_deref().unwrap_or("null")
+        ),
+        Some(_) => String::new(),
     };
-    let mut i = 0;
-    let mut git_pending = false;
-    let mut after_hunk = false;
-    while i < lines.len() {
-        let line = lines[i];
-        metadata(line)?;
-        if line == "diff --git" {
-            return Err("malformed Git header".into());
+    let new_error = match new {
+        None => ", new file name is not specified".to_owned(),
+        Some(path) if fs.exists(path)? => format!(
+            ", new file name ({}) already exists",
+            new_str.as_deref().unwrap_or("null")
+        ),
+        Some(_) => String::new(),
+    };
+    if !old_error.is_empty() || !new_error.is_empty() {
+        return failed(format!(
+            "Cannot rename file (near line {loc}){old_error}{new_error}."
+        ));
+    }
+    Ok(())
+}
+
+fn check_files_status_for_patching(
+    fs: &mut dyn PatchFs,
+    deltas: &[Delta],
+    old: &Option<String>,
+    new: &Option<String>,
+    old_str: &Option<String>,
+    new_str: &Option<String>,
+    loc: usize,
+) -> PResult<()> {
+    if old.is_none() && new.is_none() {
+        return failed(format!(
+            "Wrong patch format near line {loc}, neither new file or old file are specified."
+        ));
+    }
+    let add_file = deltas.len() == 1 && deltas[0].source.is_empty();
+    let old_exists = match old {
+        Some(path) => fs.exists(path)?,
+        None => false,
+    };
+    let new_exists = match new {
+        Some(path) => fs.exists(path)?,
+        None => false,
+    };
+    if !add_file && !old_exists && !new_exists {
+        let old_error = match old {
+            None => ", old file name is not specified".to_owned(),
+            Some(_) => format!(
+                ", old file name ({}) doesn't exist",
+                old_str.as_deref().unwrap_or("null")
+            ),
+        };
+        let new_error = match new {
+            None => ", new file name is not specified".to_owned(),
+            Some(_) => format!(
+                ", new file name ({}) doesn't exist",
+                new_str.as_deref().unwrap_or("null")
+            ),
+        };
+        return failed(format!(
+            "Cannot find file to patch (near line {loc}){old_error}{new_error}."
+        ));
+    }
+    Ok(())
+}
+
+/// PatchUtil.applyPatchToFile (java:200-260).
+fn apply_patch_to_file(
+    fs: &mut dyn PatchFs,
+    deltas: &[Delta],
+    old: &Option<String>,
+    new: &Option<String>,
+    renaming: bool,
+    mut permission: i32,
+) -> PResult<()> {
+    let old_exists = match old {
+        Some(path) => fs.exists(path)?,
+        None => false,
+    };
+    let input = if old_exists {
+        old.clone()
+    } else {
+        match new {
+            Some(path) if fs.exists(path)? => Some(path.clone()),
+            _ => None,
         }
-        if let Some(paths) = line.strip_prefix("diff --git ") {
-            if git_pending {
-                return Err("Git diff has no supported ---/+++ section".into());
+    };
+    let mut content = match &input {
+        None => Vec::new(),
+        Some(path) => {
+            let lines = fs.read_lines(path)?;
+            if permission == -1 {
+                permission = fs.permission(path)?;
             }
-            let paths: Vec<_> = paths.split_whitespace().collect();
-            if paths.len() != 2 {
-                return Err("unsupported quoted or malformed Git paths".into());
+            lines
+        }
+    };
+    let shown_old = old
+        .as_ref()
+        .map_or_else(|| "null".to_owned(), |path| fs.display(path));
+    for delta in deltas.iter().rev() {
+        apply_fuzzy(&mut content, delta).map_err(|error| match error {
+            Java::IndexOutOfBounds(message) | Java::Failed(message) => PatchError::Failed(format!(
+                "in patch applied to {shown_old}: {message}, error applying change near line {}",
+                delta.position + 1
+            )),
+            Java::Crash(message) => PatchError::Crash(message),
+        })?;
+    }
+    let output = if old_exists && !renaming {
+        old.clone()
+    } else {
+        new.clone()
+    };
+    if let Some(path) = old {
+        fs.delete(path)?;
+    }
+    let delete_file = new.is_none() && content.is_empty();
+    if let Some(path) = output
+        && !delete_file
+    {
+        fs.write(&path, &content, permission)?;
+    }
+    Ok(())
+}
+
+/// PatchUtil.applyInternal (java:448-660). `single_file` selects
+/// `applyToSingleFile` (only sections whose old and new file are it).
+fn apply_internal(
+    lines: &[String],
+    strip: i64,
+    fs: &mut dyn PatchFs,
+    single_file: Option<&str>,
+) -> PResult<()> {
+    let mut git = false;
+    let mut rename_from = false;
+    let mut rename_to = false;
+    let mut reading_chunk = false;
+    let mut content: Vec<String> = Vec::new();
+    let mut header: Option<ChunkHeader> = None;
+    let mut old_str: Option<String> = None;
+    let mut new_str: Option<String> = None;
+    let mut old: Option<String> = None;
+    let mut new: Option<String> = None;
+    let mut old_count: i64 = 0;
+    let mut new_count: i64 = 0;
+    let mut permission: i32 = -1;
+    let end = "$".to_owned();
+    for i in 0..=lines.len() {
+        // An extra line makes sure the last chunk also gets applied.
+        let line = lines.get(i).unwrap_or(&end);
+        let kind = line_type(line, reading_chunk, git);
+        match kind {
+            LineType::OldFile => {
+                content.push(line.clone());
+                old_str = extract_path(line, strip, i + 1)?;
+                old = file_path(fs, old_str.as_deref(), i + 1)?;
             }
-            for path in paths {
-                if filename(path, strip)?.is_none() {
-                    return Err("invalid /dev/null Git preamble path".into());
-                }
+            LineType::NewFile => {
+                content.push(line.clone());
+                new_str = extract_path(line, strip, i + 1)?;
+                new = file_path(fs, new_str.as_deref(), i + 1)?;
             }
-            git_pending = true;
-            after_hunk = false;
-            i += 1;
-        } else if let Some(old) = line.strip_prefix("--- ") {
-            if after_hunk {
-                return Err("adjacent plain patch sections require an explicit separator".into());
-            }
-            let old = filename(old, strip)?;
-            i += 1;
-            let new = lines
-                .get(i)
-                .and_then(|l| l.strip_prefix("+++ "))
-                .ok_or("patch requires paired ---/+++ file headers")?;
-            let new = filename(new, strip)?;
-            if old.is_none() && new.is_none() {
-                return Err("patch has two /dev/null paths".into());
-            }
-            i += 1;
-            let mut section = Section {
-                old,
-                new,
-                hunks: Vec::new(),
-            };
-            let mut old_end = 0;
-            let mut new_end = 0;
-            while lines.get(i).is_some_and(|l| l.starts_with("@@")) {
-                let (hunk, new_start, new_count) = hunk(&lines, &mut i)?;
-                let new_position = if new_count == 0 {
-                    new_start
-                } else {
-                    new_start - 1
+            LineType::NewMode | LineType::NewFileMode => {
+                let index = if kind == LineType::NewMode { 12 } else { 17 };
+                let Some(c) = line.encode_utf16().nth(index) else {
+                    return Err(PatchError::Crash(format!(
+                        "java.lang.StringIndexOutOfBoundsException at line {}",
+                        i + 1
+                    )));
                 };
-                if !section.hunks.is_empty() && (hunk.position < old_end || new_position < new_end)
-                {
-                    return Err("unsupported overlapping or unordered hunks".into());
+                if !(u16::from(b'0')..=u16::from(b'7')).contains(&c) {
+                    return failed(format!("Wrong file mode format at line {}: {line}", i + 1));
                 }
-                old_end = hunk.position + hunk.old.len();
-                new_end = new_position + hunk.new.len();
-                if section.old.is_none() && (!hunk.old.is_empty() || hunk.position != 0) {
-                    return Err("creation /dev/null side must have range -0,0".into());
+                permission = i32::from(c - u16::from(b'0'));
+            }
+            LineType::ChunkHead => {
+                let pos = line[2..].find("@@").map_or(0, |p| p + 2);
+                let text = &line[..pos + 2];
+                content.push(text.to_owned());
+                header = Some(ChunkHeader::new(text)?);
+                old_count = 0;
+                new_count = 0;
+                reading_chunk = true;
+            }
+            LineType::ChunkAdd | LineType::ChunkDel | LineType::ChunkEql => {
+                if kind != LineType::ChunkAdd {
+                    old_count += 1;
                 }
-                if section.new.is_none() && (!hunk.new.is_empty() || new_start != 0) {
-                    return Err("deletion /dev/null side must have range +0,0".into());
+                if kind != LineType::ChunkDel {
+                    new_count += 1;
                 }
-                section.hunks.push(hunk);
-            }
-            if section.hunks.is_empty() {
-                return Err("unified patch section has no hunk".into());
-            }
-            if (section.old.is_none() || section.new.is_none()) && section.hunks.len() != 1 {
-                return Err("unsupported multiple-hunk creation/deletion".into());
-            }
-            patch.sections.push(section);
-            git_pending = false;
-            after_hunk = true;
-        } else {
-            if line.starts_with("@@") || line.starts_with("+++ ") || line.starts_with('\\') {
-                return Err("malformed or orphaned hunk/header/marker".into());
-            }
-            if after_hunk
-                && !matches!(line, "--" | "-- ")
-                && (line.starts_with('+') || line.starts_with('-') || line.starts_with(' '))
-            {
-                return Err("hunk line count overflow or orphaned body line".into());
-            }
-            if !line.is_empty() && !line.starts_with("index ") {
-                after_hunk = false;
-            }
-            i += 1;
-        }
-    }
-    if git_pending {
-        return Err("Git diff has no supported ---/+++ section".into());
-    }
-    Ok(patch)
-}
-
-impl Section {
-    fn apply(&self, original: &[u8]) -> Result<Vec<u8>, String> {
-        let mut lines: Vec<String> = text_lines(original)?
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
-        let mut comparisons = 0usize;
-        let mut output_size: usize = lines.iter().map(|l| l.len() + 1).sum();
-        for hunk in self.hunks.iter().rev() {
-            let mut best = None;
-            if hunk.old.len() <= lines.len() {
-                let end = lines.len() - hunk.old.len();
-                if hunk.old.is_empty() {
-                    if hunk.position <= end {
-                        best = Some(hunk.position);
-                    }
-                } else {
-                    let mut matches = |position: usize| -> Result<bool, String> {
-                        for (actual, expected) in lines[position..].iter().zip(&hunk.old) {
-                            comparisons += 1;
-                            if comparisons > MAX_COMPARISONS {
-                                return Err("patch context search exceeds comparison limit".into());
-                            }
-                            if actual != expected {
-                                return Ok(false);
-                            }
-                        }
-                        Ok(true)
+                content.push(line.clone());
+                let checked = header
+                    .as_ref()
+                    .map_or(Check::Error, |h| h.check(old_count, new_count));
+                if checked == Check::Complete {
+                    reading_chunk = false;
+                } else if checked == Check::Error {
+                    let what = match kind {
+                        LineType::ChunkAdd => "an added",
+                        LineType::ChunkDel => "a deleted",
+                        _ => "a context",
                     };
-                    if hunk.position <= end && matches(hunk.position)? {
-                        best = Some(hunk.position);
-                    } else {
-                        // Search actual nearest offsets, skipping invalid indices;
-                        // equal distances always try the earlier position first.
-                        let mut left = hunk.position.min(end + 1);
-                        let mut right = hunk.position.saturating_add(1).min(end + 1);
-                        while left > 0 || right <= end {
-                            let position = if left > 0
-                                && (right > end
-                                    || (left - 1).abs_diff(hunk.position)
-                                        <= right.abs_diff(hunk.position))
-                            {
-                                left -= 1;
-                                left
-                            } else {
-                                let position = right;
-                                right += 1;
-                                position
-                            };
-                            if matches(position)? {
-                                best = Some(position);
-                                break;
+                    return failed(format!(
+                        "Wrong chunk detected near line {}: {line}, does not expect {what} line here.",
+                        i + 1
+                    ));
+                }
+            }
+            LineType::ChunkNoNewline => {
+                if !content.is_empty() && header.is_some() {
+                    content.push(line.clone());
+                }
+            }
+            LineType::RenameFrom | LineType::RenameTo => {
+                let (skip, slot_str, slot) = if kind == LineType::RenameFrom {
+                    rename_from = true;
+                    (12, &mut old_str, &mut old)
+                } else {
+                    rename_to = true;
+                    (10, &mut new_str, &mut new)
+                };
+                if slot_str.is_none() {
+                    let name = java_trim(&line[skip..]).to_owned();
+                    if name.is_empty() {
+                        return failed(format!(
+                            "Cannot determine file name from line {}:\n{line}",
+                            i + 1
+                        ));
+                    }
+                    *slot = file_path(fs, Some(&name), i + 1)?;
+                    *slot_str = Some(name);
+                }
+            }
+            LineType::OtherGitLine => {}
+            LineType::GitHeader | LineType::Unknown => {
+                let renaming = git && rename_from && rename_to;
+                if !content.is_empty() || renaming || permission != -1 {
+                    let start = i + 1 - content.len();
+                    check_patch_content_is_complete(&content, header, old_count, new_count, start)?;
+                    if renaming {
+                        if let Some(single) = single_file {
+                            if new.as_deref() == Some(single) || old.as_deref() == Some(single) {
+                                return failed(format!(
+                                    "Renaming {} while applying patches to it as a single file is not supported.",
+                                    fs.display(single)
+                                ));
                             }
+                        } else {
+                            check_files_status_for_renaming(
+                                fs, &old, &new, &old_str, &new_str, start,
+                            )?;
                         }
                     }
+                    if let Some(single) = single_file
+                        && strip == 0
+                        && old_str.as_deref() == Some(&format!("a/{single}"))
+                        && new_str.as_deref() == Some(&format!("b/{single}"))
+                    {
+                        return failed(format!(
+                            "error at line {start}: the patch file contains a/b prefixes, did you forget to set patch_strip = 1?"
+                        ));
+                    }
+                    if single_file.is_none_or(|single| {
+                        new.as_deref() == Some(single) && old.as_deref() == Some(single)
+                    }) {
+                        let deltas = parse_unified_diff(&content).map_err(java_error)?;
+                        check_files_status_for_patching(
+                            fs, &deltas, &old, &new, &old_str, &new_str, start,
+                        )?;
+                        apply_patch_to_file(fs, &deltas, &old, &new, renaming, permission)?;
+                    }
                 }
+                content.clear();
+                header = None;
+                old_str = None;
+                new_str = None;
+                old = None;
+                new = None;
+                permission = -1;
+                old_count = 0;
+                new_count = 0;
+                reading_chunk = false;
+                git = kind == LineType::GitHeader;
+                if git {
+                    // File names from `diff --git a/x b/y` for patches
+                    // without ---/+++ lines (Splitter.on(' ')).
+                    let args: Vec<&str> = line.split(' ').collect();
+                    if args.len() >= 4 {
+                        let o = strip_path(args[2], strip).to_owned();
+                        if !o.is_empty() {
+                            old = file_path(fs, Some(&o), i + 1)?;
+                        }
+                        old_str = Some(o);
+                        let n = strip_path(args[3], strip).to_owned();
+                        if !n.is_empty() {
+                            new = file_path(fs, Some(&n), i + 1)?;
+                        }
+                        new_str = Some(n);
+                    }
+                }
+                rename_from = false;
+                rename_to = false;
             }
-            let position =
-                best.ok_or("patch requires unsupported fuzz or has mismatched context")?;
-            let count = lines.len() - hunk.old.len() + hunk.new.len();
-            if count > MAX_LINES {
-                return Err("patched text exceeds 100000 line limit".into());
-            }
-            output_size -= hunk.old.iter().map(|l| l.len() + 1).sum::<usize>();
-            output_size += hunk.new.iter().map(|l| l.len() + 1).sum::<usize>();
-            if output_size > MAX_BYTES {
-                return Err("patched text exceeds 16 MiB limit".into());
-            }
-            lines.splice(
-                position..position + hunk.old.len(),
-                hunk.new.iter().cloned(),
-            );
         }
-        let mut output = Vec::new();
-        for line in lines {
-            output.extend_from_slice(line.as_bytes());
-            output.push(b'\n');
-        }
-        Ok(output)
     }
+    Ok(())
 }
 
-impl Patch {
-    /// Only equal, root-level MODULE.bazel header pairs are applied. Creation,
-    /// deletion, nested modules, and source files are skipped without reading
-    /// their content. With no relevant sections, preserve original bytes exactly.
-    pub fn apply_module(&self, original: &[u8]) -> Result<Vec<u8>, String> {
-        let mut output = original.to_vec();
-        for section in &self.sections {
-            if self.strip == 0
-                && section.old.as_deref() == Some("a/MODULE.bazel")
-                && section.new.as_deref() == Some("b/MODULE.bazel")
-            {
-                return Err(
-                    "patch contains a/b prefixes; did you forget to set patch_strip = 1?".into(),
-                );
-            }
-            if section.old.as_deref() == Some("MODULE.bazel")
-                && section.new.as_deref() == Some("MODULE.bazel")
-            {
-                output = section.apply(&output)?;
-            }
-        }
-        Ok(output)
-    }
+// ---------------------------------------------------------------------------
+// File systems.
 
-    /// Preflight a complete patch, then mutate a caller-owned private stage.
-    /// On any error the caller must discard the stage, never publish it.
-    pub fn apply_tree(&self, root: &Path) -> Result<(), String> {
-        check_root(root)?;
-        let mut state: BTreeMap<String, Option<Contents>> = BTreeMap::new();
-        // Include BOTH paths, even when the existing old file is preferred.
-        for section in &self.sections {
-            for path in [&section.old, &section.new].into_iter().flatten() {
-                if !state.contains_key(path) {
-                    state.insert(path.clone(), read_checked(root, path)?);
-                    working_set(&state)?;
-                }
-            }
+/// In-memory module file system (ModuleFileFunction.java:936-955:
+/// `/module/MODULE.bazel` in an InMemoryFileSystem).
+struct ModuleFs {
+    files: BTreeMap<String, (Vec<String>, i32)>,
+    original: Option<Vec<u8>>,
+}
+
+impl PatchFs for ModuleFs {
+    fn root_display(&self) -> String {
+        "/module".into()
+    }
+    fn exists(&mut self, path: &str) -> PResult<bool> {
+        Ok(path.is_empty() || self.files.contains_key(path))
+    }
+    fn read_lines(&mut self, path: &str) -> PResult<Vec<String>> {
+        match self.files.get(path) {
+            Some((lines, _)) => Ok(lines.clone()),
+            None => Err(PatchError::Io(format!(
+                "{} (No such file or directory)",
+                self.display(path)
+            ))),
         }
-        let mut changed = BTreeMap::new();
-        for section in &self.sections {
-            let old = section.old.as_ref().and_then(|p| state[p].as_ref());
-            let new = section.new.as_ref().and_then(|p| state[p].as_ref());
-            let (target, input, mode) = match (&section.old, old, new) {
-                (None, _, Some(_)) => return Err("patch creation target already exists".into()),
-                (None, _, None) => (
-                    section.new.as_ref().expect("validated creation path"),
-                    &[][..],
-                    0o644,
-                ),
-                (Some(path), Some(contents), _) => (path, contents.bytes.as_slice(), contents.mode),
-                (Some(_), None, Some(contents)) => (
-                    section.new.as_ref().expect("existing new path"),
-                    contents.bytes.as_slice(),
-                    contents.mode,
-                ),
-                _ => return Err("cannot find file to patch".into()),
-            };
-            let bytes = section.apply(input)?;
-            let contents = if section.new.is_none() {
-                if !bytes.is_empty() {
-                    return Err("deletion patch did not remove all content".into());
-                }
-                None
-            } else {
-                Some(Contents { bytes, mode })
-            };
-            state.insert(target.clone(), contents);
-            changed.insert(target.clone(), ());
-            working_set(&state)?;
+    }
+    fn permission(&mut self, path: &str) -> PResult<i32> {
+        Ok(self
+            .files
+            .get(path)
+            .map_or(6, |(_, permission)| *permission))
+    }
+    fn delete(&mut self, path: &str) -> PResult<()> {
+        if self.files.remove(path).is_some() && path == "MODULE.bazel" {
+            self.original = None;
         }
-        for path in changed.keys() {
-            let mut parent = Path::new(path).parent();
-            while let Some(p) = parent {
-                if state
-                    .get(p.to_str().ok_or("non-UTF-8 patch parent")?)
-                    .is_some_and(Option::is_some)
-                {
-                    return Err("patch output has a file/directory conflict".into());
-                }
-                parent = p.parent();
-            }
+        Ok(())
+    }
+    fn write(&mut self, path: &str, lines: &[String], permission: i32) -> PResult<()> {
+        if path == "MODULE.bazel" {
+            self.original = None;
         }
-        // No mutation occurred before this point. I/O failures below require
-        // caller rollback; no attempt is made to publish individual files.
-        for path in changed.keys() {
-            let destination = root.join(path);
-            // `oldFile.delete()` before writing: an existing file, hard-link name
-            // or symlink at the path is removed, never written through.
-            if let Some(contents) = &state[path] {
-                create_parents(root, Path::new(path))?;
-                remove_leaf(&destination)?;
-                let mut file = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&destination)
-                    .map_err(|e| format!("write patch file {destination:?}: {e}"))?;
-                file.write_all(&contents.bytes)
-                    .map_err(|e| format!("write patch content: {e}"))?;
-                set_mode(&destination, contents.mode)?;
-            } else {
-                remove_leaf(&destination)?;
-            }
-        }
+        let permission = if permission == -1 { 6 } else { permission };
+        self.files
+            .insert(path.to_owned(), (lines.to_vec(), permission));
         Ok(())
     }
 }
 
-struct Contents {
-    bytes: Vec<u8>,
-    mode: u32,
+/// The on-disk tree below a caller-owned private stage (native safety profile
+/// described in the module documentation).
+pub struct TreeFs {
+    root: PathBuf,
+    display: String,
+    working_set: usize,
 }
 
-fn working_set(state: &BTreeMap<String, Option<Contents>>) -> Result<(), String> {
-    if state
-        .values()
-        .flatten()
-        .map(|c| c.bytes.len())
-        .sum::<usize>()
-        > MAX_TREE_BYTES
-    {
-        return Err("patch tree exceeds 256 MiB working-set limit".into());
+impl TreeFs {
+    pub fn new(root: &Path) -> PResult<Self> {
+        check_root(root)?;
+        let root: PathBuf = root.components().collect();
+        Ok(Self {
+            display: root.to_string_lossy().into_owned(),
+            root,
+            working_set: 0,
+        })
     }
-    Ok(())
+
+    /// The path with every existing ancestor inside the tree checked not to
+    /// be a symlink (missing ancestors are allowed).
+    fn checked(&self, path: &str) -> PResult<PathBuf> {
+        let mut current = self.root.clone();
+        let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
+        for (index, part) in parts.iter().enumerate() {
+            current.push(part);
+            if index + 1 == parts.len() {
+                break;
+            }
+            match fs::symlink_metadata(&current) {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    return Err(PatchError::Io(format!(
+                        "unsafe patch symlink: {} (native patches never traverse symlinked directories)",
+                        current.display()
+                    )));
+                }
+                Ok(_) => {}
+                Err(e)
+                    if e.kind() == io::ErrorKind::NotFound
+                        || e.kind() == io::ErrorKind::NotADirectory => {}
+                Err(e) => {
+                    return Err(PatchError::Io(format!(
+                        "inspect patch path {}: {e}",
+                        current.display()
+                    )));
+                }
+            }
+        }
+        Ok(current)
+    }
+
+    /// Follow a leaf link inside the tree; `None` when nothing exists.
+    fn resolved(&self, path: &str) -> PResult<Option<(PathBuf, fs::Metadata)>> {
+        let current = self.checked(path)?;
+        let meta = match fs::symlink_metadata(&current) {
+            Ok(meta) => meta,
+            Err(e)
+                if e.kind() == io::ErrorKind::NotFound
+                    || e.kind() == io::ErrorKind::NotADirectory =>
+            {
+                return Ok(None);
+            }
+            Err(e) => {
+                return Err(PatchError::Io(format!(
+                    "inspect patch path {}: {e}",
+                    current.display()
+                )));
+            }
+        };
+        if !meta.file_type().is_symlink() {
+            return Ok(Some((current, meta)));
+        }
+        match crate::source_links::resolve_in_root(&self.root, Path::new(path))
+            .map_err(|e| PatchError::Io(format!("unsafe patch symlink {current:?}: {e}")))?
+        {
+            crate::source_links::Resolution::Missing(_) => Ok(None),
+            crate::source_links::Resolution::Resolved(referent) => {
+                let meta = fs::metadata(&referent).map_err(|e| {
+                    PatchError::Io(format!("inspect patch link referent {referent:?}: {e}"))
+                })?;
+                Ok(Some((referent, meta)))
+            }
+        }
+    }
 }
 
-fn directory(path: &Path) -> Result<(), String> {
-    let meta =
-        fs::symlink_metadata(path).map_err(|e| format!("inspect patch directory {path:?}: {e}"))?;
+impl PatchFs for TreeFs {
+    fn root_display(&self) -> String {
+        self.display.clone()
+    }
+
+    fn exists(&mut self, path: &str) -> PResult<bool> {
+        Ok(self.resolved(path)?.is_some())
+    }
+
+    fn read_lines(&mut self, path: &str) -> PResult<Vec<String>> {
+        let shown = self.display(path);
+        let Some((current, meta)) = self.resolved(path)? else {
+            return Err(PatchError::Io(format!(
+                "{shown} (No such file or directory)"
+            )));
+        };
+        if meta.is_dir() {
+            return Err(PatchError::Io(format!("{shown} (Is a directory)")));
+        }
+        if !meta.is_file() {
+            return Err(PatchError::Io(format!(
+                "patch target is not a regular file: {shown}"
+            )));
+        }
+        if meta.len() > MAX_BYTES as u64 {
+            return Err(PatchError::Io("patch input exceeds 16 MiB".into()));
+        }
+        let mut bytes = Vec::new();
+        File::open(&current)
+            .map_err(|e| PatchError::Io(format!("read patch input {shown}: {e}")))?
+            .take(MAX_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| PatchError::Io(e.to_string()))?;
+        if bytes.len() > MAX_BYTES {
+            return Err(PatchError::Io("patch input exceeds 16 MiB".into()));
+        }
+        self.working_set += bytes.len();
+        if self.working_set > MAX_TREE_BYTES {
+            return Err(PatchError::Io(
+                "patch tree exceeds 256 MiB working-set limit".into(),
+            ));
+        }
+        text_lines(&bytes)
+    }
+
+    fn permission(&mut self, path: &str) -> PResult<i32> {
+        let Some((_, meta)) = self.resolved(path)? else {
+            return Err(PatchError::Io(format!(
+                "{} (No such file or directory)",
+                self.display(path)
+            )));
+        };
+        Ok(permission_value(mode_of(&meta)))
+    }
+
+    fn delete(&mut self, path: &str) -> PResult<()> {
+        if path.is_empty() {
+            return Err(PatchError::Io(format!(
+                "{} (Directory not empty)",
+                self.display
+            )));
+        }
+        let current = self.checked(path)?;
+        match fs::symlink_metadata(&current) {
+            Err(e)
+                if e.kind() == io::ErrorKind::NotFound
+                    || e.kind() == io::ErrorKind::NotADirectory =>
+            {
+                Ok(())
+            }
+            Err(e) => Err(PatchError::Io(format!(
+                "inspect patch file {}: {e}",
+                current.display()
+            ))),
+            Ok(meta) if meta.is_dir() => fs::remove_dir(&current).map_err(|_| {
+                PatchError::Io(format!("{} (Directory not empty)", current.display()))
+            }),
+            Ok(_) => fs::remove_file(&current)
+                .map_err(|e| PatchError::Io(format!("delete patch file: {e}"))),
+        }
+    }
+
+    fn write(&mut self, path: &str, lines: &[String], permission: i32) -> PResult<()> {
+        let bytes = encode_lines(lines);
+        if bytes.len() > MAX_BYTES {
+            return Err(PatchError::Io("patched text exceeds 16 MiB limit".into()));
+        }
+        self.working_set += bytes.len();
+        if self.working_set > MAX_TREE_BYTES {
+            return Err(PatchError::Io(
+                "patch tree exceeds 256 MiB working-set limit".into(),
+            ));
+        }
+        let destination = self.checked(path)?;
+        if path.is_empty() {
+            return Err(PatchError::Io(format!("{} (Is a directory)", self.display)));
+        }
+        create_parents(&self.root, Path::new(path))?;
+        // FileOutputStream truncates an existing file in place (mode kept);
+        // a leaf link is replaced instead of written through (native).
+        let mut base = 0o644;
+        match fs::symlink_metadata(&destination) {
+            Ok(meta) if meta.is_dir() => {
+                return Err(PatchError::Io(format!(
+                    "{} (Is a directory)",
+                    destination.display()
+                )));
+            }
+            Ok(meta) if meta.file_type().is_symlink() => {
+                fs::remove_file(&destination)
+                    .map_err(|e| PatchError::Io(format!("delete patch link: {e}")))?;
+            }
+            Ok(meta) => {
+                base = mode_of(&meta);
+                fs::remove_file(&destination)
+                    .map_err(|e| PatchError::Io(format!("replace patch file: {e}")))?;
+            }
+            Err(_) => {}
+        }
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&destination)
+            .map_err(|e| PatchError::Io(format!("write patch file {destination:?}: {e}")))?;
+        file.write_all(&bytes)
+            .map_err(|e| PatchError::Io(format!("write patch content: {e}")))?;
+        let mode = if permission == -1 {
+            base
+        } else {
+            set_permission_bits(base, permission)
+        };
+        // The store represents 0644/0755 only.
+        let mode = if mode & 0o100 != 0 { 0o755 } else { 0o644 };
+        set_mode(&destination, mode).map_err(PatchError::Io)
+    }
+}
+
+#[cfg(unix)]
+fn mode_of(meta: &fs::Metadata) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    meta.permissions().mode() & 0o7777
+}
+
+#[cfg(not(unix))]
+fn mode_of(_meta: &fs::Metadata) -> u32 {
+    0o644
+}
+
+/// getFilePermissionValue (java:184-188) over UnixFileSystem.isReadable/
+/// isWritable/isExecutable (0400/0200/0100, unix/UnixFileSystem.java:179-191).
+fn permission_value(mode: u32) -> i32 {
+    (if mode & 0o400 != 0 { 4 } else { 0 })
+        + (if mode & 0o200 != 0 { 2 } else { 0 })
+        + (if mode & 0o100 != 0 { 1 } else { 0 })
+}
+
+/// setFilePermission (java:190-198) over setReadable 0400, setWritable 0200,
+/// setExecutable 0111 (unix/UnixFileSystem.java:200-225).
+fn set_permission_bits(mode: u32, permission: i32) -> u32 {
+    let mut mode = mode;
+    for (bit, bits) in [(4, 0o400), (2, 0o200), (1, 0o111)] {
+        if permission & bit != 0 {
+            mode |= bits;
+        } else {
+            mode &= !bits;
+        }
+    }
+    mode
+}
+
+impl Patch {
+    /// ModuleFileFunction.maybePatchModuleFile (java:935-955):
+    /// `PatchUtil.applyToSingleFile` on an in-memory `/module/MODULE.bazel`.
+    /// Without an applicable section the original bytes are kept exactly.
+    pub fn apply_module(&self, original: &[u8]) -> Result<Vec<u8>, String> {
+        let mut fs = ModuleFs {
+            files: BTreeMap::from([("MODULE.bazel".to_owned(), (text_lines(original)?, 6))]),
+            original: Some(original.to_vec()),
+        };
+        apply_internal(&self.lines, self.strip, &mut fs, Some("MODULE.bazel"))?;
+        if let Some(original) = fs.original {
+            return Ok(original);
+        }
+        let (lines, _) = fs
+            .files
+            .get("MODULE.bazel")
+            .ok_or("single_version_override patch deleted the module file")?;
+        Ok(encode_lines(lines))
+    }
+
+    /// PatchUtil.apply (java:427-430) on a caller-owned private stage.
+    pub fn apply_tree(&self, root: &Path) -> Result<(), String> {
+        self.apply_tree_detailed(root).map_err(String::from)
+    }
+
+    /// Like [`Patch::apply_tree`], distinguishing PatchFailedException.
+    pub fn apply_tree_detailed(&self, root: &Path) -> PResult<()> {
+        let mut fs = TreeFs::new(root)?;
+        apply_internal(&self.lines, self.strip, &mut fs, None)
+    }
+}
+
+fn directory(path: &Path) -> PResult<()> {
+    let meta = fs::symlink_metadata(path)
+        .map_err(|e| PatchError::Io(format!("inspect patch directory {path:?}: {e}")))?;
     if !meta.is_dir() || meta.file_type().is_symlink() {
-        return Err(format!("unsafe patch directory/symlink: {path:?}"));
+        return Err(PatchError::Io(format!(
+            "unsafe patch directory/symlink: {path:?}"
+        )));
     }
     Ok(())
 }
 
-fn check_root(root: &Path) -> Result<(), String> {
+/// Existing ancestors must be real directories. A missing output directory
+/// (and missing ancestors below the first existing one) is created by the
+/// first write, as `writeLinesAs` creates parents.
+fn check_root(root: &Path) -> PResult<()> {
     let absolute = if root.is_absolute() {
         root.to_path_buf()
     } else {
         std::env::current_dir()
-            .map_err(|e| e.to_string())?
+            .map_err(|e| PatchError::Io(e.to_string()))?
             .join(root)
     };
+    let mut existing = false;
     for ancestor in absolute.ancestors() {
+        if !existing {
+            match fs::symlink_metadata(ancestor) {
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                _ => existing = true,
+            }
+        }
         directory(ancestor)?;
     }
     Ok(())
 }
 
-fn read_checked(root: &Path, path: &str) -> Result<Option<Contents>, String> {
-    let parts = safe_path(path)?;
-    let mut current = root.to_path_buf();
-    for (i, part) in parts.iter().enumerate() {
-        current.push(part);
-        let meta = match fs::symlink_metadata(&current) {
-            Ok(m) => m,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(format!("inspect patch path {current:?}: {e}")),
-        };
-        if meta.file_type().is_symlink() && i + 1 != parts.len() {
-            return Err(format!("unsafe patch symlink: {current:?}"));
-        }
-        if i + 1 != parts.len() {
-            if !meta.is_dir() {
-                return Err("patch ancestor is not a directory".into());
-            }
-            continue;
-        }
-        let (current, meta) = if meta.file_type().is_symlink() {
-            // A leaf link is read through (`oldFile.exists()`/`readFile` follow
-            // it) and later replaced by the patched regular file.
-            match crate::source_links::resolve_in_root(root, Path::new(path))
-                .map_err(|e| format!("unsafe patch symlink {current:?}: {e}"))?
-            {
-                crate::source_links::Resolution::Missing(_) => return Ok(None),
-                crate::source_links::Resolution::Resolved(referent) => {
-                    let meta = fs::symlink_metadata(&referent)
-                        .map_err(|e| format!("inspect patch link referent {referent:?}: {e}"))?;
-                    (referent, meta)
-                }
-            }
-        } else {
-            (current, meta)
-        };
-        if !meta.is_file() {
-            return Err("patch target is not a regular file".into());
-        }
-        let mut mode = 0o644;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if meta.permissions().mode() & 0o100 != 0 {
-                mode = 0o755;
-            }
-        }
-        if meta.len() > MAX_BYTES as u64 {
-            return Err("patch input exceeds 16 MiB".into());
-        }
-        let mut bytes = Vec::new();
-        File::open(&current)
-            .map_err(|e| format!("read patch input: {e}"))?
-            .take(MAX_BYTES as u64 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|e| e.to_string())?;
-        if bytes.len() > MAX_BYTES {
-            return Err("patch input exceeds 16 MiB".into());
-        }
-        return Ok(Some(Contents { bytes, mode }));
-    }
-    unreachable!("nonempty safe path")
-}
-
-/// Remove a regular file or symlink at `path` without following it.
-fn remove_leaf(path: &Path) -> Result<(), String> {
-    match fs::symlink_metadata(path) {
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(format!("inspect patch file {path:?}: {e}")),
-        Ok(meta) if meta.is_dir() => Err(format!("patch target is a directory: {path:?}")),
-        Ok(_) => fs::remove_file(path).map_err(|e| format!("delete patch file: {e}")),
-    }
-}
-
-fn create_parents(root: &Path, path: &Path) -> Result<(), String> {
-    let mut current = root.to_path_buf();
+fn create_parents(root: &Path, path: &Path) -> PResult<()> {
+    let mut chain: Vec<PathBuf> = root
+        .ancestors()
+        .take_while(|ancestor| fs::symlink_metadata(ancestor).is_err())
+        .map(Path::to_path_buf)
+        .collect();
+    chain.reverse();
     if let Some(parent) = path.parent() {
+        let mut current = root.to_path_buf();
         for part in parent.components() {
             current.push(part);
-            match fs::symlink_metadata(&current) {
-                Ok(_) => directory(&current)?,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                    fs::create_dir(&current).map_err(|e| format!("create patch directory: {e}"))?;
-                    set_mode(&current, 0o755)?;
-                }
-                Err(e) => return Err(format!("inspect patch parent: {e}")),
+            chain.push(current.clone());
+        }
+    }
+    for current in chain {
+        match fs::symlink_metadata(&current) {
+            Ok(_) => directory(&current)?,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                fs::create_dir(&current)
+                    .map_err(|e| PatchError::Io(format!("create patch directory: {e}")))?;
+                set_mode(&current, 0o755).map_err(PatchError::Io)?;
             }
+            Err(e) => return Err(PatchError::Io(format!("inspect patch parent: {e}"))),
         }
     }
     Ok(())
@@ -704,17 +1436,10 @@ fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    fn patch(body: &str) -> Patch {
-        parse(body.as_bytes(), 0).unwrap()
-    }
-    fn module(body: &str) -> Patch {
-        patch(&format!("--- MODULE.bazel\n+++ MODULE.bazel\n{body}"))
-    }
-    fn change(path: &str, from: &str, to: &str) -> String {
-        format!("diff --git {path} {path}\n--- {path}\n+++ {path}\n@@ -1 +1 @@\n-{from}\n+{to}\n")
+    fn patch(body: &str, strip: usize) -> Patch {
+        parse(body.as_bytes(), strip).unwrap()
     }
 
     struct Temp(PathBuf);
@@ -731,13 +1456,27 @@ mod tests {
             ));
             fs::create_dir(&path).unwrap();
             set_mode(&path, 0o700).unwrap();
-            Self(path)
+            Self(fs::canonicalize(path).unwrap())
         }
         fn write(&self, path: &str, bytes: &[u8]) {
-            fs::write(self.0.join(path), bytes).unwrap();
+            let path = self.0.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, bytes).unwrap();
         }
         fn read(&self, path: &str) -> Vec<u8> {
             fs::read(self.0.join(path)).unwrap()
+        }
+        fn exists(&self, path: &str) -> bool {
+            fs::symlink_metadata(self.0.join(path)).is_ok()
+        }
+        fn mode(&self, path: &str) -> u32 {
+            mode_of(&fs::symlink_metadata(self.0.join(path)).unwrap())
+        }
+        fn apply(&self, body: &str, strip: usize) -> PResult<()> {
+            patch(body, strip).apply_tree_detailed(&self.0)
+        }
+        fn shown(&self) -> String {
+            self.0.display().to_string()
         }
     }
     impl Drop for Temp {
@@ -746,10 +1485,20 @@ mod tests {
         }
     }
 
+    const FIX: &str = "--- a/p.txt\n+++ b/p.txt\n@@ -1 +1 @@\n-a\n+b\n";
+
+    fn failure(error: PatchError) -> String {
+        match error {
+            PatchError::Failed(message) => message,
+            other => panic!("expected PatchFailedException, got {other:?}"),
+        }
+    }
+
     #[test]
-    fn module_add_dependency() {
-        let p = module(
-            "@@ -1 +1,2 @@ function context\n module(name = \"a\")\n+bazel_dep(name = \"b\", version = \"1\")\n",
+    fn module_projection_adds_a_dependency_and_strips_hunk_context() {
+        let p = patch(
+            "--- MODULE.bazel\n+++ MODULE.bazel\n@@ -1 +1,2 @@ function context\n module(name = \"a\")\n+bazel_dep(name = \"b\", version = \"1\")\n",
+            0,
         );
         assert_eq!(
             p.apply_module(b"module(name = \"a\")\n").unwrap(),
@@ -758,467 +1507,404 @@ mod tests {
     }
 
     #[test]
-    fn irrelevant_sections_preserve_arbitrary_original() {
-        let p = patch(
-            &(change("source", "not here", "new") + &change("nested/MODULE.bazel", "x", "y")),
-        );
-        assert_eq!(
-            p.apply_module(b"\xff\0\rno newline").unwrap(),
-            b"\xff\0\rno newline"
-        );
-    }
-
-    #[test]
-    fn empty_and_mail_only_are_noops() {
-        for input in ["", "Subject: hello\n\n---\n file | 1 +\n"] {
-            assert_eq!(patch(input).apply_module(b"x").unwrap(), b"x");
-        }
-    }
-
-    #[test]
-    fn ordered_sections() {
-        let p = patch(&(change("MODULE.bazel", "a", "b") + &change("MODULE.bazel", "b", "c")));
-        assert_eq!(p.apply_module(b"a").unwrap(), b"c\n");
-    }
-
-    #[test]
-    fn reverse_hunks_preserve_source_positions() {
-        let p = module("@@ -1 +1,2 @@\n-a\n+A\n+extra\n@@ -3 +4 @@\n-c\n+C\n");
-        assert_eq!(p.apply_module(b"a\nb\nc\n").unwrap(), b"A\nextra\nb\nC\n");
-        // Reverse order is observable: the later hunk can match an offset
-        // location which an earlier hunk would otherwise have changed.
-        let p = module("@@ -1 +1 @@\n-a\n+b\n@@ -5 +5 @@\n-a\n+c\n");
-        assert_eq!(p.apply_module(b"a\na\n").unwrap(), b"b\nc\n");
-    }
-
-    #[test]
-    fn nearest_offset_earlier_tie_and_nominal_priority() {
-        let p = module("@@ -3 +3 @@\n-a\n+b\n");
-        assert_eq!(p.apply_module(b"x\na\nx\na\n").unwrap(), b"x\nb\nx\na\n");
-        assert_eq!(p.apply_module(b"a\nx\na\nx\n").unwrap(), b"a\nx\nb\nx\n");
-        assert_eq!(p.apply_module(b"x\nx\nx\na\n").unwrap(), b"x\nx\nx\nb\n");
-    }
-
-    #[test]
-    fn mismatches_report_unsupported_fuzz() {
-        let p = module("@@ -1,2 +1,2 @@\n context\n-old\n+new\n");
-        assert!(
-            p.apply_module(b"different\nold\n")
-                .unwrap_err()
-                .contains("unsupported fuzz")
-        );
-    }
-
-    #[test]
-    fn line_endings_and_no_final_newline() {
-        let p = patch("--- MODULE.bazel\r\n+++ MODULE.bazel\r@@ -1,3 +1,3 @@\n a\r\n-b\r+B\n c");
-        assert_eq!(p.apply_module(b"a\r\nb\rc").unwrap(), b"a\nB\nc\n");
-    }
-
-    #[test]
-    fn empty_context_and_no_newline_markers() {
-        let p = module(
-            "@@ -1,2 +1,2 @@\n\n-old\n\\ No newline at end of file\n+new\n\\ No newline at end of file\n",
-        );
-        assert_eq!(p.apply_module(b"\nold").unwrap(), b"\nnew\n");
-        assert!(parse(b"\\ No newline at end of file\n", 0).is_err());
-        assert!(
-            parse(
-                b"--- f\n+++ f\n@@ -1 +1 @@\n\\ No newline at end of file\n-a\n+b",
-                0
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn root_module_creation_and_deletion_are_skipped() {
-        for input in [
-            "--- /dev/null\n+++ MODULE.bazel\n@@ -0,0 +1 @@\n+new\n",
-            "--- MODULE.bazel\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n",
+    fn module_projection_skips_other_files_creation_deletion_rename_and_modes() {
+        let original = b"module(name = 'a')\r\n\xff no final newline";
+        for body in [
+            "",
+            "From mail preamble\nSubject: x\n",
+            "--- a/data\n+++ b/data\n@@ -1 +1 @@\n-x\n+y\n",
+            "diff --git a/MODULE.bazel b/MODULE.bazel\nnew file mode 100644\n--- /dev/null\n+++ b/MODULE.bazel\n@@ -0,0 +1 @@\n+x\n",
+            "--- a/MODULE.bazel\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n",
+            "diff --git a/data b/other\nsimilarity index 100%\nrename from data\nrename to other\n",
+            "diff --git a/data b/data\nGIT binary patch\nliteral 1\nA00000\n",
         ] {
             assert_eq!(
-                patch(input).apply_module(b"untouched").unwrap(),
-                b"untouched"
-            );
-        }
-    }
-
-    #[test]
-    fn strip_zero_hint_and_strip_one_success() {
-        let input = b"diff --git a/MODULE.bazel b/MODULE.bazel\nindex abcd..ef12 100644\n--- a/MODULE.bazel\n+++ b/MODULE.bazel\n@@ -1 +1 @@\n-a\n+b\n";
-        assert!(
-            parse(input, 0)
-                .unwrap()
-                .apply_module(b"a")
-                .unwrap_err()
-                .contains("patch_strip = 1")
-        );
-        assert_eq!(parse(input, 1).unwrap().apply_module(b"a").unwrap(), b"b\n");
-    }
-
-    #[test]
-    fn paths_timestamps_and_dev_null_before_strip() {
-        let p = parse(
-            b"--- a/./MODULE.bazel\told time\n+++ b/./MODULE.bazel \tnew time\n@@ -1 +1 @@\n-a\n+b",
-            1,
-        )
-        .unwrap();
-        assert_eq!(p.apply_module(b"a").unwrap(), b"b\n");
-        assert!(parse(b"--- /dev/null\n+++ a/new\n@@ -0,0 +1 @@\n+x", 1).is_ok());
-        assert!(parse(b"--- a\n+++ a\n@@ -1 +1 @@\n-a\n+b", 1).is_err());
-    }
-
-    #[test]
-    fn reviewer_strip_counts_lexical_components_before_normalizing() {
-        let input = b"--- ./a/MODULE.bazel\n+++ ./b/MODULE.bazel\n@@ -1 +1 @@\n-old\n+new\n";
-        assert_eq!(
-            parse(input, 1).unwrap().apply_module(b"old\n").unwrap(),
-            b"old\n"
-        );
-        let input = b"--- a//MODULE.bazel\n+++ b//MODULE.bazel\n@@ -1 +1 @@\n-old\n+new\n";
-        assert_eq!(
-            parse(input, 2).unwrap().apply_module(b"old\n").unwrap(),
-            b"new\n"
-        );
-        assert!(
-            parse(input, 1).is_err(),
-            "stripping into an absolute path must fail"
-        );
-    }
-
-    #[test]
-    fn adjacent_plain_sections_are_rejected_instead_of_diverging_from_bazel() {
-        let bytes = b"--- data\n+++ data\n@@ -1 +1 @@\n-old\n+new\n--- MODULE.bazel\n+++ MODULE.bazel\n@@ -1 +1 @@\n-old\n+new\n";
-        assert!(parse(bytes, 0).unwrap_err().contains("explicit separator"));
-    }
-
-    #[test]
-    fn reviewer_dot_prefix_does_not_redirect_tree_patch_to_root_file() {
-        let root = Temp::new();
-        fs::create_dir(root.0.join("a")).unwrap();
-        root.write("file", b"old\n");
-        root.write("a/file", b"old\n");
-        let bytes = b"--- ./a/file\n+++ ./b/file\n@@ -1 +1 @@\n-old\n+new\n";
-        parse(bytes, 1).unwrap().apply_tree(&root.0).unwrap();
-        assert_eq!(root.read("file"), b"old\n");
-        assert_eq!(root.read("a/file"), b"new\n");
-        assert!(!root.0.join("b/file").exists());
-    }
-
-    #[test]
-    fn unsafe_paths_fail_even_in_skipped_sections_before_strip() {
-        for name in [
-            "../source",
-            "prefix/../source",
-            "/absolute/source",
-            "C:/source",
-            "a\\source",
-            "a/../../source",
-            "./",
-        ] {
-            for strip in [0, 1] {
-                assert!(
-                    parse(change(name, "a", "b").as_bytes(), strip).is_err(),
-                    "{name}"
-                );
-            }
-        }
-        assert!(
-            parse(
-                b"diff --git ../f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b",
-                1
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn counts_and_truncation_fail_for_skipped_source() {
-        for body in [
-            "@@ -1,2 +1 @@\n-a\n+b\n",
-            "@@ -1 +1 @@\n-a\n+b\n+c\n",
-            "@@ -1 +1 @@\n-a\n",
-            "@@ -1,0 +1 @@\n-a\n+b\n",
-            "@@ -0 +1 @@\n-a\n+b\n",
-            "@@ nonsense @@\n",
-            "@@ -1 +1 @\n",
-            "@@ -1,100001 +1 @@\n",
-            "@@ -99999999999999999999999 +1 @@\n",
-            "@@ -1 +1 @@\né\n",
-            "@@ -1 +1 @@\n-a\n+b\n@@ broken\n",
-        ] {
-            assert!(
-                parse(format!("--- source\n+++ source\n{body}").as_bytes(), 0).is_err(),
+                patch(body, 1).apply_module(original).unwrap(),
+                original,
                 "{body}"
             );
         }
+        // A mode-only section on MODULE.bazel itself rewrites it as lines.
+        let rewritten = patch(
+            "diff --git a/MODULE.bazel b/MODULE.bazel\nold mode 100644\nnew mode 100755\n",
+            1,
+        )
+        .apply_module(b"a\r\nb")
+        .unwrap();
+        assert_eq!(rewritten, b"a\nb\n");
     }
 
     #[test]
-    fn header_pairs_and_null_counts_required() {
-        for input in [
-            "--- f\n",
-            "+++ f\n",
-            "--- f\n+++ f\n",
-            "@@ -1 +1 @@\n-a\n+b\n",
-            "--- /dev/null\n+++ /dev/null\n@@ -0,0 +0,0 @@\n",
-            "--- /dev/null\n+++ f\n@@ -1 +1 @@\n-a\n+b\n",
-            "--- f\n+++ /dev/null\n@@ -1 +1 @@\n-a\n+b\n",
-            "--- /dev/null\n+++ f\n@@ -1,0 +1 @@\n+b\n",
+    fn module_projection_reports_bazel_prefix_hint_and_format_errors_of_any_section() {
+        let error = patch(
+            "--- a/MODULE.bazel\n+++ b/MODULE.bazel\n@@ -1 +1 @@\n-a\n+b\n",
+            0,
+        )
+        .apply_module(b"a\n")
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "error at line 1: the patch file contains a/b prefixes, did you forget to set patch_strip = 1?"
+        );
+        let error = patch("--- a/data\n+++ b/data\n@@ -1,2 +1,2 @@\n-old\n+new\n", 1)
+            .apply_module(b"a\n")
+            .unwrap_err();
+        assert_eq!(error, "Expecting more chunk line at line 6");
+        let error = patch("--- a/../escape\n+++ b/../escape\n@@ -1 +1 @@\n-a\n+b\n", 1)
+            .apply_module(b"a\n")
+            .unwrap_err();
+        assert_eq!(
+            error,
+            "Cannot patch file outside of external repository (/module), file path = \"../escape\" at line 1"
+        );
+        let error = patch(
+            "diff --git a/MODULE.bazel b/other\nrename from MODULE.bazel\nrename to other\n",
+            1,
+        )
+        .apply_module(b"a\n")
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "Renaming /module/MODULE.bazel while applying patches to it as a single file is not supported."
+        );
+    }
+
+    #[test]
+    fn captured_messages_for_missing_targets_strip_and_malformed_patches() {
+        let t = Temp::new();
+        t.write("p.txt", b"a\n");
+        for (body, strip, message) in [
+            (
+                FIX,
+                0,
+                "Cannot find file to patch (near line 1), old file name (a/p.txt) doesn't exist, new file name (b/p.txt) doesn't exist.",
+            ),
+            (
+                FIX,
+                3,
+                "Cannot determine file name with strip = 3 at line 1:\n--- a/p.txt",
+            ),
+            (
+                "--- a/p.txt\n+++ b/p.txt\n@@ -1,2 +1,2 @@\n-a\n+b\n",
+                1,
+                "Expecting more chunk line at line 6",
+            ),
+            (
+                "--- a/p.txt\n+++ b/p.txt\n@@ garbage @@\n-a\n+b\n",
+                1,
+                "Looks like a unified diff at line 1, but no patch chunk was found.",
+            ),
+            (
+                "--- a/p.txt\n@@ -1 +1 @@\n-a\n+b\n",
+                1,
+                "The patch content must start with ---/+++ prelude lines at line 1.",
+            ),
+            (
+                "--- a/q.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n",
+                1,
+                "Cannot find file to patch (near line 1), old file name (q.txt) doesn't exist, new file name is not specified.",
+            ),
+            (
+                "--- a/p.txt\n+++ b/p.txt\n@@ -1 +1 @@\n-a\n-b\n",
+                1,
+                "Wrong chunk detected near line 5: -b, does not expect a deleted line here.",
+            ),
+            (
+                "diff --git a/p.txt b/p.txt\nnew mode 100x55\n",
+                1,
+                "Wrong file mode format at line 2: new mode 100x55",
+            ),
         ] {
-            assert!(parse(input.as_bytes(), 0).is_err(), "{input}");
+            assert_eq!(failure(t.apply(body, strip).unwrap_err()), message);
         }
-    }
-
-    #[test]
-    fn reject_invalid_utf8_nul_binary_and_mode_metadata() {
-        assert!(parse(b"\xff", 0).unwrap_err().contains("non-UTF-8"));
-        assert!(parse(b"x\0y", 0).unwrap_err().contains("NUL"));
-        for line in [
-            "GIT binary patch",
-            "Binary files a/f and b/f differ",
-            "rename from source",
-            "copy to f",
-            "old mode 100644",
-            "new mode 100755",
-            "new file mode 100644",
-            "deleted file mode 100644",
-            "index ab..cd 120000",
-            "index ab..cd 160000",
-            "index ab..cd nonsense",
-            "index nonsense",
-            "diff --cc source",
-            "diff --combined source",
-            "similarity index 100%",
-            "*** source",
-        ] {
-            let input = format!("{line}\n{}", change("source", "a", "b"));
-            assert!(parse(input.as_bytes(), 0).is_err(), "{line}");
-        }
-        assert!(module("@@ -1 +1 @@\n-a\n+b").apply_module(b"\xff").is_err());
-    }
-
-    #[test]
-    fn git_mail_with_blank_context_and_footer() {
-        let input = "From 123 Mon Sep 17\nSubject: change\n\n---\n f | 2 +-\n\ndiff --git a/MODULE.bazel b/MODULE.bazel\nindex abc..def 100755\n--- a/MODULE.bazel\n+++ b/MODULE.bazel\n@@ -1,2 +1,2 @@\n\n-a\n+b\n--\n2.18.0\n";
+        assert_eq!(t.read("p.txt"), b"a\n");
+        // A negative Starlark strip strips nothing but is shown.
+        let error = parse_signed(b"--- \n+++ b\n", -1)
+            .unwrap()
+            .apply_tree_detailed(&t.0)
+            .unwrap_err();
         assert_eq!(
-            parse(input.as_bytes(), 1)
-                .unwrap()
-                .apply_module(b"\na")
-                .unwrap(),
-            b"\nb\n"
-        );
-        assert!(parse(b"diff --git a/f b/f\nindex abc..def 100644\n", 1).is_err());
-    }
-
-    #[test]
-    fn bounded_inputs() {
-        assert!(parse(&vec![b'x'; MAX_BYTES + 1], 0).is_err());
-        assert!(parse(&vec![b'\n'; MAX_LINES + 1], 0).is_err());
-    }
-
-    #[test]
-    fn insertion_zero_counts_and_empty_output() {
-        assert_eq!(
-            module("@@ -1,0 +2 @@\n+b\n").apply_module(b"a\nc").unwrap(),
-            b"a\nb\nc\n"
-        );
-        assert_eq!(
-            module("@@ -0,0 +1 @@\n+a\n").apply_module(b"").unwrap(),
-            b"a\n"
-        );
-        assert_eq!(
-            module("@@ -1 +0,0 @@\n-a\n").apply_module(b"a").unwrap(),
-            b""
+            failure(error),
+            "Cannot determine file name with strip = -1 at line 1:\n--- "
         );
     }
 
     #[test]
-    fn tree_create_modify_delete_and_ordered_sections() {
+    fn fuzz_skips_applies_partially_and_reports_content_mismatch() {
         let t = Temp::new();
-        t.write("keep", b"old");
-        t.write("delete", b"gone\n");
-        let input = format!(
-            "{}{}diff --git nested/new nested/new\n--- /dev/null\n+++ nested/new\n@@ -0,0 +1 @@\n+born\ndiff --git delete delete\n--- delete\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\n",
-            change("keep", "old", "middle"),
-            change("keep", "middle", "new")
+        // B4/mismatch_two_line: with fuzz 1 nothing is compared or changed.
+        t.write("p.txt", b"a\nkeep\n");
+        t.apply(
+            "--- a/p.txt\n+++ b/p.txt\n@@ -1,2 +1,2 @@\n-zzz\n+b\n keep\n",
+            1,
+        )
+        .unwrap();
+        assert_eq!(t.read("p.txt"), b"a\nkeep\n");
+        // B4/mismatch_context_lines: wrong context, change applied (fuzz 1).
+        t.write("p.txt", b"x\na\ny\n");
+        t.apply(
+            "--- a/p.txt\n+++ b/p.txt\n@@ -1,3 +1,3 @@\n q\n-a\n+b\n r\n",
+            1,
+        )
+        .unwrap();
+        assert_eq!(t.read("p.txt"), b"x\nb\ny\n");
+        // B4/mismatch_middle.
+        t.write("p.txt", b"1\n2\nX\n4\n5\n");
+        let error = t
+            .apply(
+                "--- a/p.txt\n+++ b/p.txt\n@@ -1,5 +1,5 @@\n 1\n 2\n-3\n+B\n 4\n 5\n",
+                1,
+            )
+            .unwrap_err();
+        assert_eq!(
+            failure(error),
+            format!(
+                "in patch applied to {}/p.txt: could not apply patch due to CONTENT_DOES_NOT_MATCH_TARGET, error applying change near line 1",
+                t.shown()
+            )
         );
-        patch(&input).apply_tree(&t.0).unwrap();
-        assert_eq!(t.read("keep"), b"new\n");
-        assert_eq!(t.read("nested/new"), b"born\n");
-        assert!(!t.0.join("delete").exists());
+        // Offsets: the nearest earlier position wins, then later ones.
+        t.write("p.txt", b"1\n2\n3\na\n5\n");
+        t.apply(
+            "--- a/p.txt\n+++ b/p.txt\n@@ -1,3 +1,3 @@\n 3\n-a\n+b\n 5\n",
+            1,
+        )
+        .unwrap();
+        assert_eq!(t.read("p.txt"), b"1\n2\n3\nb\n5\n");
+        // Each hunk applies separately, last hunk first.
+        t.write("p.txt", b"a\nb\nc\nd\ne\nf\n");
+        t.apply(
+            "--- a/p.txt\n+++ b/p.txt\n@@ -1,2 +1,2 @@\n-a\n+A\n b\n@@ -5,2 +5,2 @@\n e\n-f\n+F\n",
+            1,
+        )
+        .unwrap();
+        assert_eq!(t.read("p.txt"), b"A\nb\nc\nd\ne\nF\n");
     }
 
     #[test]
-    fn tree_module_creation_and_deletion_are_applied() {
+    fn one_line_fuzz_crash_and_index_errors_are_explicit() {
         let t = Temp::new();
-        patch("--- /dev/null\n+++ MODULE.bazel\n@@ -0,0 +1 @@\n+a\n")
-            .apply_tree(&t.0)
+        // B4/mismatch_context: genuine Bazel crashes (exit 37) in subList(1, 0).
+        t.write("p.txt", b"a\n");
+        let error = t
+            .apply("--- a/p.txt\n+++ b/p.txt\n@@ -1 +1 @@\n-zzz\n+b\n", 1)
+            .unwrap_err();
+        assert_eq!(
+            error,
+            PatchError::Crash(
+                "java.lang.IllegalArgumentException: fromIndex(1) > toIndex(0)".into()
+            )
+        );
+        assert!(error.to_string().contains("genuine Bazel 9.3 crashes"));
+        assert_eq!(t.read("p.txt"), b"a\n");
+        // verifyChunk reads one line past a short file: IndexOutOfBounds,
+        // caught and reported by applyPatchToFile.
+        t.write("p.txt", b"a\nb\nc\n");
+        let error = t
+            .apply(
+                "--- a/p.txt\n+++ b/p.txt\n@@ -1,4 +1,4 @@\n a\n b\n c\n-d\n+D\n",
+                1,
+            )
+            .unwrap_err();
+        assert_eq!(
+            failure(error),
+            format!(
+                "in patch applied to {}/p.txt: Index 3 out of bounds for length 3, error applying change near line 1",
+                t.shown()
+            )
+        );
+    }
+
+    #[test]
+    fn creation_deletion_missing_directories_and_existing_targets() {
+        let t = Temp::new();
+        let create = "--- /dev/null\n+++ b/new/dir/n.txt\n@@ -0,0 +1,2 @@\n+n1\n+n2\n";
+        t.apply(create, 1).unwrap();
+        assert_eq!(t.read("new/dir/n.txt"), b"n1\nn2\n");
+        assert_eq!(t.mode("new/dir/n.txt"), 0o644);
+        // Creation over an existing file prepends (InsertDelta at 0).
+        t.write("new/dir/n.txt", b"old\n");
+        t.apply(create, 1).unwrap();
+        assert_eq!(t.read("new/dir/n.txt"), b"n1\nn2\nold\n");
+        // A missing output directory is created by the write.
+        let nested = Temp::new();
+        patch(create, 1)
+            .apply_tree_detailed(&nested.0.join("nosuch"))
             .unwrap();
-        assert_eq!(t.read("MODULE.bazel"), b"a\n");
-        patch("--- MODULE.bazel\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n")
-            .apply_tree(&t.0)
+        assert_eq!(nested.read("nosuch/new/dir/n.txt"), b"n1\nn2\n");
+        // Deletion removes the file; parents stay.
+        t.write("p.txt", b"a\n");
+        t.apply("--- a/p.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n", 1)
             .unwrap();
-        assert!(!t.0.join("MODULE.bazel").exists());
+        assert!(!t.exists("p.txt"));
+        // A deletion whose remaining content is nonempty rewrites the file.
+        t.write("p.txt", b"a\nb\n");
+        t.apply("--- a/p.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n", 1)
+            .unwrap();
+        assert_eq!(t.read("p.txt"), b"b\n");
     }
 
     #[test]
-    fn tree_prefers_existing_old_and_falls_back_to_new() {
+    fn concatenated_plain_sections_apply_to_the_last_file_only() {
+        // B4/multi_file: without a separator the first hunk joins the second
+        // section and, with fuzz, changes nothing.
         let t = Temp::new();
-        t.write("old", b"a");
-        t.write("new", b"other");
-        let p = patch("--- old\n+++ new\n@@ -1 +1 @@\n-a\n+b");
-        p.apply_tree(&t.0).unwrap();
-        assert_eq!(t.read("old"), b"b\n");
-        assert_eq!(t.read("new"), b"other");
-        fs::remove_file(t.0.join("old")).unwrap();
-        t.write("new", b"a");
-        p.apply_tree(&t.0).unwrap();
-        assert_eq!(t.read("new"), b"b\n");
+        t.write("p.txt", b"a\n");
+        t.write("q.txt", b"q\n");
+        t.apply(
+            &format!("{FIX}--- a/q.txt\n+++ b/q.txt\n@@ -1 +1 @@\n-q\n+Q\n"),
+            1,
+        )
+        .unwrap();
+        assert_eq!(t.read("p.txt"), b"a\n");
+        assert_eq!(t.read("q.txt"), b"Q\n");
+        // Git headers separate sections.
+        t.apply(
+            "diff --git a/p.txt b/p.txt\n--- a/p.txt\n+++ b/p.txt\n@@ -1 +1 @@\n-a\n+P\ndiff --git a/q.txt b/q.txt\n--- a/q.txt\n+++ b/q.txt\n@@ -1 +1 @@\n-Q\n+R\n",
+            1,
+        )
+        .unwrap();
+        assert_eq!(t.read("p.txt"), b"P\n");
+        assert_eq!(t.read("q.txt"), b"R\n");
     }
 
     #[test]
-    fn preflight_content_failure_makes_no_files_or_parents() {
+    fn git_modes_renames_and_new_file_modes() {
         let t = Temp::new();
-        t.write("existing", b"actual");
-        let p = patch(
-            &("--- /dev/null\n+++ parent/new\n@@ -0,0 +1 @@\n+new\n".to_owned()
-                + &change("existing", "wrong", "replacement")),
+        t.write("x.sh", b"#!/bin/sh\n");
+        set_mode(&t.0.join("x.sh"), 0o755).unwrap();
+        t.apply(
+            "diff --git a/x.sh b/x.sh\nold mode 100755\nnew mode 100644\n",
+            1,
+        )
+        .unwrap();
+        assert_eq!(t.mode("x.sh"), 0o644);
+        t.apply(
+            "diff --git a/x.sh b/x.sh\nold mode 100644\nnew mode 100755\n",
+            1,
+        )
+        .unwrap();
+        assert_eq!(t.mode("x.sh"), 0o755);
+        t.write("p.txt", b"a\n");
+        t.apply(
+            "diff --git a/p.txt b/r.txt\nsimilarity index 100%\nrename from p.txt\nrename to r.txt\n",
+            1,
+        )
+        .unwrap();
+        assert!(!t.exists("p.txt"));
+        assert_eq!(t.read("r.txt"), b"a\n");
+        let error = t
+            .apply(
+                "diff --git a/p.txt b/r.txt\nrename from p.txt\nrename to r.txt\n",
+                1,
+            )
+            .unwrap_err();
+        assert_eq!(
+            failure(error),
+            "Cannot rename file (near line 4), old file name (p.txt) doesn't exist, new file name (r.txt) already exists."
         );
-        assert!(p.apply_tree(&t.0).is_err());
-        assert!(!t.0.join("parent").exists());
-        assert_eq!(t.read("existing"), b"actual");
+        t.apply(
+            "diff --git a/e.sh b/e.sh\nnew file mode 100755\nindex 0000000..1111111\n--- /dev/null\n+++ b/e.sh\n@@ -0,0 +1 @@\n+echo e\n",
+            1,
+        )
+        .unwrap();
+        assert_eq!(t.read("e.sh"), b"echo e\n");
+        assert_eq!(t.mode("e.sh"), 0o755);
+        // Executable modes are kept by content patches.
+        t.write("x.sh", b"#!/bin/sh\necho a\n");
+        set_mode(&t.0.join("x.sh"), 0o755).unwrap();
+        t.apply(
+            "--- a/x.sh\n+++ b/x.sh\n@@ -1,2 +1,2 @@\n #!/bin/sh\n-echo a\n+echo b\n",
+            1,
+        )
+        .unwrap();
+        assert_eq!(t.mode("x.sh"), 0o755);
     }
 
     #[test]
-    fn preflight_directory_conflicts_make_no_changes() {
+    fn text_lines_line_endings_markers_and_malformed_utf8() {
         let t = Temp::new();
-        t.write("existing", b"a");
-        let input = format!(
-            "{}diff --git parent parent\n--- /dev/null\n+++ parent\n@@ -0,0 +1 @@\n+x\ndiff --git parent/new parent/new\n--- /dev/null\n+++ parent/new\n@@ -0,0 +1 @@\n+y\n",
-            change("existing", "a", "b")
-        );
-        assert!(patch(&input).apply_tree(&t.0).is_err());
-        assert_eq!(t.read("existing"), b"a");
-        assert!(!t.0.join("parent").exists());
+        t.write("q.txt", b"a");
+        t.apply(
+            "--- a/q.txt\n+++ b/q.txt\n@@ -1 +1 @@\n-a\n\\ No newline at end of file\n+b\n\\ No newline at end of file\n",
+            1,
+        )
+        .unwrap();
+        assert_eq!(t.read("q.txt"), b"b\n");
+        t.write("p.txt", b"a\r\nz\rend");
+        t.apply(
+            "--- a/p.txt\r\n+++ b/p.txt\r\n@@ -1 +1 @@\r\n-a\r\n+b\r\n",
+            1,
+        )
+        .unwrap();
+        assert_eq!(t.read("p.txt"), b"b\nz\nend\n");
+        // UTF-8 decoding replaces malformed bytes (writeLinesAs re-encodes).
+        t.write("u.txt", b"\xff\x00x\n");
+        t.apply(
+            "--- a/u.txt\n+++ b/u.txt\n@@ -1 +1,2 @@\n \u{fffd}\0x\n+caf\u{e9}\n",
+            1,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(t.read("u.txt"), b"\xef\xbf\xbd\x00x\ncaf\xc3\xa9\n");
+        // Text that is no patch is ignored.
+        t.apply("this is not a patch\n", 1).unwrap();
+        t.apply("", 1).unwrap();
     }
 
     #[test]
-    fn creation_conflict_and_incomplete_deletion_fail_preflight() {
-        let t = Temp::new();
-        t.write("f", b"a\nb\n");
-        assert!(
-            patch("--- /dev/null\n+++ f\n@@ -0,0 +1 @@\n+x\n")
-                .apply_tree(&t.0)
-                .is_err()
-        );
-        assert!(
-            patch("--- f\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n")
-                .apply_tree(&t.0)
-                .is_err()
-        );
-        assert_eq!(t.read("f"), b"a\nb\n");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn symlinks_final_ancestor_root_and_unused_new_path_are_rejected() {
+    fn native_link_safety_profile() {
         use std::os::unix::fs::symlink;
         let t = Temp::new();
         let outside = Temp::new();
-        outside.write("f", b"a");
-        symlink(outside.0.join("f"), t.0.join("link")).unwrap();
+        // An in-tree leaf link is read through and replaced (referent kept).
+        t.write("t.txt", b"a\n");
+        symlink("t.txt", t.0.join("p.txt")).unwrap();
+        t.apply(FIX, 1).unwrap();
+        assert!(fs::symlink_metadata(t.0.join("p.txt")).unwrap().is_file());
+        assert_eq!(t.read("p.txt"), b"b\n");
+        assert_eq!(t.read("t.txt"), b"a\n");
+        // Escaping leaf links and symlinked ancestors are explicit errors.
+        outside.write("p.txt", b"a\n");
+        fs::remove_file(t.0.join("p.txt")).unwrap();
+        symlink(outside.0.join("p.txt"), t.0.join("p.txt")).unwrap();
+        assert!(
+            matches!(t.apply(FIX, 1), Err(PatchError::Io(m)) if m.contains("unsafe patch symlink"))
+        );
         symlink(&outside.0, t.0.join("dir")).unwrap();
-        t.write("safe", b"a");
-        for path in ["link", "dir/f"] {
-            let p = patch(&(change("safe", "a", "b") + &change(path, "a", "b")));
-            assert!(p.apply_tree(&t.0).is_err());
-        }
-        assert!(
-            patch(&change("f", "a", "b"))
-                .apply_tree(&t.0.join("dir"))
-                .is_err()
-        );
-        assert!(
-            patch("--- safe\n+++ link\n@@ -1 +1 @@\n-a\n+b")
-                .apply_tree(&t.0)
-                .is_err()
-        );
-        assert!(
-            patch("--- link\n+++ /dev/null\n@@ -1 +0,0 @@\n-a")
-                .apply_tree(&t.0)
-                .is_err()
-        );
-        assert_eq!(t.read("safe"), b"a");
-        assert_eq!(outside.read("f"), b"a");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn hardlinks_are_broken_like_bazel_and_modes_normalized() {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let t = Temp::new();
-        t.write("f", b"a");
-        fs::hard_link(t.0.join("f"), t.0.join("link")).unwrap();
-        // PatchUtil deletes the old name and writes a fresh file: the other
-        // hard-link name keeps the original bytes.
-        patch(&change("f", "a", "b")).apply_tree(&t.0).unwrap();
-        assert_eq!(t.read("f"), b"b\n");
-        assert_eq!(t.read("link"), b"a");
-        assert_eq!(fs::metadata(t.0.join("f")).unwrap().nlink(), 1);
-        assert_eq!(fs::metadata(t.0.join("link")).unwrap().nlink(), 1);
-        fs::remove_file(t.0.join("link")).unwrap();
-        t.write("f", b"a");
-        set_mode(&t.0.join("f"), 0o4751).unwrap();
-        let input = format!(
-            "{}diff --git nested/new nested/new\n--- /dev/null\n+++ nested/new\n@@ -0,0 +1 @@\n+x\n",
-            change("f", "a", "b")
-        );
-        patch(&input).apply_tree(&t.0).unwrap();
-        for (path, mode) in [("f", 0o755), ("nested", 0o755), ("nested/new", 0o644)] {
-            assert_eq!(
-                fs::metadata(t.0.join(path)).unwrap().permissions().mode() & 0o7777,
-                mode
-            );
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn internal_leaf_links_are_read_through_and_replaced_never_written_through() {
-        use std::os::unix::fs::{PermissionsExt, symlink};
-        let t = Temp::new();
-        fs::create_dir(t.0.join("data")).unwrap();
-        t.write("data/real.txt", b"real\n");
-        set_mode(&t.0.join("data/real.txt"), 0o755).unwrap();
-        symlink("data/real.txt", t.0.join("rel.txt")).unwrap();
-        symlink("missing", t.0.join("dangling")).unwrap();
-        patch(&change("rel.txt", "real", "patched"))
-            .apply_tree(&t.0)
-            .unwrap();
-        let meta = fs::symlink_metadata(t.0.join("rel.txt")).unwrap();
-        assert!(meta.is_file(), "the link itself is replaced");
-        assert_eq!(meta.permissions().mode() & 0o777, 0o755, "referent mode");
-        assert_eq!(t.read("rel.txt"), b"patched\n");
-        assert_eq!(t.read("data/real.txt"), b"real\n", "referent unchanged");
-        // Deleting a link removes the link, not its referent.
-        symlink("data/real.txt", t.0.join("gone.txt")).unwrap();
-        patch("--- gone.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-real")
-            .apply_tree(&t.0)
-            .unwrap();
-        assert!(fs::symlink_metadata(t.0.join("gone.txt")).is_err());
-        assert_eq!(t.read("data/real.txt"), b"real\n");
-        // A dangling leaf is a missing file to patch.
-        assert!(
-            patch(&change("dangling", "a", "b"))
-                .apply_tree(&t.0)
-                .unwrap_err()
-                .contains("cannot find file to patch")
-        );
+        assert!(matches!(
+            t.apply("--- a/dir/p.txt\n+++ b/dir/p.txt\n@@ -1 +1 @@\n-a\n+b\n", 1),
+            Err(PatchError::Io(m)) if m.contains("unsafe patch symlink")
+        ));
+        assert_eq!(outside.read("p.txt"), b"a\n");
+        let error = t
+            .apply("--- a/../x\n+++ b/../x\n@@ -1 +1 @@\n-a\n+b\n", 1)
+            .unwrap_err();
         assert_eq!(
-            fs::read_link(t.0.join("dangling")).unwrap(),
-            Path::new("missing")
+            failure(error),
+            format!(
+                "Cannot patch file outside of external repository ({}), file path = \"../x\" at line 1",
+                t.shown()
+            )
         );
+    }
+
+    #[test]
+    fn hard_links_are_broken_like_bazel() {
+        let t = Temp::new();
+        t.write("p.txt", b"a\n");
+        fs::hard_link(t.0.join("p.txt"), t.0.join("h.txt")).unwrap();
+        t.apply(FIX, 1).unwrap();
+        assert_eq!(t.read("p.txt"), b"b\n");
+        assert_eq!(t.read("h.txt"), b"a\n");
+    }
+
+    #[test]
+    fn huge_hunk_numbers_crash_bazel_and_limits_hold() {
+        let error = patch("--- a/p\n+++ b/p\n@@ -1,99999999999 +1 @@\n-a\n+b\n", 1)
+            .apply_module(b"a\n")
+            .unwrap_err();
+        assert!(error.contains("NumberFormatException"), "{error}");
+        assert!(parse(&vec![b'x'; MAX_BYTES + 1], 0).is_err());
+        assert!(parse("\n".repeat(MAX_LINES + 1).as_bytes(), 0).is_err());
     }
 }

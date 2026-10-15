@@ -501,7 +501,7 @@ fn git_internal_build_and_unselected_file_links_survive_cold_and_offline_warm_bu
 
 #[cfg(unix)]
 #[test]
-fn git_preserved_links_build_as_sources_but_do_not_relax_load_or_glob_boundaries() {
+fn git_preserved_links_build_as_sources_and_load_but_do_not_relax_glob_boundaries() {
     use std::os::unix::fs::symlink;
     // Source artifacts follow internal links like Bazel (docs/ARCHIVE_SYMLINKS.md).
     let f = Fixture::new();
@@ -513,39 +513,36 @@ fn git_preserved_links_build_as_sources_but_do_not_relax_load_or_glob_boundaries
     f.git_override();
     let built = f.run(&["--cache-dir=chosen", "build", "@first//p:copy"]);
     assert_eq!(fs::read(&files(&built)[0].1).unwrap(), b"alpha");
-    for (kind, build, command, target, diagnostic) in [
-        (
-            "load",
-            "load(':linked.bzl','VALUE')\nfilegroup(name='probe')\n",
-            "query",
-            "@first//p:probe",
-            "symlink load sources are unsupported",
-        ),
-        (
-            "glob",
-            "filegroup(name='probe',srcs=glob(['linked']))\n",
-            "query",
-            "@first//p:probe",
-            "glob could match unsupported symlink",
-        ),
-    ] {
-        let f = Fixture::new();
-        f.file("repos/alpha/p/BUILD.bazel", build);
-        let origin = f.0.join("repos/alpha/p");
-        if kind == "load" {
-            f.file("repos/alpha/p/real.bzl", "VALUE=1\n");
-            symlink("real.bzl", origin.join("linked.bzl")).unwrap();
-        } else {
-            symlink("data.txt", origin.join("linked")).unwrap();
-        }
-        f.git_override();
-        let result = f.run(&["--cache-dir=chosen", command, target]);
-        assert!(!result.status.success(), "{kind}");
-        assert!(
-            stderr(&result).contains(diagnostic),
-            "{kind}: {}",
-            stderr(&result)
-        );
-        assert!(result.stdout.is_empty());
-    }
+    // A .bzl loaded through an internal link is read through it (N26), as
+    // Bazel's FileValue does.
+    let f = Fixture::new();
+    f.file(
+        "repos/alpha/p/BUILD.bazel",
+        "load(':linked.bzl','VALUE')\nfilegroup(name='probe', tags=[VALUE])\n",
+    );
+    f.file("repos/alpha/p/real.bzl", "VALUE='through-link'\n");
+    symlink("real.bzl", f.0.join("repos/alpha/p/linked.bzl")).unwrap();
+    f.git_override();
+    let result = f.run(&["--cache-dir=chosen", "query", "@first//p:probe"]);
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert!(
+        String::from_utf8_lossy(&result.stdout).contains("//p:probe"),
+        "{}",
+        String::from_utf8_lossy(&result.stdout)
+    );
+    let f = Fixture::new();
+    f.file(
+        "repos/alpha/p/BUILD.bazel",
+        "filegroup(name='probe',srcs=glob(['linked']))\n",
+    );
+    symlink("data.txt", f.0.join("repos/alpha/p/linked")).unwrap();
+    f.git_override();
+    let result = f.run(&["--cache-dir=chosen", "query", "@first//p:probe"]);
+    assert!(!result.status.success());
+    assert!(
+        stderr(&result).contains("glob could match unsupported symlink"),
+        "{}",
+        stderr(&result)
+    );
+    assert!(result.stdout.is_empty());
 }

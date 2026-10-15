@@ -816,8 +816,17 @@ impl Engine {
         }
         if linked {
             let relative = Path::new(&label.package).join(&label.name);
-            match crate::source_links::resolve_in_root(&repository_root, &relative)
-                .map_err(|error| format!("source {label}: {error}"))?
+            // Links may continue into a repository already materialized in
+            // this invocation (reads only; the label stays logical).
+            let others = self.repositories.materialized_roots();
+            let blocked = self.repositories.link_blocked_prefixes();
+            match crate::source_links::resolve_across(
+                &repository_root,
+                &relative,
+                &others,
+                &blocked,
+            )
+            .map_err(|error| format!("source {label}: {error}"))?
             {
                 crate::source_links::Resolution::Resolved(resolved) => path = resolved,
                 // A dangling source symlink is a missing input file, like a

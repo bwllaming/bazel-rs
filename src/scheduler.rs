@@ -134,12 +134,17 @@ pub fn execute_graph(
     nodes: Vec<PlannedAction>,
     jobs: usize,
 ) -> Result<BTreeMap<String, crate::action::ActionResult>, String> {
-    execute_with(cache, nodes, jobs, &action::execute)
+    // Process strings cross Bazel's internalToPlatform boundary first: lone
+    // analysis-model bytes decode with replacement (bazel_bytes.rs).
+    execute_with(cache, nodes, jobs, &|cache: &Path, action: &Action| {
+        action::execute(cache, &crate::bazel_bytes::platform_action(action))
+    })
 }
 
 // The worker seam allows concurrency/lifecycle tests without sleeps or shell
-// timing assumptions. Production always delegates to action::execute unchanged,
-// retaining its atomic per-key fs2 cache locking.
+// timing assumptions. Production always delegates to action::execute (after
+// the platform-string conversion), retaining its atomic per-key fs2 cache
+// locking.
 fn execute_with<F>(
     cache: &Path,
     nodes: Vec<PlannedAction>,

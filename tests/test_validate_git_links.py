@@ -34,7 +34,6 @@ MESSAGES = {
     'cycle': 'Git symlink e2e/smoke/.bazelversion has a cycle',
     'directory': 'Git symlink e2e/smoke/.bazelversion has a directory target',
     'module_link': 'MODULE.bazel symlink is unsupported',
-    'bzl_link': 'native.bzl symlink is unsupported',
     'malformed_target': 'Git committed symlink malformedlink has an unsafe target containing a NUL control byte',
 }
 
@@ -44,13 +43,15 @@ MESSAGES = {
 # No runtime dependency on that report or its removed private scratch tree.
 CAPTURED = {
     'module_link': 'bazel-rs: Git file is not regular (symlinks/special files forbidden): /tmp/opencode/git-links-validation-hbpmlh83/native/native.root-module-link/repositories/git/trees/.stage-SkXhqh/MODULE.bazel\n',
-    'bzl_link': 'bazel-rs: symlink load sources are unsupported: @@opencode_gitcheck_dep+//bzl:native.bzl (/tmp/opencode/git-links-validation-hbpmlh83/native/native.selected-consumer-boundaries/repositories/git/trees/34daeec2a87e5feababbec9d39617960b7f65f9f7ffdaafd222b8e136ca08049/bzl/native.bzl)\n',
 }
 # Retired with N19 (docs/ARCHIVE_SYMLINKS.md): native no longer rejects a patched
 # link leaf ('unsafe patch symlink', the former 'patch_link' class) or a source
 # artifact through an internal link (the former uncaptured 'source_link'
 # contract); genuine Bazel builds both, so both phases now require success.
+# Retired with N26 (docs/REPOSITORY_RULES.md): a .bzl loaded through an
+# internal link (the former captured 'bzl_link' class); Bazel loads it too.
 RETIRED_REJECTIONS = (
+    'bazel-rs: symlink load sources are unsupported: @@opencode_gitcheck_dep+//bzl:native.bzl (/tmp/opencode/git-links-validation-hbpmlh83/native/native.selected-consumer-boundaries/repositories/git/trees/34daeec2a87e5feababbec9d39617960b7f65f9f7ffdaafd222b8e136ca08049/bzl/native.bzl)\n',
     'bazel-rs: cannot apply patch //:git-local.patch: unsafe patch symlink: "/tmp/opencode/git-links-validation-hbpmlh83/native/native.patch-symlink-leaf/repositories/git/trees/.stage-ts1Jlm/e2e/smoke/.bazelversion"\n',
     'bazel-rs: source symlinks are not supported: /private/git/tree/artifact/link\n',
 )
@@ -80,11 +81,6 @@ class CapturedDiagnosticTests(unittest.TestCase):
                             for other in ('BUILD.bazel', 'OTHER_MODULE.bazel', 'MODULE.bazel.backup', 'native.bzl')]
                            + [CAPTURED['module_link'].replace('forbidden): ', 'forbidden):\n'),
                               CAPTURED['module_link'].replace('Git file', 'Archive file')],
-            'bzl_link': [CAPTURED['bzl_link'].replace('native.bzl', 'other.bzl'),
-                         CAPTURED['bzl_link'].replace('//bzl:', '//wrong:'),
-                         CAPTURED['bzl_link'].replace('/bzl/native.bzl', '/artifact/link'),
-                         CAPTURED['bzl_link'].replace('opencode_gitcheck_dep+', 'unrelated+'),
-                         CAPTURED['bzl_link'].replace('unsupported: ', 'unsupported:\n')],
         }
         for diagnostic, examples in wrong.items():
             for text in examples:
@@ -104,6 +100,15 @@ class CapturedDiagnosticTests(unittest.TestCase):
     def test_retired_link_rejections_no_longer_satisfy_any_rejection_class(self):
         self.assertNotIn('patch_link', links.DIAGNOSTICS)
         self.assertNotIn('source_link', links.DIAGNOSTICS)
+        self.assertNotIn('bzl_link', links.DIAGNOSTICS)
+        native = '@@' + links.shared.DEP + '+//bzl:selected\n'
+        links.bzl_result(record(native), native=True)
+        links.bzl_result(record('@gitdep//bzl:selected\n'))
+        for wrong, is_native in ((record('@gitdep//bzl:selected\n'), True), (record(''), False),
+                                 (record(native + native), True),
+                                 (record(stderr=RETIRED_REJECTIONS[0], returncode=1), True)):
+            with self.assertRaises(ValueError):
+                links.bzl_result(wrong, native=is_native)
         self.assertIsNone(item('native.patch-symlink-leaf')['diagnostic'])
         for text in RETIRED_REJECTIONS:
             for diagnostic in links.DIAGNOSTICS:
@@ -532,8 +537,11 @@ class MainTests(unittest.TestCase):
                     raise RuntimeError('injected while origin is unavailable')
                 if fault == 'input':
                     (cwd / 'git-local.patch').write_bytes(b'changed')
-                if value['diagnostic'] or phase == 'bzl':
-                    diagnostic = value['diagnostic'] or 'bzl_link'
+                if phase == 'bzl':
+                    prefix = '@@' + links.shared.DEP + '+' if engine == 'native' else '@gitdep'
+                    result = record(prefix + '//bzl:selected\n')
+                elif value['diagnostic']:
+                    diagnostic = value['diagnostic']
                     # Captured word-order regressions are exercised end-to-end in
                     # the harness; new cases remain explicitly synthetic contracts.
                     message = CAPTURED.get(diagnostic, MESSAGES[diagnostic])
@@ -632,10 +640,13 @@ class MainTests(unittest.TestCase):
         self.assertTrue(report['build_commands_executed'])
         self.assertFalse(report['test_commands_executed'])
         # Native-only cases invoke only native, except the reference comparison
-        # of the consumer case's linked source artifact.
-        self.assertTrue(all(engine == 'native' or (name == 'native.selected-consumer-boundaries' and phase.startswith('artifact'))
+        # of the consumer case's linked source artifact and linked .bzl load.
+        self.assertTrue(all(engine == 'native' or (name == 'native.selected-consumer-boundaries'
+                                                   and (phase.startswith('artifact') or phase == 'bzl'))
                             for name, engine, phase in observations if name.startswith('native.')))
         self.assertIn(('native.selected-consumer-boundaries', 'reference', 'artifact.files'), observations)
+        self.assertIn(('native.selected-consumer-boundaries', 'reference', 'bzl'), observations)
+        self.assertIn(('native.selected-consumer-boundaries', 'native', 'bzl'), observations)
         for mutation in ('case', 'plan', 'parity', 'kind', 'pin', 'native-hash', 'sources', 'shutdown', 'shutdown-code',
                          'scratch', 'run-id', 'extra-run', 'stdout-hash', 'stdout-raw', 'argv', 'cwd', 'git-mode',
                          'commit', 'input', 'marker', 'link-kind', 'link-target', 'link-bytes', 'read-bytes',

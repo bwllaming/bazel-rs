@@ -9,6 +9,7 @@ mod analysis_runtime;
 pub mod archive;
 pub mod args;
 mod attribute_values;
+pub mod bazel_bytes;
 mod bazel_label;
 mod bazel_options;
 mod build_setting_ctx;

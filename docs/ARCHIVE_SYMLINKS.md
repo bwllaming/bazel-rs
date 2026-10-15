@@ -121,12 +121,30 @@ files (content digests); hard-link identity is not part of the manifest.
 
 | Consumer | Bazel 9.3 | Native decision |
 | --- | --- | --- |
-| Source artifacts (`engine.rs` source target resolution, action inputs) | Follows symlinks (`FileValue`); a dangling source link is a missing input file; a link cycle is reported as `circular symlinks detected`. | **Now follows**, uniformly for every repository (main, archive, Git, local): `source_links::resolve_in_root` resolves relative, absolute-inside-root, directory and chained links to a symlink-free path, which the action layer reads (its no-symlink checks still hold). A dangling link is `missing input file '<label>'`. A cycle produces Bazel's report (`io/AbstractFileChainUniquenessFunction.java:45-52`, `io/FileSymlinkCycleUniquenessFunction.java:64-82`, rotated to the smallest path as in `canonicalize` :63-77): `circular symlinks detected` / `[start of symlink cycle]` / the link paths / `[end of symlink cycle]`. A link resolving outside its repository root is an explicit error (`outside its repository root`) where Bazel would follow it: if the outside file exists Bazel reads it, otherwise (as for the A2 `escape.txt -> ../../outside.txt` probe) Bazel reports `missing input file`. Package-boundary checks stay on the logical label path. |
+| Source artifacts (`engine.rs` source target resolution, action inputs) | Follows symlinks (`FileValue`); a dangling source link is a missing input file; a link cycle is reported as `circular symlinks detected`. | **Now follows**, uniformly for every repository (main, archive, Git, local): `source_links::resolve_in_root` resolves relative, absolute-inside-root, directory and chained links to a symlink-free path, which the action layer reads (its no-symlink checks still hold). A dangling link is `missing input file '<label>'`. A cycle produces Bazel's report (`io/AbstractFileChainUniquenessFunction.java:45-52`, `io/FileSymlinkCycleUniquenessFunction.java:64-82`, rotated to the smallest path as in `canonicalize` :63-77): `circular symlinks detected` / `[start of symlink cycle]` / the link paths / `[end of symlink cycle]`. Since N26 a link leaving its repository is followed into another repository materialized in this invocation (`resolve_across`, see "Cross-repository links" below); a missing target outside the root is `missing input file`, as in Bazel (the A2 `escape.txt -> ../../outside.txt` probe); an existing target outside every materialized repository is an explicit error (`outside its repository root`) where Bazel would read it. Package-boundary checks stay on the logical label path. |
 | `glob()` (`glob.rs`, N14 policy) | Follows file and directory symlinks (`skyframe/GlobFunctionWithMultipleRecursiveFunctions.java:207-288`); dangling links are skipped. | **Unchanged**: "symlinks are never followed"; a potentially matching link is `glob could match unsupported symlink`. No inspected archive needs more: `aspect_bazel_lib` links are under `.bazelignore`d `e2e/` or in `.aspect/bazelrc/local/`, which `glob(["*.bazelrc", "*.md"])` in `.aspect/bazelrc` cannot match; `bazel_lib` and `tar.bzl` links are all under ignored `e2e/`. |
-| `.bzl` loads, `BUILD`/`REPO.bazel`, package discovery (`loading.rs`, `workspace.rs`) | Follows links; `//...` traverses directory links. | Unchanged: symlinked `.bzl` sources and symlinked package directories are explicit errors; internal `BUILD` file links are accepted; recursive patterns do not descend into directory links. |
+| `.bzl` loads (`loading.rs`) | Follows links (the `.bzl` FileValue); BzlCompileFunction.java:109-136 reports `cannot load 'L': no such file`, `cannot load 'L': is a directory`. | **Follows since N26** with the cross-repository policy below: package boundaries are checked on the logical label path, then `source_links::resolve_across` supplies the content (leaf or directory links, relative or absolute). Missing targets, directories and cycles report Bazel's texts (`cannot load '//lib:x.bzl': no such file`, `... is a directory`, `circular symlinks detected ...`). The label keeps its logical identity for relative loads, repository mapping and errors; only the bytes come from the resolved file (and are hashed in load provenance). |
+| `BUILD`/`REPO.bazel`, package discovery (`workspace.rs`) | Follows links; `//...` traverses directory links. | Unchanged: symlinked package directories are explicit errors; internal `BUILD` file links are accepted; recursive patterns do not descend into directory links. |
 | `module_ctx.path/read`, `repository_ctx` templates/labels (`extension_io.rs`, `repository_ctx.rs`) | Follow links. | Unchanged explicit symlink errors (docs/MODULE_SOURCE_INPUTS.md, docs/REPOSITORY_RULES.md). |
 | Repository-rule publication (`repository_store.rs`) | — | Unchanged: repository rules cannot create links natively, and published trees remain regular files/directories only. |
 | Git sources (`git_source.rs`, `repository_links.rs`) | — | Unchanged validated profile (docs/GIT_SYMLINKS.md); their internal file links now also build as source artifacts, and patched link leaves become regular files. `scripts/validate_git_links.py` was updated accordingly (consumer case: `@gitdep//artifact:selected` must build with the bytes of `data`, compared with genuine Bazel; `native.patch-symlink-leaf` must succeed with a regular patched leaf). `artifacts/git-links-validation.json` predates this and must be regenerated. |
+
+## Cross-repository links (N26)
+
+Reads of source artifacts and `.bzl` loads follow a link that leaves its
+repository only into the canonical root of a repository already materialized in
+the current invocation's repository set (`RepositorySet::materialized_roots`:
+main, `local_path` modules of the resolved graph, published registry/Git/built-in
+trees and generated repositories whose demand completed). The target is matched
+by longest path prefix; resolution then continues inside that root with the same
+40-hop budget and cross-root cycle detection. No repository is fetched by this
+lookup. The repository store (stale trees, `.stage-*`, `.trash-*`) and the whole
+`--cache-dir` root (actions, downloads) are never claimed by a shorter root that
+contains them, and arbitrary host paths remain the
+explicit `outside its repository root` error. This covers rules_cc's
+`local_config_cc` (`unix_cc_configure.bzl:362-370` links `cc_toolchain_config.bzl`
+to `@rules_cc//cc/private/toolchain:...`, whose root the callback just demanded).
+Patches, writes and globs keep refusing links outside the tree.
 
 ## Remaining documented differences
 
@@ -134,8 +152,8 @@ The paired capture's remaining classes are documented rather than fixed here:
 query label form (`@@repo+//:t` native vs `@repo//:t` apparent in Bazel), the
 CLI report for source-only targets (Bazel prints `(nothing to build)`, native
 lists the source path), PAX/GNU long link targets, hard links to directories,
-glob and `.bzl` loads through links, links escaping a repository (native refuses
-to follow), the link-below-link layout, and the wording of the nonempty-directory
+glob through links, links escaping a repository (native refuses to follow, also
+for `.bzl` loads), the link-below-link layout, and the wording of the nonempty-directory
 failure. `repository_ctx.download_and_extract` does not exist natively.
 
 ## Tests

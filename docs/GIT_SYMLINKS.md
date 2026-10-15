@@ -57,7 +57,11 @@ mutation, as with the existing materializers; this is not an OS sandbox.
 ## Adjacent behavior remains restricted
 
 Internal BUILD-file links already accepted by package loading can be preserved.
-Selected `.bzl` links and relevant glob links remain controlled unsupported cases.
+Relevant glob links remain controlled unsupported cases. Since N26
+(`docs/REPOSITORY_RULES.md`), a selected `.bzl` loaded through an internal link
+is read through it like Bazel (in-root only); the consumer case's `bzl` phase
+(`query @gitdep//bzl:all`) must now succeed on both engines, so
+`artifacts/git-links-validation.json` needs recapture for it as well.
 Since N19 (`docs/ARCHIVE_SYMLINKS.md`), source-artifact labels follow links that
 resolve inside their repository, so a preserved internal file link builds; action
 inputs are the resolved, symlink-free files.

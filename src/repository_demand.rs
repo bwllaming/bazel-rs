@@ -39,6 +39,11 @@ impl<T> DemandSlot<T> {
         }
     }
 
+    /// The successfully computed value, if any; never evaluates.
+    pub fn ready(&self) -> Option<&T> {
+        self.ready.get().and_then(|result| result.as_ref().ok())
+    }
+
     /// Evaluate once, caching either the value or its error in this slot.
     ///
     /// A panicking evaluator releases its claim without caching a result.

@@ -100,6 +100,154 @@ fn rsplitn_whitespace(s: &str, maxsplit: usize) -> Vec<String> {
     v
 }
 
+// Modified: the string model of the current thread. Bazel 9.3 keeps every
+// string as Latin-1 Java chars. In BUILD/.bzl analysis evaluation the native
+// interpreter stores the UTF-8 decoding of those bytes, so methods emulate
+// Bazel byte by byte over the UTF-8 encoding (the default). Repository and
+// extension evaluation stores each Java char directly as U+0000..U+00FF, so
+// methods apply Bazel's char semantics to the characters themselves.
+thread_local! {
+    static LATIN1_CHAR_MODEL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the current thread evaluates in the Latin-1 char model.
+pub fn latin1_char_model() -> bool {
+    LATIN1_CHAR_MODEL.with(|model| model.get())
+}
+
+/// Restores the previous model of this thread when dropped.
+pub struct Latin1CharModelGuard(bool);
+
+impl Drop for Latin1CharModelGuard {
+    fn drop(&mut self) {
+        LATIN1_CHAR_MODEL.with(|model| model.set(self.0));
+    }
+}
+
+/// Select the string model for evaluation on this thread until the guard drops.
+pub fn enter_latin1_char_model(enabled: bool) -> Latin1CharModelGuard {
+    Latin1CharModelGuard(LATIN1_CHAR_MODEL.with(|model| model.replace(enabled)))
+}
+
+/// Guava `CharMatcher.whitespace()` (Bazel `isspace`, StringModule.java:878).
+fn is_guava_whitespace(c: char) -> bool {
+    matches!(
+        c,
+        '\t'..='\r'
+            | ' '
+            | '\u{85}'
+            | '\u{a0}'
+            | '\u{1680}'
+            | '\u{2000}'..='\u{200a}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202f}'
+            | '\u{205f}'
+            | '\u{3000}'
+    )
+}
+
+/// `Character.isLetter` for one Java char.
+fn java_is_letter(c: char) -> bool {
+    c.is_alphabetic() && !c.is_numeric() && !matches!(c, '\u{345}' | '\u{2160}'..='\u{2188}')
+}
+
+/// `Character.toUpperCase(char)`/`toLowerCase(char)`: a single-char mapping.
+fn java_simple_case(c: char, upper: bool) -> char {
+    let mut mapped = if upper {
+        c.to_uppercase().collect::<Vec<_>>()
+    } else {
+        c.to_lowercase().collect::<Vec<_>>()
+    };
+    if mapped.len() == 1 {
+        mapped.pop().unwrap_or(c)
+    } else {
+        c
+    }
+}
+
+/// Split `this` at `sep` from the left (Bazel StringModule.split, java:387-422):
+/// `maxsplit` < 0 means no limit.
+fn bazel_split<'a>(this: &'a str, sep: &str, maxsplit: i64) -> Vec<&'a str> {
+    let mut res = Vec::new();
+    let mut remaining = maxsplit;
+    let mut start = 0;
+    loop {
+        let end = this[start..].find(sep).map(|i| start + i);
+        let stop = remaining == 0;
+        remaining -= 1;
+        match end {
+            Some(end) if !stop => {
+                res.push(&this[start..end]);
+                start = end + sep.len();
+            }
+            _ => {
+                res.push(&this[start..]);
+                return res;
+            }
+        }
+    }
+}
+
+/// StringModule.rsplit (java:426-468).
+fn bazel_rsplit<'a>(this: &'a str, sep: &str, maxsplit: i64) -> Vec<&'a str> {
+    let mut res = Vec::new();
+    let mut remaining = maxsplit;
+    let mut end = this.len();
+    loop {
+        let start = this[..end].rfind(sep);
+        let stop = remaining == 0;
+        remaining -= 1;
+        match start {
+            Some(start) if !stop => {
+                res.push(&this[start + sep.len()..end]);
+                end = start;
+            }
+            _ => {
+                res.push(&this[..end]);
+                res.reverse();
+                return res;
+            }
+        }
+    }
+}
+
+/// Bazel's `split`/`rsplit` parameters: `sep` is a required string and
+/// `maxsplit` an optional int (java:387-400, the interpreter's messages).
+fn bazel_split_args<'a>(
+    name: &str,
+    sep: Option<Value<'a>>,
+    maxsplit: Option<Value<'a>>,
+) -> anyhow::Result<(&'a str, i64)> {
+    let Some(sep) = sep else {
+        return Err(anyhow::anyhow!(
+            "{name}() missing 1 required positional argument: sep"
+        ));
+    };
+    let Some(sep) = sep.unpack_str() else {
+        return Err(anyhow::anyhow!(
+            "in call to {name}(), parameter 'sep' got value of type '{}', want 'string'",
+            sep.get_type()
+        ));
+    };
+    if sep.is_empty() {
+        return Err(anyhow::anyhow!("Empty separator"));
+    }
+    let maxsplit = match maxsplit {
+        None => -1,
+        Some(value) => match value.unpack_i32() {
+            Some(value) => i64::from(value),
+            None => {
+                return Err(anyhow::anyhow!(
+                    "in call to {name}(), parameter 'maxsplit' got value of type '{}', want 'int'",
+                    value.get_type()
+                ));
+            }
+        },
+    };
+    Ok((sep, maxsplit))
+}
+
 // Modified: Bazel 9.3 represents strings as UTF-8 byte strings, so its case
 // mappings and character classes only recognise ASCII. `strip()` without
 // arguments uses Bazel's `ASCII_WHITESPACE`; `isspace()` uses Guava's
@@ -145,8 +293,12 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     fn elems<'v>(
         this: StringValue<'v>,
         heap: Heap<'v>,
-    ) -> anyhow::Result<ValueOfUnchecked<'v, StarlarkIter<String>>> {
-        Ok(iterate_chars(this, heap))
+    ) -> anyhow::Result<ValueOfUnchecked<'v, UnpackList<String>>> {
+        // Modified: Bazel returns a list of one-char strings (StringModule
+        // .elems, java:926-940), so `len()` and indexing work.
+        let _ = iterate_chars;
+        let chars: Vec<String> = this.as_str().chars().map(String::from).collect();
+        Ok(heap.alloc_typed_unchecked(AllocList(chars)).cast())
     }
 
     /// [string.capitalize](
@@ -166,7 +318,13 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
         let mut chars = this.chars();
         let mut result = String::with_capacity(this.len());
         if let Some(first) = chars.next() {
-            result.push(first.to_ascii_uppercase());
+            // Modified: Character.toUpperCase of the first Java char (a
+            // Latin-1 char in the repository model, java:526-532).
+            if latin1_char_model() {
+                result.push(java_simple_case(first, true));
+            } else {
+                result.push(first.to_ascii_uppercase());
+            }
             result.push_str(&chars.as_str().to_ascii_lowercase());
         }
         Ok(result)
@@ -511,6 +669,9 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// ```
     #[starlark(speculative_exec_safe)]
     fn isspace(this: &str) -> anyhow::Result<bool> {
+        if latin1_char_model() {
+            return Ok(!this.is_empty() && this.chars().all(is_guava_whitespace));
+        }
         Ok(!this.is_empty() && this.bytes().all(is_bazel_space))
     }
 
@@ -904,52 +1065,31 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// https://github.com/bazelbuild/starlark/blob/master/spec.md#string·rsplit
     /// ): splits a string into substrings.
     ///
-    /// `S.rsplit([sep[, maxsplit]])` splits a string into substrings like
+    /// `S.rsplit(sep[, maxsplit])` splits a string into substrings like
     /// `S.split`, except that when a maximum number of splits is specified,
-    /// `rsplit` chooses the rightmost splits.
+    /// `rsplit` chooses the rightmost splits. Modified: as in Bazel 9.3, `sep`
+    /// is a required string.
     ///
     /// ```
     /// # starlark::assert::all_true(r#"
     /// "banana".rsplit("n") == ["ba", "a", "a"]
     /// "banana".rsplit("n", 1) == ["bana", "a"]
-    /// "one two  three".rsplit(None, 1) == ["one two", "three"]
+    /// "one two  three".rsplit(" ", 1) == ["one two ", "three"]
     /// # "#);
     /// ```
     #[starlark(speculative_exec_safe)]
     fn rsplit<'v>(
         this: &str,
-        #[starlark(require = pos, default = NoneOr::None)] sep: NoneOr<&str>,
-        #[starlark(require = pos, default = NoneOr::None)] maxsplit: NoneOr<i32>,
+        sep: Option<Value<'v>>,
+        maxsplit: Option<Value<'v>>,
         heap: Heap<'v>,
     ) -> anyhow::Result<ValueOfUnchecked<'v, UnpackList<String>>> {
-        let maxsplit = match maxsplit.into_option() {
-            None => None,
-            Some(v) => {
-                if v < 0 {
-                    None
-                } else {
-                    Some((v + 1) as usize)
-                }
-            }
-        };
-        Ok(match sep.into_option() {
-            None => match maxsplit {
-                None => heap
-                    .alloc_typed_unchecked(AllocList(this.split_whitespace()))
-                    .cast(),
-                Some(maxsplit) => heap
-                    .alloc_typed_unchecked(rsplitn_whitespace(this, maxsplit))
-                    .cast(),
-            },
-            Some(sep) => {
-                let mut v: Vec<_> = match maxsplit {
-                    None => this.rsplit(sep).collect(),
-                    Some(maxsplit) => this.rsplitn(maxsplit, sep).collect(),
-                };
-                v.reverse();
-                heap.alloc_typed_unchecked(AllocList(v)).cast()
-            }
-        })
+        // Modified: Bazel 9.3 requires `sep` (StringModule.rsplit, java:426-468).
+        let _ = rsplitn_whitespace;
+        let (sep, maxsplit) = bazel_split_args("rsplit", sep, maxsplit)?;
+        Ok(heap
+            .alloc_typed_unchecked(AllocList(bazel_rsplit(this, sep, maxsplit)))
+            .cast())
     }
 
     /// [string.rstrip](
@@ -988,7 +1128,7 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// https://github.com/bazelbuild/starlark/blob/master/spec.md#string·split
     /// ): split a string in substrings.
     ///
-    /// `S.split([sep [, maxsplit]])` returns the list of substrings of S,
+    /// `S.split(sep [, maxsplit])` returns the list of substrings of S,
     /// splitting at occurrences of the delimiter string `sep`.
     ///
     /// Consecutive occurrences of `sep` are considered to delimit empty
@@ -996,22 +1136,16 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// Splitting an empty string with a specified separator returns `['']`.
     /// If `sep` is the empty string, `split` fails.
     ///
-    /// If `sep` is not specified or is `None`, `split` uses a different
-    /// algorithm: it removes all leading spaces from S
-    /// (or trailing spaces in the case of `rsplit`),
-    /// then splits the string around each consecutive non-empty sequence of
-    /// Unicode white space characters.
-    ///
-    /// If S consists only of white space, `split` returns the empty list.
+    /// Modified: as in Bazel 9.3 (StringModule.split), `sep` is a required
+    /// string; there is no whitespace splitting.
     ///
     /// If `maxsplit` is given and non-negative, it specifies a maximum number
     /// of splits.
     ///
     /// ```
     /// # starlark::assert::all_true(r#"
-    /// "one two  three".split() == ["one", "two", "three"]
     /// "one two  three".split(" ") == ["one", "two", "", "three"]
-    /// "one two  three".split(None, 1) == ["one", "two  three"]
+    /// "one two  three".split(" ", 1) == ["one", "two  three"]
     /// "banana".split("n") == ["ba", "a", "a"]
     /// "banana".split("n", 1) == ["ba", "ana"]
     /// # "#);
@@ -1019,50 +1153,17 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     #[starlark(speculative_exec_safe)]
     fn split<'v>(
         this: &str,
-        #[starlark(require = pos, default = NoneOr::None)] sep: NoneOr<&str>,
-        #[starlark(require = pos, default = NoneOr::None)] maxsplit: NoneOr<i32>,
+        sep: Option<Value<'v>>,
+        maxsplit: Option<Value<'v>>,
         heap: Heap<'v>,
     ) -> anyhow::Result<ValueOfUnchecked<'v, UnpackList<String>>> {
-        let maxsplit = match maxsplit.into_option() {
-            None => None,
-            Some(v) => {
-                if v < 0 {
-                    None
-                } else {
-                    Some((v + 1) as usize)
-                }
-            }
-        };
-        Ok(match (sep.into_option(), maxsplit) {
-            (None, None) => heap
-                .alloc_typed_unchecked(AllocList(this.split_whitespace()))
-                .cast(),
-            (None, Some(maxsplit)) => heap
-                .alloc_typed_unchecked(AllocList(splitn_whitespace(this, maxsplit)))
-                .cast(),
-            (Some(sep), None) => {
-                if sep.len() == 1 {
-                    // If we are searching for a 1-byte string, we can provide a much faster path.
-                    // Since it is one byte, given how UTF8 works, all the resultant slices must be UTF8 too.
-                    let b = sep.as_bytes()[0];
-                    let count = fast_string::count_matches_byte(this, b);
-                    let mut res = Vec::with_capacity(count + 1);
-                    res.extend(
-                        this.as_bytes()
-                            .split(|x| *x == b)
-                            .map(|x| unsafe { std::str::from_utf8_unchecked(x) }),
-                    );
-                    debug_assert_eq!(res.len(), count + 1);
-                    heap.alloc_typed_unchecked(AllocList(res)).cast()
-                } else {
-                    heap.alloc_typed_unchecked(AllocList(this.split(sep)))
-                        .cast()
-                }
-            }
-            (Some(sep), Some(maxsplit)) => heap
-                .alloc_typed_unchecked(AllocList(this.splitn(maxsplit, sep)))
-                .cast(),
-        })
+        // Modified: Bazel 9.3 requires `sep` (StringModule.split, java:387-422);
+        // there is no whitespace splitting.
+        let _ = splitn_whitespace;
+        let (sep, maxsplit) = bazel_split_args("split", sep, maxsplit)?;
+        Ok(heap
+            .alloc_typed_unchecked(AllocList(bazel_split(this, sep, maxsplit)))
+            .cast())
     }
 
     /// [string.splitlines](
@@ -1206,6 +1307,21 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     fn title(this: &str) -> anyhow::Result<String> {
         let mut previous_was_letter = false;
         let mut result = String::with_capacity(this.len());
+        if latin1_char_model() {
+            // StringModule.title (java:535-560) over Java chars.
+            for c in this.chars() {
+                let letter = java_is_letter(c);
+                if letter && previous_was_letter && c.is_uppercase() {
+                    result.push(java_simple_case(c, false));
+                } else if letter && !previous_was_letter && c.is_lowercase() {
+                    result.push(java_simple_case(c, true));
+                } else {
+                    result.push(c);
+                }
+                previous_was_letter = letter;
+            }
+            return Ok(result);
+        }
         for c in this.chars() {
             if c.is_ascii() {
                 if previous_was_letter && c.is_ascii_uppercase() {
@@ -1320,8 +1436,88 @@ mod tests {
     }
 
     #[test]
+    fn test_bazel_split_requires_sep() {
+        // Modified: StringModule.split/rsplit (java:387-468).
+        assert::all_true(
+            r#"
+"a,b,,c".split(",") == ["a", "b", "", "c"]
+"a,b,c".split(sep = ",", maxsplit = 1) == ["a", "b,c"]
+"a,b,c".rsplit(",", 1) == ["a,b", "c"]
+"a,b,c".split(",", -1) == ["a", "b", "c"]
+"a,b,c".split(",", 0) == ["a,b,c"]
+"".split(",") == [""]
+"#,
+        );
+        assert::fail("'a b'.split()", "split() missing 1 required positional argument: sep");
+        assert::fail("'a b'.rsplit()", "rsplit() missing 1 required positional argument: sep");
+        assert::fail(
+            "'a b'.split(None)",
+            "in call to split(), parameter 'sep' got value of type 'NoneType', want 'string'",
+        );
+        assert::fail(
+            "'a b'.split(' ', None)",
+            "in call to split(), parameter 'maxsplit' got value of type 'NoneType', want 'int'",
+        );
+        assert::fail("'a b'.split('')", "Empty separator");
+    }
+
+    #[test]
+    fn test_latin1_char_model_methods() {
+        // Modified: Java char semantics in the repository/extension model.
+        let _model = super::enter_latin1_char_model(true);
+        assert::all_true(
+            r#"
+"\240".isspace() and "\205".isspace() and " \t".isspace()
+not "\241".isspace()
+"a\351b".title() == "A\351b"
+"\351x".capitalize() == "\311x"
+"\351".upper() == "\351"
+len("\303\251".elems()) == 2
+"#,
+        );
+        drop(_model);
+        // The default (BUILD/analysis) model keeps byte-wise emulation.
+        assert::all_true(
+            r#"
+not "\u00a0".isspace()
+"aéb".title() == "AéB"
+"#,
+        );
+    }
+
+    #[test]
+    fn test_bazel_string_literal_values() {
+        // Modified: Lexer.java raw strings keep the backslash before a quote;
+        // the default model decodes byte escapes as UTF-8 with replacement.
+        assert::all_true(
+            r#"
+r"\"" == "\\\""
+len(r'\'') == 2
+r"\\" == "\\\\"
+r'a\nb' == "a\\nb"
+"\303\251" == "é"
+"\377" == "\U0010ffff"
+len("\377") == 1
+"\200" != "\201"
+{"\200": 1, "\201": 2}["\201"] == 2
+"A\303" == "A\U0010ffc3"
+"\101" == "A"
+"#,
+        );
+        let _model = super::enter_latin1_char_model(true);
+        assert::all_true(
+            r#"
+"\377" == "\u00ff"
+len("\303\251") == 2
+r"\"" == "\\\""
+"#,
+        );
+    }
+
+    #[test]
     fn test_opaque_iterator() {
-        assert::is_true("type('foo'.elems()) != type([])");
+        // Modified: Bazel's elems() returns a list (StringModule.java:926-940).
+        assert::is_true("type('foo'.elems()) == type([])");
         assert::is_true("type('foo'.codepoints()) != type([])");
     }
 

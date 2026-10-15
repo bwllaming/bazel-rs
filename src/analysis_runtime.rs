@@ -366,9 +366,16 @@ fn action_methods(builder: &mut MethodsBuilder) {
     ) -> anyhow::Result<NoneType> {
         let context = action_receiver(this, eval, false)?;
         let content = if let Some(text) = content.unpack_str() {
-            text.as_bytes().to_vec()
+            // FileWriteAction writes Bazel's internal bytes (bazel_bytes.rs).
+            crate::bazel_bytes::internal_bytes(text).into_owned()
         } else {
-            crate::args::serialize_write_content(content)?
+            // ParameterFile.java:97 also writes the internal bytes
+            // (StringUnsafe.getInternalStringBytes) of the serialized Args.
+            let serialized = crate::args::serialize_write_content(content)?;
+            match String::from_utf8(serialized) {
+                Ok(text) => crate::bazel_bytes::internal_bytes(&text).into_owned(),
+                Err(error) => error.into_bytes(),
+            }
         };
         context.register(
             vec![unpack_file(output)?],
