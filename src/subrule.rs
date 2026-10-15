@@ -1084,7 +1084,7 @@ Outer = subrule(implementation=outer, subrules=deps)
 deps.clear()
 declared = [Outer]
 def impl(ctx):
-    (dir(ctx) == ['actions', 'attr', 'file', 'files', 'label', 'outputs', 'target_platform_has_constraint', 'toolchains']) or fail('rule fields')
+    (dir(ctx) == ['actions', 'attr', 'executable', 'file', 'files', 'label', 'outputs', 'runfiles', 'target_platform_has_constraint', 'toolchains']) or fail('rule fields')
     p = Outer()
     (p.owner == ctx.label) or fail('wrong owner')
     return [p, DefaultInfo(files=depset([p.file]))]
@@ -1315,6 +1315,7 @@ r = rule(implementation=impl, subrules=[S])
             repositories: Arc::new(crate::repository::RepositorySet::new(".".into())),
             scope: ScopeState::new("//:target".into(), direct_ids([allowed.value()]).unwrap()),
             subrule: Default::default(),
+            runfiles: Default::default(),
         };
         Module::with_temp_heap(|module| {
             let heap = module.heap();
@@ -1460,6 +1461,7 @@ S = subrule(implementation=callback)
             repositories: Arc::new(crate::repository::RepositorySet::new(".".into())),
             scope: ScopeState::new("//:target".into(), direct_ids([owned.value()]).unwrap()),
             subrule: Default::default(),
+            runfiles: Default::default(),
         };
         Module::with_temp_heap(|module| {
             let s = module.heap().access_owned_frozen_value(&owned);

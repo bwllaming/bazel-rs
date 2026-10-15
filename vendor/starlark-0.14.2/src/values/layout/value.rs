@@ -16,7 +16,8 @@
  */
 
 // Modified for allocation-free integer inspection for native JSON compatibility.
-// Modified for native Bazel 9.3 `dict | select`; see vendor provenance.
+// Modified for native Bazel 9.3 `dict | select` and unknown-attribute messages;
+// see vendor provenance.
 
 // Possible optimisations:
 // Avoid the Box duplication
@@ -1006,7 +1007,13 @@ impl<'v> Value<'v> {
     /// Like `get_attr` but return an error if the attribute is not available.
     pub fn get_attr_error(self, attribute: &str, heap: Heap<'v>) -> crate::Result<Value<'v>> {
         match self.get_attr(attribute, heap)? {
-            None => ValueError::unsupported_owned(self.get_type(), &format!(".{attribute}"), None),
+            // Modified: a value-specific message (StarlarkValue::unknown_attribute_message).
+            None => match self.get_ref().unknown_attribute_message(attribute) {
+                Some(message) => Err(crate::Error::new_value(anyhow::anyhow!(message))),
+                None => {
+                    ValueError::unsupported_owned(self.get_type(), &format!(".{attribute}"), None)
+                }
+            },
             Some(x) => Ok(x),
         }
     }

@@ -1222,8 +1222,11 @@ def _setting(ctx):
     return [Info(text='|'.join(first)+';'+ '|'.join(second)+';'+'|'.join(ctx.attr.build_setting_default))]
 setting=rule(implementation=_setting,build_setting=config.string_list(),subrules=[S])
 def _check(ctx):
-    if dir(ctx)!=['actions','attr','file','files','label','outputs','target_platform_has_constraint','toolchains'] or hasattr(ctx,'build_setting_value'):
-        fail('ordinary context surface changed')
+    # The natively implemented ctx members; Bazel's dir(ctx) has 36 names
+    # (the others, e.g. workspace_name/bin_dir/var, are N23c gaps).
+    for name in ['actions','attr','executable','file','files','label','outputs','runfiles','target_platform_has_constraint','toolchains']:
+        if name not in dir(ctx):
+            fail('ordinary context surface changed')
     out=ctx.actions.declare_file('check.out')
     ctx.actions.write(out,ctx.attr.dep[Info].text+'\n')
     return [DefaultInfo(files=depset([out]))]

@@ -3,10 +3,11 @@
 use allocative::Allocative;
 use anyhow::{anyhow, bail};
 use starlark::environment::{Methods, MethodsBuilder};
+use starlark::eval::Evaluator;
 use starlark::starlark_module;
 use starlark::values::{
-    Coerce, Freeze, FreezeResult, Freezer, FrozenValue, Heap, NoSerialize, ProvidesStaticType,
-    StarlarkPagablePanic, StarlarkValue, Trace, Value, ValueLike, starlark_value,
+    Heap, NoSerialize, ProvidesStaticType, StarlarkPagablePanic, StarlarkValue, Trace, Value,
+    ValueLike, starlark_value,
 };
 use std::fmt;
 
@@ -48,37 +49,6 @@ mod values {
         #[trace(static)]
         pub value: SettingValue,
     }
-    /// `ctx.outputs` (StarlarkRuleContext.Outputs, analysis/starlark/StarlarkRuleContext.java:353-448).
-    /// Unlike the context itself it may be stored in returned values; freezing
-    /// happens only after the implementation returned, when Bazel's context is
-    /// nullified (StarlarkRuleContext.java:471) and the object is immutable
-    /// (`:375-377`, `:586-588`).
-    #[derive(
-        Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, Coerce, StarlarkPagablePanic,
-    )]
-    #[repr(C)]
-    pub(super) struct CtxOutputsGen<V> {
-        pub fields: V,
-        /// The rule's canonical label (ruleLabelCanonicalName).
-        pub label: String,
-        /// Frozen after the implementation returned (Outputs.isImmutable).
-        pub immutable: bool,
-    }
-
-    use starlark::starlark_complex_value;
-    starlark_complex_value!(pub(super) CtxOutputs);
-
-    impl<'v> Freeze for CtxOutputsGen<Value<'v>> {
-        type Frozen = CtxOutputsGen<FrozenValue>;
-
-        fn freeze(self, freezer: &Freezer) -> FreezeResult<Self::Frozen> {
-            Ok(CtxOutputsGen {
-                fields: self.fields.freeze(freezer)?,
-                label: self.label,
-                immutable: true,
-            })
-        }
-    }
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
     pub(super) struct SubruleCtx<'v> {
         /// The subrule's exported name (StarlarkSubrule.getName).
@@ -97,66 +67,7 @@ mod values {
         pub toolchains: crate::subrule::SubruleToolchains,
     }
 }
-use values::{CtxOutputsGen, RuleCtx, SettingCtx, SubruleCtx};
-
-/// Outputs.repr (analysis/starlark/StarlarkRuleContext.java:415-439): while
-/// mutable `ctx.outputs(name = repr, ...)` sorted by field name; once immutable
-/// `ctx.outputs(for //pkg:x)`.
-impl<'v, V: ValueLike<'v>> fmt::Display for CtxOutputsGen<V> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.immutable {
-            return write!(f, "ctx.outputs(for {})", self.label);
-        }
-        f.write_str("ctx.outputs(")?;
-        if let Some(fields) =
-            starlark::values::structs::StructRef::from_value(self.fields.to_value())
-        {
-            let mut fields: Vec<_> = fields.iter().collect();
-            fields.sort_by(|(a, _), (b, _)| a.as_str().cmp(b.as_str()));
-            for (index, (name, value)) in fields.into_iter().enumerate() {
-                if index != 0 {
-                    f.write_str(", ")?;
-                }
-                write!(f, "{} = {value}", name.as_str())?;
-            }
-        }
-        f.write_str(")")
-    }
-}
-
-// The Outputs class has no @StarlarkBuiltin, so type() is its simple name.
-#[starlark_value(type = "Outputs")]
-impl<'v, V: ValueLike<'v>> StarlarkValue<'v> for CtxOutputsGen<V>
-where
-    Self: starlark::any::ProvidesStaticType<'v>,
-{
-    /// Once immutable, Bazel's getValue fails with "cannot access outputs of
-    /// rule '//pkg:x' outside of its own rule implementation function"
-    /// (StarlarkRuleContext.java:395-397,440-447); natively the field is absent.
-    fn get_attr(&self, name: &str, heap: Heap<'v>) -> Option<Value<'v>> {
-        if self.immutable {
-            return None;
-        }
-        self.fields.to_value().get_attr(name, heap).ok().flatten()
-    }
-
-    fn dir_attr(&self) -> Vec<String> {
-        self.fields.to_value().dir_attr()
-    }
-}
-
-/// The field struct of a (mutable or frozen) `ctx.outputs` value.
-pub(crate) fn outputs_fields(value: Value<'_>) -> Option<Value<'_>> {
-    values::CtxOutputs::from_value(value).map(|outputs| outputs.fields)
-}
-
-pub(crate) fn alloc_outputs<'v>(heap: Heap<'v>, fields: Value<'v>, label: &str) -> Value<'v> {
-    heap.alloc(CtxOutputsGen {
-        fields,
-        label: label.to_owned(),
-        immutable: false,
-    })
-}
+use values::{RuleCtx, SettingCtx, SubruleCtx};
 
 /// StarlarkRuleContext.repr (analysis/starlark/StarlarkRuleContext.java:590-597)
 /// for a rule (not aspect) context; `label` is the canonical form
@@ -264,6 +175,49 @@ fn rule_properties(builder: &mut MethodsBuilder) {
     #[starlark(attribute)]
     fn actions<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
         field(this, "actions", heap)
+    }
+    /// StarlarkRuleContext.getExecutable (analysis/starlark/StarlarkRuleContext.java:692-697).
+    #[starlark(attribute)]
+    fn executable<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        field(this, "executable", heap)
+    }
+    /// StarlarkRuleContext.runfiles (analysis/starlark/StarlarkRuleContext.java:1059-1125).
+    #[allow(clippy::too_many_arguments)]
+    fn runfiles<'v>(
+        this: Value<'v>,
+        files: Option<Value<'v>>,
+        transitive_files: Option<Value<'v>>,
+        collect_data: Option<Value<'v>>,
+        collect_default: Option<Value<'v>>,
+        symlinks: Option<Value<'v>>,
+        root_symlinks: Option<Value<'v>>,
+        #[starlark(require = named, default = false)] skip_conflict_checking: bool,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let heap = eval.heap();
+        let collect_data_value = field(this, "$collect_data", heap)?;
+        let collect_default_value = field(this, "$collect_default", heap)?;
+        let collected = |value: Value<'v>| {
+            crate::runfiles::Runfiles::from_value(value)
+                .ok_or_else(|| anyhow!("internal error: collected runfiles"))
+        };
+        let runfiles = crate::runfiles::ctx_runfiles(
+            crate::runfiles::RunfilesArguments {
+                files,
+                transitive_files,
+                collect_data,
+                collect_default,
+                symlinks,
+                root_symlinks,
+                skip_conflict_checking,
+            },
+            (
+                collected(collect_data_value)?,
+                collected(collect_default_value)?,
+            ),
+            eval,
+        )?;
+        Ok(eval.heap().alloc(runfiles))
     }
     /// StarlarkRuleContext.toolchains (analysis/starlark/StarlarkRuleContext.java:877-898).
     #[starlark(attribute)]
@@ -447,6 +401,10 @@ mod tests {
                         "outputs",
                         heap.alloc(AllocStruct([("out", Value::new_none())])),
                     ),
+                    (
+                        "executable",
+                        heap.alloc(AllocStruct([("tool", Value::new_none())])),
+                    ),
                     ("label", heap.alloc("//:target")),
                     (
                         "actions",
@@ -465,10 +423,12 @@ mod tests {
                 let mut expected = vec![
                     "actions",
                     "attr",
+                    "executable",
                     "file",
                     "files",
                     "label",
                     "outputs",
+                    "runfiles",
                     "target_platform_has_constraint",
                     "toolchains",
                 ];
@@ -484,7 +444,7 @@ mod tests {
                 // Methods bind without reading; properties guard the read.
                 for name in expected
                     .iter()
-                    .filter(|name| **name != "target_platform_has_constraint")
+                    .filter(|name| !matches!(**name, "target_platform_has_constraint" | "runfiles"))
                 {
                     let error = ctx.get_attr_error(name, heap).unwrap_err();
                     assert!(
@@ -514,7 +474,7 @@ mod tests {
                 owner.finish();
                 for name in expected
                     .iter()
-                    .filter(|name| **name != "target_platform_has_constraint")
+                    .filter(|name| !matches!(**name, "target_platform_has_constraint" | "runfiles"))
                 {
                     assert!(ctx.get_attr_error(name, heap).is_err());
                 }

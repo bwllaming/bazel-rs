@@ -17,7 +17,8 @@
 
 // Modified for native Bazel 9.3 ctx.toolchains string keys: location-aware
 // indexing and `in` hooks; frozen-mutation messages and `dict | select`;
-// debugPrint (print/fail) compatibility; see vendor provenance.
+// debugPrint (print/fail) compatibility; unknown-attribute messages; see vendor
+// provenance.
 
 //! The values module define a trait `StarlarkValue` that defines the attribute of
 //! any value in Starlark and a few macro to help implementing this trait.
@@ -678,6 +679,14 @@ pub trait StarlarkValue<'v>:
     /// must be consistent - if you implement one, you should probably implement all three.
     fn dir_attr(&self) -> Vec<String> {
         Vec::new()
+    }
+
+    /// Modified: the error message for reading a missing attribute, when the
+    /// value has its own (Bazel's `Structure.getErrorMessageForUnknownField`,
+    /// e.g. `ctx.outputs`/`ctx.executable`). Return [`None`] (the default) for
+    /// the ordinary `has no attribute` error.
+    fn unknown_attribute_message(&self, _attribute: &str) -> Option<String> {
+        None
     }
 
     /// Tell whether `other` is in the current value, if it is a container.

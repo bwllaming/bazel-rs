@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use anyhow::{anyhow, ensure};
+use anyhow::{anyhow, bail, ensure};
 
 use crate::action::{Action, WriteAction};
 use crate::label::Label;
@@ -60,6 +60,9 @@ mod owned {
         /// The rule's subrule inputs: lifted attribute values and toolchain
         /// state (crate::subrule::RuleEnvironment).
         pub subrule: crate::subrule::RuleEnvironment,
+        /// ctx.outputs.executable and the executable-attribute
+        /// FilesToRunProviders (crate::runfiles).
+        pub runfiles: crate::runfiles::ContextRunfiles,
     }
 
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
@@ -82,7 +85,27 @@ impl Drop for Context {
 }
 
 impl Context {
+    /// An accessed `ctx.outputs.executable` is a declared output
+    /// (RuleContext.createOutputArtifact).
+    fn sync_default_executable(&self) {
+        if let Some(default) = &self.runfiles.default_executable
+            && default.created()
+        {
+            let mut declared = self.declared.borrow_mut();
+            if !declared.contains(&default.file) {
+                declared.push(default.file.clone());
+            }
+        }
+    }
+
+    /// The declared outputs, including an accessed `ctx.outputs.executable`.
+    pub(crate) fn take_declared(&self) -> Vec<File> {
+        self.sync_default_executable();
+        std::mem::take(&mut *self.declared.borrow_mut())
+    }
+
     pub(crate) fn declare(&self, name: &str) -> anyhow::Result<File> {
+        self.sync_default_executable();
         let output = self.label.with_name(name).map_err(anyhow::Error::msg)?;
         let file = File {
             path: output
@@ -109,6 +132,7 @@ impl Context {
     }
 
     pub(crate) fn known_file(&self, file: &File) -> bool {
+        self.sync_default_executable();
         self.dependency_files.contains(file) || self.declared.borrow().contains(file)
     }
 
@@ -127,6 +151,7 @@ impl Context {
             !outputs.is_empty(),
             "an action must have at least one output"
         );
+        self.sync_default_executable();
         let declared = self.declared.borrow();
         let mut seen = BTreeSet::new();
         let mut actions = self.actions.borrow_mut();
@@ -151,6 +176,9 @@ impl Context {
             );
         }
         for input in &inputs {
+            if let Some(gap) = self.runfiles.manifest_gap(input) {
+                bail!("{gap}");
+            }
             ensure!(
                 self.known_file(input),
                 "action input {} is not a dependency or declared output",
@@ -361,6 +389,7 @@ fn action_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named)] outputs: Value<'v>,
         #[starlark(require = named)] command: &str,
         #[starlark(require = named)] inputs: Option<Value<'v>>,
+        #[starlark(require = named)] tools: Option<Value<'v>>,
         #[starlark(require = named)] arguments: Option<Value<'v>>,
         #[starlark(require = named)] env: Option<Value<'v>>,
         #[starlark(require = named, default = false)] use_default_shell_env: bool,
@@ -378,9 +407,13 @@ fn action_methods(builder: &mut MethodsBuilder) {
             ListRef::from_value(outputs).is_some(),
             "outputs must be a list of Files"
         );
+        let mut inputs = inputs.map(file_list).transpose()?.unwrap_or_default();
+        if let Some(tools) = tools {
+            inputs.extend(action_tools(context, tools, "run_shell")?);
+        }
         context.register(
             file_list(outputs)?,
-            inputs.map(file_list).transpose()?.unwrap_or_default(),
+            inputs,
             command.to_owned(),
             None,
             None,
@@ -389,6 +422,52 @@ fn action_methods(builder: &mut MethodsBuilder) {
         )?;
         Ok(NoneType)
     }
+}
+
+/// The `tools` of run/run_shell (analysis/starlark/StarlarkActionFactory.java:765-806):
+/// Files, FilesToRunProviders and depsets of Files. Tools whose
+/// FilesToRunProvider carries runfiles need the runfiles attached to the spawn,
+/// which is N23d (explicit failure).
+fn action_tools(context: &Context, tools: Value<'_>, function: &str) -> anyhow::Result<Vec<File>> {
+    const WANT: &str = "expected value of type 'File, FilesToRunProvider or Depset of Files' for a member of parameter 'tools' but";
+    let items: Vec<Value<'_>> = if let Some(list) = ListRef::from_value(tools) {
+        list.iter().collect()
+    } else if let Some(tuple) = starlark::values::tuple::TupleRef::from_value(tools) {
+        tuple.iter().collect()
+    } else if crate::starlark_types::is_depset(tools) {
+        // Depset.cast(tools, Object.class, "tools").toList(): File elements.
+        return file_list(tools).map_err(|_| {
+            anyhow!(
+                "{WANT} got a depset of '{}' instead",
+                crate::starlark_types::depset_element_type(tools).unwrap_or("unknown")
+            )
+        });
+    } else {
+        bail!(
+            "in call to {function}(), parameter 'tools' got value of type '{}', want 'sequence or depset'",
+            tools.get_type()
+        );
+    };
+    let mut files = Vec::new();
+    for item in items {
+        if let Some(file) = File::from_value(item) {
+            context.runfiles.check_action_file(file, "tool")?;
+            files.push(file.clone());
+        } else if let Some(files_to_run) = crate::runfiles::FilesToRun::from_value(item) {
+            crate::runfiles::ensure_without_runfiles(files_to_run, "tool")?;
+            files.extend(files_to_run.files.iter().cloned());
+        } else if crate::starlark_types::is_depset(item) {
+            if let Some(kind) = crate::starlark_types::depset_element_type(item)
+                && kind != "File"
+            {
+                bail!("{WANT} got a depset of '{kind}', expected a depset of 'File'");
+            }
+            files.extend(file_list(item)?);
+        } else {
+            bail!("{WANT} got {} instead", item.get_type());
+        }
+    }
+    Ok(files)
 }
 
 #[starlark_module]
@@ -417,11 +496,26 @@ fn direct_action_methods(builder: &mut MethodsBuilder) {
             "outputs must be a list of Files"
         );
         let mut inputs = inputs.map(file_list).transpose()?.unwrap_or_default();
-        inputs.extend(tools.map(file_list).transpose()?.unwrap_or_default());
+        if let Some(tools) = tools {
+            inputs.extend(action_tools(context, tools, "run")?);
+        }
         let program = if let Some(program) = executable.unpack_str() {
             program.to_owned()
         } else {
-            let file = unpack_file(executable)?;
+            let file =
+                if let Some(files_to_run) = crate::runfiles::FilesToRun::from_value(executable) {
+                    crate::runfiles::ensure_without_runfiles(files_to_run, "executable")?;
+                    // StarlarkAction.Builder.setExecutable(FilesToRunProvider)
+                    // also adds the provider's files to run as tools.
+                    inputs.extend(files_to_run.files.iter().cloned());
+                    files_to_run.executable.clone().ok_or_else(|| {
+                        anyhow!("actions.run executable FilesToRunProvider has no executable")
+                    })?
+                } else {
+                    let file = unpack_file(executable)?;
+                    context.runfiles.check_action_file(&file, "executable")?;
+                    file
+                };
             let program = format!("./{}", file.path);
             inputs.push(file);
             program
@@ -598,6 +692,7 @@ mod tests {
             repositories: Arc::new(RepositorySet::new(".".into())),
             scope: ScopeState::new("rule".into(), BTreeSet::from(["S".into()])),
             subrule: Default::default(),
+            runfiles: Default::default(),
         }
     }
 
@@ -798,6 +893,7 @@ r=rule(implementation=_rule,subrules=[S])
             repositories: Arc::new(RepositorySet::new(".".into())),
             scope: ScopeState::new("rule".into(), BTreeSet::from(["S".into()])),
             subrule: Default::default(),
+            runfiles: Default::default(),
         };
         let owner = make_context();
         let foreign = make_context();

@@ -65,6 +65,7 @@ pub mod repository_store;
 pub mod repository_text;
 mod rule_declarations;
 mod run_environment_info;
+pub mod runfiles;
 pub mod scheduler;
 pub mod source_links;
 pub mod starlark_options;

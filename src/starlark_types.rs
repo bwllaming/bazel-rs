@@ -59,24 +59,47 @@ mod owned {
         Allocative,
         StarlarkPagable,
     )]
-    pub(super) struct LabelValue {
+    pub(crate) struct LabelValue {
         pub repository: String,
         pub package: String,
         pub name: String,
     }
 
+    /// A runfiles symlink entry (analysis/SymlinkEntry.java:44-87). Bazel
+    /// deliberately has no `equals` (identity semantics, :52-66): `id` keeps
+    /// separately created entries distinct in depsets.
+    #[derive(
+        Clone,
+        Debug,
+        PartialEq,
+        Eq,
+        PartialOrd,
+        Ord,
+        Hash,
+        ProvidesStaticType,
+        NoSerialize,
+        Allocative,
+        StarlarkPagable,
+    )]
+    pub struct SymlinkEntry {
+        pub id: u64,
+        pub path: String,
+        pub target: File,
+    }
+
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Allocative)]
-    pub(super) enum Item {
+    pub(crate) enum Item {
         File(File),
         String(String),
         Label(LabelValue),
         Int(i32),
         Bool(bool),
         Tuple(Vec<Item>),
+        Symlink(SymlinkEntry),
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Allocative)]
-    pub(super) enum Order {
+    pub(crate) enum Order {
         Default,
         Postorder,
         Preorder,
@@ -84,17 +107,18 @@ mod owned {
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Allocative)]
-    pub(super) enum ItemType {
+    pub(crate) enum ItemType {
         File,
         String,
         Label,
         Int,
         Bool,
         Tuple,
+        Symlink,
     }
 
     #[derive(Debug, Allocative, StarlarkPagable)]
-    pub(super) struct DepsetNode {
+    pub(crate) struct DepsetNode {
         pub direct: Vec<Item>,
         pub children: Vec<Arc<DepsetNode>>,
         pub order: Order,
@@ -104,17 +128,27 @@ mod owned {
     }
 
     #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagable)]
-    pub(super) struct Depset {
+    pub(crate) struct Depset {
         pub node: Arc<DepsetNode>,
     }
 
-    #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagable)]
+    /// A DefaultInfo instance: a freshly constructed one
+    /// (DefaultInfo.DefaultDefaultInfo, analysis/DefaultInfo.java:84-145) or
+    /// the dependency view of a configured target (DelegatingDefaultInfo,
+    /// :148-196; `view` is set).
+    #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
     pub(super) struct DefaultInfoValue {
-        pub files: Option<Vec<File>>,
-        /// `target[DefaultInfo]` (DefaultInfo.DelegatingDefaultInfo) carries the
-        /// target's FilesToRunProvider class; a Starlark-constructed instance
-        /// has None. Only their reprs differ.
-        pub files_to_run_class: Option<String>,
+        #[allocative(skip)]
+        pub files: Option<Depset>,
+        #[allocative(skip)]
+        pub runfiles: Option<crate::runfiles::Runfiles>,
+        #[allocative(skip)]
+        pub data_runfiles: Option<crate::runfiles::Runfiles>,
+        #[allocative(skip)]
+        pub default_runfiles: Option<crate::runfiles::Runfiles>,
+        pub executable: Option<File>,
+        #[allocative(skip)]
+        pub files_to_run: Option<crate::runfiles::FilesToRun>,
     }
 
     #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagable)]
@@ -130,9 +164,17 @@ mod owned {
         /// Display names of the declared providers a rule target returned,
         /// in return order (RuleConfiguredTarget.debugPrint).
         pub provider_keys: Vec<String>,
+        /// RunfilesProvider and FilesToRunProvider of the configured target
+        /// (`target[DefaultInfo]`, docs/RUNFILES.md).
+        #[allocative(skip)]
+        pub runfiles: crate::runfiles::TargetRunfiles,
+        /// FileProvider.getFilesToBuild: one nested set per target.
+        pub files_depset: Depset,
     }
 }
-pub use owned::File;
+use owned::{DefaultInfoConstructor, DefaultInfoValue, LabelValue, Target};
+pub(crate) use owned::{Depset, DepsetNode, Item, ItemType, Order};
+pub use owned::{File, SymlinkEntry};
 
 /// The configured-target class behind a `Target` value; it selects only the
 /// repr (and str) of the value.
@@ -157,38 +199,13 @@ pub(crate) enum TargetKind {
     Alias(String, Box<TargetKind>),
 }
 
-impl TargetKind {
-    fn actual(&self) -> &TargetKind {
-        match self {
-            Self::Alias(_, actual) => actual.actual(),
-            other => other,
-        }
-    }
-
-    /// The class of the target's FilesToRunProvider: file targets create a
-    /// single-executable provider (configuredtargets/FileConfiguredTarget.java:98-101,
-    /// analysis/FilesToRunProvider.java:51-55); non-executable rules the plain
-    /// class (FilesToRunProvider.java:48-50, RuleConfiguredTargetBuilder.java:150-152).
-    fn files_to_run_class(&self) -> &'static str {
-        match self.actual() {
-            Self::InputFile | Self::OutputFile | Self::SingleExecutableRule => {
-                "com.google.devtools.build.lib.analysis.FilesToRunProvider$SingleExecutableFilesToRunProvider"
-            }
-            _ => "com.google.devtools.build.lib.analysis.FilesToRunProvider",
-        }
-    }
-}
-use owned::{
-    DefaultInfoConstructor, DefaultInfoValue, Depset, DepsetNode, Item, ItemType, LabelValue,
-    Order, Target,
-};
-
 starlark_simple_value!(File);
 starlark_simple_value!(LabelValue);
 starlark_simple_value!(Depset);
 starlark_simple_value!(DefaultInfoConstructor);
 starlark_simple_value!(DefaultInfoValue);
 starlark_simple_value!(Target);
+starlark_simple_value!(SymlinkEntry);
 
 impl File {
     /// Artifact.getRootRelativePathString (actions/Artifact.java:530-532):
@@ -540,6 +557,8 @@ impl Item {
         }
         if let Some(file) = File::from_value(value) {
             Ok(Self::File(file.clone()))
+        } else if let Some(entry) = SymlinkEntry::from_value(value) {
+            Ok(Self::Symlink(entry.clone()))
         } else if let Some(s) = value.unpack_str() {
             Ok(Self::String(s.to_owned()))
         } else if let Some(label) = LabelValue::from_value(value) {
@@ -559,15 +578,16 @@ impl Item {
             ))
         } else {
             bail!(
-                "depset elements must be immutable File, string, Label, int, bool or tuple values; {} is unsupported",
+                "depset elements must be immutable File, SymlinkEntry, string, Label, int, bool or tuple values; {} is unsupported",
                 value.get_type()
             )
         }
     }
 
-    fn alloc<'v>(&self, heap: Heap<'v>) -> Value<'v> {
+    pub(crate) fn alloc<'v>(&self, heap: Heap<'v>) -> Value<'v> {
         match self {
             Self::File(file) => alloc_file(heap, file.clone()),
+            Self::Symlink(entry) => heap.alloc(entry.clone()),
             Self::String(s) => heap.alloc(s.as_str()),
             Self::Label(label) => heap.alloc(label.clone()),
             Self::Int(integer) => heap.alloc(*integer),
@@ -586,6 +606,7 @@ impl Item {
             Self::Int(_) => ItemType::Int,
             Self::Bool(_) => ItemType::Bool,
             Self::Tuple(_) => ItemType::Tuple,
+            Self::Symlink(_) => ItemType::Symlink,
         }
     }
 }
@@ -603,7 +624,7 @@ impl Order {
         }
     }
 
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Default => "default",
             Self::Postorder => "postorder",
@@ -612,15 +633,16 @@ impl Order {
         }
     }
 
-    fn compatible(self, other: Self) -> bool {
+    pub(crate) fn compatible(self, other: Self) -> bool {
         self == other || self == Self::Default || other == Self::Default
     }
 }
 
 impl ItemType {
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::File => "File",
+            Self::Symlink => "SymlinkEntry",
             Self::String => "string",
             Self::Label => "Label",
             Self::Int => "int",
@@ -637,6 +659,7 @@ impl ItemType {
             3 => Ok(Self::Int),
             4 => Ok(Self::Bool),
             5 => Ok(Self::Tuple),
+            6 => Ok(Self::Symlink),
             _ => bail!("invalid serialized depset element type {tag}"),
         }
     }
@@ -691,6 +714,7 @@ impl starlark::pagable::StarlarkSerialize for Item {
             Self::Int(integer) => integer.starlark_serialize(ctx),
             Self::Bool(boolean) => boolean.starlark_serialize(ctx),
             Self::Tuple(items) => items.starlark_serialize(ctx),
+            Self::Symlink(entry) => entry.starlark_serialize(ctx),
         }
     }
 }
@@ -706,6 +730,7 @@ impl starlark::pagable::StarlarkDeserialize for Item {
             ItemType::Int => Self::Int(i32::starlark_deserialize(ctx)?),
             ItemType::Bool => Self::Bool(bool::starlark_deserialize(ctx)?),
             ItemType::Tuple => Self::Tuple(Vec::starlark_deserialize(ctx)?),
+            ItemType::Symlink => Self::Symlink(SymlinkEntry::starlark_deserialize(ctx)?),
         })
     }
 }
@@ -714,6 +739,7 @@ impl fmt::Display for Item {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::File(file) => write!(f, "{file}"),
+            Self::Symlink(entry) => write!(f, "{entry}"),
             Self::String(s) => f.write_str(&starlark::values::string::StarlarkStr::repr(s)),
             Self::Label(label) => write!(f, "{label}"),
             Self::Int(integer) => write!(f, "{integer}"),
@@ -755,7 +781,7 @@ impl fmt::Display for Depset {
 }
 
 impl Depset {
-    fn compose(
+    pub(crate) fn compose(
         direct: Vec<Item>,
         children: Vec<Arc<DepsetNode>>,
         order: Order,
@@ -814,7 +840,7 @@ impl Depset {
     /// their first encounter. For topological order, reverse postorder visits
     /// rightmost children first and reverses the final unique sequence. This
     /// keeps shared descendants behind all their parents, not just the first.
-    fn flatten(&self) -> Vec<&Item> {
+    pub(crate) fn flatten(&self) -> Vec<&Item> {
         enum Visit<'a> {
             Node(&'a DepsetNode),
             Item(&'a Item),
@@ -900,7 +926,8 @@ fn dedup(items: impl IntoIterator<Item = Item>) -> Vec<Item> {
 }
 
 impl Depset {
-    fn of_files(files: Vec<File>) -> Self {
+    /// A stable-order depset of owned files.
+    pub(crate) fn from_files(files: Vec<File>) -> Self {
         Depset::compose(
             files.into_iter().map(Item::File).collect(),
             vec![],
@@ -912,7 +939,7 @@ impl Depset {
 }
 
 pub fn alloc_depset<'v>(heap: Heap<'v>, files: Vec<File>) -> Value<'v> {
-    heap.alloc(Depset::of_files(files))
+    heap.alloc(Depset::from_files(files))
 }
 
 pub fn unpack_depset(value: Value<'_>) -> anyhow::Result<Vec<File>> {
@@ -952,6 +979,9 @@ pub(crate) fn contained_depset_files(value: Value<'_>) -> Option<Vec<File>> {
         while let Some(item) = stack.pop() {
             match item {
                 Item::File(file) if files.insert(file.clone()) => result.push(file.clone()),
+                Item::Symlink(entry) if files.insert(entry.target.clone()) => {
+                    result.push(entry.target.clone())
+                }
                 Item::Tuple(items) => stack.extend(items.iter().rev()),
                 _ => {}
             }
@@ -967,6 +997,16 @@ impl fmt::Display for DefaultInfoConstructor {
     }
 }
 
+/// DefaultInfoApi.DefaultInfoApiProvider.constructor parameter types
+/// (starlarkbuildapi/DefaultInfoApi.java:73-160).
+const DEFAULT_INFO_PARAMETERS: [(&str, &str); 5] = [
+    ("files", "depset or NoneType"),
+    ("runfiles", "runfiles or NoneType"),
+    ("data_runfiles", "runfiles or NoneType"),
+    ("default_runfiles", "runfiles or NoneType"),
+    ("executable", "File or NoneType"),
+];
+
 // BuiltinProvider (DefaultInfo.PROVIDER) is `@StarlarkBuiltin(name = "Provider")`
 // (starlarkbuildapi/DefaultInfoApi.java:97-98).
 #[starlark_value(type = "Provider")]
@@ -978,22 +1018,57 @@ impl<'v> StarlarkValue<'v> for DefaultInfoConstructor {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
         args.no_positional_args(eval.heap())?;
-        let mut files = None;
+        let mut info = DefaultInfoValue {
+            files: None,
+            runfiles: None,
+            data_runfiles: None,
+            default_runfiles: None,
+            executable: None,
+            files_to_run: None,
+        };
         for (name, value) in args.names_map()?.iter() {
-            if name.as_str() != "files" {
+            let name = name.as_str();
+            let Some((_, want)) = DEFAULT_INFO_PARAMETERS
+                .iter()
+                .find(|(parameter, _)| *parameter == name)
+            else {
                 return Err(starlark::Error::new_other(anyhow!(
-                    "DefaultInfo: unsupported field {}",
-                    name.as_str()
+                    "DefaultInfo() got unexpected keyword argument '{name}'"
                 )));
+            };
+            if value.is_none() {
+                continue;
             }
-            if !value.is_none() {
-                files = Some(unpack_depset(*value).map_err(starlark::Error::new_other)?);
+            let mismatch = || {
+                starlark::Error::new_other(anyhow!(
+                    "in call to DefaultInfo(), parameter '{name}' got value of type '{}', want '{want}'",
+                    value.get_type()
+                ))
+            };
+            let runfiles = || {
+                crate::runfiles::Runfiles::from_value(*value)
+                    .cloned()
+                    .ok_or_else(mismatch)
+            };
+            match name {
+                "files" => {
+                    info.files = Some(Depset::from_value(*value).ok_or_else(mismatch)?.clone())
+                }
+                "runfiles" => info.runfiles = Some(runfiles()?),
+                "data_runfiles" => info.data_runfiles = Some(runfiles()?),
+                "default_runfiles" => info.default_runfiles = Some(runfiles()?),
+                _ => info.executable = Some(File::from_value(*value).ok_or_else(mismatch)?.clone()),
             }
         }
-        Ok(eval.heap().alloc(DefaultInfoValue {
-            files,
-            files_to_run_class: None,
-        }))
+        // DefaultInfo.java:212-218.
+        if info.runfiles.is_some()
+            && (info.data_runfiles.is_some() || info.default_runfiles.is_some())
+        {
+            return Err(starlark::Error::new_other(anyhow!(
+                "Cannot specify the provider 'runfiles' together with 'data_runfiles' or 'default_runfiles'"
+            )));
+        }
+        Ok(eval.heap().alloc(info))
     }
 
     fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
@@ -1006,70 +1081,225 @@ impl<'v> StarlarkValue<'v> for DefaultInfoConstructor {
     }
 }
 
-/// NativeInfo.repr (packages/NativeInfo.java:125-138) over the sorted
-/// DefaultInfoApi struct fields (starlarkbuildapi/DefaultInfoApi.java:52-96).
-/// A constructed instance holds Java nulls (None) for every omitted field and
-/// for files_to_run (analysis/DefaultInfo.java:199-224); a target's instance
-/// exposes its runfiles and FilesToRunProvider objects, whose classes do not
-/// override repr (net/starlark/java/eval/StarlarkValue.java:50-52).
+impl DefaultInfoValue {
+    /// DefaultDefaultInfo.getDefaultRunfiles (DefaultInfo.java:126-135).
+    fn effective_default_runfiles(&self) -> Option<&crate::runfiles::Runfiles> {
+        if self.data_runfiles.is_none() && self.default_runfiles.is_none() {
+            self.runfiles.as_ref()
+        } else {
+            self.default_runfiles.as_ref()
+        }
+    }
+}
+
 impl fmt::Display for DefaultInfoValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        const RUNFILES: &str = "<unknown object com.google.devtools.build.lib.analysis.Runfiles>";
-        let (runfiles, files_to_run) = match &self.files_to_run_class {
-            Some(class) => (RUNFILES, format!("<unknown object {class}>")),
-            None => ("None", "None".to_owned()),
-        };
+        // NativeInfo.repr: sorted Starlark fields (packages/NativeInfo.java:119-135).
+        fn shown(value: Option<String>) -> String {
+            value.unwrap_or_else(|| "None".to_owned())
+        }
         write!(
             f,
-            "struct(data_runfiles = {runfiles}, default_runfiles = {runfiles}, files = "
-        )?;
-        match &self.files {
-            Some(files) => write!(f, "{}", Depset::of_files(files.clone()))?,
-            None => f.write_str("None")?,
-        }
-        write!(f, ", files_to_run = {files_to_run})")
+            "struct(data_runfiles = {}, default_runfiles = {}, files = {}, files_to_run = {})",
+            shown(self.data_runfiles.as_ref().map(ToString::to_string)),
+            shown(self.effective_default_runfiles().map(ToString::to_string)),
+            shown(self.files.as_ref().map(ToString::to_string)),
+            shown(self.files_to_run.as_ref().map(ToString::to_string)),
+        )
     }
 }
 
 #[starlark_value(type = "DefaultInfo")]
 impl<'v> StarlarkValue<'v> for DefaultInfoValue {
     fn get_attr(&self, name: &str, heap: Heap<'v>) -> Option<Value<'v>> {
-        (name == "files").then(|| alloc_depset(heap, self.files.clone().unwrap_or_default()))
+        let none = Value::new_none;
+        Some(match name {
+            "files" => self
+                .files
+                .as_ref()
+                .map_or_else(none, |files| heap.alloc(files.clone())),
+            "files_to_run" => self
+                .files_to_run
+                .as_ref()
+                .map_or_else(none, |files| heap.alloc(files.observed())),
+            "data_runfiles" => self
+                .data_runfiles
+                .as_ref()
+                .map_or_else(none, |runfiles| heap.alloc(runfiles.clone())),
+            "default_runfiles" => self
+                .effective_default_runfiles()
+                .map_or_else(none, |runfiles| heap.alloc(runfiles.clone())),
+            _ => return None,
+        })
     }
 
     fn dir_attr(&self) -> Vec<String> {
-        vec!["files".to_owned()]
+        ["data_runfiles", "default_runfiles", "files", "files_to_run"]
+            .map(String::from)
+            .to_vec()
     }
+
+    /// NativeInfo.equals: the same provider and equal Starlark fields
+    /// (packages/NativeInfo.java:96-112); depsets, runfiles and
+    /// FilesToRunProviders compare by identity.
+    fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
+        let Some(other) = DefaultInfoValue::from_value(other) else {
+            return Ok(false);
+        };
+        fn same<T>(a: Option<&T>, b: Option<&T>, eq: impl Fn(&T, &T) -> bool) -> bool {
+            match (a, b) {
+                (None, None) => true,
+                (Some(a), Some(b)) => eq(a, b),
+                _ => false,
+            }
+        }
+        let runfiles = |a: &crate::runfiles::Runfiles, b: &crate::runfiles::Runfiles| a.same(b);
+        Ok(same(self.files.as_ref(), other.files.as_ref(), |a, b| {
+            Arc::ptr_eq(&a.node, &b.node)
+        }) && same(
+            self.data_runfiles.as_ref(),
+            other.data_runfiles.as_ref(),
+            runfiles,
+        ) && same(
+            self.effective_default_runfiles(),
+            other.effective_default_runfiles(),
+            runfiles,
+        ) && same(
+            self.files_to_run.as_ref(),
+            other.files_to_run.as_ref(),
+            // Each read of a file target's provider is a new object.
+            |a, b| a.same(b) && a.observed().same(b),
+        ))
+    }
+
+    fn set_attr(&self, _attribute: &str, _new_value: Value<'v>) -> starlark::Result<()> {
+        crate::runfiles::no_field_assignment("DefaultInfo")
+    }
+}
+
+/// Depset.cast(files, Artifact.class, "files") of a returned DefaultInfo
+/// (collect/nestedset/Depset.java:262-272).
+fn default_info_files(files: &Depset) -> anyhow::Result<Vec<File>> {
+    if let Some(kind) = files.node.element_type
+        && kind != ItemType::File
+        && !files.node.empty
+    {
+        bail!(
+            "for 'files', got a depset of '{}', expected a depset of 'File'",
+            kind.name()
+        );
+    }
+    Ok(files
+        .flatten()
+        .into_iter()
+        .filter_map(|item| match item {
+            Item::File(file) => Some(file.clone()),
+            _ => None,
+        })
+        .collect())
+}
+
+/// The returned DefaultInfo, if any (a missing one means the implicit empty
+/// DefaultInfo, StarlarkRuleConfiguredTargetUtil.java:325-335).
+pub(crate) fn returned_default_info(
+    result: Value<'_>,
+) -> anyhow::Result<Option<crate::runfiles::ReturnedDefaultInfo>> {
+    let provider = if result.is_none() {
+        None
+    } else if let Some(provider) = DefaultInfoValue::from_value(result) {
+        Some(provider)
+    } else if crate::providers::instance_identity(result).is_some() {
+        None
+    } else {
+        let mut found = None;
+        for value in sequence(result)? {
+            if crate::providers::instance_identity(value).is_some() {
+                continue;
+            }
+            let provider = DefaultInfoValue::from_value(value)
+                .ok_or_else(|| anyhow!("unsupported returned provider {}; expected DefaultInfo, TemplateVariableInfo, or a custom provider instance", value.get_type()))?;
+            if found.is_some() {
+                // addProviders (StarlarkRuleConfiguredTargetUtil.java:268-270).
+                bail!("Multiple conflicting returned providers with key DefaultInfo");
+            }
+            found = Some(provider);
+        }
+        found
+    };
+    let Some(provider) = provider else {
+        return Ok(None);
+    };
+    Ok(Some(crate::runfiles::ReturnedDefaultInfo {
+        files: provider
+            .files
+            .as_ref()
+            .map(default_info_files)
+            .transpose()?,
+        runfiles: provider.runfiles.clone(),
+        data_runfiles: provider.data_runfiles.clone(),
+        default_runfiles: provider.default_runfiles.clone(),
+        executable: provider.executable.clone(),
+    }))
 }
 
 /// Missing DefaultInfo (including TemplateVariableInfo-only returns) or an
 /// omitted/None files field requests the caller's implicit predeclared
 /// outputs; an explicitly empty depset requests no default outputs.
 pub fn default_files(result: Value<'_>) -> anyhow::Result<Option<Vec<File>>> {
-    if result.is_none() {
-        return Ok(None);
+    Ok(returned_default_info(result)?.and_then(|info| info.files))
+}
+
+/// Files reachable from a DefaultInfo, Runfiles, SymlinkEntry or
+/// FilesToRunProvider payload value (provider-file traversal).
+pub(crate) fn runfiles_payload_files(value: Value<'_>) -> Option<Vec<File>> {
+    use crate::runfiles::{FilesToRun, Runfiles};
+    if let Some(runfiles) = Runfiles::from_value(value) {
+        return Some(runfiles.all_artifacts());
     }
-    if let Some(provider) = DefaultInfoValue::from_value(result) {
-        return Ok(provider.files.clone());
+    if let Some(entry) = SymlinkEntry::from_value(value) {
+        return Some(vec![entry.target.clone()]);
     }
-    if crate::providers::instance_identity(result).is_some() {
-        return Ok(None);
-    }
-    let mut found = false;
-    let mut files = None;
-    for value in sequence(result)? {
-        if crate::providers::instance_identity(value).is_some() {
-            continue;
+    let files_to_run = |files_to_run: &FilesToRun| {
+        let mut files = files_to_run.executable.iter().cloned().collect::<Vec<_>>();
+        if let Some(runfiles) = files_to_run.runfiles() {
+            files.extend(runfiles.all_artifacts());
         }
-        let provider = DefaultInfoValue::from_value(value)
-            .ok_or_else(|| anyhow!("unsupported returned provider {}; expected DefaultInfo, TemplateVariableInfo, or a custom provider instance", value.get_type()))?;
-        if found {
-            bail!("implementation returned DefaultInfo more than once");
-        }
-        found = true;
-        files = provider.files.clone();
+        files
+    };
+    if let Some(provider) = FilesToRun::from_value(value) {
+        return Some(files_to_run(provider));
     }
-    Ok(files)
+    let info = DefaultInfoValue::from_value(value)?;
+    let mut files = Vec::new();
+    if let Some(depset) = &info.files {
+        files.extend(default_info_files(depset).unwrap_or_default());
+    }
+    for runfiles in [&info.runfiles, &info.data_runfiles, &info.default_runfiles]
+        .into_iter()
+        .flatten()
+    {
+        files.extend(runfiles.all_artifacts());
+    }
+    files.extend(info.executable.iter().cloned());
+    if let Some(provider) = &info.files_to_run {
+        files.extend(files_to_run(provider));
+    }
+    let mut seen = BTreeSet::new();
+    files.retain(|file| seen.insert(file.clone()));
+    Some(files)
+}
+
+pub(crate) fn is_depset(value: Value<'_>) -> bool {
+    Depset::from_value(value).is_some()
+}
+
+/// The element type name of a non-empty depset (Depset.getElementType).
+pub(crate) fn depset_element_type(value: Value<'_>) -> Option<&'static str> {
+    let depset = Depset::from_value(value)?;
+    (!depset.node.empty)
+        .then_some(depset.node.element_type)
+        .flatten()
+        .map(ItemType::name)
 }
 
 pub(crate) fn is_default_info(value: Value<'_>) -> bool {
@@ -1091,6 +1321,22 @@ impl fmt::Display for Target {
             TargetKind::OutputFile => write!(f, "<output file target {label}>"),
             TargetKind::Unknown => write!(f, "<unknown target {label}>"),
             TargetKind::Alias(alias, _) => write!(f, "<alias target {alias} of {label}>"),
+        }
+    }
+}
+
+impl Target {
+    /// `target[DefaultInfo]`: DefaultInfo.DelegatingDefaultInfo
+    /// (analysis/DefaultInfo.java:148-196) over the target's providers.
+    fn default_info(&self) -> DefaultInfoValue {
+        let files_to_run = self.runfiles.files_to_run(&self.files);
+        DefaultInfoValue {
+            files: Some(self.files_depset.clone()),
+            runfiles: None,
+            data_runfiles: Some(self.runfiles.data_runfiles()),
+            default_runfiles: Some(self.runfiles.default_runfiles()),
+            executable: files_to_run.executable.clone(),
+            files_to_run: Some(files_to_run),
         }
     }
 }
@@ -1132,10 +1378,7 @@ impl<'v> StarlarkValue<'v> for Target {
 
     fn at(&self, index: Value<'v>, heap: Heap<'v>) -> starlark::Result<Value<'v>> {
         if DefaultInfoConstructor::from_value(index).is_some() {
-            return Ok(heap.alloc(DefaultInfoValue {
-                files: Some(self.files.clone()),
-                files_to_run_class: Some(self.kind.files_to_run_class().to_owned()),
-            }));
+            return Ok(heap.alloc(self.default_info()));
         }
         let identity = crate::providers::provider_identity(index).ok_or_else(|| {
             starlark::Error::new_other(anyhow!(
@@ -1262,11 +1505,19 @@ pub fn alloc_target_with_providers<'v>(
     files: Vec<File>,
     providers: BTreeMap<String, OwnedFrozenValue>,
 ) -> Value<'v> {
-    alloc_target_of_kind(heap, label, files, providers, TargetKind::Rule, Vec::new())
+    alloc_target_of_kind(
+        heap,
+        label,
+        files,
+        providers,
+        TargetKind::Rule,
+        Vec::new(),
+        Default::default(),
+    )
 }
 
 /// As [`alloc_target_with_providers`], for a dependency of a known
-/// configured-target class.
+/// configured-target class, with its RunfilesProvider/FilesToRunProvider.
 pub(crate) fn alloc_target_of_kind<'v>(
     heap: Heap<'v>,
     label: &str,
@@ -1274,13 +1525,16 @@ pub(crate) fn alloc_target_of_kind<'v>(
     providers: BTreeMap<String, OwnedFrozenValue>,
     kind: TargetKind,
     provider_keys: Vec<String>,
+    runfiles: crate::runfiles::TargetRunfiles,
 ) -> Value<'v> {
     heap.alloc(Target {
         label: LabelValue::parse(label).expect("Target label must be an absolute valid label"),
+        files_depset: Depset::from_files(files.clone()),
         files,
         providers,
         kind,
         provider_keys,
+        runfiles,
     })
 }
 
@@ -2174,7 +2428,16 @@ ok = (len(labels.to_list()) == 2 and owner == target.label and
         Module::with_temp_heap(|module| {
             let heap = module.heap();
             let repr = |label: &str, kind: TargetKind| {
-                alloc_target_of_kind(heap, label, vec![], BTreeMap::new(), kind, vec![]).to_repr()
+                alloc_target_of_kind(
+                    heap,
+                    label,
+                    vec![],
+                    BTreeMap::new(),
+                    kind,
+                    vec![],
+                    Default::default(),
+                )
+                .to_repr()
             };
             assert_eq!(repr("//p:r", TargetKind::Rule), "<target //p:r>");
             assert_eq!(
@@ -2207,6 +2470,7 @@ ok = (len(labels.to_list()) == 2 and owner == target.label and
                 BTreeMap::new(),
                 TargetKind::Rule,
                 vec![],
+                Default::default(),
             );
             assert_eq!(target.to_str(), target.to_repr());
         });
@@ -2318,14 +2582,47 @@ ok = (len(labels.to_list()) == 2 and owner == target.label and
         }
         pass("target[DefaultInfo].files.to_list() == [a] and target.files.to_list() == [a]");
         pass("target.label == Label('//pkg:rule') and type(target) == 'Target'");
+        // DefaultDefaultInfo fields are None unless given (DefaultInfo.java:84-145).
         pass(
-            "DefaultInfo().files.to_list() == [] and DefaultInfo(files=depset([a])).files.to_list() == [a]",
+            "DefaultInfo().files == None and DefaultInfo(files=depset([a])).files.to_list() == [a]",
         );
+        pass(
+            "[DefaultInfo().files_to_run, DefaultInfo().data_runfiles, DefaultInfo().default_runfiles] == [None, None, None]",
+        );
+        pass(
+            "dir(DefaultInfo()) == ['data_runfiles', 'default_runfiles', 'files', 'files_to_run']",
+        );
+        pass(
+            "repr(DefaultInfo()) == 'struct(data_runfiles = None, default_runfiles = None, files = None, files_to_run = None)'",
+        );
+        // The element type is only checked when the rule returns it.
+        pass("type(DefaultInfo(files=depset(['x']))) == 'DefaultInfo'");
         fail("target['DefaultInfo']", "constructor");
         fail("target[DefaultInfo()]", "constructor");
-        fail("DefaultInfo(files=[a])", "expected depset");
-        fail("DefaultInfo(files=depset(['x']))", "string element");
-        fail("DefaultInfo(runfiles=[]) ", "unsupported field");
+        fail(
+            "DefaultInfo(files=[a])",
+            "in call to DefaultInfo(), parameter 'files' got value of type 'list', want 'depset or NoneType'",
+        );
+        fail(
+            "DefaultInfo(runfiles=[]) ",
+            "in call to DefaultInfo(), parameter 'runfiles' got value of type 'list', want 'runfiles or NoneType'",
+        );
+        fail(
+            "DefaultInfo(executable='x')",
+            "in call to DefaultInfo(), parameter 'executable' got value of type 'string', want 'File or NoneType'",
+        );
+        fail(
+            "DefaultInfo(unknown=1)",
+            "DefaultInfo() got unexpected keyword argument 'unknown'",
+        );
+        pass("DefaultInfo(executable=a).files == None");
+        // The dependency view (DelegatingDefaultInfo).
+        pass(
+            "target[DefaultInfo].default_runfiles.files.to_list() == [] and target[DefaultInfo].data_runfiles == target[DefaultInfo].default_runfiles",
+        );
+        pass(
+            "repr(target[DefaultInfo].files_to_run) == '<unknown object com.google.devtools.build.lib.analysis.FilesToRunProvider>' and target[DefaultInfo].files_to_run.executable == None",
+        );
         fail("DefaultInfo(depset([a]))", "positional");
         fail("DefaultInfo().unknown", "unknown");
         fail("target.unknown", "unknown");

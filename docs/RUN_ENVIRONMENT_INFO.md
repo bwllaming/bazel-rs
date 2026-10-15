@@ -4,15 +4,17 @@ This bounded native profile implements the metadata behavior below. It is not
 operational run/test support or full Bazel parity.
 
 The scope is genuine metadata construction, snapshots, equality, nested provider
-transport and explicit action consumption. It does **not** add executable/test
-rule modes, executable/runfiles fields, `run`/`test` commands or automatic process
-environment handling. `rule(executable=True)` and `rule(test=True)` declarations
-do load natively like Bazel (query and the `_test` rule-class-name check are the
-validator's differential `rule-kind` family). Analysing or building such a target
-is still a native-only boundary: it fails with `declared rule features accepted at
-load time but not analyzed by the native profile: rule(executable=True)
-(executable rule semantics)` (or `rule(test=True) (test rule semantics)`), before
-the implementation runs.
+transport and explicit action consumption. It does **not** add `run`/`test`
+commands or automatic process environment handling. `rule(executable=True)` and
+`rule(test=True)` declarations load natively like Bazel (query and the `_test`
+rule-class-name check are the validator's differential `rule-kind` family), and
+since N23a (docs/RUNFILES.md) such targets are analyzed and built: returning
+`DefaultInfo(executable=...)` with RunEnvironmentInfo builds on both engines, and
+without an executable both fail with `The rule 'check' is executable. It needs to
+create an executable File and pass it as the 'executable' parameter to the
+DefaultInfo it returns.` (differential `rule-build` family). Only the `test` and
+`run` commands remain a native-only boundary (`bazel-rs: unsupported command or
+startup option "test"; run --help for the native subset`).
 
 ## Constructor and ownership
 
@@ -93,9 +95,9 @@ execution. Nesting the value in a custom provider is different and is allowed.
 
 Deprecated `testing.TestEnvironment` uses a private compatibility flag and has
 different warning/return behavior. It is not implemented here and is not used as
-a bypass. Standard top-level RunEnvironmentInfo transport requires real executable
-or test-rule plumbing, including a valid executable; those surfaces remain
-unsupported rather than accepted and ignored.
+a bypass. Since N23a, executable and test rules (docs/RUNFILES.md) may return
+RunEnvironmentInfo directly; the value is retained as analysis metadata only
+(no `run`/`test` command consumes it yet).
 
 The complete run/test behavior remains future work. In the reference, inherited
 values override literals only when present, otherwise literal fallbacks survive.
@@ -128,10 +130,14 @@ matrix in `artifacts/g-run-environment-info-validation.json` passes seven famili
 exact local-query case. Required `historical_parity_gaps` preserves the old
 native-success/reference-failure observations; `gap_closure` links new native
 exit 1/reference exit 48 rejection before loading or actions. The plan now has
-eight families and 106 phases: the stale executable/test declaration rejections
-became the `rule-kind` differential plus build-step native boundaries. That
-matrix was rerun against genuine Bazel 9.3.0 with the native release binary
-built from `e870d74` (SHA-256 `e1cbcfbc…`) and passed: eight families, 106
-phases, 196 commands, no errors (status `PASS`; the run receipt is untracked).
+nine families and 114 phases: the stale executable/test declaration rejections
+became the `rule-kind` and `rule-build` differentials plus the `test`/`run`
+command native boundary. The 58 native phases pass against the N23a debug
+binary. The preceding eight-family matrix (106 phases, including `rule-kind`)
+was rerun against genuine Bazel 9.3.0 with the native release binary built from
+`e870d74` (SHA-256 `e1cbcfbc…`) and passed: 196 commands, no errors (status
+`PASS`; the run receipt is untracked). The new `rule-build` family's reference
+side (predicted from the N23a paired capture) has not been executed yet, so it
+is not yet differential evidence and must be run at integration.
 Full Bazel parity, whole-application build/test success and broad performance
 claims remain unfinished.

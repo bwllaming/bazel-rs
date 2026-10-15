@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 unknown-attribute messages of rule-context
+// structures; see vendor provenance.
+
 //! Evaluation of an expression.
 
 use std::borrow::Cow;
@@ -1111,6 +1114,10 @@ impl<P: AstPayload> CompilerExprUtil<P> for ExprP<P> {
 #[cold]
 #[inline(never)]
 fn get_attr_no_attr_error<'v>(x: Value<'v>, attribute: &Symbol) -> crate::Error {
+    // Modified: a value-specific message (StarlarkValue::unknown_attribute_message).
+    if let Some(message) = x.get_ref().unknown_attribute_message(attribute.as_str()) {
+        return crate::Error::new_value(anyhow::anyhow!(message));
+    }
     match did_you_mean(attribute.as_str(), x.dir_attr().iter().map(|s| s.as_str())) {
         None => ValueError::NoAttr(x.get_type().to_owned(), attribute.as_str().to_owned()).into(),
         Some(better) => ValueError::NoAttrDidYouMean(

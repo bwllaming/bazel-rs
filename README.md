@@ -135,7 +135,7 @@ Only regular files are supported; no trees or symlink artifacts. On action failu
 new scheduling stops and in-flight actions are joined. There is no process
 cancellation/timeout or persistent analysis server yet. Globs do not follow
 symlinks; potentially matching symlinks fail explicitly (Bazel can follow them).
-Full symbolic-macro schemas, executable/test rule modes, runfiles, tree artifacts,
+Full symbolic-macro schemas, test/run commands, runfiles trees, tree artifacts,
 the full package-specification grammar and license metadata remain unsupported.
 External loading supports the
 bounded verified registry/archive, text-patch and pinned Git profiles described
@@ -157,6 +157,9 @@ snapshot timing and frozen ownership across rules, repositories and extension ta
 [Label dictionaries and computed defaults](docs/ATTR_DICTS_COMPUTED_DEFAULTS.md)
 cover `attr.string_keyed_label_dict`, `attr.label_list_dict`, private function
 defaults and the retained `analysis_test_transition`.
+[Runfiles](docs/RUNFILES.md) cover the analysis of `runfiles`, `ctx.runfiles`,
+DefaultInfo runfiles/executables, FilesToRunProvider and executable/test rules
+(no runfiles trees or manifest actions yet).
 [Local repository metadata](docs/LOCAL_REPOSITORIES.md) retains the local flag and
 provides the compatibility version only in MODULE-loaded native bindings.
 [Extension introspection](docs/EXISTING_RULES.md) enforces active-callback phase

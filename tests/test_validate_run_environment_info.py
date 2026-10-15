@@ -41,10 +41,10 @@ def record(text='', code=1, **changes):
 
 class PlanTests(unittest.TestCase):
     def test_exact_plan_and_lexical_fixtures(self):
-        self.assertEqual(len(suite.CASEPLAN), 8)
-        self.assertEqual(sum(len(c['probes']) for c in suite.CASEPLAN), 54)
-        self.assertEqual(suite.plan_receipt()['phases'], 106)
-        self.assertEqual(suite.plan_receipt(True)['phases'], 52)
+        self.assertEqual(len(suite.CASEPLAN), 9)
+        self.assertEqual(sum(len(c['probes']) for c in suite.CASEPLAN), 58)
+        self.assertEqual(suite.plan_receipt()['phases'], 114)
+        self.assertEqual(suite.plan_receipt(True)['phases'], 56)
         for item in suite.CASEPLAN:
             self.assertEqual(len(item['probes']), len(set(item['probes'])))
             for probe in item['probes']:
@@ -56,7 +56,7 @@ class PlanTests(unittest.TestCase):
                             ast.parse(raw.decode(), filename=path)
                 if v['diagnostic']:
                     self.assertIn(v['diagnostic'], suite.DIAGNOSTICS)
-                    self.assertEqual(v['failure_command'], 'query' if v['stage'] == 'loading' else 'build')
+                    self.assertEqual(v['failure_command'], v.get('command') or ('query' if v['stage'] == 'loading' else 'build'))
                 elif v.get('query_only'):
                     self.assertEqual(suite.steps_for(v, 'native'), [('query', '//app:check', [])])
                     self.assertEqual(suite.steps_for(v, 'reference'), [('query', '//app:check', [])])
@@ -101,25 +101,58 @@ class PlanTests(unittest.TestCase):
                 with self.subTest(probe=probe, text=text), self.assertRaises(ValueError):
                     suite.require_rejection(record(text, 7), v['diagnostic'], 7)
 
-    def test_executable_and_test_analysis_is_an_exact_native_build_boundary(self):
+    def test_executable_and_test_builds_are_differential(self):
+        # N23a: executable/test rule targets are analyzed and built natively.
+        item = next(c for c in suite.CASEPLAN if c['name'] == 'rule-build')
+        self.assertEqual(item['kind'], 'differential')
+        self.assertEqual(suite.phases_for(item, True), [(p, 'reference') for p in item['probes']])
+        for probe, symbol in (('executable', 'check'), ('test', 'check_test')):
+            v = suite.fixture('rule-build', probe)
+            kind = probe.encode()
+            self.assertIn(symbol.encode()+b'=rule(implementation=_impl,attrs={},'+kind+b'=True)', v['files']['defs/check.bzl'])
+            self.assertIn(b'return [DefaultInfo(executable=out),'+suite.INFO.encode()+b']', v['files']['defs/check.bzl'])
+            self.assertIn(symbol.encode()+b'(name="check")', v['files']['app/BUILD.bazel'])
+            self.assertEqual((v['diagnostic'], v['stage'], v['callback'], v['actions']), (None, 'success', True, 1))
+            self.assertEqual(v['expected'], {'check.out': b'struct(environment = {}, inherited_environment = [])'})
+            self.assertEqual(v['returncodes'], {'native': 0, 'reference': 0})
+            self.assertEqual(sum(c == 'build' for c, _, _ in suite.steps_for(v, 'native')), 2)
+            self.assertEqual(sum(c == 'cquery' for c, _, _ in suite.steps_for(v, 'reference')), 2)
+        for probe, symbol in (('executable-missing', 'check'), ('test-missing', 'check_test')):
+            v = suite.fixture('rule-build', probe)
+            self.assertIn(b'return [DefaultInfo(files=depset([out]))]', v['files']['defs/check.bzl'])
+            self.assertEqual((v['diagnostic'], v['stage'], v['failure_command'], v['callback']),
+                             ('missing-executable-'+symbol, 'callback', 'build', True))
+            self.assertEqual(v['returncodes'], {'native': 1, 'reference': 1})
+            message = ("The rule '"+symbol+"' is executable. It needs to create an executable File and pass it as"
+                       " the 'executable' parameter to the DefaultInfo it returns.")
+            observed = {'native': 'bazel-rs: analysis of //app:check: '+message,
+                        'reference': 'ERROR: /w/app/BUILD.bazel:2:11: in '+symbol+' rule //app:check: \n/w/defs/check.bzl:7:19: '+message}
+            for engine, text in observed.items():
+                suite.require_rejection(record(text), v['diagnostic'], 1)
+            other = 'check_test' if symbol == 'check' else 'check'
+            for text in (message.replace("'"+symbol+"'", "'"+other+"'"), message+' x', message[:-1]):
+                with self.subTest(probe=probe, text=text), self.assertRaises(ValueError):
+                    suite.require_rejection(record(text), v['diagnostic'], 1)
+
+    def test_test_and_run_commands_are_the_exact_native_boundary(self):
         item = suite.CASEPLAN[-1]
         self.assertEqual((item['name'], item['kind']), ('native-boundary', 'native_boundary'))
-        for probe, symbol in (('executable', 'check'), ('test', 'check_test')):
+        self.assertEqual(suite.phases_for(item, True), [])
+        for probe, command, symbol in (('test-command', 'test', 'check_test'), ('run-command', 'run', 'check')):
             v = suite.fixture('native-boundary', probe)
-            self.assertIn(symbol.encode()+b'=rule(implementation=_impl,attrs={},'+probe.encode()+b'=True)',
-                          v['files']['defs/check.bzl'])
-            self.assertEqual((v['stage'], v['failure_command'], v['diagnostic'], v['callback']),
-                             ('analysis', 'build', 'rule-'+probe, False))
-            self.assertEqual(suite.steps_for(v, 'native'), [('query', '//app:check', []), ('build', '//app:check', [])])
-            message = ('bazel-rs: analysis of //app:check: declared rule features accepted at load time but not '
-                       'analyzed by the native profile: rule('+probe+'=True) ('+probe+' rule semantics)')
-            suite.require_rejection(record(suite.READY+'\n'+message), v['diagnostic'], 1)
-            suite.require_markers(record(suite.READY+'\n'+message), v, 'build', False, 'native', True)
+            self.assertIn(b'return [DefaultInfo(executable=out)]', v['files']['defs/check.bzl'])
+            self.assertIn(symbol.encode()+b'(name="check")', v['files']['app/BUILD.bazel'])
+            self.assertEqual((v['stage'], v['failure_command'], v['diagnostic'], v['callback'], v['markers']),
+                             ('command', command, probe, False, []))
+            self.assertEqual(suite.steps_for(v, 'native'), [('query', '//app:check', []), (command, '//app:check', [])])
+            message = 'bazel-rs: unsupported command or startup option "'+command+'"; run --help for the native subset'
+            suite.require_rejection(record(message), v['diagnostic'], 1)
+            suite.require_markers(record(message), v, command, False, 'native', True)
             with self.assertRaises(ValueError):
-                suite.require_markers(record(suite.READY+'\n'+suite.ENTERED+'\n'+message), v, 'build', False, 'native', True)
-            other = 'test' if probe == 'executable' else 'executable'
-            for text in (message.replace(probe+'=True', other+'=True'), message+' x', '  '+message,
-                         'error: '+probe+' rules are not supported', message.replace('//app:check', '//app:other')):
+                suite.require_markers(record(suite.ENTERED+'\n'+message), v, command, False, 'native', True)
+            other = 'run' if command == 'test' else 'test'
+            for text in (message.replace('"'+command+'"', '"'+other+'"'), message+' x', '  '+message,
+                         'error: '+command+' is not supported'):
                 with self.subTest(probe=probe, text=text), self.assertRaises(ValueError):
                     suite.require_rejection(record(text), v['diagnostic'], 1)
 

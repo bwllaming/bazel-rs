@@ -523,6 +523,13 @@ impl<'v> AValueDyn<'v> {
         (self.vtable.starlark_value.dir_attr)(self.value)
     }
 
+    // Modified: value-specific unknown-attribute messages
+    // (see StarlarkValue::unknown_attribute_message).
+    #[inline]
+    pub(crate) fn unknown_attribute_message(self, attribute: &str) -> Option<String> {
+        (self.vtable.starlark_value.unknown_attribute_message)(self.value, attribute)
+    }
+
     #[inline]
     pub(crate) fn bit_and(self, other: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {
         (self.vtable.starlark_value.bit_and)(self.value, other, heap)

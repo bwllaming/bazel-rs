@@ -221,9 +221,6 @@ impl AttrDeclaration {
                 self.cfg.describe()
             ));
         }
-        if self.executable {
-            features.push(format!("attribute '{name}' executable=True"));
-        }
         if !self.aspects.is_empty() {
             features.push(format!(
                 "attribute '{name}' aspects=[{}] (aspect propagation)",
@@ -1592,12 +1589,11 @@ impl RuleDeclaration {
         let mut features = Vec::new();
         if self.analysis_test {
             features.push("rule(analysis_test=True)".to_owned());
-        } else if self.test {
-            features.push("rule(test=True) (test rule semantics)".to_owned());
         }
-        if self.executable {
-            features.push("rule(executable=True) (executable rule semantics)".to_owned());
-        }
+        // rule(test=True)/rule(executable=True) are analyzed natively: the
+        // executable, DefaultInfo runfiles and FilesToRunProvider
+        // (crate::runfiles, docs/RUNFILES.md). The implicit test-runner
+        // attributes need the exec transition and are not analyzed (N23g).
         if self.skylark_testable {
             features.push("rule(_skylark_testable=True)".to_owned());
         }

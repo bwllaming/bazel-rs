@@ -16,7 +16,7 @@ use starlark::values::{FrozenHeapName, Heap, OwnedFrozenValue, Value};
 use crate::custom_rule::{AttrSpec, AttrValue};
 use crate::package::Rule;
 use crate::repository::RepositorySet;
-use crate::starlark_types::{File, alloc_file, alloc_target, default_files};
+use crate::starlark_types::{File, alloc_file, alloc_target};
 
 #[derive(Clone, Debug)]
 pub struct DependencyTarget {
@@ -33,6 +33,8 @@ pub struct DependencyTarget {
     pub provider_files: Vec<File>,
     /// Display names of the returned declared providers, in return order.
     pub provider_keys: Vec<String>,
+    /// RunfilesProvider/FilesToRunProvider (docs/RUNFILES.md).
+    pub runfiles: crate::runfiles::TargetRunfiles,
 }
 
 use crate::analysis_runtime::Context;
@@ -48,6 +50,8 @@ pub struct AnalysisResult {
     pub provider_files: Vec<File>,
     /// Display names of the returned declared providers, in return order.
     pub provider_keys: Vec<String>,
+    /// RunfilesProvider/FilesToRunProvider of the configured target.
+    pub runfiles: crate::runfiles::TargetRunfiles,
 }
 
 /// The Label of a predeclared output file of `rule`.
@@ -56,8 +60,9 @@ fn output_label<'v>(heap: Heap<'v>, rule: &Rule, output: &str) -> anyhow::Result
     crate::starlark_types::alloc_label(heap, &label.to_string())
 }
 
-/// A `ctx.attr` Target whose repr names its configured-target class. A
-/// requested label that differs from the resolved one is an alias.
+/// A `ctx.attr` Target whose repr names its configured-target class, with
+/// its runfiles providers. A requested label that differs from the resolved
+/// one is an alias.
 fn alloc_dependency<'v>(heap: Heap<'v>, requested: &str, target: &DependencyTarget) -> Value<'v> {
     use crate::starlark_types::TargetKind;
     let mut provider_keys = target.provider_keys.clone();
@@ -93,6 +98,7 @@ fn alloc_dependency<'v>(heap: Heap<'v>, requested: &str, target: &DependencyTarg
         target.providers.clone(),
         kind,
         provider_keys,
+        target.runfiles.clone(),
     )
 }
 
@@ -242,13 +248,11 @@ fn make_ctx<'v>(
     // Dict.immutableCopyOf, analysis/starlark/StarlarkAttributesCollection.java:300-390):
     // mutating one fails with `trying to mutate a frozen list value`. Build
     // them on a private heap and freeze it.
+    const NAMES: [&str; 6] = ["attr", "files", "file", "outputs", "executable", "lifted"];
     let owned = Module::with_temp_heap(|module| -> anyhow::Result<_> {
         let structs =
             ctx_attribute_structs(rule, invocation, context, dependencies, module.heap())?;
-        for (name, value) in ["attr", "files", "file", "outputs", "lifted"]
-            .into_iter()
-            .zip(structs)
-        {
+        for (name, value) in NAMES.into_iter().zip(structs) {
             module.set(name, value);
         }
         let frozen = module
@@ -256,17 +260,29 @@ fn make_ctx<'v>(
                 "rule context attributes".to_owned(),
             )))
             .map_err(|error| anyhow!("cannot freeze rule context attributes: {error:?}"))?;
-        ["attr", "files", "file", "outputs", "lifted"]
+        NAMES
             .map(|name| frozen.get(name).map_err(|error| anyhow!(error.to_string())))
             .into_iter()
             .collect::<anyhow::Result<Vec<_>>>()
     })?;
-    let [attr, files, file, outputs, lifted] = <[OwnedFrozenValue; 5]>::try_from(owned)
+    let [attr, files, file, outputs, executable, lifted] = <[OwnedFrozenValue; 6]>::try_from(owned)
         .map_err(|_| anyhow!("internal error: rule context attribute structs"))?;
     // Lifted subrule attributes are read by subrule invocations only.
     context.subrule.lifted.replace(Some(lifted));
-    let [attr, files, file, outputs] =
-        [attr, files, file, outputs].map(|value| heap.access_owned_frozen_value(&value));
+    // ctx.outputs (the Outputs object of every rule, docs/REPR.md) carries
+    // the frozen outputs struct and, for executable and test rules, the
+    // on-demand ctx.outputs.executable (StarlarkRuleContext.java:344-450).
+    let outputs = crate::runfiles::alloc_outputs(
+        heap,
+        outputs,
+        context.runfiles.default_executable.clone(),
+        context.active.clone(),
+        crate::rule_declarations::canonical_form(&rule.label),
+    );
+    let executable = crate::runfiles::alloc_executable_struct(heap, executable);
+    let [attr, files, file] =
+        [attr, files, file].map(|value| heap.access_owned_frozen_value(&value));
+    let (collect_data, collect_default) = collected_runfiles(invocation, dependencies)?;
     let label = alloc_target(heap, &rule.label.to_string(), Vec::new())
         .get_attr_error("label", heap)
         .map_err(|error| anyhow!(error.to_string()))?;
@@ -274,14 +290,8 @@ fn make_ctx<'v>(
         ("attr", attr),
         ("files", files),
         ("file", file),
-        // The Outputs object itself lives on the implementation's heap: it is
-        // mutable (field access, field repr) until the implementation returns
-        // and its heap freezes; its frozen fields keep Bazel's
-        // frozen-mutation text.
-        (
-            "outputs",
-            crate::analysis_ctx::alloc_outputs(heap, outputs, &rule.label.to_string()),
-        ),
+        ("outputs", outputs),
+        ("executable", executable),
         ("label", label),
         (
             "actions",
@@ -291,6 +301,8 @@ fn make_ctx<'v>(
                 crate::analysis_ctx::rule_context_repr(&rule.label.to_string()),
             ),
         ),
+        ("$collect_data", heap.alloc(collect_data)),
+        ("$collect_default", heap.alloc(collect_default)),
     ]));
     if invocation.build_setting.is_some() {
         // The configured value (StarlarkRuleContext.getBuildSettingValue,
@@ -318,15 +330,86 @@ fn make_ctx<'v>(
     }
 }
 
-/// The `ctx.attr`, `ctx.files`, `ctx.file` and `ctx.outputs` structs, and
-/// the dict of lifted subrule attribute values.
+/// The implementation's return value shape
+/// (analysis/starlark/StarlarkRuleConfiguredTargetUtil.java:119-127, 245-275).
+fn check_return_shape(returned: Value<'_>) -> anyhow::Result<()> {
+    if returned.is_none()
+        || crate::starlark_types::is_default_info(returned)
+        || crate::providers::instance_identity(returned).is_some()
+        || starlark::values::list::ListRef::from_value(returned).is_some()
+        || starlark::values::tuple::TupleRef::from_value(returned).is_some()
+    {
+        return Ok(());
+    }
+    if starlark::values::structs::StructRef::from_value(returned).is_some() {
+        bail!("Returning a struct from a rule implementation function is deprecated.");
+    }
+    // Other Iterables (dict, set) are not Sequences.
+    if matches!(returned.get_type(), "dict" | "set") {
+        bail!(
+            "Expected a list of providers, but got {}",
+            returned.get_type()
+        );
+    }
+    bail!(
+        "Rule should return a struct or a list, but got {}",
+        returned.get_type()
+    )
+}
+
+/// The runfiles `ctx.runfiles(collect_data=True)` and
+/// `ctx.runfiles(collect_default=True)` collect (Runfiles.Builder.addRunfiles,
+/// analysis/Runfiles.java:669-781): `data`, then `srcs` and `deps`, when the
+/// rule defines them as label lists.
+fn collected_runfiles(
+    invocation: &crate::custom_rule::CustomInvocation,
+    dependencies: &BTreeMap<String, DependencyTarget>,
+) -> anyhow::Result<(crate::runfiles::Runfiles, crate::runfiles::Runfiles)> {
+    use crate::runfiles::{Mapping, Prerequisite, collect};
+    let prerequisites = |name: &str| -> anyhow::Result<Vec<Prerequisite<'_>>> {
+        match (invocation.schema.get(name), invocation.attrs.get(name)) {
+            (Some(spec), Some(AttrValue::Labels(labels)))
+                if spec.kind == crate::custom_rule::AttrKind::LabelList =>
+            {
+                // The edge's configuration (crate::engine, dependency_key).
+                let exec = matches!(spec.declaration.cfg, crate::rule_declarations::Cfg::Exec(_));
+                labels
+                    .iter()
+                    .map(|label| {
+                        let target =
+                            dependencies
+                                .get(&dependency_key(label, exec))
+                                .ok_or_else(|| {
+                                    anyhow!("attribute {name}: dependency {label} was not resolved")
+                                })?;
+                        Ok(Prerequisite {
+                            files: &target.files,
+                            runfiles: &target.runfiles,
+                        })
+                    })
+                    .collect()
+            }
+            _ => Ok(Vec::new()),
+        }
+    };
+    let data = prerequisites("data")?;
+    let mut non_data = prerequisites("srcs")?;
+    non_data.extend(prerequisites("deps")?);
+    Ok((
+        collect(&data, &non_data, Mapping::Data)?,
+        collect(&data, &non_data, Mapping::Default)?,
+    ))
+}
+
+/// The `ctx.attr`, `ctx.files`, `ctx.file`, `ctx.outputs` and
+/// `ctx.executable` structs, and the dict of lifted subrule attribute values.
 fn ctx_attribute_structs<'v>(
     rule: &Rule,
     invocation: &crate::custom_rule::CustomInvocation,
     context: &Context,
     dependencies: &BTreeMap<String, DependencyTarget>,
     heap: Heap<'v>,
-) -> anyhow::Result<[Value<'v>; 5]> {
+) -> anyhow::Result<[Value<'v>; 6]> {
     // RuleContext attribute errors: `in A attribute of KIND rule L: `
     // (analysis/EventHandlingErrorReporter.java:92-101), private names masked.
     let attribute_prefix = |name: &str| {
@@ -344,6 +427,7 @@ fn ctx_attribute_structs<'v>(
     let mut files = BTreeMap::new();
     let mut single_files = BTreeMap::new();
     let mut outputs = BTreeMap::new();
+    let mut executables = BTreeMap::new();
     let mut lifted = Vec::new();
     attrs.insert("name".to_owned(), heap.alloc(rule.label.name.as_str()));
     for (name, value) in &invocation.attrs {
@@ -485,6 +569,38 @@ fn ctx_attribute_structs<'v>(
                             .unwrap_or_else(Value::new_none),
                     );
                 }
+                if spec.declaration.executable {
+                    // StarlarkAttributesCollection.addAttribute (:410-433) with
+                    // PrerequisitesCollection.getExecutablePrerequisite (:281-303):
+                    // the first FilesToRunProvider of an executable is kept.
+                    let executable = match target {
+                        Some(target) => {
+                            let files_to_run = target.runfiles.files_to_run(&target.files);
+                            let Some(file) = files_to_run.executable.clone() else {
+                                // An implicit attribute is masked
+                                // (EventHandlingErrorReporter.java:84-86).
+                                bail!(
+                                    "{}{} does not refer to a valid executable target",
+                                    attribute_prefix(name),
+                                    crate::label::Label::parse_canonical(&target.label)
+                                        .map(|label| crate::rule_declarations::canonical_form(
+                                            &label
+                                        ))
+                                        .unwrap_or_else(|_| target.label.clone())
+                                );
+                            };
+                            context
+                                .runfiles
+                                .executables
+                                .borrow_mut()
+                                .entry(file.clone())
+                                .or_insert(files_to_run);
+                            alloc_file(heap, file)
+                        }
+                        None => Value::new_none(),
+                    };
+                    executables.insert(name.clone(), executable);
+                }
                 value
                     .as_deref()
                     .zip(target)
@@ -516,6 +632,16 @@ fn ctx_attribute_structs<'v>(
                         .map(|(requested, target)| alloc_dependency(heap, requested, target))
                         .collect::<Vec<_>>(),
                 )
+            }
+            AttrValue::Output(_) | AttrValue::Outputs(_)
+                if name == "executable" && context.runfiles.default_executable.is_some() =>
+            {
+                // Outputs.addOutput (StarlarkRuleContext.java:362-371).
+                bail!(
+                    "in {} rule {}: Multiple outputs with the same key: executable",
+                    invocation.declaration.rule_class,
+                    crate::rule_declarations::canonical_form(&rule.label)
+                );
             }
             // Output attributes are Files in ctx.outputs and their Labels in
             // ctx.attr (genuine Bazel 9.3 capture, tests/fixtures/repr).
@@ -557,6 +683,7 @@ fn ctx_attribute_structs<'v>(
         heap.alloc(AllocStruct(files)),
         heap.alloc(AllocStruct(single_files)),
         heap.alloc(AllocStruct(outputs)),
+        heap.alloc(AllocStruct(executables)),
         heap.alloc(starlark::values::dict::AllocDict(lifted)),
     ])
 }
@@ -672,12 +799,7 @@ fn builtin_ctx_attrs<'v>(
                             .cloned()
                             .map(|file| alloc_file(heap, file)),
                     );
-                    targets.push(crate::starlark_types::alloc_target_with_providers(
-                        heap,
-                        &dependency.label,
-                        dependency.files.clone(),
-                        dependency.providers.clone(),
-                    ));
+                    targets.push(alloc_dependency(heap, &key, dependency));
                 }
                 files.insert(name.to_owned(), heap.alloc(constraint_files));
                 heap.alloc(targets)
@@ -875,17 +997,50 @@ fn analyze_inner(
     if !empty.is_empty() {
         bail!("{}", empty.join("\n"));
     }
+    let kind = invocation.declaration.builtin.kind;
+    // RuleClass.isExecutableStarlark (StarlarkRuleClassFunctions.java:911-913).
+    let executable_rule = kind.executable || kind.test;
+    let active = Arc::new(AtomicBool::new(true));
+    let default_executable = executable_rule
+        .then(|| -> anyhow::Result<_> {
+            // RuleContext.createOutputArtifact: the target name in the package.
+            let output = rule
+                .label
+                .with_name(&rule.label.name)
+                .map_err(anyhow::Error::msg)?;
+            // Below the target's own configuration output root (an exec
+            // configuration's executable lives in its exec root).
+            Ok(crate::runfiles::DefaultExecutable::new(File {
+                path: output
+                    .generated_exec_path(target.output_root)
+                    .to_string_lossy()
+                    .into_owned(),
+                short_path: output.short_path().to_string_lossy().into_owned(),
+                owner: rule.label.to_string(),
+                is_source: false,
+            }))
+        })
+        .transpose()?;
     let context = Context {
         label: rule.label.clone(),
         output_root: target.output_root.to_owned(),
         action_owner: target.action_owner.to_owned(),
+        // Dependencies' runfiles artifacts are observable through
+        // dep[DefaultInfo] and their FilesToRunProviders.
         dependency_files: dependencies
             .values()
-            .flat_map(|target| target.files.iter().chain(&target.provider_files).cloned())
+            .flat_map(|target| {
+                target
+                    .files
+                    .iter()
+                    .chain(&target.provider_files)
+                    .cloned()
+                    .chain(target.runfiles.files())
+            })
             .collect(),
         declared: RefCell::new(Vec::new()),
         actions: RefCell::new(Vec::new()),
-        active: Arc::new(AtomicBool::new(true)),
+        active,
         top_level_functions: invocation.top_level_functions.clone(),
         repositories,
         scope: crate::analysis_runtime::ScopeState::new(
@@ -900,12 +1055,20 @@ fn analyze_inner(
             ),
             invocation.cpp,
         ),
+        runfiles: crate::runfiles::ContextRunfiles {
+            default_executable,
+            manifests: dependencies
+                .values()
+                .flat_map(|target| target.runfiles.manifests())
+                .collect(),
+            ..Default::default()
+        },
     };
     for output in &rule.outs {
         context.declare(output)?;
     }
-    let (files, providers, provider_files, provider_keys) = Module::with_temp_heap(
-        |module| -> anyhow::Result<_> {
+    let (files, providers, provider_files, provider_keys, target_runfiles) =
+        Module::with_temp_heap(|module| -> anyhow::Result<_> {
             let ctx = make_ctx(rule, &context, dependencies, module.heap())?;
             // Bazel's implicit DefaultInfo includes only predeclared outputs.
             let predeclared = context.declared.borrow().clone();
@@ -923,9 +1086,38 @@ fn analyze_inner(
             context.scope.finish();
             context.active.store(false, Ordering::Release);
             let returned = returned.map_err(|error| anyhow!(error.to_string()))?;
-            let files = default_files(returned)?.unwrap_or(predeclared);
+            check_return_shape(returned)?;
+            let returned_default = crate::starlark_types::returned_default_info(returned)?;
             let custom = crate::providers::returned_custom_providers(returned)?;
             let provider_keys = crate::providers::returned_provider_key_names(returned)?;
+            // addProviders (analysis/starlark/StarlarkRuleConfiguredTargetUtil.java:285-299):
+            // RunEnvironmentInfo of a non-executable, non-test target. The
+            // regular constructor sets error_on_non_executable=true;
+            // testing.TestEnvironment sets it to false (ruleWarning, provider kept).
+            if !executable_rule
+                && custom
+                    .get(crate::run_environment_info::PROVIDER_ID)
+                    .is_some_and(|info| {
+                        crate::run_environment_info::errors_on_non_executable_rule(*info)
+                    })
+            {
+                bail!(
+                    "Returning RunEnvironmentInfo from a non-executable, non-test target has no effect"
+                );
+            }
+            // parseDefaultProviderFields/addSimpleProviders (:359-490).
+            let (files, target_runfiles) = crate::runfiles::configure_target(
+                returned_default.unwrap_or_default(),
+                &crate::runfiles::RuleClassification {
+                    label: &rule.label.to_string(),
+                    rule_class: &invocation.declaration.rule_class,
+                    executable: executable_rule,
+                    test: kind.test,
+                    args: invocation.declaration.builtin.target.strings("args"),
+                },
+                predeclared,
+                context.runfiles.default_executable.as_ref(),
+            )?;
             // checkDeclaredProviders (analysis/starlark/StarlarkRuleConfiguredTargetUtil.java:138-148)
             // iterates getStarlarkProviders() only: built-in provider keys
             // (DefaultInfo, OutputGroupInfo, ...) are never checked (:141).
@@ -934,22 +1126,6 @@ fn analyze_inner(
                     provider.id.starts_with("builtin:") || custom.contains_key(&provider.id),
                     "rule advertised the '{}' provider, but this provider was not among those returned",
                     provider.display_name
-                );
-            }
-            // Executable/test rules are accepted at load time but rejected by the
-            // unanalyzed-feature gate above, so every rule analyzed here is
-            // non-executable/non-test. Future executable support MUST use real
-            // rule classification here. The regular constructor sets
-            // error_on_non_executable=true; testing.TestEnvironment sets it to
-            // false (StarlarkRuleConfiguredTargetUtil: ruleWarning, provider kept).
-            if custom
-                .get(crate::run_environment_info::PROVIDER_ID)
-                .is_some_and(|info| {
-                    crate::run_environment_info::errors_on_non_executable_rule(*info)
-                })
-            {
-                bail!(
-                    "Returning RunEnvironmentInfo from a non-executable, non-test target has no effect"
                 );
             }
             let mut slots = Vec::new();
@@ -980,22 +1156,47 @@ fn analyze_inner(
                 providers,
                 provider_files.into_iter().collect::<Vec<_>>(),
                 provider_keys,
+                target_runfiles,
             ))
-        },
-    )?;
+        })?;
     for file in files.iter().chain(&provider_files) {
+        if let Some(gap) = context.runfiles.manifest_gap(file) {
+            bail!("{gap}");
+        }
         ensure!(
             context.known_file(file),
             "DefaultInfo contains unknown file {}",
             file.path
         );
     }
-    let declared = std::mem::take(&mut *context.declared.borrow_mut());
-    let actions = std::mem::take(&mut *context.actions.borrow_mut());
-    for file in &declared {
-        if !actions.iter().any(|action| action.outputs.contains(file)) {
-            bail!("declared output {} has no generating action", file.path);
+    // Runfiles artifacts need an artifact identity like every other file; the
+    // FilesToRunProvider manifests are declared but have no action yet
+    // (docs/RUNFILES.md).
+    for file in target_runfiles.files() {
+        if let Some(gap) = context.runfiles.manifest_gap(&file) {
+            bail!("{gap}");
         }
+        ensure!(
+            context.known_file(&file),
+            "runfiles contain unknown file {}",
+            file.path
+        );
+    }
+    let declared = context.take_declared();
+    let actions = std::mem::take(&mut *context.actions.borrow_mut());
+    // StarlarkProviderValidationUtil.validateArtifacts
+    // (analysis/StarlarkProviderValidationUtil.java:25-46): every orphan by its
+    // root-relative path (Bazel iterates a HashMap; here declaration order).
+    let orphans = declared
+        .iter()
+        .filter(|file| !actions.iter().any(|action| action.outputs.contains(file)))
+        .map(|file| crate::runfiles::root_relative(file).to_owned())
+        .collect::<Vec<_>>();
+    if !orphans.is_empty() {
+        bail!(
+            "The following files have no generating action:\n{}",
+            orphans.join("\n")
+        );
     }
     let mut unique = BTreeSet::new();
     let files = files
@@ -1009,6 +1210,7 @@ fn analyze_inner(
         providers,
         provider_files,
         provider_keys,
+        runfiles: target_runfiles,
     })
 }
 
@@ -1230,6 +1432,7 @@ strict = rule(implementation=consumer_impl, attrs={"dep": attr.label(providers=[
                 provider_files: producer.provider_files,
                 provider_keys: producer.provider_keys,
                 is_filegroup: false,
+                runfiles: producer.runfiles,
             },
         )]);
         let consumer = analyze(&package[&Label::parse("//:consumer", "").unwrap()], &deps).unwrap();
@@ -1330,6 +1533,7 @@ erased = attr.label(providers=[[], [NotPackageSpecificationInfo]])
             provider_files: Vec::new(),
             provider_keys: Vec::new(),
             is_filegroup: false,
+            runfiles: Default::default(),
         };
         (BTreeMap::from([(target.label.clone(), target)]), specs)
     }
@@ -1495,6 +1699,7 @@ r = rule(implementation=impl, attrs={
             repositories: Arc::new(RepositorySet::new(std::path::PathBuf::from("."))),
             scope: crate::analysis_runtime::ScopeState::new("//pkg:rule".into(), BTreeSet::new()),
             subrule: Default::default(),
+            runfiles: Default::default(),
         }
     }
 
@@ -1589,8 +1794,12 @@ ctx.actions.write(first, 'hello')
                 "unsupported",
             ),
             (
-                "ctx.actions.run_shell(outputs=[out], command='true', tools=[])",
-                "tools",
+                "ctx.actions.run_shell(outputs=[out], command='true', tools=1)",
+                "in call to run_shell(), parameter 'tools' got value of type 'int', want 'sequence or depset'",
+            ),
+            (
+                "ctx.actions.run_shell(outputs=[out], command='true', tools=[1])",
+                "expected value of type 'File, FilesToRunProvider or Depset of Files' for a member of parameter 'tools' but got int instead",
             ),
             (
                 "ctx.actions.run_shell(outputs=[out], command='true', arguments=[1])",

@@ -71,6 +71,19 @@ notices) and 29 `.golden` files regenerated with
 whose declared-addition hash is updated). Under the frozen isolated test graph
 the vendored crate passes 964 lib tests and 157 doc tests (17 ignored).
 
+The [runfiles increment](RUNFILES.md) (N23a) adds
+`StarlarkValue::unknown_attribute_message(attribute)` (default `None`) in
+`src/values/{traits.rs,layout/vtable.rs}`; attribute reads
+(`src/eval/compiler/expr.rs`, `get_attr_no_attr_error`) and
+`Value::get_attr_error` (`src/values/layout/value.rs`) use it before the
+ordinary `has no attribute` error, so `ctx.outputs` and `ctx.executable` report
+Bazel's `Structure.getErrorMessageForUnknownField` texts
+(`analysis/starlark/StarlarkRuleContext.java:402-408`,
+`analysis/starlark/StarlarkAttributesCollection.java:82-86`,
+`packages/StructImpl.java:86-95`). `getattr()` without a default keeps the
+ordinary message. `src/eval/compiler/expr.rs` is declared with its original
+archive hash in the same provenance.
+
 ## Original published contents
 
 The source archive is

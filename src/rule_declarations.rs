@@ -2551,7 +2551,7 @@ nonempty = rule(impl, attrs = {'counts': attr.int_list(allow_empty = False)})\n"
             ),
             (
                 "exe",
-                "declared rule features accepted at load time but not analyzed by the native profile: rule(executable=True)",
+                "The rule 'exe' is executable. It needs to create an executable File and pass it as the 'executable' parameter to the DefaultInfo it returns.",
             ),
             (
                 "tool",

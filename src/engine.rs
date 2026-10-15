@@ -3771,6 +3771,10 @@ impl Engine {
         let mut provider_files: BTreeMap<ConfiguredTargetKey, Vec<File>> = BTreeMap::new();
         // Returned declared-provider names per analyzed rule (Target debugPrint).
         let mut provider_keys: BTreeMap<ConfiguredTargetKey, Vec<String>> = BTreeMap::new();
+        // RunfilesProvider/FilesToRunProvider of analyzed rule targets
+        // (docs/RUNFILES.md); file targets and other native rules have none.
+        let mut runfiles_info: BTreeMap<ConfiguredTargetKey, crate::runfiles::TargetRunfiles> =
+            BTreeMap::new();
         // File metadata is not a source filesystem path. Keep the real artifact
         // identity even when a custom provider forwards a non-default file.
         let mut artifact_index: BTreeMap<File, Artifact> = BTreeMap::new();
@@ -3861,7 +3865,7 @@ impl Engine {
                 }
                 for (label, edge_config, map_key) in dependency_labels {
                     let artifacts = self.artifacts(&label, edge_config, &dry, &declared)?;
-                    let files = artifacts.iter().map(Artifact::file).collect();
+                    let files = artifacts.iter().map(Artifact::file).collect::<Vec<_>>();
                     for artifact in artifacts {
                         artifact_index.insert(artifact.file(), artifact.clone());
                         available.insert(artifact.file(), artifact);
@@ -3880,6 +3884,20 @@ impl Engine {
                     }
                     let actual = forwarded.get(&dependency).unwrap_or(&label).clone();
                     let target = self.target(&actual)?;
+                    // The alias chain's end, in the same configuration
+                    // (Self::alias_chain).
+                    let actual_key = ConfiguredTargetKey::new(actual.clone(), edge_config);
+                    let runfiles =
+                        dependency_runfiles(&target, &files, runfiles_info.get(&actual_key));
+                    for file in runfiles.files() {
+                        let artifact = artifact_index.get(&file).ok_or_else(|| {
+                            format!(
+                                "runfiles file has no declared artifact identity: {}",
+                                file.path
+                            )
+                        })?;
+                        available.insert(file, artifact.clone());
+                    }
                     dependency_targets.insert(
                         map_key,
                         DependencyTarget {
@@ -3897,9 +3915,10 @@ impl Engine {
                             // The alias chain's end, in the same configuration
                             // (Self::alias_chain).
                             provider_keys: provider_keys
-                                .get(&ConfiguredTargetKey::new(actual.clone(), edge_config))
+                                .get(&actual_key)
                                 .cloned()
                                 .unwrap_or_default(),
+                            runfiles,
                         },
                     );
                 }
@@ -4050,7 +4069,11 @@ impl Engine {
                         declared.insert((config, exec), artifact);
                     }
                 }
-                for file in &analyzed.provider_files {
+                for file in analyzed
+                    .provider_files
+                    .iter()
+                    .chain(&analyzed.runfiles.files())
+                {
                     if !available.contains_key(file) {
                         return Err(format!(
                             "{}: provider file has no declared artifact identity: {}",
@@ -4058,6 +4081,7 @@ impl Engine {
                         ));
                     }
                 }
+                runfiles_info.insert(key.clone(), analyzed.runfiles.clone());
                 for registered in analyzed.actions {
                     let inputs = registered
                         .inputs
@@ -4193,6 +4217,13 @@ impl Engine {
                     artifact_index.insert(artifact.file(), artifact.clone());
                     declared.insert((config, artifact.exec.clone()), artifact.clone());
                 }
+                runfiles_info.insert(
+                    key.clone(),
+                    crate::runfiles::TargetRunfiles::genrule(
+                        &artifacts.iter().map(Artifact::file).collect::<Vec<_>>(),
+                    )
+                    .map_err(|error| format!("{}: {error:#}", rule.label))?,
+                );
                 dry.insert(key, artifacts);
             } else {
                 restricted_to_error(rule)?;
@@ -4228,6 +4259,41 @@ impl Engine {
                     if let Some(files) = provider_files.get(&actual).cloned() {
                         provider_files.insert(key.clone(), files);
                     }
+                    if let Some(runfiles) = runfiles_info.get(&actual).cloned() {
+                        runfiles_info.insert(key.clone(), runfiles);
+                    }
+                }
+                if matches!(rule.kind, RuleKind::Filegroup) {
+                    let mut srcs = Vec::new();
+                    for src in &rule.srcs {
+                        let label = self.resolve_rule_src(rule, src)?;
+                        let files = self
+                            .artifacts(&label, config, &dry, &declared)?
+                            .iter()
+                            .map(Artifact::file)
+                            .collect::<Vec<_>>();
+                        let actual = forwarded
+                            .get(&dependency_key(label.clone()))
+                            .unwrap_or(&label)
+                            .clone();
+                        let target = self.target(&actual)?;
+                        let runfiles = dependency_runfiles(
+                            &target,
+                            &files,
+                            runfiles_info.get(&dependency_key(actual)),
+                        );
+                        srcs.push((files, runfiles));
+                    }
+                    let files = inputs.iter().map(Artifact::file).collect::<Vec<_>>();
+                    let srcs = srcs
+                        .iter()
+                        .map(|(files, runfiles)| (files.as_slice(), runfiles))
+                        .collect::<Vec<_>>();
+                    runfiles_info.insert(
+                        key.clone(),
+                        crate::runfiles::TargetRunfiles::filegroup(&files, &srcs)
+                            .map_err(|error| format!("{}: {error:#}", rule.label))?,
+                    );
                 }
                 dry.insert(key, inputs);
             }
@@ -4238,6 +4304,32 @@ impl Engine {
                 requested.push((self.configurations.top_key(label.clone()), artifact));
             }
         }
+        // OutputGroupInfo.HIDDEN_TOP_LEVEL (RuleConfiguredTargetBuilder.java:156-171):
+        // the default runfiles artifacts of requested targets are built too,
+        // but not reported. The runfiles tree itself is not created (docs/RUNFILES.md).
+        let mut hidden = Vec::new();
+        let mut seen: std::collections::HashSet<(ConfiguredTargetKey, File)> = requested
+            .iter()
+            .map(|(key, artifact)| (key.clone(), artifact.file()))
+            .collect();
+        for label in labels {
+            let key = self.configurations.top_key(label.clone());
+            let actual = forwarded.get(&key).unwrap_or(label);
+            if let Some(runfiles) = runfiles_info.get(&self.configurations.top_key(actual.clone()))
+            {
+                for file in runfiles.default_runfiles().all_artifacts() {
+                    let artifact = artifact_index.get(&file).cloned().ok_or_else(|| {
+                        format!(
+                            "{label}: runfiles file has no declared artifact identity: {}",
+                            file.path
+                        )
+                    })?;
+                    if seen.insert((key.clone(), artifact.file())) {
+                        hidden.push((key.clone(), artifact));
+                    }
+                }
+            }
+        }
         // Analyze everything first, but execute only the actions reachable from
         // requested outputs. Empty DefaultInfo must not execute unused actions.
         let by_id: BTreeMap<_, _> = nodes
@@ -4246,6 +4338,7 @@ impl Engine {
             .collect();
         let mut todo = requested
             .iter()
+            .chain(&hidden)
             .filter_map(|(_, artifact)| artifact.producer.as_ref().map(|(id, _)| id.clone()))
             .collect::<Vec<_>>();
         let mut required = BTreeSet::new();
@@ -4278,7 +4371,7 @@ impl Engine {
         // Requested targets: `LOC: TARGET: missing input file 'L'` lines, then
         // `LOC: N input file(s) do not exist` (CompletionFunction).
         let mut by_target: Vec<(Label, Vec<String>)> = Vec::new();
-        for (key, artifact) in &requested {
+        for (key, artifact) in requested.iter().chain(&hidden) {
             if artifact.producer.is_none()
                 && let Some(missing_label) = missing(&artifact.real)
             {
@@ -4356,6 +4449,27 @@ impl Engine {
             return Err(errors.join("\n"));
         }
         Ok((nodes, requested))
+    }
+}
+
+/// The runfiles providers a dependent sees: file targets have a
+/// SingleExecutableFilesToRunProvider and no RunfilesProvider
+/// (analysis/configuredtargets/FileConfiguredTarget.java:85-101).
+fn dependency_runfiles(
+    target: &Target,
+    files: &[File],
+    analyzed: Option<&crate::runfiles::TargetRunfiles>,
+) -> crate::runfiles::TargetRunfiles {
+    match target {
+        Target::Source(_) | Target::Output(..) => files
+            .first()
+            .cloned()
+            .map(crate::runfiles::TargetRunfiles::file)
+            .unwrap_or_default(),
+        Target::Rule(_) => analyzed
+            .cloned()
+            .unwrap_or_default()
+            .with_files_to_run(files),
     }
 }
 

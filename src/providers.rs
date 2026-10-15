@@ -644,6 +644,12 @@ pub fn provider_files(value: Value<'_>) -> anyhow::Result<Vec<File>> {
                 for file in files {
                     self.file(file);
                 }
+            } else if let Some(files) = crate::starlark_types::runfiles_payload_files(value) {
+                // Runfiles, SymlinkEntry, FilesToRunProvider and DefaultInfo
+                // payloads (docs/RUNFILES.md).
+                for file in files {
+                    self.file(file);
+                }
             } else if let Some(provider) = ProviderInstance::from_value(value) {
                 for (_, field) in &provider.fields {
                     self.walk(*field, depth + 1)?;
@@ -679,7 +685,7 @@ pub fn provider_files(value: Value<'_>) -> anyhow::Result<Vec<File>> {
                 for (_, child) in structure.iter() {
                     self.walk(child, depth + 1)?;
                 }
-            } else if let Some(fields) = crate::analysis_ctx::outputs_fields(value) {
+            } else if let Some(fields) = crate::runfiles::outputs_fields(value) {
                 // ctx.outputs (formerly a plain struct): its predeclared output Files.
                 self.walk(fields, depth + 1)?;
             } else if !matches!(

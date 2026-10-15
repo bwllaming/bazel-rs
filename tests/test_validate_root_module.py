@@ -124,8 +124,8 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(suite.plan_receipt()['phases'], 29)
         self.assertEqual(suite.plan_receipt(True)['phases'], 11)
         self.assertEqual(metadata.SUITE_NAME, 'run-environment-info')
-        # F's own plan (rule-kind differential added); G replaces it privately.
-        self.assertEqual(len(metadata.CASEPLAN), 8)
+        # F's own plan (rule-kind and rule-build differentials added); G replaces it privately.
+        self.assertEqual(len(metadata.CASEPLAN), 9)
         self.assertNotIn('rule-kind', [c['name'] for c in h.CASEPLAN])
         self.assertIsNot(h, metadata)
         # Native BUILD does not predeclare print. A loaded ordinary function

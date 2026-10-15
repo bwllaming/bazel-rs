@@ -220,7 +220,7 @@ fail analysis: the testonly check below uses the effective value.
   value targets; docs/TOOLCHAINS.md).
   Retained `select()`s on built-in attributes are resolved first and these
   checks apply to the resolved values (docs/CONFIGURATION.md). Test and executable rules are
-  still rejected as a whole (`rule(test=True)` gate, docs/LOAD_DECLARATIONS.md).
+  analyzed (docs/RUNFILES.md); their implicit test-runner attributes are not.
 
 ## Not implemented / divergences
 
@@ -245,7 +245,7 @@ fail analysis: the testonly check below uses the effective value.
   incompatible and cannot be built, but was explicitly requested.`); native
   fails all of these with its explicit not-analyzed message instead.
 * Pre-existing native gaps observed by the capture, unchanged here:
-  `ctx.executable` is absent; invalid attribute names report `invalid
+  `ctx.executable` was absent (added by N23a, docs/RUNFILES.md); invalid attribute names report `invalid
   attribute name "1bad"` (Bazel: ``attribute name `1bad` is not a valid
   identifier.``); `attr.string(configurable = False)` reports ``Found
   `configurable` extra named parameter(s) for call to string`` (Bazel:

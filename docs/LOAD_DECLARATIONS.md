@@ -138,17 +138,18 @@ Following `StarlarkAttrModuleApi.java` and `StarlarkAttrModule.java:317-565`:
 
 ## Accepted but not analyzed (explicit analysis failure when used)
 
+`rule(executable=True)`, `rule(test=True)` and `attr.label(executable=True,
+cfg="target")` are analyzed since N23a (docs/RUNFILES.md).
+
 A target fails analysis with the message above if it uses any of these:
 
-* rule level: `executable=True`, `test=True`, `analysis_test=True`,
-  `_skylark_testable=True`, `output_to_genfiles=True`,
+* rule level: `analysis_test=True`, `_skylark_testable=True`, `output_to_genfiles=True`,
   `dependency_resolution_rule=True`, non-empty `exec_groups`, `cfg` other
   than none/target, dict `outputs`
   (the implicit outputs exist for loading, but not as `ctx.outputs`);
 * attribute level, when the attribute's resolved value (explicit, default or
   chosen `select()` branch, docs/CONFIGURATION.md) is non-empty:
   `cfg` other than target and exec (`config.none()`, Starlark transitions),
-  `executable=True`,
   non-empty `aspects`, extension-list `allow_files`/`allow_single_file`,
   `allow_rules`, non-empty `flags`, `skip_validations=True`, any
   `label_keyed_string_dict` value;

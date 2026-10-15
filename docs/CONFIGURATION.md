@@ -460,7 +460,7 @@ confirmed by the paired capture (`D10/gap_order`, `T10`):
    attribute is resolved in rule-class attribute order — `name`, built-in
    attributes, then Starlark attributes in `attrs` dict order — and the first
    failure is reported at the rule's location.
-6. Remaining rule-level gaps (test/executable classes, unresolved late-bound
+6. Remaining rule-level gaps (analysis tests, unresolved late-bound
    defaults — resolvable ones take their configured value first, docs/SUBRULES.md,
    implicit outputs, package-default gaps), then **gaps of resolved values**:
    dependency edges with `cfg` transitions other than exec, aspects, file/rule restrictions,
