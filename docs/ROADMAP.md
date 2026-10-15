@@ -25,9 +25,22 @@ analysis, toolchains and the production execution/test stack remain incomplete.
 Successful fixture or filegroup builds do not establish application parity.
 
 The progression below records historical increment boundaries, not the current
-application blocker. The later N3 runtime-pinned query reaches the existing JSON
-resource budget. This combined tree includes the decode-only JSON capacity
-profile (`ac9d646`); the query must be rerun, and application query/build/test remains unproven.
+application state. The earlier N3 runtime-pinned query reached the JSON resource
+budget in effect before the decode-only JSON capacity profile (`ac9d646`). On the
+current tree, the native query of `//src/beyondwork.ai/utils/str:str` succeeds
+with the expected single-label output. A native build of that target passes
+loading and stops at the first analysis gap (`label_flag`/configuration).
+Evidence: main commit `2d2bfd4` with installed release `79bc245f…`, probe
+`artifacts/probe_application_v2.py` (native `query --experimental-builtin-modules
+--registry=https://bcr.bazel.build --lockfile_mode=off //src/beyondwork.ai/utils/str:str`,
+isolated HOME/TMPDIR/cache, tracked checkout state asserted unchanged): query exit 0,
+receipt `artifacts/mainrepo-n13-n15-promoted-loading.json` (sha256 `64213a66…`);
+the same probe with `build` exits 1 at the `label_flag` analysis gap, receipt
+`artifacts/mainrepo-n13-n15-promoted-build.json` (sha256 `24a46217…`). Both receipts
+live in the main checkout's ignored `artifacts/` directory and are referenced from
+`artifacts/n13-n15-promotion.json`; no genuine Bazel capture of this query exists. This
+is a query and loading result only: application build/test and performance
+remain unproven.
 
 The previously captured native query of `//src/beyondwork.ai/utils/str:str` failed
 before application analysis because `aspect_bazel_lib@2.22.5` is unavailable in
@@ -75,8 +88,9 @@ The next increment adds bounded non-isolated ordinary extension execution:
 immutable BFS module/tag projections, complete callbacks, call-time repository
 argument snapshots, deferred sibling label binding and complete import/spec
 validation before demanded repository execution. See `docs/MODULE_EXTENSIONS.md`.
-Metadata, facts, SDK operations and implicit built-in closure are still missing;
-application query/build/test and full compatibility remain unproven.
+Metadata, facts, SDK operations and implicit built-in closure were still missing
+at that increment; full compatibility remains unproven (see the current
+application state above).
 
 Genuine built-in discovery is now available as an opt-in native profile. It
 injects only `bazel_tools` before selection, evaluates its unchanged official

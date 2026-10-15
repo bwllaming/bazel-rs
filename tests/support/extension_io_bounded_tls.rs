@@ -37,7 +37,10 @@ mod n3_tls_process {
         // Ask the kernel (kill(2) with signal 0 on the group) instead of
         // parsing every host process's /proc stat: foreign processes must not
         // be able to fail this owned-group check. Exit 0 iff the group has a
-        // member; our own group is never EPERM. No shell or inherited env.
+        // member. kill(1) exits 1 for ESRCH and EPERM alike, so absence is
+        // only its exact C-locale (empty env) ESRCH report for this argument,
+        // read from a bounded stderr capture; anything else is an error.
+        // No shell or inherited env.
         if group <= 1 {
             return Err("refusing non-private group".into());
         }
@@ -46,18 +49,51 @@ mod n3_tls_process {
             .env_clear()
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| e.to_string())?;
-        match reap(&mut probe, Instant::now() + CLEANUP) {
-            Ok(status) => Ok(status.success()),
+        let pipe = probe.stderr.take().ok_or("group probe stderr missing")?;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        // Detached only if the pipe never closes; storage is bounded either way.
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let read = pipe.take(4097).read_to_end(&mut bytes);
+            let _ = sender.send(read.map(|_| bytes));
+        });
+        let status = match reap(&mut probe, Instant::now() + CLEANUP) {
+            Ok(status) => status,
             Err(first) => {
                 let killed = probe.kill();
                 let reaped = reap(&mut probe, Instant::now() + CLEANUP);
-                Err(format!(
+                return Err(format!(
                     "group probe failed: {first}; kill={killed:?}; reap={reaped:?}"
-                ))
+                ));
             }
+        };
+        let stderr = match receiver.recv_timeout(CLEANUP) {
+            Ok(Ok(bytes)) if bytes.len() <= 4096 => bytes,
+            other => return Err(format!("group probe stderr unusable: {other:?}")),
+        };
+        if status.success() {
+            return Ok(true);
+        }
+        let esrch = std::str::from_utf8(&stderr)
+            .ok()
+            .and_then(|text| text.strip_suffix('\n'))
+            .is_some_and(|line| {
+                !line.contains('\n')
+                    && (line.ends_with(&format!(": (-{group}): No such process"))
+                        || line.ends_with(&format!(
+                            ": sending signal to -{group} failed: No such process"
+                        )))
+            });
+        if status.code() == Some(1) && esrch {
+            Ok(false)
+        } else {
+            Err(format!(
+                "group probe failed ({status}): {:?}",
+                String::from_utf8_lossy(&stderr)
+            ))
         }
     }
 

@@ -231,9 +231,20 @@ Module graph evidence is in `artifacts/module-validation.json`. Local external
 repository differential validation passes 20 scoped checks and is not implied by
 module JSON parity. Its historical native application query failed on unavailable
 registry metadata for `aspect_bazel_lib@2.22.5`. The later N3 runtime-pinned query
-reached the earlier JSON resource budget; this combined tree includes the
-decode-only JSON capacity profile (`ac9d646`), so that query must be rerun. Successful application query,
-Go build/test parity and full-repository performance remain unestablished. See
+reached the JSON resource budget in effect before the decode-only JSON capacity
+profile (`ac9d646`). On the current tree, the native query of
+`//src/beyondwork.ai/utils/str:str` succeeds with the expected single-label
+output; a native build of that target passes loading and stops at the first
+analysis gap (`label_flag`/configuration). Evidence: main commit `2d2bfd4` with installed release `79bc245f…`, probe
+`artifacts/probe_application_v2.py` (native `query --experimental-builtin-modules
+--registry=https://bcr.bazel.build --lockfile_mode=off //src/beyondwork.ai/utils/str:str`,
+isolated HOME/TMPDIR/cache, tracked checkout state asserted unchanged): query exit 0,
+receipt `artifacts/mainrepo-n13-n15-promoted-loading.json` (sha256 `64213a66…`);
+the same probe with `build` exits 1 at the `label_flag` analysis gap, receipt
+`artifacts/mainrepo-n13-n15-promoted-build.json` (sha256 `24a46217…`). Both receipts
+live in the main checkout's ignored `artifacts/` directory and are referenced from
+`artifacts/n13-n15-promotion.json`; no genuine Bazel capture of this query exists. Application build/test, Go build/test
+parity and full-repository performance remain unestablished. See
 [`docs/REPOSITORY_VALIDATION.md`](docs/REPOSITORY_VALIDATION.md) for implementation
 scope, the source-preserving application probe and evidence boundaries.
 

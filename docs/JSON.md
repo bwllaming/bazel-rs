@@ -120,4 +120,5 @@ and the 8 MiB decode input ceiling counts UTF-8 bytes, so each byte >= 0x80 coun
 twice: a read file of roughly 4 to 8 MiB with many high bytes can exceed the decode
 ceiling although the read itself succeeds. In repository/extension evaluation,
 `\u` escape runs decode to UTF-8 bytes like Bazel (see MODULE_EXTENSION_IO.md).
-Application query, build and test remain unproven until rerun on this tree.
+The application query now gets past this decode step (the native query of
+`//src/beyondwork.ai/utils/str:str` succeeds); application build and test remain unproven.

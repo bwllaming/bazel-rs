@@ -18,7 +18,7 @@
 #![deny(unsafe_code)]
 
 #[cfg(not(target_os = "linux"))]
-compile_error!("git_process supports Linux only (process groups and /proc required)");
+compile_error!("git_process supports Linux only (process groups and kill(1) required)");
 
 use std::collections::VecDeque;
 use std::ffi::OsString;
@@ -320,10 +320,10 @@ fn kill_group(kill: &Path, group: u32) -> Result<(), String> {
     if status.success() {
         return Ok(());
     }
-    // kill(1)'s status does not distinguish ESRCH from EPERM. With null stderr,
-    // positively verify group absence through Linux /proc; never blindly accept
-    // exit code 1. Any inspection failure is a cleanup error (fail closed).
-    match group_exists(group) {
+    // kill(1)'s status does not distinguish ESRCH from EPERM. Positively verify
+    // group absence with a kernel probe; never blindly accept exit code 1. Any
+    // probe failure other than ESRCH is a cleanup error (fail closed).
+    match group_exists(kill, group) {
         Ok(false) => Ok(()),
         Ok(true) => Err(format!(
             "group-kill helper failed ({status}) for Git group {group}; group still exists"
@@ -334,59 +334,116 @@ fn kill_group(kill: &Path, group: u32) -> Result<(), String> {
     }
 }
 
-fn group_exists(group: u32) -> Result<bool, String> {
-    let entries =
-        fs::read_dir("/proc").map_err(|e| format!("cannot inspect process groups: {e}"))?;
-    for entry in entries {
-        let entry = entry.map_err(|e| format!("cannot enumerate process groups: {e}"))?;
-        if entry.file_name().to_string_lossy().parse::<u32>().is_err() {
-            continue;
+/// Ask the kernel whether `group` has any member (including unreaped zombies)
+/// via kill(2) with signal 0 on `-group`, run through trusted kill(1) with no
+/// shell, an empty environment (C locale) and null stdin/stdout. Unlike a scan
+/// of every host `/proc/*/stat`, foreign processes cannot make this fail.
+fn group_exists(kill: &Path, group: u32) -> Result<bool, String> {
+    if group <= 1 {
+        return Err(format!(
+            "refusing to probe non-private process group {group}"
+        ));
+    }
+    let mut probe = Command::new(kill);
+    probe
+        .args(["-0", "--", &format!("-{group}")])
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    let mut probe = probe
+        .spawn()
+        .map_err(|e| format!("cannot spawn group probe '{}': {e}", kill.display()))?;
+    let overflow = Arc::new(AtomicBool::new(false));
+    let stderr = match probe.stderr.take() {
+        Some(pipe) => Capture::start(pipe, overflow.clone()),
+        None => Err("group probe stderr pipe missing".into()),
+    };
+    let stderr = match stderr {
+        Ok(stderr) => stderr,
+        Err(e) => {
+            let killed = probe.kill();
+            let waited = probe.wait();
+            return Err(format!("{e}; probe kill={killed:?}, wait={waited:?}"));
         }
-        let stat = match fs::read_to_string(entry.path().join("stat")) {
-            Ok(stat) => stat,
-            Err(e) if proc_disappeared(&e) => continue,
-            Err(e) => {
+    };
+    let deadline = Instant::now() + CLEANUP_TIMEOUT;
+    let status = loop {
+        match probe.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => thread::sleep(POLL),
+            result => {
+                let reason = match result {
+                    Err(e) => format!("cannot wait for group probe: {e}"),
+                    _ => "group probe deadline exceeded".into(),
+                };
+                let killed = probe.kill();
+                let waited = probe.wait();
+                let mut errors = Vec::new();
+                stderr.finish(
+                    Instant::now() + CLEANUP_TIMEOUT,
+                    "group-probe stderr",
+                    &mut errors,
+                );
                 return Err(format!(
-                    "cannot inspect process '{}': {e}",
-                    entry.path().display()
+                    "{reason}; probe kill={killed:?}, wait={waited:?}; {}",
+                    errors.join("; ")
                 ));
             }
-        };
-        if stat_group(&stat).map_err(|e| format!("{}: {e}", entry.path().display()))? == Some(group)
-        {
-            return Ok(true);
         }
+    };
+    let mut errors = Vec::new();
+    let text = stderr.finish(
+        Instant::now() + CLEANUP_TIMEOUT,
+        "group-probe stderr",
+        &mut errors,
+    );
+    if overflow.load(Ordering::Acquire) {
+        errors.push("group probe stderr exceeded 1048576 bytes".into());
     }
-    Ok(false)
+    if !errors.is_empty() {
+        return Err(format!(
+            "group probe for {group} failed: {}",
+            errors.join("; ")
+        ));
+    }
+    classify_probe(group, status, &text)
 }
 
-fn stat_group(stat: &str) -> Result<Option<u32>, String> {
-    // comm may contain spaces, newlines and parentheses. pgrp is field 5.
-    let fields = stat
-        .rsplit_once(')')
-        .ok_or("malformed /proc process stat")?
-        .1;
-    let raw = fields
-        .split_whitespace()
-        .nth(2)
-        .ok_or("missing /proc process group")?;
-    // Linux fs/proc/array.c do_task_stat initializes signed pgid = -1 and
-    // leaves it there when lock_task_sighand races with __exit_signal.
-    // Namespace-invisible IDs may be 0. Neither is a live positive group.
-    let group: i32 = raw
-        .parse()
-        .map_err(|e| format!("invalid /proc process group {raw:?}: {e}"))?;
-    match group {
-        -1 | 0 => Ok(None),
-        1.. => Ok(Some(group as u32)),
-        _ => Err(format!("invalid /proc process group {raw:?}")),
+/// Exit 0 => the group exists. Neither procps-ng kill (exit 1 on any failure)
+/// nor util-linux kill (exit 1, or 64 for partial success) encodes errno in
+/// its status, so absence is recognised only from the C-locale (empty
+/// environment) strerror(ESRCH) report for exactly this one argument:
+/// procps-ng `<argv0>: (-<group>): No such process`, util-linux
+/// `<argv0>: sending signal to -<group> failed: No such process`. Anything
+/// else (EPERM, other statuses, signals, extra or unexpected output) is an
+/// error, never "absent".
+fn classify_probe(group: u32, status: ExitStatus, stderr: &[u8]) -> Result<bool, String> {
+    if status.success() {
+        return Ok(true);
     }
+    if status.code() == Some(1) && reports_esrch(group, stderr) {
+        return Ok(false);
+    }
+    let start = stderr.len().saturating_sub(512);
+    Err(format!(
+        "group probe for {group} failed ({status}): {:?}",
+        String::from_utf8_lossy(&stderr[start..])
+    ))
 }
 
-fn proc_disappeared(error: &io::Error) -> bool {
-    // Linux procfs can return ESRCH after opening a stat file when its task
-    // exits. It is not mapped to ErrorKind::NotFound (ENOENT) by std.
-    error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(3)
+fn reports_esrch(group: u32, stderr: &[u8]) -> bool {
+    let Some(line) = std::str::from_utf8(stderr)
+        .ok()
+        .and_then(|text| text.strip_suffix('\n'))
+    else {
+        return false;
+    };
+    !line.contains('\n')
+        && (line.ends_with(&format!(": (-{group}): No such process"))
+            || line.ends_with(&format!(
+                ": sending signal to -{group} failed: No such process"
+            )))
 }
 
 struct GroupGuard {
@@ -511,33 +568,93 @@ fn diagnostic(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn concurrent_proc_exit_is_distinct_from_inspection_permission_failure() {
-        assert!(proc_disappeared(&io::Error::from_raw_os_error(2)));
-        assert!(proc_disappeared(&io::Error::from_raw_os_error(3)));
-        for code in [1, 5, 13] {
-            assert!(!proc_disappeared(&io::Error::from_raw_os_error(code)));
-        }
-        assert!(!proc_disappeared(&io::Error::other("malformed stat")));
+    use std::os::unix::process::ExitStatusExt;
+
+    fn sleeper() -> Child {
+        Command::new("/bin/sleep")
+            .arg("30")
+            .env_clear()
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .unwrap()
     }
 
     #[test]
-    fn proc_group_exit_sentinel_is_not_a_malformed_or_live_group() {
-        assert_eq!(stat_group("123 (exiting) X 1 -1 -1 0").unwrap(), None);
-        assert_eq!(stat_group("123 (hidden) Z 0 0 0 0").unwrap(), None);
-        assert_eq!(
-            stat_group("123 (name with )\n parens)) S 2 123 123 0").unwrap(),
-            Some(123)
-        );
-        for stat in [
-            "123 (bad) S 1 bogus",
-            "123 (bad) S 1 -2",
-            "123 (bad) S 1 4294967296",
-            "123 (bad) S 1",
+    fn kernel_probe_sees_live_and_zombie_group_then_absence_after_reap() {
+        let kill = Path::new("/usr/bin/kill");
+        let mut child = sleeper();
+        let group = child.id();
+        assert_eq!(group_exists(kill, group), Ok(true));
+        child.kill().unwrap();
+        // An unreaped (zombie) leader is still a group member.
+        assert_eq!(group_exists(kill, group), Ok(true));
+        child.wait().unwrap();
+        assert_eq!(group_exists(kill, group), Ok(false));
+    }
+
+    #[test]
+    fn kernel_probe_refuses_shared_groups_and_fails_closed() {
+        for group in [0, 1] {
+            // Refused before any spawn: even a missing helper is not reached.
+            let error = group_exists(Path::new("/nonexistent/kill"), group).unwrap_err();
+            assert!(error.contains("refusing"), "{error}");
+        }
+        let mut child = sleeper();
+        let group = child.id();
+        let error = group_exists(Path::new("/nonexistent/kill"), group).unwrap_err();
+        assert!(error.contains("cannot spawn group probe"), "{error}");
+        // Exit 1 without the ESRCH report (e.g. a broken helper) is not absence.
+        let error = group_exists(Path::new("/usr/bin/false"), group).unwrap_err();
+        assert!(error.contains("exit status: 1"), "{error}");
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn probe_classification_accepts_only_exact_esrch_as_absent() {
+        let exited = |code: i32| ExitStatus::from_raw(code << 8);
+        assert_eq!(classify_probe(42, exited(0), b""), Ok(true));
+        for stderr in [
+            &b"/usr/bin/kill: (-42): No such process\n"[..],
+            b"kill: sending signal to -42 failed: No such process\n",
         ] {
-            assert!(stat_group(stat).is_err(), "{stat}");
+            assert_eq!(classify_probe(42, exited(1), stderr), Ok(false));
+        }
+        for (status, stderr) in [
+            (
+                exited(1),
+                &b"/usr/bin/kill: (-42): Operation not permitted\n"[..],
+            ),
+            (
+                exited(1),
+                b"kill: sending signal to -42 failed: Operation not permitted\n",
+            ),
+            (exited(1), b""),
+            (exited(1), b"/usr/bin/kill: (-42): No such process"),
+            (exited(1), b"/usr/bin/kill: (-142): No such process\n"),
+            (exited(1), b"/usr/bin/kill: (-421): No such process\n"),
+            (exited(1), b"x\n/usr/bin/kill: (-42): No such process\n"),
+            (
+                exited(64),
+                b"kill: sending signal to -42 failed: No such process\n",
+            ),
+            (exited(2), b"/usr/bin/kill: (-42): No such process\n"),
+            (
+                ExitStatus::from_raw(9),
+                b"/usr/bin/kill: (-42): No such process\n",
+            ),
+            (exited(1), b"/usr/bin/kill: (-42): No such process\xff\n"),
+        ] {
+            assert!(
+                classify_probe(42, status, stderr).is_err(),
+                "{status} {stderr:?}"
+            );
         }
     }
+
     use std::os::unix::fs::symlink;
     use std::sync::atomic::AtomicU64;
 
@@ -585,7 +702,8 @@ mod tests {
                 stat.rsplit_once(')').unwrap().1.split_whitespace().next(),
                 Some("Z" | "X")
             ),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => true,
+            // procfs returns ESRCH (not ENOENT) when the task exits mid-read.
+            Err(e) if e.kind() == io::ErrorKind::NotFound || e.raw_os_error() == Some(3) => true,
             Err(e) => panic!("{e}"),
         }
     }
@@ -903,8 +1021,13 @@ mod tests {
             kill: "/usr/bin/false".into(),
             armed: true,
         };
+        // The same broken helper also serves as the probe: its bare exit 1
+        // must be a cleanup error, never "absent" (fail closed).
         let error = guard.cleanup().unwrap_err();
-        assert!(error.contains("group still exists"), "{error}");
+        assert!(
+            error.contains("group-kill helper failed") && error.contains("group probe"),
+            "{error}"
+        );
         assert!(not_live(&guard.group.to_string()));
         guard.kill = "/usr/bin/kill".into();
         drop(guard);
