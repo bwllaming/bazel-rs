@@ -48,7 +48,10 @@ at promotion. With toolchain resolution (N17) the build of that target now enter
 resolution, which expands and analyzes every registered toolchain, and currently
 stops while loading rules_cc's `cc_shared_library.bzl` (computed attribute defaults
 at `cc/common/semantics.bzl:62`, being added); its receipt is recorded in
-`artifacts/n17-n19-promotion.json` at promotion. This
+`artifacts/n17-n19-promotion.json` at promotion. With label dictionary attributes, computed defaults (N20) and the repository_ctx
+host APIs (N21) that load succeeds and the build stops later, while loading rules_cc's
+`fdo_context.bzl` (subrule `attrs`, `cc/private/rules_impl/fdo/fdo_context.bzl:430`);
+its receipt is recorded in `artifacts/n20-n21-promotion.json` at promotion. This
 is a query and loading result only: application build/test and performance
 remain unproven.
 
