@@ -129,7 +129,9 @@ exact local-query case. Required `historical_parity_gaps` preserves the old
 native-success/reference-failure observations; `gap_closure` links new native
 exit 1/reference exit 48 rejection before loading or actions. The plan now has
 eight families and 106 phases: the stale executable/test declaration rejections
-became the `rule-kind` differential plus build-step native boundaries; that
-matrix has not been rerun against genuine Bazel here.
+became the `rule-kind` differential plus build-step native boundaries. That
+matrix was rerun against genuine Bazel 9.3.0 with the native release binary
+built from `e870d74` (SHA-256 `e1cbcfbc…`) and passed: eight families, 106
+phases, 196 commands, no errors (status `PASS`; the run receipt is untracked).
 Full Bazel parity, whole-application build/test success and broad performance
 claims remain unfinished.
