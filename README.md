@@ -148,8 +148,10 @@ declarations; full extension/repository APIs and toolchains remain incomplete.
 `module_ctx.download`/`read` implementation and `--repository_disable_download`
 policy (not an offline flag); final acceptance and release remain pending.
 [Build-setting defaults](docs/BUILD_SETTINGS.md) execute genuine implementations
-and propagate native template-variable providers to explicit consumers; CLI
-setting overrides, configured analysis and implicit Make expansion remain unsupported.
+and propagate native template-variable providers to explicit consumers; command-line
+setting values (`--//pkg:flag=value`), `flag_values` matching and `label_flag`/`label_setting`
+analysis follow [CONFIGURATION.md](docs/CONFIGURATION.md); implicit Make expansion remains
+unsupported.
 [Ordered dictionary attributes](docs/STRING_LIST_DICT.md) preserve typed values,
 snapshot timing and frozen ownership across rules, repositories and extension tags.
 [Local repository metadata](docs/LOCAL_REPOSITORIES.md) retains the local flag and

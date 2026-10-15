@@ -13,7 +13,8 @@ The `.bzl` `config` namespace provides keyword-only `bool`, `int`, `string` and
 `string_list` constructors. Each accepts `flag=False`; string lists also accept
 `repeatable=False`, with repeatability requiring `flag=True`.
 `config.string(allow_multiple=False)` is accepted, while `True` remains explicitly
-unsupported. String-set and label-setting constructors are not implemented.
+unsupported. String-set constructors are not implemented; label-typed settings are the
+native `label_flag`/`label_setting` rules, which are analyzed (docs/CONFIGURATION.md).
 
 `rule(build_setting=descriptor)` injects a mandatory typed
 `build_setting_default` and a string `help` attribute, rejecting collisions with
