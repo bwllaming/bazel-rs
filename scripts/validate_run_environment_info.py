@@ -84,13 +84,16 @@ CASEPLAN = [
     common.case('phase', ('bare', 'list', 'default', 'duplicate', 'atomic')),
     common.case('module', ('build-global', 'module-global-local', 'module-global', 'alias', 'repository', 'extension')),
     common.case('action', ('implicit', 'explicit', 'all-entries')),
+    # Executable/test rule declarations load natively like Bazel (query and the
+    # rule-class-name check are differential); only their analysis is a native gap.
+    common.case('rule-kind', ('executable-query', 'test-query', 'test-misnamed', 'plain-misnamed')),
     common.case('native-boundary', ('executable', 'test'), 'native_boundary'),
 ]
 PLAN = [(c['name'], c['kind']) for c in CASEPLAN]
 LIMITATIONS = [
     'Bounded metadata API, nested ordinary-provider transport and explicit rule-authored action env only.',
-    'No executable/test rule classification, DefaultInfo executable/runfiles, CLI run/test or testing.TestEnvironment support.',
-    'Executable/test descriptors are native-only unsupported boundaries, never paired positive cases.',
+    'rule(executable=True)/rule(test=True) loading, query and the _test rule-class-name check are differential (rule-kind).',
+    'Analysis of executable/test rule targets (DefaultInfo executable/runfiles, CLI run/test, testing.TestEnvironment) is a native-only build-step boundary with the exact native gap message, never a paired positive case.',
     'Inherited names remain metadata: no host reads or automatic action environment folding.',
     'Unicode and NUL values are metadata only; NUL is never passed to an OS environment.',
     'Reference-only preparation cannot claim native PASS; synthetic unit receipts are not engine evidence.',
@@ -111,9 +114,9 @@ def write(expression):
         'return [DefaultInfo(files=depset([out]))]\n')
 
 
-def rule(body, prefix=KEYS, attrs='{}', extra=''):
+def rule(body, prefix=KEYS, attrs='{}', extra='', symbol='check'):
     return (prefix+'def _impl(ctx):\n'+common.indent('print("'+ENTERED+'")\n'+body)
-        +'check=rule(implementation=_impl,attrs='+attrs+extra+')\nprint("'+READY+'")\n')
+        +symbol+'=rule(implementation=_impl,attrs='+attrs+extra+')\nprint("'+READY+'")\n')
 
 
 def fixture(name, probe):
@@ -124,7 +127,7 @@ def fixture(name, probe):
         'app/BUILD.bazel': 'load("//defs:check.bzl","check")\ncheck(name="check")\n'}
     value = dict(target='//app:check', expected={'check.out': b'struct(environment = {}, inherited_environment = [])'},
         actions=1, diagnostic=None, stage='success', queries=[], genuine=False, markers=[READY], callback=True)
-    body, prefix, attrs, extra = write('repr(R())'), KEYS, '{}', ''
+    body, prefix, attrs, extra, symbol = write('repr(R())'), KEYS, '{}', '', 'check'
 
     def reject(diagnostic, stage='loading'):
         value.update(diagnostic=diagnostic, stage=stage, expected={}, actions=0, callback=stage == 'callback')
@@ -277,10 +280,23 @@ def fixture(name, probe):
                 else 'e=use_extension("//defs:context.bzl","e")\nuse_repo(e,"made")\n')
             files['app/BUILD.bazel'] = 'genrule(name="check",srcs=["@made//:data"],outs=["check.out"],cmd="cat $(SRCS) > $@; chmod +x $@")\n'
             value.update(expected={'check.out': b'struct(environment = {"K": "repo"}, inherited_environment = [])'}, markers=[], callback=False)
-    elif name == 'native-boundary':
-        extra = ','+probe+'=True'
-        reject('rule-'+probe)
-    files['defs/check.bzl'] = rule(body, prefix, attrs, extra)
+    elif name in ('rule-kind', 'native-boundary'):
+        kind = probe.split('-')[0]
+        extra = '' if kind == 'plain' else ','+kind+'=True'
+        # Bazel requires test rule classes, and only them, to end with _test
+        # (StarlarkRuleClassFunctions.java:1931-1937).
+        symbol = 'check_test' if probe in ('test', 'test-query', 'plain-misnamed') else 'check'
+        if symbol != 'check':
+            files['app/BUILD.bazel'] = 'load("//defs:check.bzl","'+symbol+'")\n'+symbol+'(name="check")\n'
+        if probe.endswith('-misnamed'):
+            reject('misnamed-'+symbol)
+        else:
+            value.update(queries=[('//app:check', ['//app:check'])], expected={}, actions=0, callback=False)
+            if name == 'native-boundary':
+                reject('rule-'+kind, 'analysis')
+            else:
+                value.update(stage='query', query_only=True)
+    files['defs/check.bzl'] = rule(body, prefix, attrs, extra, symbol)
     value['failure_command'] = 'query' if value['stage'] == 'loading' else 'build'
     value['returncodes'] = {'native': 1, 'reference': 48 if name == 'module' and probe in ('module-global', 'module-global-local')
         else 7 if value['stage'] == 'loading' else 1} if value['diagnostic'] else {'native': 0, 'reference': 0}
@@ -315,8 +331,14 @@ DIAGNOSTICS = {
     'ordinary-return': r'Returning RunEnvironmentInfo from a non-executable, non-test target has no effect',
     'duplicate-provider': r'(?:multiple conflicting returned providers.*RunEnvironmentInfo|(?:duplicate|multiple).*RunEnvironmentInfo.*provider|Returning RunEnvironmentInfo from a non-executable, non-test target has no effect)|^bazel-rs: analysis of //app:check: implementation returned provider builtin:RunEnvironmentInfo more than once$',
     'missing-global': r"(?:name ['`]RunEnvironmentInfo['`] is not defined|Variable `RunEnvironmentInfo` not found)",
-    'rule-executable': r'(?:executable.*(?:unsupported|not supported|False)|(?:unsupported|not supported).*executable)',
-    'rule-test': r'(?:test.*(?:unsupported|not supported|False)|(?:unsupported|not supported).*test)',
+    # Exact native analysis-gap text for an otherwise loaded executable/test rule
+    # target (before its implementation runs); query of the same target succeeds.
+    'rule-executable': r'^bazel-rs: analysis of //app:check: declared rule features accepted at load time but not analyzed by the native profile: rule\(executable=True\) \(executable rule semantics\)$',
+    'rule-test': r'^bazel-rs: analysis of //app:check: declared rule features accepted at load time but not analyzed by the native profile: rule\(test=True\) \(test rule semantics\)$',
+    # Bazel's exported-rule check (StarlarkRuleClassFunctions.java:1931-1937),
+    # identical in both engines; it ends the error line.
+    'misnamed-check': r"(?:^|: )Invalid rule class name 'check', test rule class names must end with '_test' and other rule classes must not$",
+    'misnamed-check_test': r"(?:^|: )Invalid rule class name 'check_test', test rule class names must end with '_test' and other rule classes must not$",
 }
 
 
@@ -347,6 +369,8 @@ materialize = utility.materialize
 
 def steps_for(value, engine):
     steps = [('query', target, []) for target, _ in value['queries']]
+    if value.get('query_only'):
+        return steps
     if value['diagnostic']:
         return steps+[(value['failure_command'], value['target'], [])]
     for _ in range(2):
@@ -494,9 +518,9 @@ def validate_phase(phase, report, args, workspace, reference, item):
             if e['kind'] != 'file' or e['mode'] != 0o555 or not valid_evidence(e, value['expected'][Path(e['path']).name], True):
                 raise ValueError('consumer bytes or executable mode mismatch')
         output_index += 1
-    if value['diagnostic']:
+    if value['diagnostic'] or value.get('query_only'):
         if phase['outputs']:
-            raise ValueError('rejected phase published outputs')
+            raise ValueError('rejected or query-only phase published outputs')
     elif len(phase['outputs']) != 2 or phase['outputs'][0] != phase['outputs'][1]:
         raise ValueError('missing or inconsistent cold/warm output evidence')
 

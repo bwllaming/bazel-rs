@@ -6,7 +6,13 @@ operational run/test support or full Bazel parity.
 The scope is genuine metadata construction, snapshots, equality, nested provider
 transport and explicit action consumption. It does **not** add executable/test
 rule modes, executable/runfiles fields, `run`/`test` commands or automatic process
-environment handling.
+environment handling. `rule(executable=True)` and `rule(test=True)` declarations
+do load natively like Bazel (query and the `_test` rule-class-name check are the
+validator's differential `rule-kind` family). Analysing or building such a target
+is still a native-only boundary: it fails with `declared rule features accepted at
+load time but not analyzed by the native profile: rule(executable=True)
+(executable rule semantics)` (or `rule(test=True) (test rule semantics)`), before
+the implementation runs.
 
 ## Constructor and ownership
 
@@ -121,6 +127,9 @@ matrix in `artifacts/g-run-environment-info-validation.json` passes seven famili
 98 phases and 186 commands, retaining external-demand coverage and adding the
 exact local-query case. Required `historical_parity_gaps` preserves the old
 native-success/reference-failure observations; `gap_closure` links new native
-exit 1/reference exit 48 rejection before loading or actions.
+exit 1/reference exit 48 rejection before loading or actions. The plan now has
+eight families and 106 phases: the stale executable/test declaration rejections
+became the `rule-kind` differential plus build-step native boundaries; that
+matrix has not been rerun against genuine Bazel here.
 Full Bazel parity, whole-application build/test success and broad performance
 claims remain unfinished.

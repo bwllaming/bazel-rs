@@ -41,10 +41,10 @@ def record(text='', code=1, **changes):
 
 class PlanTests(unittest.TestCase):
     def test_exact_plan_and_lexical_fixtures(self):
-        self.assertEqual(len(suite.CASEPLAN), 7)
-        self.assertEqual(sum(len(c['probes']) for c in suite.CASEPLAN), 50)
-        self.assertEqual(suite.plan_receipt()['phases'], 98)
-        self.assertEqual(suite.plan_receipt(True)['phases'], 48)
+        self.assertEqual(len(suite.CASEPLAN), 8)
+        self.assertEqual(sum(len(c['probes']) for c in suite.CASEPLAN), 54)
+        self.assertEqual(suite.plan_receipt()['phases'], 106)
+        self.assertEqual(suite.plan_receipt(True)['phases'], 52)
         for item in suite.CASEPLAN:
             self.assertEqual(len(item['probes']), len(set(item['probes'])))
             for probe in item['probes']:
@@ -57,6 +57,9 @@ class PlanTests(unittest.TestCase):
                 if v['diagnostic']:
                     self.assertIn(v['diagnostic'], suite.DIAGNOSTICS)
                     self.assertEqual(v['failure_command'], 'query' if v['stage'] == 'loading' else 'build')
+                elif v.get('query_only'):
+                    self.assertEqual(suite.steps_for(v, 'native'), [('query', '//app:check', [])])
+                    self.assertEqual(suite.steps_for(v, 'reference'), [('query', '//app:check', [])])
                 else:
                     self.assertEqual(sum(c == 'build' for c, _, _ in suite.steps_for(v, 'native')), 2)
 
@@ -66,6 +69,59 @@ class PlanTests(unittest.TestCase):
                 suite.fixture(family, probe)
         self.assertEqual(suite.phases_for(suite.CASEPLAN[-1], True), [])
         self.assertTrue(all(e == 'native' for _, e in suite.phases_for(suite.CASEPLAN[-1])))
+
+    def test_executable_and_test_rule_declarations_are_differential_until_analysis(self):
+        # Native loads rule(executable=True)/rule(test=True) like Bazel, so
+        # query and the _test class-name check are paired with genuine Bazel.
+        item = next(c for c in suite.CASEPLAN if c['name'] == 'rule-kind')
+        self.assertEqual(item['kind'], 'differential')
+        self.assertEqual(suite.phases_for(item, True), [(p, 'reference') for p in item['probes']])
+        for probe, symbol, flag in (('executable-query', b'check', b',executable=True)'),
+                                    ('test-query', b'check_test', b',test=True)')):
+            v = suite.fixture('rule-kind', probe)
+            self.assertIn(symbol+b'=rule(implementation=_impl,attrs={}'+flag, v['files']['defs/check.bzl'])
+            self.assertIn(symbol+b'(name="check")', v['files']['app/BUILD.bazel'])
+            self.assertEqual((v['diagnostic'], v['stage'], v['queries'], v['expected'], v['callback']),
+                             (None, 'query', [('//app:check', ['//app:check'])], {}, False))
+            self.assertEqual(v['returncodes'], {'native': 0, 'reference': 0})
+        for probe, symbol, flag in (('test-misnamed', 'check', b',test=True)'), ('plain-misnamed', 'check_test', b')')):
+            v = suite.fixture('rule-kind', probe)
+            self.assertIn(symbol.encode()+b'=rule(implementation=_impl,attrs={}'+flag, v['files']['defs/check.bzl'])
+            self.assertEqual((v['diagnostic'], v['stage'], v['failure_command']), ('misnamed-'+symbol, 'loading', 'query'))
+            self.assertEqual(v['returncodes'], {'native': 1, 'reference': 7})
+            message = ("Invalid rule class name '"+symbol+"', test rule class names must end with '_test'"
+                       " and other rule classes must not")
+            observed = {'native': 'bazel-rs: cannot evaluate //defs:check.bzl: error: '+message,
+                        'reference': 'ERROR: /w/defs/check.bzl:9:7: '+message}
+            for engine, text in observed.items():
+                suite.require_rejection(record(text, v['returncodes'][engine]), v['diagnostic'], v['returncodes'][engine])
+            other = 'check_test' if symbol == 'check' else 'check'
+            for text in (message.replace("'"+symbol+"'", "'"+other+"'"), message+' (suffix)',
+                         'ERROR: source excerpt: '+message[:-4], 'bazel-rs: test rules are unsupported'):
+                with self.subTest(probe=probe, text=text), self.assertRaises(ValueError):
+                    suite.require_rejection(record(text, 7), v['diagnostic'], 7)
+
+    def test_executable_and_test_analysis_is_an_exact_native_build_boundary(self):
+        item = suite.CASEPLAN[-1]
+        self.assertEqual((item['name'], item['kind']), ('native-boundary', 'native_boundary'))
+        for probe, symbol in (('executable', 'check'), ('test', 'check_test')):
+            v = suite.fixture('native-boundary', probe)
+            self.assertIn(symbol.encode()+b'=rule(implementation=_impl,attrs={},'+probe.encode()+b'=True)',
+                          v['files']['defs/check.bzl'])
+            self.assertEqual((v['stage'], v['failure_command'], v['diagnostic'], v['callback']),
+                             ('analysis', 'build', 'rule-'+probe, False))
+            self.assertEqual(suite.steps_for(v, 'native'), [('query', '//app:check', []), ('build', '//app:check', [])])
+            message = ('bazel-rs: analysis of //app:check: declared rule features accepted at load time but not '
+                       'analyzed by the native profile: rule('+probe+'=True) ('+probe+' rule semantics)')
+            suite.require_rejection(record(suite.READY+'\n'+message), v['diagnostic'], 1)
+            suite.require_markers(record(suite.READY+'\n'+message), v, 'build', False, 'native', True)
+            with self.assertRaises(ValueError):
+                suite.require_markers(record(suite.READY+'\n'+suite.ENTERED+'\n'+message), v, 'build', False, 'native', True)
+            other = 'test' if probe == 'executable' else 'executable'
+            for text in (message.replace(probe+'=True', other+'=True'), message+' x', '  '+message,
+                         'error: '+probe+' rules are not supported', message.replace('//app:check', '//app:other')):
+                with self.subTest(probe=probe, text=text), self.assertRaises(ValueError):
+                    suite.require_rejection(record(text), v['diagnostic'], 1)
 
     def test_unicode_nul_not_normalized_or_os_environment(self):
         v = suite.fixture('constructor', 'unicode-nul')
