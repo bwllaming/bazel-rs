@@ -41,6 +41,19 @@ pub fn extract(
     extract_named(bytes, archive_type, strip_prefix, destination, "archive")
 }
 
+/// Whether an extraction error is one of Bazel's own decompressor
+/// IOException texts (the zip link-escape and missing hard-link target
+/// errors), which `repository_ctx.extract` wraps like
+/// DecompressorValue.decompress; other errors are native-profile limits.
+pub fn is_bazel_extraction_io_error(error: &str) -> bool {
+    error.starts_with(ZIP_LINK_ESCAPE)
+        || (error.starts_with("File \"")
+            && error.ends_with("\" does not exist")
+            && error.contains("\" linked from \""))
+}
+
+const ZIP_LINK_ESCAPE: &str = "Zip entries cannot refer to files outside of their directory: ";
+
 /// [`extract`] with the archive's display name, used where Bazel's own
 /// diagnostics name the archive (the zip link-escape error).
 pub fn extract_named(
@@ -761,7 +774,7 @@ fn extract_zip(bytes: &[u8], state: &mut Extraction<'_>) -> Result<(), String> {
                     if zip_link_escapes(parts, target) {
                         // ZipDecompressor.java:152-164, verbatim.
                         return Err(format!(
-                            "Zip entries cannot refer to files outside of their directory: {} has a symlink {} pointing to {target}",
+                            "{ZIP_LINK_ESCAPE}{} has a symlink {} pointing to {target}",
                             state.archive,
                             parts.join("/")
                         ));

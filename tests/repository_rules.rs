@@ -421,3 +421,59 @@ fn multitool_shaped_rule_decodes_lockfile_read_through_a_label() {
         b"tool:https://example.invalid/tool\n"
     );
 }
+
+/// N21 publishes `repository_ctx.symlink` links; N19 source resolution follows
+/// them when a direct repository's file is an action input.
+#[test]
+fn direct_repository_source_symlinks_resolve_like_archive_links() {
+    let f = Fixture::new();
+    f.file("outside.txt", "main\n");
+    f.file("BUILD.bazel", "genrule(name='copy',srcs=['@made//:linked.txt'],outs=['copy.txt'],cmd='cat $(SRCS) > $@')\ngenrule(name='escape',srcs=['@made//:escape.txt'],outs=['escape.out'],cmd='cat $(SRCS) > $@')\n");
+    f.file("defs.bzl", "def _impl(ctx):\n    ctx.file('BUILD.bazel', \"exports_files(['data.txt', 'linked.txt', 'escape.txt'])\\n\")\n    ctx.file('data.txt', 'inside\\n', executable=False)\n    ctx.symlink('data.txt', 'linked.txt')\n    ctx.symlink(ctx.path(Label('//:outside.txt')), 'escape.txt')\nmake=repository_rule(_impl,attrs={'text':attr.string()})\n");
+    let built = f.build("//:copy");
+    assert_eq!(bytes(&built[0].1), b"inside\n");
+    let root = f.roots().pop().unwrap();
+    // Links into the repository are replanted relative (docs/REPOSITORY_RULES.md).
+    assert_eq!(
+        fs::read_link(root.join("linked.txt")).unwrap(),
+        Path::new("data.txt")
+    );
+    // A link leaving the repository root is N19's explicit native limit
+    // (Bazel would read the main-repository file).
+    rejected(
+        &f.run(&["build", "//:escape"]),
+        "points outside its repository root",
+    );
+}
+
+/// N19 extracts real tar hard links, but the direct-repository store rejects
+/// hard-linked files when it snapshots the stage, so a `repository_ctx.extract`
+/// of such an archive fails before publication (docs/REPOSITORY_RULES.md).
+#[test]
+fn extracted_archive_hard_links_fail_at_the_direct_repository_snapshot() {
+    let f = Fixture::new();
+    let mut builder = tar::Builder::new(Vec::new());
+    let mut header = tar::Header::new_ustar();
+    header.set_size(5);
+    header.set_mode(0o644);
+    header.set_entry_type(tar::EntryType::Regular);
+    header.set_cksum();
+    builder
+        .append_data(&mut header, "top/data.txt", &b"data\n"[..])
+        .unwrap();
+    let mut header = tar::Header::new_ustar();
+    header.set_size(0);
+    header.set_mode(0o644);
+    header.set_entry_type(tar::EntryType::Link);
+    header.set_cksum();
+    builder
+        .append_link(&mut header, "top/hard.txt", "top/data.txt")
+        .unwrap();
+    f.file("links.tar", builder.into_inner().unwrap());
+    f.file("defs.bzl", "def _impl(ctx):\n    ctx.extract(ctx.attr.archive, strip_prefix='top')\n    ctx.file('BUILD.bazel', \"exports_files(['data.txt', 'hard.txt'])\\n\")\nmake=repository_rule(_impl,attrs={'text':attr.string(),'archive':attr.label(default='//:links.tar')})\n");
+    rejected(
+        &f.run(&["build", "@made//:data.txt"]),
+        "hard-linked direct repository files are unsupported",
+    );
+    assert!(f.roots().is_empty());
+}

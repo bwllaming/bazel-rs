@@ -111,7 +111,13 @@ the published location (relative symlinks into it are replanted, below).
   native profile rewrites links into the repository directory (from
   `ctx.symlink` or executed tools) as relative links with the same resolved
   contents. Other targets stay absolute. The store records link targets without
-  following them. (Archive symlink replanting in extraction is separate N19 work.)
+  following them. Archive links from `ctx.extract`/`ctx.download_and_extract`
+  follow N19's extraction semantics (docs/ARCHIVE_SYMLINKS.md). When a file of
+  the published repository is used as a source artifact, N19 source resolution
+  follows these links inside the repository root; a link leaving the root (for
+  example to a main-workspace file) is the explicit `points outside its
+  repository root` error where Bazel would read the target, and `.bzl` loads,
+  globs and package directories through links stay unsupported.
 * `path.realpath` resolves component by component; a dangling link fails naming
   the missing target: `[unix_jni.cc:382] TARGET (No such file or directory)`.
 * `ctx.extract(archive, output="", strip_prefix="", ...)` and
@@ -142,7 +148,13 @@ the published location (relative symlinks into it are replanted, below).
   malformed checksum until after the attempt like Bazel, and return
   `struct(success, integrity, sha256, size_bytes)`; `canonical_id` only keys
   Bazel's repository cache, which the native profile does not have. Local
-  archives are limited to 16 MiB.
+  archives are limited to 16 MiB. Archive symlinks and tar hard links are
+  extracted like Bazel (docs/ARCHIVE_SYMLINKS.md); the zip link-escape and
+  missing hard-link target errors keep Bazel's text, naming the archive by its
+  basename, wrapped in `java.io.IOException: Error extracting ARCHIVE to
+  PARENT: ...`. A repository that still contains an extracted hard link when the
+  callback returns fails at the store snapshot with `hard-linked direct
+  repository files are unsupported` (Bazel keeps the hard link).
 * `ctx.watch(path)` and `watch=`/`watch_template=`/`watch_archive=` use Bazel's
   `yes`/`no`/`auto` rules (SBEC:1656-1755): watching the repository directory
   fails with `attempted to watch path under working directory` for `yes` and is

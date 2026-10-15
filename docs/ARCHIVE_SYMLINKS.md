@@ -13,12 +13,17 @@ Citations are to the pinned reference checkout
 
 ## Consumers and formats
 
-`archive::extract`/`extract_named` has two consumers: registry module sources
+`archive::extract`/`extract_named` has three consumers: registry module sources
 (`source.json` archives, `materializer.rs`, Bazel's `http_archive` →
-`ctx.download_and_extract`, `tools/build_defs/repo/http.bzl:203`) and the embedded
-`bazel_tools` tree (`builtin_tools.rs`, no links). Native `repository_ctx` has no
-`download_and_extract`/`extract`/`symlink` (docs/REPOSITORY_RULES.md), so there is no
-third consumer. Supported formats are unchanged: `tar`, `tar.gz`/`tgz` and `zip`
+`ctx.download_and_extract`, `tools/build_defs/repo/http.bzl:203`), the embedded
+`bazel_tools` tree (`builtin_tools.rs`, no links) and, since N21, direct
+repository rules' `repository_ctx.extract`/`download_and_extract`
+(`repository_ctx.rs`, docs/REPOSITORY_RULES.md), which name the archive by its
+basename in the zip link-escape error and wrap it, like the missing hard-link
+target error, in `java.io.IOException: Error extracting ARCHIVE to PARENT: ...`
+(`DecompressorValue.java:260-270`). Extracted tar hard links still make that
+direct repository fail when its stage is snapshotted (`hard-linked direct
+repository files are unsupported`, `repository_store.rs`). Supported formats are unchanged: `tar`, `tar.gz`/`tgz` and `zip`
 (including `jar`/`war`/`aar`); `.tar.xz`, `.tar.zst`, `.tar.bz2`, 7z and ar remain
 unsupported archive types. Zip has no hard-link representation.
 

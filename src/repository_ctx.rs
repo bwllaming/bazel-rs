@@ -634,10 +634,19 @@ fn normalized_prefix(prefix: &str) -> String {
     segments.join("/")
 }
 
+/// A decompressor IOException wrapped like DecompressorValue.decompress:
+/// `Error extracting ARCHIVE to ARCHIVE_PARENT: MESSAGE` (java:260-270).
+fn extraction_io_error(archive: &[u8], message: &str) -> anyhow::Error {
+    anyhow!(
+        "java.io.IOException: Error extracting {} to {}: {message}",
+        display(archive),
+        display(&normalize(archive, b".."))
+    )
+}
+
 /// DecompressorValue.CouldNotFindPrefixException (java:134-164) wrapped by
 /// `Error extracting ARCHIVE to ARCHIVE_PARENT: ...` (java:260-270).
 fn prefix_not_found(archive: &[u8], prefix: &str, available: &BTreeSet<String>) -> anyhow::Error {
-    let parent = normalize(archive, b"..");
     let suggestion = if available.is_empty() {
         "We could not find any directory in this archive (maybe there is no need for `strip_prefix`?)".to_owned()
     } else {
@@ -646,10 +655,9 @@ fn prefix_not_found(archive: &[u8], prefix: &str, available: &BTreeSet<String>) 
             available.iter().cloned().collect::<Vec<_>>().join("\", \"")
         )
     };
-    anyhow!(
-        "java.io.IOException: Error extracting {} to {}: Prefix \"{prefix}\" was given, but not found in the archive. {suggestion}",
-        display(archive),
-        display(&parent)
+    extraction_io_error(
+        archive,
+        &format!("Prefix \"{prefix}\" was given, but not found in the archive. {suggestion}"),
     )
 }
 
@@ -1262,7 +1270,12 @@ impl Context {
         let temporary = tempfile::Builder::new()
             .prefix(".extract-")
             .tempdir_in(&self.stage)?;
-        if let Err(error) = crate::archive::extract(bytes, kind, &normalized, temporary.path()) {
+        // ZipReader.getFilename (java.io.File.getName): the archive's basename
+        // names it in the zip link-escape error (ZipDecompressor.java:154-163).
+        let archive_name = display(archive.rsplit(|byte| *byte == b'/').next().unwrap_or(b""));
+        if let Err(error) =
+            crate::archive::extract_named(bytes, kind, &normalized, temporary.path(), &archive_name)
+        {
             if !normalized.is_empty() && error.ends_with("did not match") {
                 // Bazel lists the first segment of every multi-segment entry.
                 let listing = tempfile::Builder::new()
@@ -1280,6 +1293,9 @@ impl Context {
                     }
                 }
                 return Err(prefix_not_found(archive, strip_prefix, &available));
+            }
+            if crate::archive::is_bazel_extraction_io_error(&error) {
+                return Err(extraction_io_error(archive, &error));
             }
             return Err(anyhow::Error::msg(error));
         }
@@ -3996,6 +4012,70 @@ ctx.extract("archive.tar.gz", "out", strip_prefix = "top")"#);
         fixture.ok("ctx.extract('archive.tar.gz', 'slash', 'top/')\nctx.extract('archive.tar.gz', 'dotted', './top/./')");
         assert_eq!(fixture.bytes("slash/a.txt"), b"A");
         assert_eq!(fixture.bytes("dotted/sub/b.txt"), b"B");
+    }
+
+    #[test]
+    fn extract_reports_bazel_archive_link_errors_with_the_archive_basename() {
+        // N19 archive links through repository_ctx.extract: the zip
+        // link-escape error names the archive by its basename
+        // (ZipReader.getFilename) and, like every decompressor IOException,
+        // is wrapped by DecompressorValue.decompress (java:260-270).
+        let fixture = Fixture::new();
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default().unix_permissions(0o644);
+        writer
+            .add_symlink("pkg/a/esc", "../../outside", options)
+            .unwrap();
+        fs::create_dir(fixture.stage.path().join("dl")).unwrap();
+        fs::write(
+            fixture.stage.path().join("dl/esc.zip"),
+            writer.finish().unwrap().into_inner(),
+        )
+        .unwrap();
+        fixture.error(
+            "ctx.extract('dl/esc.zip', 'out', 'pkg')",
+            &format!(
+                "java.io.IOException: Error extracting {stage}/dl/esc.zip to {stage}/dl: Zip entries cannot refer to files outside of their directory: esc.zip has a symlink a/esc pointing to ../../outside",
+                stage = fixture.stage_text()
+            ),
+        );
+        // Without the prefix the link stays inside the archive root.
+        fixture.ok("ctx.extract('dl/esc.zip', 'whole')");
+        assert_eq!(
+            fs::read_link(fixture.stage.path().join("whole/pkg/a/esc")).unwrap(),
+            Path::new("../../outside")
+        );
+        // Tar hard links: real links inside the callback; a missing target
+        // keeps Bazel's FileSystem.createHardLink text, wrapped the same way.
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_ustar();
+        header.set_size(1);
+        header.set_mode(0o644);
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "top/file", &b"F"[..])
+            .unwrap();
+        for (name, target) in [("top/hard", "top/file"), ("top/broken", "top/missing")] {
+            let mut header = tar::Header::new_ustar();
+            header.set_size(0);
+            header.set_mode(0o644);
+            header.set_entry_type(tar::EntryType::Link);
+            header.set_cksum();
+            builder.append_link(&mut header, name, target).unwrap();
+        }
+        fs::write(
+            fixture.stage.path().join("dl/links.tar"),
+            builder.into_inner().unwrap(),
+        )
+        .unwrap();
+        fixture.error(
+            "ctx.extract('dl/links.tar', 'hl', 'top')",
+            &format!(
+                "java.io.IOException: Error extracting {stage}/dl/links.tar to {stage}/dl: File \"missing\" linked from \"broken\" does not exist",
+                stage = fixture.stage_text()
+            ),
+        );
     }
 
     #[test]
