@@ -461,7 +461,10 @@ fn lifted_private_label_attributes_reach_nested_subrules_with_late_bound_none() 
         &output,
         "got invalid named argument: '_tool' is an implicit dependency and cannot be overridden",
     );
-    // A present value with cfg='exec' needs the exec transition, which is not modelled.
+    // A present value with cfg='exec' takes the exec transition (N18b,
+    // docs/CONFIGURATION.md): the rule resolves its execution platform, the
+    // host platform, and the lifted dependency is analyzed in the exec
+    // configuration.
     ws.file(
         "defs.bzl",
         LIFTED.replace(
@@ -471,8 +474,15 @@ fn lifted_private_label_attributes_reach_nested_subrules_with_late_bound_none() 
     );
     rejected(
         &ws.run(&["build", ":check"]),
-        "cfg=exec (configuration transition)",
+        "While resolving toolchains for target //:check",
     );
+    ws.file("BUILD.bazel", format!("{CHECK}platform(name='host')\n"));
+    let output = ws.run(&["build", "--host_platform=//:host", ":check"]);
+    assert_eq!(
+        content(&output),
+        [b"outer|tool|data.txt|None|None|tool-provider|None\n".to_vec()]
+    );
+    ws.file("BUILD.bazel", CHECK);
     // Late-bound fields without a native configured value stay explicit gaps.
     ws.file(
         "defs.bzl",
@@ -1142,6 +1152,57 @@ fn subrule_fragment_fields_are_declared_and_public_cpp_members_have_bazel_defaul
                 .to_vec()
         ]
     );
+}
+
+#[test]
+fn subrule_cpp_fragment_reads_the_configuration_of_the_target_being_analyzed() {
+    // CppConfiguration is the configured target's own fragment: the exec
+    // configuration has the exec transition's compilation mode
+    // (--host_compilation_mode, default opt) and strip=always
+    // (crate::config_registry::exec_transition). The private members are
+    // read from an allowlisted rules_cc file.
+    let ws = Workspace::new(
+        r#"load('@rules_cc//cc:defs.bzl','S')
+P=provider(fields=['text'])
+def _tool(ctx):
+    return [P(text=S())]
+tool=rule(implementation=_tool, subrules=[S])
+def _check(ctx):
+    out=ctx.actions.declare_file('check.out')
+    ctx.actions.write(out, 'target '+S()+' exec '+ctx.attr._tool[P].text+'\n')
+    return [DefaultInfo(files=depset([out]))]
+check=rule(implementation=_check, subrules=[S], attrs={'_tool':attr.label(default='//:tool', cfg='exec')})
+"#,
+        "load(':defs.bzl','check','tool')\nplatform(name='host')\ntool(name='tool')\ncheck(name='check')\n",
+    );
+    ws.file(
+        "MODULE.bazel",
+        "module(name='subrules_fixture')\nbazel_dep(name='rules_cc',version='0')\nlocal_path_override(module_name='rules_cc',path='rules_cc')\n",
+    );
+    ws.file(
+        "rules_cc/MODULE.bazel",
+        "module(name='rules_cc',version='0')\n",
+    );
+    ws.file("rules_cc/cc/BUILD.bazel", "");
+    ws.file(
+        "rules_cc/cc/defs.bzl",
+        "def _s(ctx):\n    c=ctx.fragments.cpp\n    return '%s|%s' % (c.compilation_mode(), c.should_strip_binaries())\nS=subrule(implementation=_s, fragments=['cpp'])\n",
+    );
+    for (flags, expected) in [
+        (&[][..], "target fastbuild|True exec opt|True\n"),
+        (&["-c", "dbg"][..], "target dbg|False exec opt|True\n"),
+        (
+            &["-c", "opt", "--host_compilation_mode=dbg", "--strip=never"][..],
+            "target opt|False exec dbg|True\n",
+        ),
+    ] {
+        let mut args = vec!["build", "--host_platform=//:host"];
+        args.extend_from_slice(flags);
+        args.push(":check");
+        let output = ws.run(&args);
+        success(&output);
+        assert_eq!(content(&output), [expected.as_bytes().to_vec()]);
+    }
 }
 
 #[test]
