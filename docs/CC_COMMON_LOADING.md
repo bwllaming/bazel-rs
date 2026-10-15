@@ -88,6 +88,12 @@ nested action factory. The members have type `builtin_function_or_method`.
 - `check_private_api(allowlist=[(repo, prefix), ...], depth=1)` is
   implemented. `depth` counts Starlark frames below the caller. Native frames
   between Starlark frames are not skipped, which is a documented edge.
+- `freeze(value)` (positional-only) is implemented (CcStarlarkInternal.java:949-960):
+  a dict yields a dict copy, a list/tuple/range/set yields a list copy, anything
+  else is returned unchanged. Bazel's copies are immutable; native copies become
+  immutable when their module freezes (rules_cc's top-level
+  `EMPTY_COMPILATION_OUTPUTS`), so mutating a `freeze()` result during analysis
+  is a known divergence.
 - `create_header_info()` is implemented for the artifact-free form: all
   defaults, `None`, or empty sequences. It returns an immutable, hashable
   `HeaderInfo` with Bazel's unannotated type name and identity equality, as

@@ -369,6 +369,29 @@ pub(crate) fn check_private_api_call<'v>(
 
 /// CcStarlarkInternal.createHeaderInfo. Only the artifact-free form (all
 /// defaults, as in rules_cc's `_EMPTY_COMPILATION_CONTEXT`) is supported.
+/// `cc_internal.freeze(value)` (CcStarlarkInternal.java:949-960): a dict becomes
+/// an immutable dict copy, any other Java `Iterable` (list, tuple, range, set)
+/// an immutable list copy, and everything else (e.g. depset, struct) is returned
+/// unchanged. starlark-rust has no immutable-but-unfrozen containers, so the
+/// copies here are fresh values that become immutable only when their module
+/// freezes; mutating a `freeze()` result during analysis is a known divergence.
+pub(crate) fn freeze<'v>(
+    value: Value<'v>,
+    heap: starlark::values::Heap<'v>,
+) -> starlark::Result<Value<'v>> {
+    use starlark::values::dict::{AllocDict, DictRef};
+    use starlark::values::list::AllocList;
+    if let Some(dict) = DictRef::from_value(value) {
+        let entries: Vec<(Value<'v>, Value<'v>)> = dict.iter().collect();
+        return Ok(heap.alloc(AllocDict(entries)));
+    }
+    if matches!(value.get_type(), "list" | "tuple" | "range" | "set") {
+        let items: Vec<Value<'v>> = value.iterate(heap)?.collect();
+        return Ok(heap.alloc(AllocList(items)));
+    }
+    Ok(value)
+}
+
 pub(crate) fn create_header_info<'v>(
     args: &Arguments<'v, '_>,
     eval: &mut Evaluator<'v, '_, '_>,
@@ -572,13 +595,29 @@ def _cc_toolchain_variables(*, vars):
     cc_internal.check_private_api(allowlist = _PRIVATE_STARLARKIFICATION_ALLOWLIST)
     return vars
 _cc_toolchain_variables(vars = 1)
+# CcStarlarkInternal.freeze: dict -> dict copy, iterable -> list, else unchanged.
+_src = [1, [2]]
+_frozen = cc_internal.freeze(_src)
+(type(_frozen) == "list" and _frozen == _src) or fail("freeze list")
+(type(cc_internal.freeze((1, 2))) == "list" and cc_internal.freeze((1, 2)) == [1, 2]) or fail("freeze tuple")
+(cc_internal.freeze(range(3)) == [0, 1, 2]) or fail("freeze range")
+(cc_internal.freeze({"a": 1}) == {"a": 1} and type(cc_internal.freeze({"a": 1})) == "dict") or fail("freeze dict")
+_d = depset([1])
+(cc_internal.freeze(_d) == _d and cc_internal.freeze("s") == "s" and cc_internal.freeze(None) == None) or fail("freeze passthrough")
+_src.append(3)
+(_frozen == [1, [2]]) or fail("freeze copies")
+EMPTY = cc_internal.freeze([])
 "#
         );
         pass("@@rules_cc+//cc/private:cc_common.bzl", &source);
         for (call, message) in [
             (
-                "cc_internal.freeze([])",
-                "cc_internal.freeze is not implemented in the native profile (analysis-time C++ API)",
+                "cc_internal.freeze()",
+                "missing 1 required positional argument",
+            ),
+            (
+                "cc_internal.freeze(value = [])",
+                "freeze() got named argument for positional-only parameter 'value'",
             ),
             (
                 "cc_internal.create_cc_compile_action()",
