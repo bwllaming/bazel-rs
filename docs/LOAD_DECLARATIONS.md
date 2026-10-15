@@ -168,8 +168,10 @@ explicit attribute error), `doc`, `extendable`, `for_dependency_resolution`,
   Starlark dict `|`; `select(...) | dict` and `+`/`+=` with lists work.
 * `IntList`/`LabelKeyedStringDict` attributes in repository rules and module
   extension tags fail explicitly when their values are materialized.
-* Built-in attributes (`tags`, `testonly`, `size`, ...) are still not accepted
-  by custom rule instantiation (existing boundary).
+* Built-in attributes (`tags`, `testonly`, `size`, ...) are accepted by
+  custom rule instantiation since the common-attributes increment
+  (docs/COMMON_RULE_ATTRIBUTES.md); defining an attribute with a built-in
+  name fails with Bazel's `built-in attributes cannot be overridden`.
 * The BUILD error footer was updated by the native-rule-class increment
   (docs/NATIVE_BUILD_RULES.md, "Error footer"); validators accept the current
   and the legacy literal.

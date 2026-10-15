@@ -74,6 +74,8 @@ pub struct Engine {
     generated: BTreeMap<Label, (Label, String)>,
     group_nodes: BTreeMap<Label, Arc<GroupNode>>,
     group_budget: HostBudget,
+    /// Warnings in emission order, without Bazel's `WARNING: ` prefix (added
+    /// by the CLI): filtered target patterns and analysis warnings.
     warnings: Vec<String>,
 }
 
@@ -93,8 +95,8 @@ impl Engine {
         }
     }
 
-    /// Warnings (without Bazel's `WARNING: ` prefix) reported so far, e.g.
-    /// target patterns filtered out by ignored directories.
+    /// Drain the warnings reported so far (also after a failed build, as
+    /// Bazel prints warnings before the error that stops it).
     pub fn take_warnings(&mut self) -> Vec<String> {
         std::mem::take(&mut self.warnings)
     }
@@ -201,6 +203,10 @@ impl Engine {
                                 .native
                                 .as_ref()
                                 .is_some_and(|native| native.input_labels.contains(label))
+                            // Built-in attributes of Starlark rules likewise.
+                            || rule.custom.as_ref().is_some_and(|custom| {
+                                custom.declaration.builtin.target.input_labels.contains(label)
+                            })
                     }));
         if !declared_source {
             return Err(format!(
@@ -525,12 +531,64 @@ impl Engine {
             if !visible {
                 return Err(format!("{dependency} is not visible to {}", rule.label));
             }
+            self.validate_prerequisite(&rule, &dependency)?;
             self.analyze(&dependency, active, done, plan)?;
         }
         active.pop();
         done.insert(rule.label.clone());
         plan.push(rule);
         Ok(())
+    }
+
+    /// CommonPrerequisiteValidator.validateDirectPrerequisiteForTestOnly and
+    /// validateDirectPrerequisiteForDeprecation (CommonPrerequisiteValidator.java:683-776)
+    /// with BazelPrerequisiteValidator (bazel/rules/BazelPrerequisiteValidator.java:24-33:
+    /// no experimental packages, same logical package = same package). Messages
+    /// use RuleContext's `in CLASS rule LABEL: ` prefix
+    /// (analysis/EventHandlingErrorReporter.java:80-82).
+    fn validate_prerequisite(&mut self, rule: &Rule, dependency: &Label) -> Result<(), String> {
+        let (generating, output) = match self.target(dependency)? {
+            Target::Rule(dep) => (dep, false),
+            Target::Output(dep, _) => (dep, true),
+            Target::Source(_) => return Ok(()),
+        };
+        let shown = crate::rule_declarations::canonical_form(&rule.label);
+        let shown_dependency = crate::rule_declarations::canonical_form(dependency);
+        let prefix = format!("in {} rule {shown}: ", rule.rule_class_name());
+        let args = &self.packages[&rule.label.package_id()].args;
+        let dependency_args = &self.packages[&generating.label.package_id()].args;
+        // Output files of testonly rules are only checked with
+        // --incompatible_check_testonly_for_output_files (default false,
+        // analysis/config/CoreOptions.java:690-701).
+        let testonly_error = (!output
+            && generating.is_test_only(dependency_args)
+            && !rule.is_test_only(args))
+        .then(|| {
+            format!(
+                "{prefix}non-test target '{shown}' depends on testonly target '{shown_dependency}' and doesn't have testonly attribute set"
+            )
+        });
+        // validate() runs the testonly check, then the deprecation check, for
+        // each edge (CommonPrerequisiteValidator.java:48-60): an edge's
+        // deprecation warning is still reported with its testonly error.
+        if rule.deprecation_warning(args).is_none()
+            && rule.label.package_id() != generating.label.package_id()
+            && let Some(warning) = generating.deprecation_warning(dependency_args)
+        {
+            let message = if output {
+                format!(
+                    "{prefix}target '{shown}' depends on the output file {shown_dependency} of a deprecated rule {}': {warning}",
+                    crate::rule_declarations::canonical_form(&generating.label)
+                )
+            } else {
+                format!(
+                    "{prefix}target '{shown}' depends on deprecated target '{shown_dependency}': {warning}"
+                )
+            };
+            self.warnings
+                .push(located(rule.location.as_deref(), message));
+        }
+        testonly_error.map_or(Ok(()), Err)
     }
 
     fn artifacts(
@@ -609,6 +667,32 @@ impl Engine {
         if jobs == 0 {
             return Err("jobs must be greater than zero".into());
         }
+        // TargetPatternPhaseFunction.maybeReportDeprecation
+        // (skyframe/TargetPatternPhaseFunction.java:255-275): every requested
+        // rule whose `deprecation` is explicitly specified (package defaults
+        // excluded, "" included), before analysis.
+        for label in labels {
+            if let Ok(Target::Rule(rule)) = self.target(label) {
+                let explicit = rule
+                    .native
+                    .as_ref()
+                    .and_then(|native| native.string("deprecation"))
+                    .or_else(|| {
+                        rule.custom.as_ref().and_then(|custom| {
+                            custom.declaration.builtin.target.string("deprecation")
+                        })
+                    });
+                if let Some(message) = explicit {
+                    self.warnings.push(located(
+                        rule.location.as_deref(),
+                        format!(
+                            "target '{}' is deprecated: {message}",
+                            crate::rule_declarations::canonical_form(&rule.label)
+                        ),
+                    ));
+                }
+            }
+        }
         let mut plan = Vec::new();
         let mut done = BTreeSet::new();
         for label in labels {
@@ -686,6 +770,7 @@ impl Engine {
                 }
                 let analyzed =
                     analysis::analyze_in(rule, &dependency_targets, self.repositories.clone())?;
+                restricted_to_error(rule)?;
                 custom_providers.insert(rule.label.clone(), analyzed.providers.clone());
                 provider_files.insert(rule.label.clone(), analyzed.provider_files.clone());
                 for file in &analyzed.declared {
@@ -796,6 +881,7 @@ impl Engine {
                     &rule.label,
                     &self.repositories,
                 )?;
+                restricted_to_error(rule)?;
                 for output in &outputs {
                     register_output(&mut producers, output, &rule.label)?;
                 }
@@ -827,6 +913,7 @@ impl Engine {
                 }
                 dry.insert(rule.label.clone(), artifacts);
             } else {
+                restricted_to_error(rule)?;
                 dry.insert(rule.label.clone(), inputs);
             }
         }
@@ -877,6 +964,36 @@ impl Engine {
         }
         Ok(summary)
     }
+}
+
+/// Event text with Bazel's `LOCATION: ` prefix when the location is known.
+fn located(location: Option<&str>, message: String) -> String {
+    match location {
+        Some(location) => format!("{location}: {message}"),
+        None => message,
+    }
+}
+
+/// RuleContextConstraintSemantics.validateAttributes
+/// (analysis/constraints/RuleContextConstraintSemantics.java:354-367), run by
+/// RuleConfiguredTargetBuilder.build after the rule's factory or
+/// implementation (analysis/RuleConfiguredTargetBuilder.java:104-106,
+/// 450-468): an explicit empty `restricted_to` is an attribute error.
+fn restricted_to_error(rule: &Rule) -> Result<(), String> {
+    let explicit_empty = |target: &crate::native_rules::NativeTarget| matches!(target.attrs.get("restricted_to"), Some(crate::custom_rule::AttrValue::Labels(labels)) if labels.is_empty());
+    let empty = rule.native.as_deref().is_some_and(explicit_empty)
+        || rule
+            .custom
+            .as_ref()
+            .is_some_and(|custom| explicit_empty(&custom.declaration.builtin.target));
+    if empty {
+        return Err(format!(
+            "in restricted_to attribute of {} rule {}: attribute cannot be empty",
+            rule.rule_class_name(),
+            crate::rule_declarations::canonical_form(&rule.label)
+        ));
+    }
+    Ok(())
 }
 
 fn rule_authority(rule: &Rule) -> PackageId {
@@ -1224,6 +1341,7 @@ mod tests {
             }),
             native: None,
             unanalyzed: Vec::new(),
+            location: None,
         }
     }
 
@@ -2087,6 +2205,7 @@ m = macro(implementation=emit)
             macro_owner: None,
             native: None,
             unanalyzed: Vec::new(),
+            location: None,
         };
         assert_eq!(
             engine.resolve_rule_src(&rule, "//p:in").unwrap().repository,

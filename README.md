@@ -76,7 +76,10 @@ Implemented:
   package defaults, matching Bazel 9.3's default flag setting.
 - Native custom `rule` definitions with typed string/list/int/bool/label/output
   attributes, declaration snapshots, `None` fallback and definition-relative label defaults.
-  Implementations run during analysis, never during query.
+  Implementations run during analysis, never during query. Bazel's built-in
+  attributes (`tags`, `visibility`, `testonly`, `deprecation`, `features`, ...)
+  load with Bazel's schemas, drive `manual` filtering, the testonly error and
+  deprecation warnings, and appear in `ctx.attr` (docs/COMMON_RULE_ATTRIBUTES.md).
 - `DefaultInfo` and custom providers survive module freezing and retain identity
   across packages. Provider-carried generated files remain usable even when they
   are not default outputs. File values and depsets preserve artifact identity.

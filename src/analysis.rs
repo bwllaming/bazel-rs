@@ -236,6 +236,7 @@ fn make_ctx<'v>(
         };
         attrs.insert(name.clone(), attr);
     }
+    builtin_ctx_attrs(rule, invocation, &mut attrs, &mut files, heap)?;
     let label = alloc_target(heap, &rule.label.to_string(), Vec::new())
         .get_attr_error("label", heap)
         .map_err(|error| anyhow!(error.to_string()))?;
@@ -266,6 +267,128 @@ fn make_ctx<'v>(
             None,
         ))
     }
+}
+
+/// `ctx.attr`/`ctx.files` entries of Bazel's built-in attributes
+/// (StarlarkRuleContext.java:205-266, StarlarkAttributesCollection.java:225-390):
+/// every attribute of the rule class is exposed under its public name except
+/// `aspect_hints` (filtered, StarlarkRuleContext.java:207-209) and
+/// `exec_group_compatible_with` (shouldIgnore, :255-259); public names are
+/// unique (clashes fail when the rule is exported, RuleClass.java:1905-1918).
+/// Non-dependency values convert directly (`Attribute.valueToStarlark`, so an
+/// unset `deprecation` is `None`); dependency label lists become Targets and
+/// have `ctx.files` entries. Non-empty dependency lists and selects never
+/// reach here (load-time analysis gaps, docs/COMMON_RULE_ATTRIBUTES.md).
+fn builtin_ctx_attrs<'v>(
+    rule: &Rule,
+    invocation: &crate::custom_rule::CustomInvocation,
+    attrs: &mut BTreeMap<String, Value<'v>>,
+    files: &mut BTreeMap<String, Value<'v>>,
+    heap: Heap<'v>,
+) -> anyhow::Result<()> {
+    use crate::native_rules::NativeType;
+    let builtin = &invocation.declaration.builtin;
+    let target = &builtin.target;
+    let empty_targets = |name: &str| -> anyhow::Result<Value<'v>> {
+        ensure!(
+            target.labels(name).is_empty() && !target.configurable.contains_key(name),
+            "{}: built-in attribute '{name}' dependencies are {}",
+            rule.label,
+            crate::rule_declarations::NOT_ANALYZED
+        );
+        Ok(heap.alloc(Vec::<Value<'v>>::new()))
+    };
+    let labels = |values: &[String]| -> anyhow::Result<Value<'v>> {
+        Ok(heap.alloc(
+            values
+                .iter()
+                .map(|label| crate::starlark_types::alloc_label(heap, label))
+                .collect::<anyhow::Result<Vec<_>>>()?,
+        ))
+    };
+    let class = crate::native_rules::starlark_builtins(builtin.kind);
+    let mut values = Vec::new();
+    for attribute in class.attrs() {
+        let name = attribute.name;
+        if matches!(name, "aspect_hints" | "exec_group_compatible_with") {
+            continue;
+        }
+        let explicit = target.attrs.get(name);
+        let value = match (name, attribute.ty) {
+            ("testonly", _) => heap.alloc(builtin.testonly),
+            ("deprecation", _) => builtin
+                .deprecation
+                .as_deref()
+                .map(|text| heap.alloc(text))
+                .unwrap_or_else(Value::new_none),
+            ("tags", _) => heap.alloc(target.tags.clone()),
+            // Explicit values are stored; otherwise Rule.getAttr computes them
+            // from the interior call stack, "" outside macros (Rule.java:395-405).
+            ("generator_name" | "generator_function" | "generator_location", _)
+                if !matches!(explicit, Some(AttrValue::String(_))) =>
+            {
+                let computed = builtin.generator.as_ref().map(|generator| match name {
+                    "generator_name" => Some(generator.name.as_str()),
+                    "generator_function" => Some(generator.function.as_str()),
+                    _ => generator.location.as_deref(),
+                });
+                match computed {
+                    None => heap.alloc(""),
+                    Some(Some(text)) => heap.alloc(text),
+                    Some(None) => Value::new_none(),
+                }
+            }
+            ("visibility", _) => labels(builtin.visibility.as_deref().unwrap_or_default())?,
+            (_, NativeType::LabelList) => {
+                files.insert(name.to_owned(), heap.alloc(Vec::<Value<'v>>::new()));
+                empty_targets(name)?
+            }
+            (_, NativeType::NodepLabelList) => labels(&target.labels(name))?,
+            (_, NativeType::String) => match explicit {
+                Some(AttrValue::String(text)) => heap.alloc(text.as_str()),
+                _ => heap.alloc(match name {
+                    "size" => "medium",
+                    "timeout" => crate::custom_rule::default_test_timeout(
+                        target.string("size").unwrap_or("medium"),
+                    ),
+                    _ => "",
+                }),
+            },
+            (_, NativeType::StringList) => heap.alloc(target.strings(name)),
+            (_, NativeType::StringDict) => match explicit {
+                Some(AttrValue::StringDict(entries)) => {
+                    crate::attribute_values::alloc_string_dict(heap, entries)?
+                }
+                _ => crate::attribute_values::alloc_string_dict(heap, &[])?,
+            },
+            (_, NativeType::Bool) => heap.alloc(matches!(explicit, Some(AttrValue::Bool(true)))),
+            (_, NativeType::Int) => heap.alloc(match explicit {
+                Some(AttrValue::Int(value)) => *value,
+                // shard_count defaults to -1 (StarlarkRuleClassFunctions.java:281).
+                _ => -1,
+            }),
+            (_, ty) => bail!(
+                "{}: built-in attribute '{name}' of type {} has no ctx.attr value",
+                rule.label,
+                ty.name()
+            ),
+        };
+        values.push((name.to_owned(), value));
+    }
+    // Private built-in dependency attributes have public names `_x`
+    // (Attribute.getStarlarkName, packages/Attribute.java:2307-2312). Without
+    // --experimental_action_listener and without select() keys (gated above)
+    // both are empty target lists.
+    if !builtin.kind.dependency_resolution {
+        for name in ["_action_listener", "_config_dependencies"] {
+            files.insert(name.to_owned(), heap.alloc(Vec::<Value<'v>>::new()));
+            values.push((name.to_owned(), heap.alloc(Vec::<Value<'v>>::new())));
+        }
+    }
+    for (name, value) in values {
+        attrs.insert(name, value);
+    }
+    Ok(())
 }
 
 pub fn analyze(

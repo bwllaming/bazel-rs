@@ -241,6 +241,31 @@ pub struct InvocationDeclaration {
     pub configurable: BTreeMap<String, Vec<ConfigurablePart>>,
     /// Rule class name for Bazel-form diagnostics (the exported rule name).
     pub rule_class: String,
+    /// Bazel's built-in attributes of this instance (docs/COMMON_RULE_ATTRIBUTES.md).
+    pub builtin: BuiltinAttributes,
+}
+
+/// Values of the built-in attributes a Starlark rule class inherits from
+/// `StarlarkRuleClassFunctions.baseRule`/`binaryBaseRule`/`getTestBaseRule`
+/// (crate::native_rules::starlark_builtins).
+#[derive(Clone, Debug, Default)]
+pub struct BuiltinAttributes {
+    pub kind: crate::native_rules::StarlarkRuleKind,
+    /// Explicit non-None values, retained `select()`s, effective `tags` and
+    /// assumed input labels (`rule_class` is the exported rule name).
+    pub target: crate::native_rules::NativeTarget,
+    /// Explicit `visibility` after RuleVisibility.validateAndSimplify
+    /// (canonical label strings); `None` when unset.
+    pub visibility: Option<Vec<String>>,
+    /// Effective `testonly` (explicit, the TEST class override, or the package
+    /// default; BaseRuleClasses.java:68-74), finalized with the package.
+    pub testonly: bool,
+    /// Effective `deprecation` (explicit or the package default;
+    /// BaseRuleClasses.java:76-82), finalized with the package.
+    pub deprecation: Option<String>,
+    /// Computed `generator_*` values when created by a macro; explicit
+    /// values (in `target`) win.
+    pub generator: Option<crate::package::Generator>,
 }
 #[derive(Clone, Debug)]
 pub struct CustomInvocation {
@@ -826,6 +851,22 @@ mod values {
                         "Invalid rule class name '{name}', test rule class names must end with '_test' and other rule classes must not"
                     )));
                 }
+                // RuleClass constructor (packages/RuleClass.java:1905-1918): a
+                // Starlark `_x` whose native name differs from a built-in one
+                // with the same public name (`$action_listener` versus
+                // `:action_listener`) fails when the class is built.
+                let builtins = crate::native_rules::starlark_builtins(self.declaration.kind());
+                for (attribute, spec) in &self.schema {
+                    if !attribute.starts_with('_') {
+                        continue;
+                    }
+                    let native = native_attribute_name(attribute, spec.declaration.late_bound);
+                    if let Some(conflicting) = builtins.public_name_conflict(&native) {
+                        return Err(starlark::Error::new_other(anyhow!(
+                            "Rule {name}: Attributes {native} and {conflicting} have an identical public name: {attribute}"
+                        )));
+                    }
+                }
                 let _ = self.exported.set(name.to_owned());
             }
             Ok(())
@@ -913,6 +954,13 @@ mod values {
                     })
                 })
                 .unwrap_or_default();
+            let kind = self.declaration.kind();
+            let builtins = crate::native_rules::starlark_builtins(kind);
+            let mut builtin = crate::native_rules::NativeTarget {
+                rule_class: rule_class.clone(),
+                ..Default::default()
+            };
+            let mut converter = crate::native_rules::BuiltinConverter::new(&repositories, &package);
             for (key, value, origin) in &arguments {
                 let key = key.as_str();
                 match key {
@@ -921,16 +969,52 @@ mod values {
                             starlark::Error::new_other(anyhow!("name must be a string"))
                         })?)
                     }
-                    "visibility" => visibility = Some(*value),
-                    _ => {
-                        if key.starts_with('_') && *origin != Origin::Initializer {
+                    "visibility" => {
+                        // BuildType.convertFromBuildLangType (BuildType.java:234-238).
+                        if crate::rule_declarations::select_pieces(*value).is_some() {
                             return Err(starlark::Error::new_other(anyhow!(
-                                "private attribute {key:?} cannot be set explicitly"
+                                "{target_text}: attribute \"visibility\" is not configurable"
                             )));
                         }
-                        let spec = self.schema.get(key).ok_or_else(|| {
-                            starlark::Error::new_other(anyhow!("unknown attribute {key:?}"))
-                        })?;
+                        visibility = Some(*value)
+                    }
+                    _ => {
+                        // Explicit keyword arguments name native attributes, so a
+                        // Starlark `_x` (native `$x`) is not settable by BUILD
+                        // (AttributeProvider.java:220-235); initializers convert
+                        // `_x` to `$x` (StarlarkRuleClassFunctions.java:1855).
+                        let spec = match self.schema.get(key) {
+                            Some(spec)
+                                if !key.starts_with('_') || *origin == Origin::Initializer =>
+                            {
+                                spec
+                            }
+                            _ => {
+                                // applicable_licenses is an alternate spelling of
+                                // package_metadata (AttributeProvider.java:213-217).
+                                let native = if key == "applicable_licenses" {
+                                    "package_metadata"
+                                } else {
+                                    key
+                                };
+                                // The renamed key is the one reported
+                                // (AttributeProvider.java:213-235).
+                                let Some(attribute) = builtins.attribute(native) else {
+                                    return Err(starlark::Error::new_other(anyhow!(
+                                        "{target_text}: no such attribute '{native}' in '{rule_class}' rule{}",
+                                        unknown_attribute_hint(native, &builtins, &self.schema)
+                                    )));
+                                };
+                                if value.is_none() {
+                                    continue;
+                                }
+                                converter
+                                    .convert_argument(&rule_class, &target_text, attribute, *value)
+                                    .map_err(starlark::Error::new_other)?
+                                    .store(native, &mut builtin);
+                                continue;
+                            }
+                        };
                         // Bazel treats an explicit None like an omitted value:
                         // defaults and mandatory checks still apply.
                         if value.is_none() {
@@ -1022,9 +1106,40 @@ mod values {
                     attrs.insert(key.clone(), spec.default.clone());
                 }
             }
+            if kind.test {
+                check_test_size_and_timeout(name, &builtin).map_err(starlark::Error::new_other)?;
+            }
+            // RuleClass.checkForValidSizeAndTimeoutValues runs for every rule
+            // with a STRING `size`/`timeout` attribute and reads it through
+            // NonconfigurableAttributeMapper (packages/RuleClass.java:2138-2156,
+            // NonconfigurableAttributeMapper.java:44-49), whose precondition
+            // fails for a (configurable) Starlark attribute: Bazel 9.3 crashes.
+            // Fail explicitly instead of guessing a result.
+            for key in ["size", "timeout"] {
+                if self
+                    .schema
+                    .get(key)
+                    .is_some_and(|spec| spec.kind == AttrKind::String)
+                {
+                    return Err(starlark::Error::new_other(anyhow!(
+                        "{target_text}: Starlark attribute '{key}' of type string is not supported by the native profile: Bazel 9.3 crashes validating it (RuleClass.checkForValidSizeAndTimeoutValues reads it with NonconfigurableAttributeMapper)"
+                    )));
+                }
+            }
+            builtin.tags = builtin.strings("tags");
+            builtin.input_labels = crate::native_rules::input_labels(&builtin, |key| {
+                builtins.attribute(key).is_some_and(|attribute| {
+                    matches!(
+                        attribute.ty,
+                        crate::native_rules::NativeType::NodepLabel
+                            | crate::native_rules::NativeType::NodepLabelList
+                    )
+                })
+            });
             let implicit_outputs = implicit_outputs(&self.declaration.implicit_outputs, name)
                 .map_err(starlark::Error::new_other)?;
-            let unanalyzed = unanalyzed(&self.declaration, &self.schema, &attrs, &configurable);
+            let mut unanalyzed = unanalyzed(&self.declaration, &self.schema, &attrs, &configurable);
+            unanalyzed.extend(builtin_gaps(&builtin));
             crate::package::register_custom(
                 eval,
                 name,
@@ -1040,6 +1155,11 @@ mod values {
                     provides: self.declaration.provides.clone(),
                     configurable,
                     rule_class,
+                    builtin: BuiltinAttributes {
+                        kind,
+                        target: builtin,
+                        ..Default::default()
+                    },
                 },
             )
             .map_err(starlark::Error::new_other)?;
@@ -1083,6 +1203,15 @@ pub(crate) enum ImplicitOutputs {
 }
 
 impl RuleDeclaration {
+    /// The Starlark base rule class this rule extends.
+    pub(crate) fn kind(&self) -> crate::native_rules::StarlarkRuleKind {
+        crate::native_rules::StarlarkRuleKind {
+            test: self.test,
+            executable: self.executable,
+            dependency_resolution: self.dependency_resolution_rule,
+        }
+    }
+
     /// Rule-level features any analysis of a target of this rule exercises.
     fn unanalyzed(&self) -> Vec<String> {
         let mut features = Vec::new();
@@ -1147,37 +1276,118 @@ enum Origin {
     Initializer,
 }
 
-/// Attributes Bazel defines natively (never Starlark-defined); the initializer
-/// may not set them (StarlarkRuleClassFunctions.java:1866-1869).
-fn native_attribute(name: &str, test: bool) -> bool {
-    matches!(
-        name,
-        "visibility"
-            | "tags"
-            | "testonly"
-            | "deprecation"
-            | "features"
-            | "compatible_with"
-            | "restricted_to"
-            | "target_compatible_with"
-            | "exec_compatible_with"
-            | "exec_group_compatible_with"
-            | "exec_properties"
-            | "package_metadata"
-            | "toolchains"
-            | "licenses"
-            | "distribs"
-            | "applicable_licenses"
-            | "aspect_hints"
-            | "transitive_configs"
-            | "generator_name"
-            | "generator_function"
-            | "generator_location"
-    ) || (test
-        && matches!(
-            name,
-            "size" | "timeout" | "flaky" | "shard_count" | "local" | "args" | "env" | "env_inherit"
-        ))
+/// Native name of a Starlark attribute (AttributeValueSource.convertToNativeName,
+/// packages/AttributeValueSource.java:62-70): `_x` becomes `$x`, or `:x` for
+/// late-bound (`configuration_field`) defaults.
+fn native_attribute_name(name: &str, late_bound: bool) -> String {
+    match name.strip_prefix('_') {
+        Some(rest) if late_bound => format!(":{rest}"),
+        Some(rest) => format!("${rest}"),
+        None => name.to_owned(),
+    }
+}
+
+/// `//pkg:x: no such attribute 'K' in 'R' rule` suffix: SpellChecker over the
+/// documented attributes (AttributeProvider.java:220-235). Private (`$x`/`:x`)
+/// attributes, built-in or Starlark `_x`, are UNDOCUMENTED (Attribute.java:444-449)
+/// and never suggested. Built-in attributes come first in Bazel's order;
+/// Starlark attributes follow in name order (the retained schema does not keep
+/// the `attrs` dict order, which only matters for equally distant candidates).
+fn unknown_attribute_hint(
+    key: &str,
+    builtins: &crate::native_rules::StarlarkBuiltins,
+    schema: &BTreeMap<String, AttrSpec>,
+) -> String {
+    let candidates = builtins
+        .candidates()
+        .into_iter()
+        .chain(
+            schema
+                .keys()
+                .map(String::as_str)
+                .filter(|name| !name.starts_with('_')),
+        )
+        .collect::<Vec<_>>();
+    crate::native_rules::did_you_mean(key, &candidates)
+}
+
+/// RuleClass.checkForValidSizeAndTimeoutValues (packages/RuleClass.java:2138-2156)
+/// with the `size` default `medium` and BaseRuleClasses.TIMEOUT_DEFAULT
+/// (BaseRuleClasses.java:84-98), TestSize.getTestSize (TestSize.java:96-106)
+/// and TestTimeout.getTestTimeout (TestTimeout.java:122-133).
+fn check_test_size_and_timeout(
+    name: &str,
+    builtin: &crate::native_rules::NativeTarget,
+) -> anyhow::Result<()> {
+    let size = builtin.string("size").unwrap_or("medium");
+    let valid_size = matches!(size, "small" | "medium" | "large" | "enormous");
+    if !valid_size {
+        bail!("In rule '{name}', size '{size}' is not a valid size.");
+    }
+    let timeout = builtin
+        .string("timeout")
+        .map(str::to_owned)
+        .unwrap_or_else(|| default_test_timeout(size).to_owned());
+    if timeout != timeout.to_lowercase()
+        || !matches!(
+            timeout.to_uppercase().as_str(),
+            "SHORT" | "MODERATE" | "LONG" | "ETERNAL"
+        )
+    {
+        bail!("In rule '{name}', timeout '{timeout}' is not a valid timeout.");
+    }
+    Ok(())
+}
+
+/// BaseRuleClasses.TIMEOUT_DEFAULT (BaseRuleClasses.java:84-98) over
+/// TestSize's default timeouts (TestSize.java:30-36).
+pub(crate) fn default_test_timeout(size: &str) -> &'static str {
+    match size {
+        "small" => "short",
+        "medium" => "moderate",
+        "large" => "long",
+        "enormous" => "eternal",
+        _ => "illegal",
+    }
+}
+
+/// Non-empty built-in attribute values whose Bazel analysis semantics the
+/// native profile does not implement (docs/COMMON_RULE_ATTRIBUTES.md); a
+/// target exercising one fails analysis explicitly.
+fn builtin_gaps(builtin: &crate::native_rules::NativeTarget) -> Vec<String> {
+    let mut gaps = Vec::new();
+    for key in builtin.configurable.keys() {
+        gaps.push(format!(
+            "attribute '{key}' select() (configured attribute resolution)"
+        ));
+    }
+    for (key, value) in &builtin.attrs {
+        // An empty expect_failure has no effect
+        // (StarlarkRuleConfiguredTargetUtil.java:80-131 checks isEmpty()).
+        if AttrKind::is_empty_value(value)
+            || matches!(value, AttrValue::String(text) if text.is_empty())
+        {
+            continue;
+        }
+        let reason = match key.as_str() {
+            "target_compatible_with" => "incompatible target skipping (constraint analysis)",
+            "compatible_with" | "restricted_to" => "constraint environments",
+            "exec_compatible_with" | "exec_group_compatible_with" => {
+                "execution platform resolution"
+            }
+            "toolchains" => "TemplateVariableInfo Make variables",
+            "package_metadata" => "package metadata dependencies",
+            "aspect_hints" => "aspect hints",
+            "transitive_configs" => "configuration trimming",
+            "expect_failure" => "expected analysis failure",
+            _ => continue,
+        };
+        gaps.push(format!(
+            "attribute '{key}' = {} ({reason})",
+            crate::native_rules::describe(value)
+        ));
+    }
+    gaps
 }
 
 /// ALLOWLIST_RULE_EXTENSION_API_EXPERIMENTAL (StarlarkRuleClassFunctions.java:249-253)
@@ -1319,7 +1529,10 @@ fn run_initializer<'v>(
                 crate::rule_declarations::canonical_form(definition)
             );
         }
-        if !schema.contains_key(key) && native_attribute(key, declaration.test) {
+        if !schema.contains_key(key)
+            && crate::native_rules::starlark_builtins(declaration.kind())
+                .contains(&native_attribute_name(key, false))
+        {
             bail!("Initializer can only set Starlark defined attributes, not '{key}'");
         }
         budget.string(key).map_err(anyhow::Error::msg)?;
@@ -2275,31 +2488,13 @@ fn define_rule<'v>(
     if let Some(attrs) = attrs {
         let dict = DictRef::from_value(attrs)
             .ok_or_else(|| anyhow!("rule attrs must be a dict of attribute descriptors"))?;
+        // attrObjectToAttributesList validates every name before any attribute
+        // is added (StarlarkRuleClassFunctions.java:1286-1300, 941-1020).
+        let mut descriptors = Vec::new();
         for (name, spec) in dict.iter() {
             let name = name
                 .unpack_str()
                 .ok_or_else(|| anyhow!("attribute names must be strings"))?;
-            if matches!(
-                name,
-                "name"
-                    | "visibility"
-                    | "tags"
-                    | "testonly"
-                    | "deprecation"
-                    | "features"
-                    | "compatible_with"
-                    | "restricted_to"
-                    | "target_compatible_with"
-                    | "exec_compatible_with"
-                    | "exec_group_compatible_with"
-                    | "exec_properties"
-                    | "package_metadata"
-                    | "toolchains"
-                    | "licenses"
-                    | "distribs"
-            ) {
-                bail!("attribute {name:?} is reserved");
-            }
             if name.is_empty()
                 || !name.bytes().enumerate().all(|(i, b)| {
                     b == b'_' || b.is_ascii_alphabetic() || (i > 0 && b.is_ascii_digit())
@@ -2316,6 +2511,21 @@ fn define_rule<'v>(
                 bail!(
                     "When an attribute value is a function, the attribute must be private (i.e. start with '_'). Found '{name}'"
                 );
+            }
+            descriptors.push((name, spec));
+        }
+        let builtins =
+            crate::native_rules::starlark_builtins(crate::native_rules::StarlarkRuleKind {
+                test,
+                executable,
+                dependency_resolution: args.dependency_resolution_rule,
+            });
+        for (name, spec) in descriptors {
+            // RuleClass.Builder.override (packages/RuleClass.java:1301-1306):
+            // built-in attributes, including `name` and the private `$x`/`:x`
+            // ones (reported by public name), cannot be overridden.
+            if builtins.contains(&native_attribute_name(name, spec.0.declaration.late_bound)) {
+                bail!("attribute `{name}`: built-in attributes cannot be overridden.");
             }
             if name.starts_with('_') && spec.0.mandatory {
                 bail!(
@@ -3385,19 +3595,52 @@ z = attr.string_dict()
             ("rule(implementation=impl, attrs={'x': 1})", "descriptor"),
             (
                 "rule(implementation=impl, attrs={'name': attr.string()})",
-                "reserved",
+                "attribute `name`: built-in attributes cannot be overridden.",
             ),
             (
                 "rule(implementation=impl, attrs={'visibility': attr.string()})",
-                "reserved",
+                "attribute `visibility`: built-in attributes cannot be overridden.",
             ),
             (
                 "rule(implementation=impl, attrs={'testonly': attr.bool()})",
-                "reserved",
+                "attribute `testonly`: built-in attributes cannot be overridden.",
             ),
             (
                 "rule(implementation=impl, attrs={'tags': attr.string_list()})",
-                "reserved",
+                "attribute `tags`: built-in attributes cannot be overridden.",
+            ),
+            (
+                "rule(implementation=impl, attrs={'aspect_hints': attr.label_list()})",
+                "attribute `aspect_hints`: built-in attributes cannot be overridden.",
+            ),
+            (
+                "rule(implementation=impl, attrs={'expect_failure': attr.string()})",
+                "attribute `expect_failure`: built-in attributes cannot be overridden.",
+            ),
+            (
+                "rule(implementation=impl, attrs={'exec_properties': attr.string_dict()})",
+                "attribute `exec_properties`: built-in attributes cannot be overridden.",
+            ),
+            (
+                "rule(implementation=impl, attrs={'_config_dependencies': attr.label_list()})",
+                "attribute `_config_dependencies`: built-in attributes cannot be overridden.",
+            ),
+            (
+                "rule(implementation=impl, executable=True, attrs={'output_licenses': attr.string_list()})",
+                "attribute `output_licenses`: built-in attributes cannot be overridden.",
+            ),
+            (
+                "rule(implementation=impl, test=True, attrs={'_is_executable': attr.bool()})",
+                "attribute `_is_executable`: built-in attributes cannot be overridden.",
+            ),
+            (
+                "rule(implementation=impl, test=True, attrs={'flaky': attr.bool()})",
+                "attribute `flaky`: built-in attributes cannot be overridden.",
+            ),
+            // Every name is validated before any attribute is added.
+            (
+                "rule(implementation=impl, attrs={'tags': attr.string_list(), 'bad-name': attr.string()})",
+                "invalid attribute name",
             ),
             (
                 "rule(implementation=impl, attrs={'bad-name': attr.string()})",
@@ -3414,6 +3657,138 @@ z = attr.string_dict()
                 "{expression}: expected {expected:?}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn rule_attribute_names_outside_the_builtin_set_are_free() {
+        // licenses/distribs belong to NativeBuildRule only; test attributes
+        // only to test rules; dependency resolution rules drop the constraint
+        // attributes (StarlarkRuleClassFunctions.java:159-241).
+        build_fixture(
+            "r = rule(implementation=impl, attrs={'licenses': attr.string_list(), 'distribs': attr.string_list(), 'size': attr.int(), 'args': attr.string_list(), '_tool': attr.label_list()})",
+            "r(name='x', licenses=['own'], size=3, args=['a'])",
+        )
+        .unwrap();
+        // A STRING size/timeout makes Bazel 9.3 crash at instantiation.
+        for key in ["size", "timeout"] {
+            let error = build_fixture(
+                &format!("r = rule(implementation=impl, attrs={{'{key}': attr.string()}})"),
+                "r(name='x')",
+            )
+            .unwrap_err();
+            assert!(
+                error.contains(&format!(
+                    "//:x: Starlark attribute '{key}' of type string is not supported by the native profile"
+                )),
+                "{error}"
+            );
+        }
+        build_fixture(
+            "r = rule(implementation=impl, dependency_resolution_rule=True, attrs={'toolchains': attr.label_list(for_dependency_resolution=True), 'aspect_hints': attr.label_list(for_dependency_resolution=True)})",
+            "r(name='x')",
+        )
+        .unwrap();
+        let error = build_fixture(
+            "r = rule(implementation=impl, dependency_resolution_rule=True)",
+            "r(name='x', target_compatible_with=[])",
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("//:x: no such attribute 'target_compatible_with' in 'r' rule"),
+            "{error}"
+        );
+        // The renamed key is reported (AttributeProvider.java:213-235).
+        let error = build_fixture(
+            "r = rule(implementation=impl, dependency_resolution_rule=True)",
+            "r(name='x', applicable_licenses=[])",
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("//:x: no such attribute 'package_metadata' in 'r' rule\n"),
+            "{error}"
+        );
+        // Public-name clashes with private built-ins fail at export.
+        let error = build_fixture(
+            "r = rule(implementation=impl, attrs={'_action_listener': attr.label_list()})",
+            "r(name='x')",
+        )
+        .unwrap_err();
+        assert!(
+            error.contains(
+                "Rule r: Attributes $action_listener and :action_listener have an identical public name: _action_listener"
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn builtin_attributes_are_converted_retained_and_finalized() {
+        let package = build_fixture(
+            "r = rule(implementation=impl, attrs={'licenses': attr.string_list()})",
+            "package(default_deprecation='pkg', default_testonly=True)\n\
+r(name='x', tags=('a', 'manual'), testonly=1, applicable_licenses=[':lic'], target_compatible_with=select({':c': [':p'], '//conditions:default': []}), transitive_configs=[':t'], features=None, licenses=['own'], exec_group_compatible_with={'g': [':e']})\n\
+r(name='y', deprecation='own', testonly=False, features=select({'//conditions:default': ['f']}))\n\
+r(name='z')",
+        )
+        .unwrap();
+        let rule = |name: &str| &package[&crate::label::Label::parse(name, "").unwrap()];
+        let x = rule(":x");
+        let custom = x.custom.as_ref().unwrap();
+        let builtin = &custom.declaration.builtin;
+        assert_eq!(builtin.target.rule_class, "r");
+        assert_eq!(builtin.target.tags, ["a", "manual"]);
+        assert!(x.is_manual());
+        assert_eq!(builtin.target.attrs["testonly"], AttrValue::Bool(true));
+        assert_eq!(
+            builtin.target.attrs["package_metadata"],
+            AttrValue::Labels(vec!["//:lic".into()])
+        );
+        assert!(!builtin.target.attrs.contains_key("features"));
+        assert!(
+            builtin
+                .target
+                .configurable
+                .contains_key("target_compatible_with")
+        );
+        // NODEP transitive_configs values are not assumed input files.
+        let inputs = builtin
+            .target
+            .input_labels
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        assert_eq!(inputs, ["//:e", "//:lic", "//:c", "//:p"]);
+        assert!(builtin.testonly);
+        assert_eq!(builtin.deprecation.as_deref(), Some("pkg"));
+        assert_eq!(
+            custom.attrs["licenses"],
+            AttrValue::Strings(vec!["own".into()])
+        );
+        let gaps = custom.declaration.unanalyzed.join("; ");
+        for expected in [
+            "attribute 'target_compatible_with' select() (configured attribute resolution)",
+            "attribute 'package_metadata' = [\"//:lic\"] (package metadata dependencies)",
+            "attribute 'transitive_configs' = [\"//:t\"] (configuration trimming)",
+            "attribute 'exec_group_compatible_with' = ",
+        ] {
+            assert!(gaps.contains(expected), "{expected}: {gaps}");
+        }
+        let y = rule(":y").custom.as_ref().unwrap();
+        assert_eq!(y.declaration.builtin.deprecation.as_deref(), Some("own"));
+        assert!(!y.declaration.builtin.testonly);
+        assert_eq!(
+            y.declaration.builtin.target.attrs["features"],
+            AttrValue::Strings(vec!["f".into()])
+        );
+        assert!(
+            y.declaration.unanalyzed.is_empty(),
+            "{:?}",
+            y.declaration.unanalyzed
+        );
+        let z = rule(":z").custom.as_ref().unwrap();
+        assert!(z.declaration.builtin.testonly);
+        assert!(z.declaration.builtin.target.tags.is_empty());
+        assert!(!rule(":z").is_manual());
     }
 
     #[test]

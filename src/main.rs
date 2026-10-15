@@ -216,7 +216,12 @@ fn run() -> Result<(), String> {
             println!("{label}");
         }
     } else {
-        let summary = engine.build_with_jobs(&labels, &cache, jobs)?;
+        let result = engine.build_with_jobs(&labels, &cache, jobs);
+        // Analysis warnings precede the result, also when the build fails.
+        for warning in engine.take_warnings() {
+            eprintln!("WARNING: {warning}");
+        }
+        let summary = result?;
         for (label, output) in summary.outputs {
             println!("{label}\t{}", output.display());
         }

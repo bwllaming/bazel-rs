@@ -11,7 +11,7 @@ use starlark::collections::SmallMap;
 use starlark::environment::{Globals, GlobalsBuilder, LibraryExtension, Module};
 use starlark::eval::{Arguments, Evaluator, ReturnFileLoader};
 use starlark::starlark_module;
-use starlark::syntax::ast::{Argument, Expr};
+use starlark::syntax::ast::{Argument, AstLiteral, Expr};
 use starlark::syntax::{AstModule, Dialect};
 use starlark::values::Value;
 use starlark::values::list::ListRef;
@@ -76,6 +76,9 @@ pub struct Rule {
     /// Load-time facts native analysis does not model; analysis of this rule
     /// fails explicitly when nonempty.
     pub unanalyzed: Vec<String>,
+    /// `Rule.getLocation()`: the BUILD-level call (`/abs/BUILD:L:C`, the
+    /// call's left parenthesis), as Bazel prefixes rule events.
+    pub location: Option<String>,
 }
 
 impl Rule {
@@ -84,6 +87,65 @@ impl Rule {
         self.native
             .as_ref()
             .is_some_and(|native| native.is_manual())
+            || self
+                .custom
+                .as_ref()
+                .is_some_and(|custom| custom.declaration.builtin.target.is_manual())
+    }
+
+    /// Rule.isTestOnly (packages/Rule.java:794-800): the effective `testonly`
+    /// value, falling back to the class override (`test_suite`, Starlark test
+    /// rules) or the package default (BaseRuleClasses.java:68-74).
+    pub fn is_test_only(&self, args: &PackageArgs) -> bool {
+        if let Some(custom) = &self.custom {
+            let builtin = &custom.declaration.builtin;
+            return match builtin.target.attrs.get("testonly") {
+                Some(AttrValue::Bool(value)) => *value,
+                _ => crate::native_rules::starlark_builtins(builtin.kind)
+                    .testonly_default
+                    .unwrap_or_else(|| args.default_testonly.unwrap_or(false)),
+            };
+        }
+        let Some(native) = &self.native else {
+            return false;
+        };
+        let Some(class) = crate::native_rules::rule_class(&native.rule_class) else {
+            return false;
+        };
+        if class.attribute("testonly").is_none() {
+            return false;
+        }
+        match native.attrs.get("testonly") {
+            Some(AttrValue::Bool(value)) => *value,
+            _ => class
+                .testonly_default
+                .unwrap_or_else(|| args.default_testonly.unwrap_or(false)),
+        }
+    }
+
+    /// Rule.getDeprecationWarning (packages/Rule.java:789-791): the explicit
+    /// `deprecation` or the package default (BaseRuleClasses.java:76-82).
+    pub fn deprecation_warning(&self, args: &PackageArgs) -> Option<String> {
+        let explicit = if let Some(custom) = &self.custom {
+            custom.declaration.builtin.target.string("deprecation")
+        } else if let Some(native) = &self.native {
+            native.string("deprecation")
+        } else {
+            return None;
+        };
+        explicit
+            .map(str::to_owned)
+            .or_else(|| args.default_deprecation.clone())
+    }
+
+    /// Rule class name for diagnostics (RuleContext.getRuleClassNameForLogging,
+    /// analysis/RuleContext.java:1908-1911).
+    pub fn rule_class_name(&self) -> &str {
+        match (&self.custom, &self.native) {
+            (Some(custom), _) => &custom.declaration.rule_class,
+            (None, Some(native)) => &native.rule_class,
+            (None, None) => self.kind.class_name(),
+        }
     }
 }
 
@@ -183,6 +245,10 @@ mod collector {
         // An index of actual rule/output/export declarations, not inferred inputs.
         pub declared_names: RefCell<BTreeSet<String>>,
         pub group_budget: RefCell<HostBudget>,
+        /// Generator call site of the active symbolic macro.
+        pub macro_site: RefCell<Option<super::CallSite>>,
+        /// Call expressions of the BUILD file (generator names, locations).
+        pub calls: super::CallExpressions,
     }
 
     /// REPO.bazel evaluation state (packages/RepoThreadContext.java).
@@ -234,9 +300,20 @@ pub(crate) fn register_custom<'v>(
     attrs: BTreeMap<String, AttrValue>,
     schema: BTreeMap<String, AttrSpec>,
     build_setting: Option<BuildSetting>,
-    declaration: InvocationDeclaration,
+    mut declaration: InvocationDeclaration,
 ) -> anyhow::Result<()> {
     let context = declarations(eval)?;
+    let (location, generator) = rule_origin(eval, context, name);
+    declaration.builtin.generator = generator;
+    let visibility = rule_visibility(visibility, context, name)?;
+    // ctx.attr.visibility is the explicit, simplified attribute value.
+    declaration.builtin.visibility = visibility.as_ref().map(|visibility| {
+        visibility
+            .declared_labels()
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    });
     let mut srcs = Vec::new();
     let mut outs = Vec::new();
     for value in attrs.values() {
@@ -259,14 +336,10 @@ pub(crate) fn register_custom<'v>(
             .map(|(_, output)| output.clone()),
     );
     let index = context.rules.borrow().len();
-    context.declare(
-        name,
-        RuleKind::Custom,
-        srcs,
-        outs,
-        None,
-        parse_visibility(visibility, context)?,
-    )?;
+    context.declare(name, RuleKind::Custom, srcs, outs, None, visibility)?;
+    if let Some(rule) = context.rules.borrow_mut().last_mut() {
+        rule.location = location;
+    }
     // Not a valid Starlark identifier: BUILD assignments cannot overwrite roots.
     let slot = format!("__custom_implementation${index}");
     eval.module().set(&slot, implementation);
@@ -374,9 +447,140 @@ impl Declarations {
             macro_owner,
             native: None,
             unanalyzed: Vec::new(),
+            location: None,
         });
         Ok(NoneType)
     }
+}
+
+/// The BUILD-level call being evaluated, as Bazel's StarlarkThread call stack
+/// entry 0 sees it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CallSite {
+    /// `Location.toString()` of the call's left parenthesis (Java Starlark
+    /// call locations are `CallExpression.getLparenLocation`).
+    pub location: String,
+    /// The callee's name when it is a legacy macro (a `.bzl` function that
+    /// called the rule): `CallStack.Node.functionName` of the interior stack.
+    pub function: Option<String>,
+    /// `f(name = "literal")` of that call (PackageFactory.checkBuildSyntax
+    /// recordGeneratorName, packages/PackageFactory.java:637-648).
+    pub name_literal: Option<String>,
+}
+
+/// Per BUILD call expression (keyed by its span): the left parenthesis
+/// position and the `name = "literal"` keyword (PackageFactory.checkBuildSyntax
+/// recordGeneratorName, packages/PackageFactory.java:637-648).
+pub(crate) type CallExpressions = HashMap<(u32, u32), (u32, Option<String>)>;
+
+/// Index every call expression of a BUILD file, nested calls included.
+fn call_expressions(ast: &AstModule) -> CallExpressions {
+    let file = ast.file_span(ast.statement().span).file;
+    let source = file.source().as_bytes();
+    let mut calls = HashMap::new();
+    let mut expressions = Vec::new();
+    ast.statement().visit_expr(|expr| expressions.push(expr));
+    while let Some(expr) = expressions.pop() {
+        if let Expr::Call(callee, arguments) = &expr.node {
+            let mut lparen = callee.span.end().get() as usize;
+            while lparen < source.len() && source[lparen] != b'(' {
+                lparen += 1;
+            }
+            let name = arguments
+                .args
+                .iter()
+                .rev()
+                .find_map(|argument| match &argument.node {
+                    Argument::Named(name, value) if name.node == "name" => match &value.node {
+                        Expr::Literal(AstLiteral::String(text)) => Some(text.node.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                });
+            calls.insert(
+                (expr.span.begin().get(), expr.span.end().get()),
+                (lparen as u32, name),
+            );
+        }
+        expr.visit_expr(|child| expressions.push(child));
+    }
+    calls
+}
+
+/// Computed `generator_*` values of a rule (Rule.java:395-405 with
+/// RuleFactory.getGeneratorName, packages/RuleFactory.java:238-274).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Generator {
+    /// The BUILD call's `name` literal, else the target name.
+    pub name: String,
+    /// The outermost function called from BUILD (legacy macro), or the
+    /// symbolic macro's exported name.
+    pub function: String,
+    /// Rule.getRelativeLocation (packages/Rule.java:353-366): the location from
+    /// the first occurrence of the package name; `None` when absent.
+    pub location: Option<String>,
+}
+
+/// `Rule.getLocation()` and the computed generator values of a rule
+/// instantiated now (TargetDefinitionContext.createRule,
+/// packages/TargetDefinitionContext.java:543-559).
+fn rule_origin(
+    eval: &Evaluator<'_, '_, '_>,
+    context: &Declarations,
+    name: &str,
+) -> (Option<String>, Option<Generator>) {
+    let site = call_site(eval, &context.calls);
+    let location = site.as_ref().map(|site| site.location.clone());
+    let generator_site = if context.active_macro.borrow().is_some() {
+        context.macro_site.borrow().clone()
+    } else {
+        site.filter(|site| site.function.is_some())
+    };
+    let generator = generator_site.map(|site| Generator {
+        name: site.name_literal.unwrap_or_else(|| name.to_owned()),
+        function: site.function.unwrap_or_default(),
+        // String.indexOf: the empty root package name matches at 0.
+        location: site
+            .location
+            .find(context.package.as_str())
+            .map(|position| site.location[position..].to_owned()),
+    });
+    (location, generator)
+}
+
+/// Starlark-rust frames are `(callee, call site in the caller)`, outermost
+/// first; the first frame's site is the BUILD-level call (Java's call stack
+/// entry 0 location). A rule called from a function whose current location is
+/// in a `.bzl` file was created by a legacy macro
+/// (RuleFactory.getGeneratorName, packages/RuleFactory.java:238-274).
+fn call_site(eval: &Evaluator<'_, '_, '_>, calls: &CallExpressions) -> Option<CallSite> {
+    let frames = eval.call_stack().frames;
+    let first = frames.first()?;
+    let span = first.location.as_ref()?;
+    let (lparen, name_literal) = calls
+        .get(&(span.span.begin().get(), span.span.end().get()))
+        .cloned()
+        .unwrap_or((span.span.begin().get(), None));
+    let position = starlark::codemap::Pos::new(lparen);
+    let resolved = span
+        .file
+        .resolve_span(starlark::codemap::Span::new(position, position));
+    let in_macro = frames.get(1).is_some_and(|frame| {
+        frame
+            .location
+            .as_ref()
+            .is_some_and(|location| location.filename().ends_with(".bzl"))
+    });
+    Some(CallSite {
+        location: format!(
+            "{}:{}:{}",
+            span.filename(),
+            resolved.begin.line + 1,
+            resolved.begin.column + 1
+        ),
+        function: in_macro.then(|| first.name.clone()),
+        name_literal,
+    })
 }
 
 fn local_label(name: &str, package: &PackageId, what: &str) -> anyhow::Result<Label> {
@@ -422,6 +626,44 @@ fn parse_visibility(
         .map_err(anyhow::Error::msg)
 }
 
+/// A rule's `visibility` argument. A misspelled //visibility label is reported
+/// as `LABEL MESSAGE` (AttributeProvider.java:277-286), for native and Starlark
+/// rules alike.
+fn rule_visibility(
+    value: Option<Value<'_>>,
+    context: &Declarations,
+    name: &str,
+) -> anyhow::Result<Option<Visibility>> {
+    let parsed = (|| {
+        let Some(value) = value.filter(|value| !value.is_none()) else {
+            return Ok(None);
+        };
+        let mut labels = visibility_labels(value, context)?;
+        // `visibility` is orderIndependent (BaseRuleClasses.java:232-236): the
+        // converted list is sorted (BuildType.java:248-253) before
+        // RuleVisibility.validateAndSimplify (AttributeProvider.java:277-286).
+        labels.sort_by(crate::native_rules::label_cmp);
+        Visibility::from_labels(labels)
+            .map(Some)
+            .map_err(anyhow::Error::msg)
+    })();
+    parsed.map_err(|error| {
+        let text = error.to_string();
+        if text.starts_with("Invalid visibility label") {
+            anyhow!(
+                "{} {text}",
+                crate::rule_declarations::canonical_form(&Label {
+                    repository: context.repository.clone(),
+                    package: context.package.clone(),
+                    name: name.to_owned(),
+                })
+            )
+        } else {
+            error
+        }
+    })
+}
+
 fn visibility_labels(value: Value<'_>, context: &Declarations) -> anyhow::Result<Vec<Label>> {
     let items = if let Some(list) = ListRef::from_value(value) {
         list.content()
@@ -459,6 +701,26 @@ fn visibility_labels(value: Value<'_>, context: &Declarations) -> anyhow::Result
             }
         })
         .collect()
+}
+
+struct MacroSiteFrame<'a> {
+    slot: &'a RefCell<Option<CallSite>>,
+    previous: Option<CallSite>,
+}
+
+impl<'a> MacroSiteFrame<'a> {
+    fn enter(slot: &'a RefCell<Option<CallSite>>, site: Option<CallSite>) -> Self {
+        Self {
+            slot,
+            previous: slot.replace(site),
+        }
+    }
+}
+
+impl Drop for MacroSiteFrame<'_> {
+    fn drop(&mut self) {
+        self.slot.replace(self.previous.take());
+    }
 }
 
 struct MacroFrame<'a> {
@@ -551,6 +813,14 @@ pub(crate) fn invoke_symbolic_macro<'v>(
     })?;
     let visibility = eval.heap().access_owned_frozen_value(&owned);
     context.macro_names.borrow_mut().insert(name.to_owned());
+    // MacroInstance generator name and parent call stack
+    // (TargetDefinitionContext.createMacro, packages/TargetDefinitionContext.java:570-595):
+    // the BUILD call site, and the macro callable as the interior function.
+    let site = call_site(eval, &context.calls).map(|site| CallSite {
+        function: exported.map(str::to_owned),
+        ..site
+    });
+    let _site = MacroSiteFrame::enter(&context.macro_site, site);
     let _frame = MacroFrame::enter(&context.active_macro, owner);
     let result = eval
         .eval_function(
@@ -684,23 +954,7 @@ fn declare_native<'v>(
         &context.repositories,
         &context.package_id(),
     )?;
-    // A misspelled //visibility label is reported as `LABEL MESSAGE`
-    // (AttributeProvider.java:277-286).
-    let visibility = parse_visibility(instance.visibility, context).map_err(|error| {
-        let text = error.to_string();
-        if text.starts_with("Invalid visibility label") {
-            anyhow!(
-                "{} {text}",
-                crate::rule_declarations::canonical_form(&Label {
-                    repository: context.repository.clone(),
-                    package: context.package.clone(),
-                    name: instance.name.clone(),
-                })
-            )
-        } else {
-            error
-        }
-    })?;
+    let visibility = rule_visibility(instance.visibility, context, &instance.name)?;
     let target = instance.target;
     let (kind, srcs, outs, cmd, unanalyzed) = match class.name {
         "filegroup" => (
@@ -729,11 +983,13 @@ fn declare_native<'v>(
             Vec::new(),
         ),
     };
+    let (location, _) = rule_origin(eval, context, &instance.name);
     context.declare(&instance.name, kind, srcs, outs, cmd, visibility)?;
     let mut rules = context.rules.borrow_mut();
     let rule = rules.last_mut().expect("declared rule");
     rule.native = Some(Arc::new(target));
     rule.unanalyzed = unanalyzed;
+    rule.location = location;
     Ok(())
 }
 
@@ -1536,6 +1792,8 @@ fn evaluate_at(
         macro_names: RefCell::new(BTreeSet::new()),
         declared_names: RefCell::new(BTreeSet::new()),
         group_budget: RefCell::new(HostBudget::default()),
+        macro_site: RefCell::new(None),
+        calls: call_expressions(&ast),
     };
     let frozen = Module::with_temp_heap(|module| {
         let mut evaluator = Evaluator::new(&module);
@@ -1582,6 +1840,13 @@ fn evaluate_at(
     let args = declarations.package_args.into_inner();
     for rule in rules.values_mut() {
         rule.unanalyzed.extend(package_default_gaps(rule, &args));
+        // Computed defaults are resolved against the final package arguments.
+        let testonly = rule.is_test_only(&args);
+        let deprecation = rule.deprecation_warning(&args);
+        if let Some(custom) = rule.custom.as_mut() {
+            custom.declaration.builtin.testonly = testonly;
+            custom.declaration.builtin.deprecation = deprecation;
+        }
     }
     let default_visibility = declarations.default_visibility.into_inner();
     for label in declarations.defaulted_rules.into_inner() {
@@ -1611,8 +1876,10 @@ fn evaluate_at(
 pub const NATIVE_LOADING_FOOTER: &str = "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() values load, but native analysis does not resolve them.";
 
 /// Computed package defaults that would change a rule's analysis in Bazel
-/// (BaseRuleClasses.java:68-108 testonly/package_metadata defaults,
+/// (BaseRuleClasses.java:100-108 package_metadata default,
 /// RuleClass.java:286-296 default environments). Explicit values win.
+/// `default_testonly`/`default_deprecation` need no gap: the testonly check and
+/// the deprecation warning use the effective values (crate::engine).
 fn package_default_gaps(rule: &Rule, args: &PackageArgs) -> Vec<String> {
     if matches!(rule.kind, RuleKind::PackageGroup(_)) {
         return Vec::new();
@@ -1621,20 +1888,25 @@ fn package_default_gaps(rule: &Rule, args: &PackageArgs) -> Vec<String> {
         .native
         .as_ref()
         .and_then(|native| crate::native_rules::rule_class(&native.rule_class));
-    let has = |name: &str| {
-        class
-            .as_ref()
-            .is_none_or(|class| class.attribute(name).is_some())
+    let builtins = rule
+        .custom
+        .as_ref()
+        .map(|custom| crate::native_rules::starlark_builtins(custom.declaration.builtin.kind));
+    let has = |name: &str| match (&builtins, &class) {
+        (Some(builtins), _) => builtins.attribute(name).is_some(),
+        (None, Some(class)) => class.attribute(name).is_some(),
+        (None, None) => true,
     };
     let explicit = |name: &str| {
         rule.native
             .as_ref()
             .is_some_and(|native| native.explicit(name))
+            || rule
+                .custom
+                .as_ref()
+                .is_some_and(|custom| custom.declaration.builtin.target.explicit(name))
     };
     let mut gaps = Vec::new();
-    if args.default_testonly == Some(true) && has("testonly") && !explicit("testonly") {
-        gaps.push("package default_testonly=True (testonly dependency checks)".to_owned());
-    }
     if args
         .default_package_metadata
         .as_ref()
@@ -2018,11 +2290,13 @@ unused = [genrule(name = "make_" + n, outs = [n + ".out"], cmd = "echo " + n + "
     #[test]
     fn attributes_are_strictly_checked() {
         // Bazel 9.3 schemas (native_rules.rs): common attributes load, but
-        // analysis-relevant ones are recorded as unanalyzed.
+        // analysis-relevant ones are recorded as unanalyzed. testonly only
+        // drives the prerequisite check the engine runs.
         let rules = eval("filegroup(name='x', testonly=True, tags=['manual'])\ngenrule(name='g', outs=['y'], cmd='true', tools=[':x'], executable=True)\ngenrule(name='n', cmd='true', outs=[])\ngenrule(name='o', outs=['z'])").unwrap();
         let x = &rules[&Label::parse(":x", "pkg").unwrap()];
         assert!(x.is_manual());
-        assert_eq!(x.unanalyzed, ["attribute 'testonly' = True"]);
+        assert!(x.is_test_only(&PackageArgs::default()));
+        assert!(x.unanalyzed.is_empty(), "{:?}", x.unanalyzed);
         let g = &rules[&Label::parse(":g", "pkg").unwrap()];
         assert_eq!(g.unanalyzed.len(), 2, "{:?}", g.unanalyzed);
         assert!(rules[&Label::parse(":n", "pkg").unwrap()].outs.is_empty());
@@ -2799,6 +3073,8 @@ def legacy():
                 macro_names: RefCell::new(BTreeSet::new()),
                 declared_names: RefCell::new(BTreeSet::new()),
                 group_budget: RefCell::new(HostBudget::default()),
+                macro_site: RefCell::new(None),
+                calls: HashMap::new(),
             };
             Module::with_temp_heap(|module| {
                 module.set(
@@ -3165,7 +3441,22 @@ r = rule(implementation=impl, attrs={
             ("r(name='x', s='', deps=[1])", "list of strings"),
             ("r(name='x', s='', out='../escape')", "output path"),
             ("r(name='x', s='', outputs=[1])", "list of strings"),
-            ("r(name='x', s='', unknown=1)", "unknown attribute"),
+            (
+                "r(name='x', s='', unknown=1)",
+                "//pkg:x: no such attribute 'unknown' in 'r' rule",
+            ),
+            (
+                "r(name='x', s='', sss=[])",
+                "//pkg:x: no such attribute 'sss' in 'r' rule (did you mean 'ss'?)",
+            ),
+            (
+                "r(name='x', s='', licenses=['notice'])",
+                "//pkg:x: no such attribute 'licenses' in 'r' rule",
+            ),
+            (
+                "r(name='x', s='', size='small')",
+                "//pkg:x: no such attribute 'size' in 'r' rule",
+            ),
             ("r('x', s='')", "positional"),
             ("r(s='')", "name"),
             ("r(name=1, s='')", "name"),
@@ -3487,7 +3778,14 @@ r = rule(implementation=impl, attrs={
                 &format!("load(':defs.bzl', 'r')\nr(name='x', {argument})"),
             )
             .unwrap_err();
-            assert!(error.contains("private attribute"), "{error}");
+            let key = argument.split('=').next().unwrap();
+            // Private ($x) attributes are UNDOCUMENTED: never suggested
+            // (Attribute.java:444-449).
+            assert!(
+                error.contains(&format!("//pkg:x: no such attribute '{key}' in 'r' rule"))
+                    && !error.contains("did you mean '$"),
+                "{error}"
+            );
         }
     }
 
@@ -3784,11 +4082,18 @@ filegroup(name='explicit', testonly=False, package_metadata=[])
         .unwrap();
         assert_eq!(
             rules[&Label::parse(":f", "pkg").unwrap()].unanalyzed,
-            [
-                "package default_testonly=True (testonly dependency checks)",
-                "package default_package_metadata (package metadata dependencies)"
-            ]
+            ["package default_package_metadata (package metadata dependencies)"]
         );
+        let f = &rules[&Label::parse(":f", "pkg").unwrap()];
+        let args = PackageArgs {
+            default_testonly: Some(true),
+            default_deprecation: Some("old".into()),
+            ..PackageArgs::default()
+        };
+        assert!(f.is_test_only(&args));
+        assert_eq!(f.deprecation_warning(&args).as_deref(), Some("old"));
+        let explicit = &rules[&Label::parse(":explicit", "pkg").unwrap()];
+        assert!(!explicit.is_test_only(&args));
         assert!(
             rules[&Label::parse(":explicit", "pkg").unwrap()]
                 .unanalyzed

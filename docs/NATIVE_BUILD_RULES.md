@@ -171,7 +171,7 @@ load time but not analyzed by the native profile: attribute 'cmd' select()
   attributes (`srcs`, `outs`, `cmd`; metadata such as `tags`, `deprecation`,
   `licenses`, `features`, `message`, `local`, `output_to_bindir`,
   `exec_properties`, Windows-only `cmd_bat`/`cmd_ps`). Any other non-empty
-  value (`testonly=True`, `data`, `tools`, `toolchains`, `cmd_bash`,
+  value (`data`, `tools`, `toolchains`, `cmd_bash`,
   `executable=True`, `stamp` other than 0, `target_compatible_with`,
   `package_metadata`, `aspect_hints`, `output_group`, ...) is recorded and
   analysis fails explicitly listing it.
@@ -181,9 +181,13 @@ load time but not analyzed by the native profile: attribute 'cmd' select()
   accepted and have **no effect** on native execution. Native actions always
   run locally and unsandboxed, so `local = True`/`no-sandbox` match, but every
   native action is cached: a `no-cache` genrule is cached natively where Bazel
-  would not cache it, and the deprecation warning Bazel prints for dependents
-  is not printed. `output_to_bindir` has no effect because genfiles and bin are
-  one directory (`--incompatible_merge_genfiles_directory`).
+  would not cache it. `output_to_bindir` has no effect because genfiles and bin
+  are one directory (`--incompatible_merge_genfiles_directory`).
+* `testonly` and `deprecation` (explicit or from `package()`/`repo()`
+  defaults) drive Bazel's prerequisite checks for every analyzed consumer:
+  the testonly error and the deprecation warning
+  (docs/COMMON_RULE_ATTRIBUTES.md, "Analysis"). `testonly = True` on
+  `filegroup`/`genrule` is therefore modeled, not an analysis gap.
 * `genrule(outs = [])` loads (mandatory only means present) and fails analysis
   with `in outs attribute of genrule rule //pkg:x: Genrules without outputs
   don't make sense` (`rules/genrule/GenRuleBase.java:75-77`); a genrule without
@@ -212,8 +216,9 @@ patterns (`:all`, `/...`) now skip targets tagged `manual`
 `skyframe/TargetPatternPhaseFunction.java:293-296`); explicitly named targets
 are kept. `config_setting`, `toolchain`, `constraint_setting`,
 `constraint_value` and `platform` default to `tags = ["manual"]`, so
-`build //pkg:all` skips them as Bazel does. Custom Starlark rules still reject
-built-in attributes such as `tags` (existing boundary).
+`build //pkg:all` skips them as Bazel does. Starlark rules accept the built-in
+attributes (`tags`, `testonly`, ...) and `manual` Starlark targets are skipped
+too (docs/COMMON_RULE_ATTRIBUTES.md).
 
 ## Package and repository helpers
 
@@ -240,11 +245,14 @@ built-in attributes such as `tags` (existing boundary).
   [IGNORED_DIRECTORIES.md](IGNORED_DIRECTORIES.md).
 * Package defaults that change analysis in Bazel are recorded per rule and make
   its analysis fail explicitly unless the rule sets the attribute itself:
-  `default_testonly = True`, non-empty `default_package_metadata` (computed
+  non-empty `default_package_metadata` (computed
   `package_metadata` dependencies, `BaseRuleClasses.java:102-108`),
   non-empty `default_compatible_with`/`default_restricted_to`, and
   `transitive_visibility`. Classes that removed the attribute (for example
-  `platform` has no `package_metadata`) are unaffected.
+  `platform` has no `package_metadata`) are unaffected. `default_testonly` and
+  `default_deprecation` are applied as computed defaults by the testonly check
+  and the deprecation warning (docs/COMMON_RULE_ATTRIBUTES.md); Starlark rules
+  follow the same rules with their own attribute sets.
 * `licenses([...])` (BUILD only, `packages/BuildGlobals.java:100-132`) validates
   license types and records the package license.
 * Shared BUILD/`native` helpers (`StarlarkNativeModule.java:616-683`):
@@ -262,8 +270,8 @@ built-in attributes such as `tags` (existing boundary).
 
 * `native.existing_rule()`/`existing_rules()` in BUILD context
   (`StarlarkNativeModule.java:320-522`): an exact view needs every attribute of
-  every rule kind, including the built-in attributes custom Starlark rules do
-  not yet accept; the functions stay absent from BUILD-loaded `native`
+  every rule kind (including the computed and call-stack-derived built-in
+  values); the functions stay absent from BUILD-loaded `native`
   (docs/EXISTING_RULES.md).
 * `subpackages()`, `environment_group`, `query --output=label_kind` (query
   options are rejected), `test_suite`'s implicit `$implicit_tests`.

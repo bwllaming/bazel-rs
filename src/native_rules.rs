@@ -77,6 +77,9 @@ pub struct NativeAttr {
     /// Attribute.isDocumented: the SpellChecker candidate set
     /// (AttributeProvider.java:229-234).
     pub documented: bool,
+    /// Attribute.isOrderIndependent (packages/Attribute.java:2019-2021): list
+    /// values are sorted at conversion (BuildType.java:248-253).
+    pub order_independent: bool,
 }
 
 const fn attr(name: &'static str, ty: NativeType) -> NativeAttr {
@@ -88,6 +91,7 @@ const fn attr(name: &'static str, ty: NativeType) -> NativeAttr {
         configurable: !matches!(ty, NativeType::OutputList | NativeType::License),
         mandatory: false,
         documented: true,
+        order_independent: false,
     }
 }
 
@@ -103,6 +107,11 @@ const fn mandatory(mut attribute: NativeAttr) -> NativeAttr {
 
 const fn undocumented(mut attribute: NativeAttr) -> NativeAttr {
     attribute.documented = false;
+    attribute
+}
+
+const fn order_independent(mut attribute: NativeAttr) -> NativeAttr {
+    attribute.order_independent = true;
     attribute
 }
 
@@ -191,32 +200,222 @@ impl RuleClass {
 
 use NativeType as T;
 
+/// One entry of a built-in attribute list in Bazel's declaration order: a
+/// user-settable attribute, or the native name (`$x`/`:x`) of a private one.
+/// Private attributes are never settable by keyword (their native names are
+/// not identifiers), but they are documented SpellChecker candidates
+/// (Attribute.isDocumented, packages/Attribute.java:2067-2069) and block
+/// Starlark attributes of the same native name.
+#[derive(Clone, Debug)]
+enum Entry {
+    Attr(NativeAttr),
+    Private(&'static str),
+}
+
+/// BaseRuleClasses.commonCoreAndStarlarkAttributes (BaseRuleClasses.java:226-299),
+/// shared by every native BUILD rule and every Starlark rule class.
+fn common_core_and_starlark_attributes() -> Vec<Entry> {
+    use Entry::{Attr, Private};
+    vec![
+        // visibility, transitive_configs, tags and features are
+        // orderIndependent (BaseRuleClasses.java:232-267).
+        Attr(order_independent(nonconfigurable(attr(
+            "visibility",
+            T::NodepLabelList,
+        )))),
+        Attr(order_independent(nonconfigurable(attr(
+            "transitive_configs",
+            T::NodepLabelList,
+        )))),
+        Attr(nonconfigurable(attr("deprecation", T::String))),
+        Attr(order_independent(nonconfigurable(attr(
+            "tags",
+            T::StringList,
+        )))),
+        Attr(undocumented(nonconfigurable(attr(
+            "generator_name",
+            T::String,
+        )))),
+        Attr(undocumented(nonconfigurable(attr(
+            "generator_function",
+            T::String,
+        )))),
+        Attr(undocumented(nonconfigurable(attr(
+            "generator_location",
+            T::String,
+        )))),
+        Attr(nonconfigurable(attr("testonly", T::Bool))),
+        Attr(order_independent(attr("features", T::StringList))),
+        Private(":action_listener"),
+        Attr(nonconfigurable(attr("compatible_with", T::LabelList))),
+        Attr(nonconfigurable(attr("restricted_to", T::LabelList))),
+        Private("$config_dependencies"),
+        Attr(nonconfigurable(attr("package_metadata", T::LabelList))),
+        Attr(attr("aspect_hints", T::LabelList)),
+    ]
+}
+
 /// RuleClass.Builder constructor adds `name` first (RuleClass.java:771), then
 /// BaseRuleClasses.commonCoreAndStarlarkAttributes (BaseRuleClasses.java:226-299)
 /// and NativeBuildRule (BaseRuleClasses.java:318-340).
 fn native_build_rule(name: &'static str) -> RuleClass {
-    RuleClass::new(
-        name,
-        vec![
-            nonconfigurable(attr("visibility", T::NodepLabelList)),
-            nonconfigurable(attr("transitive_configs", T::NodepLabelList)),
-            nonconfigurable(attr("deprecation", T::String)),
-            nonconfigurable(attr("tags", T::StringList)),
-            undocumented(nonconfigurable(attr("generator_name", T::String))),
-            undocumented(nonconfigurable(attr("generator_function", T::String))),
-            undocumented(nonconfigurable(attr("generator_location", T::String))),
-            nonconfigurable(attr("testonly", T::Bool)),
-            attr("features", T::StringList),
-            nonconfigurable(attr("compatible_with", T::LabelList)),
-            nonconfigurable(attr("restricted_to", T::LabelList)),
-            nonconfigurable(attr("package_metadata", T::LabelList)),
-            attr("aspect_hints", T::LabelList),
-            // NativeBuildRule (BaseRuleClasses.java:322-338).
-            nonconfigurable(attr("licenses", T::License)),
-            nonconfigurable(attr("distribs", T::StringList)),
-            attr("target_compatible_with", T::LabelList),
-        ],
-    )
+    let mut attrs = common_core_and_starlark_attributes()
+        .into_iter()
+        .filter_map(|entry| match entry {
+            Entry::Attr(attribute) => Some(attribute),
+            Entry::Private(_) => None,
+        })
+        .collect::<Vec<_>>();
+    // NativeBuildRule (BaseRuleClasses.java:322-338).
+    attrs.extend([
+        nonconfigurable(attr("licenses", T::License)),
+        nonconfigurable(attr("distribs", T::StringList)),
+        attr("target_compatible_with", T::LabelList),
+    ]);
+    RuleClass::new(name, attrs)
+}
+
+/// Which `StarlarkRuleClassFunctions` base class a Starlark `rule()` extends
+/// (StarlarkRuleClassFunctions.java:760-784).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StarlarkRuleKind {
+    /// `test=True` or `analysis_test=True`: `getTestBaseRule` (:258-378).
+    pub test: bool,
+    /// `executable=True`: `binaryBaseRule` (:232-241).
+    pub executable: bool,
+    /// `dependency_resolution_rule=True`: `dependencyResolutionBaseRule` (:197-212).
+    pub dependency_resolution: bool,
+}
+
+/// The built-in attributes of a Starlark rule class.
+#[derive(Clone, Debug)]
+pub struct StarlarkBuiltins {
+    entries: Vec<Entry>,
+    /// `testonly` is overridden to `True` for test rule classes
+    /// (packages/RuleClass.java:839-851); otherwise it is the package default.
+    pub testonly_default: Option<bool>,
+}
+
+impl StarlarkBuiltins {
+    /// User-settable built-in attributes, in declaration order.
+    pub fn attrs(&self) -> impl Iterator<Item = &NativeAttr> {
+        self.entries.iter().filter_map(|entry| match entry {
+            Entry::Attr(attribute) => Some(attribute),
+            Entry::Private(_) => None,
+        })
+    }
+
+    pub fn attribute(&self, name: &str) -> Option<&NativeAttr> {
+        self.attrs().find(|attribute| attribute.name == name)
+    }
+
+    /// Whether `native_name` (`$x`/`:x` for private attributes) is a built-in
+    /// attribute, which Starlark attributes cannot override (RuleClass.java:1301-1306).
+    pub fn contains(&self, native_name: &str) -> bool {
+        native_name == "name"
+            || self.entries.iter().any(|entry| match entry {
+                Entry::Attr(attribute) => attribute.name == native_name,
+                Entry::Private(name) => *name == native_name,
+            })
+    }
+
+    /// Documented attribute names in Bazel's order, `name` first
+    /// (AttributeProvider.java:220-235 SpellChecker candidates). Private
+    /// `$x`/`:x` attributes are always UNDOCUMENTED (Attribute.java:444-449).
+    pub fn candidates(&self) -> Vec<&'static str> {
+        std::iter::once("name")
+            .chain(self.entries.iter().filter_map(|entry| match entry {
+                Entry::Attr(attribute) => attribute.documented.then_some(attribute.name),
+                Entry::Private(_) => None,
+            }))
+            .collect()
+    }
+
+    /// A built-in attribute with a different native name but the same public
+    /// name (`_x`, Attribute.getStarlarkName, packages/Attribute.java:2307-2312)
+    /// as `native_name`: building the rule class fails
+    /// (packages/RuleClass.java:1905-1918).
+    pub fn public_name_conflict(&self, native_name: &str) -> Option<&'static str> {
+        let public = |name: &str| match name.strip_prefix(['$', ':']) {
+            Some(rest) => format!("_{rest}"),
+            None => name.to_owned(),
+        };
+        let wanted = public(native_name);
+        self.entries.iter().find_map(|entry| match entry {
+            Entry::Private(name) if *name != native_name && public(name) == wanted => Some(*name),
+            _ => None,
+        })
+    }
+}
+
+/// `StarlarkRuleClassFunctions.baseRule` (StarlarkRuleClassFunctions.java:159-194),
+/// `binaryBaseRule` (:232-241), `getTestBaseRule` (:258-378) and
+/// `dependencyResolutionBaseRule` (:197-212). `licenses`/`distribs` belong to
+/// NativeBuildRule only, so Starlark rules do not have them.
+pub fn starlark_builtins(kind: StarlarkRuleKind) -> StarlarkBuiltins {
+    use Entry::{Attr, Private};
+    let mut entries = vec![Attr(attr("expect_failure", T::String))];
+    entries.extend(common_core_and_starlark_attributes());
+    entries.extend([
+        Attr(attr("toolchains", T::LabelList)),
+        Attr(attr("exec_properties", T::StringDict)),
+        Attr(nonconfigurable(attr("exec_compatible_with", T::LabelList))),
+        Attr(nonconfigurable(attr(
+            "exec_group_compatible_with",
+            T::LabelListDict,
+        ))),
+        Attr(attr("target_compatible_with", T::LabelList)),
+    ]);
+    // The TEST rule class type overrides testonly regardless of the parent.
+    let testonly_default = kind.test.then_some(true);
+    if kind.dependency_resolution {
+        let removed = [
+            ":action_listener",
+            "aspect_hints",
+            "toolchains",
+            "exec_compatible_with",
+            "exec_group_compatible_with",
+            "target_compatible_with",
+            "compatible_with",
+            "restricted_to",
+            "$config_dependencies",
+            "package_metadata",
+        ];
+        entries.retain(|entry| match entry {
+            Attr(attribute) => !removed.contains(&attribute.name),
+            Private(name) => !removed.contains(name),
+        });
+    } else if kind.test {
+        entries.extend([
+            Attr(nonconfigurable(attr("size", T::String))),
+            Attr(nonconfigurable(attr("timeout", T::String))),
+            Attr(nonconfigurable(attr("flaky", T::Bool))),
+            Attr(attr("shard_count", T::Int)),
+            Attr(nonconfigurable(attr("local", T::Bool))),
+            Attr(attr("args", T::StringList)),
+            Private("$test_wrapper"),
+            Private("$xml_writer"),
+            Private("$test_runtime"),
+            Private("$test_setup_script"),
+            Private("$xml_generator_script"),
+            Private("$collect_coverage_script"),
+            Private(":coverage_support"),
+            Private(":coverage_report_generator"),
+            Private(":run_under_exec_config"),
+            Private(":run_under_target_config"),
+            Private("$is_executable"),
+        ]);
+    } else if kind.executable {
+        entries.extend([
+            Attr(attr("args", T::StringList)),
+            Attr(attr("output_licenses", T::StringList)),
+            Private("$is_executable"),
+        ]);
+    }
+    StarlarkBuiltins {
+        entries,
+        testonly_default,
+    }
 }
 
 /// NativeActionCreatingRule (BaseRuleClasses.java:382-408).
@@ -408,7 +607,11 @@ pub fn rule_class(name: &str) -> Option<RuleClass> {
         "test_suite" => {
             let mut class = native_build_rule("test_suite")
                 .override_attr(nonconfigurable(attr("testonly", T::Bool)))
-                .add(nonconfigurable(attr("tests", T::LabelList)));
+                // TestSuiteRule.java:99-103: orderIndependent.
+                .add(order_independent(nonconfigurable(attr(
+                    "tests",
+                    T::LabelList,
+                ))));
             class.testonly_default = Some(true);
             class
         }
@@ -888,7 +1091,7 @@ fn concat(ty: NativeType, values: Vec<AttrValue>) -> AttrValue {
 const DEFAULT_CONDITION: &str = "//conditions:default";
 
 /// Value of a converted attribute: plain or a retained select.
-enum Converted {
+pub(crate) enum Converted {
     Plain(AttrValue),
     /// `select({"//conditions:default": None})` of a type whose default is
     /// null: the attribute stays unset (AttributeProvider.java:269-272).
@@ -980,8 +1183,158 @@ fn convert_select(
     )))
 }
 
+impl Converted {
+    /// Record the value in a target (unset values stay absent).
+    pub(crate) fn store(self, key: &str, target: &mut NativeTarget) {
+        match self {
+            Converted::Plain(value) => {
+                target.attrs.insert(key.to_owned(), value);
+            }
+            Converted::Unset => {}
+            Converted::Select(parts) => {
+                target.configurable.insert(key.to_owned(), parts);
+            }
+        }
+    }
+}
+
+impl Converter<'_> {
+    /// BuildType.convertFromBuildLangType (packages/BuildType.java:220-238) of
+    /// one keyword argument, with the `LABEL: MESSAGE` prefix of
+    /// AttributeProvider.populateDefinedRuleAttributeValues
+    /// (AttributeProvider.java:254-265). `class_name` is the attribute
+    /// provider's name (the rule class), used in `attribute 'K' of 'CLASS'`.
+    fn convert_argument(
+        &mut self,
+        class_name: &str,
+        shown: &str,
+        attribute: &NativeAttr,
+        value: Value<'_>,
+    ) -> anyhow::Result<Converted> {
+        let key = attribute.name;
+        let what = format!("attribute '{key}' of '{class_name}'");
+        let converted = if let Some(pieces) = crate::rule_declarations::select_pieces(value) {
+            if !attribute.configurable {
+                bail!("{shown}: attribute \"{key}\" is not configurable");
+            }
+            convert_select(self, attribute.ty, pieces, &what)
+                .map_err(|error| anyhow!("{shown}: {error}"))?
+        } else {
+            Converted::Plain(
+                self.convert(attribute.ty, value, &what)
+                    .map_err(|error| anyhow!("{shown}: {error}"))?,
+            )
+        };
+        // BuildType.convertFromBuildLangType sorts every converted List of an
+        // orderIndependent attribute (BuildType.java:248-253), including a
+        // simplified select; retained selects (SelectorList) stay unsorted.
+        Ok(match converted {
+            Converted::Plain(mut value) if attribute.order_independent => {
+                sort_order_independent(&mut value);
+                Converted::Plain(value)
+            }
+            other => other,
+        })
+    }
+}
+
+/// Java `String.compareTo` (UTF-16 code unit order).
+pub(crate) fn java_string_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    a.encode_utf16().cmp(b.encode_utf16())
+}
+
+/// `Label.compareTo` (cmdline/Label.java:677-685, PackageIdentifier.java:295-307,
+/// PathFragment.java:514-516): repository name, package path, then name.
+pub(crate) fn label_cmp(a: &Label, b: &Label) -> std::cmp::Ordering {
+    java_string_cmp(&a.repository, &b.repository)
+        .then_with(|| java_string_cmp(&a.package, &b.package))
+        .then_with(|| java_string_cmp(&a.name, &b.name))
+}
+
+/// `Ordering.natural().sortedCopy` of a converted list (stable, duplicates kept).
+fn sort_order_independent(value: &mut AttrValue) {
+    match value {
+        AttrValue::Strings(values) => values.sort_by(|a, b| java_string_cmp(a, b)),
+        AttrValue::Labels(values) => values.sort_by(|a, b| {
+            match (Label::parse_canonical(a), Label::parse_canonical(b)) {
+                (Ok(a), Ok(b)) => label_cmp(&a, &b),
+                // Unresolved apparent-repository labels (deferred) sort by text.
+                _ => java_string_cmp(a, b),
+            }
+        }),
+        _ => {}
+    }
+}
+
+/// Converter for the built-in attributes of a Starlark rule instance, using
+/// the BUILD file's package and repository mapping.
+pub(crate) struct BuiltinConverter<'a>(Converter<'a>);
+
+impl<'a> BuiltinConverter<'a> {
+    pub(crate) fn new(repositories: &'a RepositorySet, package: &'a PackageId) -> Self {
+        Self(Converter {
+            repositories,
+            package,
+            budget: HostBudget::default(),
+        })
+    }
+
+    pub(crate) fn convert_argument(
+        &mut self,
+        class_name: &str,
+        shown: &str,
+        attribute: &NativeAttr,
+        value: Value<'_>,
+    ) -> anyhow::Result<Converted> {
+        self.0.convert_argument(class_name, shown, attribute, value)
+    }
+}
+
+/// Assumed input files of a target (`Rule.getLabels()`):
+/// AggregatingAttributeMapper.visitLabels (packages/AggregatingAttributeMapper.java:96-109)
+/// skips NODEP_LABEL(_LIST) attribute values (`nodep`). Select keys of every
+/// attribute, NODEP ones included, are visited through `$config_dependencies`
+/// (AttributeProvider.java:443-466, a LABEL_LIST, BaseRuleClasses.java:288-290);
+/// the genuine capture confirms
+/// (reference_receipt B/nodep_platform_allowed_toolchain_types_select_key).
+pub(crate) fn input_labels(target: &NativeTarget, nodep: impl Fn(&str) -> bool) -> Vec<Label> {
+    let mut labels = Vec::new();
+    for (key, value) in &target.attrs {
+        if !nodep(key) {
+            collect_labels(value, &mut labels);
+        }
+    }
+    for (attribute, parts) in &target.configurable {
+        let values = !nodep(attribute);
+        for part in parts {
+            match part {
+                ConfigurablePart::Plain(value) => {
+                    if values {
+                        collect_labels(value, &mut labels)
+                    }
+                }
+                ConfigurablePart::Select { branches, .. } => {
+                    for (key, value) in branches {
+                        if key != DEFAULT_CONDITION
+                            && let Ok(label) = Label::parse_canonical(key)
+                        {
+                            labels.push(label);
+                        }
+                        if values && let Some(value) = value {
+                            collect_labels(value, &mut labels);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut seen = BTreeSet::new();
+    labels.retain(|label| seen.insert(label.clone()));
+    labels
+}
+
 /// SpellChecker.didYouMean (net/starlark/java/spelling/SpellChecker.java).
-fn did_you_mean(input: &str, words: &[&str]) -> String {
+pub(crate) fn did_you_mean(input: &str, words: &[&str]) -> String {
     fn edit_distance(s1: &[u8], s2: &[u8], max: usize) -> Option<usize> {
         if s1 == s2 {
             return Some(0);
@@ -1116,33 +1469,13 @@ pub(crate) fn instantiate<'v>(
         if key == "licenses" && class.ignore_licenses {
             continue;
         }
-        let what = format!("attribute '{key}' of '{}'", class.name);
-        if let Some(pieces) = crate::rule_declarations::select_pieces(*value) {
-            // BuildType.convertFromBuildLangType (packages/BuildType.java:234-238).
-            if !attribute.configurable {
-                bail!("{shown}: attribute \"{key}\" is not configurable");
-            }
-            match convert_select(&mut converter, attribute.ty, pieces, &what)
-                .map_err(|error| anyhow!("{shown}: {error}"))?
-            {
-                Converted::Plain(value) => {
-                    target.attrs.insert(key.to_owned(), value);
-                }
-                Converted::Unset => {}
-                Converted::Select(parts) => {
-                    target.configurable.insert(key.to_owned(), parts);
-                }
-            }
-            continue;
-        }
-        if key == "visibility" {
+        if key == "visibility" && crate::rule_declarations::select_pieces(*value).is_none() {
             visibility = Some(*value);
             continue;
         }
-        let converted = converter
-            .convert(attribute.ty, *value, &what)
-            .map_err(|error| anyhow!("{shown}: {error}"))?;
-        target.attrs.insert(key.to_owned(), converted);
+        converter
+            .convert_argument(class.name, &shown, attribute, *value)?
+            .store(key, &mut target);
     }
     // AttributeProvider.checkAllowedValues (AttributeProvider.java:478-497).
     for (name, allowed) in class.allowed_values {
@@ -1188,55 +1521,17 @@ pub(crate) fn instantiate<'v>(
             .map(|tag| (*tag).to_owned())
             .collect(),
     };
-    // AggregatingAttributeMapper.visitLabels (packages/AggregatingAttributeMapper.java:96-109)
-    // skips NODEP_LABEL(_LIST) attribute values. The build-setting default of
-    // label_flag/label_setting is still visited through the `:alias`
-    // attribute's rule-based default (rules/LabelBuildSettings.java:62-90).
-    // Select keys of every attribute, NODEP ones included, are visited through
-    // `$config_dependencies` (AttributeProvider.java:443-466, a LABEL_LIST,
-    // BaseRuleClasses.java:288-290); the genuine capture confirms
-    // (reference_receipt B/nodep_platform_allowed_toolchain_types_select_key).
-    let visited = |key: &str| {
-        class.attribute(key).is_none_or(|attribute| {
-            !matches!(
+    // The build-setting default of label_flag/label_setting is still visited
+    // through the `:alias` attribute's rule-based default
+    // (rules/LabelBuildSettings.java:62-90).
+    target.input_labels = input_labels(&target, |key| {
+        class.attribute(key).is_some_and(|attribute| {
+            matches!(
                 attribute.ty,
                 NativeType::NodepLabel | NativeType::NodepLabelList
-            ) || (class.build_setting && key == "build_setting_default")
+            ) && !(class.build_setting && key == "build_setting_default")
         })
-    };
-    let mut labels = Vec::new();
-    for (key, value) in &target.attrs {
-        if visited(key) {
-            collect_labels(value, &mut labels);
-        }
-    }
-    for (attribute, parts) in &target.configurable {
-        let values = visited(attribute);
-        for part in parts {
-            match part {
-                ConfigurablePart::Plain(value) => {
-                    if values {
-                        collect_labels(value, &mut labels)
-                    }
-                }
-                ConfigurablePart::Select { branches, .. } => {
-                    for (key, value) in branches {
-                        if key != DEFAULT_CONDITION
-                            && let Ok(label) = Label::parse_canonical(key)
-                        {
-                            labels.push(label);
-                        }
-                        if values && let Some(value) = value {
-                            collect_labels(value, &mut labels);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    let mut seen = BTreeSet::new();
-    labels.retain(|label| seen.insert(label.clone()));
-    target.input_labels = labels;
+    });
     Ok(Instance {
         name: name.to_owned(),
         visibility,
@@ -1305,11 +1600,14 @@ pub(crate) fn analysis_gaps(target: &NativeTarget) -> Vec<String> {
     }
     // Attributes without effect on the native local action graph: metadata,
     // diagnostics-only, or Windows-only commands on this Unix host profile.
+    // `testonly` only drives the prerequisite check, which crate::engine runs
+    // (CommonPrerequisiteValidator.java:730-776).
     let neutral: &[&str] = match target.rule_class.as_str() {
         "filegroup" => &[
             "srcs",
             "tags",
             "deprecation",
+            "testonly",
             "features",
             "licenses",
             "distribs",
@@ -1326,6 +1624,7 @@ pub(crate) fn analysis_gaps(target: &NativeTarget) -> Vec<String> {
             "cmd_ps",
             "tags",
             "deprecation",
+            "testonly",
             "features",
             "licenses",
             "distribs",
@@ -1345,8 +1644,7 @@ pub(crate) fn analysis_gaps(target: &NativeTarget) -> Vec<String> {
             continue;
         }
         let neutral_value = match (key.as_str(), value) {
-            ("testonly", AttrValue::Bool(false))
-            | ("executable", AttrValue::Bool(false))
+            ("executable", AttrValue::Bool(false))
             | ("heuristic_label_expansion", AttrValue::Bool(false)) => true,
             // stamp=0 is the genrule default (BazelGenRuleRule.java:47).
             ("stamp", AttrValue::Int(0)) => true,
@@ -1360,7 +1658,7 @@ pub(crate) fn analysis_gaps(target: &NativeTarget) -> Vec<String> {
     gaps
 }
 
-fn describe(value: &AttrValue) -> String {
+pub(crate) fn describe(value: &AttrValue) -> String {
     match value {
         AttrValue::String(text) => format!("{text:?}"),
         AttrValue::Bool(value) => if *value { "True" } else { "False" }.to_owned(),
@@ -1436,6 +1734,150 @@ mod tests {
                 .configurable
         );
         assert!(flag.attribute("build_setting_default").unwrap().mandatory);
+    }
+
+    #[test]
+    fn starlark_builtins_follow_starlark_rule_class_functions() {
+        let base = starlark_builtins(StarlarkRuleKind::default());
+        let names = base
+            .attrs()
+            .map(|attribute| attribute.name)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            [
+                "expect_failure",
+                "visibility",
+                "transitive_configs",
+                "deprecation",
+                "tags",
+                "generator_name",
+                "generator_function",
+                "generator_location",
+                "testonly",
+                "features",
+                "compatible_with",
+                "restricted_to",
+                "package_metadata",
+                "aspect_hints",
+                "toolchains",
+                "exec_properties",
+                "exec_compatible_with",
+                "exec_group_compatible_with",
+                "target_compatible_with",
+            ]
+        );
+        // Shared with every native BUILD rule (commonCoreAndStarlarkAttributes).
+        let filegroup = rule_class("filegroup").unwrap();
+        for attribute in base.attrs().filter(|attribute| {
+            !matches!(
+                attribute.name,
+                "expect_failure"
+                    | "toolchains"
+                    | "exec_properties"
+                    | "exec_compatible_with"
+                    | "exec_group_compatible_with"
+            )
+        }) {
+            let native = filegroup.attribute(attribute.name).unwrap();
+            assert_eq!(
+                (
+                    native.ty,
+                    native.configurable,
+                    native.documented,
+                    native.order_independent
+                ),
+                (
+                    attribute.ty,
+                    attribute.configurable,
+                    attribute.documented,
+                    attribute.order_independent
+                ),
+                "{}",
+                attribute.name
+            );
+        }
+        let configurable = base
+            .attrs()
+            .filter(|attribute| attribute.configurable)
+            .map(|attribute| attribute.name)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            configurable,
+            [
+                "expect_failure",
+                "features",
+                "aspect_hints",
+                "toolchains",
+                "exec_properties",
+                "target_compatible_with"
+            ]
+        );
+        assert!(base.attribute("licenses").is_none() && base.attribute("distribs").is_none());
+        assert!(base.contains("name") && base.contains("$config_dependencies"));
+        assert!(base.contains(":action_listener") && !base.contains("$action_listener"));
+        assert_eq!(base.testonly_default, None);
+        let candidates = base.candidates();
+        assert_eq!(candidates[..3], ["name", "expect_failure", "visibility"]);
+        assert!(!candidates.contains(&"generator_name"));
+        assert!(!candidates.contains(&"$config_dependencies"));
+        assert_eq!(did_you_mean("config_dependencies", &candidates), "");
+        assert_eq!(
+            base.public_name_conflict("$action_listener"),
+            Some(":action_listener")
+        );
+        assert_eq!(base.public_name_conflict(":action_listener"), None);
+        assert_eq!(base.public_name_conflict("$tool"), None);
+        assert!(base.attribute("tags").unwrap().order_independent);
+        assert!(base.attribute("features").unwrap().order_independent);
+        assert!(base.attribute("visibility").unwrap().order_independent);
+        assert!(
+            base.attribute("transitive_configs")
+                .unwrap()
+                .order_independent
+        );
+        assert!(!base.attribute("toolchains").unwrap().order_independent);
+        assert!(
+            rule_class("test_suite")
+                .unwrap()
+                .attribute("tests")
+                .unwrap()
+                .order_independent
+        );
+        let test = starlark_builtins(StarlarkRuleKind {
+            test: true,
+            ..Default::default()
+        });
+        assert_eq!(test.testonly_default, Some(true));
+        assert!(!test.attribute("size").unwrap().configurable);
+        assert!(test.attribute("shard_count").unwrap().configurable);
+        assert!(test.contains("$test_runtime") && test.contains("$is_executable"));
+        assert!(test.attribute("output_licenses").is_none());
+        let binary = starlark_builtins(StarlarkRuleKind {
+            executable: true,
+            ..Default::default()
+        });
+        assert!(binary.attribute("args").is_some() && binary.attribute("size").is_none());
+        assert!(binary.attribute("output_licenses").is_some());
+        let resolution = starlark_builtins(StarlarkRuleKind {
+            dependency_resolution: true,
+            ..Default::default()
+        });
+        for removed in [
+            "aspect_hints",
+            "toolchains",
+            "exec_compatible_with",
+            "exec_group_compatible_with",
+            "target_compatible_with",
+            "compatible_with",
+            "restricted_to",
+            "package_metadata",
+            "$config_dependencies",
+            ":action_listener",
+        ] {
+            assert!(!resolution.contains(removed), "{removed}");
+        }
+        assert!(resolution.attribute("tags").is_some());
     }
 
     #[test]
