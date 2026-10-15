@@ -47,8 +47,8 @@ Implemented:
 
 - Workspace and package discovery; main and local external-repository labels, with a deliberately
   restricted ASCII path grammar and no symlink package directories. `.git`,
-  `.direnv`, and `bazel-rs-out` are reserved directories. Recursive discovery
-  rejects nonempty `.bazelignore`/`REPO.bazel` directives rather than ignoring them.
+  `.direnv`, and `bazel-rs-out` are reserved directories. `.bazelignore` prefixes and
+  REPO.bazel `ignore_directories()` patterns follow Bazel 9.3 (docs/IGNORED_DIRECTORIES.md).
 - Real Starlark parsing/evaluation via `starlark` 0.14.2: expressions, constants,
   and comprehensions; BUILD-appropriate restrictions on definitions/control flow.
 - Main and local-override repository `.bzl` loading: nested/aliased loads, frozen modules, load-cycle

@@ -4,6 +4,7 @@
 //! directories are not supported; discovery never follows directory symlinks.
 //! Nested repositories are boundaries, not packages in the outer repository.
 
+use crate::ignored::IgnoredSubdirectories;
 use crate::label::validate_package_path;
 use std::fs;
 use std::io;
@@ -51,29 +52,17 @@ pub fn package_build_file(root: &Path, package: &str) -> Result<PathBuf, String>
     })
 }
 
-pub fn discover_packages(root: &Path, package: &str) -> Result<Vec<String>, String> {
+/// Packages at or below `package` (`RecursivePkgFunction` /
+/// `ProcessPackageDirectory`): subdirectories whose repository-relative path
+/// has a `matching_entry` in `ignored` are not recursed into. The caller
+/// checks `package` itself (`TargetPattern.TargetsBelowDirectory`).
+pub fn discover_packages(
+    root: &Path,
+    package: &str,
+    ignored: &IgnoredSubdirectories,
+) -> Result<Vec<String>, String> {
     validate_package_path(package)?;
     let root = canonical_root(root)?;
-    // REPO.bazel is evaluated by package loading (package::repo_args); its
-    // ignore_directories() is rejected there. .bazelignore still is here.
-    {
-        let name = ".bazelignore";
-        let path = root.join(name);
-        match fs::read_to_string(&path) {
-            Ok(text)
-                if text
-                    .lines()
-                    .any(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#')) =>
-            {
-                return Err(format!(
-                    "recursive discovery with {name} directives is not implemented yet (planned for the N14 ignore-files increment); use explicit package labels"
-                ));
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
-        }
-    }
     let directory = package_directory(&root, package)?;
     let mut pending = vec![(directory, package.to_owned())];
     let mut packages = Vec::new();
@@ -81,6 +70,8 @@ pub fn discover_packages(root: &Path, package: &str) -> Result<Vec<String>, Stri
         if find_build_file(&root, &directory)?.is_some() {
             packages.push(package.clone());
         }
+        // excludedPaths.filterForDirectory: only entries that can match below.
+        let ignored = ignored.filter_for_directory(&package);
         let entries = fs::read_dir(&directory)
             .map_err(|e| format!("cannot read package directory {}: {e}", directory.display()))?;
         for entry in entries {
@@ -103,15 +94,21 @@ pub fn discover_packages(root: &Path, package: &str) -> Result<Vec<String>, Stri
             if matches!(name, ".git" | ".direnv" | "bazel-rs-out") {
                 continue;
             }
-            let path = entry.path();
-            if has_marker(&path)? {
-                continue;
-            }
             let child = if package.is_empty() {
                 name.to_owned()
             } else {
                 format!("{package}/{name}")
             };
+            // ProcessPackageDirectory: "If this subdirectory is one of the
+            // excluded paths, don't recurse into it." This precedes the
+            // nested-repository and package-name checks below.
+            if ignored.matching_entry(&child).is_some() {
+                continue;
+            }
+            let path = entry.path();
+            if has_marker(&path)? {
+                continue;
+            }
             // Do not silently omit directories that could contain unsupported
             // packages: report the bounded grammar instead of false success.
             validate_package_path(&child)?;
@@ -190,13 +187,31 @@ pub(crate) fn has_marker(directory: &Path) -> Result<bool, String> {
     Ok(false)
 }
 
-/// The repository's REPO.bazel with the same regular-file and
-/// stays-inside-the-workspace checks as BUILD files (`find_build_file`).
+/// The repository's REPO.bazel with the same stays-inside-the-workspace
+/// check as BUILD files (`find_build_file`). Like `RepoFileFunction`, any
+/// existing path counts (`FileValue.exists()`, following symlinks; a
+/// dangling symlink does not exist): a directory or other non-regular file
+/// is an error reading it rather than an absent REPO.bazel.
 pub fn repo_file(root: &Path) -> Result<Option<PathBuf>, String> {
     let root = canonical_root(root)?;
     let path = root.join("REPO.bazel");
-    if !is_regular_file(&path)? {
-        return Ok(None);
+    match fs::metadata(&path) {
+        Ok(metadata) if metadata.is_file() => {}
+        // RepoFileFunction.java:110-116: reading fails with exactly this
+        // IOException message (the cause is not part of it).
+        Ok(_) => {
+            return Err(format!(
+                "error reading REPO.bazel file at {}",
+                path.display()
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => {
+            return Err(format!(
+                "error reading REPO.bazel file at {}",
+                path.display()
+            ));
+        }
     }
     let resolved = fs::canonicalize(&path)
         .map_err(|e| format!("cannot resolve REPO.bazel file {}: {e}", path.display()))?;
@@ -208,6 +223,26 @@ pub fn repo_file(root: &Path) -> Result<Option<PathBuf>, String> {
         ));
     }
     Ok(Some(path))
+}
+
+/// Whether `package` has a regular BUILD file (PackageLookupFunction's
+/// `findPackageByBuildFile`); a missing directory is no package. Once a BUILD
+/// file is found, the same policy checks as `package_build_file` apply.
+pub(crate) fn is_package(root: &Path, package: &str) -> Result<bool, String> {
+    validate_package_path(package)?;
+    let canonical = canonical_root(root)?;
+    let mut directory = canonical.clone();
+    directory.extend(package.split('/').filter(|part| !part.is_empty()));
+    match fs::metadata(&directory) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => return Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("cannot inspect {}: {error}", directory.display())),
+    }
+    if find_build_file(&canonical, &directory)?.is_none() {
+        return Ok(false);
+    }
+    package_build_file(root, package).map(|_| true)
 }
 
 fn find_build_file(root: &Path, directory: &Path) -> Result<Option<PathBuf>, String> {
@@ -236,6 +271,10 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+    fn none() -> IgnoredSubdirectories {
+        IgnoredSubdirectories::default()
+    }
 
     struct Temp(PathBuf);
 
@@ -324,7 +363,7 @@ mod tests {
         temp.file("not-directory");
         assert!(package_build_file(&temp.0, "not-directory").is_err());
         assert!(package_build_file(&temp.0.join("not-directory"), "").is_err());
-        assert!(discover_packages(&temp.0, "missing").is_err());
+        assert!(discover_packages(&temp.0, "missing", &none()).is_err());
     }
 
     #[test]
@@ -342,7 +381,10 @@ mod tests {
             "a\0b",
         ] {
             assert!(package_build_file(&temp.0, package).is_err(), "{package:?}");
-            assert!(discover_packages(&temp.0, package).is_err(), "{package:?}");
+            assert!(
+                discover_packages(&temp.0, package, &none()).is_err(),
+                "{package:?}"
+            );
         }
     }
 
@@ -360,10 +402,13 @@ mod tests {
             temp.file(file);
         }
         assert_eq!(
-            discover_packages(&temp.0, "").unwrap(),
+            discover_packages(&temp.0, "", &none()).unwrap(),
             ["", "a", "a/b", "unpackaged/c", "z"]
         );
-        assert_eq!(discover_packages(&temp.0, "a").unwrap(), ["a", "a/b"]);
+        assert_eq!(
+            discover_packages(&temp.0, "a", &none()).unwrap(),
+            ["a", "a/b"]
+        );
     }
 
     #[test]
@@ -375,7 +420,10 @@ mod tests {
         }
         temp.file("a/BUILD");
         temp.file(".other/BUILD");
-        assert_eq!(discover_packages(&temp.0, "").unwrap(), [".other", "a"]);
+        assert_eq!(
+            discover_packages(&temp.0, "", &none()).unwrap(),
+            [".other", "a"]
+        );
     }
 
     #[test]
@@ -385,34 +433,84 @@ mod tests {
             temp.file(&format!("{name}/BUILD"));
         }
         assert_eq!(
-            discover_packages(&temp.0, "").unwrap(),
+            discover_packages(&temp.0, "", &none()).unwrap(),
             ["bazel-out", "bazel-project", "target"]
         );
     }
 
     #[test]
-    fn recursive_discovery_rejects_unimplemented_ignore_directives() {
+    fn recursive_discovery_skips_ignored_directories() {
         let temp = Temp::new();
-        temp.file("BUILD");
-        fs::write(temp.0.join(".bazelignore"), "node_modules").unwrap();
-        assert!(
-            discover_packages(&temp.0, "")
-                .unwrap_err()
-                .contains("not implemented yet (planned for the N14 ignore-files increment)")
+        for file in [
+            "BUILD",
+            "pkg/BUILD",
+            "pkg/sub/BUILD",
+            "src/ts/BUILD",
+            "src/ts/node_modules/dep/BUILD",
+            "src/ts/app/node_modules/BUILD",
+            "src/ts/app/BUILD",
+            "src/python/.venv/lib/BUILD",
+            "src/python/.venv/bin/BUILD",
+            "src/python/BUILD",
+            "node_modules/BUILD",
+            "pkgs/BUILD",
+            // Names outside the supported grammar are fine when ignored.
+            "src/ts/node_modules/space name/BUILD",
+            // Nested markers below an ignored directory are never inspected.
+            "pkg/nested/MODULE.bazel",
+        ] {
+            temp.file(file);
+        }
+        assert!(discover_packages(&temp.0, "", &IgnoredSubdirectories::default()).is_err());
+        let ignored = IgnoredSubdirectories::new(
+            vec!["pkg".into(), "src/python/.venv/lib".into()],
+            vec!["**/node_modules".into()],
         );
-        fs::remove_file(temp.0.join(".bazelignore")).unwrap();
+        assert_eq!(
+            discover_packages(&temp.0, "", &ignored).unwrap(),
+            [
+                "",
+                "pkgs",
+                "src/python",
+                "src/python/.venv/bin",
+                "src/ts",
+                "src/ts/app"
+            ]
+        );
+        assert_eq!(
+            discover_packages(&temp.0, "src/ts", &ignored).unwrap(),
+            ["src/ts", "src/ts/app"]
+        );
+        // The empty prefix (".bazelignore" line ".") skips every child.
+        let everything = IgnoredSubdirectories::new(vec![String::new()], Vec::new());
+        assert_eq!(discover_packages(&temp.0, "", &everything).unwrap(), [""]);
         // REPO.bazel content is evaluated by package loading, not here.
         fs::write(temp.0.join("REPO.bazel"), "repo(default_testonly = True)").unwrap();
-        assert_eq!(discover_packages(&temp.0, "").unwrap(), [""]);
+        fs::write(temp.0.join(".bazelignore"), "pkg\n").unwrap();
+        assert_eq!(
+            discover_packages(&temp.0, "src/ts", &ignored).unwrap(),
+            ["src/ts", "src/ts/app"]
+        );
     }
 
     #[test]
     fn repo_file_must_be_a_regular_file_inside_the_workspace() {
         let temp = Temp::new();
         assert_eq!(repo_file(&temp.0).unwrap(), None);
+        // FileValue.exists() is true for directories: reading then fails.
         fs::create_dir(temp.0.join("REPO.bazel")).unwrap();
-        assert_eq!(repo_file(&temp.0).unwrap(), None);
+        assert_eq!(
+            repo_file(&temp.0).unwrap_err(),
+            format!(
+                "error reading REPO.bazel file at {}",
+                temp.0.join("REPO.bazel").display()
+            )
+        );
         fs::remove_dir(temp.0.join("REPO.bazel")).unwrap();
+        // A dangling symlink does not exist.
+        std::os::unix::fs::symlink("missing", temp.0.join("REPO.bazel")).unwrap();
+        assert_eq!(repo_file(&temp.0).unwrap(), None);
+        fs::remove_file(temp.0.join("REPO.bazel")).unwrap();
         let outside = Temp::new();
         outside.file("REPO.bazel");
         std::os::unix::fs::symlink(outside.0.join("REPO.bazel"), temp.0.join("REPO.bazel"))
@@ -438,19 +536,19 @@ mod tests {
             temp.file(&format!("{nested}/BUILD"));
             temp.file(&format!("{nested}/child/BUILD"));
             assert!(
-                discover_packages(&temp.0, &nested)
+                discover_packages(&temp.0, &nested, &none())
                     .unwrap_err()
                     .contains("nested workspace")
             );
             assert!(package_build_file(&temp.0, &format!("{nested}/child")).is_err());
         }
-        assert_eq!(discover_packages(&temp.0, "").unwrap(), [""]);
+        assert_eq!(discover_packages(&temp.0, "", &none()).unwrap(), [""]);
     }
 
     #[test]
     fn empty_tree_has_no_packages() {
         let temp = Temp::new();
-        assert!(discover_packages(&temp.0, "").unwrap().is_empty());
+        assert!(discover_packages(&temp.0, "", &none()).unwrap().is_empty());
     }
 
     #[test]
@@ -458,7 +556,7 @@ mod tests {
         let temp = Temp::new();
         temp.file("space name/BUILD");
         assert!(
-            discover_packages(&temp.0, "")
+            discover_packages(&temp.0, "", &none())
                 .unwrap_err()
                 .contains("stricter subset")
         );
@@ -475,9 +573,9 @@ mod tests {
         symlink(&outside.0, temp.0.join("escape")).unwrap();
         symlink(temp.0.join("real"), temp.0.join("alias")).unwrap();
         symlink(&temp.0, temp.0.join("loop")).unwrap();
-        assert_eq!(discover_packages(&temp.0, "").unwrap(), ["real"]);
+        assert_eq!(discover_packages(&temp.0, "", &none()).unwrap(), ["real"]);
         for package in ["escape", "alias", "loop"] {
-            assert!(discover_packages(&temp.0, package).is_err());
+            assert!(discover_packages(&temp.0, package, &none()).is_err());
             assert!(package_build_file(&temp.0, package).is_err());
         }
     }
@@ -496,7 +594,7 @@ mod tests {
                 .unwrap_err()
                 .contains("outside workspace")
         );
-        assert!(discover_packages(&temp.0, "").is_err());
+        assert!(discover_packages(&temp.0, "", &none()).is_err());
         fs::remove_file(temp.0.join("BUILD.bazel")).unwrap();
         symlink(temp.0.join("BUILD"), temp.0.join("BUILD.bazel")).unwrap();
         assert_eq!(

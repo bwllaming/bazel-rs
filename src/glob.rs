@@ -22,6 +22,12 @@
 //! true. With `allow_empty=false`, pre-exclusion matches must be known, so even
 //! excluded, potentially matching symlinks are errors. Irrelevant symlinks and
 //! reserved trees are ignored. Special filesystem objects are unsupported.
+//!
+//! Directories matched by the repository's ignored subdirectories
+//! (`.bazelignore` prefixes and REPO.bazel `ignore_directories()` patterns,
+//! `crate::ignored`) are neither results nor traversed, exactly like Bazel's
+//! `DirectoryDirentProducer`/`GlobFunction` `matchingEntry` checks on the
+//! repository-relative directory path. Regular files are never checked.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -180,6 +186,7 @@ pub fn glob(
     excludes: &[String],
     exclude_directories: bool,
     allow_empty: bool,
+    ignored: &crate::ignored::IgnoredSubdirectories,
 ) -> Result<Vec<String>, String> {
     let includes = includes
         .iter()
@@ -245,6 +252,20 @@ pub fn glob(
                 && matches!(name.as_str(), ".git" | ".direnv" | "bazel-rs-out")
             {
                 continue;
+            }
+            if kind.is_dir() || kind.is_symlink() {
+                let repository_path = if package.is_empty() {
+                    path.clone()
+                } else {
+                    format!("{package}/{path}")
+                };
+                // Bazel resolves a symlink dirent first and checks only the
+                // resulting directories; a stat decides without traversal.
+                if ignored.matching_entry(&repository_path).is_some()
+                    && (kind.is_dir() || fs::metadata(entry.path()).is_ok_and(|m| m.is_dir()))
+                {
+                    continue;
+                }
             }
             let excluded = excludes.iter().any(|pattern| pattern.matches(&path));
             let tree_excluded = excludes.iter().any(|pattern| pattern.covers_tree(&path));
@@ -340,8 +361,17 @@ fn is_boundary(directory: &Path) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ignored::IgnoredSubdirectories;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn none() -> IgnoredSubdirectories {
+        IgnoredSubdirectories::default()
+    }
+
+    fn ignoring(prefixes: &[&str], patterns: &[&str]) -> IgnoredSubdirectories {
+        IgnoredSubdirectories::new(strings(prefixes), strings(patterns))
+    }
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
     struct Temp(PathBuf);
@@ -383,6 +413,7 @@ mod tests {
                 &strings(excludes),
                 dirs,
                 empty,
+                &IgnoredSubdirectories::default(),
             )
         }
     }
@@ -613,11 +644,20 @@ mod tests {
         temp.file("p/a.txt");
         temp.file("outside.txt");
         assert_eq!(
-            glob(&temp.0, "p", &strings(&["*.txt"]), &[], true, false).unwrap(),
+            glob(
+                &temp.0,
+                "p",
+                &strings(&["*.txt"]),
+                &[],
+                true,
+                false,
+                &none()
+            )
+            .unwrap(),
             ["a.txt"]
         );
         for package in ["../p", "p/..", "/p", "p//x", "p/.", "missing"] {
-            assert!(glob(&temp.0, package, &[], &[], true, true).is_err());
+            assert!(glob(&temp.0, package, &[], &[], true, true, &none()).is_err());
         }
     }
 
@@ -753,7 +793,7 @@ mod tests {
                 .is_empty()
         );
         assert!(temp.run(&["alias.rs"], &["alias.rs"], true, false).is_err());
-        assert!(glob(&temp.0, "loop", &strings(&["**"]), &[], true, true).is_err());
+        assert!(glob(&temp.0, "loop", &strings(&["**"]), &[], true, true, &none()).is_err());
     }
 
     #[cfg(unix)]
@@ -786,5 +826,107 @@ mod tests {
                 .unwrap_err()
                 .contains("non-UTF-8")
         );
+    }
+
+    #[test]
+    fn ignored_directories_are_neither_results_nor_traversed() {
+        let temp = Temp::new();
+        temp.file("p/BUILD");
+        for path in [
+            "p/a.js",
+            "p/node_modules/dep/index.js",
+            "p/src/node_modules/x.js",
+            "p/src/keep.js",
+            "p/.venv/lib/site.py",
+            "p/vendor/lib.js",
+            "p/vendored/lib.js",
+            // A BUILD file inside an ignored directory is no boundary either.
+            "p/gen/BUILD",
+            "p/gen/x.js",
+        ] {
+            temp.file(path);
+        }
+        // A regular file whose path matches an entry is still a source.
+        temp.file("p/files/node_modules");
+        let ignored = ignoring(&["p/vendor", "p/gen"], &["**/node_modules", "**/.venv"]);
+        let run = |includes: &[&str], dirs: bool, empty: bool, ignored: &IgnoredSubdirectories| {
+            glob(&temp.0, "p", &strings(includes), &[], dirs, empty, ignored)
+        };
+        assert_eq!(
+            run(&["**"], false, false, &ignored).unwrap(),
+            [
+                "BUILD",
+                "a.js",
+                "files",
+                "files/node_modules",
+                "src",
+                "src/keep.js",
+                "vendored",
+                "vendored/lib.js"
+            ]
+        );
+        assert_eq!(
+            run(&["**/*.js"], true, false, &ignored).unwrap(),
+            ["a.js", "src/keep.js", "vendored/lib.js"]
+        );
+        // Without ignored entries, the same trees are globbed (gen is a
+        // subpackage boundary).
+        assert_eq!(
+            run(&["**/*.js"], true, false, &none()).unwrap(),
+            [
+                "a.js",
+                "node_modules/dep/index.js",
+                "src/keep.js",
+                "src/node_modules/x.js",
+                "vendor/lib.js",
+                "vendored/lib.js"
+            ]
+        );
+        // An include that only reaches ignored directories matches nothing.
+        assert!(
+            run(&["node_modules/**"], false, false, &ignored)
+                .unwrap_err()
+                .contains("matched no source entries")
+        );
+        assert!(run(&["vendor"], false, true, &ignored).unwrap().is_empty());
+        // Entries are repository-relative: the package prefix matters.
+        assert_eq!(
+            run(&["vendor/*.js"], true, false, &ignoring(&["vendor"], &[])).unwrap(),
+            ["vendor/lib.js"]
+        );
+        // Deterministic: sorted and identical across runs.
+        assert_eq!(
+            run(&["**"], false, false, &ignored).unwrap(),
+            run(&["**"], false, false, &ignored).unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ignored_symlinks_to_directories_are_skipped_without_traversal() {
+        use std::os::unix::fs::symlink;
+        let temp = Temp::new();
+        temp.file("real/a.js");
+        temp.file("file.js");
+        symlink(temp.0.join("real"), temp.0.join("node_modules")).unwrap();
+        symlink(temp.0.join("file.js"), temp.0.join("linked.js")).unwrap();
+        let ignored = ignoring(&[], &["**/node_modules", "linked.js"]);
+        let run = |ignored: &IgnoredSubdirectories| {
+            glob(
+                &temp.0,
+                "",
+                &strings(&["**/*.js"]),
+                &[],
+                true,
+                true,
+                ignored,
+            )
+        };
+        // Ignored symlink to a directory: skipped like the directory itself.
+        // A symlink to a file is no directory, so ignoring cannot skip it.
+        assert!(run(&ignored).unwrap_err().contains("unsupported symlink"));
+        fs::remove_file(temp.0.join("linked.js")).unwrap();
+        assert_eq!(run(&ignored).unwrap(), ["file.js", "real/a.js"]);
+        assert!(run(&none()).unwrap_err().contains("unsupported symlink"));
     }
 }

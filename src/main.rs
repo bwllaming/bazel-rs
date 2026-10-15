@@ -201,10 +201,15 @@ fn run() -> Result<(), String> {
     repositories.validate_root_module()?;
     let mut engine = Engine::with_repositories(repositories);
     let labels = if command == "query" {
-        engine.select(&rest, &current_package)?
+        engine.select(&rest, &current_package)
     } else {
-        engine.select_for_build(&rest, &current_package)?
+        engine.select_for_build(&rest, &current_package)
     };
+    // Bazel reports pattern warnings as they happen, before a later error.
+    for warning in engine.take_warnings() {
+        eprintln!("WARNING: {warning}");
+    }
+    let labels = labels?;
     if command == "query" {
         // Print only after all packages have loaded successfully.
         for label in labels {

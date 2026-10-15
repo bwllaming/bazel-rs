@@ -233,11 +233,11 @@ built-in attributes such as `tags` (existing boundary).
   (`repo() argument 'X'`, `RepoPackageArgsFunction.java:117-130`) and supplies
   defaults that `package()` overrides (`PackageArgs.mergeWith`); `repo()` call
   order/arity errors are Bazel's. The file is read only when it is a regular
-  file that resolves inside the repository (the same checks as BUILD files).
-  Recursive `/...` discovery evaluates it too, so plain `repo(...)` content
-  works there. `ignore_directories([...])` with a non-empty list and non-empty
-  `.bazelignore` files still fail explicitly (`... not implemented ... yet
-  (planned for the N14 ignore-files increment)`).
+  file that resolves inside the repository (the same checks as BUILD files);
+  any other existing path named `REPO.bazel` (for example a directory) is
+  Bazel's `error reading REPO.bazel file at ...` (`FileValue.exists()`).
+  `ignore_directories([...])` and `.bazelignore` are implemented (N14): see
+  [IGNORED_DIRECTORIES.md](IGNORED_DIRECTORIES.md).
 * Package defaults that change analysis in Bazel are recorded per rule and make
   its analysis fail explicitly unless the rule sets the attribute itself:
   `default_testonly = True`, non-empty `default_package_metadata` (computed

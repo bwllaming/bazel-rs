@@ -39,7 +39,11 @@ struct RepositoryState {
     direct: OnceLock<Result<DirectRuntime, String>>,
     environment: Arc<crate::repository_environment::Snapshot>,
     host: Arc<crate::host_os::HostSnapshot>,
+    /// IgnoredSubdirectoriesValue per repository, computed once per set.
+    ignored: std::sync::Mutex<BTreeMap<String, IgnoredResult>>,
 }
+
+type IgnoredResult = Result<Arc<crate::ignored::IgnoredSubdirectories>, String>;
 
 #[derive(Debug)]
 struct DirectRuntime {
@@ -188,8 +192,34 @@ impl RepositorySet {
                 direct: OnceLock::new(),
                 environment,
                 host,
+                ignored: std::sync::Mutex::default(),
             }),
         }
+    }
+
+    /// The repository's ignored subdirectories (`IgnoredSubdirectoriesValue`),
+    /// evaluated once per repository set like a Skyframe value. The lock is
+    /// not held while computing: evaluation may resolve repositories.
+    pub fn ignored_subdirectories(&self, repository: &str) -> IgnoredResult {
+        let cached = self
+            .state
+            .ignored
+            .lock()
+            .map_err(|_| "ignored-subdirectories cache poisoned".to_owned())?
+            .get(repository)
+            .cloned();
+        if let Some(result) = cached {
+            return result;
+        }
+        let computed =
+            crate::ignored::for_repository(&Arc::new(self.clone()), repository).map(Arc::new);
+        self.state
+            .ignored
+            .lock()
+            .map_err(|_| "ignored-subdirectories cache poisoned".to_owned())?
+            .entry(repository.to_owned())
+            .or_insert(computed)
+            .clone()
     }
 
     pub fn with_source_cache(self, cache: PathBuf) -> Self {

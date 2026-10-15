@@ -169,6 +169,8 @@ mod collector {
         pub repository: String,
         pub repositories: Arc<RepositorySet>,
         pub root: PathBuf,
+        /// The repository's ignored subdirectories, filtered for the package.
+        pub ignored: crate::ignored::IgnoredSubdirectories,
         pub rules: RefCell<Vec<Rule>>,
         pub exports: RefCell<BTreeMap<Label, Visibility>>,
         pub default_visibility: RefCell<Visibility>,
@@ -190,6 +192,9 @@ mod collector {
         pub repository: String,
         pub called: Cell<bool>,
         pub ignored_directories: RefCell<Option<Vec<String>>>,
+        /// RepoFileValue keeps repo() kwargs raw; only RepoPackageArgsFunction
+        /// converts them. Ignored-directory computation must not convert.
+        pub process_args: bool,
         pub args: RefCell<PackageArgs>,
     }
 }
@@ -1032,6 +1037,7 @@ fn package_globals(builder: &mut GlobalsBuilder) {
             &excludes,
             exclude_directories != 0,
             allow_empty,
+            &context.ignored,
         )
         .map_err(anyhow::Error::msg)
     }
@@ -1183,6 +1189,9 @@ fn repo_file_globals(builder: &mut GlobalsBuilder) {
         if kwargs.is_empty() {
             bail!("at least one argument must be given to the 'repo' function");
         }
+        if !context.process_args {
+            return Ok(NoneType);
+        }
         let package = PackageId {
             repository: context.repository.clone(),
             package: String::new(),
@@ -1202,42 +1211,85 @@ fn repo_file_globals(builder: &mut GlobalsBuilder) {
         Ok(NoneType)
     }
 
-    /// RepoFileGlobals.ignoreDirectories (packages/RepoFileGlobals.java).
+    /// RepoFileGlobals.ignoreDirectories (packages/RepoFileGlobals.java:35-61):
+    /// positional `dirs` of type sequence, `Sequence.cast(dirs, String.class,
+    /// "dirs")`, then the once-only check (with Bazel's `ignored_` spelling).
+    ///
+    /// Argument binding follows BuiltinFunction (net/starlark/java/eval/
+    /// BuiltinFunction.java:150-160, 330-345, 455-480): too many positionals,
+    /// then named arguments, then the missing positional parameter.
     fn ignore_directories<'v>(
-        dirs: Value<'v>,
+        #[starlark(args)] args: UnpackTuple<Value<'v>>,
+        #[starlark(kwargs)] kwargs: SmallMap<String, Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
+        if args.items.len() > 1 {
+            bail!(
+                "ignore_directories() accepts no more than 1 positional argument but got {}",
+                args.items.len()
+            );
+        }
+        if let Some((name, _)) = kwargs.iter().next() {
+            if name == "dirs" {
+                bail!(
+                    "ignore_directories() got named argument for positional-only parameter 'dirs'"
+                );
+            }
+            bail!("ignore_directories() got unexpected keyword argument '{name}'");
+        }
+        let Some(&dirs) = args.items.first() else {
+            bail!("ignore_directories() missing 1 required positional argument: dirs");
+        };
+        let dirs = if dirs.get_type() == "range" {
+            // RangeList is a Sequence of ints: only an empty one casts.
+            if dirs.length().map_err(|e| anyhow!("{e}"))? != 0 {
+                bail!("at index 0 of dirs, got element of type int, want string");
+            }
+            Vec::new()
+        } else if crate::custom_rule::sequence_ref(dirs).is_some() {
+            crate::rule_declarations::cast_strings(dirs, "dirs")?
+        } else {
+            bail!(
+                "in call to ignore_directories(), parameter 'dirs' got value of type '{}', want 'sequence'",
+                dirs.get_type()
+            );
+        };
         let context = repo_file(eval)?;
         if context.ignored_directories.borrow().is_some() {
             bail!("'ignored_directories()' can only be called once");
         }
-        let dirs = crate::rule_declarations::cast_strings(dirs, "dirs")?;
         *context.ignored_directories.borrow_mut() = Some(dirs);
         Ok(NoneType)
     }
 }
 
-/// Evaluate a repository's REPO.bazel into package defaults
-/// (skyframe/RepoFileFunction.java:148-181). Nonempty `ignore_directories()`
-/// fails explicitly: directory exclusion is not modeled by package loading.
-pub(crate) fn repo_args(
+/// Evaluated REPO.bazel (skyframe/RepoFileFunction.java:65-181): package
+/// defaults (converted only when `process_args`, like RepoPackageArgsFunction)
+/// and `ignore_directories()` patterns.
+struct RepoFileValue {
+    args: PackageArgs,
+    ignored_directories: Vec<String>,
+}
+
+fn repo_file_value(
     repositories: &Arc<RepositorySet>,
     repository: &str,
-) -> Result<PackageArgs, String> {
+    process_args: bool,
+) -> Result<RepoFileValue, String> {
     let display = if repository.is_empty() {
         "the main repo".to_owned()
     } else {
         format!("@@{repository}")
     };
     let Some(path) = crate::workspace::repo_file(repositories.root(repository)?)? else {
-        return Ok(PackageArgs::default());
+        return Ok(RepoFileValue {
+            args: PackageArgs::default(),
+            ignored_directories: Vec::new(),
+        });
     };
-    let source = std::fs::read_to_string(&path).map_err(|error| {
-        format!(
-            "error reading REPO.bazel file at {}: {error}",
-            path.display()
-        )
-    })?;
+    // RepoFileFunction.java:110-116: the IOException message is exactly this.
+    let source = std::fs::read_to_string(&path)
+        .map_err(|_| format!("error reading REPO.bazel file at {}", path.display()))?;
     let dialect = Dialect {
         enable_def: false,
         enable_lambda: false,
@@ -1252,6 +1304,7 @@ pub(crate) fn repo_args(
         repository: repository.to_owned(),
         called: Cell::new(false),
         ignored_directories: RefCell::new(None),
+        process_args,
         args: RefCell::new(PackageArgs::default()),
     };
     let globals = GlobalsBuilder::standard().with(repo_file_globals).build();
@@ -1263,17 +1316,28 @@ pub(crate) fn repo_args(
             .map(|_| ())
             .map_err(|e| format!("error evaluating REPO.bazel file for {display}: {e:#}"))
     })?;
-    if context
-        .ignored_directories
-        .borrow()
-        .as_ref()
-        .is_some_and(|dirs| !dirs.is_empty())
-    {
-        return Err(format!(
-            "REPO.bazel file for {display}: ignore_directories() is not implemented by the native profile yet (planned for the N14 ignore-files increment)"
-        ));
-    }
-    Ok(context.args.into_inner())
+    Ok(RepoFileValue {
+        args: context.args.into_inner(),
+        ignored_directories: context.ignored_directories.into_inner().unwrap_or_default(),
+    })
+}
+
+/// Package defaults from a repository's REPO.bazel `repo()` call
+/// (RepoPackageArgsFunction over RepoFileValue).
+pub(crate) fn repo_args(
+    repositories: &Arc<RepositorySet>,
+    repository: &str,
+) -> Result<PackageArgs, String> {
+    repo_file_value(repositories, repository, true).map(|value| value.args)
+}
+
+/// `RepoFileValue.ignoredDirectories()` for IgnoredSubdirectoriesFunction:
+/// repo() arguments are not converted (no repository mapping is needed).
+pub(crate) fn repo_ignored_directories(
+    repositories: &Arc<RepositorySet>,
+    repository: &str,
+) -> Result<Vec<String>, String> {
+    repo_file_value(repositories, repository, false).map(|value| value.ignored_directories)
 }
 
 fn repo_file<'a>(eval: &'a Evaluator<'_, '_, '_>) -> anyhow::Result<&'a RepoFile> {
@@ -1378,10 +1442,25 @@ pub fn evaluate_in(
 ) -> Result<Package, String> {
     local_label("__package__", package, "package path").map_err(|e| e.to_string())?;
     let root = repositories.root(&package.repository)?;
+    // PackageLookupFunction: a package inside an ignored directory is
+    // DELETED_PACKAGE_VALUE, before any BUILD file is looked up.
+    let ignored = repositories.ignored_subdirectories(&package.repository)?;
+    if ignored.matching_entry(&package.package).is_some() {
+        return Err(crate::ignored::deleted_package_error(
+            &package.repository,
+            &package.package,
+        ));
+    }
     let build = crate::workspace::package_build_file(root, &package.package)?;
     let source = std::fs::read_to_string(&build)
         .map_err(|e| format!("cannot read {}: {e}", build.display()))?;
-    evaluate_at(repositories, &build.to_string_lossy(), package, source)
+    evaluate_at(
+        repositories,
+        &build.to_string_lossy(),
+        package,
+        source,
+        &ignored,
+    )
 }
 
 fn evaluate_at(
@@ -1389,6 +1468,7 @@ fn evaluate_at(
     filename: &str,
     package: &PackageId,
     source: String,
+    ignored: &crate::ignored::IgnoredSubdirectories,
 ) -> Result<Package, String> {
     let dialect = Dialect {
         enable_def: false,
@@ -1441,6 +1521,7 @@ fn evaluate_at(
         package: package.package.clone(),
         repository: package.repository.clone(),
         root: repositories.root(&package.repository)?.to_path_buf(),
+        ignored: ignored.filter_for_directory(&package.package),
         repositories,
         rules: RefCell::new(Vec::new()),
         exports: RefCell::new(BTreeMap::new()),
@@ -1588,14 +1669,17 @@ fn evaluate_source(
     package: &str,
     source: String,
 ) -> Result<BTreeMap<Label, Rule>, String> {
+    let repositories = Arc::new(RepositorySet::new(PathBuf::from(".")));
+    let ignored = repositories.ignored_subdirectories("")?;
     evaluate_at(
-        Arc::new(RepositorySet::new(PathBuf::from("."))),
+        repositories,
         filename,
         &PackageId {
             repository: String::new(),
             package: package.to_owned(),
         },
         source,
+        &ignored,
     )
     .map(|package| package.rules)
 }
@@ -2703,6 +2787,7 @@ def legacy():
                 repository: "".into(),
                 repositories,
                 root: PathBuf::from("/nonexistent-symbolic-macro-test-root"),
+                ignored: Default::default(),
                 rules: RefCell::new(Vec::new()),
                 exports: RefCell::new(BTreeMap::new()),
                 default_visibility: RefCell::new(Visibility::Private),
@@ -3751,7 +3836,7 @@ filegroup(name='explicit', testonly=False, package_metadata=[])
     }
 
     #[test]
-    fn repo_file_defaults_apply_before_package_and_reject_ignored_directories() {
+    fn repo_file_defaults_apply_before_package_and_ignored_directories_delete_packages() {
         let root = TempRoot::new();
         std::fs::write(root.0.join("REPO.bazel"), "repo(default_visibility=['//visibility:public'], default_package_metadata=['//:license'])\n").unwrap();
         std::fs::write(root.0.join("pkg/BUILD"), "filegroup(name='f')").unwrap();
@@ -3786,8 +3871,48 @@ filegroup(name='explicit', testonly=False, package_metadata=[])
                 "for repo() argument 'default_visibility'",
             ),
             (
-                "ignore_directories(['x'])",
-                "ignore_directories() is not implemented by the native profile",
+                "ignore_directories(['pkg'])",
+                "no such package 'pkg': Package is considered deleted due to --deleted_packages",
+            ),
+            (
+                "ignore_directories(['**'])",
+                "no such package 'pkg': Package is considered deleted due to --deleted_packages",
+            ),
+            (
+                "ignore_directories([])\nignore_directories(['x'])",
+                "'ignored_directories()' can only be called once",
+            ),
+            (
+                "ignore_directories('pkg')",
+                "in call to ignore_directories(), parameter 'dirs' got value of type 'string', want 'sequence'",
+            ),
+            (
+                "ignore_directories([1])",
+                "at index 0 of dirs, got element of type int, want string",
+            ),
+            (
+                "ignore_directories(range(2))",
+                "at index 0 of dirs, got element of type int, want string",
+            ),
+            (
+                "ignore_directories(dirs=[])",
+                "ignore_directories() got named argument for positional-only parameter 'dirs'",
+            ),
+            (
+                "ignore_directories()",
+                "ignore_directories() missing 1 required positional argument: dirs",
+            ),
+            (
+                "ignore_directories(['a'], ['b'])",
+                "ignore_directories() accepts no more than 1 positional argument but got 2",
+            ),
+            (
+                "ignore_directories(['a'], other=1)",
+                "ignore_directories() got unexpected keyword argument 'other'",
+            ),
+            (
+                "repo(bogus=1)\nignore_directories(['pkg'])",
+                "no such package 'pkg'",
             ),
             (
                 "load(':x.bzl', 'y')",
@@ -3798,6 +3923,55 @@ filegroup(name='explicit', testonly=False, package_metadata=[])
             let error = evaluate(&root.0, "pkg").unwrap_err();
             assert!(error.contains(expected), "{repo}: {error}");
         }
+        // Non-matching entries leave the package and its globs alone, and
+        // repo() still has to come first.
+        std::fs::create_dir_all(root.0.join("pkg/node_modules/dep")).unwrap();
+        std::fs::write(root.0.join("pkg/node_modules/dep/a.txt"), "").unwrap();
+        std::fs::write(root.0.join("pkg/b.txt"), "").unwrap();
+        std::fs::write(
+            root.0.join("pkg/BUILD"),
+            "filegroup(name='f', srcs=glob(['**/*.txt']))",
+        )
+        .unwrap();
+        let srcs = |root: &TempRoot| {
+            evaluate(&root.0, "pkg").unwrap()[&Label::parse(":f", "pkg").unwrap()]
+                .srcs
+                .clone()
+        };
+        std::fs::write(
+            root.0.join("REPO.bazel"),
+            "repo(default_testonly=False)\nignore_directories(['other', 'pkg/x'])",
+        )
+        .unwrap();
+        assert_eq!(srcs(&root), ["//pkg:b.txt", "//pkg:node_modules/dep/a.txt"]);
+        std::fs::write(
+            root.0.join("REPO.bazel"),
+            "ignore_directories(['**/node_modules'])",
+        )
+        .unwrap();
+        assert_eq!(srcs(&root), ["//pkg:b.txt"]);
+        std::fs::write(root.0.join("REPO.bazel"), "").unwrap();
+        std::fs::write(root.0.join(".bazelignore"), "pkg/node_modules/\n").unwrap();
+        assert_eq!(srcs(&root), ["//pkg:b.txt"]);
+        std::fs::write(root.0.join(".bazelignore"), "/pkg\n").unwrap();
+        assert_eq!(
+            evaluate(&root.0, "pkg").unwrap_err(),
+            format!(
+                "Invalid path in {}: '/pkg': cannot be an absolute path",
+                root.0.join(".bazelignore").display()
+            )
+        );
+        std::fs::write(root.0.join(".bazelignore"), "# pkg\npkg/sub\n").unwrap();
+        assert_eq!(srcs(&root), ["//pkg:b.txt", "//pkg:node_modules/dep/a.txt"]);
+        std::fs::remove_file(root.0.join(".bazelignore")).unwrap();
+        // A directory named REPO.bazel exists, so reading it fails.
+        std::fs::remove_file(root.0.join("REPO.bazel")).unwrap();
+        std::fs::create_dir(root.0.join("REPO.bazel")).unwrap();
+        assert!(
+            evaluate(&root.0, "pkg")
+                .unwrap_err()
+                .starts_with("error reading REPO.bazel file at ")
+        );
     }
 
     #[test]

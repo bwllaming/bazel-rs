@@ -421,13 +421,22 @@ fn repo_file_defaults_apply_to_recursive_queries() {
     let query = ws.run(&["query", "//go/..."]);
     assert!(query.status.success(), "{}", errors(&query));
     assert!(stdout(&query).starts_with("//go:toolchain\n"));
+    // ignore_directories() entries that match nothing leave the query alone;
+    // ignoring the pattern's own directory filters it out with a warning.
     fs::write(
         ws.path().join("REPO.bazel"),
-        "ignore_directories(['misc'])\n",
+        "repo(default_visibility = ['//visibility:public'])\nignore_directories(['misc'])\n",
     )
     .unwrap();
-    rejected(
-        &ws.run(&["query", "//go/..."]),
-        "ignore_directories() is not implemented by the native profile yet (planned for the N14 ignore-files increment)",
+    let ignored = ws.run(&["query", "//go/..."]);
+    assert!(ignored.status.success(), "{}", errors(&ignored));
+    assert_eq!(stdout(&ignored), stdout(&query));
+    fs::write(ws.path().join("REPO.bazel"), "ignore_directories(['go'])\n").unwrap();
+    let filtered = ws.run(&["query", "//go/..."]);
+    assert!(filtered.status.success(), "{}", errors(&filtered));
+    assert_eq!(stdout(&filtered), "");
+    assert!(
+        errors(&filtered)
+            .contains("WARNING: Pattern '//go/...' was filtered out by ignored directory 'go'")
     );
 }

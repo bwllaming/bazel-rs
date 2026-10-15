@@ -1,6 +1,7 @@
 //! A deliberately small native analysis/execution pipeline, not Skyframe.
 use crate::action::{self, Action};
 use crate::analysis::{self, DependencyTarget};
+use crate::ignored::IgnoredSubdirectories;
 use crate::label::{Label, PackageId};
 use crate::package::{self, Package, Rule, RuleKind};
 use crate::package_specification::{self, GroupNode};
@@ -73,6 +74,7 @@ pub struct Engine {
     generated: BTreeMap<Label, (Label, String)>,
     group_nodes: BTreeMap<Label, Arc<GroupNode>>,
     group_budget: HostBudget,
+    warnings: Vec<String>,
 }
 
 impl Engine {
@@ -87,15 +89,27 @@ impl Engine {
             generated: BTreeMap::new(),
             group_nodes: BTreeMap::new(),
             group_budget: HostBudget::default(),
+            warnings: Vec::new(),
         }
+    }
+
+    /// Warnings (without Bazel's `WARNING: ` prefix) reported so far, e.g.
+    /// target patterns filtered out by ignored directories.
+    pub fn take_warnings(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.warnings)
+    }
+
+    fn ignored(&self, repository: &str) -> Result<Arc<IgnoredSubdirectories>, String> {
+        self.repositories.ignored_subdirectories(repository)
     }
 
     fn load_package(&mut self, package: &PackageId) -> Result<(), String> {
         if !self.packages.contains_key(package) {
             let rules = package::evaluate_in(self.repositories.clone(), package)?;
+            let ignored = self.ignored(&package.repository)?;
             for rule in rules.values() {
                 for out in &rule.outs {
-                    self.validate_output_directory(package, out)?;
+                    self.validate_output_directory(package, out, &ignored)?;
                     let output = rule.label.with_name(out)?;
                     self.generated
                         .insert(output, (rule.label.clone(), out.clone()));
@@ -106,14 +120,24 @@ impl Engine {
         Ok(())
     }
 
-    fn validate_output_directory(&self, package: &PackageId, out: &str) -> Result<(), String> {
+    fn validate_output_directory(
+        &self,
+        package: &PackageId,
+        out: &str,
+        ignored: &IgnoredSubdirectories,
+    ) -> Result<(), String> {
         let mut directory = self
             .repositories
             .root(&package.repository)?
             .join(&package.package);
+        let mut relative = package.package.clone();
         let components = out.split('/').collect::<Vec<_>>();
         for component in components.iter().take(components.len().saturating_sub(1)) {
             directory.push(component);
+            if !relative.is_empty() {
+                relative.push('/');
+            }
+            relative.push_str(component);
             match std::fs::symlink_metadata(&directory) {
                 Ok(metadata) if metadata.file_type().is_symlink() => {
                     return Err(format!(
@@ -133,10 +157,11 @@ impl Engine {
                     ));
                 }
             }
-            if directory.join("BUILD.bazel").is_file()
-                || directory.join("BUILD").is_file()
-                || workspace::has_marker(&directory)?
-            {
+            // An ignored directory is a deleted package, never a subpackage
+            // (ContainingPackageLookupFunction).
+            let subpackage = ignored.matching_entry(&relative).is_none()
+                && (directory.join("BUILD.bazel").is_file() || directory.join("BUILD").is_file());
+            if subpackage || workspace::has_marker(&directory)? {
                 return Err(format!(
                     "output {out} crosses a package or nested workspace boundary at {}",
                     directory.display()
@@ -186,13 +211,19 @@ impl Engine {
             .repositories
             .root(&label.repository)?
             .join(&label.package);
+        let ignored = self.ignored(&label.repository)?;
         let mut path = package_dir.clone();
+        let mut relative = label.package.clone();
         let parts: Vec<_> = Path::new(&label.name).components().collect();
         for (i, component) in parts.iter().enumerate() {
             if !matches!(component, Component::Normal(_)) {
                 return Err(format!("unsafe source label {label}"));
             }
             path.push(component.as_os_str());
+            if !relative.is_empty() {
+                relative.push('/');
+            }
+            relative.push_str(&component.as_os_str().to_string_lossy());
             let metadata = std::fs::symlink_metadata(&path)
                 .map_err(|e| format!("no target or source {label}: {e}"))?;
             if metadata.file_type().is_symlink() {
@@ -202,8 +233,8 @@ impl Engine {
                 ));
             }
             if i + 1 < parts.len()
-                && (path.join("BUILD.bazel").is_file()
-                    || path.join("BUILD").is_file()
+                && ((ignored.matching_entry(&relative).is_none()
+                    && (path.join("BUILD.bazel").is_file() || path.join("BUILD").is_file()))
                     || workspace::has_marker(&path)?)
             {
                 return Err(format!(
@@ -273,11 +304,19 @@ impl Engine {
                     "",
                     current_package,
                 )?;
-                // REPO.bazel is evaluated first: non-empty ignore_directories()
-                // fails explicitly instead of discovering ignored packages.
-                package::repo_args(&self.repositories, &context.repository)?;
+                // TargetPattern.TargetsBelowDirectory.eval: a directory inside
+                // an ignored directory yields a warning and no targets; the
+                // rest is searched with filterForDirectory'd entries.
+                let ignored = self.ignored(&context.repository)?;
+                if let Some(entry) = ignored.matching_entry(&context.package) {
+                    self.warnings.push(format!(
+                        "Pattern '{pattern}' was filtered out by ignored directory '{entry}'"
+                    ));
+                    continue;
+                }
+                let ignored = ignored.filter_for_directory(&context.package);
                 let root = self.repositories.root(&context.repository)?;
-                for package in workspace::discover_packages(root, &context.package)? {
+                for package in workspace::discover_packages(root, &context.package, &ignored)? {
                     let id = PackageId {
                         repository: context.repository.clone(),
                         package,
@@ -575,6 +614,7 @@ impl Engine {
         for label in labels {
             self.analyze(label, &mut Vec::new(), &mut done, &mut plan)?;
         }
+        let main_ignored = self.ignored("")?;
         // Validate every command before executing any action. The dry artifacts
         // carry the same exec paths as the actual generated files.
         let mut dry = BTreeMap::new();
@@ -655,9 +695,11 @@ impl Engine {
                         .strip_prefix(&package_output)
                         .map_err(|_| format!("output outside declaring package: {}", file.path))?;
                     rule.label.with_name(&short_name.to_string_lossy())?;
+                    let ignored = self.ignored(&rule.label.repository)?;
                     self.validate_output_directory(
                         &rule.label.package_id(),
                         &short_name.to_string_lossy(),
+                        &ignored,
                     )?;
                 }
                 // First index EVERY action's outputs, so registration order is not
@@ -698,7 +740,7 @@ impl Engine {
                             })
                         })
                         .collect::<Result<Vec<_>, _>>()?;
-                    nodes.push(plan_action(registered.action, inputs)?);
+                    nodes.push(plan_action(registered.action, inputs, &main_ignored)?);
                 }
                 let defaults = analyzed
                     .files
@@ -768,7 +810,7 @@ impl Engine {
                     arguments: Vec::new(),
                     environment: BTreeMap::new(),
                 };
-                nodes.push(plan_action(action, inputs)?);
+                nodes.push(plan_action(action, inputs, &main_ignored)?);
                 let artifacts = outputs
                     .into_iter()
                     .enumerate()
@@ -888,7 +930,32 @@ fn register_output(
     Ok(())
 }
 
-fn plan_action(mut action: Action, inputs: Vec<Artifact>) -> Result<PlannedAction, String> {
+/// Whether Bazel plants the execroot entry for a source input. The execroot
+/// symlink forest omits every top-level main-repository entry with a
+/// `matchingEntry` (buildtool/SymlinkForest.java:425-442 with the main
+/// repository's ignored subdirectories `withPrefix(workspace)`,
+/// skyframe/SkyframeExecutor.java:3776-3793), so a declared source input
+/// below such an entry is absent when the action runs. External repositories
+/// are planted separately under `external/` and are unaffected.
+fn planted(artifact: &Artifact, main_ignored: &IgnoredSubdirectories) -> bool {
+    if artifact.producer.is_some()
+        || Label::parse_canonical(&artifact.owner).is_ok_and(|l| !l.repository.is_empty())
+    {
+        return true;
+    }
+    match artifact.exec.components().next() {
+        Some(Component::Normal(top)) => main_ignored
+            .matching_entry(&top.to_string_lossy())
+            .is_none(),
+        _ => true,
+    }
+}
+
+fn plan_action(
+    mut action: Action,
+    inputs: Vec<Artifact>,
+    main_ignored: &IgnoredSubdirectories,
+) -> Result<PlannedAction, String> {
     action.inputs = inputs
         .iter()
         .map(|artifact| (artifact.real.clone(), artifact.exec.clone()))
@@ -913,7 +980,7 @@ fn plan_action(mut action: Action, inputs: Vec<Artifact>) -> Result<PlannedActio
                 output_index,
                 destination: artifact.exec,
             });
-        } else {
+        } else if planted(&artifact, main_ignored) {
             action.inputs.push((artifact.real, artifact.exec));
         }
     }
@@ -1089,6 +1156,52 @@ fn expand_command_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_main_repository_sources_below_ignored_top_level_entries_are_unplanted() {
+        let ignored = IgnoredSubdirectories::new(
+            vec!["pkg".into(), "src/ts/node_modules".into()],
+            vec!["**/node_modules".into()],
+        );
+        let source = |exec: &str, owner: &str| Artifact {
+            real: PathBuf::from("/ws").join(exec),
+            exec: PathBuf::from(exec),
+            producer: None,
+            owner: owner.into(),
+        };
+        for (artifact, expected) in [
+            (source("node_modules/b.txt", "//:node_modules/b.txt"), false),
+            (source("pkg/sub/c.txt", "//pkg/sub:c.txt"), false),
+            (source("pkgs/c.txt", "//pkgs:c.txt"), true),
+            // Nested ignored directories hang below a planted top-level entry.
+            (
+                source("src/ts/node_modules/x.js", "//src/ts:node_modules/x.js"),
+                true,
+            ),
+            (
+                source("external/ext+/node_modules/x", "@@ext+//:node_modules/x"),
+                true,
+            ),
+            (
+                Artifact {
+                    producer: Some(("//:gen".into(), 0)),
+                    ..source("node_modules/o.txt", "//:gen")
+                },
+                true,
+            ),
+        ] {
+            assert_eq!(
+                planted(&artifact, &ignored),
+                expected,
+                "{:?}",
+                artifact.exec
+            );
+        }
+        assert!(!planted(
+            &source("a.txt", "//:a.txt"),
+            &IgnoredSubdirectories::new(vec![String::new()], Vec::new())
+        ));
+    }
     use crate::package::MacroOwner;
     use crate::visibility::Visibility;
 

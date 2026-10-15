@@ -944,6 +944,19 @@ fn resolve_source_label(
         );
     }
     let root = repositories.root(repository).map_err(anyhow::Error::msg)?;
+    // RepositoryUtils.getRootedPathFromLabel: PackageLookupValue, which is
+    // DELETED_PACKAGE_VALUE inside an ignored directory.
+    if repositories
+        .ignored_subdirectories(repository)
+        .map_err(anyhow::Error::msg)?
+        .matching_entry(package)
+        .is_some()
+    {
+        bail!(
+            "Unable to load package for {label}: {}",
+            crate::ignored::DELETED_PACKAGE_MESSAGE
+        );
+    }
     crate::workspace::package_build_file(root, package)
         .map_err(|message| anyhow!("Unable to load package for {label}: {message}"))?;
     let root = std::fs::canonicalize(root)

@@ -496,11 +496,24 @@ impl<'a> Loader<'a> {
         // This checks every package-directory component (including symlinks and
         // nested workspaces), without reading/evaluating the BUILD contents.
         let root = self.repositories.root(&label.repository)?;
+        // BzlLoadFunction's ContainingPackageLookup: ignored directories are
+        // deleted packages, so the lookup continues with the parent.
+        let ignored = self
+            .repositories
+            .ignored_subdirectories(&label.repository)?;
+        if ignored.matching_entry(&label.package).is_some() {
+            return Err(ignored_package_load_error(root, label, &ignored)?);
+        }
         package_build_file(root, &label.package)?;
         let mut path = root.join(&label.package);
+        let mut relative = label.package.clone();
         let mut components = label.name.split('/').peekable();
         while let Some(component) = components.next() {
             path.push(component);
+            if !relative.is_empty() {
+                relative.push('/');
+            }
+            relative.push_str(component);
             let metadata = fs::symlink_metadata(&path)
                 .map_err(|e| format!("cannot inspect load {label} ({}): {e}", path.display()))?;
             if metadata.file_type().is_symlink() {
@@ -529,7 +542,13 @@ impl<'a> Loader<'a> {
                         path.display()
                     ));
                 }
-                for name in ["BUILD.bazel", "BUILD"] {
+                // An ignored directory with a BUILD file is no subpackage.
+                let names: &[&str] = if ignored.matching_entry(&relative).is_some() {
+                    &[]
+                } else {
+                    &["BUILD.bazel", "BUILD"]
+                };
+                for name in names {
                     let build = path.join(name);
                     match fs::metadata(&build) {
                         Ok(metadata) if metadata.is_file() => {
@@ -547,6 +566,60 @@ impl<'a> Loader<'a> {
         }
         Ok(path)
     }
+}
+
+/// The BzlLoadFunction error for a `.bzl` label whose package lies in an
+/// ignored directory: ContainingPackageLookupFunction walks up past deleted
+/// packages; the nearest existing ancestor package makes the label cross a
+/// package boundary (`ContainingPackageLookupValue
+/// .getErrorMessageForLabelCrossingPackageBoundary`), none means
+/// `BzlLoadFunction.noBuildFile`.
+fn ignored_package_load_error(
+    root: &Path,
+    label: &Label,
+    ignored: &crate::ignored::IgnoredSubdirectories,
+) -> Result<String, String> {
+    let mut current = label.package.clone();
+    let containing = loop {
+        let Some(parent) = (if current.is_empty() {
+            None
+        } else {
+            Some(
+                current
+                    .rsplit_once('/')
+                    .map_or("", |(parent, _)| parent)
+                    .to_owned(),
+            )
+        }) else {
+            break None;
+        };
+        current = parent;
+        if ignored.matching_entry(&current).is_none()
+            && crate::workspace::is_package(root, &current)?
+        {
+            break Some(current);
+        }
+    };
+    let Some(containing) = containing else {
+        return Ok(format!(
+            "Every .bzl file must have a corresponding package, but '{label}' does not have one. Please create a BUILD file in the same or any parent directory. Note that this BUILD file does not need to do anything except exist."
+        ));
+    };
+    let full = format!("{}/{}", label.package, label.name);
+    let relative = if containing.is_empty() {
+        full.as_str()
+    } else {
+        &full[containing.len() + 1..]
+    };
+    let containing = if label.repository.is_empty() {
+        format!("//{containing}")
+    } else {
+        format!("@@{}//{containing}", label.repository)
+    };
+    Ok(format!(
+        "Label '{label}' is invalid because '{}' is not a package; perhaps you meant to put the colon here: '{containing}:{relative}'?",
+        label.package
+    ))
 }
 
 /// Only immediate `def` statements qualify. A frozen function obtained from a
@@ -1398,6 +1471,47 @@ lambda_mapper = lambda value: value
             );
             fs::remove_file(temp.0.join("nested").join(marker)).unwrap();
         }
+    }
+
+    #[test]
+    fn loads_from_ignored_directories_follow_containing_package_lookup() {
+        let temp = Temp::new();
+        temp.file("REPO.bazel", "ignore_directories(['**/node_modules'])\n");
+        temp.file(".bazelignore", "gen\n");
+        for dir in ["node_modules/pkg", "gen", "a/node_modules"] {
+            temp.file(&format!("{dir}/BUILD"), "");
+            temp.file(&format!("{dir}/defs.bzl"), "x = 1\n");
+        }
+        // The nearest existing ancestor package makes the label cross a
+        // package boundary (ContainingPackageLookupValue).
+        for (load, expected) in [
+            (
+                "load('//node_modules/pkg:defs.bzl', 'x')",
+                "Label '//node_modules/pkg:defs.bzl' is invalid because 'node_modules/pkg' is not a package; perhaps you meant to put the colon here: '//:node_modules/pkg/defs.bzl'?",
+            ),
+            (
+                "load('//gen:defs.bzl', 'x')",
+                "Label '//gen:defs.bzl' is invalid because 'gen' is not a package; perhaps you meant to put the colon here: '//:gen/defs.bzl'?",
+            ),
+        ] {
+            assert_eq!(temp.load(load).unwrap_err(), expected);
+        }
+        temp.file("a/BUILD", "");
+        assert_eq!(
+            temp.load("load('//a/node_modules:defs.bzl', 'x')")
+                .unwrap_err(),
+            "Label '//a/node_modules:defs.bzl' is invalid because 'a/node_modules' is not a package; perhaps you meant to put the colon here: '//a:node_modules/defs.bzl'?"
+        );
+        // An ignored directory with a BUILD file is no subpackage, so the
+        // file belongs to the containing package.
+        assert!(temp.load("load('//:gen/defs.bzl', 'x')").is_ok());
+        assert!(temp.load("load('//a:node_modules/defs.bzl', 'x')").is_ok());
+        // Without any containing package: BzlLoadFunction.noBuildFile.
+        fs::remove_file(temp.0.join("BUILD")).unwrap();
+        assert_eq!(
+            temp.load("load('//gen:defs.bzl', 'x')").unwrap_err(),
+            "Every .bzl file must have a corresponding package, but '//gen:defs.bzl' does not have one. Please create a BUILD file in the same or any parent directory. Note that this BUILD file does not need to do anything except exist."
+        );
     }
 
     #[test]

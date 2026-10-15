@@ -28,6 +28,7 @@ pub mod git_source;
 pub mod glob;
 mod guarded_globals;
 mod host_os;
+pub mod ignored;
 mod json;
 pub mod label;
 pub mod language_modules;
