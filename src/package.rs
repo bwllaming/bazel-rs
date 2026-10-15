@@ -1876,6 +1876,7 @@ fn evaluate_at(
             attrs: pending.attrs,
             schema: pending.schema,
             build_setting: pending.build_setting,
+            setting_value: None,
             declaration: pending.declaration,
         });
     }

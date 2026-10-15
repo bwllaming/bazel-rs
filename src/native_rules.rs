@@ -1550,7 +1550,8 @@ pub(crate) fn analysis_error(label: &Label, target: &NativeTarget) -> Option<Str
     }
 }
 
-/// Attributes of `filegroup`/`genrule`/`config_setting` whose analysis the
+/// Attributes of `filegroup`/`genrule`/`config_setting`/`alias`/`label_flag`/
+/// `label_setting` whose analysis the
 /// native profile models; any other set attribute makes analysis fail
 /// explicitly instead of silently ignoring Bazel semantics. Evaluated on the
 /// configured (select-resolved) target (crate::configured_attributes).
@@ -1595,8 +1596,35 @@ pub(crate) fn analysis_gaps(target: &NativeTarget) -> Vec<String> {
             "generator_function",
             "generator_location",
         ],
+        // Alias.create reads only `actual` (rules/Alias.java:40-56); testonly
+        // on an alias is not checked (CommonPrerequisiteValidator.java:730-738).
+        "alias" => &[
+            "actual",
+            "tags",
+            "deprecation",
+            "testonly",
+            "features",
+            "generator_name",
+            "generator_function",
+            "generator_location",
+        ],
+        // LateBoundAlias.create (rules/LateBoundAlias.java:47-79): the value or
+        // build_setting_default; `scope` only affects transitions, `help` is
+        // documentation.
+        "label_flag" | "label_setting" => &[
+            "build_setting_default",
+            "scope",
+            "help",
+            "tags",
+            "deprecation",
+            "testonly",
+            "features",
+            "generator_name",
+            "generator_function",
+            "generator_location",
+        ],
         // ConfigSetting.create reads only these (rules/config/ConfigSetting.java:111-258);
-        // flag_values/constraint_values fail explicitly in crate::config_setting.
+        // constraint_values fail explicitly in crate::config_setting.
         "config_setting" => &[
             "values",
             "define_values",

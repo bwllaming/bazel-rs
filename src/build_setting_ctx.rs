@@ -1,15 +1,15 @@
 //! Setting-only native context with independently owned, fresh default snapshots.
 use crate::analysis_runtime::ScopeHandle;
-use crate::custom_rule::AttrValue;
+use crate::configuration::SettingValue;
 use starlark::values::{Heap, Value};
 
 pub(crate) fn wrap<'v>(
     heap: Heap<'v>,
     backing: Value<'v>,
-    default: AttrValue,
+    value: SettingValue,
     scope: ScopeHandle,
 ) -> Value<'v> {
-    crate::analysis_ctx::alloc_rule(heap, backing, scope, Some(default))
+    crate::analysis_ctx::alloc_rule(heap, backing, scope, Some(value))
 }
 
 #[cfg(test)]
@@ -41,7 +41,7 @@ mod tests {
                 wrap(
                     heap,
                     backing,
-                    AttrValue::Strings(vec!["seed".to_owned()]),
+                    SettingValue::StringList(vec!["seed".to_owned()]),
                     scope.root(),
                 ),
             );
@@ -72,7 +72,7 @@ mod tests {
                 wrap(
                     heap,
                     backing,
-                    AttrValue::Strings(vec!["seed".to_owned()]),
+                    SettingValue::StringList(vec!["seed".to_owned()]),
                     scope.root(),
                 ),
             );

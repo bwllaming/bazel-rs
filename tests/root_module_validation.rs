@@ -349,11 +349,11 @@ fn root_module_cli_argument_errors_and_metadata_commands_precede_recording() {
     for (args, diagnostic) in [
         (
             vec!["query", "--unsupported-root-module-option"],
-            "unsupported option",
+            "--unsupported-root-module-option :: Unrecognized option: --unsupported-root-module-option",
         ),
         (
             vec!["build", "--unsupported-root-module-option", "//app:check"],
-            "unsupported option",
+            "--unsupported-root-module-option :: Unrecognized option: --unsupported-root-module-option",
         ),
         (vec!["query"], "query requires exactly one"),
         (

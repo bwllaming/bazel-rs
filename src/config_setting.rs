@@ -1,16 +1,33 @@
-//! `config_setting` analysis for `values` and `define_values`
-//! (rules/config/ConfigSetting.java). `flag_values` (N16b) and
-//! `constraint_values` (N16c) fail explicitly when non-empty.
+//! `config_setting` analysis for `values`, `define_values` and `flag_values`
+//! (rules/config/ConfigSetting.java). `constraint_values` (N16c) fails
+//! explicitly when non-empty.
 //!
 //! Pinned source: `/tmp/opencode/bazel-9.3-reference` (e89755b, Release 9.3.0).
 //! Paths below are relative to `src/main/java/com/google/devtools/build/lib/`.
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::configuration::{self, Configuration, OptionValue};
+use crate::configuration::{self, Configuration, LabelParser, OptionValue, SettingValue};
 use crate::configured_attributes::{ConfigMatching, Diff, MatchResult};
 use crate::custom_rule::AttrValue;
 use crate::label::Label;
 use crate::native_rules::NativeTarget;
+use crate::starlark_options::{self, BuildSettingInfo, ConversionError, SettingType};
+
+/// A `flag_values` prerequisite as UserDefinedFlagMatch sees it
+/// (ConfigSetting.java:633-797), after crate::engine analyzed and validated it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FlagPrerequisite {
+    /// AliasProvider.getDependencyLabel (analysis/AliasProvider.java:79-82):
+    /// the key as written.
+    pub specified: Label,
+    /// TransitiveInfoCollection.getLabel: the end of an alias chain
+    /// (rules/AliasConfiguredTarget.java:178-185).
+    pub actual: Label,
+    /// The `flag_values` value for the key.
+    pub value: String,
+    /// The (forwarded) BuildSettingProvider.
+    pub setting: Option<BuildSettingInfo>,
+}
 
 /// ConfigSetting.PARSE_ERROR_MESSAGE (ConfigSetting.java:377-378).
 const PARSE_ERROR_MESSAGE: &str = "error while parsing configuration settings: ";
@@ -40,10 +57,14 @@ fn option_label(name: &str) -> Label {
 /// checks of crate::native_rules::analysis_error. Errors are RuleContext
 /// attribute errors (`in values attribute of config_setting rule L: ...`,
 /// analysis/EventHandlingErrorReporter.java:92-101), all reported.
+/// `flags` are the analyzed `flag_values` prerequisites in attribute order;
+/// `package_labels` parses labels in the `config_setting`'s package context.
 pub fn analyze(
     label: &Label,
     target: &NativeTarget,
     configuration: &Configuration,
+    flags: &[FlagPrerequisite],
+    package_labels: &LabelParser<'_>,
 ) -> Result<ConfigMatching, String> {
     let shown = crate::rule_declarations::canonical_form(label);
     // getSettings (ConfigSetting.java:169-258): values entries, then
@@ -79,15 +100,14 @@ pub fn analyze(
         };
         native = native.combine(result);
     }
+    // UserDefinedFlagMatch (ConfigSetting.java:141-143): its attribute
+    // errors follow the values errors; any error fails the rule (:146-148).
+    let (user_defined, flag_values) =
+        user_defined_flags(&shown, flags, configuration, package_labels, &mut errors);
     if !errors.is_empty() {
         return Err(errors.join("\n"));
     }
-    // UserDefinedFlagMatch and diffConstraintValues (ConfigSetting.java:141-144).
-    if !dict(target, "flag_values").is_empty() {
-        return Err(format!(
-            "in config_setting rule {shown}: config_setting flag_values (build setting analysis) not implemented in the native profile"
-        ));
-    }
+    // diffConstraintValues (ConfigSetting.java:144).
     if !target.labels("constraint_values").is_empty() {
         return Err(format!(
             "in config_setting rule {shown}: config_setting constraint_values (target platform constraint analysis) not implemented in the native profile"
@@ -96,14 +116,143 @@ pub fn analyze(
     Ok(ConfigMatching {
         label: label.clone(),
         settings,
-        flags: BTreeMap::new(),
+        flags: flag_values,
         constraints: BTreeSet::new(),
         // Stream.of(userDefinedFlags, nativeFlags, constraintValues).reduce(combine)
-        // with both other results MATCH.
-        result: MatchResult::Match
-            .combine(native)
-            .combine(MatchResult::Match),
+        // with the constraint result MATCH.
+        result: user_defined.combine(native).combine(MatchResult::Match),
     })
+}
+
+/// ConfigSetting.maybeCanonicalizeLabel (ConfigSetting.java:799-834): the
+/// expected value of a label-typed setting, parsed in the config_setting's
+/// package, as Label.getUnambiguousCanonicalForm (`@@repo//pkg:name`).
+fn maybe_canonicalize_label(
+    value: &str,
+    setting: Option<&BuildSettingInfo>,
+    package_labels: &LabelParser<'_>,
+) -> String {
+    if setting.is_none_or(|setting| setting.ty != SettingType::Label) {
+        return value.to_owned();
+    }
+    match package_labels(value) {
+        Ok(label) => format!("@@{}//{}:{}", label.repository, label.package, label.name),
+        Err(_) => value.to_owned(),
+    }
+}
+
+/// UserDefinedFlagMatch.fromAttributeValueAndPrerequisites
+/// (ConfigSetting.java:633-797) for build settings (config_feature_flag is
+/// not a Bazel 9.3 rule of this profile). Attribute errors are appended to
+/// `errors`; returns the match result and `getSpecifiedFlagValues` (keyed by
+/// the end of each alias chain).
+fn user_defined_flags(
+    shown: &str,
+    flags: &[FlagPrerequisite],
+    configuration: &Configuration,
+    package_labels: &LabelParser<'_>,
+    errors: &mut Vec<String>,
+) -> (MatchResult, BTreeMap<Label, String>) {
+    let attribute_error = |message: String| {
+        format!("in flag_values attribute of config_setting rule {shown}: {message}")
+    };
+    let shown_label = crate::rule_declarations::canonical_form;
+    let mut specified_values: Vec<(Label, String)> = Vec::new();
+    let mut diffs = Vec::new();
+    let mut found_duplicate = false;
+    for flag in flags {
+        let specified = shown_label(&flag.specified);
+        let value = maybe_canonicalize_label(&flag.value, flag.setting.as_ref(), package_labels);
+        // LinkedHashMap.put: a repeated key keeps its position.
+        match specified_values
+            .iter_mut()
+            .find(|(actual, _)| *actual == flag.actual)
+        {
+            Some(entry) => {
+                found_duplicate = true;
+                entry.1 = value.clone();
+            }
+            None => specified_values.push((flag.actual.clone(), value.clone())),
+        }
+        let Some(setting) = &flag.setting else {
+            errors.push(attribute_error(format!(
+                "error while parsing user-defined configuration values: flag_values keys must be build settings or feature flags and {specified} is not"
+            )));
+            continue;
+        };
+        let configured = setting.value(configuration);
+        // BUILD_SETTING_CONVERTERS with a null conversion context: the value
+        // is already canonical (CoreOptionConverters.convertOptionsLabel, :345-350).
+        let converted = match starlark_options::convert(
+            setting.ty,
+            &value,
+            &configuration::parse_canonical_option_label,
+        ) {
+            Ok(converted) => converted,
+            Err(ConversionError::Invalid) => {
+                errors.push(attribute_error(format!(
+                    "error while parsing user-defined configuration values: '{value}' cannot be converted to {specified} type {}",
+                    setting.ty.name()
+                )));
+                continue;
+            }
+            Err(ConversionError::IntRange) => {
+                errors.push(attribute_error(format!(
+                    "'{value}' for {specified}: int build setting values outside the signed 64-bit range are not implemented in the native profile"
+                )));
+                continue;
+            }
+        };
+        let diff = || Diff {
+            what: flag.specified.clone(),
+            got: converted.to_string(),
+            want: configured.to_string(),
+        };
+        // List-valued settings match if any entry equals the single expected
+        // value (:722-756); allow_multiple settings are not modelled.
+        if let SettingValue::StringList(actual_values) = &configured {
+            let SettingValue::StringList(expected) = &converted else {
+                unreachable!("string_list settings convert to lists");
+            };
+            if expected.len() != 1 {
+                errors.push(attribute_error(format!(
+                    "\"{value}\" not a valid value for flag {specified}. Only single, exact values are allowed. If you want to match multiple values, consider Skylib's selects.config_setting_group"
+                )));
+            } else if !actual_values.contains(&expected[0]) {
+                diffs.push(diff());
+            }
+        } else if configured != converted {
+            diffs.push(diff());
+        }
+    }
+    if found_duplicate {
+        // collectAliases (:611-619): specified labels grouped by actual label.
+        let mut grouped: Vec<(&Label, Vec<String>)> = Vec::new();
+        for flag in flags {
+            match grouped
+                .iter_mut()
+                .find(|(actual, _)| **actual == flag.actual)
+            {
+                Some((_, aliases)) => aliases.push(shown_label(&flag.specified)),
+                None => grouped.push((&flag.actual, vec![shown_label(&flag.specified)])),
+            }
+        }
+        for (actual, aliases) in grouped {
+            if aliases.len() > 1 {
+                errors.push(attribute_error(format!(
+                    "flag '{}' referenced multiple times as ['{}']",
+                    shown_label(actual),
+                    aliases.join("', '")
+                )));
+            }
+        }
+    }
+    let result = if diffs.is_empty() {
+        MatchResult::Match
+    } else {
+        MatchResult::NoMatch(diffs)
+    };
+    (result, specified_values.into_iter().collect())
 }
 
 /// ConfigSetting.checkOptionValue (ConfigSetting.java:420-482). `Err` is the
@@ -262,9 +411,15 @@ mod tests {
 
     fn result(values: &[(&str, &str)], defines: &[(&str, &str)], args: &[&str]) -> MatchResult {
         let label = Label::parse_canonical("//c:x").unwrap();
-        analyze(&label, &target(values, defines), &configuration(args))
-            .unwrap()
-            .result
+        analyze(
+            &label,
+            &target(values, defines),
+            &configuration(args),
+            &[],
+            &|_| unreachable!("no labels"),
+        )
+        .unwrap()
+        .result
     }
 
     #[test]
@@ -351,7 +506,14 @@ mod tests {
     fn values_errors_are_bazel_attribute_errors() {
         let label = Label::parse_canonical("//c:x").unwrap();
         let error = |values: &[(&str, &str)]| {
-            analyze(&label, &target(values, &[]), &Configuration::default()).unwrap_err()
+            analyze(
+                &label,
+                &target(values, &[]),
+                &Configuration::default(),
+                &[],
+                &|_| unreachable!("no labels"),
+            )
+            .unwrap_err()
         };
         assert_eq!(
             error(&[("nope", "1")]),
@@ -370,15 +532,153 @@ mod tests {
                 "select() on build option 'cpu' is not implemented in the native profile"
             )
         );
-        let mut flagged = target(&[("stamp", "0")], &[]);
-        flagged.attrs.insert(
+    }
+
+    fn flag(
+        specified: &str,
+        actual: &str,
+        value: &str,
+        setting: Option<(&str, SettingType, SettingValue)>,
+    ) -> FlagPrerequisite {
+        FlagPrerequisite {
+            specified: Label::parse_canonical(specified).unwrap(),
+            actual: Label::parse_canonical(actual).unwrap(),
+            value: value.into(),
+            setting: setting.map(|(label, ty, default)| BuildSettingInfo {
+                label: Label::parse_canonical(label).unwrap(),
+                ty,
+                default,
+                is_flag: true,
+                repeatable: false,
+            }),
+        }
+    }
+
+    fn flags_result(
+        flags: &[FlagPrerequisite],
+        configuration: &Configuration,
+    ) -> Result<ConfigMatching, String> {
+        let label = Label::parse_canonical("//c:x").unwrap();
+        let mut target = target(&[], &[]);
+        target.attrs.insert(
             "flag_values".into(),
             AttrValue::LabelKeyedStringDict(vec![("//f:x".into(), "1".into())]),
         );
-        assert!(
-            analyze(&label, &flagged, &Configuration::default())
-                .unwrap_err()
-                .contains("flag_values (build setting analysis) not implemented")
+        analyze(&label, &target, configuration, flags, &|text| {
+            let text = text.strip_prefix(':').unwrap_or(text);
+            if text.starts_with("//") || text.starts_with("@@") {
+                Label::parse_canonical(text)
+            } else if text.contains(':') {
+                Err("bad label".into())
+            } else {
+                Label::parse_canonical(&format!("//c:{text}"))
+            }
+        })
+    }
+
+    #[test]
+    fn flag_values_match_through_the_setting_type() {
+        let bool_flag = || Some(("//f:b", SettingType::Bool, SettingValue::Bool(false)));
+        let default = Configuration::default();
+        let matching =
+            flags_result(&[flag("//f:b", "//f:b", "False", bool_flag())], &default).unwrap();
+        assert_eq!(matching.result, MatchResult::Match);
+        assert_eq!(
+            matching.flags,
+            BTreeMap::from([(Label::parse_canonical("//f:b").unwrap(), "False".into())])
+        );
+        // NoMatch diffs: `got` is the expected value, `want` the configured
+        // one (ConfigSetting.java:757-762).
+        let set = Configuration::new(
+            Default::default(),
+            BTreeMap::from([(
+                Label::parse_canonical("//f:b").unwrap(),
+                SettingValue::Bool(true),
+            )]),
+        );
+        assert_eq!(
+            flags_result(&[flag("//f:a", "//f:b", "0", bool_flag())], &set)
+                .unwrap()
+                .result,
+            MatchResult::NoMatch(vec![Diff {
+                what: Label::parse_canonical("//f:a").unwrap(),
+                got: "false".into(),
+                want: "true".into(),
+            }])
+        );
+        // Lists match by containment of a single expected value.
+        let list = || {
+            Some((
+                "//f:l",
+                SettingType::StringList,
+                SettingValue::StringList(vec!["a".into(), "b".into()]),
+            ))
+        };
+        assert_eq!(
+            flags_result(&[flag("//f:l", "//f:l", "b", list())], &default)
+                .unwrap()
+                .result,
+            MatchResult::Match
+        );
+        assert_eq!(
+            flags_result(&[flag("//f:l", "//f:l", "c", list())], &default)
+                .unwrap()
+                .result,
+            MatchResult::NoMatch(vec![Diff {
+                what: Label::parse_canonical("//f:l").unwrap(),
+                got: "[c]".into(),
+                want: "[a, b]".into(),
+            }])
+        );
+        // Label values are canonicalized in the config_setting's package.
+        let label_flag = || {
+            Some((
+                "//f:lf",
+                SettingType::Label,
+                SettingValue::Label(Label::parse_canonical("//c:dflt").unwrap()),
+            ))
+        };
+        let matching = flags_result(
+            &[flag("//f:lf", "//c:dflt", ":dflt", label_flag())],
+            &default,
+        )
+        .unwrap();
+        assert_eq!(matching.result, MatchResult::Match);
+        assert_eq!(matching.flags.values().collect::<Vec<_>>(), ["@@//c:dflt"]);
+        let error = flags_result(
+            &[flag("//f:lf", "//c:dflt", "a:b:c", label_flag())],
+            &default,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "in flag_values attribute of config_setting rule //c:x: error while parsing user-defined configuration values: 'a:b:c' cannot be converted to //f:lf type label"
+        );
+        assert_eq!(
+            flags_result(
+                &[flag(
+                    "//f:i",
+                    "//f:i",
+                    "99999999999999999999",
+                    Some(("//f:i", SettingType::Int, SettingValue::Int(0)))
+                )],
+                &default
+            )
+            .unwrap_err(),
+            "in flag_values attribute of config_setting rule //c:x: '99999999999999999999' for //f:i: int build setting values outside the signed 64-bit range are not implemented in the native profile"
+        );
+        // Every error is reported, then duplicates by actual label.
+        assert_eq!(
+            flags_result(
+                &[
+                    flag("//f:fg", "//f:fg", "1", None),
+                    flag("//f:b", "//f:b", "maybe", bool_flag()),
+                    flag("//f:a", "//f:b", "1", bool_flag()),
+                ],
+                &default
+            )
+            .unwrap_err(),
+            "in flag_values attribute of config_setting rule //c:x: error while parsing user-defined configuration values: flag_values keys must be build settings or feature flags and //f:fg is not\nin flag_values attribute of config_setting rule //c:x: error while parsing user-defined configuration values: 'maybe' cannot be converted to //f:b type boolean\nin flag_values attribute of config_setting rule //c:x: flag '//f:b' referenced multiple times as ['//f:b', '//f:a']"
         );
     }
 
@@ -389,6 +689,8 @@ mod tests {
             &label,
             &target(&[("define", "a=1"), ("stamp", "0")], &[("b", "2")]),
             &configuration(&["--define=a=1", "--define=b=2"]),
+            &[],
+            &|_| unreachable!("no labels"),
         )
         .unwrap();
         assert_eq!(

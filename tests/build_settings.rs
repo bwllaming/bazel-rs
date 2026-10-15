@@ -202,7 +202,19 @@ fn default_change_cache_round_trip_and_cli_rejections_remain_distinct() {
             "{stderr}"
         );
     }
-    for flag in ["--//:setting=override", "--//:setting", "--no//:setting"] {
-        reject(&f.run("build", &[flag, "//:value"]), "unsupported option");
-    }
+    // Command-line values reach the genuine implementation (N16b); the
+    // non-boolean forms fail like StarlarkOptionsParser.parseArg (:313-339).
+    let overridden = f.run("build", &["--//:setting=override", "//:value"]);
+    success(&overridden);
+    let text = String::from_utf8(overridden.stdout).unwrap();
+    let (_, output) = text.trim_end().split_once('\t').unwrap();
+    assert_eq!(fs::read(output).unwrap(), b"setting=override\n");
+    reject(
+        &f.run("build", &["--//:setting", "//:value"]),
+        "bazel-rs: --//:setting :: Expected value after --//:setting. Did you mean --//:setting=//:value?\n",
+    );
+    reject(
+        &f.run("build", &["--no//:setting", "//:value"]),
+        "bazel-rs: //:setting :: Illegal use of 'no' prefix on non-boolean option: //:setting\n",
+    );
 }

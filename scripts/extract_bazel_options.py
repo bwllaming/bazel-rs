@@ -5,8 +5,10 @@ Usage: extract_bazel_options.py /path/to/bazel-9.3-reference > src/bazel_options
 
 Lists every @Option of every FragmentOptions subclass (BuildOptionDetails
 covers only fragment options, analysis/config/BuildOptionDetails.java:56-84),
-excluding INTERNAL options, which BuildOptionDetails ignores. Static text
-extraction only; nothing is executed.
+excluding INTERNAL options, which BuildOptionDetails ignores, and the names
+and old names of every @Option of the whole source tree (a superset of any
+command's options, used to decide that an argument is certainly not a Bazel
+option). Static text extraction only; nothing is executed.
 """
 
 import os
@@ -42,6 +44,27 @@ def main(reference):
         return name == 'FragmentOptions' or (
             name not in seen and any(fragment(p, seen + (name,)) for p in parents.get(name, ())))
 
+    def annotations(body):
+        for annotation in re.finditer(r'@Option\s*\(', body):
+            index, depth = annotation.end(), 1
+            while depth:
+                char = body[index]
+                if char == '"':
+                    index += 1
+                    while body[index] != '"':
+                        index += 2 if body[index] == '\\' else 1
+                depth += {'(': 1, ')': -1}.get(char, 0)
+                index += 1
+            yield annotation, body[annotation.end():index - 1]
+
+    every = set()
+    for text in texts.values():
+        for _, arguments in annotations(text):
+            for key in ('name', 'oldName'):
+                found = re.search(r'\b' + key + r'\s*=\s*"([^"]*)"', arguments)
+                if found and found.group(1):
+                    every.add(found.group(1))
+
     options = []
     for name, parent, path in sorted(declared, key=lambda d: (d[2], d[0])):
         if not fragment(parent):
@@ -53,17 +76,7 @@ def main(reference):
             depth += {'{': 1, '}': -1}.get(text[end], 0)
             end += 1
         body = text[start:end]
-        for annotation in re.finditer(r'@Option\s*\(', body):
-            index, depth = annotation.end(), 1
-            while depth:
-                char = body[index]
-                if char == '"':
-                    index += 1
-                    while body[index] != '"':
-                        index += 2 if body[index] == '\\' else 1
-                depth += {'(': 1, ')': -1}.get(char, 0)
-                index += 1
-            arguments = body[annotation.end():index - 1]
+        for annotation, arguments in annotations(body):
             option = re.search(r'\bname\s*=\s*"([^"]*)"', arguments)
             if not option:
                 continue
@@ -84,6 +97,14 @@ def main(reference):
     print('pub(crate) const FRAGMENT_OPTIONS: &[(&str, &str, bool, &str)] = &[')
     for name, old, nonconfigurable, path, line in sorted(options):
         print(f'    ("{name}", "{old}", {"true" if nonconfigurable else "false"}, "{path}:{line}"),')
+    print('];')
+    print()
+    print('/// Every `name` and `oldName` of every `@Option` in the source tree (any')
+    print('/// command, INTERNAL included): a superset of the valid option names.')
+    print('#[rustfmt::skip]')
+    print('pub(crate) const ALL_OPTION_NAMES: &[&str] = &[')
+    for name in sorted(every):
+        print(f'    "{name}",')
     print('];')
 
 

@@ -13,7 +13,8 @@ Usage:
 Patterns: //..., //package/..., //package:all, //package:target, :target
 Build options: --jobs=N or --jobs N (positive integer; default: available CPUs, max 32)
 Configuration (build): -c/--compilation_mode, --[no]stamp, --strip, --[no]force_pic,
-  --define NAME=VALUE, --platforms, --host_platform (docs/CONFIGURATION.md).
+  --define NAME=VALUE, --platforms, --host_platform, Starlark build settings
+  --//pkg:flag=VALUE / --[no]//pkg:bool_flag (docs/CONFIGURATION.md).
 Repository options: --registry=URL (file/http/https, repeatable), --ignore_dev_dependency
   --repository_disable_download[=BOOL] blocks uncached archive/overlay/patch acquisition.
   Verified caches, registry metadata and Git execution are unaffected (not an offline mode).
@@ -97,6 +98,13 @@ fn run() -> Result<(), String> {
         let mut positional = Vec::new();
         let mut args = rest.into_iter();
         while let Some(arg) = args.next() {
+            // `--` ends the options: every later argument is a target
+            // pattern (OptionsParserImpl.java:528-531).
+            if arg == "--" {
+                positional.push(arg);
+                positional.extend(args.by_ref());
+                break;
+            }
             if let Some(disabled) =
                 bazel_rs::module_cli::repository_disable_download_argument(&arg)?
             {
@@ -158,6 +166,10 @@ fn run() -> Result<(), String> {
         let mut targets = Vec::new();
         let mut args = rest.into_iter().peekable();
         while let Some(arg) = args.next() {
+            if arg == "--" {
+                targets.extend(args.by_ref());
+                break;
+            }
             if let bazel_rs::configuration::Parsed::Consumed(next) =
                 configuration_options.parse(&arg, args.peek().map(String::as_str))?
             {
@@ -165,19 +177,18 @@ fn run() -> Result<(), String> {
                     args.next();
                 }
             } else {
+                reject_unmodelled_option(&arg)?;
                 targets.push(arg);
             }
         }
         rest = targets;
-        if let Some(flag) = rest.iter().find(|arg| arg.starts_with('-')) {
-            return Err(format!(
-                "unsupported option {flag:?}; options are never silently ignored"
-            ));
-        }
         if rest.len() != 1 {
             return Err("query requires exactly one literal target pattern; query expressions are not implemented".into());
         }
     }
+    // The command's arguments, for the Starlark options' `Did you mean` hint
+    // (runtime/BlazeOptionHandler.java:428-440).
+    let command_args = rest.clone();
     if command == "build" {
         let mut targets = Vec::new();
         let mut args = rest.into_iter().peekable();
@@ -186,6 +197,9 @@ fn run() -> Result<(), String> {
                 jobs = parse_jobs(&args.next().ok_or("--jobs requires a positive integer")?)?;
             } else if let Some(value) = arg.strip_prefix("--jobs=") {
                 jobs = parse_jobs(value)?;
+            } else if arg == "--" {
+                targets.extend(args.by_ref());
+                break;
             } else if let bazel_rs::configuration::Parsed::Consumed(next) =
                 configuration_options.parse(&arg, args.peek().map(String::as_str))?
             {
@@ -193,6 +207,7 @@ fn run() -> Result<(), String> {
                     args.next();
                 }
             } else {
+                reject_unmodelled_option(&arg)?;
                 targets.push(arg);
             }
         }
@@ -200,13 +215,6 @@ fn run() -> Result<(), String> {
         if rest.is_empty() {
             return Err("build requires at least one target".into());
         }
-    }
-    if command != "mod"
-        && let Some(flag) = rest.iter().find(|arg| arg.starts_with('-'))
-    {
-        return Err(format!(
-            "unsupported option {flag:?}; options are never silently ignored"
-        ));
     }
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let root = workspace::workspace_root(&cwd)?;
@@ -247,7 +255,7 @@ fn run() -> Result<(), String> {
     if command == "build" {
         // Label-typed options convert with the main repository mapping
         // (CoreOptionConverters.convertOptionsLabel, :351-357).
-        engine.set_configuration(configuration_options.configuration(&|text| {
+        let labels = |text: &str| {
             repositories.parse(text, "", "").or_else(|error| {
                 // `bazel_tools` is always visible from the main repository
                 // (an implicit dependency of every module).
@@ -258,7 +266,27 @@ fn run() -> Result<(), String> {
                     Err(error)
                 }
             })
-        })?);
+        };
+        let native = configuration_options.configuration(&labels)?;
+        // Starlark build settings are parsed after the native options and
+        // before target patterns (runtime/BlazeCommandDispatcher.java:765-776);
+        // only values different from the defaults enter the configuration.
+        let starlark = engine.starlark_options(
+            configuration_options.starlark_args(),
+            &command_args,
+            &labels,
+            &current_package,
+        );
+        // Loading option targets reports deprecation warnings, also before a
+        // later option error.
+        for warning in engine.take_warnings() {
+            eprintln!("WARNING: {warning}");
+        }
+        let starlark = starlark?;
+        engine.set_configuration(bazel_rs::configuration::Configuration::new(
+            native.native,
+            starlark,
+        ));
     }
     let labels = if command == "query" {
         engine.select(&rest, &current_package)
@@ -291,6 +319,20 @@ fn run() -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// An option argument this profile does not model: Bazel's `Unrecognized
+/// option` when it is certainly not a Bazel option, otherwise an explicit
+/// unsupported-option error (options are never silently ignored).
+fn reject_unmodelled_option(arg: &str) -> Result<(), String> {
+    if !arg.starts_with('-') {
+        return Ok(());
+    }
+    Err(
+        bazel_rs::configuration::unrecognized_option(arg).unwrap_or_else(|| {
+            format!("unsupported option {arg:?}; options are never silently ignored")
+        }),
+    )
 }
 
 fn parse_jobs(value: &str) -> Result<usize, String> {

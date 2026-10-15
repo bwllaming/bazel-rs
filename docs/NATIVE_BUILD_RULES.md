@@ -6,9 +6,10 @@ bazel_skylib, rules_python, `@bazel_tools//tools/cpp`, the platforms module,
 in BUILD files and legacy macros. The native profile now **registers** these
 classes with Bazel 9.3's attribute schemas, **validates** their attributes with
 Bazel's load-time messages, **retains** the converted values (including
-`select()`), and lists their targets in `query`. Except `filegroup`, `genrule`
-and `config_setting` (`values`/`define_values`, docs/CONFIGURATION.md) it does
-**not** analyze them: analysis fails explicitly, never silently.
+`select()`), and lists their targets in `query`. Except `filegroup`, `genrule`,
+`config_setting` (`values`/`define_values`/`flag_values`) and the alias-like
+`alias`/`label_flag`/`label_setting` (docs/CONFIGURATION.md) it does **not**
+analyze them: analysis fails explicitly, never silently.
 
 Pinned source: `/tmp/opencode/bazel-9.3-reference` (e89755b, Release 9.3.0).
 Paths are relative to `src/main/java/com/google/devtools/build/lib/` unless
@@ -165,10 +166,14 @@ example `//skylib:linux`'s `constraint_values`).
 
 ## Analysis
 
-* The classes above other than `filegroup`/`genrule` fail analysis with
-  `//pkg:x: native rule KIND analysis not implemented in the native profile`,
-  including when reached as a dependency or through an implicit output
-  (`//pkg:doc.binaryproto`). No alias provider forwarding is attempted.
+* The classes above other than `filegroup`/`genrule`/`config_setting`/`alias`/
+  `label_flag`/`label_setting` fail analysis with `//pkg:x: native rule KIND
+  analysis not implemented in the native profile`, including when reached as
+  a dependency or through an implicit output (`//pkg:doc.binaryproto`).
+  `alias`, `label_flag` and `label_setting` forward their configured actual
+  (docs/CONFIGURATION.md); any of their other non-empty attributes
+  (`target_compatible_with`, `compatible_with`, `restricted_to`,
+  `package_metadata`, `aspect_hints`, `transitive_configs`) fails explicitly.
 * `filegroup`/`genrule` keep their native analysis only for the modeled
   attributes (`srcs`, `outs`, `cmd`; metadata such as `tags`, `deprecation`,
   `licenses`, `features`, `message`, `local`, `output_to_bindir`,

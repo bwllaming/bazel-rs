@@ -249,14 +249,17 @@ fn make_ctx<'v>(
         ("actions", alloc_actions(heap, context.scope.root())),
     ]));
     if invocation.build_setting.is_some() {
-        let default = invocation
-            .attrs
-            .get("build_setting_default")
-            .ok_or_else(|| anyhow!("build-setting invocation has no typed default"))?;
+        // The configured value (StarlarkRuleContext.getBuildSettingValue,
+        // analysis/starlark/StarlarkRuleContext.java:738-757): the command-line
+        // value set by crate::engine, else build_setting_default.
+        let value = match &invocation.setting_value {
+            Some(value) => value.clone(),
+            None => setting_default(invocation)?,
+        };
         Ok(crate::build_setting_ctx::wrap(
             heap,
             backing,
-            default.clone(),
+            value,
             context.scope.root(),
         ))
     } else {
@@ -267,6 +270,26 @@ fn make_ctx<'v>(
             None,
         ))
     }
+}
+
+/// The typed `build_setting_default` of a build-setting rule invocation.
+pub(crate) fn setting_default(
+    invocation: &crate::custom_rule::CustomInvocation,
+) -> anyhow::Result<crate::configuration::SettingValue> {
+    use crate::configuration::SettingValue;
+    Ok(
+        match invocation
+            .attrs
+            .get("build_setting_default")
+            .ok_or_else(|| anyhow!("build-setting invocation has no typed default"))?
+        {
+            AttrValue::Bool(value) => SettingValue::Bool(*value),
+            AttrValue::Int(value) => SettingValue::Int(i64::from(*value)),
+            AttrValue::String(value) => SettingValue::String(value.clone()),
+            AttrValue::Strings(values) => SettingValue::StringList(values.clone()),
+            other => bail!("unsupported build-setting default {other:?}"),
+        },
+    )
 }
 
 /// `ctx.attr`/`ctx.files` entries of Bazel's built-in attributes

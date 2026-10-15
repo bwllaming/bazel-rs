@@ -52,6 +52,22 @@ CASES = [
     case('native.unsupported', ('string-option', 'bool-option', 'negative-bool-option', 'allow-multiple', 'string-set', 'legacy-true'), 'native_boundary'),
 ]
 PLAN = [(c['name'], c['kind']) for c in CASES]
+# The pre-N16b boundary "Starlark build settings on the command line are
+# unsupported" no longer exists: N16b implements them (docs/CONFIGURATION.md,
+# tests/configured_build_settings.rs and the paired capture
+# tests/fixtures/configured_build_settings/reference_receipt.json). These
+# probes are retired: never executed, recorded with this reason, and only
+# accepted in that recorded form. CASES keeps them for historical identity.
+SUPERSEDED_REASON = ('superseded by N16b: Starlark build settings on the command line are implemented '
+                     '(docs/CONFIGURATION.md); the pre-N16b unsupported-option boundary no longer exists')
+SUPERSEDED = {('native.unsupported', probe): SUPERSEDED_REASON
+              for probe in ('string-option', 'bool-option', 'negative-bool-option')}
+
+
+def superseded_phase(phase):
+    """A retired probe's phase: no runs or evidence, only the recorded reason."""
+    return (phase.get('status') == 'SUPERSEDED' and phase.get('reason') == SUPERSEDED_REASON
+            and phase.get('runs') == [] and set(phase) == {'probe', 'engine', 'status', 'reason', 'runs'})
 DIAGNOSTICS = {
     'default': r'build_setting_default[^\n]*(?:mandatory|required|missing|None|bool|int|string|list|range|convert)|(?:mandatory|required|missing)[^\n]*build_setting_default|(?:out of range|32.bit|not.*boolean|expected.*(?:bool|int|string|list))',
     'injected': r'(?:build_setting_default|help)[^\n]*(?:built.in|implicit|reserved|already|override|redefin)|(?:built.in|implicit|reserved|already|override|redefin)[^\n]*(?:build_setting_default|help)',
@@ -347,6 +363,11 @@ def run_case(args, runner, scratch, reference, item):
     check = dict(name=item['name'], kind=item['kind'], input=item, status='FAIL', parity_claim=False, phases=[])
     runner.report['checks'].append(check)
     for probe in item['probes']:
+        if (item['name'], probe) in SUPERSEDED:
+            for engine in ('reference', 'native') if item['kind'] == 'differential' else ('native',):
+                check['phases'].append(dict(probe=probe, engine=engine, status='SUPERSEDED',
+                                            reason=SUPERSEDED[(item['name'], probe)], runs=[]))
+            continue
         spec = specification(item, probe)
         paths = prepare(reference.workspace, spec)
         shared = item['name'] in ('genuine.nine-defaults', 'cache.default-change')
@@ -431,6 +452,12 @@ def validate_check(check, report):
     reference = reference_for(report)
     scratch = Path(report['scratch_directory'])
     for phase in check['phases']:
+        if (item['name'], phase['probe']) in SUPERSEDED:
+            if not superseded_phase(phase):
+                raise ValueError('retired probe must be recorded as superseded, never executed')
+            continue
+        if phase.get('status') == 'SUPERSEDED':
+            raise ValueError('only retired probes may be superseded')
         spec = specification(item, phase['probe'])
         shared = item['name'] in ('genuine.nine-defaults', 'cache.default-change')
         cache = scratch / 'cases' / item['name'] / ('cache' if shared else phase['probe'] + '-cache')
@@ -482,6 +509,8 @@ def validate_check(check, report):
                     raise ValueError('artifact bytes/mode mismatch')
     if item['kind'] == 'differential':
         for one, two in zip(check['phases'][::2], check['phases'][1::2]):
+            if one.get('status') == 'SUPERSEDED':
+                continue
             if [(a['sha256'], bool(a['mode'] & 0o111)) for a in one['artifacts']] != [(a['sha256'], bool(a['mode'] & 0o111)) for a in two['artifacts']]:
                 raise ValueError('genuine raw-byte/executable-mode comparison differs')
 
@@ -500,7 +529,8 @@ def report_passes(report):
                 or any(report['executables'][name]['sha256'] != report['executables_after'][name]['sha256']
                        or report['executables_after'][name]['path'] != report['configuration'][name]
                        for name in ('native', 'reference'))
-                or report['reference_release'] != 'bazel 9.3.0' or report['fixture'] != load_inputs()):
+                or report['reference_release'] != 'bazel 9.3.0' or report['fixture'] != load_inputs()
+                or report.get('superseded') != {'/'.join(key): reason for key, reason in SUPERSEDED.items()}):
             return False
         runs = report['runs']
         if [r['id'] for r in runs] != list(range(len(runs))):
@@ -564,11 +594,13 @@ def main(argv=None):
             or any(args.output.is_relative_to(ROOT / p) for p in ('src', 'scripts', 'tests', 'resources'))):
         raise ValueError('report must not overwrite sources, fixtures or executables')
     report = dict(schema_version=1, status='FAIL', runs=[], checks=[], errors=[], cleanup=[], planned_checks=CASES,
+                  superseded={'/'.join(key): reason for key, reason in SUPERSEDED.items()},
                   case_inputs_sha256=json_digest(CASES), configuration={k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
                   scratch_cleaned=False, sources_unchanged=False, reference_shutdown_attempted=False,
                   reference_shutdown_succeeded=False, started_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                   limitations=['Default-only; no select, transitions, CLI setting overrides, Make expansion or toolchain resolution.',
                     'Eight genuine differential families; one native-only unsupported boundary. Not full Bazel compatibility.',
+                    'The three CLI-option probes of native.unsupported are retired (' + SUPERSEDED_REASON + ').',
                     'Real unmodified skylib 1.8.2 local override; genuine built-in file registry. Native builtin profile is explicitly enabled.',
                     'Reference may download genuine sources; native remote access remains disabled. No fake provider/namespace definitions.',
                     'Source/binary hashes identify supplied inputs, not independent proof of compilation provenance.',

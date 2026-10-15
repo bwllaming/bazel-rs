@@ -48,7 +48,8 @@ def synthetic_report(scratch):
                   completed_checks=9, completed_differential_cases=8, reference_release='bazel 9.3.0',
                   reference_shutdown_succeeded=True, executables_unchanged=True,
                   configuration={'native': '/synthetic/native', 'reference': '/synthetic/reference'},
-                  fixture=settings.load_inputs())
+                  fixture=settings.load_inputs(),
+                  superseded={'/'.join(key): reason for key, reason in settings.SUPERSEDED.items()})
     report['executables'] = {name: dict(sha256=settings.REFERENCE_SHA256 if name == 'reference' else 'a' * 64)
                              for name in ('native', 'reference')}
     report['executables_after'] = {name: dict(value, path=report['configuration'][name]) for name, value in report['executables'].items()}
@@ -68,6 +69,10 @@ def synthetic_report(scratch):
         check = dict(name=item['name'], kind=item['kind'], input=item, status='PASS', parity_claim=item['kind'] == 'differential', phases=[])
         report['checks'].append(check)
         for probe, engine in settings.phases_for(item):
+            if (item['name'], probe) in settings.SUPERSEDED:
+                check['phases'].append(dict(probe=probe, engine=engine, status='SUPERSEDED',
+                                            reason=settings.SUPERSEDED_REASON, runs=[]))
+                continue
             spec = settings.specification(item, probe)
             frozen = settings.snapshot(settings.prepare(ref.workspace, spec))
             cache = scratch / 'cases' / item['name'] / ('cache' if item['name'] in ('genuine.nine-defaults', 'cache.default-change') else probe + '-cache')
@@ -353,6 +358,35 @@ class ArtifactTests(unittest.TestCase):
 
 
 class ReportTests(unittest.TestCase):
+    def test_cli_option_probes_are_retired_by_n16b_not_false_failures(self):
+        self.assertEqual(sorted(settings.SUPERSEDED), [('native.unsupported', p) for p in
+                                                       ('bool-option', 'negative-bool-option', 'string-option')])
+        self.assertIn('superseded by N16b', settings.SUPERSEDED_REASON)
+        with tempfile.TemporaryDirectory(dir='/tmp/opencode') as directory:
+            report = synthetic_report(Path(directory))
+            self.assertTrue(settings.report_passes(report))
+            boundary = report['checks'][-1]
+            retired = boundary['phases'][0]
+            self.assertEqual((retired['probe'], retired['status']), ('string-option', 'SUPERSEDED'))
+            for mutation in ('executed', 'reason', 'status', 'evidence', 'report-reason', 'other-probe'):
+                changed = copy.deepcopy(report)
+                phases = changed['checks'][-1]['phases']
+                if mutation == 'executed':
+                    phases[0]['runs'] = [0]
+                elif mutation == 'reason':
+                    phases[0]['reason'] = 'skipped'
+                elif mutation == 'status':
+                    phases[0]['status'] = 'PASS'
+                elif mutation == 'evidence':
+                    phases[0]['diagnostic'] = 'option'
+                elif mutation == 'report-reason':
+                    del changed['superseded']
+                else:
+                    phases[3] = dict(probe=phases[3]['probe'], engine='native', status='SUPERSEDED',
+                                     reason=settings.SUPERSEDED_REASON, runs=[])
+                with self.subTest(mutation=mutation):
+                    self.assertFalse(settings.report_passes(changed))
+
     def test_complete_synthetic_evidence_replays_and_tampering_fails(self):
         with tempfile.TemporaryDirectory(dir='/tmp/opencode') as directory:
             report = synthetic_report(Path(directory))

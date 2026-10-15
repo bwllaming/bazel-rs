@@ -6,7 +6,8 @@
 //! options in [`OPTIONS`] are modelled; every other build option is an explicit
 //! failure on the command line and in `config_setting(values=...)`
 //! (docs/CONFIGURATION.md). Starlark build settings (`starlark`) are stored
-//! only when different from their default; N16b fills them.
+//! only when different from their default (StarlarkOptionsParser.java:232-254,
+//! crate::starlark_options).
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -160,6 +161,58 @@ pub fn fragment_option(name: &str) -> Option<bool> {
         .iter()
         .find(|(option, _, _, _)| *option == name)
         .map(|(_, _, non_configurable, _)| *non_configurable)
+}
+
+/// SpellChecker.suggest (net/starlark/java/spelling/SpellChecker.java:83-96):
+/// whether some word is within `min(5, (len + 1) / 2)` case-insensitive edits.
+fn has_suggestion(input: &str, words: impl IntoIterator<Item = String>) -> bool {
+    fn distance(a: &[char], b: &[char]) -> usize {
+        let mut row = (0..=b.len()).collect::<Vec<_>>();
+        for i in 1..=a.len() {
+            let mut previous = row[0];
+            row[0] = i;
+            for j in 1..=b.len() {
+                let old = row[j];
+                row[j] =
+                    (previous + usize::from(a[i - 1] != b[j - 1])).min(1 + row[j - 1].min(row[j]));
+                previous = old;
+            }
+        }
+        row[b.len()]
+    }
+    let input = input.to_lowercase().chars().collect::<Vec<_>>();
+    let threshold = 5.min(input.len().div_ceil(2));
+    words.into_iter().any(|word| {
+        let word = word.to_lowercase().chars().collect::<Vec<_>>();
+        input.len().abs_diff(word.len()) < threshold && distance(&input, &word) < threshold
+    })
+}
+
+/// OptionsParserImpl.identifyOptionAndPossibleArgument for a `--` argument
+/// that is not a native option of this profile
+/// (common/options/OptionsParserImpl.java:776-824): `ARG :: Unrecognized
+/// option: ARG` when the name (also without a `no` prefix) is not the name or
+/// old name of any `@Option` of Bazel 9.3 and SpellChecker would suggest
+/// nothing even among every option (`--NAME`, `--noNAME`; a superset of the
+/// command's valid arguments). `None` otherwise: the caller keeps its
+/// explicit "unsupported option" error.
+pub fn unrecognized_option(arg: &str) -> Option<String> {
+    let rest = arg.strip_prefix("--")?;
+    let name = rest.split_once('=').map_or(rest, |(name, _)| name);
+    if name.trim().is_empty() {
+        return None;
+    }
+    let known = |name: &str| crate::bazel_options::ALL_OPTION_NAMES.contains(&name);
+    if known(name) || name.strip_prefix("no").is_some_and(known) {
+        return None;
+    }
+    let words = crate::bazel_options::ALL_OPTION_NAMES
+        .iter()
+        .flat_map(|name| [format!("--{name}"), format!("--no{name}")]);
+    if has_suggestion(arg, words) {
+        return None;
+    }
+    Some(invalid_argument(arg, format!("Unrecognized option: {arg}")))
 }
 
 /// A converted option value, compared like the Java objects Bazel stores.
@@ -374,14 +427,29 @@ impl NativeOptions {
     }
 }
 
-/// A Starlark build setting value (N16b).
+/// A build setting value, compared like the Java objects Bazel stores
+/// (Boolean, StarlarkInt, String, List<String>, Label).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum SettingValue {
     Bool(bool),
     Int(i64),
     String(String),
     StringList(Vec<String>),
-    Label(String),
+    Label(#[serde(serialize_with = "serialize_label")] Label),
+}
+
+impl fmt::Display for SettingValue {
+    /// Java `toString` of the stored value (Boolean, StarlarkInt,
+    /// AbstractCollection.toString, Label.toString = getCanonicalForm).
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Bool(value) => write!(f, "{value}"),
+            Self::Int(value) => write!(f, "{value}"),
+            Self::String(value) => f.write_str(value),
+            Self::StringList(values) => write!(f, "[{}]", values.join(", ")),
+            Self::Label(label) => f.write_str(&crate::rule_declarations::canonical_form(label)),
+        }
+    }
 }
 
 /// SHA-256 over the canonical serialization of a configuration.
@@ -464,6 +532,9 @@ fn canonical_serialization(
 pub struct CommandLineOptions {
     /// (option, command-line form, unconverted value).
     entries: Vec<(&'static OptionDef, String, String)>,
+    /// Starlark build setting arguments (skipped by the native parser), in
+    /// command-line order.
+    starlark: Vec<String>,
     /// `query` options: only CoreOptions (runtime/commands/QueryCommand.java:59-67,
     /// no usesConfigurationOptions, runtime/BlazeCommandUtils.java:74-98).
     query: bool,
@@ -482,6 +553,11 @@ pub enum Parsed {
     /// Consumed; the next argument was consumed too when `true`.
     Consumed(bool),
 }
+
+/// OptionsParser.STARLARK_SKIPPED_PREFIXES (common/options/OptionsParser.java:111-112):
+/// the native parser skips these arguments; StarlarkOptionsParser parses them
+/// for commands that analyze (runtime/BlazeOptionHandler.java:417-423).
+pub const STARLARK_SKIPPED_PREFIXES: [&str; 4] = ["--//", "--no//", "--@", "--no@"];
 
 impl CommandLineOptions {
     /// Options of the `query` command: the modelled CoreOptions
@@ -502,6 +578,24 @@ impl CommandLineOptions {
         let query = self.query;
         let available =
             move |option: &&OptionDef| !query || option.source.contains("/CoreOptions.java");
+        // OptionsParserImpl.java:515-525: a likely negative target pattern or a
+        // mistyped Starlark option (no invalid-argument prefix).
+        if arg.starts_with("-//") || arg.starts_with("-@") {
+            return Err(format!(
+                "Invalid options syntax: {arg}\nNote: Negative target patterns can only appear after the end of options marker ('--'). Flags corresponding to Starlark-defined build settings always start with '--', not '-'."
+            ));
+        }
+        // OptionsParserImpl.java:535-550: skipped Starlark options keep their
+        // order; `query` never parses them (it does not analyze).
+        if STARLARK_SKIPPED_PREFIXES
+            .iter()
+            .any(|prefix| arg.starts_with(prefix))
+        {
+            if !query {
+                self.starlark.push(arg.to_owned());
+            }
+            return Ok(Parsed::Consumed(false));
+        }
         // OptionsParserImpl.java:766-808: `-x` (abbreviation), `-x-`, `--name[=value]`;
         // anything else starting with '-' is invalid syntax.
         if arg.starts_with('-')
@@ -580,8 +674,15 @@ impl CommandLineOptions {
         Ok(Parsed::Consumed(used_next))
     }
 
-    /// The configuration of these options. `labels` resolves label options
-    /// with the main repository mapping.
+    /// The Starlark build setting arguments, in command-line order
+    /// (OptionsParserImpl.getSkippedArgs), for crate::starlark_options.
+    pub fn starlark_args(&self) -> &[String] {
+        &self.starlark
+    }
+
+    /// The configuration of the native options (without Starlark build
+    /// settings, which need package loading: crate::starlark_options).
+    /// `labels` resolves label options with the main repository mapping.
     pub fn configuration(&self, labels: &LabelParser<'_>) -> Result<Configuration, String> {
         let mut native = NativeOptions::default();
         let mut platforms = Vec::new();
@@ -810,8 +911,35 @@ mod tests {
                 )
             );
         }
+        // Starlark options are skipped by the native parser, in order
+        // (OptionsParserImpl.java:535-550); `-//` and `-@` are invalid syntax.
+        let mut options = CommandLineOptions::default();
+        for arg in ["--//:a=1", "--no//p:b", "--@r//:c", "--no@r//:d"] {
+            assert!(matches!(
+                options.parse(arg, Some("next")),
+                Ok(Parsed::Consumed(false))
+            ));
+        }
+        assert_eq!(
+            options.starlark_args(),
+            ["--//:a=1", "--no//p:b", "--@r//:c", "--no@r//:d"]
+        );
+        for arg in ["-//:a=1", "-@r//:a"] {
+            assert_eq!(
+                options.parse(arg, None).err().unwrap(),
+                format!(
+                    "Invalid options syntax: {arg}\nNote: Negative target patterns can only appear after the end of options marker ('--'). Flags corresponding to Starlark-defined build settings always start with '--', not '-'."
+                )
+            );
+        }
         // query accepts only the modelled CoreOptions.
         let mut query = CommandLineOptions::for_query();
+        // ... and ignores Starlark options (it does not analyze).
+        assert!(matches!(
+            query.parse("--//:a=1", None),
+            Ok(Parsed::Consumed(false))
+        ));
+        assert!(query.starlark_args().is_empty());
         assert!(matches!(
             query.parse("-c", Some("opt")),
             Ok(Parsed::Consumed(true))
@@ -866,6 +994,64 @@ mod tests {
             defined.id
         );
         assert_eq!(opt.output_root(), "bazel-out/rust-opt/bin");
+        // Starlark build settings take part in the identity; only values
+        // different from the default are stored (crate::starlark_options).
+        let flag = Label::parse_canonical("//:flag").unwrap();
+        let set = |value: SettingValue| {
+            Configuration::new(
+                NativeOptions::default(),
+                BTreeMap::from([(flag.clone(), value)]),
+            )
+        };
+        assert_ne!(set(SettingValue::Bool(true)).id, default.id);
+        assert_ne!(
+            set(SettingValue::Bool(true)).id,
+            set(SettingValue::String("true".into())).id
+        );
+        assert_eq!(
+            set(SettingValue::Label(flag.clone())).id,
+            set(SettingValue::Label(flag.clone())).id
+        );
+    }
+
+    #[test]
+    fn unrecognized_options_are_certain_and_without_suggestions() {
+        for arg in ["--:s=blue", "--s=blue", "--//x", "--zzzzzzzzzzzzzzzz=1"] {
+            assert_eq!(
+                unrecognized_option(arg),
+                Some(format!("{arg} :: Unrecognized option: {arg}")),
+                "{arg}"
+            );
+        }
+        // Real Bazel options (also `no`-prefixed or old names) and arguments
+        // close to one (SpellChecker would suggest it) stay undecided.
+        for arg in [
+            "--keep_going",
+            "--nokeep_going",
+            "--cpu=k8",
+            "--experimental_platforms=//:p",
+            "--keep-going",
+            "--stmp",
+            "-k",
+            "--=x",
+        ] {
+            assert_eq!(unrecognized_option(arg), None, "{arg}");
+        }
+    }
+
+    #[test]
+    fn setting_values_print_like_java_objects() {
+        assert_eq!(SettingValue::Bool(true).to_string(), "true");
+        assert_eq!(SettingValue::Int(-3).to_string(), "-3");
+        assert_eq!(SettingValue::String("a b".into()).to_string(), "a b");
+        assert_eq!(
+            SettingValue::StringList(vec!["a".into(), "".into()]).to_string(),
+            "[a, ]"
+        );
+        assert_eq!(
+            SettingValue::Label(Label::parse_canonical("@@r+//p:x").unwrap()).to_string(),
+            "@@r+//p:x"
+        );
     }
 
     #[test]

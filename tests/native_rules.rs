@@ -230,10 +230,12 @@ fn analysis_of_unmodeled_native_rules_fails_explicitly() {
     let ws = Workspace::fixture();
     for (target, diagnostic) in [
         // The alias's select() conditions are analyzed first
-        // (docs/CONFIGURATION.md): a flag_values config_setting (N16b).
+        // (docs/CONFIGURATION.md): both label settings forward to
+        // :noop_nogo, so the flag_values keys collide (ConfigSetting.java:771-787;
+        // paired capture row A/build_go/private:default_nogo, 35:15).
         (
             "//go/private:default_nogo",
-            "in config_setting rule //go/private:nogo_active: config_setting flag_values (build setting analysis) not implemented in the native profile",
+            "go/private/BUILD.bazel:35:15: in flag_values attribute of config_setting rule //go/private:nogo_active: flag '//go/private:noop_nogo' referenced multiple times as ['//go/private:bootstrap_nogo', '//go/private:request_nogo']",
         ),
         (
             "//go/toolchain:go_linux_amd64_toolchain",
@@ -248,10 +250,6 @@ fn analysis_of_unmodeled_native_rules_fails_explicitly() {
         (
             "//skylib:linux",
             "in config_setting rule //skylib:linux: config_setting constraint_values (target platform constraint analysis) not implemented in the native profile",
-        ),
-        (
-            "//tools/cpp:link_extra_libs",
-            "native rule label_flag analysis not implemented",
         ),
         (
             "//misc:defs_doc.binaryproto",
@@ -288,6 +286,13 @@ fn unconditional_selects_and_plain_native_rules_still_build() {
     // cc_toolchain_suite is a plain filegroup (exports.bzl:53-54).
     let suite = ws.run(&["build", "//tools/cpp:toolchain"]);
     assert!(suite.status.success(), "{}", errors(&suite));
+    // label_flag forwards its default, an empty filegroup (N16b; the paired
+    // capture row A/build_tools/cpp:link_extra_libs builds in Bazel too).
+    for target in ["//tools/cpp:link_extra_libs", "//tools/cpp:link_extra_lib"] {
+        let flag = ws.run(&["build", target]);
+        assert!(flag.status.success(), "{target}: {}", errors(&flag));
+        assert!(flag.stdout.is_empty(), "{target}");
+    }
 }
 
 #[test]

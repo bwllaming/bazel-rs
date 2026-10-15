@@ -1,9 +1,11 @@
-# Default-only build-setting execution
+# Build-setting execution
 
 This native profile implements typed declaration defaults and actual analysis
-callbacks for build settings. It is **not CLI flag/configuration parity**. The
-`flag` and `repeatable` options are retained descriptor metadata; command-line
-setting overrides remain explicit errors, not silently ignored options.
+callbacks for build settings. Since N16b, `flag` and `repeatable` drive the
+command-line parser (`--//pkg:flag=value`) and `ctx.build_setting_value`
+receives the configured value; docs/CONFIGURATION.md describes the options,
+`config_setting(flag_values = ...)` and the native BuildSettingProvider.
+Transitions and multi-configuration analysis remain unsupported.
 
 ## Supported declarations and analysis
 
@@ -20,8 +22,10 @@ accept booleans or integers 0/1; this does not relax ordinary `attr.bool` rules.
 Integer defaults use the signed 32-bit declaration range. Defaults are owned
 invocation-time snapshots, not shared mutable rule metadata.
 
-Setting implementations receive `ctx.build_setting_value`. Each list-valued
-access creates a new mutable list from the invocation snapshot: modifying one
+Setting implementations receive `ctx.build_setting_value`: the command-line
+value when one differs from the default, else the default
+(`StarlarkRuleContext.java:738-757`). Each list-valued access creates a new
+mutable list from that value: modifying one
 read cannot change later reads, another target, or the stored default. The
 ordinary context fields continue to work. Non-setting rules do not acquire this
 property. `cfg=None` remains omission-equivalent; non-`None` configurations and
@@ -52,12 +56,19 @@ dependencies. Other `platform_common` fields are not placeholder implementations
 
 ## Configuration and cache boundaries
 
-`--//:flag=value`, positive/negative boolean CLI forms, aliases, transitions,
-`select`, configuration matching and multi-configuration analysis remain
-unsupported. This increment adds no partial option parser or mutable global
-configuration. Analysis consumes declaration defaults; changed defaults flow
-through actual providers into action bytes/arguments and existing content-based
-cache keys. A default-change cache round trip is not a CLI-override test.
+`--//:flag=value`, the positive/negative boolean forms, alias resolution,
+`select()` on `flag_values` and the configuration identity are N16b
+(docs/CONFIGURATION.md). Transitions and multi-configuration analysis remain
+unsupported. Defaults and command-line values flow through actual providers
+into action bytes/arguments and existing content-based cache keys (output
+paths do not change with Starlark settings, like Bazel's top-level
+configuration). The default-change cache round trip below predates N16b.
+`scripts/validate_build_settings.py` retires the three CLI-option probes of
+its `native.unsupported` family (`--//:string_flag=blue`, `--//:bool_flag`,
+`--no//:bool_flag`): they are never executed and are recorded as
+`SUPERSEDED` with the reason "superseded by N16b: ..." (`SUPERSEDED`,
+`SUPERSEDED_REASON`); a report passes only with exactly that record. The
+other boundary probes (`allow_multiple`, `string_set`, legacy `True`) remain.
 
 Reference mutation contracts and fixture provenance are retained in
 `artifacts/build-settings-mutability-contract.json` and

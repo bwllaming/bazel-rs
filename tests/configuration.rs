@@ -585,9 +585,15 @@ fn invalid_conditions_and_condition_visibility() {
         "{}/c/BUILD.bazel:4:15: in values attribute of config_setting rule //c:unknown: error while parsing configuration settings: unknown option: 'no_such_option'",
         ws.path().display()
     )));
-    assert!(ws.rejected(&["build", "//:flags"]).contains(
-        "config_setting flag_values (build setting analysis) not implemented in the native profile"
-    ));
+    // A flag_values key without a target is an assumed input file that does
+    // not exist (RuleContext.java:1869-1880; paired capture row T9/flag_values).
+    assert_eq!(
+        ws.rejected(&["build", "//:flags"]),
+        format!(
+            "bazel-rs: {ws}/c/BUILD.bazel:5:15: in flag_values attribute of config_setting rule //c:flags: rule '//c:x' does not exist\n{ws}/BUILD.bazel:8:5: errors encountered resolving select() keys for //:flags\n",
+            ws = ws.path().display()
+        )
+    );
     assert!(ws.rejected(&["build", "//:empty"]).contains(&format!(
         "{}/c/BUILD.bazel:6:15: in config_setting rule //c:empty: Either values, flag_values or constraint_values must be specified and non-empty",
         ws.path().display()
@@ -707,9 +713,14 @@ fn unconditional_none_missing_inputs_and_missing_conditions() {
             ws.path().display()
         ))
     );
+    // The consumer adds `errors encountered resolving select() keys`
+    // (ConfigConditionsProducer.java:121-129, 200-211; N16a capture T11).
     assert_eq!(
         ws.rejected(&["build", "//:missing_key_pkg"]),
-        "bazel-rs: no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nope\n"
+        format!(
+            "bazel-rs: no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nope\n{}/BUILD.bazel:18:5: errors encountered resolving select() keys for //:missing_key_pkg\n",
+            ws.path().display()
+        )
     );
     // Equal maps in another order are the same value (Java Map.equals).
     let text = ws.built(&["build", "-c", "opt", "--stamp", "//:dict_order"]);

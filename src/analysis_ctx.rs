@@ -11,7 +11,7 @@ use starlark::values::{
 use std::fmt;
 
 use crate::analysis_runtime::ScopeHandle;
-use crate::custom_rule::AttrValue;
+use crate::configuration::SettingValue;
 
 #[allow(unsafe_code)]
 mod values {
@@ -26,8 +26,10 @@ mod values {
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
     pub(super) struct SettingCtx<'v> {
         pub ctx: RuleCtx<'v>,
+        /// The configured value (command line or `build_setting_default`).
+        #[allocative(skip)]
         #[trace(static)]
-        pub default: AttrValue,
+        pub value: SettingValue,
     }
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
     pub(super) struct SubruleCtx<'v> {
@@ -135,12 +137,13 @@ fn setting_properties(builder: &mut MethodsBuilder) {
             .downcast_ref::<SettingCtx>()
             .ok_or_else(|| anyhow!("expected build-setting ctx"))?;
         ctx.ctx.scope.check_current()?;
-        match &ctx.default {
-            AttrValue::Bool(value) => Ok(heap.alloc(*value)),
-            AttrValue::Int(value) => Ok(heap.alloc(*value)),
-            AttrValue::String(value) => Ok(heap.alloc(value.as_str())),
-            AttrValue::Strings(value) => Ok(heap.alloc(value.clone())),
-            _ => bail!("unsupported build-setting default"),
+        // A fresh value per read (mutable list copies).
+        match &ctx.value {
+            SettingValue::Bool(value) => Ok(heap.alloc(*value)),
+            SettingValue::Int(value) => Ok(heap.alloc(*value)),
+            SettingValue::String(value) => Ok(heap.alloc(value.as_str())),
+            SettingValue::StringList(value) => Ok(heap.alloc(value.clone())),
+            SettingValue::Label(_) => bail!("unsupported build-setting value type label"),
         }
     }
 }
@@ -179,11 +182,11 @@ pub(crate) fn alloc_rule<'v>(
     heap: Heap<'v>,
     backing: Value<'v>,
     scope: ScopeHandle,
-    default: Option<AttrValue>,
+    value: Option<SettingValue>,
 ) -> Value<'v> {
     let ctx = RuleCtx { backing, scope };
-    match default {
-        Some(default) => heap.alloc_complex_no_freeze(SettingCtx { ctx, default }),
+    match value {
+        Some(value) => heap.alloc_complex_no_freeze(SettingCtx { ctx, value }),
         None => heap.alloc_complex_no_freeze(ctx),
     }
 }
@@ -244,7 +247,7 @@ mod tests {
                     heap,
                     backing,
                     owner.root(),
-                    setting.then(|| AttrValue::Strings(vec!["seed".into()])),
+                    setting.then(|| SettingValue::StringList(vec!["seed".into()])),
                 );
                 module.set("ctx", ctx);
                 let mut expected = vec!["actions", "attr", "file", "files", "label", "outputs"];

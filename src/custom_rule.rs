@@ -287,6 +287,10 @@ pub struct BuiltinAttributes {
 #[derive(Clone, Debug)]
 pub struct CustomInvocation {
     pub build_setting: Option<BuildSetting>,
+    /// The configured value of a build setting (`ctx.build_setting_value`),
+    /// set by crate::engine for the analysis configuration; `None` means
+    /// the `build_setting_default` (StarlarkRuleContext.java:738-757).
+    pub setting_value: Option<crate::configuration::SettingValue>,
     pub implementation: OwnedFrozenValue,
     /// Strong frozen roots for direct declarations, including factory closures.
     pub subrules: Vec<OwnedFrozenValue>,

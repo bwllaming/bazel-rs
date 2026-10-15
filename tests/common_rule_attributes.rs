@@ -185,6 +185,13 @@ fn rules_go_nogo_macro_forwards_tags_and_visibility_through_kwargs() {
             "tags=[\"lint\", \"manual\"]\ntestonly=False\ndeprecation=None\nfeatures=[\"-layering_check\"]\nvisibility=[\"@@//visibility:public\"]\nexec_properties={}\nexpect_failure=\"\"\ndependency_lists=[[], [], [], [], [], [], [], [], []]\nfiles=[[], [], []]\nabsent=[False, False, False, False, False, False]\ndeps=[\"dep\"]\n"
         ]
     );
+    // The alias forwards its actual's files (N16b; paired capture rows
+    // D/nogo_build_alias_explicit, D/nogo_build_all, D/nogo_build_recursive).
+    assert_eq!(contents(&ws.run(&["build", "//:nogo"])), built);
+    for pattern in ["//:all", "//..."] {
+        let output = ws.run(&["build", pattern]);
+        assert!(output.status.success(), "{pattern}: {}", errors(&output));
+    }
     // `manual` custom targets are skipped by build wildcards; explicit
     // labels still build (FilteringPolicies.FILTER_MANUAL).
     let ws = workspace(

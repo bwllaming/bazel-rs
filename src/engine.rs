@@ -1,7 +1,7 @@
 //! A deliberately small native analysis/execution pipeline, not Skyframe.
 use crate::action::{self, Action};
 use crate::analysis::{self, DependencyTarget};
-use crate::configuration::{ConfigId, Configuration};
+use crate::configuration::{ConfigId, Configuration, LabelParser, SettingValue};
 use crate::configured_attributes::{self, ConfigMatching};
 use crate::ignored::IgnoredSubdirectories;
 use crate::label::{Label, PackageId};
@@ -10,6 +10,7 @@ use crate::package_specification::{self, GroupNode};
 use crate::repository::RepositorySet;
 use crate::repository_budget::HostBudget;
 use crate::scheduler::{self, Dependency, PlannedAction};
+use crate::starlark_options::{BuildSettingInfo, LoadedTarget, SettingType};
 use crate::starlark_types::File;
 use crate::visibility::Visibility;
 use crate::workspace;
@@ -74,8 +75,48 @@ pub struct ConfiguredTargetKey {
 /// An analyzed rule target in its configuration.
 #[derive(Clone, Debug, Default)]
 struct ConfiguredNode {
-    /// ConfigMatchingProvider of an analyzed `config_setting`.
+    /// ConfigMatchingProvider of an analyzed `config_setting` (forwarded by
+    /// aliases).
     matching: Option<ConfigMatching>,
+    /// The native BuildSettingProvider (forwarded by `alias`, overridden by
+    /// label_flag/label_setting; rules/LateBoundAlias.java:58-79).
+    build_setting: Option<BuildSettingInfo>,
+    /// The direct `actual` of `alias`, `label_flag` and `label_setting`
+    /// (AliasConfiguredTarget, rules/AliasConfiguredTarget.java:99-123).
+    actual: Option<Label>,
+}
+
+/// Rules whose configured target is an AliasConfiguredTarget: `alias`
+/// (rules/Alias.java:43-56) and the LateBoundAlias build settings
+/// label_flag/label_setting (rules/LateBoundAlias.java:47-79).
+fn forwards(rule: &Rule) -> bool {
+    matches!(
+        rule.kind,
+        RuleKind::Native("alias" | "label_flag" | "label_setting")
+    )
+}
+
+/// AliasProvider.describeTargetWithAliases (analysis/AliasProvider.java:123-148):
+/// `KIND 'L'`, or `alias 'A' referring to KIND 'L'[ through 'B' -> 'C']`.
+fn describe_with_aliases(chain: &[Label], target: &Label, kind: &str) -> String {
+    let target = crate::rule_declarations::canonical_form(target);
+    let Some((first, rest)) = chain.split_first() else {
+        return format!("{kind} '{target}'");
+    };
+    let mut text = format!(
+        "alias '{}' referring to {kind} '{target}'",
+        crate::rule_declarations::canonical_form(first)
+    );
+    if !rest.is_empty() {
+        text.push_str(&format!(
+            " through '{}'",
+            rest.iter()
+                .map(crate::rule_declarations::canonical_form)
+                .collect::<Vec<_>>()
+                .join("' -> '")
+        ));
+    }
+    text
 }
 
 type ConfiguredNodes = BTreeMap<ConfiguredTargetKey, ConfiguredNode>;
@@ -436,6 +477,15 @@ impl Engine {
     ) -> Result<Vec<Label>, String> {
         let mut selected = BTreeSet::new();
         for pattern in patterns {
+            // A `-` prefix makes a negative pattern (TargetPattern.Parser,
+            // cmdline/TargetPattern.java); its syntax is checked like any
+            // pattern, but subtraction is not implemented natively.
+            if let Some(negative) = pattern.strip_prefix('-') {
+                crate::bazel_label::Parts::parse(negative)?;
+                return Err(format!(
+                    "negative target pattern {pattern:?} is not implemented in the native profile"
+                ));
+            }
             if (pattern.starts_with("//") || pattern.starts_with('@')) && pattern.ends_with("/...")
             {
                 let prefix = pattern.strip_suffix("...").unwrap();
@@ -641,16 +691,8 @@ impl Engine {
         if configured.contains_key(&key) {
             return Ok(());
         }
-        if active.contains(&rule.label) {
-            active.push(rule.label);
-            return Err(format!(
-                "dependency cycle: {}",
-                active
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(" -> ")
-            ));
+        if let Some(start) = active.iter().position(|label| *label == rule.label) {
+            return Err(self.cycle_error(&rule, &active[..start], &active[start..]));
         }
         if active.len() >= 256 {
             return Err("native prototype dependency depth limit (256) exceeded".into());
@@ -674,7 +716,7 @@ impl Engine {
         };
         // DependencyResolutionHelpers.visitRule reports a validation failure
         // at the rule's location (analysis/DependencyResolutionHelpers.java:309-313).
-        let rule = configured_attributes::configure(&rule, &resolver)
+        let mut rule = configured_attributes::configure(&rule, &resolver)
             .map_err(|error| located(rule.location.as_deref(), error))?;
         if let Some(custom) = &rule.custom
             && !custom.declaration.unanalyzed.is_empty()
@@ -682,11 +724,26 @@ impl Engine {
             return Err(custom_gap_error(&rule, &custom.declaration.unanalyzed));
         }
         resolved_value_gate(&rule)?;
+        // An alias-like rule has one dependency, its (resolved) actual: the
+        // `actual` attribute, or the late-bound `:alias` of label_flag /
+        // label_setting (rules/LabelBuildSettings.java:62-83).
+        let build_setting = self.build_setting_info(&rule)?;
+        if forwards(&rule) {
+            rule.srcs = vec![self.alias_actual(&rule, build_setting.as_ref())?];
+        }
+        // Late-bound attributes skip the visibility check
+        // (CommonPrerequisiteValidator.java:159-163); rules that can have any
+        // provider skip the testonly check (:730-738).
+        let late_bound = matches!(rule.kind, RuleKind::Native("label_flag" | "label_setting"));
+        let skip_testonly = forwards(&rule);
         let requesting_package = rule_authority(&rule);
-        for src in &rule.srcs {
-            let dependency = self.resolve_rule_src(&rule, src)?;
-            let target = self.target(&dependency)?;
+        for src in rule.srcs.clone() {
+            let dependency = self.resolve_rule_src(&rule, &src)?;
+            let target = self
+                .target(&dependency)
+                .map_err(|error| missing_edge(&rule, &dependency, error))?;
             let is_source = matches!(target, Target::Source(_));
+            let forwarding = matches!(&target, Target::Rule(dep) if forwards(dep));
             let visible = match target {
                 Target::Rule(dep) | Target::Output(dep, _) => {
                     check_macro_namespace(&dep, &dependency)?;
@@ -699,52 +756,515 @@ impl Engine {
                             rule.label
                         ));
                     }
-                    self.visible(
-                        &dep.visibility,
-                        &rule_authority(&dep),
-                        Some(&requesting_package),
-                    )?
+                    late_bound
+                        || self.visible(
+                            &dep.visibility,
+                            &rule_authority(&dep),
+                            Some(&requesting_package),
+                        )?
                 }
+                Target::Source(_) => {
+                    late_bound
+                        || self.visible(
+                            &self.source_visibility(&dependency),
+                            &dependency.package_id(),
+                            Some(&requesting_package),
+                        )?
+                }
+            };
+            if !forwarding {
+                if !visible {
+                    return Err(visibility_error(
+                        &rule,
+                        &describe_with_aliases(&[], &dependency, "target"),
+                        is_source,
+                    ));
+                }
+                self.validate_prerequisite(
+                    &rule,
+                    &dependency,
+                    &describe_with_aliases(&[], &dependency, "target"),
+                    skip_testonly,
+                )?;
+                self.analyze(&dependency, active, configured, plan)?;
+                continue;
+            }
+            // The configured alias (its actual's label and kind) is needed to
+            // describe and validate the edge (AliasProvider.describeTargetWithAliases).
+            self.analyze(&dependency, active, configured, plan)?;
+            let (chain, actual) = self.alias_chain(configured, &dependency);
+            let description = describe_with_aliases(&chain, &actual, "target");
+            if !visible {
+                let is_source = matches!(self.target(&actual)?, Target::Source(_));
+                return Err(visibility_error(&rule, &description, is_source));
+            }
+            self.validate_prerequisite(&rule, &actual, &description, skip_testonly)?;
+        }
+        self.starlark_file_type_errors(&rule, configured)?;
+        // config_setting flag_values: prerequisites analyzed, then validated
+        // (RuleContext.Builder, analysis/RuleContext.java:1700-1745, 1845-1880, 2165-2172).
+        let flag_prerequisites = self.flag_prerequisites(&rule, active, configured, plan)?;
+        // RuleContext.Builder.validateExtraPrerequisites validates the config
+        // conditions like direct prerequisites, after dependency analysis
+        // (analysis/RuleContext.java:2104-2152). Under the DEFAULT_PUBLIC
+        // policy the validated prerequisite is the END of an alias chain
+        // (`condition.fromConfiguredTargetNoCheck(getActual())`, :2148-2150;
+        // AliasConfiguredTarget.getActual, rules/AliasConfiguredTarget.java:229-233):
+        // the alias's own visibility is skipped and the message names the
+        // config_setting without an alias description.
+        for (condition, _) in &ordered {
+            let dependency = self.resolve_rule_src(&rule, condition)?;
+            let (_, actual) = self.alias_chain(configured, &dependency);
+            if let Target::Rule(dep) = self.target(&actual)? {
+                let description = describe_with_aliases(&[], &actual, "target");
+                if !self.visible(
+                    &dep.visibility,
+                    &rule_authority(&dep),
+                    Some(&requesting_package),
+                )? {
+                    return Err(visibility_error(&rule, &description, false));
+                }
+                self.validate_prerequisite(&rule, &actual, &description, skip_testonly)?;
+            }
+        }
+        // ConfigSetting.create (rules/config/ConfigSetting.java:111-166).
+        let mut matching = match (&rule.kind, &rule.native) {
+            (RuleKind::Native("config_setting"), Some(native)) => {
+                let repositories = self.repositories.clone();
+                let context = rule.label.clone();
+                Some(
+                    crate::config_setting::analyze(
+                        &rule.label,
+                        native,
+                        &self.configuration,
+                        &flag_prerequisites,
+                        &|text| repositories.parse(text, &context.repository, &context.package),
+                    )
+                    .map_err(|error| located_lines(rule.location.as_deref(), &error))?,
+                )
+            }
+            _ => None,
+        };
+        // AliasConfiguredTarget forwards the actual's providers; label_flag and
+        // label_setting override BuildSettingProvider (LateBoundAlias.java:58-79).
+        let mut actual = None;
+        let mut build_setting = build_setting;
+        if forwards(&rule) {
+            let target = self.resolve_rule_src(&rule, &rule.srcs[0])?;
+            let forwarded = configured
+                .get(&ConfiguredTargetKey {
+                    label: target.clone(),
+                    config: self.configuration.id,
+                })
+                .cloned()
+                .unwrap_or_default();
+            matching = forwarded.matching;
+            if build_setting.is_none() {
+                build_setting = forwarded.build_setting;
+            }
+            actual = Some(target);
+        }
+        // ctx.build_setting_value of a Starlark build setting.
+        if let (Some(info), Some(custom)) = (&build_setting, rule.custom.as_mut()) {
+            custom.setting_value = Some(info.value(&self.configuration));
+        }
+        active.pop();
+        configured.insert(
+            key,
+            ConfiguredNode {
+                matching,
+                build_setting,
+                actual,
+            },
+        );
+        plan.push(rule);
+        Ok(())
+    }
+
+    /// AbstractLabelCycleReporter.maybeReportCycle (skyframe/AbstractLabelCycleReporter.java:81-170):
+    /// `in KIND L: cycle in dependency graph:` at the location of the cycle's
+    /// first element, the path to the cycle indented by four spaces, then the
+    /// cycle drawn with `.-> `, `|   `, `` `-- `` (`[self-edge]` for one
+    /// element). Configured target keys print as `LABEL (CONFIG)`; the native
+    /// configuration is the full native ConfigId, not Bazel's BuildOptions
+    /// checksum, and the single native configuration has no separate
+    /// top-level key (docs/CONFIGURATION.md).
+    fn cycle_error(&self, head: &Rule, path: &[Label], cycle: &[Label]) -> String {
+        let key = |label: &Label| {
+            format!(
+                "{} ({})",
+                crate::rule_declarations::canonical_form(label),
+                self.configuration.id
+            )
+        };
+        let mut message = String::from("cycle in dependency graph:");
+        for label in path {
+            message.push_str("\n    ");
+            message.push_str(&key(label));
+        }
+        message.push_str("\n.-> ");
+        message.push_str(&key(&cycle[0]));
+        if cycle.len() == 1 {
+            message.push_str(" [self-edge]\n`--");
+        } else {
+            for label in &cycle[1..] {
+                message.push_str("\n|   ");
+                message.push_str(&key(label));
+            }
+            message.push_str("\n`-- ");
+            message.push_str(&key(&cycle[0]));
+        }
+        located(
+            head.location.as_deref(),
+            format!(
+                "in {} rule {}: {message}",
+                head.rule_class_name(),
+                crate::rule_declarations::canonical_form(&head.label)
+            ),
+        )
+    }
+
+    /// The alias chain from `label` (AliasProvider.getAliasChain) and its
+    /// end (AliasConfiguredTarget.getLabel, rules/AliasConfiguredTarget.java:178-185).
+    fn alias_chain(&self, configured: &ConfiguredNodes, label: &Label) -> (Vec<Label>, Label) {
+        let mut chain = Vec::new();
+        let mut current = label.clone();
+        while let Some(actual) = configured
+            .get(&ConfiguredTargetKey {
+                label: current.clone(),
+                config: self.configuration.id,
+            })
+            .and_then(|node| node.actual.clone())
+        {
+            if chain.contains(&current) {
+                break;
+            }
+            chain.push(current);
+            current = actual;
+        }
+        (chain, current)
+    }
+
+    /// The configured actual of an alias-like rule, as label text: `actual`
+    /// after select() resolution, or the label_flag/label_setting value
+    /// (LabelBuildSettings.ACTUAL, rules/LabelBuildSettings.java:62-83).
+    fn alias_actual(
+        &self,
+        rule: &Rule,
+        build_setting: Option<&BuildSettingInfo>,
+    ) -> Result<String, String> {
+        if let Some(info) = build_setting {
+            return match info.value(&self.configuration) {
+                SettingValue::Label(label) => Ok(label.to_string()),
+                other => Err(format!(
+                    "internal error: label build setting {} has value {other}",
+                    rule.label
+                )),
+            };
+        }
+        match rule
+            .native
+            .as_ref()
+            .and_then(|native| native.attrs.get("actual"))
+        {
+            Some(crate::custom_rule::AttrValue::Label(Some(actual))) => Ok(actual.clone()),
+            _ => Err(format!(
+                "internal error: alias {} has no resolved actual",
+                rule.label
+            )),
+        }
+    }
+
+    /// The BuildSettingProvider of a build-setting rule: Starlark rules with
+    /// `build_setting` (RuleConfiguredTargetBuilder.java:250-259) and
+    /// label_flag/label_setting (NODEP_LABEL, LabelBuildSettings.java:97).
+    fn build_setting_info(&self, rule: &Rule) -> Result<Option<BuildSettingInfo>, String> {
+        if let Some(custom) = &rule.custom
+            && let Some(setting) = &custom.build_setting
+        {
+            return Ok(Some(BuildSettingInfo {
+                label: rule.label.clone(),
+                ty: SettingType::of(setting.kind),
+                default: crate::analysis::setting_default(custom)
+                    .map_err(|error| format!("{}: {error}", rule.label))?,
+                is_flag: setting.flag,
+                repeatable: setting.repeatable,
+            }));
+        }
+        let RuleKind::Native(kind @ ("label_flag" | "label_setting")) = rule.kind else {
+            return Ok(None);
+        };
+        let Some(crate::custom_rule::AttrValue::Label(Some(default))) = rule
+            .native
+            .as_ref()
+            .and_then(|native| native.attrs.get("build_setting_default"))
+        else {
+            return Err(format!(
+                "internal error: {kind} {} has no build_setting_default",
+                rule.label
+            ));
+        };
+        Ok(Some(BuildSettingInfo {
+            label: rule.label.clone(),
+            ty: SettingType::Label,
+            default: SettingValue::Label(self.resolve_rule_src(rule, default)?),
+            is_flag: kind == "label_flag",
+            repeatable: false,
+        }))
+    }
+
+    /// RuleContext.Builder.validateDirectPrerequisiteType for an attribute
+    /// that allows no files (analysis/RuleContext.java:1845-1880): the end of
+    /// the alias chain must be a rule. A missing input file is `rule 'L' does
+    /// not exist` (`target` when the name has a `.`); a file is `KIND 'L' is
+    /// misplaced here (expected no files)` with the alias description
+    /// (RuleContext.java:1819-1830, AliasProvider.java:123-148).
+    fn no_files_error(
+        &mut self,
+        chain: &[Label],
+        actual: &Label,
+    ) -> Result<Option<String>, String> {
+        let misplaced = |kind: &str| {
+            Some(format!(
+                "{} is misplaced here (expected no files)",
+                describe_with_aliases(chain, actual, kind)
+            ))
+        };
+        Ok(match self.target(actual)? {
+            Target::Source(path) if std::fs::symlink_metadata(&path).is_err() => Some(format!(
+                "{} '{}' does not exist",
+                if actual.name.contains('.') {
+                    "target"
+                } else {
+                    "rule"
+                },
+                crate::rule_declarations::canonical_form(actual)
+            )),
+            Target::Source(_) => misplaced("source file"),
+            Target::Output(..) => misplaced("generated file"),
+            Target::Rule(_) => None,
+        })
+    }
+
+    /// Starlark `attr.label`/`attr.label_list` without `allow_files` allow no
+    /// files and check labels strictly (StarlarkAttrModule.java:431-445,
+    /// Attribute.java:2349): every file prerequisite is an attribute error
+    /// `in A attribute of KIND rule L: ...`, all reported at the rule's
+    /// location, in attribute order.
+    fn starlark_file_type_errors(
+        &mut self,
+        rule: &Rule,
+        configured: &ConfiguredNodes,
+    ) -> Result<(), String> {
+        let Some(custom) = &rule.custom else {
+            return Ok(());
+        };
+        let shown = crate::rule_declarations::canonical_form(&rule.label);
+        let mut errors = Vec::new();
+        for name in &custom.declaration.attr_order {
+            let (Some(spec), Some(value)) = (custom.schema.get(name), custom.attrs.get(name))
+            else {
+                continue;
+            };
+            if spec.allow_files || spec.allow_single_file || spec.declaration.file_types.is_some() {
+                continue;
+            }
+            let labels = match value {
+                crate::custom_rule::AttrValue::Label(Some(label)) => vec![label.clone()],
+                crate::custom_rule::AttrValue::Labels(labels) => labels.clone(),
+                _ => continue,
+            };
+            for text in labels {
+                let dependency = self.resolve_rule_src(rule, &text)?;
+                let (chain, actual) = self.alias_chain(configured, &dependency);
+                if let Some(error) = self.no_files_error(&chain, &actual)? {
+                    errors.push(located(
+                        rule.location.as_deref(),
+                        format!(
+                            "in {name} attribute of {} rule {shown}: {error}",
+                            rule.rule_class_name()
+                        ),
+                    ));
+                }
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("\n"))
+        }
+    }
+
+    /// The `flag_values` prerequisites of a `config_setting`: every key is
+    /// analyzed first, then each edge is validated like RuleContext.Builder
+    /// does (validateDirectPrerequisiteType, analysis/RuleContext.java:1845-1880,
+    /// with no allowed file types, ConfigRuleClasses.java:292-294; then
+    /// visibility, testonly and deprecation). All errors are reported.
+    fn flag_prerequisites(
+        &mut self,
+        rule: &Rule,
+        active: &mut Vec<Label>,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Vec<Rule>,
+    ) -> Result<Vec<crate::config_setting::FlagPrerequisite>, String> {
+        let (RuleKind::Native("config_setting"), Some(native)) = (&rule.kind, &rule.native) else {
+            return Ok(Vec::new());
+        };
+        let entries = match native.attrs.get("flag_values") {
+            Some(crate::custom_rule::AttrValue::LabelKeyedStringDict(entries)) => entries.clone(),
+            _ => Vec::new(),
+        };
+        let mut keys = Vec::new();
+        for (key, value) in entries {
+            let dependency = self.resolve_rule_src(rule, &key)?;
+            self.target(&dependency)
+                .map_err(|error| missing_edge(rule, &dependency, error))?;
+            self.analyze(&dependency, active, configured, plan)?;
+            keys.push((dependency, value));
+        }
+        let shown = crate::rule_declarations::canonical_form(&rule.label);
+        let requesting_package = rule_authority(rule);
+        let mut errors = Vec::new();
+        let mut prerequisites = Vec::new();
+        for (dependency, value) in keys {
+            let (chain, actual) = self.alias_chain(configured, &dependency);
+            let is_source = matches!(self.target(&actual)?, Target::Source(_));
+            if let Some(error) = self.no_files_error(&chain, &actual)? {
+                errors.push(format!(
+                    "in flag_values attribute of config_setting rule {shown}: {error}"
+                ));
+            }
+            let visible = match self.target(&dependency)? {
+                Target::Rule(dep) | Target::Output(dep, _) => self.visible(
+                    &dep.visibility,
+                    &rule_authority(&dep),
+                    Some(&requesting_package),
+                )?,
                 Target::Source(_) => self.visible(
                     &self.source_visibility(&dependency),
                     &dependency.package_id(),
                     Some(&requesting_package),
                 )?,
             };
+            let description = describe_with_aliases(&chain, &actual, "target");
             if !visible {
-                return Err(visibility_error(&rule, &dependency, is_source));
+                errors.push(visibility_message(rule, &description, is_source));
             }
-            self.validate_prerequisite(&rule, &dependency)?;
-            self.analyze(&dependency, active, configured, plan)?;
-        }
-        // RuleContext.Builder.validateExtraPrerequisites validates the config
-        // conditions like direct prerequisites, after dependency analysis
-        // (analysis/RuleContext.java:2104-2152; DEFAULT_PUBLIC policy).
-        for (condition, _) in &ordered {
-            let dependency = self.resolve_rule_src(&rule, condition)?;
-            if let Target::Rule(dep) = self.target(&dependency)? {
-                if !self.visible(
-                    &dep.visibility,
-                    &rule_authority(&dep),
-                    Some(&requesting_package),
-                )? {
-                    return Err(visibility_error(&rule, &dependency, false));
-                }
-                self.validate_prerequisite(&rule, &dependency)?;
+            if let Some(error) = self.prerequisite_error(rule, &actual, &description, false)? {
+                errors.push(error);
             }
+            let setting = configured
+                .get(&ConfiguredTargetKey {
+                    label: dependency.clone(),
+                    config: self.configuration.id,
+                })
+                .and_then(|node| node.build_setting.clone());
+            prerequisites.push(crate::config_setting::FlagPrerequisite {
+                specified: dependency,
+                actual,
+                value,
+                setting,
+            });
         }
-        // ConfigSetting.create (rules/config/ConfigSetting.java:111-166).
-        let matching = match (&rule.kind, &rule.native) {
-            (RuleKind::Native("config_setting"), Some(native)) => Some(
-                crate::config_setting::analyze(&rule.label, native, &self.configuration)
-                    .map_err(|error| located_lines(rule.location.as_deref(), &error))?,
-            ),
-            _ => None,
+        if !errors.is_empty() {
+            return Err(errors
+                .into_iter()
+                .map(|error| located(rule.location.as_deref(), error))
+                .collect::<Vec<_>>()
+                .join("\n"));
+        }
+        Ok(prerequisites)
+    }
+
+    /// Starlark build settings of the command line
+    /// (runtime/StarlarkOptionsParser.java, crate::starlark_options): each
+    /// option name is loaded as a target pattern
+    /// (BlazeOptionHandler.SkyframeExecutorTargetLoader,
+    /// runtime/BlazeOptionHandler.java:371-410). `command_args` are the
+    /// command's arguments (for the `Did you mean` hint); `labels` converts
+    /// label values with the main repository mapping.
+    pub fn starlark_options(
+        &mut self,
+        args: &[String],
+        command_args: &[String],
+        labels: &LabelParser<'_>,
+        current_package: &str,
+    ) -> Result<BTreeMap<Label, SettingValue>, String> {
+        if args.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let mut loader = |name: &str| self.load_option_target(name, current_package);
+        crate::starlark_options::parse(args, command_args, &mut loader, labels)
+    }
+
+    fn load_option_target(
+        &mut self,
+        name: &str,
+        current_package: &str,
+    ) -> Result<LoadedTarget, String> {
+        let labels =
+            if name.ends_with("/...")
+                || name.ends_with(":all")
+                || name.ends_with(":*")
+                || name.ends_with(":all-targets")
+            {
+                self.select(&[name.to_owned()], current_package)?
+            } else {
+                // Label syntax first (LabelParser.Parts.parse, cmdline/LabelParser.java),
+                // then repository visibility with Bazel's wording
+                // (cmdline/RepositoryMapping.java, RepositoryName.getNameWithAt).
+                crate::bazel_label::Parts::parse(name)?;
+                let label = self.repositories.parse(name, "", current_package).map_err(
+                    |error| match name
+                        .strip_prefix('@')
+                        .filter(|rest| !rest.starts_with('@'))
+                        .and_then(|rest| rest.split_once("//"))
+                    {
+                        Some((repository, _))
+                            if error.starts_with("unknown apparent repository") =>
+                        {
+                            format!("No repository visible as '@{repository}' from main repository")
+                        }
+                        _ => error,
+                    },
+                )?;
+                self.target(&label)?;
+                vec![label]
+            };
+        let [label] = labels.as_slice() else {
+            return Err("user-defined flags must reference exactly one target".to_owned());
         };
-        active.pop();
-        configured.insert(key, ConfiguredNode { matching });
-        plan.push(rule);
-        Ok(())
+        // Options are loaded through the target pattern phase, which reports
+        // deprecated targets (BlazeOptionHandler.java:393-409).
+        self.report_pattern_deprecation(label);
+        Ok(match self.target(label)? {
+            Target::Source(_) => LoadedTarget::NotRule(label.clone()),
+            // Target.getAssociatedRule of an output file is its generating rule.
+            Target::Output(..) => LoadedTarget::OtherRule(label.clone()),
+            Target::Rule(rule) => {
+                if let Some(info) = self.build_setting_info(&rule)? {
+                    LoadedTarget::BuildSetting(info)
+                } else if matches!(rule.kind, RuleKind::Native("alias")) {
+                    let native = rule.native.as_ref().expect("native alias");
+                    let actual = if native.configurable.contains_key("actual") {
+                        None
+                    } else {
+                        match native.attrs.get("actual") {
+                            Some(crate::custom_rule::AttrValue::Label(Some(actual))) => {
+                                Some(self.resolve_rule_src(&rule, actual)?)
+                            }
+                            _ => None,
+                        }
+                    };
+                    LoadedTarget::Alias {
+                        label: label.clone(),
+                        actual,
+                    }
+                } else {
+                    LoadedTarget::OtherRule(label.clone())
+                }
+            }
+        })
     }
 
     /// ConfigConditionsProducer (analysis/producers/ConfigConditionsProducer.java:91-172):
@@ -761,7 +1281,23 @@ impl Engine {
         let mut keys = Vec::new();
         for text in configured_attributes::rule_config_dependencies(rule) {
             let label = self.resolve_rule_src(rule, &text)?;
-            self.analyze(&label, active, configured, plan)?;
+            // A key that fails to load or analyze is reported by itself, then
+            // the consumer adds `errors encountered resolving select() keys
+            // for L` at its location (ConfigConditionsProducer.emitErrorIfMostImportant,
+            // analysis/producers/ConfigConditionsProducer.java:121-129, 200-211).
+            self.analyze(&label, active, configured, plan)
+                .map_err(|error| {
+                    format!(
+                        "{error}\n{}",
+                        located(
+                            rule.location.as_deref(),
+                            format!(
+                                "errors encountered resolving select() keys for {}",
+                                crate::rule_declarations::canonical_form(&rule.label)
+                            )
+                        )
+                    )
+                })?;
             keys.push((text, label));
         }
         let mut conditions = Vec::new();
@@ -770,6 +1306,10 @@ impl Engine {
                 label: label.clone(),
                 config: self.configuration.id,
             };
+            // The invalid-condition message names the prerequisite's target,
+            // the end of an alias chain (ConfigConditionsProducer.java:156-165,
+            // ConfiguredTargetAndData.getTargetLabel).
+            let label = self.alias_chain(configured, &label).1;
             let Some(matching) = configured.get(&key).and_then(|node| node.matching.clone()) else {
                 let target = crate::rule_declarations::canonical_form(&rule.label);
                 return Err(located(
@@ -791,11 +1331,34 @@ impl Engine {
     /// no experimental packages, same logical package = same package). Messages
     /// use RuleContext's `in CLASS rule LABEL: ` prefix
     /// (analysis/EventHandlingErrorReporter.java:80-82).
-    fn validate_prerequisite(&mut self, rule: &Rule, dependency: &Label) -> Result<(), String> {
+    fn validate_prerequisite(
+        &mut self,
+        rule: &Rule,
+        dependency: &Label,
+        description: &str,
+        skip_testonly: bool,
+    ) -> Result<(), String> {
+        // A RuleContext.ruleError at the consuming rule's location.
+        self.prerequisite_error(rule, dependency, description, skip_testonly)?
+            .map_or(Ok(()), |error| {
+                Err(located(rule.location.as_deref(), error))
+            })
+    }
+
+    /// The testonly error of [`Self::validate_prerequisite`] (`None` when
+    /// valid); deprecation warnings are recorded. `dependency` is the end of
+    /// an alias chain and `description` its describeTargetWithAliases text.
+    fn prerequisite_error(
+        &mut self,
+        rule: &Rule,
+        dependency: &Label,
+        description: &str,
+        skip_testonly: bool,
+    ) -> Result<Option<String>, String> {
         let (generating, output) = match self.target(dependency)? {
             Target::Rule(dep) => (dep, false),
             Target::Output(dep, _) => (dep, true),
-            Target::Source(_) => return Ok(()),
+            Target::Source(_) => return Ok(None),
         };
         let shown = crate::rule_declarations::canonical_form(&rule.label);
         let shown_dependency = crate::rule_declarations::canonical_form(dependency);
@@ -805,12 +1368,13 @@ impl Engine {
         // Output files of testonly rules are only checked with
         // --incompatible_check_testonly_for_output_files (default false,
         // analysis/config/CoreOptions.java:690-701).
-        let testonly_error = (!output
+        let testonly_error = (!skip_testonly
+            && !output
             && generating.is_test_only(dependency_args)
             && !rule.is_test_only(args))
         .then(|| {
             format!(
-                "{prefix}non-test target '{shown}' depends on testonly target '{shown_dependency}' and doesn't have testonly attribute set"
+                "{prefix}non-test target '{shown}' depends on testonly {description} and doesn't have testonly attribute set"
             )
         });
         // validate() runs the testonly check, then the deprecation check, for
@@ -833,7 +1397,7 @@ impl Engine {
             self.warnings
                 .push(located(rule.location.as_deref(), message));
         }
-        testonly_error.map_or(Ok(()), Err)
+        Ok(testonly_error)
     }
 
     fn artifacts(
@@ -899,6 +1463,33 @@ impl Engine {
         Ok((inputs, locations))
     }
 
+    /// TargetPatternPhaseFunction.maybeReportDeprecation
+    /// (skyframe/TargetPatternPhaseFunction.java:255-275): a loaded rule whose
+    /// `deprecation` is explicitly specified (package defaults excluded, ""
+    /// included) warns at its location.
+    fn report_pattern_deprecation(&mut self, label: &Label) {
+        if let Ok(Target::Rule(rule)) = self.target(label) {
+            let explicit = rule
+                .native
+                .as_ref()
+                .and_then(|native| native.string("deprecation"))
+                .or_else(|| {
+                    rule.custom
+                        .as_ref()
+                        .and_then(|custom| custom.declaration.builtin.target.string("deprecation"))
+                });
+            if let Some(message) = explicit {
+                self.warnings.push(located(
+                    rule.location.as_deref(),
+                    format!(
+                        "target '{}' is deprecated: {message}",
+                        crate::rule_declarations::canonical_form(&rule.label)
+                    ),
+                ));
+            }
+        }
+    }
+
     pub fn build(&mut self, labels: &[Label], cache: &Path) -> Result<BuildSummary, String> {
         self.build_with_jobs(labels, cache, 1)
     }
@@ -917,26 +1508,7 @@ impl Engine {
         // rule whose `deprecation` is explicitly specified (package defaults
         // excluded, "" included), before analysis.
         for label in labels {
-            if let Ok(Target::Rule(rule)) = self.target(label) {
-                let explicit = rule
-                    .native
-                    .as_ref()
-                    .and_then(|native| native.string("deprecation"))
-                    .or_else(|| {
-                        rule.custom.as_ref().and_then(|custom| {
-                            custom.declaration.builtin.target.string("deprecation")
-                        })
-                    });
-                if let Some(message) = explicit {
-                    self.warnings.push(located(
-                        rule.location.as_deref(),
-                        format!(
-                            "target '{}' is deprecated: {message}",
-                            crate::rule_declarations::canonical_form(&rule.label)
-                        ),
-                    ));
-                }
-            }
+            self.report_pattern_deprecation(label);
         }
         // Generated files of this build live under its configuration's root.
         let _output_root = crate::label::OutputRootScope::new(self.configuration.output_root());
@@ -945,6 +1517,18 @@ impl Engine {
         for label in labels {
             self.analyze(label, &mut Vec::new(), &mut configured, &mut plan)?;
         }
+        // Alias-like targets and the end of their alias chain: dependents see
+        // that target's label, kind and providers (AliasConfiguredTarget).
+        let forwarded: BTreeMap<Label, Label> = configured
+            .iter()
+            .filter(|(_, node)| node.actual.is_some())
+            .map(|(key, _)| {
+                (
+                    key.label.clone(),
+                    self.alias_chain(&configured, &key.label).1,
+                )
+            })
+            .collect();
         let main_ignored = self.ignored("")?;
         // Validate every command before executing any action. The dry artifacts
         // carry the same exec paths as the actual generated files.
@@ -1007,11 +1591,12 @@ impl Engine {
                         })?;
                         available.insert(file.clone(), artifact.clone());
                     }
-                    let target = self.target(&label)?;
+                    let actual = forwarded.get(&label).unwrap_or(&label).clone();
+                    let target = self.target(&actual)?;
                     dependency_targets.insert(
                         label.to_string(),
                         DependencyTarget {
-                            label: label.to_string(),
+                            label: actual.to_string(),
                             files,
                             is_source: matches!(target, Target::Source(_)),
                             is_rule: matches!(&target, Target::Rule(rule) if !matches!(rule.kind, RuleKind::PackageGroup(_))),
@@ -1175,6 +1760,17 @@ impl Engine {
                 dry.insert(rule.label.clone(), artifacts);
             } else {
                 restricted_to_error(rule)?;
+                // An alias-like target forwards its actual's files (above) and
+                // providers.
+                if forwards(rule) {
+                    let actual = self.resolve_rule_src(rule, &rule.srcs[0])?;
+                    if let Some(providers) = custom_providers.get(&actual).cloned() {
+                        custom_providers.insert(rule.label.clone(), providers);
+                    }
+                    if let Some(files) = provider_files.get(&actual).cloned() {
+                        provider_files.insert(rule.label.clone(), files);
+                    }
+                }
                 dry.insert(rule.label.clone(), inputs);
             }
         }
@@ -1377,14 +1973,22 @@ fn suggest_targets(input: &str, words: &BTreeSet<String>) -> String {
 /// (analysis/CommonPrerequisiteValidator.java:380-405, default
 /// --noverbose_visibility_errors) reported by RuleContext.ruleError at the
 /// consuming rule (`LOC: in CLASS rule L: `, EventHandlingErrorReporter.java:80-82).
-/// Implicit (private Starlark) attributes are attributed to the consumer
-/// target here, not to its rule's `.bzl` (divergence, docs/CONFIGURATION.md).
-fn visibility_error(rule: &Rule, dependency: &Label, is_source: bool) -> String {
+/// `description` is describeTargetWithAliases(WITHOUT_KIND); `is_source`
+/// whether the (alias chain's end) target is a source file. Implicit
+/// (private Starlark) attributes are attributed to the consumer target here,
+/// not to its rule's `.bzl` (divergence, docs/CONFIGURATION.md).
+fn visibility_error(rule: &Rule, description: &str, is_source: bool) -> String {
+    located(
+        rule.location.as_deref(),
+        visibility_message(rule, description, is_source),
+    )
+}
+
+fn visibility_message(rule: &Rule, description: &str, is_source: bool) -> String {
     let mut message = format!(
-        "in {} rule {}: Visibility error:\ntarget '{}' is not visible from\ntarget '{}'\nRecommendation: modify the visibility declaration if you think the dependency is legitimate. For more info see https://bazel.build/concepts/visibility",
+        "in {} rule {}: Visibility error:\n{description} is not visible from\ntarget '{}'\nRecommendation: modify the visibility declaration if you think the dependency is legitimate. For more info see https://bazel.build/concepts/visibility",
         rule.rule_class_name(),
         crate::rule_declarations::canonical_form(&rule.label),
-        crate::rule_declarations::canonical_form(dependency),
         crate::rule_declarations::canonical_form(&rule.label),
     );
     if is_source {
@@ -1392,7 +1996,53 @@ fn visibility_error(rule: &Rule, dependency: &Label, is_source: bool) -> String 
             ". To set the visibility of that source file target, use the exports_files() function",
         );
     }
-    located(rule.location.as_deref(), message)
+    message
+}
+
+/// TargetUtils.formatMissingEdge (packages/TargetUtils.java:394-430) at the
+/// consuming rule's location (MissingEdgeError, analysis/producers/MissingEdgeError.java:86-111;
+/// DependencyProducer.java:279-290): an explicit dependency appends
+/// ` and referenced by 'L'`; an implicit one (label_flag/label_setting's
+/// late-bound `:alias`, private Starlark attributes) is `every rule of type
+/// KIND implicitly depends upon the target 'D', but this target could not be
+/// found because of: MESSAGE`. A missing package is first reported on its
+/// own (the package lookup error event). Other errors pass through.
+fn missing_edge(rule: &Rule, dependency: &Label, error: String) -> String {
+    let package = error.starts_with("no such package '");
+    if !package && !error.starts_with("no such target '") {
+        return error;
+    }
+    let explicit = match (&rule.kind, &rule.custom) {
+        (RuleKind::Native("label_flag" | "label_setting"), _) => false,
+        (_, Some(custom)) => custom.attrs.iter().any(|(name, value)| {
+            !name.starts_with('_')
+                && crate::package::custom_dependency_labels(&BTreeMap::from([(
+                    name.clone(),
+                    value.clone(),
+                )]))
+                .iter()
+                .any(|text| Label::parse_canonical(text).as_ref() == Ok(dependency))
+        }),
+        _ => true,
+    };
+    let edge = if explicit {
+        format!(
+            "{error} and referenced by '{}'",
+            crate::rule_declarations::canonical_form(&rule.label)
+        )
+    } else {
+        format!(
+            "every rule of type {} implicitly depends upon the target '{}', but this target could not be found because of: {error}",
+            rule.rule_class_name(),
+            crate::rule_declarations::canonical_form(dependency)
+        )
+    };
+    let edge = located(rule.location.as_deref(), edge);
+    if package {
+        format!("{error}\n{edge}")
+    } else {
+        edge
+    }
 }
 
 /// [`located`] for each line of several events.
@@ -1574,10 +2224,14 @@ fn native_analysis_gate(rule: &Rule) -> Result<(), String> {
         // RuleContext errors carry the rule's location.
         return Err(located(rule.location.as_deref(), error));
     }
-    // config_setting analysis is modelled for values/define_values
-    // (crate::config_setting); flag_values/constraint_values fail there.
+    // config_setting analysis is modelled (crate::config_setting;
+    // constraint_values fail there), alias/label_flag/label_setting forward
+    // to their actual; the other native classes fail explicitly (N16c/N17).
     if let RuleKind::Native(kind) = rule.kind
-        && kind != "config_setting"
+        && !matches!(
+            kind,
+            "config_setting" | "alias" | "label_flag" | "label_setting"
+        )
     {
         return Err(format!(
             "{}: native rule {kind} analysis not implemented in the native profile",
@@ -1612,7 +2266,7 @@ fn resolved_value_gate(rule: &Rule) -> Result<(), String> {
     if let Some(native) = &rule.native
         && matches!(
             native.rule_class.as_str(),
-            "filegroup" | "genrule" | "config_setting"
+            "filegroup" | "genrule" | "config_setting" | "alias" | "label_flag" | "label_setting"
         )
     {
         let gaps = crate::native_rules::analysis_gaps(native);
@@ -1774,6 +2428,27 @@ fn expand_command_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alias_descriptions_follow_alias_provider() {
+        let label = |text: &str| Label::parse_canonical(text).unwrap();
+        assert_eq!(
+            describe_with_aliases(&[], &label("//p:x"), "target"),
+            "target '//p:x'"
+        );
+        assert_eq!(
+            describe_with_aliases(&[label("//a:a")], &label("@@r+//p:x"), "source file"),
+            "alias '//a:a' referring to source file '@@r+//p:x'"
+        );
+        assert_eq!(
+            describe_with_aliases(
+                &[label("//a:a"), label("//a:b"), label("//a:c")],
+                &label("//p:x"),
+                "target"
+            ),
+            "alias '//a:a' referring to target '//p:x' through '//a:b' -> '//a:c'"
+        );
+    }
 
     #[test]
     fn only_main_repository_sources_below_ignored_top_level_entries_are_unplanted() {
