@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-// Modified for native Bazel 9.3 set assignment compatibility; see vendor provenance.
+// Modified for native Bazel 9.3 set assignment compatibility and frozen-mutation messages; see vendor provenance.
 
 use std::cell::Cell;
 use std::cell::RefCell;
@@ -889,7 +889,7 @@ load('imported', 'add2')
 def add3(z):
     add2(z)
 add3(8)"#,
-        "Immutable",
+        "trying to mutate a frozen list value",
     );
 
     golden_test_template(

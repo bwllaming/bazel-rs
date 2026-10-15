@@ -52,8 +52,11 @@ CASEPLAN = [
     common.case('binding', ('name-keyword', 'default-keyword', 'name-type', 'default-present',
                           'default-absent', 'missing', 'extra', 'environ-none', 'environ-element', 'frozen')),
     common.case('privacy', ROUTES),
+    # module_ctx.getenv (N21; genuine Bazel records it as an extension input):
+    # the only dependency path is extension getenv -> repository attribute.
+    common.case('module-getenv', ('ordinary',)),
     common.case('native-boundary', ('nonascii', 'nonutf8', 'name-limit', 'getter-limit',
-                                   'repo-env-inline', 'repo-env-split', 'module-getenv'), 'native_boundary'),
+                                   'repo-env-inline', 'repo-env-split'), 'native_boundary'),
 ]
 PLAN = [(c['name'], c['kind']) for c in CASEPLAN]
 digest, evidence, snapshot, valid_evidence = direct.digest, direct.evidence, direct.snapshot, direct.valid_evidence
@@ -69,7 +72,6 @@ DIAGNOSTICS = {
     'encoding': r'(?:environment|repository)[^\n]*(?:ASCII|UTF-8|encoding)',
     'limit': r'(?:environment|getenv)[^\n]*(?:limit|budget|too (?:long|many)|exceed)',
     'repo-env': r'--repo_env[^\n]*(?:unsupported|not supported)',
-    'module-getenv': r'(?:module_ctx|module context)[^\n]*(?:getenv|attribute)|getenv[^\n]*(?:attribute|unsupported|not supported)',
 }
 # Native errors are deliberately value-free constants, not Bazel binder wording.
 # Keep logical argument/type/encoding/quota classes distinct: an observation
@@ -217,6 +219,7 @@ def fixture(name, probe):
     expression = 'ctx.getenv('+repr(A)+',"MISSING")'
     before = ''
     template = name == 'watched'
+    attrs = '{}'
     if variant == 'tuple':
         names = '('+repr(A)+','+repr(A)+')'
     if variant == 'snapshot':
@@ -235,6 +238,10 @@ def fixture(name, probe):
         prelude += 'ODD='+odd+'\n'
         names = 'ODD' if variant == 'declared' else '[]'
         expression = '"|".join([str(ctx.getenv(n))+"/"+ctx.getenv(n,"DEFAULT") for n in ODD])'
+    if name == 'module-getenv':
+        # The repository callback reads no environment: its value arrives only
+        # through the attribute computed by the extension's module_ctx.getenv.
+        names, expression, attrs = '[]', 'ctx.attr.text', '{"text":attr.string(mandatory=True)}'
     if name == 'binding':
         template = False
         calls = {'name-keyword': 'ctx.getenv(name='+repr(A)+')',
@@ -260,10 +267,8 @@ def fixture(name, probe):
         elif probe == 'getter-limit':
             names, diagnostic = '[]', 'limit'
             before = 'for i in range(10001):\n    ctx.getenv('+repr(A)+')\n'
-        elif probe.startswith('repo-env-'):
-            diagnostic, callbacks = 'repo-env', 0
         else:
-            diagnostic, callbacks = 'module-getenv', 0
+            diagnostic, callbacks = 'repo-env', 0
     body = 'print("ENV_CALLBACK_A")\n'+before
     body += 'if getattr(ctx.attr,"environ",None) != None:\n    fail("ENV_BECAME_ATTR")\n'
     body += 'value=CAPTURED+'+expression+'+"\\n"\n'
@@ -272,7 +277,8 @@ def fixture(name, probe):
     else:
         body += 'ctx.file("a.txt",value,executable=False)\n'
     body += 'ctx.file("BUILD.bazel",\'exports_files(["a.txt"],visibility=["//visibility:public"])\\n\',executable=False)\n'
-    attrs = '{"src":attr.label(default="//:input.tpl",allow_single_file=True)}' if template else '{}'
+    if template:
+        attrs = '{"src":attr.label(default="//:input.tpl",allow_single_file=True)}'
     defs = (prelude+'def _impl(ctx):\n'+common.indent(body)+
             'r=repository_rule(implementation=_impl,environ='+names+',local=False,attrs='+attrs+')\n'+tail)
     files = {'MODULE.bazel': 'module(name="environment_contract")\n', 'defs.bzl': defs,
@@ -286,7 +292,8 @@ def fixture(name, probe):
         repos.append('second')
     if route == 'ordinary':
         ext = 'load(":defs.bzl","r"'+(',"other"' if len(repos) == 2 else '')+')\n'
-        ext += 'def _ext(ctx):\n    r(name="made")\n'+('    other(name="second")\n' if len(repos) == 2 else '')
+        made = 'r(name="made",text=ctx.getenv('+repr(A)+',"MISSING"))' if name == 'module-getenv' else 'r(name="made")'
+        ext += 'def _ext(ctx):\n    '+made+'\n'+('    other(name="second")\n' if len(repos) == 2 else '')
         files['ext.bzl'] = ext+'e=module_extension(implementation=_ext)\n'
         files['MODULE.bazel'] += 'e=use_extension("//:ext.bzl","e")\nuse_repo(e,'+','.join(map(repr, repos))+')\n'
     else:
@@ -295,10 +302,6 @@ def fixture(name, probe):
             files['MODULE.bazel'] += 'other=use_repo_rule("//:defs.bzl","other")\nother(name="second")\n'
     if name == 'binding' and probe == 'frozen':
         files['consumer.bzl'] = 'load(":defs.bzl","NAMES")\nNAMES.append('+repr(B)+')\n'
-    if name == 'native-boundary' and probe == 'module-getenv':
-        files['MODULE.bazel'] = 'module(name="environment_contract")\ne=use_extension("//:ext.bzl","e")\nuse_repo(e,"made")\n'
-        files['ext.bzl'] = ('load(":defs.bzl","r")\ndef _ext(ctx):\n    ctx.getenv('+repr(A)+')\n'
-                            '    r(name="made")\ne=module_extension(implementation=_ext)\n')
     srcs = ['@made//:a.txt']+(['@second//:b.txt'] if len(repos) == 2 else [])
     files['BUILD.bazel'] = ('load(":consumer.bzl","NAMES")\n' if name == 'binding' and probe == 'frozen' else '')
     files['BUILD.bazel'] += ('exports_files(["input.tpl"])\n'
@@ -756,7 +759,8 @@ def main(argv=None):
             'NonASCII/nonUTF8/quotas and unsupported flags are EXPLICIT_NATIVE_BOUNDARY, not Bazel error parity.',
             'Reader error memoization, raw absent/default watch counts, runtime clone ownership, resource digest vectors are core-unit gates.',
             'Initial OS allocation cannot be precharged; no oversized OS spawn or RSS/OOM guarantee.',
-            'No module_extension environ/module_ctx getenv, OS SDK, flag override, or application completeness claim.'])
+            'module_ctx.getenv is differential only through an extension-computed repository attribute (module-getenv).',
+            'No module_extension(environ=...), OS SDK, flag override, or application completeness claim here (see validate_host_os).'])
     scratch = ref = runner = None
     interrupted = False
     try:

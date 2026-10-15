@@ -34,7 +34,7 @@
     {"path": "src/eval/bc/opcode.rs", "original": {"size": 5789, "sha256": "3be76d3d2874f3247ef926ab243363e06bbcfa107960a60260b4d5f13e2bcab5"}, "current": {"size": 5927, "sha256": "434e556fa62e50c06e10a9758e13945794db9ae1e6daba1d07ae07cf6b036c81"}},
     {"path": "src/eval/compiler/stmt.rs", "original": {"size": 30921, "sha256": "40ca5fbc987f2435ef8a68a731eb5e0838aca4a4dbb05d548906da2869f17978"}, "current": {"size": 32740, "sha256": "19b348e7cd02cb0616d6b503949026cbb6b13a276a0a3fc41246a81f43ca2839"}},
     {"path": "src/eval/runtime/evaluator.rs", "original": {"size": 53486, "sha256": "c888af6b8eecdcce0eeecebfa4756677b630c0a2473f72ac5ad396dc4df96c99"}, "current": {"size": 55411, "sha256": "5af18ffffca5ee84fee967c9a539893d266d2b94e4b83b9154fed12643602a1a"}},
-    {"path": "src/tests/uncategorized.rs", "original": {"size": 23524, "sha256": "f7ec37a3e8ac03fa91be4ae0712b6d804610a29e7803fe6c182231e383c84f5a"}, "current": {"size": 36090, "sha256": "b20f875ebb109a4ab32a2c58ed82f87709ccd389f874ea7115223a22d26399be"}},
+    {"path": "src/tests/uncategorized.rs", "original": {"size": 23524, "sha256": "f7ec37a3e8ac03fa91be4ae0712b6d804610a29e7803fe6c182231e383c84f5a"}, "current": {"size": 36146, "sha256": "893ed77e2a51b8f49a6a138057160d3fafdf27360a2c8bf57b6bdaf35f59616b"}},
     {"path": "src/typing/tests/types.rs", "original": {"size": 2350, "sha256": "f57229518d02ef6dd60ea058b0255a1258a9b6021c6ba679bc642302fe86a30c"}, "current": {"size": 5052, "sha256": "e619f3f4b8b0ad903d49daf7eed728c8adbed66b868374b22a603a219dc7c1d9"}},
     {"path": "src/values/types/set/methods.rs", "original": {"size": 19969, "sha256": "d9a6a27fd31f3ff5f36c3a15a5f7f6a7d75eca911dc906de2d2f4994b0cd31aa"}, "current": {"size": 29382, "sha256": "6f804a291ca810741cfbd8c0596e3740d41509e6fb057cb29bb06d5d9d978141"}},
     {"path": "src/values/types/set/refs.rs", "original": {"size": 3618, "sha256": "327b7992e6fe48b19a26a5d6f4d6d9caf902e8b87a3b6a37bd175c78c891c14a"}, "current": {"size": 4022, "sha256": "83397d2cf8b651722e977191db850947eb85ef1d8041c60ba27a5654aaaf5f03"}},
@@ -47,13 +47,17 @@
     {"path": "src/values/types/string/methods.rs", "original": {"size": 48364, "sha256": "0686915bd409170c1ccb8b603cd9a496b4cd4a4108c2cf6a3d886c9ba7f13cce"}, "current": {"size": 53660, "sha256": "c1a8e8ad4d6b33cfd0f9c48cf0c8972c38c64113a76586ebe7448fc97f757ba2"}},
     {"path": "src/values/types/string/repr.rs", "original": {"size": 12926, "sha256": "d553105c2d84daaae3c18b4d5d0d360519c14f65ac79a65fa4c4509f4b2fbb60"}, "current": {"size": 13057, "sha256": "80a87d38f02f7c9884f9f6669a7bcc8b263c99bcbc983c8d5577a834ccd4b197"}},
     {"path": "src/values/error.rs", "original": {"size": 3960, "sha256": "b24ee2c7a0f366d326664d47f4cde57a6f9477e3805689f4e1d6107a418f22d5"}, "current": {"size": 4294, "sha256": "9c02d7ae919f68ba05b424c37d4bd66578d6e049a3acb78bc61279a2d8c42017"}},
-    {"path": "src/values/types/list/value.rs", "original": {"size": 18982, "sha256": "faab92b654d9d19da4ee0eae5127377a433ed88ff53c4d27b4fc6edcaddb1112"}, "current": {"size": 19095, "sha256": "25a083b2c14811f423b7ea14b06af3594d621d8b0db909aa510cee1efd7e882e"}},
+    {"path": "src/values/types/list/value.rs", "original": {"size": 18982, "sha256": "faab92b654d9d19da4ee0eae5127377a433ed88ff53c4d27b4fc6edcaddb1112"}, "current": {"size": 19184, "sha256": "4b49e311a669e325fdedd8326712d8c263eafcd2071d67a93fe19b82c3cb5f65"}},
     {"path": "src/values/types/dict/refs.rs", "original": {"size": 4546, "sha256": "42abbff9c26da760a5b653564219634ffaf5c5fc001d10ba6e27c4054f1fd946"}, "current": {"size": 4654, "sha256": "7dc92ebd54bd279e2ea9d5ca44ae1516682178a72a7e8f67b97930c51d5e8e55"}},
     {"path": "src/values/types/dict/value.rs", "original": {"size": 18317, "sha256": "837b7ee8a283ef8090f89f751cb2153574b8a5a5f07b9ee6076e94de5064e43b"}, "current": {"size": 18425, "sha256": "60027ce39dc826bdb666de31a8a39a1f401c6e5205a795c3a1be25126b6eb361"}},
     {"path": "src/values/traits.rs", "original": {"size": 34455, "sha256": "5017b2cc096cf76d60d1461b76860a1acfa064dcd8230765c824e509cbdc9e13"}, "current": {"size": 35985, "sha256": "fe17f19947d6ae73c3b58a9323ca77d024a3b0b50ab3345f6106fe00b1a035b1"}},
-    {"path": "src/values/layout/vtable.rs", "original": {"size": 26037, "sha256": "a53c9a02a1ec54549f49865b37d5d6b9cdd3e3b994733dabd09b59cab535a040"}, "current": {"size": 27079, "sha256": "7b13879b8f12831c00a65e54a9e7f48572da0675c32e1a6544c9ade6d723e6bb"}}
+    {"path": "src/values/layout/vtable.rs", "original": {"size": 26037, "sha256": "a53c9a02a1ec54549f49865b37d5d6b9cdd3e3b994733dabd09b59cab535a040"}, "current": {"size": 27079, "sha256": "7b13879b8f12831c00a65e54a9e7f48572da0675c32e1a6544c9ade6d723e6bb"}},
+    {"path": "src/tests/call.rs", "original": {"size": 9024, "sha256": "5ed32159401c16f85f58f43b6138e2de0297841a2519861ef72d9812bc08b84f"}, "current": {"size": 9157, "sha256": "44c29358c3a1f47a912ac23d83c2a469717fed51b7de21ee0f498dd09ca56a48"}},
+    {"path": "src/values/types/dict/methods.rs", "original": {"size": 14780, "sha256": "d81b219a00622900e07c553a034d3ca46c5ba1ac733526a6d9ece10c89dbbf2f"}, "current": {"size": 14917, "sha256": "358c166e18bbcc6d910684ca28898b78c9a424930d9bb6f2d3747cc1337cae8e"}},
+    {"path": "src/tests/uncategorized_error_display.golden", "original": {"size": 414, "sha256": "7fe0f9a7cb04f5501d1c9b666127c03660c53923da1c1d3509c8e77d0803fc46"}, "current": {"size": 441, "sha256": "58d93347b1912c1d0297c1bd3e12904953c332f9d029e453aef243ef9a77345b"}},
+    {"path": "src/tests/uncategorized_error_display_hash.golden", "original": {"size": 414, "sha256": "7fe0f9a7cb04f5501d1c9b666127c03660c53923da1c1d3509c8e77d0803fc46"}, "current": {"size": 441, "sha256": "58d93347b1912c1d0297c1bd3e12904953c332f9d029e453aef243ef9a77345b"}}
   ],
-  "patch_scope": "Bazel-compatible core set methods/constructor, assignment-specific mutation, scoped iterator error cleanup and regressions; allocation-free typed BigInt inspection for native JSON preflight; Bazel 9.3 UTF-8 byte-string string methods (ASCII-only case mapping/predicates, ASCII strip whitespace, explicit None strip argument, byte-wise title letter state) and Printer-compatible string repr escaping; location-aware indexing and `in` (StarlarkValue::at_with_location / is_in_with_location with default delegation to at / is_in, used by the ArrayIndex and In bytecode instructions with the expression's lazily computed span) for native ctx.toolchains string keys (docs/TOOLCHAINS.md). Native feature installation remains separate from vendor changes. Bazel 9.3 frozen list/dict mutation text ('trying to mutate a frozen list|dict value', Starlark.checkMutable) and a reverse `|` hook (StarlarkValue::rbit_or) so a dict left operand defers to `select()` (SelectorList.binaryOp with thisLeft = false), also for `|=`.",
+  "patch_scope": "Bazel-compatible core set methods/constructor, assignment-specific mutation, scoped iterator error cleanup and regressions; allocation-free typed BigInt inspection for native JSON preflight; Bazel 9.3 UTF-8 byte-string string methods (ASCII-only case mapping/predicates, ASCII strip whitespace, explicit None strip argument, byte-wise title letter state) and Printer-compatible string repr escaping; location-aware indexing and `in` (StarlarkValue::at_with_location / is_in_with_location with default delegation to at / is_in, used by the ArrayIndex and In bytecode instructions with the expression's lazily computed span) for native ctx.toolchains string keys (docs/TOOLCHAINS.md). Native feature installation remains separate from vendor changes. Bazel 9.3 frozen list/dict mutation text ('trying to mutate a frozen list|dict value', Starlark.checkMutable) and a reverse `|` hook (StarlarkValue::rbit_or) so a dict left operand defers to `select()` (SelectorList.binaryOp with thisLeft = false), also for `|=`. The vendored crate's own frozen list/dict mutation tests and error-display goldens expect that Bazel text (tuples, bytes and sets keep `Immutable`).",
   "additional_files": [
     {
       "path": "LICENSE",
@@ -66,10 +70,10 @@
     },
     {
       "path": "BAZEL_RS_MODIFICATIONS.md",
-      "size": 672,
-      "sha256": "60cdeaa33736e546331f2b0a0882a2137d38c1a4e5588161a4d5ca229965f5ef",
+      "size": 1143,
+      "sha256": "e3f76fbf16b112be83636037ec01b8d47311d5c00dc7ee12318db25a81cea151",
       "origin": "Local bazel-rs modification notice, not upstream material",
-      "reason": "Prominent modification notice for machine-readable profiling golden data"
+      "reason": "Prominent modification notice for machine-readable profiling and error-display golden data"
     }
   ],
   "notice": {

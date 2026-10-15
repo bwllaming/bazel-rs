@@ -13,7 +13,7 @@ Traceback (most recent call last):
       add(z)
   * imported.bzl:11, in add
       x.append(z)
-error: Immutable
+error: trying to mutate a frozen list value
   --> imported.bzl:11:3
    |
 11 |   x.append(z)

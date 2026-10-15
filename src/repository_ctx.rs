@@ -1088,7 +1088,12 @@ impl Context {
         if let Some(canonical) = unpack_label(value) {
             let bytes = self.read_label(&canonical)?;
             self.charge_read(bytes.len())?;
-            if watch != ShouldWatch::No {
+            // Label templates are already keyed by their `templates` entry
+            // (canonical label and full bytes, recorded regardless of watch
+            // mode), so content changes rekey without a `files` entry; adding
+            // one would change the pre-N21 identity of existing repositories.
+            // Label read() calls had no previous identity and are recorded.
+            if method != "template" && watch != ShouldWatch::No {
                 self.record(
                     canonical.clone(),
                     "file",
@@ -3194,6 +3199,65 @@ R = repository_rule(implementation = _impl)
                 0o755
             );
         }
+    }
+
+    #[test]
+    fn label_templates_keep_pre_n21_execution_input_identity() {
+        // Golden: the exact bytes main (040d055) serialized for a repository
+        // using only ctx.file and Label templates — no `files`, `watched_env`
+        // or `host_facilities` keys. The `templates` entry (canonical label and
+        // full bytes) alone keys template content, whatever the watch mode.
+        let golden = r#"{"templates":[{"source":"//:data.tpl","bytes":[65,32,66,32,65,66,13,10,255]},{"source":"//:tool.tpl","bytes":[84,32,37,123,110,125,10]}]}"#;
+        for watch in ["", ", watch_template = 'yes'", ", watch_template = 'auto'"] {
+            let fixture = Fixture::new();
+            fixture.file("data.tpl", b"A B AB\r\n\xff");
+            fixture.file("tool.tpl", b"T %{n}\n");
+            let loaded = fixture.load(
+                &format!("ctx.file('BUILD.bazel', '')\nctx.file('plain.txt', 'plain', executable = False)\nctx.template('data.txt', ctx.attr.source, {{'A': 'B'}}, executable = False{watch})\nctx.template('tool.sh', Label('//:tool.tpl'), {{'%{{n}}': 'x'}}{watch})"),
+                "{'source': attr.label(default = '//:data.tpl')}",
+            );
+            let inputs = fixture.run_loaded(loaded, BTreeMap::new()).unwrap();
+            assert_eq!(fixture.bytes("data.txt"), b"B B BB\r\n\xff");
+            assert_eq!(fixture.bytes("tool.sh"), b"T x\n");
+            assert_eq!(serde_json::to_string(&inputs).unwrap(), golden);
+            let host = crate::host_os::HostMetadata::fixture("linux", "amd64", "linux");
+            assert_eq!(
+                crate::host_os::repository_inputs(&host, &inputs).unwrap(),
+                format!(r#"{{"host_input_profile":"repository-host-v1","host":{{"name":"linux","arch":"amd64"}},"execution":{golden}}}"#).into_bytes()
+            );
+        }
+        // Changed template bytes still change the identity (no files entry
+        // needed), including with watch_template = 'no'.
+        let fixture = Fixture::new();
+        fixture.file("tool.tpl", b"U\n");
+        let inputs = fixture
+            .run("ctx.template('tool.sh', Label('//:tool.tpl'), watch_template = 'no')")
+            .unwrap();
+        assert_eq!(
+            serde_json::to_string(&inputs).unwrap(),
+            r#"{"templates":[{"source":"//:tool.tpl","bytes":[85,10]}]}"#
+        );
+        // Label read() had no previous identity and stays a recorded file
+        // input unless watch = 'no'; a Label template plus a read of the same
+        // Label records only the read.
+        fixture.file("tool.tpl", b"T\n");
+        let inputs = fixture
+            .run("ctx.template('tool.sh', Label('//:tool.tpl'))\nctx.read(Label('//:tool.tpl'))\nctx.read(Label('//:tool.tpl'), watch = 'no')")
+            .unwrap();
+        assert_eq!(
+            serde_json::to_string(&inputs).unwrap(),
+            format!(
+                r#"{{"templates":[{{"source":"//:tool.tpl","bytes":[84,10]}}],"files":[{{"path":"//:tool.tpl","kind":"file","state":"file:{}"}}]}}"#,
+                sha256(b"T\n")
+            )
+        );
+        let inputs = fixture
+            .run("ctx.read(Label('//:tool.tpl'), watch = 'no')")
+            .unwrap();
+        assert_eq!(
+            serde_json::to_string(&inputs).unwrap(),
+            r#"{"templates":[]}"#
+        );
     }
 
     #[test]

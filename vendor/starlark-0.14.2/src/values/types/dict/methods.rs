@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 frozen-mutation messages; see vendor provenance.
+
 //! Methods for the `dict` type.
 
 use std::mem;
@@ -427,7 +429,7 @@ load('d.star', 'D')
 
 D.update(D)
 "#,
-            "Immutable",
+            "trying to mutate a frozen dict value",
         );
     }
 
@@ -440,7 +442,7 @@ D.update(D)
 load('d.star', 'D')
 D.update(**D)
 "#,
-            "Immutable",
+            "trying to mutate a frozen dict value",
         );
     }
 }

@@ -167,6 +167,58 @@ fn template_preserves_binary_input_and_uses_ordered_literal_substitutions() {
 }
 
 #[test]
+fn label_template_repositories_keep_their_pre_n21_publication_identity() {
+    // Goldens were produced by the main binary (040d055, before N21) with a
+    // private --cache-dir on linux/amd64; N21 must not rekey repositories that
+    // only use ctx.file and Label templates (direct and extension-generated).
+    let f = Fixture::new();
+    f.file("MODULE.bazel", "module(name='main')\nmake = use_repo_rule('//:defs.bzl','make')\nmake(name='made', source='//:data.tpl')\n");
+    f.file("BUILD.bazel", "genrule(name='copy',srcs=['@made//:data.txt','@made//:tool.sh'],outs=['copy.txt'],cmd='cat $(SRCS) > $@')\n");
+    f.file("data.tpl", b"A B AB\r\n\xff");
+    f.file("tool.tpl", "#!/bin/sh\necho %{name}\n");
+    f.file("defs.bzl", "def _impl(ctx):\n    ctx.file('BUILD.bazel', \"exports_files(['data.txt','tool.sh','plain.txt'])\\n\")\n    ctx.file('plain.txt', 'plain', executable=False)\n    ctx.template('data.txt', ctx.attr.source, {'A':'B'}, executable=False)\n    ctx.template('tool.sh', Label('//:tool.tpl'), {'%{name}':'x'})\nmake = repository_rule(_impl, attrs={'source':attr.label()})\n");
+    let identity = |f: &Fixture| {
+        let roots = f.roots();
+        assert_eq!(roots.len(), 1, "{roots:?}");
+        roots[0].file_name().unwrap().to_str().unwrap().to_owned()
+    };
+    let golden = cfg!(all(target_os = "linux", target_arch = "x86_64"));
+    assert_eq!(
+        bytes(&f.build("//:copy")[0].1),
+        b"B B BB\r\n\xff#!/bin/sh\necho x\n"
+    );
+    if golden {
+        assert_eq!(
+            identity(&f),
+            "f9736a7487473637e97783d2bdf641a417e64493204e33a4c16cac0f9e71bec9"
+        );
+    }
+    // Template content changes still rekey through the templates entry.
+    let first = identity(&f);
+    f.file("tool.tpl", "#!/bin/sh\necho changed %{name}\n");
+    fs::remove_dir_all(f.0.path().join("cache")).unwrap();
+    assert_eq!(
+        bytes(&f.build("//:copy")[0].1),
+        b"B B BB\r\n\xff#!/bin/sh\necho changed x\n"
+    );
+    assert_ne!(identity(&f), first);
+    f.file("tool.tpl", "#!/bin/sh\necho %{name}\n");
+    fs::remove_dir_all(f.0.path().join("cache")).unwrap();
+    f.file(
+        "MODULE.bazel",
+        "module(name='main')\next = use_extension('//:ext.bzl','ext')\nuse_repo(ext,'made')\n",
+    );
+    f.file("ext.bzl", "load(':defs.bzl','make')\ndef _impl(ctx):\n    make(name='made', source='//:data.tpl')\next = module_extension(_impl)\n");
+    f.build("//:copy");
+    if golden {
+        assert_eq!(
+            identity(&f),
+            "d3421e2c2e5dd7d64464467f49e9128319181a35645ec17f091a05c55e02e14d"
+        );
+    }
+}
+
+#[test]
 fn validates_entire_innate_group_but_does_not_run_unused_implementations() {
     let f = Fixture::new();
     let original = fs::read_to_string(f.0.path().join("MODULE.bazel")).unwrap();

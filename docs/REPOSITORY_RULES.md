@@ -160,11 +160,14 @@ the published location (relative symlinks into it are replanted, below).
   fails with `attempted to watch path under working directory` for `yes` and is
   skipped for `auto`.
 
-Watched files, directory listings and Label reads outside the repository
-directory are recorded in the execution inputs as `@@//relative` (main
-workspace), the canonical Label, or the absolute host path, with a content digest
-(`file:<sha256>`, `directory`, `missing`, `dirents:<sha256>`). They identify the
-publication only; they never allow skipping execution.
+Watched files, directory listings and Label `read()` calls outside the
+repository directory are recorded in the execution inputs as `@@//relative`
+(main workspace), the canonical Label, or the absolute host path, with a content
+digest (`file:<sha256>`, `directory`, `missing`, `dirents:<sha256>`). Label
+templates add no such file input: every template read (any `watch_template`
+mode) is already recorded with its source and full bytes, which keys its content
+and preserves pre-N21 identities. Inputs identify the publication only; they
+never allow skipping execution.
 
 ### Host access
 
@@ -261,8 +264,11 @@ above (symlinked parents, store-representable names, strict Label inputs,
 * `repository_ctx.execute` runs host programs. If bazel-rs itself is killed
   (for example Ctrl-C), a running child process may be orphaned; normal
   completion, timeouts and output overflow kill the child's process group.
-* Label templates and Label reads are now recorded as file inputs, so
-  repositories using them rekey once.
+* Label `read()` calls (unless `watch = "no"`) and host-path reads/watches are
+  recorded as file inputs. Label templates are not: their existing `templates`
+  entry (canonical label and full bytes) already keys their content, so
+  repositories that only use `ctx.file` and Label templates keep their
+  pre-N21 publication identity (no rekey).
 * The process-wrapper timeout path was probed (EXACT); `timeout=0` crashes
   genuine Bazel and is an explicit native error.
 

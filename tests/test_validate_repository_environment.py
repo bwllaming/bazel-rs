@@ -31,9 +31,9 @@ error: trying to mutate a frozen list value
 
 
 class PlanTests(unittest.TestCase):
-    def test_eight_families_complete_unique_plan(self):
-        self.assertEqual(len(suite.CASEPLAN), 8)
-        self.assertEqual(len(set(suite.PLAN)), 8)
+    def test_nine_families_complete_unique_plan(self):
+        self.assertEqual(len(suite.CASEPLAN), 9)
+        self.assertEqual(len(set(suite.PLAN)), 9)
         for item in suite.CASEPLAN:
             self.assertEqual(len(item['probes']), len(set(item['probes'])))
             for probe in item['probes']:
@@ -74,6 +74,33 @@ class PlanTests(unittest.TestCase):
                     self.assertGreater(defs.index(b'NAMES.append'), defs.index(b'r=repository_rule'))
                 if route == 'ordinary':
                     self.assertIn(b'r(name="made")', value['files']['ext.bzl'])
+
+    def test_module_getenv_is_a_differential_extension_input_not_a_boundary(self):
+        # N21 implements module_ctx.getenv like Bazel; it is no longer a native
+        # rejection probe and has no rejection classifier.
+        item = next(c for c in suite.CASEPLAN if c['name'] == 'module-getenv')
+        self.assertEqual((item['kind'], item['probes']), ('differential', ['ordinary']))
+        self.assertEqual(suite.phases_for(item), [('ordinary', 'reference'), ('ordinary', 'native')])
+        boundary = next(c for c in suite.CASEPLAN if c['name'] == 'native-boundary')
+        self.assertNotIn('module-getenv', boundary['probes'])
+        self.assertNotIn('module-getenv', suite.DIAGNOSTICS)
+        value = suite.fixture('module-getenv', 'ordinary')
+        self.assertIsNone(value['diagnostic'])
+        self.assertFalse(value['template'])
+        files = value['files']
+        self.assertIn(b'r(name="made",text=ctx.getenv('+repr(suite.A).encode()+b',"MISSING"))', files['ext.bzl'])
+        self.assertIn(b'use_extension("//:ext.bzl","e")', files['MODULE.bazel'])
+        # The repository callback itself never observes the environment.
+        self.assertNotIn(b'getenv', files['defs.bzl'])
+        self.assertNotIn(b'os.environ', files['defs.bzl'])
+        self.assertIn(b'environ=[]', files['defs.bzl'])
+        self.assertIn(b'value=CAPTURED+ctx.attr.text+', files['defs.bzl'])
+        self.assertEqual([suite.expected_callbacks('module-getenv', 'ordinary', 'reference', i) for i in range(5)],
+                         [['A'], [], ['A'], [], ['A']])
+        self.assertEqual([suite.expected_callbacks('module-getenv', 'ordinary', 'native', i) for i in range(5)], [['A']]*5)
+        outputs = [suite.expected_outputs('module-getenv', 'ordinary', env, source)['a.txt']
+                   for _, env, source in suite.states('module-getenv', 'ordinary')]
+        self.assertEqual(outputs, [b'prefix:alpha\n']*2+[b'prefix:beta\n']*2+[b'prefix:alpha\n'])
 
     def test_declared_unused_and_discarded_dynamic_really_differ(self):
         for route in suite.ROUTES:
@@ -225,7 +252,7 @@ class DiagnosticTests(unittest.TestCase):
                     'environ-element': 'environ entries must be strings', 'frozen': 'cannot mutate frozen list',
                     'encoding': 'repository environment must contain ASCII text',
                     'limit': 'repository environment name limit exceeded',
-                    'repo-env': '--repo_env is unsupported', 'module-getenv': 'module_ctx has no attribute getenv'}
+                    'repo-env': '--repo_env is unsupported'}
         for diagnostic, text in messages.items():
             suite.require_rejection(record(text), diagnostic)
             for extra in ('panicked', 'network unavailable', 'permission denied', 'internal error', 'name ctx is not defined'):
@@ -384,6 +411,20 @@ class ReplayTests(unittest.TestCase):
                 mutate(phase, report)
                 with self.assertRaises((ValueError, KeyError, IndexError)):
                     suite.validate_phase(phase, report, *values[2:])
+
+    def test_module_getenv_native_replay_uses_the_generic_identity_rules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            values = self.positive(Path(tmp), 'module-getenv', 'ordinary')
+            suite.validate_phase(*values)
+            roots = [o['roots']['a.txt'] for o in values[0]['observations']]
+            self.assertEqual((roots[0], roots[2]), (roots[1], roots[3]))
+            self.assertNotEqual(roots[0], roots[2])
+            self.assertEqual(roots[0], roots[4])
+            # Every native invocation re-runs the generated repository callback.
+            phase, report = copy.deepcopy(values[:2])
+            report['runs'][1]['stderr'] = '0 actions executed, 1 cache hits'
+            with self.assertRaisesRegex(ValueError, 'callback count'):
+                suite.validate_phase(phase, report, *values[2:])
 
     def test_constant_bytes_hit_cache_but_must_change_repository_identity(self):
         for route in suite.ROUTES:

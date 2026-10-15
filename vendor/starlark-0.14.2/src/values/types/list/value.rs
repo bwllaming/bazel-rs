@@ -641,10 +641,13 @@ def list_result():
     return [1, 2, 4]
 "#,
         );
-        a.fail("load('x','frozen_list')\nfrozen_list += [1]", "Immutable");
+        a.fail(
+            "load('x','frozen_list')\nfrozen_list += [1]",
+            "trying to mutate a frozen list value",
+        );
         a.fail(
             "load('x','frozen_list_result')\nx = frozen_list_result()\nx += [1]",
-            "Immutable",
+            "trying to mutate a frozen list value",
         );
         a.is_true("load('x','list_result')\nx = list_result()\nx += [8]\nx == [1, 2, 4, 8]");
     }

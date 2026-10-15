@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 frozen-mutation messages; see vendor provenance.
+
 //! Test call expression and parameter binding.
 
 use crate::assert;
@@ -165,7 +167,10 @@ fn test_parameter_defaults_frozen() {
     // It works if we call it with an explicit parameter
     a.is_true("load('f.bzl', 'f')\nf(1, [2]) == [2, 1]");
     // But fails if we don't, with a frozen error
-    a.fail("load('f.bzl', 'f')\nf(1) == [1]", "Immutable");
+    a.fail(
+        "load('f.bzl', 'f')\nf(1) == [1]",
+        "trying to mutate a frozen list value",
+    );
 }
 
 #[test]

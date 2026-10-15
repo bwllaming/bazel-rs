@@ -45,7 +45,15 @@ The [label-dictionary increment](ATTR_DICTS_COMPUTED_DEFAULTS.md) (N20) patches
 non-dict right operand of a dict `|` / `|=` answer first, as Bazel's
 `SelectorList.binaryOp(op, that, thisLeft = false)` does for
 `{...} | select(...)` (`packages/SelectorList.java:171-182`). These files are
-declared with their original archive hashes in the same provenance.
+declared with their original archive hashes in the same provenance. The
+vendored crate's own tests that asserted the former list/dict text are updated
+to the Bazel text as declared patches: `src/tests/call.rs`,
+`src/tests/uncategorized.rs` (`test_error_display`),
+`src/values/types/dict/methods.rs`, `src/values/types/list/value.rs`, and the
+two error-display goldens `src/tests/uncategorized_error_display{,_hash}.golden`
+(plain and `{:#}` renderings; only the `error:` line changes, and their notice is
+in `BAZEL_RS_MODIFICATIONS.md` because the golden format cannot carry one).
+Tuple, bytes and set mutation tests still expect `Immutable`.
 
 ## Original published contents
 
