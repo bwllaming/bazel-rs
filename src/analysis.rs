@@ -27,13 +27,17 @@ pub struct DependencyTarget {
     pub is_rule: bool,
     /// Actual package-group kind; never inferred from provider presence.
     pub is_package_group: bool,
+    /// Actual native `filegroup` rule (Filegroup.java).
+    pub is_filegroup: bool,
     pub providers: BTreeMap<String, OwnedFrozenValue>,
     pub provider_files: Vec<File>,
+    /// Display names of the returned declared providers, in return order.
+    pub provider_keys: Vec<String>,
 }
 
+use crate::analysis_runtime::Context;
 pub use crate::analysis_runtime::RegisteredAction;
 pub(crate) use crate::analysis_runtime::repository_context;
-use crate::analysis_runtime::{Context, alloc_actions};
 
 #[derive(Debug)]
 pub struct AnalysisResult {
@@ -42,6 +46,54 @@ pub struct AnalysisResult {
     pub actions: Vec<RegisteredAction>,
     pub providers: BTreeMap<String, OwnedFrozenValue>,
     pub provider_files: Vec<File>,
+    /// Display names of the returned declared providers, in return order.
+    pub provider_keys: Vec<String>,
+}
+
+/// The Label of a predeclared output file of `rule`.
+fn output_label<'v>(heap: Heap<'v>, rule: &Rule, output: &str) -> anyhow::Result<Value<'v>> {
+    let label = rule.label.with_name(output).map_err(anyhow::Error::msg)?;
+    crate::starlark_types::alloc_label(heap, &label.to_string())
+}
+
+/// A `ctx.attr` Target whose repr names its configured-target class. A
+/// requested label that differs from the resolved one is an alias.
+fn alloc_dependency<'v>(heap: Heap<'v>, requested: &str, target: &DependencyTarget) -> Value<'v> {
+    use crate::starlark_types::TargetKind;
+    let mut provider_keys = target.provider_keys.clone();
+    let actual = if target.is_source {
+        TargetKind::InputFile
+    } else if target.is_filegroup {
+        // Filegroup adds InstrumentedFilesInfo as its only declared provider
+        // (rules/filegroup/Filegroup.java:103-108) and makes a single file its
+        // executable (Filegroup.java:107,117-119).
+        provider_keys = vec!["InstrumentedFilesInfo".to_owned()];
+        if target.files.len() == 1 {
+            TargetKind::SingleExecutableRule
+        } else {
+            TargetKind::Rule
+        }
+    } else if target.is_rule {
+        TargetKind::Rule
+    } else if target.is_package_group {
+        TargetKind::Unknown
+    } else {
+        TargetKind::OutputFile
+    };
+    // Both labels are canonical forms (crate::label::Label's Display).
+    let kind = if requested != target.label {
+        TargetKind::Alias(requested.to_owned(), Box::new(actual))
+    } else {
+        actual
+    };
+    crate::starlark_types::alloc_target_of_kind(
+        heap,
+        &target.label,
+        target.files.clone(),
+        target.providers.clone(),
+        kind,
+        provider_keys,
+    )
 }
 
 /// The key of a dependency in the implementation's dependency map: the
@@ -163,15 +215,7 @@ fn dict_prerequisites<'v, 'a>(
                 files.push(alloc_file(heap, file.clone()));
             }
         }
-        values.insert(
-            label,
-            crate::starlark_types::alloc_target_with_providers(
-                heap,
-                &target.label,
-                target.files.clone(),
-                target.providers.clone(),
-            ),
-        );
+        values.insert(label, alloc_dependency(heap, label, target));
     }
     Ok(DictPrerequisites {
         values,
@@ -223,9 +267,23 @@ fn make_ctx<'v>(
         ("attr", attr),
         ("files", files),
         ("file", file),
-        ("outputs", outputs),
+        // The Outputs object itself lives on the implementation's heap: it is
+        // mutable (field access, field repr) until the implementation returns
+        // and its heap freezes; its frozen fields keep Bazel's
+        // frozen-mutation text.
+        (
+            "outputs",
+            crate::analysis_ctx::alloc_outputs(heap, outputs, &rule.label.to_string()),
+        ),
         ("label", label),
-        ("actions", alloc_actions(heap, context.scope.root())),
+        (
+            "actions",
+            crate::analysis_runtime::alloc_actions_for(
+                heap,
+                context.scope.root(),
+                crate::analysis_ctx::rule_context_repr(&rule.label.to_string()),
+            ),
+        ),
     ]));
     if invocation.build_setting.is_some() {
         // The configured value (StarlarkRuleContext.getBuildSettingValue,
@@ -373,15 +431,10 @@ fn ctx_attribute_structs<'v>(
                             .unwrap_or_else(Value::new_none),
                     );
                 }
-                target
-                    .map(|target| {
-                        crate::starlark_types::alloc_target_with_providers(
-                            heap,
-                            &target.label,
-                            target.files.clone(),
-                            target.providers.clone(),
-                        )
-                    })
+                value
+                    .as_deref()
+                    .zip(target)
+                    .map(|(requested, target)| alloc_dependency(heap, requested, target))
                     .unwrap_or_else(Value::new_none)
             }
             AttrValue::Labels(labels) => {
@@ -403,19 +456,15 @@ fn ctx_attribute_structs<'v>(
                     ),
                 );
                 heap.alloc(
-                    targets
+                    labels
                         .iter()
-                        .map(|target| {
-                            crate::starlark_types::alloc_target_with_providers(
-                                heap,
-                                &target.label,
-                                target.files.clone(),
-                                target.providers.clone(),
-                            )
-                        })
+                        .zip(&targets)
+                        .map(|(requested, target)| alloc_dependency(heap, requested, target))
                         .collect::<Vec<_>>(),
                 )
             }
+            // Output attributes are Files in ctx.outputs and their Labels in
+            // ctx.attr (genuine Bazel 9.3 capture, tests/fixtures/repr).
             AttrValue::Output(value) => {
                 let output = value
                     .as_ref()
@@ -424,8 +473,11 @@ fn ctx_attribute_structs<'v>(
                     .map(|file| alloc_file(heap, file))
                     .unwrap_or_else(Value::new_none);
                 outputs.insert(name.clone(), output);
-                // Output attributes belong to ctx.outputs, not ctx.attr.
-                continue;
+                value
+                    .as_ref()
+                    .map(|output| output_label(heap, rule, output))
+                    .transpose()?
+                    .unwrap_or_else(Value::new_none)
             }
             AttrValue::Outputs(values) => {
                 let output = heap.alloc(
@@ -435,7 +487,12 @@ fn ctx_attribute_structs<'v>(
                         .collect::<anyhow::Result<Vec<_>>>()?,
                 );
                 outputs.insert(name.clone(), output);
-                continue;
+                heap.alloc(
+                    values
+                        .iter()
+                        .map(|output| output_label(heap, rule, output))
+                        .collect::<anyhow::Result<Vec<_>>>()?,
+                )
             }
         };
         attrs.insert(name.clone(), attr);
@@ -784,7 +841,7 @@ fn analyze_inner(
     for output in &rule.outs {
         context.declare(output)?;
     }
-    let (files, providers, provider_files) = Module::with_temp_heap(
+    let (files, providers, provider_files, provider_keys) = Module::with_temp_heap(
         |module| -> anyhow::Result<_> {
             let ctx = make_ctx(rule, &context, dependencies, module.heap())?;
             // Bazel's implicit DefaultInfo includes only predeclared outputs.
@@ -805,6 +862,7 @@ fn analyze_inner(
             let returned = returned.map_err(|error| anyhow!(error.to_string()))?;
             let files = default_files(returned)?.unwrap_or(predeclared);
             let custom = crate::providers::returned_custom_providers(returned)?;
+            let provider_keys = crate::providers::returned_provider_key_names(returned)?;
             // checkDeclaredProviders (analysis/starlark/StarlarkRuleConfiguredTargetUtil.java:138-148)
             // iterates getStarlarkProviders() only: built-in provider keys
             // (DefaultInfo, OutputGroupInfo, ...) are never checked (:141).
@@ -858,6 +916,7 @@ fn analyze_inner(
                 files,
                 providers,
                 provider_files.into_iter().collect::<Vec<_>>(),
+                provider_keys,
             ))
         },
     )?;
@@ -886,6 +945,7 @@ fn analyze_inner(
         actions,
         providers,
         provider_files,
+        provider_keys,
     })
 }
 
@@ -1105,6 +1165,8 @@ strict = rule(implementation=consumer_impl, attrs={"dep": attr.label(providers=[
                 is_package_group: false,
                 providers: producer.providers,
                 provider_files: producer.provider_files,
+                provider_keys: producer.provider_keys,
+                is_filegroup: false,
             },
         )]);
         let consumer = analyze(&package[&Label::parse("//:consumer", "").unwrap()], &deps).unwrap();
@@ -1203,6 +1265,8 @@ erased = attr.label(providers=[[], [NotPackageSpecificationInfo]])
             is_package_group: false,
             providers,
             provider_files: Vec::new(),
+            provider_keys: Vec::new(),
+            is_filegroup: false,
         };
         (BTreeMap::from([(target.label.clone(), target)]), specs)
     }
@@ -1377,7 +1441,7 @@ r = rule(implementation=impl, attrs={
                 "ctx",
                 module.heap().alloc(AllocStruct([(
                     "actions",
-                    alloc_actions(module.heap(), context.scope.root()),
+                    crate::analysis_runtime::alloc_actions(module.heap(), context.scope.root()),
                 )])),
             );
             let mut eval = Evaluator::new(&module);

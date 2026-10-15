@@ -3752,6 +3752,8 @@ impl Engine {
             BTreeMap<String, starlark::values::OwnedFrozenValue>,
         > = BTreeMap::new();
         let mut provider_files: BTreeMap<ConfiguredTargetKey, Vec<File>> = BTreeMap::new();
+        // Returned declared-provider names per analyzed rule (Target debugPrint).
+        let mut provider_keys: BTreeMap<ConfiguredTargetKey, Vec<String>> = BTreeMap::new();
         // File metadata is not a source filesystem path. Keep the real artifact
         // identity even when a custom provider forwards a non-default file.
         let mut artifact_index: BTreeMap<File, Artifact> = BTreeMap::new();
@@ -3869,11 +3871,18 @@ impl Engine {
                             is_source: matches!(target, Target::Source(_)),
                             is_rule: matches!(&target, Target::Rule(rule) if !matches!(rule.kind, RuleKind::PackageGroup(_))),
                             is_package_group: matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::PackageGroup(_))),
+                            is_filegroup: matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::Filegroup)),
                             providers: custom_providers
                                 .get(&dependency)
                                 .cloned()
                                 .unwrap_or_default(),
                             provider_files: target_provider_files,
+                            // The alias chain's end, in the same configuration
+                            // (Self::alias_chain).
+                            provider_keys: provider_keys
+                                .get(&ConfiguredTargetKey::new(actual.clone(), edge_config))
+                                .cloned()
+                                .unwrap_or_default(),
                         },
                     );
                 }
@@ -3983,6 +3992,7 @@ impl Engine {
                 let analyzed = analyzed?;
                 restricted_to_error(rule)?;
                 custom_providers.insert(key.clone(), analyzed.providers.clone());
+                provider_keys.insert(key.clone(), analyzed.provider_keys.clone());
                 provider_files.insert(key.clone(), analyzed.provider_files.clone());
                 for file in &analyzed.declared {
                     let package_output =

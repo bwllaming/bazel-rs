@@ -98,13 +98,19 @@ mod values {
 
     impl<V> fmt::Display for TagGen<V> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("<tag>")
+            // TypeCheckedTag has no repr override (bazel/bzlmod/TypeCheckedTag.java:39;
+            // StarlarkValue.java:50-52).
+            f.write_str(
+                "<unknown object com.google.devtools.build.lib.bazel.bzlmod.TypeCheckedTag>",
+            )
         }
     }
 
     starlark_complex_value!(pub(super) Tag);
 
-    #[starlark_value(type = "tag")]
+    // TypeCheckedTag is `@StarlarkBuiltin(name = "bazel_module_tag")`
+    // (bazel/bzlmod/TypeCheckedTag.java:38).
+    #[starlark_value(type = "bazel_module_tag")]
     impl<'v, V: ValueLike<'v>> StarlarkValue<'v> for TagGen<V>
     where
         Self: ProvidesStaticType<'v>,
@@ -140,11 +146,57 @@ mod values {
 
     impl<V> fmt::Display for BazelModuleGen<V> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "<bazel_module {}>", self.name)
+            // StarlarkBazelModule has no repr override
+            // (bazel/bzlmod/StarlarkBazelModule.java:45; StarlarkValue.java:50-52).
+            f.write_str(
+                "<unknown object com.google.devtools.build.lib.bazel.bzlmod.StarlarkBazelModule>",
+            )
         }
     }
 
     starlark_complex_value!(pub(super) BazelModule);
+
+    /// `bazel_module.tags` (StarlarkBazelModule.Tags, bazel/bzlmod/StarlarkBazelModule.java:51-94):
+    /// the tag lists by tag class name.
+    #[derive(
+        Debug,
+        ProvidesStaticType,
+        NoSerialize,
+        Allocative,
+        Trace,
+        Freeze,
+        Coerce,
+        StarlarkPagablePanic,
+    )]
+    #[repr(C)]
+    pub(super) struct TagsGen<V> {
+        pub classes: V,
+    }
+
+    impl<V> fmt::Display for TagsGen<V> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            // No repr override (StarlarkValue.java:50-52).
+            f.write_str(
+                "<unknown object com.google.devtools.build.lib.bazel.bzlmod.StarlarkBazelModule$Tags>",
+            )
+        }
+    }
+
+    starlark_complex_value!(pub(super) Tags);
+
+    #[starlark_value(type = "bazel_module_tags")]
+    impl<'v, V: ValueLike<'v>> StarlarkValue<'v> for TagsGen<V>
+    where
+        Self: ProvidesStaticType<'v>,
+    {
+        fn get_attr(&self, name: &str, heap: Heap<'v>) -> Option<Value<'v>> {
+            self.classes.to_value().get_attr(name, heap).ok().flatten()
+        }
+
+        fn dir_attr(&self) -> Vec<String> {
+            self.classes.to_value().dir_attr()
+        }
+    }
 
     #[starlark_value(type = "bazel_module")]
     impl<'v, V: ValueLike<'v>> StarlarkValue<'v> for BazelModuleGen<V>
@@ -190,7 +242,9 @@ mod values {
 
     impl<V> fmt::Display for ModuleCtxGen<V> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("<module_ctx>")
+            // ModuleExtensionContext has no repr override
+            // (bazel/bzlmod/ModuleExtensionContext.java:51; StarlarkValue.java:50-52).
+            f.write_str("<unknown object com.google.devtools.build.lib.bazel.bzlmod.ModuleExtensionContext>")
         }
     }
 
@@ -297,6 +351,12 @@ mod values {
 
     #[starlark_value(type = "Facts")]
     impl<'v> StarlarkValue<'v> for EmptyFacts {
+        /// Facts.debugPrint (bazel/bzlmod/Facts.java:162-168) of Facts.EMPTY
+        /// (Facts.java:60): `Facts({})`.
+        fn collect_debug_print(&self, collector: &mut String, _eval: &Evaluator<'v, '_, '_>) {
+            collector.push_str("Facts({})");
+        }
+
         fn get_methods() -> Option<&'static Methods> {
             Some(FACTS_METHODS.methods())
         }
@@ -354,6 +414,7 @@ mod values {
 }
 use values::{
     BazelModuleGen, Context, ExtensionMetadata, FrozenTag, ModuleCtxGen, SourcePath, Tag, TagGen,
+    TagsGen,
 };
 
 fn io_receiver(this: Value<'_>, eval: &Evaluator<'_, '_, '_>) -> anyhow::Result<u64> {
@@ -1218,7 +1279,9 @@ fn projection(modules: &[BoundModule]) -> anyhow::Result<OwnedFrozenValue> {
                 name: bound.name.clone(),
                 version: bound.version.clone(),
                 is_root: bound.is_root,
-                tags: heap.alloc(AllocStruct(classes)),
+                tags: heap.alloc(TagsGen {
+                    classes: heap.alloc(AllocStruct(classes)),
+                }),
             }));
         }
         module.set("modules", heap.alloc(views));
@@ -1527,7 +1590,7 @@ mod tests {
         let result = fixture.run(r#"
 m = ctx.modules[0]
 t = m.tags.t[0]
-(type(ctx) == 'module_ctx' and type(m) == 'bazel_module' and type(t) == 'tag') or fail('types')
+(type(ctx) == 'module_ctx' and type(m) == 'bazel_module' and type(t) == 'bazel_module_tag' and type(m.tags) == 'bazel_module_tags' and repr(m.tags) == '<unknown object com.google.devtools.build.lib.bazel.bzlmod.StarlarkBazelModule$Tags>') or fail('types')
 (m.name == 'root' and m.version == '1.2' and m.is_root) or fail('module')
 (ctx.root_module_has_non_dev_dependency == True) or fail('root flag')
 (t._private == 'yes' and t.name == 'declared' and t.dev_dependency == 7) or fail('schema')

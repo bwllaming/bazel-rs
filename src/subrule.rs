@@ -183,10 +183,19 @@ mod values {
                 .map(|(name, value)| (name.as_str(), *value))
                 .collect::<Vec<_>>();
             let handle = guard.handle();
-            let label = crate::starlark_types::alloc_target(eval.heap(), &label, Vec::new())
+            let label_text = label;
+            let label = crate::starlark_types::alloc_target(eval.heap(), &label_text, Vec::new())
                 .get_attr_error("label", eval.heap())?;
-            let actions = crate::analysis_runtime::alloc_actions(eval.heap(), handle.clone());
-            let ctx = crate::analysis_ctx::alloc_subrule(eval.heap(), label, actions, handle);
+            let name = self
+                .exported
+                .get()
+                .map_or("unexported subrule", String::as_str);
+            let actions = crate::analysis_runtime::alloc_actions_for(
+                eval.heap(),
+                handle.clone(),
+                crate::analysis_ctx::subrule_context_repr(name, &label_text),
+            );
+            let ctx = crate::analysis_ctx::alloc_subrule(eval.heap(), name, label, actions, handle);
             let mut positional = vec![ctx];
             for value in positions {
                 budget
@@ -437,7 +446,10 @@ S = subrule(*[], **{'implementation': impl, 'attrs': {}, 'toolchains': (), 'frag
             for (source, expected) in [
                 ("subrule.type", "type"),
                 ("subrule[int]", "not supported"),
-                ("{subrule: 1}", "not hashable"),
+                (
+                    "{subrule: 1}",
+                    "unhashable type: 'builtin_function_or_method'",
+                ),
                 (
                     "subrule(implementation=impl, **{'implementation': impl})",
                     "more than once",

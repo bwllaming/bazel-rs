@@ -458,7 +458,7 @@ mod tests {
                 // Intentionally resembles the builtin diagnostic: message matching
                 // would incorrectly hide this unrelated host failure.
                 Err(crate::Error::new_other(anyhow::anyhow!(
-                    "host value is not hashable: deliberate failure"
+                    "unhashable type: 'bad_hash' (host value, deliberate failure)"
                 )))
             }
         }

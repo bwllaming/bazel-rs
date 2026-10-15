@@ -41,8 +41,12 @@ asserts.eq(calls, ["yang", "yin"])
 
 
 # builtin_function_or_method use identity equivalence.
-closures = set(["".count for _ in range(10)])
-# asserts.eq(len(closures), 10)
+# Modified for native Bazel 9.3 compatibility (see vendor provenance): builtins
+# are unhashable in Bazel ("unhashable type: 'builtin_function_or_method'",
+# StarlarkValue.java:120), so they cannot be set elements.
+closures = ["".count for _ in range(10)]
+asserts.eq(len(closures), 10)
+asserts.fails(lambda: set(closures), "unhashable type: 'builtin_function_or_method'")
 
 ---
 # Default values of function parameters are mutable.

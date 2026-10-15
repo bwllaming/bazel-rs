@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 struct repr compatibility; see vendor provenance.
+
 use std::cmp::Ordering;
 use std::fmt;
 use std::fmt::Display;
@@ -22,7 +24,6 @@ use std::hash::Hash;
 use std::hash::Hasher;
 
 use allocative::Allocative;
-use display_container::fmt_keyed_container;
 use serde::Serialize;
 use starlark_derive::Freeze;
 use starlark_derive::Trace;
@@ -121,15 +122,32 @@ pub(crate) struct StructGen<'v, V: ValueLike<'v>> {
 
 unsafe impl<'v> Coerce<StructGen<'v, Value<'v>>> for StructGen<'static, FrozenValue> {}
 
+impl<'v, V: ValueLike<'v>> StructGen<'v, V> {
+    /// Modified: Bazel 9.3 `StructImpl.repr` (packages/StructImpl.java:139-153)
+    /// prints the fields sorted by natural String order, each as `name = repr`.
+    /// Bazel's Starlark strings hold UTF-8 bytes as Latin-1 chars, so that
+    /// order is UTF-8 byte (code point) order, Rust's `str` order.
+    fn repr_order(&self) -> Vec<(&str, Value<'v>)> {
+        let mut fields: Vec<_> = self
+            .fields
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.to_value()))
+            .collect();
+        fields.sort_by(|(a, _), (b, _)| a.cmp(b));
+        fields
+    }
+}
+
 impl<'v, V: ValueLike<'v>> Display for StructGen<'v, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt_keyed_container(
-            f,
-            "struct(",
-            ")",
-            "=",
-            self.iter().map(|(k, v)| (k.as_str(), v)),
-        )
+        f.write_str("struct(")?;
+        for (index, (name, value)) in self.repr_order().into_iter().enumerate() {
+            if index != 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "{name} = {value}")?;
+        }
+        f.write_str(")")
     }
 }
 
@@ -138,6 +156,20 @@ impl<'v, V: ValueLike<'v>> StarlarkValue<'v> for StructGen<'v, V>
 where
     Self: ProvidesStaticType<'v>,
 {
+    // Modified: nested values use their own `repr`, as in Bazel's Printer.
+    fn collect_repr(&self, collector: &mut String) {
+        collector.push_str("struct(");
+        for (index, (name, value)) in self.repr_order().into_iter().enumerate() {
+            if index != 0 {
+                collector.push_str(", ");
+            }
+            collector.push_str(name);
+            collector.push_str(" = ");
+            value.collect_repr(collector);
+        }
+        collector.push(')');
+    }
+
     fn collect_repr_cycle(&self, collector: &mut String) {
         collector.push_str("struct(...)");
     }
@@ -228,19 +260,24 @@ mod tests {
 
     #[test]
     fn test_repr() {
-        assert::eq("repr(struct(a=1, b=[]))", "'struct(a=1, b=[])'");
-        assert::eq("str(struct(a=1, b=[]))", "'struct(a=1, b=[])'");
+        assert::eq("repr(struct(a=1, b=[]))", "'struct(a = 1, b = [])'");
+        assert::eq("str(struct(a=1, b=[]))", "'struct(a = 1, b = [])'");
+        assert::eq("repr(struct(b=1, a=2))", "'struct(a = 2, b = 1)'");
+        assert::eq(
+            "repr(struct(**{'\\U0001F600': 3, '\\uFFFD': 4}))",
+            "'struct(\\uFFFD = 4, \\U0001F600 = 3)'",
+        );
     }
 
     #[test]
     fn test_repr_cycle() {
         assert::eq(
             "l = []; s = struct(f=l); l.append(s); repr(s)",
-            "'struct(f=[struct(...)])'",
+            "'struct(f = [struct(...)])'",
         );
         assert::eq(
             "l = []; s = struct(f=l); l.append(s); str(s)",
-            "'struct(f=[struct(...)])'",
+            "'struct(f = [struct(...)])'",
         );
     }
 

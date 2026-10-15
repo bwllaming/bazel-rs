@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 str() compatibility; see vendor provenance.
+
 use std::str::FromStr;
 
 use starlark_syntax::dot_format_parser::FormatConv;
@@ -71,7 +73,9 @@ pub(crate) fn format_one<'v>(
         None => {
             let mut result = String::with_capacity(before.len() + after.len() + 10);
             result.push_str(before);
-            arg.collect_repr(&mut result);
+            // Modified: `{}` formats with str() (Starlark.str), as the general
+            // path below already does, not repr().
+            arg.collect_str(&mut result);
             result.push_str(after);
             heap.alloc_str(&result)
         }
@@ -146,16 +150,30 @@ pub(crate) fn format<'v>(
         match token {
             FormatToken::Text(text) => result.push_str(text),
             FormatToken::Escape(e) => result.push_str(e.as_str()),
-            FormatToken::Capture {
-                capture,
-                conv,
-                pos: _,
-            } => format_capture(capture, conv, &mut args, &kwargs, &mut result)?,
+            FormatToken::Capture { capture, conv, pos } => {
+                // Modified: Bazel's FormatParser (net/starlark/java/eval/FormatParser.java)
+                // has no `!r`/`!s` conversions: the whole field text, `!` included,
+                // names a keyword argument.
+                if this.as_bytes().get(pos + capture.len()) == Some(&b'!') {
+                    let field = &this[pos..pos + capture.len() + 2];
+                    match kwargs.get_str(field) {
+                        None => return Err(missing_argument(field)),
+                        Some(v) => v.collect_str(&mut result),
+                    }
+                } else {
+                    format_capture(capture, conv, &mut args, &kwargs, &mut result)?
+                }
+            }
         }
     }
     let r = heap.alloc_str(&result);
     string_pool.release(result);
     Ok(r)
+}
+
+/// Modified: Bazel FormatParser.getKwarg (net/starlark/java/eval/FormatParser.java:110-116).
+fn missing_argument(field: &str) -> anyhow::Error {
+    anyhow::anyhow!("Missing argument '{field}'")
 }
 
 fn format_capture<'v, T: Iterator<Item = Value<'v>>>(
@@ -191,7 +209,7 @@ fn format_capture<'v, T: Iterator<Item = Value<'v>>>(
             ));
         }
         match kwargs.get_str(field) {
-            None => Err(ValueError::KeyNotFound(field.to_owned()).into()),
+            None => Err(missing_argument(field)),
             Some(v) => {
                 conv(v, result);
                 Ok(())

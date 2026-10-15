@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 builtin function repr compatibility; see vendor
+// provenance.
+
 //! Function types, including native functions and `object.member` functions.
 
 use allocative::Allocative;
@@ -67,6 +70,12 @@ enum FunctionError {
 /// Return value of `type(any function)`.
 pub const FUNCTION_TYPE: &str = "function";
 
+/// Modified: `type()` of a Bazel 9.3 `BuiltinFunction`
+/// (net/starlark/java/eval/BuiltinFunction.java, `@StarlarkBuiltin(name = "builtin_function_or_method")`).
+/// Unlike `function`, such values are not hashable (genuine Bazel 9.3:
+/// `unhashable type: 'builtin_function_or_method'`).
+pub const BUILTIN_FUNCTION_TYPE: &str = "builtin_function_or_method";
+
 #[derive(Debug, Allocative, Clone, Copy, Dupe, pagable::Pagable)]
 #[doc(hidden)]
 pub enum SpecialBuiltinFunction {
@@ -110,17 +119,18 @@ impl NativeFunc {
 #[derive(
     Derivative,
     ProvidesStaticType,
-    Display,
     NoSerialize,
     Allocative,
     crate::StarlarkPagable
 )]
 #[derivative(Debug)]
-#[display("{}", name)]
 pub(crate) struct NativeFunction {
     #[derivative(Debug = "ignore")]
     pub(crate) function: NativeFunc,
     pub(crate) name: String,
+    /// Modified: the Starlark type of the value a Bazel builtin is a method of
+    /// (see [`GlobalsBuilder::set_builtin_receiver`](crate::environment::GlobalsBuilder::set_builtin_receiver)).
+    pub(crate) repr_receiver: Option<String>,
     /// `.type` attribute and a type when this function is used in type expression.
     #[starlark_pagable(pagable)]
     pub(crate) as_type: Option<Ty>,
@@ -133,6 +143,33 @@ pub(crate) struct NativeFunction {
     pub(crate) docs: DocItem,
     #[starlark_pagable(pagable)]
     pub(crate) special_builtin_function: Option<SpecialBuiltinFunction>,
+}
+
+impl NativeFunction {
+    /// Modified: the same function, as a builtin method of a `receiver` value.
+    pub(crate) fn with_repr_receiver(&self, receiver: &str) -> NativeFunction {
+        NativeFunction {
+            function: NativeFunc(self.function.0, self.function.1.clone()),
+            name: self.name.clone(),
+            repr_receiver: Some(receiver.to_owned()),
+            as_type: self.as_type.clone(),
+            ty: self.ty.dupe(),
+            speculative_exec_safe: self.speculative_exec_safe,
+            docs: self.docs.clone(),
+            special_builtin_function: self.special_builtin_function,
+        }
+    }
+}
+
+/// Modified: Bazel 9.3 `BuiltinFunction.repr`
+/// (net/starlark/java/eval/BuiltinFunction.java:192-203).
+impl std::fmt::Display for NativeFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.repr_receiver {
+            Some(receiver) => write!(f, "<built-in method {} of {receiver} value>", self.name),
+            None => write!(f, "<built-in function {}>", self.name),
+        }
+    }
 }
 
 impl AllocFrozenValue for NativeFunction {
@@ -148,8 +185,13 @@ impl<'v> AllocValue<'v> for NativeFunction {
 }
 
 /// Define the function type
-#[starlark_value(type = FUNCTION_TYPE)]
+#[starlark_value(type = BUILTIN_FUNCTION_TYPE)]
 impl<'v> StarlarkValue<'v> for NativeFunction {
+    // Modified: call stacks keep naming the function, not its repr.
+    fn name_for_call_stack(&self, _me: Value<'v>) -> String {
+        self.name.clone()
+    }
+
     fn invoke(
         &self,
         _me: Value<'v>,
@@ -362,7 +404,6 @@ impl<'v> StarlarkValue<'v> for NativeAttribute {
     Debug,
     Trace,
     Coerce,
-    Display,
     Freeze,
     NoSerialize,
     ProvidesStaticType,
@@ -370,13 +411,25 @@ impl<'v> StarlarkValue<'v> for NativeAttribute {
     crate::StarlarkPagable
 )]
 #[repr(C)]
-#[display("{}", method)]
 pub(crate) struct BoundMethodGen<V: ValueLifetimeless> {
     pub(crate) method: FrozenValueTyped<'static, NativeMethod>,
     pub(crate) this: V,
 }
 
 starlark_complex_value!(pub(crate) BoundMethod);
+
+/// Modified: Bazel 9.3 `BuiltinFunction.repr` of a method bound to a value
+/// (net/starlark/java/eval/BuiltinFunction.java:192-199).
+impl<'v, V: ValueLike<'v>> std::fmt::Display for BoundMethodGen<V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "<built-in method {} of {} value>",
+            self.method.name,
+            self.this.to_value().get_type()
+        )
+    }
+}
 
 impl<'v, V: ValueLike<'v>> BoundMethodGen<V> {
     /// Create a new [`BoundMethod`]. Given the expression `object.function`,
@@ -386,7 +439,7 @@ impl<'v, V: ValueLike<'v>> BoundMethodGen<V> {
     }
 }
 
-#[starlark_value(type = FUNCTION_TYPE)]
+#[starlark_value(type = BUILTIN_FUNCTION_TYPE)]
 impl<'v, V: ValueLike<'v>> StarlarkValue<'v> for BoundMethodGen<V>
 where
     Self: ProvidesStaticType<'v>,
@@ -401,6 +454,12 @@ where
             .function
             .invoke(eval, self.this.to_value(), args)
     }
+
+    // Modified: call stacks keep naming the method, not its repr.
+    fn name_for_call_stack(&self, _me: Value<'v>) -> String {
+        self.method.name.clone()
+    }
+
 
     fn documentation(&self) -> DocItem {
         self.method.documentation()

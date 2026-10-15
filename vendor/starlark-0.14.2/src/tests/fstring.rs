@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 repr/type/hashability compatibility; see vendor provenance.
+
 mod pass {
     use crate::assert::Assert;
     use crate::syntax::Dialect;
@@ -102,9 +104,14 @@ f"{x}" == '("x",)'
 
     #[test]
     fn conv() {
+        // Modified: Bazel 9.3's format has no `!r` conversion
+        // (FormatParser.java:110-116) and f-strings desugar to `.format`, so
+        // repr conversion is expressed with repr() and `!r` is rejected. The
+        // f-string parser drops the default `!s` before `.format`.
         assert().is_true(r#"x = 'a'; f"{x}" == 'a'"#);
         assert().is_true(r#"x = 'a'; f"{x!s}" == 'a'"#);
-        assert().is_true(r#"x = 'a'; f"{x!r}" == '"a"'"#);
+        assert().is_true(r#"x = 'a'; f"{repr(x)}" == '"a"'"#);
+        assert().fail(r#"x = 'a'; f"{x!r}""#, "Missing argument '!r'");
     }
 
     #[test]
@@ -308,9 +315,11 @@ f"""
 
     #[test]
     fn conversion_with_expressions() {
+        // Modified: see `conv` (no `!r` conversion in Bazel 9.3).
         assert().is_true(r#"f"{1 + 2!s}" == "3""#);
-        assert().is_true(r#"f"{'hello'!r}" == "\"hello\"""#);
-        assert().is_true(r#"items = [1, 2]; f"{items!r}" == "[1, 2]""#);
+        assert().is_true(r#"f"{repr('hello')}" == "\"hello\"""#);
+        assert().is_true(r#"items = [1, 2]; f"{repr(items)}" == "[1, 2]""#);
+        assert().fail(r#"f"{'hello'!r}""#, "Missing argument '!r'");
     }
 
     #[test]

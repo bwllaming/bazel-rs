@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 debugPrint (print/fail) compatibility; see vendor
+// provenance.
+
 //! A module with the standard function and constants that are by default in all
 //! dialect of Starlark
 
@@ -30,7 +33,6 @@ use crate::values::FrozenStringValue;
 use crate::values::Heap;
 use crate::values::Value;
 use crate::values::ValueError;
-use crate::values::ValueLike;
 use crate::values::list::AllocList;
 use crate::values::tuple::UnpackTuple;
 use crate::values::typing::StarlarkIter;
@@ -50,14 +52,16 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
     /// fail("oops", 1, False)  # fail: oops 1 False
     /// # "#, "oops 1 False");
     /// ```
-    fn fail(#[starlark(args)] args: UnpackTuple<Value>) -> starlark::Result<StarlarkNever> {
+    fn fail<'v>(
+        #[starlark(args)] args: UnpackTuple<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<StarlarkNever> {
+        // Modified: Bazel MethodLibrary.fail (net/starlark/java/eval/MethodLibrary.java:895-913)
+        // formats each argument with Printer.debugPrint, not repr.
         let mut s = String::new();
         for x in args.items {
             s.push(' ');
-            match x.unpack_str() {
-                Some(x) => s.push_str(x),
-                None => x.collect_repr(&mut s),
-            }
+            crate::stdlib::extra::debug_print(x, &mut s, eval);
         }
         Err(starlark::Error::new_kind(starlark::ErrorKind::Fail(
             anyhow::Error::msg(s),

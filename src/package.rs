@@ -915,6 +915,61 @@ mod native_functions {
         }
     }
 
+    /// `cc_toolchain_suite` is the builtins lambda
+    /// `lambda name, **kwargs: native.filegroup(name = name)`
+    /// (src/main/starlark/builtins_bzl/bazel/exports.bzl:53-54): a Starlark
+    /// function (type `function`) whose repr names its `_builtins` module
+    /// (net/starlark/java/eval/StarlarkFunction.java:222-231).
+    #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
+    pub(super) struct CcToolchainSuite;
+    impl fmt::Display for CcToolchainSuite {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("<function lambda from @@_builtins//:bazel/exports.bzl>")
+        }
+    }
+    starlark_simple_value!(CcToolchainSuite);
+    #[starlark_value(type = "function")]
+    impl<'v> StarlarkValue<'v> for CcToolchainSuite {
+        /// Starlark lambda binding errors follow StarlarkFunction argument
+        /// processing (`lambda() missing 1 required positional argument: name`).
+        fn invoke(
+            &self,
+            _me: Value<'v>,
+            args: &Arguments<'v, '_>,
+            eval: &mut Evaluator<'v, '_, '_>,
+        ) -> starlark::Result<Value<'v>> {
+            let positional: Vec<_> = args.positions(eval.heap())?.collect();
+            let named = args.names_map()?;
+            if positional.len() > 1 {
+                return Err(starlark::Error::new_other(anyhow::anyhow!(
+                    "lambda() accepts no more than 1 positional argument but got {}",
+                    positional.len()
+                )));
+            }
+            let keyword = named
+                .iter()
+                .find(|(key, _)| key.as_str() == "name")
+                .map(|(_, value)| *value);
+            let name = match (positional.first(), keyword) {
+                (Some(_), Some(_)) => {
+                    return Err(starlark::Error::new_other(anyhow::anyhow!(
+                        "lambda() got multiple values for parameter 'name'"
+                    )));
+                }
+                (Some(name), None) => *name,
+                (None, Some(name)) => name,
+                (None, None) => {
+                    return Err(starlark::Error::new_other(anyhow::anyhow!(
+                        "lambda() missing 1 required positional argument: name"
+                    )));
+                }
+            };
+            super::declare_native(eval, "filegroup", &[("name".to_owned(), name)])
+                .map_err(starlark::Error::new_other)?;
+            Ok(Value::new_none())
+        }
+    }
+
     /// `_removed_rule_failure(**_kwargs)` injected by builtins
     /// (src/main/starlark/builtins_bzl/bazel/exports.bzl:39-58).
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
@@ -960,6 +1015,7 @@ fn native_rule_globals(builder: &mut GlobalsBuilder) {
     for name in crate::native_rules::REMOVED_RULES {
         builder.set(name, native_functions::RemovedRule);
     }
+    builder.set("cc_toolchain_suite", native_functions::CcToolchainSuite);
 }
 
 /// Instantiate a native rule class at loading.
@@ -1012,31 +1068,6 @@ fn declare_native<'v>(
 
 #[starlark_module]
 fn rule_globals(builder: &mut GlobalsBuilder) {
-    /// `cc_toolchain_suite` is the builtins lambda
-    /// `lambda name, **kwargs: native.filegroup(name = name)`
-    /// (src/main/starlark/builtins_bzl/bazel/exports.bzl:53-54).
-    /// Starlark lambda binding errors follow StarlarkFunction argument
-    /// processing (`lambda() missing 1 required positional argument: name`).
-    fn cc_toolchain_suite<'v>(
-        #[starlark(args)] args: UnpackTuple<Value<'v>>,
-        #[starlark(kwargs)] kwargs: SmallMap<String, Value<'v>>,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<NoneType> {
-        if args.items.len() > 1 {
-            bail!(
-                "lambda() accepts no more than 1 positional argument but got {}",
-                args.items.len()
-            );
-        }
-        let name = match (args.items.first(), kwargs.get("name")) {
-            (Some(_), Some(_)) => bail!("lambda() got multiple values for parameter 'name'"),
-            (Some(name), None) | (None, Some(name)) => *name,
-            (None, None) => bail!("lambda() missing 1 required positional argument: name"),
-        };
-        declare_native(eval, "filegroup", &[("name".to_owned(), name)])?;
-        Ok(NoneType)
-    }
-
     fn package_group<'v>(
         #[starlark(require = named)] name: &str,
         #[starlark(require = named)] packages: Option<Value<'v>>,
@@ -1657,8 +1688,44 @@ pub fn module_bzl_globals() -> Globals {
     bzl_globals_for(BzlPhase::Module)
 }
 
+/// BUILD-file top-levels shared with `native` are methods bound to a
+/// StarlarkNativeModule (StarlarkNativeModule.java:84-90 via
+/// StarlarkGlobalsImpl.java:76-78; names from StarlarkNativeModuleApi.java:52-337),
+/// so they repr as `<built-in method NAME of native value>`.
+fn install_build_native_methods(globals: &mut GlobalsBuilder) {
+    const NATIVE_METHODS: [&str; 13] = [
+        "glob",
+        "existing_rule",
+        "existing_rules",
+        "package_group",
+        "exports_files",
+        "package_name",
+        "package_default_visibility",
+        "repository_name",
+        "repo_name",
+        "package_relative_label",
+        "module_name",
+        "module_version",
+        "subpackages",
+    ];
+    let methods = GlobalsBuilder::new()
+        .with(|builder| builder.set_builtin_receiver("native"))
+        .with(rule_globals)
+        .with(package_globals)
+        .build();
+    globals.frozen_heap().add_reference(methods.heap());
+    for (name, value) in methods.iter() {
+        if NATIVE_METHODS.contains(&name) {
+            globals.set(name, value);
+        }
+    }
+}
+
 fn bzl_globals_for(phase: BzlPhase) -> Globals {
+    // `native` members are builtin methods of the native module value
+    // (StarlarkNativeModuleApi extends StarlarkValue; BuiltinFunction.java:192-199).
     let mut native = GlobalsBuilder::new()
+        .with(|builder| builder.set_builtin_receiver("native"))
         .with(rule_globals)
         .with(native_rule_globals)
         .with(package_globals);
@@ -1674,6 +1741,7 @@ fn bzl_globals_for(phase: BzlPhase) -> Globals {
     ]);
     bzl.frozen_heap().add_reference(native.heap());
     bzl.set("native", AllocStruct(native.iter()));
+    crate::starlark_types::install_struct_provider(&mut bzl);
     crate::custom_rule::rule_globals(&mut bzl);
     crate::build_settings::install(&mut bzl);
     crate::rule_declarations::install(&mut bzl);
@@ -1808,6 +1876,7 @@ fn evaluate_at(
         .with(native_rule_globals)
         .with(package_globals)
         .with(build_only_globals);
+    install_build_native_methods(&mut globals);
     crate::json::install(&mut globals);
     crate::rule_declarations::install_build(&mut globals);
     let globals = globals.build();
@@ -4260,6 +4329,10 @@ def check():
     for name in ['alias', 'config_setting', 'toolchain', 'toolchain_type', 'constraint_setting', 'constraint_value', 'platform', 'label_flag', 'label_setting', 'genquery', 'starlark_doc_extract', 'test_suite', 'java_plugins_flag_alias', 'cc_libc_top_alias', 'cc_toolchain_suite', 'cc_toolchain_alias', 'filegroup', 'genrule']:
         hasattr(native, name) or fail('missing native.' + name)
     repr(native.alias) == '<built-in rule alias>' or fail(repr(native.alias))
+    repr(native.glob) == '<built-in method glob of native value>' or fail(repr(native.glob))
+    repr(native.package_group) == '<built-in method package_group of native value>' or fail(repr(native.package_group))
+    repr(attr.string) == '<built-in method string of attr value>' or fail(repr(attr.string))
+    repr(rule) == '<built-in function rule>' or fail(repr(rule))
     native.alias(name = 'from_macro', actual = select({native.package_relative_label(':c'): ':a', '//conditions:default': ':b'}))
     native.package_relative_label(':x') == Label('//pkg:x') or fail('relative label')
     native.repo_name() == '' or fail('repo name')

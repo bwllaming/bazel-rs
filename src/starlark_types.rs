@@ -111,6 +111,10 @@ mod owned {
     #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagable)]
     pub(super) struct DefaultInfoValue {
         pub files: Option<Vec<File>>,
+        /// `target[DefaultInfo]` (DefaultInfo.DelegatingDefaultInfo) carries the
+        /// target's FilesToRunProvider class; a Starlark-constructed instance
+        /// has None. Only their reprs differ.
+        pub files_to_run_class: Option<String>,
     }
 
     #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagable)]
@@ -121,9 +125,59 @@ mod owned {
         pub label: LabelValue,
         pub files: Vec<File>,
         pub providers: BTreeMap<String, OwnedFrozenValue>,
+        #[allocative(skip)]
+        pub kind: TargetKind,
+        /// Display names of the declared providers a rule target returned,
+        /// in return order (RuleConfiguredTarget.debugPrint).
+        pub provider_keys: Vec<String>,
     }
 }
 pub use owned::File;
+
+/// The configured-target class behind a `Target` value; it selects only the
+/// repr (and str) of the value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TargetKind {
+    /// RuleConfiguredTarget.repr (configuredtargets/RuleConfiguredTarget.java:284-286).
+    Rule,
+    /// A rule target whose single file is its executable, so its
+    /// FilesToRunProvider is single-executable: a one-file filegroup
+    /// (rules/filegroup/Filegroup.java:107,117-119). Prints like `Rule`.
+    SingleExecutableRule,
+    /// InputFileConfiguredTarget.repr (configuredtargets/InputFileConfiguredTarget.java:100-102).
+    InputFile,
+    /// OutputFileConfiguredTarget.repr (configuredtargets/OutputFileConfiguredTarget.java:149-151).
+    OutputFile,
+    /// AbstractConfiguredTarget.repr (configuredtargets/AbstractConfiguredTarget.java:243-245),
+    /// e.g. a package group.
+    Unknown,
+    /// AliasConfiguredTarget.repr (rules/AliasConfiguredTarget.java:246-249):
+    /// the alias's own canonical label; `label` and the boxed kind describe
+    /// the actual target.
+    Alias(String, Box<TargetKind>),
+}
+
+impl TargetKind {
+    fn actual(&self) -> &TargetKind {
+        match self {
+            Self::Alias(_, actual) => actual.actual(),
+            other => other,
+        }
+    }
+
+    /// The class of the target's FilesToRunProvider: file targets create a
+    /// single-executable provider (configuredtargets/FileConfiguredTarget.java:98-101,
+    /// analysis/FilesToRunProvider.java:51-55); non-executable rules the plain
+    /// class (FilesToRunProvider.java:48-50, RuleConfiguredTargetBuilder.java:150-152).
+    fn files_to_run_class(&self) -> &'static str {
+        match self.actual() {
+            Self::InputFile | Self::OutputFile | Self::SingleExecutableRule => {
+                "com.google.devtools.build.lib.analysis.FilesToRunProvider$SingleExecutableFilesToRunProvider"
+            }
+            _ => "com.google.devtools.build.lib.analysis.FilesToRunProvider",
+        }
+    }
+}
 use owned::{
     DefaultInfoConstructor, DefaultInfoValue, Depset, DepsetNode, Item, ItemType, LabelValue,
     Order, Target,
@@ -136,9 +190,33 @@ starlark_simple_value!(DefaultInfoConstructor);
 starlark_simple_value!(DefaultInfoValue);
 starlark_simple_value!(Target);
 
+impl File {
+    /// Artifact.getRootRelativePathString (actions/Artifact.java:530-532):
+    /// a source artifact's path below its (possibly external) source root
+    /// (Artifact.java:773-775), a derived artifact's path below its output
+    /// root (Artifact.java:307-309), so external generated files keep the
+    /// `external/<repo>/` prefix of the non-sibling layout.
+    fn root_relative_path(&self) -> String {
+        match self.short_path.strip_prefix("../") {
+            Some(external) if self.is_source => external
+                .split_once('/')
+                .map_or(external, |(_, path)| path)
+                .to_owned(),
+            Some(external) => format!("external/{external}"),
+            None => self.short_path.clone(),
+        }
+    }
+}
+
+// Artifact.repr (actions/Artifact.java:1256-1262); str() is repr().
 impl fmt::Display for File {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "<File {}>", self.path)
+        let kind = if self.is_source {
+            "source"
+        } else {
+            "generated"
+        };
+        write!(f, "<{kind} file {}>", self.root_relative_path())
     }
 }
 
@@ -156,9 +234,101 @@ impl LabelValue {
     }
 }
 
+impl LabelValue {
+    /// Label.getCanonicalForm (cmdline/Label.java:490-492,
+    /// PackageIdentifier.java:214-216, RepositoryName.java:284-286): no
+    /// repository prefix in the main repository, `@@repo` otherwise.
+    pub(crate) fn canonical_form(&self) -> String {
+        if self.repository.is_empty() {
+            format!("//{}:{}", self.package, self.name)
+        } else {
+            self.unambiguous_canonical_form()
+        }
+    }
+
+    /// Label.getUnambiguousCanonicalForm (cmdline/Label.java:499-501).
+    fn unambiguous_canonical_form(&self) -> String {
+        format!("@@{}//{}:{}", self.repository, self.package, self.name)
+    }
+
+    /// Label.getDisplayForm (cmdline/Label.java:511-513 via
+    /// PackageIdentifier.getDisplayForm).
+    fn display_form(&self, main_mapping: Option<&BTreeMap<String, String>>) -> String {
+        format!(
+            "{}//{}:{}",
+            repository_display_form(&self.repository, main_mapping),
+            self.package,
+            self.name
+        )
+    }
+
+    /// Label.getShorthandDisplayForm (cmdline/Label.java:527-539).
+    fn shorthand_display_form(&self, main_mapping: Option<&BTreeMap<String, String>>) -> String {
+        let repository = repository_display_form(&self.repository, main_mapping);
+        let basename = self.package.rsplit('/').next().unwrap_or("");
+        if basename == self.name {
+            return format!("{repository}//{}", self.package);
+        }
+        if basename.is_empty()
+            && (repository == format!("@{}", self.name) || repository == format!("@@{}", self.name))
+        {
+            return repository;
+        }
+        self.display_form(main_mapping)
+    }
+}
+
+/// RepositoryName.getDisplayForm (cmdline/RepositoryName.java:305-324): empty
+/// for the main repository; otherwise the first apparent name the main
+/// repository's mapping has for it (RepositoryMapping.getInverse,
+/// RepositoryMapping.java:145-150), else the canonical `@@name`, also when no
+/// mapping is known. Bazel's "first" follows mapping insertion order; the
+/// native mapping is ordered by apparent name (docs/REPR.md).
+fn repository_display_form(
+    repository: &str,
+    main_mapping: Option<&BTreeMap<String, String>>,
+) -> String {
+    if repository.is_empty() {
+        return String::new();
+    }
+    main_mapping
+        .and_then(|mapping| {
+            mapping
+                .iter()
+                .find(|(_, canonical)| canonical.as_str() == repository)
+        })
+        .map_or_else(
+            || format!("@@{repository}"),
+            |(apparent, _)| format!("@{apparent}"),
+        )
+}
+
+/// The main repository's mapping, when the evaluation has repositories.
+fn main_repository_mapping(eval: &Evaluator<'_, '_, '_>) -> Option<BTreeMap<String, String>> {
+    crate::loading::repositories(eval)
+        .and_then(|repositories| repositories.mapping("").ok().cloned())
+}
+
+/// A Label's command-line form: StarlarkCustomCommandLine.expandToCommandLine
+/// (analysis/starlark/StarlarkCustomCommandLine.java:967-978) prints
+/// Label.getDisplayForm with the main repository mapping.
+pub(crate) fn label_command_line_form(
+    value: Value<'_>,
+    eval: &Evaluator<'_, '_, '_>,
+) -> Option<String> {
+    let label = LabelValue::from_value(value)?;
+    Some(label.display_form(main_repository_mapping(eval).as_ref()))
+}
+
+/// Label.repr (cmdline/Label.java:718-723): `Label("<canonical form>")`,
+/// the canonical form quoted by Printer.repr.
 impl fmt::Display for LabelValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "@@{}//{}:{}", self.repository, self.package, self.name)
+        write!(
+            f,
+            "Label({})",
+            starlark::values::string::StarlarkStr::repr(&self.canonical_form())
+        )
     }
 }
 
@@ -175,6 +345,12 @@ pub fn unpack_label(value: Value<'_>) -> Option<String> {
     )
 }
 
+/// Label.getCanonicalForm of a genuine Label value (`//pkg:x` in the main
+/// repository).
+pub(crate) fn label_canonical_form(value: Value<'_>) -> Option<String> {
+    LabelValue::from_value(value).map(LabelValue::canonical_form)
+}
+
 /// Borrow components so bounded host consumers can charge before formatting.
 pub(crate) fn label_parts(value: Value<'_>) -> Option<(&str, &str, &str)> {
     let label = LabelValue::from_value(value)?;
@@ -188,6 +364,19 @@ pub fn alloc_label<'v>(heap: Heap<'v>, canonical: &str) -> anyhow::Result<Value<
 
 #[starlark_value(type = "Label")]
 impl<'v> StarlarkValue<'v> for LabelValue {
+    /// Label.str (cmdline/Label.java:740-754) under Bazel 9.3's default
+    /// `--incompatible_unambiguous_label_stringification`
+    /// (packages/semantics/BuildLanguageOptions.java:546-548): `@@//pkg:x`.
+    fn collect_str(&self, collector: &mut String) {
+        collector.push_str(&self.unambiguous_canonical_form());
+    }
+
+    /// Label.debugPrint (cmdline/Label.java:725-737): the shorthand display
+    /// form relative to the main repository mapping (print, fail).
+    fn collect_debug_print(&self, collector: &mut String, eval: &Evaluator<'v, '_, '_>) {
+        collector.push_str(&self.shorthand_display_form(main_repository_mapping(eval).as_ref()));
+    }
+
     fn write_hash(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
         self.hash(hasher);
         Ok(())
@@ -525,8 +714,8 @@ impl fmt::Display for Item {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::File(file) => write!(f, "{file}"),
-            Self::String(s) => write!(f, "{s:?}"),
-            Self::Label(label) => write!(f, "Label({:?})", label.to_string()),
+            Self::String(s) => f.write_str(&starlark::values::string::StarlarkStr::repr(s)),
+            Self::Label(label) => write!(f, "{label}"),
             Self::Int(integer) => write!(f, "{integer}"),
             Self::Bool(boolean) => f.write_str(if *boolean { "True" } else { "False" }),
             Self::Tuple(items) => {
@@ -546,6 +735,8 @@ impl fmt::Display for Item {
     }
 }
 
+/// Depset.repr (collect/nestedset/Depset.java:319-328): the flattened
+/// elements, then `, order = "<name>"` unless the order is "default".
 impl fmt::Display for Depset {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("depset([")?;
@@ -557,7 +748,7 @@ impl fmt::Display for Depset {
         }
         f.write_str("]")?;
         if self.node.order != Order::Default {
-            write!(f, ", order={:?}", self.node.order.name())?;
+            write!(f, ", order = \"{}\"", self.node.order.name())?;
         }
         f.write_str(")")
     }
@@ -708,16 +899,20 @@ fn dedup(items: impl IntoIterator<Item = Item>) -> Vec<Item> {
         .collect()
 }
 
-pub fn alloc_depset<'v>(heap: Heap<'v>, files: Vec<File>) -> Value<'v> {
-    heap.alloc(
+impl Depset {
+    fn of_files(files: Vec<File>) -> Self {
         Depset::compose(
             files.into_iter().map(Item::File).collect(),
             vec![],
             Order::Default,
             Some(ItemType::File),
         )
-        .expect("owned File depset always has a valid homogeneous type and bounded depth"),
-    )
+        .expect("owned File depset always has a valid homogeneous type and bounded depth")
+    }
+}
+
+pub fn alloc_depset<'v>(heap: Heap<'v>, files: Vec<File>) -> Value<'v> {
+    heap.alloc(Depset::of_files(files))
 }
 
 pub fn unpack_depset(value: Value<'_>) -> anyhow::Result<Vec<File>> {
@@ -765,13 +960,16 @@ pub(crate) fn contained_depset_files(value: Value<'_>) -> Option<Vec<File>> {
     })
 }
 
+/// BuiltinProvider.repr (packages/BuiltinProvider.java:94-97).
 impl fmt::Display for DefaultInfoConstructor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("DefaultInfo")
+        f.write_str("<function DefaultInfo>")
     }
 }
 
-#[starlark_value(type = "provider")]
+// BuiltinProvider (DefaultInfo.PROVIDER) is `@StarlarkBuiltin(name = "Provider")`
+// (starlarkbuildapi/DefaultInfoApi.java:97-98).
+#[starlark_value(type = "Provider")]
 impl<'v> StarlarkValue<'v> for DefaultInfoConstructor {
     fn invoke(
         &self,
@@ -792,7 +990,10 @@ impl<'v> StarlarkValue<'v> for DefaultInfoConstructor {
                 files = Some(unpack_depset(*value).map_err(starlark::Error::new_other)?);
             }
         }
-        Ok(eval.heap().alloc(DefaultInfoValue { files }))
+        Ok(eval.heap().alloc(DefaultInfoValue {
+            files,
+            files_to_run_class: None,
+        }))
     }
 
     fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
@@ -805,9 +1006,28 @@ impl<'v> StarlarkValue<'v> for DefaultInfoConstructor {
     }
 }
 
+/// NativeInfo.repr (packages/NativeInfo.java:125-138) over the sorted
+/// DefaultInfoApi struct fields (starlarkbuildapi/DefaultInfoApi.java:52-96).
+/// A constructed instance holds Java nulls (None) for every omitted field and
+/// for files_to_run (analysis/DefaultInfo.java:199-224); a target's instance
+/// exposes its runfiles and FilesToRunProvider objects, whose classes do not
+/// override repr (net/starlark/java/eval/StarlarkValue.java:50-52).
 impl fmt::Display for DefaultInfoValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "DefaultInfo(files={:?})", self.files)
+        const RUNFILES: &str = "<unknown object com.google.devtools.build.lib.analysis.Runfiles>";
+        let (runfiles, files_to_run) = match &self.files_to_run_class {
+            Some(class) => (RUNFILES, format!("<unknown object {class}>")),
+            None => ("None", "None".to_owned()),
+        };
+        write!(
+            f,
+            "struct(data_runfiles = {runfiles}, default_runfiles = {runfiles}, files = "
+        )?;
+        match &self.files {
+            Some(files) => write!(f, "{}", Depset::of_files(files.clone()))?,
+            None => f.write_str("None")?,
+        }
+        write!(f, ", files_to_run = {files_to_run})")
     }
 }
 
@@ -860,14 +1080,44 @@ pub(crate) fn is_default_info_constructor(value: Value<'_>) -> bool {
     DefaultInfoConstructor::from_value(value).is_some()
 }
 
+/// The configured-target reprs print Label.toString, the canonical form
+/// (cmdline/Label.java:478-481); str() is repr().
 impl fmt::Display for Target {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "<Target {}>", self.label)
+        let label = self.label.canonical_form();
+        match &self.kind {
+            TargetKind::Rule | TargetKind::SingleExecutableRule => write!(f, "<target {label}>"),
+            TargetKind::InputFile => write!(f, "<input file target {label}>"),
+            TargetKind::OutputFile => write!(f, "<output file target {label}>"),
+            TargetKind::Unknown => write!(f, "<unknown target {label}>"),
+            TargetKind::Alias(alias, _) => write!(f, "<alias target {alias} of {label}>"),
+        }
     }
 }
 
 #[starlark_value(type = "Target")]
 impl<'v> StarlarkValue<'v> for Target {
+    /// RuleConfiguredTarget.debugPrint (configuredtargets/RuleConfiguredTarget.java:288-303):
+    /// the declared provider keys in insertion order, the returned providers
+    /// then the framework's OutputGroupInfo (RuleConfiguredTargetBuilder.java:158-172,211-213).
+    /// Other configured targets print their repr (StarlarkValue.java:77-79).
+    fn collect_debug_print(&self, collector: &mut String, _eval: &Evaluator<'v, '_, '_>) {
+        use std::fmt::Write;
+        if !matches!(
+            self.kind,
+            TargetKind::Rule | TargetKind::SingleExecutableRule
+        ) {
+            write!(collector, "{self}").unwrap();
+            return;
+        }
+        write!(collector, "<target {}, keys:[", self.label.canonical_form()).unwrap();
+        for key in &self.provider_keys {
+            collector.push_str(key);
+            collector.push_str(", ");
+        }
+        collector.push_str("OutputGroupInfo]>");
+    }
+
     fn get_attr(&self, name: &str, heap: Heap<'v>) -> Option<Value<'v>> {
         Some(match name {
             "files" => alloc_depset(heap, self.files.clone()),
@@ -884,6 +1134,7 @@ impl<'v> StarlarkValue<'v> for Target {
         if DefaultInfoConstructor::from_value(index).is_some() {
             return Ok(heap.alloc(DefaultInfoValue {
                 files: Some(self.files.clone()),
+                files_to_run_class: Some(self.kind.files_to_run_class().to_owned()),
             }));
         }
         let identity = crate::providers::provider_identity(index).ok_or_else(|| {
@@ -892,7 +1143,10 @@ impl<'v> StarlarkValue<'v> for Target {
             ))
         })?;
         let provider = self.providers.get(&identity).ok_or_else(|| {
-            starlark::Error::new_other(anyhow!("Target {} does not provide {identity}", self.label))
+            starlark::Error::new_other(anyhow!(
+                "Target {} does not provide {identity}",
+                self.label.unambiguous_canonical_form()
+            ))
         })?;
         Ok(heap.access_owned_frozen_value(provider))
     }
@@ -910,6 +1164,91 @@ impl<'v> StarlarkValue<'v> for Target {
     }
 }
 
+/// The `attr` module object (StarlarkAttrModule): repr `<attr>`
+/// (analysis/starlark/StarlarkAttrModule.java:660-662), type `attr`
+/// (starlarkbuildapi/StarlarkAttrModuleApi.java:40-57). Its members are the
+/// frozen struct of `attr.*` builtin methods.
+pub(crate) use builtin_objects::AttrModule;
+use builtin_objects::StructProvider;
+
+// Only the upstream derives generate unsafe marker implementations; both
+// values own no heap references beyond a frozen globals value.
+#[allow(unsafe_code)]
+mod builtin_objects {
+    use super::*;
+    #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
+    pub(crate) struct AttrModule(pub starlark::values::FrozenValue);
+
+    #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
+    pub(super) struct StructProvider;
+}
+starlark_simple_value!(AttrModule);
+
+impl fmt::Display for AttrModule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("<attr>")
+    }
+}
+
+#[starlark_value(type = "attr")]
+impl<'v> StarlarkValue<'v> for AttrModule {
+    fn get_attr(&self, name: &str, heap: Heap<'v>) -> Option<Value<'v>> {
+        self.0.to_value().get_attr(name, heap).ok().flatten()
+    }
+
+    fn dir_attr(&self) -> Vec<String> {
+        self.0.to_value().dir_attr()
+    }
+}
+
+// The `struct` builtin is the StructProvider (packages/StructProvider.java:30-44):
+// a BuiltinProvider with repr `<function struct>` (BuiltinProvider.java:94-97)
+// and type `Provider` (starlarkbuildapi/core/StructApi.java:38-39). Calling it
+// creates a struct from keyword arguments only (StructApi.java:41-53).
+starlark_simple_value!(StructProvider);
+
+impl fmt::Display for StructProvider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("<function struct>")
+    }
+}
+
+#[starlark_value(type = "Provider")]
+impl<'v> StarlarkValue<'v> for StructProvider {
+    fn invoke(
+        &self,
+        _me: Value<'v>,
+        args: &Arguments<'v, '_>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<Value<'v>> {
+        let heap = eval.heap();
+        if args.positions(heap)?.next().is_some() {
+            // BuiltinFunction argument binding (net/starlark/java/eval/BuiltinFunction.java:152-154).
+            return Err(starlark::Error::new_other(anyhow!(
+                "struct() got unexpected positional argument"
+            )));
+        }
+        let fields = args.names_map()?;
+        Ok(heap.alloc(starlark::values::structs::AllocStruct(
+            fields.iter().map(|(name, value)| (name.as_str(), *value)),
+        )))
+    }
+
+    fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
+        Ok(Self::from_value(other).is_some())
+    }
+
+    fn write_hash(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
+        "struct".hash(hasher);
+        Ok(())
+    }
+}
+
+/// Replace the generic `struct` builtin with Bazel's StructProvider.
+pub(crate) fn install_struct_provider(builder: &mut GlobalsBuilder) {
+    builder.set("struct", StructProvider);
+}
+
 /// `label` is a canonical absolute label supplied by the analysis engine.
 pub fn alloc_target<'v>(heap: Heap<'v>, label: &str, files: Vec<File>) -> Value<'v> {
     alloc_target_with_providers(heap, label, files, BTreeMap::new())
@@ -923,10 +1262,25 @@ pub fn alloc_target_with_providers<'v>(
     files: Vec<File>,
     providers: BTreeMap<String, OwnedFrozenValue>,
 ) -> Value<'v> {
+    alloc_target_of_kind(heap, label, files, providers, TargetKind::Rule, Vec::new())
+}
+
+/// As [`alloc_target_with_providers`], for a dependency of a known
+/// configured-target class.
+pub(crate) fn alloc_target_of_kind<'v>(
+    heap: Heap<'v>,
+    label: &str,
+    files: Vec<File>,
+    providers: BTreeMap<String, OwnedFrozenValue>,
+    kind: TargetKind,
+    provider_keys: Vec<String>,
+) -> Value<'v> {
     heap.alloc(Target {
         label: LabelValue::parse(label).expect("Target label must be an absolute valid label"),
         files,
         providers,
+        kind,
+        provider_keys,
     })
 }
 
@@ -1735,10 +2089,127 @@ ok = (len(labels.to_list()) == 2 and owner == target.label and
         fail("depset([Label('//p:a'), '//p:a'])", "same type");
         fail("depset([{}])", "unsupported");
         fail("depset([([1],)])", "unsupported");
-        pass("repr(depset(['x'], order='preorder')) == 'depset([\"x\"], order=\"preorder\")'");
+        pass("repr(depset(['x'], order='preorder')) == 'depset([\"x\"], order = \"preorder\")'");
         pass(
             "[f.path for f in depset([a, b], order='topological').to_list()] == ['pkg/a.txt', 'pkg/b']",
         );
+    }
+
+    /// Bazel 9.3 repr/str of the owned analysis values (docs/REPR.md).
+    #[test]
+    fn bazel_repr_and_str_of_analysis_values() {
+        // Label.repr/str (cmdline/Label.java:718-754).
+        pass("repr(Label('//p:a')) == 'Label(\"//p:a\")'");
+        pass("repr(Label('@@r+//p:a')) == 'Label(\"@@r+//p:a\")'");
+        pass("str(Label('//p:a')) == '@@//p:a' and str(Label('@@r+//p:a')) == '@@r+//p:a'");
+        pass("'%s|%r' % (Label('//p:a'), Label('//p:a')) == '@@//p:a|Label(\"//p:a\")'");
+        pass("repr([Label('//p:a')]) == '[Label(\"//p:a\")]'");
+        // Artifact.repr (actions/Artifact.java:1256-1262).
+        pass("repr(a) == '<source file pkg/a.txt>' and str(a) == repr(a)");
+        // Depset.repr (collect/nestedset/Depset.java:319-328).
+        pass("repr(depset([a])) == 'depset([<source file pkg/a.txt>])'");
+        pass(
+            "repr(depset([Label('//p:a'), Label('@@r+//p:b')])) == 'depset([Label(\"//p:a\"), Label(\"@@r+//p:b\")])'",
+        );
+        pass(
+            "repr(depset([(1, 'x')], order='postorder')) == 'depset([(1, \"x\")], order = \"postorder\")'",
+        );
+        pass("str(depset([])) == 'depset([])'");
+        // RuleConfiguredTarget.repr; BuiltinProvider.repr; NativeInfo.repr.
+        pass("repr(target) == '<target //pkg:rule>' and str(target) == repr(target)");
+        pass("repr(DefaultInfo) == '<function DefaultInfo>'");
+        pass(
+            "repr(DefaultInfo(files=depset([a]))) == 'struct(data_runfiles = None, default_runfiles = None, files = depset([<source file pkg/a.txt>]), files_to_run = None)'",
+        );
+        pass(
+            "repr(DefaultInfo()) == 'struct(data_runfiles = None, default_runfiles = None, files = None, files_to_run = None)'",
+        );
+        pass(
+            "repr(target[DefaultInfo]) == 'struct(data_runfiles = <unknown object com.google.devtools.build.lib.analysis.Runfiles>, default_runfiles = <unknown object com.google.devtools.build.lib.analysis.Runfiles>, files = depset([<source file pkg/a.txt>]), files_to_run = <unknown object com.google.devtools.build.lib.analysis.FilesToRunProvider>)'",
+        );
+        // BuiltinFunction.repr of a top-level builtin and of a bound method.
+        pass(
+            "repr(depset) == '<built-in function depset>' and repr(len) == '<built-in function len>'",
+        );
+        pass("repr(depset([]).to_list) == '<built-in method to_list of depset value>'");
+        pass("repr('x'.upper) == '<built-in method upper of string value>'");
+        pass("type(len) == 'builtin_function_or_method' and type('x'.upper) == type(len)");
+        pass("type(DefaultInfo) == 'Provider'");
+        // Bazel 9.3: `unhashable type: 'builtin_function_or_method'` (N22 capture).
+        fail("{len: 1}", "unhashable type: 'builtin_function_or_method'");
+        // fail() formats with debugPrint (MethodLibrary.java:895-913; Label.java:725-737);
+        // without a main repository mapping external labels stay canonical.
+        fail(
+            "fail('x', Label('//p:a'), Label('//p:p'), Label('@@r+//:r+'), Label('@@r+//q:z'), [Label('//p:a')], 1)",
+            "x //p:a //p @@r+ @@r+//q:z [Label(\"//p:a\")] 1",
+        );
+    }
+
+    #[test]
+    fn file_and_target_reprs_follow_their_configured_class() {
+        let generated = File {
+            path: "bazel-out/k8-fastbuild/bin/pkg/out.txt".into(),
+            short_path: "pkg/out.txt".into(),
+            owner: "//pkg:rule".into(),
+            is_source: false,
+        };
+        assert_eq!(generated.to_string(), "<generated file pkg/out.txt>");
+        let external_source = File {
+            path: "external/dep+/pkg/in.txt".into(),
+            short_path: "../dep+/pkg/in.txt".into(),
+            owner: "@@dep+//pkg:in.txt".into(),
+            is_source: true,
+        };
+        assert_eq!(external_source.to_string(), "<source file pkg/in.txt>");
+        let external_generated = File {
+            path: "bazel-out/k8-fastbuild/bin/external/dep+/pkg/out.txt".into(),
+            short_path: "../dep+/pkg/out.txt".into(),
+            owner: "@@dep+//pkg:rule".into(),
+            is_source: false,
+        };
+        assert_eq!(
+            external_generated.to_string(),
+            "<generated file external/dep+/pkg/out.txt>"
+        );
+        Module::with_temp_heap(|module| {
+            let heap = module.heap();
+            let repr = |label: &str, kind: TargetKind| {
+                alloc_target_of_kind(heap, label, vec![], BTreeMap::new(), kind, vec![]).to_repr()
+            };
+            assert_eq!(repr("//p:r", TargetKind::Rule), "<target //p:r>");
+            assert_eq!(
+                repr("@@dep+//p:r", TargetKind::Rule),
+                "<target @@dep+//p:r>"
+            );
+            assert_eq!(
+                repr("//p:f.txt", TargetKind::InputFile),
+                "<input file target //p:f.txt>"
+            );
+            assert_eq!(
+                repr("//p:out", TargetKind::OutputFile),
+                "<output file target //p:out>"
+            );
+            assert_eq!(
+                repr("//p:group", TargetKind::Unknown),
+                "<unknown target //p:group>"
+            );
+            assert_eq!(
+                repr(
+                    "//p:actual",
+                    TargetKind::Alias("//p:alias".into(), Box::new(TargetKind::Rule))
+                ),
+                "<alias target //p:alias of //p:actual>"
+            );
+            let target = alloc_target_of_kind(
+                heap,
+                "//p:r",
+                vec![],
+                BTreeMap::new(),
+                TargetKind::Rule,
+                vec![],
+            );
+            assert_eq!(target.to_str(), target.to_repr());
+        });
     }
 
     #[test]

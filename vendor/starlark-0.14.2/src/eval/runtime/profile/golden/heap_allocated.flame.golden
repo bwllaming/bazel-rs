@@ -6,8 +6,8 @@
 
 range 8
 module;function 16
-module;test.star.test;dict 192
-module;test.star.test;list 384
-module;test.star.test;array 480
-module;test.star.test;tuple 192
-module;test.star.test;test.star.inner;dict 1760
+module;<function test from test.star>;dict 192
+module;<function test from test.star>;list 384
+module;<function test from test.star>;array 480
+module;<function test from test.star>;tuple 192
+module;<function test from test.star>;<function inner from test.star>;dict 1760

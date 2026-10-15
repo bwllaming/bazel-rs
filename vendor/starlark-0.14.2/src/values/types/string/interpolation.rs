@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 str() compatibility; see vendor provenance.
+
 //! String interpolation-related code.
 //! Based on <https://docs.python.org/3/library/stdtypes.html#printf-style-string-formatting>
 
@@ -218,11 +220,9 @@ pub(crate) fn percent(format: &str, value: Value) -> crate::Result<String> {
         match item.format {
             None => {}
             Some(PercentSFormat::Str) => {
-                let arg = next_value()?;
-                match arg.unpack_str() {
-                    None => arg.collect_repr(&mut res),
-                    Some(s) => res.push_str(s),
-                }
+                // Modified: `%s` formats with str() (Bazel's Starlark.str), so
+                // values whose str differs from repr (e.g. Label) print str.
+                next_value()?.collect_str(&mut res);
             }
             Some(PercentSFormat::Repr) => next_value()?.collect_repr(&mut res),
             Some(PercentSFormat::Dec) => {

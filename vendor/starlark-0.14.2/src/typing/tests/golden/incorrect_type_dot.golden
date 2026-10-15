@@ -9,7 +9,7 @@ def foo(x: list.foo.bar):
     pass
 
 Error:
-error: Operation `.foo` not supported on type `function`
+error: Operation `.foo` not supported on type `builtin_function_or_method`
  --> filename:2:12
   |
 2 | def foo(x: list.foo.bar):
@@ -20,7 +20,7 @@ Approximations:
 Approximation: Unknown type = "Span { begin: Pos(12), end: Pos(24) }"
 
 Compiler typechecker (eval):
-error: Operation `.foo` not supported on type `function`
+error: Operation `.foo` not supported on type `builtin_function_or_method`
  --> filename:2:17
   |
 2 | def foo(x: list.foo.bar):

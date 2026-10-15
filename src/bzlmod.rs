@@ -270,13 +270,16 @@ mod values {
 
     #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
     pub(super) struct Builtin(pub &'static str);
+    // BuiltinFunction.repr (net/starlark/java/eval/BuiltinFunction.java:192-203):
+    // ModuleFileGlobals (bazel/bzlmod/ModuleFileGlobals.java:61) is no StarlarkValue.
     impl fmt::Display for Builtin {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str(self.0)
+            write!(f, "<built-in function {}>", self.0)
         }
     }
     starlark_simple_value!(Builtin);
-    #[starlark_value(type = "module_directive")]
+    // type() of a BuiltinFunction (net/starlark/java/eval/BuiltinFunction.java).
+    #[starlark_value(type = "builtin_function_or_method")]
     impl<'v> StarlarkValue<'v> for Builtin {
         fn invoke(
             &self,
@@ -295,7 +298,8 @@ mod values {
     }
     impl fmt::Display for ExtensionProxy {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("<module_extension_proxy>")
+            // No repr override (ModuleFileGlobals.java:549; StarlarkValue.java:50-52).
+            f.write_str("<unknown object com.google.devtools.build.lib.bazel.bzlmod.ModuleFileGlobals$ModuleExtensionProxy>")
         }
     }
     starlark_simple_value!(ExtensionProxy);
@@ -318,7 +322,8 @@ mod values {
     }
     impl fmt::Display for RepoRuleProxy {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("<repo_rule_proxy>")
+            // No repr override (ModuleFileGlobals.java:833; StarlarkValue.java:50-52).
+            f.write_str("<unknown object com.google.devtools.build.lib.bazel.bzlmod.ModuleFileGlobals$RepoRuleProxy>")
         }
     }
     starlark_simple_value!(RepoRuleProxy);
@@ -341,11 +346,14 @@ mod values {
     }
     impl fmt::Display for TagCallable {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "<extension tag {}>", self.name)
+            // No repr override (ModuleFileGlobals.java:579; StarlarkValue.java:50-52).
+            f.write_str("<unknown object com.google.devtools.build.lib.bazel.bzlmod.ModuleFileGlobals$ModuleExtensionProxy$TagCallable>")
         }
     }
     starlark_simple_value!(TagCallable);
-    #[starlark_value(type = "module_extension_tag")]
+    // TagCallable has no @StarlarkBuiltin, so type() is its simple class name
+    // (ModuleFileGlobals.java:579).
+    #[starlark_value(type = "TagCallable")]
     impl<'v> StarlarkValue<'v> for TagCallable {
         fn invoke(
             &self,
@@ -1347,6 +1355,20 @@ mod tests {
     }
 
     #[test]
+    fn module_file_values_have_bazel_reprs() {
+        // BuiltinFunction.java:192-203; ModuleFileGlobals.java:549,579,833
+        // classes without repr overrides (StarlarkValue.java:50-52).
+        run(r#"
+(repr(bazel_dep) == '<built-in function bazel_dep>') or fail(repr(bazel_dep))
+e = use_extension('//:ext.bzl', 'ext')
+(repr(e) == '<unknown object com.google.devtools.build.lib.bazel.bzlmod.ModuleFileGlobals$ModuleExtensionProxy>') or fail(repr(e))
+(repr(e.tag) == '<unknown object com.google.devtools.build.lib.bazel.bzlmod.ModuleFileGlobals$ModuleExtensionProxy$TagCallable>') or fail(repr(e.tag))
+r = use_repo_rule('//:repo.bzl', 'repo')
+(repr(r) == '<unknown object com.google.devtools.build.lib.bazel.bzlmod.ModuleFileGlobals$RepoRuleProxy>') or fail(repr(r))
+"#);
+    }
+
+    #[test]
     fn sets_in_module_globals_record_only_explicit_sequence_conversions() {
         let file = run(r#"
 Set = set
@@ -1377,7 +1399,7 @@ e.tag(names=list(names))
             fails(source, "unsupported extension tag attribute");
         }
         for source in ["x = {set: 1}", "x = set([set])"] {
-            fails(source, "not hashable");
+            fails(source, "unhashable type: 'builtin_function_or_method'");
         }
         fails("x = set.type", "type");
         fails("x = set[int]", "not supported");

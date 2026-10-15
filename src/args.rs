@@ -62,9 +62,10 @@ impl Args {
     }
 }
 
+/// Args.repr (analysis/starlark/Args.java:67-70); str() is repr().
 impl fmt::Display for Args {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("<Args>")
+        f.write_str("context.args() object")
     }
 }
 
@@ -74,6 +75,13 @@ starlark::methods_static!(ARGS_METHODS = args_methods);
 impl<'v> StarlarkValue<'v> for Args {
     fn get_methods() -> Option<&'static Methods> {
         Some(ARGS_METHODS.methods())
+    }
+
+    /// Args.debugPrint (analysis/starlark/Args.java:72-83): the expanded
+    /// arguments joined by spaces. (Bazel expands Labels there without a
+    /// main repository mapping; native arguments are already expanded.)
+    fn collect_debug_print(&self, collector: &mut String, _eval: &Evaluator<'v, '_, '_>) {
+        collector.push_str(&self.values.borrow().join(" "));
     }
 }
 
@@ -185,12 +193,14 @@ pub fn expand_arguments(value: Value<'_>) -> anyhow::Result<Vec<String>> {
     Ok(result)
 }
 
-fn string_value(value: Value<'_>) -> anyhow::Result<String> {
+fn string_value(value: Value<'_>, eval: &Evaluator<'_, '_, '_>) -> anyhow::Result<String> {
     if let Some(text) = value.unpack_str() {
         Ok(text.to_owned())
     } else if let Ok(file) = crate::starlark_types::unpack_file(value) {
         Ok(file.path)
-    } else if let Some(label) = crate::starlark_types::unpack_label(value) {
+    } else if let Some(label) = crate::starlark_types::label_command_line_form(value, eval) {
+        // Label.getDisplayForm with the main repository mapping
+        // (StarlarkCustomCommandLine.java:967-978): `@dep//pkg:x`, not `@@dep+//pkg:x`.
         Ok(label)
     } else if matches!(value.get_type(), "int" | "bool") {
         Ok(value.to_str())
@@ -301,7 +311,7 @@ fn mapped_values<'v>(
     let mut seen = BTreeSet::new();
     for item in values {
         let strings = if map_each.is_none() {
-            vec![string_value(item)?]
+            vec![string_value(item, eval)?]
         } else {
             let mapped = eval
                 .eval_function(map_each, &[item], &[])
@@ -339,12 +349,16 @@ fn args_methods(builder: &mut MethodsBuilder) {
         this: Value<'v>,
         #[starlark(args)] args: UnpackTuple<Value<'v>>,
         #[starlark(default = NoneOr::None)] format: NoneOr<&str>,
+        eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
         let builder = Args::from_value(this)?;
         builder.check_active()?;
         let (name, value) = named_value(&args.items)?;
         let mut values: Vec<_> = name.into_iter().collect();
-        values.push(formatted(format.into_option(), &string_value(value)?)?);
+        values.push(formatted(
+            format.into_option(),
+            &string_value(value, eval)?,
+        )?);
         builder.append(values)?;
         Ok(this)
     }

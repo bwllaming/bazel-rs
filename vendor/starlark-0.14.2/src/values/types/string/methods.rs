@@ -337,10 +337,10 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// they may be omitted and those values will be implied; however,
     /// the explicit and implicit forms may not be mixed.
     ///
-    /// The *conversion* specifies how to convert an argument value `x` to a
-    /// string. It may be either `!r`, which converts the value using
-    /// `repr(x)`, or `!s`, which converts the value using `str(x)` and is
-    /// the default.
+    /// Modified: Bazel 9.3 has no *conversion* (`!r`/`!s`): such a field text
+    /// names a keyword argument, so `"{0!r}".format(x)` fails with
+    /// `Missing argument '0!r'` (FormatParser.java:110-116). Values are
+    /// converted with `str(x)`.
     ///
     /// The *format specifier*, after a colon, specifies field width,
     /// alignment, padding, and numeric precision.
@@ -352,7 +352,8 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// "a{x}b{y}c{}".format(1, x=2, y=3) == "a2b3c1"
     /// "a{}b{}c".format(1, 2) == "a1b2c"
     /// "({1}, {0})".format("zero", "one") == "(one, zero)"
-    /// "Is {0!r} {0!s}?".format("heterological") == "Is \"heterological\" heterological?"
+    /// "Is {0} {1}?".format(repr("heterological"), "heterological") == "Is \"heterological\" heterological?"
+    /// "{x!r}".format(**{"x!r": "kw"}) == "kw"
     /// # "#);
     /// ```
     #[starlark(speculative_exec_safe)]

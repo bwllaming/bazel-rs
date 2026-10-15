@@ -5,8 +5,8 @@ use anyhow::{anyhow, bail};
 use starlark::environment::{Methods, MethodsBuilder};
 use starlark::starlark_module;
 use starlark::values::{
-    Heap, NoSerialize, ProvidesStaticType, StarlarkPagablePanic, StarlarkValue, Trace, Value,
-    ValueLike, starlark_value,
+    Coerce, Freeze, FreezeResult, Freezer, FrozenValue, Heap, NoSerialize, ProvidesStaticType,
+    StarlarkPagablePanic, StarlarkValue, Trace, Value, ValueLike, starlark_value,
 };
 use std::fmt;
 
@@ -48,8 +48,43 @@ mod values {
         #[trace(static)]
         pub value: SettingValue,
     }
+    /// `ctx.outputs` (StarlarkRuleContext.Outputs, analysis/starlark/StarlarkRuleContext.java:353-448).
+    /// Unlike the context itself it may be stored in returned values; freezing
+    /// happens only after the implementation returned, when Bazel's context is
+    /// nullified (StarlarkRuleContext.java:471) and the object is immutable
+    /// (`:375-377`, `:586-588`).
+    #[derive(
+        Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, Coerce, StarlarkPagablePanic,
+    )]
+    #[repr(C)]
+    pub(super) struct CtxOutputsGen<V> {
+        pub fields: V,
+        /// The rule's canonical label (ruleLabelCanonicalName).
+        pub label: String,
+        /// Frozen after the implementation returned (Outputs.isImmutable).
+        pub immutable: bool,
+    }
+
+    use starlark::starlark_complex_value;
+    starlark_complex_value!(pub(super) CtxOutputs);
+
+    impl<'v> Freeze for CtxOutputsGen<Value<'v>> {
+        type Frozen = CtxOutputsGen<FrozenValue>;
+
+        fn freeze(self, freezer: &Freezer) -> FreezeResult<Self::Frozen> {
+            Ok(CtxOutputsGen {
+                fields: self.fields.freeze(freezer)?,
+                label: self.label,
+                immutable: true,
+            })
+        }
+    }
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
     pub(super) struct SubruleCtx<'v> {
+        /// The subrule's exported name (StarlarkSubrule.getName).
+        #[allocative(skip)]
+        #[trace(static)]
+        pub name: String,
         pub label: Value<'v>,
         pub actions: Value<'v>,
         #[allocative(skip)]
@@ -57,21 +92,114 @@ mod values {
         pub scope: ScopeHandle,
     }
 }
-use values::{RuleCtx, SettingCtx, SubruleCtx};
+use values::{CtxOutputsGen, RuleCtx, SettingCtx, SubruleCtx};
+
+/// Outputs.repr (analysis/starlark/StarlarkRuleContext.java:415-439): while
+/// mutable `ctx.outputs(name = repr, ...)` sorted by field name; once immutable
+/// `ctx.outputs(for //pkg:x)`.
+impl<'v, V: ValueLike<'v>> fmt::Display for CtxOutputsGen<V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.immutable {
+            return write!(f, "ctx.outputs(for {})", self.label);
+        }
+        f.write_str("ctx.outputs(")?;
+        if let Some(fields) =
+            starlark::values::structs::StructRef::from_value(self.fields.to_value())
+        {
+            let mut fields: Vec<_> = fields.iter().collect();
+            fields.sort_by(|(a, _), (b, _)| a.as_str().cmp(b.as_str()));
+            for (index, (name, value)) in fields.into_iter().enumerate() {
+                if index != 0 {
+                    f.write_str(", ")?;
+                }
+                write!(f, "{} = {value}", name.as_str())?;
+            }
+        }
+        f.write_str(")")
+    }
+}
+
+// The Outputs class has no @StarlarkBuiltin, so type() is its simple name.
+#[starlark_value(type = "Outputs")]
+impl<'v, V: ValueLike<'v>> StarlarkValue<'v> for CtxOutputsGen<V>
+where
+    Self: starlark::any::ProvidesStaticType<'v>,
+{
+    /// Once immutable, Bazel's getValue fails with "cannot access outputs of
+    /// rule '//pkg:x' outside of its own rule implementation function"
+    /// (StarlarkRuleContext.java:395-397,440-447); natively the field is absent.
+    fn get_attr(&self, name: &str, heap: Heap<'v>) -> Option<Value<'v>> {
+        if self.immutable {
+            return None;
+        }
+        self.fields.to_value().get_attr(name, heap).ok().flatten()
+    }
+
+    fn dir_attr(&self) -> Vec<String> {
+        self.fields.to_value().dir_attr()
+    }
+}
+
+/// The field struct of a (mutable or frozen) `ctx.outputs` value.
+pub(crate) fn outputs_fields(value: Value<'_>) -> Option<Value<'_>> {
+    values::CtxOutputs::from_value(value).map(|outputs| outputs.fields)
+}
+
+pub(crate) fn alloc_outputs<'v>(heap: Heap<'v>, fields: Value<'v>, label: &str) -> Value<'v> {
+    heap.alloc(CtxOutputsGen {
+        fields,
+        label: label.to_owned(),
+        immutable: false,
+    })
+}
+
+/// StarlarkRuleContext.repr (analysis/starlark/StarlarkRuleContext.java:590-597)
+/// for a rule (not aspect) context; `label` is the canonical form
+/// (StarlarkRuleContext.java:197).
+pub(crate) fn rule_context_repr(label: &str) -> String {
+    format!("<rule context for {label}>")
+}
+
+/// A label Value's canonical form; other values (native unit-test stand-ins)
+/// print as str().
+fn canonical_label(value: Value<'_>) -> String {
+    crate::starlark_types::label_canonical_form(value).unwrap_or_else(|| value.to_str())
+}
+
+impl RuleCtx<'_> {
+    fn label(&self) -> String {
+        starlark::values::structs::StructRef::from_value(self.backing)
+            .and_then(|fields| {
+                fields
+                    .iter()
+                    .find(|(name, _)| name.as_str() == "label")
+                    .map(|(_, value)| canonical_label(value))
+            })
+            .unwrap_or_default()
+    }
+}
 
 impl fmt::Display for RuleCtx<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("<ctx>")
+        f.write_str(&rule_context_repr(&self.label()))
     }
 }
+// A build setting's ctx is the same StarlarkRuleContext.
 impl fmt::Display for SettingCtx<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("<ctx>")
+        self.ctx.fmt(f)
     }
+}
+/// SubruleContext.repr (analysis/starlark/StarlarkSubrule.java:493-501).
+pub(crate) fn subrule_context_repr(name: &str, label: &str) -> String {
+    format!("<{name} context for {label}>")
 }
 impl fmt::Display for SubruleCtx<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("<subrule_ctx>")
+        f.write_str(&subrule_context_repr(
+            &self.name,
+            &canonical_label(self.label),
+        ))
     }
 }
 
@@ -254,11 +382,13 @@ pub(crate) fn alloc_rule<'v>(
 
 pub(crate) fn alloc_subrule<'v>(
     heap: Heap<'v>,
+    name: &str,
     label: Value<'v>,
     actions: Value<'v>,
     scope: ScopeHandle,
 ) -> Value<'v> {
     heap.alloc_complex_no_freeze(SubruleCtx {
+        name: name.to_owned(),
         label,
         actions,
         scope,
@@ -390,7 +520,7 @@ mod tests {
                         None,
                     ),
                     "subrule" => {
-                        alloc_subrule(heap, heap.alloc("//:target"), actions, owner.root())
+                        alloc_subrule(heap, "s", heap.alloc("//:target"), actions, owner.root())
                     }
                     _ => actions,
                 };

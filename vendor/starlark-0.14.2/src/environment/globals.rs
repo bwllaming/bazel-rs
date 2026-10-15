@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 builtin function repr compatibility; see vendor
+// provenance.
+
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -163,6 +166,8 @@ pub struct GlobalsBuilder {
     /// FIXME(JakobDegen): This should probably be removed. Having a docstring on a `GlobalsBuilder`
     /// doesn't really make sense, because there's no way good way to combine multiple docstrings.
     docstring: Option<String>,
+    /// Modified: the receiver type recorded on subsequently set native functions.
+    builtin_receiver: Option<String>,
 }
 
 impl Globals {
@@ -267,7 +272,16 @@ impl GlobalsBuilder {
             variables: SymbolMap::new(),
             namespace_fields: Vec::new(),
             docstring: None,
+            builtin_receiver: None,
         }
+    }
+
+    /// Modified: native functions set after this call are Bazel builtin methods
+    /// of a value of Starlark type `receiver` (e.g. `native`, `attr`), so their
+    /// repr is `<built-in method NAME of RECEIVER value>`
+    /// (net/starlark/java/eval/BuiltinFunction.java:192-199).
+    pub fn set_builtin_receiver(&mut self, receiver: &str) {
+        self.builtin_receiver = Some(receiver.to_owned());
     }
 
     /// Create a [`GlobalsBuilder`] following the
@@ -400,6 +414,7 @@ impl GlobalsBuilder {
             NativeFunction {
                 function: NativeFunc(f, sig),
                 name: name.to_owned(),
+                repr_receiver: self.builtin_receiver.clone(),
                 speculative_exec_safe: components.speculative_exec_safe,
                 as_type: as_type.as_ref().map(|x| x.0.dupe()),
                 ty: ty
@@ -485,7 +500,18 @@ impl GlobalsStatic {
         let globals = self.globals();
         out.heap.add_reference(globals.heap());
         for (name, value) in globals.0.variables.iter() {
-            out.set_inner(name.as_str(), value.value, value.doc_hidden)
+            // Modified: shared native functions are rebound to the builder's
+            // builtin receiver (see `set_builtin_receiver`).
+            let rebound = match (
+                &out.builtin_receiver,
+                crate::values::ValueLike::downcast_ref::<NativeFunction>(value.value),
+            ) {
+                (Some(receiver), Some(function)) => {
+                    out.heap.alloc(function.with_repr_receiver(receiver))
+                }
+                _ => value.value,
+            };
+            out.set_inner(name.as_str(), rebound, value.doc_hidden)
         }
         out.docstring = globals.0.docstring.clone();
     }

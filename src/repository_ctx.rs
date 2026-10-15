@@ -169,8 +169,9 @@ mod values {
 
     impl<V> fmt::Display for RepositoryCtxGen<V> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            // No repr override: Starlark's default for the Java class
-            // (captured repr/str of ctx).
+            // StarlarkRepositoryContext has no repr override (bazel/repository/
+            // starlark/StarlarkRepositoryContext.java:73; StarlarkValue.java:50-52):
+            // Starlark's default for the Java class (captured repr/str of ctx).
             f.write_str(
                 "<unknown object com.google.devtools.build.lib.bazel.repository.starlark.StarlarkRepositoryContext>",
             )

@@ -555,7 +555,7 @@ mod tests {
             "issuperset",
             "isdisjoint",
         ] {
-            assert::fail(&format!("set().{method}([2, []])"), "not hashable");
+            assert::fail(&format!("set().{method}([2, []])"), "unhashable type");
             assert::fail(&format!("set().{method}('abc')"), "collection");
             assert::fail(&format!("set().{method}(other=[])"), "parameter");
         }
@@ -572,8 +572,8 @@ mod tests {
         for method in ["add", "remove", "discard"] {
             assert::fail(&format!("set().{method}(element=1)"), "parameter");
         }
-        assert::fail("set([1]).issuperset([2, []])", "not hashable");
-        assert::fail("set([1]).isdisjoint([1, []])", "not hashable");
+        assert::fail("set([1]).issuperset([2, []])", "unhashable type");
+        assert::fail("set([1]).isdisjoint([1, []])", "unhashable type");
     }
 
     #[test]
@@ -655,7 +655,7 @@ mod tests {
                 let error = Evaluator::new(&module)
                     .eval_module(ast, &globals)
                     .unwrap_err();
-                assert!(error.to_string().contains("not hashable"), "{error}");
+                assert!(error.to_string().contains("unhashable type"), "{error}");
                 let s = SetRef::unpack_value_opt(module.get("S").unwrap()).unwrap();
                 let actual: Vec<_> = s.iter().map(|x| x.unpack_i32().unwrap()).collect();
                 assert_eq!(actual, expected, "{call}");

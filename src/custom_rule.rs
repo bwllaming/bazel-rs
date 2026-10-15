@@ -3626,9 +3626,15 @@ mod definitions {
 pub fn rule_globals(builder: &mut GlobalsBuilder) {
     definitions::definition_globals(builder);
     crate::starlark_types::analysis_globals(builder);
-    let attrs = GlobalsBuilder::new().with(attr_globals).build();
+    // StarlarkAttrModuleApi extends StarlarkValue (@StarlarkBuiltin "attr"), so
+    // its functions repr as methods (BuiltinFunction.java:192-199).
+    let attrs = GlobalsBuilder::new()
+        .with(|builder| builder.set_builtin_receiver("attr"))
+        .with(attr_globals)
+        .build();
     builder.frozen_heap().add_reference(attrs.heap());
-    builder.set("attr", AllocStruct(attrs.iter()));
+    let members = builder.alloc(AllocStruct(attrs.iter()));
+    builder.set("attr", crate::starlark_types::AttrModule(members));
 }
 
 #[cfg(test)]

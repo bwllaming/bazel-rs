@@ -17,7 +17,7 @@
 
 // Modified for native Bazel 9.3 ctx.toolchains string keys: location-aware
 // indexing and `in` hooks; frozen-mutation messages and `dict | select`;
-// see vendor provenance.
+// debugPrint (print/fail) compatibility; see vendor provenance.
 
 //! The values module define a trait `StarlarkValue` that defines the attribute of
 //! any value in Starlark and a few macro to help implementing this trait.
@@ -387,6 +387,13 @@ pub trait StarlarkValue<'v>:
     /// for `str()` vs `repr()` (e.g. bytes decodes as UTF-8 for `str()`).
     fn collect_str(&self, collector: &mut String) {
         self.collect_repr(collector)
+    }
+
+    /// Modified: Bazel 9.3 `StarlarkValue.debugPrint`
+    /// (net/starlark/java/eval/StarlarkValue.java:77-79), the form used by
+    /// `print()` and `fail()`. Defaults to `str()`.
+    fn collect_debug_print(&self, collector: &mut String, _eval: &Evaluator<'v, '_, '_>) {
+        self.collect_str(collector)
     }
 
     /// String used when printing call stack. `repr(self)` by default.

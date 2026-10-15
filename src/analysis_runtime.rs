@@ -64,6 +64,8 @@ mod owned {
         #[allocative(skip)]
         #[trace(static)]
         pub scope: ScopeHandle,
+        /// The repr of the owning rule or subrule context.
+        pub context: String,
     }
 }
 use owned::Actions;
@@ -197,14 +199,30 @@ pub(crate) fn repository_context(eval: &Evaluator<'_, '_, '_>) -> Option<Arc<Rep
         .map(|context| context.repositories.clone())
 }
 
+/// StarlarkActionFactory.repr (analysis/starlark/StarlarkActionFactory.java:1284-1287):
+/// "actions for" immediately followed by the context's repr.
 impl fmt::Display for Actions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("ctx.actions")
+        write!(f, "actions for{}", self.context)
     }
 }
 
+#[cfg(test)]
 pub(crate) fn alloc_actions<'v>(heap: Heap<'v>, scope: ScopeHandle) -> Value<'v> {
-    heap.alloc_complex_no_freeze(Actions { scope })
+    alloc_actions_for(
+        heap,
+        scope,
+        crate::analysis_ctx::rule_context_repr("//:test"),
+    )
+}
+
+/// `context` is the repr of the owning rule or subrule context.
+pub(crate) fn alloc_actions_for<'v>(
+    heap: Heap<'v>,
+    scope: ScopeHandle,
+    context: String,
+) -> Value<'v> {
+    heap.alloc_complex_no_freeze(Actions { scope, context })
 }
 
 fn action_receiver<'a>(

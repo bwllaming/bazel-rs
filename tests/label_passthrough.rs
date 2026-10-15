@@ -301,7 +301,7 @@ fn wrong_types_fail_in_typed_binder_after_argument_evaluation() {
         ("{}", "dict (repr: {})"),
         (
             "struct(type='Label')",
-            "struct (repr: struct(type=\"Label\"))",
+            "struct (repr: struct(type = \"Label\"))",
         ),
     ] {
         let f = Fixture::new();

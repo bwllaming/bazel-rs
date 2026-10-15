@@ -55,6 +55,22 @@ two error-display goldens `src/tests/uncategorized_error_display{,_hash}.golden`
 in `BAZEL_RS_MODIFICATIONS.md` because the golden format cannot carry one).
 Tuple, bytes and set mutation tests still expect `Immutable`.
 
+[repr/str/debugPrint patches](REPR.md) for Bazel 9.3 value printing modify
+`src/values/types/{structs/value,function}.rs`, `src/environment/globals.rs`,
+`src/values/types/string/{interpolation,dot_format}.rs`,
+`src/eval/compiler/def.rs`, `src/values/{traits,layout/vtable}.rs` and
+`src/stdlib/{extra,funcs/other}.rs` and `src/values/error.rs` (Bazel's
+`unhashable type: 'T'` text); each carries an inline modification notice and is
+declared in the same provenance with its original archive hashes. The crate's
+own tests follow those behaviours: `src/environment/modules.rs`,
+`src/values/layout/value.rs`, `src/tests/{basic,uncategorized,fstring,opt/def_inline}.rs`,
+`src/values/types/set/{methods,set,value}.rs`, the `format` doc test in
+`src/values/types/string/methods.rs`, `testcases/eval/go/function.star` (inline
+notices) and 29 `.golden` files regenerated with
+`STARLARK_RUST_REGENERATE_GOLDEN_TESTS=1` (listed in `BAZEL_RS_MODIFICATIONS.md`,
+whose declared-addition hash is updated). Under the frozen isolated test graph
+the vendored crate passes 964 lib tests and 157 doc tests (17 ignored).
+
 ## Original published contents
 
 The source archive is

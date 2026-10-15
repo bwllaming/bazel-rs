@@ -186,12 +186,11 @@ impl<V> ProviderConstructorGen<V> {
     }
 }
 
+/// StarlarkProvider.repr (packages/StarlarkProvider.java:528-530), exported
+/// or not; str() is repr().
 impl<V> fmt::Display for ProviderConstructorGen<V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.identity() {
-            Some(identity) => write!(f, "<provider {identity}>"),
-            None => write!(f, "<unexported provider from {}>", self.extension),
-        }
+        f.write_str("<provider>")
     }
 }
 
@@ -391,9 +390,18 @@ where
     }
 }
 
-impl<V> fmt::Display for ProviderInstanceGen<V> {
+/// StarlarkInfo inherits StructImpl.repr (packages/StructImpl.java:139-153):
+/// `struct(` then the present fields sorted by name as `name = repr`.
+impl<'v, V: ValueLike<'v>> fmt::Display for ProviderInstanceGen<V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}(...)", self.name)
+        f.write_str("struct(")?;
+        for (index, (name, value)) in self.fields.iter().enumerate() {
+            if index != 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "{name} = {}", value.to_value())?;
+        }
+        f.write_str(")")
     }
 }
 
@@ -416,8 +424,7 @@ where
     }
 
     fn collect_repr(&self, collector: &mut String) {
-        collector.push_str(&self.name);
-        collector.push('(');
+        collector.push_str("struct(");
         for (index, (name, value)) in self.fields.iter().enumerate() {
             if index != 0 {
                 collector.push_str(", ");
@@ -430,8 +437,7 @@ where
     }
 
     fn collect_repr_cycle(&self, collector: &mut String) {
-        collector.push_str(&self.name);
-        collector.push_str("(...)");
+        collector.push_str("struct(...)");
     }
 
     fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
@@ -565,6 +571,33 @@ pub fn returned_custom_providers<'v>(
     Ok(providers)
 }
 
+/// Provider.Key names of the returned declared providers in return order, as
+/// RuleConfiguredTarget.debugPrint lists them (StarlarkProvider.Key.toString
+/// is the exported name, packages/StarlarkProvider.java:655-657;
+/// BuiltinProvider.Key.toString the provider name, BuiltinProvider.java:153-155).
+/// DefaultInfo is not a declared provider of the target.
+pub fn returned_provider_key_names(result: Value<'_>) -> anyhow::Result<Vec<String>> {
+    if result.is_none() {
+        return Ok(Vec::new());
+    }
+    let values = if is_default_info(result) || instance_identity(result).is_some() {
+        vec![result]
+    } else {
+        sequence(result)?
+    };
+    Ok(values
+        .into_iter()
+        .filter_map(instance_identity)
+        .map(|identity| match identity.rsplit_once('%') {
+            Some((_, name)) => name.to_owned(),
+            None => identity
+                .strip_prefix("builtin:")
+                .unwrap_or(&identity)
+                .to_owned(),
+        })
+        .collect())
+}
+
 /// Collect files reachable through supported provider payloads, preserving first
 /// encounter order. Unknown value kinds and cyclic/overdeep containers fail
 /// explicitly rather than silently losing dependencies. String depsets and
@@ -646,6 +679,9 @@ pub fn provider_files(value: Value<'_>) -> anyhow::Result<Vec<File>> {
                 for (_, child) in structure.iter() {
                     self.walk(child, depth + 1)?;
                 }
+            } else if let Some(fields) = crate::analysis_ctx::outputs_fields(value) {
+                // ctx.outputs (formerly a plain struct): its predeclared output Files.
+                self.walk(fields, depth + 1)?;
             } else if !matches!(
                 value.get_type(),
                 "NoneType" | "bool" | "int" | "float" | "string"
@@ -1037,6 +1073,11 @@ c = _new_p(name = "raw")
 (type(P) == "Provider" and type(_new_p) == "RawConstructor") or fail("types")
 (repr(_new_p) == "<unknown object com.google.devtools.build.lib.packages.StarlarkProvider$RawConstructor>") or fail("raw repr")
 (str(_new_p) == repr(_new_p)) or fail("raw str")
+(repr(P) == "<provider>" and str(P) == "<provider>") or fail("provider repr")
+(repr(provider()) == "<provider>") or fail("unexported provider repr")
+(repr(a) == 'struct(name = "x", upper = "X")' and str(a) == repr(a)) or fail("instance repr " + repr(a))
+(repr([c]) == '[struct(name = "raw")]') or fail("nested instance repr")
+(repr(struct(z = 1, a = c)) == 'struct(a = struct(name = "raw"), z = 1)') or fail("struct repr " + repr(struct(z = 1, a = c)))
 (type(a) == "struct" and type(c) == "struct") or fail("instance types")
 (a == _new_p(name = "x", upper = "X") and a != c) or fail("shared instance type")
 (_new_p == _new_p and _new_p != P) or fail("raw identity")
@@ -1660,7 +1701,8 @@ template = platform_common.TemplateVariableInfo({})
                 ("P(x={'k': 1})", Some(vec![])),
                 ("l = []; p = P(x=l); l.append(p); p", None),
                 ("P(x=len)", None),
-                ("P(x=set([len]))", None),
+                // Builtins are unhashable (Bazel 9.3); a def is a hashable unknown kind.
+                ("def f():\n    pass\nP(x=set([f]))", None),
                 ("l = []; l.append(l); P(x=[set([file]), l])", None),
                 (
                     "def deep():\n    x = []\n    for i in range(140):\n        x = [x]\n    return P(x=x)\ndeep()",

@@ -117,8 +117,8 @@ not hasattr(set, 'type') and set == set and set != list
         assert::fail("set(None)", "not supported");
         assert::fail("set('abc')", "not supported");
         assert::fail("set[int]", "not supported");
-        assert::fail("{set: 1}", "not hashable");
-        assert::fail("set([set])", "not hashable");
+        assert::fail("{set: 1}", "unhashable type");
+        assert::fail("set([set])", "unhashable type");
     }
 
     #[test]

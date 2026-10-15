@@ -1751,7 +1751,8 @@ mod tests {
             .unwrap_err();
         assert!(
             e.to_string()
-                .contains("Value `function (repr: bool)` is not compatible with"),
+                // Modified: Bazel builtin type name and repr.
+                .contains("Value `builtin_function_or_method (repr: <built-in function bool>)` is not compatible with"),
             "{e}"
         );
 
@@ -1761,7 +1762,8 @@ mod tests {
             .unwrap_err();
         assert!(
             e.to_string()
-                .contains("Value `function (repr: bool)` is not compatible with"),
+                // Modified: Bazel builtin type name and repr.
+                .contains("Value `builtin_function_or_method (repr: <built-in function bool>)` is not compatible with"),
             "{e}"
         );
     }

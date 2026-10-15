@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 repr/type/hashability compatibility; see vendor provenance.
+
 //! The environment, called "Module" in [this spec](
 //! https://github.com/bazelbuild/starlark/blob/master/spec.md)
 //! is the list of variable in the current scope. It can be frozen, after which
@@ -727,7 +729,11 @@ x = f(1)
             let module = module.freeze_named(StarlarkTestHeapName::frozen_heap_name())?;
             let heap_summary = module.heap_profile().unwrap().gen_csv().unwrap();
             // Smoke test.
-            assert!(heap_summary.contains("\"x.star.f\""), "{heap_summary:?}");
+            // Modified: profiles label a def by its Bazel repr.
+            assert!(
+                heap_summary.contains("\"<function f from x.star>\""),
+                "{heap_summary:?}"
+            );
             crate::Result::Ok(())
         })
         .unwrap();
@@ -749,7 +755,11 @@ x = f(1)
         let globals = globals.build();
 
         let module = FrozenModule::from_globals(&globals).unwrap();
-        assert_eq!("function", module.get("foo").unwrap().value().get_type());
+        // Modified: native functions have Bazel's builtin type name.
+        assert_eq!(
+            "builtin_function_or_method",
+            module.get("foo").unwrap().value().get_type()
+        );
         assert_eq!(
             0,
             ListRef::from_value(module.get("BAR").unwrap().value())

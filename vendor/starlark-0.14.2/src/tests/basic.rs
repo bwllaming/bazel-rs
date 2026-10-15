@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 repr/type/hashability compatibility; see vendor provenance.
+
 //! Basic expression tests.
 
 use crate::assert;
@@ -206,7 +208,7 @@ xs == ys
 #[test]
 fn test_not_in_unhashable() {
     // Note that [] can't be hashed
-    assert::fail("[] not in {123: 456}", "not hashable");
+    assert::fail("[] not in {123: 456}", "unhashable type");
 }
 
 #[test]
@@ -217,7 +219,7 @@ x = {}
 y = {}
 x[y] = 1
 "#,
-        "not hashable",
+        "unhashable type",
     );
     assert::fail(
         r#"
@@ -225,7 +227,7 @@ x = {'x': 1}
 y = {}
 x.get(y)
 "#,
-        "not hashable",
+        "unhashable type",
     );
     assert::fail(
         r#"
@@ -233,6 +235,6 @@ x = {'x': 1}
 y = {}
 x[y]
 "#,
-        "not hashable",
+        "unhashable type",
     );
 }

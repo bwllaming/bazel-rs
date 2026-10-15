@@ -49,7 +49,8 @@ mod values {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match self.exported.get() {
                 Some(name) => write!(f, "<macro {name}>"),
-                None => f.write_str("<unexported macro>"),
+                // MacroFunction.repr (analysis/starlark/StarlarkRuleClassFunctions.java:1683-1689).
+                None => f.write_str("<macro>"),
             }
         }
     }

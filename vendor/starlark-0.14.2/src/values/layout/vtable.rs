@@ -17,7 +17,7 @@
 
 // Modified for native Bazel 9.3 ctx.toolchains string keys: location-aware
 // indexing and `in` hooks; frozen-mutation messages and `dict | select`;
-// see vendor provenance.
+// debugPrint (print/fail) compatibility; see vendor provenance.
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -661,6 +661,16 @@ impl<'v> AValueDyn<'v> {
     #[inline]
     pub(crate) fn collect_str(self, collector: &mut String) {
         (self.vtable.starlark_value.collect_str)(self.value, collector)
+    }
+
+    // Modified: Bazel `StarlarkValue.debugPrint` dispatch.
+    #[inline]
+    pub(crate) fn collect_debug_print(
+        self,
+        collector: &mut String,
+        eval: &crate::eval::Evaluator<'v, '_, '_>,
+    ) {
+        (self.vtable.starlark_value.collect_debug_print)(self.value, collector, eval)
     }
 
     #[inline]

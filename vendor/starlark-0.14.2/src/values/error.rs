@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-// Modified for native Bazel 9.3 frozen-mutation messages and `dict | select`; see vendor provenance.
+// Modified for native Bazel 9.3 frozen-mutation messages and `dict | select`, and
+// repr/type/hashability compatibility; see vendor provenance.
 
 //! Define a common set of errors.
 
@@ -76,7 +77,9 @@ impl From<ValueError> for crate::Error {
 
 #[derive(Debug, Error)]
 pub(crate) enum ControlError {
-    #[error("Value of type `{0}` is not hashable")]
+    // Modified: Bazel 9.3 `StarlarkValue.checkHashable`
+    // (net/starlark/java/eval/StarlarkValue.java:120).
+    #[error("unhashable type: '{0}'")]
     NotHashableValue(String),
     #[error("Too many recursion levels")]
     TooManyRecursionLevel,

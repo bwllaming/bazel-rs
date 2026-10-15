@@ -780,25 +780,38 @@ True"#,
 
 #[test]
 fn test_function_to_name() {
+    // Modified: Bazel 9.3 builtins are unhashable (StarlarkValue.java:120), so
+    // the frozen/unfrozen function-key round trip uses `def` and `lambda`.
     let mut a = Assert::new();
     a.module(
         "x",
         r#"
 def mine():
     pass
-names = {repr: "repr", str: "str", mine: "mine"}
-assert_eq(names[repr], "repr")
+def other():
+    pass
+anon = lambda: None
+names = {mine: "mine", other: "other", anon: "anon"}
 assert_eq(names[mine], "mine")
-assert_eq(names[str], "str")
+assert_eq(names[other], "other")
+assert_eq(names[anon], "anon")
 "#,
     );
     a.pass(
         r#"
-load("x", "mine", "names")
-assert_eq(names[repr], "repr")
+load("x", "mine", "other", "anon", "names")
 assert_eq(names[mine], "mine")
-assert_eq(names[str], "str")
+assert_eq(names[other], "other")
+assert_eq(names[anon], "anon")
 "#,
+    );
+    a.fail(
+        "names = {repr: 'repr'}",
+        "unhashable type: 'builtin_function_or_method'",
+    );
+    a.fail(
+        "names = {''.count: 'count'}",
+        "unhashable type: 'builtin_function_or_method'",
     );
 }
 
@@ -1295,14 +1308,14 @@ xs == {1: 2}
 xs = {}
 xs[xs]
 "#,
-        "not hashable",
+        "unhashable type",
     );
     assert::fail(
         r#"
 xs = {}
 xs[xs] = 1
 "#,
-        "not hashable",
+        "unhashable type",
     );
     assert::is_true(
         r#"
@@ -1349,7 +1362,7 @@ def f():
 load('m.star', 'f')
 f()
     ",
-        "Value of type `list` is not hashable",
+        "unhashable type: 'list'",
     );
 }
 

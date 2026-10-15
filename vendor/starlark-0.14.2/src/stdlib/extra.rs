@@ -15,9 +15,11 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 debugPrint (print/fail) compatibility; see vendor
+// provenance.
+
 use std::fmt;
 
-use itertools::Itertools;
 use starlark_derive::starlark_module;
 
 use crate as starlark;
@@ -133,15 +135,38 @@ impl PrintHandler for StderrPrintHandler {
 #[starlark_module]
 pub fn print(builder: &mut GlobalsBuilder) {
     /// Print some values to the output.
-    fn print(
-        #[starlark(args)] args: UnpackTuple<Value>,
-        eval: &mut Evaluator,
+    fn print<'v>(
+        #[starlark(args)] args: UnpackTuple<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<NoneType> {
-        // In practice most users should want to put the print somewhere else, but this does for now
-        // Unfortunately, we can't use PrintWrapper because strings to_str() and Display are different.
-        eval.print_handler
-            .println(&args.items.iter().map(|x| x.to_str()).join(" "))?;
+        // Modified: Bazel MethodLibrary.print (net/starlark/java/eval/MethodLibrary.java:940-955)
+        // formats each argument with Printer.debugPrint.
+        let mut text = String::new();
+        for (index, x) in args.items.iter().enumerate() {
+            if index != 0 {
+                text.push(' ');
+            }
+            debug_print(*x, &mut text, eval);
+        }
+        eval.print_handler.println(&text)?;
         Ok(NoneType)
+    }
+}
+
+/// Modified: Bazel 9.3 `Printer.debugPrint` (net/starlark/java/eval/Printer.java:117-124):
+/// a string prints itself, any other value its `StarlarkValue.debugPrint`.
+pub(crate) fn debug_print<'v>(
+    value: Value<'v>,
+    collector: &mut String,
+    eval: &Evaluator<'v, '_, '_>,
+) {
+    if let Some(s) = value.unpack_str() {
+        collector.push_str(s);
+        return;
+    }
+    match crate::values::recursive_repr_or_json_guard::repr_stack_push(value) {
+        Ok(_guard) => value.get_ref().collect_debug_print(collector, eval),
+        Err(..) => value.get_ref().collect_repr_cycle(collector),
     }
 }
 

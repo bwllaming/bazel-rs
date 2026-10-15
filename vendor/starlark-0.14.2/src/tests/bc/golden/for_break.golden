@@ -20,7 +20,7 @@ Instructions:
           # instrs.star.bzl:3:11-16
       40: Break &2 128
           # instrs.star.bzl:4:5-12
-  >   56: CallFrozenNativePos noop &1..&2 instrs.star.bzl:4:5-12 ->&3
+  >   56: CallFrozenNativePos <built-in function noop> &1..&2 instrs.star.bzl:4:5-12 ->&3
           # instrs.star.bzl:4:5-12
      104: Continue &2 0 ->&i 24 128
   >128: ReturnConst None

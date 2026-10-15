@@ -806,6 +806,21 @@ mod tests {
     }
 
     #[test]
+    fn repository_rule_reprs_follow_repository_rule_function() {
+        // StarlarkRepositoryModule.java:153-159 with RepoRuleId.java:32-34.
+        extension(
+            "def impl(ctx):\n    return None\nanon = repr(repository_rule(impl))\nR = repository_rule(impl)\n(anon == '<anonymous starlark repository rule>') or fail(anon)\n(repr(R) == '<starlark repository rule @@//defs:repos.bzl%R>' and str(R) == repr(R)) or fail(repr(R))",
+        )
+        .unwrap();
+        extension_in(
+            "@@dep+//defs:repos.bzl",
+            "def impl(ctx):\n    return None\nR = repository_rule(impl)\n(repr(R) == '<starlark repository rule @@dep+//defs:repos.bzl%R>') or fail(repr(R))",
+            &HashMap::new(),
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn supplied_values_are_checked_against_values_like_attribute_utils() {
         let definition = definition(
             "{'mode': attr.string(default = 'z', values = ['a', 'b']), 'n': attr.int(values = [1, 2])}",

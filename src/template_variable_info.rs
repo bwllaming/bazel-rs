@@ -133,9 +133,24 @@ impl<'v> StarlarkValue<'v> for Constructor {
     }
 }
 
+/// NativeInfo.repr (packages/NativeInfo.java:125-138) over the single
+/// `variables` struct field (starlarkbuildapi/TemplateVariableInfoApi.java:45-52).
 impl fmt::Display for TemplateVariableInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("TemplateVariableInfo(...)")
+        use starlark::values::string::StarlarkStr;
+        f.write_str("struct(variables = {")?;
+        for (index, (key, value)) in self.variables.iter().enumerate() {
+            if index != 0 {
+                f.write_str(", ")?;
+            }
+            write!(
+                f,
+                "{}: {}",
+                StarlarkStr::repr(key),
+                StarlarkStr::repr(value)
+            )?;
+        }
+        f.write_str("})")
     }
 }
 

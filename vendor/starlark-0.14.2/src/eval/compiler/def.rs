@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 function repr compatibility; see vendor provenance.
+
 //! Implementation of `def`.
 
 use std::cell::UnsafeCell;
@@ -601,9 +603,18 @@ fn deserialize_optimized_on_freeze_stmt(
     })
 }
 
+/// Modified: Bazel 9.3 `StarlarkFunction.repr`
+/// (net/starlark/java/eval/StarlarkFunction.java:222-231): `<function NAME from
+/// MODULE>`, where the module's client data prints its label
+/// (cmdline/BazelModuleContext.java:133-135), the name this file was parsed as.
 impl<V> Display for DefGen<V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.parameters.signature())
+        write!(
+            f,
+            "<function {} from {}>",
+            self.def_info.name.as_str(),
+            self.def_info.codemap.filename()
+        )
     }
 }
 

@@ -143,7 +143,12 @@ fn config_globals(builder: &mut GlobalsBuilder) {
 
 /// Install the config namespace into extension globals only.
 pub fn install(globals: &mut GlobalsBuilder) {
-    let config = GlobalsBuilder::new().with(config_globals).build();
+    // StarlarkConfigApi extends StarlarkValue (@StarlarkBuiltin "config"), so its
+    // functions repr as methods (BuiltinFunction.java:192-199).
+    let config = GlobalsBuilder::new()
+        .with(|builder| builder.set_builtin_receiver("config"))
+        .with(config_globals)
+        .build();
     globals.frozen_heap().add_reference(config.heap());
     globals.set("config", AllocStruct(config.iter()));
 }

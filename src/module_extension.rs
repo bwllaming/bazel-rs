@@ -56,7 +56,9 @@ mod values {
 
     impl fmt::Display for TagClass {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("<tag_class>")
+            // TagClass is a record without a repr override
+            // (bazel/bzlmod/TagClass.java:33-36; StarlarkValue.java:50-52).
+            f.write_str("<unknown object com.google.devtools.build.lib.bazel.bzlmod.TagClass>")
         }
     }
 
@@ -94,7 +96,11 @@ mod values {
 
     impl<V> fmt::Display for ModuleExtensionGen<V> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("<module_extension>")
+            // ModuleExtension is a record without a repr override
+            // (bazel/bzlmod/ModuleExtension.java:37; StarlarkValue.java:50-52).
+            f.write_str(
+                "<unknown object com.google.devtools.build.lib.bazel.bzlmod.ModuleExtension>",
+            )
         }
     }
 
@@ -102,7 +108,8 @@ mod values {
 
     // Bazel's ModuleExtension is not StarlarkExportable. In particular, aliases
     // and private globals do not acquire a first-export identity here.
-    #[starlark_value(type = "module_extension")]
+    // The record has no @StarlarkBuiltin, so type() is its simple class name.
+    #[starlark_value(type = "ModuleExtension")]
     impl<'v, V: ValueLike<'v>> StarlarkValue<'v> for ModuleExtensionGen<V> where
         Self: ProvidesStaticType<'v>
     {
@@ -828,7 +835,7 @@ mod tests {
     #[test]
     fn private_aliases_reexports_and_unexported_values_unpack_without_identity() {
         let original = extension(
-            "def _impl(ctx):\n    return ctx\n_private = module_extension(_impl)\nAlias = _private\nOther = module_extension(implementation=_impl)\n(type(Alias) == 'module_extension') or fail('type')\n(Alias == _private and Alias != Other) or fail('identity')",
+            "def _impl(ctx):\n    return ctx\n_private = module_extension(_impl)\nAlias = _private\nOther = module_extension(implementation=_impl)\n(type(Alias) == 'ModuleExtension') or fail('type')\n(Alias == _private and Alias != Other) or fail('identity')",
         ).unwrap();
         let private = original.get_any_visibility("_private").unwrap().0;
         let reexport = extension_in(
@@ -910,7 +917,7 @@ mod tests {
 
     #[test]
     fn schemas_and_docs_are_owned_opaque_and_unhashable() {
-        let module = extension("items = ['before']\na = {'items': attr.string_list(default=items)}\nT = tag_class(a, doc='é')\na['later'] = attr.int()\nitems.append('after')\nclasses = {'_t': T}\ndef impl(ctx):\n    return None\nE = module_extension(impl, tag_classes=classes, doc='é')\nclasses['later'] = tag_class()\n(repr(T) == '<tag_class>') or fail('repr')\n(repr(E) == '<module_extension>') or fail('repr')").unwrap();
+        let module = extension("items = ['before']\na = {'items': attr.string_list(default=items)}\nT = tag_class(a, doc='é')\na['later'] = attr.int()\nitems.append('after')\nclasses = {'_t': T}\ndef impl(ctx):\n    return None\nE = module_extension(impl, tag_classes=classes, doc='é')\nclasses['later'] = tag_class()\n(repr(T) == '<unknown object com.google.devtools.build.lib.bazel.bzlmod.TagClass>') or fail('repr')\n(repr(E) == '<unknown object com.google.devtools.build.lib.bazel.bzlmod.ModuleExtension>') or fail('repr')").unwrap();
         let definition = unpack(&module.get("E").unwrap()).unwrap();
         assert_eq!(definition.tag_classes.len(), 1);
         let schema = &definition.tag_classes["_t"];

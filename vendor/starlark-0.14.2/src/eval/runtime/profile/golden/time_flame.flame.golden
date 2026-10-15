@@ -6,5 +6,5 @@
 
 root 35
 root;"module" 70
-root;"module";test.star.test 168
-root;"module";test.star.test;test.star.inner 140
+root;"module";<function test from test.star> 168
+root;"module";<function test from test.star>;<function inner from test.star> 140

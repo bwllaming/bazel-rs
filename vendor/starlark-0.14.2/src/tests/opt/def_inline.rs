@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 repr/type/hashability compatibility; see vendor provenance.
+
 //! Test function bodies inlined.
 
 use crate::assert::Assert;
@@ -118,7 +120,7 @@ Traceback (most recent call last):
       def h(): return g()
   * g.bzl.bzl:2, in g
       def g(): return f()
-error: Value of type `list` is not hashable
+error: unhashable type: 'list'
  --> f.bzl.bzl:1:18
   |
 1 | def f(): return {[]: 10}

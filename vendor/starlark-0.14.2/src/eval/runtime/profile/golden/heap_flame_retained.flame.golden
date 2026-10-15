@@ -5,4 +5,4 @@
 # ```
 
 module;function 16
-module;test.star.test;list 8
+module;<function test from test.star>;list 8
