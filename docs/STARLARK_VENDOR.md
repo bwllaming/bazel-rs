@@ -98,8 +98,11 @@ Latin-1 char model (`enter_latin1_char_model`, re-exported from
 Upstream doc examples and one unit test that asserted the replaced behaviour were
 updated with modification notices; three tests were added. The isolated vendored
 test run (frozen h1 test-graph lock, direct 1.99.0 binaries, offline;
-`/tmp/opencode/n26v-scratch/receipt.json`) shows the same five pre-existing lib
-failures as the unmodified HEAD tree and no new failure; doc tests pass.
+`/tmp/opencode/n26v-scratch/receipt.json`) showed, on N26's own base, the same
+five pre-existing lib failures as its unmodified base tree (whose vendored tests
+still expected the pre-N20 `Immutable` text) and no new failure. On the merged
+tree (with the N20 vendored test expectations, N22, N23a and N26) the same
+procedure passes all 967 lib tests and 157 doc tests (17 ignored).
 
 ## Original published contents
 
