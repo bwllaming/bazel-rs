@@ -1,0 +1,6 @@
+# Test-only replacement of bazel_skylib 1.9.0's MODULE.bazel; see PROVENANCE.md.
+module(
+    name = "bazel_skylib",
+    version = "1.9.0",
+    compatibility_level = 1,
+)

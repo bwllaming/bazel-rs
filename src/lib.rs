@@ -18,6 +18,8 @@ pub mod builtin_tools;
 mod bzl_visibility;
 pub mod bzlmod;
 mod cc_common;
+mod cc_features;
+mod cc_variables;
 pub mod config_registry;
 pub mod config_setting;
 pub mod configuration;

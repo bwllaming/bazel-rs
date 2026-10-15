@@ -94,6 +94,8 @@ pub(crate) enum Behavior {
     ExecGroup,
     ConfigurationField,
     TestEnvironment,
+    /// C++ toolchain features, variables and tools (`crate::cc_features`).
+    CcFeatures(crate::cc_features::Op),
 }
 
 /// The four Java builtin namespaces plus `cc_internal`; each has its own
@@ -243,6 +245,13 @@ impl Namespace {
             (Namespace::CcInternal, "check_private_api") => method(Behavior::CheckPrivateApi),
             (Namespace::CcInternal, "create_header_info") => method(Behavior::CreateHeaderInfo),
             (Namespace::CcInternal, "freeze") => method(Behavior::Freeze),
+            (Namespace::CcInternal, _)
+                if crate::cc_features::Op::for_cc_internal(name).is_some() =>
+            {
+                method(Behavior::CcFeatures(
+                    crate::cc_features::Op::for_cc_internal(name).expect("checked"),
+                ))
+            }
             (Namespace::CcInternal, _) => method(Behavior::Unimplemented(Domain::Cc)),
         })
     }
@@ -987,6 +996,7 @@ fn call<'v>(
                 plist.to_str()
             )))
         }
+        Behavior::CcFeatures(op) => crate::cc_features::call(op, style, name, args, eval),
         Behavior::ToolchainType => toolchain_type(args, eval),
         Behavior::ExecGroup => exec_group(args, eval),
         Behavior::ConfigurationField => configuration_field(args, eval),

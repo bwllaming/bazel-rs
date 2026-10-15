@@ -1,0 +1,6 @@
+# Test-only replacement of platforms 1.1.0's MODULE.bazel; see PROVENANCE.md.
+module(
+    name = "platforms",
+    version = "1.1.0",
+    compatibility_level = 1,
+)

@@ -212,7 +212,8 @@ pub(crate) fn install(builder: &mut GlobalsBuilder) {
                         def,
                         CC_MODULE,
                         qualified,
-                        Behavior::Unimplemented(Domain::Cc),
+                        crate::cc_features::Op::for_cc_common(field)
+                            .map_or(Behavior::Unimplemented(Domain::Cc), Behavior::CcFeatures),
                     ),
                 )
             })
@@ -537,12 +538,13 @@ x = struct(do_not_use_tools_cpp_compiler_present = _cc_common_internal.do_not_us
         );
         for (call, message) in [
             (
+                // Implemented by crate::cc_features (CcModule.getToolForAction).
                 "cc_common.get_tool_for_action(feature_configuration = None, action_name = 'c')",
-                "cc_common.get_tool_for_action is not implemented in the native profile (analysis-time C++ API)",
+                "in call to get_tool_for_action(), parameter 'feature_configuration' got value of type 'NoneType', want 'FeatureConfiguration'",
             ),
             (
-                "cc_common.empty_variables()",
-                "cc_common.empty_variables is not implemented in the native profile",
+                "cc_common.legacy_cc_flags_make_variable_do_not_use(cc_toolchain = None)",
+                "cc_common.legacy_cc_flags_make_variable_do_not_use is not implemented in the native profile (analysis-time C++ API)",
             ),
             (
                 "cc_common.check_experimental_cc_shared_library()",

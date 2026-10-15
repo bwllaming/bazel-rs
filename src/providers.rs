@@ -170,6 +170,14 @@ mod values {
         pub name: String,
         // Sorted by field name for deterministic repr, comparison and hashing.
         pub fields: Vec<(String, V)>,
+        /// `Info.getCreationLocation()`: the provider call site
+        /// (StarlarkProvider.fastcall uses `thread.getCallerLocation()`).
+        /// Never part of equality, hashing or repr.
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        #[allocative(skip)]
+        #[starlark_pagable(skip)]
+        pub location: Option<starlark::codemap::FileSpan>,
     }
 }
 use values::{ProviderConstructorGen, ProviderInstanceGen, RawConstructorGen};
@@ -225,7 +233,7 @@ impl<'v, V: ValueLike<'v>> ProviderConstructorGen<V> {
             .iter()
             .map(|(name, value)| (name.as_str().to_owned(), *value))
             .collect();
-        self.instantiate(identity, name, entries, eval.heap())
+        self.instantiate(identity, name, entries, eval)
     }
 
     /// Bazel ArgumentProcessorWithInit: forward the exact arguments to init,
@@ -260,7 +268,7 @@ impl<'v, V: ValueLike<'v>> ProviderConstructorGen<V> {
             entries.push((key.to_owned(), value));
         }
         drop(dict);
-        self.instantiate(identity, name, entries, eval.heap())
+        self.instantiate(identity, name, entries, eval)
     }
 
     /// Bazel StarlarkInfoFactory addNamedArg + createFromArgs/createFromMap.
@@ -269,8 +277,9 @@ impl<'v, V: ValueLike<'v>> ProviderConstructorGen<V> {
         identity: String,
         name: String,
         entries: Vec<(String, Value<'v>)>,
-        heap: Heap<'v>,
+        eval: &Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
+        let heap = eval.heap();
         let mut seen = BTreeSet::new();
         let mut unexpected = Vec::new();
         let mut fields = Vec::with_capacity(entries.len());
@@ -302,6 +311,7 @@ impl<'v, V: ValueLike<'v>> ProviderConstructorGen<V> {
             identity,
             name,
             fields,
+            location: eval.call_stack_top_location(),
         }))
     }
 }
@@ -508,6 +518,12 @@ pub fn instance_identity(value: Value<'_>) -> Option<String> {
         return Some(crate::toolchain_info::PROVIDER_ID.to_owned());
     }
     Some(ProviderInstance::from_value(value)?.identity.clone())
+}
+
+/// The call site that created a custom-provider instance (Bazel
+/// `Info.getCreationLocation()`), if it was created by a Starlark call.
+pub(crate) fn instance_creation_location(value: Value<'_>) -> Option<starlark::codemap::FileSpan> {
+    ProviderInstance::from_value(value)?.location.clone()
 }
 
 /// Borrow genuine custom-provider fields, already sorted by name. The typed

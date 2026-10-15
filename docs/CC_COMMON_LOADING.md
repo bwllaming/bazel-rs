@@ -20,9 +20,10 @@ fails explicitly when called:
 
 The domain in parentheses names the API family (C++, Java, Apple, Python,
 platform/toolchain, configuration, coverage or testing). **C++ analysis, C++
-toolchains, `cc_common.compile`/`link`, feature configuration, and every other
-analysis-time member are unsupported.** This milestone only lets `.bzl`
-loading get past these globals.
+toolchains, `cc_common.compile`/`link`, and every other analysis-time member
+are unsupported.** This milestone only lets `.bzl` loading get past these
+globals. The C++ feature engine (feature configuration, build variables and
+tool selection) is a later increment, documented in docs/CC_FEATURES.md.
 
 All the globals below are installed in both BUILD-loaded and MODULE-loaded
 `.bzl` environments. Bazel's `BazelStarlarkEnvironment.createBzlEnvUsingInjection`
@@ -39,7 +40,7 @@ struct `repr` spacing (`struct(a=1)`) is a pre-existing difference from Bazel
 
 | Global | Source | Fields |
 | --- | --- | --- |
-| `cc_common` | `common/cc/cc_common_bazel.bzl:69-84` | 14: `internal_DO_NOT_USE`, `do_not_use_tools_cpp_compiler_present` (None, `CcModuleApi.compilerFlagExists`), and 12 analysis-time functions |
+| `cc_common` | `common/cc/cc_common_bazel.bzl:69-84` | 14: `internal_DO_NOT_USE`, `do_not_use_tools_cpp_compiler_present` (None, `CcModuleApi.compilerFlagExists`), and 12 analysis-time functions (7 feature/variable/tool functions implemented, docs/CC_FEATURES.md) |
 | `java_common` | `common/java/java_common.bzl` | `internal_DO_NOT_USE` |
 | `apple_common` | `common/objc/apple_common.bzl:37-50` (`apple_common_bazel`) | 10 (see below) |
 | `py_internal` | `common/python/py_internal.bzl` | 26: 24 functions, `cc_helper`, `PackageSpecificationInfo` |
@@ -133,6 +134,10 @@ nested action factory. The members have type `builtin_function_or_method`.
   artifact getters (`allowReturnNones`) return `None`. The four list getters
   return an empty immutable list (`StarlarkList.immutableCopyOf`); natively
   this is the frozen empty list, so mutation fails.
+- `cc_toolchain_features`, `cc_toolchain_variables`,
+  `combine_cc_toolchain_variables`, `intern_string_sequence_variable_value`
+  and `exec_os` are implemented by the C++ feature engine
+  (docs/CC_FEATURES.md).
 - Every other member fails explicitly.
 
 ### `apple_common`
