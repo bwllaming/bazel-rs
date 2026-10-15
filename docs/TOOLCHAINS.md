@@ -270,8 +270,11 @@ resolves never silently becomes `None`.
   `packages/RuleClass.java:179-203`), `exec_group_compatible_with`, named
   exec-group transitions (`config.exec("G")`, N18d).
 * `genrule(toolchains = ...)` and the Starlark `toolchains` attribute (Make
-  variables), `genrule(exec_compatible_with = ...)`, toolchains of aspects
-  and subrules.
+  variables), `genrule(exec_compatible_with = ...)`, toolchains of aspects,
+  and a subrule's `ctx.toolchains` (it needs automatic exec groups; without
+  them it is Bazel's `subrules using toolchains must enable automatic
+  exec-groups` error). A subrule's toolchain types are requested by the
+  consuming rule (docs/SUBRULES.md).
 * Negative registration patterns (`--extra_toolchains=-//x:y`), `:*` and
   `:all-targets` registrations (a Bazel crash, above), and
   `--toolchain_resolution_debug` (an unsupported option).

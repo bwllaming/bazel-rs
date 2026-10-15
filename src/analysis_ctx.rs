@@ -87,9 +87,14 @@ mod values {
         pub name: String,
         pub label: Value<'v>,
         pub actions: Value<'v>,
+        /// SubruleFragmentCollection (crate::subrule_fragments).
+        pub fragments: Value<'v>,
         #[allocative(skip)]
         #[trace(static)]
         pub scope: ScopeHandle,
+        #[allocative(skip)]
+        #[trace(static)]
+        pub toolchains: crate::subrule::SubruleToolchains,
     }
 }
 use values::{CtxOutputsGen, RuleCtx, SettingCtx, SubruleCtx};
@@ -348,15 +353,25 @@ fn subrule_properties(builder: &mut MethodsBuilder) {
     fn actions<'v>(this: Value<'v>) -> anyhow::Result<Value<'v>> {
         Ok(subctx(this)?.actions)
     }
+    /// SubruleContext.getFragmentCollection (StarlarkSubrule.java:405-412).
     #[starlark(attribute)]
     fn fragments<'v>(this: Value<'v>) -> anyhow::Result<Value<'v>> {
-        subctx(this)?;
-        bail!("subrule fragments are unsupported")
+        Ok(subctx(this)?.fragments)
     }
+    /// SubruleContext.toolchains (StarlarkSubrule.java:377-397).
     #[starlark(attribute)]
-    fn toolchains<'v>(this: Value<'v>) -> anyhow::Result<Value<'v>> {
-        subctx(this)?;
-        bail!("subrule toolchains are unsupported")
+    fn toolchains<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        use crate::subrule::SubruleToolchains;
+        match &subctx(this)?.toolchains {
+            // StarlarkToolchainContext.TOOLCHAINS_NOT_VALID.
+            SubruleToolchains::NotValid => Ok(crate::toolchain_info::alloc_context(heap, None)),
+            SubruleToolchains::NoAutoExecGroups => bail!(
+                "subrules using toolchains must enable automatic exec-groups. For more info, see https://bazel.build/extending/auto-exec-groups#migration-aegs"
+            ),
+            SubruleToolchains::AutoExecGroups => bail!(
+                "subrule toolchains with automatic exec groups are not implemented by the native profile"
+            ),
+        }
     }
 }
 
@@ -385,13 +400,17 @@ pub(crate) fn alloc_subrule<'v>(
     name: &str,
     label: Value<'v>,
     actions: Value<'v>,
+    fragments: Value<'v>,
     scope: ScopeHandle,
+    toolchains: crate::subrule::SubruleToolchains,
 ) -> Value<'v> {
     heap.alloc_complex_no_freeze(SubruleCtx {
         name: name.to_owned(),
         label,
         actions,
+        fragments,
         scope,
+        toolchains,
     })
 }
 
@@ -519,9 +538,15 @@ mod tests {
                         TargetPlatform::Absent,
                         None,
                     ),
-                    "subrule" => {
-                        alloc_subrule(heap, "s", heap.alloc("//:target"), actions, owner.root())
-                    }
+                    "subrule" => alloc_subrule(
+                        heap,
+                        "s",
+                        heap.alloc("//:target"),
+                        actions,
+                        Value::new_none(),
+                        owner.root(),
+                        crate::subrule::SubruleToolchains::NotValid,
+                    ),
                     _ => actions,
                 };
                 module.set("capability", value);

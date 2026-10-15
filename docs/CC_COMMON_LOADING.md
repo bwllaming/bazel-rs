@@ -211,9 +211,10 @@ implementation.
   `@StarlarkConfigurationField` methods. Otherwise it fails with
   `invalid configuration fragment name '…'` or `invalid configuration field
   name '…' on fragment '…'`. The result has type `LateBoundDefault` and
-  `repr` `<late-bound default>`. Using it as an `attr.label` default fails
-  explicitly, because late-bound defaults are an analysis-time configuration
-  API.
+  `repr` `<late-bound default>`. As an `attr.label` default it is resolved
+  per configured target (docs/SUBRULES.md, `src/late_bound.rs`) for the
+  fields whose value is fixed in every native configuration; other fields
+  fail explicitly at analysis.
 - `CcToolchainConfigInfo` is `None`. This is the flag-guarded
   `Starlark.NONE` registered by `CcBootstrap`, which `exports.bzl` does not
   override.

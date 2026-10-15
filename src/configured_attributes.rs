@@ -711,6 +711,9 @@ pub fn configure(rule: &Rule, resolver: &Resolver<'_>) -> Result<Rule, String> {
         for (name, value) in starlark_values {
             custom.attrs.insert(name, value);
         }
+        // Late-bound defaults take their configured value (LateBoundDefault
+        // resolution in ConfiguredAttributeMapper's configuration).
+        crate::late_bound::configure(&custom.schema, &mut custom.attrs);
         configured.srcs = crate::package::custom_dependency_labels(&custom.attrs);
     }
     Ok(configured)

@@ -258,7 +258,7 @@ pub(crate) fn allowlist_allows(
 
 /// BuiltinRestriction.failIfModuleOutsideAllowlist for the module `depth`
 /// Starlark frames below the native callee.
-fn check_private_api(
+pub(crate) fn check_private_api(
     eval: &Evaluator<'_, '_, '_>,
     depth: usize,
     allowlist: &[(String, String)],

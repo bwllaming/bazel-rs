@@ -45,8 +45,18 @@ MESSAGES = {
     'native-field': "Object has no attribute 'subrule'",
     'transitive-direct': "rule 'r' must declare 'Leaf' in 'subrules'",
     'nested-undeclared': "subrule Outer must declare Leaf in 'subrules'",
-    **{p:'nonempty subrule '+p+' are unsupported' for p in ('attrs','toolchains','fragments')},
-    **{'read-'+p:'subrule '+p+' are unsupported' for p in ('toolchains','fragments')},
+    'read-toolchains': 'subrules using toolchains must enable automatic exec-groups. For more info, see https://bazel.build/extending/auto-exec-groups#migration-aegs',
+    'undeclared-fragment': "S has to declare 'cpp' as a required fragment in order to access it. Please update the 'fragments' argument of the subrule definition (for example: fragments = [\"cpp\"])",
+    'private-cpp-api': "file '//:defs.bzl' cannot use private API",
+    'override': "got invalid named argument: '_dep' is an implicit dependency and cannot be overridden",
+    'public-attr': "illegal attribute name 'dep': subrules may only define private attributes (whose names begin with '_').",
+    'nonlabel-attr': "bad type for attribute '_dep': subrule attributes may only be label or lists of labels.",
+    'no-default': "for attribute '_dep': no default value specified",
+    'computed-default': "illegal default value for attribute '_dep': subrules cannot define computed defaults.",
+    'bad-cfg': "bad cfg for attribute '_dep': subrules may only have target/exec attributes.",
+    'two-toolchains': 'subrules may require at most 1 toolchain, got: [ToolchainTypeRequirement[toolchainType=//:a, mandatory=true, ignoreIfInvalid=false], ToolchainTypeRequirement[toolchainType=//:b, mandatory=true, ignoreIfInvalid=false]]',
+    'mandatory-lifted': "//:consume: missing value for mandatory attribute '$//:defs.bzl%S%_dep' in 'r' rule",
+    'lifted-label-list': "subrule S attribute '_deps' (attr.label_list) is not supported by the native profile: Bazel 9.3 crashes passing a lifted label_list to the implementation (InvalidStarlarkValueException: Lists$TransformingRandomAccessList)",
     'explicit-flag': 'unsupported option --experimental_rule_extension_api=false',
     'write-list': 'write content must be a string or Args', 'write-tuple': 'write content must be a string or Args',
     'param-file-format': 'parameter files are unsupported', 'use-param-file': 'parameter files are unsupported',
@@ -162,10 +172,13 @@ def synthetic(reference_only=False):
     return report
 
 
+COMMANDS_REFERENCE,COMMANDS_FULL=115,198
+
+
 class PlanTests(unittest.TestCase):
     def test_complete_bounded_plan_and_syntax(self):
-        self.assertEqual((len(s.CASEPLAN),s.plan_receipt(True)['phases'],s.plan_receipt(False)['phases']),(8,45,99))
-        self.assertEqual((s.plan_receipt(True)['commands'],s.plan_receipt(False)['commands']),(92,162))
+        self.assertEqual((len(s.CASEPLAN),s.plan_receipt(True)['phases'],s.plan_receipt(False)['phases']),(9,59,123))
+        self.assertEqual((s.plan_receipt(True)['commands'],s.plan_receipt(False)['commands']),(COMMANDS_REFERENCE,COMMANDS_FULL))
         for c in s.CASEPLAN:
             self.assertEqual(len(c['probes']),len(set(c['probes'])))
             for p in c['probes']:
@@ -236,6 +249,33 @@ class PlanTests(unittest.TestCase):
             self.assertIn(token,s.CONSUMER)
         self.assertEqual(v['changed'],('consumer/seed.txt',b'seed-B!\n',{'consume.out':b'seed-B!\n'}))
         self.assertEqual(v['target'],'//consumer:consume')
+
+    def test_configuration_family_is_differential_with_bazel_texts_and_outputs(self):
+        item=next(c for c in s.CASEPLAN if c['name']=='configuration')
+        self.assertEqual({e for _,e in s.phases_for(item)},{'reference','native'})
+        self.assertEqual(len(s.phases_for(item,True)),len(item['probes']))
+        boundaries=next(c for c in s.CASEPLAN if c['name']=='boundaries')['probes']
+        for gone in ('attrs','toolchains','fragments','read-toolchains','read-fragments'):
+            self.assertNotIn(gone,boundaries)
+        for probe in item['probes']:
+            v=s.fixture('configuration',probe)
+            self.assertFalse(v['native_only'])
+            if probe in s.CONFIGURATION_OUTPUTS:
+                self.assertIsNone(v['diagnostic'])
+                self.assertEqual(v['expected'],{'consume.out':s.CONFIGURATION_OUTPUTS[probe]})
+            else:
+                self.assertEqual(v['diagnostic'],probe)
+                self.assertTrue(s.re.search(s.DIAGNOSTICS[probe],'Error: '+MESSAGES[probe]))
+        lifted=s.fixture('configuration','lifted-attrs')['files']['defs.bzl']
+        for token in (b'configuration_field(fragment="cpp",name="fdo_optimize")',b'allow_single_file=True',b'subrules=[Leaf]',b'subrules=[Outer]',b'cfg=config.none()'):
+            self.assertIn(token,lifted)
+        # Bazel 9.3 crashes on lifted label_list: never in the differential family.
+        self.assertNotIn(b'label_list',lifted)
+        self.assertIn(b'cfg=T)',s.fixture('configuration','bad-cfg')['files']['defs.bzl'])
+        boundary=s.fixture('boundaries','lifted-label-list')
+        self.assertTrue(boundary['native_only']);self.assertEqual(boundary['diagnostic'],'lifted-label-list')
+        self.assertIn(b'_dep=None',s.fixture('configuration','override')['files']['defs.bzl'])
+        self.assertIn('NEW',str(s.LIMITATIONS))
 
     def test_native_boundaries_never_become_differential(self):
         item=next(c for c in s.CASEPLAN if c['name']=='boundaries')

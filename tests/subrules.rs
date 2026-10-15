@@ -332,19 +332,236 @@ fn dependency_declarations_are_strict_real_subrule_sequences() {
 }
 
 #[test]
-fn nonempty_configuration_constructor_inputs_are_explicitly_unsupported() {
-    for option in [
-        "attrs={'_dep':attr.label(default=':dep')}",
-        "toolchains=['//:tool']",
-        "fragments=['cpp']",
+fn subrule_constructor_attribute_and_toolchain_restrictions_use_bazel_texts() {
+    // StarlarkRuleClassFunctions.subrule (StarlarkRuleClassFunctions.java:2171-2205).
+    for (option, diagnostic) in [
+        (
+            "attrs={'dep':attr.label(default=':dep')}",
+            "illegal attribute name 'dep': subrules may only define private attributes (whose names begin with '_').",
+        ),
+        (
+            "attrs={'_dep':attr.string(default='x')}",
+            "bad type for attribute '_dep': subrule attributes may only be label or lists of labels.",
+        ),
+        (
+            "attrs={'_dep':attr.label()}",
+            "for attribute '_dep': no default value specified",
+        ),
+        (
+            "attrs={'_dep':attr.label_list(default=lambda: [])}",
+            "illegal default value for attribute '_dep': subrules cannot define computed defaults.",
+        ),
+        // Only Starlark transitions are rejected; config.none() is a tool
+        // transition (NoConfigTransition.java:96-99) and is accepted.
+        (
+            "attrs={'_dep':attr.label(default=':dep',cfg=transition(implementation=lambda s, a: {},inputs=[],outputs=[]))}",
+            "bad cfg for attribute '_dep': subrules may only have target/exec attributes.",
+        ),
+        (
+            "attrs={'dep':attr.label(default=':dep',cfg=config.none())}",
+            "illegal attribute name 'dep': subrules may only define private attributes (whose names begin with '_').",
+        ),
+        (
+            "attrs=[]",
+            "in call to subrule(), parameter 'attrs' got value of type 'list', want 'dict'",
+        ),
+        (
+            "toolchains='//:a'",
+            "in call to subrule(), parameter 'toolchains' got value of type 'string', want 'sequence'",
+        ),
+        (
+            "fragments='cpp'",
+            "in call to subrule(), parameter 'fragments' got value of type 'string', want 'sequence'",
+        ),
+        (
+            "toolchains=['//:a','//:b']",
+            "subrules may require at most 1 toolchain, got: [ToolchainTypeRequirement[toolchainType=//:a, mandatory=true, ignoreIfInvalid=false], ToolchainTypeRequirement[toolchainType=//:b, mandatory=true, ignoreIfInvalid=false]]",
+        ),
     ] {
         let ws = Workspace::new(
             &format!("def _sub(ctx):\n    return []\nS=subrule(implementation=_sub,{option})\n"),
             "load(':defs.bzl','S')\nfilegroup(name='check')\n",
         );
-        rejected(&ws.run(&["query", ":check"]), "unsupported");
+        rejected(&ws.run(&["query", ":check"]), diagnostic);
         ws.untouched();
     }
+    // Accepted by subrule() (paired capture B1b/cfg_none/query).
+    let ws = Workspace::new(
+        "def _sub(ctx,_dep):\n    return []\nS=subrule(implementation=_sub,attrs={'_dep':attr.label(default=':dep',cfg=config.none())})\n",
+        "load(':defs.bzl','S')\nfilegroup(name='check')\n",
+    );
+    success(&ws.run(&["query", ":check"]));
+    // Mandatory is accepted by subrule(); the lifted attribute then has no
+    // BUILD value (AttributeProvider.java:319-327).
+    let ws = Workspace::new(
+        "def _sub(ctx,_dep):\n    return []\nS=subrule(implementation=_sub,attrs={'_dep':attr.label(mandatory=True,default=':data')})\ndef _check(ctx):\n    S()\n    return []\ncheck=rule(implementation=_check,subrules=[S])\n",
+        "load(':defs.bzl','check')\nfilegroup(name='data')\ncheck(name='check')\n",
+    );
+    rejected(
+        &ws.run(&["query", ":check"]),
+        "//:check: missing value for mandatory attribute '$//:defs.bzl%S%_dep' in 'check' rule",
+    );
+}
+
+const LIFTED: &str = r#"
+P=provider(fields=['text'])
+def _leaf(ctx, word, *, _tool, _single, _fdo, _malloc):
+    if type(_tool)!='Target' or type(_single)!='File':
+        fail('lifted value types')
+    if dir(ctx.fragments)==[] or str(ctx.fragments).find('SubruleFragmentCollection')<0:
+        fail('fragment collection')
+    return '|'.join([word, str(_tool.label.name), _single.basename, repr(_fdo), repr(_malloc), str(_tool[P].text)])
+Leaf=subrule(
+    implementation=_leaf,
+    attrs={
+        '_tool':attr.label(default='//tools:tool', providers=[P]),
+        '_single':attr.label(default='//tools:data.txt', allow_single_file=True),
+        '_fdo':attr.label(default=configuration_field(fragment='cpp', name='fdo_optimize'), cfg='exec'),
+        '_malloc':attr.label(default=configuration_field('cpp','custom_malloc')),
+    },
+    fragments=['cpp'],
+)
+def _outer(ctx):
+    return Leaf('outer')
+Outer=subrule(implementation=_outer, subrules=[Leaf])
+def _tool(ctx):
+    return [P(text='tool-provider')]
+tool=rule(implementation=_tool)
+def _check(ctx):
+    names=[n for n in dir(ctx.attr) if n.find('%')>=0]
+    if names or [n for n in dir(ctx.files) if n.find('%')>=0] or [n for n in dir(ctx.file) if n.find('%')>=0]:
+        fail('lifted subrule attributes leaked into ctx: '+repr(names))
+    out=ctx.actions.declare_file('check.out')
+    ctx.actions.write(out, Outer()+'|'+repr(ctx.attr._zipper)+'\n')
+    return [DefaultInfo(files=depset([out]))]
+check=rule(implementation=_check, subrules=[Outer], attrs={'_zipper':attr.label(default=configuration_field('cpp','zipper'), cfg='exec', allow_single_file=True)})
+"#;
+
+#[test]
+fn lifted_private_label_attributes_reach_nested_subrules_with_late_bound_none() {
+    let ws = Workspace::new(LIFTED, CHECK);
+    ws.file(
+        "tools/BUILD.bazel",
+        "load('//:defs.bzl','tool')\ntool(name='tool',visibility=['//visibility:public'])\nfilegroup(name='data',srcs=['data.txt'],visibility=['//visibility:public'])\nexports_files(['data.txt'])\n",
+    );
+    ws.file("tools/data.txt", "data\n");
+    let output = ws.run(&["build", ":check"]);
+    assert_eq!(
+        content(&output),
+        [b"outer|tool|data.txt|None|None|tool-provider|None\n".to_vec()]
+    );
+    counts(&output, 1, 0);
+    // An explicit argument cannot override an implicit dependency (StarlarkSubrule.java:155-161).
+    ws.file(
+        "defs.bzl",
+        LIFTED.replace("Leaf('outer')", "Leaf('outer', _tool=None)"),
+    );
+    let output = ws.run(&["build", ":check"]);
+    rejected(
+        &output,
+        "got invalid named argument: '_tool' is an implicit dependency and cannot be overridden",
+    );
+    // A present value with cfg='exec' needs the exec transition, which is not modelled.
+    ws.file(
+        "defs.bzl",
+        LIFTED.replace(
+            "'_tool':attr.label(default='//tools:tool', providers=[P]),",
+            "'_tool':attr.label(default='//tools:tool', providers=[P], cfg='exec'),",
+        ),
+    );
+    rejected(
+        &ws.run(&["build", ":check"]),
+        "cfg=exec (configuration transition)",
+    );
+    // Late-bound fields without a native configured value stay explicit gaps.
+    ws.file(
+        "defs.bzl",
+        LIFTED.replace(
+            "configuration_field('cpp','custom_malloc')",
+            "configuration_field('proto','proto_compiler')",
+        ),
+    );
+    rejected(
+        &ws.run(&["build", ":check"]),
+        "late-bound default (configuration_field proto.proto_compiler)",
+    );
+    // Bazel 9.3 crashes (InvalidStarlarkValueException) passing any lifted
+    // label_list to the implementation, even an empty one: explicit failure.
+    for default in ["['//tools:tool','//tools:data']", "[]"] {
+        ws.file(
+            "defs.bzl",
+            LIFTED
+                .replace(
+                    "def _leaf(ctx, word, *, _tool,",
+                    "def _leaf(ctx, word, *, _tools, _tool,",
+                )
+                .replace(
+                    "'_single':",
+                    &format!("'_tools':attr.label_list(default={default}),\n        '_single':"),
+                ),
+        );
+        rejected(
+            &ws.run(&["build", ":check"]),
+            "subrule Leaf attribute '_tools' (attr.label_list) is not supported by the native profile: Bazel 9.3 crashes passing a lifted label_list to the implementation (InvalidStarlarkValueException: Lists$TransformingRandomAccessList)",
+        );
+    }
+}
+
+#[test]
+fn subrule_toolchains_extend_rule_requests_and_subrule_ctx_requires_auto_exec_groups() {
+    let defs = r#"
+def _tc(ctx):
+    return [platform_common.ToolchainInfo(value='resolved')]
+tc=rule(implementation=_tc)
+def _sub(ctx):
+    print('SUBRULE_ENTER')
+    return ctx.toolchains
+S=subrule(implementation=_sub, toolchains=['//:type'])
+def _check(ctx):
+    print('RULE', ctx.toolchains['//:type'].value)
+    S()
+    return []
+check=rule(implementation=_check, subrules=[S])
+"#;
+    let ws = Workspace::new(
+        defs,
+        "load(':defs.bzl','check','tc')\nplatform(name='p')\ntoolchain_type(name='type')\ntc(name='impl')\ntoolchain(name='toolchain',toolchain=':impl',toolchain_type=':type')\ncheck(name='check')\n",
+    );
+    let output = ws.run(&[
+        "build",
+        "--platforms=//:p",
+        "--host_platform=//:p",
+        "--extra_toolchains=//:toolchain",
+        ":check",
+    ]);
+    rejected(
+        &output,
+        "subrules using toolchains must enable automatic exec-groups. For more info, see https://bazel.build/extending/auto-exec-groups#migration-aegs",
+    );
+    // The rule itself requested the subrule's toolchain type.
+    assert!(
+        stderr(&output).contains("RULE resolved"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(
+        stderr(&output).contains("SUBRULE_ENTER"),
+        "{}",
+        stderr(&output)
+    );
+    // Without a registered toolchain the merged mandatory type fails resolution.
+    let output = ws.run(&[
+        "build",
+        "--platforms=//:p",
+        "--host_platform=//:p",
+        ":check",
+    ]);
+    rejected(&output, "No matching toolchains found for types");
+    assert!(
+        !stderr(&output).contains("SUBRULE_ENTER"),
+        "{}",
+        stderr(&output)
+    );
 }
 
 #[test]
@@ -865,21 +1082,66 @@ fn expired_child_args_factories_are_controlled_known_reference_defect_divergence
 }
 
 #[test]
-fn configuration_property_reads_are_explicit_unsupported_not_dummy_views() {
-    for expression in [
-        "ctx.fragments",
-        "ctx.toolchains",
-        "getattr(ctx,'fragments',None)",
-        "getattr(ctx,'toolchains',None)",
+fn subrule_fragments_require_declaration_and_cpp_members_are_private_api() {
+    for (fragments, expression, diagnostic) in [
+        (
+            "[]",
+            "ctx.fragments.cpp",
+            "S has to declare 'cpp' as a required fragment in order to access it. Please update the 'fragments' argument of the subrule definition (for example: fragments = [\"cpp\"])",
+        ),
+        (
+            "['cpp']",
+            "ctx.fragments.java",
+            "S has to declare 'java' as a required fragment in order to access it.",
+        ),
+        (
+            "['java']",
+            "ctx.fragments.java",
+            "configuration fragment 'java' is not implemented in subrule contexts by the native profile",
+        ),
+        // CcModule.checkPrivateStarlarkificationAllowlist (CcModule.java:189-192).
+        (
+            "['cpp']",
+            "ctx.fragments.cpp.compilation_mode()",
+            "file '//:defs.bzl' cannot use private API",
+        ),
+        // Structure hasattr calls getValue (paired capture B5/fragments/hasattr_undeclared_cpp).
+        (
+            "[]",
+            "hasattr(ctx.fragments,'cpp')",
+            "S has to declare 'cpp' as a required fragment in order to access it.",
+        ),
+        // CppConfiguration.checkInExpandedApiAllowlist (CppConfiguration.java:899-906).
+        (
+            "['cpp']",
+            "ctx.fragments.cpp.force_pic()",
+            "file '//:defs.bzl' cannot use private API (feature 'force_pic' in CppConfiguration)",
+        ),
     ] {
         let ws = Workspace::new(
             &format!(
-                "def _sub(ctx):\n    print('SUBRULE_ENTER')\n    value={expression}\n    fail('GUARD_BYPASSED')\nS=subrule(implementation=_sub)\ndef _check(ctx):\n    S()\n    return []\ncheck=rule(implementation=_check,subrules=[S])\n"
+                "def _sub(ctx):\n    print('SUBRULE_ENTER')\n    value={expression}\n    fail('GUARD_BYPASSED')\nS=subrule(implementation=_sub,fragments={fragments})\ndef _check(ctx):\n    S()\n    return []\ncheck=rule(implementation=_check,subrules=[S])\n"
             ),
             CHECK,
         );
-        ws.analysis_rejection(":check", "unsupported", "SUBRULE_ENTER");
+        ws.analysis_rejection(":check", diagnostic, "SUBRULE_ENTER");
     }
+}
+
+#[test]
+fn subrule_fragment_fields_are_declared_and_public_cpp_members_have_bazel_defaults() {
+    // Paired captures B5/fragments/dir_declared_*, public_cpp_copts, dir_cpp_fragment.
+    let ws = Workspace::new(
+        "def _sub(ctx):\n    f=ctx.fragments\n    c=f.cpp\n    return repr((dir(f), hasattr(f,'cpp'), hasattr(f,'py'), getattr(f,'nope','dflt'), c.copts, c.linkopts, c.custom_malloc, c.dynamic_mode(), c.minimum_os_version(), len(dir(c))))\nS=subrule(implementation=_sub,fragments=['java','cpp'])\ndef _check(ctx):\n    out=ctx.actions.declare_file('check.out')\n    ctx.actions.write(out,S()+'\\n')\n    return [DefaultInfo(files=depset([out]))]\ncheck=rule(implementation=_check,subrules=[S])\n",
+        CHECK,
+    );
+    assert_eq!(
+        content(&ws.run(&["build", ":check"])),
+        [
+            b"([\"cpp\", \"java\"], True, False, \"dflt\", [], [], None, \"DEFAULT\", None, 49)\n"
+                .to_vec()
+        ]
+    );
 }
 
 #[test]

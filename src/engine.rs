@@ -1284,7 +1284,14 @@ impl Engine {
         // Late-bound attributes skip the visibility check
         // (CommonPrerequisiteValidator.java:159-163); rules that can have any
         // provider skip the testonly check (:730-738).
-        let late_bound = matches!(rule.kind, RuleKind::Native("label_flag" | "label_setting"));
+        let late_bound_rule = matches!(rule.kind, RuleKind::Native("label_flag" | "label_setting"));
+        let analysis_dependent = rule
+            .custom
+            .as_ref()
+            .map(|custom| {
+                crate::late_bound::analysis_dependent_labels(&custom.schema, &custom.attrs)
+            })
+            .unwrap_or_default();
         let skip_testonly = forwards(&rule);
         let requesting_package = rule_authority(&rule);
         // The configuration of each dependency edge
@@ -1332,10 +1339,19 @@ impl Engine {
                 }
             };
             let src = edge.label;
+            let late_bound = late_bound_rule || analysis_dependent.contains(&src);
             let dependency = self.resolve_rule_src(&rule, &src)?;
-            let target = self
-                .target(&dependency)
-                .map_err(|error| self.missing_edge_error(&rule, &dependency, error))?;
+            let target = self.target(&dependency).map_err(|error| {
+                let error = self.missing_edge_error(&rule, &dependency, error);
+                if analysis_dependent.contains(&src) {
+                    // Name the gap: the edge is a resolved late-bound default
+                    // (crate::late_bound), e.g. apple.xcode_config_label's
+                    // @bazel_tools//tools/cpp:host_xcodes.
+                    crate::late_bound::edge_error(&rule.label, &dependency, error)
+                } else {
+                    error
+                }
+            })?;
             let is_source = matches!(target, Target::Source(_));
             let forwarding = matches!(&target, Target::Rule(dep) if forwards(dep));
             let visible = match target {
@@ -1873,7 +1889,8 @@ impl Engine {
                     errors.push(located(
                         rule.location.as_deref(),
                         format!(
-                            "in {name} attribute of {} rule {shown}: {error}",
+                            "in {} attribute of {} rule {shown}: {error}",
+                            crate::custom_rule::attribute_message_name(name, spec),
                             rule.rule_class_name()
                         ),
                     ));
@@ -3901,6 +3918,14 @@ impl Engine {
                         .clone(),
                 );
                 if let Some(custom) = analyzed_rule.custom.as_mut() {
+                    // The configuration's C++ options (subrule ctx.fragments.cpp).
+                    // The target's own configuration: an exec configuration
+                    // carries the exec transition's compilation mode
+                    // (--host_compilation_mode) and strip=always
+                    // (crate::config_registry::exec_transition).
+                    custom.cpp = crate::custom_rule::CppConfigurationView::of(
+                        &self.configurations.get(config).native,
+                    );
                     custom.target_platform = match self.platforms.get(&target) {
                         _ if !uses_toolchains => crate::platforms::TargetPlatform::Absent,
                         Some(Ok(platform)) => {

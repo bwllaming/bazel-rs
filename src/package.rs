@@ -1957,6 +1957,7 @@ fn evaluate_at(
             setting_value: None,
             target_platform: crate::platforms::TargetPlatform::Absent,
             toolchains: None,
+            cpp: Default::default(),
             declaration: pending.declaration,
         });
     }

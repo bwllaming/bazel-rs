@@ -57,6 +57,9 @@ mod owned {
         pub top_level_functions: Vec<OwnedFrozenValue>,
         pub repositories: Arc<RepositorySet>,
         pub scope: Arc<ScopeState>,
+        /// The rule's subrule inputs: lifted attribute values and toolchain
+        /// state (crate::subrule::RuleEnvironment).
+        pub subrule: crate::subrule::RuleEnvironment,
     }
 
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
@@ -594,6 +597,7 @@ mod tests {
             top_level_functions: Vec::new(),
             repositories: Arc::new(RepositorySet::new(".".into())),
             scope: ScopeState::new("rule".into(), BTreeSet::from(["S".into()])),
+            subrule: Default::default(),
         }
     }
 
@@ -793,6 +797,7 @@ r=rule(implementation=_rule,subrules=[S])
             top_level_functions: Vec::new(),
             repositories: Arc::new(RepositorySet::new(".".into())),
             scope: ScopeState::new("rule".into(), BTreeSet::from(["S".into()])),
+            subrule: Default::default(),
         };
         let owner = make_context();
         let foreign = make_context();

@@ -124,10 +124,14 @@ fn dependency<'a>(
         "attribute {name}: source file {label} is not allowed (allow_files=False)"
     );
     if spec.allow_single_file {
+        // RuleContext.Builder.validateDirectPrerequisiteFileTypes
+        // (analysis/RuleContext.java:1966-1974).
         ensure!(
             target.files.len() == 1,
-            "attribute {name}: {label} must provide exactly one file, got {}",
-            target.files.len()
+            "{prefix}'{}' must produce a single file",
+            crate::label::Label::parse_canonical(label)
+                .map(|label| crate::rule_declarations::canonical_form(&label))
+                .unwrap_or_else(|_| label.to_owned())
         );
     }
     if target.is_package_group {
@@ -241,7 +245,7 @@ fn make_ctx<'v>(
     let owned = Module::with_temp_heap(|module| -> anyhow::Result<_> {
         let structs =
             ctx_attribute_structs(rule, invocation, context, dependencies, module.heap())?;
-        for (name, value) in ["attr", "files", "file", "outputs"]
+        for (name, value) in ["attr", "files", "file", "outputs", "lifted"]
             .into_iter()
             .zip(structs)
         {
@@ -252,14 +256,17 @@ fn make_ctx<'v>(
                 "rule context attributes".to_owned(),
             )))
             .map_err(|error| anyhow!("cannot freeze rule context attributes: {error:?}"))?;
-        ["attr", "files", "file", "outputs"]
+        ["attr", "files", "file", "outputs", "lifted"]
             .map(|name| frozen.get(name).map_err(|error| anyhow!(error.to_string())))
             .into_iter()
             .collect::<anyhow::Result<Vec<_>>>()
     })?;
-    let [attr, files, file, outputs] = <[OwnedFrozenValue; 4]>::try_from(owned)
-        .map_err(|_| anyhow!("internal error: rule context attribute structs"))?
-        .map(|value| heap.access_owned_frozen_value(&value));
+    let [attr, files, file, outputs, lifted] = <[OwnedFrozenValue; 5]>::try_from(owned)
+        .map_err(|_| anyhow!("internal error: rule context attribute structs"))?;
+    // Lifted subrule attributes are read by subrule invocations only.
+    context.subrule.lifted.replace(Some(lifted));
+    let [attr, files, file, outputs] =
+        [attr, files, file, outputs].map(|value| heap.access_owned_frozen_value(&value));
     let label = alloc_target(heap, &rule.label.to_string(), Vec::new())
         .get_attr_error("label", heap)
         .map_err(|error| anyhow!(error.to_string()))?;
@@ -311,19 +318,24 @@ fn make_ctx<'v>(
     }
 }
 
-/// The `ctx.attr`, `ctx.files`, `ctx.file` and `ctx.outputs` structs.
+/// The `ctx.attr`, `ctx.files`, `ctx.file` and `ctx.outputs` structs, and
+/// the dict of lifted subrule attribute values.
 fn ctx_attribute_structs<'v>(
     rule: &Rule,
     invocation: &crate::custom_rule::CustomInvocation,
     context: &Context,
     dependencies: &BTreeMap<String, DependencyTarget>,
     heap: Heap<'v>,
-) -> anyhow::Result<[Value<'v>; 4]> {
+) -> anyhow::Result<[Value<'v>; 5]> {
     // RuleContext attribute errors: `in A attribute of KIND rule L: `
-    // (analysis/EventHandlingErrorReporter.java:92-101).
+    // (analysis/EventHandlingErrorReporter.java:92-101), private names masked.
     let attribute_prefix = |name: &str| {
+        let shown = match invocation.schema.get(name) {
+            Some(spec) => crate::custom_rule::attribute_message_name(name, spec),
+            None => name.to_owned(),
+        };
         format!(
-            "in {name} attribute of {} rule {}: ",
+            "in {shown} attribute of {} rule {}: ",
             invocation.declaration.rule_class,
             crate::rule_declarations::canonical_form(&rule.label)
         )
@@ -332,6 +344,7 @@ fn ctx_attribute_structs<'v>(
     let mut files = BTreeMap::new();
     let mut single_files = BTreeMap::new();
     let mut outputs = BTreeMap::new();
+    let mut lifted = Vec::new();
     attrs.insert("name".to_owned(), heap.alloc(rule.label.name.as_str()));
     for (name, value) in &invocation.attrs {
         let spec = invocation
@@ -402,6 +415,47 @@ fn ctx_attribute_structs<'v>(
                 heap.alloc(starlark::values::dict::AllocDict(items))
             }
             AttrValue::Bool(value) => heap.alloc(*value),
+            AttrValue::Label(value) if crate::subrule::is_lifted_attribute(name) => {
+                // StarlarkSubrule.call (:166-178): FilesToRunProvider for an
+                // executable, the single File for allow_single_file, else the
+                // Target; None without a value.
+                let target = value
+                    .as_ref()
+                    .map(|label| {
+                        dependency(label, name, spec, dependencies, &attribute_prefix(name))
+                    })
+                    .transpose()?;
+                let value = match target {
+                    None => Value::new_none(),
+                    Some(_) if spec.declaration.executable => bail!(
+                        "{}executable subrule attributes (FilesToRunProvider) are {}",
+                        attribute_prefix(name),
+                        crate::rule_declarations::NOT_ANALYZED
+                    ),
+                    Some(target) if spec.allow_single_file => target
+                        .files
+                        .first()
+                        .map(|file| alloc_file(heap, file.clone()))
+                        .unwrap_or_else(Value::new_none),
+                    Some(target) => value
+                        .as_deref()
+                        .map(|requested| alloc_dependency(heap, requested, target))
+                        .unwrap_or_else(Value::new_none),
+                };
+                lifted.push((name.as_str(), value));
+                continue;
+            }
+            AttrValue::Labels(labels) if crate::subrule::is_lifted_attribute(name) => {
+                let targets = labels
+                    .iter()
+                    .map(|label| {
+                        dependency(label, name, spec, dependencies, &attribute_prefix(name))
+                            .map(|target| alloc_dependency(heap, label, target))
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                lifted.push((name.as_str(), heap.alloc(targets)));
+                continue;
+            }
             AttrValue::Label(value) => {
                 let target = value
                     .as_ref()
@@ -503,6 +557,7 @@ fn ctx_attribute_structs<'v>(
         heap.alloc(AllocStruct(files)),
         heap.alloc(AllocStruct(single_files)),
         heap.alloc(AllocStruct(outputs)),
+        heap.alloc(starlark::values::dict::AllocDict(lifted)),
     ])
 }
 
@@ -836,6 +891,14 @@ fn analyze_inner(
         scope: crate::analysis_runtime::ScopeState::new(
             rule.label.to_string(),
             crate::subrule::direct_ids(invocation.subrules.iter().map(|value| value.value()))?,
+        ),
+        subrule: crate::subrule::RuleEnvironment::new(
+            invocation.toolchains.is_some(),
+            matches!(
+                invocation.attrs.get("_use_auto_exec_groups"),
+                Some(AttrValue::Bool(true))
+            ),
+            invocation.cpp,
         ),
     };
     for output in &rule.outs {
@@ -1323,7 +1386,7 @@ erased = attr.label(providers=[[], [NotPackageSpecificationInfo]])
             dependency("//pkg:dep", "g", &single, &deps, "")
                 .unwrap_err()
                 .to_string()
-                .contains("exactly one file")
+                .contains("must produce a single file")
         );
     }
 
@@ -1348,7 +1411,7 @@ erased = attr.label(providers=[[], [NotPackageSpecificationInfo]])
             dependency("//pkg:dep", "src", &spec, &deps, "")
                 .unwrap_err()
                 .to_string()
-                .contains("exactly one file")
+                .contains("must produce a single file")
         );
         deps.get_mut("//pkg:dep").unwrap().files.push(File {
             path: "pkg/dep".into(),
@@ -1431,6 +1494,7 @@ r = rule(implementation=impl, attrs={
             top_level_functions: Vec::new(),
             repositories: Arc::new(RepositorySet::new(std::path::PathBuf::from("."))),
             scope: crate::analysis_runtime::ScopeState::new("//pkg:rule".into(), BTreeSet::new()),
+            subrule: Default::default(),
         }
     }
 

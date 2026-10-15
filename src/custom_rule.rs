@@ -110,6 +110,11 @@ pub struct AttrDeclaration {
     /// `default = configuration_field(...)` (StarlarkLateBoundDefault).
     #[serde(skip_serializing_if = "is_false")]
     pub late_bound: bool,
+    /// The `configuration_field(fragment, name)` of a late-bound default
+    /// (StarlarkLateBoundDefault.getFragmentName/getFragmentFieldName),
+    /// resolved per configuration by crate::late_bound.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub configuration_field: Option<ConfigurationField>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allow_rules: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -135,12 +140,27 @@ pub struct AttrDeclaration {
     pub configurable_set: bool,
 }
 
+/// A `configuration_field(fragment, name)` identity.
+#[derive(Clone, Debug, PartialEq, Eq, Allocative, serde::Serialize)]
+pub struct ConfigurationField {
+    pub fragment: String,
+    pub name: String,
+}
+
 impl AttrDeclaration {
     pub(crate) fn is_default(&self) -> bool {
         Self {
             explicit_default: false,
             ..self.clone()
         } == Self::default()
+    }
+
+    /// A late-bound default whose configured value crate::late_bound resolves.
+    pub(crate) fn late_bound_resolvable(&self) -> bool {
+        self.late_bound
+            && self.configuration_field.as_ref().is_some_and(|field| {
+                crate::late_bound::resolve(&field.fragment, &field.name).is_some()
+            })
     }
 
     /// AllowedValueSet.apply; an empty set allows everything.
@@ -210,9 +230,14 @@ impl AttrDeclaration {
                 self.aspects.join(", ")
             ));
         }
-        if self.late_bound {
+        if self.late_bound && !self.late_bound_resolvable() {
+            let field = self
+                .configuration_field
+                .as_ref()
+                .map(|field| format!(" {}.{}", field.fragment, field.name))
+                .unwrap_or_default();
             features.push(format!(
-                "attribute '{name}' late-bound default (configuration_field)"
+                "attribute '{name}' late-bound default (configuration_field{field})"
             ));
         }
         if let Some(types) = &self.file_types {
@@ -321,6 +346,43 @@ pub struct BuiltinAttributes {
     /// values (in `target`) win.
     pub generator: Option<crate::package::Generator>,
 }
+/// The modelled options a CppConfiguration reads (rules/cpp/CppConfiguration.java:
+/// compilationMode, --strip, --force_pic), taken from the Configuration the
+/// target is analyzed in (crate::engine). The default is the default
+/// configuration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CppConfigurationView {
+    pub compilation_mode: &'static str,
+    pub strip: &'static str,
+    pub force_pic: bool,
+}
+
+impl Default for CppConfigurationView {
+    fn default() -> Self {
+        Self {
+            compilation_mode: "fastbuild",
+            strip: "sometimes",
+            force_pic: false,
+        }
+    }
+}
+
+impl CppConfigurationView {
+    pub fn of(native: &crate::configuration::NativeOptions) -> Self {
+        Self {
+            compilation_mode: native.compilation_mode,
+            strip: native.strip,
+            force_pic: native.force_pic,
+        }
+    }
+
+    /// CppConfiguration.stripBinaries (rules/cpp/CppConfiguration.java:299-302).
+    pub(crate) fn should_strip_binaries(&self) -> bool {
+        self.strip == "always"
+            || (self.strip == "sometimes" && self.compilation_mode == "fastbuild")
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CustomInvocation {
     pub build_setting: Option<BuildSetting>,
@@ -334,6 +396,9 @@ pub struct CustomInvocation {
     /// The resolved toolchain context (`ctx.toolchains`), set by
     /// crate::engine; `None` for rules without toolchain resolution.
     pub toolchains: Option<std::sync::Arc<crate::toolchain_info::ToolchainContextData>>,
+    /// The configuration's C++ options for `subrule_ctx.fragments.cpp`, set by
+    /// crate::engine before analysis.
+    pub cpp: CppConfigurationView,
     pub implementation: OwnedFrozenValue,
     /// Strong frozen roots for direct declarations, including factory closures.
     pub subrules: Vec<OwnedFrozenValue>,
@@ -1347,6 +1412,15 @@ mod values {
                     && !configurable.contains_key(key)
                     && !spec.declaration.computed_default
                 {
+                    if spec.mandatory && crate::subrule::is_lifted_attribute(key) {
+                        // AttributeProvider.populateDefaultRuleAttributeValues
+                        // (packages/AttributeProvider.java:319-327): a lifted
+                        // subrule attribute cannot be set by BUILD files.
+                        return Err(starlark::Error::new_other(anyhow!(
+                            "{target_text}: missing value for mandatory attribute '{}' in '{rule_class}' rule",
+                            native_attribute_name(key, spec.declaration.late_bound)
+                        )));
+                    }
                     if spec.mandatory {
                         return Err(starlark::Error::new_other(anyhow!(
                             "missing mandatory attribute {key:?}"
@@ -2339,7 +2413,9 @@ fn static_gaps(
 ) -> (Vec<String>, Vec<String>, Vec<String>) {
     let (transition, toolchain, mut features) = declaration.phased_gaps();
     for (name, spec) in schema {
-        if spec.declaration.late_bound {
+        // Resolved late-bound values are checked like any other value
+        // (value_gaps); unresolved ones fail before dependencies.
+        if spec.declaration.late_bound && !spec.declaration.late_bound_resolvable() {
             features.extend(spec.declaration.unanalyzed(name));
         }
     }
@@ -2357,7 +2433,7 @@ pub(crate) fn value_gaps(invocation: &CustomInvocation) -> Vec<String> {
             .attrs
             .get(name)
             .is_some_and(|value| !AttrKind::is_empty_value(value));
-        if present && !spec.declaration.late_bound {
+        if present && (!spec.declaration.late_bound || spec.declaration.late_bound_resolvable()) {
             features.extend(spec.declaration.unanalyzed(name));
         }
         if present && spec.kind == AttrKind::LabelKeyedStringDict {
@@ -2462,6 +2538,20 @@ pub(crate) fn attribute_spec_ref(value: Value<'_>) -> Option<&AttrSpec> {
 /// The retained function of a computed-default descriptor.
 fn computed_default_function(value: Value<'_>) -> Option<Value<'_>> {
     ComputedDescriptor::from_value(value).map(|value| value.function.to_value())
+}
+
+/// The attribute name in `in A attribute of ...` errors:
+/// EventHandlingErrorReporter.maskInternalAttributeNames
+/// (analysis/EventHandlingErrorReporter.java:84-86) applied to the native
+/// name, so implicit (`$x`) attributes, including lifted subrule ones, read
+/// `(an implicit dependency)` and late-bound ones keep `:x`.
+pub(crate) fn attribute_message_name(name: &str, spec: &AttrSpec) -> String {
+    let native = native_attribute_name(name, spec.declaration.late_bound);
+    if native.starts_with('$') {
+        "(an implicit dependency)".to_owned()
+    } else {
+        native
+    }
 }
 
 /// AttributeValueSource.validateStarlarkName (packages/AttributeValueSource.java:47-58):
@@ -2704,6 +2794,21 @@ fn dependency_descriptor<'v>(
             },
         ));
     }
+    // attr.label_list's `default` is Sequence or StarlarkFunction, not
+    // NoneType (StarlarkAttrModuleApi.java:621-626), so a LateBoundDefault
+    // or None fails the @Param check.
+    if kind == AttrKind::LabelList
+        && let Some(value) = default
+        && sequence_ref(value).is_none()
+        && value.parameters_spec().is_none()
+    {
+        return Err(param_type_error(
+            function,
+            "default",
+            value,
+            "sequence or function",
+        ));
+    }
     if !options.allow_files.is_none()
         && options.allow_files.unpack_bool().is_none()
         && sequence_ref(options.allow_files).is_none()
@@ -2728,6 +2833,9 @@ fn dependency_descriptor<'v>(
     require_sequence(function, "flags", options.flags)?;
     let late_bound = kind == AttrKind::Label
         && default.is_some_and(crate::rule_declarations::is_late_bound_default);
+    let configuration_field = default
+        .filter(|_| late_bound)
+        .and_then(crate::language_modules::configuration_field_of);
     // A Starlark function default is a computed default
     // (StarlarkAttrModule.java:358-368, StarlarkComputedDefaultTemplate).
     let computed = default.filter(|value| value.parameters_spec().is_some());
@@ -2773,6 +2881,7 @@ fn dependency_descriptor<'v>(
     )?;
     let declaration = &mut descriptor.0.declaration;
     declaration.late_bound = late_bound;
+    declaration.configuration_field = configuration_field;
     declaration.computed_default = computed.is_some();
     declaration.explicit_default |= late_bound || computed.is_some();
     declaration.configurable_set = options.configurable.is_some();
@@ -3500,6 +3609,23 @@ fn define_rule<'v>(
             attr_order.push(name.to_owned());
         }
     }
+    // Subrule attributes are lifted to the rule class as if declared there,
+    // after its own attributes (StarlarkRuleFunction.export,
+    // StarlarkRuleClassFunctions.java:1940-1964), and their toolchain types
+    // are requested by the rule before its own
+    // (StarlarkRuleClassFunctions.java:1024-1027, 1064; RuleClass.Builder
+    // keeps a LinkedHashSet, packages/RuleClass.java:743, 1587-1590).
+    for (name, spec) in crate::subrule::lifted_attributes(&subrules, &mut budget)? {
+        schema.insert(name.clone(), spec);
+        attr_order.push(name);
+    }
+    let mut toolchains_with_subrules = crate::subrule::lifted_toolchains(&subrules, &mut budget)?;
+    for toolchain in toolchains {
+        if !toolchains_with_subrules.contains(&toolchain) {
+            toolchains_with_subrules.push(toolchain);
+        }
+    }
+    let toolchains = toolchains_with_subrules;
     let declaration = RuleDeclaration {
         definition_label: definition.to_string(),
         executable,
@@ -4381,7 +4507,7 @@ z = attr.string_dict()
             ("attr.string(default=None)", "expected a string"),
             (
                 "attr.label_list(default=None)",
-                "expected a list of strings or Labels",
+                "in call to label_list(), parameter 'default' got value of type 'NoneType', want 'sequence or function'",
             ),
         ] {
             let error = definition_error(expression);

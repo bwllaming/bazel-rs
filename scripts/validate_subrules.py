@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Strict I0 zero-attribute subrule matrix; never a full Bazel parity claim.
+"""Strict I0 subrule matrix plus the N24 configuration family; never a full Bazel parity claim.
 
 Original research receipts are immutable, not runtime dependencies. Shared scope
 fixtures below are explicitly named derivatives: only their unused local platform
@@ -52,6 +52,18 @@ OFFICIAL_FILES = {
     'src/main/java/com/google/devtools/build/lib/util/ShellEscaper.java': 'd6f6051220e0c9fbb0153b31b4bfa287a9fc1800eedd4ffff9c4d8d2e3199564',
     'src/main/java/com/google/devtools/build/lib/analysis/actions/ParameterFileWriteAction.java': '64f2f912057fa35c35b5bb834a72ec3c5877cfa21fd9db0e6fbce73ed25e6370',
     'src/main/java/com/google/devtools/build/lib/vfs/OutputPermissions.java': 'c9cb7a4ca61f5b4802ecf395b909a5f267145fd80c53e4892774287792078d6b',
+    # N24 configuration family: subrule attrs/toolchains/fragments, late-bound defaults.
+    'src/main/java/com/google/devtools/build/lib/analysis/starlark/StarlarkLateBoundDefault.java': '68f54ff5291c2a2f38739fb5fec40671350f52eb0f493533d48e1de4e37c5abe',
+    'src/main/java/com/google/devtools/build/lib/rules/cpp/CppConfiguration.java': 'd0c0fae644272fa8992e44461e8ec2f6655681e370b41594954f4f8f1adf9a71',
+    'src/main/java/com/google/devtools/build/lib/rules/apple/AppleConfiguration.java': 'ff9f606dba2dddaa63945136da4638621063bc8f297adccdbeaf23e78ed8e2d5',
+    'src/main/java/com/google/devtools/build/lib/rules/apple/AppleCommandLineOptions.java': 'ec8dd72422033bd2a2e76492ade2e26d6c5d2795016ad4a0a3fe278f55e64f6d',
+    'src/main/java/com/google/devtools/build/lib/analysis/test/CoverageConfiguration.java': '9f1759880b3e5367d0ffe3fabbb196dc21d837abf0fe00f5e4537a154e1a27c8',
+    'src/main/java/com/google/devtools/build/lib/rules/java/JavaConfiguration.java': '23f67a5d8f447043fb9c834fb3a861c37a4d52bdcd77301c735f01a8d6a6de74',
+    'src/main/java/com/google/devtools/build/lib/packages/AttributeProvider.java': '995e75ea72f98dfe3e69f3a2b4a95808f064dd66273f6ff15a49a9391c00b046',
+    'src/main/java/com/google/devtools/build/lib/packages/BuiltinRestriction.java': '383c157100c35564c11ddcc270f7a2757c9f151f343ac0ce6253bffb5dfb5081',
+    'src/main/java/com/google/devtools/build/lib/analysis/starlark/StarlarkAttributesCollection.java': '9b3b300d7e9c25dceafc8a9450dd2511f9b0b83088e11421b6dc3b5086cc7442',
+    'src/main/java/com/google/devtools/build/lib/analysis/CommonPrerequisiteValidator.java': '473f263c43f0122a7da1f56bdb95b00f35148d09d16722c27d2e34cc32119ccb',
+    'src/main/java/com/google/devtools/build/lib/packages/AttributeValueSource.java': 'c0e66478a7d920e8291cd93e5860c2aec6c1eec1da624103185840073d9d1cb9',
 }
 # Evaluated on each invocation, not a stale list captured before core handoff.
 def source_paths():
@@ -76,8 +88,14 @@ CASEPLAN = [
     common.case('receivers', ('parent_declare', 'parent_write', 'parent_bound', 'escaped_ctx', 'escaped_actions', 'escaped_bound')),
     common.case('args', ('parent_object', 'parent_bound', 'child_object', 'child_bound', 'returned-builder',
         'write-mixed', 'write-empty', 'write-formatted', 'write-mapped', 'write-list', 'write-tuple')),
-    common.case('boundaries', ('attrs', 'toolchains', 'fragments', 'read-toolchains', 'read-fragments', 'explicit-flag',
-        'ordinary-setting-visibility', 'param-file-format', 'use-param-file')),
+    # N24: Bazel-faithful subrule attrs/toolchains/fragments and late-bound
+    # defaults. Differential (reference + native); NEW fixtures needing a
+    # genuine reference recapture before any acceptance claim.
+    common.case('configuration', ('lifted-attrs', 'late-bound-rule', 'read-fragments', 'read-toolchains',
+        'undeclared-fragment', 'private-cpp-api', 'override', 'public-attr', 'nonlabel-attr', 'no-default',
+        'computed-default', 'bad-cfg', 'two-toolchains', 'mandatory-lifted')),
+    common.case('boundaries', ('explicit-flag', 'ordinary-setting-visibility', 'param-file-format', 'use-param-file',
+        'lifted-label-list')),
 ]
 DEFECTS = ('child_object', 'child_bound')
 KNOWN_REFERENCE_DEFECTS = [dict(id=p, classification='INTENTIONAL_DIVERGENCE',
@@ -87,13 +105,18 @@ KNOWN_REFERENCE_DEFECTS = [dict(id=p, classification='INTENTIONAL_DIVERGENCE',
     evidence='CURRENT_EXECUTION_PRIVATE_BATCH; original Args-factory receipt unchanged',
     marker_limit='Buffered BEFORE_FACTORY may be absent on genuine crash; analysis stack and fixture line bind the phase') for p in DEFECTS]
 LIMITATIONS = [
-    'PASS_ONLY_BOUNDED_PROFILE: zero attrs, no configured dependencies/toolchains/fragments, aspects/inheritance or run/test SDK.',
+    'PASS_ONLY_BOUNDED_PROFILE: lifted private label/label_list subrule attrs (target cfg or a None value), declared cpp fragment members, the non-AEG subrule ctx.toolchains error; no exec-cfg values, AEG toolchains, aspects/inheritance or run/test SDK.',
     'Expired child Args factories are REQUIRED KNOWN_REFERENCE_DEFECT / INTENTIONAL_DIVERGENCE, never ordinary guard parity PASS.',
     'Still-live ancestor Args factories are allowed; returned Args builders survive until root analysis ends.',
     'actions.write(Args) checks exact SHELL_QUOTED UTF-8/LF bytes, including empty Args versus one empty argument. Final 0555 modes do not mean is_executable was ignored.',
     'Existing native map_each eagerly evaluates at Args mutation; Bazel defers it to write execution. write-mapped compares successful bytes ONLY, not callback timing. The recorded reference mapper_failure --nobuild/build phase difference is not a native parity case.',
     'set_param_file_format/use_param_file remain explicit native-only unsupported boundaries; no parameter-file filesystem or silent format acceptance.',
-    'Nonempty configuration and config-view reads plus explicit experimental flag are native-only unsupported boundaries, not Bazel allowlist parity.',
+    'Explicit experimental flag is a native-only unsupported boundary, not Bazel allowlist parity.',
+    'configuration family (N24) is differential but NEW: it needs a genuine reference recapture; no prior receipt covers it.',
+    'Late-bound fields resolve only where every native configuration has Bazel\'s option default (cpp FDO/malloc/libc/proto/zipper, coverage.output_generator, java launcher/proguard/local optimization: None; apple.xcode_config_label: @bazel_tools//tools/cpp:host_xcodes); others stay explicit analysis gaps.',
+    'Unknown fragment names give the interpreter missing-attribute error, not Bazel\'s "There is no configuration fragment named" text. Not compared.',
+    'Lifted attr.label_list crashes Bazel 9.3 (InvalidStarlarkValueException); native fails explicitly (boundaries/lifted-label-list), never differential.',
+    'Subrule ctx.toolchains positive path needs automatic exec groups, which the engine rejects before analysis; only the non-AEG Bazel error is compared.',
     'Original case01 reads dir(ctx.fragments) and remains outside I0. Named zeroattrs-no-config-views derives from scope contract seed-data fixture, not case01.',
     'Scope/Args fixture derivatives omit only unused local_platform BUILD declaration and use genuine pinned platforms distfile; original receipts never rewritten.',
     'Ordinary ctx full dir is not compared. Bazel ordinary ctx has build_setting_value structurally; native intentionally omits it and checks this only in ordinary-setting-visibility. Subrule ctx dir is exactly actions/fragments/label/toolchains.',
@@ -263,6 +286,75 @@ def args_factory(probe):
         +common.indent(body+'return [DefaultInfo(files=depset([out]))]\n')+'r=rule(implementation=_rule,subrules=[S])\n')
 
 
+CONFIGURATION_OUTPUTS = {
+    'lifted-attrs': b'outer|data|data.txt|None|Target|File|[]\n',
+    'late-bound-rule': b'(None, None, None, None, [])\n',
+    'read-fragments': b'fragments\n',
+}
+CONFIGURATION_REJECTIONS = {
+    'read-toolchains': 'analysis', 'undeclared-fragment': 'analysis', 'private-cpp-api': 'analysis', 'override': 'analysis',
+    'public-attr': 'loading', 'nonlabel-attr': 'loading', 'no-default': 'loading', 'computed-default': 'loading',
+    'bad-cfg': 'loading', 'two-toolchains': 'loading', 'mandatory-lifted': 'loading',
+}
+# No lifted label_list: Bazel 9.3 crashes passing one to the implementation
+# (paired capture A2/lifted/check, exit 37 InvalidStarlarkValueException
+# Lists$TransformingRandomAccessList); see the native-only boundary
+# lifted-label-list. The unused NoneCfg subrule checks that subrule() accepts
+# config.none() (a tool transition, NoConfigTransition.java:96-99; capture
+# B1b/cfg_none).
+LIFTED_LEAF = ('def _leaf(ctx,word,*,_dep,_single,_late):\n    print("I0_CHILD")\n'
+    '    return "|".join([word,_dep.label.name,_single.basename,repr(_late),type(_dep),type(_single)])\n'
+    'Leaf=subrule(implementation=_leaf,attrs={"_dep":attr.label(default=":data"),'
+    '"_single":attr.label(default=":data.txt",allow_single_file=True),'
+    '"_late":attr.label(default=configuration_field(fragment="cpp",name="fdo_optimize"))})\n'
+    'NoneCfg=subrule(implementation=_leaf,attrs={"_n":attr.label(default=":data",cfg=config.none())})\n'
+    'def _outer(ctx):\n    return Leaf("outer"%s)\nOuter=subrule(implementation=_outer,subrules=[Leaf])\n')
+
+
+def configuration_fixture(probe, files):
+    """(prefix, rule_args, body) of one N24 probe (StarlarkSubrule.java, StarlarkRuleClassFunctions.subrule)."""
+    rule_args = ',subrules=[S]'
+    body = 'S()\n'+write_result()
+    child = 'def _sub(ctx):\n    print("I0_CHILD")\n'
+    if probe in ('lifted-attrs', 'override'):
+        files['BUILD.bazel'] += 'filegroup(name="data",srcs=["data.txt"])\n'
+        files['data.txt'] = 'data\n'
+        prefix = LIFTED_LEAF % (',_dep=None' if probe == 'override' else '')
+        rule_args = ',subrules=[Outer]'
+        body = 'names=[n for n in dir(ctx.attr)+dir(ctx.files)+dir(ctx.file) if "%" in n]\n'+write_result('Outer()+"|"+repr(names)+"\\n"')
+    elif probe == 'late-bound-rule':
+        prefix = ''
+        rule_args = (',attrs={"_m":attr.label(default=configuration_field("cpp","custom_malloc")),'
+            '"_c":attr.label(default=configuration_field("coverage","output_generator"),cfg="exec"),'
+            '"_z":attr.label(default=configuration_field("cpp","zipper"),cfg="exec",allow_single_file=True)}')
+        body = write_result('repr((ctx.attr._m,ctx.attr._c,ctx.attr._z,ctx.file._z,ctx.files._m))+"\\n"')
+    elif probe == 'read-fragments':
+        prefix = child+'    return type(ctx.fragments)\nS=subrule(implementation=_sub,fragments=["cpp"])\n'
+        body = write_result('S()+"\\n"')
+    elif probe == 'read-toolchains':
+        prefix = child+'    x=ctx.toolchains\n    print("GUARD_BYPASSED")\nS=subrule(implementation=_sub)\n'
+    elif probe == 'undeclared-fragment':
+        prefix = child+'    x=ctx.fragments.cpp\n    print("GUARD_BYPASSED")\nS=subrule(implementation=_sub,fragments=["java"])\n'
+    elif probe == 'private-cpp-api':
+        prefix = child+'    x=ctx.fragments.cpp.compilation_mode()\n    print("GUARD_BYPASSED")\nS=subrule(implementation=_sub,fragments=["cpp"])\n'
+    else:
+        option = {'public-attr': 'attrs={"dep":attr.label(default=":dep")}',
+            'nonlabel-attr': 'attrs={"_dep":attr.string(default="x")}',
+            'no-default': 'attrs={"_dep":attr.label()}',
+            'computed-default': 'attrs={"_dep":attr.label_list(default=lambda: [])}',
+            'bad-cfg': 'attrs={"_dep":attr.label(default=":dep",cfg=T)}',
+            'two-toolchains': 'toolchains=["//:a","//:b"]',
+            'mandatory-lifted': 'attrs={"_dep":attr.label(mandatory=True,default=":dep")}'}[probe]
+        if probe == 'mandatory-lifted':
+            files['BUILD.bazel'] += 'filegroup(name="dep")\n'
+        prefix = 'def _sub(ctx,**kwargs):\n    return None\n'
+        if probe == 'bad-cfg':
+            # Only Starlark transitions are rejected (StarlarkRuleClassFunctions.java:2177-2181).
+            prefix += 'def _t(settings,attr):\n    return {}\nT=transition(implementation=_t,inputs=[],outputs=[])\n'
+        prefix += 'S=subrule(implementation=_sub,'+option+')\n'
+    return prefix, rule_args, body
+
+
 def fixture(family, probe):
     if not any(c['name'] == family and probe in c['probes'] for c in CASEPLAN):
         raise ValueError('unknown planned probe')
@@ -364,6 +456,15 @@ def fixture(family, probe):
         rule_args = ',subrules=[Outer]'
         body = ('Leaf()' if probe == 'transitive-direct' else 'Outer()')+'\n'+write_result()
         v.update(diagnostic=probe, markers=['I0_RULE']+(['I0_OUTER'] if probe == 'nested-undeclared' else []))
+    elif family == 'configuration':
+        prefix, rule_args, body = configuration_fixture(probe, files)
+        if probe in CONFIGURATION_OUTPUTS:
+            v['expected'] = {'consume.out': CONFIGURATION_OUTPUTS[probe]}
+            v['markers'] = ['I0_RULE', 'I0_ACTION_READY'] + (['I0_CHILD'] if probe != 'late-bound-rule' else [])
+        else:
+            v.update(diagnostic=probe, stage=CONFIGURATION_REJECTIONS[probe])
+            if v['stage'] == 'analysis':
+                v['markers'] = ['I0_RULE'] + (['I0_CHILD'] if probe in ('read-toolchains', 'undeclared-fragment', 'private-cpp-api') else [])
     elif family == 'context':
         prefix = ('def _sub(ctx,parent):\n'
             '    return repr((type(ctx),dir(ctx),hasattr(ctx,"attr"),hasattr(ctx,"outputs")))+"\\n"\n'
@@ -376,6 +477,11 @@ def fixture(family, probe):
             # parity. Preserve that discovery, and test native's bounded table.
             body = write_result('repr((hasattr(ctx,"build_setting_value"),"build_setting_value" in dir(ctx)))+"\\n"')
             v['expected'] = {'consume.out': b'(False, False)\n'}
+        elif probe == 'lifted-label-list':
+            # Native-only: Bazel 9.3 crashes (exit 37) on any lifted label_list.
+            prefix = ('def _sub(ctx,_deps):\n    print("I0_CHILD")\n    return None\n'
+                'S=subrule(implementation=_sub,attrs={"_deps":attr.label_list(default=[])})\n')
+            v['markers'] = ['I0_RULE']
         elif probe in ('param-file-format','use-param-file'):
             operation = 'set_param_file_format("multiline")' if probe == 'param-file-format' else 'use_param_file("@%s",use_always=True)'
             body = 'ctx.actions.args().'+operation+'\n'+write_result()
@@ -421,8 +527,20 @@ DIAGNOSTICS = {
     'native-field': r"(?:no (?:attribute|field|method|native function or rule)|has no attribute)[^\n]*['\"`]subrule",
     'transitive-direct': r"rule 'r' must declare 'Leaf' in 'subrules'|subrule [^\n]*Leaf must be declared in subrules of its immediate caller",
     'nested-undeclared': r"subrule Outer must declare Leaf in 'subrules'|subrule [^\n]*Leaf must be declared in subrules of its immediate caller",
-    **{p: r'nonempty subrule '+p+r' are unsupported' for p in ('attrs','toolchains','fragments')},
-    **{'read-'+p: r'subrule '+p+r' are unsupported' for p in ('toolchains','fragments')},
+    **{probe: re.escape(text) for probe, text in {
+        'read-toolchains': 'subrules using toolchains must enable automatic exec-groups. For more info, see https://bazel.build/extending/auto-exec-groups#migration-aegs',
+        'undeclared-fragment': "S has to declare 'cpp' as a required fragment in order to access it. Please update the 'fragments' argument of the subrule definition (for example: fragments = [\"cpp\"])",
+        'private-cpp-api': "file '//:defs.bzl' cannot use private API",
+        'override': "got invalid named argument: '_dep' is an implicit dependency and cannot be overridden",
+        'public-attr': "illegal attribute name 'dep': subrules may only define private attributes (whose names begin with '_').",
+        'nonlabel-attr': "bad type for attribute '_dep': subrule attributes may only be label or lists of labels.",
+        'no-default': "for attribute '_dep': no default value specified",
+        'computed-default': "illegal default value for attribute '_dep': subrules cannot define computed defaults.",
+        'bad-cfg': "bad cfg for attribute '_dep': subrules may only have target/exec attributes.",
+        'two-toolchains': 'subrules may require at most 1 toolchain, got: [ToolchainTypeRequirement[toolchainType=//:a, mandatory=true, ignoreIfInvalid=false], ToolchainTypeRequirement[toolchainType=//:b, mandatory=true, ignoreIfInvalid=false]]',
+        'mandatory-lifted': "//:consume: missing value for mandatory attribute '$//:defs.bzl%S%_dep' in 'r' rule",
+        'lifted-label-list': "subrule S attribute '_deps' (attr.label_list) is not supported by the native profile: Bazel 9.3 crashes passing a lifted label_list to the implementation (InvalidStarlarkValueException: Lists$TransformingRandomAccessList)",
+    }.items()},
     'explicit-flag': r'(?:unsupported|unknown|unrecognized)[^\n]*experimental_rule_extension_api',
     'write-list': r"content[^\n]*(?:string|str)[^\n]*Args|content[^\n]*list[^\n]*(?:want|expected)",
     'write-tuple': r"content[^\n]*(?:string|str)[^\n]*Args|content[^\n]*tuple[^\n]*(?:want|expected)",

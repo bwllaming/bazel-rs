@@ -1395,13 +1395,15 @@ fn construct_aspect<'v>(
             anyhow!("aspect() can only be used during .bzl initialization (top-level evaluation)")
         })?;
     let definition_label = context.label.clone();
-    let attrs = crate::custom_rule::attribute_dict(args.attrs)?;
+    let mut attrs = crate::custom_rule::attribute_dict(args.attrs)?;
     // Subrules need the ALLOWLIST_RULE_EXTENSION_API restriction only when
     // --experimental_rule_extension_api is off (StarlarkRuleClassFunctions.java:1349-1353);
     // it defaults to true in 9.3 (FlagConstants.java:24), so any .bzl may pass them.
     let mut budget = HostBudget::default();
     let subrules = crate::subrule::snapshot(args.subrules, &mut budget)?;
     crate::subrule::validate_exports(&subrules, &mut budget)?;
+    // Subrule attributes follow the aspect's own (StarlarkRuleClassFunctions.java:1355-1365).
+    attrs.extend(crate::subrule::lifted_attributes(&subrules, &mut budget)?);
     let mut required_parameters = Vec::new();
     for (name, spec) in &attrs {
         aspect_attribute(name, spec, &mut required_parameters)?;
@@ -1431,7 +1433,13 @@ fn construct_aspect<'v>(
     }
     let exec_compatible_with = exec_compatible_with(eval, args.exec_compatible_with)?;
     let exec_groups = exec_groups(args.exec_groups)?;
-    let toolchains = toolchains(eval, args.toolchains, eval.heap())?;
+    // The aspect's toolchain types, then its subrules' (StarlarkRuleClassFunctions.java:1488-1493).
+    let mut toolchains = toolchains(eval, args.toolchains, eval.heap())?;
+    for toolchain in crate::subrule::lifted_toolchains(&subrules, &mut budget)? {
+        if !toolchains.contains(&toolchain) {
+            toolchains.push(toolchain);
+        }
+    }
     let attr_aspects = if is_function(args.attr_aspects) {
         callbacks.push(args.attr_aspects);
         None
@@ -1874,6 +1882,31 @@ mod tests {
         fails(
             "OutputGroupInfo(x = depset())",
             "OutputGroupInfo construction is not implemented in the native profile",
+        );
+    }
+
+    #[test]
+    fn aspect_subrules_lift_attributes_after_own_and_toolchains_after_own() {
+        // StarlarkRuleClassFunctions.java:1355-1365, 1488-1493.
+        let module = passes(&format!(
+            "{IMPL}def s(ctx):\n    pass\n\
+             L = subrule(implementation = s, attrs = {{'_dep': attr.label(default = '//tools:t')}}, toolchains = ['//tc:s'])\n\
+             a = aspect(aimpl, attrs = {{'_own': attr.label(default = '//tools:o')}}, toolchains = ['//tc:a', '//tc:s'], subrules = [L])\n",
+        ));
+        let owned = module.get("a").unwrap();
+        let aspect = Aspect::from_value(owned.value()).unwrap();
+        assert_eq!(
+            aspect
+                .declaration
+                .attrs
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            ["_own", "_//pkg:defs.bzl%L%_dep"]
+        );
+        assert_eq!(
+            aspect.declaration.toolchains,
+            [("//tc:a".to_owned(), true), ("//tc:s".to_owned(), true)]
         );
     }
 

@@ -1,6 +1,6 @@
 //! Exported, traced zero-attribute subrules and immediate-caller invocation.
 use allocative::Allocative;
-use anyhow::{anyhow, bail, ensure};
+use anyhow::{anyhow, bail};
 use starlark::collections::StarlarkHasher;
 use starlark::environment::GlobalsBuilder;
 use starlark::eval::{Arguments, Evaluator, ParametersSpec, ParametersSpecParam};
@@ -12,8 +12,11 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::OnceLock;
 
+use crate::custom_rule::AttrSpec;
 use crate::loading::ExtensionContext;
 use crate::repository_budget::HostBudget;
+use starlark::values::OwnedFrozenValue;
+use std::cell::RefCell;
 
 #[allow(unsafe_code)]
 mod values {
@@ -83,6 +86,18 @@ mod values {
     pub(super) struct SubruleDefinitionGen<V> {
         pub implementation: V,
         pub subrules: Vec<V>,
+        /// `attrs` in declaration order (SubruleAttribute, StarlarkSubrule.java:504-551).
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        pub attributes: Vec<(String, AttrSpec)>,
+        /// parseToolchainTypes(toolchains) (StarlarkRuleClassFunctions.java:2201-2205).
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        pub toolchains: Vec<(String, bool)>,
+        /// ImmutableSet.copyOf(fragments) (StarlarkRuleClassFunctions.java:2210).
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        pub fragments: Vec<String>,
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
         pub definition_label: String,
@@ -98,6 +113,21 @@ mod values {
                 .get()
                 .ok_or_else(|| anyhow!("invalid subrule hasn't been exported by a bzl file"))?;
             Ok(format!("{}%{name}", self.definition_label))
+        }
+
+        /// StarlarkSubrule.getRuleAttrName (StarlarkSubrule.java:553-560) in
+        /// Starlark spelling: `_` + the canonical .bzl label + `%` + the
+        /// exported name + `%` + the attribute; the native name replaces the
+        /// leading `_` with `$` (or `:` when late-bound) like any private
+        /// attribute (AttributeValueSource.convertToNativeName).
+        pub(super) fn rule_attribute_name(&self, attribute: &str) -> anyhow::Result<String> {
+            Ok(format!("_{}%{attribute}", self.identity()?))
+        }
+
+        pub(super) fn name(&self) -> &str {
+            self.exported
+                .get()
+                .map_or("unexported subrule", String::as_str)
         }
     }
     impl<V> fmt::Display for SubruleDefinitionGen<V> {
@@ -177,25 +207,73 @@ mod values {
             let named = args.names_map()?;
             // Independently count actual slots: an iterable's reported length
             // must not permit an unchecked extend or size_hint reservation.
-            let mut budget = forwarding_budget(named.len())?;
+            let mut budget = forwarding_budget(named.len() + self.attributes.len())?;
+            // Implicit dependencies are passed as named arguments and cannot
+            // be overridden (StarlarkSubrule.call, :152-184).
+            let mut implicit = Vec::new();
+            for (attribute, _) in &self.attributes {
+                if named.iter().any(|(name, _)| name.as_str() == attribute) {
+                    return Err(starlark::Error::new_other(anyhow!(
+                        "got invalid named argument: '{attribute}' is an implicit dependency and cannot be overridden"
+                    )));
+                }
+                let rule_name = self
+                    .rule_attribute_name(attribute)
+                    .map_err(starlark::Error::new_other)?;
+                let value = context
+                    .subrule
+                    .lifted(&rule_name, eval.heap())
+                    .map_err(starlark::Error::new_other)?;
+                implicit.push((attribute.as_str(), value));
+            }
+            // Bazel 9.3 passes a lifted label_list as the Java list of
+            // RuleContext.getPrerequisites (StarlarkSubrule.java:171-172),
+            // which Dict.immutableCopyOf rejects (:191-192): the server
+            // crashes with InvalidStarlarkValueException
+            // (Lists$TransformingRandomAccessList), even for an empty list.
+            // Fail explicitly instead of inventing a result.
+            if let Some((attribute, _)) = self
+                .attributes
+                .iter()
+                .find(|(_, spec)| spec.kind == crate::custom_rule::AttrKind::LabelList)
+            {
+                return Err(starlark::Error::new_other(anyhow!(
+                    "subrule {} attribute '{attribute}' (attr.label_list) is not supported by the native profile: Bazel 9.3 crashes passing a lifted label_list to the implementation (InvalidStarlarkValueException: Lists$TransformingRandomAccessList)",
+                    self.name()
+                )));
+            }
             let named = named
                 .iter()
                 .map(|(name, value)| (name.as_str(), *value))
+                .chain(implicit)
                 .collect::<Vec<_>>();
             let handle = guard.handle();
             let label_text = label;
             let label = crate::starlark_types::alloc_target(eval.heap(), &label_text, Vec::new())
                 .get_attr_error("label", eval.heap())?;
-            let name = self
-                .exported
-                .get()
-                .map_or("unexported subrule", String::as_str);
+            let name = self.name();
             let actions = crate::analysis_runtime::alloc_actions_for(
                 eval.heap(),
                 handle.clone(),
                 crate::analysis_ctx::subrule_context_repr(name, &label_text),
             );
-            let ctx = crate::analysis_ctx::alloc_subrule(eval.heap(), name, label, actions, handle);
+            let fragments = crate::subrule_fragments::alloc_collection(
+                eval.heap(),
+                name,
+                &self.fragments,
+                handle.clone(),
+                context.subrule.cpp,
+            );
+            let toolchains = context.subrule.toolchains.clone();
+            let ctx = crate::analysis_ctx::alloc_subrule(
+                eval.heap(),
+                name,
+                label,
+                actions,
+                fragments,
+                handle,
+                toolchains,
+            );
             let mut positional = vec![ctx];
             for value in positions {
                 budget
@@ -213,6 +291,151 @@ mod values {
     }
 }
 use values::{SubruleDefinition, SubruleDefinitionGen};
+
+/// What `subrule_ctx.toolchains` is in the consuming rule's analysis
+/// (SubruleContext.toolchains, StarlarkSubrule.java:377-397).
+#[derive(Clone, Debug, Default)]
+pub(crate) enum SubruleToolchains {
+    /// The rule has no toolchain context (no toolchain resolution):
+    /// StarlarkToolchainContext.TOOLCHAINS_NOT_VALID.
+    #[default]
+    NotValid,
+    /// RuleContext.useAutoExecGroups is false (RuleClass.AutoExecGroupsMode,
+    /// packages/RuleClass.java:178-202; --incompatible_auto_exec_groups is
+    /// false, analysis/config/CoreOptions.java:419-432).
+    NoAutoExecGroups,
+    /// `_use_auto_exec_groups = True`; crate::engine rejects such rules
+    /// before analysis, so this is never observed.
+    AutoExecGroups,
+}
+
+/// Subrule inputs of one rule analysis, owned by the analysis Context.
+#[derive(Default)]
+pub(crate) struct RuleEnvironment {
+    /// Frozen dict from lifted rule attribute name to the implementation
+    /// argument (FilesToRunProvider, [Target], File or Target, or None).
+    pub lifted: RefCell<Option<OwnedFrozenValue>>,
+    pub toolchains: SubruleToolchains,
+    /// The configuration's C++ options (CustomInvocation::cpp).
+    pub cpp: crate::custom_rule::CppConfigurationView,
+}
+
+impl RuleEnvironment {
+    pub(crate) fn new(
+        toolchain_context: bool,
+        auto_exec_groups: bool,
+        cpp: crate::custom_rule::CppConfigurationView,
+    ) -> Self {
+        Self {
+            lifted: RefCell::new(None),
+            cpp,
+            toolchains: if !toolchain_context {
+                SubruleToolchains::NotValid
+            } else if auto_exec_groups {
+                SubruleToolchains::AutoExecGroups
+            } else {
+                SubruleToolchains::NoAutoExecGroups
+            },
+        }
+    }
+
+    /// The value of one lifted attribute, read from the underlying rule
+    /// context because the attribute is hidden from `ctx.attr`
+    /// (StarlarkSubrule.call, :162-183).
+    fn lifted<'v>(
+        &self,
+        rule_name: &str,
+        heap: starlark::values::Heap<'v>,
+    ) -> anyhow::Result<Value<'v>> {
+        let lifted = self.lifted.borrow();
+        let value = lifted
+            .as_ref()
+            .map(|owned| heap.access_owned_frozen_value(owned))
+            .and_then(|dict| DictRef::from_value(dict)?.get_str(rule_name));
+        value.ok_or_else(|| {
+            anyhow!("internal error: subrule attribute {rule_name} was not lifted to the rule")
+        })
+    }
+}
+
+/// StarlarkSubrule.getTransitiveSubrules (StarlarkSubrule.java:294-303):
+/// each subrule, then its declared subrules' transitive closure, the first
+/// occurrence of an exported identity winning.
+fn transitive<'v>(values: &[Value<'v>], budget: &mut HostBudget) -> anyhow::Result<Vec<Value<'v>>> {
+    fn visit<'v>(
+        values: &[Value<'v>],
+        seen: &mut BTreeSet<String>,
+        result: &mut Vec<Value<'v>>,
+        budget: &mut HostBudget,
+    ) -> anyhow::Result<()> {
+        for &value in values {
+            charge(value, budget)?;
+            let definition = SubruleDefinition::from_value(value).expect("validated Subrule");
+            // A subrule seen before already contributed its whole closure.
+            // The declared graph is immutable and acyclic: a subrule's
+            // dependencies exist before it does.
+            if seen.insert(definition.identity()?) {
+                result.push(value);
+                let children = definition
+                    .subrules
+                    .iter()
+                    .map(|child| child.to_value())
+                    .collect::<Vec<_>>();
+                visit(&children, seen, result, budget)?;
+            }
+        }
+        Ok(())
+    }
+    let mut result = Vec::new();
+    visit(values, &mut BTreeSet::new(), &mut result, budget)?;
+    Ok(result)
+}
+
+/// StarlarkSubrule.discoverAttributes (StarlarkSubrule.java:275-282): the
+/// attributes lifted to a rule or aspect, keyed by their Starlark spelling
+/// of the rule attribute name.
+pub(crate) fn lifted_attributes(
+    values: &[Value<'_>],
+    budget: &mut HostBudget,
+) -> anyhow::Result<Vec<(String, AttrSpec)>> {
+    let mut attributes = Vec::new();
+    for value in transitive(values, budget)? {
+        let definition = SubruleDefinition::from_value(value).expect("validated Subrule");
+        for (name, spec) in &definition.attributes {
+            let rule_name = definition.rule_attribute_name(name)?;
+            budget.string(&rule_name).map_err(anyhow::Error::msg)?;
+            budget.spec(spec).map_err(anyhow::Error::msg)?;
+            attributes.push((rule_name, spec.clone()));
+        }
+    }
+    Ok(attributes)
+}
+
+/// StarlarkSubrule.discoverToolchains (StarlarkSubrule.java:285-292): an
+/// ImmutableSet of ToolchainTypeRequirement records.
+pub(crate) fn lifted_toolchains(
+    values: &[Value<'_>],
+    budget: &mut HostBudget,
+) -> anyhow::Result<Vec<(String, bool)>> {
+    let mut toolchains = Vec::new();
+    for value in transitive(values, budget)? {
+        let definition = SubruleDefinition::from_value(value).expect("validated Subrule");
+        for toolchain in &definition.toolchains {
+            if !toolchains.contains(toolchain) {
+                toolchains.push(toolchain.clone());
+            }
+        }
+    }
+    Ok(toolchains)
+}
+
+/// Whether a rule attribute is hidden from `ctx.attr`/`ctx.files`/`ctx.file`/
+/// `ctx.executable` because its public name is not an identifier: only
+/// lifted subrule attributes (StarlarkAttributesCollection.shouldIgnore,
+/// analysis/starlark/StarlarkAttributesCollection.java:247-252).
+pub(crate) fn is_lifted_attribute(name: &str) -> bool {
+    !crate::rule_declarations::is_identifier(name)
+}
 
 fn constructor_signature() -> &'static (ParametersSpec<FrozenValue>, Ty) {
     static SIGNATURE: OnceLock<(ParametersSpec<FrozenValue>, Ty)> = OnceLock::new();
@@ -337,6 +560,8 @@ pub(crate) fn direct_ids<'v>(
 
 pub(crate) fn globals(builder: &mut GlobalsBuilder) {
     builder.set("subrule", values::Constructor);
+    // Structure semantics of subrule_ctx.fragments for hasattr/dir.
+    crate::subrule_fragments::structure_builtins(builder);
 }
 
 fn construct_subrule<'v>(
@@ -353,30 +578,141 @@ fn construct_subrule<'v>(
         .ok_or_else(|| {
             anyhow!("subrule() definitions are only allowed during .bzl initialization")
         })?;
-    ensure!(
-        implementation.parameters_spec().is_some(),
-        "subrule implementation must be a Starlark function"
-    );
-    let attrs =
-        DictRef::from_value(attrs).ok_or_else(|| anyhow!("subrule attrs must be a dict"))?;
-    if !attrs.is_empty() {
-        bail!("nonempty subrule attrs are unsupported");
+    // @Param allowedTypes, checked in parameter order before the body
+    // (StarlarkRuleFunctionsApi.java:1089-1148).
+    use crate::rule_declarations::{param_type_error, require_sequence};
+    if implementation.parameters_spec().is_none() {
+        // Native builtins (Starlark type `function` here) are Java
+        // BuiltinFunctions, type `builtin_function_or_method`, in Bazel.
+        let shown = match implementation.get_type() {
+            "function" => "builtin_function_or_method",
+            other => other,
+        };
+        bail!(
+            "in call to subrule(), parameter 'implementation' got value of type '{shown}', want 'function'"
+        );
     }
-    for (name, value) in [("toolchains", toolchains), ("fragments", fragments)] {
-        let values = crate::custom_rule::sequence_ref(value)
-            .ok_or_else(|| anyhow!("subrule {name} must be a list or tuple"))?;
-        ensure!(values.is_empty(), "nonempty subrule {name} are unsupported");
+    let attrs = DictRef::from_value(attrs)
+        .ok_or_else(|| param_type_error("subrule", "attrs", attrs, "dict"))?;
+    for (name, value) in [
+        ("toolchains", toolchains),
+        ("fragments", fragments),
+        ("subrules", subrules),
+    ] {
+        require_sequence("subrule", name, value)?;
+    }
+    // StarlarkRuleClassFunctions.subrule (:2160-2212), in Bazel's order:
+    // Dict.cast(attrs), Sequence.noneableCast(fragments), the attribute
+    // checks, parseToolchainTypes, Sequence.cast(subrules).
+    let mut attributes = Vec::new();
+    for (name, spec) in attrs.iter() {
+        match (
+            name.unpack_str(),
+            crate::custom_rule::attribute_spec_ref(spec),
+        ) {
+            (Some(name), Some(spec)) => attributes.push((name.to_owned(), spec.clone())),
+            _ => bail!(
+                "got dict<{}, {}> for 'attrs', want dict<string, Attribute>",
+                name.get_type(),
+                spec.get_type()
+            ),
+        }
+    }
+    let fragments = crate::rule_declarations::cast_strings(fragments, "fragments")?;
+    for (name, spec) in &attributes {
+        validate_attribute(name, spec)?;
+    }
+    let toolchains = crate::rule_declarations::toolchains(eval, toolchains, eval.heap())?;
+    if toolchains.len() > 1 {
+        bail!(
+            "subrules may require at most 1 toolchain, got: [{}]",
+            toolchains
+                .iter()
+                .map(|(label, mandatory)| format!(
+                    "ToolchainTypeRequirement[toolchainType={}, mandatory={mandatory}, ignoreIfInvalid=false]",
+                    crate::label::Label::parse_canonical(label)
+                        .map(|label| crate::rule_declarations::canonical_form(&label))
+                        .unwrap_or_else(|_| label.clone())
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    let mut unique_fragments: Vec<String> = Vec::new();
+    for fragment in fragments {
+        if !unique_fragments.contains(&fragment) {
+            unique_fragments.push(fragment);
+        }
     }
     let mut budget = HostBudget::default();
     let subrules = snapshot(subrules, &mut budget)?;
     let label = context.label.to_string();
     budget.string(&label).map_err(anyhow::Error::msg)?;
+    for (name, spec) in &attributes {
+        budget.string(name).map_err(anyhow::Error::msg)?;
+        budget.spec(spec).map_err(anyhow::Error::msg)?;
+    }
+    for text in unique_fragments
+        .iter()
+        .chain(toolchains.iter().map(|(label, _)| label))
+    {
+        budget.string(text).map_err(anyhow::Error::msg)?;
+    }
     Ok(eval.heap().alloc(SubruleDefinitionGen {
         implementation,
         subrules,
+        attributes,
+        toolchains,
+        fragments: unique_fragments,
         definition_label: label,
         exported: OnceLock::new(),
     }))
+}
+
+/// The per-attribute checks of StarlarkRuleClassFunctions.subrule
+/// (:2171-2199): transition, identifier, private name, computed default,
+/// default presence and label type, in that order.
+fn validate_attribute(name: &str, spec: &AttrSpec) -> anyhow::Result<()> {
+    use crate::custom_rule::AttrKind;
+    use crate::rule_declarations::Cfg;
+    // NoTransition or a tool transition: exec, and config.none() whose
+    // NoConfigTransition factory isTool() (NoConfigTransition.java:96-99).
+    // Only Starlark transitions are rejected.
+    if !matches!(
+        spec.declaration.cfg,
+        Cfg::Target | Cfg::Exec(_) | Cfg::NoConfig
+    ) {
+        bail!("bad cfg for attribute '{name}': subrules may only have target/exec attributes.");
+    }
+    if !crate::rule_declarations::is_identifier(name) {
+        bail!("attribute name `{name}` is not a valid identifier.");
+    }
+    if !name.starts_with('_') {
+        bail!(
+            "illegal attribute name '{name}': subrules may only define private attributes (whose names begin with '_')."
+        );
+    }
+    if spec.declaration.computed_default {
+        bail!(
+            "illegal default value for attribute '{name}': subrules cannot define computed defaults."
+        );
+    }
+    // Descriptor.hasDefault: every attr.*() whose @Param default is not None
+    // sets a value; attr.label() (default None) and outputs do not.
+    let has_default = spec.declaration.explicit_default
+        || !matches!(
+            spec.kind,
+            AttrKind::Label | AttrKind::Output | AttrKind::OutputList
+        );
+    if !has_default {
+        bail!("for attribute '{name}': no default value specified");
+    }
+    if !matches!(spec.kind, AttrKind::Label | AttrKind::LabelList) {
+        bail!(
+            "bad type for attribute '{name}': subrule attributes may only be label or lists of labels."
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -456,7 +792,10 @@ S = subrule(*[], **{'implementation': impl, 'attrs': {}, 'toolchains': (), 'frag
                 ),
                 ("subrule(*[impl], **{})", "named-only"),
                 ("subrule(**{'implementation': impl, 'doc': ''})", "doc"),
-                ("subrule(implementation=subrule)", "Starlark function"),
+                (
+                    "subrule(implementation=subrule)",
+                    "in call to subrule(), parameter 'implementation' got value of type 'builtin_function_or_method', want 'function'",
+                ),
             ] {
                 let error = extension(&format!("def impl(ctx):\n    pass\n{source}\n"), &globals)
                     .unwrap_err();
@@ -516,40 +855,89 @@ S = subrule(*[], **{'implementation': impl, 'attrs': {}, 'toolchains': (), 'frag
             for (call, expected) in [
                 ("subrule()", "implementation"),
                 ("subrule(impl)", "named-only"),
-                ("subrule(implementation=len)", "Starlark function"),
-                ("subrule(implementation=provider())", "Starlark function"),
+                (
+                    "subrule(implementation=len)",
+                    "parameter 'implementation' got value of type 'builtin_function_or_method', want 'function'",
+                ),
+                (
+                    "subrule(implementation=provider())",
+                    "parameter 'implementation' got value of type 'Provider', want 'function'",
+                ),
                 (
                     "subrule(implementation=rule(implementation=impl))",
-                    "Starlark function",
+                    "parameter 'implementation' got value of type 'rule', want 'function'",
                 ),
-                ("subrule(implementation=None)", "Starlark function"),
+                (
+                    "subrule(implementation=None)",
+                    "parameter 'implementation' got value of type 'NoneType', want 'function'",
+                ),
                 ("subrule(implementation=impl, doc='x')", "doc"),
                 ("subrule(implementation=impl, unknown=[])", "unknown"),
-                ("subrule(implementation=impl, attrs=None)", "dict"),
-                ("subrule(implementation=impl, attrs=[])", "dict"),
+                (
+                    "subrule(implementation=impl, attrs=None)",
+                    "in call to subrule(), parameter 'attrs' got value of type 'NoneType', want 'dict'",
+                ),
+                (
+                    "subrule(implementation=impl, attrs=[])",
+                    "in call to subrule(), parameter 'attrs' got value of type 'list', want 'dict'",
+                ),
                 (
                     "subrule(implementation=impl, attrs={'_x':attr.label()})",
-                    "unsupported",
+                    "for attribute '_x': no default value specified",
+                ),
+                (
+                    "subrule(implementation=impl, attrs={'x':attr.label(default='//:x')})",
+                    "illegal attribute name 'x': subrules may only define private attributes (whose names begin with '_').",
+                ),
+                (
+                    "subrule(implementation=impl, attrs={'_x':attr.string(default='x')})",
+                    "bad type for attribute '_x': subrule attributes may only be label or lists of labels.",
+                ),
+                (
+                    "subrule(implementation=impl, attrs={'_x':attr.label_list(default=lambda: [])})",
+                    "illegal default value for attribute '_x': subrules cannot define computed defaults.",
+                ),
+                // config.none() is a tool transition (accepted); a public
+                // name then fails the private-name check.
+                (
+                    "subrule(implementation=impl, attrs={'x':attr.label(default='//:x', cfg=config.none())})",
+                    "illegal attribute name 'x': subrules may only define private attributes (whose names begin with '_').",
+                ),
+                (
+                    "subrule(implementation=impl, attrs={'x':attr.label(default='//:x', cfg=transition(implementation=lambda s, a: {}, inputs=[], outputs=[]))})",
+                    "bad cfg for attribute 'x': subrules may only have target/exec attributes.",
+                ),
+                (
+                    "subrule(implementation=impl, attrs={'_x y':attr.label(default='//:x')})",
+                    "attribute name `_x y` is not a valid identifier.",
+                ),
+                (
+                    "subrule(implementation=impl, attrs={'_x':1})",
+                    "got dict<string, int> for 'attrs', want dict<string, Attribute>",
                 ),
                 (
                     "subrule(implementation=impl, toolchains=None)",
-                    "list or tuple",
+                    "in call to subrule(), parameter 'toolchains' got value of type 'NoneType', want 'sequence'",
                 ),
                 (
-                    "subrule(implementation=impl, toolchains=['//:tc'])",
-                    "unsupported",
+                    "subrule(implementation=impl, toolchains=['//:a', Label('//:b')])",
+                    "subrules may require at most 1 toolchain, got: [ToolchainTypeRequirement[toolchainType=//:a, mandatory=true, ignoreIfInvalid=false], ToolchainTypeRequirement[toolchainType=//:b, mandatory=true, ignoreIfInvalid=false]]",
+                ),
+                (
+                    "subrule(implementation=impl, toolchains=[1])",
+                    "'toolchains' takes a toolchain_type, Label, or String",
                 ),
                 (
                     "subrule(implementation=impl, fragments={})",
-                    "list or tuple",
+                    "in call to subrule(), parameter 'fragments' got value of type 'dict', want 'sequence'",
                 ),
                 (
-                    "subrule(implementation=impl, fragments=['java'])",
-                    "unsupported",
+                    "subrule(implementation=impl, fragments=[1])",
+                    "at index 0 of fragments, got element of type int, want string",
                 ),
                 (
                     "subrule(implementation=impl, subrules=None)",
-                    "list or tuple",
+                    "in call to subrule(), parameter 'subrules' got value of type 'NoneType', want 'sequence'",
                 ),
                 ("subrule(implementation=impl, subrules=[impl])", "Subrule"),
                 (
@@ -579,6 +967,58 @@ S = subrule(*[], **{'implementation': impl, 'attrs': {}, 'toolchains': (), 'frag
             }
             extension("def impl():\n    pass\nS = subrule(implementation=impl, attrs={}, toolchains=(), fragments=[], subrules=())\n(type(S) == 'Subrule' and repr(S) == '<subrule S>' and not hasattr(native, 'subrule')) or fail('binding')\n", &globals).unwrap();
         }
+    }
+
+    #[test]
+    fn lifted_attributes_and_toolchains_follow_transitive_discovery_order() {
+        let module = extension(
+            r#"
+def impl(ctx):
+    pass
+A = subrule(implementation=impl, attrs={'_a': attr.label(default='//:a')}, toolchains=['//:t1'])
+B = subrule(implementation=impl, attrs={'_b': attr.label_list(default=['//:b']), '_late': attr.label(default=configuration_field('cpp', 'fdo_profile'))}, subrules=[A], toolchains=['//:t2'])
+C = subrule(implementation=impl, subrules=[A, B], fragments=['cpp', 'cpp', 'java'])
+r = rule(implementation=impl, subrules=[B, C, A], toolchains=['//:t1', '//:t3'], attrs={'own': attr.label()})
+"#,
+            &crate::package::bzl_globals(),
+        )
+        .unwrap();
+        let view = crate::custom_rule::rule_declaration(module.get("r").unwrap().value()).unwrap();
+        // StarlarkSubrule.getTransitiveSubrules: B, A (through B), C.
+        assert_eq!(
+            view.schema
+                .keys()
+                .filter(|name| is_lifted_attribute(name))
+                .count(),
+            3
+        );
+        let late = &view.schema["_//:defs.bzl%B%_late"];
+        assert!(late.declaration.late_bound && late.declaration.late_bound_resolvable());
+        assert_eq!(
+            late.declaration.configuration_field,
+            Some(crate::custom_rule::ConfigurationField {
+                fragment: "cpp".into(),
+                name: "fdo_profile".into()
+            })
+        );
+        assert_eq!(
+            view.schema["_//:defs.bzl%A%_a"].default,
+            crate::custom_rule::AttrValue::Label(Some("//:a".into()))
+        );
+        // Subrule toolchain types first, then the rule's own, as a set.
+        assert_eq!(
+            view.declaration.toolchains,
+            [
+                ("//:t2".to_owned(), true),
+                ("//:t1".to_owned(), true),
+                ("//:t3".to_owned(), true)
+            ]
+        );
+        let owned = module.get("C").unwrap();
+        let c = SubruleDefinition::from_value(owned.value()).unwrap();
+        assert_eq!(c.fragments, ["cpp", "java"]);
+        assert_eq!(c.rule_attribute_name("_x").unwrap(), "_//:defs.bzl%C%_x");
+        assert!(!is_lifted_attribute("_x") && is_lifted_attribute("_//:defs.bzl%C%_x"));
     }
 
     #[test]
@@ -755,10 +1195,13 @@ r = rule(implementation=impl, subrules=[S])
             result.actions[0].action.write.as_ref().unwrap().content,
             b"True|True|fallback\n"
         );
-        for field in ["fragments", "toolchains"] {
-            let error = analyze(&format!("def child(ctx):\n    ctx.{field}\nS=subrule(implementation=child)\ndef impl(ctx):\n    S()\nr=rule(implementation=impl, subrules=[S])\n")).unwrap_err();
-            assert!(error.contains("unsupported"), "{error}");
-        }
+        // Without engine toolchain resolution there is no toolchain context
+        // (TOOLCHAINS_NOT_VALID); fragments is the declared collection.
+        let result = analyze("def child(ctx):\n    t = ctx.toolchains\n    f = ctx.fragments\n    out = ctx.actions.declare_file('out')\n    ctx.actions.write(out, repr((type(t), type(f), dir(f) == [], str(f))))\nS=subrule(implementation=child)\ndef impl(ctx):\n    S()\nr=rule(implementation=impl, subrules=[S])\n").unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&result.actions[0].action.write.as_ref().unwrap().content),
+            "(\"ToolchainContext\", \"fragments\", True, \"<unknown object com.google.devtools.build.lib.analysis.starlark.StarlarkSubrule$SubruleFragmentCollection>\")"
+        );
     }
 
     #[test]
@@ -871,6 +1314,7 @@ r = rule(implementation=impl, subrules=[S])
             top_level_functions: Vec::new(),
             repositories: Arc::new(crate::repository::RepositorySet::new(".".into())),
             scope: ScopeState::new("//:target".into(), direct_ids([allowed.value()]).unwrap()),
+            subrule: Default::default(),
         };
         Module::with_temp_heap(|module| {
             let heap = module.heap();
@@ -1015,6 +1459,7 @@ S = subrule(implementation=callback)
             top_level_functions: Vec::new(),
             repositories: Arc::new(crate::repository::RepositorySet::new(".".into())),
             scope: ScopeState::new("//:target".into(), direct_ids([owned.value()]).unwrap()),
+            subrule: Default::default(),
         };
         Module::with_temp_heap(|module| {
             let s = module.heap().access_owned_frozen_value(&owned);

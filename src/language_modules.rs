@@ -704,6 +704,16 @@ pub(crate) fn is_late_bound_default(value: Value<'_>) -> bool {
     LateBoundDefault::from_value(value).is_some()
 }
 
+/// The fragment and field name of a `configuration_field(...)` value.
+pub(crate) fn configuration_field_of(
+    value: Value<'_>,
+) -> Option<crate::custom_rule::ConfigurationField> {
+    LateBoundDefault::from_value(value).map(|value| crate::custom_rule::ConfigurationField {
+        fragment: value.fragment.clone(),
+        name: value.name.clone(),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Argument binding with Bazel's BuiltinFunction diagnostics.
 

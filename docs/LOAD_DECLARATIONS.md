@@ -127,7 +127,8 @@ Following `StarlarkAttrModuleApi.java` and `StarlarkAttrModule.java:317-565`:
 * `attr.label(default=configuration_field(...))`: a late-bound default,
   recognized by Starlark type `LateBoundDefault`. It must be on a private
   attribute (`When an attribute value is a function, the attribute must be
-  private ...`) and is kept without a resolved value.
+  private ...`) and keeps its `configuration_field` identity; the configured
+  target resolves it (docs/SUBRULES.md) when the field is resolvable natively.
 * New `attr.int_list(mandatory, allow_empty, default, doc)` and
   `attr.label_keyed_string_dict(...)`; `attr.string_keyed_label_dict(...)`
   and `attr.label_list_dict(...)` (docs/ATTR_DICTS_COMPUTED_DEFAULTS.md).
@@ -151,7 +152,8 @@ A target fails analysis with the message above if it uses any of these:
   non-empty `aspects`, extension-list `allow_files`/`allow_single_file`,
   `allow_rules`, non-empty `flags`, `skip_validations=True`, any
   `label_keyed_string_dict` value;
-* always: a late-bound (`configuration_field`) default;
+* always: a late-bound (`configuration_field`) default whose field is not
+  resolved natively (resolved fields are ordinary values, docs/SUBRULES.md);
 * `aspect()` objects are never applied; `transition()` implementations,
   `attr_aspects`/`toolchains_aspects` functions and `propagation_predicate` are
   never called; `OutputGroupInfo(...)` and `AnalysisTestResultInfo(...)` fail
