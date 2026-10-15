@@ -304,6 +304,30 @@ impl RepositorySet {
         self.root_module().map(|_| ())
     }
 
+    /// The Bzlmod module associated with a repository, for native
+    /// `module_name()`/`module_version()` (packages/StarlarkNativeModule.java:669-683,
+    /// skyframe/RepositoryMappingFunction.java:100-159). Module-extension repos
+    /// report their hosting module in Bazel; that association is not modeled.
+    pub(crate) fn associated_module(&self, repository: &str) -> Result<(String, String), String> {
+        if repository.is_empty() {
+            return self.root_module()?.identity();
+        }
+        let graph = self.resolve_graph()?;
+        if let Some(module) = graph.modules.get(repository) {
+            // Module.getVersion is the module() declaration (InterimModule
+            // keeps it for non-registry overrides, whose key version is
+            // empty; ModuleFileFunction.java:274-279 forces equality otherwise).
+            let version = match &module.module.module {
+                Some(info) => crate::module_graph::normalize_declared_version(&info.version)?,
+                None => module.version.clone(),
+            };
+            return Ok((module.name.clone(), version));
+        }
+        Err(format!(
+            "module_name()/module_version() in repository @@{repository}: the associated module of a non-module (extension or direct) repository is not implemented by the native profile"
+        ))
+    }
+
     pub fn resolve_graph(&self) -> Result<&ResolvedGraph, String> {
         self.state
             .resolved

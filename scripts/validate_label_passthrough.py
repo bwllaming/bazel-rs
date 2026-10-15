@@ -79,9 +79,18 @@ ACTION = re.compile(r'\b\d+\s+(?:(?:(?:total|cached|remote|local)\s+)?actions?\b
 # returned error with eprintln!, supplying exactly the final LF. Both source
 # files are in source_paths()/the frozen executable binding. This is NOT a
 # general exception for unsupported APIs, builds, successful calls or reference.
-NATIVE_LOADING_FOOTER = ('Supported rules: filegroup, genrule, and local custom rules. '
-                         'select and non-local repositories remain unsupported.\n')
-FOOTER_HINT = re.compile(r'\bsupported\s+rules:|local custom rules\.|non-local repositories remain', re.I)
+# Since the native-rule-class increment (docs/NATIVE_BUILD_RULES.md) the footer
+# names the registered native rule classes and accepts select() at loading.
+# Captures retained from earlier increments carry the legacy literal; either
+# exact, terminal footer is accepted, nothing else.
+NATIVE_LOADING_FOOTER = ('Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md '
+                         'and Starlark rule() definitions. select() values load, but native '
+                         'analysis does not resolve them.\n')
+LEGACY_NATIVE_LOADING_FOOTER = ('Supported rules: filegroup, genrule, and local custom rules. '
+                                'select and non-local repositories remain unsupported.\n')
+NATIVE_LOADING_FOOTERS = (NATIVE_LOADING_FOOTER, LEGACY_NATIVE_LOADING_FOOTER)
+FOOTER_HINT = re.compile(r'\bsupported\s+rules:|local custom rules\.|non-local repositories remain|'
+                         r'Starlark rule\(\) definitions\.|native analysis does not resolve', re.I)
 
 
 def require(condition, message):
@@ -264,8 +273,9 @@ def native_negative_body(text):
         return text
     # No strip()/splitlines()/whitespace normalization: the exact footer must
     # occupy one whole terminal line, with the LF emitted by main's eprintln!.
-    require(text.endswith('\n' + NATIVE_LOADING_FOOTER), 'modified or nonterminal native loading footer')
-    body = text[:-len(NATIVE_LOADING_FOOTER)]
+    footer = next((f for f in NATIVE_LOADING_FOOTERS if text.endswith('\n' + f)), None)
+    require(footer is not None, 'modified or nonterminal native loading footer')
+    body = text[:-len(footer)]
     require(not FOOTER_HINT.search(body), 'duplicate or embedded native loading footer')
     return body
 

@@ -200,7 +200,11 @@ fn run() -> Result<(), String> {
     );
     repositories.validate_root_module()?;
     let mut engine = Engine::with_repositories(repositories);
-    let labels = engine.select(&rest, &current_package)?;
+    let labels = if command == "query" {
+        engine.select(&rest, &current_package)?
+    } else {
+        engine.select_for_build(&rest, &current_package)?
+    };
     if command == "query" {
         // Print only after all packages have loaded successfully.
         for label in labels {

@@ -289,6 +289,21 @@ class DiagnosticTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     suite.require_rejection(row,wrong,'native')
 
+    def test_scalar_diagnostic_accepts_current_and_legacy_footer_only(self):
+        legacy = ('Supported rules: filegroup, genrule, and local custom rules. '
+                  'select and non-local repositories remain unsupported.\n')
+        current = ('Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and '
+                   'Starlark rule() definitions. select() values load, but native analysis does not resolve them.\n')
+        self.assertEqual(suite.NATIVE_LOADING_FOOTERS, (current, legacy))
+        for probe in NATIVE_SHAPE_OBSERVATIONS:
+            row = native_observed_row(probe)
+            diagnostic = probe.split('-')[0]
+            with self.subTest(probe=probe):
+                suite.require_rejection(dict(row, stderr=row['stderr'].replace(legacy, current)), diagnostic, 'native')
+                for footer in ('', current.replace('them.', 'them!'), legacy + current, current.upper()):
+                    with self.assertRaises(ValueError):
+                        suite.require_rejection(dict(row, stderr=row['stderr'].replace(legacy, footer)), diagnostic, 'native')
+
     def test_observed_native_categories_reject_context_and_body_mutations(self):
         for probe in (*NATIVE_BINDER_OBSERVATIONS,*NATIVE_SHAPE_OBSERVATIONS):
             diagnostic = probe if probe in NATIVE_BINDER_OBSERVATIONS else probe.split('-')[0]

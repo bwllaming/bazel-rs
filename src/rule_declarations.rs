@@ -478,12 +478,13 @@ pub(crate) struct AspectDeclaration {
 // ---------------------------------------------------------------------------
 // Shared Bazel-shaped validation helpers.
 
-/// Bazel `Label.getCanonicalForm()` (cmdline/Label.java:490): `//pkg:name` or `@repo//pkg:name`.
+/// Bazel `Label.getCanonicalForm()` (cmdline/Label.java:490-492): `//pkg:name`
+/// or `@@repo//pkg:name` (`RepositoryName.getNameWithAt`, RepositoryName.java:270-286).
 pub(crate) fn canonical_form(label: &crate::label::Label) -> String {
     if label.repository.is_empty() {
         format!("//{}:{}", label.package, label.name)
     } else {
-        format!("@{}//{}:{}", label.repository, label.package, label.name)
+        format!("@@{}//{}:{}", label.repository, label.package, label.name)
     }
 }
 

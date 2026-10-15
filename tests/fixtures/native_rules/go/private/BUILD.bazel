@@ -1,0 +1,60 @@
+# Shapes of rules_go go/private/BUILD.bazel (config_settings) and the nogo
+# alias select of go/private/rules/nogo.bzl.
+config_setting(
+    name = "stamp",
+    values = {"stamp": "true"},
+    visibility = ["//:__pkg__"],
+)
+
+config_setting(
+    name = "is_strip_always",
+    values = {"strip": "always"},
+    visibility = ["//:__pkg__"],
+)
+
+config_setting(
+    name = "is_strip_sometimes_fastbuild",
+    values = {
+        "strip": "sometimes",
+        "compilation_mode": "fastbuild",
+    },
+    visibility = ["//:__pkg__"],
+)
+
+label_setting(
+    name = "bootstrap_nogo",
+    build_setting_default = ":noop_nogo",
+)
+
+label_flag(
+    name = "request_nogo",
+    build_setting_default = ":noop_nogo",
+    scope = "universal",
+)
+
+config_setting(
+    name = "nogo_active",
+    flag_values = {
+        ":bootstrap_nogo": "False",
+        ":request_nogo": "True",
+    },
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "empty_setting",
+)
+
+filegroup(
+    name = "noop_nogo",
+    srcs = [],
+)
+
+alias(
+    name = "default_nogo",
+    actual = select({
+        ":nogo_active": "//go/toolchain:go_linux_amd64_sdk",
+        "//conditions:default": ":noop_nogo",
+    }),
+    visibility = ["//visibility:public"],
+)

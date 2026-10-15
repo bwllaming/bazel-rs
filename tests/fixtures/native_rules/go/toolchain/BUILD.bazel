@@ -1,0 +1,12 @@
+load(":toolchains.bzl", "declare_constraints", "declare_toolchains")
+
+package(default_visibility = ["//visibility:public"])
+
+declare_constraints()
+
+declare_toolchains("go_linux_amd64", "linux", "amd64")
+
+filegroup(
+    name = "go_linux_amd64_sdk",
+    srcs = [],
+)

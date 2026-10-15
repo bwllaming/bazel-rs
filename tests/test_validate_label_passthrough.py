@@ -747,13 +747,37 @@ class NativeTerminalFooterTests(unittest.TestCase):
         self.assertEqual(self.report, before)
 
     def test_footer_literal_is_bound_to_real_package_and_main_print_sites(self):
-        self.assertEqual(self.footer, suite.NATIVE_LOADING_FOOTER.encode())
+        # The retained capture predates the native-rule-class footer.
+        self.assertEqual(self.footer, suite.LEGACY_NATIVE_LOADING_FOOTER.encode())
         package = (suite.ROOT / 'src/package.rs').read_text()
         main = (suite.ROOT / 'src/main.rs').read_text()
-        self.assertIn('"{e:#}\\n' + suite.NATIVE_LOADING_FOOTER[:-1] + '"', package)
+        self.assertIn('pub const NATIVE_LOADING_FOOTER: &str = "' + suite.NATIVE_LOADING_FOOTER[:-1] + '";', package)
+        self.assertIn('"{e:#}\\n{NATIVE_LOADING_FOOTER}"', package)
+        self.assertNotIn(suite.LEGACY_NATIVE_LOADING_FOOTER[:-1], package)
         self.assertIn('eprintln!("bazel-rs: {error}");', main)
         self.assertIn(suite.ROOT / 'src/package.rs', suite.source_paths())
         self.assertIn(suite.ROOT / 'src/main.rs', suite.source_paths())
+
+    def test_current_footer_accepts_and_its_mutations_reject(self):
+        footer = suite.NATIVE_LOADING_FOOTER.encode()
+        row = copy.deepcopy(self.report['runs'][self.index])
+        row['stderr'] = suite.blob(self.body + footer)
+        self.assertEqual(suite.query_result(row, 'wrong-type-none', 'native'), 'PARITY_REJECTION_CATEGORY')
+        variants = {
+            'duplicate': self.body + footer + footer,
+            'mixed-legacy-and-current': self.body + self.footer + footer,
+            'missing-final-lf': self.body + footer[:-1],
+            'changed-period': self.body + footer.replace(b'them.', b'them!'),
+            'changed-prefix': self.body + footer.replace(b'Supported rules:', b'Available rules:'),
+            'case-changed': self.body + footer.upper(),
+            'embedded-in-body': self.body + b'error: quoted ' + footer + footer,
+        }
+        for mutation, raw in variants.items():
+            report = copy.deepcopy(self.report)
+            report['runs'][self.index]['stderr'] = suite.blob(raw)
+            with self.subTest(mutation=mutation):
+                self.reject(report, self.index, 'native-terminal-footer', mutation,
+                            '(?:modified or nonterminal|duplicate or embedded) native loading footer')
 
     def test_footer_is_optional_not_a_claim_about_all_native_diagnostic_counts(self):
         row = copy.deepcopy(self.report['runs'][self.index])
@@ -911,7 +935,7 @@ class NativeBindingObservationTests(unittest.TestCase):
                     self.mutate(case, raw.replace(good.encode(), bad.encode()), name, 'wrong native positional-only binding')
 
     def test_real_Label_call_frame_span_and_phase_not_unrelated_source_echo(self):
-        footer = suite.NATIVE_LOADING_FOOTER.encode()
+        footer = suite.LEGACY_NATIVE_LOADING_FOOTER.encode()
         for case in BINDING_OBSERVATIONS:
             raw = suite.unblob(BINDING_OBSERVATIONS[case]['stderr'])
             body = raw[:-len(footer)]
@@ -935,7 +959,7 @@ class NativeBindingObservationTests(unittest.TestCase):
                                 'wrong native binder operation/callsite|wrong target operation/callsite|not a bound loading rejection')
 
     def test_duplicate_primary_and_crash_fallback_action_footer_rehashed(self):
-        footer = suite.NATIVE_LOADING_FOOTER.encode()
+        footer = suite.LEGACY_NATIVE_LOADING_FOOTER.encode()
         for case in BINDING_OBSERVATIONS:
             raw = suite.unblob(BINDING_OBSERVATIONS[case]['stderr'])
             body = raw[:-len(footer)]

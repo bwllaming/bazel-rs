@@ -54,7 +54,10 @@ pub fn package_build_file(root: &Path, package: &str) -> Result<PathBuf, String>
 pub fn discover_packages(root: &Path, package: &str) -> Result<Vec<String>, String> {
     validate_package_path(package)?;
     let root = canonical_root(root)?;
-    for name in [".bazelignore", "REPO.bazel"] {
+    // REPO.bazel is evaluated by package loading (package::repo_args); its
+    // ignore_directories() is rejected there. .bazelignore still is here.
+    {
+        let name = ".bazelignore";
         let path = root.join(name);
         match fs::read_to_string(&path) {
             Ok(text)
@@ -63,7 +66,7 @@ pub fn discover_packages(root: &Path, package: &str) -> Result<Vec<String>, Stri
                     .any(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#')) =>
             {
                 return Err(format!(
-                    "recursive discovery with {name} directives is not implemented; use explicit package labels"
+                    "recursive discovery with {name} directives is not implemented yet (planned for the N14 ignore-files increment); use explicit package labels"
                 ));
             }
             Ok(_) => {}
@@ -185,6 +188,26 @@ pub(crate) fn has_marker(directory: &Path) -> Result<bool, String> {
         }
     }
     Ok(false)
+}
+
+/// The repository's REPO.bazel with the same regular-file and
+/// stays-inside-the-workspace checks as BUILD files (`find_build_file`).
+pub fn repo_file(root: &Path) -> Result<Option<PathBuf>, String> {
+    let root = canonical_root(root)?;
+    let path = root.join("REPO.bazel");
+    if !is_regular_file(&path)? {
+        return Ok(None);
+    }
+    let resolved = fs::canonicalize(&path)
+        .map_err(|e| format!("cannot resolve REPO.bazel file {}: {e}", path.display()))?;
+    if !resolved.starts_with(&root) {
+        return Err(format!(
+            "REPO.bazel file {} resolves outside workspace {}",
+            path.display(),
+            root.display()
+        ));
+    }
+    Ok(Some(path))
 }
 
 fn find_build_file(root: &Path, directory: &Path) -> Result<Option<PathBuf>, String> {
@@ -371,15 +394,37 @@ mod tests {
     fn recursive_discovery_rejects_unimplemented_ignore_directives() {
         let temp = Temp::new();
         temp.file("BUILD");
-        for name in [".bazelignore", "REPO.bazel"] {
-            fs::write(temp.0.join(name), "ignored_directories(['node_modules'])").unwrap();
-            assert!(
-                discover_packages(&temp.0, "")
-                    .unwrap_err()
-                    .contains("not implemented")
-            );
-            fs::remove_file(temp.0.join(name)).unwrap();
-        }
+        fs::write(temp.0.join(".bazelignore"), "node_modules").unwrap();
+        assert!(
+            discover_packages(&temp.0, "")
+                .unwrap_err()
+                .contains("not implemented yet (planned for the N14 ignore-files increment)")
+        );
+        fs::remove_file(temp.0.join(".bazelignore")).unwrap();
+        // REPO.bazel content is evaluated by package loading, not here.
+        fs::write(temp.0.join("REPO.bazel"), "repo(default_testonly = True)").unwrap();
+        assert_eq!(discover_packages(&temp.0, "").unwrap(), [""]);
+    }
+
+    #[test]
+    fn repo_file_must_be_a_regular_file_inside_the_workspace() {
+        let temp = Temp::new();
+        assert_eq!(repo_file(&temp.0).unwrap(), None);
+        fs::create_dir(temp.0.join("REPO.bazel")).unwrap();
+        assert_eq!(repo_file(&temp.0).unwrap(), None);
+        fs::remove_dir(temp.0.join("REPO.bazel")).unwrap();
+        let outside = Temp::new();
+        outside.file("REPO.bazel");
+        std::os::unix::fs::symlink(outside.0.join("REPO.bazel"), temp.0.join("REPO.bazel"))
+            .unwrap();
+        assert!(
+            repo_file(&temp.0)
+                .unwrap_err()
+                .contains("resolves outside workspace")
+        );
+        fs::remove_file(temp.0.join("REPO.bazel")).unwrap();
+        temp.file("REPO.bazel");
+        assert!(repo_file(&temp.0).unwrap().is_some());
     }
 
     #[test]

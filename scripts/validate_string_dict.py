@@ -100,6 +100,14 @@ NATIVE_CTOR_ERRORS = {
     'duplicate': 'Argument `allow_empty` occurs more than once',
 }
 NATIVE_SCALAR_ERROR = 'attribute "d": expected a dict of strings to strings'
+# BUILD loading footer (src/package.rs NATIVE_LOADING_FOOTER) and the literal of
+# captures made before the native-rule-class increment (docs/NATIVE_BUILD_RULES.md).
+NATIVE_LOADING_FOOTERS = (
+    'Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() '
+    'definitions. select() values load, but native analysis does not resolve them.\n',
+    'Supported rules: filegroup, genrule, and local custom rules. select and non-local '
+    'repositories remain unsupported.\n',
+)
 
 
 def require_bound_native_diagnostic(row, diagnostic):
@@ -116,7 +124,7 @@ input bytes and absence of outputs/publication before accepting the phase.
         source = 'A=attr.string_dict('+BAD_CTORS[probe]+')'
         line = value['files']['defs.bzl'].decode().splitlines().index(source)+1
         header = 'bazel-rs: cannot evaluate //:defs.bzl: Traceback (most recent call last):'
-        error, footer = NATIVE_CTOR_ERRORS[diagnostic], ''
+        error, footers = NATIVE_CTOR_ERRORS[diagnostic], ('',)
     else:
         matched = re.fullmatch(r'validation\.(custom\.(?:key-(?:int|bool)|value-(?:list|tuple|int|bool|none|dict)))\.native\.0',row.get('name',''))
         if not matched or not Path(row.get('cwd','')).is_absolute():
@@ -129,11 +137,12 @@ input bytes and absence of outputs/publication before accepting the phase.
         line = value['files']['BUILD.bazel'].decode().splitlines().index(source)+1
         path, column = str(Path(row['cwd'])/'BUILD.bazel'), 1
         header, error = 'bazel-rs: Traceback (most recent call last):', NATIVE_SCALAR_ERROR
-        footer = 'Supported rules: filegroup, genrule, and local custom rules. select and non-local repositories remain unsupported.\n'
+        footers = NATIVE_LOADING_FOOTERS
     trace = (header+'\n'+f'  * {path}:{line}, in <module>\n      {source}\nerror: {error}\n'
         +f' --> {path}:{line}:{column}\n  |\n{line} | {source}\n'
-        +'  | '+' '*(column-1)+'^'*len(source[column-1:])+'\n  |\n\n'+footer)
-    if (row.get('name') != name+'.'+probe+'.native.0' or row['stderr'] != trace
+        +'  | '+' '*(column-1)+'^'*len(source[column-1:])+'\n  |\n\n')
+    if (row.get('name') != name+'.'+probe+'.native.0'
+            or row['stderr'] not in [trace + footer for footer in footers]
             or row['stdout'] != '' or row['returncode'] != 1):
         raise ValueError('unbound native '+diagnostic+' diagnostic')
     return error

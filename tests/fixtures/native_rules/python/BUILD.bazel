@@ -1,0 +1,21 @@
+load(":toolchains.bzl", "py_toolchain_suite")
+
+toolchain_type(name = "toolchain_type")
+
+toolchain_type(name = "exec_tools_toolchain_type")
+
+config_setting(
+    name = "exec_tools_toolchain_enabled",
+    values = {"compilation_mode": "opt"},
+)
+
+config_setting(
+    name = "is_python_3.12",
+    define_values = {"python": "3.12"},
+)
+
+py_toolchain_suite(
+    prefix = "python_3_12",
+    target_settings = [":is_python_3.12"],
+    target_compatible_with = ["@platforms//os:linux"],
+)

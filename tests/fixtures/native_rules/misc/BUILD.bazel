@@ -1,0 +1,50 @@
+genquery(
+    name = "deps_query",
+    expression = "deps(//misc:copy)",
+    scope = [":copy"],
+)
+
+starlark_doc_extract(
+    name = "defs_doc",
+    src = "defs.bzl",
+    symbol_names = ["hello"],
+)
+
+test_suite(
+    name = "all_tests",
+    tags = ["manual"],
+)
+
+java_plugins_flag_alias(name = "java_plugins_flag_alias")
+
+filegroup(
+    name = "configured_files",
+    srcs = ["a.txt"] + select({
+        "//skylib:linux": ["linux.txt"],
+        "//conditions:default": [],
+    }),
+)
+
+filegroup(
+    name = "unconditional_files",
+    srcs = select({"//conditions:default": ["a.txt"]}) + ["b.txt"],
+)
+
+genrule(
+    name = "copy",
+    srcs = ["a.txt"],
+    outs = ["copy.txt"],
+    cmd = select({
+        "//skylib:linux": "cp $< $@",
+        "//conditions:default": "cat $< > $@",
+    }),
+)
+
+genrule(
+    name = "plain",
+    srcs = [":unconditional_files"],
+    outs = ["plain.txt"],
+    cmd = "cat $(SRCS) > $@",
+    message = "plain",
+    tags = ["manual"],
+)

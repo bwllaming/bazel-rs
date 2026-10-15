@@ -32,29 +32,43 @@ impl Visibility {
         Self::from_labels(labels)
     }
 
+    /// RuleVisibility.validateAndSimplify (packages/RuleVisibility.java:162-215):
+    /// `//visibility:public` subsumes every other label, `//visibility:private`
+    /// is dropped next to other labels, an empty or all-private list is private,
+    /// and any other `//visibility:X` except `__pkg__`/`__subpackages__` is a
+    /// misspelling error.
     pub(crate) fn from_labels(labels: Vec<Label>) -> Result<Self, String> {
-        if labels.is_empty() {
-            return Ok(Self::Private);
-        }
+        let special = |label: &Label, name: &str| {
+            label.repository.is_empty() && label.package == "visibility" && label.name == name
+        };
+        let mut public = false;
+        let mut private = 0;
         for label in &labels {
-            if label.repository.is_empty()
+            if special(label, "public") {
+                public = true;
+            } else if special(label, "private") {
+                private += 1;
+            } else if label.repository.is_empty()
                 && label.package == "visibility"
-                && matches!(label.name.as_str(), "public" | "private")
+                && !matches!(label.name.as_str(), "__pkg__" | "__subpackages__")
             {
-                if labels.len() != 1 {
-                    return Err(
-                        "public/private visibility cannot be combined with other visibility labels"
-                            .into(),
-                    );
-                }
-                return Ok(if label.name == "public" {
-                    Self::Public
-                } else {
-                    Self::Private
-                });
+                return Err(format!(
+                    "Invalid visibility label '{label}'; did you mean //visibility:public or //visibility:private?"
+                ));
             }
         }
-        Ok(Self::Labels(labels))
+        if public {
+            return Ok(Self::Public);
+        }
+        if private == labels.len() {
+            return Ok(Self::Private);
+        }
+        Ok(Self::Labels(
+            labels
+                .into_iter()
+                .filter(|label| !special(label, "private"))
+                .collect(),
+        ))
     }
 
     /// Add an exact authority grant without changing the declared scope sequence.
@@ -340,17 +354,41 @@ mod tests {
         );
         assert!(!group.allows("owner", "other"));
         assert!(group.allows("owner", "x"));
-        for values in [
-            vec!["//visibility:public", "//x:__pkg__"],
-            vec!["@repo//p:__pkg__"],
+        // RuleVisibility.validateAndSimplify: public subsumes, private drops.
+        assert_eq!(
+            parse(&["//x:__pkg__", "//visibility:public"]),
+            Visibility::Public
+        );
+        assert_eq!(
+            parse(&[
+                "//visibility:private",
+                "//x:__pkg__",
+                "//visibility:private"
+            ])
+            .declared_labels(),
+            labels(&["//x:__pkg__"])
+        );
+        assert_eq!(
+            parse(&["//visibility:private", "//visibility:private"]),
+            Visibility::Private
+        );
+        assert_eq!(
+            parse(&["//visibility:__pkg__"]).declared_labels(),
+            labels(&["//visibility:__pkg__"])
+        );
+        for (values, expected) in [
+            (vec!["@repo//p:__pkg__"], "external"),
+            (
+                vec!["//x:__pkg__", "//visibility:pubic"],
+                "Invalid visibility label '//visibility:pubic'; did you mean //visibility:public or //visibility:private?",
+            ),
         ] {
-            assert!(
-                Visibility::parse(
-                    &values.into_iter().map(String::from).collect::<Vec<_>>(),
-                    "owner"
-                )
-                .is_err()
-            );
+            let error = Visibility::parse(
+                &values.into_iter().map(String::from).collect::<Vec<_>>(),
+                "owner",
+            )
+            .unwrap_err();
+            assert!(error.contains(expected), "{error}");
         }
     }
 

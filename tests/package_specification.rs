@@ -920,14 +920,17 @@ m=macro(implementation=_m)
         content(&ws.run(&["build", ":demo"])),
         [b"normalized".to_vec()]
     );
-    // Ordinary mixed-public visibility remains the existing strict unsupported
-    // profile; symbolic normalization must not silently broaden ordinary rules.
+    // Ordinary rules follow RuleVisibility.validateAndSimplify too
+    // (packages/RuleVisibility.java:185-200, AttributeProvider.java:277-286):
+    // public subsumes the list, so the missing group is never resolved.
     let ordinary = Workspace::new(
         "",
-        "filegroup(name='bad',visibility=['//visibility:public','//:missing_group'])\n",
+        "filegroup(name='mixed',visibility=['//visibility:public','//:missing_group'])\n",
     );
-    rejected(&ordinary.run(&["query", ":bad"]), "");
-    ordinary.untouched();
+    let query = ordinary.run(&["query", ":mixed"]);
+    success(&query);
+    assert_eq!(String::from_utf8_lossy(&query.stdout), "//:mixed\n");
+    success(&ordinary.run(&["build", ":mixed"]));
 }
 
 #[test]

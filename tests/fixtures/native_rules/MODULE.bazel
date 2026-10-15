@@ -1,0 +1,4 @@
+module(name = "native_rules_fixture", version = "0.3.0")
+
+bazel_dep(name = "platforms", version = "1.1.0")
+local_path_override(module_name = "platforms", path = "platforms")

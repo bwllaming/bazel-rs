@@ -124,6 +124,25 @@ pub(crate) struct RootModuleSnapshot {
     module: RootModulePresence,
 }
 
+impl RootModuleSnapshot {
+    /// The root module's name and normalized version, as Bazel's
+    /// RepositoryMappingValue for the main repository reports them
+    /// (skyframe/RepositoryMappingFunction.java:147-159; an absent MODULE.bazel
+    /// is the empty root module, RepositoryMappingValue.java:57-58).
+    pub(crate) fn identity(&self) -> Result<(String, String), String> {
+        match &self.module {
+            RootModulePresence::Present(module) => match &module.module {
+                Some(info) => Ok((
+                    info.name.clone(),
+                    normalize_declared_version(&info.version)?,
+                )),
+                None => Ok((String::new(), String::new())),
+            },
+            RootModulePresence::Missing(_) => Ok((String::new(), String::new())),
+        }
+    }
+}
+
 #[derive(Debug)]
 enum RootModulePresence {
     Present(Box<ModuleFile>),

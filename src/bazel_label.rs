@@ -181,6 +181,19 @@ fn perhaps_you_meant(pkg: &str, target: &str) -> String {
     }
 }
 
+/// `LabelParser.validateAndProcessTargetName` without triple dots
+/// (cmdline/LabelParser.java:215-232), as used by `Label.create`
+/// (cmdline/Label.java:303-311) for rule names.
+pub(crate) fn validate_and_process_target_name(pkg: &str, target: &str) -> Result<(), String> {
+    match validate_target_name(target) {
+        Some(error) => Err(sanitize(format!(
+            "invalid target name '{target}': {error}{}",
+            perhaps_you_meant(pkg, target)
+        ))),
+        None => Ok(()),
+    }
+}
+
 fn strip_trailing_triple_dots(pkg: &str) -> &str {
     if let Some(stripped) = pkg.strip_suffix("/...") {
         stripped

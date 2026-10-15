@@ -170,6 +170,12 @@ impl Engine {
                         rule.srcs
                             .iter()
                             .any(|src| self.resolve_rule_src(rule, src).as_ref() == Ok(label))
+                            // Labels in any other native attribute or select()
+                            // are assumed input files too (Package.java:897-920).
+                            || rule
+                                .native
+                                .as_ref()
+                                .is_some_and(|native| native.input_labels.contains(label))
                     }));
         if !declared_source {
             return Err(format!(
@@ -213,8 +219,10 @@ impl Engine {
     }
 
     fn resolve_rule_src(&self, rule: &Rule, text: &str) -> Result<Label, String> {
-        if matches!(rule.kind, RuleKind::Custom) {
-            // Custom attributes were canonicalized during package evaluation.
+        if matches!(rule.kind, RuleKind::Custom)
+            || (rule.native.is_some() && (text.starts_with("//") || text.starts_with("@@")))
+        {
+            // Custom and native attributes were canonicalized during package evaluation.
             // In particular, //p:t here denotes main, even in an external rule.
             Label::parse_canonical(text)
         } else {
@@ -224,10 +232,31 @@ impl Engine {
     }
 
     /// Only literal labels, :all, //... and //package/...; not the query language.
+    /// `query` keeps every rule (FilteringPolicies.NO_FILTER).
     pub fn select(
         &mut self,
         patterns: &[String],
         current_package: &str,
+    ) -> Result<Vec<Label>, String> {
+        self.select_filtered(patterns, current_package, false)
+    }
+
+    /// Build target patterns: wildcards skip rules tagged `manual`
+    /// (FilteringPolicies.FILTER_MANUAL, pkgcache/FilteringPolicies.java:60-65;
+    /// skyframe/TargetPatternPhaseFunction.java:293-296); literal labels stay.
+    pub fn select_for_build(
+        &mut self,
+        patterns: &[String],
+        current_package: &str,
+    ) -> Result<Vec<Label>, String> {
+        self.select_filtered(patterns, current_package, true)
+    }
+
+    fn select_filtered(
+        &mut self,
+        patterns: &[String],
+        current_package: &str,
+        filter_manual: bool,
     ) -> Result<Vec<Label>, String> {
         let mut selected = BTreeSet::new();
         for pattern in patterns {
@@ -244,6 +273,9 @@ impl Engine {
                     "",
                     current_package,
                 )?;
+                // REPO.bazel is evaluated first: non-empty ignore_directories()
+                // fails explicitly instead of discovering ignored packages.
+                package::repo_args(&self.repositories, &context.repository)?;
                 let root = self.repositories.root(&context.repository)?;
                 for package in workspace::discover_packages(root, &context.package)? {
                     let id = PackageId {
@@ -255,6 +287,7 @@ impl Engine {
                         self.packages[&id]
                             .values()
                             .filter(|rule| !matches!(rule.kind, RuleKind::PackageGroup(_)))
+                            .filter(|rule| !(filter_manual && rule.is_manual()))
                             .map(|rule| rule.label.clone()),
                     );
                 }
@@ -271,6 +304,7 @@ impl Engine {
                     self.packages[&id]
                         .values()
                         .filter(|rule| !matches!(rule.kind, RuleKind::PackageGroup(_)))
+                        .filter(|rule| !(filter_manual && rule.is_manual()))
                         .map(|rule| rule.label.clone()),
                 );
             } else {
@@ -403,6 +437,7 @@ impl Engine {
         if matches!(rule.kind, RuleKind::PackageGroup(_)) {
             self.resolve_group(&rule.label, &mut Vec::new())?;
         }
+        native_analysis_gate(&rule)?;
         if done.contains(&rule.label) {
             return Ok(());
         }
@@ -694,9 +729,25 @@ impl Engine {
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             if matches!(rule.kind, RuleKind::Genrule) {
+                if outputs.is_empty() {
+                    // GenRuleBase.create (rules/genrule/GenRuleBase.java:75-77) with
+                    // RuleContext.attributeError's prefix.
+                    return Err(format!(
+                        "in outs attribute of genrule rule {}: Genrules without outputs don't make sense",
+                        crate::rule_declarations::canonical_form(&rule.label)
+                    ));
+                }
                 add_output_locations(rule, &outputs, &mut locations)?;
                 let command = expand_command_in(
-                    rule.cmd.as_deref().ok_or("genrule has no command")?,
+                    // GenRuleBase.determineCommandTypeAndAttribute
+                    // (rules/genrule/GenRuleBase.java:262-284); cmd_bash makes
+                    // the rule unanalyzed earlier, cmd_bat/cmd_ps are Windows-only.
+                    rule.cmd.as_deref().ok_or_else(|| {
+                        format!(
+                            "in cmd attribute of genrule rule {}: missing value for `cmd` attribute, you can also set `cmd_ps` or `cmd_bat` on Windows and `cmd_bash` on other platforms.",
+                            crate::rule_declarations::canonical_form(&rule.label)
+                        )
+                    })?,
                     &inputs.iter().map(|a| a.exec.clone()).collect::<Vec<_>>(),
                     &outputs,
                     &locations,
@@ -872,6 +923,33 @@ fn plan_action(mut action: Action, inputs: Vec<Artifact>) -> Result<PlannedActio
     })
 }
 
+/// Native rules that loading accepts but analysis does not model fail
+/// explicitly; nothing is silently analyzed (docs/NATIVE_BUILD_RULES.md).
+fn native_analysis_gate(rule: &Rule) -> Result<(), String> {
+    if let Some(error) = rule
+        .native
+        .as_ref()
+        .and_then(|native| crate::native_rules::analysis_error(&rule.label, native))
+    {
+        return Err(error);
+    }
+    if let RuleKind::Native(kind) = rule.kind {
+        return Err(format!(
+            "{}: native rule {kind} analysis not implemented in the native profile",
+            rule.label
+        ));
+    }
+    if !rule.unanalyzed.is_empty() {
+        return Err(format!(
+            "{}: {} accepted at load time but not analyzed by the native profile: {}",
+            rule.label,
+            rule.kind.class_name(),
+            rule.unanalyzed.join("; ")
+        ));
+    }
+    Ok(())
+}
+
 fn add_output_locations(
     rule: &Rule,
     outputs: &[PathBuf],
@@ -1031,6 +1109,8 @@ mod tests {
                 definition_package: test_label(definition).package_id(),
                 name: name.into(),
             }),
+            native: None,
+            unanalyzed: Vec::new(),
         }
     }
 
@@ -1892,6 +1972,8 @@ m = macro(implementation=emit)
             visibility: Default::default(),
             custom: None,
             macro_owner: None,
+            native: None,
+            unanalyzed: Vec::new(),
         };
         assert_eq!(
             engine.resolve_rule_src(&rule, "//p:in").unwrap().repository,

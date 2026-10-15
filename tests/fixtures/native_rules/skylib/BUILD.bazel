@@ -1,0 +1,32 @@
+load("//lib:selects.bzl", "config_setting_group")
+
+config_setting(
+    name = "linux",
+    constraint_values = ["@platforms//os:linux"],
+)
+
+config_setting(
+    name = "macos",
+    constraint_values = ["@platforms//os:osx"],
+)
+
+config_setting(
+    name = "windows",
+    constraint_values = ["@platforms//os:windows"],
+)
+
+config_setting_group(
+    name = "unix",
+    match_any = [":linux", ":macos"],
+    visibility = ["//visibility:public"],
+)
+
+config_setting_group(
+    name = "any_os",
+    match_any = [":linux", ":macos", ":windows"],
+)
+
+config_setting_group(
+    name = "only_linux",
+    match_any = [":linux"],
+)

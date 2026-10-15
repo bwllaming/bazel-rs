@@ -26,8 +26,10 @@ Code comments cite file:line.
 | `OutputGroupInfo` | `OutputGroupInfo.java`, `BuiltinProvider.java:94` | Type `Provider`, repr `<function OutputGroupInfo>`, usable in `providers=`/`provides=` (identity `builtin:OutputGroupInfo`). Calling it fails explicitly (analysis-time output groups are not implemented). |
 
 `select` was not available in native BUILD files before; it is now a BUILD
-global too. Custom rules type-check and keep `select()` values; native
-`filegroup`/`genrule` reject them explicitly.
+global too. Custom rules type-check and keep `select()` values. Native rule
+classes (including `filegroup`/`genrule`) accept them on configurable
+attributes and fail analysis explicitly when a select would need resolution
+(docs/NATIVE_BUILD_RULES.md).
 
 ## `rule()` parameters
 
@@ -168,8 +170,9 @@ explicit attribute error), `doc`, `extendable`, `for_dependency_resolution`,
   extension tags fail explicitly when their values are materialized.
 * Built-in attributes (`tags`, `testonly`, `size`, ...) are still not accepted
   by custom rule instantiation (existing boundary).
-* The BUILD error footer still says that select is unsupported; validation
-  scripts depend on its exact text.
+* The BUILD error footer was updated by the native-rule-class increment
+  (docs/NATIVE_BUILD_RULES.md, "Error footer"); validators accept the current
+  and the legacy literal.
 
 ## Integration with language modules
 

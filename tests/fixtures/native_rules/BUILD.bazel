@@ -1,0 +1,5 @@
+# Root module identity through the shared BUILD/native helpers.
+toolchain_type(
+    name = "module_" + module_name(),
+    no_match_error = "module %s@%s in repo '%s' (%s)" % (module_name(), module_version(), repo_name(), repository_name()),
+)

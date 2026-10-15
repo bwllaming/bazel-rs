@@ -64,7 +64,14 @@ Implemented:
   pattern and the final result must match unless explicitly overridden.
 - `filegroup(name, srcs)` and `genrule(name, srcs, outs, cmd)`; public/private,
   `__pkg__` and `__subpackages__` visibility, enforced across dependencies.
-- `package(default_visibility=...)`, including late defaults, and `exports_files`.
+- Bazel 9.3 native rule classes at loading (`alias`, `config_setting`,
+  `toolchain`, `toolchain_type`, `constraint_setting`/`constraint_value`,
+  `platform`, `label_flag`/`label_setting`, `genquery`,
+  `starlark_doc_extract`, `test_suite`, ...) with exact schemas, Bazel errors and
+  `select()` on configurable attributes; query lists them, analysis fails
+  explicitly (docs/NATIVE_BUILD_RULES.md).
+- `package(...)` and `REPO.bazel` `repo(...)` arguments, including late
+  default visibility, `licenses()`, and `exports_files`.
   Exports default to public regardless of package defaults. Implicit files inherit
   package defaults, matching Bazel 9.3's default flag setting.
 - Native custom `rule` definitions with typed string/list/int/bool/label/output

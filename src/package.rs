@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, bail};
 use starlark::any::ProvidesStaticType;
+use starlark::collections::SmallMap;
 use starlark::environment::{Globals, GlobalsBuilder, LibraryExtension, Module};
 use starlark::eval::{Arguments, Evaluator, ReturnFileLoader};
 use starlark::starlark_module;
@@ -17,10 +18,12 @@ use starlark::values::list::ListRef;
 use starlark::values::none::NoneType;
 use starlark::values::structs::AllocStruct;
 use starlark::values::tuple::TupleRef;
+use starlark::values::tuple::UnpackTuple;
 
 use crate::build_settings::BuildSetting;
 use crate::custom_rule::{AttrSpec, AttrValue, CustomInvocation, InvocationDeclaration};
 use crate::label::{Label, PackageId};
+use crate::native_rules::NativeTarget;
 use crate::package_specification::{self, GroupDefinition};
 use crate::repository::RepositorySet;
 use crate::repository_budget::HostBudget;
@@ -33,6 +36,22 @@ pub enum RuleKind {
     Custom,
     #[allow(private_interfaces)]
     PackageGroup(Arc<GroupDefinition>),
+    /// Another registered Bazel 9.3 native rule class (crate::native_rules);
+    /// loaded and queryable, never analyzed.
+    Native(&'static str),
+}
+
+impl RuleKind {
+    /// Bazel's rule class name (`query --output=label_kind` spelling).
+    pub fn class_name(&self) -> &str {
+        match self {
+            Self::Filegroup => "filegroup",
+            Self::Genrule => "genrule",
+            Self::Custom => "custom",
+            Self::PackageGroup(_) => "package_group",
+            Self::Native(name) => name,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -51,6 +70,75 @@ pub struct Rule {
     pub visibility: Visibility,
     pub custom: Option<CustomInvocation>,
     pub macro_owner: Option<MacroOwner>,
+    /// Retained native attribute values (filegroup, genrule and the other
+    /// registered native classes; docs/NATIVE_BUILD_RULES.md).
+    pub native: Option<Arc<NativeTarget>>,
+    /// Load-time facts native analysis does not model; analysis of this rule
+    /// fails explicitly when nonempty.
+    pub unanalyzed: Vec<String>,
+}
+
+impl Rule {
+    /// TargetUtils.hasManualTag (packages/TargetUtils.java:105-107).
+    pub fn is_manual(&self) -> bool {
+        self.native
+            .as_ref()
+            .is_some_and(|native| native.is_manual())
+    }
+}
+
+/// Package defaults from REPO.bazel `repo()` merged with `package()`
+/// (packages/PackageArgs.java:164-204, mergeWith :210-243).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PackageArgs {
+    pub default_visibility: Option<Visibility>,
+    pub default_testonly: Option<bool>,
+    pub default_deprecation: Option<String>,
+    pub features: Vec<String>,
+    pub license: Option<Vec<String>>,
+    pub default_compatible_with: Option<Vec<Label>>,
+    pub default_restricted_to: Option<Vec<Label>>,
+    pub default_package_metadata: Option<Vec<Label>>,
+    pub default_hdrs_check: Option<String>,
+    pub transitive_visibility: Option<Label>,
+}
+
+impl PackageArgs {
+    fn merge(&mut self, other: PackageArgs) {
+        if other.default_visibility.is_some() {
+            self.default_visibility = other.default_visibility;
+        }
+        if other.default_testonly.is_some() {
+            self.default_testonly = other.default_testonly;
+        }
+        if other.default_deprecation.is_some() {
+            self.default_deprecation = other.default_deprecation;
+        }
+        // FeatureSet.merge keeps both sets (PackageArgs.java:220-222).
+        for feature in other.features {
+            if !self.features.contains(&feature) {
+                self.features.push(feature);
+            }
+        }
+        if other.license.is_some() {
+            self.license = other.license;
+        }
+        if other.default_compatible_with.is_some() {
+            self.default_compatible_with = other.default_compatible_with;
+        }
+        if other.default_restricted_to.is_some() {
+            self.default_restricted_to = other.default_restricted_to;
+        }
+        if other.default_package_metadata.is_some() {
+            self.default_package_metadata = other.default_package_metadata;
+        }
+        if other.default_hdrs_check.is_some() {
+            self.default_hdrs_check = other.default_hdrs_check;
+        }
+        if other.transitive_visibility.is_some() {
+            self.transitive_visibility = other.transitive_visibility;
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -59,6 +147,8 @@ pub struct Package {
     pub exports: BTreeMap<Label, Visibility>,
     pub default_visibility: Visibility,
     pub macro_names: BTreeSet<String>,
+    /// Effective REPO.bazel/package() arguments.
+    pub args: PackageArgs,
 }
 
 impl std::ops::Deref for Package {
@@ -84,6 +174,7 @@ mod collector {
         pub default_visibility: RefCell<Visibility>,
         pub defaulted_rules: RefCell<BTreeSet<Label>>,
         pub package_called: Cell<bool>,
+        pub package_args: RefCell<PackageArgs>,
         pub custom: RefCell<Vec<PendingCustom>>,
         pub active_macro: RefCell<Option<MacroOwner>>,
         pub macro_names: RefCell<BTreeSet<String>>,
@@ -91,8 +182,18 @@ mod collector {
         pub declared_names: RefCell<BTreeSet<String>>,
         pub group_budget: RefCell<HostBudget>,
     }
+
+    /// REPO.bazel evaluation state (packages/RepoThreadContext.java).
+    #[derive(ProvidesStaticType)]
+    pub(super) struct RepoFile {
+        pub repositories: Arc<RepositorySet>,
+        pub repository: String,
+        pub called: Cell<bool>,
+        pub ignored_directories: RefCell<Option<Vec<String>>>,
+        pub args: RefCell<PackageArgs>,
+    }
 }
-use collector::Declarations;
+use collector::{Declarations, RepoFile};
 
 #[derive(Debug)]
 struct PendingCustom {
@@ -224,16 +325,16 @@ impl Declarations {
     ) -> anyhow::Result<NoneType> {
         let label = local_label(name, &self.package_id(), "rule name")?;
         self.check_macro_collision(name)?;
+        // Custom and native attribute labels are canonicalized at loading,
+        // except native labels of not-visible apparent repositories, whose
+        // resolution error is deferred to analysis (native_rules::deferred).
         for src in &srcs {
-            (if matches!(kind, RuleKind::Custom) {
-                Label::parse_canonical(src).map(|_| ())
-            } else {
+            (if src.starts_with('@') && !src.starts_with("@@") {
                 Label::validate_syntax(src, &self.package)
+            } else {
+                Label::parse_canonical(src).map(|_| ())
             })
             .map_err(|e| anyhow!("invalid srcs entry {src:?} in {label}: {e}"))?;
-        }
-        if matches!(kind, RuleKind::Genrule) && outs.is_empty() {
-            bail!("genrule {label}: outs must not be empty");
         }
         for out in &outs {
             self.check_macro_collision(out)?;
@@ -266,6 +367,8 @@ impl Declarations {
             visibility,
             custom: None,
             macro_owner,
+            native: None,
+            unanalyzed: Vec::new(),
         });
         Ok(NoneType)
     }
@@ -284,7 +387,9 @@ fn local_label(name: &str, package: &PackageId, what: &str) -> anyhow::Result<La
 
 fn strings(value: Value<'_>, attribute: &str) -> anyhow::Result<Vec<String>> {
     if crate::rule_declarations::select_pieces(value).is_some() {
-        bail!("select() in native rule attribute {attribute} is unsupported by the native profile");
+        bail!(
+            "{attribute}: got value of type 'select', want 'sequence' (select() is not accepted here)"
+        );
     }
     let list = ListRef::from_value(value)
         .ok_or_else(|| anyhow!("{attribute} must be a list of strings"))?;
@@ -464,8 +569,196 @@ fn declarations<'a>(eval: &'a Evaluator<'_, '_, '_>) -> anyhow::Result<&'a Decla
         .ok_or_else(|| anyhow!("rule declaration outside package evaluation"))
 }
 
+// The upstream derives generate unsafe marker-trait implementations for these
+// owned, heap-free callables; there is no handwritten unsafe code.
+#[allow(unsafe_code)]
+mod native_functions {
+    use allocative::Allocative;
+    use starlark::eval::{Arguments, Evaluator};
+    use starlark::starlark_simple_value;
+    use starlark::values::{
+        NoSerialize, ProvidesStaticType, StarlarkPagablePanic, StarlarkValue, Value, starlark_value,
+    };
+    use std::fmt;
+
+    /// A registered native rule class (RuleFactory.BuiltinRuleFunction,
+    /// packages/RuleFactory.java:293-355).
+    #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
+    pub(super) struct NativeRuleFunction(pub String);
+    impl fmt::Display for NativeRuleFunction {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "<built-in rule {}>", self.0)
+        }
+    }
+    starlark_simple_value!(NativeRuleFunction);
+    // RuleFunction is @StarlarkBuiltin(name = "rule") (starlarkbuildapi/RuleFunctionApi);
+    // genuine `type(genrule)` is "rule".
+    #[starlark_value(type = "rule")]
+    impl<'v> StarlarkValue<'v> for NativeRuleFunction {
+        fn invoke(
+            &self,
+            _me: Value<'v>,
+            args: &Arguments<'v, '_>,
+            eval: &mut Evaluator<'v, '_, '_>,
+        ) -> starlark::Result<Value<'v>> {
+            // BuiltinRuleFunction.call (RuleFactory.java:304-308).
+            if args.positions(eval.heap())?.next().is_some() {
+                return Err(starlark::Error::new_other(anyhow::anyhow!(
+                    "unexpected positional arguments"
+                )));
+            }
+            let named = args
+                .names_map()?
+                .iter()
+                .map(|(key, value)| (key.as_str().to_owned(), *value))
+                .collect::<Vec<_>>();
+            super::declare_native(eval, &self.0, &named).map_err(starlark::Error::new_other)?;
+            Ok(Value::new_none())
+        }
+    }
+
+    /// `_removed_rule_failure(**_kwargs)` injected by builtins
+    /// (src/main/starlark/builtins_bzl/bazel/exports.bzl:39-58).
+    #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
+    pub(super) struct RemovedRule;
+    impl fmt::Display for RemovedRule {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            // StarlarkFunction.repr with the module's BazelModuleContext label
+            // (net/starlark/java/eval/StarlarkFunction.java:222-231).
+            f.write_str("<function _removed_rule_failure from @@_builtins//:bazel/exports.bzl>")
+        }
+    }
+    starlark_simple_value!(RemovedRule);
+    #[starlark_value(type = "function")]
+    impl<'v> StarlarkValue<'v> for RemovedRule {
+        fn invoke(
+            &self,
+            _me: Value<'v>,
+            args: &Arguments<'v, '_>,
+            eval: &mut Evaluator<'v, '_, '_>,
+        ) -> starlark::Result<Value<'v>> {
+            let positional = args.positions(eval.heap())?.count();
+            if positional > 0 {
+                return Err(starlark::Error::new_other(anyhow::anyhow!(
+                    "_removed_rule_failure() accepts no more than 0 positional arguments but got {positional}"
+                )));
+            }
+            Err(starlark::Error::new_other(anyhow::anyhow!(
+                "{}",
+                crate::native_rules::REMOVED_RULE_MESSAGE
+            )))
+        }
+    }
+}
+
+/// Register every native rule class (BUILD globals and `native`).
+fn native_rule_globals(builder: &mut GlobalsBuilder) {
+    for name in crate::native_rules::RULE_CLASSES {
+        builder.set(
+            name,
+            native_functions::NativeRuleFunction((*name).to_owned()),
+        );
+    }
+    for name in crate::native_rules::REMOVED_RULES {
+        builder.set(name, native_functions::RemovedRule);
+    }
+}
+
+/// Instantiate a native rule class at loading.
+fn declare_native<'v>(
+    eval: &mut Evaluator<'v, '_, '_>,
+    class: &str,
+    arguments: &[(String, Value<'v>)],
+) -> anyhow::Result<()> {
+    let context = declarations(eval)?;
+    let class = crate::native_rules::rule_class(class)
+        .ok_or_else(|| anyhow!("unregistered native rule class {class}"))?;
+    let instance = crate::native_rules::instantiate(
+        &class,
+        arguments,
+        &context.repositories,
+        &context.package_id(),
+    )?;
+    // A misspelled //visibility label is reported as `LABEL MESSAGE`
+    // (AttributeProvider.java:277-286).
+    let visibility = parse_visibility(instance.visibility, context).map_err(|error| {
+        let text = error.to_string();
+        if text.starts_with("Invalid visibility label") {
+            anyhow!(
+                "{} {text}",
+                crate::rule_declarations::canonical_form(&Label {
+                    repository: context.repository.clone(),
+                    package: context.package.clone(),
+                    name: instance.name.clone(),
+                })
+            )
+        } else {
+            error
+        }
+    })?;
+    let target = instance.target;
+    let (kind, srcs, outs, cmd, unanalyzed) = match class.name {
+        "filegroup" => (
+            RuleKind::Filegroup,
+            target.labels("srcs"),
+            Vec::new(),
+            None,
+            crate::native_rules::analysis_gaps(&target),
+        ),
+        "genrule" => (
+            RuleKind::Genrule,
+            target.labels("srcs"),
+            target.strings("outs"),
+            target.string("cmd").map(str::to_owned),
+            crate::native_rules::analysis_gaps(&target),
+        ),
+        name => (
+            RuleKind::Native(name),
+            Vec::new(),
+            class
+                .implicit_outputs
+                .iter()
+                .map(|template| template.replace("%{name}", &instance.name))
+                .collect(),
+            None,
+            Vec::new(),
+        ),
+    };
+    context.declare(&instance.name, kind, srcs, outs, cmd, visibility)?;
+    let mut rules = context.rules.borrow_mut();
+    let rule = rules.last_mut().expect("declared rule");
+    rule.native = Some(Arc::new(target));
+    rule.unanalyzed = unanalyzed;
+    Ok(())
+}
+
 #[starlark_module]
 fn rule_globals(builder: &mut GlobalsBuilder) {
+    /// `cc_toolchain_suite` is the builtins lambda
+    /// `lambda name, **kwargs: native.filegroup(name = name)`
+    /// (src/main/starlark/builtins_bzl/bazel/exports.bzl:53-54).
+    /// Starlark lambda binding errors follow StarlarkFunction argument
+    /// processing (`lambda() missing 1 required positional argument: name`).
+    fn cc_toolchain_suite<'v>(
+        #[starlark(args)] args: UnpackTuple<Value<'v>>,
+        #[starlark(kwargs)] kwargs: SmallMap<String, Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        if args.items.len() > 1 {
+            bail!(
+                "lambda() accepts no more than 1 positional argument but got {}",
+                args.items.len()
+            );
+        }
+        let name = match (args.items.first(), kwargs.get("name")) {
+            (Some(_), Some(_)) => bail!("lambda() got multiple values for parameter 'name'"),
+            (Some(name), None) | (None, Some(name)) => *name,
+            (None, None) => bail!("lambda() missing 1 required positional argument: name"),
+        };
+        declare_native(eval, "filegroup", &[("name".to_owned(), name)])?;
+        Ok(NoneType)
+    }
+
     fn package_group<'v>(
         #[starlark(require = named)] name: &str,
         #[starlark(require = named)] packages: Option<Value<'v>>,
@@ -579,68 +872,109 @@ fn rule_globals(builder: &mut GlobalsBuilder) {
             Some(Visibility::Public),
         )
     }
-
-    fn filegroup<'v>(
-        #[starlark(require = named)] name: &str,
-        #[starlark(require = named)] srcs: Option<Value<'v>>,
-        #[starlark(require = named)] visibility: Option<Value<'v>>,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<NoneType> {
-        let context = declarations(eval)?;
-        context.declare(
-            name,
-            RuleKind::Filegroup,
-            srcs.map(|v| strings(v, "srcs"))
-                .transpose()?
-                .unwrap_or_default(),
-            Vec::new(),
-            None,
-            parse_visibility(visibility, context)?,
-        )
-    }
-
-    fn genrule<'v>(
-        #[starlark(require = named)] name: &str,
-        #[starlark(require = named)] srcs: Option<Value<'v>>,
-        #[starlark(require = named)] outs: Value<'v>,
-        #[starlark(require = named)] cmd: &str,
-        #[starlark(require = named)] visibility: Option<Value<'v>>,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<NoneType> {
-        let context = declarations(eval)?;
-        context.declare(
-            name,
-            RuleKind::Genrule,
-            srcs.map(|v| strings(v, "srcs"))
-                .transpose()?
-                .unwrap_or_default(),
-            strings(outs, "outs")?,
-            Some(cmd.to_owned()),
-            parse_visibility(visibility, context)?,
-        )
-    }
 }
 
 #[starlark_module]
 fn package_globals(builder: &mut GlobalsBuilder) {
+    /// PackageCallable.packageCallable (packages/PackageCallable.java:50-77).
     fn package<'v>(
-        #[starlark(require = named)] default_visibility: Option<Value<'v>>,
+        #[starlark(kwargs)] kwargs: SmallMap<String, Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let context = declarations(eval)?;
         context.forbid_in_macro("package")?;
         if context.package_called.replace(true) {
-            bail!("package() may only be called once");
+            bail!("'package' can only be used once per BUILD file");
         }
-        if default_visibility.is_none() {
-            bail!("package() requires at least one argument");
+        if kwargs.is_empty() {
+            bail!("at least one argument must be given to the 'package' function");
         }
-        if default_visibility.is_some_and(|v| v.is_none()) {
-            bail!("package default_visibility must be a list");
+        let mut args = PackageArgs::default();
+        for (name, value) in kwargs.iter() {
+            process_package_arg(
+                name,
+                *value,
+                &format!("package() argument '{name}'"),
+                &context.repositories,
+                &context.package_id(),
+                &mut args,
+            )?;
         }
-        *context.default_visibility.borrow_mut() =
-            parse_visibility(default_visibility, context)?.unwrap_or_default();
+        if let Some(visibility) = args.default_visibility.clone() {
+            *context.default_visibility.borrow_mut() = visibility;
+        }
+        context.package_args.borrow_mut().merge(args);
         Ok(NoneType)
+    }
+
+    /// StarlarkNativeModule.packageDefaultVisibility (StarlarkNativeModule.java:623-634).
+    fn package_default_visibility<'v>(
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Vec<Value<'v>>> {
+        let context = declarations(eval)?;
+        let labels = context
+            .default_visibility
+            .borrow()
+            .with_package(&context.package_id())
+            .declared_labels();
+        labels
+            .iter()
+            .map(|label| crate::starlark_types::alloc_label(eval.heap(), &label.to_string()))
+            .collect()
+    }
+
+    /// StarlarkNativeModule.repoName (StarlarkNativeModule.java:643-648).
+    fn repo_name(eval: &mut Evaluator<'_, '_, '_>) -> anyhow::Result<String> {
+        Ok(declarations(eval)?.repository.clone())
+    }
+
+    /// StarlarkNativeModule.repositoryName (StarlarkNativeModule.java:636-641).
+    fn repository_name(eval: &mut Evaluator<'_, '_, '_>) -> anyhow::Result<String> {
+        Ok(format!("@{}", declarations(eval)?.repository))
+    }
+
+    /// StarlarkNativeModule.packageRelativeLabel (StarlarkNativeModule.java:650-667).
+    fn package_relative_label<'v>(
+        input: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let context = declarations(eval)?;
+        if crate::starlark_types::label_parts(input).is_some() {
+            return Ok(input);
+        }
+        let Some(text) = input.unpack_str() else {
+            bail!(
+                "in call to package_relative_label(), parameter 'input' got value of type '{}', want 'string or Label'",
+                input.get_type()
+            );
+        };
+        crate::bazel_label::Parts::parse(text)
+            .map_err(|error| anyhow!("invalid label in native.package_relative_label: {error}"))?;
+        let label = context
+            .repositories
+            .parse(text, &context.repository, &context.package)
+            .map_err(|error| anyhow!("invalid label in native.package_relative_label: {error}"))?;
+        crate::starlark_types::alloc_label(eval.heap(), &label.to_string())
+    }
+
+    /// StarlarkNativeModule.moduleName (StarlarkNativeModule.java:669-675).
+    fn module_name(eval: &mut Evaluator<'_, '_, '_>) -> anyhow::Result<String> {
+        let context = declarations(eval)?;
+        Ok(context
+            .repositories
+            .associated_module(&context.repository)
+            .map_err(anyhow::Error::msg)?
+            .0)
+    }
+
+    /// StarlarkNativeModule.moduleVersion (StarlarkNativeModule.java:677-683).
+    fn module_version(eval: &mut Evaluator<'_, '_, '_>) -> anyhow::Result<String> {
+        let context = declarations(eval)?;
+        Ok(context
+            .repositories
+            .associated_module(&context.repository)
+            .map_err(anyhow::Error::msg)?
+            .1)
     }
 
     fn exports_files<'v>(
@@ -707,6 +1041,247 @@ fn package_globals(builder: &mut GlobalsBuilder) {
     }
 }
 
+/// BUILD-file-only globals (BuildGlobals, not shared with `native`).
+#[starlark_module]
+fn build_only_globals(builder: &mut GlobalsBuilder) {
+    /// BuildGlobals.licenses (packages/BuildGlobals.java:100-132).
+    fn licenses<'v>(
+        #[starlark(require = pos)] license_strings: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let context = declarations(eval)?;
+        if crate::custom_rule::sequence_ref(license_strings).is_none()
+            || crate::custom_rule::sequence_ref(license_strings)
+                .unwrap()
+                .iter()
+                .any(|value| value.unpack_str().is_none())
+        {
+            bail!(
+                "in call to licenses(), parameter 'license_strings' got value of type '{}', want 'sequence of strings'",
+                license_strings.get_type()
+            );
+        }
+        let license = crate::native_rules::convert_license(license_strings, "'licenses' operand")?;
+        context.package_args.borrow_mut().license = Some(license);
+        Ok(NoneType)
+    }
+}
+
+/// PackageArgs.processParam (packages/PackageArgs.java:160-204).
+fn process_package_arg(
+    name: &str,
+    value: Value<'_>,
+    what: &str,
+    repositories: &RepositorySet,
+    package: &PackageId,
+    args: &mut PackageArgs,
+) -> anyhow::Result<()> {
+    use crate::custom_rule::AttrValue;
+    use crate::native_rules::{NativeType, convert_value};
+    let convert = |ty| convert_value(repositories, package, ty, value, what);
+    let labels = |ty| -> anyhow::Result<Vec<Label>> {
+        match convert(ty)? {
+            AttrValue::Labels(values) => values
+                .iter()
+                .map(|text| Label::parse_canonical(text).map_err(anyhow::Error::msg))
+                .collect(),
+            _ => unreachable!("label list conversion"),
+        }
+    };
+    // PackageArgs.throwIfHasDupes (PackageArgs.java:152-158).
+    let no_dupes = |labels: Vec<Label>| -> anyhow::Result<Vec<Label>> {
+        let mut seen = BTreeSet::new();
+        let mut dupes = BTreeSet::new();
+        for label in &labels {
+            if !seen.insert(label.clone()) {
+                dupes.insert(crate::rule_declarations::canonical_form(label));
+            }
+        }
+        if !dupes.is_empty() {
+            bail!(
+                "duplicate label(s) in {name}: {}",
+                dupes.into_iter().collect::<Vec<_>>().join(", ")
+            );
+        }
+        Ok(labels)
+    };
+    let string = || -> anyhow::Result<String> {
+        match convert(NativeType::String)? {
+            AttrValue::String(text) => Ok(text),
+            _ => unreachable!("string conversion"),
+        }
+    };
+    match name {
+        "default_visibility" => {
+            args.default_visibility = Some(
+                Visibility::from_labels(labels(NativeType::LabelList)?)
+                    .map_err(anyhow::Error::msg)?,
+            )
+        }
+        "default_testonly" => {
+            let AttrValue::Bool(value) = convert(NativeType::Bool)? else {
+                unreachable!("bool conversion")
+            };
+            args.default_testonly = Some(value);
+        }
+        "default_deprecation" => args.default_deprecation = Some(string()?),
+        "features" => {
+            let AttrValue::Strings(features) = convert(NativeType::StringList)? else {
+                unreachable!("string list conversion")
+            };
+            for feature in features {
+                if !args.features.contains(&feature) {
+                    args.features.push(feature);
+                }
+            }
+        }
+        "licenses" => {
+            args.license = Some(crate::native_rules::convert_license(value, what)?);
+        }
+        "default_compatible_with" => {
+            args.default_compatible_with = Some(no_dupes(labels(NativeType::LabelList)?)?)
+        }
+        "default_restricted_to" => {
+            args.default_restricted_to = Some(no_dupes(labels(NativeType::LabelList)?)?)
+        }
+        "default_applicable_licenses" | "default_package_metadata" => {
+            if args.default_package_metadata.is_some() {
+                bail!(
+                    "Can not set both default_package_metadata and default_applicable_licenses. Move all declarations to default_package_metadata."
+                );
+            }
+            args.default_package_metadata = Some(no_dupes(labels(NativeType::LabelList)?)?);
+        }
+        "default_hdrs_check" => args.default_hdrs_check = Some(string()?),
+        "transitive_visibility" => {
+            let AttrValue::Label(Some(label)) = convert(NativeType::Label)? else {
+                unreachable!("label conversion")
+            };
+            args.transitive_visibility =
+                Some(Label::parse_canonical(&label).map_err(anyhow::Error::msg)?);
+        }
+        _ => bail!("unexpected keyword argument: {name}"),
+    }
+    Ok(())
+}
+
+#[starlark_module]
+fn repo_file_globals(builder: &mut GlobalsBuilder) {
+    /// RepoFileGlobals.repoCallable (packages/RepoFileGlobals.java), with the
+    /// arguments processed like RepoPackageArgsFunction (:117-130).
+    fn repo<'v>(
+        #[starlark(kwargs)] kwargs: SmallMap<String, Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let context = repo_file(eval)?;
+        if context.called.replace(true) {
+            bail!("'repo' can only be called once in the REPO.bazel file");
+        }
+        if context.ignored_directories.borrow().is_some() {
+            bail!("if repo() is called, it must be called before any other functions");
+        }
+        if kwargs.is_empty() {
+            bail!("at least one argument must be given to the 'repo' function");
+        }
+        let package = PackageId {
+            repository: context.repository.clone(),
+            package: String::new(),
+        };
+        let mut args = PackageArgs::default();
+        for (name, value) in kwargs.iter() {
+            process_package_arg(
+                name,
+                *value,
+                &format!("repo() argument '{name}'"),
+                &context.repositories,
+                &package,
+                &mut args,
+            )?;
+        }
+        *context.args.borrow_mut() = args;
+        Ok(NoneType)
+    }
+
+    /// RepoFileGlobals.ignoreDirectories (packages/RepoFileGlobals.java).
+    fn ignore_directories<'v>(
+        dirs: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let context = repo_file(eval)?;
+        if context.ignored_directories.borrow().is_some() {
+            bail!("'ignored_directories()' can only be called once");
+        }
+        let dirs = crate::rule_declarations::cast_strings(dirs, "dirs")?;
+        *context.ignored_directories.borrow_mut() = Some(dirs);
+        Ok(NoneType)
+    }
+}
+
+/// Evaluate a repository's REPO.bazel into package defaults
+/// (skyframe/RepoFileFunction.java:148-181). Nonempty `ignore_directories()`
+/// fails explicitly: directory exclusion is not modeled by package loading.
+pub(crate) fn repo_args(
+    repositories: &Arc<RepositorySet>,
+    repository: &str,
+) -> Result<PackageArgs, String> {
+    let display = if repository.is_empty() {
+        "the main repo".to_owned()
+    } else {
+        format!("@@{repository}")
+    };
+    let Some(path) = crate::workspace::repo_file(repositories.root(repository)?)? else {
+        return Ok(PackageArgs::default());
+    };
+    let source = std::fs::read_to_string(&path).map_err(|error| {
+        format!(
+            "error reading REPO.bazel file at {}: {error}",
+            path.display()
+        )
+    })?;
+    let dialect = Dialect {
+        enable_def: false,
+        enable_lambda: false,
+        enable_load: false,
+        enable_top_level_stmt: false,
+        ..Dialect::Standard
+    };
+    let ast = AstModule::parse(&path.to_string_lossy(), source, &dialect)
+        .map_err(|e| format!("error parsing REPO.bazel file for {display}: {e:#}"))?;
+    let context = RepoFile {
+        repositories: repositories.clone(),
+        repository: repository.to_owned(),
+        called: Cell::new(false),
+        ignored_directories: RefCell::new(None),
+        args: RefCell::new(PackageArgs::default()),
+    };
+    let globals = GlobalsBuilder::standard().with(repo_file_globals).build();
+    Module::with_temp_heap(|module| {
+        let mut evaluator = Evaluator::new(&module);
+        evaluator.extra = Some(&context);
+        evaluator
+            .eval_module(ast, &globals)
+            .map(|_| ())
+            .map_err(|e| format!("error evaluating REPO.bazel file for {display}: {e:#}"))
+    })?;
+    if context
+        .ignored_directories
+        .borrow()
+        .as_ref()
+        .is_some_and(|dirs| !dirs.is_empty())
+    {
+        return Err(format!(
+            "REPO.bazel file for {display}: ignore_directories() is not implemented by the native profile yet (planned for the N14 ignore-files increment)"
+        ));
+    }
+    Ok(context.args.into_inner())
+}
+
+fn repo_file<'a>(eval: &'a Evaluator<'_, '_, '_>) -> anyhow::Result<&'a RepoFile> {
+    eval.extra
+        .and_then(|extra| extra.downcast_ref::<RepoFile>())
+        .ok_or_else(|| anyhow!("repo() can only be used while evaluating a REPO.bazel file"))
+}
+
 #[derive(Clone, Copy)]
 enum BzlPhase {
     Build,
@@ -748,6 +1323,7 @@ pub fn module_bzl_globals() -> Globals {
 fn bzl_globals_for(phase: BzlPhase) -> Globals {
     let mut native = GlobalsBuilder::new()
         .with(rule_globals)
+        .with(native_rule_globals)
         .with(package_globals);
     if matches!(phase, BzlPhase::Module) {
         native.set("bazel_version", crate::COMPATIBILITY_VERSION);
@@ -841,7 +1417,9 @@ fn evaluate_at(
     }
     let mut globals = GlobalsBuilder::extended_by(&[LibraryExtension::SetType])
         .with(rule_globals)
-        .with(package_globals);
+        .with(native_rule_globals)
+        .with(package_globals)
+        .with(build_only_globals);
     crate::json::install(&mut globals);
     crate::rule_declarations::install_build(&mut globals);
     let globals = globals.build();
@@ -858,6 +1436,7 @@ fn evaluate_at(
         .map(|(name, module)| (name.as_str(), module))
         .collect::<HashMap<_, _>>();
     let loader = ReturnFileLoader { modules: &modules };
+    let repo_defaults = repo_args(&repositories, &package.repository)?;
     let declarations = Declarations {
         package: package.package.clone(),
         repository: package.repository.clone(),
@@ -865,9 +1444,12 @@ fn evaluate_at(
         repositories,
         rules: RefCell::new(Vec::new()),
         exports: RefCell::new(BTreeMap::new()),
-        default_visibility: RefCell::new(Visibility::Private),
+        default_visibility: RefCell::new(
+            repo_defaults.default_visibility.clone().unwrap_or_default(),
+        ),
         defaulted_rules: RefCell::new(BTreeSet::new()),
         package_called: Cell::new(false),
+        package_args: RefCell::new(repo_defaults),
         custom: RefCell::new(Vec::new()),
         active_macro: RefCell::new(None),
         macro_names: RefCell::new(BTreeSet::new()),
@@ -881,11 +1463,9 @@ fn evaluate_at(
         evaluator
             .set_max_callstack_size(128)
             .map_err(|e| e.to_string())?;
-        evaluator.eval_module(ast, &globals).map_err(|e| {
-            format!(
-                "{e:#}\nSupported rules: filegroup, genrule, and local custom rules. select and non-local repositories remain unsupported."
-            )
-        })?;
+        evaluator
+            .eval_module(ast, &globals)
+            .map_err(|e| format!("{e:#}\n{NATIVE_LOADING_FOOTER}"))?;
         drop(evaluator);
         module
             .freeze_named(starlark::values::FrozenHeapName::User(Box::new(
@@ -918,6 +1498,10 @@ fn evaluate_at(
         });
     }
     let mut rules = validate_rules(declared_rules).map_err(|e| format!("{filename}: {e}"))?;
+    let args = declarations.package_args.into_inner();
+    for rule in rules.values_mut() {
+        rule.unanalyzed.extend(package_default_gaps(rule, &args));
+    }
     let default_visibility = declarations.default_visibility.into_inner();
     for label in declarations.defaulted_rules.into_inner() {
         if let Some(rule) = rules.get_mut(&label) {
@@ -937,7 +1521,65 @@ fn evaluate_at(
         exports,
         default_visibility,
         macro_names: declarations.macro_names.into_inner(),
+        args,
     })
+}
+
+/// Appended to every BUILD evaluation error. Validators compare it exactly
+/// (scripts/validate_label_passthrough.py, scripts/validate_string_dict.py).
+pub const NATIVE_LOADING_FOOTER: &str = "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() values load, but native analysis does not resolve them.";
+
+/// Computed package defaults that would change a rule's analysis in Bazel
+/// (BaseRuleClasses.java:68-108 testonly/package_metadata defaults,
+/// RuleClass.java:286-296 default environments). Explicit values win.
+fn package_default_gaps(rule: &Rule, args: &PackageArgs) -> Vec<String> {
+    if matches!(rule.kind, RuleKind::PackageGroup(_)) {
+        return Vec::new();
+    }
+    let class = rule
+        .native
+        .as_ref()
+        .and_then(|native| crate::native_rules::rule_class(&native.rule_class));
+    let has = |name: &str| {
+        class
+            .as_ref()
+            .is_none_or(|class| class.attribute(name).is_some())
+    };
+    let explicit = |name: &str| {
+        rule.native
+            .as_ref()
+            .is_some_and(|native| native.explicit(name))
+    };
+    let mut gaps = Vec::new();
+    if args.default_testonly == Some(true) && has("testonly") && !explicit("testonly") {
+        gaps.push("package default_testonly=True (testonly dependency checks)".to_owned());
+    }
+    if args
+        .default_package_metadata
+        .as_ref()
+        .is_some_and(|labels| !labels.is_empty())
+        && has("package_metadata")
+        && !explicit("package_metadata")
+    {
+        gaps.push("package default_package_metadata (package metadata dependencies)".to_owned());
+    }
+    for (attribute, value) in [
+        ("compatible_with", &args.default_compatible_with),
+        ("restricted_to", &args.default_restricted_to),
+    ] {
+        if value.as_ref().is_some_and(|labels| !labels.is_empty())
+            && has(attribute)
+            && !explicit(attribute)
+        {
+            gaps.push(format!(
+                "package default_{attribute} (constraint environments)"
+            ));
+        }
+    }
+    if args.transitive_visibility.is_some() {
+        gaps.push("package transitive_visibility".to_owned());
+    }
+    gaps
 }
 
 #[cfg(test)]
@@ -1007,7 +1649,7 @@ filegroup(name='json', srcs=json.decode('["a.txt","b.txt"]'))
 "#).unwrap();
         assert_eq!(
             rules[&Label::parse(":json", "pkg").unwrap()].srcs,
-            ["a.txt", "b.txt"]
+            ["//pkg:a.txt", "//pkg:b.txt"]
         );
         rejected("x = struct()", "struct");
         rejected("print('x')", "print");
@@ -1065,15 +1707,17 @@ def callback():
         ).unwrap();
         assert_eq!(
             package[&Label::parse(":direct", "pkg").unwrap()].srcs,
-            ["b.txt", "a.txt"]
+            ["//pkg:b.txt", "//pkg:a.txt"]
         );
         assert_eq!(
             package[&Label::parse(":loaded", "pkg").unwrap()].srcs,
-            ["b.txt", "a.txt", "c.txt"]
+            ["//pkg:b.txt", "//pkg:a.txt", "//pkg:c.txt"]
         );
-        rejected(
-            "filegroup(name='x', srcs=set(['a.txt']))",
-            "list of strings",
+        // Bazel's ListType.convert accepts any Iterable, including sets.
+        let rules = eval("filegroup(name='x', srcs=set(['a.txt']))").unwrap();
+        assert_eq!(
+            rules[&Label::parse(":x", "pkg").unwrap()].srcs,
+            ["//pkg:a.txt"]
         );
         // Enabling sets must not expose the unrelated .bzl extensions in BUILD.
         rejected("x = struct()", "struct");
@@ -1262,7 +1906,7 @@ genrule(name = "constant", outs = ["constant.txt"], cmd = "echo hi > $@")
         assert!(empty.srcs.is_empty() && empty.outs.is_empty() && empty.cmd.is_none());
         let generated = &rules[&Label::parse(":make", "pkg").unwrap()];
         assert!(matches!(generated.kind, RuleKind::Genrule));
-        assert_eq!(generated.srcs, [":inputs"]);
+        assert_eq!(generated.srcs, ["//pkg:inputs"]);
         assert_eq!(generated.outs, ["dir/out"]);
         assert_eq!(generated.cmd.as_deref(), Some("cat $(SRCS) > $@"));
         assert!(
@@ -1283,39 +1927,76 @@ unused = [genrule(name = "make_" + n, outs = [n + ".out"], cmd = "echo " + n + "
         assert_eq!(rules.len(), 6);
         assert_eq!(
             rules[&Label::parse(":input_b", "pkg").unwrap()].srcs,
-            ["b.txt"]
+            ["//pkg:b.txt"]
         );
     }
 
     #[test]
     fn attributes_are_strictly_checked() {
-        for source in [
-            "filegroup(name='x', testonly=True)",
-            "filegroup(name='x', **{'tags': []})",
-            "genrule(name='x', outs=['y'], cmd='true', tools=[])",
-            "genrule(name='x', outs=['y'], cmd='true', executable=True)",
-            "genrule(name='x', cmd='true')",
-            "genrule(name='x', outs=['y'])",
-            "filegroup('x')",
-            "filegroup(name=42)",
-            "genrule(name='x', outs=['y'], cmd=42)",
+        // Bazel 9.3 schemas (native_rules.rs): common attributes load, but
+        // analysis-relevant ones are recorded as unanalyzed.
+        let rules = eval("filegroup(name='x', testonly=True, tags=['manual'])\ngenrule(name='g', outs=['y'], cmd='true', tools=[':x'], executable=True)\ngenrule(name='n', cmd='true', outs=[])\ngenrule(name='o', outs=['z'])").unwrap();
+        let x = &rules[&Label::parse(":x", "pkg").unwrap()];
+        assert!(x.is_manual());
+        assert_eq!(x.unanalyzed, ["attribute 'testonly' = True"]);
+        let g = &rules[&Label::parse(":g", "pkg").unwrap()];
+        assert_eq!(g.unanalyzed.len(), 2, "{:?}", g.unanalyzed);
+        assert!(rules[&Label::parse(":n", "pkg").unwrap()].outs.is_empty());
+        assert!(rules[&Label::parse(":o", "pkg").unwrap()].cmd.is_none());
+        for (source, expected) in [
+            ("filegroup(name='x', **{'tags': []})", "*args and **kwargs"),
+            (
+                "genrule(name='x', cmd='true')",
+                "missing value for mandatory attribute 'outs' in 'genrule' rule",
+            ),
+            ("filegroup('x')", "unexpected positional arguments"),
+            (
+                "filegroup(name=42)",
+                "filegroup 'name' attribute must be a string",
+            ),
+            ("filegroup()", "filegroup rule has no 'name' attribute"),
+            (
+                "genrule(name='x', outs=['y'], cmd=42)",
+                "//pkg:x: expected value of type 'string' for attribute 'cmd' of 'genrule', but got 42 (int)",
+            ),
+            (
+                "filegroup(name='x', bogus=None)",
+                "//pkg:x: no such attribute 'bogus' in 'filegroup' rule",
+            ),
+            (
+                "filegroup(name='x', src=[])",
+                "no such attribute 'src' in 'filegroup' rule (did you mean 'srcs'?)",
+            ),
+            (
+                "genrule(name='x', outs=select({'//conditions:default': ['y']}), cmd='true')",
+                "//pkg:x: attribute \"outs\" is not configurable",
+            ),
+            (
+                "filegroup(name='x', tags=select({'//conditions:default': []}))",
+                "attribute \"tags\" is not configurable",
+            ),
         ] {
-            assert!(eval(source).is_err(), "accepted {source}");
+            rejected(source, expected);
         }
-        for value in ["None", "'x'", "('x',)", "[1]", "{'x': 1}"] {
+        for value in ["'x'", "1", "True"] {
             rejected(
                 &format!("filegroup(name='x', srcs={value})"),
-                "list of strings",
+                "expected value of type 'list(label)' for attribute 'srcs' of 'filegroup'",
             );
             rejected(
                 &format!("genrule(name='x', outs={value}, cmd='true')"),
-                "list of strings",
+                "expected value of type 'list(output)' for attribute 'outs' of 'genrule'",
             );
         }
         rejected(
-            "genrule(name='x', outs=[], cmd='true')",
-            "outs must not be empty",
+            "filegroup(name='x', srcs=[1])",
+            "expected value of type 'string' for element 0 of attribute 'srcs' of 'filegroup', but got 1 (int)",
         );
+        // None is an unset value; tuples are sequences.
+        let rules =
+            eval("filegroup(name='x', srcs=None)\nfilegroup(name='y', srcs=('a',))").unwrap();
+        assert!(rules[&Label::parse(":x", "pkg").unwrap()].srcs.is_empty());
+        assert_eq!(rules[&Label::parse(":y", "pkg").unwrap()].srcs, ["//pkg:a"]);
     }
 
     #[test]
@@ -1331,7 +2012,7 @@ unused = [genrule(name = "make_" + n, outs = [n + ".out"], cmd = "echo " + n + "
         }
         rejected(
             "filegroup(name='x', srcs=['../escape'])",
-            "invalid srcs entry",
+            "invalid label '../escape' in element 0 of attribute 'srcs' of 'filegroup'",
         );
     }
 
@@ -1371,13 +2052,11 @@ unused = [genrule(name = "make_" + n, outs = [n + ".out"], cmd = "echo " + n + "
             "load('@repo//:defs.bzl', 'my_rule')\nmy_rule(name='x')",
             "external repository",
         );
-        for source in [
-            "filegroup(name='x', srcs=select({'//conditions:default': []}))",
-            "native.filegroup(name='x')",
+        rejected("native.filegroup(name='x')", "native");
+        rejected(
             "cc_binary(name='x')",
-        ] {
-            rejected(source, "unsupported");
-        }
+            "This rule has been removed from Bazel. Please add a `load()` statement for it.",
+        );
         assert!(eval("filegroup(name=").is_err());
     }
 
@@ -1411,12 +2090,34 @@ unused = [genrule(name = "make_" + n, outs = [n + ".out"], cmd = "echo " + n + "
                 );
             }
         }
-        for value in [
-            "['//visibility:public', '//visibility:private']",
-            "['//visibility:public', '//visibility:public']",
-            "'//visibility:public'",
-            "[1]",
+        // RuleVisibility.validateAndSimplify (RuleVisibility.java:185-215):
+        // public subsumes, private is dropped next to other labels.
+        for (value, public) in [
+            ("['//visibility:public', '//visibility:private']", true),
+            ("['//visibility:public', '//visibility:public']", true),
+            ("['//other:__pkg__', '//visibility:public']", true),
+            ("['//visibility:private', '//other:__pkg__']", false),
         ] {
+            let rules = eval(&format!("filegroup(name='x', visibility={value})")).unwrap();
+            let visibility = &rules[&Label::parse(":x", "pkg").unwrap()].visibility;
+            assert_eq!(*visibility == Visibility::Public, public, "{value}");
+            if !public {
+                assert_eq!(
+                    visibility.declared_labels(),
+                    [Label::parse("//other:__pkg__", "").unwrap()]
+                );
+            }
+        }
+        rejected(
+            "filegroup(name='x', visibility=['//visibility:pubic'])",
+            "//pkg:x Invalid visibility label '//visibility:pubic'; did you mean //visibility:public or //visibility:private?",
+        );
+        let rules = eval("package(default_visibility=['//visibility:public', '//go:__subpackages__'])\nfilegroup(name='x')\n([str(v) for v in package_default_visibility()] == ['@@//visibility:public']) or fail('pdv')").unwrap();
+        assert_eq!(
+            rules[&Label::parse(":x", "pkg").unwrap()].visibility,
+            Visibility::Public
+        );
+        for value in ["'//visibility:public'", "[1]"] {
             rejected(
                 &format!("filegroup(name='x', visibility={value})"),
                 "visibility",
@@ -1439,13 +2140,13 @@ unused = [genrule(name = "make_" + n, outs = [n + ".out"], cmd = "echo " + n + "
         .unwrap();
         let rule = &rules[&Label::parse("//src/docker:config", "").unwrap()];
         assert_eq!(rule.visibility, Visibility::Public);
-        assert_eq!(rule.srcs, ["config.json"]);
+        assert_eq!(rule.srcs, ["//src/docker:config.json"]);
     }
 
     #[test]
     fn records_owned_attribute_snapshots() {
         let rules = eval("s = ['a']\nfilegroup(name='x', srcs=s)\ns.append('b')").unwrap();
-        assert_eq!(rules[&Label::parse(":x", "pkg").unwrap()].srcs, ["a"]);
+        assert_eq!(rules[&Label::parse(":x", "pkg").unwrap()].srcs, ["//pkg:a"]);
     }
 
     #[test]
@@ -1948,10 +2649,12 @@ def legacy():
         let package = custom_fixture("def m():\n    native.filegroup(name='x', visibility=(Label('//other:__pkg__'), ':__pkg__'))", "load(':defs.bzl', 'm')\nm()").unwrap();
         let rule = &package[&Label::parse(":x", "pkg").unwrap()];
         assert!(rule.visibility.allows("pkg", "other"));
-        rejected("filegroup(name='x', srcs=('a',))", "list of strings");
-        rejected(
-            "filegroup(name='x', visibility=('//visibility:public', '//visibility:private'))",
-            "cannot be combined",
+        let rules =
+            eval("filegroup(name='x', visibility=('//visibility:public', '//visibility:private'))")
+                .unwrap();
+        assert_eq!(
+            rules[&Label::parse(":x", "pkg").unwrap()].visibility,
+            Visibility::Public
         );
     }
 
@@ -2005,6 +2708,7 @@ def legacy():
                 default_visibility: RefCell::new(Visibility::Private),
                 defaulted_rules: RefCell::new(BTreeSet::new()),
                 package_called: Cell::new(false),
+                package_args: RefCell::new(PackageArgs::default()),
                 custom: RefCell::new(Vec::new()),
                 active_macro: RefCell::new(None),
                 macro_names: RefCell::new(BTreeSet::new()),
@@ -2022,6 +2726,7 @@ def legacy():
                 eval.extra = Some(&context);
                 let globals = GlobalsBuilder::standard()
                     .with(rule_globals)
+                    .with(native_rule_globals)
                     .with(package_globals)
                     .build();
                 let error = eval
@@ -2665,7 +3370,7 @@ def macro(name):
         )
         .unwrap();
         let native = &package[&Label::parse_canonical("@@dep+//pkg:native").unwrap()];
-        assert_eq!(native.srcs, [":input"]);
+        assert_eq!(native.srcs, ["@@dep+//pkg:input"]);
         assert!(
             package
                 .exports
@@ -2715,5 +3420,504 @@ def macro(name):
         )
         .unwrap_err();
         assert!(error.contains("extension initialization"), "{error}");
+    }
+
+    fn native_of<'a>(rules: &'a BTreeMap<Label, Rule>, name: &str) -> &'a NativeTarget {
+        rules[&Label::parse(&format!(":{name}"), "pkg").unwrap()]
+            .native
+            .as_ref()
+            .unwrap()
+    }
+
+    #[test]
+    fn native_rule_classes_register_with_kinds_defaults_and_selects() {
+        let rules = eval(
+            r#"
+alias(name='a', actual=select({':linux': ':x', '//conditions:default': ':y'}))
+alias(name='simplified', actual=select({'//conditions:default': ':x'}))
+config_setting(name='linux', values={'cpu': 'k8'}, define_values={'a': 'b'}, flag_values={':flag': 'on'}, constraint_values=['//os:linux'])
+config_setting(name='empty')
+toolchain_type(name='tt', no_match_error='none')
+toolchain(name='t', toolchain_type=':tt', toolchain=':impl', target_settings=select({':linux': [':linux'], '//conditions:default': []}), exec_compatible_with=['//os:linux'], use_target_platform_constraints=False)
+constraint_setting(name='cs', default_constraint_value=':cv')
+constraint_value(name='cv', constraint_setting=':cs')
+platform(name='p', constraint_values=[':cv'], parents=[], exec_properties={'k': 'v'}, flags=['--x'], required_settings=[':linux'], missing_toolchain_error='m')
+label_flag(name='flag', build_setting_default=':x')
+label_setting(name='setting', build_setting_default=':x', scope='target')
+genquery(name='q', expression='deps(:x)', scope=[':x'])
+starlark_doc_extract(name='doc', src='defs.bzl')
+test_suite(name='suite', tests=[':a'])
+java_plugins_flag_alias(name='java_plugins_flag_alias')
+cc_libc_top_alias(name='libc')
+cc_toolchain_suite('suite_fg', toolchains={'k8': ':cc'}, tags=['manual'], visibility=['//visibility:public'])
+filegroup(name='fg', srcs=['a'] + select({':linux': ['b'], '//conditions:default': None}))
+genrule(name='g', outs=['g.out'], cmd=select({':linux': 'a', '//conditions:default': 'b'}))
+"#,
+        )
+        .unwrap();
+        let kind = |name: &str| {
+            rules[&Label::parse(&format!(":{name}"), "pkg").unwrap()]
+                .kind
+                .class_name()
+                .to_owned()
+        };
+        for (name, expected) in [
+            ("a", "alias"),
+            ("linux", "config_setting"),
+            ("tt", "toolchain_type"),
+            ("t", "toolchain"),
+            ("cs", "constraint_setting"),
+            ("cv", "constraint_value"),
+            ("p", "platform"),
+            ("flag", "label_flag"),
+            ("setting", "label_setting"),
+            ("q", "genquery"),
+            ("doc", "starlark_doc_extract"),
+            ("suite", "test_suite"),
+            ("java_plugins_flag_alias", "java_plugins_flag_alias"),
+            ("libc", "cc_libc_top_alias"),
+            ("suite_fg", "filegroup"),
+            ("fg", "filegroup"),
+            ("g", "genrule"),
+        ] {
+            assert_eq!(kind(name), expected, "{name}");
+        }
+        // select() is retained where configurable; an unconditional select is
+        // simplified (BuildType.java:165-211).
+        assert!(native_of(&rules, "a").configurable.contains_key("actual"));
+        assert_eq!(
+            native_of(&rules, "simplified").attrs["actual"],
+            AttrValue::Label(Some("//pkg:x".into()))
+        );
+        assert!(
+            native_of(&rules, "t")
+                .configurable
+                .contains_key("target_settings")
+        );
+        // Default tags: manual for config/platform/toolchain classes only.
+        for name in ["linux", "t", "cs", "cv", "p"] {
+            assert!(
+                rules[&Label::parse(&format!(":{name}"), "pkg").unwrap()].is_manual(),
+                "{name}"
+            );
+        }
+        for name in ["a", "tt", "flag", "q", "suite_fg"] {
+            assert!(
+                !rules[&Label::parse(&format!(":{name}"), "pkg").unwrap()].is_manual(),
+                "{name}"
+            );
+        }
+        // The cc_toolchain_suite lambda forwards only the name.
+        let suite = &rules[&Label::parse(":suite_fg", "pkg").unwrap()];
+        assert_eq!(suite.visibility, Visibility::Private);
+        assert!(suite.native.as_ref().unwrap().attrs.is_empty());
+        assert!(suite.unanalyzed.is_empty());
+        assert_eq!(
+            rules[&Label::parse(":doc", "pkg").unwrap()].outs,
+            ["doc.binaryproto", "doc.textproto"]
+        );
+        // Select branch and key labels are assumed inputs; filegroup/genrule
+        // selects make analysis fail explicitly.
+        let fg = &rules[&Label::parse(":fg", "pkg").unwrap()];
+        assert!(fg.srcs.is_empty());
+        assert_eq!(
+            fg.native.as_ref().unwrap().input_labels,
+            [
+                Label::parse(":a", "pkg").unwrap(),
+                Label::parse(":linux", "pkg").unwrap(),
+                Label::parse(":b", "pkg").unwrap()
+            ]
+        );
+        assert_eq!(
+            fg.unanalyzed,
+            ["attribute 'srcs' select() (configured attribute resolution)"]
+        );
+        assert_eq!(
+            rules[&Label::parse(":g", "pkg").unwrap()].unanalyzed,
+            ["attribute 'cmd' select() (configured attribute resolution)"]
+        );
+        assert!(native_of(&rules, "empty").attrs.is_empty());
+    }
+
+    #[test]
+    fn native_rule_load_errors_use_bazel_messages() {
+        for (source, expected) in [
+            (
+                "alias(name='a', acutal=':b')",
+                "//pkg:a: no such attribute 'acutal' in 'alias' rule (did you mean 'actual'?)",
+            ),
+            (
+                "alias(name='a', licenses=['notice'], actual=':b')",
+                "//pkg:a: no such attribute 'licenses' in 'alias' rule",
+            ),
+            (
+                "alias(name='a')",
+                "//pkg:a: missing value for mandatory attribute 'actual' in 'alias' rule",
+            ),
+            (
+                "alias(name='a', actual=None)",
+                "missing value for mandatory attribute 'actual'",
+            ),
+            (
+                "alias(name='a', actual=1)",
+                "//pkg:a: expected value of type 'string' for attribute 'actual' of 'alias', but got 1 (int)",
+            ),
+            ("alias('a', actual=':b')", "unexpected positional arguments"),
+            (
+                "alias(name='a', actual=select({':x': ':y'}) + select({':z': ':w'}))",
+                "//pkg:a: type 'label' doesn't support select concatenation",
+            ),
+            (
+                "toolchain(name='t', toolchain=':i', toolchain_type=select({'//conditions:default': ':tt'}))",
+                "//pkg:t: attribute \"toolchain_type\" is not configurable",
+            ),
+            (
+                "toolchain(name='t', toolchain=':i', toolchain_type=':tt', exec_compatible_with=select({'//conditions:default': []}))",
+                "attribute \"exec_compatible_with\" is not configurable",
+            ),
+            (
+                "toolchain(name='t', toolchain=':i', toolchain_type=':tt', compatible_with=[])",
+                "no such attribute 'compatible_with' in 'toolchain' rule",
+            ),
+            (
+                "config_setting(name='c', values=select({'//conditions:default': {}}))",
+                "//pkg:c: attribute \"values\" is not configurable",
+            ),
+            (
+                "config_setting(name='c', values={'a': 1})",
+                "//pkg:c: expected value of type 'string' for dict value element, but got 1 (int)",
+            ),
+            (
+                "config_setting(name='c', flag_values={':a': '1', '//pkg:a': '2'})",
+                "//pkg:c: duplicate labels in attribute 'flag_values' of 'config_setting': //pkg:a (as [\":a\", \"//pkg:a\"])",
+            ),
+            (
+                "constraint_value(name='v')",
+                "missing value for mandatory attribute 'constraint_setting' in 'constraint_value' rule",
+            ),
+            (
+                "platform(name='p', package_metadata=[])",
+                "no such attribute 'package_metadata' in 'platform' rule",
+            ),
+            (
+                "platform(name='p', flags=select({'//conditions:default': []}))",
+                "attribute \"flags\" is not configurable",
+            ),
+            (
+                "label_flag(name='f')",
+                "missing value for mandatory attribute 'build_setting_default' in 'label_flag' rule",
+            ),
+            (
+                "label_flag(name='f', build_setting_default=select({'//conditions:default': ':x'}))",
+                "attribute \"build_setting_default\" is not configurable",
+            ),
+            (
+                "label_flag(name='f', build_setting_default=':x', scope='bogus')",
+                "//pkg:f: invalid value in 'scope' attribute: has to be one of 'universal', 'target', or 'project' instead of 'bogus'",
+            ),
+            (
+                "genquery(name='q', expression='x', scope=[':a'], strict=2)",
+                "//pkg:q: expected one of [False, True, 0, 1] for attribute 'strict' of 'genquery', but got 2 (int)",
+            ),
+            (
+                "genrule(name='g', outs=['o'], stamp=2)",
+                "expected value of type 'tristate' for TriState values is not one of [-1, 0, 1], but got 2 (int)",
+            ),
+            (
+                "genrule(name='g', outs=['o'], local=4294967296)",
+                "for attribute 'local' of 'genrule', but got 4294967296 (int)",
+            ),
+            (
+                "test_suite(name='s', tests=select({'//conditions:default': []}))",
+                "attribute \"tests\" is not configurable",
+            ),
+            (
+                "filegroup(name='f', licenses=['bogus'])",
+                "//pkg:f: invalid license type: 'bogus'",
+            ),
+            (
+                "filegroup(name='f', srcs=select({':a': 1}))",
+                "//pkg:f: expected value of type 'list(label)' for each branch in select expression of attribute 'srcs' of 'filegroup' (including '//pkg:a'), but got 1 (int)",
+            ),
+            (
+                "filegroup(name='f', visibility=select({'//conditions:default': []}))",
+                "attribute \"visibility\" is not configurable",
+            ),
+            (
+                "filegroup(name=1)",
+                "filegroup 'name' attribute must be a string",
+            ),
+            (
+                "starlark_doc_extract(name='d')",
+                "missing value for mandatory attribute 'src' in 'starlark_doc_extract' rule",
+            ),
+            (
+                "cc_toolchain_alias(name='x')",
+                "This rule has been removed from Bazel.",
+            ),
+            (
+                "cc_library('x')",
+                "_removed_rule_failure() accepts no more than 0 positional arguments but got 1",
+            ),
+        ] {
+            rejected(source, expected);
+        }
+        // config_setting ignores licenses entirely (setIgnoreLicenses,
+        // AttributeProvider.java:245-249); an empty config_setting loads.
+        eval("config_setting(name='c', licenses=['bogus'])\nconfig_setting(name='e')").unwrap();
+    }
+
+    #[test]
+    fn native_rules_are_in_the_native_struct_with_bazel_reprs() {
+        custom_fixture(
+            r#"
+def check():
+    for name in ['alias', 'config_setting', 'toolchain', 'toolchain_type', 'constraint_setting', 'constraint_value', 'platform', 'label_flag', 'label_setting', 'genquery', 'starlark_doc_extract', 'test_suite', 'java_plugins_flag_alias', 'cc_libc_top_alias', 'cc_toolchain_suite', 'cc_toolchain_alias', 'filegroup', 'genrule']:
+        hasattr(native, name) or fail('missing native.' + name)
+    repr(native.alias) == '<built-in rule alias>' or fail(repr(native.alias))
+    native.alias(name = 'from_macro', actual = select({native.package_relative_label(':c'): ':a', '//conditions:default': ':b'}))
+    native.package_relative_label(':x') == Label('//pkg:x') or fail('relative label')
+    native.repo_name() == '' or fail('repo name')
+    native.repository_name() == '@' or fail('repository name')
+"#,
+            "load(':defs.bzl', 'check')\ncheck()",
+        )
+        .unwrap();
+        rejected("x = native.alias", "native");
+    }
+
+    #[test]
+    fn package_arguments_follow_package_args_java() {
+        let rules = eval(
+            r#"
+package(default_visibility=['//visibility:public'], default_testonly=1, default_deprecation='old', features=['-f'], licenses=['notice'], default_compatible_with=[], default_restricted_to=[], default_package_metadata=[':m'], default_hdrs_check='strict')
+licenses(['notice', 'reciprocal'])
+filegroup(name='f')
+filegroup(name='explicit', testonly=False, package_metadata=[])
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            rules[&Label::parse(":f", "pkg").unwrap()].unanalyzed,
+            [
+                "package default_testonly=True (testonly dependency checks)",
+                "package default_package_metadata (package metadata dependencies)"
+            ]
+        );
+        assert!(
+            rules[&Label::parse(":explicit", "pkg").unwrap()]
+                .unanalyzed
+                .is_empty()
+        );
+        assert_eq!(
+            rules[&Label::parse(":f", "pkg").unwrap()].visibility,
+            Visibility::Public
+        );
+        for (source, expected) in [
+            (
+                "package()",
+                "at least one argument must be given to the 'package' function",
+            ),
+            ("package(foo=1)", "unexpected keyword argument: foo"),
+            (
+                "package(default_testonly=True)\npackage(default_testonly=True)",
+                "'package' can only be used once per BUILD file",
+            ),
+            (
+                "package(default_visibility=None)",
+                "expected value of type 'list(label)' for package() argument 'default_visibility', but got None (NoneType)",
+            ),
+            (
+                "package(default_applicable_licenses=[':a'], default_package_metadata=[':b'])",
+                "Can not set both default_package_metadata and default_applicable_licenses.",
+            ),
+            (
+                "package(default_compatible_with=[':a', '//pkg:a'])",
+                "duplicate label(s) in default_compatible_with: //pkg:a",
+            ),
+            (
+                "package(licenses=['bogus'])",
+                "invalid license type: 'bogus'",
+            ),
+            ("licenses(['bogus'])", "invalid license type: 'bogus'"),
+            (
+                "licenses('notice')",
+                "in call to licenses(), parameter 'license_strings' got value of type 'string'",
+            ),
+        ] {
+            rejected(source, expected);
+        }
+        rejected("x = native.licenses", "native");
+    }
+
+    #[test]
+    fn repo_file_defaults_apply_before_package_and_reject_ignored_directories() {
+        let root = TempRoot::new();
+        std::fs::write(root.0.join("REPO.bazel"), "repo(default_visibility=['//visibility:public'], default_package_metadata=['//:license'])\n").unwrap();
+        std::fs::write(root.0.join("pkg/BUILD"), "filegroup(name='f')").unwrap();
+        let package = evaluate(&root.0, "pkg").unwrap();
+        let rule = &package[&Label::parse(":f", "pkg").unwrap()];
+        assert_eq!(rule.visibility, Visibility::Public);
+        assert_eq!(
+            rule.unanalyzed,
+            ["package default_package_metadata (package metadata dependencies)"]
+        );
+        std::fs::write(root.0.join("pkg/BUILD"), "package(default_visibility=['//visibility:private'], default_package_metadata=[])\nfilegroup(name='f')").unwrap();
+        let package = evaluate(&root.0, "pkg").unwrap();
+        let rule = &package[&Label::parse(":f", "pkg").unwrap()];
+        assert_eq!(rule.visibility, Visibility::Private);
+        assert!(rule.unanalyzed.is_empty());
+        for (repo, expected) in [
+            (
+                "repo()",
+                "at least one argument must be given to the 'repo' function",
+            ),
+            (
+                "repo(default_testonly=True)\nrepo(default_testonly=True)",
+                "'repo' can only be called once in the REPO.bazel file",
+            ),
+            (
+                "ignore_directories([])\nrepo(default_testonly=True)",
+                "if repo() is called, it must be called before any other functions",
+            ),
+            ("repo(bogus=1)", "unexpected keyword argument: bogus"),
+            (
+                "repo(default_visibility=1)",
+                "for repo() argument 'default_visibility'",
+            ),
+            (
+                "ignore_directories(['x'])",
+                "ignore_directories() is not implemented by the native profile",
+            ),
+            (
+                "load(':x.bzl', 'y')",
+                "error parsing REPO.bazel file for the main repo",
+            ),
+        ] {
+            std::fs::write(root.0.join("REPO.bazel"), repo).unwrap();
+            let error = evaluate(&root.0, "pkg").unwrap_err();
+            assert!(error.contains(expected), "{repo}: {error}");
+        }
+    }
+
+    #[test]
+    fn module_identity_helpers_report_root_module() {
+        let root = TempRoot::new();
+        std::fs::write(
+            root.0.join("MODULE.bazel"),
+            "module(name='demo', version='1.2.3')\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.0.join("pkg/BUILD"),
+            "filegroup(name=module_name() + '_' + module_version())\n([str(v) for v in package_default_visibility()] == ['@@//pkg:__pkg__']) or fail('default visibility')\npackage(default_visibility=['//visibility:public'])\n([str(v) for v in package_default_visibility()] == ['@@//visibility:public']) or fail('public visibility')",
+        )
+        .unwrap();
+        assert!(
+            evaluate(&root.0, "pkg")
+                .unwrap()
+                .contains_key(&Label::parse(":demo_1.2.3", "pkg").unwrap())
+        );
+        std::fs::write(root.0.join("MODULE.bazel"), "").unwrap();
+        std::fs::write(
+            root.0.join("pkg/BUILD"),
+            "filegroup(name='m' + module_name() + module_version())",
+        )
+        .unwrap();
+        assert!(
+            evaluate(&root.0, "pkg")
+                .unwrap()
+                .contains_key(&Label::parse(":m", "pkg").unwrap())
+        );
+    }
+
+    #[test]
+    fn unknown_apparent_repositories_defer_to_analysis() {
+        // Without a root MODULE.bazel and with an unknown repository alike.
+        let rules = eval(
+            "filegroup(name='f', srcs=['@missing//:x'])\nalias(name='a', actual='@missing//:y')",
+        )
+        .unwrap();
+        assert_eq!(
+            rules[&Label::parse(":f", "pkg").unwrap()].srcs,
+            ["@missing//:x"]
+        );
+        assert_eq!(
+            native_of(&rules, "a").attrs["actual"],
+            AttrValue::Label(Some("@missing//:y".into()))
+        );
+        rejected(
+            "filegroup(name='f', srcs=['@missing//:../x'])",
+            "invalid label '@missing//:../x'",
+        );
+    }
+
+    #[test]
+    fn nodep_attributes_do_not_create_assumed_input_files() {
+        let rules = eval(
+            r#"
+toolchain(name='t', toolchain=':impl', toolchain_type=':tt', target_settings=[':ts'])
+constraint_setting(name='s', default_constraint_value=':dv')
+platform(name='p', allowed_toolchain_types=[':att'], required_settings=[':rs'])
+platform(name='q', allowed_toolchain_types=select({':key': [':branch'], '//conditions:default': []}))
+filegroup(name='f', transitive_configs=[':tc'], srcs=[':src'])
+label_flag(name='lf', build_setting_default=':lfd')
+label_setting(name='ls', build_setting_default=':lsd')
+"#,
+        )
+        .unwrap();
+        let inputs = |name: &str| {
+            native_of(&rules, name)
+                .input_labels
+                .iter()
+                .map(|label| label.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(inputs("t"), ["ts", "tt"]);
+        assert!(inputs("s").is_empty());
+        assert_eq!(inputs("p"), ["rs"]);
+        // Select keys are visited through $config_dependencies; NODEP branch
+        // values are not.
+        assert_eq!(inputs("q"), ["key"]);
+        assert_eq!(inputs("f"), ["src"]);
+        assert_eq!(inputs("lf"), ["lfd"]);
+        assert_eq!(inputs("ls"), ["lsd"]);
+    }
+
+    #[test]
+    fn capture_aligned_messages_for_names_licenses_lambda_and_rule_types() {
+        for (source, expected) in [
+            (
+                "filegroup(name='a:b')",
+                "illegal rule name: a:b: invalid target name 'a:b': target names may not contain ':'",
+            ),
+            (
+                "filegroup(name='../x')",
+                "illegal rule name: ../x: invalid target name '../x': target names may not contain up-level references '..'",
+            ),
+            (
+                "filegroup(name='')",
+                "illegal rule name: : invalid target name '': empty target name",
+            ),
+            (
+                "filegroup(name='f', licenses=1)",
+                "//pkg:f: expected value of type 'list(string)' for attribute 'licenses' of 'filegroup', but got 1 (int)",
+            ),
+            (
+                "cc_toolchain_suite(toolchains={})",
+                "lambda() missing 1 required positional argument: name",
+            ),
+            (
+                "cc_toolchain_suite('a', 'b')",
+                "lambda() accepts no more than 1 positional argument but got 2",
+            ),
+            (
+                "cc_toolchain_suite('a', name='b')",
+                "lambda() got multiple values for parameter 'name'",
+            ),
+        ] {
+            rejected(source, expected);
+        }
+        eval("[(type(r) == 'rule') or fail(repr(r)) for r in [alias, config_setting, toolchain, toolchain_type, constraint_setting, constraint_value, platform, label_flag, label_setting, genquery, starlark_doc_extract, test_suite, java_plugins_flag_alias, cc_libc_top_alias, filegroup, genrule]]\n(type(cc_toolchain_suite) == 'function' and type(cc_library) == 'function') or fail('functions')").unwrap();
     }
 }
