@@ -51,7 +51,11 @@ at `cc/common/semantics.bzl:62`, being added); its receipt is recorded in
 `artifacts/n17-n19-promotion.json` at promotion. With label dictionary attributes, computed defaults (N20) and the repository_ctx
 host APIs (N21) that load succeeds and the build stops later, while loading rules_cc's
 `fdo_context.bzl` (subrule `attrs`, `cc/private/rules_impl/fdo/fdo_context.bzl:430`);
-its receipt is recorded in `artifacts/n20-n21-promotion.json` at promotion. This
+its receipt is recorded in `artifacts/n20-n21-promotion.json` at promotion. With the exec transition (N18a/N18b), repr parity (N22) and subrule
+attrs/toolchains/late-bound defaults (N24) that file loads and the build stops
+later, while expanding registered toolchains: the `@build_stack_rules_proto`
+http_archive needs `repository_ctx.patch()` (being added in N26); its receipt is
+recorded in `artifacts/n18-n22-n24-promotion.json` at promotion. This
 is a query and loading result only: application build/test and performance
 remain unproven.
 
