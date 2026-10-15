@@ -214,8 +214,9 @@ fail analysis: the testonly check below uses the effective value.
   (execution platform resolution), `toolchains` (TemplateVariableInfo Make
   variables), `package_metadata`/`applicable_licenses`, `aspect_hints`,
   `transitive_configs`, a non-empty `expect_failure` (expected-failure
-  analysis; `""` has no effect, `StarlarkRuleConfiguredTargetUtil.java:80-131`), and any
-  retained `select()` on a built-in attribute. Test and executable rules are
+  analysis; `""` has no effect, `StarlarkRuleConfiguredTargetUtil.java:80-131`).
+  Retained `select()`s on built-in attributes are resolved first and these
+  checks apply to the resolved values (docs/CONFIGURATION.md). Test and executable rules are
   still rejected as a whole (`rule(test=True)` gate, docs/LOAD_DECLARATIONS.md).
 
 ## Not implemented / divergences

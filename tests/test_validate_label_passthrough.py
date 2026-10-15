@@ -767,9 +767,11 @@ class NativeTerminalFooterTests(unittest.TestCase):
             'duplicate': self.body + footer + footer,
             'mixed-legacy-and-current': self.body + self.footer + footer,
             'missing-final-lf': self.body + footer[:-1],
-            'changed-period': self.body + footer.replace(b'them.', b'them!'),
+            'changed-period': self.body + footer.replace(b'.md).', b'.md)!'),
             'changed-prefix': self.body + footer.replace(b'Supported rules:', b'Available rules:'),
             'case-changed': self.body + footer.upper(),
+            'previous-footer-wording': self.body + suite.PREVIOUS_NATIVE_LOADING_FOOTER.encode()
+            .replace(b'them.', b'them!'),
             'embedded-in-body': self.body + b'error: quoted ' + footer + footer,
         }
         for mutation, raw in variants.items():

@@ -356,14 +356,27 @@ fn select_follows_attribute_configurability() {
     );
     let query = ws.run(&["query", "//:all"]);
     assert!(query.status.success(), "{}", errors(&query));
-    rejected(
-        &ws.run(&["build", "//:retained"]),
-        "attribute 'features' select() (configured attribute resolution)",
-    );
-    rejected(
-        &ws.run(&["build", "//:tcw"]),
-        "attribute 'target_compatible_with' select() (configured attribute resolution)",
-    );
+    // Retained selects resolve against the configuration (docs/CONFIGURATION.md).
+    for (args, features) in [
+        (&["build", "//:retained"][..], "features=[]\n"),
+        (
+            &["build", "-c", "opt", "//:retained"][..],
+            "features=[\"fast\"]\n",
+        ),
+    ] {
+        let built = contents(&ws.run(args));
+        assert!(built[0].contains(features), "{args:?}: {}", built[0]);
+        // ctx.attr._config_dependencies stays [] with select() conditions
+        // (DependencyResolutionHelpers.java:408-416).
+        assert!(
+            built[0].contains("dependency_lists=[[], [], [], [], [], [], [], [], []]\n"),
+            "{}",
+            built[0]
+        );
+    }
+    // An empty resolved target_compatible_with needs no constraint analysis.
+    let tcw = contents(&ws.run(&["build", "-c", "opt", "//:tcw"]));
+    assert!(tcw[0].contains("features=[]\n"), "{}", tcw[0]);
     for (argument, message) in [
         (
             "tags = select({'//conditions:default': []})",

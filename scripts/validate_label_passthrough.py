@@ -84,11 +84,16 @@ ACTION = re.compile(r'\b\d+\s+(?:(?:(?:total|cached|remote|local)\s+)?actions?\b
 # Captures retained from earlier increments carry the legacy literal; either
 # exact, terminal footer is accepted, nothing else.
 NATIVE_LOADING_FOOTER = ('Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md '
-                         'and Starlark rule() definitions. select() values load, but native '
-                         'analysis does not resolve them.\n')
+                         'and Starlark rule() definitions. select() resolves against modelled '
+                         'config_setting values (docs/CONFIGURATION.md).\n')
+# Footer of captures made between the native-rule-class and configuration increments.
+PREVIOUS_NATIVE_LOADING_FOOTER = ('Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md '
+                                  'and Starlark rule() definitions. select() values load, but native '
+                                  'analysis does not resolve them.\n')
 LEGACY_NATIVE_LOADING_FOOTER = ('Supported rules: filegroup, genrule, and local custom rules. '
                                 'select and non-local repositories remain unsupported.\n')
-NATIVE_LOADING_FOOTERS = (NATIVE_LOADING_FOOTER, LEGACY_NATIVE_LOADING_FOOTER)
+NATIVE_LOADING_FOOTERS = (NATIVE_LOADING_FOOTER, PREVIOUS_NATIVE_LOADING_FOOTER,
+                          LEGACY_NATIVE_LOADING_FOOTER)
 FOOTER_HINT = re.compile(r'\bsupported\s+rules:|local custom rules\.|non-local repositories remain|'
                          r'Starlark rule\(\) definitions\.|native analysis does not resolve', re.I)
 

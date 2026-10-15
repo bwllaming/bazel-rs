@@ -9,7 +9,37 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 
+/// Generated-file root of the default configuration
+/// (crate::configuration::Configuration::output_root).
 pub(crate) const GENERATED_EXEC_ROOT: &str = "bazel-out/rust-fastbuild/bin";
+
+thread_local! {
+    /// Generated-file root of the configuration being analyzed on this thread.
+    /// One configuration is analyzed per build (no transitions are modelled);
+    /// crate::engine scopes it with [`OutputRootScope`].
+    static OUTPUT_ROOT: std::cell::Cell<&'static str> =
+        const { std::cell::Cell::new(GENERATED_EXEC_ROOT) };
+}
+
+/// The generated-file root of the configuration being analyzed.
+pub(crate) fn generated_exec_root() -> &'static str {
+    OUTPUT_ROOT.with(std::cell::Cell::get)
+}
+
+/// Sets the generated-file root for this thread until dropped.
+pub(crate) struct OutputRootScope(&'static str);
+
+impl OutputRootScope {
+    pub(crate) fn new(root: &'static str) -> Self {
+        Self(OUTPUT_ROOT.with(|cell| cell.replace(root)))
+    }
+}
+
+impl Drop for OutputRootScope {
+    fn drop(&mut self) {
+        OUTPUT_ROOT.with(|cell| cell.set(self.0));
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct PackageId {
@@ -196,7 +226,7 @@ impl Label {
     }
 
     pub fn generated_exec_path(&self) -> PathBuf {
-        PathBuf::from(GENERATED_EXEC_ROOT).join(self.source_exec_path())
+        PathBuf::from(generated_exec_root()).join(self.source_exec_path())
     }
 }
 

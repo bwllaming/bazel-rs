@@ -104,6 +104,8 @@ NATIVE_SCALAR_ERROR = 'attribute "d": expected a dict of strings to strings'
 # captures made before the native-rule-class increment (docs/NATIVE_BUILD_RULES.md).
 NATIVE_LOADING_FOOTERS = (
     'Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() '
+    'definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n',
+    'Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() '
     'definitions. select() values load, but native analysis does not resolve them.\n',
     'Supported rules: filegroup, genrule, and local custom rules. select and non-local '
     'repositories remain unsupported.\n',

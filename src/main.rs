@@ -6,12 +6,14 @@ const HELP: &str = "bazel-rs — experimental native build engine (NOT full Baze
 
 Usage:
   bazel-rs [--ignore_all_rc_files] [--cache-dir=PATH] query PATTERN
-  bazel-rs [--ignore_all_rc_files] [--cache-dir=PATH] build [--jobs=N] TARGET...
+  bazel-rs [--ignore_all_rc_files] [--cache-dir=PATH] build [--jobs=N] [CONFIG...] TARGET...
   bazel-rs [--ignore_all_rc_files] mod graph --output=json [--registry=URL]
   bazel-rs version | --version | capabilities
 
 Patterns: //..., //package/..., //package:all, //package:target, :target
 Build options: --jobs=N or --jobs N (positive integer; default: available CPUs, max 32)
+Configuration (build): -c/--compilation_mode, --[no]stamp, --strip, --[no]force_pic,
+  --define NAME=VALUE, --platforms, --host_platform (docs/CONFIGURATION.md).
 Repository options: --registry=URL (file/http/https, repeatable), --ignore_dev_dependency
   --repository_disable_download[=BOOL] blocks uncached archive/overlay/patch acquisition.
   Verified caches, registry metadata and Git execution are unaffected (not an offline mode).
@@ -144,18 +146,52 @@ fn run() -> Result<(), String> {
         }
         rest = positional;
         resolver_options.validate_registries()?;
-        if command == "query" && rest.len() != 1 {
+    }
+    let mut configuration_options = if command == "query" {
+        // query is configuration-independent; it accepts (and validates) the
+        // modelled CoreOptions (runtime/commands/QueryCommand.java:59-67).
+        bazel_rs::configuration::CommandLineOptions::for_query()
+    } else {
+        bazel_rs::configuration::CommandLineOptions::default()
+    };
+    if command == "query" {
+        let mut targets = Vec::new();
+        let mut args = rest.into_iter().peekable();
+        while let Some(arg) = args.next() {
+            if let bazel_rs::configuration::Parsed::Consumed(next) =
+                configuration_options.parse(&arg, args.peek().map(String::as_str))?
+            {
+                if next {
+                    args.next();
+                }
+            } else {
+                targets.push(arg);
+            }
+        }
+        rest = targets;
+        if let Some(flag) = rest.iter().find(|arg| arg.starts_with('-')) {
+            return Err(format!(
+                "unsupported option {flag:?}; options are never silently ignored"
+            ));
+        }
+        if rest.len() != 1 {
             return Err("query requires exactly one literal target pattern; query expressions are not implemented".into());
         }
     }
     if command == "build" {
         let mut targets = Vec::new();
-        let mut args = rest.into_iter();
+        let mut args = rest.into_iter().peekable();
         while let Some(arg) = args.next() {
             if arg == "--jobs" {
                 jobs = parse_jobs(&args.next().ok_or("--jobs requires a positive integer")?)?;
             } else if let Some(value) = arg.strip_prefix("--jobs=") {
                 jobs = parse_jobs(value)?;
+            } else if let bazel_rs::configuration::Parsed::Consumed(next) =
+                configuration_options.parse(&arg, args.peek().map(String::as_str))?
+            {
+                if next {
+                    args.next();
+                }
             } else {
                 targets.push(arg);
             }
@@ -192,6 +228,14 @@ fn run() -> Result<(), String> {
         );
         return Ok(());
     }
+    // Bazel reads a workspace-root `platform_mappings` file by default
+    // (PlatformOptions.java:172-187); platform mappings are not modelled.
+    if command == "build" && root.join("platform_mappings").exists() {
+        return Err(format!(
+            "platform mappings are not implemented in the native profile (found {})",
+            root.join("platform_mappings").display()
+        ));
+    }
     let current_package = current_package(&root, &cwd)?;
     let repositories = Arc::new(
         bazel_rs::repository::RepositorySet::with_options(root.clone(), resolver_options)
@@ -199,7 +243,23 @@ fn run() -> Result<(), String> {
             .with_source_cache(cache.join("repositories")),
     );
     repositories.validate_root_module()?;
-    let mut engine = Engine::with_repositories(repositories);
+    let mut engine = Engine::with_repositories(repositories.clone());
+    if command == "build" {
+        // Label-typed options convert with the main repository mapping
+        // (CoreOptionConverters.convertOptionsLabel, :351-357).
+        engine.set_configuration(configuration_options.configuration(&|text| {
+            repositories.parse(text, "", "").or_else(|error| {
+                // `bazel_tools` is always visible from the main repository
+                // (an implicit dependency of every module).
+                let repository = text.trim_start_matches('@').split("//").next();
+                if text.starts_with('@') && repository == Some("bazel_tools") {
+                    bazel_rs::configuration::parse_canonical_option_label(text)
+                } else {
+                    Err(error)
+                }
+            })
+        })?);
+    }
     let labels = if command == "query" {
         engine.select(&rest, &current_package)
     } else {

@@ -293,14 +293,19 @@ class DiagnosticTests(unittest.TestCase):
         legacy = ('Supported rules: filegroup, genrule, and local custom rules. '
                   'select and non-local repositories remain unsupported.\n')
         current = ('Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and '
-                   'Starlark rule() definitions. select() values load, but native analysis does not resolve them.\n')
-        self.assertEqual(suite.NATIVE_LOADING_FOOTERS, (current, legacy))
+                   'Starlark rule() definitions. select() resolves against modelled config_setting '
+                   'values (docs/CONFIGURATION.md).\n')
+        previous = ('Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and '
+                    'Starlark rule() definitions. select() values load, but native analysis does not resolve them.\n')
+        self.assertEqual(suite.NATIVE_LOADING_FOOTERS, (current, previous, legacy))
         for probe in NATIVE_SHAPE_OBSERVATIONS:
             row = native_observed_row(probe)
             diagnostic = probe.split('-')[0]
             with self.subTest(probe=probe):
-                suite.require_rejection(dict(row, stderr=row['stderr'].replace(legacy, current)), diagnostic, 'native')
-                for footer in ('', current.replace('them.', 'them!'), legacy + current, current.upper()):
+                for accepted in (current, previous):
+                    suite.require_rejection(dict(row, stderr=row['stderr'].replace(legacy, accepted)), diagnostic, 'native')
+                for footer in ('', current.replace('.md).', '.md)!'), previous.replace('them.', 'them!'),
+                               legacy + current, previous + current, current.upper()):
                     with self.assertRaises(ValueError):
                         suite.require_rejection(dict(row, stderr=row['stderr'].replace(legacy, footer)), diagnostic, 'native')
 

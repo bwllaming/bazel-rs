@@ -290,6 +290,25 @@ pub(crate) fn custom_label_context(
     Ok((context.repositories.clone(), context.package_id()))
 }
 
+/// Dependency labels of Starlark attribute values, in attribute-name order:
+/// label, label list and label-keyed dictionary keys (also of defaults).
+/// Configured targets recompute this from resolved values
+/// (crate::configured_attributes::configure).
+pub(crate) fn custom_dependency_labels(attrs: &BTreeMap<String, AttrValue>) -> Vec<String> {
+    let mut srcs = Vec::new();
+    for value in attrs.values() {
+        match value {
+            AttrValue::Label(Some(value)) => srcs.push(value.clone()),
+            AttrValue::Labels(values) => srcs.extend(values.iter().cloned()),
+            AttrValue::LabelKeyedStringDict(entries) => {
+                srcs.extend(entries.iter().map(|(label, _)| label.clone()))
+            }
+            _ => {}
+        }
+    }
+    srcs
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn register_custom<'v>(
     eval: &mut Evaluator<'v, '_, '_>,
@@ -314,15 +333,10 @@ pub(crate) fn register_custom<'v>(
             .map(ToString::to_string)
             .collect()
     });
-    let mut srcs = Vec::new();
+    let srcs = custom_dependency_labels(&attrs);
     let mut outs = Vec::new();
     for value in attrs.values() {
         match value {
-            AttrValue::Label(Some(value)) => srcs.push(value.clone()),
-            AttrValue::Labels(values) => srcs.extend(values.iter().cloned()),
-            AttrValue::LabelKeyedStringDict(entries) => {
-                srcs.extend(entries.iter().map(|(label, _)| label.clone()))
-            }
             AttrValue::Output(Some(value)) => outs.push(value.clone()),
             AttrValue::Outputs(values) => outs.extend(values.iter().cloned()),
             _ => {}
@@ -956,20 +970,16 @@ fn declare_native<'v>(
     )?;
     let visibility = rule_visibility(instance.visibility, context, &instance.name)?;
     let target = instance.target;
-    let (kind, srcs, outs, cmd, unanalyzed) = match class.name {
-        "filegroup" => (
-            RuleKind::Filegroup,
-            target.labels("srcs"),
-            Vec::new(),
-            None,
-            crate::native_rules::analysis_gaps(&target),
-        ),
+    // Plain (non-select) srcs/cmd only; select()s are resolved per
+    // configuration and value-dependent analysis gaps are evaluated on the
+    // resolved values (crate::configured_attributes, crate::engine).
+    let (kind, srcs, outs, cmd) = match class.name {
+        "filegroup" => (RuleKind::Filegroup, target.labels("srcs"), Vec::new(), None),
         "genrule" => (
             RuleKind::Genrule,
             target.labels("srcs"),
             target.strings("outs"),
             target.string("cmd").map(str::to_owned),
-            crate::native_rules::analysis_gaps(&target),
         ),
         name => (
             RuleKind::Native(name),
@@ -980,7 +990,6 @@ fn declare_native<'v>(
                 .map(|template| template.replace("%{name}", &instance.name))
                 .collect(),
             None,
-            Vec::new(),
         ),
     };
     let (location, _) = rule_origin(eval, context, &instance.name);
@@ -988,7 +997,6 @@ fn declare_native<'v>(
     let mut rules = context.rules.borrow_mut();
     let rule = rules.last_mut().expect("declared rule");
     rule.native = Some(Arc::new(target));
-    rule.unanalyzed = unanalyzed;
     rule.location = location;
     Ok(())
 }
@@ -1707,6 +1715,9 @@ pub fn evaluate_in(
             &package.package,
         ));
     }
+    if let Some(error) = no_build_file(root, package) {
+        return Err(error);
+    }
     let build = crate::workspace::package_build_file(root, &package.package)?;
     let source = std::fs::read_to_string(&build)
         .map_err(|e| format!("cannot read {}: {e}", build.display()))?;
@@ -1717,6 +1728,38 @@ pub fn evaluate_in(
         source,
         &ignored,
     )
+}
+
+/// PackageLookupFunction.explainNoBuildFileValue
+/// (skyframe/PackageLookupFunction.java:125-155) in NoSuchPackageException
+/// form (packages/NoSuchPackageException.java:66-68): the package directory
+/// or its BUILD file does not exist. Other lookup failures keep their
+/// native diagnostics.
+fn no_build_file(root: &std::path::Path, package: &PackageId) -> Option<String> {
+    let directory = root.join(&package.package);
+    let missing = match std::fs::metadata(&directory) {
+        Ok(metadata) => {
+            metadata.is_dir()
+                && !directory.join("BUILD.bazel").is_file()
+                && !directory.join("BUILD").is_file()
+        }
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+    };
+    if !missing {
+        return None;
+    }
+    let education = "Add a BUILD file to a directory to mark it as a package.";
+    Some(if package.repository.is_empty() {
+        format!(
+            "no such package '{}': BUILD file not found in any of the following directories. {education}\n - {}",
+            package.package, package.package
+        )
+    } else {
+        format!(
+            "no such package '@@{}//{}': BUILD file not found in directory '{}' of external repository @@{}. {education}",
+            package.repository, package.package, package.package, package.repository
+        )
+    })
 }
 
 fn evaluate_at(
@@ -1851,7 +1894,17 @@ fn evaluate_at(
     let default_visibility = declarations.default_visibility.into_inner();
     for label in declarations.defaulted_rules.into_inner() {
         if let Some(rule) = rules.get_mut(&label) {
-            rule.visibility = default_visibility.clone();
+            // Rule.getDefaultVisibility (packages/Rule.java:694-710): with the
+            // DEFAULT_PUBLIC config_setting visibility policy
+            // (--incompatible_enforce_config_setting_visibility=true and
+            // --incompatible_config_setting_private_default_visibility=false
+            // defaults, pkgcache/PackageOptions.java:117-140), a config_setting
+            // without explicit visibility is public.
+            rule.visibility = if matches!(rule.kind, RuleKind::Native("config_setting")) {
+                Visibility::Public
+            } else {
+                default_visibility.clone()
+            };
         }
     }
     let exports = declarations.exports.into_inner();
@@ -1873,7 +1926,7 @@ fn evaluate_at(
 
 /// Appended to every BUILD evaluation error. Validators compare it exactly
 /// (scripts/validate_label_passthrough.py, scripts/validate_string_dict.py).
-pub const NATIVE_LOADING_FOOTER: &str = "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() values load, but native analysis does not resolve them.";
+pub const NATIVE_LOADING_FOOTER: &str = "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).";
 
 /// Computed package defaults that would change a rule's analysis in Bazel
 /// (BaseRuleClasses.java:100-108 package_metadata default,
@@ -2298,7 +2351,10 @@ unused = [genrule(name = "make_" + n, outs = [n + ".out"], cmd = "echo " + n + "
         assert!(x.is_test_only(&PackageArgs::default()));
         assert!(x.unanalyzed.is_empty(), "{:?}", x.unanalyzed);
         let g = &rules[&Label::parse(":g", "pkg").unwrap()];
-        assert_eq!(g.unanalyzed.len(), 2, "{:?}", g.unanalyzed);
+        // Value gaps are evaluated on the configured target (crate::engine).
+        assert!(g.unanalyzed.is_empty(), "{:?}", g.unanalyzed);
+        let gaps = crate::native_rules::analysis_gaps(g.native.as_ref().unwrap());
+        assert_eq!(gaps.len(), 2, "{gaps:?}");
         assert!(rules[&Label::parse(":n", "pkg").unwrap()].outs.is_empty());
         assert!(rules[&Label::parse(":o", "pkg").unwrap()].cmd.is_none());
         for (source, expected) in [
@@ -3900,7 +3956,7 @@ genrule(name='g', outs=['g.out'], cmd=select({':linux': 'a', '//conditions:defau
             ["doc.binaryproto", "doc.textproto"]
         );
         // Select branch and key labels are assumed inputs; filegroup/genrule
-        // selects make analysis fail explicitly.
+        // selects are retained for configured resolution, not gaps.
         let fg = &rules[&Label::parse(":fg", "pkg").unwrap()];
         assert!(fg.srcs.is_empty());
         assert_eq!(
@@ -3911,14 +3967,17 @@ genrule(name='g', outs=['g.out'], cmd=select({':linux': 'a', '//conditions:defau
                 Label::parse(":b", "pkg").unwrap()
             ]
         );
-        assert_eq!(
-            fg.unanalyzed,
-            ["attribute 'srcs' select() (configured attribute resolution)"]
+        assert!(fg.unanalyzed.is_empty());
+        assert!(
+            fg.native
+                .as_ref()
+                .unwrap()
+                .configurable
+                .contains_key("srcs")
         );
-        assert_eq!(
-            rules[&Label::parse(":g", "pkg").unwrap()].unanalyzed,
-            ["attribute 'cmd' select() (configured attribute resolution)"]
-        );
+        let g = &rules[&Label::parse(":g", "pkg").unwrap()];
+        assert!(g.unanalyzed.is_empty() && g.cmd.is_none());
+        assert!(g.native.as_ref().unwrap().configurable.contains_key("cmd"));
         assert!(native_of(&rules, "empty").attrs.is_empty());
     }
 

@@ -28,8 +28,7 @@ Code comments cite file:line.
 `select` was not available in native BUILD files before; it is now a BUILD
 global too. Custom rules type-check and keep `select()` values. Native rule
 classes (including `filegroup`/`genrule`) accept them on configurable
-attributes and fail analysis explicitly when a select would need resolution
-(docs/NATIVE_BUILD_RULES.md).
+attributes. Analysis resolves them per configuration (docs/CONFIGURATION.md).
 
 ## `rule()` parameters
 
@@ -141,11 +140,12 @@ A target fails analysis with the message above if it uses any of these:
   `dependency_resolution_rule=True`, non-empty `toolchains`, `exec_groups`
   or `exec_compatible_with`, `cfg` other than none/target, dict `outputs`
   (the implicit outputs exist for loading, but not as `ctx.outputs`);
-* attribute level, when the attribute has a value (explicit or default):
+* attribute level, when the attribute's resolved value (explicit, default or
+  chosen `select()` branch, docs/CONFIGURATION.md) is non-empty:
   `cfg` other than target (exec, none, Starlark transitions), `executable=True`,
   non-empty `aspects`, extension-list `allow_files`/`allow_single_file`,
   `allow_rules`, non-empty `flags`, `skip_validations=True`, any
-  `label_keyed_string_dict` value, any `select()` value;
+  `label_keyed_string_dict` value;
 * always: a late-bound (`configuration_field`) default;
 * `aspect()` objects are never applied; `transition()` implementations,
   `attr_aspects`/`toolchains_aspects` functions and `propagation_predicate` are

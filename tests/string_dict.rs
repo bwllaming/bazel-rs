@@ -639,13 +639,11 @@ fn string_dict_native_profile_configurable_and_select_boundaries() {
         "r(name='probe',mapping=select({'//conditions:default':{'k':'v'}}))",
     );
     // BUILD-time select() values are type-checked and retained at loading
-    // (docs/LOAD_DECLARATIONS.md); configured resolution fails explicitly.
+    // (docs/LOAD_DECLARATIONS.md) and resolved per configuration
+    // (docs/CONFIGURATION.md).
     let query = f.run(&["query", "//:probe"]);
     assert!(query.status.success(), "{}", errors(&query));
-    f.reject(
-        &["build", "//:probe"],
-        &["select()", "not analyzed by the native profile"],
-    );
+    f.build(&["//:probe"], &[("//:probe", &record(&["k"], &["v"]))]);
     f.ordinary(
         "attr.string_dict()",
         "r(name='probe',mapping=select({'//conditions:default':{'k':1}}))",

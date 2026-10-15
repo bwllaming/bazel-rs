@@ -232,13 +232,30 @@ pub struct InvocationDeclaration {
     /// Implicit outputs from `rule(outputs={...})`, already in `Rule::outs`.
     pub implicit_outputs: Vec<(String, String)>,
     /// Exercised features that native analysis does not implement; analysis
-    /// fails explicitly when nonempty.
+    /// fails explicitly when nonempty, after attribute validation and before
+    /// dependencies (test/executable classes, late-bound defaults, ...).
     pub unanalyzed: Vec<String>,
+    /// A rule `cfg` transition: it decides the configuration the target and
+    /// its select() conditions are analyzed in, so it fails first.
+    pub transition_gaps: Vec<String>,
+    /// Rule-level toolchain/execution platform resolution, which Bazel runs
+    /// after the select() conditions and before attribute validation
+    /// (analysis/producers/PrerequisiteProducer).
+    pub toolchain_gaps: Vec<String>,
     /// `rule(provides=[...])` identities checked against returned providers.
     #[allow(private_interfaces)]
     pub provides: Vec<ProviderRequirement>,
     /// Retained `select()` attribute values.
     pub configurable: BTreeMap<String, Vec<ConfigurablePart>>,
+    /// Starlark attribute names in rule-class order: the `attrs` dict order,
+    /// then the build-setting attributes (StarlarkRuleClassFunctions.java:935-1020,
+    /// RuleClass.java:904-919). The schema map itself is name-ordered.
+    pub attr_order: Vec<String>,
+    /// Labels of Starlark `select()` keys and branches (and of the attribute
+    /// default for `None` branches): assumed input files
+    /// (AggregatingAttributeMapper.visitLabelsInSelect,
+    /// packages/AggregatingAttributeMapper.java:182-215; Package.java:893-920).
+    pub configurable_labels: Vec<crate::label::Label>,
     /// Rule class name for Bazel-form diagnostics (the exported rule name).
     pub rule_class: String,
     /// Bazel's built-in attributes of this instance (docs/COMMON_RULE_ATTRIBUTES.md).
@@ -756,6 +773,27 @@ impl AttrKind {
         })
     }
 
+    /// `Type.getDefaultValue()` of the attribute type (packages/Type.java,
+    /// packages/BuildType.java): the value of a `None` select branch inside
+    /// its Selector (BuildType.java:722-725). Null label/output defaults are
+    /// `Label(None)`/`Output(None)`.
+    pub(crate) fn type_default(&self) -> AttrValue {
+        match self {
+            Self::String => AttrValue::String(String::new()),
+            Self::StringList => AttrValue::Strings(Vec::new()),
+            Self::StringListDict => AttrValue::StringListDict(Vec::new()),
+            Self::StringDict => AttrValue::StringDict(Vec::new()),
+            Self::Int => AttrValue::Int(0),
+            Self::Bool => AttrValue::Bool(false),
+            Self::Label => AttrValue::Label(None),
+            Self::LabelList => AttrValue::Labels(Vec::new()),
+            Self::Output => AttrValue::Output(None),
+            Self::OutputList => AttrValue::Outputs(Vec::new()),
+            Self::IntList => AttrValue::Ints(Vec::new()),
+            Self::LabelKeyedStringDict => AttrValue::LabelKeyedStringDict(Vec::new()),
+        }
+    }
+
     pub(crate) fn is_empty_value(value: &AttrValue) -> bool {
         match value {
             AttrValue::String(_) | AttrValue::Int(_) | AttrValue::Bool(_) => false,
@@ -820,6 +858,10 @@ mod values {
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
         pub schema: BTreeMap<String, AttrSpec>,
+        /// Schema keys in rule-class attribute order.
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        pub attr_order: Vec<String>,
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
         pub declaration: RuleDeclaration,
@@ -1044,7 +1086,23 @@ mod values {
                             .map_err(|e| {
                                 starlark::Error::new_other(anyhow!("{target_text}: {e}"))
                             })?;
-                            configurable.insert(key.to_owned(), parts);
+                            let type_default = match spec.kind.type_default() {
+                                AttrValue::Label(None) | AttrValue::Output(None) => None,
+                                value => Some(value),
+                            };
+                            match crate::configured_attributes::simplify_unconditional(
+                                parts,
+                                type_default,
+                            ) {
+                                crate::configured_attributes::Simplified::Retained(parts) => {
+                                    configurable.insert(key.to_owned(), parts);
+                                }
+                                crate::configured_attributes::Simplified::Plain(value) => {
+                                    attrs.insert(key.to_owned(), value);
+                                }
+                                // Like an omitted value: default and mandatory checks apply.
+                                crate::configured_attributes::Simplified::Unset => {}
+                            }
                             continue;
                         }
                         // Bazel's build-setting boolean conversion accepts 0/1;
@@ -1090,8 +1148,10 @@ mod values {
             check_allowed_values(&target, &self.schema, &attrs, &configurable)
                 .map_err(starlark::Error::new_other)?;
             for (key, spec) in &self.schema {
-                if !attrs.contains_key(key) {
-                    if spec.mandatory && !configurable.contains_key(key) {
+                // A select()-valued attribute is resolved at analysis
+                // (crate::configured_attributes); its default is not a value.
+                if !attrs.contains_key(key) && !configurable.contains_key(key) {
+                    if spec.mandatory {
                         return Err(starlark::Error::new_other(anyhow!(
                             "missing mandatory attribute {key:?}"
                         )));
@@ -1138,8 +1198,9 @@ mod values {
             });
             let implicit_outputs = implicit_outputs(&self.declaration.implicit_outputs, name)
                 .map_err(starlark::Error::new_other)?;
-            let mut unanalyzed = unanalyzed(&self.declaration, &self.schema, &attrs, &configurable);
-            unanalyzed.extend(builtin_gaps(&builtin));
+            let (transition_gaps, toolchain_gaps, unanalyzed) =
+                static_gaps(&self.declaration, &self.schema);
+            let configurable_labels = configurable_labels(&self.schema, &configurable);
             crate::package::register_custom(
                 eval,
                 name,
@@ -1152,8 +1213,12 @@ mod values {
                 InvocationDeclaration {
                     implicit_outputs,
                     unanalyzed,
+                    transition_gaps,
+                    toolchain_gaps,
                     provides: self.declaration.provides.clone(),
                     configurable,
+                    attr_order: self.attr_order.clone(),
+                    configurable_labels,
                     rule_class,
                     builtin: BuiltinAttributes {
                         kind,
@@ -1213,7 +1278,11 @@ impl RuleDeclaration {
     }
 
     /// Rule-level features any analysis of a target of this rule exercises.
-    fn unanalyzed(&self) -> Vec<String> {
+    /// Rule-level gaps by the analysis phase that would exercise them:
+    /// (rule transition, toolchain/execution platform resolution, other).
+    fn phased_gaps(&self) -> (Vec<String>, Vec<String>, Vec<String>) {
+        let mut transition = Vec::new();
+        let mut toolchain = Vec::new();
         let mut features = Vec::new();
         if self.analysis_test {
             features.push("rule(analysis_test=True)".to_owned());
@@ -1233,7 +1302,7 @@ impl RuleDeclaration {
             features.push("rule(dependency_resolution_rule=True)".to_owned());
         }
         if !self.toolchains.is_empty() {
-            features.push(format!(
+            toolchain.push(format!(
                 "rule(toolchains=[{}]) (toolchain resolution)",
                 self.toolchains
                     .iter()
@@ -1243,19 +1312,19 @@ impl RuleDeclaration {
             ));
         }
         if !self.exec_groups.is_empty() {
-            features.push(format!(
+            toolchain.push(format!(
                 "rule(exec_groups=[{}]) (execution platform resolution)",
                 self.exec_groups.join(", ")
             ));
         }
         if !self.exec_compatible_with.is_empty() {
-            features.push(format!(
+            toolchain.push(format!(
                 "rule(exec_compatible_with=[{}]) (execution platform resolution)",
                 self.exec_compatible_with.join(", ")
             ));
         }
         if !self.cfg.is_target() {
-            features.push(format!(
+            transition.push(format!(
                 "rule(cfg={}) (configuration transition)",
                 self.cfg.describe()
             ));
@@ -1265,7 +1334,7 @@ impl RuleDeclaration {
         {
             features.push("rule(outputs={...}) implicit outputs in ctx.outputs".to_owned());
         }
-        features
+        (transition, toolchain, features)
     }
 }
 
@@ -1356,11 +1425,6 @@ pub(crate) fn default_test_timeout(size: &str) -> &'static str {
 /// target exercising one fails analysis explicitly.
 fn builtin_gaps(builtin: &crate::native_rules::NativeTarget) -> Vec<String> {
     let mut gaps = Vec::new();
-    for key in builtin.configurable.keys() {
-        gaps.push(format!(
-            "attribute '{key}' select() (configured attribute resolution)"
-        ));
-    }
     for (key, value) in &builtin.attrs {
         // An empty expect_failure has no effect
         // (StarlarkRuleConfiguredTargetUtil.java:80-131 checks isEmpty()).
@@ -1562,6 +1626,14 @@ fn configurable_parts(
     if nonconfigurable || matches!(spec.kind, AttrKind::Output | AttrKind::OutputList) {
         bail!("attribute \"{key}\" is not configurable");
     }
+    // BuildType.selectableConvert (packages/BuildType.java:177-180): types
+    // whose Type.concat is null reject `select() + ...`.
+    if pieces.len() > 1 && matches!(spec.kind, AttrKind::Bool | AttrKind::Label) {
+        bail!(
+            "type '{}' doesn't support select concatenation",
+            spec.kind.type_name()
+        );
+    }
     let parse = |value, what: &str| -> anyhow::Result<AttrValue> {
         if let Some(error) = spec.kind.conversion_error(value, what) {
             bail!("{error}");
@@ -1691,20 +1763,36 @@ fn implicit_outputs(
     }
 }
 
-/// Every declared-but-unanalyzed feature this target would exercise.
-fn unanalyzed(
+/// Declared-but-unanalyzed features any analysis of this target exercises,
+/// independent of attribute values: rule-level declarations (toolchains,
+/// exec groups, rule transitions, test/executable classes) and late-bound
+/// defaults. Analysis fails on them before configuration conditions or
+/// dependencies are visited (crate::engine).
+fn static_gaps(
     declaration: &RuleDeclaration,
     schema: &BTreeMap<String, AttrSpec>,
-    attrs: &BTreeMap<String, AttrValue>,
-    configurable: &BTreeMap<String, Vec<ConfigurablePart>>,
-) -> Vec<String> {
-    let mut features = declaration.unanalyzed();
+) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let (transition, toolchain, mut features) = declaration.phased_gaps();
     for (name, spec) in schema {
-        let present = configurable.contains_key(name)
-            || attrs
-                .get(name)
-                .is_some_and(|value| !AttrKind::is_empty_value(value));
-        if spec.declaration.late_bound || present {
+        if spec.declaration.late_bound {
+            features.extend(spec.declaration.unanalyzed(name));
+        }
+    }
+    (transition, toolchain, features)
+}
+
+/// Declared-but-unanalyzed features exercised by the configured (resolved)
+/// attribute values of a target: dependency edges with transitions, aspects
+/// or file/rule restrictions, label-keyed dictionaries and built-in attribute
+/// values (docs/CONFIGURATION.md). Never evaluated on unresolved selects.
+pub(crate) fn value_gaps(invocation: &CustomInvocation) -> Vec<String> {
+    let mut features = Vec::new();
+    for (name, spec) in &invocation.schema {
+        let present = invocation
+            .attrs
+            .get(name)
+            .is_some_and(|value| !AttrKind::is_empty_value(value));
+        if present && !spec.declaration.late_bound {
             features.extend(spec.declaration.unanalyzed(name));
         }
         if present && spec.kind == AttrKind::LabelKeyedStringDict {
@@ -1712,13 +1800,58 @@ fn unanalyzed(
                 "attribute '{name}' attr.label_keyed_string_dict value"
             ));
         }
-        if configurable.contains_key(name) {
-            features.push(format!(
-                "attribute '{name}' select() (configured attribute resolution)"
-            ));
+    }
+    features.extend(builtin_gaps(&invocation.declaration.builtin.target));
+    features
+}
+
+/// Labels in Starlark `select()` keys and branch values; a `None` branch
+/// contributes the attribute default's labels
+/// (AggregatingAttributeMapper.visitLabelsInSelect,
+/// packages/AggregatingAttributeMapper.java:182-215).
+fn configurable_labels(
+    schema: &BTreeMap<String, AttrSpec>,
+    configurable: &BTreeMap<String, Vec<ConfigurablePart>>,
+) -> Vec<crate::label::Label> {
+    fn push(value: &AttrValue, labels: &mut Vec<crate::label::Label>) {
+        let mut add = |text: &str| {
+            if let Ok(label) = crate::label::Label::parse_canonical(text) {
+                labels.push(label);
+            }
+        };
+        match value {
+            AttrValue::Label(Some(text)) => add(text),
+            AttrValue::Labels(values) => values.iter().for_each(|text| add(text)),
+            AttrValue::LabelKeyedStringDict(entries) => {
+                entries.iter().for_each(|(text, _)| add(text))
+            }
+            _ => {}
         }
     }
-    features
+    let mut labels = Vec::new();
+    for (name, parts) in configurable {
+        let default = schema.get(name).map(|spec| &spec.default);
+        for part in parts {
+            match part {
+                ConfigurablePart::Plain(value) => push(value, &mut labels),
+                ConfigurablePart::Select { branches, .. } => {
+                    for (key, value) in branches {
+                        if key != crate::configured_attributes::DEFAULT_CONDITION
+                            && let Ok(label) = crate::label::Label::parse_canonical(key)
+                        {
+                            labels.push(label);
+                        }
+                        if let Some(value) = value.as_ref().or(default) {
+                            push(value, &mut labels);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    labels.retain(|label| seen.insert(label.clone()));
+    labels
 }
 
 /// Owned view of a `rule()` definition's retained declaration (tests/diagnostics).
@@ -2480,6 +2613,7 @@ fn define_rule<'v>(
         );
     };
     let mut schema = BTreeMap::new();
+    let mut attr_order = Vec::new();
     let mut budget = crate::repository_budget::HostBudget::default();
     budget.node().map_err(anyhow::Error::msg)?;
     let subrules = crate::subrule::snapshot(args.subrules, &mut budget)?;
@@ -2536,6 +2670,7 @@ fn define_rule<'v>(
             budget.string(name).map_err(anyhow::Error::msg)?;
             budget.spec(&spec.0).map_err(anyhow::Error::msg)?;
             schema.insert(name.to_owned(), spec.0.clone());
+            attr_order.push(name.to_owned());
         }
     }
     // Implicit outputs (StarlarkRuleClassFunctions.java:1102-1122).
@@ -2615,6 +2750,7 @@ fn define_rule<'v>(
             budget.string(name).map_err(anyhow::Error::msg)?;
             budget.spec(&spec).map_err(anyhow::Error::msg)?;
             schema.insert(name.to_owned(), spec);
+            attr_order.push(name.to_owned());
         }
     }
     let declaration = RuleDeclaration {
@@ -2644,6 +2780,7 @@ fn define_rule<'v>(
         initializer,
         outputs_function,
         schema,
+        attr_order,
         build_setting,
         declaration,
         exported: OnceLock::new(),
@@ -3764,9 +3901,18 @@ r(name='z')",
             custom.attrs["licenses"],
             AttrValue::Strings(vec!["own".into()])
         );
-        let gaps = custom.declaration.unanalyzed.join("; ");
+        // Value-dependent gaps are evaluated on resolved values; the select
+        // itself is retained for configured attribute resolution.
+        assert!(custom.declaration.unanalyzed.is_empty());
+        assert!(
+            builtin
+                .target
+                .configurable
+                .contains_key("target_compatible_with")
+        );
+        assert!(!custom.attrs.contains_key("target_compatible_with"));
+        let gaps = value_gaps(custom).join("; ");
         for expected in [
-            "attribute 'target_compatible_with' select() (configured attribute resolution)",
             "attribute 'package_metadata' = [\"//:lic\"] (package metadata dependencies)",
             "attribute 'transitive_configs' = [\"//:t\"] (configuration trimming)",
             "attribute 'exec_group_compatible_with' = ",
@@ -3781,7 +3927,7 @@ r(name='z')",
             AttrValue::Strings(vec!["f".into()])
         );
         assert!(
-            y.declaration.unanalyzed.is_empty(),
+            y.declaration.unanalyzed.is_empty() && value_gaps(y).is_empty(),
             "{:?}",
             y.declaration.unanalyzed
         );

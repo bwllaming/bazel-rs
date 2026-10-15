@@ -312,7 +312,7 @@ pub(crate) fn file_json_root(file: &File) -> anyhow::Result<&'static str> {
         }
         Ok("")
     } else {
-        let root = crate::label::GENERATED_EXEC_ROOT;
+        let root = crate::label::generated_exec_root();
         if file
             .path
             .strip_prefix(root)

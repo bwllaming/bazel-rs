@@ -1022,7 +1022,7 @@ pub(crate) fn convert_value(
 
 /// The empty value of a type (Type.getDefaultValue), used for simplified
 /// `select({"//conditions:default": None})` branches.
-fn type_default(ty: NativeType) -> Option<AttrValue> {
+pub(crate) fn type_default(ty: NativeType) -> Option<AttrValue> {
     Some(match ty {
         NativeType::String => AttrValue::String(String::new()),
         NativeType::StringList | NativeType::License => AttrValue::Strings(Vec::new()),
@@ -1038,54 +1038,16 @@ fn type_default(ty: NativeType) -> Option<AttrValue> {
     })
 }
 
-/// `Type.concat` for the concatenable types.
+/// `Type.concat` for the concatenable types (crate::configured_attributes::concat).
 fn concat(ty: NativeType, values: Vec<AttrValue>) -> AttrValue {
-    let mut iter = values.into_iter();
-    let mut result = iter.next().expect("at least one select element");
-    for value in iter {
-        result = match (result, value) {
-            (AttrValue::String(a), AttrValue::String(b)) => AttrValue::String(a + &b),
-            (AttrValue::Int(a), AttrValue::Int(b)) => AttrValue::Int(a.wrapping_add(b)),
-            (AttrValue::Strings(mut a), AttrValue::Strings(b)) => {
-                a.extend(b);
-                AttrValue::Strings(a)
-            }
-            (AttrValue::Outputs(mut a), AttrValue::Outputs(b)) => {
-                a.extend(b);
-                AttrValue::Outputs(a)
-            }
-            (AttrValue::Labels(mut a), AttrValue::Labels(b)) => {
-                a.extend(b);
-                AttrValue::Labels(a)
-            }
-            (AttrValue::StringDict(mut a), AttrValue::StringDict(b)) => {
-                for (key, value) in b {
-                    a.retain(|(seen, _)| *seen != key);
-                    a.push((key, value));
-                }
-                AttrValue::StringDict(a)
-            }
-            (AttrValue::LabelKeyedStringDict(mut a), AttrValue::LabelKeyedStringDict(b)) => {
-                for (key, value) in b {
-                    a.retain(|(seen, _)| *seen != key);
-                    a.push((key, value));
-                }
-                AttrValue::LabelKeyedStringDict(a)
-            }
-            (AttrValue::StringListDict(mut a), AttrValue::StringListDict(b)) => {
-                for (key, value) in b {
-                    a.retain(|(seen, _)| *seen != key);
-                    a.push((key, value));
-                }
-                AttrValue::StringListDict(a)
-            }
-            (left, _) => {
-                debug_assert!(false, "concat of mismatched {ty:?} values");
-                left
-            }
-        };
-    }
-    result
+    let first = values
+        .first()
+        .cloned()
+        .expect("at least one select element");
+    crate::configured_attributes::concat(values).unwrap_or_else(|| {
+        debug_assert!(false, "concat of mismatched {ty:?} values");
+        first
+    })
 }
 
 const DEFAULT_CONDITION: &str = "//conditions:default";
@@ -1588,16 +1550,12 @@ pub(crate) fn analysis_error(label: &Label, target: &NativeTarget) -> Option<Str
     }
 }
 
-/// Attributes of `filegroup`/`genrule` whose analysis the native profile
-/// models; any other set attribute, or any select(), makes analysis fail
-/// explicitly instead of silently ignoring Bazel semantics.
+/// Attributes of `filegroup`/`genrule`/`config_setting` whose analysis the
+/// native profile models; any other set attribute makes analysis fail
+/// explicitly instead of silently ignoring Bazel semantics. Evaluated on the
+/// configured (select-resolved) target (crate::configured_attributes).
 pub(crate) fn analysis_gaps(target: &NativeTarget) -> Vec<String> {
     let mut gaps = Vec::new();
-    for key in target.configurable.keys() {
-        gaps.push(format!(
-            "attribute '{key}' select() (configured attribute resolution)"
-        ));
-    }
     // Attributes without effect on the native local action graph: metadata,
     // diagnostics-only, or Windows-only commands on this Unix host profile.
     // `testonly` only drives the prerequisite check, which crate::engine runs
@@ -1633,6 +1591,22 @@ pub(crate) fn analysis_gaps(target: &NativeTarget) -> Vec<String> {
             "local",
             "output_to_bindir",
             "exec_properties",
+            "generator_name",
+            "generator_function",
+            "generator_location",
+        ],
+        // ConfigSetting.create reads only these (rules/config/ConfigSetting.java:111-258);
+        // flag_values/constraint_values fail explicitly in crate::config_setting.
+        "config_setting" => &[
+            "values",
+            "define_values",
+            "flag_values",
+            "constraint_values",
+            "tags",
+            "deprecation",
+            "testonly",
+            "features",
+            "distribs",
             "generator_name",
             "generator_function",
             "generator_location",

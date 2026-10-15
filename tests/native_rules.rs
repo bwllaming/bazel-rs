@@ -229,9 +229,11 @@ fn query_lists_native_rule_targets_like_bazel() {
 fn analysis_of_unmodeled_native_rules_fails_explicitly() {
     let ws = Workspace::fixture();
     for (target, diagnostic) in [
+        // The alias's select() conditions are analyzed first
+        // (docs/CONFIGURATION.md): a flag_values config_setting (N16b).
         (
             "//go/private:default_nogo",
-            "//go/private:default_nogo: native rule alias analysis not implemented in the native profile",
+            "in config_setting rule //go/private:nogo_active: config_setting flag_values (build setting analysis) not implemented in the native profile",
         ),
         (
             "//go/toolchain:go_linux_amd64_toolchain",
@@ -239,11 +241,13 @@ fn analysis_of_unmodeled_native_rules_fails_explicitly() {
         ),
         (
             "//skylib:unix",
-            "native rule alias analysis not implemented",
+            "in config_setting rule //skylib:linux: config_setting constraint_values",
         ),
+        // A select() condition is analyzed in the same configuration; a
+        // constraint_values config_setting fails explicitly (N16c).
         (
-            "//python:is_python_3.12",
-            "native rule config_setting analysis not implemented",
+            "//skylib:linux",
+            "in config_setting rule //skylib:linux: config_setting constraint_values (target platform constraint analysis) not implemented in the native profile",
         ),
         (
             "//tools/cpp:link_extra_libs",
@@ -255,11 +259,11 @@ fn analysis_of_unmodeled_native_rules_fails_explicitly() {
         ),
         (
             "//misc:copy",
-            "//misc:copy: genrule accepted at load time but not analyzed by the native profile: attribute 'cmd' select() (configured attribute resolution)",
+            "in config_setting rule //skylib:linux: config_setting constraint_values (target platform constraint analysis) not implemented in the native profile",
         ),
         (
             "//misc:configured_files",
-            "attribute 'srcs' select() (configured attribute resolution)",
+            "in config_setting rule //skylib:linux: config_setting constraint_values",
         ),
         (
             "@platforms//os:srcs",
@@ -340,7 +344,7 @@ fn load_errors_carry_bazel_messages_and_the_native_footer() {
         let query = ws.run(&["query", "//bad:all"]);
         rejected(&query, diagnostic);
         assert!(errors(&query).ends_with(
-            "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() values load, but native analysis does not resolve them.\n"
+            "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n"
         ));
     }
 }

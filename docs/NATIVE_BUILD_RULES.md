@@ -6,8 +6,9 @@ bazel_skylib, rules_python, `@bazel_tools//tools/cpp`, the platforms module,
 in BUILD files and legacy macros. The native profile now **registers** these
 classes with Bazel 9.3's attribute schemas, **validates** their attributes with
 Bazel's load-time messages, **retains** the converted values (including
-`select()`), and lists their targets in `query`. It does **not** analyze them:
-analysis fails explicitly, never silently.
+`select()`), and lists their targets in `query`. Except `filegroup`, `genrule`
+and `config_setting` (`values`/`define_values`, docs/CONFIGURATION.md) it does
+**not** analyze them: analysis fails explicitly, never silently.
 
 Pinned source: `/tmp/opencode/bazel-9.3-reference` (e89755b, Release 9.3.0).
 Paths are relative to `src/main/java/com/google/devtools/build/lib/` unless
@@ -156,10 +157,11 @@ succeeds). The build-setting default of
 rule-based default (`rules/LabelBuildSettings.java:62-90`), so
 `label_flag(build_setting_default = ':x')` makes `//pkg:x` a target.
 
-**Analysis never picks a branch.** A `filegroup`/`genrule` whose attribute
-still holds a `select()` fails analysis with `//misc:copy: genrule accepted at
-load time but not analyzed by the native profile: attribute 'cmd' select()
-(configured attribute resolution)`. Resolution is the next increment.
+**Selects resolve per configuration** (docs/CONFIGURATION.md): analysis of a
+`filegroup`/`genrule` resolves its retained selects against the analyzed
+`config_setting` conditions; unmodeled attribute values are checked on the
+resolved values. A condition that cannot be analyzed fails explicitly (for
+example `//skylib:linux`'s `constraint_values`).
 
 ## Analysis
 
@@ -278,8 +280,8 @@ too (docs/COMMON_RULE_ATTRIBUTES.md).
 * Every other Bazel native rule class (for example the `EmptyRule` stubs
   `java_library`/`py_binary` that load in Bazel and fail at analysis) remains an
   unknown global.
-* Analysis of every class listed above except `filegroup`/`genrule`, and
-  `select()` resolution.
+* Analysis of every class listed above except `filegroup`/`genrule` and
+  `config_setting` with `values`/`define_values` (docs/CONFIGURATION.md).
 
 ## Documented divergences (pre-existing, unchanged here)
 
@@ -294,17 +296,19 @@ Recorded by the paired capture (`tests/fixtures/native_rules/reference_receipt.j
   dependency not declared` versus Bazel's `no such package '@@[unknown repo
   'missing' requested from @@]//': ... No repository visible as '@missing' from
   main repository`.
-* Visibility violations: native `//dep:f is not visible to //pkg:g` versus
-  Bazel's multi-line `in genrule rule //pkg:g: Visibility error: target
-  '//dep:f' is not visible from target '//pkg:g' ...`.
+* Visibility violations (fixed by the configuration increment): native now
+  prints Bazel's multi-line `LOC: in genrule rule //pkg:g: Visibility error:
+  target '//dep:f' is not visible from target '//pkg:g' ...`
+  (docs/CONFIGURATION.md).
 * The native label grammar is a stricter subset (`//a b:c` is rejected at
   loading; Bazel accepts it).
 * Unregistered Bazel native rule classes (`java_library`, ...) are unknown
   globals (`Variable `java_library` not found`).
-* A missing source target reports `source target //pkg:k is not declared by
-  exports_files or a rule in its package`; Bazel reports `no such target
-  '//pkg:k': target 'k' not declared in package 'pkg' ... (Perhaps add
-  'exports_files(["k"])' ...)`.
+* A missing source target (fixed by the configuration increment) reports
+  Bazel's `no such target '//pkg:k': target 'k' not declared in package 'pkg'
+  defined by BUILD ...` with the source-file and did-you-mean suggestions
+  (docs/CONFIGURATION.md); a missing package Bazel's `no such package 'P':
+  BUILD file not found ...`.
 * `package_group` (a `native` builtin since before N13) has `type()`
   `function` and repr `package_group`; Bazel: `builtin_function_or_method`,
   `<built-in method package_group of native value>`.
@@ -324,16 +328,18 @@ the pre-fix native failure.
 Every BUILD evaluation error ends with
 
 ```
-Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() values load, but native analysis does not resolve them.
+Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).
 ```
 
-(`src/package.rs` `NATIVE_LOADING_FOOTER`). The previous footer (`Supported
+(`src/package.rs` `NATIVE_LOADING_FOOTER`). Captures made before configured
+attribute resolution end with `... select() values load, but native analysis
+does not resolve them.`. The footer before that (`Supported
 rules: filegroup, genrule, and local custom rules. select and non-local
 repositories remain unsupported.`) was stale: it named only two rule classes and
 claimed select was unsupported. `scripts/validate_label_passthrough.py` and
 `scripts/validate_string_dict.py` compare the footer byte-exactly; they now
 accept the current literal and, for captures retained from earlier increments,
-the legacy literal — each only as the single exact terminal line.
+the two earlier literals — each only as the single exact terminal line.
 
 ## Tests
 

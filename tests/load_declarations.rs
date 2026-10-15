@@ -121,31 +121,34 @@ fn exercised_declarations_fail_explicitly_at_analysis() {
                 "rule(toolchains=[//rules:go_toolchain_type]) (toolchain resolution)",
             ][..],
         ),
+        // select() conditions are analyzed before toolchain resolution
+        // (docs/CONFIGURATION.md): the fixture's //rules:linux key is not a
+        // target (Package.getTarget, Package.java:335-362).
         (
             "//:goselect",
-            &["attribute 'srcs' select() (configured attribute resolution)"][..],
+            &[
+                "no such target '//rules:linux': target 'linux' not declared in package 'rules' defined by ",
+            ][..],
         ),
+        // A rule transition fails first: it decides the configuration the
+        // rest is analyzed in (docs/CONFIGURATION.md).
         (
             "//:go_default_test",
-            &[
-                "rule(test=True) (test rule semantics)",
-                "(configuration transition)",
-            ][..],
+            &["rule(cfg=transition from //rules:go_like.bzl) (configuration transition)"][..],
         ),
         (
             "//:pybin",
-            &[
-                "rule(executable=True) (executable rule semantics)",
-                "attribute 'srcs' allowed file types [.py]",
-            ][..],
+            &["rule(cfg=transition from //rules:proto_like.bzl) (configuration transition)"][..],
         ),
         (
             "//:ccbin",
-            &["rule(outputs={...}) implicit outputs in ctx.outputs"][..],
+            &["rule(toolchains=[//rules:cc_toolchain_type]) (toolchain resolution)"][..],
         ),
+        // Execution platform resolution precedes attribute-level gaps; the
+        // rule-class gap (test=True) follows attribute validation.
         (
             "//:cc_unit_test",
-            &["attribute '_lcov_merger' executable=True"][..],
+            &["rule(exec_compatible_with=[//rules:linux]) (execution platform resolution)"][..],
         ),
         (
             "//:cc_proto",

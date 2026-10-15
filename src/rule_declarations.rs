@@ -2199,12 +2199,17 @@ def m(name):\n    r(name = name, deps = [':x'] + select({':cond': [':y'], '//con
                 },
             ]
         );
-        assert!(
+        // Retained for configured resolution: no load-time default value and
+        // no load-time dependency; key and branch labels are assumed inputs.
+        assert!(!custom.attrs.contains_key("deps") && !sel.srcs.contains(&"//:y".to_owned()));
+        assert_eq!(
             custom
                 .declaration
-                .unanalyzed
+                .configurable_labels
                 .iter()
-                .any(|feature| feature.contains("'deps' select()"))
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            ["//:x", "//:cond", "//:y"]
         );
         let plain = target(&package, "plain");
         assert_eq!(plain.outs, ["plain.o", "plain.bin"]);

@@ -283,7 +283,7 @@ fn action_methods(builder: &mut MethodsBuilder) {
             let exec = if sibling.is_source {
                 path
             } else {
-                path.strip_prefix("bazel-out/rust-fastbuild/bin")
+                path.strip_prefix(crate::label::generated_exec_root())
                     .map_err(|_| anyhow!("invalid generated sibling execution path"))?
             };
             let relative = exec

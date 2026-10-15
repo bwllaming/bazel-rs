@@ -277,8 +277,9 @@ fn make_ctx<'v>(
 /// unique (clashes fail when the rule is exported, RuleClass.java:1905-1918).
 /// Non-dependency values convert directly (`Attribute.valueToStarlark`, so an
 /// unset `deprecation` is `None`); dependency label lists become Targets and
-/// have `ctx.files` entries. Non-empty dependency lists and selects never
-/// reach here (load-time analysis gaps, docs/COMMON_RULE_ATTRIBUTES.md).
+/// have `ctx.files` entries. Values are the configured (select-resolved)
+/// ones; non-empty dependency lists never reach here (resolved-value gaps,
+/// docs/COMMON_RULE_ATTRIBUTES.md).
 fn builtin_ctx_attrs<'v>(
     rule: &Rule,
     invocation: &crate::custom_rule::CustomInvocation,
@@ -377,8 +378,10 @@ fn builtin_ctx_attrs<'v>(
     }
     // Private built-in dependency attributes have public names `_x`
     // (Attribute.getStarlarkName, packages/Attribute.java:2307-2312). Without
-    // --experimental_action_listener and without select() keys (gated above)
-    // both are empty target lists.
+    // --experimental_action_listener `_action_listener` is empty, and
+    // `$config_dependencies` is never resolved as a prerequisite
+    // (analysis/DependencyResolutionHelpers.java:408-416), so both are empty
+    // target lists even when the target has select() conditions.
     if !builtin.kind.dependency_resolution {
         for name in ["_action_listener", "_config_dependencies"] {
             files.insert(name.to_owned(), heap.alloc(Vec::<Value<'v>>::new()));
@@ -420,13 +423,31 @@ fn analyze_inner(
         .custom
         .as_ref()
         .ok_or_else(|| anyhow!("not a custom rule"))?;
-    // Declared load-time features without native analysis semantics fail
-    // explicitly instead of being silently ignored (docs/LOAD_DECLARATIONS.md).
-    if !invocation.declaration.unanalyzed.is_empty() {
+    // Only configured targets are analyzed: every select() was resolved by
+    // crate::configured_attributes::configure (docs/CONFIGURATION.md).
+    ensure!(
+        invocation.declaration.configurable.is_empty()
+            && invocation
+                .declaration
+                .builtin
+                .target
+                .configurable
+                .is_empty(),
+        "internal error: unresolved select() reached analysis"
+    );
+    // Declared load-time features and resolved attribute values without native
+    // analysis semantics fail explicitly instead of being silently ignored
+    // (docs/LOAD_DECLARATIONS.md); crate::engine reports them before deps.
+    let declaration = &invocation.declaration;
+    let mut gaps = declaration.transition_gaps.clone();
+    gaps.extend(declaration.toolchain_gaps.iter().cloned());
+    gaps.extend(declaration.unanalyzed.iter().cloned());
+    gaps.extend(crate::custom_rule::value_gaps(invocation));
+    if !gaps.is_empty() {
         bail!(
             "declared rule features {}: {}",
             crate::rule_declarations::NOT_ANALYZED,
-            invocation.declaration.unanalyzed.join("; ")
+            gaps.join("; ")
         );
     }
     for (name, spec) in &invocation.schema {

@@ -392,6 +392,37 @@ fn action_inputs_below_ignored_top_level_entries_are_not_planted() {
     assert_eq!(fs::read_to_string(ws.0.join(&built[0])).unwrap(), "b");
 }
 
+/// A declared source input that does not exist is reported by Bazel's
+/// ArtifactFunction ("missing input file") whether or not the execroot would
+/// plant it: inputs below ignored top-level entries are checked too
+/// (skyframe/ArtifactFunction.java:79-90, ActionExecutionFunction.java:1543-1583).
+#[test]
+fn missing_inputs_below_ignored_top_level_entries_are_reported() {
+    let ws = Workspace::monorepo();
+    ws.file(
+        "BUILD.bazel",
+        "genrule(name='gone', srcs=['node_modules/gone.txt', 'docs/a.txt'], outs=['gone.out'], cmd='cat $(SRCS) > $@')
+genrule(name='gone_pkg', srcs=['pkg/gone.txt'], outs=['gone_pkg.out'], cmd='cat $(SRCS) > $@')
+",
+    );
+    let root = ws.0.canonicalize().unwrap();
+    for (target, line, missing) in [
+        ("//:gone", 1, "//:node_modules/gone.txt"),
+        ("//:gone_pkg", 2, "//:pkg/gone.txt"),
+    ] {
+        let output = ws.run(&["build", target]);
+        assert!(!output.status.success(), "{target}");
+        let location = format!("{}/BUILD.bazel:{line}:8", root.display());
+        assert_eq!(
+            stderr(&output),
+            format!(
+                "bazel-rs: {location}: Executing genrule {target} failed: missing input file '{missing}'\n{location}: Executing genrule {target} failed: 1 input file(s) do not exist\n"
+            ),
+            "{target}"
+        );
+    }
+}
+
 /// TargetPattern warnings are reported before a later pattern fails.
 #[test]
 fn filtered_pattern_warnings_precede_later_errors() {

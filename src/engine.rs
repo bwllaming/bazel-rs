@@ -1,6 +1,8 @@
 //! A deliberately small native analysis/execution pipeline, not Skyframe.
 use crate::action::{self, Action};
 use crate::analysis::{self, DependencyTarget};
+use crate::configuration::{ConfigId, Configuration};
+use crate::configured_attributes::{self, ConfigMatching};
 use crate::ignored::IgnoredSubdirectories;
 use crate::label::{Label, PackageId};
 use crate::package::{self, Package, Rule, RuleKind};
@@ -27,7 +29,7 @@ impl Artifact {
     fn file(&self) -> File {
         let relative = self
             .exec
-            .strip_prefix("bazel-out/rust-fastbuild/bin")
+            .strip_prefix(crate::label::generated_exec_root())
             .ok()
             .filter(|_| self.producer.is_some())
             .unwrap_or(&self.exec);
@@ -61,6 +63,23 @@ enum Target {
     Source(PathBuf),
 }
 
+/// A target in a configuration (ConfiguredTargetKey). One configuration is
+/// analyzed per build; no transitions are modelled.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ConfiguredTargetKey {
+    pub label: Label,
+    pub config: ConfigId,
+}
+
+/// An analyzed rule target in its configuration.
+#[derive(Clone, Debug, Default)]
+struct ConfiguredNode {
+    /// ConfigMatchingProvider of an analyzed `config_setting`.
+    matching: Option<ConfigMatching>,
+}
+
+type ConfiguredNodes = BTreeMap<ConfiguredTargetKey, ConfiguredNode>;
+
 #[derive(Debug, Default)]
 pub struct BuildSummary {
     pub outputs: Vec<(Label, PathBuf)>,
@@ -74,6 +93,10 @@ pub struct Engine {
     generated: BTreeMap<Label, (Label, String)>,
     group_nodes: BTreeMap<Label, Arc<GroupNode>>,
     group_budget: HostBudget,
+    /// The (single) configuration builds analyze targets in.
+    configuration: Configuration,
+    /// Declared source files that do not exist (path -> label).
+    missing_sources: BTreeMap<PathBuf, Label>,
     /// Warnings in emission order, without Bazel's `WARNING: ` prefix (added
     /// by the CLI): filtered target patterns and analysis warnings.
     warnings: Vec<String>,
@@ -91,8 +114,15 @@ impl Engine {
             generated: BTreeMap::new(),
             group_nodes: BTreeMap::new(),
             group_budget: HostBudget::default(),
+            configuration: Configuration::default(),
+            missing_sources: BTreeMap::new(),
             warnings: Vec::new(),
         }
+    }
+
+    /// Analyze builds in `configuration` (default: the default configuration).
+    pub fn set_configuration(&mut self, configuration: Configuration) {
+        self.configuration = configuration;
     }
 
     /// Drain the warnings reported so far (also after a failed build, as
@@ -206,12 +236,12 @@ impl Engine {
                             // Built-in attributes of Starlark rules likewise.
                             || rule.custom.as_ref().is_some_and(|custom| {
                                 custom.declaration.builtin.target.input_labels.contains(label)
+                                    // Starlark select() keys and branches.
+                                    || custom.declaration.configurable_labels.contains(label)
                             })
                     }));
         if !declared_source {
-            return Err(format!(
-                "source target {label} is not declared by exports_files or a rule in its package"
-            ));
+            return Err(self.no_such_target(label)?);
         }
         let package_dir = self
             .repositories
@@ -221,17 +251,31 @@ impl Engine {
         let mut path = package_dir.clone();
         let mut relative = label.package.clone();
         let parts: Vec<_> = Path::new(&label.name).components().collect();
+        if parts
+            .iter()
+            .any(|component| !matches!(component, Component::Normal(_)))
+        {
+            return Err(format!("unsafe source label {label}"));
+        }
         for (i, component) in parts.iter().enumerate() {
-            if !matches!(component, Component::Normal(_)) {
-                return Err(format!("unsafe source label {label}"));
-            }
             path.push(component.as_os_str());
             if !relative.is_empty() {
                 relative.push('/');
             }
             relative.push_str(&component.as_os_str().to_string_lossy());
-            let metadata = std::fs::symlink_metadata(&path)
-                .map_err(|e| format!("no target or source {label}: {e}"))?;
+            let metadata = match std::fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                // A declared (assumed) input file is a target whether or not
+                // the file exists (Package.java:893-920); a missing file only
+                // fails when an action or the build request needs it
+                // (skyframe/ArtifactFunction.java:79-90).
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    let full = package_dir.join(&label.name);
+                    self.missing_sources.insert(full.clone(), label.clone());
+                    return Ok(Target::Source(full));
+                }
+                Err(error) => return Err(format!("no target or source {label}: {error}")),
+            };
             if metadata.file_type().is_symlink() {
                 return Err(format!(
                     "source symlinks are not supported: {}",
@@ -253,6 +297,101 @@ impl Engine {
             return Err(format!("source is not a regular file: {label}"));
         }
         Ok(Target::Source(path))
+    }
+
+    /// NoSuchTargetException for an undeclared target of a loaded package:
+    /// Package.getTarget (packages/Package.java:335-362) with
+    /// getAlternateTargetSuggestion (:364-396) and TargetSuggester
+    /// (packages/TargetSuggester.java), NoSuchTargetException.java:51.
+    fn no_such_target(&self, label: &Label) -> Result<String, String> {
+        let root = self.repositories.root(&label.repository)?;
+        let Ok(build) = workspace::package_build_file(root, &label.package) else {
+            // Without a BUILD file path, the succinct form (Package.java:348-350).
+            return Ok(format!(
+                "no such target '{}': target '{}' not declared in package '{}'",
+                crate::rule_declarations::canonical_form(label),
+                label.name,
+                label.package
+            ));
+        };
+        let directory = root.join(&label.package);
+        let candidate = directory.join(&label.name);
+        let build_name = build
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let relative_build = if label.package.is_empty() {
+            build_name
+        } else {
+            format!("{}/{build_name}", label.package)
+        };
+        let suggestion = if label.name == "*" {
+            String::new()
+        } else if candidate.is_dir() {
+            format!(
+                "; however, a source directory of this name exists.  (Perhaps add 'exports_files([\"{}\"])' to {relative_build}, or define a filegroup?)",
+                label.name
+            )
+        } else if candidate.exists() {
+            format!(
+                "; however, a source file of this name exists.  (Perhaps add 'exports_files([\"{}\"])' to {relative_build}?)",
+                label.name
+            )
+        } else {
+            suggest_targets(&label.name, &self.package_target_names(&label.package_id()))
+        };
+        Ok(format!(
+            "no such target '{}': target '{}' not declared in package '{}' defined by {}{suggestion}",
+            crate::rule_declarations::canonical_form(label),
+            label.name,
+            label.package,
+            build.display()
+        ))
+    }
+
+    /// Names of a loaded package's targets (rules, outputs, exported and
+    /// assumed input files), in sorted order (Packageoid.targets is an
+    /// ImmutableSortedMap, packages/Packageoid.java:84).
+    fn package_target_names(&self, package: &PackageId) -> BTreeSet<String> {
+        let mut names = BTreeSet::new();
+        let Some(rules) = self.packages.get(package) else {
+            return names;
+        };
+        names.extend(rules.exports.keys().map(|label| label.name.clone()));
+        for rule in rules.values() {
+            names.insert(rule.label.name.clone());
+            names.extend(rule.outs.iter().cloned());
+            if rule.macro_owner.is_some() || matches!(rule.kind, RuleKind::PackageGroup(_)) {
+                continue;
+            }
+            let mut labels = rule
+                .srcs
+                .iter()
+                .filter_map(|src| self.resolve_rule_src(rule, src).ok())
+                .collect::<Vec<_>>();
+            if let Some(native) = &rule.native {
+                labels.extend(native.input_labels.iter().cloned());
+            }
+            if let Some(custom) = &rule.custom {
+                labels.extend(
+                    custom
+                        .declaration
+                        .builtin
+                        .target
+                        .input_labels
+                        .iter()
+                        .cloned(),
+                );
+                labels.extend(custom.declaration.configurable_labels.iter().cloned());
+            }
+            names.extend(
+                labels
+                    .into_iter()
+                    .filter(|label| label.package_id() == *package)
+                    .map(|label| label.name),
+            );
+        }
+        names
     }
 
     fn resolve_rule_src(&self, rule: &Rule, text: &str) -> Result<Label, String> {
@@ -457,11 +596,17 @@ impl Engine {
         )
     }
 
+    /// Analyze one target in the build configuration, in Bazel's per-target
+    /// order (ConfiguredTargetFunction / PrerequisiteProducer): load-time gates
+    /// and pre-dependency gaps, configuration conditions in the same
+    /// configuration (ConfigConditionsProducer), attribute validation
+    /// (ConfiguredAttributeMapper.validateAttributes), gaps of the resolved
+    /// attribute values, then dependencies from resolved values only.
     fn analyze(
         &mut self,
         label: &Label,
         active: &mut Vec<Label>,
-        done: &mut BTreeSet<Label>,
+        configured: &mut ConfiguredNodes,
         plan: &mut Vec<Rule>,
     ) -> Result<(), String> {
         let rule = match self.target(label)? {
@@ -482,8 +627,18 @@ impl Engine {
         if matches!(rule.kind, RuleKind::PackageGroup(_)) {
             self.resolve_group(&rule.label, &mut Vec::new())?;
         }
-        native_analysis_gate(&rule)?;
-        if done.contains(&rule.label) {
+        // A rule transition decides the configuration everything else is
+        // evaluated in (TargetAndConfigurationProducer); it is not modelled.
+        if let Some(custom) = &rule.custom
+            && !custom.declaration.transition_gaps.is_empty()
+        {
+            return Err(custom_gap_error(&rule, &custom.declaration.transition_gaps));
+        }
+        let key = ConfiguredTargetKey {
+            label: rule.label.clone(),
+            config: self.configuration.id,
+        };
+        if configured.contains_key(&key) {
             return Ok(());
         }
         if active.contains(&rule.label) {
@@ -501,10 +656,38 @@ impl Engine {
             return Err("native prototype dependency depth limit (256) exceeded".into());
         }
         active.push(rule.label.clone());
+        // PrerequisiteProducer order (analysis/producers/PrerequisiteProducer.java):
+        // select() conditions, then toolchain resolution, then dependency
+        // resolution (attribute validation, dependencies), then the factory.
+        let ordered = self.config_conditions(&rule, active, configured, plan)?;
+        if let Some(custom) = &rule.custom
+            && !custom.declaration.toolchain_gaps.is_empty()
+        {
+            return Err(custom_gap_error(&rule, &custom.declaration.toolchain_gaps));
+        }
+        native_analysis_gate(&rule)?;
+        let conditions = ordered.iter().cloned().collect::<BTreeMap<_, _>>();
+        let resolver = configured_attributes::Resolver {
+            target: &rule.label,
+            conditions: &conditions,
+            config_hash: self.configuration.id.to_string(),
+        };
+        // DependencyResolutionHelpers.visitRule reports a validation failure
+        // at the rule's location (analysis/DependencyResolutionHelpers.java:309-313).
+        let rule = configured_attributes::configure(&rule, &resolver)
+            .map_err(|error| located(rule.location.as_deref(), error))?;
+        if let Some(custom) = &rule.custom
+            && !custom.declaration.unanalyzed.is_empty()
+        {
+            return Err(custom_gap_error(&rule, &custom.declaration.unanalyzed));
+        }
+        resolved_value_gate(&rule)?;
         let requesting_package = rule_authority(&rule);
         for src in &rule.srcs {
             let dependency = self.resolve_rule_src(&rule, src)?;
-            let visible = match self.target(&dependency)? {
+            let target = self.target(&dependency)?;
+            let is_source = matches!(target, Target::Source(_));
+            let visible = match target {
                 Target::Rule(dep) | Target::Output(dep, _) => {
                     check_macro_namespace(&dep, &dependency)?;
                     check_macro_namespace(&dep, &dep.label)?;
@@ -529,15 +712,77 @@ impl Engine {
                 )?,
             };
             if !visible {
-                return Err(format!("{dependency} is not visible to {}", rule.label));
+                return Err(visibility_error(&rule, &dependency, is_source));
             }
             self.validate_prerequisite(&rule, &dependency)?;
-            self.analyze(&dependency, active, done, plan)?;
+            self.analyze(&dependency, active, configured, plan)?;
         }
+        // RuleContext.Builder.validateExtraPrerequisites validates the config
+        // conditions like direct prerequisites, after dependency analysis
+        // (analysis/RuleContext.java:2104-2152; DEFAULT_PUBLIC policy).
+        for (condition, _) in &ordered {
+            let dependency = self.resolve_rule_src(&rule, condition)?;
+            if let Target::Rule(dep) = self.target(&dependency)? {
+                if !self.visible(
+                    &dep.visibility,
+                    &rule_authority(&dep),
+                    Some(&requesting_package),
+                )? {
+                    return Err(visibility_error(&rule, &dependency, false));
+                }
+                self.validate_prerequisite(&rule, &dependency)?;
+            }
+        }
+        // ConfigSetting.create (rules/config/ConfigSetting.java:111-166).
+        let matching = match (&rule.kind, &rule.native) {
+            (RuleKind::Native("config_setting"), Some(native)) => Some(
+                crate::config_setting::analyze(&rule.label, native, &self.configuration)
+                    .map_err(|error| located_lines(rule.location.as_deref(), &error))?,
+            ),
+            _ => None,
+        };
         active.pop();
-        done.insert(rule.label.clone());
+        configured.insert(key, ConfiguredNode { matching });
         plan.push(rule);
         Ok(())
+    }
+
+    /// ConfigConditionsProducer (analysis/producers/ConfigConditionsProducer.java:91-172):
+    /// every `$config_dependencies` label is analyzed in this configuration;
+    /// each must then provide a ConfigMatchingProvider
+    /// (ConfigConditions.fromConfiguredTarget, analysis/config/ConfigConditions.java:64-83).
+    fn config_conditions(
+        &mut self,
+        rule: &Rule,
+        active: &mut Vec<Label>,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Vec<Rule>,
+    ) -> Result<Vec<(String, ConfigMatching)>, String> {
+        let mut keys = Vec::new();
+        for text in configured_attributes::rule_config_dependencies(rule) {
+            let label = self.resolve_rule_src(rule, &text)?;
+            self.analyze(&label, active, configured, plan)?;
+            keys.push((text, label));
+        }
+        let mut conditions = Vec::new();
+        for (text, label) in keys {
+            let key = ConfiguredTargetKey {
+                label: label.clone(),
+                config: self.configuration.id,
+            };
+            let Some(matching) = configured.get(&key).and_then(|node| node.matching.clone()) else {
+                let target = crate::rule_declarations::canonical_form(&rule.label);
+                return Err(located(
+                    rule.location.as_deref(),
+                    format!(
+                        "{} is not a valid select() condition for {target}.\nTo inspect the select(), run: bazel query --output=build {target}.\nFor more help, see https://bazel.build/reference/be/functions#select.\n\n",
+                        crate::rule_declarations::canonical_form(&label)
+                    ),
+                ));
+            };
+            conditions.push((text, matching));
+        }
+        Ok(conditions)
     }
 
     /// CommonPrerequisiteValidator.validateDirectPrerequisiteForTestOnly and
@@ -693,10 +938,12 @@ impl Engine {
                 }
             }
         }
+        // Generated files of this build live under its configuration's root.
+        let _output_root = crate::label::OutputRootScope::new(self.configuration.output_root());
         let mut plan = Vec::new();
-        let mut done = BTreeSet::new();
+        let mut configured = ConfiguredNodes::new();
         for label in labels {
-            self.analyze(label, &mut Vec::new(), &mut done, &mut plan)?;
+            self.analyze(label, &mut Vec::new(), &mut configured, &mut plan)?;
         }
         let main_ignored = self.ignored("")?;
         // Validate every command before executing any action. The dry artifacts
@@ -713,6 +960,10 @@ impl Engine {
         let mut declared = BTreeMap::new();
         let mut producers: BTreeMap<PathBuf, Label> = BTreeMap::new();
         let mut nodes = Vec::new();
+        // Every source input of every action, before execroot planting drops
+        // main-repository inputs under ignored top-level entries: Bazel's
+        // ArtifactFunction checks a source artifact regardless of planting.
+        let mut source_inputs: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
         for rule in &plan {
             if matches!(rule.kind, RuleKind::PackageGroup(_)) {
                 let node = self.resolve_group(&rule.label, &mut Vec::new())?;
@@ -735,6 +986,8 @@ impl Engine {
             if matches!(rule.kind, RuleKind::Custom) {
                 let mut dependency_targets = BTreeMap::new();
                 let mut available = BTreeMap::new();
+                // Resolved dependencies only: `$config_dependencies` is never a
+                // prerequisite (DependencyResolutionHelpers.java:408-416).
                 for src in &rule.srcs {
                     let label = self.resolve_rule_src(rule, src)?;
                     let artifacts = self.artifacts(&label, &dry, &declared)?;
@@ -774,7 +1027,7 @@ impl Engine {
                 custom_providers.insert(rule.label.clone(), analyzed.providers.clone());
                 provider_files.insert(rule.label.clone(), analyzed.provider_files.clone());
                 for file in &analyzed.declared {
-                    let package_output = PathBuf::from("bazel-out/rust-fastbuild/bin")
+                    let package_output = PathBuf::from(crate::label::generated_exec_root())
                         .join(rule.label.package_exec_path());
                     let short_name = Path::new(&file.path)
                         .strip_prefix(&package_output)
@@ -825,6 +1078,7 @@ impl Engine {
                             })
                         })
                         .collect::<Result<Vec<_>, _>>()?;
+                    source_inputs.insert(registered.action.id.clone(), source_paths(&inputs));
                     nodes.push(plan_action(registered.action, inputs, &main_ignored)?);
                 }
                 let defaults = analyzed
@@ -859,9 +1113,12 @@ impl Engine {
                 if outputs.is_empty() {
                     // GenRuleBase.create (rules/genrule/GenRuleBase.java:75-77) with
                     // RuleContext.attributeError's prefix.
-                    return Err(format!(
-                        "in outs attribute of genrule rule {}: Genrules without outputs don't make sense",
-                        crate::rule_declarations::canonical_form(&rule.label)
+                    return Err(located(
+                        rule.location.as_deref(),
+                        format!(
+                            "in outs attribute of genrule rule {}: Genrules without outputs don't make sense",
+                            crate::rule_declarations::canonical_form(&rule.label)
+                        ),
                     ));
                 }
                 add_output_locations(rule, &outputs, &mut locations)?;
@@ -870,9 +1127,12 @@ impl Engine {
                     // (rules/genrule/GenRuleBase.java:262-284); cmd_bash makes
                     // the rule unanalyzed earlier, cmd_bat/cmd_ps are Windows-only.
                     rule.cmd.as_deref().ok_or_else(|| {
-                        format!(
-                            "in cmd attribute of genrule rule {}: missing value for `cmd` attribute, you can also set `cmd_ps` or `cmd_bat` on Windows and `cmd_bash` on other platforms.",
-                            crate::rule_declarations::canonical_form(&rule.label)
+                        located(
+                            rule.location.as_deref(),
+                            format!(
+                                "in cmd attribute of genrule rule {}: missing value for `cmd` attribute, you can also set `cmd_ps` or `cmd_bat` on Windows and `cmd_bash` on other platforms.",
+                                crate::rule_declarations::canonical_form(&rule.label)
+                            ),
                         )
                     })?,
                     &inputs.iter().map(|a| a.exec.clone()).collect::<Vec<_>>(),
@@ -896,6 +1156,7 @@ impl Engine {
                     arguments: Vec::new(),
                     environment: BTreeMap::new(),
                 };
+                source_inputs.insert(action.id.clone(), source_paths(&inputs));
                 nodes.push(plan_action(action, inputs, &main_ignored)?);
                 let artifacts = outputs
                     .into_iter()
@@ -947,6 +1208,94 @@ impl Engine {
             }
         }
         nodes.retain(|node| required.contains(&node.action.id));
+        // Missing declared source files fail only where needed: as requested
+        // outputs or as inputs of an executed action (ArtifactFunction
+        // "missing input file", skyframe/ArtifactFunction.java:79-90, 404-430;
+        // ActionExecutionFunction.createSourceErrorCodeAndMessage,
+        // skyframe/ActionExecutionFunction.java:1543-1583).
+        let missing_sources = self.missing_sources.clone();
+        let missing = |real: &Path| {
+            missing_sources
+                .get(real)
+                .filter(|_| std::fs::symlink_metadata(real).is_err())
+                .map(crate::rule_declarations::canonical_form)
+        };
+        let mut errors = Vec::new();
+        // Requested targets: `LOC: TARGET: missing input file 'L'` lines, then
+        // `LOC: N input file(s) do not exist` (CompletionFunction).
+        let mut by_target: Vec<(Label, Vec<String>)> = Vec::new();
+        for (label, artifact) in &requested {
+            if artifact.producer.is_none()
+                && let Some(missing_label) = missing(&artifact.real)
+            {
+                match by_target.iter_mut().find(|(seen, _)| seen == label) {
+                    Some((_, labels)) => labels.push(missing_label),
+                    None => by_target.push((label.clone(), vec![missing_label])),
+                }
+            }
+        }
+        for (label, labels) in &by_target {
+            let location = match self.target(label) {
+                Ok(Target::Rule(rule) | Target::Output(rule, _)) => rule.location,
+                _ => None,
+            };
+            let shown = crate::rule_declarations::canonical_form(label);
+            for missing_label in labels {
+                errors.push(located(
+                    location.as_deref(),
+                    format!("{shown}: missing input file '{missing_label}'"),
+                ));
+            }
+            errors.push(located(
+                location.as_deref(),
+                format!("{} input file(s) do not exist", labels.len()),
+            ));
+        }
+        // Actions: `LOC: PROGRESS failed: missing input file 'L'` lines, then
+        // `LOC: PROGRESS failed: N input file(s) do not exist`. The genrule
+        // progress message is `Executing genrule L`
+        // (rules/genrule/GenRuleBase.java); custom actions use their action id.
+        let rules_by_label = plan
+            .iter()
+            .map(|rule| (rule.label.to_string(), rule))
+            .collect::<BTreeMap<_, _>>();
+        for node in &nodes {
+            let absent = source_inputs
+                .get(&node.action.id)
+                .into_iter()
+                .flatten()
+                .filter_map(|real| missing(real))
+                .collect::<Vec<_>>();
+            if absent.is_empty() {
+                continue;
+            }
+            let owner = node.action.id.split('#').next().unwrap_or_default();
+            let rule = rules_by_label.get(owner);
+            let progress = match rule {
+                Some(rule) if matches!(rule.kind, RuleKind::Genrule) => format!(
+                    "Executing genrule {}",
+                    crate::rule_declarations::canonical_form(&rule.label)
+                ),
+                _ => node.action.id.clone(),
+            };
+            let location = rule.and_then(|rule| rule.location.as_deref());
+            for label in &absent {
+                errors.push(located(
+                    location,
+                    format!("{progress} failed: missing input file '{label}'"),
+                ));
+            }
+            errors.push(located(
+                location,
+                format!(
+                    "{progress} failed: {} input file(s) do not exist",
+                    absent.len()
+                ),
+            ));
+        }
+        if !errors.is_empty() {
+            return Err(errors.join("\n"));
+        }
         let results = scheduler::execute_graph(cache, nodes, jobs)?;
         let mut summary = BuildSummary::default();
         for result in results.values() {
@@ -964,6 +1313,95 @@ impl Engine {
         }
         Ok(summary)
     }
+}
+
+/// TargetSuggester.suggestTargets (packages/TargetSuggester.java:41-140) with
+/// SpellChecker.editDistance (net/starlark/java/spelling/SpellChecker.java:33-77).
+fn suggest_targets(input: &str, words: &BTreeSet<String>) -> String {
+    fn edit_distance(s1: &[char], s2: &[char], max: usize) -> Option<usize> {
+        if s1 == s2 {
+            return Some(0);
+        }
+        if s1.len().abs_diff(s2.len()) > max {
+            return None;
+        }
+        let mut row = (0..=s2.len()).collect::<Vec<_>>();
+        for i in 1..=s1.len() {
+            row[0] = i;
+            let mut best = row[0];
+            let mut previous = i - 1;
+            for j in 1..=s2.len() {
+                let old = row[j];
+                row[j] = (previous + usize::from(s1[i - 1] != s2[j - 1]))
+                    .min(1 + row[j - 1].min(row[j]));
+                previous = old;
+                best = best.min(row[j]);
+            }
+            if best > max {
+                return None;
+            }
+        }
+        let result = row[s2.len()];
+        (result <= max).then_some(result)
+    }
+    let lower = input.to_lowercase().chars().collect::<Vec<_>>();
+    let max = 5.min(input.chars().count().div_ceil(2));
+    let mut by_distance: BTreeMap<usize, Vec<&str>> = BTreeMap::new();
+    for word in words {
+        let candidate = word.to_lowercase().chars().collect::<Vec<_>>();
+        if let Some(distance) = edit_distance(&lower, &candidate, max) {
+            by_distance.entry(distance).or_default().push(word);
+        }
+    }
+    let suggested = if let Some(words) = by_distance.get(&0).or_else(|| by_distance.get(&1)) {
+        words.iter().take(10).copied().collect::<Vec<_>>()
+    } else {
+        let mut suggested = Vec::new();
+        for distance in 2..max {
+            for word in by_distance.get(&distance).into_iter().flatten() {
+                if suggested.len() < 10 {
+                    suggested.push(*word);
+                }
+            }
+        }
+        suggested
+    };
+    match suggested.as_slice() {
+        [] => String::new(),
+        [only] => format!(" (did you mean {only}?)"),
+        [init @ .., last] => format!(" (did you mean {}, or {last}?)", init.join(", ")),
+    }
+}
+
+/// CommonPrerequisiteValidator.generateVisibilityConflictMessage
+/// (analysis/CommonPrerequisiteValidator.java:380-405, default
+/// --noverbose_visibility_errors) reported by RuleContext.ruleError at the
+/// consuming rule (`LOC: in CLASS rule L: `, EventHandlingErrorReporter.java:80-82).
+/// Implicit (private Starlark) attributes are attributed to the consumer
+/// target here, not to its rule's `.bzl` (divergence, docs/CONFIGURATION.md).
+fn visibility_error(rule: &Rule, dependency: &Label, is_source: bool) -> String {
+    let mut message = format!(
+        "in {} rule {}: Visibility error:\ntarget '{}' is not visible from\ntarget '{}'\nRecommendation: modify the visibility declaration if you think the dependency is legitimate. For more info see https://bazel.build/concepts/visibility",
+        rule.rule_class_name(),
+        crate::rule_declarations::canonical_form(&rule.label),
+        crate::rule_declarations::canonical_form(dependency),
+        crate::rule_declarations::canonical_form(&rule.label),
+    );
+    if is_source {
+        message.push_str(
+            ". To set the visibility of that source file target, use the exports_files() function",
+        );
+    }
+    located(rule.location.as_deref(), message)
+}
+
+/// [`located`] for each line of several events.
+fn located_lines(location: Option<&str>, messages: &str) -> String {
+    messages
+        .lines()
+        .map(|message| located(location, message.to_owned()))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Event text with Bazel's `LOCATION: ` prefix when the location is known.
@@ -987,10 +1425,13 @@ fn restricted_to_error(rule: &Rule) -> Result<(), String> {
             .as_ref()
             .is_some_and(|custom| explicit_empty(&custom.declaration.builtin.target));
     if empty {
-        return Err(format!(
-            "in restricted_to attribute of {} rule {}: attribute cannot be empty",
-            rule.rule_class_name(),
-            crate::rule_declarations::canonical_form(&rule.label)
+        return Err(located(
+            rule.location.as_deref(),
+            format!(
+                "in restricted_to attribute of {} rule {}: attribute cannot be empty",
+                rule.rule_class_name(),
+                crate::rule_declarations::canonical_form(&rule.label)
+            ),
         ));
     }
     Ok(())
@@ -1068,6 +1509,17 @@ fn planted(artifact: &Artifact, main_ignored: &IgnoredSubdirectories) -> bool {
     }
 }
 
+/// Source (non-generated) input paths of an action, deduplicated in order.
+fn source_paths(inputs: &[Artifact]) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for artifact in inputs.iter().filter(|artifact| artifact.producer.is_none()) {
+        if !paths.contains(&artifact.real) {
+            paths.push(artifact.real.clone());
+        }
+    }
+    paths
+}
+
 fn plan_action(
     mut action: Action,
     inputs: Vec<Artifact>,
@@ -1107,17 +1559,26 @@ fn plan_action(
     })
 }
 
-/// Native rules that loading accepts but analysis does not model fail
-/// explicitly; nothing is silently analyzed (docs/NATIVE_BUILD_RULES.md).
+/// Load-time gates and pre-dependency gaps: native rules that loading
+/// accepts but analysis does not model, package-default gaps, and declared
+/// rule-level features (toolchains, exec groups, rule transitions, late-bound
+/// defaults) fail explicitly before configuration conditions or dependencies
+/// are visited; nothing is silently analyzed (docs/NATIVE_BUILD_RULES.md,
+/// docs/CONFIGURATION.md).
 fn native_analysis_gate(rule: &Rule) -> Result<(), String> {
     if let Some(error) = rule
         .native
         .as_ref()
         .and_then(|native| crate::native_rules::analysis_error(&rule.label, native))
     {
-        return Err(error);
+        // RuleContext errors carry the rule's location.
+        return Err(located(rule.location.as_deref(), error));
     }
-    if let RuleKind::Native(kind) = rule.kind {
+    // config_setting analysis is modelled for values/define_values
+    // (crate::config_setting); flag_values/constraint_values fail there.
+    if let RuleKind::Native(kind) = rule.kind
+        && kind != "config_setting"
+    {
         return Err(format!(
             "{}: native rule {kind} analysis not implemented in the native profile",
             rule.label
@@ -1130,6 +1591,45 @@ fn native_analysis_gate(rule: &Rule) -> Result<(), String> {
             rule.kind.class_name(),
             rule.unanalyzed.join("; ")
         ));
+    }
+    Ok(())
+}
+
+fn custom_gap_error(rule: &Rule, gaps: &[String]) -> String {
+    format!(
+        "analysis of {}: declared rule features {}: {}",
+        rule.label,
+        crate::rule_declarations::NOT_ANALYZED,
+        gaps.join("; ")
+    )
+}
+
+/// Gaps of the configured (select-resolved) attribute values, evaluated
+/// after attribute validation and before any dependency edge is followed:
+/// edges with transitions, aspects or file/rule restrictions and unmodelled
+/// attribute values fail explicitly at the edge.
+fn resolved_value_gate(rule: &Rule) -> Result<(), String> {
+    if let Some(native) = &rule.native
+        && matches!(
+            native.rule_class.as_str(),
+            "filegroup" | "genrule" | "config_setting"
+        )
+    {
+        let gaps = crate::native_rules::analysis_gaps(native);
+        if !gaps.is_empty() {
+            return Err(format!(
+                "{}: {} accepted at load time but not analyzed by the native profile: {}",
+                rule.label,
+                rule.kind.class_name(),
+                gaps.join("; ")
+            ));
+        }
+    }
+    if let Some(custom) = &rule.custom {
+        let gaps = crate::custom_rule::value_gaps(custom);
+        if !gaps.is_empty() {
+            return Err(custom_gap_error(rule, &gaps));
+        }
     }
     Ok(())
 }
@@ -1191,7 +1691,8 @@ fn expand_command_in(
     label: &Label,
     repositories: &RepositorySet,
 ) -> Result<String, String> {
-    let rule_dir = PathBuf::from("bazel-out/rust-fastbuild/bin").join(label.package_exec_path());
+    let rule_dir =
+        PathBuf::from(crate::label::generated_exec_root()).join(label.package_exec_path());
     let mut expanded = String::new();
     let mut chars = command.chars();
     while let Some(c) = chars.next() {
@@ -1365,8 +1866,23 @@ mod tests {
         engine
     }
 
+    /// CommonPrerequisiteValidator's visibility text (test rules have no location).
+    fn assert_not_visible(error: &str, dependency: &str, consumer: &str, source: bool) {
+        let suffix = if source {
+            ". To set the visibility of that source file target, use the exports_files() function"
+        } else {
+            ""
+        };
+        assert_eq!(
+            error,
+            format!(
+                "in filegroup rule {consumer}: Visibility error:\ntarget '{dependency}' is not visible from\ntarget '{consumer}'\nRecommendation: modify the visibility declaration if you think the dependency is legitimate. For more info see https://bazel.build/concepts/visibility{suffix}"
+            )
+        );
+    }
+
     fn analyze_roots(engine: &mut Engine, roots: &[&str]) -> Result<Vec<Rule>, String> {
-        let mut done = BTreeSet::new();
+        let mut done = ConfiguredNodes::new();
         let mut plan = Vec::new();
         for root in roots {
             engine.analyze(&test_label(root), &mut Vec::new(), &mut done, &mut plan)?;
@@ -1864,7 +2380,7 @@ m = macro(implementation=emit)
             // not let a subsequent unauthorized edge bypass the check via done.
             let error =
                 analyze_roots(&mut engine, &["//app:demo_secret", "//app:demo_use"]).unwrap_err();
-            assert_eq!(error, "//app:demo_secret is not visible to //app:demo_use");
+            assert_not_visible(&error, "//app:demo_secret", "//app:demo_use", false);
         }
     }
 
@@ -1912,9 +2428,11 @@ m = macro(implementation=emit)
             let mut consumer = test_rule("//app:demo_use", (!macro_producer).then_some(owner));
             consumer.srcs.push("//app:demo.out".into());
             let mut engine = test_engine(PathBuf::new(), vec![producer, consumer]);
-            assert_eq!(
-                analyze_roots(&mut engine, &["//app:demo_make", "//app:demo_use"]).unwrap_err(),
-                "//app:demo.out is not visible to //app:demo_use"
+            assert_not_visible(
+                &analyze_roots(&mut engine, &["//app:demo_make", "//app:demo_use"]).unwrap_err(),
+                "//app:demo.out",
+                "//app:demo_use",
+                false,
             );
         }
     }
@@ -2113,9 +2631,11 @@ m = macro(implementation=emit)
                     .exports
                     .insert(source.clone(), Visibility::Private);
             }
-            assert_eq!(
-                analyze_roots(&mut engine, &["//app:demo"]).unwrap_err(),
-                "//app:data is not visible to //app:demo"
+            assert_not_visible(
+                &analyze_roots(&mut engine, &["//app:demo"]).unwrap_err(),
+                "//app:data",
+                "//app:demo",
+                true,
             );
             let package = engine.packages.get_mut(&source.package_id()).unwrap();
             let grant = Visibility::Private.with_package(&test_label("//defs:x").package_id());
