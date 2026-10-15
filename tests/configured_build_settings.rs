@@ -809,12 +809,21 @@ show(name = "use_lf", dep = ":lf")
     // Cycles (AbstractLabelCycleReporter.java:81-170); the configuration is
     // the native identifier.
     let cycle = |args: &[&str]| {
-        let diagnostic = f.rejected(args);
-        let id = diagnostic
-            .rsplit_once(" (")
-            .map(|(_, id)| id[..64].to_owned())
-            .unwrap();
-        diagnostic.replace(&id, "ID")
+        // Every configuration identifier (64 hex digits) becomes ID.
+        let mut diagnostic = f.rejected(args);
+        while let Some(index) =
+            diagnostic
+                .match_indices(" (")
+                .map(|(index, _)| index)
+                .find(|index| {
+                    diagnostic[index + 2..].get(..65).is_some_and(|id| {
+                        id.ends_with(')') && id[..64].bytes().all(|b| b.is_ascii_hexdigit())
+                    })
+                })
+        {
+            diagnostic.replace_range(index + 2..index + 66, "ID");
+        }
+        diagnostic
     };
     assert_eq!(
         cycle(&["//:self"]),
@@ -825,7 +834,7 @@ show(name = "use_lf", dep = ":lf")
     assert_eq!(
         cycle(&["//:use_self"]),
         format!(
-            "bazel-rs: {ws}/BUILD.bazel:8:6: in alias rule //:self: cycle in dependency graph:\n    //:use_self (ID)\n.-> //:self (ID) [self-edge]\n`--\n"
+            "bazel-rs: {ws}/BUILD.bazel:8:6: in alias rule //:self: cycle in dependency graph:\n    //:use_self (ID)\n    //:use_self (ID)\n.-> //:self (ID) [self-edge]\n`--\n"
         )
     );
     assert_eq!(
@@ -837,7 +846,7 @@ show(name = "use_lf", dep = ":lf")
     assert_eq!(
         cycle(&["--//:lf=//:lf_alias", "//:use_lf"]),
         format!(
-            "bazel-rs: {ws}/BUILD.bazel:11:11: in label_flag rule //:lf: cycle in dependency graph:\n    //:use_lf (ID)\n.-> //:lf (ID)\n|   //:lf_alias (ID)\n`-- //:lf (ID)\n"
+            "bazel-rs: {ws}/BUILD.bazel:11:11: in label_flag rule //:lf: cycle in dependency graph:\n    //:use_lf (ID)\n    //:use_lf (ID)\n.-> //:lf (ID)\n|   //:lf_alias (ID)\n`-- //:lf (ID)\n"
         )
     );
 }

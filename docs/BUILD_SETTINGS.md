@@ -30,7 +30,10 @@ mutable list from that value: modifying one
 read cannot change later reads, another target, or the stored default. The
 ordinary context fields continue to work. Non-setting rules do not acquire this
 property. `cfg=None` remains omission-equivalent; non-`None` configurations and
-transitions are unsupported.
+transitions are unsupported. An explicitly specified string `scope` attribute
+decides whether a command-line value reaches exec configurations (`target`
+resets it; docs/CONFIGURATION.md "Exec transition"); exec-transition
+attributes of a build-setting rule are no-ops (no execution platform).
 
 The genuine `bazel_skylib` 1.8.2 `rules/common_settings.bzl` file is used unchanged
 to exercise all nine exported setting rules. Its implementations—not native

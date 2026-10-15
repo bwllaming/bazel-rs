@@ -438,6 +438,102 @@ fn describe_with_aliases(chain: &[Label], target: &Label, kind: &str) -> String 
 
 type ConfiguredNodes = BTreeMap<ConfiguredTargetKey, ConfiguredNode>;
 
+/// The transition of a dependency edge.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum EdgeCfg {
+    /// No transition: the parent's configuration.
+    Target,
+    /// ExecutionTransitionFactory for the default (`None`) or a named exec
+    /// group: Starlark `cfg = "exec"`/`"host"`/`config.exec(...)`, genrule
+    /// `tools` (rules/genrule/GenRuleBaseRule.java:89-92).
+    Exec(Option<String>),
+}
+
+/// A dependency edge of a configured rule: the label text, its attribute
+/// and transition.
+struct Edge {
+    label: String,
+    attribute: String,
+    cfg: EdgeCfg,
+}
+
+/// The dependency edges of a configured (select-resolved) rule, in the
+/// order of `rule.srcs` (Starlark attributes in name order,
+/// crate::package::custom_dependency_labels), then genrule `tools`.
+fn dependency_edges(rule: &Rule) -> Vec<Edge> {
+    let edge = |label: &String, attribute: &str, cfg: EdgeCfg| Edge {
+        label: label.clone(),
+        attribute: attribute.to_owned(),
+        cfg,
+    };
+    if let Some(custom) = &rule.custom {
+        let mut edges = Vec::new();
+        for (name, value) in &custom.attrs {
+            let cfg = match custom.schema.get(name).map(|spec| &spec.declaration.cfg) {
+                Some(crate::rule_declarations::Cfg::Exec(group)) => EdgeCfg::Exec(
+                    group
+                        .clone()
+                        // The default exec group by name
+                        // (DeclaredExecGroup.DEFAULT_EXEC_GROUP_NAME).
+                        .filter(|group| group != "default-exec-group"),
+                ),
+                _ => EdgeCfg::Target,
+            };
+            // As crate::package::custom_dependency_labels, per attribute.
+            match value {
+                crate::custom_rule::AttrValue::Label(Some(label)) => {
+                    edges.push(edge(label, name, cfg));
+                }
+                crate::custom_rule::AttrValue::Labels(labels) => {
+                    edges.extend(labels.iter().map(|label| edge(label, name, cfg.clone())));
+                }
+                crate::custom_rule::AttrValue::LabelKeyedStringDict(entries) => {
+                    edges.extend(
+                        entries
+                            .iter()
+                            .map(|(label, _)| edge(label, name, cfg.clone())),
+                    );
+                }
+                // DictType.visitLabels (packages/Type.java:504-514): label values.
+                crate::custom_rule::AttrValue::StringKeyedLabelDict(entries) => {
+                    edges.extend(
+                        entries
+                            .iter()
+                            .map(|(_, label)| edge(label, name, cfg.clone())),
+                    );
+                }
+                crate::custom_rule::AttrValue::LabelListDict(entries) => {
+                    edges.extend(
+                        entries
+                            .iter()
+                            .flat_map(|(_, labels)| labels.iter())
+                            .map(|label| edge(label, name, cfg.clone())),
+                    );
+                }
+                _ => {}
+            }
+        }
+        return edges;
+    }
+    let mut edges = rule
+        .srcs
+        .iter()
+        .map(|label| edge(label, "srcs", EdgeCfg::Target))
+        .collect::<Vec<_>>();
+    if let (RuleKind::Genrule, Some(native)) = (&rule.kind, &rule.native) {
+        edges.extend(
+            native
+                .labels("tools")
+                .iter()
+                .map(|label| edge(label, "tools", EdgeCfg::Exec(None))),
+        );
+    }
+    edges
+}
+
+/// The planned actions of a build and the requested targets' artifacts.
+type BuildPlan = (Vec<PlannedAction>, Vec<(ConfiguredTargetKey, Artifact)>);
+
 /// The analyzed rules of a build in analysis (postorder) order, each with
 /// the configuration it was analyzed in.
 type Plan = Vec<(ConfigId, Rule)>;
@@ -477,12 +573,25 @@ pub struct Engine {
     /// first requests a toolchain type
     /// (skyframe/toolchains/RegisteredToolchainsFunction.java:64-147).
     registered_toolchains: BTreeMap<ConfigId, Result<Arc<RegisteredToolchains>, ResolutionError>>,
-    /// Reentrancy guard of [`Self::registered_toolchains`]: the registered
-    /// toolchain target being analyzed.
-    computing_toolchains: Option<ConfiguredTargetKey>,
+    /// Reentrancy guards of [`Self::registered_toolchains`]: per
+    /// configuration whose registered toolchains are being computed, the
+    /// registered toolchain target being analyzed (a stack: an exec edge of
+    /// a registered target may compute another configuration's).
+    computing_toolchains: Vec<ConfiguredTargetKey>,
     /// The cycle report of a registered toolchain that needs toolchain
-    /// resolution itself (Self::toolchain_cycle).
-    toolchain_cycle_report: Option<String>,
+    /// resolution itself (Self::toolchain_cycle), per configuration.
+    toolchain_cycle_reports: BTreeMap<ConfigId, String>,
+    /// The exec configuration of each analyzed target's default exec group
+    /// (its parent configuration when the exec transition is a no-op), for
+    /// targets with exec-transition dependency edges.
+    exec_configurations: BTreeMap<ConfiguredTargetKey, ConfigId>,
+    /// The top-level Starlark flags with `scope = "target"`, reset by the
+    /// exec transition (computed on first use).
+    target_scoped_flags: Option<BTreeSet<Label>>,
+    /// The requested top-level rule being analyzed when its rule is test
+    /// trimmed (not alias-like): its top-level key precedes it in cycle paths
+    /// (Self::cycle_error).
+    requested_trimmed_root: Option<ConfiguredTargetKey>,
     /// The resolved toolchain context of each toolchain-resolving rule of
     /// the build (UnloadedToolchainContext), read by the build loop.
     toolchain_contexts: BTreeMap<ConfiguredTargetKey, UnloadedToolchainContext>,
@@ -512,8 +621,11 @@ impl Engine {
             registrations_checked: false,
             empty_configuration_rules: BTreeSet::new(),
             registered_toolchains: BTreeMap::new(),
-            computing_toolchains: None,
-            toolchain_cycle_report: None,
+            computing_toolchains: Vec::new(),
+            toolchain_cycle_reports: BTreeMap::new(),
+            exec_configurations: BTreeMap::new(),
+            target_scoped_flags: None,
+            requested_trimmed_root: None,
             toolchain_contexts: BTreeMap::new(),
             toolchain_implementations: BTreeSet::new(),
         }
@@ -524,6 +636,7 @@ impl Engine {
         self.configurations = Configurations::new(configuration);
         self.platforms.clear();
         self.registered_toolchains.clear();
+        self.target_scoped_flags = None;
     }
 
     /// Drain the warnings reported so far (also after a failed build, as
@@ -1174,7 +1287,51 @@ impl Engine {
         let late_bound = matches!(rule.kind, RuleKind::Native("label_flag" | "label_setting"));
         let skip_testonly = forwards(&rule);
         let requesting_package = rule_authority(&rule);
-        for src in rule.srcs.clone() {
+        // The configuration of each dependency edge
+        // (DependencyResolutionHelpers.getExecutionPlatformLabel,
+        // analysis/DependencyResolutionHelpers.java:223-253): the exec
+        // transition needs the parent's execution platform, which toolchain
+        // resolution chose before any dependency (ExecutionTransitionFactory).
+        let edges = dependency_edges(&rule);
+        let exec_config =
+            if uses_toolchains && edges.iter().any(|edge| edge.cfg == EdgeCfg::Exec(None)) {
+                let exec_config = self.exec_configuration(
+                    &rule,
+                    config,
+                    toolchain_context.as_ref(),
+                    configured,
+                    plan,
+                )?;
+                self.exec_configurations.insert(key.clone(), exec_config);
+                exec_config
+            } else {
+                // No execution platform: the exec transition is a no-op
+                // (ExecutionTransitionFactory.java:194-197).
+                config
+            };
+        for edge in edges {
+            let dep_config = match &edge.cfg {
+                EdgeCfg::Target => config,
+                EdgeCfg::Exec(None) => exec_config,
+                // Named exec groups (exec_groups fail before, so the group
+                // never exists): a dependency error when the rule has
+                // toolchain contexts (DependencyResolutionHelpers.java:243-253,
+                // DependencyProducer.ExecGroupErrorEmitter), otherwise no
+                // execution platform and a no-op transition.
+                EdgeCfg::Exec(Some(group)) => {
+                    if uses_toolchains {
+                        return Err(located(
+                            rule.location.as_deref(),
+                            format!(
+                                "Attr '{}' declares a transition for non-existent exec group '{group}'",
+                                edge.attribute
+                            ),
+                        ));
+                    }
+                    config
+                }
+            };
+            let src = edge.label;
             let dependency = self.resolve_rule_src(&rule, &src)?;
             let target = self
                 .target(&dependency)
@@ -1189,8 +1346,8 @@ impl Engine {
                         && !matches!(rule.kind, RuleKind::Custom)
                     {
                         return Err(format!(
-                            "{}: package group '{dependency}' is misplaced in srcs",
-                            rule.label
+                            "{}: package group '{dependency}' is misplaced in {}",
+                            rule.label, edge.attribute
                         ));
                     }
                     late_bound
@@ -1223,13 +1380,13 @@ impl Engine {
                     &describe_with_aliases(&[], &dependency, "target"),
                     skip_testonly,
                 )?;
-                self.analyze(&dependency, config, active, configured, plan)?;
+                self.analyze(&dependency, dep_config, active, configured, plan)?;
                 continue;
             }
             // The configured alias (its actual's label and kind) is needed to
             // describe and validate the edge (AliasProvider.describeTargetWithAliases).
-            self.analyze(&dependency, config, active, configured, plan)?;
-            let (chain, actual) = self.alias_chain(configured, config, &dependency);
+            self.analyze(&dependency, dep_config, active, configured, plan)?;
+            let (chain, actual) = self.alias_chain(configured, dep_config, &dependency);
             let description = describe_with_aliases(&chain, &actual, "target");
             if !visible {
                 let is_source = matches!(self.target(&actual)?, Target::Source(_));
@@ -1250,7 +1407,7 @@ impl Engine {
                 self.analyze(&implementation, config, active, configured, plan)?;
             }
         }
-        self.starlark_file_type_errors(&rule, config, configured)?;
+        self.starlark_file_type_errors(&rule, config, exec_config, configured)?;
         // config_setting flag_values/constraint_values and the platform rules'
         // label attributes: prerequisites analyzed, then validated
         // (RuleContext.Builder, analysis/RuleContext.java:1700-1745, 1845-1880, 2165-2172).
@@ -1371,6 +1528,65 @@ impl Engine {
         Ok(())
     }
 
+    /// The configuration of `rule`'s exec-transition edges (its default exec
+    /// group): the exec transition (crate::config_registry::exec_transition)
+    /// for the execution platform chosen by its toolchain resolution — the
+    /// host platform, the only execution platform (docs/TOOLCHAINS.md),
+    /// resolved here when toolchain resolution needed no platform (the lazy
+    /// default host platform, docs/PLATFORMS.md).
+    fn exec_configuration(
+        &mut self,
+        rule: &Rule,
+        config: ConfigId,
+        context: Option<&UnloadedToolchainContext>,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Plan,
+    ) -> Result<ConfigId, String> {
+        let platform = match context {
+            Some(context) => context.exec_platform.label.clone(),
+            None => {
+                let host = self.configurations.get(config).native.host_platform.clone();
+                self.platform_info(&host, config, configured, plan)
+                    .map_err(|error| self.platform_resolution_error(rule, config, &host, error))?
+                    .label
+                    .clone()
+            }
+        };
+        let target_scoped = self.target_scoped_flags()?;
+        // An invalid exec output directory name fails the dependency's
+        // configuration (InvalidMnemonicException), reported at the rule.
+        self.configurations
+            .intern_exec(config, platform, &target_scoped)
+            .map_err(|error| located(rule.location.as_deref(), error))
+    }
+
+    /// The top-level Starlark flags whose rule explicitly sets
+    /// `scope = "target"` (Scope.ScopeType.TARGET, analysis/config/Scope.java:31-46).
+    fn target_scoped_flags(&mut self) -> Result<BTreeSet<Label>, String> {
+        if let Some(flags) = &self.target_scoped_flags {
+            return Ok(flags.clone());
+        }
+        let mut flags = BTreeSet::new();
+        let labels = self
+            .configurations
+            .top_configuration()
+            .starlark
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for label in labels {
+            if let Target::Rule(rule) = self.target(&label)?
+                && self
+                    .build_setting_info(&rule)?
+                    .is_some_and(|info| info.scope.is_target())
+            {
+                flags.insert(label);
+            }
+        }
+        self.target_scoped_flags = Some(flags.clone());
+        Ok(flags)
+    }
+
     /// A missing dependency edge (missing_edge), preceded by the target
     /// loading event when the target belongs to another package.
     fn missing_edge_error(&self, rule: &Rule, dependency: &Label, error: String) -> String {
@@ -1426,6 +1642,19 @@ impl Engine {
     ) -> String {
         let key = ConfiguredTargetKey::to_string;
         let mut message = String::from("cycle in dependency graph:");
+        // The path starts at the requested target's top-level key: for a
+        // test-trimmed rule, its key in the untrimmed configuration, then its
+        // own (AbstractLabelCycleReporter prints every key of the path,
+        // skyframe/AbstractLabelCycleReporter.java:105-114).
+        if let Some(root) = &self.requested_trimmed_root
+            && path.first().or(cycle.first()) == Some(root)
+        {
+            message.push_str(&format!(
+                "\n    {} ({})",
+                crate::rule_declarations::canonical_form(&root.label),
+                self.configurations.get(root.config).untrimmed_id()
+            ));
+        }
         for element in path {
             message.push_str("\n    ");
             message.push_str(&key(element));
@@ -1520,6 +1749,7 @@ impl Engine {
                     .map_err(|error| format!("{}: {error}", rule.label))?,
                 is_flag: setting.flag,
                 repeatable: setting.repeatable,
+                scope: custom.declaration.explicit_scope.clone(),
             }));
         }
         let RuleKind::Native(kind @ ("label_flag" | "label_setting")) = rule.kind else {
@@ -1541,6 +1771,18 @@ impl Engine {
             default: SettingValue::Label(self.resolve_rule_src(rule, default)?),
             is_flag: kind == "label_flag",
             repeatable: false,
+            // The native `scope` attribute (rules/LabelBuildSettings.java:93-96)
+            // is stored only when explicitly specified.
+            scope: match rule
+                .native
+                .as_ref()
+                .and_then(|native| native.attrs.get("scope"))
+            {
+                Some(crate::custom_rule::AttrValue::String(scope)) => {
+                    crate::starlark_options::ScopeAttribute::Value(scope.clone())
+                }
+                _ => crate::starlark_options::ScopeAttribute::Unspecified,
+            },
         }))
     }
 
@@ -1586,6 +1828,7 @@ impl Engine {
         &mut self,
         rule: &Rule,
         config: ConfigId,
+        exec_config: ConfigId,
         configured: &ConfiguredNodes,
     ) -> Result<(), String> {
         let Some(custom) = &rule.custom else {
@@ -1613,9 +1856,19 @@ impl Engine {
                     .collect(),
                 _ => continue,
             };
+            let edge_config = match &spec.declaration.cfg {
+                crate::rule_declarations::Cfg::Exec(group)
+                    if group
+                        .as_deref()
+                        .is_none_or(|group| group == "default-exec-group") =>
+                {
+                    exec_config
+                }
+                _ => config,
+            };
             for text in labels {
                 let dependency = self.resolve_rule_src(rule, &text)?;
-                let (chain, actual) = self.alias_chain(configured, config, &dependency);
+                let (chain, actual) = self.alias_chain(configured, edge_config, &dependency);
                 if let Some(error) = self.no_files_error(&chain, &actual)? {
                     errors.push(located(
                         rule.location.as_deref(),
@@ -2231,10 +2484,18 @@ impl Engine {
         let registered = if types.is_empty() {
             Arc::new(RegisteredToolchains::default())
         } else {
-            if self.computing_toolchains.is_some()
+            if self
+                .computing_toolchains
+                .iter()
+                .any(|computing| computing.config == config)
                 && !self.registered_toolchains.contains_key(&config)
             {
-                return Err(self.toolchain_cycle(active, &key, &types[0].requirement.label));
+                return Err(self.toolchain_cycle(
+                    config,
+                    active,
+                    &key,
+                    &types[0].requirement.label,
+                ));
             }
             self.registered_toolchains(config, configured, plan)
                 .map_err(|error| self.resolution_error(rule, config, error))?
@@ -2268,6 +2529,7 @@ impl Engine {
     /// resolution (`toolchain type T`); reported without location.
     fn toolchain_cycle(
         &mut self,
+        config: ConfigId,
         active: &[ConfiguredTargetKey],
         key: &ToolchainContextKey,
         first_type: &Label,
@@ -2293,7 +2555,7 @@ impl Engine {
                 .join(", "),
             shown(first_type)
         ));
-        self.toolchain_cycle_report = Some(report.clone());
+        self.toolchain_cycle_reports.insert(config, report.clone());
         report
     }
 
@@ -2406,7 +2668,11 @@ impl Engine {
         if let Some(cached) = self.registered_toolchains.get(&config) {
             return cached.clone();
         }
-        if let Some(key) = &self.computing_toolchains {
+        if let Some(key) = self
+            .computing_toolchains
+            .iter()
+            .find(|computing| computing.config == config)
+        {
             // Reached only through resolve_toolchains, which reports the
             // cycle itself (Self::toolchain_cycle).
             return Err(ResolutionError::Propagated(format!(
@@ -2415,7 +2681,7 @@ impl Engine {
             )));
         }
         // Set to each registered target while it is analyzed.
-        self.computing_toolchains = Some(ConfiguredTargetKey::new(
+        self.computing_toolchains.push(ConfiguredTargetKey::new(
             Label {
                 repository: String::new(),
                 package: String::new(),
@@ -2424,7 +2690,7 @@ impl Engine {
             config,
         ));
         let result = self.compute_registered_toolchains(config, configured, plan);
-        self.computing_toolchains = None;
+        self.computing_toolchains.pop();
         self.registered_toolchains.insert(config, result.clone());
         result
     }
@@ -2463,10 +2729,12 @@ impl Engine {
         let mut cycle = None;
         let mut analyzed = Vec::new();
         for label in labels {
-            self.computing_toolchains = Some(ConfiguredTargetKey::new(label.clone(), config));
+            if let Some(computing) = self.computing_toolchains.last_mut() {
+                computing.label = label.clone();
+            }
             match self.analyze(&label, config, &mut Vec::new(), configured, plan) {
                 Ok(()) => analyzed.push(label),
-                Err(error) => match self.toolchain_cycle_report.take() {
+                Err(error) => match self.toolchain_cycle_reports.remove(&config) {
                     Some(report) if error.contains(&report) => cycle = Some(report),
                     _ => return Err(ResolutionError::Propagated(error)),
                 },
@@ -3259,8 +3527,14 @@ impl Engine {
                     "{prefix}target '{shown}' depends on deprecated target '{shown_dependency}': {warning}"
                 )
             };
-            self.warnings
-                .push(located(rule.location.as_deref(), message));
+            // Skyframe reports an identical warning event once
+            // (EmittedEventState.addWarning, skyframe/EmittedEventState.java:32-52):
+            // an edge to the same deprecated target in two configurations,
+            // or through two attributes, warns once.
+            let warning = located(rule.location.as_deref(), message);
+            if !self.warnings.contains(&warning) {
+                self.warnings.push(warning);
+            }
         }
         Ok(testonly_error)
     }
@@ -3374,6 +3648,28 @@ impl Engine {
         if jobs == 0 {
             return Err("jobs must be greater than zero".into());
         }
+        let (nodes, requested) = self.plan_build(labels)?;
+        let results = scheduler::execute_graph(cache, nodes, jobs)?;
+        let mut summary = BuildSummary::default();
+        for result in results.values() {
+            if result.cache_hit {
+                summary.cache_hits += 1;
+            } else {
+                summary.executed += 1;
+            }
+        }
+        for (key, mut artifact) in requested {
+            if let Some((id, index)) = &artifact.producer {
+                artifact.real = results[id].outputs[*index].clone();
+            }
+            summary.outputs.push((key.label, artifact.real));
+        }
+        Ok(summary)
+    }
+
+    /// Analysis and action planning of a build: the actions reachable from
+    /// the requested targets' artifacts, validated before any execution.
+    fn plan_build(&mut self, labels: &[Label]) -> Result<BuildPlan, String> {
         // TargetPatternPhaseFunction.maybeReportDeprecation
         // (skyframe/TargetPatternPhaseFunction.java:255-275): every requested
         // rule whose `deprecation` is explicitly specified (package defaults
@@ -3388,7 +3684,8 @@ impl Engine {
         let mut configured = ConfiguredNodes::new();
         self.registrations_checked = false;
         self.registered_toolchains.clear();
-        self.toolchain_cycle_report = None;
+        self.toolchain_cycle_reports.clear();
+        self.exec_configurations.clear();
         self.toolchain_contexts.clear();
         self.toolchain_implementations.clear();
         // BuildConfigurationKeyProducer resolves an explicit --platforms
@@ -3409,16 +3706,30 @@ impl Engine {
                 .map_err(|error| error.target_text())?;
         }
         for label in labels {
-            self.analyze(label, top, &mut Vec::new(), &mut configured, &mut plan)
-                .map_err(|error| match error.split_once(ANALYSIS_ABORTED) {
-                    // BuildView: `Analysis of target 'L' failed; build
-                    // aborted: MESSAGE` for the requested target.
-                    Some((_, message)) => format!(
-                        "Analysis of target '{}' failed; build aborted: {message}",
-                        crate::rule_declarations::canonical_form(label)
-                    ),
-                    None => error,
-                })?;
+            // A requested non-alias rule is first keyed in the untrimmed
+            // top-level configuration, then in its test-trimmed one
+            // (TestTrimmingTransitionFactory.create,
+            // analysis/test/TestTrimmingTransitionFactory.java:92-135:
+            // aliases may point to tests and are not trimmed).
+            self.requested_trimmed_root = match self.target(label) {
+                Ok(Target::Rule(rule))
+                    if !forwards(&rule) && !matches!(rule.kind, RuleKind::PackageGroup(_)) =>
+                {
+                    Some(ConfiguredTargetKey::new(rule.label.clone(), top))
+                }
+                _ => None,
+            };
+            let analyzed = self.analyze(label, top, &mut Vec::new(), &mut configured, &mut plan);
+            self.requested_trimmed_root = None;
+            analyzed.map_err(|error| match error.split_once(ANALYSIS_ABORTED) {
+                // BuildView: `Analysis of target 'L' failed; build
+                // aborted: MESSAGE` for the requested target.
+                Some((_, message)) => format!(
+                    "Analysis of target '{}' failed; build aborted: {message}",
+                    crate::rule_declarations::canonical_form(label)
+                ),
+                None => error,
+            })?;
         }
         // Alias-like targets and the end of their alias chain: dependents see
         // that target's label, kind and providers (AliasConfiguredTarget).
@@ -3456,6 +3767,12 @@ impl Engine {
             let key = ConfiguredTargetKey::new(rule.label.clone(), config);
             let output_root = self.configurations.output_root(config);
             let action_owner = key.action_owner(top);
+            // The configuration of the target's exec-transition edges.
+            let exec_config = self
+                .exec_configurations
+                .get(&key)
+                .copied()
+                .unwrap_or(config);
             let dependency_key = |label: Label| ConfiguredTargetKey::new(label, config);
             if matches!(rule.kind, RuleKind::PackageGroup(_)) {
                 let node = self.resolve_group(&rule.label, &mut Vec::new())?;
@@ -3482,15 +3799,32 @@ impl Engine {
                 // prerequisite (DependencyResolutionHelpers.java:408-416). The
                 // resolved toolchain implementations are dependencies too
                 // (their ToolchainInfo files are action inputs).
-                let mut dependency_labels = Vec::new();
-                for src in &rule.srcs {
-                    dependency_labels.push(self.resolve_rule_src(rule, src)?);
+                // Each dependency with the configuration of its edge and its
+                // key in the implementation's dependency map
+                // (analysis::dependency_key).
+                let mut dependency_labels: Vec<(Label, ConfigId, String)> = Vec::new();
+                for edge in dependency_edges(rule) {
+                    let label = self.resolve_rule_src(rule, &edge.label)?;
+                    let edge_config = match edge.cfg {
+                        EdgeCfg::Target => config,
+                        EdgeCfg::Exec(_) => exec_config,
+                    };
+                    let map_key =
+                        analysis::dependency_key(&label.to_string(), edge.cfg != EdgeCfg::Target);
+                    dependency_labels.push((label, edge_config, map_key));
                 }
+                let mut add_target = |label: Label| {
+                    let map_key = label.to_string();
+                    if !dependency_labels
+                        .iter()
+                        .any(|(_, _, seen)| *seen == map_key)
+                    {
+                        dependency_labels.push((label, config, map_key));
+                    }
+                };
                 if let Some(context) = self.toolchain_contexts.get(&key) {
                     for implementation in context.resolved_labels() {
-                        if !dependency_labels.contains(&implementation) {
-                            dependency_labels.push(implementation);
-                        }
+                        add_target(implementation);
                     }
                 }
                 // The target's exec_compatible_with constraint values
@@ -3503,20 +3837,17 @@ impl Engine {
                         .target
                         .labels("exec_compatible_with")
                     {
-                        let label = self.resolve_rule_src(rule, &text)?;
-                        if !dependency_labels.contains(&label) {
-                            dependency_labels.push(label);
-                        }
+                        add_target(self.resolve_rule_src(rule, &text)?);
                     }
                 }
-                for label in dependency_labels {
-                    let artifacts = self.artifacts(&label, config, &dry, &declared)?;
+                for (label, edge_config, map_key) in dependency_labels {
+                    let artifacts = self.artifacts(&label, edge_config, &dry, &declared)?;
                     let files = artifacts.iter().map(Artifact::file).collect();
                     for artifact in artifacts {
                         artifact_index.insert(artifact.file(), artifact.clone());
                         available.insert(artifact.file(), artifact);
                     }
-                    let dependency = dependency_key(label.clone());
+                    let dependency = ConfiguredTargetKey::new(label.clone(), edge_config);
                     let target_provider_files =
                         provider_files.get(&dependency).cloned().unwrap_or_default();
                     for file in &target_provider_files {
@@ -3531,7 +3862,7 @@ impl Engine {
                     let actual = forwarded.get(&dependency).unwrap_or(&label).clone();
                     let target = self.target(&actual)?;
                     dependency_targets.insert(
-                        label.to_string(),
+                        map_key,
                         DependencyTarget {
                             label: actual.to_string(),
                             files,
@@ -3727,6 +4058,32 @@ impl Engine {
             for artifact in &inputs {
                 artifact_index.insert(artifact.file(), artifact.clone());
             }
+            // genrule `tools`, built in the exec configuration: action inputs
+            // and $(location) entries merged with the srcs' (CommandHelper,
+            // analysis/CommandHelper.java:128-180), never $(SRCS)
+            // (GenRuleBase.java:95-110, 170-175).
+            let mut tools = Vec::new();
+            if let (RuleKind::Genrule, Some(native)) = (&rule.kind, &rule.native) {
+                for text in native.labels("tools") {
+                    let label = self.resolve_rule_src(rule, &text)?;
+                    let artifacts = self.artifacts(&label, exec_config, &dry, &declared)?;
+                    let paths = artifacts
+                        .iter()
+                        .map(|artifact| artifact.exec.clone())
+                        .collect::<Vec<_>>();
+                    locations
+                        .entry(label.to_string())
+                        .or_default()
+                        .extend(paths.iter().cloned());
+                    if text != label.to_string() {
+                        locations.entry(text).or_default().extend(paths);
+                    }
+                    for artifact in &artifacts {
+                        artifact_index.insert(artifact.file(), artifact.clone());
+                    }
+                    tools.extend(artifacts);
+                }
+            }
             let outputs = rule
                 .outs
                 .iter()
@@ -3784,8 +4141,9 @@ impl Engine {
                     arguments: Vec::new(),
                     environment: BTreeMap::new(),
                 };
-                source_inputs.insert(action.id.clone(), source_paths(&inputs));
-                nodes.push(plan_action(action, inputs, &main_ignored)?);
+                let action_inputs = inputs.iter().cloned().chain(tools).collect::<Vec<_>>();
+                source_inputs.insert(action.id.clone(), source_paths(&action_inputs));
+                nodes.push(plan_action(action, action_inputs, &main_ignored)?);
                 let artifacts = outputs
                     .into_iter()
                     .enumerate()
@@ -3962,22 +4320,7 @@ impl Engine {
         if !errors.is_empty() {
             return Err(errors.join("\n"));
         }
-        let results = scheduler::execute_graph(cache, nodes, jobs)?;
-        let mut summary = BuildSummary::default();
-        for result in results.values() {
-            if result.cache_hit {
-                summary.cache_hits += 1;
-            } else {
-                summary.executed += 1;
-            }
-        }
-        for (key, mut artifact) in requested {
-            if let Some((id, index)) = &artifact.producer {
-                artifact.real = results[id].outputs[*index].clone();
-            }
-            summary.outputs.push((key.label, artifact.real));
-        }
-        Ok(summary)
+        Ok((nodes, requested))
     }
 }
 
@@ -5635,6 +5978,213 @@ m = macro(implementation=emit)
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// A workspace whose `//:top` depends on `//:leaf` in the target and
+    /// (cfg = "exec") the exec configuration, every rule resolving a
+    /// toolchain, with the explicit host platform //p:linux.
+    fn two_configuration_engine(
+        build: &str,
+        registrations: &str,
+        extra_defs: &str,
+    ) -> (Fixture, Engine) {
+        let f = Fixture::new();
+        f.write(
+            "MODULE.bazel",
+            &format!("module(name='main')\nregister_toolchains('//tc:all'{registrations})\n"),
+        );
+        f.write(
+            "os/BUILD",
+            "constraint_setting(name='os', visibility=['//visibility:public'])\nconstraint_value(name='linux', constraint_setting=':os', visibility=['//visibility:public'])\n",
+        );
+        f.write(
+            "p/BUILD",
+            "platform(name='linux', constraint_values=['//os:linux'], visibility=['//visibility:public'])\n",
+        );
+        f.write("r/BUILD", "");
+        f.write(
+            "r/defs.bzl",
+            &format!("def _impl_impl(ctx):\n    return [platform_common.ToolchainInfo(name='tc'), DefaultInfo()]\nimpl = rule(implementation=_impl_impl)\ndef _gen_impl(ctx):\n    out = ctx.actions.declare_file(ctx.label.name + '.txt')\n    ctx.actions.write(out, ' '.join([f.path for f in ctx.files.tool + ctx.files.dep]) + ctx.toolchains['//tc:type'].name)\n    return [DefaultInfo(files=depset([out] + ctx.files.tool + ctx.files.dep))]\ngen = rule(implementation=_gen_impl, toolchains=['//tc:type'], attrs={{'tool': attr.label(cfg='exec'), 'dep': attr.label()}})\n{extra_defs}"),
+        );
+        f.write(
+            "tc/BUILD",
+            "load('//r:defs.bzl', 'impl')\ntoolchain_type(name='type', visibility=['//visibility:public'])\nimpl(name='impl')\ntoolchain(name='tc', toolchain_type=':type', toolchain=':impl')\n",
+        );
+        f.write("BUILD", build);
+        let mut engine = Engine::new(f.0.clone());
+        let mut options = crate::configuration::CommandLineOptions::default();
+        options.parse("--host_platform=//p:linux", None).unwrap();
+        engine.set_configuration(
+            options
+                .configuration(&crate::configuration::parse_canonical_option_label)
+                .unwrap(),
+        );
+        (f, engine)
+    }
+
+    #[test]
+    fn one_engine_analyzes_a_target_in_two_configurations() {
+        let (_f, mut engine) = two_configuration_engine(
+            "load('//r:defs.bzl', 'gen')\ngen(name='leaf')\ngen(name='top', tool=':leaf', dep=':leaf')\n",
+            "",
+            "",
+        );
+        let labels = engine.select_for_build(&["//:top".into()], "").unwrap();
+        let (nodes, requested) = engine.plan_build(&labels).unwrap();
+        let top = engine.configurations.top();
+        let key = |name: &str, config| ConfiguredTargetKey::new(test_label(name), config);
+        let exec = engine.exec_configurations[&key("//:top", top)];
+        assert_ne!(exec, top);
+        assert_eq!(engine.configurations.mnemonic(exec), "linux-opt-exec");
+        // Separate actions: `L#n` in the top-level configuration,
+        // `L[config8]#n` in the exec configuration; separate output roots,
+        // so the producers of the two leaf outputs never conflict.
+        let actions = nodes
+            .iter()
+            .map(|node| {
+                (
+                    node.action.id.clone(),
+                    node.action.outputs[0].display().to_string(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let exec_leaf = format!("//:leaf[{}]#0", &exec.to_string()[..8]);
+        assert_eq!(
+            actions,
+            BTreeMap::from([
+                (
+                    "//:leaf#0".to_owned(),
+                    "bazel-out/rust-fastbuild/bin/leaf.txt".to_owned()
+                ),
+                (
+                    exec_leaf.clone(),
+                    "bazel-out/linux-opt-exec/bin/leaf.txt".to_owned()
+                ),
+                (
+                    "//:top#0".to_owned(),
+                    "bazel-out/rust-fastbuild/bin/top.txt".to_owned()
+                ),
+            ])
+        );
+        // The consumer sees both configured leaves (its write content).
+        let top_action = nodes
+            .iter()
+            .find(|node| node.action.id == "//:top#0")
+            .unwrap();
+        assert_eq!(
+            top_action.action.write.as_ref().unwrap().content,
+            b"bazel-out/linux-opt-exec/bin/leaf.txt bazel-out/rust-fastbuild/bin/leaf.txttc"
+        );
+        // The requested target's files: its output and both leaves'.
+        assert_eq!(
+            requested
+                .iter()
+                .map(|(requested, artifact)| {
+                    assert_eq!(*requested, key("//:top", top));
+                    artifact.exec.display().to_string()
+                })
+                .collect::<Vec<_>>(),
+            [
+                "bazel-out/rust-fastbuild/bin/top.txt",
+                "bazel-out/linux-opt-exec/bin/leaf.txt",
+                "bazel-out/rust-fastbuild/bin/leaf.txt"
+            ]
+        );
+        // Toolchain contexts and registered toolchains per configuration.
+        assert_eq!(
+            engine
+                .toolchain_contexts
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            {
+                let mut keys = vec![
+                    key("//:leaf", top),
+                    key("//:leaf", exec),
+                    key("//:top", top),
+                ];
+                keys.sort();
+                keys
+            }
+        );
+        assert_eq!(
+            engine
+                .registered_toolchains
+                .keys()
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([top, exec])
+        );
+        assert!(engine.computing_toolchains.is_empty());
+        // Exec of exec is the same configuration; nothing else was interned.
+        assert_eq!(
+            engine
+                .configurations
+                .intern_exec(exec, test_label("//p:linux"), &BTreeSet::new()),
+            Ok(exec)
+        );
+    }
+
+    /// The registered-toolchain guards are per configuration: computing
+    /// the top-level registry analyzes a registered target whose exec edge
+    /// needs the exec configuration's registry, which is computed nested
+    /// instead of being reported as a toolchain cycle.
+    #[test]
+    fn nested_exec_registries_are_not_toolchain_cycles() {
+        let (_f, mut engine) = two_configuration_engine(
+            "load('//r:defs.bzl', 'gen', 'plain')\nconfig_setting(name='opt', values={'compilation_mode': 'opt'})\ngen(name='leaf')\nplain(name='reg', tool=select({':opt': None, '//conditions:default': ':leaf'}))\ngen(name='top')\n",
+            ", '//:reg'",
+            "def _plain_impl(ctx):\n    return []\nplain = rule(implementation=_plain_impl, attrs={'tool': attr.label(cfg='exec')})\n",
+        );
+        let labels = engine.select_for_build(&["//:top".into()], "").unwrap();
+        let error = engine.plan_build(&labels).unwrap_err();
+        assert!(!error.contains("Misconfigured toolchains"), "{error}");
+        assert!(
+            error.contains("invalid registered toolchain '//:reg': target does not provide the DeclaredToolchainInfo provider"),
+            "{error}"
+        );
+        assert!(engine.computing_toolchains.is_empty());
+        // The exec configuration's registry was computed (nested) and kept.
+        assert_eq!(engine.registered_toolchains.len(), 2);
+    }
+
+    #[test]
+    fn cycles_through_exec_edges_print_each_configuration() {
+        let (_f, mut engine) = two_configuration_engine(
+            "load('//r:defs.bzl', 'gen')\ngen(name='a', tool=':b')\ngen(name='b', tool=':a')\n",
+            "",
+            "",
+        );
+        let labels = engine.select_for_build(&["//:a".into()], "").unwrap();
+        let error = engine.plan_build(&labels).unwrap_err();
+        let top = engine.configurations.top();
+        let exec = engine.exec_configurations[&ConfiguredTargetKey::new(test_label("//:a"), top)];
+        // The requested rule's untrimmed top-level key precedes its own.
+        let untrimmed = engine.configurations.get(top).untrimmed_id();
+        assert_ne!(untrimmed, top);
+        assert!(
+            error.ends_with(&format!(
+                ": in gen rule //:b: cycle in dependency graph:\n    //:a ({untrimmed})\n    //:a ({top})\n.-> //:b ({exec})\n|   //:a ({exec})\n`-- //:b ({exec})"
+            )),
+            "{error}"
+        );
+        // A requested rule inside its own cycle: only the untrimmed key is
+        // on the path.
+        let (_f, mut engine) = two_configuration_engine(
+            "load('//r:defs.bzl', 'gen')\ngen(name='a', dep=':b')\ngen(name='b', dep=':a')\n",
+            "",
+            "",
+        );
+        let labels = engine.select_for_build(&["//:a".into()], "").unwrap();
+        let error = engine.plan_build(&labels).unwrap_err();
+        let top = engine.configurations.top();
+        let untrimmed = engine.configurations.get(top).untrimmed_id();
+        assert!(
+            error.ends_with(&format!(
+                ": in gen rule //:a: cycle in dependency graph:\n    //:a ({untrimmed})\n.-> //:a ({top})\n|   //:b ({top})\n`-- //:a ({top})"
+            )),
+            "{error}"
+        );
     }
 
     #[test]

@@ -52,6 +52,11 @@ pub struct ResolverOptions {
     pub builtin_profile: BuiltinProfile,
     /// Remote CLI resolution requires explicitly disabling unsupported lockfiles.
     pub allow_remote: bool,
+    /// `--incompatible_disable_starlark_host_transitions` (a Starlark
+    /// semantics option, packages/semantics/BuildLanguageOptions.java:590-598;
+    /// default false): `attr.*(cfg = "host")` fails at .bzl evaluation
+    /// (analysis/starlark/StarlarkAttrModule.java:520-531).
+    pub disable_starlark_host_transitions: bool,
 }
 
 impl ResolverOptions {

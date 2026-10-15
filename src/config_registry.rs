@@ -7,10 +7,11 @@
 //! Every phase-2 (analysis and action planning) value is keyed by a
 //! [`ConfiguredTargetKey`] (skyframe/ConfiguredTargetKey.java): the label and
 //! the identity of the configuration the target is analyzed in. One build
-//! has a top-level configuration; dependency edges currently always keep
-//! their parent's configuration (no transitions are modelled yet, N18b-d).
+//! has a top-level configuration; dependency edges keep their parent's
+//! configuration except across the exec transition ([`exec_transition`],
+//! N18b; Starlark and split transitions are N18c-d).
 use std::cell::OnceCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -66,8 +67,11 @@ pub struct Configurations {
     /// in it, and it is the baseline of every output path mnemonic
     /// (`diff_against_dynamic_baseline`, analysis/BuildView.java:280).
     top: ConfigId,
-    /// The exec configuration derived from `top` (N18b; unused yet).
-    exec_baseline: OnceCell<ConfigId>,
+    /// The baseline of exec configurations' mnemonics: `top` with the exec
+    /// transition applied for its `--host_platform` (SkyframeExecutor.adjustForExec,
+    /// skyframe/SkyframeExecutor.java:1525-1572; BaselineOptionsFunction,
+    /// skyframe/config/BaselineOptionsFunction.java:47-95).
+    exec_baseline: OnceCell<Arc<Configuration>>,
     /// The output path mnemonic of each configuration.
     mnemonics: BTreeMap<ConfigId, String>,
 }
@@ -88,7 +92,12 @@ impl Configurations {
             exec_baseline: OnceCell::new(),
             mnemonics: BTreeMap::new(),
         };
-        configurations.mnemonics.insert(id, mnemonic(&top, &top));
+        // The top-level configuration is never an exec configuration
+        // (`is exec configuration` is internal), so its CPU descriptor is
+        // the fixed `rust` and cannot be invalid.
+        let top_mnemonic =
+            mnemonic(&top, &top).expect("internal error: top-level output path mnemonic");
+        configurations.mnemonics.insert(id, top_mnemonic);
         configurations.by_id.insert(id, Arc::new(top));
         configurations
     }
@@ -111,21 +120,70 @@ impl Configurations {
             .unwrap_or_else(|| panic!("internal error: configuration {id} is not interned"))
     }
 
-    /// Intern `configuration` (a configuration derived from the top-level
-    /// one, N18b-d) and return its identity.
-    pub fn intern(&mut self, configuration: Configuration) -> ConfigId {
+    /// Intern `configuration`, a configuration derived from the top-level
+    /// one, with the output path mnemonic computed against `baseline`, and
+    /// return its identity; an invalid mnemonic is Bazel's
+    /// InvalidMnemonicException text.
+    pub fn intern(
+        &mut self,
+        configuration: Configuration,
+        baseline: &Configuration,
+    ) -> Result<ConfigId, String> {
         let id = configuration.id;
         if !self.by_id.contains_key(&id) {
-            let mnemonic = mnemonic(&configuration, self.top_configuration());
+            let mnemonic = mnemonic(&configuration, baseline)?;
             self.mnemonics.insert(id, mnemonic);
             self.by_id.insert(id, Arc::new(configuration));
         }
-        id
+        Ok(id)
     }
 
-    /// The exec configuration once created (N18b).
-    pub fn exec_baseline(&self) -> Option<ConfigId> {
-        self.exec_baseline.get().copied()
+    /// The mnemonic baseline of exec configurations before its platform is
+    /// replaced (BuildConfigurationFunction.getBaselineOptions,
+    /// skyframe/config/BuildConfigurationFunction.java:133-174, and
+    /// BaselineOptionsFunction, skyframe/config/BaselineOptionsFunction.java:47-95):
+    /// under the default `diff_against_dynamic_baseline` scheme an exec
+    /// configuration uses the exec-transitioned top-level options
+    /// (SkyframeExecutor.adjustForExec, skyframe/SkyframeExecutor.java:1525-1572,
+    /// whose execution platform is the top-level `--host_platform` label as
+    /// given). `target_scoped` are the top-level Starlark flags that the exec
+    /// transition resets.
+    pub fn exec_baseline(&self, target_scoped: &BTreeSet<Label>) -> &Arc<Configuration> {
+        self.exec_baseline.get_or_init(|| {
+            let top = self.top_configuration();
+            Arc::new(exec_transition(
+                top,
+                top.native.host_platform.clone(),
+                target_scoped,
+            ))
+        })
+    }
+
+    /// The exec configuration of `from` for an edge whose parent's
+    /// execution platform is `execution_platform`, interned with the exec
+    /// baseline.
+    pub fn intern_exec(
+        &mut self,
+        from: ConfigId,
+        execution_platform: Label,
+        target_scoped: &BTreeSet<Label>,
+    ) -> Result<ConfigId, String> {
+        let exec = exec_transition(self.get(from), execution_platform, target_scoped);
+        if let Some(existing) = self.by_id.get(&exec.id) {
+            return Ok(existing.id);
+        }
+        // An exec configuration uses its platform in the output directory
+        // (CoreOptions.usePlatformInOutputDir, analysis/config/CoreOptions.java:1146-1149:
+        // `--experimental_platform_in_output_dir` defaults to AUTO), so its
+        // baseline gets the configuration's own target platform
+        // (BuildConfigurationFunction.java:151-160, BaselineOptionsFunction.java:72-77).
+        let mut baseline = self.exec_baseline(target_scoped).as_ref().clone();
+        if let [platform] = exec.native.platforms.as_slice() {
+            let mut native = baseline.native.clone();
+            native.platforms = vec![platform.clone()];
+            baseline = Configuration::new(native, baseline.starlark.clone());
+        }
+        self.intern(exec, &baseline)
     }
 
     /// The output path mnemonic of an interned configuration.
@@ -152,28 +210,146 @@ pub fn output_root(mnemonic: &str) -> String {
     format!("bazel-out/{mnemonic}/bin")
 }
 
+/// The native profile's CPU descriptor (Bazel's `--cpu`, `k8` on this host;
+/// docs/CONFIGURATION.md D1): the historical `rust`.
+pub const NATIVE_CPU: &str = "rust";
+
+/// PlatformOptions.DEFAULT_PLATFORM_NAMES (analysis/PlatformOptions.java:43-50).
+const DEFAULT_PLATFORM_NAMES: [&str; 5] = [
+    "host",
+    "host_platform",
+    "target_platform",
+    "default_host",
+    "default_target",
+];
+
+/// The CPU/platform descriptor of `configuration`
+/// (OutputPathMnemonicComputer.handlePlatformCpuDescriptor,
+/// analysis/config/OutputPathMnemonicComputer.java:247-282) and whether
+/// `platforms` is explicit in the output path. Only exec configurations use
+/// their platform (CoreOptions.usePlatformInOutputDir, CoreOptions.java:1146-1149:
+/// `--experimental_platform_in_output_dir=auto`): with one platform,
+/// computePlatformName's legacy heuristic
+/// (`--experimental_use_platforms_in_output_dir_legacy_heuristic`, default
+/// true, CoreOptions.java:182-194; no `--experimental_override_platform_cpu_name`)
+/// gives the platform's name unless it is a default name
+/// (PlatformOptions.platformIsDefault), then the CPU. Target configurations
+/// use the CPU (`cpu` explicit, which the native profile does not model).
+fn cpu_descriptor(configuration: &Configuration) -> (&str, bool) {
+    let native = &configuration.native;
+    if !native.is_exec {
+        return (NATIVE_CPU, false);
+    }
+    match native.platforms.as_slice() {
+        [platform] if DEFAULT_PLATFORM_NAMES.contains(&platform.name.as_str()) => {
+            (NATIVE_CPU, true)
+        }
+        [platform] => (platform.name.as_str(), true),
+        // Not marked explicit, so the ST- hash covers `platforms`.
+        _ => ("multi-platform", false),
+    }
+}
+
 /// OutputPathMnemonicComputer.computeMnemonic
 /// (analysis/config/OutputPathMnemonicComputer.java:174-245) for the native
-/// profile: `rust-{compilation_mode}[-{platform_suffix}][-ST-{12 hex}]`. The
-/// CPU/platform descriptor is the profile's fixed `rust` (a documented
-/// divergence from Bazel's `k8`, which marks `cpu` explicit in the output
-/// path); `compilation_mode` and `platform_suffix` are explicit too. The
-/// `ST-` fragment hashes every other option that differs from `baseline`
+/// profile: `{cpu}-{compilation_mode}[-{platform_suffix}][-ST-{12 hex}]`.
+/// The CPU descriptor ([`cpu_descriptor`]) is the profile's fixed `rust`
+/// where Bazel writes its `--cpu` (`k8`, a documented divergence that keeps
+/// the default `rust-fastbuild` root), and the execution platform's name for
+/// an exec configuration with a non-default platform name, as in Bazel
+/// (`linux-opt-exec`). `compilation_mode`, `platform_suffix` and, for exec
+/// configurations, `platforms` are explicit in the path. The `ST-` fragment
+/// hashes every other option that differs from `baseline`
 /// (computeNameFragmentWithDiff, :286-318), so the top-level configuration,
 /// its own baseline, keeps the historical `rust-fastbuild`, `rust-dbg` and
-/// `rust-opt` roots.
-pub fn mnemonic(configuration: &Configuration, baseline: &Configuration) -> String {
+/// `rust-opt` roots. The fragment follows Bazel's algorithm over the native
+/// option set and values only: it can never equal Bazel's hash, which covers
+/// every Bazel option (docs/CONFIGURATION.md). A descriptor with a path
+/// separator is Bazel's InvalidMnemonicException
+/// (`CPU/Platform descriptor 'D' is invalid as part of a path: must not
+/// contain /`, :55-61, 134-144; vfs/PathFragment.java:948-957).
+pub fn mnemonic(configuration: &Configuration, baseline: &Configuration) -> Result<String, String> {
     let native = &configuration.native;
-    let mut mnemonic = format!("rust-{}", native.compilation_mode);
+    let (cpu, platforms_explicit) = cpu_descriptor(configuration);
+    if cpu.contains('/') {
+        return Err(format!(
+            "CPU/Platform descriptor '{cpu}' is invalid as part of a path: must not contain /"
+        ));
+    }
+    let mut mnemonic = format!("{cpu}-{}", native.compilation_mode);
     if let Some(suffix) = native.platform_suffix.filter(|suffix| !suffix.is_empty()) {
         mnemonic.push('-');
         mnemonic.push_str(suffix);
     }
-    if let Some(fragment) = name_fragment_with_diff(configuration, baseline) {
+    let explicit: &[&str] = if platforms_explicit {
+        &["compilation_mode", "platform_suffix", "platforms"]
+    } else {
+        EXPLICIT_IN_OUTPUT_PATH
+    };
+    if let Some(fragment) = name_fragment_with_diff(configuration, baseline, explicit) {
         mnemonic.push('-');
         mnemonic.push_str(&fragment);
     }
-    mnemonic
+    Ok(mnemonic)
+}
+
+/// Bazel's exec transition for the modelled options: the built-in Starlark
+/// `bazel_exec_transition` (`--experimental_exec_config` default,
+/// analysis/config/CoreOptions.java:97-108;
+/// src/main/starlark/builtins_bzl/common/builtin_exec_platforms.bzl) over a
+/// baseline of every native option at its DEFAULT
+/// (FunctionTransitionUtil.maybeGetExecDefaults,
+/// analysis/starlark/FunctionTransitionUtil.java:167-225), then the native
+/// finalizer (ExecutionTransitionFactory.ExecTransitionFinalizer.patch,
+/// analysis/config/ExecutionTransitionFactory.java:192-268):
+///
+/// * `compilation_mode` = `host_compilation_mode`, `is exec configuration`
+///   = true, `stamp` = false (`_core_options`, builtin_exec_platforms.bzl:221-229);
+///   `host_compilation_mode` propagates (:231-235);
+/// * `strip` = `always` (CppOptions, :291-348); `force_pic` is not
+///   propagated, so it is the default;
+/// * `--define` is carried (`experimental_exclude_defines_from_exec_config`
+///   is false, FunctionTransitionUtil.java:210-223);
+/// * `host_platform` and `extra_toolchains` propagate (PlatformOptions,
+///   builtin_exec_platforms.bzl:411-419); `platforms` becomes the parent's
+///   execution platform (ExecutionTransitionFactory.java:203-207);
+/// * `platform_suffix` = `exec` (the default
+///   `--experimental_exec_configuration_distinguisher=off`,
+///   CoreOptions.java:488-505; ExecutionTransitionFactory.java:255-258);
+/// * Starlark flags are carried unless their `scope` is `target`
+///   (`--incompatible_exclude_starlark_flags_from_exec_config` is false,
+///   FunctionTransitionUtil.getExecPropagatingStarlarkFlags, :231-251).
+///   Feature flags (ExecutionTransitionFactory.java:209-221) do not exist
+///   natively (config_feature_flag fails explicitly).
+///
+/// The transition is idempotent: the exec configuration of an exec
+/// configuration with the same execution platform is itself.
+pub fn exec_transition(
+    from: &Configuration,
+    execution_platform: Label,
+    target_scoped: &BTreeSet<Label>,
+) -> Configuration {
+    let defaults = NativeOptions::default();
+    let native = NativeOptions {
+        compilation_mode: from.native.host_compilation_mode,
+        stamp: false,
+        define: from.native.define.clone(),
+        strip: "always",
+        force_pic: defaults.force_pic,
+        platforms: vec![execution_platform],
+        host_platform: from.native.host_platform.clone(),
+        extra_toolchains: from.native.extra_toolchains.clone(),
+        host_compilation_mode: from.native.host_compilation_mode,
+        is_exec: true,
+        platform_suffix: Some("exec"),
+    };
+    let starlark = from
+        .starlark
+        .iter()
+        .filter(|(label, _)| !target_scoped.contains(*label))
+        .map(|(label, value)| (label.clone(), value.clone()))
+        .collect();
+    Configuration::new(native, starlark)
 }
 
 /// Options whose value is explicit in the mnemonic
@@ -193,10 +369,6 @@ fn native_option_strings(native: &NativeOptions) -> BTreeMap<&'static str, Strin
     }
     let list = |items: &[String]| format!("=[{}]", items.join(", "));
     options.insert("extra_toolchains", list(&native.extra_toolchains));
-    options.insert(
-        "host_compilation_mode",
-        format!("={}", native.host_compilation_mode),
-    );
     options.insert("is exec configuration", format!("={}", native.is_exec));
     options.insert(
         "platform_suffix",
@@ -214,6 +386,7 @@ fn native_option_strings(native: &NativeOptions) -> BTreeMap<&'static str, Strin
 fn name_fragment_with_diff(
     configuration: &Configuration,
     baseline: &Configuration,
+    explicit: &[&str],
 ) -> Option<String> {
     if configuration.id == baseline.id {
         return None;
@@ -223,7 +396,7 @@ fn name_fragment_with_diff(
     // A TreeMap of `KEY` to its hash form.
     let mut chosen: BTreeMap<String, String> = BTreeMap::new();
     for (name, value) in &to {
-        if from.get(name) != Some(value) && !EXPLICIT_IN_OUTPUT_PATH.contains(name) {
+        if from.get(name) != Some(value) && !explicit.contains(name) {
             let key = format!("//command_line_option:{name}");
             chosen.insert(key.clone(), format!("{key}{value}"));
         }
@@ -332,61 +505,168 @@ mod tests {
 
     #[test]
     fn derived_configurations_add_the_suffix_and_a_diff_hash() {
-        let top = parsed(&[]);
+        let top = parsed(&["--host_platform=//p:h"]);
         let mut configurations = Configurations::new(top.clone());
-        assert_eq!(configurations.exec_baseline(), None);
         // Interning is idempotent and keeps the top-level configuration.
-        assert_eq!(configurations.intern(top.clone()), configurations.top());
+        assert_eq!(
+            configurations.intern(top.clone(), &top),
+            Ok(configurations.top())
+        );
         assert_eq!(
             configurations.mnemonic(configurations.top()),
             "rust-fastbuild"
         );
-        // An exec-like configuration: suffix `exec`, mode from
-        // --host_compilation_mode, `is exec configuration` in the hash.
-        let mut native = top.native.clone();
-        native.compilation_mode = native.host_compilation_mode;
-        native.is_exec = true;
-        native.platform_suffix = Some("exec");
-        let exec = Configuration::new(native, BTreeMap::new());
-        let id = configurations.intern(exec.clone());
+        // An exec configuration uses its platform's name as the CPU
+        // descriptor and `platforms` is explicit (paired capture: Bazel's
+        // `linux-opt-exec` for --host_platform=//p:linux and its alias).
+        let none = BTreeSet::new();
+        let id = configurations
+            .intern_exec(configurations.top(), label("//p:h"), &none)
+            .unwrap();
         assert_ne!(id, configurations.top());
-        let exec_mnemonic = configurations.mnemonic(id).to_owned();
-        let hash = exec_mnemonic
-            .strip_prefix("rust-opt-exec-ST-")
-            .unwrap_or_else(|| panic!("{exec_mnemonic}"));
-        assert_eq!(hash.len(), 12);
-        assert!(hash.bytes().all(|byte| byte.is_ascii_hexdigit()));
-        assert_eq!(
-            configurations.output_root(id),
-            format!("bazel-out/{exec_mnemonic}/bin")
-        );
+        assert_eq!(configurations.mnemonic(id), "h-opt-exec");
+        assert_eq!(configurations.output_root(id), "bazel-out/h-opt-exec/bin");
+        assert_eq!(configurations.exec_baseline(&none).id, id);
         assert!(Arc::ptr_eq(configurations.get(id), configurations.get(id)));
+        // Exec of exec is the same configuration.
+        assert_eq!(
+            configurations.intern_exec(id, label("//p:h"), &none),
+            Ok(id)
+        );
+        // Another execution platform (the end of an alias chain, or the
+        // default host platform's @platforms//host:host) differs from the
+        // baseline only in the explicit `platforms`: no hash
+        // (paired capture: `k8-opt-exec`, `linux-opt-exec`).
+        let other = configurations
+            .intern_exec(configurations.top(), label("//p:other"), &none)
+            .unwrap();
+        assert_eq!(configurations.mnemonic(other), "other-opt-exec");
+        // Default platform names use the CPU (PlatformOptions.platformIsDefault).
+        for name in [
+            "host",
+            "host_platform",
+            "target_platform",
+            "default_host",
+            "default_target",
+        ] {
+            let id = configurations
+                .intern_exec(
+                    configurations.top(),
+                    label(&format!("@@platforms//host:{name}")),
+                    &none,
+                )
+                .unwrap();
+            assert_eq!(configurations.mnemonic(id), "rust-opt-exec", "{name}");
+        }
+        // A platform name with a separator is not a path component.
+        assert_eq!(
+            configurations.intern_exec(configurations.top(), label("//p:sub/linux"), &none),
+            Err("CPU/Platform descriptor 'sub/linux' is invalid as part of a path: must not contain /".to_owned())
+        );
+        // Options other than the explicit ones still enter the hash of an
+        // exec configuration (here a Starlark flag dropped from the
+        // baseline only).
+        let mut flagged = Configurations::new(Configuration::new(
+            top.native.clone(),
+            BTreeMap::from([(label("//:f"), SettingValue::Bool(true))]),
+        ));
+        let target = BTreeSet::from([label("//:f")]);
+        let baseline_dropped = flagged.exec_baseline(&target).clone();
+        assert!(baseline_dropped.starlark.is_empty());
+        let mut native = baseline_dropped.native.clone();
+        native.stamp = true;
+        let id = flagged
+            .intern(
+                Configuration::new(native, BTreeMap::new()),
+                &baseline_dropped,
+            )
+            .unwrap();
+        assert!(flagged.mnemonic(id).starts_with("h-opt-exec-ST-"));
         // Only explicit options differ: no hash.
         let mut native = top.native.clone();
         native.compilation_mode = "dbg";
         native.platform_suffix = Some("x");
         assert_eq!(
             mnemonic(&Configuration::new(native, BTreeMap::new()), &top),
-            "rust-dbg-x"
+            Ok("rust-dbg-x".to_owned())
         );
         // Other options (also Starlark settings) are hashed; equal diffs give
         // equal hashes, different values different hashes.
         let stamped = parsed(&["--stamp"]);
-        let stamped_mnemonic = mnemonic(&stamped, &top);
+        let stamped_mnemonic = mnemonic(&stamped, &top).unwrap();
         assert!(stamped_mnemonic.starts_with("rust-fastbuild-ST-"));
-        assert_eq!(stamped_mnemonic, mnemonic(&parsed(&["--stamp=yes"]), &top));
-        assert_ne!(stamped_mnemonic, mnemonic(&parsed(&["--define=a=1"]), &top));
+        assert_eq!(
+            stamped_mnemonic,
+            mnemonic(&parsed(&["--stamp=yes"]), &top).unwrap()
+        );
+        assert_ne!(
+            stamped_mnemonic,
+            mnemonic(&parsed(&["--define=a=1"]), &top).unwrap()
+        );
         let flag = |value: bool| {
             Configuration::new(
                 NativeOptions::default(),
                 BTreeMap::from([(label("//:flag"), SettingValue::Bool(value))]),
             )
         };
-        let set = mnemonic(&flag(true), &top);
+        let set = mnemonic(&flag(true), &top).unwrap();
         assert!(set.starts_with("rust-fastbuild-ST-"));
-        assert_ne!(set, mnemonic(&flag(false), &top));
+        assert_ne!(set, mnemonic(&flag(false), &top).unwrap());
         // A setting removed relative to the baseline is hashed as `@null`.
-        assert!(mnemonic(&top, &flag(true)).starts_with("rust-fastbuild-ST-"));
+        assert!(
+            mnemonic(&top, &flag(true))
+                .unwrap()
+                .starts_with("rust-fastbuild-ST-")
+        );
+    }
+
+    #[test]
+    fn exec_transition_follows_the_builtin_exec_transition() {
+        let from = Configuration::new(
+            parsed(&[
+                "-c",
+                "dbg",
+                "--host_compilation_mode=fastbuild",
+                "--stamp",
+                "--define=a=1",
+                "--strip=never",
+                "--force_pic",
+                "--platforms=//p:t",
+                "--host_platform=//p:h",
+                "--extra_toolchains=//tc:x",
+            ])
+            .native,
+            BTreeMap::from([
+                (label("//f:universal"), SettingValue::Bool(true)),
+                (label("//f:target"), SettingValue::Int(3)),
+            ]),
+        );
+        let exec = exec_transition(
+            &from,
+            label("//p:exec"),
+            &BTreeSet::from([label("//f:target")]),
+        );
+        let native = &exec.native;
+        assert_eq!(native.compilation_mode, "fastbuild");
+        assert_eq!(native.host_compilation_mode, "fastbuild");
+        assert!(native.is_exec && !native.stamp && !native.force_pic);
+        assert_eq!(native.strip, "always");
+        assert_eq!(native.define, [("a".to_owned(), "1".to_owned())]);
+        assert_eq!(native.platforms, [label("//p:exec")]);
+        assert_eq!(native.host_platform, label("//p:h"));
+        assert_eq!(native.extra_toolchains, ["//tc:x"]);
+        assert_eq!(native.platform_suffix, Some("exec"));
+        assert_eq!(
+            exec.starlark,
+            BTreeMap::from([(label("//f:universal"), SettingValue::Bool(true))])
+        );
+        // Idempotent for the same execution platform.
+        let none = BTreeSet::new();
+        assert_eq!(exec_transition(&exec, label("//p:exec"), &none).id, exec.id);
+        // Defaults: --host_compilation_mode is `opt`.
+        let default = exec_transition(&Configuration::default(), label("//p:exec"), &none);
+        assert_eq!(default.native.compilation_mode, "opt");
+        assert_eq!(mnemonic(&default, &default), Ok("exec-opt-exec".to_owned()));
     }
 
     #[test]
@@ -407,10 +687,13 @@ mod tests {
             )
         };
         assert_eq!(
-            name_fragment_with_diff(&parsed(&["--stamp"]), &parsed(&[])),
+            name_fragment_with_diff(&parsed(&["--stamp"]), &parsed(&[]), EXPLICIT_IN_OUTPUT_PATH),
             Some(expected)
         );
-        assert_eq!(name_fragment_with_diff(&parsed(&[]), &parsed(&[])), None);
+        assert_eq!(
+            name_fragment_with_diff(&parsed(&[]), &parsed(&[]), EXPLICIT_IN_OUTPUT_PATH),
+            None
+        );
     }
 
     #[test]

@@ -72,6 +72,21 @@ pub const OPTIONS: &[OptionDef] = &[
         source: "build/lib/analysis/config/CoreOptions.java:396-404",
     },
     OptionDef {
+        name: "host_compilation_mode",
+        old_name: None,
+        abbrev: None,
+        // CompilationMode.Converter, like --compilation_mode; the exec
+        // transition's compilation mode (builtin_exec_platforms.bzl:221-229).
+        kind: OptionKind::Enum {
+            type_name: "compilation mode",
+            values: COMPILATION_MODES,
+        },
+        default: "opt",
+        allow_multiple: false,
+        non_configurable: false,
+        source: "build/lib/analysis/config/CoreOptions.java:406-417",
+    },
+    OptionDef {
         name: "stamp",
         old_name: None,
         abbrev: None,
@@ -213,6 +228,41 @@ pub fn unrecognized_option(arg: &str) -> Option<String> {
         return None;
     }
     Some(invalid_argument(arg, format!("Unrecognized option: {arg}")))
+}
+
+/// A boolean option outside the modelled configuration (a Starlark
+/// semantics option such as `--incompatible_disable_starlark_host_transitions`)
+/// in OptionsParserImpl's forms (common/options/OptionsParserImpl.java:756-850):
+/// `--NAME`, `--noNAME`, `--NAME=V` with BooleanConverter; `None` when `arg`
+/// is not this option.
+pub fn boolean_option(arg: &str, name: &str) -> Option<Result<bool, String>> {
+    let rest = arg.strip_prefix("--")?;
+    let (given, value) = match rest.split_once('=') {
+        Some((given, value)) => (given, Some(value)),
+        None => (rest, None),
+    };
+    if given == name {
+        return Some(match value {
+            None => Ok(true),
+            Some(value) => match value.to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" | "t" | "y" => Ok(true),
+                "false" | "0" | "no" | "f" | "n" => Ok(false),
+                lower => Err(format!(
+                    "While parsing option {arg}: '{lower}' is not a boolean"
+                )),
+            },
+        });
+    }
+    if given.strip_prefix("no") == Some(name) {
+        return Some(match value {
+            None => Ok(false),
+            Some(_) => Err(invalid_argument(
+                arg,
+                format!("Unexpected value after boolean option: {arg}"),
+            )),
+        });
+    }
+    None
 }
 
 /// A converted option value, compared like the Java objects Bazel stores.
@@ -385,13 +435,14 @@ pub struct NativeOptions {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub extra_toolchains: Vec<String>,
     /// `--host_compilation_mode` (CoreOptions.java:406-417, default `opt`):
-    /// the compilation mode of the exec configuration (N18b). Not a
-    /// command-line option of the native profile yet; omitted from the
-    /// identity serialization at its default.
+    /// the compilation mode of the exec configuration
+    /// (builtin_exec_platforms.bzl:221-229); omitted from the identity
+    /// serialization at its default.
     #[serde(skip_serializing_if = "is_default_host_compilation_mode")]
     pub host_compilation_mode: &'static str,
     /// CoreOptions.isExec (`is exec configuration`, an internal option set
-    /// by the exec transition, N18b); omitted from the identity when false.
+    /// by the exec transition, builtin_exec_platforms.bzl:224); omitted from
+    /// the identity when false.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub is_exec: bool,
     /// CoreOptions.platformSuffix (`--platform_suffix`, default null; the
@@ -456,6 +507,7 @@ impl NativeOptions {
     pub fn value(&self, name: &str) -> Option<OptionValue> {
         Some(match name {
             "compilation_mode" => OptionValue::Enum(self.compilation_mode),
+            "host_compilation_mode" => OptionValue::Enum(self.host_compilation_mode),
             "stamp" => OptionValue::Bool(self.stamp),
             "define" => OptionValue::Assignments(self.define.clone()),
             "strip" => OptionValue::Enum(self.strip),
@@ -522,28 +574,47 @@ impl Default for Configuration {
 
 impl Configuration {
     pub fn new(native: NativeOptions, starlark: BTreeMap<Label, SettingValue>) -> Self {
-        let id = ConfigId(Sha256::digest(canonical_serialization(&native, &starlark)).into());
+        let id =
+            ConfigId(Sha256::digest(canonical_serialization(&native, &starlark, false)).into());
         Self {
             id,
             native,
             starlark,
         }
     }
+
+    /// The identity of this configuration before Bazel's test trimming: a
+    /// top-level target is requested in the configuration with the
+    /// TestOptions fragment (not modelled natively), and a non-test,
+    /// non-alias rule's TestTrimmingTransition removes it
+    /// (analysis/test/TestTrimmingTransitionFactory.java:92-135), so a cycle
+    /// path through a requested rule lists both keys
+    /// (crate::engine::Engine::cycle_error). The modelled configurations are
+    /// the trimmed ones.
+    pub fn untrimmed_id(&self) -> ConfigId {
+        ConfigId(Sha256::digest(canonical_serialization(&self.native, &self.starlark, true)).into())
+    }
 }
 
 fn canonical_serialization(
     native: &NativeOptions,
     starlark: &BTreeMap<Label, SettingValue>,
+    test_options: bool,
 ) -> Vec<u8> {
     #[derive(serde::Serialize)]
     struct Canonical<'a> {
         version: u32,
         native: &'a NativeOptions,
         starlark: Vec<(String, &'a SettingValue)>,
+        /// The (unmodelled) TestOptions fragment of an untrimmed
+        /// configuration; omitted otherwise, so identities are unchanged.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        test_options: bool,
     }
     serde_json::to_vec(&Canonical {
         version: 1,
         native,
+        test_options,
         starlark: starlark
             .iter()
             .map(|(label, value)| (crate::rule_declarations::canonical_form(label), value))
@@ -774,6 +845,9 @@ impl CommandLineOptions {
                 .map_err(|error| format!("While parsing option {form}: {error}"))?;
             match (option.name, converted) {
                 ("compilation_mode", OptionValue::Enum(mode)) => native.compilation_mode = mode,
+                ("host_compilation_mode", OptionValue::Enum(mode)) => {
+                    native.host_compilation_mode = mode
+                }
                 ("strip", OptionValue::Enum(mode)) => native.strip = mode,
                 ("stamp", OptionValue::Bool(value)) => native.stamp = value,
                 ("force_pic", OptionValue::Bool(value)) => native.force_pic = value,
@@ -949,7 +1023,7 @@ mod tests {
         assert_eq!(native.platforms, [default_host_platform()]);
         assert_eq!(
             crate::config_registry::mnemonic(&configuration, &configuration),
-            "rust-dbg"
+            Ok("rust-dbg".to_owned())
         );
         let mut options = CommandLineOptions::default();
         for (args, error) in [
@@ -1124,7 +1198,10 @@ mod tests {
             parsed(&["--define=a=0", "--define=a=1"]).unwrap().id,
             defined.id
         );
-        assert_eq!(crate::config_registry::mnemonic(&opt, &opt), "rust-opt");
+        assert_eq!(
+            crate::config_registry::mnemonic(&opt, &opt),
+            Ok("rust-opt".to_owned())
+        );
         // Starlark build settings take part in the identity; only values
         // different from the default are stored (crate::starlark_options).
         let flag = Label::parse_canonical("//:flag").unwrap();
@@ -1179,13 +1256,42 @@ mod tests {
             assert_eq!(
                 String::from_utf8(canonical_serialization(
                     &configuration.native,
-                    &configuration.starlark
+                    &configuration.starlark,
+                    false
                 ))
                 .unwrap(),
                 expected
             );
             assert_eq!(configuration.id.to_string(), id, "{args:?}");
         }
+        // --host_compilation_mode (CoreOptions.java:406-417): converted like
+        // --compilation_mode; its default keeps the identity.
+        for args in [
+            &["--host_compilation_mode=opt"][..],
+            &["--host_compilation_mode", "OPT"][..],
+        ] {
+            assert_eq!(parsed(args).unwrap().id, Configuration::default().id);
+        }
+        let host_dbg = parsed(&["--host_compilation_mode=dbg"]).unwrap();
+        assert_eq!(host_dbg.native.host_compilation_mode, "dbg");
+        assert_eq!(
+            host_dbg.native.value("host_compilation_mode"),
+            Some(OptionValue::Enum("dbg"))
+        );
+        assert_ne!(host_dbg.id, Configuration::default().id);
+        assert_eq!(
+            parsed(&["--host_compilation_mode=x"]).unwrap_err(),
+            "While parsing option --host_compilation_mode=x: Not a valid compilation mode: 'x' (should be fastbuild, dbg or opt)"
+        );
+        assert_eq!(
+            parsed(&["--nohost_compilation_mode"]).unwrap_err(),
+            "--nohost_compilation_mode :: Illegal use of 'no' prefix on non-boolean option: --nohost_compilation_mode"
+        );
+        // A CoreOptions option: query accepts it (QueryCommand.java:59-67).
+        assert!(matches!(
+            CommandLineOptions::for_query().parse("--host_compilation_mode=dbg", None),
+            Ok(Parsed::Consumed(false))
+        ));
         // Non-default values are part of the identity.
         let base = NativeOptions::default();
         for native in [

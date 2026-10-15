@@ -190,7 +190,12 @@ impl AttrDeclaration {
     /// Features a target exercises at analysis when this attribute has a value.
     pub(crate) fn unanalyzed(&self, name: &str) -> Vec<String> {
         let mut features = Vec::new();
-        if !self.cfg.is_target() {
+        // The exec transition is modelled (crate::engine, docs/CONFIGURATION.md);
+        // Starlark transitions and config.none() are not.
+        if !matches!(
+            self.cfg,
+            crate::rule_declarations::Cfg::Target | crate::rule_declarations::Cfg::Exec(_)
+        ) {
             features.push(format!(
                 "attribute '{name}' cfg={} (configuration transition)",
                 self.cfg.describe()
@@ -287,6 +292,9 @@ pub struct InvocationDeclaration {
     pub configurable_labels: Vec<crate::label::Label>,
     /// Rule class name for Bazel-form diagnostics (the exported rule name).
     pub rule_class: String,
+    /// The explicitly specified `scope` of a string `scope` attribute
+    /// (crate::starlark_options::ScopeAttribute).
+    pub explicit_scope: crate::starlark_options::ScopeAttribute,
     /// Bazel's built-in attributes of this instance (docs/COMMON_RULE_ATTRIBUTES.md).
     pub builtin: BuiltinAttributes,
 }
@@ -1316,6 +1324,20 @@ mod values {
             // branches are checked; defaults never are (AttributeProvider.java:288-290).
             check_allowed_values(&target, &self.schema, &attrs, &configurable)
                 .map_err(starlark::Error::new_other)?;
+            // Before defaults fill in omitted attributes: whether a string
+            // `scope` was explicitly specified (StarlarkOptionsParser.java:256-275).
+            let explicit_scope = match (self.schema.get("scope"), attrs.get("scope")) {
+                (Some(spec), _) if spec.kind != AttrKind::String => {
+                    crate::starlark_options::ScopeAttribute::Unspecified
+                }
+                (_, Some(AttrValue::String(scope))) => {
+                    crate::starlark_options::ScopeAttribute::Value(scope.clone())
+                }
+                _ if configurable.contains_key("scope") => {
+                    crate::starlark_options::ScopeAttribute::Configurable
+                }
+                _ => crate::starlark_options::ScopeAttribute::Unspecified,
+            };
             for (key, spec) in &self.schema {
                 // A select()-valued attribute is resolved at analysis
                 // (crate::configured_attributes); its default is not a value.
@@ -1429,6 +1451,7 @@ mod values {
                     attr_order: self.attr_order.clone(),
                     configurable_labels,
                     rule_class,
+                    explicit_scope,
                     builtin: BuiltinAttributes {
                         kind,
                         target: builtin,
@@ -2784,7 +2807,11 @@ fn dependency_descriptor<'v>(
             "allowed rule classes for attribute definition",
         )?);
     }
-    declaration.cfg = crate::rule_declarations::attribute_cfg(options.cfg)?;
+    let disable_host = eval
+        .extra
+        .and_then(|extra| extra.downcast_ref::<crate::loading::ExtensionContext>())
+        .is_some_and(|context| context.repositories.disable_starlark_host_transitions());
+    declaration.cfg = crate::rule_declarations::attribute_cfg(options.cfg, disable_host)?;
     declaration.aspects = crate::rule_declarations::aspect_identities(options.aspects, "aspects")?;
     let declaration = declaration.clone();
     let mut descriptor = with_required_providers(descriptor, options.providers)?;

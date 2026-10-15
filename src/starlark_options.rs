@@ -44,6 +44,29 @@ impl SettingType {
     }
 }
 
+/// The explicitly specified `scope` attribute of a build setting rule
+/// (RawAttributeMapper.isAttributeValueExplicitlySpecified, read by
+/// StarlarkOptionsParser.java:256-275 and BuildOptionsScopeFunction.java:180-190):
+/// an omitted `scope` is the DEFAULT scope whatever the attribute's
+/// default value (skylib declares `default = "universal"`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ScopeAttribute {
+    #[default]
+    Unspecified,
+    /// The explicit string value, as written.
+    Value(String),
+    /// A `select()`-valued `scope` (not modelled).
+    Configurable,
+}
+
+impl ScopeAttribute {
+    /// Scope.ScopeType.TARGET (analysis/config/Scope.java:31-46): the flag
+    /// resets on exec transitions.
+    pub fn is_target(&self) -> bool {
+        matches!(self, Self::Value(value) if value.eq_ignore_ascii_case("target"))
+    }
+}
+
 /// The native BuildSettingProvider (analysis/BuildSettingProvider.java:27-58)
 /// of a build setting target: added for every build-setting rule
 /// (analysis/RuleConfiguredTargetBuilder.java:250-259) and by label_flag /
@@ -58,6 +81,8 @@ pub struct BuildSettingInfo {
     pub is_flag: bool,
     /// `BuildSetting.isRepeatableFlag` (`config.string_list(repeatable=True)`).
     pub repeatable: bool,
+    /// The explicitly specified `scope` (exec transitions, crate::config_registry).
+    pub scope: ScopeAttribute,
 }
 
 impl BuildSettingInfo {
@@ -415,6 +440,16 @@ fn parse_inner(
             None => parsed.push((info, value)),
         }
     }
+    // The scope of each parsed setting (StarlarkOptionsParser.java:256-275;
+    // Bazel iterates a HashMap here, natively the first argument wins among
+    // invalid values). Scopes Bazel accepts but the native profile does not
+    // model fail only after every Bazel error.
+    for (info, _) in &parsed {
+        invalid_scope(info)?;
+    }
+    for (info, _) in &parsed {
+        unmodelled_scope(info)?;
+    }
     let mut options = BTreeMap::new();
     for (info, value) in parsed {
         if value != info.default {
@@ -422,6 +457,62 @@ fn parse_inner(
         }
     }
     Ok(options)
+}
+
+/// Scope.ScopeType.allowedAttributeValues (analysis/config/Scope.java:53-59).
+const ALLOWED_SCOPES: [&str; 3] = ["universal", "target", "project"];
+
+/// StarlarkOptionsParser's `scope` validation (:256-275).
+fn invalid_scope(info: &BuildSettingInfo) -> Result<(), Failure> {
+    let flag = crate::rule_declarations::canonical_form(&info.label);
+    match &info.scope {
+        ScopeAttribute::Value(scope) => {
+            let lower = scope.to_lowercase();
+            if !ALLOWED_SCOPES.contains(&lower.as_str()) {
+                return Err(Failure::new(
+                    format!(
+                        "Can't load flag --{flag}: Invalid \"scope\" attribute value \"{scope}\". Allowed values: [{}].",
+                        ALLOWED_SCOPES
+                            .iter()
+                            .map(|scope| format!("\"{scope}\""))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    None,
+                ));
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The explicit failures of scopes the native profile does not model:
+/// `project` (project-boundary resets in every target configuration,
+/// analysis/producers/BuildConfigurationKeyProducer.java:60-75, PROJECT.scl)
+/// and a select()-valued `scope`.
+fn unmodelled_scope(info: &BuildSettingInfo) -> Result<(), Failure> {
+    let flag = crate::rule_declarations::canonical_form(&info.label);
+    match &info.scope {
+        ScopeAttribute::Unspecified => Ok(()),
+        ScopeAttribute::Value(scope) => {
+            if scope.eq_ignore_ascii_case("project") {
+                return Err(Failure::new(
+                    format!(
+                        "--{flag}: build settings with scope = \"project\" (project-scoped flags, PROJECT.scl) are not implemented in the native profile"
+                    ),
+                    None,
+                ));
+            }
+            Ok(())
+        }
+        ScopeAttribute::Configurable => Err(Failure::new(
+            format!(
+                "--{flag}: a select()-valued `scope` attribute of a build setting is not implemented in the native profile"
+            ),
+            None,
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -447,6 +538,7 @@ mod tests {
             default,
             is_flag: flag,
             repeatable: false,
+            scope: ScopeAttribute::Unspecified,
         })
     }
 
@@ -473,6 +565,7 @@ mod tests {
                 default: SettingValue::StringList(vec![]),
                 is_flag: true,
                 repeatable: true,
+                scope: ScopeAttribute::Unspecified,
             }),
             "//:lf" => setting(
                 "//:lf",
@@ -666,5 +759,78 @@ mod tests {
         ] {
             assert_eq!(parse_starlark_int(input), expected, "{input}");
         }
+    }
+
+    #[test]
+    fn scopes_are_validated_for_parsed_settings() {
+        let scoped = |scope: ScopeAttribute| {
+            move |name: &str| -> Result<LoadedTarget, String> {
+                Ok(LoadedTarget::BuildSetting(BuildSettingInfo {
+                    label: label(name.strip_prefix("@@").unwrap_or(name)),
+                    ty: SettingType::String,
+                    default: SettingValue::String("d".into()),
+                    is_flag: true,
+                    repeatable: false,
+                    scope: scope.clone(),
+                }))
+            }
+        };
+        let canonical = crate::configuration::parse_canonical_option_label;
+        let parse_one = |scope: ScopeAttribute, value: &str| {
+            parse(
+                &[format!("--//:s={value}")],
+                &[],
+                &mut scoped(scope),
+                &canonical,
+            )
+        };
+        for scope in ["universal", "TARGET", "Universal"] {
+            assert!(
+                parse_one(ScopeAttribute::Value(scope.into()), "x").is_ok(),
+                "{scope}"
+            );
+        }
+        // Also when the value equals the default (not stored).
+        assert_eq!(
+            parse_one(ScopeAttribute::Value("everywhere".into()), "d").unwrap_err(),
+            "Can't load flag --//:s: Invalid \"scope\" attribute value \"everywhere\". Allowed values: [\"universal\", \"target\", \"project\"]."
+        );
+        assert!(
+            parse_one(ScopeAttribute::Value("project".into()), "x")
+                .unwrap_err()
+                .contains("are not implemented in the native profile")
+        );
+        assert!(
+            parse_one(ScopeAttribute::Configurable, "x")
+                .unwrap_err()
+                .contains("select()-valued `scope`")
+        );
+        // Bazel's invalid-value error wins over the native project gap,
+        // whatever the argument order (paired capture B1/project_and_bogus).
+        let mut by_name = |name: &str| -> Result<LoadedTarget, String> {
+            let name = name.strip_prefix("@@").unwrap_or(name);
+            scoped(ScopeAttribute::Value(
+                if name == "//:project" {
+                    "project"
+                } else {
+                    "everywhere"
+                }
+                .into(),
+            ))(name)
+        };
+        for args in [
+            ["--//:project=y".to_owned(), "--//:bogus=x".to_owned()],
+            ["--//:bogus=x".to_owned(), "--//:project=y".to_owned()],
+        ] {
+            assert!(
+                parse(&args, &[], &mut by_name, &canonical)
+                    .unwrap_err()
+                    .starts_with("Can't load flag --//:bogus: Invalid \"scope\""),
+                "{args:?}"
+            );
+        }
+        assert!(ScopeAttribute::Value("Target".into()).is_target());
+        assert!(!ScopeAttribute::Value("universal".into()).is_target());
+        assert!(!ScopeAttribute::Unspecified.is_target());
     }
 }

@@ -109,6 +109,13 @@ fn run() -> Result<(), String> {
                 bazel_rs::module_cli::repository_disable_download_argument(&arg)?
             {
                 repository_downloads_enabled = !disabled;
+            } else if let Some(value) = bazel_rs::configuration::boolean_option(
+                &arg,
+                "incompatible_disable_starlark_host_transitions",
+            ) {
+                // A Starlark semantics option of every loading command
+                // (packages/semantics/BuildLanguageOptions.java:590-598).
+                resolver_options.disable_starlark_host_transitions = value?;
             } else if let Some(profile) = bazel_rs::module_cli::builtin_profile_argument(&arg)? {
                 resolver_options.builtin_profile = profile;
             } else if arg == "--override_repository" || arg.starts_with("--override_repository=") {

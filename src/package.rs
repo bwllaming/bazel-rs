@@ -2496,7 +2496,8 @@ unused = [genrule(name = "make_" + n, outs = [n + ".out"], cmd = "echo " + n + "
         // Value gaps are evaluated on the configured target (crate::engine).
         assert!(g.unanalyzed.is_empty(), "{:?}", g.unanalyzed);
         let gaps = crate::native_rules::analysis_gaps(g.native.as_ref().unwrap());
-        assert_eq!(gaps.len(), 2, "{gaps:?}");
+        // `tools` is analyzed (the exec transition); `executable` is a gap.
+        assert_eq!(gaps, ["attribute 'executable' = True"]);
         assert!(rules[&Label::parse(":n", "pkg").unwrap()].outs.is_empty());
         assert!(rules[&Label::parse(":o", "pkg").unwrap()].cmd.is_none());
         for (source, expected) in [

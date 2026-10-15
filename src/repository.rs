@@ -252,6 +252,11 @@ impl RepositorySet {
         self.state.repository_downloads_enabled
     }
 
+    /// `--incompatible_disable_starlark_host_transitions` (ResolverOptions).
+    pub(crate) fn disable_starlark_host_transitions(&self) -> bool {
+        self.state.options.disable_starlark_host_transitions
+    }
+
     pub(crate) fn environment(&self) -> &crate::repository_environment::Snapshot {
         &self.state.environment
     }

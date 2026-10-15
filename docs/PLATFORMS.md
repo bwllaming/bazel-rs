@@ -182,8 +182,10 @@ platform). The native profile resolves it only where a constraint needs it: a
 (after the `values`/`flag_values`/not-a-constraint_value/duplicate checks, so
 `//os:os is not a constraint_value` comes first as in Bazel, paired capture
 B2/direct_cv_setting), or `ctx.target_platform_has_constraint` (the rule is
-analyzed again once it is resolved), and the toolchain resolution of a rule
-with toolchain types or execution constraints (docs/TOOLCHAINS.md). A build
+analyzed again once it is resolved), the toolchain resolution of a rule
+with toolchain types or execution constraints (docs/TOOLCHAINS.md), and the
+execution platform of a toolchain-using rule with a resolved exec-transition
+edge (N18b, docs/CONFIGURATION.md "Exec transition"). A build
 that never needs either never resolves it, and builds without the built-in
 profile keep working.
 
@@ -318,7 +320,10 @@ and referenced by '//:cv_missing'`) or select() key error.
   rule: `register_execution_platforms("//:p") is not implemented in the native
   profile: execution platform resolution (N17)`; `--extra_execution_platforms`
   is an unsupported option.
-* Execution transitions and exec groups (N18); platform `flags` as the target
+* Exec groups (N18d); the exec transition is modelled (N18b,
+  docs/CONFIGURATION.md: an exec configuration's target platform is the
+  execution platform, the end of the host platform's alias chain); platform
+  `flags` as the target
   platform; `required_settings` and select() in a target platform's tree;
   `platform_mappings` (a workspace file fails the build);
   `target_compatible_with` (incompatible target skipping) stays an analysis

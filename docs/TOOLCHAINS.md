@@ -6,8 +6,12 @@ toolchain resolution of every rule that declares `rule(toolchains = ...)`
 against the target platform and the host execution platform, and the
 Starlark side: `platform_common.ToolchainInfo(...)`, `dep[ToolchainInfo]` and
 `ctx.toolchains`. The execution platform is always the host platform:
-registered execution platforms, exec groups and execution transitions stay
-explicit failures (below).
+registered execution platforms and exec groups stay explicit failures
+(below). Exec configurations (N18b, docs/CONFIGURATION.md "Exec
+transition") resolve toolchains like any configuration: their target
+platform is the parent's execution platform, `--extra_toolchains` propagates
+into them (PlatformOptions, `builtin_exec_platforms.bzl:411-419`), and their
+registered toolchains are computed for them.
 
 Pinned source: `/tmp/opencode/bazel-9.3-reference` (e89755b, Release 9.3.0).
 Paths are relative to `src/main/java/com/google/devtools/build/lib/`. Code:
@@ -75,7 +79,9 @@ platform is forced). The default host platform needs the built-in
 profile (docs/PLATFORMS.md); without it a toolchain-using rule fails with
 `While resolving toolchains for target L (CONFIG): the target platform
 @@bazel_tools//tools:host_platform (the default host platform) needs the
-built-in @bazel_tools repository, ...`.
+built-in @bazel_tools repository, ...`. A rule with a resolved
+exec-transition edge needs its execution platform even without toolchain
+types (N18b): it resolves the host platform then, with the same failure.
 
 ## Resolution (`ToolchainResolutionFunction.java:62-345`)
 
@@ -106,7 +112,10 @@ built-in @bazel_tools repository, ...`.
    instance. Is the rule definition for the target you're building setting
    "toolchains =" to a toolchain() instead of the expected toolchain_type()?`.
 3. **Registered toolchains** (`RegisteredToolchainsFunction.java:64-172`),
-   computed once per configuration and only when a rule has at least one
+   computed once per configuration (also per exec configuration; the
+   reentrancy guards are per configuration, so a registered target whose
+   exec edge needs the exec configuration's toolchains is not a cycle) and
+   only when a rule has at least one
    type: `--extra_toolchains` reversed (the last one wins; parsed with the main
    repository mapping), then each module's `register_toolchains` patterns in
    the dependency graph's breadth-first order (root first,
@@ -258,8 +267,8 @@ resolves never silently becomes `None`.
 * Exec groups (`rule(exec_groups = ...)`), automatic exec groups (a
   `_use_auto_exec_groups` attribute that is True; `--incompatible_auto_exec_groups`
   defaults to false, `analysis/config/CoreOptions.java:419-432`,
-  `packages/RuleClass.java:179-203`), `exec_group_compatible_with`, execution
-  transitions.
+  `packages/RuleClass.java:179-203`), `exec_group_compatible_with`, named
+  exec-group transitions (`config.exec("G")`, N18d).
 * `genrule(toolchains = ...)` and the Starlark `toolchains` attribute (Make
   variables), `genrule(exec_compatible_with = ...)`, toolchains of aspects
   and subrules.

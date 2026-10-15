@@ -645,6 +645,7 @@ mod tests {
                 default,
                 is_flag: true,
                 repeatable: false,
+                scope: Default::default(),
             }),
         }
     }

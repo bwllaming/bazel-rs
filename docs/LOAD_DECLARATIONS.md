@@ -8,7 +8,9 @@ Bazel 9.3 does it at load time. It does **not** analyze them: when building a
 target would use one of these features, analysis fails explicitly with
 `declared rule features accepted at load time but not analyzed by the native
 profile: <feature>; ...`. A target that declares a feature but does not use it
-(for example an empty `cfg = "exec"` label list) still analyzes as before.
+(for example an empty `cfg = config.none()` label list) still analyzes as
+before. The exec transition (`cfg = "exec"`, `"host"`, `config.exec()`) is
+analyzed since N18b (docs/CONFIGURATION.md "Exec transition").
 
 Pinned sources: `/tmp/opencode/bazel-9.3-reference` (e89755b, Release 9.3.0).
 Paths below are relative to `src/main/java/com/google/devtools/build/lib/`.
@@ -115,8 +117,9 @@ Following `StarlarkAttrModuleApi.java` and `StarlarkAttrModule.java:317-565`:
   `allow_single_file` take `True`/`False`/`None`/a list of extensions
   (`%s should be a boolean or a string list`, `Cannot specify both
   allow_files and allow_single_file`); `cfg` takes `"target"`, `"exec"`,
-  `"host"` (exec, because `--incompatible_disable_starlark_host_transitions`
-  is off), `transition()`, `config.exec/target/none()` (otherwise Bazel's
+  `"host"` (exec while `--incompatible_disable_starlark_host_transitions`
+  is off, its default; with it, Bazel's `'cfg = "host"' is deprecated ...`
+  error, docs/CONFIGURATION.md), `transition()`, `config.exec/target/none()` (otherwise Bazel's
   `cfg must be either 'target', 'exec' ...`); `executable=True` requires `cfg`;
   `aspects=[...]` takes exported aspects; also `allow_rules`, `flags`,
   `skip_validations`, `for_dependency_resolution`; nested `providers` lists
@@ -143,7 +146,8 @@ A target fails analysis with the message above if it uses any of these:
   (the implicit outputs exist for loading, but not as `ctx.outputs`);
 * attribute level, when the attribute's resolved value (explicit, default or
   chosen `select()` branch, docs/CONFIGURATION.md) is non-empty:
-  `cfg` other than target (exec, none, Starlark transitions), `executable=True`,
+  `cfg` other than target and exec (`config.none()`, Starlark transitions),
+  `executable=True`,
   non-empty `aspects`, extension-list `allow_files`/`allow_single_file`,
   `allow_rules`, non-empty `flags`, `skip_validations=True`, any
   `label_keyed_string_dict` value;

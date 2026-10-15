@@ -661,24 +661,39 @@ fn gap_order_and_select_branch_inputs() {
         diagnostic.contains("needs the built-in @bazel_tools repository"),
         "{diagnostic}"
     );
-    // Edge gaps apply to resolved values only, after attribute validation.
+    // Exec edges come from resolved values only, after attribute
+    // validation: an unselected exec edge needs no execution platform; a
+    // selected one needs the parent's execution platform (the host platform;
+    // the default one needs the built-in profile, docs/CONFIGURATION.md).
     let output = ws.run(&["build", "//:edge_unset"]);
     assert!(output.status.success(), "{}", errors(&output));
     let diagnostic = ws.rejected(&["build", "-c", "opt", "//:edge_unset"]);
     assert!(
-        diagnostic.contains("attribute 'tools' cfg=exec (configuration transition)"),
+        diagnostic.contains("While resolving toolchains for target //:edge_unset (")
+            && diagnostic.contains("needs the built-in @bazel_tools repository"),
         "{diagnostic}"
     );
+    let output = ws.run(&[
+        "build",
+        "-c",
+        "opt",
+        "--host_platform=//:p",
+        "//:edge_unset",
+    ]);
+    assert!(output.status.success(), "{}", errors(&output));
     let diagnostic = ws.rejected(&["build", "//:edge_order"]);
     assert!(
         diagnostic.contains("configurable attribute \"mode\" in //:edge_order doesn't match"),
         "{diagnostic}"
     );
-    let diagnostic = ws.rejected(&["build", "-c", "dbg", "//:edge_order"]);
-    assert!(
-        diagnostic.contains("(configuration transition)"),
-        "{diagnostic}"
-    );
+    let output = ws.run(&[
+        "build",
+        "-c",
+        "dbg",
+        "--host_platform=//:p",
+        "//:edge_order",
+    ]);
+    assert!(output.status.success(), "{}", errors(&output));
     // Labels only named in a select() branch are declared input files
     // (Package.java:893-920).
     let text = ws.built(&["build", "-c", "opt", "//:inputs"]);

@@ -842,15 +842,19 @@ pub(crate) fn is_late_bound_default(value: Value<'_>) -> bool {
 }
 
 /// Classify an attribute `cfg` value (StarlarkAttrModule.convertCfg, :516-565).
-pub(crate) fn attribute_cfg(value: Value<'_>) -> anyhow::Result<Cfg> {
+pub(crate) fn attribute_cfg(value: Value<'_>, disable_host: bool) -> anyhow::Result<Cfg> {
     if value.is_none() {
         return Ok(Cfg::Target);
     }
     if let Some(text) = value.unpack_str() {
         match text {
             "target" => return Ok(Cfg::Target),
-            // --incompatible_disable_starlark_host_transitions defaults to false
-            // (BuildLanguageOptions.java:591), so "host" is the exec transition.
+            // StarlarkAttrModule.java:520-531: "host" is the exec transition
+            // unless --incompatible_disable_starlark_host_transitions (default
+            // false, BuildLanguageOptions.java:590-598).
+            "host" if disable_host => bail!(
+                "'cfg = \"host\"' is deprecated and should no longer be used. Please use 'cfg = \"exec\"' instead."
+            ),
             "host" | "exec" => return Ok(Cfg::Exec(None)),
             _ => {}
         }
@@ -2497,7 +2501,7 @@ def bare(ctx):\n    return []\n\
 plain = rule(impl, attrs = {'counts': attr.int_list(), 'tools': attr.label_list(cfg = 'exec'), 'late_ok': attr.string(values = ['x', ''])}, fragments = ['cpp'], provides = [I])\n\
 missing = rule(bare, provides = [I])\n\
 exe = rule(impl, executable = True, attrs = {'counts': attr.int_list()})\n\
-tool = rule(impl, attrs = {'counts': attr.int_list(), '_cc': attr.label(default = '//:dep', cfg = 'exec')})\n\
+tool = rule(impl, attrs = {'counts': attr.int_list(), '_cc': attr.label(default = '//:dep', cfg = config.none())})\n\
 nonempty = rule(impl, attrs = {'counts': attr.int_list(allow_empty = False)})\n";
         let package = evaluate_package(
             defs,
@@ -2518,7 +2522,7 @@ nonempty = rule(impl, attrs = {'counts': attr.int_list(allow_empty = False)})\n"
             ),
             (
                 "tool",
-                "attribute '_cc' cfg=exec (configuration transition)",
+                "attribute '_cc' cfg=config.none() (configuration transition)",
             ),
             (
                 "empty",

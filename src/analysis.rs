@@ -44,6 +44,18 @@ pub struct AnalysisResult {
     pub provider_files: Vec<File>,
 }
 
+/// The key of a dependency in the implementation's dependency map: the
+/// label text of a target-configuration edge, `LABEL (exec)` for an edge
+/// with the exec transition, whose dependency is configured in the exec
+/// configuration (crate::engine; the same label may be both).
+pub(crate) fn dependency_key(label: &str, exec: bool) -> String {
+    if exec {
+        format!("{label} (exec)")
+    } else {
+        label.to_owned()
+    }
+}
+
 fn dependency<'a>(
     label: &str,
     name: &str,
@@ -51,8 +63,9 @@ fn dependency<'a>(
     dependencies: &'a BTreeMap<String, DependencyTarget>,
     prefix: &str,
 ) -> anyhow::Result<&'a DependencyTarget> {
+    let exec = matches!(spec.declaration.cfg, crate::rule_declarations::Cfg::Exec(_));
     let target = dependencies
-        .get(label)
+        .get(&dependency_key(label, exec))
         .ok_or_else(|| anyhow!("attribute {name}: dependency {label} was not resolved"))?;
     ensure!(
         !target.is_source || spec.allow_files || spec.allow_single_file,

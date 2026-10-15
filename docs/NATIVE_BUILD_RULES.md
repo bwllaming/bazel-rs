@@ -184,10 +184,11 @@ match the target platform (docs/PLATFORMS.md).
   (`target_compatible_with`, `compatible_with`, `restricted_to`,
   `package_metadata`, `aspect_hints`, `transitive_configs`) fails explicitly.
 * `filegroup`/`genrule` keep their native analysis only for the modeled
-  attributes (`srcs`, `outs`, `cmd`; metadata such as `tags`, `deprecation`,
+  attributes (`srcs`, `outs`, `cmd`, genrule `tools` in the exec
+  configuration, docs/CONFIGURATION.md "Exec transition"; metadata such as `tags`, `deprecation`,
   `licenses`, `features`, `message`, `local`, `output_to_bindir`,
   `exec_properties`, Windows-only `cmd_bat`/`cmd_ps`). Any other non-empty
-  value (`data`, `tools`, `toolchains`, `cmd_bash`,
+  value (`data`, `toolchains`, `cmd_bash`,
   `executable=True`, `stamp` other than 0, `target_compatible_with`,
   `package_metadata`, `aspect_hints`, `output_group`, ...) is recorded and
   analysis fails explicitly listing it.
