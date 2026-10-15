@@ -1986,10 +1986,17 @@ groups = {"test": exec_group(), "cpp_link": exec_group(toolchains = [t])}
         ] {
             fails(FILE, call, message);
         }
-        fails(
+        // Late-bound defaults are accepted and retained at load time (the
+        // load-declaration surface); targets using them fail at analysis.
+        pass(
             FILE,
             "_libc = attr.label(default = configuration_field(fragment = 'cpp', name = 'libc_top'))",
-            "late-bound label defaults (configuration_field) are not implemented in the native profile (analysis-time configuration API)",
+        );
+        // StarlarkRuleClassFunctions attribute check: public late-bound attrs fail.
+        fails(
+            FILE,
+            "def _i(ctx):\n    pass\nr = rule(_i, attrs = {'late': attr.label(default = configuration_field('cpp', 'libc_top'))})",
+            "When an attribute value is a function, the attribute must be private (i.e. start with '_'). Found 'late'",
         );
         let outside = run_with(
             &crate::package::bzl_globals(),

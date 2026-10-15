@@ -527,47 +527,9 @@ fn bzl_label(eval: &Evaluator<'_, '_, '_>, text: &str) -> anyhow::Result<crate::
 }
 
 /// Java `getClass().getSimpleName()` used by parseToolchainType's error
-/// (StarlarkRuleClassFunctions.java:2256). Same mapping as the language-module
-/// branch's `java_class_simple_name` (merge note: keep one copy).
+/// (StarlarkRuleClassFunctions.java:2256); shared with the language modules.
 fn java_simple_name(value: Value<'_>) -> String {
-    if value.is_none() {
-        return "NoneType".to_owned();
-    }
-    if value.unpack_bool().is_some() {
-        return "Boolean".to_owned();
-    }
-    if value.unpack_str().is_some() {
-        return "String".to_owned();
-    }
-    if let Some(tuple) = starlark::values::tuple::TupleRef::from_value(value) {
-        // Tuple.wrap: SingletonTuple for one element, else RegularTuple.
-        return if tuple.len() == 1 {
-            "SingletonTuple"
-        } else {
-            "RegularTuple"
-        }
-        .to_owned();
-    }
-    match value.get_type() {
-        // StarlarkInt.of: Int32 within int range, Int64, then Big.
-        "int" => match value.unpack_i32() {
-            Some(_) => "Int32",
-            None if value.to_str().parse::<i64>().is_ok() => "Int64",
-            None => "Big",
-        },
-        "float" => "StarlarkFloat",
-        // A list literal is StarlarkList.wrap(mutable) -> MutableStarlarkList.
-        "list" => "MutableStarlarkList",
-        "dict" => "Dict",
-        "set" => "StarlarkSet",
-        "range" => "RangeList",
-        "depset" => "Depset",
-        "struct" => "StarlarkInfoNoSchema",
-        "function" => "StarlarkFunction",
-        "builtin_function_or_method" => "BuiltinFunction",
-        other => return other.to_owned(),
-    }
-    .to_owned()
+    crate::language_modules::java_class_simple_name(value)
 }
 
 /// BuiltinFunction parameter type error for @Param allowedTypes
