@@ -44,7 +44,11 @@ toolchain requirement (`rule(toolchains=[@@rules_go+//go:toolchain,
 @@bazel_tools//tools/cpp:toolchain_type])`, toolchain resolution was not yet
 implemented then; N17 implements it with the host platform as the only
 execution platform, docs/TOOLCHAINS.md); its evidence receipt is recorded in `artifacts/n16a-m1-promotion.json`
-at promotion. This
+at promotion. With toolchain resolution (N17) the build of that target now enters toolchain
+resolution, which expands and analyzes every registered toolchain, and currently
+stops while loading rules_cc's `cc_shared_library.bzl` (computed attribute defaults
+at `cc/common/semantics.bzl:62`, being added); its receipt is recorded in
+`artifacts/n17-n19-promotion.json` at promotion. This
 is a query and loading result only: application build/test and performance
 remain unproven.
 
