@@ -15,6 +15,7 @@ pub(crate) fn wrap<'v>(
         scope,
         Some(value),
         crate::platforms::TargetPlatform::Absent,
+        None,
     )
 }
 

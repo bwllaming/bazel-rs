@@ -598,9 +598,22 @@ pub(crate) fn toolchains<'v>(
         } else if let Some(label) = crate::starlark_types::unpack_label(item) {
             (label, true)
         } else if let Some(text) = item.unpack_str() {
-            let label = bzl_label_checked(eval, text)
-                .map_err(|e| anyhow!("Unable to parse toolchain_type label '{text}': {e}"))?;
-            (label.to_string(), true)
+            let label = match bzl_label_checked(eval, text) {
+                Ok(label) => label.to_string(),
+                // Label.parseWithRepoContext keeps an apparent repository
+                // the .bzl's repository does not see; resolution fails later
+                // (crate::toolchains::deferred_label_text).
+                Err(error) if error.starts_with("unknown apparent repository") => {
+                    let requester = crate::loading::definition_label(eval)
+                        .map(|label| label.repository)
+                        .unwrap_or_default();
+                    crate::toolchains::deferred_label_text(text, &requester).ok_or_else(|| {
+                        anyhow!("Unable to parse toolchain_type label '{text}': {error}")
+                    })?
+                }
+                Err(error) => bail!("Unable to parse toolchain_type label '{text}': {error}"),
+            };
+            (label, true)
         } else {
             bail!(
                 "'toolchains' takes a toolchain_type, Label, or String, but instead got a {}",

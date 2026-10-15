@@ -18,6 +18,23 @@ dependency versions and enabled features remain unchanged.
 semantics modify `src/values/types/string/{methods,repr,globals}.rs`; they are
 declared in the same provenance with their original archive hashes.
 
+[Location-aware indexing and `in`](TOOLCHAINS.md) for native `ctx.toolchains`
+string keys add two `StarlarkValue` methods with defaults,
+`at_with_location(index, heap, location)` and `is_in_with_location(other,
+location)`, which delegate to `at` and `is_in`. `location` lazily returns the
+span of the indexing or `in` expression (its own module, also when the
+expression was inlined from another module's function). Only the bytecode
+`ArrayIndex` and `In` instructions call them (`src/eval/bc/instr_impl.rs`;
+`In` becomes a no-flow instruction with the same argument slots); the vtable
+gains the two entries (`src/values/layout/vtable.rs`, `src/values/traits.rs`).
+Other values keep a single vtable call; the span is computed only when a value
+asks for it. An A/B release benchmark of 4,000,000 iterations of list/dict
+indexing and `in` over the pristine and patched crates measured 0.326-0.333 s
+(pristine) versus 0.303-0.307 s (patched), i.e. no regression. The vendored
+crate's own tests cannot run in this workspace (`starlark` is not a member and
+needs dev-dependencies); the behaviour is covered by `src/toolchain_info.rs`
+unit tests and `tests/toolchains.rs`.
+
 ## Original published contents
 
 The source archive is

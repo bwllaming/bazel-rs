@@ -463,9 +463,11 @@ fn unmodeled_builtin_values_fail_analysis_explicitly() {
             "compatible_with = ['//:c']",
             "attribute 'compatible_with' = [\"//:c\"] (constraint environments)",
         ),
+        // exec_compatible_with takes part in toolchain resolution
+        // (docs/TOOLCHAINS.md), which needs the (default host) platforms.
         (
             "exec_compatible_with = ['//:c']",
-            "attribute 'exec_compatible_with' = [\"//:c\"] (execution platform resolution)",
+            "While resolving toolchains for target //:x (",
         ),
         (
             "toolchains = ['//:c']",

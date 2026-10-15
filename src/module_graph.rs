@@ -79,6 +79,49 @@ pub struct ResolvedGraph {
     pub root_mapping: BTreeMap<String, String>,
 }
 
+impl ResolvedGraph {
+    /// The selected non-root modules in breadth-first order from the root
+    /// (Selection.java:91, 376-410: the resolved dependency graph iterates
+    /// in BFS order, dependencies in declaration order; nodep and ignored
+    /// dev edges have no repository mapping and are not followed).
+    pub fn modules_in_bfs_order(&self) -> Vec<&ResolvedModule> {
+        let mut order = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        let mut queue = VecDeque::new();
+        let mut enqueue = |dependencies: &mut dyn Iterator<Item = &crate::bzlmod::Dependency>,
+                           mapping: &BTreeMap<String, String>,
+                           queue: &mut VecDeque<String>| {
+            for dependency in dependencies {
+                if let Some(canonical) = dependency
+                    .effective_repo_name()
+                    .and_then(|alias| mapping.get(alias))
+                    .filter(|canonical| !canonical.is_empty())
+                    && seen.insert(canonical.clone())
+                {
+                    queue.push_back(canonical.clone());
+                }
+            }
+        };
+        enqueue(
+            &mut self.root.effective_dependencies(),
+            &self.root_mapping,
+            &mut queue,
+        );
+        while let Some(canonical) = queue.pop_front() {
+            let Some(module) = self.modules.get(&canonical) else {
+                continue;
+            };
+            order.push(module);
+            enqueue(
+                &mut module.module.effective_dependencies(),
+                &module.mapping,
+                &mut queue,
+            );
+        }
+        order
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedModule {
     pub name: String,
@@ -1789,6 +1832,78 @@ mod tests {
         )
         .unwrap();
         assert!(graph.modules.is_empty());
+    }
+
+    #[test]
+    fn modules_in_bfs_order_follow_dependency_declarations() {
+        use crate::bzlmod::{Dependency, DependencyRepoName};
+        let dependency = |name: &str, repo_name: DependencyRepoName| Dependency {
+            name: name.into(),
+            version: "1.0".into(),
+            repo_name,
+            ..Default::default()
+        };
+        let module = |name: &str, deps: Vec<Dependency>, mapping: &[(&str, &str)]| {
+            (
+                format!("{name}+"),
+                ResolvedModule {
+                    name: name.into(),
+                    version: "1.0".into(),
+                    compatibility_level: 0,
+                    canonical_name: format!("{name}+"),
+                    module: ModuleFile {
+                        dependencies: deps,
+                        ..Default::default()
+                    },
+                    mapping: mapping
+                        .iter()
+                        .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
+                        .collect(),
+                    source: ModuleSource::LocalPath(PathBuf::from("/x")),
+                },
+            )
+        };
+        // root -> b, a (declaration order); b -> c, a; a -> d; nodep e.
+        let graph = ResolvedGraph {
+            root: ModuleFile {
+                dependencies: vec![
+                    dependency("b", DependencyRepoName::Default),
+                    dependency("a", DependencyRepoName::Explicit("aa".into())),
+                    dependency("e", DependencyRepoName::Nodep),
+                ],
+                ..Default::default()
+            },
+            modules: BTreeMap::from([
+                module(
+                    "a",
+                    vec![dependency("d", DependencyRepoName::Default)],
+                    &[("d", "d+")],
+                ),
+                module(
+                    "b",
+                    vec![
+                        dependency("c", DependencyRepoName::Default),
+                        dependency("a", DependencyRepoName::Default),
+                    ],
+                    &[("c", "c+"), ("a", "a+")],
+                ),
+                module("c", vec![], &[]),
+                module("d", vec![], &[]),
+            ]),
+            root_mapping: BTreeMap::from([
+                (String::new(), String::new()),
+                ("b".into(), "b+".into()),
+                ("aa".into(), "a+".into()),
+            ]),
+        };
+        assert_eq!(
+            graph
+                .modules_in_bfs_order()
+                .iter()
+                .map(|module| module.name.as_str())
+                .collect::<Vec<_>>(),
+            ["b", "a", "c", "d"]
+        );
     }
 
     #[test]

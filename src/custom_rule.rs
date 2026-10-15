@@ -238,10 +238,19 @@ pub struct InvocationDeclaration {
     /// A rule `cfg` transition: it decides the configuration the target and
     /// its select() conditions are analyzed in, so it fails first.
     pub transition_gaps: Vec<String>,
-    /// Rule-level toolchain/execution platform resolution, which Bazel runs
-    /// after the select() conditions and before attribute validation
+    /// Rule-level execution platform features the native toolchain
+    /// resolution does not model (exec groups), which Bazel runs after the
+    /// select() conditions and before attribute validation
     /// (analysis/producers/PrerequisiteProducer).
     pub toolchain_gaps: Vec<String>,
+    /// `rule(toolchains = ...)`: canonical type labels and `mandatory`, in
+    /// declaration order (RuleClass.getToolchainTypes).
+    pub toolchain_types: Vec<(String, bool)>,
+    /// `rule(exec_compatible_with = ...)` canonical labels
+    /// (RuleClass.getExecutionPlatformConstraints).
+    pub exec_compatible_with: Vec<String>,
+    /// The `.bzl` that called rule() (`ctx.toolchains` string keys).
+    pub definition_label: String,
     /// `rule(provides=[...])` identities checked against returned providers.
     #[allow(private_interfaces)]
     pub provides: Vec<ProviderRequirement>,
@@ -294,6 +303,9 @@ pub struct CustomInvocation {
     /// The target platform the implementation sees, set by crate::engine
     /// (`ctx.target_platform_has_constraint`).
     pub target_platform: crate::platforms::TargetPlatform,
+    /// The resolved toolchain context (`ctx.toolchains`), set by
+    /// crate::engine; `None` for rules without toolchain resolution.
+    pub toolchains: Option<std::sync::Arc<crate::toolchain_info::ToolchainContextData>>,
     pub implementation: OwnedFrozenValue,
     /// Strong frozen roots for direct declarations, including factory closures.
     pub subrules: Vec<OwnedFrozenValue>,
@@ -1222,6 +1234,9 @@ mod values {
                     unanalyzed,
                     transition_gaps,
                     toolchain_gaps,
+                    toolchain_types: self.declaration.toolchains.clone(),
+                    exec_compatible_with: self.declaration.exec_compatible_with.clone(),
+                    definition_label: self.declaration.definition_label.clone(),
                     provides: self.declaration.provides.clone(),
                     configurable,
                     attr_order: self.attr_order.clone(),
@@ -1308,26 +1323,12 @@ impl RuleDeclaration {
         if self.dependency_resolution_rule {
             features.push("rule(dependency_resolution_rule=True)".to_owned());
         }
-        if !self.toolchains.is_empty() {
-            toolchain.push(format!(
-                "rule(toolchains=[{}]) (toolchain resolution)",
-                self.toolchains
-                    .iter()
-                    .map(|(label, _)| label.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
+        // rule(toolchains=...) and rule(exec_compatible_with=...) are
+        // resolved natively (crate::toolchains, docs/TOOLCHAINS.md).
         if !self.exec_groups.is_empty() {
             toolchain.push(format!(
                 "rule(exec_groups=[{}]) (execution platform resolution)",
                 self.exec_groups.join(", ")
-            ));
-        }
-        if !self.exec_compatible_with.is_empty() {
-            toolchain.push(format!(
-                "rule(exec_compatible_with=[{}]) (execution platform resolution)",
-                self.exec_compatible_with.join(", ")
             ));
         }
         if !self.cfg.is_target() {
@@ -1443,9 +1444,9 @@ fn builtin_gaps(builtin: &crate::native_rules::NativeTarget) -> Vec<String> {
         let reason = match key.as_str() {
             "target_compatible_with" => "incompatible target skipping (constraint analysis)",
             "compatible_with" | "restricted_to" => "constraint environments",
-            "exec_compatible_with" | "exec_group_compatible_with" => {
-                "execution platform resolution"
-            }
+            // `exec_compatible_with` filters the execution platforms of the
+            // native toolchain resolution (crate::engine, docs/TOOLCHAINS.md).
+            "exec_group_compatible_with" => "execution platform resolution",
             "toolchains" => "TemplateVariableInfo Make variables",
             "package_metadata" => "package metadata dependencies",
             "aspect_hints" => "aspect hints",

@@ -68,5 +68,7 @@ pub mod starlark_types;
 mod subrule;
 mod symbolic_macro;
 pub mod template_variable_info;
+mod toolchain_info;
+pub mod toolchains;
 pub mod visibility;
 pub mod workspace;

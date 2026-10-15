@@ -3,7 +3,8 @@
 Native analysis of `constraint_setting`, `constraint_value` and `platform`,
 the build's target platform, `config_setting(constraint_values = ...)` and
 `constraint_value` targets used directly as `select()` keys. Toolchain
-resolution and everything else that needs it stay explicit failures (N17).
+resolution against these platforms is N17 (docs/TOOLCHAINS.md); execution
+platform registrations and exec groups stay explicit failures.
 
 Pinned source: `/tmp/opencode/bazel-9.3-reference` (e89755b, Release 9.3.0).
 Paths are relative to `src/main/java/com/google/devtools/build/lib/`. Code:
@@ -93,11 +94,12 @@ deprecation:
   platform's; required settings, toolchain-type checks and the missing-toolchain
   message are not inherited.
 
-`flags`, `required_settings`, `check_toolchain_types`,
-`allowed_toolchain_types`, `missing_toolchain_error` and the execution
-properties are recorded but only toolchain resolution (N17) or platform-based
-flags would consume them; platform flags fail explicitly when the platform is
-the target platform (below).
+`check_toolchain_types`, `allowed_toolchain_types` and
+`missing_toolchain_error` are consumed by toolchain resolution
+(docs/TOOLCHAINS.md); `flags`, `required_settings` and the execution
+properties are recorded but only execution platform resolution or
+platform-based flags would consume them; platform flags fail explicitly when
+the platform is the target platform (below).
 
 ## Target platform
 
@@ -180,8 +182,10 @@ platform). The native profile resolves it only where a constraint needs it: a
 (after the `values`/`flag_values`/not-a-constraint_value/duplicate checks, so
 `//os:os is not a constraint_value` comes first as in Bazel, paired capture
 B2/direct_cv_setting), or `ctx.target_platform_has_constraint` (the rule is
-analyzed again once it is resolved). A build that never matches a constraint
-never needs it, and builds without the built-in profile keep working.
+analyzed again once it is resolved), and the toolchain resolution of a rule
+with toolchain types or execution constraints (docs/TOOLCHAINS.md). A build
+that never needs either never resolves it, and builds without the built-in
+profile keep working.
 
 **Default host platform.** `@bazel_tools//tools:host_platform` is the genuine
 embedded `tools/BUILD` alias to `@platforms//host`; that package loads
@@ -306,7 +310,8 @@ and referenced by '//:cv_missing'`) or select() key error.
 
 ## Explicit gaps
 
-* Toolchain resolution and `toolchain`/`toolchain_type` analysis (N17).
+* Toolchain resolution is implemented with the host platform as the only
+  execution platform (docs/TOOLCHAINS.md).
 * `register_execution_platforms` (the root module's registrations, and the
   non-dev registrations of the other modules once the module graph has been
   resolved; no extra module resolution I/O) fails the first toolchain-resolving

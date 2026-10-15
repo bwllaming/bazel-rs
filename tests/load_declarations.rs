@@ -112,13 +112,26 @@ fn ordinary_rule_still_analyzes_and_builds() {
 #[test]
 fn exercised_declarations_fail_explicitly_at_analysis() {
     let ws = Workspace::fixture();
+    // Toolchain resolution (docs/TOOLCHAINS.md) needs platforms: the default
+    // host platform needs the built-in profile, so the builds use an explicit
+    // one.
+    fs::create_dir_all(ws.path().join("plat")).unwrap();
+    fs::write(ws.path().join("plat/BUILD.bazel"), "platform(name = 'p')\n").unwrap();
+    rejected(
+        &ws.run(&["build", "//:golib"]),
+        &[
+            "While resolving toolchains for target //:golib (",
+            "needs the built-in @bazel_tools repository",
+        ],
+    );
     for (target, diagnostics) in [
+        // The fixture's toolchain types are not targets
+        // (ToolchainTypeLookupUtil.java:139-144).
         (
             "//:golib",
             &[
-                "analysis of //:golib",
-                "accepted at load time but not analyzed by the native profile",
-                "rule(toolchains=[//rules:go_toolchain_type]) (toolchain resolution)",
+                "While resolving toolchains for target //:golib (",
+                "): com.google.devtools.build.lib.packages.NoSuchTargetException: no such target '//rules:go_toolchain_type': target 'go_toolchain_type' not declared in package 'rules' defined by ",
             ][..],
         ),
         // select() conditions are analyzed before toolchain resolution
@@ -142,13 +155,17 @@ fn exercised_declarations_fail_explicitly_at_analysis() {
         ),
         (
             "//:ccbin",
-            &["rule(toolchains=[//rules:cc_toolchain_type]) (toolchain resolution)"][..],
+            &["no such target '//rules:cc_toolchain_type'"][..],
         ),
-        // Execution platform resolution precedes attribute-level gaps; the
-        // rule-class gap (test=True) follows attribute validation.
+        // Execution platform resolution (the rule's exec_compatible_with,
+        // ConstraintValueLookupUtil.java:62-92) precedes attribute-level
+        // gaps; the rule-class gap (test=True) follows attribute validation.
         (
             "//:cc_unit_test",
-            &["rule(exec_compatible_with=[//rules:linux]) (execution platform resolution)"][..],
+            &[
+                "While resolving toolchains for target //:cc_unit_test (",
+                "): com.google.devtools.build.lib.packages.NoSuchTargetException: no such target '//rules:linux'",
+            ][..],
         ),
         (
             "//:cc_proto",
@@ -157,7 +174,7 @@ fn exercised_declarations_fail_explicitly_at_analysis() {
             ][..],
         ),
     ] {
-        let build = ws.run(&["build", target]);
+        let build = ws.run(&["build", "--host_platform=//plat:p", target]);
         rejected(&build, diagnostics);
     }
     assert!(!ws.path().join("bazel-rs-out").exists());

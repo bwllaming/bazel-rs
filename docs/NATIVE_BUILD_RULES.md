@@ -8,8 +8,10 @@ classes with Bazel 9.3's attribute schemas, **validates** their attributes with
 Bazel's load-time messages, **retains** the converted values (including
 `select()`), and lists their targets in `query`. Except `filegroup`, `genrule`,
 `config_setting` (`values`/`define_values`/`flag_values`) and the alias-like
-`alias`/`label_flag`/`label_setting` (docs/CONFIGURATION.md) it does **not**
-analyze them: analysis fails explicitly, never silently.
+`alias`/`label_flag`/`label_setting` (docs/CONFIGURATION.md), the platform
+rules (docs/PLATFORMS.md) and `toolchain`/`toolchain_type`
+(docs/TOOLCHAINS.md) it does **not** analyze them: analysis fails explicitly,
+never silently.
 
 Pinned source: `/tmp/opencode/bazel-9.3-reference` (e89755b, Release 9.3.0).
 Paths are relative to `src/main/java/com/google/devtools/build/lib/` unless
@@ -292,8 +294,10 @@ too (docs/COMMON_RULE_ATTRIBUTES.md).
 * Every other Bazel native rule class (for example the `EmptyRule` stubs
   `java_library`/`py_binary` that load in Bazel and fail at analysis) remains an
   unknown global.
-* Analysis of every class listed above except `filegroup`/`genrule` and
-  `config_setting` with `values`/`define_values` (docs/CONFIGURATION.md).
+* Analysis of every class listed above except `filegroup`/`genrule`,
+  `config_setting`, the alias-like rules (docs/CONFIGURATION.md), the
+  platform rules (docs/PLATFORMS.md) and `toolchain`/`toolchain_type`
+  (docs/TOOLCHAINS.md).
 
 ## Documented divergences (pre-existing, unchanged here)
 

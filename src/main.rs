@@ -25,7 +25,7 @@ Native rules: filegroup(name, srcs), genrule(name, srcs, outs, cmd)
 Loading: local .bzl legacy macros, glob, package defaults and exports_files.
 Analysis: custom rules/attributes/providers, declared files, write/run/run_shell actions.
 No upstream fallback. Repository rules and module extensions have bounded native profiles.
-No test command, complete repository/extension APIs, toolchains,
+No test command, complete repository/extension APIs, execution platforms,
 remote execution, rc expansion, sandbox or full query language yet.
 Builds execute trusted shell commands locally; this is not a security sandbox.
 ";

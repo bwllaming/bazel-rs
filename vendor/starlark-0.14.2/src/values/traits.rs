@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 ctx.toolchains string keys: location-aware
+// indexing and `in` hooks; see vendor provenance.
+
 //! The values module define a trait `StarlarkValue` that defines the attribute of
 //! any value in Starlark and a few macro to help implementing this trait.
 //! The `Value` struct defines the actual structure holding a StarlarkValue. It is
@@ -463,6 +466,31 @@ pub trait StarlarkValue<'v>:
         _eval: &mut Evaluator<'v, '_, '_>,
     ) -> crate::Result<Value<'v>> {
         ValueError::unsupported(self, "call()")
+    }
+
+    /// `a[index]` evaluated by the bytecode interpreter: `location` lazily
+    /// returns the source span of the indexing expression (its own file, also
+    /// when the expression was inlined from another module). The default
+    /// delegates to [`at`](StarlarkValue::at).
+    fn at_with_location(
+        &self,
+        index: Value<'v>,
+        heap: Heap<'v>,
+        _location: &dyn Fn() -> Option<crate::codemap::FileSpan>,
+    ) -> crate::Result<Value<'v>> {
+        self.at(index, heap)
+    }
+
+    /// `other in a` evaluated by the bytecode interpreter, with the lazy
+    /// location of the `in` expression (see
+    /// [`at_with_location`](StarlarkValue::at_with_location)). The default
+    /// delegates to [`is_in`](StarlarkValue::is_in).
+    fn is_in_with_location(
+        &self,
+        other: Value<'v>,
+        _location: &dyn Fn() -> Option<crate::codemap::FileSpan>,
+    ) -> crate::Result<bool> {
+        self.is_in(other)
     }
 
     /// Return the result of `a[index]` if `a` is indexable.

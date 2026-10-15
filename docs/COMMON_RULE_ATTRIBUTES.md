@@ -210,11 +210,14 @@ fail analysis: the testonly check below uses the effective value.
   (`declared rule features not analyzed by the native profile: ...`), never
   silently: non-empty `target_compatible_with` (constraint analysis and
   incompatible target skipping), `compatible_with`/`restricted_to`
-  (constraint environments), `exec_compatible_with`/`exec_group_compatible_with`
+  (constraint environments), `exec_group_compatible_with`
   (execution platform resolution), `toolchains` (TemplateVariableInfo Make
   variables), `package_metadata`/`applicable_licenses`, `aspect_hints`,
   `transitive_configs`, a non-empty `expect_failure` (expected-failure
   analysis; `""` has no effect, `StarlarkRuleConfiguredTargetUtil.java:80-131`).
+  `exec_compatible_with` takes part in toolchain resolution (it filters the
+  execution platforms; `ctx.attr.exec_compatible_with` holds the constraint
+  value targets; docs/TOOLCHAINS.md).
   Retained `select()`s on built-in attributes are resolved first and these
   checks apply to the resolved values (docs/CONFIGURATION.md). Test and executable rules are
   still rejected as a whole (`rule(test=True)` gate, docs/LOAD_DECLARATIONS.md).

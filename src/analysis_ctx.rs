@@ -14,6 +14,8 @@ use crate::analysis_runtime::ScopeHandle;
 use crate::configuration::SettingValue;
 
 use crate::platforms::TargetPlatform;
+use crate::toolchain_info::ToolchainContextData;
+use std::sync::Arc;
 
 /// The analysis error of an implementation that needs a deferred target
 /// platform.
@@ -32,6 +34,11 @@ mod values {
         #[allocative(skip)]
         #[trace(static)]
         pub platform: TargetPlatform,
+        /// The resolved toolchain context (`ctx.toolchains`); `None` for
+        /// rules without toolchain resolution.
+        #[allocative(skip)]
+        #[trace(static)]
+        pub toolchains: Option<Arc<ToolchainContextData>>,
     }
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
     pub(super) struct SettingCtx<'v> {
@@ -124,6 +131,16 @@ fn rule_properties(builder: &mut MethodsBuilder) {
     #[starlark(attribute)]
     fn actions<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
         field(this, "actions", heap)
+    }
+    /// StarlarkRuleContext.toolchains (analysis/starlark/StarlarkRuleContext.java:877-898).
+    #[starlark(attribute)]
+    fn toolchains<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        let ctx = rule_ctx(this)?;
+        ctx.scope.check_current()?;
+        Ok(crate::toolchain_info::alloc_context(
+            heap,
+            ctx.toolchains.clone(),
+        ))
     }
     /// StarlarkRuleContext.targetPlatformHasConstraint
     /// (analysis/starlark/StarlarkRuleContext.java:902-904; RuleContext.java:1144-1150):
@@ -221,11 +238,13 @@ pub(crate) fn alloc_rule<'v>(
     scope: ScopeHandle,
     value: Option<SettingValue>,
     platform: TargetPlatform,
+    toolchains: Option<Arc<ToolchainContextData>>,
 ) -> Value<'v> {
     let ctx = RuleCtx {
         backing,
         scope,
         platform,
+        toolchains,
     };
     match value {
         Some(value) => heap.alloc_complex_no_freeze(SettingCtx { ctx, value }),
@@ -291,6 +310,7 @@ mod tests {
                     owner.root(),
                     setting.then(|| SettingValue::StringList(vec!["seed".into()])),
                     TargetPlatform::Absent,
+                    None,
                 );
                 module.set("ctx", ctx);
                 let mut expected = vec![
@@ -301,6 +321,7 @@ mod tests {
                     "label",
                     "outputs",
                     "target_platform_has_constraint",
+                    "toolchains",
                 ];
                 if setting {
                     expected.push("build_setting_value");
@@ -366,6 +387,7 @@ mod tests {
                         owner.root(),
                         None,
                         TargetPlatform::Absent,
+                        None,
                     ),
                     "subrule" => {
                         alloc_subrule(heap, heap.alloc("//:target"), actions, owner.root())

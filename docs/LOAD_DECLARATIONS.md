@@ -137,8 +137,8 @@ A target fails analysis with the message above if it uses any of these:
 
 * rule level: `executable=True`, `test=True`, `analysis_test=True`,
   `_skylark_testable=True`, `output_to_genfiles=True`,
-  `dependency_resolution_rule=True`, non-empty `toolchains`, `exec_groups`
-  or `exec_compatible_with`, `cfg` other than none/target, dict `outputs`
+  `dependency_resolution_rule=True`, non-empty `exec_groups`, `cfg` other
+  than none/target, dict `outputs`
   (the implicit outputs exist for loading, but not as `ctx.outputs`);
 * attribute level, when the attribute's resolved value (explicit, default or
   chosen `select()` branch, docs/CONFIGURATION.md) is non-empty:
@@ -150,6 +150,9 @@ A target fails analysis with the message above if it uses any of these:
 * `aspect()` objects are never applied; `transition()` implementations,
   `attr_aspects`/`toolchains_aspects` functions and `propagation_predicate` are
   never called; `OutputGroupInfo(...)` fails when called.
+
+`toolchains` and `exec_compatible_with` drive toolchain resolution
+(docs/TOOLCHAINS.md).
 
 Accepted, kept, and with no effect on analysis: `fragments`,
 `host_fragments` (`ctx.fragments` is not available, so reading it is an

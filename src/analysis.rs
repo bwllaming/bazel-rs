@@ -49,6 +49,7 @@ fn dependency<'a>(
     name: &str,
     spec: &AttrSpec,
     dependencies: &'a BTreeMap<String, DependencyTarget>,
+    prefix: &str,
 ) -> anyhow::Result<&'a DependencyTarget> {
     let target = dependencies
         .get(label)
@@ -79,23 +80,37 @@ fn dependency<'a>(
             "attribute {name}: package group '{label}' is misplaced here (they are only allowed in the visibility attribute)"
         );
     } else if target.is_rule {
+        let provided = |provider: &crate::providers::ProviderRequirement| {
+            provider.id == crate::providers::DEFAULT_INFO_PROVIDER_ID
+                || target.providers.contains_key(&provider.id)
+        };
+        // RuleContext.Builder.checkRuleDependencyMandatoryProviders
+        // (analysis/RuleContext.java:2070-2095) with the missing providers'
+        // RequiredProviders.getDescription (packages/RequiredProviders.java:157-190,
+        // 207-212, 308-321): per alternative, the missing providers, quoted,
+        // bracketed when several, joined with " or ".
         ensure!(
             spec.required_providers.is_empty()
-                || spec.required_providers.iter().any(|clause| {
-                    clause.iter().all(|provider| {
-                        provider.id == crate::providers::DEFAULT_INFO_PROVIDER_ID
-                            || target.providers.contains_key(&provider.id)
-                    })
-                }),
-            "attribute {name}: '{label}' does not have mandatory providers: {}",
+                || spec
+                    .required_providers
+                    .iter()
+                    .any(|clause| clause.iter().all(provided)),
+            "{prefix}'{}' does not have mandatory providers: {}",
+            target.label,
             spec.required_providers
                 .iter()
-                .map(|clause| clause
-                    .iter()
-                    .map(|provider| format!("'{}'", provider.display_name))
-                    .collect::<Vec<_>>()
-                    .join(", "))
-                .map(|clause| format!("[{clause}]"))
+                .map(|clause| {
+                    let missing = clause
+                        .iter()
+                        .filter(|provider| !provided(provider))
+                        .map(|provider| format!("'{}'", provider.display_name))
+                        .collect::<Vec<_>>();
+                    if missing.len() > 1 {
+                        format!("[{}]", missing.join(", "))
+                    } else {
+                        missing.join(", ")
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join(" or ")
         );
@@ -113,6 +128,15 @@ fn make_ctx<'v>(
         .custom
         .as_ref()
         .ok_or_else(|| anyhow!("{} is not a custom rule", rule.label))?;
+    // RuleContext attribute errors: `in A attribute of KIND rule L: `
+    // (analysis/EventHandlingErrorReporter.java:92-101).
+    let attribute_prefix = |name: &str| {
+        format!(
+            "in {name} attribute of {} rule {}: ",
+            invocation.declaration.rule_class,
+            crate::rule_declarations::canonical_form(&rule.label)
+        )
+    };
     let mut attrs = BTreeMap::new();
     let mut files = BTreeMap::new();
     let mut single_files = BTreeMap::new();
@@ -147,7 +171,9 @@ fn make_ctx<'v>(
             AttrValue::Label(value) => {
                 let target = value
                     .as_ref()
-                    .map(|label| dependency(label, name, spec, dependencies))
+                    .map(|label| {
+                        dependency(label, name, spec, dependencies, &attribute_prefix(name))
+                    })
                     .transpose()?;
                 let target_files = target
                     .map(|target| target.files.clone())
@@ -185,7 +211,9 @@ fn make_ctx<'v>(
             AttrValue::Labels(labels) => {
                 let targets = labels
                     .iter()
-                    .map(|label| dependency(label, name, spec, dependencies))
+                    .map(|label| {
+                        dependency(label, name, spec, dependencies, &attribute_prefix(name))
+                    })
                     .collect::<anyhow::Result<Vec<_>>>()?;
                 files.insert(
                     name.clone(),
@@ -236,7 +264,7 @@ fn make_ctx<'v>(
         };
         attrs.insert(name.clone(), attr);
     }
-    builtin_ctx_attrs(rule, invocation, &mut attrs, &mut files, heap)?;
+    builtin_ctx_attrs(rule, invocation, dependencies, &mut attrs, &mut files, heap)?;
     let label = alloc_target(heap, &rule.label.to_string(), Vec::new())
         .get_attr_error("label", heap)
         .map_err(|error| anyhow!(error.to_string()))?;
@@ -269,6 +297,7 @@ fn make_ctx<'v>(
             context.scope.root(),
             None,
             invocation.target_platform.clone(),
+            invocation.toolchains.clone(),
         ))
     }
 }
@@ -307,6 +336,7 @@ pub(crate) fn setting_default(
 fn builtin_ctx_attrs<'v>(
     rule: &Rule,
     invocation: &crate::custom_rule::CustomInvocation,
+    dependencies: &BTreeMap<String, DependencyTarget>,
     attrs: &mut BTreeMap<String, Value<'v>>,
     files: &mut BTreeMap<String, Value<'v>>,
     heap: Heap<'v>,
@@ -364,6 +394,35 @@ fn builtin_ctx_attrs<'v>(
                 }
             }
             ("visibility", _) => labels(builtin.visibility.as_deref().unwrap_or_default())?,
+            // The constraint values of the target's toolchain resolution
+            // (crate::engine): Targets with their ConstraintValueInfo.
+            ("exec_compatible_with", NativeType::LabelList) => {
+                let mut targets = Vec::new();
+                let mut constraint_files = Vec::new();
+                for label in target.labels(name) {
+                    let key = crate::label::Label::parse_canonical(&label)
+                        .map(|label| label.to_string())
+                        .unwrap_or(label.clone());
+                    let dependency = dependencies.get(&key).ok_or_else(|| {
+                        anyhow!("attribute {name}: dependency {label} was not resolved")
+                    })?;
+                    constraint_files.extend(
+                        dependency
+                            .files
+                            .iter()
+                            .cloned()
+                            .map(|file| alloc_file(heap, file)),
+                    );
+                    targets.push(crate::starlark_types::alloc_target_with_providers(
+                        heap,
+                        &dependency.label,
+                        dependency.files.clone(),
+                        dependency.providers.clone(),
+                    ));
+                }
+                files.insert(name.to_owned(), heap.alloc(constraint_files));
+                heap.alloc(targets)
+            }
             (_, NativeType::LabelList) => {
                 files.insert(name.to_owned(), heap.alloc(Vec::<Value<'v>>::new()));
                 empty_targets(name)?
@@ -973,21 +1032,21 @@ erased = attr.label(providers=[[], [NotPackageSpecificationInfo]])
     fn ordinary_provider_constraints_use_actual_instances_and_synthesized_default() {
         let (mut deps, specs) = provider_fixture();
         for spec in ["unrestricted", "default", "both", "alternative"] {
-            dependency("//pkg:dep", "dep", &specs[spec], &deps).unwrap();
+            dependency("//pkg:dep", "dep", &specs[spec], &deps, "").unwrap();
         }
-        let error = dependency("//pkg:dep", "dep", &specs["missing"], &deps)
+        let error = dependency("//pkg:dep", "dep", &specs["missing"], &deps, "PREFIX: ")
             .unwrap_err()
             .to_string();
-        assert!(
-            error.contains("attribute dep")
-                && error.contains("mandatory providers")
-                && error.contains("Q"),
-            "{error}"
+        // Only the missing provider of the alternative is described
+        // (packages/RequiredProviders.java:157-190).
+        assert_eq!(
+            error,
+            "PREFIX: '//pkg:dep' does not have mandatory providers: 'Q'"
         );
         deps.get_mut("//pkg:dep").unwrap().providers.clear();
-        dependency("//pkg:dep", "another_attr", &specs["default"], &deps).unwrap();
+        dependency("//pkg:dep", "another_attr", &specs["default"], &deps, "").unwrap();
         for spec in ["both", "alternative", "group"] {
-            assert!(dependency("//pkg:dep", "another_attr", &specs[spec], &deps).is_err());
+            assert!(dependency("//pkg:dep", "another_attr", &specs[spec], &deps, "").is_err());
         }
         // An empty files collection does not turn an ordinary rule into a file.
         assert!(deps["//pkg:dep"].files.is_empty());
@@ -1001,10 +1060,10 @@ erased = attr.label(providers=[[], [NotPackageSpecificationInfo]])
         group.is_package_group = true;
         group.providers.clear();
         for spec in ["group", "old_group_name"] {
-            dependency("//pkg:dep", "g", &specs[spec], &deps).unwrap();
+            dependency("//pkg:dep", "g", &specs[spec], &deps, "").unwrap();
         }
         for spec in ["unrestricted", "default", "erased", "both"] {
-            let error = dependency("//pkg:dep", "g", &specs[spec], &deps)
+            let error = dependency("//pkg:dep", "g", &specs[spec], &deps, "")
                 .unwrap_err()
                 .to_string();
             assert!(
@@ -1012,13 +1071,13 @@ erased = attr.label(providers=[[], [NotPackageSpecificationInfo]])
                 "{error}"
             );
             for name in ["visibility", "_allowlist_function_transition"] {
-                dependency("//pkg:dep", name, &specs[spec], &deps).unwrap();
+                dependency("//pkg:dep", name, &specs[spec], &deps, "").unwrap();
             }
         }
         let mut single = specs["group"].clone();
         single.allow_single_file = true;
         assert!(
-            dependency("//pkg:dep", "g", &single, &deps)
+            dependency("//pkg:dep", "g", &single, &deps, "")
                 .unwrap_err()
                 .to_string()
                 .contains("exactly one file")
@@ -1034,16 +1093,16 @@ erased = attr.label(providers=[[], [NotPackageSpecificationInfo]])
         target.providers.clear();
         let mut spec = specs["missing"].clone();
         assert!(
-            dependency("//pkg:dep", "src", &spec, &deps)
+            dependency("//pkg:dep", "src", &spec, &deps, "")
                 .unwrap_err()
                 .to_string()
                 .contains("allow_files=False")
         );
         spec.allow_files = true;
-        dependency("//pkg:dep", "src", &spec, &deps).unwrap();
+        dependency("//pkg:dep", "src", &spec, &deps, "").unwrap();
         spec.allow_single_file = true;
         assert!(
-            dependency("//pkg:dep", "src", &spec, &deps)
+            dependency("//pkg:dep", "src", &spec, &deps, "")
                 .unwrap_err()
                 .to_string()
                 .contains("exactly one file")
@@ -1054,11 +1113,11 @@ erased = attr.label(providers=[[], [NotPackageSpecificationInfo]])
             owner: "//pkg:dep".into(),
             is_source: true,
         });
-        dependency("//pkg:dep", "src", &spec, &deps).unwrap();
+        dependency("//pkg:dep", "src", &spec, &deps, "").unwrap();
         // Output-file targets also have no rule class. Preserve the existing
         // is_source-only permission behavior independently of provider checks.
         deps.get_mut("//pkg:dep").unwrap().is_source = false;
-        dependency("//pkg:dep", "out", &specs["missing"], &deps).unwrap();
+        dependency("//pkg:dep", "out", &specs["missing"], &deps, "").unwrap();
     }
 
     #[test]
@@ -1089,11 +1148,11 @@ r = rule(implementation=impl, attrs={
         for (call, expected) in [
             (
                 "r(name='consumer', a='//pkg:dep', b='//pkg:dep')",
-                "attribute b",
+                "in b attribute of r rule //:consumer: '//pkg:dep' does not have mandatory providers: 'P'",
             ),
             (
                 "r(name='consumer', many=['//pkg:dep', '//pkg:second'])",
-                "attribute many",
+                "in many attribute of r rule //:consumer: ",
             ),
             ("r(name='consumer', b=None)", "consumer callback entered"),
         ] {
@@ -1108,7 +1167,7 @@ r = rule(implementation=impl, attrs={
             // this definition's distinct P intentionally cannot satisfy it.
             let error = analyze(rule, &deps).unwrap_err();
             assert!(error.contains(expected), "{call}: {error}");
-            if expected == "attribute many" {
+            if expected.starts_with("in many attribute") {
                 assert!(error.contains("//pkg:second"), "{error}");
             }
             if expected != "consumer callback entered" {

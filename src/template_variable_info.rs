@@ -229,7 +229,7 @@ T = platform_common.TemplateVariableInfo
             "T({}).variables = {}",
             "T({}).unknown",
             // Present (Bazel's namespace) but analysis-time only in the native profile.
-            "platform_common.ToolchainInfo()",
+            "platform_common.ToolchainInfo(1)",
             "platform_common.ConstraintValueInfo()",
             "platform_common.Unknown",
         ] {

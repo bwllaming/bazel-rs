@@ -589,9 +589,13 @@ impl<'v> StarlarkValue<'v> for BuiltinProvider {
     fn invoke(
         &self,
         _me: Value<'v>,
-        _args: &Arguments<'v, '_>,
-        _eval: &mut Evaluator<'v, '_, '_>,
+        args: &Arguments<'v, '_>,
+        eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
+        // ToolchainInfo.Provider.toolchainInfo (analysis/platform/ToolchainInfo.java:49-60).
+        if self.owner == "platform_common" && self.name == "ToolchainInfo" {
+            return crate::toolchain_info::construct(args, eval);
+        }
         Err(failure(format!(
             "{}.{} {NOT_IMPLEMENTED} ({})",
             self.owner,
@@ -1623,14 +1627,18 @@ _all_providers()
 (repr(config_common.toolchain_type) == "<built-in method toolchain_type of config_common value>") or fail("method repr")
 (repr(exec_group) == "<built-in function exec_group>" and repr(configuration_field) == "<built-in function configuration_field>") or fail("top-level repr")
 (type(platform_common.TemplateVariableInfo({})) == "TemplateVariableInfo") or fail("template still implemented")
+# ToolchainInfo (analysis/platform/ToolchainInfo.java:41-106): a struct with
+# sorted keyword fields.
+t = platform_common.ToolchainInfo(z = [1], a = "x", m = None)
+(type(t) == "ToolchainInfo" and dir(t) == ["a", "m", "z"] and t.a == "x" and t.z == [1] and t.m == None) or fail("toolchain info")
+(repr(t) == 'struct(a = "x", m = None, z = [1])' and str(platform_common.ToolchainInfo()) == "struct()") or fail(repr(t))
+(t == platform_common.ToolchainInfo(a = "x", m = None, z = [1]) and t != platform_common.ToolchainInfo(a = "x")) or fail("equality")
+(not hasattr(t, "b") and getattr(t, "b", 3) == 3) or fail("missing field")
 (proto_common_do_not_use.INCOMPATIBLE_ENABLE_PROTO_TOOLCHAIN_RESOLUTION == True and dir(proto_common_do_not_use) == ["INCOMPATIBLE_ENABLE_PROTO_TOOLCHAIN_RESOLUTION"]) or fail("proto")
 "#,
         );
         for (call, message) in [
-            (
-                "platform_common.ToolchainInfo(x = 1)",
-                "platform_common.ToolchainInfo is not implemented in the native profile (analysis-time platform/toolchain API)",
-            ),
+            ("platform_common.ToolchainInfo(1)", "positional"),
             (
                 "platform_common.ConstraintValueInfo()",
                 "platform_common.ConstraintValueInfo is not implemented in the native profile",

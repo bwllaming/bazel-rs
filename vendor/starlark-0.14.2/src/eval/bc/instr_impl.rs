@@ -16,6 +16,7 @@
  */
 
 // Modified for native Bazel 9.3 set assignment compatibility; see vendor provenance.
+// Modified for location-aware indexing and `in` (native ctx.toolchains string keys); see vendor provenance.
 
 //! Instruction implementations.
 
@@ -339,7 +340,12 @@ impl InstrNoFlowImpl for InstrArrayIndexImpl {
     ) -> crate::Result<()> {
         let array = frame.get_bc_slot(*array);
         let index = frame.get_bc_slot(*index);
-        let value = array.at(index, eval.heap())?;
+        // bazel-rs: the location of the indexing expression is computed only
+        // when a value asks for it (StarlarkValue::at_with_location).
+        let location = || Some(Bc::slow_arg_at_ptr(_ip).span.span.to_file_span());
+        let value = array
+            .get_ref()
+            .at_with_location(index, eval.heap(), &location)?;
         frame.set_bc_slot(*target, value);
         Ok(())
     }
@@ -677,7 +683,8 @@ pub(crate) type InstrBitXor = InstrBinOp<InstrBitXorImpl>;
 pub(crate) type InstrBitXorAssign = InstrBinOp<InstrBitXorAssignImpl>;
 pub(crate) type InstrLeftShift = InstrBinOp<InstrLeftShiftImpl>;
 pub(crate) type InstrRightShift = InstrBinOp<InstrRightShiftImpl>;
-pub(crate) type InstrIn = InstrBinOp<InstrInImpl>;
+// bazel-rs: `in` passes the expression's location (StarlarkValue::is_in_with_location).
+pub(crate) type InstrIn = InstrNoFlow<InstrInImpl>;
 
 impl InstrBinOpImpl for InstrAddImpl {
     #[inline(always)]
@@ -791,10 +798,22 @@ impl InstrBinOpImpl for InstrRightShiftImpl {
     }
 }
 
-impl InstrBinOpImpl for InstrInImpl {
+impl InstrNoFlowImpl for InstrInImpl {
+    type Arg = (BcSlotIn, BcSlotIn, BcSlotOut);
+
     #[inline(always)]
-    fn eval<'v>(v0: Value<'v>, v1: Value<'v>, _heap: Heap<'v>) -> crate::Result<Value<'v>> {
-        Ok(Value::new_bool(v1.is_in(v0)?))
+    fn run_with_args<'v>(
+        _eval: &mut Evaluator<'v, '_, '_>,
+        frame: BcFramePtr<'v>,
+        ip: BcPtrAddr,
+        (v0, v1, target): &(BcSlotIn, BcSlotIn, BcSlotOut),
+    ) -> crate::Result<()> {
+        let v0 = frame.get_bc_slot(*v0);
+        let v1 = frame.get_bc_slot(*v1);
+        let location = || Some(Bc::slow_arg_at_ptr(ip).span.span.to_file_span());
+        let v = Value::new_bool(v1.get_ref().is_in_with_location(v0, &location)?);
+        frame.set_bc_slot(*target, v);
+        Ok(())
     }
 }
 

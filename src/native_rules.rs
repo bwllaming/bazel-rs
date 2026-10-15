@@ -524,6 +524,8 @@ pub fn rule_class(name: &str) -> Option<RuleClass> {
                 "use_target_platform_constraints",
                 T::Bool,
             )))
+            // allowedRuleClasses("config_setting"), no files
+            // (ToolchainRule.java:97-103); checked by crate::engine.
             .add(attr("target_settings", T::LabelList))
             .add(mandatory(attr("toolchain", T::NodepLabel))),
         // rules/platform/ConstraintSettingRule.java:38-87.
@@ -1662,6 +1664,37 @@ pub(crate) fn analysis_gaps(target: &NativeTarget) -> Vec<String> {
             "missing_toolchain_error",
             "check_toolchain_types",
             "allowed_toolchain_types",
+            "tags",
+            "deprecation",
+            "testonly",
+            "features",
+            "licenses",
+            "distribs",
+            "generator_name",
+            "generator_function",
+            "generator_location",
+        ],
+        // ToolchainType.create reads only `no_match_error` (rules/ToolchainType.java:40-52).
+        "toolchain_type" => &[
+            "no_match_error",
+            "tags",
+            "deprecation",
+            "testonly",
+            "features",
+            "generator_name",
+            "generator_function",
+            "generator_location",
+        ],
+        // Toolchain.create (rules/platform/Toolchain.java:42-110); the
+        // `target_settings` labels must be config_setting rules
+        // (ToolchainRule.java:97-103, crate::engine).
+        "toolchain" => &[
+            "toolchain_type",
+            "exec_compatible_with",
+            "target_compatible_with",
+            "use_target_platform_constraints",
+            "target_settings",
+            "toolchain",
             "tags",
             "deprecation",
             "testonly",

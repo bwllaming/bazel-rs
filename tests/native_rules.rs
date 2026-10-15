@@ -237,10 +237,6 @@ fn analysis_of_unmodeled_native_rules_fails_explicitly() {
             "//go/private:default_nogo",
             "go/private/BUILD.bazel:35:15: in flag_values attribute of config_setting rule //go/private:nogo_active: flag '//go/private:noop_nogo' referenced multiple times as ['//go/private:bootstrap_nogo', '//go/private:request_nogo']",
         ),
-        (
-            "//go/toolchain:go_linux_amd64_toolchain",
-            "native rule toolchain analysis not implemented",
-        ),
         // A select() condition is analyzed in the same configuration; a
         // constraint_values config_setting needs the target platform, and
         // the default host platform needs the built-in @bazel_tools
@@ -267,6 +263,19 @@ fn analysis_of_unmodeled_native_rules_fails_explicitly() {
 }
 
 const HOST_PLATFORM_UNAVAILABLE: &str = "bazel-rs: the target platform @@bazel_tools//tools:host_platform (the default host platform) needs the built-in @bazel_tools repository, which this module profile does not provide (";
+
+#[test]
+fn rules_go_toolchain_targets_analyze() {
+    let ws = Workspace::fixture();
+    // The rules_go-shaped toolchain() of the fixture (N17,
+    // docs/TOOLCHAINS.md): its toolchain_type, constraint values and nodep
+    // implementation label; no files.
+    for target in ["//go/toolchain:go_linux_amd64_toolchain", "//go:toolchain"] {
+        let build = ws.run(&["build", target]);
+        assert!(build.status.success(), "{target}: {}", errors(&build));
+        assert!(build.stdout.is_empty(), "{target}: {}", stdout(&build));
+    }
+}
 
 #[test]
 fn platform_constraint_selects_build_with_the_platforms_module_host_platform() {
@@ -363,11 +372,11 @@ fn build_wildcards_skip_manual_targets_but_query_lists_them() {
     assert!(build.status.success(), "{}", errors(&build));
     assert_eq!(stdout(&build).lines().count(), 1, "{}", stdout(&build));
     assert!(stdout(&build).starts_with("//manual:f\t"));
-    // An explicit label is never filtered.
-    rejected(
-        &ws.run(&["build", "//manual:t"]),
-        "native rule toolchain analysis not implemented",
-    );
+    // An explicit label is never filtered; a toolchain target analyzes
+    // (rules/platform/Toolchain.java:42-110) and has no files.
+    let toolchain = ws.run(&["build", "//manual:t"]);
+    assert!(toolchain.status.success(), "{}", errors(&toolchain));
+    assert!(toolchain.stdout.is_empty(), "{}", stdout(&toolchain));
     let explicit = ws.run(&["build", "//manual:g"]);
     assert!(explicit.status.success(), "{}", errors(&explicit));
 }

@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 ctx.toolchains string keys: location-aware
+// indexing and `in` hooks; see vendor provenance.
+
 use std::cmp::Ordering;
 use std::fmt;
 use std::fmt::Debug;
@@ -457,6 +460,15 @@ impl<'v> AValueDyn<'v> {
         (self.vtable.starlark_value.at)(self.value, index, heap)
     }
 
+    pub(crate) fn at_with_location(
+        self,
+        index: Value<'v>,
+        heap: Heap<'v>,
+        location: &dyn Fn() -> Option<crate::codemap::FileSpan>,
+    ) -> crate::Result<Value<'v>> {
+        (self.vtable.starlark_value.at_with_location)(self.value, index, heap, location)
+    }
+
     pub(crate) fn at2(
         self,
         index0: Value<'v>,
@@ -469,6 +481,14 @@ impl<'v> AValueDyn<'v> {
     #[inline]
     pub(crate) fn is_in(self, collection: Value<'v>) -> crate::Result<bool> {
         (self.vtable.starlark_value.is_in)(self.value, collection)
+    }
+
+    pub(crate) fn is_in_with_location(
+        self,
+        collection: Value<'v>,
+        location: &dyn Fn() -> Option<crate::codemap::FileSpan>,
+    ) -> crate::Result<bool> {
+        (self.vtable.starlark_value.is_in_with_location)(self.value, collection, location)
     }
 
     #[inline]

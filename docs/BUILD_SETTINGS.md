@@ -52,8 +52,8 @@ provider payload traversal use the normal native analysis paths.
 
 Consumers may explicitly read this provider from a declared dependency and use
 its values in actions. Producing it does **not** implement implicit Make-variable
-expansion, `ctx.var`, `ctx.toolchains`, platform selection, or genrule toolchain
-dependencies. Other `platform_common` fields are not placeholder implementations.
+expansion, `ctx.var`, platform selection, or genrule toolchain dependencies
+(`ctx.toolchains` is toolchain resolution, docs/TOOLCHAINS.md). Other `platform_common` fields are not placeholder implementations.
 
 ## Configuration and cache boundaries
 

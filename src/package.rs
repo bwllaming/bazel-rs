@@ -1878,6 +1878,7 @@ fn evaluate_at(
             build_setting: pending.build_setting,
             setting_value: None,
             target_platform: crate::platforms::TargetPlatform::Absent,
+            toolchains: None,
             declaration: pending.declaration,
         });
     }

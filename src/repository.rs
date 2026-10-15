@@ -394,6 +394,42 @@ impl RepositorySet {
         found
     }
 
+    /// `register_toolchains` patterns with the repository they are parsed
+    /// in, in RegisteredToolchainsFunction order
+    /// (skyframe/toolchains/RegisteredToolchainsFunction.java:96-104, 149-172):
+    /// the modules of the dependency graph in breadth-first order (root
+    /// first). Non-root dev registrations are dropped, and the root's under
+    /// --ignore_dev_dependency (bazel/bzlmod/ModuleFileGlobals.java:390-411).
+    /// The module graph is resolved when the root module has dependencies.
+    pub(crate) fn toolchain_registrations(&self) -> Result<Vec<(String, Vec<String>)>, String> {
+        use crate::bzlmod::RegistrationKind;
+        let ignore_dev = self.state.options.ignore_dev_dependencies;
+        let mut found = Vec::new();
+        let root = self.root_module()?;
+        let Some(module) = root.module_file() else {
+            return Ok(found);
+        };
+        for registration in &module.registrations {
+            if registration.kind == RegistrationKind::Toolchains
+                && !(ignore_dev && registration.dev_dependency)
+            {
+                found.push((String::new(), registration.labels.clone()));
+            }
+        }
+        if module.effective_dependencies().next().is_none() {
+            return Ok(found);
+        }
+        for module in self.resolve_graph()?.modules_in_bfs_order() {
+            for registration in &module.module.registrations {
+                if registration.kind == RegistrationKind::Toolchains && !registration.dev_dependency
+                {
+                    found.push((module.canonical_name.clone(), registration.labels.clone()));
+                }
+            }
+        }
+        Ok(found)
+    }
+
     pub fn resolve_graph(&self) -> Result<&ResolvedGraph, String> {
         self.state
             .resolved

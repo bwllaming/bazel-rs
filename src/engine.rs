@@ -13,6 +13,10 @@ use crate::repository_budget::HostBudget;
 use crate::scheduler::{self, Dependency, PlannedAction};
 use crate::starlark_options::{BuildSettingInfo, LoadedTarget, SettingType};
 use crate::starlark_types::File;
+use crate::toolchains::{
+    DeclaredToolchainInfo, RegisteredToolchains, ToolchainContextKey, ToolchainTypeInfo,
+    ToolchainTypeRequirement, UnloadedToolchainContext,
+};
 use crate::visibility::Visibility;
 use crate::workspace;
 use std::collections::{BTreeMap, BTreeSet};
@@ -91,6 +95,27 @@ struct ConfiguredNode {
     constraint_value: Option<ConstraintValueInfo>,
     /// PlatformInfo of a `platform` (forwarded by aliases).
     platform: Option<Arc<PlatformInfo>>,
+    /// ToolchainTypeInfo of a `toolchain_type` (forwarded by aliases).
+    toolchain_type: Option<ToolchainTypeInfo>,
+    /// DeclaredToolchainInfo of a `toolchain` (forwarded by aliases).
+    declared_toolchain: Option<Arc<DeclaredToolchainInfo>>,
+}
+
+/// A failure of toolchain resolution: a ToolchainException, reported as
+/// `While resolving toolchains for target L (CONFIG): MESSAGE` at the
+/// rule's location (skyframe/toolchains/ToolchainException.java:67-91), or
+/// an error that already carries its own report (the analysis error of a
+/// prerequisite, ConfiguredValueCreationException, which
+/// asConfiguredValueCreationException propagates unchanged).
+#[derive(Clone, Debug)]
+enum ResolutionError {
+    Toolchain(String),
+    /// An error that aborts the analysis of the requested target
+    /// (`Analysis of target 'L' failed; build aborted: MESSAGE`).
+    Aborted(String),
+    /// A ToolchainException preceded by reported events (a loading event).
+    Reported(String, String),
+    Propagated(String),
 }
 
 /// Why a platform label could not be resolved (PlatformFunction).
@@ -153,6 +178,7 @@ enum NativeProvider {
     ConstraintSetting,
     ConstraintValue,
     Platform,
+    ToolchainType,
 }
 
 impl NativeProvider {
@@ -163,6 +189,7 @@ impl NativeProvider {
             Self::ConstraintSetting => "ConstraintSettingInfo",
             Self::ConstraintValue => "ConstraintValueInfo",
             Self::Platform => "PlatformInfo",
+            Self::ToolchainType => "ToolchainTypeInfo",
         }
     }
 
@@ -171,6 +198,7 @@ impl NativeProvider {
             Self::ConstraintSetting => node.constraint_setting.is_some(),
             Self::ConstraintValue => node.constraint_value.is_some(),
             Self::Platform => node.platform.is_some(),
+            Self::ToolchainType => node.toolchain_type.is_some(),
         }
     }
 }
@@ -260,6 +288,36 @@ fn platform_prerequisite_attributes(rule: &Rule) -> Vec<PrerequisiteAttribute> {
             PrerequisiteAttribute {
                 name: "required_settings",
                 labels: native.labels("required_settings"),
+                allowed_rule_classes: &["config_setting"],
+                mandatory_provider: None,
+            },
+        ],
+        // rules/platform/ToolchainRule.java:57-111 (the NODEP `toolchain`
+        // attribute is not a prerequisite).
+        RuleKind::Native("toolchain") => vec![
+            PrerequisiteAttribute {
+                name: "toolchain_type",
+                labels: label("toolchain_type"),
+                allowed_rule_classes: &["toolchain_type"],
+                mandatory_provider: Some(NativeProvider::ToolchainType),
+            },
+            PrerequisiteAttribute {
+                name: "exec_compatible_with",
+                labels: native.labels("exec_compatible_with"),
+                allowed_rule_classes: &[],
+                mandatory_provider: Some(NativeProvider::ConstraintValue),
+            },
+            PrerequisiteAttribute {
+                name: "target_compatible_with",
+                labels: native.labels("target_compatible_with"),
+                allowed_rule_classes: &[],
+                mandatory_provider: Some(NativeProvider::ConstraintValue),
+            },
+            // `target_settings`: only config_setting rules, no files, no
+            // mandatory provider (ToolchainRule.java:97-103).
+            PrerequisiteAttribute {
+                name: "target_settings",
+                labels: native.labels("target_settings"),
                 allowed_rule_classes: &["config_setting"],
                 mandatory_provider: None,
             },
@@ -412,6 +470,23 @@ pub struct Engine {
     registrations_checked: bool,
     /// Rules analyzed while resolving a platform (no toolchain context).
     empty_configuration_rules: BTreeSet<Label>,
+    /// RegisteredToolchainsValue of the configuration, computed when a rule
+    /// first requests a toolchain type
+    /// (skyframe/toolchains/RegisteredToolchainsFunction.java:64-147).
+    registered_toolchains: Option<Result<Arc<RegisteredToolchains>, ResolutionError>>,
+    /// Reentrancy guard of [`Self::registered_toolchains`]: the registered
+    /// toolchain target being analyzed.
+    computing_toolchains: Option<Label>,
+    /// The cycle report of a registered toolchain that needs toolchain
+    /// resolution itself (Self::toolchain_cycle).
+    toolchain_cycle_report: Option<String>,
+    /// The resolved toolchain context of each toolchain-resolving rule of
+    /// the build (UnloadedToolchainContext), read by the build loop.
+    toolchain_contexts: BTreeMap<Label, UnloadedToolchainContext>,
+    /// Targets analyzed as toolchain implementations: their own resolution
+    /// forces the parent's execution platform, the host platform
+    /// (ToolchainContextUtil.java:136-141; docs/TOOLCHAINS.md).
+    toolchain_implementations: BTreeSet<Label>,
 }
 
 impl Engine {
@@ -433,6 +508,11 @@ impl Engine {
             resolving_platforms: Vec::new(),
             registrations_checked: false,
             empty_configuration_rules: BTreeSet::new(),
+            registered_toolchains: None,
+            computing_toolchains: None,
+            toolchain_cycle_report: None,
+            toolchain_contexts: BTreeMap::new(),
+            toolchain_implementations: BTreeSet::new(),
         }
     }
 
@@ -440,6 +520,7 @@ impl Engine {
     pub fn set_configuration(&mut self, configuration: Configuration) {
         self.configuration = configuration;
         self.platforms.clear();
+        self.registered_toolchains = None;
     }
 
     /// Drain the warnings reported so far (also after a failed build, as
@@ -1011,13 +1092,32 @@ impl Engine {
         // resolution (attribute validation, dependencies), then the factory.
         let ordered = self.config_conditions(&rule, active, configured, plan)?;
         if uses_toolchains {
-            self.resolve_execution_platform(&rule, configured, plan)?;
+            self.check_execution_platform_registrations()?;
         }
-        if let Some(custom) = &rule.custom
-            && !custom.declaration.toolchain_gaps.is_empty()
-        {
-            return Err(custom_gap_error(&rule, &custom.declaration.toolchain_gaps));
+        if let Some(custom) = &rule.custom {
+            // Exec groups and automatic exec groups (a `_use_auto_exec_groups`
+            // attribute that is True, packages/RuleClass.java:179-203; the
+            // --incompatible_auto_exec_groups default is false,
+            // analysis/config/CoreOptions.java:419-432) are not modelled.
+            let mut gaps = custom.declaration.toolchain_gaps.clone();
+            if matches!(
+                custom.attrs.get("_use_auto_exec_groups"),
+                Some(crate::custom_rule::AttrValue::Bool(true))
+            ) {
+                gaps.push(
+                    "attribute '_use_auto_exec_groups' = True (automatic exec groups)".to_owned(),
+                );
+            }
+            if !gaps.is_empty() {
+                return Err(custom_gap_error(&rule, &gaps));
+            }
         }
+        // ToolchainResolutionFunction (skyframe/toolchains/ToolchainResolutionFunction.java:62-131).
+        let toolchain_context = if uses_toolchains {
+            self.resolve_toolchains(&rule, active, configured, plan)?
+        } else {
+            None
+        };
         native_analysis_gate(&rule)?;
         let conditions = ordered.iter().cloned().collect::<BTreeMap<_, _>>();
         let resolver = configured_attributes::Resolver {
@@ -1114,6 +1214,19 @@ impl Engine {
             }
             self.validate_prerequisite(&rule, &actual, &description, skip_testonly)?;
         }
+        // The resolved toolchain implementations are dependencies after the
+        // attribute dependencies (DependencyResolutionHelpers.java:358-373),
+        // analyzed in the parent's configuration (DependencyProducer.java:160-175,
+        // DependencyResolver.java:835-866), each once.
+        if let Some(context) = &toolchain_context {
+            for implementation in context.resolved_labels() {
+                self.toolchain_implementations
+                    .insert(implementation.clone());
+                self.target(&implementation)
+                    .map_err(|error| self.missing_edge_error(&rule, &implementation, error))?;
+                self.analyze(&implementation, active, configured, plan)?;
+            }
+        }
         self.starlark_file_type_errors(&rule, configured)?;
         // config_setting flag_values/constraint_values and the platform rules'
         // label attributes: prerequisites analyzed, then validated
@@ -1185,6 +1298,10 @@ impl Engine {
         // ConstraintSetting/ConstraintValue/Platform.create (rules/platform/*.java).
         let (mut constraint_setting, mut constraint_value, mut platform) =
             self.platform_rule_providers(&rule, &platform_prerequisites, configured)?;
+        // ToolchainType.create / Toolchain.create (rules/ToolchainType.java:40-52,
+        // rules/platform/Toolchain.java:42-110).
+        let (mut toolchain_type, mut declared_toolchain) =
+            self.toolchain_rule_providers(&rule, &platform_prerequisites, configured)?;
         // AliasConfiguredTarget forwards the actual's providers; label_flag and
         // label_setting override BuildSettingProvider (LateBoundAlias.java:58-79).
         let mut actual = None;
@@ -1205,6 +1322,8 @@ impl Engine {
             constraint_setting = forwarded.constraint_setting;
             constraint_value = forwarded.constraint_value;
             platform = forwarded.platform;
+            toolchain_type = forwarded.toolchain_type;
+            declared_toolchain = forwarded.declared_toolchain;
             actual = Some(target);
         }
         // ctx.build_setting_value of a Starlark build setting.
@@ -1212,6 +1331,9 @@ impl Engine {
             custom.setting_value = Some(info.value(&self.configuration));
         }
         active.pop();
+        if let Some(context) = toolchain_context {
+            self.toolchain_contexts.insert(rule.label.clone(), context);
+        }
         configured.insert(
             key,
             ConfiguredNode {
@@ -1221,6 +1343,8 @@ impl Engine {
                 constraint_setting,
                 constraint_value,
                 platform,
+                toolchain_type,
+                declared_toolchain,
             },
         );
         plan.push(rule);
@@ -1250,7 +1374,15 @@ impl Engine {
         dependency: &Label,
         error: &str,
     ) -> Option<String> {
-        if !error.starts_with("no such target '") || dependency.package_id() == *consumer {
+        if dependency.package_id() == *consumer {
+            return None;
+        }
+        self.target_loading_event(dependency, error)
+    }
+
+    /// The loading event of a missing target, at its package's BUILD file.
+    fn target_loading_event(&self, dependency: &Label, error: &str) -> Option<String> {
+        if !error.starts_with("no such target '") {
             return None;
         }
         let root = self.repositories.root(&dependency.repository).ok()?;
@@ -1856,23 +1988,10 @@ impl Engine {
             == crate::configuration::default_host_platform()
     }
 
-    /// The execution-platform part of toolchain resolution that the native
-    /// profile models for a rule that uses toolchain resolution
-    /// (ToolchainResolutionFunction via the toolchain contexts of
-    /// DependencyContextProducerWithCompatibilityCheck.java:189-210):
-    /// registered execution platforms fail explicitly (N17), and a
-    /// non-default `--host_platform` (the execution platform) must be a
-    /// platform, reported like Bazel's `While resolving toolchains for target
-    /// L (CONFIG): Target H was referenced as a platform, but does not provide
-    /// PlatformInfo` at the rule's location (paired capture
-    /// B2/host_host_platform_fg_platforms_p_mac; CONFIG is the native
-    /// identifier).
-    fn resolve_execution_platform(
-        &mut self,
-        rule: &Rule,
-        configured: &mut ConfiguredNodes,
-        plan: &mut Vec<Rule>,
-    ) -> Result<(), String> {
+    /// RegisteredExecutionPlatformsFunction: registered execution platforms
+    /// fail explicitly (N17 keeps the host platform as the only execution
+    /// platform), once per build, at the first toolchain-resolving rule.
+    fn check_execution_platform_registrations(&mut self) -> Result<(), String> {
         if !self.registrations_checked {
             self.registrations_checked = true;
             if let Some(labels) = self
@@ -1891,33 +2010,694 @@ impl Engine {
                 ));
             }
         }
-        let host = self.configuration.native.host_platform.clone();
-        if host == crate::configuration::default_host_platform()
-            || host == *self.configuration.native.target_platform()
-        {
-            return Ok(());
+        Ok(())
+    }
+
+    /// ToolchainException.asConfiguredValueCreationException
+    /// (skyframe/toolchains/ToolchainException.java:67-91) as reported by
+    /// ConfiguredTargetFunction (:394-404): `While resolving toolchains for
+    /// target L (CONFIG): MESSAGE` at the rule's location, after `events`
+    /// (CONFIG is the native identifier, docs/PLATFORMS.md).
+    fn toolchain_error(&self, rule: &Rule, events: &str, message: &str) -> String {
+        let id = self.configuration.id.to_string();
+        let error = located(
+            rule.location.as_deref(),
+            format!(
+                "While resolving toolchains for target {} ({}): {message}",
+                crate::rule_declarations::canonical_form(&rule.label),
+                &id[..7]
+            ),
+        );
+        if events.is_empty() {
+            error
+        } else {
+            format!("{events}\n{error}")
         }
-        let Err(error) = self.platform_info(&host, configured, plan) else {
-            return Ok(());
-        };
+    }
+
+    /// An InvalidPlatformException of PlatformKeys (PlatformKeys.java:150-166):
+    /// a loading error names the label as a non-platform (paired capture
+    /// B2/host_host_platform_fg_platforms_p_mac); other errors keep their
+    /// reported lines and wrap the last one.
+    fn platform_resolution_error(
+        &self,
+        rule: &Rule,
+        label: &Label,
+        error: PlatformError,
+    ) -> String {
         let text = match error {
-            PlatformError::Missing { .. } => crate::platforms::not_a_platform(&host),
+            PlatformError::Missing { .. } => crate::platforms::not_a_platform(label),
             PlatformError::Other(text) => text,
         };
-        let id = self.configuration.id.to_string();
-        let prefix = format!(
-            "While resolving toolchains for target {} ({}): ",
-            crate::rule_declarations::canonical_form(&rule.label),
-            &id[..7]
-        );
-        let (events, last) = match text.rsplit_once('\n') {
-            Some((events, last)) => (format!("{events}\n"), last.to_owned()),
-            None => (String::new(), text),
+        match text.rsplit_once('\n') {
+            Some((events, last)) => self.toolchain_error(rule, events, last),
+            None => self.toolchain_error(rule, "", &text),
+        }
+    }
+
+    fn resolution_error(&self, rule: &Rule, error: ResolutionError) -> String {
+        match error {
+            ResolutionError::Toolchain(message) => self.toolchain_error(rule, "", &message),
+            ResolutionError::Reported(events, message) => {
+                self.toolchain_error(rule, &events, &message)
+            }
+            ResolutionError::Propagated(message) => message,
+            ResolutionError::Aborted(message) => format!("{ANALYSIS_ABORTED}{message}"),
+        }
+    }
+
+    /// ToolchainContextUtil.getUnloadedToolchainContextsInputs
+    /// (skyframe/toolchains/ToolchainContextUtil.java:60-165): the rule
+    /// class's toolchain types and execution constraints; a toolchain
+    /// implementation forces its parent's execution platform.
+    fn toolchain_context_key(&self, rule: &Rule) -> Result<ToolchainContextKey, String> {
+        let mut key = ToolchainContextKey {
+            forced_exec: self.toolchain_implementations.contains(&rule.label),
+            ..Default::default()
         };
-        Err(format!(
-            "{events}{}",
-            located(rule.location.as_deref(), format!("{prefix}{last}"))
+        if let Some(custom) = &rule.custom {
+            for (text, mandatory) in &custom.declaration.toolchain_types {
+                key.types.push(ToolchainTypeRequirement {
+                    label: crate::toolchains::parse_label(text)?,
+                    mandatory: *mandatory,
+                    ignore_if_invalid: false,
+                });
+            }
+            // The rule class's constraints, then the target's
+            // `exec_compatible_with` (an ImmutableSet, :152-164).
+            let mut labels = Vec::new();
+            for text in &custom.declaration.exec_compatible_with {
+                labels.push(Label::parse_canonical(text)?);
+            }
+            for text in custom
+                .declaration
+                .builtin
+                .target
+                .labels("exec_compatible_with")
+            {
+                labels.push(self.resolve_rule_src(rule, &text)?);
+            }
+            for label in labels {
+                if !key.exec_constraints.contains(&label) {
+                    key.exec_constraints.push(label);
+                }
+            }
+        }
+        Ok(key)
+    }
+
+    /// ToolchainResolutionFunction.compute (skyframe/toolchains/ToolchainResolutionFunction.java:62-131)
+    /// for a toolchain-resolving rule: PlatformKeys (the target platform,
+    /// then the host platform as the only execution platform, filtered by
+    /// the rule's execution constraints; PlatformKeys.java:78-224), the
+    /// toolchain types (ToolchainTypeLookupUtil.java:44-170), the registered
+    /// toolchains and the per-type resolution. The default host platform is
+    /// resolved only when the rule has toolchain types or execution
+    /// constraints (docs/TOOLCHAINS.md); a non-default `--host_platform` is
+    /// always validated.
+    fn resolve_toolchains(
+        &mut self,
+        rule: &Rule,
+        active: &mut Vec<Label>,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Vec<Rule>,
+    ) -> Result<Option<UnloadedToolchainContext>, String> {
+        let key = self.toolchain_context_key(rule)?;
+        let host = self.configuration.native.host_platform.clone();
+        let target_label = self.configuration.native.target_platform().clone();
+        let default_host = host == crate::configuration::default_host_platform();
+        if !key.needs_platforms() {
+            if default_host {
+                return Ok(None);
+            }
+            let host_info = self
+                .platform_info(&host, configured, plan)
+                .map_err(|error| self.platform_resolution_error(rule, &host, error))?;
+            // PlatformKeys.isPlatformSuitable (:265-275): without toolchain
+            // types a platform that checks toolchain types is unsuitable,
+            // unless forced.
+            if host_info.check_toolchain_types && !key.forced_exec {
+                let target = self
+                    .platform_info(&target_label, configured, plan)
+                    .map_err(|error| self.platform_resolution_error(rule, &target_label, error))?;
+                return Err(self.toolchain_error(
+                    rule,
+                    "",
+                    &crate::toolchains::no_matching_platform(&[], &target.label, &[host_info]),
+                ));
+            }
+            return Ok(None);
+        }
+        let target = self
+            .platform_info(&target_label, configured, plan)
+            .map_err(|error| self.platform_resolution_error(rule, &target_label, error))?;
+        let host_info = self
+            .platform_info(&host, configured, plan)
+            .map_err(|error| self.platform_resolution_error(rule, &host, error))?;
+        // PlatformKeys.filterExecutionPlatforms (:168-205).
+        let mut constraints = Vec::new();
+        for label in &key.exec_constraints {
+            let value = self
+                .exec_constraint(rule, label, active, configured, plan)
+                .map_err(|error| self.resolution_error(rule, error))?;
+            constraints.push(value);
+        }
+        let exec = if host_info
+            .constraints
+            .contains_all(&constraints.iter().collect::<Vec<_>>())
+        {
+            vec![host_info.clone()]
+        } else {
+            Vec::new()
+        };
+        let mut lookups = Vec::new();
+        for requirement in &key.types {
+            let info = self
+                .toolchain_type_info(rule, requirement, active, configured, plan)
+                .map_err(|error| self.resolution_error(rule, error))?;
+            lookups.push((requirement.clone(), info));
+        }
+        let types = crate::toolchains::resolved_types(&lookups);
+        let requested = crate::toolchains::requested_types(&lookups);
+        // SingleToolchainResolutionFunction reads RegisteredToolchainsValue
+        // only for a type to resolve (:72-84).
+        let registered = if types.is_empty() {
+            Arc::new(RegisteredToolchains::default())
+        } else {
+            if self.computing_toolchains.is_some() && self.registered_toolchains.is_none() {
+                return Err(self.toolchain_cycle(active, &key, &types[0].requirement.label));
+            }
+            self.registered_toolchains(configured, plan)
+                .map_err(|error| self.resolution_error(rule, error))?
+        };
+        // PlatformKeys.find (:230-245): the forced platform is the target
+        // platform or one of the execution platforms.
+        let forced = key.forced_exec.then(|| host_info.clone()).filter(|forced| {
+            forced.label == target.label || exec.iter().any(|exec| exec.label == forced.label)
+        });
+        crate::toolchains::resolve(
+            &types,
+            requested,
+            crate::toolchains::Platforms {
+                target: &target,
+                exec: &exec,
+                forced,
+            },
+            &registered,
+        )
+        .map(Some)
+        .map_err(|message| self.toolchain_error(rule, "", &message))
+    }
+
+    /// RegisteredToolchainsCycleReporter.maybeReportCycle
+    /// (skyframe/toolchains/RegisteredToolchainsCycleReporter.java:61-139)
+    /// with AbstractLabelCycleReporter.printCycle (:134-170): a registered
+    /// toolchain target whose analysis (`active`, from the registered target
+    /// to the rule) needs the registered toolchains. The cycle is
+    /// RegisteredToolchains, the configured targets, the rule's toolchain
+    /// context key (`toolchain types ...`) and its first type's single
+    /// resolution (`toolchain type T`); reported without location.
+    fn toolchain_cycle(
+        &mut self,
+        active: &[Label],
+        key: &ToolchainContextKey,
+        first_type: &Label,
+    ) -> String {
+        let shown = crate::rule_declarations::canonical_form;
+        let head = active.first().map(shown).unwrap_or_default();
+        let mut report = format!(
+            "Misconfigured toolchains: {head} is declared as a toolchain but has inappropriate dependencies. Declared toolchains should be created with the 'toolchain' rule and should not have dependencies that themselves require toolchains.\n.-> RegisteredToolchains"
+        );
+        for label in active {
+            report.push_str("\n|   ");
+            report.push_str(&shown(label));
+        }
+        report.push_str(&format!(
+            "\n|   toolchain types {}\n|   toolchain type {}\n`-- RegisteredToolchains",
+            key.types
+                .iter()
+                .map(|requirement| shown(&requirement.label))
+                .collect::<Vec<_>>()
+                .join(", "),
+            shown(first_type)
+        ));
+        self.toolchain_cycle_report = Some(report.clone());
+        report
+    }
+
+    /// A target loaded for toolchain resolution: a loading error is the
+    /// NoSuchThingException itself (`com.google...NoSuchTargetException:
+    /// ...`, ToolchainTypeLookupUtil.java:139-144,
+    /// ConstraintValueLookupUtil.java:101-105), preceded by the loading event
+    /// of another package's BUILD file.
+    fn resolution_target(&mut self, rule: &Rule, label: &Label) -> Result<(), ResolutionError> {
+        // An unresolvable apparent repository (crate::toolchains::deferred_label_text):
+        // the BuildFileNotFoundException of its package, also reported as an
+        // event without location (paired capture B4/resolution_errors/unknown_repo).
+        if let Some((name, requester)) =
+            crate::toolchains::unknown_repository_parts(&label.repository)
+        {
+            let message = format!(
+                "no such package '@@{repository}//{package}': The repository '@@{repository}' could not be resolved: No repository visible as '@{name}' from {context}",
+                repository = label.repository,
+                package = label.package,
+                context = if requester.is_empty() {
+                    "main repository".to_owned()
+                } else {
+                    format!("repository '@@{requester}'")
+                }
+            );
+            return Err(ResolutionError::Reported(
+                message.clone(),
+                format!(
+                    "com.google.devtools.build.lib.packages.BuildFileNotFoundException: {message}"
+                ),
+            ));
+        }
+        self.target(label).map(|_| ()).map_err(|error| {
+            // The loading event is reported for the rule's own package too
+            // (paired capture A5/resolution_errors/missing_type).
+            let _ = rule;
+            let event = self.target_loading_event(label, &error);
+            let message = PlatformError::loading(error).target_text();
+            match event {
+                Some(event) => ResolutionError::Reported(event, message),
+                None => ResolutionError::Toolchain(message),
+            }
+        })
+    }
+
+    /// ConstraintValueLookupUtil.findConstraintValueInfo
+    /// (skyframe/toolchains/ConstraintValueLookupUtil.java:62-92).
+    fn exec_constraint(
+        &mut self,
+        rule: &Rule,
+        label: &Label,
+        active: &mut Vec<Label>,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Vec<Rule>,
+    ) -> Result<ConstraintValueInfo, ResolutionError> {
+        self.resolution_target(rule, label)?;
+        self.analyze(label, active, configured, plan)
+            .map_err(ResolutionError::Propagated)?;
+        let node = configured.get(&ConfiguredTargetKey {
+            label: label.clone(),
+            config: self.configuration.id,
+        });
+        node.and_then(|node| node.constraint_value.clone())
+            .ok_or_else(|| {
+                ResolutionError::Toolchain(crate::toolchains::not_a_constraint_value(
+                    &self.alias_chain(configured, label).1,
+                ))
+            })
+    }
+
+    /// ToolchainTypeLookupUtil.findToolchainTypeInfo
+    /// (skyframe/toolchains/ToolchainTypeLookupUtil.java:97-148): the type
+    /// target is analyzed in the rule's configuration; `None` for an invalid
+    /// type that is ignored.
+    fn toolchain_type_info(
+        &mut self,
+        rule: &Rule,
+        requirement: &ToolchainTypeRequirement,
+        active: &mut Vec<Label>,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Vec<Rule>,
+    ) -> Result<Option<ToolchainTypeInfo>, ResolutionError> {
+        let label = &requirement.label;
+        self.resolution_target(rule, label)?;
+        self.analyze(label, active, configured, plan)
+            .map_err(ResolutionError::Propagated)?;
+        let node = configured.get(&ConfiguredTargetKey {
+            label: label.clone(),
+            config: self.configuration.id,
+        });
+        if let Some(info) = node.and_then(|node| node.toolchain_type.clone()) {
+            return Ok(Some(info));
+        }
+        if requirement.ignore_if_invalid {
+            return Ok(None);
+        }
+        let is_toolchain = node.is_some_and(|node| node.declared_toolchain.is_some());
+        Err(ResolutionError::Toolchain(
+            crate::toolchains::invalid_toolchain_type(
+                &self.alias_chain(configured, label).1,
+                is_toolchain,
+            ),
         ))
+    }
+
+    /// RegisteredToolchainsFunction.compute (skyframe/toolchains/RegisteredToolchainsFunction.java:64-147),
+    /// once per configuration (D1: every registered toolchain is analyzed).
+    fn registered_toolchains(
+        &mut self,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Vec<Rule>,
+    ) -> Result<Arc<RegisteredToolchains>, ResolutionError> {
+        if let Some(cached) = &self.registered_toolchains {
+            return cached.clone();
+        }
+        if let Some(label) = &self.computing_toolchains {
+            // Reached only through resolve_toolchains, which reports the
+            // cycle itself (Self::toolchain_cycle).
+            return Err(ResolutionError::Propagated(format!(
+                "internal error: registered toolchains needed while analyzing {}",
+                crate::rule_declarations::canonical_form(label)
+            )));
+        }
+        // Set to each registered target while it is analyzed.
+        self.computing_toolchains = Some(Label {
+            repository: String::new(),
+            package: String::new(),
+            name: String::new(),
+        });
+        let result = self.compute_registered_toolchains(configured, plan);
+        self.computing_toolchains = None;
+        self.registered_toolchains = Some(result.clone());
+        result
+    }
+
+    fn compute_registered_toolchains(
+        &mut self,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Vec<Rule>,
+    ) -> Result<Arc<RegisteredToolchains>, ResolutionError> {
+        // --extra_toolchains, reversed so the last one wins, parsed with the
+        // main repository mapping (:82-93); then the modules of the
+        // dependency graph (:96-104, 149-172).
+        let mut patterns = self
+            .configuration
+            .native
+            .extra_toolchains
+            .iter()
+            .rev()
+            .map(|pattern| (String::new(), pattern.clone()))
+            .collect::<Vec<_>>();
+        for (repository, labels) in self
+            .repositories
+            .toolchain_registrations()
+            .map_err(ResolutionError::Propagated)?
+        {
+            patterns.extend(labels.into_iter().map(|label| (repository.clone(), label)));
+        }
+        let labels = self.expand_toolchain_patterns(&patterns)?;
+        // configureRegisteredToolchains (:174-215).
+        let mut declared = Vec::new();
+        // Of several registered targets in a toolchain cycle, Bazel reports
+        // the last one (paired capture B4/resolution_errors/extra_cyc_all_o:
+        // `//cyc:all` names //cyc:type_is_user, not //cyc:exec_user).
+        let mut cycle = None;
+        let mut analyzed = Vec::new();
+        for label in labels {
+            self.computing_toolchains = Some(label.clone());
+            match self.analyze(&label, &mut Vec::new(), configured, plan) {
+                Ok(()) => analyzed.push(label),
+                Err(error) => match self.toolchain_cycle_report.take() {
+                    Some(report) if error.contains(&report) => cycle = Some(report),
+                    _ => return Err(ResolutionError::Propagated(error)),
+                },
+            }
+        }
+        if let Some(report) = cycle {
+            return Err(ResolutionError::Propagated(report));
+        }
+        for label in analyzed {
+            let info = configured
+                .get(&ConfiguredTargetKey {
+                    label: label.clone(),
+                    config: self.configuration.id,
+                })
+                .and_then(|node| node.declared_toolchain.clone())
+                .ok_or_else(|| {
+                    ResolutionError::Toolchain(crate::toolchains::invalid_registered_toolchain(
+                        &crate::rule_declarations::canonical_form(&label),
+                        "target does not provide the DeclaredToolchainInfo provider",
+                    ))
+                })?;
+            declared.push(info);
+        }
+        // ConfigMatchingUtil.validate per toolchain (:120-141).
+        let mut toolchains = Vec::new();
+        for info in declared {
+            match crate::toolchains::target_settings_match(&info.target_label, &info.settings) {
+                Ok(true) => toolchains.push(info),
+                Ok(false) => {}
+                Err(message) => {
+                    return Err(ResolutionError::Toolchain(
+                        crate::toolchains::invalid_registered_toolchain(
+                            &crate::rule_declarations::canonical_form(&info.target_label),
+                            &message,
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(Arc::new(RegisteredToolchains { toolchains }))
+    }
+
+    /// TargetPatternUtil.expandTargetPatterns (skyframe/TargetPatternUtil.java:44-87)
+    /// with FilteringPolicies.ruleTypeExplicit("toolchain")
+    /// (pkgcache/FilteringPolicies.java:45-47): patterns in order, the first
+    /// copy of a label kept; wildcards keep only `toolchain` rules (manual
+    /// tags are not filtered), explicit labels are kept whatever they are.
+    /// `:all` lists a package's targets by name; `/...` visits packages in
+    /// the RecursivePkgFunction order (sorted directory entries, each
+    /// directory's subpackages before itself: a STABLE_ORDER nested set
+    /// iterates postorder, collect/nestedset/NestedSet.java:190-230,
+    /// skyframe/RecursivePkgFunction.java:88-116).
+    fn expand_toolchain_patterns(
+        &mut self,
+        patterns: &[(String, String)],
+    ) -> Result<Vec<Label>, ResolutionError> {
+        let mut labels: Vec<Label> = Vec::new();
+        for (repository, pattern) in patterns {
+            let invalid = |message: String| {
+                ResolutionError::Toolchain(crate::toolchains::invalid_registered_toolchain(
+                    pattern, &message,
+                ))
+            };
+            if pattern.starts_with('-') {
+                return Err(ResolutionError::Propagated(format!(
+                    "negative toolchain registration pattern {pattern:?} is not implemented in the native profile"
+                )));
+            }
+            // An unknown apparent repository fails the whole analysis, not
+            // the toolchain resolution (paired capture
+            // B1/extra_extra_toolchains_nope_x): `Analysis of target 'L'
+            // failed; build aborted: No repository visible as '@R' from main
+            // repository` (RepositoryFetchFunction.java:149-153,
+            // RepositoryName.getContextRepoDisplayString, :251-258).
+            let parse = |this: &Self, text: &str| {
+                this.repositories
+                    .parse(text, repository, "")
+                    .map_err(
+                        |error| match unknown_apparent_repository(text, repository, &error) {
+                            Some(message) => ResolutionError::Aborted(message),
+                            None => invalid(error),
+                        },
+                    )
+            };
+            let (base, wildcard) = match pattern.rsplit_once(':') {
+                Some((base, "all")) => (base, true),
+                // FilteringPolicies.RuleTypeFilter.shouldRetain
+                // (pkgcache/FilteringPolicies.java:120) dereferences the
+                // associated rule of every target, so Bazel 9.3 crashes with
+                // a NullPointerException on the package's file targets (paired
+                // capture B1/extra_extra_toolchains_names, exit 37).
+                Some((_, kind @ ("*" | "all-targets"))) => {
+                    return Err(ResolutionError::Propagated(format!(
+                        "toolchain registration pattern '{pattern}' (the :{kind} wildcard) is not implemented in the native profile: Bazel 9.3 crashes expanding it (NullPointerException in FilteringPolicies.RuleTypeFilter.shouldRetain, pkgcache/FilteringPolicies.java:120)"
+                    )));
+                }
+                _ => (pattern.as_str(), false),
+            };
+            let found = if base == "..." || base.ends_with("/...") {
+                // TargetPattern.TargetsBelowDirectory: `//...` and `@r//...`
+                // keep their `//`, other directories drop the trailing `/`
+                // (as select_filtered).
+                let prefix = base.strip_suffix("...").unwrap_or_default();
+                let directory = if prefix.is_empty() || prefix.ends_with("//") {
+                    prefix
+                } else {
+                    prefix.strip_suffix('/').unwrap_or(prefix)
+                };
+                let context = parse(self, &format!("{directory}:__pattern__"))?;
+                let ignored = self.ignored(&context.repository).map_err(invalid)?;
+                // A directory inside an ignored directory warns and yields no
+                // targets (TargetPattern.TargetsBelowDirectory.eval; the
+                // warning of select_filtered, docs/IGNORED_DIRECTORIES.md).
+                if let Some(entry) = ignored.matching_entry(&context.package) {
+                    self.warnings.push(format!(
+                        "Pattern '{pattern}' was filtered out by ignored directory '{entry}'"
+                    ));
+                    continue;
+                }
+                let ignored = ignored.filter_for_directory(&context.package);
+                let root = self
+                    .repositories
+                    .root(&context.repository)
+                    .map_err(invalid)?
+                    .to_path_buf();
+                let mut packages = if root.join(&context.package).is_dir() {
+                    workspace::discover_packages(&root, &context.package, &ignored)
+                        .map_err(invalid)?
+                } else {
+                    Vec::new()
+                };
+                // RecursivePackageProviderBackedTargetPatternResolver.java:326-329.
+                if packages.is_empty() {
+                    return Err(invalid(format!(
+                        "no targets found beneath '{}'",
+                        context.package
+                    )));
+                }
+                packages.sort_by(|a, b| subpackages_first(a, b));
+                let mut found = Vec::new();
+                for package in packages {
+                    let id = PackageId {
+                        repository: context.repository.clone(),
+                        package,
+                    };
+                    self.load_package(&id).map_err(invalid)?;
+                    found.extend(self.package_toolchain_rules(&id));
+                }
+                found
+            } else if wildcard {
+                let id = parse(self, &format!("{base}:all"))?.package_id();
+                // TargetPatternResolverUtil.getParsingErrorMessage
+                // (pkgcache/TargetPatternResolverUtil.java:33-39).
+                self.load_package(&id)
+                    .map_err(|error| invalid(format!("while parsing '{pattern}': {error}")))?;
+                self.package_toolchain_rules(&id)
+            } else {
+                let label = parse(self, pattern)?;
+                self.target(&label).map_err(invalid)?;
+                vec![label]
+            };
+            for label in found {
+                if !labels.contains(&label) {
+                    labels.push(label);
+                }
+            }
+        }
+        Ok(labels)
+    }
+
+    /// The `toolchain` rules of a loaded package, by name.
+    fn package_toolchain_rules(&self, id: &PackageId) -> Vec<Label> {
+        self.packages[id]
+            .values()
+            .filter(|rule| matches!(rule.kind, RuleKind::Native("toolchain")))
+            .map(|rule| rule.label.clone())
+            .collect()
+    }
+
+    /// ToolchainType.create (rules/ToolchainType.java:40-52) and
+    /// Toolchain.create (rules/platform/Toolchain.java:42-110) from the
+    /// validated prerequisites (crate::toolchains).
+    fn toolchain_rule_providers(
+        &self,
+        rule: &Rule,
+        prerequisites: &[Vec<Label>],
+        configured: &ConfiguredNodes,
+    ) -> Result<
+        (
+            Option<ToolchainTypeInfo>,
+            Option<Arc<DeclaredToolchainInfo>>,
+        ),
+        String,
+    > {
+        let Some(native) = &rule.native else {
+            return Ok((None, None));
+        };
+        match rule.kind {
+            RuleKind::Native("toolchain_type") => Ok((
+                Some(ToolchainTypeInfo::new(
+                    rule.label.clone(),
+                    native.string("no_match_error").unwrap_or_default(),
+                )),
+                None,
+            )),
+            RuleKind::Native("toolchain") => {
+                let config = self.configuration.id;
+                let node = |label: &Label| {
+                    configured.get(&ConfiguredTargetKey {
+                        label: label.clone(),
+                        config,
+                    })
+                };
+                let internal = |what: &str| {
+                    format!(
+                        "internal error: validated prerequisite of {} lacks {what}",
+                        rule.label
+                    )
+                };
+                let provided = |index: usize| prerequisites.get(index).cloned().unwrap_or_default();
+                let toolchain_type = provided(0)
+                    .first()
+                    .and_then(node)
+                    .and_then(|node| node.toolchain_type.clone())
+                    .ok_or_else(|| internal("ToolchainTypeInfo"))?;
+                let constraints = |labels: Vec<Label>| {
+                    labels
+                        .iter()
+                        .map(|label| {
+                            node(label)
+                                .and_then(|node| node.constraint_value.clone())
+                                .ok_or_else(|| internal("ConstraintValueInfo"))
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                };
+                let exec_compatible_with = constraints(provided(1))?;
+                let target_compatible_with = constraints(provided(2))?;
+                let target_settings = provided(3)
+                    .iter()
+                    .map(|label| {
+                        node(label)
+                            .and_then(|node| node.matching.clone())
+                            .ok_or_else(|| internal("ConfigMatchingProvider"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let Some(crate::custom_rule::AttrValue::Label(Some(toolchain))) =
+                    native.attrs.get("toolchain")
+                else {
+                    return Err(internal("a toolchain attribute"));
+                };
+                let toolchain = self.resolve_rule_src(rule, toolchain)?;
+                let shown = crate::rule_declarations::canonical_form(&rule.label);
+                let declared = crate::toolchains::declare_toolchain(
+                    &rule.label,
+                    crate::toolchains::ToolchainAttributes {
+                        toolchain_type,
+                        exec_compatible_with,
+                        target_compatible_with,
+                        use_target_platform_constraints: matches!(
+                            native.attrs.get("use_target_platform_constraints"),
+                            Some(crate::custom_rule::AttrValue::Bool(true))
+                        ),
+                        target_settings,
+                        toolchain,
+                    },
+                )
+                .map_err(|errors| {
+                    errors
+                        .iter()
+                        .map(|error| {
+                            located(
+                                rule.location.as_deref(),
+                                format!(
+                                    "in {} attribute of toolchain rule {shown}: {}",
+                                    error.attribute, error.message
+                                ),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })?;
+                Ok((None, Some(Arc::new(declared))))
+            }
+            _ => Ok((None, None)),
+        }
     }
 
     /// PlatformFunction.compute (analysis/platform/PlatformFunction.java:57-126),
@@ -2554,6 +3334,10 @@ impl Engine {
         let mut plan = Vec::new();
         let mut configured = ConfiguredNodes::new();
         self.registrations_checked = false;
+        self.registered_toolchains = None;
+        self.toolchain_cycle_report = None;
+        self.toolchain_contexts.clear();
+        self.toolchain_implementations.clear();
         // BuildConfigurationKeyProducer resolves an explicit --platforms
         // entry when the top-level configuration is created, before analysis
         // (analysis/producers/BuildConfigurationKeyProducer.java:126-145). A
@@ -2571,7 +3355,16 @@ impl Engine {
                 .map_err(|error| error.target_text())?;
         }
         for label in labels {
-            self.analyze(label, &mut Vec::new(), &mut configured, &mut plan)?;
+            self.analyze(label, &mut Vec::new(), &mut configured, &mut plan)
+                .map_err(|error| match error.split_once(ANALYSIS_ABORTED) {
+                    // BuildView: `Analysis of target 'L' failed; build
+                    // aborted: MESSAGE` for the requested target.
+                    Some((_, message)) => format!(
+                        "Analysis of target '{}' failed; build aborted: {message}",
+                        crate::rule_declarations::canonical_form(label)
+                    ),
+                    None => error,
+                })?;
         }
         // Alias-like targets and the end of their alias chain: dependents see
         // that target's label, kind and providers (AliasConfiguredTarget).
@@ -2627,9 +3420,37 @@ impl Engine {
                 let mut dependency_targets = BTreeMap::new();
                 let mut available = BTreeMap::new();
                 // Resolved dependencies only: `$config_dependencies` is never a
-                // prerequisite (DependencyResolutionHelpers.java:408-416).
+                // prerequisite (DependencyResolutionHelpers.java:408-416). The
+                // resolved toolchain implementations are dependencies too
+                // (their ToolchainInfo files are action inputs).
+                let mut dependency_labels = Vec::new();
                 for src in &rule.srcs {
-                    let label = self.resolve_rule_src(rule, src)?;
+                    dependency_labels.push(self.resolve_rule_src(rule, src)?);
+                }
+                if let Some(context) = self.toolchain_contexts.get(&rule.label) {
+                    for implementation in context.resolved_labels() {
+                        if !dependency_labels.contains(&implementation) {
+                            dependency_labels.push(implementation);
+                        }
+                    }
+                }
+                // The target's exec_compatible_with constraint values
+                // (ctx.attr.exec_compatible_with), analyzed by its toolchain
+                // resolution.
+                if let Some(custom) = &rule.custom {
+                    for text in custom
+                        .declaration
+                        .builtin
+                        .target
+                        .labels("exec_compatible_with")
+                    {
+                        let label = self.resolve_rule_src(rule, &text)?;
+                        if !dependency_labels.contains(&label) {
+                            dependency_labels.push(label);
+                        }
+                    }
+                }
+                for label in dependency_labels {
                     let artifacts = self.artifacts(&label, &dry, &declared)?;
                     let files = artifacts.iter().map(Artifact::file).collect();
                     for artifact in artifacts {
@@ -2677,6 +3498,50 @@ impl Engine {
                             crate::platforms::TargetPlatform::Resolved(platform.clone())
                         }
                         _ => crate::platforms::TargetPlatform::Deferred,
+                    };
+                    // ResolvedToolchainContext.load (analysis/ResolvedToolchainContext.java:48-110)
+                    // with ConfiguredTargetFunction.java:348-366: the
+                    // ToolchainInfo of each resolved implementation (through
+                    // an alias), else TargetNotToolchainException.
+                    custom.toolchains = if uses_toolchains {
+                        let mut toolchains = BTreeMap::new();
+                        let mut requested = Vec::new();
+                        if let Some(context) = self.toolchain_contexts.get(&rule.label) {
+                            for (info, implementation) in &context.resolved {
+                                let Some(provider) =
+                                    custom_providers.get(implementation).and_then(|providers| {
+                                        providers.get(crate::toolchain_info::PROVIDER_ID)
+                                    })
+                                else {
+                                    return Err(self.toolchain_error(
+                                        rule,
+                                        "",
+                                        &crate::toolchains::not_a_toolchain(
+                                            &info.type_label,
+                                            implementation,
+                                        ),
+                                    ));
+                                };
+                                toolchains.insert(info.type_label.clone(), provider.clone());
+                            }
+                            requested = context
+                                .requested
+                                .iter()
+                                .map(|(label, info)| (label.clone(), info.type_label.clone()))
+                                .collect();
+                        }
+                        Some(Arc::new(crate::toolchain_info::ToolchainContextData {
+                            target_description: format!(
+                                "{} rule {}",
+                                rule.rule_class_name(),
+                                crate::rule_declarations::canonical_form(&rule.label)
+                            ),
+                            requested,
+                            toolchains,
+                            repositories: self.repositories.clone(),
+                        }))
+                    } else {
+                        None
                     };
                 }
                 // print() output of a discarded attempt is dropped: Bazel
@@ -3033,6 +3898,51 @@ impl Engine {
     }
 }
 
+/// Marks an error that aborts the analysis of a requested target; the
+/// build prefixes `Analysis of target 'L' failed; build aborted: `.
+const ANALYSIS_ABORTED: &str = "\u{0}analysis aborted:";
+
+/// `No repository visible as '@R' from main repository` (or `from repository
+/// '@@C'`) for a label text naming an apparent repository the context
+/// repository does not see (RepositoryFetchFunction.java:149-153,
+/// cmdline/RepositoryName.java:251-258).
+fn unknown_apparent_repository(text: &str, context: &str, error: &str) -> Option<String> {
+    if !error.starts_with("unknown apparent repository") {
+        return None;
+    }
+    let name = text
+        .strip_prefix('@')
+        .filter(|rest| !rest.starts_with('@'))
+        .and_then(|rest| rest.split_once("//"))
+        .map(|(name, _)| name)?;
+    Some(format!(
+        "No repository visible as '@{name}' from {}",
+        if context.is_empty() {
+            "main repository".to_owned()
+        } else {
+            format!("repository '@@{context}'")
+        }
+    ))
+}
+
+/// The RecursivePkgFunction order of packages below a directory: sorted
+/// directory entries, a directory's subpackages before the directory itself
+/// (a STABLE_ORDER nested set iterates postorder).
+fn subpackages_first(a: &str, b: &str) -> std::cmp::Ordering {
+    let mut left = a.split('/').filter(|part| !part.is_empty());
+    let mut right = b.split('/').filter(|part| !part.is_empty());
+    loop {
+        match (left.next(), right.next()) {
+            (Some(x), Some(y)) if x == y => continue,
+            (Some(x), Some(y)) => return crate::native_rules::java_string_cmp(x, y),
+            // A descendant comes before its ancestor.
+            (Some(_), None) => return std::cmp::Ordering::Less,
+            (None, Some(_)) => return std::cmp::Ordering::Greater,
+            (None, None) => return std::cmp::Ordering::Equal,
+        }
+    }
+}
+
 /// TargetSuggester.suggestTargets (packages/TargetSuggester.java:41-140) with
 /// SpellChecker.editDistance (net/starlark/java/spelling/SpellChecker.java:33-77).
 fn suggest_targets(input: &str, words: &BTreeSet<String>) -> String {
@@ -3347,10 +4257,11 @@ fn native_analysis_gate(rule: &Rule) -> Result<(), String> {
         return Err(located(rule.location.as_deref(), error));
     }
     // config_setting analysis is modelled (crate::config_setting),
-    // alias/label_flag/label_setting forward to their actual, and
+    // alias/label_flag/label_setting forward to their actual,
     // constraint_setting/constraint_value/platform provide their platform
-    // providers (crate::platforms); the other native classes (toolchain,
-    // toolchain_type, ...) fail explicitly (N17).
+    // providers (crate::platforms) and toolchain_type/toolchain their
+    // toolchain providers (crate::toolchains); the other native classes
+    // fail explicitly.
     if let RuleKind::Native(kind) = rule.kind
         && !matches!(
             kind,
@@ -3361,6 +4272,8 @@ fn native_analysis_gate(rule: &Rule) -> Result<(), String> {
                 | "constraint_setting"
                 | "constraint_value"
                 | "platform"
+                | "toolchain_type"
+                | "toolchain"
         )
     {
         return Err(format!(
@@ -3405,6 +4318,8 @@ fn resolved_value_gate(rule: &Rule) -> Result<(), String> {
                 | "constraint_setting"
                 | "constraint_value"
                 | "platform"
+                | "toolchain_type"
+                | "toolchain"
         )
     {
         let gaps = crate::native_rules::analysis_gaps(native);
@@ -3566,6 +4481,19 @@ fn expand_command_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recursive_package_order_lists_subpackages_first() {
+        let mut packages = vec!["tc", "tc/b", "tc/a", "tc/a/deep", "tc/a-b", "tc/B"];
+        packages.sort_by(|a, b| subpackages_first(a, b));
+        assert_eq!(
+            packages,
+            ["tc/B", "tc/a/deep", "tc/a", "tc/a-b", "tc/b", "tc"]
+        );
+        let mut root = vec!["", "x", "a/b", "a"];
+        root.sort_by(|a, b| subpackages_first(a, b));
+        assert_eq!(root, ["a/b", "a", "x", ""]);
+    }
 
     #[test]
     fn english_lists_follow_string_util() {

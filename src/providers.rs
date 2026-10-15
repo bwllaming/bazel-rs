@@ -478,6 +478,7 @@ pub fn provider_identity(value: Value<'_>) -> Option<String> {
             crate::platform_providers::CONSTRAINT_SETTING_ID,
             crate::platform_providers::CONSTRAINT_VALUE_ID,
             crate::platform_providers::PLATFORM_ID,
+            crate::toolchain_info::PROVIDER_ID,
         ]
         .contains(&id.as_str())
     {
@@ -496,6 +497,9 @@ pub fn instance_identity(value: Value<'_>) -> Option<String> {
     }
     if crate::template_variable_info::is_instance(value) {
         return Some(crate::template_variable_info::PROVIDER_ID.to_owned());
+    }
+    if crate::toolchain_info::is_instance(value) {
+        return Some(crate::toolchain_info::PROVIDER_ID.to_owned());
     }
     Some(ProviderInstance::from_value(value)?.identity.clone())
 }
@@ -610,6 +614,16 @@ pub fn provider_files(value: Value<'_>) -> anyhow::Result<Vec<File>> {
             } else if let Some(provider) = ProviderInstance::from_value(value) {
                 for (_, field) in &provider.fields {
                     self.walk(*field, depth + 1)?;
+                }
+            } else if let Some(fields) = crate::toolchain_info::fields(value) {
+                for field in fields {
+                    self.walk(field, depth + 1)?;
+                }
+            } else if let Some(infos) = crate::toolchain_info::context_infos(value) {
+                // A ctx.toolchains value stored in a provider: its
+                // ToolchainInfos' files.
+                for info in infos {
+                    self.walk(info, depth + 1)?;
                 }
             } else if let Some(list) = ListRef::from_value(value) {
                 for child in list.iter() {

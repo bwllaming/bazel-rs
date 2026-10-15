@@ -152,6 +152,45 @@ impl ConstraintCollection {
             .iter()
             .all(|value| self.get(&value.setting).as_ref() == Some(*value))
     }
+
+    /// ConstraintCollection.allConstraintSettings (:232-238): the settings
+    /// set here or by a parent, nearest first, without duplicates.
+    fn all_settings(&self) -> Vec<Arc<ConstraintSettingInfo>> {
+        let mut settings: Vec<Arc<ConstraintSettingInfo>> = Vec::new();
+        let mut current = Some(self);
+        while let Some(collection) = current {
+            for value in &collection.values {
+                if !settings.iter().any(|seen| **seen == *value.setting) {
+                    settings.push(value.setting.clone());
+                }
+            }
+            current = collection.parent.as_deref();
+        }
+        settings
+    }
+
+    /// ConstraintCollection.diff (:151-155): the settings (of either
+    /// collection) whose values differ, defaults included.
+    pub fn diff(&self, other: &ConstraintCollection) -> Vec<Arc<ConstraintSettingInfo>> {
+        let mut settings = self.all_settings();
+        for setting in other.all_settings() {
+            if !settings.iter().any(|seen| **seen == *setting) {
+                settings.push(setting);
+            }
+        }
+        settings.retain(|setting| self.get(setting) != other.get(setting));
+        settings
+    }
+
+    /// ConstraintCollection.hasWithoutDefault (:182-194): set here or by a
+    /// parent, ignoring the setting's default value.
+    pub fn has_without_default(&self, setting: &ConstraintSettingInfo) -> bool {
+        self.values.iter().any(|value| *value.setting == *setting)
+            || self
+                .parent
+                .as_ref()
+                .is_some_and(|parent| parent.has_without_default(setting))
+    }
 }
 
 /// ConstraintCollection.validateConstraints (:305-325) with

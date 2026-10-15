@@ -154,7 +154,8 @@ subclasses. `XcodeVersionInfo` and `ObjcInfo` are Starlark providers. All of
 these report `Provider`. They compare and hash by key and are
 valid `attr.label(providers=[...])` requirements under `builtin:NAME`.
 `@_builtins` Starlark providers use `@@_builtins//:FILE%NAME`. Calling them
-fails explicitly. `TemplateVariableInfo` remains the existing native
+fails explicitly, except `platform_common.ToolchainInfo(**kwargs)`, which
+constructs a ToolchainInfo (docs/TOOLCHAINS.md). `TemplateVariableInfo` remains the existing native
 implementation.
 
 - `config_common.toolchain_type(name, *, mandatory=True)` is implemented

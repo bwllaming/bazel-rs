@@ -41,8 +41,9 @@ live in the main checkout's ignored `artifacts/` directory and are referenced fr
 `artifacts/n13-n15-promotion.json`; no genuine Bazel capture of this query exists. With the configuration and `select()` increment (N16a) on this tree, the same
 build gets past that `label_flag` boundary and first stops at `go_library`'s own
 toolchain requirement (`rule(toolchains=[@@rules_go+//go:toolchain,
-@@bazel_tools//tools/cpp:toolchain_type])`, toolchain resolution is not yet
-implemented); its evidence receipt is recorded in `artifacts/n16a-m1-promotion.json`
+@@bazel_tools//tools/cpp:toolchain_type])`, toolchain resolution was not yet
+implemented then; N17 implements it with the host platform as the only
+execution platform, docs/TOOLCHAINS.md); its evidence receipt is recorded in `artifacts/n16a-m1-promotion.json`
 at promotion. This
 is a query and loading result only: application build/test and performance
 remain unproven.

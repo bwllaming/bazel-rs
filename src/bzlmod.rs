@@ -830,7 +830,11 @@ fn invoke<'v>(
             .collect::<anyhow::Result<Vec<_>>>()?;
         for label in &labels {
             if !label.starts_with("//") && !label.starts_with('@') {
-                bail!("registration requires an absolute target pattern, got {label:?}");
+                // ModuleFileGlobals.checkAllAbsolutePatterns
+                // (bazel/bzlmod/ModuleFileGlobals.java:198-208).
+                bail!(
+                    "Expected absolute target patterns (must begin with '//' or '@') for '{name}' argument, but got '{label}' as an argument"
+                );
             }
         }
         let dev_dependency = kwargs.boolean("dev_dependency")?;

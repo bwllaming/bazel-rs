@@ -377,6 +377,13 @@ pub struct NativeOptions {
     pub platforms: Vec<Label>,
     #[serde(serialize_with = "serialize_label")]
     pub host_platform: Label,
+    /// `--extra_toolchains` target patterns (PlatformOptions.java:98-116,
+    /// CommaSeparatedOptionListConverter, repeatable), deduplicated keeping
+    /// the last copy (PlatformOptions.getNormalized, :164-201). Omitted from
+    /// the identity serialization when empty, so existing identities keep
+    /// their value.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub extra_toolchains: Vec<String>,
 }
 
 fn serialize_labels<S: serde::Serializer>(labels: &[Label], s: S) -> Result<S::Ok, S::Error> {
@@ -407,6 +414,7 @@ impl Default for NativeOptions {
             force_pic: false,
             platforms: vec![host_platform.clone()],
             host_platform,
+            extra_toolchains: Vec::new(),
         }
     }
 }
@@ -545,6 +553,8 @@ pub struct CommandLineOptions {
     /// `query` options: only CoreOptions (runtime/commands/QueryCommand.java:59-67,
     /// no usesConfigurationOptions, runtime/BlazeCommandUtils.java:74-98).
     query: bool,
+    /// `--extra_toolchains` values in command-line order.
+    extra_toolchains: Vec<String>,
 }
 
 /// OptionsParsingException with an invalid argument: BlazeOptionHandler prints
@@ -642,10 +652,35 @@ impl CommandLineOptions {
                     "experimental_platforms",
                     "host_platform",
                     "experimental_host_platform",
+                    "extra_toolchains",
                 ]
                 .contains(&name)
             {
                 return Err(invalid_argument(arg, format!("Unrecognized option: {arg}")));
+            }
+            // --extra_toolchains (PlatformOptions.java:98-116): a repeatable
+            // comma-separated list of target patterns (empty values kept,
+            // an empty input is no value; Converters.java:253-287).
+            if name == "extra_toolchains" || name == "noextra_toolchains" {
+                if name == "noextra_toolchains" {
+                    return Err(invalid_argument(
+                        arg,
+                        format!("Illegal use of 'no' prefix on non-boolean option: {arg}"),
+                    ));
+                }
+                let (value, used_next) = match value {
+                    Some(value) => (value.to_owned(), false),
+                    None => (
+                        next.ok_or_else(|| format!("Expected value after {arg}"))?
+                            .to_owned(),
+                        true,
+                    ),
+                };
+                if !value.is_empty() {
+                    self.extra_toolchains
+                        .extend(value.split(',').map(str::to_owned));
+                }
+                return Ok(Parsed::Consumed(used_next));
             }
             let (option, negated) = match lookup(name) {
                 Some(option) => (option, false),
@@ -737,6 +772,15 @@ impl CommandLineOptions {
             }
         }
         native.define = normalize_defines(defines);
+        // dedupeKeepingLast (PlatformOptions.java:164-185).
+        let mut extra_toolchains: Vec<String> = Vec::new();
+        for pattern in self.extra_toolchains.iter().rev() {
+            if !extra_toolchains.contains(pattern) {
+                extra_toolchains.push(pattern.clone());
+            }
+        }
+        extra_toolchains.reverse();
+        native.extra_toolchains = extra_toolchains;
         // PlatformOptions.getNormalized keeps only the first entry (:189-200);
         // an empty list becomes [--host_platform] (PlatformMappingValue.computeMapping,
         // skyframe/config/PlatformMappingValue.java:154-158). The platforms are
@@ -1087,6 +1131,46 @@ mod tests {
         assert_eq!(
             set(SettingValue::Label(flag.clone())).id,
             set(SettingValue::Label(flag.clone())).id
+        );
+    }
+
+    #[test]
+    fn extra_toolchains_are_a_repeatable_list_keeping_the_last_copy() {
+        // PlatformOptions.java:98-116, 164-201; Converters.java:253-287.
+        let configuration = parsed(&[
+            "--extra_toolchains=//a:b,//c:d",
+            "--extra_toolchains",
+            "//a:b",
+            "--extra_toolchains=",
+        ])
+        .unwrap();
+        assert_eq!(configuration.native.extra_toolchains, ["//c:d", "//a:b"]);
+        assert_eq!(
+            parsed(&["--extra_toolchains=,x"])
+                .unwrap()
+                .native
+                .extra_toolchains,
+            ["", "x"]
+        );
+        // The identity of a configuration without extra toolchains is
+        // unchanged; with them it differs.
+        assert_eq!(parsed(&[]).unwrap().id, Configuration::default().id);
+        assert_ne!(
+            parsed(&["--extra_toolchains=//a:b"]).unwrap().id,
+            Configuration::default().id
+        );
+        assert_eq!(
+            parsed(&["--noextra_toolchains"]).unwrap_err(),
+            "--noextra_toolchains :: Illegal use of 'no' prefix on non-boolean option: --noextra_toolchains"
+        );
+        assert_eq!(
+            parsed(&["--extra_toolchains"]).unwrap_err(),
+            "Expected value after --extra_toolchains"
+        );
+        let mut query = CommandLineOptions::for_query();
+        assert_eq!(
+            query.parse("--extra_toolchains=//a:b", None).err().unwrap(),
+            "--extra_toolchains=//a:b :: Unrecognized option: --extra_toolchains=//a:b"
         );
     }
 

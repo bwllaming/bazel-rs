@@ -640,14 +640,25 @@ fn gap_order_and_select_branch_inputs() {
     ws.file(
         "BUILD.bazel",
         &format!(
-            "load(':defs.bzl', 'show', 'tooled', 'edged')\n{SETTINGS}\ntooled(name = 'tooled', mode = select({{':dbg': 'x'}}), deps = ['//missing:dep'])\nedged(name = 'edge_unset', tools = select({{':opt': [':in.txt'], '//conditions:default': []}}))\nedged(name = 'edge_order', tools = [':in.txt'], mode = select({{':dbg': 'd'}}))\nshow(name = 'inputs', srcs = select({{':opt': ['only_in_select.txt'], '//conditions:default': []}}))\n"
+            "load(':defs.bzl', 'show', 'tooled', 'edged')\n{SETTINGS}\ntooled(name = 'tooled', mode = select({{':dbg': 'x'}}), deps = ['//missing:dep'])\nedged(name = 'edge_unset', tools = select({{':opt': [':in.txt'], '//conditions:default': []}}))\nedged(name = 'edge_order', tools = [':in.txt'], mode = select({{':dbg': 'd'}}))\nshow(name = 'inputs', srcs = select({{':opt': ['only_in_select.txt'], '//conditions:default': []}}))\nplatform(name = 'p')\n"
         ),
+    );
+    // Toolchain resolution (N17, docs/TOOLCHAINS.md) precedes the
+    // dependencies: the missing type target is reported, not the missing
+    // //missing:dep package. The default host platform needs the built-in
+    // profile, so an explicit platform is used.
+    let diagnostic = ws.rejected(&["build", "--host_platform=//:p", "//:tooled"]);
+    assert!(
+        diagnostic.contains(
+            "While resolving toolchains for target //:tooled ("
+        ) && diagnostic.contains(
+            "): com.google.devtools.build.lib.packages.NoSuchTargetException: no such target '//:toolchain_type': target 'toolchain_type' not declared in package '' defined by "
+        ),
+        "{diagnostic}"
     );
     let diagnostic = ws.rejected(&["build", "//:tooled"]);
     assert!(
-        diagnostic.contains(
-            "analysis of //:tooled: declared rule features accepted at load time but not analyzed by the native profile: rule(toolchains=[//:toolchain_type]) (toolchain resolution)"
-        ),
+        diagnostic.contains("needs the built-in @bazel_tools repository"),
         "{diagnostic}"
     );
     // Edge gaps apply to resolved values only, after attribute validation.

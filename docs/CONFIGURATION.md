@@ -31,6 +31,7 @@ with Bazel's defaults and converters:
 | `--[no]force_pic` | `false` | BooleanConverter | `CppOptions.java:218-227` |
 | `--platforms` (`--experimental_platforms`) | `--host_platform` | comma list, empty entries dropped, `//` prefixed unless `/`/`@`; only the first entry is kept (the target platform); empty becomes `--host_platform` | `analysis/PlatformOptions.java:82-96, 189-212`, `skyframe/config/PlatformMappingValue.java:154-158`, `CoreOptionConverters.java:143-158, 331-361` |
 | `--host_platform` (`--experimental_host_platform`) | `@bazel_tools//tools:host_platform` | label; empty means the default | `PlatformOptions.java:46-64, 218-227` |
+| `--extra_toolchains` | `[]` | repeatable comma list of target patterns (empty values kept, an empty value adds nothing); duplicates keep the last copy; part of the identity only when non-empty; not a `query` option (docs/TOOLCHAINS.md) | `PlatformOptions.java:98-116, 164-201`, `common/options/Converters.java:253-287` |
 
 Values that resolve to `@@bazel_tools//tools:host_platform` (or are empty)
 give the default configuration, exactly like the unset options (both become
@@ -189,8 +190,8 @@ confirmed by the paired capture (`D10/gap_order`, `T10`):
    (`ConfigConditions.java:64-83`, docs/PLATFORMS.md); a
    `config_setting(constraint_values = ...)` resolves the target platform
    before its own conditions.
-3. Rule-level toolchain / execution platform resolution gaps
-   (`toolchains`, `exec_groups`, `exec_compatible_with`) — Bazel resolves
+3. Rule-level execution platform gaps (`exec_groups`, automatic exec
+   groups), then toolchain resolution (docs/TOOLCHAINS.md) — Bazel resolves
    toolchains after the conditions and before dependency resolution.
 4. Native classes without native analysis (everything but `filegroup`,
    `genrule`, `config_setting`, `alias`, `label_flag`, `label_setting`,
@@ -563,12 +564,11 @@ documented divergences:
 
 ## Explicitly unsupported (unchanged boundaries)
 
-* Toolchain resolution, execution platforms (`register_execution_platforms`
-  fails explicitly), platform `flags`, `required_settings`/select() in a
-  target platform's tree, `target_compatible_with`,
-  `--experimental_platforms_api` (docs/PLATFORMS.md; N17).
-* `toolchain`, `toolchain_type` analysis (also as select keys or alias
-  actuals; N17).
+* Execution platforms (`register_execution_platforms` fails explicitly;
+  toolchain resolution uses the host platform, docs/TOOLCHAINS.md), platform
+  `flags`, `required_settings`/select() in a target platform's tree,
+  `target_compatible_with`, `--experimental_platforms_api`
+  (docs/PLATFORMS.md).
 * `config_feature_flag`, `--flag_alias`, `allow_multiple` string settings,
   Starlark int values outside 64 bits, `scope`-dependent (project/exec)
   behavior. Option names are loaded with the native target-pattern subset
