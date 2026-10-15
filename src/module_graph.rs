@@ -125,6 +125,14 @@ pub(crate) struct RootModuleSnapshot {
 }
 
 impl RootModuleSnapshot {
+    /// The parsed root MODULE.bazel, when present.
+    pub(crate) fn module_file(&self) -> Option<&ModuleFile> {
+        match &self.module {
+            RootModulePresence::Present(module) => Some(module),
+            RootModulePresence::Missing(_) => None,
+        }
+    }
+
     /// The root module's name and normalized version, as Bazel's
     /// RepositoryMappingValue for the main repository reports them
     /// (skyframe/RepositoryMappingFunction.java:147-159; an absent MODULE.bazel

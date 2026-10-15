@@ -236,14 +236,6 @@ fn values_match_modelled_options_across_configurations() {
             "bazel-rs: -c=opt :: Invalid options syntax: -c=opt",
         ),
         (
-            &["--platforms=//:p"][..],
-            "bazel-rs: --platforms=//:p requires platform analysis (N16c), which is not implemented in the native profile; only the default host platform @@bazel_tools//tools:host_platform is modelled",
-        ),
-        (
-            &["--host_platform", "//:p"][..],
-            "bazel-rs: --host_platform //:p requires platform analysis (N16c), which is not implemented in the native profile; only the default host platform @@bazel_tools//tools:host_platform is modelled",
-        ),
-        (
             &["--define=novalue"][..],
             "bazel-rs: While parsing option --define=novalue: Variable definitions must be in the form of a 'name=value' assignment",
         ),
@@ -257,6 +249,22 @@ fn values_match_modelled_options_across_configurations() {
         command.push("//:m");
         let diagnostic = ws.rejected(&command);
         assert_eq!(diagnostic.trim_end(), message, "{args:?}");
+    }
+    // Other platforms are resolved as platform targets (PlatformFunction /
+    // PlatformLookupUtil, docs/PLATFORMS.md): a missing target reports its
+    // loading exception (paired capture U/configuration_values).
+    for args in [&["--platforms=//:p"][..], &["--host_platform", "//:p"][..]] {
+        let mut command = vec!["build"];
+        command.extend_from_slice(args);
+        command.push("//:m");
+        assert_eq!(
+            ws.rejected(&command),
+            format!(
+                "bazel-rs: com.google.devtools.build.lib.packages.NoSuchTargetException: no such target '//:p': target 'p' not declared in package '' defined by {}/BUILD.bazel (did you mean m?)\n",
+                ws.path().display()
+            ),
+            "{args:?}"
+        );
     }
     // The default host platform spelled explicitly is the default configuration.
     for platform in [
@@ -733,4 +741,55 @@ fn unconditional_none_missing_inputs_and_missing_conditions() {
         "{}/BUILD.bazel:20:8: in cmd attribute of genrule rule //:no_cmd: missing value for `cmd` attribute",
         ws.path().display()
     )));
+}
+
+#[test]
+fn concatenated_selects_reject_duplicate_labels_at_analysis() {
+    // RuleContext.Builder.checkAttributesForDuplicateLabels
+    // (analysis/RuleContext.java:1553-1568): a resolved LABEL_LIST built from
+    // several elements must not repeat a label; each element alone is checked
+    // at loading (RuleClass.checkForDuplicateLabels).
+    let ws = Workspace::new(&[
+        ("a.txt", "a\n"),
+        ("b.txt", "b\n"),
+        (
+            "BUILD.bazel",
+            "load(':defs.bzl', 'show')\nconfig_setting(name = 'opt', values = {'compilation_mode': 'opt'})\nfilegroup(name = 'fg', srcs = ['a.txt'] + select({':opt': ['a.txt'], '//conditions:default': []}))\ngenrule(name = 'g', srcs = ['a.txt'] + select({':opt': ['b.txt', 'a.txt'], '//conditions:default': ['b.txt']}), outs = ['g.txt'], cmd = 'cat $(SRCS) > $@')\nshow(name = 's', srcs = ['a.txt', 'b.txt'] + select({':opt': ['b.txt', 'a.txt'], '//conditions:default': []}))\n",
+        ),
+    ]);
+    // Without the duplicate the targets build.
+    for target in ["//:fg", "//:s"] {
+        let output = ws.run(&["build", target]);
+        assert!(output.status.success(), "{target}: {}", errors(&output));
+    }
+    assert_eq!(ws.built(&["build", "//:g"]), "a\nb\n");
+    let ws_path = ws.path().display().to_string();
+    for (target, expected) in [
+        (
+            "//:fg",
+            format!(
+                "bazel-rs: {ws_path}/BUILD.bazel:3:10: in srcs attribute of filegroup rule //:fg: Label '//:a.txt' is duplicated\n"
+            ),
+        ),
+        (
+            "//:g",
+            format!(
+                "bazel-rs: {ws_path}/BUILD.bazel:4:8: in srcs attribute of genrule rule //:g: Label '//:a.txt' is duplicated\n"
+            ),
+        ),
+        // Every duplicate is reported (native order: first duplicate first;
+        // Bazel's is a HashSet's).
+        (
+            "//:s",
+            format!(
+                "bazel-rs: {ws_path}/BUILD.bazel:5:5: in srcs attribute of show rule //:s: Label '//:b.txt' is duplicated\n{ws_path}/BUILD.bazel:5:5: in srcs attribute of show rule //:s: Label '//:a.txt' is duplicated\n"
+            ),
+        ),
+    ] {
+        assert_eq!(
+            ws.rejected(&["build", "-c", "opt", target]),
+            expected,
+            "{target}"
+        );
+    }
 }

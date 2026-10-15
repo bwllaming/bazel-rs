@@ -4,7 +4,10 @@ Increment N16a: a native build configuration with the modelled Bazel options,
 `config_setting` analysis for `values`/`define_values`, and `select()`
 resolution during analysis. Increment N16b: Starlark build settings on the
 command line, `config_setting(flag_values = ...)`, and analysis of `alias`,
-`label_flag` and `label_setting`. Everything else that a configuration would
+`label_flag` and `label_setting`. Increment N16c: platforms — the target
+platform, `constraint_setting`/`constraint_value`/`platform` analysis,
+`config_setting(constraint_values = ...)` and `constraint_value` select()
+keys (docs/PLATFORMS.md). Everything else that a configuration would
 influence keeps failing explicitly; nothing is ignored.
 
 Pinned source: `/tmp/opencode/bazel-9.3-reference` (e89755b, Release 9.3.0).
@@ -26,18 +29,19 @@ with Bazel's defaults and converters:
 | `--define NAME=VALUE` | `[]` | AssignmentConverter, repeatable; last value per key, sorted by key | `CoreOptions.java:255-267, 1245-1248`, `FragmentOptions.java:100-113` |
 | `--strip` | `sometimes` | `always`, `sometimes`, `never` | `rules/cpp/CppOptions.java:337-347`, `CppConfiguration.java:119-134` |
 | `--[no]force_pic` | `false` | BooleanConverter | `CppOptions.java:218-227` |
-| `--platforms` (`--experimental_platforms`) | host platform | comma list, empty entries dropped, `//` prefixed unless `/`/`@`; only the first entry is kept; empty becomes `--host_platform` | `analysis/PlatformOptions.java:82-96, 189-200`, `skyframe/config/PlatformMappingValue.java:154-158`, `CoreOptionConverters.java:143-158, 331-361` |
+| `--platforms` (`--experimental_platforms`) | `--host_platform` | comma list, empty entries dropped, `//` prefixed unless `/`/`@`; only the first entry is kept (the target platform); empty becomes `--host_platform` | `analysis/PlatformOptions.java:82-96, 189-212`, `skyframe/config/PlatformMappingValue.java:154-158`, `CoreOptionConverters.java:143-158, 331-361` |
 | `--host_platform` (`--experimental_host_platform`) | `@bazel_tools//tools:host_platform` | label; empty means the default | `PlatformOptions.java:46-64, 218-227` |
 
-Only the default host platform is modelled: `--platforms`/`--host_platform`
-values that resolve to `@@bazel_tools//tools:host_platform` (or are empty) give
-the default configuration, exactly like the unset options (both become
-`platforms = [host]` after platform mapping); any other value fails with
-`FORM requires platform analysis (N16c), which is not implemented in the native
-profile; only the default host platform @@bazel_tools//tools:host_platform is
-modelled`. `@bazel_tools` is always visible from the main repository (an
-implicit dependency of every module), also when the native module graph does
-not materialize it.
+Values that resolve to `@@bazel_tools//tools:host_platform` (or are empty)
+give the default configuration, exactly like the unset options (both become
+`platforms = [host]` after platform mapping). Other values are configurations
+of their own whose platforms are resolved and validated as platform targets
+(PlatformFunction semantics, docs/PLATFORMS.md): an explicit non-default
+target or host platform before analysis, the default host platform only where
+a constraint needs it. `@bazel_tools` is always visible from the main
+repository (an implicit dependency of every module) for option conversion,
+also when the native module graph does not materialize it; resolving the
+default host platform then fails explicitly (docs/PLATFORMS.md).
 
 Command-line forms follow `OptionsParserImpl.identifyOptionAndPossibleArgument`
 (`common/options/OptionsParserImpl.java:756-850`): `--name=value`,
@@ -54,8 +58,10 @@ existing `unsupported option ...; options are never silently ignored` error.
 `query` accepts and validates the modelled CoreOptions (`-c`, `--[no]stamp`,
 `--define`; `runtime/commands/QueryCommand.java:59-67`, which does not add the
 configuration fragments' options, `runtime/BlazeCommandUtils.java:74-98`) and
-ignores them (query is configuration-independent); `--strip`, `--force_pic`,
-`--platforms` and `--host_platform` stay unsupported for `query`. A
+ignores them (query is configuration-independent); `--strip` and
+`--force_pic` stay unsupported for `query`, and `--platforms`/`--host_platform`
+are Bazel's `ARG :: Unrecognized option: ARG` (query registers no
+PlatformOptions; docs/PLATFORMS.md). A
 workspace-root `platform_mappings` file (read by Bazel by default) fails the
 build explicitly: platform mappings are not modelled.
 
@@ -177,12 +183,18 @@ confirmed by the paired capture (`D10/gap_order`, `T10`):
    (`ConfiguredTargetAndData.getTargetLabel`). When a key fails to load or
    analyze, its own error is followed by `LOC: errors encountered resolving
    select() keys for L` at the consumer's location
-   (`ConfigConditionsProducer.java:121-129, 200-211`).
+   (`ConfigConditionsProducer.java:121-129, 200-211`). A `constraint_value`
+   key is matched against the target platform when the consuming rule uses
+   toolchain resolution and is otherwise not a valid condition
+   (`ConfigConditions.java:64-83`, docs/PLATFORMS.md); a
+   `config_setting(constraint_values = ...)` resolves the target platform
+   before its own conditions.
 3. Rule-level toolchain / execution platform resolution gaps
    (`toolchains`, `exec_groups`, `exec_compatible_with`) — Bazel resolves
    toolchains after the conditions and before dependency resolution.
 4. Native classes without native analysis (everything but `filegroup`,
-   `genrule`, `config_setting`, `alias`, `label_flag`, `label_setting`) and
+   `genrule`, `config_setting`, `alias`, `label_flag`, `label_setting`,
+   `constraint_setting`, `constraint_value`, `platform`) and
    factory checks (`config_setting` all-empty / label-like keys) fail
    explicitly.
 5. **validateAttributes** (`ConfiguredAttributeMapper.java:121-125`, called at
@@ -318,8 +330,9 @@ first-seen order (`:169-258`). For each entry, `checkOptionValue` (`:420-482`):
   `<empty>` diffs).
 
 All entry errors are reported, each as `LOC: in values attribute of
-config_setting rule L: ...` at the `config_setting`'s location. Non-empty
-`constraint_values` (N16c) fail explicitly. The option name table `src/bazel_options.rs` lists every
+config_setting rule L: ...` at the `config_setting`'s location.
+`constraint_values` are matched against the target platform
+(`diffConstraintValues`, docs/PLATFORMS.md). The option name table `src/bazel_options.rs` lists every
 non-INTERNAL `@Option` of every `FragmentOptions` subclass in the pinned
 source (including fragments Bazel may not register; those then fail as
 "not implemented" rather than "unknown option").
@@ -384,12 +397,13 @@ These are AliasConfiguredTargets (`rules/AliasConfiguredTarget.java:50-123`):
   any provider (these three) skip the testonly check of their own
   prerequisites (`:730-738`); testonly is checked between the consumer and
   the actual.
-* No toolchain resolution: `alias` resolves an execution platform only with
-  select keys or `target_compatible_with` (`Alias.java:78-87`), which needs no
-  constraint matching for the default host platform; a non-empty
+* Toolchain resolution: `alias` uses it only with select keys or
+  `target_compatible_with` (`Alias.java:78-98`), so a `constraint_value` key
+  of an alias is valid (docs/PLATFORMS.md); a non-empty
   `target_compatible_with` (and the other constraint/metadata attributes) fails
-  explicitly as an analysis gap (N16c). Label settings never resolve
-  toolchains (`LabelBuildSettings.java:99`).
+  explicitly as an analysis gap (incompatible target skipping is not
+  implemented). Label settings never resolve toolchains
+  (`LabelBuildSettings.java:99`).
 * `Alias.create`'s `@bazel_tools//platforms` error compares
   `getCanonicalForm()` (`@@bazel_tools//...` in Bazel 9.3) with
   `@bazel_tools//platforms` and can never fire; it is not modelled.
@@ -477,8 +491,9 @@ remaining mismatches are documented divergences:
   BuildOptions checksum and doubled top-level key, see Cycles above).
 * `A10/missing_target_edge`: for a missing target of another package Bazel
   first reports the target loading error at that package's BUILD file
-  (`<WS>/p/BUILD.bazel: no such target '//p:nothere': ...`); native prints
-  only the edge error (which matches Bazel's second error exactly).
+  (`<WS>/p/BUILD.bazel: no such target '//p:nothere': ...`); native printed
+  only the edge error (which matches Bazel's second error exactly). Fixed in
+  N16c: the loading event now precedes the edge error (docs/PLATFORMS.md).
 * `B7/external/missing_in_repo`: the `defined by` path of an external
   repository is the output-base symlink in Bazel, the source directory
   natively.
@@ -490,6 +505,26 @@ of the same package (Bazel reports every rule error of a package; native stops
 at the first), and the column of `label_flag(build_setting_default = None)`
 errors (`2:11` versus `2:1`). `cquery` and int values outside 64 bits are
 EXPECTED_NATIVE_UNSUPPORTED.
+
+## N16c paired capture
+
+`artifacts/n16c-capture.py` (ignored) runs every step of `tests/platforms.rs`
+(A1-A10), the updated rows of `tests/native_rules.rs` and
+`tests/configuration.rs` (U/) and probes (B1-B8; B8 covers the empty
+configuration of platforms) against genuine Bazel 9.3.0 and the native binary;
+the tracked summary is `tests/fixtures/platforms/reference_receipt.json`
+(verdicts, exact Bazel strings of every mismatch, run history). Run 1 (387
+rows): 199 EXACT, 90 EXACT_MESSAGE, 41 EXPECTED_NATIVE_UNSUPPORTED, 57 MISMATCH.
+Run 2 (454 rows, after the review fixes): 246 / 131 / 54 / 23; it exposed a
+regression (toolchain resolution inside a platform tree) and two
+label-setting/required_settings texts, fixed before the recorded run 3 (454
+rows): 246 EXACT, 139 EXACT_MESSAGE, 54 EXPECTED_NATIVE_UNSUPPORTED, 15
+MISMATCH. The remaining mismatches (docs/PLATFORMS.md Divergences): 3
+source-only CLI listings; `A9/bad` (same final error, Starlark traceback
+framing); 6 B4 flag-gated provider fields (interpreter wording ``Object of type
+`X` has no attribute `f` `` versus `'X' value has no field or method 'f'`); and
+5 explicit gaps (platform flags, `platform_common.PlatformInfo()`,
+execution-platform registrations / `--extra_execution_platforms`).
 
 ## Paired capture
 
@@ -517,8 +552,9 @@ documented divergences:
   `(nothing to build)`.
 * Starlark-level locations (load-time conversion errors, `fail()` in a rule
   implementation) point at the native interpreter's span.
-* `constraint_values`/platforms and toolchain resolution (N16c) fail
-  explicitly where Bazel evaluates them.
+* `constraint_values`/platforms (implemented since by N16c, docs/PLATFORMS.md)
+  and toolchain resolution failed explicitly where Bazel evaluates them in
+  this capture.
 * `query --strip=...` (and the other non-CoreOptions modelled options) is an
   explicit unsupported option; Bazel says `--strip=always :: Unrecognized
   option: --strip=always` with SpellChecker suggestions over every query option.
@@ -527,10 +563,12 @@ documented divergences:
 
 ## Explicitly unsupported (unchanged boundaries)
 
-* `constraint_values`, platforms, `constraint_value` select keys, toolchain
-  resolution (N16c).
-* `constraint_setting`, `constraint_value`, `platform`, `toolchain`,
-  `toolchain_type` analysis (also as select keys or alias actuals; N16c/N17).
+* Toolchain resolution, execution platforms (`register_execution_platforms`
+  fails explicitly), platform `flags`, `required_settings`/select() in a
+  target platform's tree, `target_compatible_with`,
+  `--experimental_platforms_api` (docs/PLATFORMS.md; N17).
+* `toolchain`, `toolchain_type` analysis (also as select keys or alias
+  actuals; N17).
 * `config_feature_flag`, `--flag_alias`, `allow_multiple` string settings,
   Starlark int values outside 64 bits, `scope`-dependent (project/exec)
   behavior. Option names are loaded with the native target-pattern subset
@@ -538,5 +576,4 @@ documented divergences:
   flags must reference exactly one target`).
 * Configuration transitions (rule and attribute `cfg`), `--flag_alias`,
   `--debug_select_always_succeed`, `--incompatible_disable_select_on`,
-  platform mappings, non-default `--platforms`/`--host_platform`, every other
-  build option, `cquery`/`config` commands.
+  platform mappings, every other build option, `cquery`/`config` commands.

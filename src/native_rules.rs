@@ -3,8 +3,8 @@
 //!
 //! Pinned source: `/tmp/opencode/bazel-9.3-reference` (e89755b, Release 9.3.0).
 //! Paths below are relative to `src/main/java/com/google/devtools/build/lib/`.
-//! Only loading is modeled here; analysis of the classes other than
-//! `filegroup`/`genrule` fails explicitly (see `crate::engine`).
+//! Only loading is modeled here; analysis is in `crate::engine` (classes
+//! without native analysis fail explicitly there).
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{anyhow, bail};
@@ -1623,8 +1623,56 @@ pub(crate) fn analysis_gaps(target: &NativeTarget) -> Vec<String> {
             "generator_function",
             "generator_location",
         ],
-        // ConfigSetting.create reads only these (rules/config/ConfigSetting.java:111-258);
-        // constraint_values fail explicitly in crate::config_setting.
+        // ConstraintSetting.create / ConstraintValue.create
+        // (rules/platform/ConstraintSetting.java:227-304, ConstraintValue.java:338-353).
+        "constraint_setting" => &[
+            "default_constraint_value",
+            "refines_constraint_value",
+            "tags",
+            "deprecation",
+            "testonly",
+            "features",
+            "licenses",
+            "distribs",
+            "generator_name",
+            "generator_function",
+            "generator_location",
+        ],
+        "constraint_value" => &[
+            "constraint_setting",
+            "tags",
+            "deprecation",
+            "testonly",
+            "features",
+            "licenses",
+            "distribs",
+            "generator_name",
+            "generator_function",
+            "generator_location",
+        ],
+        // Platform.create (rules/platform/Platform.java:44-120); `flags` fail
+        // where the platform is the target platform (crate::engine).
+        "platform" => &[
+            "constraint_values",
+            "parents",
+            "remote_execution_properties",
+            "exec_properties",
+            "flags",
+            "required_settings",
+            "missing_toolchain_error",
+            "check_toolchain_types",
+            "allowed_toolchain_types",
+            "tags",
+            "deprecation",
+            "testonly",
+            "features",
+            "licenses",
+            "distribs",
+            "generator_name",
+            "generator_function",
+            "generator_location",
+        ],
+        // ConfigSetting.create reads only these (rules/config/ConfigSetting.java:111-258).
         "config_setting" => &[
             "values",
             "define_values",

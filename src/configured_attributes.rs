@@ -57,7 +57,8 @@ pub struct ConfigMatching {
     pub settings: Vec<(String, String)>,
     /// `flagSettingsMap` (N16b).
     pub flags: BTreeMap<Label, String>,
-    /// `constraintValuesSetting` (N16c).
+    /// `constraintValuesSetting`: constraint_values labels and their
+    /// refinement chains (crate::config_setting).
     pub constraints: BTreeSet<Label>,
     pub result: MatchResult,
 }
@@ -571,6 +572,75 @@ pub fn rule_config_dependencies(rule: &Rule) -> Vec<String> {
             .into_iter()
             .map(|(_, parts)| parts),
     )
+}
+
+/// RuleContext.Builder.checkAttributesForDuplicateLabels
+/// (analysis/RuleContext.java:1553-1568) with
+/// ConfiguredAttributeMapper.checkForDuplicateLabels
+/// (packages/ConfiguredAttributeMapper.java:456-467): a LABEL_LIST attribute
+/// whose value concatenates several elements (`[...] + select(...)`, more than
+/// one selector; single selectors and plain values were checked at loading)
+/// must not contain a label twice once resolved. LABEL_LIST_DICT is skipped
+/// (concatenated dicts keep the last list per key, RuleContext.java:1557-1560).
+/// The attribute errors `in A attribute of KIND rule L: Label 'X' is
+/// duplicated`, in rule-class attribute order; `rule` is the unconfigured
+/// rule and `configured` its configure() result.
+pub fn concatenated_duplicate_errors(rule: &Rule, configured: &Rule) -> Vec<String> {
+    let shown = |text: &str| {
+        Label::parse_canonical(text)
+            .map(|label| crate::rule_declarations::canonical_form(&label))
+            .unwrap_or_else(|_| text.to_owned())
+    };
+    let label = crate::rule_declarations::canonical_form(&rule.label);
+    let mut errors = Vec::new();
+    for (source, parts) in configurable_attributes(rule) {
+        if parts.len() < 2 {
+            continue;
+        }
+        let (name, resolved) = match &source {
+            AttributeSource::Native(attribute) => {
+                if attribute.ty != crate::native_rules::NativeType::LabelList {
+                    continue;
+                }
+                let target = match (&configured.native, &configured.custom) {
+                    (Some(native), _) => native.as_ref(),
+                    (None, Some(custom)) => &custom.declaration.builtin.target,
+                    (None, None) => continue,
+                };
+                (attribute.name, target.attrs.get(attribute.name))
+            }
+            AttributeSource::Starlark(name, spec) => {
+                if spec.kind != crate::custom_rule::AttrKind::LabelList {
+                    continue;
+                }
+                (
+                    *name,
+                    configured
+                        .custom
+                        .as_ref()
+                        .and_then(|custom| custom.attrs.get(*name)),
+                )
+            }
+        };
+        let Some(AttrValue::Labels(labels)) = resolved else {
+            continue;
+        };
+        let mut seen = BTreeSet::new();
+        let mut duplicates: Vec<&String> = Vec::new();
+        for label in labels {
+            if !seen.insert(label) && !duplicates.contains(&label) {
+                duplicates.push(label);
+            }
+        }
+        for duplicate in duplicates {
+            errors.push(format!(
+                "in {name} attribute of {} rule {label}: Label '{}' is duplicated",
+                rule.rule_class_name(),
+                shown(duplicate)
+            ));
+        }
+    }
+    errors
 }
 
 /// The configured rule: every `select()` resolved by

@@ -13,6 +13,12 @@ use std::fmt;
 use crate::analysis_runtime::ScopeHandle;
 use crate::configuration::SettingValue;
 
+use crate::platforms::TargetPlatform;
+
+/// The analysis error of an implementation that needs a deferred target
+/// platform.
+pub use crate::platforms::NEEDS_TARGET_PLATFORM;
+
 #[allow(unsafe_code)]
 mod values {
     use super::*;
@@ -22,6 +28,10 @@ mod values {
         #[allocative(skip)]
         #[trace(static)]
         pub scope: ScopeHandle,
+        /// The rule's target platform (ctx.target_platform_has_constraint).
+        #[allocative(skip)]
+        #[trace(static)]
+        pub platform: TargetPlatform,
     }
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
     pub(super) struct SettingCtx<'v> {
@@ -82,14 +92,7 @@ impl<'v> StarlarkValue<'v> for SubruleCtx<'v> {
 }
 
 fn field<'v>(this: Value<'v>, name: &str, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
-    let ctx = if let Some(ctx) = this.downcast_ref::<RuleCtx>() {
-        ctx
-    } else {
-        &this
-            .downcast_ref::<SettingCtx>()
-            .ok_or_else(|| anyhow!("expected ctx"))?
-            .ctx
-    };
+    let ctx = rule_ctx(this)?;
     ctx.scope.check_current()?;
     ctx.backing
         .get_attr_error(name, heap)
@@ -122,6 +125,40 @@ fn rule_properties(builder: &mut MethodsBuilder) {
     fn actions<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
         field(this, "actions", heap)
     }
+    /// StarlarkRuleContext.targetPlatformHasConstraint
+    /// (analysis/starlark/StarlarkRuleContext.java:902-904; RuleContext.java:1144-1150):
+    /// whether the target platform's value for the setting is this value.
+    fn target_platform_has_constraint<'v>(
+        this: Value<'v>,
+        #[starlark(require = pos)] constraint_value: Value<'v>,
+    ) -> anyhow::Result<bool> {
+        let ctx = rule_ctx(this)?;
+        ctx.scope.check_current()?;
+        let Some(value) = crate::platform_providers::constraint_value(constraint_value) else {
+            bail!(
+                "in call to target_platform_has_constraint(), parameter 'constraintValue' got value of type '{}', want 'ConstraintValueInfo'",
+                constraint_value.get_type()
+            );
+        };
+        match &ctx.platform {
+            TargetPlatform::Absent => Ok(false),
+            TargetPlatform::Deferred => bail!("{NEEDS_TARGET_PLATFORM}"),
+            TargetPlatform::Resolved(platform) => Ok(platform
+                .constraints
+                .get(&value.setting)
+                .is_some_and(|found| found == *value)),
+        }
+    }
+}
+
+fn rule_ctx<'v>(this: Value<'v>) -> anyhow::Result<&'v RuleCtx<'v>> {
+    if let Some(ctx) = this.downcast_ref::<RuleCtx>() {
+        return Ok(ctx);
+    }
+    Ok(&this
+        .downcast_ref::<SettingCtx>()
+        .ok_or_else(|| anyhow!("expected ctx"))?
+        .ctx)
 }
 
 fn all_setting_properties(builder: &mut MethodsBuilder) {
@@ -183,8 +220,13 @@ pub(crate) fn alloc_rule<'v>(
     backing: Value<'v>,
     scope: ScopeHandle,
     value: Option<SettingValue>,
+    platform: TargetPlatform,
 ) -> Value<'v> {
-    let ctx = RuleCtx { backing, scope };
+    let ctx = RuleCtx {
+        backing,
+        scope,
+        platform,
+    };
     match value {
         Some(value) => heap.alloc_complex_no_freeze(SettingCtx { ctx, value }),
         None => heap.alloc_complex_no_freeze(ctx),
@@ -248,9 +290,18 @@ mod tests {
                     backing,
                     owner.root(),
                     setting.then(|| SettingValue::StringList(vec!["seed".into()])),
+                    TargetPlatform::Absent,
                 );
                 module.set("ctx", ctx);
-                let mut expected = vec!["actions", "attr", "file", "files", "label", "outputs"];
+                let mut expected = vec![
+                    "actions",
+                    "attr",
+                    "file",
+                    "files",
+                    "label",
+                    "outputs",
+                    "target_platform_has_constraint",
+                ];
                 if setting {
                     expected.push("build_setting_value");
                 }
@@ -260,7 +311,11 @@ mod tests {
                     ctx.get_attr_error(name, heap).unwrap();
                 }
                 let child = owner.enter("S".into(), BTreeSet::new()).unwrap();
-                for name in &expected {
+                // Methods bind without reading; properties guard the read.
+                for name in expected
+                    .iter()
+                    .filter(|name| **name != "target_platform_has_constraint")
+                {
                     let error = ctx.get_attr_error(name, heap).unwrap_err();
                     assert!(
                         error.to_string().contains("scope receiver"),
@@ -287,7 +342,10 @@ mod tests {
                     Some("//:target")
                 );
                 owner.finish();
-                for name in &expected {
+                for name in expected
+                    .iter()
+                    .filter(|name| **name != "target_platform_has_constraint")
+                {
                     assert!(ctx.get_attr_error(name, heap).is_err());
                 }
             });
@@ -307,6 +365,7 @@ mod tests {
                         heap.alloc(AllocStruct([("label", heap.alloc("//:target"))])),
                         owner.root(),
                         None,
+                        TargetPlatform::Absent,
                     ),
                     "subrule" => {
                         alloc_subrule(heap, heap.alloc("//:target"), actions, owner.root())

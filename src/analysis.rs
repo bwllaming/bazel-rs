@@ -268,6 +268,7 @@ fn make_ctx<'v>(
             backing,
             context.scope.root(),
             None,
+            invocation.target_platform.clone(),
         ))
     }
 }
@@ -433,14 +434,44 @@ pub fn analyze_in(
     dependencies: &BTreeMap<String, DependencyTarget>,
     repositories: Arc<RepositorySet>,
 ) -> Result<AnalysisResult, String> {
-    analyze_inner(rule, dependencies, repositories)
-        .map_err(|error| format!("analysis of {}: {error:#}", rule.label))
+    let (result, printed) = analyze_buffered(rule, dependencies, repositories);
+    for line in printed {
+        eprintln!("{line}");
+    }
+    result
+}
+
+/// `print()` output of an implementation, kept until the caller decides
+/// whether the attempt counts (an analysis retried for a deferred target
+/// platform must print once, crate::engine).
+#[derive(Default)]
+struct BufferedPrints(RefCell<Vec<String>>);
+
+impl starlark::PrintHandler for BufferedPrints {
+    fn println(&self, text: &str) -> starlark::Result<()> {
+        self.0.borrow_mut().push(text.to_owned());
+        Ok(())
+    }
+}
+
+/// [`analyze_in`] without writing the implementation's `print()` output:
+/// the result and the printed lines, in order.
+pub(crate) fn analyze_buffered(
+    rule: &Rule,
+    dependencies: &BTreeMap<String, DependencyTarget>,
+    repositories: Arc<RepositorySet>,
+) -> (Result<AnalysisResult, String>, Vec<String>) {
+    let prints = BufferedPrints::default();
+    let result = analyze_inner(rule, dependencies, repositories, &prints)
+        .map_err(|error| format!("analysis of {}: {error:#}", rule.label));
+    (result, prints.0.into_inner())
 }
 
 fn analyze_inner(
     rule: &Rule,
     dependencies: &BTreeMap<String, DependencyTarget>,
     repositories: Arc<RepositorySet>,
+    prints: &BufferedPrints,
 ) -> anyhow::Result<AnalysisResult> {
     let invocation = rule
         .custom
@@ -524,6 +555,7 @@ fn analyze_inner(
             eval.set_max_callstack_size(128)
                 .map_err(|error| anyhow!(error.to_string()))?;
             eval.extra = Some(&context);
+            eval.set_print_handler(prints);
             let implementation = module
                 .heap()
                 .access_owned_frozen_value(&invocation.implementation);

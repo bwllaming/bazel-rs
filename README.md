@@ -69,13 +69,16 @@ Implemented:
   `platform`, `label_flag`/`label_setting`, `genquery`,
   `starlark_doc_extract`, `test_suite`, ...) with exact schemas, Bazel errors and
   `select()` on configurable attributes; query lists them, analysis fails
-  explicitly except `filegroup`/`genrule`/`config_setting` and the alias-like
-  `alias`/`label_flag`/`label_setting` (docs/NATIVE_BUILD_RULES.md).
+  explicitly except `filegroup`/`genrule`/`config_setting`, the alias-like
+  `alias`/`label_flag`/`label_setting` and the platform rules
+  `constraint_setting`/`constraint_value`/`platform` (docs/NATIVE_BUILD_RULES.md,
+  docs/PLATFORMS.md).
 - One native build configuration (`-c`, `--[no]stamp`, `--strip`,
   `--[no]force_pic`, `--define`, `--platforms`, `--host_platform`, Starlark
   build settings `--//pkg:flag=value`), and `select()` resolution against
-  `config_setting` `values`/`define_values`/`flag_values`
-  (docs/CONFIGURATION.md).
+  `config_setting` `values`/`define_values`/`flag_values`/`constraint_values`
+  and `constraint_value` keys matched against the target platform
+  (docs/CONFIGURATION.md, docs/PLATFORMS.md).
 - `package(...)` and `REPO.bazel` `repo(...)` arguments, including late
   default visibility, `licenses()`, and `exports_files`.
   Exports default to public regardless of package defaults. Implicit files inherit

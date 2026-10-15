@@ -291,6 +291,9 @@ pub struct CustomInvocation {
     /// set by crate::engine for the analysis configuration; `None` means
     /// the `build_setting_default` (StarlarkRuleContext.java:738-757).
     pub setting_value: Option<crate::configuration::SettingValue>,
+    /// The target platform the implementation sees, set by crate::engine
+    /// (`ctx.target_platform_has_constraint`).
+    pub target_platform: crate::platforms::TargetPlatform,
     pub implementation: OwnedFrozenValue,
     /// Strong frozen roots for direct declarations, including factory closures.
     pub subrules: Vec<OwnedFrozenValue>,

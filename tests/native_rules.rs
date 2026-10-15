@@ -241,28 +241,19 @@ fn analysis_of_unmodeled_native_rules_fails_explicitly() {
             "//go/toolchain:go_linux_amd64_toolchain",
             "native rule toolchain analysis not implemented",
         ),
-        (
-            "//skylib:unix",
-            "in config_setting rule //skylib:linux: config_setting constraint_values",
-        ),
         // A select() condition is analyzed in the same configuration; a
-        // constraint_values config_setting fails explicitly (N16c).
-        (
-            "//skylib:linux",
-            "in config_setting rule //skylib:linux: config_setting constraint_values (target platform constraint analysis) not implemented in the native profile",
-        ),
+        // constraint_values config_setting needs the target platform, and
+        // the default host platform needs the built-in @bazel_tools
+        // repository, which this fixture's module profile does not provide
+        // (docs/PLATFORMS.md).
+        ("//skylib:unix", HOST_PLATFORM_UNAVAILABLE),
+        ("//skylib:linux", HOST_PLATFORM_UNAVAILABLE),
         (
             "//misc:defs_doc.binaryproto",
             "//misc:defs_doc: native rule starlark_doc_extract analysis not implemented",
         ),
-        (
-            "//misc:copy",
-            "in config_setting rule //skylib:linux: config_setting constraint_values (target platform constraint analysis) not implemented in the native profile",
-        ),
-        (
-            "//misc:configured_files",
-            "in config_setting rule //skylib:linux: config_setting constraint_values",
-        ),
+        ("//misc:copy", HOST_PLATFORM_UNAVAILABLE),
+        ("//misc:configured_files", HOST_PLATFORM_UNAVAILABLE),
         (
             "@platforms//os:srcs",
             "filegroup accepted at load time but not analyzed by the native profile: package default_package_metadata (package metadata dependencies)",
@@ -273,6 +264,60 @@ fn analysis_of_unmodeled_native_rules_fails_explicitly() {
         assert!(!errors(&build).contains("actions executed"), "{target}");
     }
     assert!(!ws.path().join("private-cache/actions").exists());
+}
+
+const HOST_PLATFORM_UNAVAILABLE: &str = "bazel-rs: the target platform @@bazel_tools//tools:host_platform (the default host platform) needs the built-in @bazel_tools repository, which this module profile does not provide (";
+
+#[test]
+fn platform_constraint_selects_build_with_the_platforms_module_host_platform() {
+    let ws = Workspace::fixture();
+    // The fixture platforms module's @platforms//host (x86_64, linux) as
+    // the target platform: skylib's config_setting_group alias chain, the
+    // genrule cmd and the filegroup srcs select the linux branches.
+    let host = "--platforms=@platforms//host";
+    let copy = ws.run(&["build", host, "//misc:copy"]);
+    assert!(copy.status.success(), "{}", errors(&copy));
+    let path = stdout(&copy).trim().split_once('\t').unwrap().1.to_owned();
+    assert_eq!(
+        fs::read_to_string(path).unwrap(),
+        fs::read_to_string(ws.path().join("misc/a.txt")).unwrap()
+    );
+    let files = ws.run(&["build", host, "//misc:configured_files"]);
+    assert!(files.status.success(), "{}", errors(&files));
+    let listed = stdout(&files)
+        .lines()
+        .map(|line| line.split_once('\t').unwrap().1.to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        listed,
+        [
+            ws.path().join("misc/a.txt").display().to_string(),
+            ws.path().join("misc/linux.txt").display().to_string()
+        ]
+    );
+    for target in [
+        "//skylib:unix",
+        "//skylib:any_os",
+        "//skylib:only_linux",
+        "//skylib:linux",
+        "@platforms//os:linux",
+        "@platforms//host",
+    ] {
+        let build = ws.run(&["build", host, target]);
+        assert!(build.status.success(), "{target}: {}", errors(&build));
+        assert!(build.stdout.is_empty(), "{target}: {}", stdout(&build));
+    }
+    // Another target platform takes the default branches.
+    fs::create_dir_all(ws.path().join("plat")).unwrap();
+    fs::write(
+        ws.path().join("plat/BUILD.bazel"),
+        "platform(name = 'mac', constraint_values = ['@platforms//os:osx', '@platforms//cpu:aarch64'])
+",
+    )
+    .unwrap();
+    let files = ws.run(&["build", "--platforms=//plat:mac", "//misc:configured_files"]);
+    assert!(files.status.success(), "{}", errors(&files));
+    assert_eq!(stdout(&files).lines().count(), 1, "{}", stdout(&files));
 }
 
 #[test]

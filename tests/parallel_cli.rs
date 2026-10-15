@@ -114,9 +114,11 @@ fn jobs_one_and_parallel_have_identical_outputs_and_share_cache() {
 
 #[test]
 fn mixed_generated_and_source_inputs_keep_first_occurrence_order() {
+    // `:z` reaches `join` twice (directly and through `files`); a label twice
+    // in one list would be a Bazel package error (RuleClass.checkForDuplicateLabels).
     let ws = Workspace::new(
         "genrule(name='make',outs=['z','a'],cmd='printf Z > $(location :z); printf A > $(location :a)')\n\
-         filegroup(name='files',srcs=[':a','source',':z',':a'])\n\
+         filegroup(name='files',srcs=[':a','source',':z'])\n\
          genrule(name='join',srcs=[':files',':z','last'],outs=['out'],cmd='cat $(SRCS) > $@')\n",
     );
     ws.file("source", "S");

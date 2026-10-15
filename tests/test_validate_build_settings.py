@@ -154,8 +154,10 @@ class PlanTests(unittest.TestCase):
                 module = settings.specification(item, probe)['files']['MODULE.bazel']
                 self.assertIn('bazel_dep(name = "bazel_skylib", version = "1.8.2")', module)
                 self.assertIn(repr(str(settings.FIXTURE / 'skylib')), module)
-                self.assertNotIn('platforms', module)
-                self.assertNotIn('rules_license', module)
+                # The checkout path itself may contain these words.
+                declarations = module.replace(repr(str(settings.FIXTURE / 'skylib')), '')
+                self.assertNotIn('platforms', declarations)
+                self.assertNotIn('rules_license', declarations)
         upstream = (settings.FIXTURE / 'skylib/MODULE.bazel').read_text()
         self.assertIn('platforms', upstream)
         self.assertIn('rules_license', upstream)

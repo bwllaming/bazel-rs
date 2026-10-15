@@ -9,7 +9,13 @@ pub(crate) fn wrap<'v>(
     value: SettingValue,
     scope: ScopeHandle,
 ) -> Value<'v> {
-    crate::analysis_ctx::alloc_rule(heap, backing, scope, Some(value))
+    crate::analysis_ctx::alloc_rule(
+        heap,
+        backing,
+        scope,
+        Some(value),
+        crate::platforms::TargetPlatform::Absent,
+    )
 }
 
 #[cfg(test)]

@@ -1,6 +1,5 @@
-//! `config_setting` analysis for `values`, `define_values` and `flag_values`
-//! (rules/config/ConfigSetting.java). `constraint_values` (N16c) fails
-//! explicitly when non-empty.
+//! `config_setting` analysis for `values`, `define_values`, `flag_values` and
+//! `constraint_values` (rules/config/ConfigSetting.java).
 //!
 //! Pinned source: `/tmp/opencode/bazel-9.3-reference` (e89755b, Release 9.3.0).
 //! Paths below are relative to `src/main/java/com/google/devtools/build/lib/`.
@@ -28,6 +27,20 @@ pub struct FlagPrerequisite {
     /// The (forwarded) BuildSettingProvider.
     pub setting: Option<BuildSettingInfo>,
 }
+
+/// A `constraint_values` prerequisite of a `config_setting`, after
+/// crate::engine analyzed and validated it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConstraintPrerequisite {
+    /// TransitiveInfoCollection.getLabel: the end of an alias chain.
+    pub actual: Label,
+    /// The (forwarded) ConstraintValueInfo, if the target provides one.
+    pub value: Option<crate::platforms::ConstraintValueInfo>,
+}
+
+/// The error [`analyze`] returns when matching `constraint_values` needs the
+/// target platform and none was given (crate::engine then resolves it).
+pub const NEEDS_TARGET_PLATFORM: &str = "\u{0}config_setting needs the target platform";
 
 /// ConfigSetting.PARSE_ERROR_MESSAGE (ConfigSetting.java:377-378).
 const PARSE_ERROR_MESSAGE: &str = "error while parsing configuration settings: ";
@@ -57,13 +70,19 @@ fn option_label(name: &str) -> Label {
 /// checks of crate::native_rules::analysis_error. Errors are RuleContext
 /// attribute errors (`in values attribute of config_setting rule L: ...`,
 /// analysis/EventHandlingErrorReporter.java:92-101), all reported.
-/// `flags` are the analyzed `flag_values` prerequisites in attribute order;
-/// `package_labels` parses labels in the `config_setting`'s package context.
+/// `flags` are the analyzed `flag_values` prerequisites in attribute order,
+/// `constraints` the `constraint_values` prerequisites and `target_platform`
+/// the configuration's target platform (resolved by crate::engine when
+/// `constraint_values` is non-empty: the rule then uses toolchain resolution,
+/// ConfigRuleClasses.java:196-201); `package_labels` parses labels in the
+/// `config_setting`'s package context.
 pub fn analyze(
     label: &Label,
     target: &NativeTarget,
     configuration: &Configuration,
     flags: &[FlagPrerequisite],
+    constraints: &[ConstraintPrerequisite],
+    target_platform: Option<&crate::platforms::PlatformInfo>,
     package_labels: &LabelParser<'_>,
 ) -> Result<ConfigMatching, String> {
     let shown = crate::rule_declarations::canonical_form(label);
@@ -104,24 +123,96 @@ pub fn analyze(
     // errors follow the values errors; any error fails the rule (:146-148).
     let (user_defined, flag_values) =
         user_defined_flags(&shown, flags, configuration, package_labels, &mut errors);
+    // diffConstraintValues (ConfigSetting.java:144, 300-357).
+    let constraint_result =
+        diff_constraint_values(&shown, constraints, target_platform, &mut errors);
+    if errors.iter().any(|error| error == NEEDS_TARGET_PLATFORM) {
+        return Err(NEEDS_TARGET_PLATFORM.to_owned());
+    }
     if !errors.is_empty() {
         return Err(errors.join("\n"));
-    }
-    // diffConstraintValues (ConfigSetting.java:144).
-    if !target.labels("constraint_values").is_empty() {
-        return Err(format!(
-            "in config_setting rule {shown}: config_setting constraint_values (target platform constraint analysis) not implemented in the native profile"
-        ));
     }
     Ok(ConfigMatching {
         label: label.clone(),
         settings,
         flags: flag_values,
-        constraints: BTreeSet::new(),
-        // Stream.of(userDefinedFlags, nativeFlags, constraintValues).reduce(combine)
-        // with the constraint result MATCH.
-        result: user_defined.combine(native).combine(MatchResult::Match),
+        constraints: specified_constraint_values(constraints),
+        // Stream.of(userDefinedFlags, nativeFlags, constraintValues).reduce(combine).
+        result: user_defined.combine(native).combine(constraint_result),
     })
+}
+
+/// ConfigSetting.diffConstraintValues (ConfigSetting.java:300-357). Attribute
+/// and rule errors are appended to `errors` (which already holds the
+/// `values`/`flag_values` errors: `ruleContext.hasErrors()` sees them too).
+fn diff_constraint_values(
+    shown: &str,
+    constraints: &[ConstraintPrerequisite],
+    target_platform: Option<&crate::platforms::PlatformInfo>,
+    errors: &mut Vec<String>,
+) -> MatchResult {
+    let attribute_error = |message: String| {
+        format!("in constraint_values attribute of config_setting rule {shown}: {message}")
+    };
+    let mut values = Vec::new();
+    for prerequisite in constraints {
+        match &prerequisite.value {
+            Some(value) => values.push(value),
+            None => errors.push(attribute_error(format!(
+                "{} is not a constraint_value",
+                crate::rule_declarations::canonical_form(&prerequisite.actual)
+            ))),
+        }
+    }
+    if !errors.is_empty() {
+        return MatchResult::NoMatch(Vec::new());
+    }
+    if values.is_empty() {
+        return MatchResult::Match;
+    }
+    let owned = values
+        .iter()
+        .map(|value| (*value).clone())
+        .collect::<Vec<_>>();
+    if let Err(message) = crate::platforms::validate_constraints(&owned) {
+        errors.push(format!("in config_setting rule {shown}: {message}"));
+        return MatchResult::NoMatch(Vec::new());
+    }
+    // The rule uses toolchain resolution (ConfigRuleClasses.java:196-201), so
+    // Bazel always has a target platform here; crate::engine resolves the
+    // default host platform only now that it is needed and analyzes again.
+    let Some(platform) = target_platform else {
+        errors.push(NEEDS_TARGET_PLATFORM.to_owned());
+        return MatchResult::NoMatch(Vec::new());
+    };
+    if platform.constraints.contains_all(&values) {
+        return MatchResult::Match;
+    }
+    let mut diffs = Vec::new();
+    for value in values {
+        let platform_value = platform.constraints.get(&value.setting);
+        if platform_value.as_ref() != Some(value) {
+            diffs.push(Diff {
+                what: value.setting.label.clone(),
+                want: value.label.name.clone(),
+                got: platform_value.map_or_else(|| "<unset>".to_owned(), |value| value.label.name),
+            });
+        }
+    }
+    MatchResult::NoMatch(diffs)
+}
+
+/// ConfigSetting.getSpecifiedConstraintValues (ConfigSetting.java:841-852):
+/// each prerequisite's label plus the refinement chain of its setting.
+fn specified_constraint_values(constraints: &[ConstraintPrerequisite]) -> BTreeSet<Label> {
+    let mut specified = BTreeSet::new();
+    for prerequisite in constraints {
+        specified.insert(prerequisite.actual.clone());
+        if let Some(value) = &prerequisite.value {
+            specified.extend(value.setting.refinement_chain());
+        }
+    }
+    specified
 }
 
 /// ConfigSetting.maybeCanonicalizeLabel (ConfigSetting.java:799-834): the
@@ -416,6 +507,8 @@ mod tests {
             &target(values, defines),
             &configuration(args),
             &[],
+            &[],
+            None,
             &|_| unreachable!("no labels"),
         )
         .unwrap()
@@ -511,6 +604,8 @@ mod tests {
                 &target(values, &[]),
                 &Configuration::default(),
                 &[],
+                &[],
+                None,
                 &|_| unreachable!("no labels"),
             )
             .unwrap_err()
@@ -564,7 +659,7 @@ mod tests {
             "flag_values".into(),
             AttrValue::LabelKeyedStringDict(vec![("//f:x".into(), "1".into())]),
         );
-        analyze(&label, &target, configuration, flags, &|text| {
+        analyze(&label, &target, configuration, flags, &[], None, &|text| {
             let text = text.strip_prefix(':').unwrap_or(text);
             if text.starts_with("//") || text.starts_with("@@") {
                 Label::parse_canonical(text)
@@ -683,6 +778,110 @@ mod tests {
     }
 
     #[test]
+    fn constraint_values_match_the_target_platform() {
+        use crate::platforms::{
+            ConstraintSettingInfo, ConstraintValueInfo, PlatformAttributes, create_platform,
+        };
+        use std::sync::Arc;
+        let label = |text: &str| Label::parse_canonical(text).unwrap();
+        let setting = |text: &str, refined: Option<ConstraintValueInfo>| {
+            Arc::new(ConstraintSettingInfo {
+                label: label(text),
+                default_value: None,
+                refined: refined.map(Box::new),
+            })
+        };
+        let os = setting("//os:os", None);
+        let cpu = setting("//cpu:cpu", None);
+        let value = |setting: &Arc<ConstraintSettingInfo>, text: &str| ConstraintValueInfo {
+            setting: setting.clone(),
+            label: label(text),
+        };
+        let linux = value(&os, "//os:linux");
+        let distro = setting("//os:distro", Some(linux.clone()));
+        let platform = create_platform(
+            &label("//p:linux"),
+            PlatformAttributes {
+                constraint_values: vec![linux.clone()],
+                ..Default::default()
+            },
+            &|label| crate::rule_declarations::canonical_form(label),
+        )
+        .unwrap();
+        let mut target = target(&[], &[]);
+        target.attrs.insert(
+            "constraint_values".into(),
+            AttrValue::Labels(vec!["//os:linux".into()]),
+        );
+        let prerequisite = |value: &ConstraintValueInfo| ConstraintPrerequisite {
+            actual: value.label.clone(),
+            value: Some(value.clone()),
+        };
+        let run = |constraints: &[ConstraintPrerequisite]| {
+            analyze(
+                &label("//c:x"),
+                &target,
+                &Configuration::default(),
+                &[],
+                constraints,
+                Some(&platform),
+                &|_| unreachable!("no labels"),
+            )
+        };
+        let matched = run(&[prerequisite(&linux)]).unwrap();
+        assert_eq!(matched.result, MatchResult::Match);
+        assert_eq!(matched.constraints, BTreeSet::from([label("//os:linux")]));
+        // Diffs: want the expected value's name, got the platform's or <unset>
+        // (ConfigSetting.java:340-354).
+        assert_eq!(
+            run(&[
+                prerequisite(&value(&os, "//os:osx")),
+                prerequisite(&value(&cpu, "//cpu:arm64"))
+            ])
+            .unwrap()
+            .result,
+            MatchResult::NoMatch(vec![
+                Diff {
+                    what: label("//os:os"),
+                    got: "linux".into(),
+                    want: "osx".into()
+                },
+                Diff {
+                    what: label("//cpu:cpu"),
+                    got: "<unset>".into(),
+                    want: "arm64".into()
+                }
+            ])
+        );
+        // A refining value specifies its refinement chain too.
+        assert_eq!(
+            run(&[prerequisite(&value(&distro, "//os:debian"))])
+                .unwrap()
+                .constraints,
+            BTreeSet::from([label("//os:debian"), label("//os:linux")])
+        );
+        assert_eq!(
+            run(&[
+                ConstraintPrerequisite {
+                    actual: label("//c:fg"),
+                    value: None
+                },
+                prerequisite(&linux),
+                ConstraintPrerequisite {
+                    actual: label("@@r+//c:other"),
+                    value: None
+                },
+            ])
+            .unwrap_err(),
+            "in constraint_values attribute of config_setting rule //c:x: //c:fg is not a constraint_value\nin constraint_values attribute of config_setting rule //c:x: @@r+//c:other is not a constraint_value"
+        );
+        assert_eq!(
+            run(&[prerequisite(&linux), prerequisite(&value(&os, "//os:osx"))]).unwrap_err(),
+            "in config_setting rule //c:x: Duplicate constraint values detected: constraint_setting //os:os has [//os:linux, //os:osx]"
+        );
+    }
+
+    #[test]
     fn settings_group_define_values_with_values_define_entries() {
         let label = Label::parse_canonical("//c:x").unwrap();
         let matching = analyze(
@@ -690,6 +889,8 @@ mod tests {
             &target(&[("define", "a=1"), ("stamp", "0")], &[("b", "2")]),
             &configuration(&["--define=a=1", "--define=b=2"]),
             &[],
+            &[],
+            None,
             &|_| unreachable!("no labels"),
         )
         .unwrap();

@@ -46,6 +46,8 @@ pub mod package;
 pub mod package_specification;
 pub mod patch_inputs;
 pub mod patching;
+mod platform_providers;
+pub mod platforms;
 pub mod providers;
 pub mod registry;
 pub mod repository;

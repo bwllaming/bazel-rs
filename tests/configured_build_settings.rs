@@ -781,10 +781,15 @@ show(name = "use_lf", dep = ":lf")
             "bazel-rs: {package}\n{ws}/BUILD.bazel:7:6: {package} and referenced by '//:to_missing_pkg'\n"
         )
     );
+    // A missing target of another package is first reported at that
+    // package's BUILD file (paired capture N16b A10/missing_target_edge).
+    let missing = format!(
+        "no such target '//p:nothere': target 'nothere' not declared in package 'p' defined by {ws}/p/BUILD.bazel (did you mean other?)"
+    );
     assert_eq!(
         f.rejected(&["//:use_missing_target"]),
         format!(
-            "bazel-rs: {ws}/BUILD.bazel:14:5: no such target '//p:nothere': target 'nothere' not declared in package 'p' defined by {ws}/p/BUILD.bazel (did you mean other?) and referenced by '//:use_missing_target'\n"
+            "bazel-rs: {ws}/p/BUILD.bazel: {missing}\n{ws}/BUILD.bazel:14:5: {missing} and referenced by '//:use_missing_target'\n"
         )
     );
     // The late-bound `:alias` of a label_flag is an implicit dependency.

@@ -470,6 +470,19 @@ pub fn provider_identity(value: Value<'_>) -> Option<String> {
     if crate::template_variable_info::is_constructor(value) {
         return Some(crate::template_variable_info::PROVIDER_ID.to_owned());
     }
+    // platform_common.ConstraintSettingInfo / ConstraintValueInfo /
+    // PlatformInfo: native providers of the platform rules
+    // (crate::platform_providers).
+    if let Some((id, _)) = crate::language_modules::builtin_provider_requirement(value)
+        && [
+            crate::platform_providers::CONSTRAINT_SETTING_ID,
+            crate::platform_providers::CONSTRAINT_VALUE_ID,
+            crate::platform_providers::PLATFORM_ID,
+        ]
+        .contains(&id.as_str())
+    {
+        return Some(id);
+    }
     ProviderConstructor::from_value(value)?.identity()
 }
 

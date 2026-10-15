@@ -388,7 +388,9 @@ fn required_provider_group_placement_uses_normalized_display_names_not_satisfact
     ] {
         for (kind, dep, targets) in [
             ("label", "':g'", "[ctx.attr.dep]"),
-            ("label_list", "[':g',':g']", "ctx.attr.dep"),
+            // A label twice in a label list is a Bazel package error
+            // (RuleClass.checkForDuplicateLabels), so the list names it once.
+            ("label_list", "[':g']", "ctx.attr.dep"),
         ] {
             let defs = format!(
                 "Custom=provider()\nNotPackageSpecificationInfo=provider()\nNotPackageSpecificationProvider=provider()\n{}",

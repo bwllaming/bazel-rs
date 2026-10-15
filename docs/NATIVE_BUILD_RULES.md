@@ -107,6 +107,10 @@ Every class starts from `name` (`RuleClass.java:771`), the common attributes
   grammar port (`invalid label '../x' in element 0 of attribute 'srcs' of
   'filegroup': ...`). Lists accept lists, tuples, sets and dicts (Java
   `Iterable`, `Type.java:730-745`).
+* Duplicate labels in a LABEL_LIST / LABEL_LIST_DICT attribute (native and
+  Starlark rules; plain value and each select() branch separately) are package
+  errors `LOC: Label 'L' is duplicated in the 'A' attribute of rule 'N'`
+  (`packages/RuleClass.java:2107-2129`; docs/PLATFORMS.md).
 * Allowed values: `label_flag(scope = "bogus")` gives `invalid value in 'scope'
   attribute: has to be one of 'universal', 'target', or 'project' instead of
   'bogus'`.
@@ -161,13 +165,16 @@ rule-based default (`rules/LabelBuildSettings.java:62-90`), so
 **Selects resolve per configuration** (docs/CONFIGURATION.md): analysis of a
 `filegroup`/`genrule` resolves its retained selects against the analyzed
 `config_setting` conditions; unmodeled attribute values are checked on the
-resolved values. A condition that cannot be analyzed fails explicitly (for
-example `//skylib:linux`'s `constraint_values`).
+resolved values. `constraint_values` conditions such as `//skylib:linux`
+match the target platform (docs/PLATFORMS.md).
 
 ## Analysis
 
+* `constraint_setting`, `constraint_value` and `platform` provide native
+  ConstraintSettingInfo/ConstraintValueInfo/PlatformInfo (docs/PLATFORMS.md).
 * The classes above other than `filegroup`/`genrule`/`config_setting`/`alias`/
-  `label_flag`/`label_setting` fail analysis with `//pkg:x: native rule KIND
+  `label_flag`/`label_setting` and the platform rules fail analysis with
+  `//pkg:x: native rule KIND
   analysis not implemented in the native profile`, including when reached as
   a dependency or through an implicit output (`//pkg:doc.binaryproto`).
   `alias`, `label_flag` and `label_setting` forward their configured actual

@@ -1877,8 +1877,18 @@ fn evaluate_at(
             schema: pending.schema,
             build_setting: pending.build_setting,
             setting_value: None,
+            target_platform: crate::platforms::TargetPlatform::Absent,
             declaration: pending.declaration,
         });
+    }
+    // RuleClass.checkForDuplicateLabels (packages/RuleClass.java:2080, 2107-2129)
+    // reports every rule error; the package is then in error.
+    let duplicates = declared_rules
+        .iter()
+        .flat_map(duplicate_label_errors)
+        .collect::<Vec<_>>();
+    if !duplicates.is_empty() {
+        return Err(duplicates.join("\n"));
     }
     let mut rules = validate_rules(declared_rules).map_err(|e| format!("{filename}: {e}"))?;
     let args = declarations.package_args.into_inner();
@@ -1923,6 +1933,125 @@ fn evaluate_at(
         macro_names: declarations.macro_names.into_inner(),
         args,
     })
+}
+
+/// RuleClass.checkForDuplicateLabels (packages/RuleClass.java:2107-2129) with
+/// AggregatingAttributeMapper.checkForDuplicateLabels
+/// (packages/AggregatingAttributeMapper.java:243-320): for every LABEL_LIST
+/// and LABEL_LIST_DICT attribute in rule-class attribute order, a label that
+/// appears twice in the plain value, in one select() branch or in one dict
+/// value list is `LOC: Label 'L' is duplicated in the 'A' attribute of rule
+/// 'N'` at the rule's location. NODEP label lists and outputs are exempt.
+fn duplicate_label_errors(rule: &Rule) -> Vec<String> {
+    use crate::custom_rule::ConfigurablePart;
+    use crate::native_rules::NativeType;
+    fn lists(value: &AttrValue) -> Vec<&[String]> {
+        match value {
+            AttrValue::Labels(labels) => vec![labels.as_slice()],
+            AttrValue::StringListDict(entries) => entries
+                .iter()
+                .map(|(_, labels)| labels.as_slice())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+    /// The plain value, every plain element and every select() branch.
+    fn possibilities<'a>(
+        plain: Option<&'a AttrValue>,
+        parts: Option<&'a Vec<ConfigurablePart>>,
+    ) -> Vec<&'a [String]> {
+        let mut all = plain.map(lists).unwrap_or_default();
+        for part in parts.into_iter().flatten() {
+            match part {
+                ConfigurablePart::Plain(value) => all.extend(lists(value)),
+                ConfigurablePart::Select { branches, .. } => {
+                    for value in branches.iter().filter_map(|(_, value)| value.as_ref()) {
+                        all.extend(lists(value));
+                    }
+                }
+            }
+        }
+        all
+    }
+    let label_list =
+        |ty: NativeType| matches!(ty, NativeType::LabelList | NativeType::LabelListDict);
+    let mut checked: Vec<(String, Vec<&[String]>)> = Vec::new();
+    if let Some(native) = &rule.native
+        && let Some(class) = crate::native_rules::rule_class(&native.rule_class)
+    {
+        for attribute in class
+            .attrs
+            .iter()
+            .filter(|attribute| label_list(attribute.ty))
+        {
+            checked.push((
+                attribute.name.to_owned(),
+                possibilities(
+                    native.attrs.get(attribute.name),
+                    native.configurable.get(attribute.name),
+                ),
+            ));
+        }
+    }
+    if let Some(custom) = &rule.custom {
+        let builtin = &custom.declaration.builtin;
+        for attribute in crate::native_rules::starlark_builtins(builtin.kind)
+            .attrs()
+            .filter(|attribute| label_list(attribute.ty))
+        {
+            checked.push((
+                attribute.name.to_owned(),
+                possibilities(
+                    builtin.target.attrs.get(attribute.name),
+                    builtin.target.configurable.get(attribute.name),
+                ),
+            ));
+        }
+        for name in &custom.declaration.attr_order {
+            if custom
+                .schema
+                .get(name)
+                .is_some_and(|spec| spec.kind == crate::custom_rule::AttrKind::LabelList)
+            {
+                checked.push((
+                    name.clone(),
+                    possibilities(
+                        custom.attrs.get(name),
+                        custom.declaration.configurable.get(name),
+                    ),
+                ));
+            }
+        }
+    }
+    let shown = |text: &str| {
+        Label::parse_canonical(text)
+            .map(|label| crate::rule_declarations::canonical_form(&label))
+            .unwrap_or_else(|_| text.to_owned())
+    };
+    let mut errors = Vec::new();
+    for (name, lists) in checked {
+        let mut duplicates: Vec<&String> = Vec::new();
+        for list in lists {
+            let mut seen = BTreeSet::new();
+            for label in list {
+                if !seen.insert(label) && !duplicates.contains(&label) {
+                    duplicates.push(label);
+                }
+            }
+        }
+        for label in duplicates {
+            let message = format!(
+                "Label '{}' is duplicated in the '{name}' attribute of rule '{}'",
+                shown(label),
+                rule.label.name
+            );
+            errors.push(match &rule.location {
+                Some(location) => format!("{location}: {message}"),
+                None => message,
+            });
+        }
+    }
+    errors
 }
 
 /// Appended to every BUILD evaluation error. Validators compare it exactly

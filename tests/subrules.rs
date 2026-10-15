@@ -899,7 +899,7 @@ def _setting(ctx):
     return [Info(text='|'.join(first)+';'+ '|'.join(second)+';'+'|'.join(ctx.attr.build_setting_default))]
 setting=rule(implementation=_setting,build_setting=config.string_list(),subrules=[S])
 def _check(ctx):
-    if dir(ctx)!=['actions','attr','file','files','label','outputs'] or hasattr(ctx,'build_setting_value'):
+    if dir(ctx)!=['actions','attr','file','files','label','outputs','target_platform_has_constraint'] or hasattr(ctx,'build_setting_value'):
         fail('ordinary context surface changed')
     out=ctx.actions.declare_file('check.out')
     ctx.actions.write(out,ctx.attr.dep[Info].text+'\n')

@@ -7,6 +7,7 @@ use crate::ignored::IgnoredSubdirectories;
 use crate::label::{Label, PackageId};
 use crate::package::{self, Package, Rule, RuleKind};
 use crate::package_specification::{self, GroupNode};
+use crate::platforms::{ConstraintSettingInfo, ConstraintValueInfo, PlatformInfo};
 use crate::repository::RepositorySet;
 use crate::repository_budget::HostBudget;
 use crate::scheduler::{self, Dependency, PlannedAction};
@@ -84,6 +85,267 @@ struct ConfiguredNode {
     /// The direct `actual` of `alias`, `label_flag` and `label_setting`
     /// (AliasConfiguredTarget, rules/AliasConfiguredTarget.java:99-123).
     actual: Option<Label>,
+    /// ConstraintSettingInfo of a `constraint_setting` (forwarded by aliases).
+    constraint_setting: Option<ConstraintSettingInfo>,
+    /// ConstraintValueInfo of a `constraint_value` (forwarded by aliases).
+    constraint_value: Option<ConstraintValueInfo>,
+    /// PlatformInfo of a `platform` (forwarded by aliases).
+    platform: Option<Arc<PlatformInfo>>,
+}
+
+/// Why a platform label could not be resolved (PlatformFunction).
+#[derive(Clone, Debug)]
+enum PlatformError {
+    /// A package or target loading error (NoSuchThingException, propagated
+    /// unchanged by InvalidPlatformException, PlatformLookupUtil.java:186-190).
+    Missing {
+        class: &'static str,
+        message: String,
+    },
+    /// Any other failure, its full text.
+    Other(String),
+}
+
+impl PlatformError {
+    /// A `no such target`/`no such package` loading error, or another error.
+    fn loading(error: String) -> Self {
+        let class = if error.starts_with("no such target '") {
+            "NoSuchTargetException"
+        } else if error.starts_with("no such package '") {
+            if error.contains("BUILD file not found") {
+                "BuildFileNotFoundException"
+            } else {
+                "NoSuchPackageException"
+            }
+        } else {
+            return Self::Other(error);
+        };
+        Self::Missing {
+            class,
+            message: error,
+        }
+    }
+
+    /// The text of a failing target platform: Bazel 9.3 prints the loading
+    /// exception itself (`com.google.devtools.build.lib.packages.CLASS:
+    /// MESSAGE`, paired capture A4/platforms_e_nope, U/.../platforms_missing).
+    fn target_text(&self) -> String {
+        match self {
+            Self::Missing { class, message } => {
+                format!("com.google.devtools.build.lib.packages.{class}: {message}")
+            }
+            Self::Other(text) => text.clone(),
+        }
+    }
+}
+
+/// The platform providers of a `constraint_setting`, `constraint_value` or
+/// `platform` target.
+type PlatformProviders = (
+    Option<ConstraintSettingInfo>,
+    Option<ConstraintValueInfo>,
+    Option<Arc<PlatformInfo>>,
+);
+
+/// A native provider an attribute requires (`mandatoryProviders`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NativeProvider {
+    ConstraintSetting,
+    ConstraintValue,
+    Platform,
+}
+
+impl NativeProvider {
+    /// BuiltinProvider names (RequiredProviders.getDescription quotes them,
+    /// packages/RequiredProviders.java:209-213).
+    fn name(self) -> &'static str {
+        match self {
+            Self::ConstraintSetting => "ConstraintSettingInfo",
+            Self::ConstraintValue => "ConstraintValueInfo",
+            Self::Platform => "PlatformInfo",
+        }
+    }
+
+    fn provided_by(self, node: &ConfiguredNode) -> bool {
+        match self {
+            Self::ConstraintSetting => node.constraint_setting.is_some(),
+            Self::ConstraintValue => node.constraint_value.is_some(),
+            Self::Platform => node.platform.is_some(),
+        }
+    }
+}
+
+/// A label attribute of a native rule as RuleContext.Builder validates its
+/// prerequisites (analysis/RuleContext.java:1845-1880, 2002-2093, 2165-2172):
+/// every attribute here allows no files.
+struct PrerequisiteAttribute {
+    name: &'static str,
+    labels: Vec<String>,
+    /// `allowedRuleClasses` (empty: any rule).
+    allowed_rule_classes: &'static [&'static str],
+    mandatory_provider: Option<NativeProvider>,
+}
+
+/// Rule.useToolchainResolution (packages/Rule.java:846-854) of the native
+/// rule classes and Starlark rules: disabled for `constraint_setting`,
+/// `constraint_value`, `platform`, `toolchain`, `toolchain_type`
+/// (ToolchainResolutionMode.DISABLED, rules/platform/*Rule.java,
+/// rules/ToolchainType.java:62), label settings and Starlark build settings
+/// (rules/LabelBuildSettings.java:99, packages/RuleClass.java:916-918),
+/// conditional for `alias` (select() keys or target_compatible_with,
+/// rules/Alias.java:78-98) and `config_setting` (non-empty constraint_values,
+/// rules/config/ConfigRuleClasses.java:196-201), enabled otherwise.
+fn uses_toolchain_resolution(rule: &Rule) -> bool {
+    if let Some(custom) = &rule.custom {
+        return custom.build_setting.is_none();
+    }
+    match (&rule.kind, &rule.native) {
+        (RuleKind::PackageGroup(_), _) => false,
+        (RuleKind::Native("alias"), Some(native)) => {
+            !configured_attributes::rule_config_dependencies(rule).is_empty()
+                || !native.labels("target_compatible_with").is_empty()
+                || native.configurable.contains_key("target_compatible_with")
+        }
+        (RuleKind::Native("config_setting"), Some(native)) => {
+            !native.labels("constraint_values").is_empty()
+        }
+        (
+            RuleKind::Native(
+                "label_flag" | "label_setting" | "constraint_setting" | "constraint_value"
+                | "platform" | "toolchain" | "toolchain_type",
+            ),
+            _,
+        ) => false,
+        _ => true,
+    }
+}
+
+/// The label attributes of `constraint_setting` (ConstraintSettingRule.java:84-89),
+/// `constraint_value` (ConstraintValueRule.java:56-63) and `platform`
+/// (PlatformRule.java:75-89, 149-152), in rule-class attribute order.
+fn platform_prerequisite_attributes(rule: &Rule) -> Vec<PrerequisiteAttribute> {
+    let Some(native) = &rule.native else {
+        return Vec::new();
+    };
+    let label = |name: &str| match native.attrs.get(name) {
+        Some(crate::custom_rule::AttrValue::Label(Some(text))) => vec![text.clone()],
+        _ => Vec::new(),
+    };
+    match rule.kind {
+        RuleKind::Native("constraint_setting") => vec![PrerequisiteAttribute {
+            name: "refines_constraint_value",
+            labels: label("refines_constraint_value"),
+            allowed_rule_classes: &["constraint_value"],
+            mandatory_provider: Some(NativeProvider::ConstraintValue),
+        }],
+        RuleKind::Native("constraint_value") => vec![PrerequisiteAttribute {
+            name: "constraint_setting",
+            labels: label("constraint_setting"),
+            allowed_rule_classes: &["constraint_setting"],
+            mandatory_provider: Some(NativeProvider::ConstraintSetting),
+        }],
+        RuleKind::Native("platform") => vec![
+            PrerequisiteAttribute {
+                name: "constraint_values",
+                labels: native.labels("constraint_values"),
+                allowed_rule_classes: &[],
+                mandatory_provider: Some(NativeProvider::ConstraintValue),
+            },
+            PrerequisiteAttribute {
+                name: "parents",
+                labels: native.labels("parents"),
+                allowed_rule_classes: &[],
+                mandatory_provider: Some(NativeProvider::Platform),
+            },
+            PrerequisiteAttribute {
+                name: "required_settings",
+                labels: native.labels("required_settings"),
+                allowed_rule_classes: &["config_setting"],
+                mandatory_provider: None,
+            },
+        ],
+        _ => Vec::new(),
+    }
+}
+
+/// RuleContext.Builder.validateRuleDependency (analysis/RuleContext.java:2002-2093):
+/// a rule prerequisite is accepted when its class is allowed, else when it
+/// has the mandatory provider; otherwise both unfulfilled requirements are
+/// joined (StringUtil.joinEnglishList with "and").
+fn rule_dependency_error(
+    attribute: &PrerequisiteAttribute,
+    chain: &[Label],
+    actual: &Label,
+    actual_rule: &Rule,
+    node: Option<&ConfiguredNode>,
+) -> Option<String> {
+    let mut unfulfilled = Vec::new();
+    if !attribute.allowed_rule_classes.is_empty() {
+        if attribute
+            .allowed_rule_classes
+            .contains(&actual_rule.rule_class_name())
+        {
+            return None;
+        }
+        unfulfilled.push(format!(
+            "{} is misplaced here (expected {})",
+            describe_with_aliases(
+                chain,
+                actual,
+                &format!("{} rule", actual_rule.rule_class_name())
+            ),
+            join_english_list(attribute.allowed_rule_classes, "or")
+        ));
+    }
+    if let Some(provider) = attribute.mandatory_provider {
+        if node.is_some_and(|node| provider.provided_by(node)) {
+            return None;
+        }
+        unfulfilled.push(format!(
+            "'{}' does not have mandatory providers: '{}'",
+            crate::rule_declarations::canonical_form(actual),
+            provider.name()
+        ));
+    }
+    (!unfulfilled.is_empty()).then(|| join_english_list(&unfulfilled, "and"))
+}
+
+/// StringUtil.joinEnglishList (util/StringUtil.java:54-73) with the Oxford
+/// comma.
+fn join_english_list<T: AsRef<str>>(choices: &[T], last: &str) -> String {
+    let mut text = String::new();
+    for (index, choice) in choices.iter().enumerate() {
+        if index > 0 {
+            let is_last = index + 1 == choices.len();
+            if !is_last || index >= 2 {
+                text.push(',');
+            }
+            if is_last {
+                text.push(' ');
+                text.push_str(last);
+            }
+            text.push(' ');
+        }
+        text.push_str(choice.as_ref());
+    }
+    if text.is_empty() {
+        "nothing".to_owned()
+    } else {
+        text
+    }
+}
+
+/// PlatformLookupUtil.hasPlatformInfo (skyframe/toolchains/PlatformLookupUtil.java:160-172):
+/// the target's rule does not use toolchain resolution and its class
+/// advertises PlatformInfo (`platform`, PlatformRule.java:53) or can have any
+/// provider (`alias`, rules/Alias.java:76; label settings,
+/// rules/LabelBuildSettings.java:98).
+fn has_platform_info(rule: &Rule) -> bool {
+    !uses_toolchain_resolution(rule)
+        && matches!(
+            rule.kind,
+            RuleKind::Native("platform" | "alias" | "label_flag" | "label_setting")
+        )
 }
 
 /// Rules whose configured target is an AliasConfiguredTarget: `alias`
@@ -141,6 +403,15 @@ pub struct Engine {
     /// Warnings in emission order, without Bazel's `WARNING: ` prefix (added
     /// by the CLI): filtered target patterns and analysis warnings.
     warnings: Vec<String>,
+    /// PlatformValue per platform label of the current configuration
+    /// (PlatformFunction, analysis/platform/PlatformFunction.java:57-126).
+    platforms: BTreeMap<Label, Result<Arc<PlatformInfo>, PlatformError>>,
+    /// Platforms being resolved (reentrancy guard).
+    resolving_platforms: Vec<Label>,
+    /// Whether execution platform registrations were checked in this build.
+    registrations_checked: bool,
+    /// Rules analyzed while resolving a platform (no toolchain context).
+    empty_configuration_rules: BTreeSet<Label>,
 }
 
 impl Engine {
@@ -158,12 +429,17 @@ impl Engine {
             configuration: Configuration::default(),
             missing_sources: BTreeMap::new(),
             warnings: Vec::new(),
+            platforms: BTreeMap::new(),
+            resolving_platforms: Vec::new(),
+            registrations_checked: false,
+            empty_configuration_rules: BTreeSet::new(),
         }
     }
 
     /// Analyze builds in `configuration` (default: the default configuration).
     pub fn set_configuration(&mut self, configuration: Configuration) {
         self.configuration = configuration;
+        self.platforms.clear();
     }
 
     /// Drain the warnings reported so far (also after a failed build, as
@@ -698,10 +974,45 @@ impl Engine {
             return Err("native prototype dependency depth limit (256) exceeded".into());
         }
         active.push(rule.label.clone());
+        // constraint_setting and constraint_value are analyzed under
+        // NoConfigTransition (rules/platform/ConstraintSettingRule.java:42,
+        // ConstraintValueRule.java:41): select() in their configurable
+        // attributes would be evaluated in the no-op configuration, which is
+        // not modelled.
+        if let RuleKind::Native(kind @ ("constraint_setting" | "constraint_value")) = rule.kind
+            && !configured_attributes::rule_config_dependencies(&rule).is_empty()
+        {
+            return Err(format!(
+                "{}: select() in {kind} attributes is not implemented in the native profile (Bazel analyzes {kind} targets in the no-op configuration, NoConfigTransition)",
+                rule.label
+            ));
+        }
+        // DependencyContextProducerWithCompatibilityCheck
+        // (analysis/producers/DependencyContextProducerWithCompatibilityCheck.java:80-110, 132-145):
+        // a rule that uses toolchain resolution resolves its target platform
+        // before its select() conditions. A non-default target platform is
+        // resolved so; the default host platform only where a constraint
+        // needs it (constraint_value keys in config_conditions,
+        // config_setting constraint_values matching below; docs/PLATFORMS.md).
+        // Inside a platform's tree (the empty configuration, no
+        // PlatformConfiguration) no rule resolves toolchains
+        // (ToolchainContextUtil.java:79-82: platformConfig == null).
+        let in_empty_configuration = !self.resolving_platforms.is_empty();
+        if in_empty_configuration {
+            self.empty_configuration_rules.insert(rule.label.clone());
+        }
+        let uses_toolchains = uses_toolchain_resolution(&rule) && !in_empty_configuration;
+        let mut target_platform = None;
+        if uses_toolchains && !self.default_target_platform() {
+            target_platform = Some(self.target_platform(configured, plan)?);
+        }
         // PrerequisiteProducer order (analysis/producers/PrerequisiteProducer.java):
         // select() conditions, then toolchain resolution, then dependency
         // resolution (attribute validation, dependencies), then the factory.
         let ordered = self.config_conditions(&rule, active, configured, plan)?;
+        if uses_toolchains {
+            self.resolve_execution_platform(&rule, configured, plan)?;
+        }
         if let Some(custom) = &rule.custom
             && !custom.declaration.toolchain_gaps.is_empty()
         {
@@ -716,8 +1027,11 @@ impl Engine {
         };
         // DependencyResolutionHelpers.visitRule reports a validation failure
         // at the rule's location (analysis/DependencyResolutionHelpers.java:309-313).
-        let mut rule = configured_attributes::configure(&rule, &resolver)
+        let configured_rule = configured_attributes::configure(&rule, &resolver)
             .map_err(|error| located(rule.location.as_deref(), error))?;
+        let duplicate_errors =
+            configured_attributes::concatenated_duplicate_errors(&rule, &configured_rule);
+        let mut rule = configured_rule;
         if let Some(custom) = &rule.custom
             && !custom.declaration.unanalyzed.is_empty()
         {
@@ -741,7 +1055,7 @@ impl Engine {
             let dependency = self.resolve_rule_src(&rule, &src)?;
             let target = self
                 .target(&dependency)
-                .map_err(|error| missing_edge(&rule, &dependency, error))?;
+                .map_err(|error| self.missing_edge_error(&rule, &dependency, error))?;
             let is_source = matches!(target, Target::Source(_));
             let forwarding = matches!(&target, Target::Rule(dep) if forwards(dep));
             let visible = match target {
@@ -801,9 +1115,23 @@ impl Engine {
             self.validate_prerequisite(&rule, &actual, &description, skip_testonly)?;
         }
         self.starlark_file_type_errors(&rule, configured)?;
-        // config_setting flag_values: prerequisites analyzed, then validated
+        // config_setting flag_values/constraint_values and the platform rules'
+        // label attributes: prerequisites analyzed, then validated
         // (RuleContext.Builder, analysis/RuleContext.java:1700-1745, 1845-1880, 2165-2172).
-        let flag_prerequisites = self.flag_prerequisites(&rule, active, configured, plan)?;
+        let (flag_prerequisites, constraint_prerequisites) =
+            self.config_setting_prerequisites(&rule, active, configured, plan)?;
+        let platform_prerequisites =
+            self.platform_rule_prerequisites(&rule, active, configured, plan)?;
+        // RuleContext.Builder.validateExtraPrerequisites first checks resolved
+        // label lists for duplicates (analysis/RuleContext.java:2110-2113,
+        // 1553-1568), attribute errors at the rule's location.
+        if !duplicate_errors.is_empty() {
+            return Err(duplicate_errors
+                .iter()
+                .map(|error| located(rule.location.as_deref(), error.clone()))
+                .collect::<Vec<_>>()
+                .join("\n"));
+        }
         // RuleContext.Builder.validateExtraPrerequisites validates the config
         // conditions like direct prerequisites, after dependency analysis
         // (analysis/RuleContext.java:2104-2152). Under the DEFAULT_PUBLIC
@@ -832,19 +1160,31 @@ impl Engine {
             (RuleKind::Native("config_setting"), Some(native)) => {
                 let repositories = self.repositories.clone();
                 let context = rule.label.clone();
-                Some(
+                let run = |configuration: &Configuration, platform: Option<&PlatformInfo>| {
                     crate::config_setting::analyze(
                         &rule.label,
                         native,
-                        &self.configuration,
+                        configuration,
                         &flag_prerequisites,
+                        &constraint_prerequisites,
+                        platform,
                         &|text| repositories.parse(text, &context.repository, &context.package),
                     )
-                    .map_err(|error| located_lines(rule.location.as_deref(), &error))?,
-                )
+                };
+                let mut result = run(&self.configuration, target_platform.as_deref());
+                if result.as_ref().err().map(String::as_str)
+                    == Some(crate::config_setting::NEEDS_TARGET_PLATFORM)
+                {
+                    let platform = self.target_platform(configured, plan)?;
+                    result = run(&self.configuration, Some(&platform));
+                }
+                Some(result.map_err(|error| located_lines(rule.location.as_deref(), &error))?)
             }
             _ => None,
         };
+        // ConstraintSetting/ConstraintValue/Platform.create (rules/platform/*.java).
+        let (mut constraint_setting, mut constraint_value, mut platform) =
+            self.platform_rule_providers(&rule, &platform_prerequisites, configured)?;
         // AliasConfiguredTarget forwards the actual's providers; label_flag and
         // label_setting override BuildSettingProvider (LateBoundAlias.java:58-79).
         let mut actual = None;
@@ -862,6 +1202,9 @@ impl Engine {
             if build_setting.is_none() {
                 build_setting = forwarded.build_setting;
             }
+            constraint_setting = forwarded.constraint_setting;
+            constraint_value = forwarded.constraint_value;
+            platform = forwarded.platform;
             actual = Some(target);
         }
         // ctx.build_setting_value of a Starlark build setting.
@@ -875,10 +1218,44 @@ impl Engine {
                 matching,
                 build_setting,
                 actual,
+                constraint_setting,
+                constraint_value,
+                platform,
             },
         );
         plan.push(rule);
         Ok(())
+    }
+
+    /// A missing dependency edge (missing_edge), preceded by the target
+    /// loading event when the target belongs to another package.
+    fn missing_edge_error(&self, rule: &Rule, dependency: &Label, error: String) -> String {
+        let event = self.foreign_target_event(&rule.label.package_id(), dependency, &error);
+        let edge = missing_edge(rule, dependency, error);
+        match event {
+            Some(event) => format!("{event}\n{edge}"),
+            None => edge,
+        }
+    }
+
+    /// Bazel reports a missing target of another package first as that
+    /// package's loading event, located at its BUILD file
+    /// (`/ws/p/BUILD.bazel: no such target '//p:x': ...`, an event of the
+    /// target lookup, as observed in the paired captures N16b
+    /// A10/missing_target_edge and N16c B2/lx_use_cv_missing), before the
+    /// consumer's edge error.
+    fn foreign_target_event(
+        &self,
+        consumer: &PackageId,
+        dependency: &Label,
+        error: &str,
+    ) -> Option<String> {
+        if !error.starts_with("no such target '") || dependency.package_id() == *consumer {
+            return None;
+        }
+        let root = self.repositories.root(&dependency.repository).ok()?;
+        let build = workspace::package_build_file(root, &dependency.package).ok()?;
+        Some(format!("{}: {error}", build.display()))
     }
 
     /// AbstractLabelCycleReporter.maybeReportCycle (skyframe/AbstractLabelCycleReporter.java:81-170):
@@ -1095,20 +1472,28 @@ impl Engine {
         }
     }
 
-    /// The `flag_values` prerequisites of a `config_setting`: every key is
-    /// analyzed first, then each edge is validated like RuleContext.Builder
-    /// does (validateDirectPrerequisiteType, analysis/RuleContext.java:1845-1880,
-    /// with no allowed file types, ConfigRuleClasses.java:292-294; then
-    /// visibility, testonly and deprecation). All errors are reported.
-    fn flag_prerequisites(
+    /// The `flag_values` and `constraint_values` prerequisites of a
+    /// `config_setting`: every key and label is analyzed first, then each
+    /// edge is validated like RuleContext.Builder does
+    /// (validateDirectPrerequisiteType, analysis/RuleContext.java:1845-1880,
+    /// with no allowed file types, ConfigRuleClasses.java:292-294, 314-316;
+    /// then visibility, testonly and deprecation), in attribute order. All
+    /// errors are reported.
+    fn config_setting_prerequisites(
         &mut self,
         rule: &Rule,
         active: &mut Vec<Label>,
         configured: &mut ConfiguredNodes,
         plan: &mut Vec<Rule>,
-    ) -> Result<Vec<crate::config_setting::FlagPrerequisite>, String> {
+    ) -> Result<
+        (
+            Vec<crate::config_setting::FlagPrerequisite>,
+            Vec<crate::config_setting::ConstraintPrerequisite>,
+        ),
+        String,
+    > {
         let (RuleKind::Native("config_setting"), Some(native)) = (&rule.kind, &rule.native) else {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         };
         let entries = match native.attrs.get("flag_values") {
             Some(crate::custom_rule::AttrValue::LabelKeyedStringDict(entries)) => entries.clone(),
@@ -1118,20 +1503,28 @@ impl Engine {
         for (key, value) in entries {
             let dependency = self.resolve_rule_src(rule, &key)?;
             self.target(&dependency)
-                .map_err(|error| missing_edge(rule, &dependency, error))?;
+                .map_err(|error| self.missing_edge_error(rule, &dependency, error))?;
             self.analyze(&dependency, active, configured, plan)?;
-            keys.push((dependency, value));
+            keys.push(("flag_values", dependency, Some(value)));
+        }
+        for text in native.labels("constraint_values") {
+            let dependency = self.resolve_rule_src(rule, &text)?;
+            self.target(&dependency)
+                .map_err(|error| self.missing_edge_error(rule, &dependency, error))?;
+            self.analyze(&dependency, active, configured, plan)?;
+            keys.push(("constraint_values", dependency, None));
         }
         let shown = crate::rule_declarations::canonical_form(&rule.label);
         let requesting_package = rule_authority(rule);
         let mut errors = Vec::new();
-        let mut prerequisites = Vec::new();
-        for (dependency, value) in keys {
+        let mut flags = Vec::new();
+        let mut constraints = Vec::new();
+        for (attribute, dependency, value) in keys {
             let (chain, actual) = self.alias_chain(configured, &dependency);
             let is_source = matches!(self.target(&actual)?, Target::Source(_));
             if let Some(error) = self.no_files_error(&chain, &actual)? {
                 errors.push(format!(
-                    "in flag_values attribute of config_setting rule {shown}: {error}"
+                    "in {attribute} attribute of config_setting rule {shown}: {error}"
                 ));
             }
             let visible = match self.target(&dependency)? {
@@ -1153,18 +1546,22 @@ impl Engine {
             if let Some(error) = self.prerequisite_error(rule, &actual, &description, false)? {
                 errors.push(error);
             }
-            let setting = configured
-                .get(&ConfiguredTargetKey {
-                    label: dependency.clone(),
-                    config: self.configuration.id,
-                })
-                .and_then(|node| node.build_setting.clone());
-            prerequisites.push(crate::config_setting::FlagPrerequisite {
-                specified: dependency,
-                actual,
-                value,
-                setting,
+            let node = configured.get(&ConfiguredTargetKey {
+                label: dependency.clone(),
+                config: self.configuration.id,
             });
+            match value {
+                Some(value) => flags.push(crate::config_setting::FlagPrerequisite {
+                    specified: dependency,
+                    actual,
+                    value,
+                    setting: node.and_then(|node| node.build_setting.clone()),
+                }),
+                None => constraints.push(crate::config_setting::ConstraintPrerequisite {
+                    actual,
+                    value: node.and_then(|node| node.constraint_value.clone()),
+                }),
+            }
         }
         if !errors.is_empty() {
             return Err(errors
@@ -1173,7 +1570,628 @@ impl Engine {
                 .collect::<Vec<_>>()
                 .join("\n"));
         }
-        Ok(prerequisites)
+        Ok((flags, constraints))
+    }
+
+    /// The label attributes of `constraint_setting`
+    /// (ConstraintSettingRule.java:84-89), `constraint_value`
+    /// (ConstraintValueRule.java:56-63) and `platform` (PlatformRule.java:75-89,
+    /// 149-152), in rule-class attribute order, analyzed and validated (the
+    /// resolved labels per attribute).
+    fn platform_rule_prerequisites(
+        &mut self,
+        rule: &Rule,
+        active: &mut Vec<Label>,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Vec<Rule>,
+    ) -> Result<Vec<Vec<Label>>, String> {
+        let attributes = platform_prerequisite_attributes(rule);
+        if attributes.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.native_prerequisites(rule, &attributes, active, configured, plan)
+    }
+
+    /// RuleContext.Builder.createTargetMap for native label attributes
+    /// (analysis/RuleContext.java:1708-1745, 2165-2172): every prerequisite is
+    /// analyzed, then validated in attribute order — validateRuleDependency
+    /// for rules (allowed rule classes, else mandatory providers, :2002-2093),
+    /// the no-files check for files (:1845-1880), then visibility, testonly
+    /// and deprecation. All errors are reported at the rule's location.
+    fn native_prerequisites(
+        &mut self,
+        rule: &Rule,
+        attributes: &[PrerequisiteAttribute],
+        active: &mut Vec<Label>,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Vec<Rule>,
+    ) -> Result<Vec<Vec<Label>>, String> {
+        let mut resolved = Vec::new();
+        for attribute in attributes {
+            let mut labels = Vec::new();
+            for text in &attribute.labels {
+                let dependency = self.resolve_rule_src(rule, text)?;
+                self.target(&dependency)
+                    .map_err(|error| self.missing_edge_error(rule, &dependency, error))?;
+                self.analyze(&dependency, active, configured, plan)?;
+                labels.push(dependency);
+            }
+            resolved.push(labels);
+        }
+        let shown = crate::rule_declarations::canonical_form(&rule.label);
+        let class = rule.rule_class_name().to_owned();
+        let requesting_package = rule_authority(rule);
+        let mut errors = Vec::new();
+        for (attribute, labels) in attributes.iter().zip(&resolved) {
+            let prefix = format!("in {} attribute of {class} rule {shown}: ", attribute.name);
+            for dependency in labels {
+                let (chain, actual) = self.alias_chain(configured, dependency);
+                let actual_target = self.target(&actual)?;
+                let is_source = matches!(actual_target, Target::Source(_));
+                let type_error = match &actual_target {
+                    Target::Rule(actual_rule) => rule_dependency_error(
+                        attribute,
+                        &chain,
+                        &actual,
+                        actual_rule,
+                        configured.get(&ConfiguredTargetKey {
+                            label: actual.clone(),
+                            config: self.configuration.id,
+                        }),
+                    ),
+                    _ => self.no_files_error(&chain, &actual)?,
+                };
+                if let Some(error) = type_error {
+                    errors.push(format!("{prefix}{error}"));
+                }
+                let visible = match self.target(dependency)? {
+                    Target::Rule(dep) | Target::Output(dep, _) => self.visible(
+                        &dep.visibility,
+                        &rule_authority(&dep),
+                        Some(&requesting_package),
+                    )?,
+                    Target::Source(_) => self.visible(
+                        &self.source_visibility(dependency),
+                        &dependency.package_id(),
+                        Some(&requesting_package),
+                    )?,
+                };
+                let description = describe_with_aliases(&chain, &actual, "target");
+                if !visible {
+                    errors.push(visibility_message(rule, &description, is_source));
+                }
+                if let Some(error) = self.prerequisite_error(rule, &actual, &description, false)? {
+                    errors.push(error);
+                }
+            }
+        }
+        if !errors.is_empty() {
+            return Err(errors
+                .into_iter()
+                .map(|error| located(rule.location.as_deref(), error))
+                .collect::<Vec<_>>()
+                .join("\n"));
+        }
+        Ok(resolved)
+    }
+
+    /// The providers of `constraint_setting` (rules/platform/ConstraintSetting.java:227-304),
+    /// `constraint_value` (ConstraintValue.java:338-353) and `platform`
+    /// (Platform.java:44-120) from their validated prerequisites.
+    fn platform_rule_providers(
+        &mut self,
+        rule: &Rule,
+        prerequisites: &[Vec<Label>],
+        configured: &ConfiguredNodes,
+    ) -> Result<PlatformProviders, String> {
+        let Some(native) = rule.native.clone() else {
+            return Ok((None, None, None));
+        };
+        let shown = crate::rule_declarations::canonical_form(&rule.label);
+        let class = rule.rule_class_name().to_owned();
+        let attribute_error = |attribute: &str, message: &str| {
+            located(
+                rule.location.as_deref(),
+                format!("in {attribute} attribute of {class} rule {shown}: {message}"),
+            )
+        };
+        let config = self.configuration.id;
+        let node = |label: &Label| {
+            configured.get(&ConfiguredTargetKey {
+                label: label.clone(),
+                config,
+            })
+        };
+        let internal = |what: &str| {
+            format!(
+                "internal error: validated prerequisite of {} lacks {what}",
+                rule.label
+            )
+        };
+        match rule.kind {
+            RuleKind::Native("constraint_setting") => {
+                // validateDefaultConstraintValue (ConstraintSetting.java:270-304).
+                let mut default_value = None;
+                if let Some(crate::custom_rule::AttrValue::Label(Some(text))) =
+                    native.attrs.get("default_constraint_value")
+                {
+                    let default = self.resolve_rule_src(rule, text)?;
+                    if default.package_id() != rule.label.package_id() {
+                        return Err(attribute_error(
+                            "default_constraint_value",
+                            "The default constraint value must be defined in the same package as the constraint setting itself.",
+                        ));
+                    }
+                    if self.target(&default).is_err() {
+                        return Err(attribute_error(
+                            "default_constraint_value",
+                            &format!(
+                                "The default constraint value '{}' does not exist",
+                                crate::rule_declarations::canonical_form(&default)
+                            ),
+                        ));
+                    }
+                    default_value = Some(default);
+                }
+                let refined = match prerequisites.first().and_then(|labels| labels.first()) {
+                    Some(label) => Some(Box::new(
+                        node(label)
+                            .and_then(|node| node.constraint_value.clone())
+                            .ok_or_else(|| internal("ConstraintValueInfo"))?,
+                    )),
+                    None => None,
+                };
+                Ok((
+                    Some(ConstraintSettingInfo {
+                        label: rule.label.clone(),
+                        default_value,
+                        refined,
+                    }),
+                    None,
+                    None,
+                ))
+            }
+            RuleKind::Native("constraint_value") => {
+                let setting = prerequisites
+                    .first()
+                    .and_then(|labels| labels.first())
+                    .and_then(node)
+                    .and_then(|node| node.constraint_setting.clone())
+                    .ok_or_else(|| internal("ConstraintSettingInfo"))?;
+                Ok((
+                    None,
+                    Some(ConstraintValueInfo {
+                        setting: Arc::new(setting),
+                        label: rule.label.clone(),
+                    }),
+                    None,
+                ))
+            }
+            RuleKind::Native("platform") => {
+                let provided = |index: usize| prerequisites.get(index).cloned().unwrap_or_default();
+                let mut constraint_values = Vec::new();
+                for label in provided(0) {
+                    constraint_values.push(
+                        node(&label)
+                            .and_then(|node| node.constraint_value.clone())
+                            .ok_or_else(|| internal("ConstraintValueInfo"))?,
+                    );
+                }
+                let mut parents = Vec::new();
+                for label in provided(1) {
+                    parents.push(
+                        node(&label)
+                            .and_then(|node| node.platform.clone())
+                            .ok_or_else(|| internal("PlatformInfo"))?,
+                    );
+                }
+                let required_settings = provided(2)
+                    .iter()
+                    .map(|label| self.alias_chain(configured, label).1)
+                    .collect();
+                let mut allowed_toolchain_types = Vec::new();
+                for text in native.labels("allowed_toolchain_types") {
+                    allowed_toolchain_types.push(self.resolve_rule_src(rule, &text)?);
+                }
+                let exec_properties = match native.attrs.get("exec_properties") {
+                    Some(crate::custom_rule::AttrValue::StringDict(entries)) => entries.clone(),
+                    _ => Vec::new(),
+                };
+                let attributes = crate::platforms::PlatformAttributes {
+                    parents,
+                    constraint_values,
+                    remote_execution_properties: native
+                        .string("remote_execution_properties")
+                        .unwrap_or_default()
+                        .to_owned(),
+                    exec_properties,
+                    flags: native.strings("flags"),
+                    required_settings,
+                    check_toolchain_types: matches!(
+                        native.attrs.get("check_toolchain_types"),
+                        Some(crate::custom_rule::AttrValue::Bool(true))
+                    ),
+                    allowed_toolchain_types,
+                    missing_toolchain_error: native
+                        .string("missing_toolchain_error")
+                        .unwrap_or(crate::platforms::DEFAULT_MISSING_TOOLCHAIN_ERROR)
+                        .to_owned(),
+                };
+                let mapping = self.repositories.mapping("").cloned().unwrap_or_default();
+                let platform =
+                    crate::platforms::create_platform(&rule.label, attributes, &|label| {
+                        crate::platforms::shorthand_display_form(label, &mapping)
+                    })
+                    .map_err(|errors| {
+                        errors
+                            .iter()
+                            .map(|error| attribute_error(error.attribute, &error.message))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    })?;
+                Ok((None, None, Some(Arc::new(platform))))
+            }
+            _ => Ok((None, None, None)),
+        }
+    }
+
+    /// The target platform of the build configuration
+    /// (PlatformConfiguration.getTargetPlatform, analysis/PlatformConfiguration.java:84-86),
+    /// resolved like PlatformFunction. Loading errors carry Bazel's
+    /// exception-class prefix (PlatformError::target_text).
+    fn target_platform(
+        &mut self,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Vec<Rule>,
+    ) -> Result<Arc<PlatformInfo>, String> {
+        let label = self.configuration.native.target_platform().clone();
+        self.platform_info(&label, configured, plan)
+            .map_err(|error| error.target_text())
+    }
+
+    /// Whether the target platform is the default host platform, which the
+    /// native profile resolves only where a constraint needs it.
+    fn default_target_platform(&self) -> bool {
+        *self.configuration.native.target_platform()
+            == crate::configuration::default_host_platform()
+    }
+
+    /// The execution-platform part of toolchain resolution that the native
+    /// profile models for a rule that uses toolchain resolution
+    /// (ToolchainResolutionFunction via the toolchain contexts of
+    /// DependencyContextProducerWithCompatibilityCheck.java:189-210):
+    /// registered execution platforms fail explicitly (N17), and a
+    /// non-default `--host_platform` (the execution platform) must be a
+    /// platform, reported like Bazel's `While resolving toolchains for target
+    /// L (CONFIG): Target H was referenced as a platform, but does not provide
+    /// PlatformInfo` at the rule's location (paired capture
+    /// B2/host_host_platform_fg_platforms_p_mac; CONFIG is the native
+    /// identifier).
+    fn resolve_execution_platform(
+        &mut self,
+        rule: &Rule,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Vec<Rule>,
+    ) -> Result<(), String> {
+        if !self.registrations_checked {
+            self.registrations_checked = true;
+            if let Some(labels) = self
+                .repositories
+                .known_execution_platform_registrations()
+                .into_iter()
+                .next()
+            {
+                return Err(format!(
+                    "register_execution_platforms({}) is not implemented in the native profile: execution platform resolution (N17)",
+                    labels
+                        .iter()
+                        .map(|label| format!("{label:?}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+        }
+        let host = self.configuration.native.host_platform.clone();
+        if host == crate::configuration::default_host_platform()
+            || host == *self.configuration.native.target_platform()
+        {
+            return Ok(());
+        }
+        let Err(error) = self.platform_info(&host, configured, plan) else {
+            return Ok(());
+        };
+        let text = match error {
+            PlatformError::Missing { .. } => crate::platforms::not_a_platform(&host),
+            PlatformError::Other(text) => text,
+        };
+        let id = self.configuration.id.to_string();
+        let prefix = format!(
+            "While resolving toolchains for target {} ({}): ",
+            crate::rule_declarations::canonical_form(&rule.label),
+            &id[..7]
+        );
+        let (events, last) = match text.rsplit_once('\n') {
+            Some((events, last)) => (format!("{events}\n"), last.to_owned()),
+            None => (String::new(), text),
+        };
+        Err(format!(
+            "{events}{}",
+            located(rule.location.as_deref(), format!("{prefix}{last}"))
+        ))
+    }
+
+    /// PlatformFunction.compute (analysis/platform/PlatformFunction.java:57-126),
+    /// memoized per configuration.
+    fn platform_info(
+        &mut self,
+        label: &Label,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Vec<Rule>,
+    ) -> Result<Arc<PlatformInfo>, PlatformError> {
+        if let Some(cached) = self.platforms.get(label) {
+            return cached.clone();
+        }
+        if self.resolving_platforms.contains(label) {
+            return Err(PlatformError::Other(format!(
+                "platform {} is needed while it is being resolved; this is not implemented in the native profile",
+                crate::rule_declarations::canonical_form(label)
+            )));
+        }
+        self.resolving_platforms.push(label.clone());
+        let result = self.compute_platform_info(label, configured, plan);
+        self.resolving_platforms.pop();
+        self.platforms.insert(label.clone(), result.clone());
+        result
+    }
+
+    fn compute_platform_info(
+        &mut self,
+        label: &Label,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Vec<Rule>,
+    ) -> Result<Arc<PlatformInfo>, PlatformError> {
+        let shown = crate::rule_declarations::canonical_form(label);
+        // An apparent repository the main repository does not see stays an
+        // unresolvable label (`@@[unknown repo 'R' requested from @@]`,
+        // crate::configuration) until the package is looked up.
+        if let Some(name) = crate::configuration::unknown_repository_name(label) {
+            return Err(PlatformError::Missing {
+                class: "BuildFileNotFoundException",
+                message: format!(
+                    "no such package '@@{}//{}': The repository '@@{}' could not be resolved: No repository visible as '@{name}' from main repository",
+                    label.repository, label.package, label.repository
+                ),
+            });
+        }
+        // The default --host_platform is @bazel_tools//tools:host_platform
+        // (PlatformOptions.java:46-56), an alias of @platforms//host whose
+        // constraints the platforms module's host_platform extension computes
+        // from the host (docs/PLATFORMS.md). Without the built-in bazel_tools
+        // repository there is nothing to resolve.
+        if label.repository == "bazel_tools"
+            && let Err(error) = self.repositories.root("bazel_tools")
+        {
+            return Err(PlatformError::Other(format!(
+                "the target platform {shown} (the default host platform) needs the built-in @bazel_tools repository, which this module profile does not provide ({error}); use --experimental-builtin-modules, or select a platform with --platforms"
+            )));
+        }
+        // PlatformLookupUtil.hasPlatformInfo before analysis (:160-172);
+        // package and target errors propagate (InvalidPlatformException(NoSuchThingException)).
+        let rule = match self.target(label) {
+            Err(error) => return Err(PlatformError::loading(error)),
+            Ok(Target::Rule(rule) | Target::Output(rule, _)) => rule,
+            Ok(Target::Source(_)) => {
+                return Err(PlatformError::Other(crate::platforms::not_a_platform(
+                    label,
+                )));
+            }
+        };
+        if rule.label != *label || !has_platform_info(&rule) {
+            return Err(PlatformError::Other(crate::platforms::not_a_platform(
+                label,
+            )));
+        }
+        self.check_platform_tree(label)?;
+        self.analyze(label, &mut Vec::new(), configured, plan)
+            .map_err(|error| {
+                PlatformError::Other(format!(
+                    "{error}\n{}",
+                    crate::platforms::not_a_platform(label)
+                ))
+            })?;
+        let platform = configured
+            .get(&ConfiguredTargetKey {
+                label: label.clone(),
+                config: self.configuration.id,
+            })
+            .and_then(|node| node.platform.clone())
+            .ok_or_else(|| {
+                PlatformError::Other(crate::platforms::not_a_platform(
+                    &self.alias_chain(configured, label).1,
+                ))
+            })?;
+        // PlatformFunction parses PlatformInfo.flags into the configuration
+        // (:102-125, ParsedFlagsValue): not modelled.
+        if !platform.flags.is_empty() {
+            return Err(PlatformError::Other(format!(
+                "platform {shown} sets flags [{}]: platform-based flags (platform(flags = ...), analysis/platform/PlatformFunction.java:102-125) are not implemented in the native profile",
+                platform.flags.join(", ")
+            )));
+        }
+        Ok(platform)
+    }
+
+    /// The alias chain from `label` through plain (select()-free) aliases,
+    /// stopping at a label setting (no actual in the empty configuration):
+    /// the aliases passed and the end.
+    fn static_alias_chain(&mut self, label: &Label) -> (Vec<Label>, Label) {
+        let mut chain = Vec::new();
+        let mut current = label.clone();
+        loop {
+            let Ok(Target::Rule(rule)) = self.target(&current) else {
+                break;
+            };
+            if !matches!(rule.kind, RuleKind::Native("alias")) || chain.contains(&current) {
+                break;
+            }
+            let Some(crate::custom_rule::AttrValue::Label(Some(actual))) = rule
+                .native
+                .as_ref()
+                .and_then(|native| native.attrs.get("actual"))
+            else {
+                break;
+            };
+            let Ok(actual) = self.resolve_rule_src(&rule, actual) else {
+                break;
+            };
+            chain.push(current);
+            current = actual;
+        }
+        (chain, current)
+    }
+
+    /// Bazel analyzes a platform and its whole dependency tree in
+    /// `CommonOptions.EMPTY_OPTIONS` (PlatformFunction.configuredTargetDep,
+    /// analysis/platform/PlatformFunction.java:46-52;
+    /// analysis/config/CommonOptions.java:32-42: CoreOptions defaults only,
+    /// no platform options and no Starlark build settings). The native
+    /// profile analyzes in the build configuration, which gives the same
+    /// result only when nothing in the tree depends on the configuration:
+    ///
+    /// * a `label_flag`/`label_setting` on the platform label's alias chain
+    ///   resolves to no actual there, so it provides no PlatformInfo (Bazel
+    ///   names it: `Target //:plat_flag was referenced as a platform, but
+    ///   does not provide PlatformInfo`, paired capture B2 platforms*_plat_flag,
+    ///   platforms*_fg_flag); one reached through a platform rule's attribute
+    ///   fails that rule's prerequisite validation (Bazel's text);
+    /// * select() keys anywhere in the tree, label settings reached otherwise
+    ///   and `required_settings` naming config_settings (config_setting
+    ///   matching, only used by execution-platform resolution, N17) fail
+    ///   explicitly.
+    fn check_platform_tree(&mut self, platform: &Label) -> Result<(), PlatformError> {
+        let shown = crate::rule_declarations::canonical_form(platform);
+        let mut current = platform.clone();
+        let mut chain = BTreeSet::new();
+        while chain.insert(current.clone()) {
+            let Ok(Target::Rule(rule)) = self.target(&current) else {
+                break;
+            };
+            match rule.kind {
+                RuleKind::Native("label_flag" | "label_setting") => {
+                    return Err(PlatformError::Other(crate::platforms::not_a_platform(
+                        &current,
+                    )));
+                }
+                RuleKind::Native("alias") => {
+                    let Some(crate::custom_rule::AttrValue::Label(Some(actual))) = rule
+                        .native
+                        .as_ref()
+                        .and_then(|native| native.attrs.get("actual"))
+                    else {
+                        break;
+                    };
+                    match self.resolve_rule_src(&rule, actual) {
+                        Ok(actual) => current = actual,
+                        Err(_) => break,
+                    }
+                }
+                _ => break,
+            }
+        }
+        let gap = |what: String| {
+            PlatformError::Other(format!(
+                "{what} in the dependency tree of platform {shown} is not implemented in the native profile: Bazel analyzes platforms and their dependencies in the empty configuration (analysis/platform/PlatformFunction.java:46-52, analysis/config/CommonOptions.java:32-42), which the native profile does not model"
+            ))
+        };
+        let mut stack = vec![platform.clone()];
+        let mut visited = BTreeSet::new();
+        while let Some(label) = stack.pop() {
+            if visited.len() >= 100_000 || !visited.insert(label.clone()) {
+                continue;
+            }
+            let Ok(Target::Rule(rule)) = self.target(&label) else {
+                continue;
+            };
+            let rule_shown = crate::rule_declarations::canonical_form(&rule.label);
+            if !configured_attributes::rule_config_dependencies(&rule).is_empty() {
+                return Err(gap(format!("{rule_shown}: select()")));
+            }
+            if let RuleKind::Native(kind @ ("label_flag" | "label_setting")) = rule.kind {
+                return Err(gap(format!("{rule_shown}: {kind}")));
+            }
+            // A label setting reached through a platform rule's attribute
+            // has no providers in the empty configuration: Bazel's
+            // prerequisite error (paired capture A8/gap_flag_parent,
+            // B8/target_cv_flag_platform), then InvalidPlatformException.
+            let attributes = platform_prerequisite_attributes(&rule);
+            let mut errors = Vec::new();
+            let mut required_are_settings = true;
+            for attribute in &attributes {
+                for text in &attribute.labels {
+                    let Ok(dependency) = self.resolve_rule_src(&rule, text) else {
+                        continue;
+                    };
+                    let (chain, end) = self.static_alias_chain(&dependency);
+                    let Ok(Target::Rule(end_rule)) = self.target(&end) else {
+                        required_are_settings &= attribute.name != "required_settings";
+                        continue;
+                    };
+                    if attribute.name == "required_settings" {
+                        required_are_settings &=
+                            matches!(end_rule.kind, RuleKind::Native("config_setting"));
+                    }
+                    if matches!(
+                        end_rule.kind,
+                        RuleKind::Native("label_flag" | "label_setting")
+                    ) && let Some(error) =
+                        rule_dependency_error(attribute, &chain, &end, &end_rule, None)
+                    {
+                        errors.push(located(
+                            rule.location.as_deref(),
+                            format!(
+                                "in {} attribute of {} rule {rule_shown}: {error}",
+                                attribute.name,
+                                rule.rule_class_name()
+                            ),
+                        ));
+                    }
+                }
+            }
+            if !errors.is_empty() {
+                errors.push(crate::platforms::not_a_platform(platform));
+                return Err(PlatformError::Other(errors.join("\n")));
+            }
+            // Non-config_setting required settings fail prerequisite
+            // validation, which the analysis below reports like Bazel.
+            if let (RuleKind::Native("platform"), Some(native)) = (&rule.kind, &rule.native)
+                && !native.labels("required_settings").is_empty()
+                && required_are_settings
+            {
+                return Err(gap(format!(
+                    "{rule_shown}: required_settings (config_setting matching for execution platform resolution, N17)"
+                )));
+            }
+            if let Some(native) = &rule.native {
+                stack.extend(native.input_labels.iter().cloned());
+            }
+            if let Some(custom) = &rule.custom {
+                stack.extend(
+                    custom
+                        .declaration
+                        .builtin
+                        .target
+                        .input_labels
+                        .iter()
+                        .cloned(),
+                );
+                for text in crate::package::custom_dependency_labels(&custom.attrs) {
+                    if let Ok(dependency) = self.resolve_rule_src(&rule, &text) {
+                        stack.push(dependency);
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Starlark build settings of the command line
@@ -1285,7 +2303,15 @@ impl Engine {
             // the consumer adds `errors encountered resolving select() keys
             // for L` at its location (ConfigConditionsProducer.emitErrorIfMostImportant,
             // analysis/producers/ConfigConditionsProducer.java:121-129, 200-211).
-            self.analyze(&label, active, configured, plan)
+            // A missing key of another package is first reported at that
+            // package's BUILD file (the target loading event, paired capture
+            // B2/lx_missing_key).
+            let loaded = self.target(&label).map(|_| ()).map_err(|error| {
+                self.foreign_target_event(&rule.label.package_id(), &label, &error)
+                    .unwrap_or(error)
+            });
+            loaded
+                .and_then(|()| self.analyze(&label, active, configured, plan))
                 .map_err(|error| {
                     format!(
                         "{error}\n{}",
@@ -1310,7 +2336,20 @@ impl Engine {
             // the end of an alias chain (ConfigConditionsProducer.java:156-165,
             // ConfiguredTargetAndData.getTargetLabel).
             let label = self.alias_chain(configured, &label).1;
-            let Some(matching) = configured.get(&key).and_then(|node| node.matching.clone()) else {
+            // ConfigConditions.fromConfiguredTarget (analysis/config/ConfigConditions.java:64-83):
+            // a ConfigMatchingProvider, or a constraint_value matched against
+            // the target platform when the consuming rule uses toolchain
+            // resolution (otherwise the key is not a valid condition).
+            let node = configured.get(&key);
+            let mut matching = node.and_then(|node| node.matching.clone());
+            if matching.is_none()
+                && let Some(value) = node.and_then(|node| node.constraint_value.clone())
+                && uses_toolchain_resolution(rule)
+            {
+                let platform = self.target_platform(configured, plan)?;
+                matching = Some(value.config_matching(&platform));
+            }
+            let Some(matching) = matching else {
                 let target = crate::rule_declarations::canonical_form(&rule.label);
                 return Err(located(
                     rule.location.as_deref(),
@@ -1514,6 +2553,23 @@ impl Engine {
         let _output_root = crate::label::OutputRootScope::new(self.configuration.output_root());
         let mut plan = Vec::new();
         let mut configured = ConfiguredNodes::new();
+        self.registrations_checked = false;
+        // BuildConfigurationKeyProducer resolves an explicit --platforms
+        // entry when the top-level configuration is created, before analysis
+        // (analysis/producers/BuildConfigurationKeyProducer.java:126-145). A
+        // target platform that comes from --host_platform (empty --platforms)
+        // is resolved by each toolchain-resolving rule
+        // (DependencyContextProducerWithCompatibilityCheck.java:96-110), and a
+        // non-default --host_platform by their toolchain resolution
+        // (resolve_execution_platform); the default host platform only where
+        // a constraint needs it (docs/PLATFORMS.md).
+        let target = self.configuration.native.target_platform().clone();
+        if target != crate::configuration::default_host_platform()
+            && target != self.configuration.native.host_platform
+        {
+            self.platform_info(&target, &mut configured, &mut plan)
+                .map_err(|error| error.target_text())?;
+        }
         for label in labels {
             self.analyze(label, &mut Vec::new(), &mut configured, &mut plan)?;
         }
@@ -1606,8 +2662,50 @@ impl Engine {
                         },
                     );
                 }
-                let analyzed =
-                    analysis::analyze_in(rule, &dependency_targets, self.repositories.clone())?;
+                // ctx.target_platform_has_constraint: a toolchain-resolving
+                // rule sees its target platform; a deferred default host
+                // platform is resolved only when the implementation asks,
+                // then the (side-effect free) analysis runs again.
+                let mut analyzed_rule = rule.clone();
+                let uses_toolchains = uses_toolchain_resolution(rule)
+                    && !self.empty_configuration_rules.contains(&rule.label);
+                let target = self.configuration.native.target_platform().clone();
+                if let Some(custom) = analyzed_rule.custom.as_mut() {
+                    custom.target_platform = match self.platforms.get(&target) {
+                        _ if !uses_toolchains => crate::platforms::TargetPlatform::Absent,
+                        Some(Ok(platform)) => {
+                            crate::platforms::TargetPlatform::Resolved(platform.clone())
+                        }
+                        _ => crate::platforms::TargetPlatform::Deferred,
+                    };
+                }
+                // print() output of a discarded attempt is dropped: Bazel
+                // runs the implementation once, after its target platform is
+                // known.
+                let (mut analyzed, mut printed) = analysis::analyze_buffered(
+                    &analyzed_rule,
+                    &dependency_targets,
+                    self.repositories.clone(),
+                );
+                if analyzed
+                    .as_ref()
+                    .is_err_and(|error| error.contains(crate::platforms::NEEDS_TARGET_PLATFORM))
+                {
+                    let platform = self.target_platform(&mut configured, &mut Vec::new())?;
+                    if let Some(custom) = analyzed_rule.custom.as_mut() {
+                        custom.target_platform =
+                            crate::platforms::TargetPlatform::Resolved(platform);
+                    }
+                    (analyzed, printed) = analysis::analyze_buffered(
+                        &analyzed_rule,
+                        &dependency_targets,
+                        self.repositories.clone(),
+                    );
+                }
+                for line in printed {
+                    eprintln!("{line}");
+                }
+                let analyzed = analyzed?;
                 restricted_to_error(rule)?;
                 custom_providers.insert(rule.label.clone(), analyzed.providers.clone());
                 provider_files.insert(rule.label.clone(), analyzed.provider_files.clone());
@@ -1760,6 +2858,30 @@ impl Engine {
                 dry.insert(rule.label.clone(), artifacts);
             } else {
                 restricted_to_error(rule)?;
+                // The native platform providers, visible to Starlark as
+                // dep[platform_common.X] (crate::platform_providers).
+                if let Some(node) = configured.get(&ConfiguredTargetKey {
+                    label: rule.label.clone(),
+                    config: self.configuration.id,
+                }) && !forwards(rule)
+                {
+                    use crate::platform_providers::Provider;
+                    let provider = match (
+                        &node.constraint_setting,
+                        &node.constraint_value,
+                        &node.platform,
+                    ) {
+                        (Some(info), _, _) => Some(Provider::Setting(info.clone())),
+                        (_, Some(info), _) => Some(Provider::Value(info.clone())),
+                        (_, _, Some(info)) => Some(Provider::Platform(info.clone())),
+                        _ => None,
+                    };
+                    if let Some(provider) = provider {
+                        let (id, value) = crate::platform_providers::freeze(provider)?;
+                        custom_providers.insert(rule.label.clone(), BTreeMap::from([(id, value)]));
+                        provider_files.insert(rule.label.clone(), Vec::new());
+                    }
+                }
                 // An alias-like target forwards its actual's files (above) and
                 // providers.
                 if forwards(rule) {
@@ -2224,13 +3346,21 @@ fn native_analysis_gate(rule: &Rule) -> Result<(), String> {
         // RuleContext errors carry the rule's location.
         return Err(located(rule.location.as_deref(), error));
     }
-    // config_setting analysis is modelled (crate::config_setting;
-    // constraint_values fail there), alias/label_flag/label_setting forward
-    // to their actual; the other native classes fail explicitly (N16c/N17).
+    // config_setting analysis is modelled (crate::config_setting),
+    // alias/label_flag/label_setting forward to their actual, and
+    // constraint_setting/constraint_value/platform provide their platform
+    // providers (crate::platforms); the other native classes (toolchain,
+    // toolchain_type, ...) fail explicitly (N17).
     if let RuleKind::Native(kind) = rule.kind
         && !matches!(
             kind,
-            "config_setting" | "alias" | "label_flag" | "label_setting"
+            "config_setting"
+                | "alias"
+                | "label_flag"
+                | "label_setting"
+                | "constraint_setting"
+                | "constraint_value"
+                | "platform"
         )
     {
         return Err(format!(
@@ -2266,7 +3396,15 @@ fn resolved_value_gate(rule: &Rule) -> Result<(), String> {
     if let Some(native) = &rule.native
         && matches!(
             native.rule_class.as_str(),
-            "filegroup" | "genrule" | "config_setting" | "alias" | "label_flag" | "label_setting"
+            "filegroup"
+                | "genrule"
+                | "config_setting"
+                | "alias"
+                | "label_flag"
+                | "label_setting"
+                | "constraint_setting"
+                | "constraint_value"
+                | "platform"
         )
     {
         let gaps = crate::native_rules::analysis_gaps(native);
@@ -2428,6 +3566,14 @@ fn expand_command_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn english_lists_follow_string_util() {
+        assert_eq!(join_english_list::<&str>(&[], "or"), "nothing");
+        assert_eq!(join_english_list(&["a"], "or"), "a");
+        assert_eq!(join_english_list(&["a", "b"], "and"), "a and b");
+        assert_eq!(join_english_list(&["a", "b", "c"], "or"), "a, b, or c");
+    }
 
     #[test]
     fn alias_descriptions_follow_alias_provider() {

@@ -387,7 +387,8 @@ fn serialize_label<S: serde::Serializer>(label: &Label, s: S) -> Result<S::Ok, S
     s.serialize_str(&crate::rule_declarations::canonical_form(label))
 }
 
-fn default_host_platform() -> Label {
+/// The label of [`DEFAULT_HOST_PLATFORM`].
+pub fn default_host_platform() -> Label {
     Label {
         repository: "bazel_tools".into(),
         package: "tools".into(),
@@ -411,6 +412,12 @@ impl Default for NativeOptions {
 }
 
 impl NativeOptions {
+    /// PlatformConfiguration.getTargetPlatform: the first `--platforms`
+    /// entry (PlatformOptions.computeTargetPlatform, PlatformOptions.java:205-212).
+    pub fn target_platform(&self) -> &Label {
+        self.platforms.first().unwrap_or(&self.host_platform)
+    }
+
     /// BuildOptionDetails.getOptionValue (BuildOptionDetails.java:145-158) of a
     /// modelled option.
     pub fn value(&self, name: &str) -> Option<OptionValue> {
@@ -625,6 +632,21 @@ impl CommandLineOptions {
                     .filter(available)
                     .find(|option| option.name == name || option.old_name == Some(name))
             };
+            // `query` registers no PlatformOptions (QueryCommand.java:59-67):
+            // OptionsParserImpl reports them as unknown (paired capture
+            // B1/query_platforms_mac: `--platforms=//:mac :: Unrecognized
+            // option: --platforms=//:mac`).
+            if query
+                && [
+                    "platforms",
+                    "experimental_platforms",
+                    "host_platform",
+                    "experimental_host_platform",
+                ]
+                .contains(&name)
+            {
+                return Err(invalid_argument(arg, format!("Unrecognized option: {arg}")));
+            }
             let (option, negated) = match lookup(name) {
                 Some(option) => (option, false),
                 None => match name.strip_prefix("no").and_then(lookup) {
@@ -687,10 +709,21 @@ impl CommandLineOptions {
         let mut native = NativeOptions::default();
         let mut platforms = Vec::new();
         let mut defines = Vec::new();
-        let mut platforms_form = None;
-        let mut host_platform_form = None;
+        // Label.parseWithRepoContext keeps an apparent repository the main
+        // repository does not see as `@@[unknown repo 'R' requested from @@]`
+        // (cmdline/RepositoryName.java); the platform lookup then fails with
+        // BuildFileNotFoundException (crate::engine, paired capture
+        // B2/platforms*_nope_p).
+        let platform_labels = |text: &str| {
+            labels(text).or_else(|error| deferred_unknown_repository(text).ok_or(error))
+        };
         for (option, form, value) in &self.entries {
-            let converted = convert(option, value, labels)
+            let parser: &LabelParser<'_> = if matches!(option.name, "platforms" | "host_platform") {
+                &platform_labels
+            } else {
+                labels
+            };
+            let converted = convert(option, value, parser)
                 .map_err(|error| format!("While parsing option {form}: {error}"))?;
             match (option.name, converted) {
                 ("compilation_mode", OptionValue::Enum(mode)) => native.compilation_mode = mode,
@@ -698,42 +731,56 @@ impl CommandLineOptions {
                 ("stamp", OptionValue::Bool(value)) => native.stamp = value,
                 ("force_pic", OptionValue::Bool(value)) => native.force_pic = value,
                 ("define", OptionValue::Assignments(entries)) => defines.extend(entries),
-                ("platforms", OptionValue::Labels(labels)) => {
-                    platforms = labels;
-                    platforms_form = Some(form);
-                }
-                ("host_platform", OptionValue::Label(label)) => {
-                    native.host_platform = label;
-                    host_platform_form = Some(form);
-                }
+                ("platforms", OptionValue::Labels(labels)) => platforms = labels,
+                ("host_platform", OptionValue::Label(label)) => native.host_platform = label,
                 _ => unreachable!("converter shape of {}", option.name),
             }
         }
         native.define = normalize_defines(defines);
+        // PlatformOptions.getNormalized keeps only the first entry (:189-200);
+        // an empty list becomes [--host_platform] (PlatformMappingValue.computeMapping,
+        // skyframe/config/PlatformMappingValue.java:154-158). The platforms are
+        // resolved and validated as platform targets by crate::engine
+        // (docs/PLATFORMS.md); the default host platform spelled explicitly is
+        // the same configuration as an unset option.
         platforms.truncate(1);
-        // Only the default host platform is modelled: any other target or
-        // host platform needs platform/toolchain analysis (N16c). The default
-        // spelled explicitly is the same configuration as an unset option.
-        let default = default_host_platform();
-        let unsupported = |form: Option<&String>| {
-            format!(
-                "{} requires platform analysis (N16c), which is not implemented in the native profile; only the default host platform {} is modelled",
-                form.map_or("--platforms", String::as_str),
-                crate::rule_declarations::canonical_form(&default)
-            )
+        native.platforms = if platforms.is_empty() {
+            vec![native.host_platform.clone()]
+        } else {
+            platforms
         };
-        if native.host_platform != default {
-            return Err(unsupported(host_platform_form));
-        }
-        if platforms
-            .first()
-            .is_some_and(|platform| *platform != default)
-        {
-            return Err(unsupported(platforms_form));
-        }
-        native.platforms = vec![default];
         Ok(Configuration::new(native, BTreeMap::new()))
     }
+}
+
+/// The repository name RepositoryName.createUnvalidated gives an apparent
+/// repository that is not visible from the main repository
+/// (`[unknown repo 'R' requested from @@]`).
+fn unknown_repository(name: &str) -> String {
+    format!("[unknown repo '{name}' requested from @@]")
+}
+
+/// `@R//pkg:name` with an apparent repository R as an unresolvable label.
+fn deferred_unknown_repository(text: &str) -> Option<Label> {
+    let parts = crate::bazel_label::Parts::parse(text).ok()?;
+    let repository = parts.repo.filter(|_| !parts.repo_is_canonical)?;
+    if repository.is_empty() {
+        return None;
+    }
+    Some(Label {
+        repository: unknown_repository(repository),
+        package: parts.pkg.to_owned(),
+        name: parts.target.to_owned(),
+    })
+}
+
+/// The apparent repository name of a label made by
+/// [`deferred_unknown_repository`].
+pub fn unknown_repository_name(label: &Label) -> Option<&str> {
+    label
+        .repository
+        .strip_prefix("[unknown repo '")?
+        .strip_suffix("' requested from @@]")
 }
 
 /// FragmentOptions.normalizeEntries then sortEntries (CoreOptions.java:1199-1208).
@@ -887,7 +934,7 @@ mod tests {
         assert_eq!(empty.native.platforms, [default_host_platform()]);
         assert_eq!(empty, Configuration::default());
         // The default host platform spelled explicitly is the default
-        // configuration; any other platform needs platform analysis (N16c).
+        // configuration.
         for args in [
             &["--platforms=@bazel_tools//tools:host_platform"][..],
             &["--host_platform=@@bazel_tools//tools:host_platform"][..],
@@ -896,21 +943,48 @@ mod tests {
         ] {
             assert_eq!(parsed(args).unwrap(), Configuration::default(), "{args:?}");
         }
-        for (args, form) in [
-            (&["--platforms=//p:x"][..], "--platforms=//p:x"),
-            (&["--host_platform", "//p:h"][..], "--host_platform //p:h"),
+        // Other platforms are configurations of their own (validated as
+        // platform targets by crate::engine); without --platforms the target
+        // platform is --host_platform (PlatformMappingValue.java:154-158).
+        let label = |text: &str| Label::parse_canonical(text).unwrap();
+        for (args, target, host) in [
+            (&["--platforms=//p:x"][..], "//p:x", DEFAULT_HOST_PLATFORM),
+            (&["--host_platform", "//p:h"][..], "//p:h", "//p:h"),
             (
-                &["--experimental_platforms=p:x"][..],
-                "--experimental_platforms=p:x",
+                &["--experimental_platforms=p:x,p:y", "--host_platform=//p:h"][..],
+                "//p:x",
+                "//p:h",
             ),
         ] {
+            let configuration = parsed(args).unwrap();
+            assert_eq!(configuration.native.platforms, [label(target)], "{args:?}");
+            assert_eq!(*configuration.native.target_platform(), label(target));
             assert_eq!(
-                parsed(args).unwrap_err(),
-                format!(
-                    "{form} requires platform analysis (N16c), which is not implemented in the native profile; only the default host platform @@bazel_tools//tools:host_platform is modelled"
-                )
+                configuration.native.host_platform,
+                parse_canonical_option_label(host).unwrap()
             );
+            assert_ne!(configuration.id, Configuration::default().id);
         }
+        // An apparent repository the main repository does not see is kept
+        // as an unresolvable label for the platform lookup.
+        let mut options = CommandLineOptions::default();
+        options.parse("--platforms=@nope//p:x", None).unwrap();
+        let configuration = options
+            .configuration(&|text| {
+                if text.starts_with("@nope") {
+                    Err("unknown apparent repository @nope".into())
+                } else {
+                    canonical(text)
+                }
+            })
+            .unwrap();
+        let target = configuration.native.target_platform();
+        assert_eq!(unknown_repository_name(target), Some("nope"));
+        assert_eq!(
+            crate::rule_declarations::canonical_form(target),
+            "@@[unknown repo 'nope' requested from @@]//p:x"
+        );
+        assert_eq!(deferred_unknown_repository("@@nope//:x"), None);
         // Starlark options are skipped by the native parser, in order
         // (OptionsParserImpl.java:535-550); `-//` and `-@` are invalid syntax.
         let mut options = CommandLineOptions::default();
@@ -952,15 +1026,17 @@ mod tests {
             query.parse("--define=a=1", None),
             Ok(Parsed::Consumed(false))
         ));
-        for arg in [
-            "--strip=always",
-            "--force_pic",
-            "--platforms=//p:x",
-            "--host_platform=//p:h",
-        ] {
+        for arg in ["--strip=always", "--force_pic"] {
             assert!(
                 matches!(query.parse(arg, None), Ok(Parsed::NotModelled)),
                 "{arg}"
+            );
+        }
+        // query has no PlatformOptions (QueryCommand.java:59-67).
+        for arg in ["--platforms=//p:x", "--host_platform=//p:h", "--platforms"] {
+            assert_eq!(
+                query.parse(arg, Some("next")).err(),
+                Some(format!("{arg} :: Unrecognized option: {arg}"))
             );
         }
     }

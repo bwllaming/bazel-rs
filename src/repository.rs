@@ -358,6 +358,42 @@ impl RepositorySet {
         ))
     }
 
+    /// `register_execution_platforms` label lists in effect without new
+    /// module resolution I/O: the root module's (dev registrations unless
+    /// dev dependencies are ignored) and, when the module graph has already
+    /// been resolved, the non-dev registrations of the other modules
+    /// (RegisteredExecutionPlatformsFunction semantics).
+    pub(crate) fn known_execution_platform_registrations(&self) -> Vec<Vec<String>> {
+        use crate::bzlmod::RegistrationKind;
+        let mut found = Vec::new();
+        let ignore_dev = self.state.options.ignore_dev_dependencies;
+        if let Ok(root) = self.root_module()
+            && let Some(module) = root.module_file()
+        {
+            for registration in &module.registrations {
+                if registration.kind == RegistrationKind::ExecutionPlatforms
+                    && !(ignore_dev && registration.dev_dependency)
+                    && !registration.labels.is_empty()
+                {
+                    found.push(registration.labels.clone());
+                }
+            }
+        }
+        if let Some(Ok(graph)) = self.state.resolved.get() {
+            for module in graph.modules.values() {
+                for registration in &module.module.registrations {
+                    if registration.kind == RegistrationKind::ExecutionPlatforms
+                        && !registration.dev_dependency
+                        && !registration.labels.is_empty()
+                    {
+                        found.push(registration.labels.clone());
+                    }
+                }
+            }
+        }
+        found
+    }
+
     pub fn resolve_graph(&self) -> Result<&ResolvedGraph, String> {
         self.state
             .resolved
