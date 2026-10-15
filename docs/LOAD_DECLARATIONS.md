@@ -106,8 +106,8 @@ in parameter 'default' of attribute 'label_keyed_string_dict': //a:b (as
 ["//a:b", "@@//a:b"])`). Exported-aspect checks use `Aspects should be
 top-level values in extension files that define them.`
 (`AspectsList.java:352`). `allow_empty=False` failures at analysis use
-`in ATTR attribute of RULE rule LABEL: attribute must be non empty`
-(`RuleContext.java:1548`, `EventHandlingErrorReporter.java:92-101`).
+`LOC: in ATTR attribute of RULE rule LABEL: attribute must be non empty` at the
+rule's location (`RuleContext.java:1548`, `EventHandlingErrorReporter.java:92-101`).
 
 ## `attr` changes
 
@@ -136,6 +136,71 @@ Following `StarlarkAttrModuleApi.java` and `StarlarkAttrModule.java:317-565`:
   (checked at analysis, like the existing dict attributes); `values` on
   `string`/`int`.
 
+### Extension-list `allow_files` / `allow_single_file`
+
+A list becomes `allowedFileTypes(FileType.of(list))`
+(`StarlarkAttrModule.java:127-140`, `Attribute.java:848-868`): a one-entry
+`FileTypeSet` with strict label checking, never `NO_FILE`, even for `[]`.
+Every prerequisite of a Starlark `attr.label`, `attr.label_list`,
+`attr.string_keyed_label_dict` or `attr.label_list_dict` is validated like
+`RuleContext.Builder.validateDirectPrerequisite` (`RuleContext.java:2165-2172`):
+
+* Matching is `FileType.hasExtension` off Windows: a case-sensitive
+  `String.endsWith` per entry (`util/FileType.java:109-133`), so entries need
+  no leading dot, can be exact names (`Makefile`) or multi-dot suffixes
+  (`.tar.gz`), and `""` matches everything.
+* A file at the end of the alias chain (`validateDirectPrerequisiteType`,
+  `:1845-1886`) is tested by its label name. On a mismatch, a missing input
+  file is `target 'L' does not exist` (always `target`, the set is not
+  `NO_FILE`); otherwise `source file 'L' is misplaced here (expected T)` /
+  `generated file ...`, with the alias description. A missing input file
+  whose name matches passes analysis, as in Bazel; as an action input it fails
+  at execution with `missing input file 'L'`, the native action described by
+  its id (`//:t#0 failed: ...`) where Bazel uses the action's progress message
+  (`Action t.cat failed: ...`, plus a location-without-colon summary line).
+* Then `validateDirectPrerequisiteFileTypes` (`:1945-1994`): after the
+  `allow_single_file` check (`'L' must produce a single file`), one of the
+  prerequisite's files to build must match by file name, else `'L' does not
+  produce any RULE ATTR files (expected T)` (ATTR is Bazel's native name,
+  `$x` for a private `_x`; L the alias's actual). A mismatched file therefore
+  gets both errors, like Bazel. The same check runs for `allow_files=True` on
+  an `allow_empty=False` list or `allow_single_file=True` (`expected any
+  files`).
+* T is `FileTypeSet.toString`, `StringUtil.joinEnglishList` of the entries in
+  declaration order (`util/FileTypeSet.java:143-146`,
+  `util/StringUtil.java:35-73`): `.go`, `.go or .s`, `.go, .s, or .h`,
+  `nothing` for `[]`.
+* Rule prerequisites are not filtered: `ctx.files` is all files to build
+  (`PrerequisiteArtifacts.nestedSet`, `PrerequisiteArtifacts.java:64-72`) and
+  `ctx.file` the single file (`PrerequisitesCollection.java:253-271`).
+* Prerequisite errors follow `RuleContext.Builder.build`
+  (`RuleContext.java:1491-1503`): after the prerequisites are analyzed and
+  before the implementation runs, every prerequisite of every attribute is
+  validated in attribute declaration order, then prerequisite order
+  (`createTargetMap`, `:1708-1740`): missing mandatory providers
+  (`validateRuleDependency`), the file checks above, then a package group
+  outside `visibility`, whose message carries its own prefix
+  (`CommonPrerequisiteValidator.java:48-59, 343-378`), so Bazel prints `LOC:
+  in srcs attribute of K rule L: in srcs attribute of K rule L: package group
+  '//:pg' is misplaced here (they are only allowed in the visibility
+  attribute)` (the inner name is the native one, `$x`). Then
+  `validateExtraPrerequisites`: empty `allow_empty=False` attributes, then
+  duplicate labels (`:2102-2113`). All are attribute errors at the rule's
+  location, all reported; identical events (same location and text, e.g. a
+  file and an alias to it) are reported once, as a configured target's
+  events form a NestedSet (`skyframe/SkyFunctionEnvironment.java:318-321`,
+  `collect/nestedset/NestedSetBuilder.java:43, 86`). Visibility,
+  `config_setting` visibility and testonly checks still fail earlier, on
+  their own. `label_keyed_string_dict` values stay an explicit gap.
+* A source directory is an input-file target like any file, matched by name
+  (`godir.go` passes `[".go"]`, `dir` gets the error pair). Using one as an
+  action input or requested output (Bazel tracks source directories
+  unsoundly) fails explicitly: `source directory 'L' as an action input is
+  not supported by the native profile`; likewise as a requested target's
+  runfile, which is built with it (N23a hidden top-level runfiles): `T:
+  source directory 'L' in its runfiles is not supported by the native
+  profile`.
+
 ## Accepted but not analyzed (explicit analysis failure when used)
 
 `rule(executable=True)`, `rule(test=True)` and `attr.label(executable=True,
@@ -152,8 +217,7 @@ A target fails analysis with the message above if it uses any of these:
   chosen `select()` branch, docs/CONFIGURATION.md) is non-empty:
   `cfg` other than target, exec and a Starlark `transition()` (N18c:
   `config.none()`, `analysis_test_transition`),
-  non-empty `aspects`, extension-list `allow_files`/`allow_single_file`,
-  `allow_rules`, non-empty `flags`, `skip_validations=True`, any
+  non-empty `aspects`, `allow_rules`, non-empty `flags`, `skip_validations=True`, any
   `label_keyed_string_dict` value;
 * always: a late-bound (`configuration_field`) default whose field is not
   resolved natively (resolved fields are ordinary values, docs/SUBRULES.md);

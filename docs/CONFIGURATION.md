@@ -837,7 +837,10 @@ the end of each alias chain must be a rule, else `LOC: in A attribute of K rule
 L: KIND 'F' is misplaced here (expected no files)` (`source file` /
 `generated file`, with the alias description), or `rule 'F' does not exist`
 (`target` when the name has a `.`) for a missing input file
-(`RuleContext.java:1819-1880`), all attribute errors reported.
+(`RuleContext.java:1819-1880`), all attribute errors reported. Extension-list
+`allow_files` checks file prerequisites the same way; for Starlark rules these
+errors are reported with every other prerequisite error, after the
+prerequisites are analyzed (docs/LOAD_DECLARATIONS.md).
 
 **Cycles** use `AbstractLabelCycleReporter.maybeReportCycle`
 (`skyframe/AbstractLabelCycleReporter.java:81-170`): `LOC: in KIND rule L:

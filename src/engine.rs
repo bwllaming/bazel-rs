@@ -652,6 +652,11 @@ pub struct Engine {
     /// forces the parent's execution platform, the host platform
     /// (ToolchainContextUtil.java:136-141; docs/TOOLCHAINS.md).
     toolchain_implementations: BTreeSet<ConfiguredTargetKey>,
+    /// Duplicate-label attribute errors of Starlark rules, reported with
+    /// their other prerequisite errors (Self::starlark_prerequisite_errors).
+    deferred_duplicates: BTreeMap<ConfiguredTargetKey, Vec<String>>,
+    /// Source directories used as file targets (path -> label).
+    source_directories: BTreeMap<PathBuf, Label>,
 }
 
 impl Engine {
@@ -685,6 +690,8 @@ impl Engine {
             requested_trimmed_root: None,
             toolchain_contexts: BTreeMap::new(),
             toolchain_implementations: BTreeSet::new(),
+            deferred_duplicates: BTreeMap::new(),
+            source_directories: BTreeMap::new(),
         }
     }
 
@@ -901,6 +908,13 @@ impl Engine {
                     return Ok(Target::Source(missing));
                 }
             }
+        }
+        // A source directory is an input file target too, matched by name
+        // like any file (Package.java:893-920, RuleContext.java:1865); only
+        // its use as an action input or requested output is not modelled.
+        if path.is_dir() {
+            self.source_directories.insert(path.clone(), label.clone());
+            return Ok(Target::Source(path));
         }
         if !path.is_file() {
             return Err(format!("source is not a regular file: {label}"));
@@ -1663,8 +1677,22 @@ impl Engine {
                 self.analyze(&implementation, config, active, configured, plan)?;
             }
         }
-        self.starlark_file_type_errors(&rule, config, exec_config, &attribute_configs, configured)?;
-        self.package_metadata_file_errors(&rule, configured)?;
+        // Starlark rules: prerequisite errors need the analyzed prerequisites'
+        // files and providers, so they are reported before the implementation
+        // runs (Self::starlark_prerequisite_errors).
+        // package_metadata (no-config edges): native rules here; a Starlark
+        // rule's are part of its prerequisite pass, as a built-in attribute
+        // before its own attributes.
+        if rule.custom.is_none() {
+            let errors = self.package_metadata_errors(&rule, configured)?;
+            if !errors.is_empty() {
+                return Err(errors
+                    .into_iter()
+                    .map(|error| located(rule.location.as_deref(), error))
+                    .collect::<Vec<_>>()
+                    .join("\n"));
+            }
+        }
         if !attribute_configs.is_empty() {
             self.edge_configs.insert(key.clone(), attribute_configs);
         }
@@ -1678,7 +1706,10 @@ impl Engine {
         // RuleContext.Builder.validateExtraPrerequisites first checks resolved
         // label lists for duplicates (analysis/RuleContext.java:2110-2113,
         // 1553-1568), attribute errors at the rule's location.
-        if !duplicate_errors.is_empty() {
+        if rule.custom.is_some() {
+            self.deferred_duplicates
+                .insert(key.clone(), duplicate_errors.clone());
+        } else if !duplicate_errors.is_empty() {
             return Err(duplicate_errors
                 .iter()
                 .map(|error| located(rule.location.as_deref(), error.clone()))
@@ -2478,66 +2509,135 @@ impl Engine {
 
     /// `package_metadata` allows no files (`allowedFileTypes(FileTypeSet.NO_FILE)`,
     /// analysis/BaseRuleClasses.java:291-297): every file prerequisite is an
-    /// attribute error, like [`Self::starlark_file_type_errors`], all
-    /// reported at the rule's location. The edges are analyzed in the
-    /// no-config configuration.
-    fn package_metadata_file_errors(
+    /// attribute error `in package_metadata attribute of KIND rule L: ...`
+    /// (unlocated; the caller reports them at the rule's location). The
+    /// edges are analyzed in the no-config configuration.
+    fn package_metadata_errors(
         &mut self,
         rule: &Rule,
         configured: &ConfiguredNodes,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<String>, String> {
+        let mut errors = Vec::new();
         if rule.package_metadata.is_empty() {
-            return Ok(());
+            return Ok(errors);
         }
         let no_config = self.configurations.intern_no_config();
         let shown = crate::rule_declarations::canonical_form(&rule.label);
-        let mut errors = Vec::new();
         for text in &rule.package_metadata {
             let dependency = self.resolve_rule_src(rule, text)?;
             let (chain, actual) = self.alias_chain(configured, no_config, &dependency);
             if let Some(error) = self.no_files_error(&chain, &actual)? {
-                errors.push(located(
-                    rule.location.as_deref(),
-                    format!(
-                        "in package_metadata attribute of {} rule {shown}: {error}",
-                        rule.rule_class_name()
-                    ),
+                errors.push(format!(
+                    "in package_metadata attribute of {} rule {shown}: {error}",
+                    rule.rule_class_name()
                 ));
             }
         }
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors.join("\n"))
-        }
+        Ok(errors)
     }
 
-    /// Starlark `attr.label`/`attr.label_list` without `allow_files` allow no
-    /// files and check labels strictly (StarlarkAttrModule.java:431-445,
-    /// Attribute.java:2349): every file prerequisite is an attribute error
-    /// `in A attribute of KIND rule L: ...`, all reported at the rule's
-    /// location, in attribute order.
-    fn starlark_file_type_errors(
+    /// RuleContext.Builder.validateDirectPrerequisite for a file at the end
+    /// of the alias chain of an attribute with an extension list
+    /// (analysis/RuleContext.java:2165-2172): validateDirectPrerequisiteType
+    /// (:1845-1886) tests the label name, so a mismatch is `target 'L' does
+    /// not exist` for a missing input file (the set is never NO_FILE) or `KIND
+    /// 'L' is misplaced here (expected TYPES)`; then
+    /// validateDirectPrerequisiteFileTypes (:1945-1994) tests the file's
+    /// own name (FileConfiguredTarget.java:94-96). Rules are checked against
+    /// their files to build at analysis (crate::analysis).
+    fn file_type_errors(
+        &mut self,
+        chain: &[Label],
+        actual: &Label,
+        spec: &crate::custom_rule::AttrSpec,
+        name: &str,
+        rule_class: &str,
+    ) -> Result<Vec<String>, String> {
+        let allowed = spec.allowed_file_types();
+        let shown = crate::rule_declarations::canonical_form(actual);
+        let kind = match self.target(actual)? {
+            Target::Rule(_) => return Ok(Vec::new()),
+            Target::Source(path) => {
+                if !allowed.matches(&actual.name) && std::fs::symlink_metadata(&path).is_err() {
+                    None
+                } else {
+                    Some("source file")
+                }
+            }
+            Target::Output(..) => Some("generated file"),
+        };
+        let mut errors = Vec::new();
+        if !allowed.matches(&actual.name) {
+            errors.push(match kind {
+                Some(kind) => format!(
+                    "{} is misplaced here (expected {allowed})",
+                    describe_with_aliases(chain, actual, kind)
+                ),
+                None => format!("target '{shown}' does not exist"),
+            });
+        }
+        let file_name = actual.name.rsplit('/').next().unwrap_or(&actual.name);
+        errors.extend(spec.produced_file_type_error(
+            name,
+            rule_class,
+            &shown,
+            std::iter::once(file_name),
+        ));
+        Ok(errors)
+    }
+
+    /// RuleContext.Builder.build for a Starlark rule, after its prerequisites
+    /// are analyzed and before the implementation runs
+    /// (analysis/RuleContext.java:1491-1503): createTargetMap validates every
+    /// prerequisite of every attribute, in attribute declaration order then
+    /// prerequisite order (validateDirectPrerequisite, :1708-1740,
+    /// 2165-2172), then validateExtraPrerequisites reports empty attributes
+    /// and duplicate labels (:2102-2113, 1532-1568). Every error is an
+    /// attribute error `in A attribute of KIND rule L: ...` at the rule's
+    /// location, all reported; identical events are reported once (a
+    /// configured target's events are a NestedSet, whose builder keeps one
+    /// of equal elements: skyframe/SkyFunctionEnvironment.java:318-321,
+    /// collect/nestedset/NestedSetBuilder.java:43, 86).
+    ///
+    /// Without `allow_files` a Starlark label attribute allows no files and
+    /// checks labels strictly (StarlarkAttrModule.java:431-445,
+    /// Attribute.java:2349); extension lists check file prerequisites by
+    /// name (file_type_errors); other prerequisites are checked against their
+    /// providers and files to build (analysis::prerequisite_errors).
+    fn starlark_prerequisite_errors(
         &mut self,
         rule: &Rule,
-        config: ConfigId,
+        key: &ConfiguredTargetKey,
         exec_config: ConfigId,
-        attribute_configs: &BTreeMap<String, ConfigId>,
         configured: &ConfiguredNodes,
+        targets: &BTreeMap<String, DependencyTarget>,
     ) -> Result<(), String> {
         let Some(custom) = &rule.custom else {
             return Ok(());
         };
+        let config = key.config;
         let shown = crate::rule_declarations::canonical_form(&rule.label);
-        let mut errors = Vec::new();
+        let consumer = analysis::Consumer {
+            rule_class: rule.rule_class_name(),
+            label: &shown,
+        };
+        let prefix = |name: &str, spec: &crate::custom_rule::AttrSpec| {
+            format!(
+                "in {} attribute of {} rule {shown}: ",
+                crate::custom_rule::attribute_message_name(name, spec),
+                rule.rule_class_name()
+            )
+        };
+        // The built-in `package_metadata` attribute precedes the rule's own
+        // attributes in the rule class (BaseRuleClasses.java:291-297); its
+        // no-config prerequisites are file-checked first (N28c).
+        let mut errors = self.package_metadata_errors(rule, configured)?;
         for name in &custom.declaration.attr_order {
             let (Some(spec), Some(value)) = (custom.schema.get(name), custom.attrs.get(name))
             else {
                 continue;
             };
-            if spec.allow_files || spec.allow_single_file || spec.declaration.file_types.is_some() {
-                continue;
-            }
+            let allowed = spec.allowed_file_types();
             let labels = match value {
                 crate::custom_rule::AttrValue::Label(Some(label)) => vec![label.clone()],
                 crate::custom_rule::AttrValue::Labels(labels) => labels.clone(),
@@ -2550,35 +2650,85 @@ impl Engine {
                     .collect(),
                 _ => continue,
             };
+            // No prerequisites, nothing to validate (and no edge, so a
+            // transitioned attribute has no configuration).
+            if labels.is_empty() {
+                continue;
+            }
+            // The attribute's edge configuration, as the build loop maps the
+            // dependency edges (EdgeCfg): the exec configuration, the
+            // attribute's Starlark-transition configuration (N18c,
+            // Self::edge_configs) or the target's; the dependency map key
+            // follows the same edge (analysis::attribute_dependency_key).
             let edge_config = match &spec.declaration.cfg {
-                crate::rule_declarations::Cfg::Exec(group)
-                    if group
-                        .as_deref()
-                        .is_none_or(|group| group == "default-exec-group") =>
-                {
-                    exec_config
-                }
-                _ => attribute_configs.get(name).copied().unwrap_or(config),
+                crate::rule_declarations::Cfg::Exec(_) => exec_config,
+                crate::rule_declarations::Cfg::Starlark {
+                    analysis_test: false,
+                    ..
+                } => self
+                    .edge_configs
+                    .get(key)
+                    .and_then(|configs| configs.get(name))
+                    .copied()
+                    .ok_or_else(|| {
+                        format!(
+                            "internal error: no transitioned configuration for {shown} attribute {name}"
+                        )
+                    })?,
+                _ => config,
             };
             for text in labels {
                 let dependency = self.resolve_rule_src(rule, &text)?;
                 let (chain, actual) = self.alias_chain(configured, edge_config, &dependency);
-                if let Some(error) = self.no_files_error(&chain, &actual)? {
-                    errors.push(located(
-                        rule.location.as_deref(),
-                        format!(
-                            "in {} attribute of {} rule {shown}: {error}",
-                            crate::custom_rule::attribute_message_name(name, spec),
-                            rule.rule_class_name()
-                        ),
-                    ));
+                let found = match self.target(&actual)? {
+                    Target::Rule(_) => {
+                        // Every prerequisite was analyzed before this point;
+                        // a missing entry must never skip validation.
+                        let map_key =
+                            analysis::attribute_dependency_key(&dependency.to_string(), name, spec);
+                        let target = targets.get(&map_key).ok_or_else(|| {
+                            format!(
+                                "internal error: prerequisite {map_key} of {shown} (attribute {name}) has no analyzed dependency entry"
+                            )
+                        })?;
+                        analysis::prerequisite_errors(name, spec, target, consumer)
+                    }
+                    _ => match allowed {
+                        crate::custom_rule::AllowedFileTypes::None => {
+                            self.no_files_error(&chain, &actual)?.into_iter().collect()
+                        }
+                        // A file is its single file to build, of any type.
+                        crate::custom_rule::AllowedFileTypes::Any => Vec::new(),
+                        crate::custom_rule::AllowedFileTypes::Extensions(_) => self
+                            .file_type_errors(
+                                &chain,
+                                &actual,
+                                spec,
+                                name,
+                                rule.rule_class_name(),
+                            )?,
+                    },
+                };
+                for error in found {
+                    errors.push(format!("{}{error}", prefix(name, spec)));
                 }
             }
         }
+        errors.extend(analysis::empty_attribute_errors(rule, custom));
+        // Recorded by the target's first analysis pass (Self::analyze).
+        errors.extend(self.deferred_duplicates.remove(key).ok_or_else(|| {
+            format!("internal error: {shown} has no recorded duplicate-label check")
+        })?);
+        let mut seen = BTreeSet::new();
+        errors.retain(|error| seen.insert(error.clone()));
         if errors.is_empty() {
             Ok(())
         } else {
-            Err(errors.join("\n"))
+            Err(errors
+                .into_iter()
+                .map(|error| located(rule.location.as_deref(), error))
+                .collect::<Vec<_>>()
+                .join("\n"))
         }
     }
 
@@ -4388,6 +4538,7 @@ impl Engine {
         self.registered_toolchains.clear();
         self.toolchain_cycle_reports.clear();
         self.exec_configurations.clear();
+        self.deferred_duplicates.clear();
         self.toolchain_contexts.clear();
         self.toolchain_implementations.clear();
         self.edge_configs.clear();
@@ -4645,6 +4796,13 @@ impl Engine {
                         },
                     );
                 }
+                self.starlark_prerequisite_errors(
+                    rule,
+                    &key,
+                    exec_config,
+                    &configured,
+                    &dependency_targets,
+                )?;
                 // ctx.target_platform_has_constraint: a toolchain-resolving
                 // rule sees its target platform; a deferred default host
                 // platform is resolved only when the implementation asks,
@@ -5099,6 +5257,53 @@ impl Engine {
                 .filter(|_| std::fs::symlink_metadata(real).is_err())
                 .map(crate::rule_declarations::canonical_form)
         };
+        // Bazel accepts source directories as inputs with unsound change
+        // tracking; the native executor does not plant or digest them.
+        let directories = self.source_directories.clone();
+        let directory = |real: &Path| {
+            directories
+                .get(real)
+                .filter(|_| real.is_dir())
+                .map(crate::rule_declarations::canonical_form)
+        };
+        let mut unsupported = Vec::new();
+        for (key, artifact) in &requested {
+            if artifact.producer.is_none()
+                && let Some(label) = directory(&artifact.real)
+            {
+                unsupported.push(format!(
+                    "{}: source directory '{label}' as a requested output is not supported by the native profile",
+                    crate::rule_declarations::canonical_form(&key.label)
+                ));
+            }
+        }
+        // N23a: a requested target's default runfiles are built (staged)
+        // with it (OutputGroupInfo.HIDDEN_TOP_LEVEL); a source directory
+        // among them is the same unmodelled input.
+        for (key, artifact) in &hidden {
+            if artifact.producer.is_none()
+                && let Some(label) = directory(&artifact.real)
+            {
+                unsupported.push(format!(
+                    "{}: source directory '{label}' in its runfiles is not supported by the native profile",
+                    crate::rule_declarations::canonical_form(&key.label)
+                ));
+            }
+        }
+        for node in &nodes {
+            for real in source_inputs.get(&node.action.id).into_iter().flatten() {
+                if let Some(label) = directory(real) {
+                    unsupported.push(format!(
+                        "{}: source directory '{label}' as an action input is not supported by the native profile",
+                        node.action.id
+                    ));
+                }
+            }
+        }
+        if !unsupported.is_empty() {
+            unsupported.dedup();
+            return Err(unsupported.join("\n"));
+        }
         let mut errors = Vec::new();
         // Requested targets: `LOC: TARGET: missing input file 'L'` lines, then
         // `LOC: N input file(s) do not exist` (CompletionFunction).

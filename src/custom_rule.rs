@@ -97,7 +97,8 @@ pub struct AllowedValue {
 /// See StarlarkAttrModule.createAttribute (StarlarkAttrModule.java:317-513).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Allocative, serde::Serialize)]
 pub struct AttrDeclaration {
-    /// `allow_files`/`allow_single_file` given as a list of file extensions.
+    /// `allow_files`/`allow_single_file` given as a list of file extensions
+    /// (AllowedFileTypes::Extensions, validated at analysis).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_types: Option<Vec<String>>,
     #[serde(skip_serializing_if = "crate::rule_declarations::Cfg::is_target")]
@@ -243,12 +244,8 @@ impl AttrDeclaration {
                 "attribute '{name}' late-bound default (configuration_field{field})"
             ));
         }
-        if let Some(types) = &self.file_types {
-            features.push(format!(
-                "attribute '{name}' allowed file types [{}]",
-                types.join(", ")
-            ));
-        }
+        // Extension-list allow_files/allow_single_file are validated at
+        // analysis (AllowedFileTypes, crate::engine, crate::analysis).
         if let Some(rules) = &self.allow_rules {
             features.push(format!(
                 "attribute '{name}' allow_rules=[{}]",
@@ -1677,6 +1674,108 @@ impl RuleDeclaration {
     }
 }
 
+/// Attribute.getAllowedFileTypesPredicate of a Starlark dependency attribute
+/// (packages/Attribute.java:2175): StarlarkAttrModule.setAllowedFileTypes
+/// (analysis/starlark/StarlarkAttrModule.java:127-140, 431-445) makes
+/// `True` FileTypeSet.ANY_FILE, `False`/unset NO_FILE, and a list
+/// `allowedFileTypes(FileType.of(list))`: a one-FileType set
+/// (Attribute.java:866-868, FileTypeSet.java:89-95), never NO_FILE, even when
+/// the list is empty.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AllowedFileTypes<'a> {
+    None,
+    Any,
+    Extensions(&'a [String]),
+}
+
+impl AllowedFileTypes<'_> {
+    /// FileTypeSet.matches with FileType.hasAnyExtension
+    /// (util/FileTypeSet.java:118-126, util/FileType.java:109-133): a plain
+    /// case-sensitive suffix test off Windows, so entries need no leading dot
+    /// and may be exact names or multi-dot suffixes (`.tar.gz`); `""` matches
+    /// every name.
+    pub(crate) fn matches(&self, name: &str) -> bool {
+        match self {
+            Self::None => false,
+            Self::Any => true,
+            Self::Extensions(types) => types.iter().any(|suffix| name.ends_with(suffix.as_str())),
+        }
+    }
+}
+
+/// FileTypeSet.toString (util/FileTypeSet.java:63-67, 47-51, 143-146):
+/// `no files`, `any files`, or StringUtil.joinEnglishList of the extensions
+/// in declaration order (util/StringUtil.java:35-73: `a`, `a or b`,
+/// `a, b, or c`; `nothing` when empty).
+impl std::fmt::Display for AllowedFileTypes<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let types = match self {
+            Self::None => return f.write_str("no files"),
+            Self::Any => return f.write_str("any files"),
+            Self::Extensions(types) => types,
+        };
+        // joinEnglishList tests the buffer, not the index, for separators.
+        let mut joined = String::new();
+        for (index, choice) in types.iter().enumerate() {
+            if !joined.is_empty() {
+                let last = index + 1 == types.len();
+                if !last || index >= 2 {
+                    joined.push(',');
+                }
+                if last {
+                    joined.push_str(" or");
+                }
+                joined.push(' ');
+            }
+            joined.push_str(choice);
+        }
+        f.write_str(if joined.is_empty() {
+            "nothing"
+        } else {
+            &joined
+        })
+    }
+}
+
+impl AttrSpec {
+    /// The attribute's allowed file types (AllowedFileTypes).
+    pub(crate) fn allowed_file_types(&self) -> AllowedFileTypes<'_> {
+        match &self.declaration.file_types {
+            Some(types) => AllowedFileTypes::Extensions(types),
+            None if self.allow_files || self.allow_single_file => AllowedFileTypes::Any,
+            None => AllowedFileTypes::None,
+        }
+    }
+
+    /// RuleContext.Builder.validateDirectPrerequisiteFileTypes
+    /// (analysis/RuleContext.java:1945-1994) after its single-artifact check:
+    /// unless NO_FILE (or ANY_FILE on a list that may be empty), one of the
+    /// prerequisite's files to build must match, by file name: `'L' does not
+    /// produce any RULE ATTR files (expected TYPES)`, with Bazel's native
+    /// attribute name. There are no tree artifacts natively.
+    pub(crate) fn produced_file_type_error<'f>(
+        &self,
+        name: &str,
+        rule_class: &str,
+        label: &str,
+        mut file_names: impl Iterator<Item = &'f str>,
+    ) -> Option<String> {
+        let allowed = self.allowed_file_types();
+        let checked = match allowed {
+            AllowedFileTypes::None => false,
+            AllowedFileTypes::Any => self.non_empty || self.allow_single_file,
+            AllowedFileTypes::Extensions(_) => true,
+        };
+        if !checked || file_names.any(|file| allowed.matches(file)) {
+            return None;
+        }
+        Some(format!(
+            "'{label}' does not produce any {rule_class} {} files (expected {allowed})",
+            native_attribute_name(name, self.declaration.late_bound)
+        ))
+    }
+}
+
 /// Argument provenance during rule instantiation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Origin {
@@ -1687,7 +1786,7 @@ enum Origin {
 /// Native name of a Starlark attribute (AttributeValueSource.convertToNativeName,
 /// packages/AttributeValueSource.java:62-70): `_x` becomes `$x`, or `:x` for
 /// late-bound (`configuration_field`) defaults.
-fn native_attribute_name(name: &str, late_bound: bool) -> String {
+pub(crate) fn native_attribute_name(name: &str, late_bound: bool) -> String {
     match name.strip_prefix('_') {
         Some(rest) if late_bound => format!(":{rest}"),
         Some(rest) => format!("${rest}"),
@@ -3928,6 +4027,44 @@ mod tests {
     use super::*;
     use starlark::environment::{FrozenModule, Module};
     use starlark::syntax::{AstModule, Dialect};
+
+    #[test]
+    fn allowed_file_types_match_suffixes_and_join_english_lists() {
+        let types = |list: &[&str]| {
+            list.iter()
+                .map(|text| (*text).to_owned())
+                .collect::<Vec<_>>()
+        };
+        let go = types(&[".go", ".s"]);
+        let go = AllowedFileTypes::Extensions(&go);
+        // FileType.hasExtension off Windows: case-sensitive String.endsWith.
+        assert!(go.matches("a.go") && go.matches("sub/b.s") && go.matches(".go"));
+        assert!(!go.matches("a.GO") && !go.matches("a.go.txt") && !go.matches("a.gox"));
+        let odd = types(&["tar.gz", "BUILD", "o"]);
+        let odd = AllowedFileTypes::Extensions(&odd);
+        // No leading dot needed: exact names and multi-dot suffixes match too.
+        assert!(odd.matches("x.tar.gz") && odd.matches("BUILD") && odd.matches("foo"));
+        assert!(!odd.matches("x.gz"));
+        let empty: Vec<String> = Vec::new();
+        assert!(!AllowedFileTypes::Extensions(&empty).matches("a.go"));
+        let blank = types(&[""]);
+        assert!(AllowedFileTypes::Extensions(&blank).matches("anything"));
+        assert!(AllowedFileTypes::Any.matches("x") && !AllowedFileTypes::None.matches("x"));
+        // FileTypeSet.toString / StringUtil.joinEnglishList (oxford comma).
+        for (list, shown) in [
+            (&[][..], "nothing"),
+            (&[".go"][..], ".go"),
+            (&[".go", ".s"][..], ".go or .s"),
+            (&[".go", ".s", ".h"][..], ".go, .s, or .h"),
+            (&[".go", ".s", ".h", ".c"][..], ".go, .s, .h, or .c"),
+            (&[".s", ".go", ".s"][..], ".s, .go, or .s"),
+        ] {
+            let list = types(list);
+            assert_eq!(AllowedFileTypes::Extensions(&list).to_string(), shown);
+        }
+        assert_eq!(AllowedFileTypes::Any.to_string(), "any files");
+        assert_eq!(AllowedFileTypes::None.to_string(), "no files");
+    }
 
     fn provider_extension(label: &str, source: &str) -> anyhow::Result<FrozenModule> {
         let globals = GlobalsBuilder::standard()

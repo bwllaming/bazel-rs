@@ -73,7 +73,8 @@ or `allow_single_file`. The types are `BuildType.LABEL_DICT_UNARY`
   `analysis/PrerequisiteArtifacts.java:64-72`). There is no `ctx.file`
   entry (no `allow_single_file`). Prerequisites are validated like
   `attr.label_list` ones: `allow_files` (files without it are
-  `source file '//:x' is misplaced here (expected no files)`), `providers`,
+  `source file '//:x' is misplaced here (expected no files)`; extension
+  lists filter by name), `providers`,
   and `allow_empty=False` (`attribute must be non empty`,
   `RuleContext.checkAttributesNonEmpty`, `:1532-1550`, applies to every map;
   every empty attribute is reported, in attribute order).
@@ -82,8 +83,9 @@ or `allow_single_file`. The types are `BuildType.LABEL_DICT_UNARY`
   `StarlarkAttributesCollection.java:300-390`); mutation fails with Bazel's
   `trying to mutate a frozen dict value` / `trying to mutate a frozen list
   value` (vendored message, docs/STARLARK_VENDOR.md).
-  `cfg`, `aspects`, `allow_rules`, `flags`, extension-list `allow_files` and
-  `skip_validations` keep the existing explicit unanalyzed-feature gate.
+  `cfg`, `aspects`, `allow_rules`, `flags` and `skip_validations` keep the
+  existing explicit unanalyzed-feature gate; extension-list `allow_files` is
+  validated (docs/LOAD_DECLARATIONS.md, "Extension-list `allow_files`").
 * Repository rules and module-extension tags accept both kinds (Bazel does not
   restrict repository attribute types, `bazel/repository/starlark/StarlarkRepositoryModule.java:80-91`,
   `:242-256`). Strings bind with the caller's repository mapping; genuine

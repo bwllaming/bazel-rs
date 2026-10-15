@@ -583,9 +583,16 @@ r(name = "empty")
     );
     let stderr = f.rejected(
         &f.run("build", &["//both:ne_unset"]),
-        "in m attribute of nonempty rule //both:ne_unset: attribute must be non empty\nin l attribute of nonempty rule //both:ne_unset: attribute must be non empty",
+        "/both/BUILD.bazel:2:9: in m attribute of nonempty rule //both:ne_unset: attribute must be non empty\n",
     );
-    assert!(stderr.contains("in l attribute"), "{stderr}");
+    // Attribute errors at the rule's location (genuine Bazel 9.3: both
+    // lines at 2:9, tests/fixtures/attr_dicts_computed_defaults/reference_receipt.json).
+    assert!(
+        stderr.ends_with(
+            "/both/BUILD.bazel:2:9: in l attribute of nonempty rule //both:ne_unset: attribute must be non empty\n"
+        ),
+        "{stderr}"
+    );
 }
 
 #[test]
