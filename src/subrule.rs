@@ -850,6 +850,8 @@ r = rule(implementation=impl, subrules=[S])
         drop(frozen);
         let context = Context {
             label: crate::label::Label::parse_canonical("//:target").unwrap(),
+            output_root: crate::label::GENERATED_EXEC_ROOT.into(),
+            action_owner: "//:target".into(),
             dependency_files: BTreeSet::new(),
             declared: RefCell::new(Vec::new()),
             actions: RefCell::new(Vec::new()),
@@ -992,6 +994,8 @@ S = subrule(implementation=callback)
         drop(frozen);
         let context = Context {
             label: crate::label::Label::parse_canonical("//:target").unwrap(),
+            output_root: crate::label::GENERATED_EXEC_ROOT.into(),
+            action_owner: "//:target".into(),
             dependency_files: BTreeSet::new(),
             declared: RefCell::new(Vec::new()),
             actions: RefCell::new(Vec::new()),

@@ -1,6 +1,8 @@
 //! A deliberately small native analysis/execution pipeline, not Skyframe.
 use crate::action::{self, Action};
 use crate::analysis::{self, DependencyTarget};
+use crate::config_registry::Configurations;
+pub use crate::config_registry::ConfiguredTargetKey;
 use crate::configuration::{ConfigId, Configuration, LabelParser, SettingValue};
 use crate::configured_attributes::{self, ConfigMatching};
 use crate::ignored::IgnoredSubdirectories;
@@ -33,12 +35,13 @@ struct Artifact {
 
 impl Artifact {
     fn file(&self) -> File {
+        // A generated file is relative to its configuration's output root.
+        let exec = self.exec.to_string_lossy();
         let relative = self
-            .exec
-            .strip_prefix(crate::label::generated_exec_root())
-            .ok()
-            .filter(|_| self.producer.is_some())
-            .unwrap_or(&self.exec);
+            .producer
+            .as_ref()
+            .and_then(|_| crate::label::split_generated_root(&exec))
+            .map_or(self.exec.as_path(), |(_, relative)| Path::new(relative));
         // External short paths are metadata, never filesystem lookup paths.
         let short_path = if Label::parse_canonical(&self.owner)
             .is_ok_and(|label| !label.repository.is_empty())
@@ -60,6 +63,8 @@ impl Artifact {
 }
 
 type Locations = BTreeMap<String, Vec<PathBuf>>;
+/// Declared generated artifacts by configuration and execution path.
+type Declared = BTreeMap<(ConfigId, PathBuf), Artifact>;
 type ResolvedInputs = (Vec<Artifact>, Locations);
 
 #[derive(Clone)]
@@ -67,14 +72,6 @@ enum Target {
     Rule(Rule),
     Output(Rule, String),
     Source(PathBuf),
-}
-
-/// A target in a configuration (ConfiguredTargetKey). One configuration is
-/// analyzed per build; no transitions are modelled.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ConfiguredTargetKey {
-    pub label: Label,
-    pub config: ConfigId,
 }
 
 /// An analyzed rule target in its configuration.
@@ -441,6 +438,10 @@ fn describe_with_aliases(chain: &[Label], target: &Label, kind: &str) -> String 
 
 type ConfiguredNodes = BTreeMap<ConfiguredTargetKey, ConfiguredNode>;
 
+/// The analyzed rules of a build in analysis (postorder) order, each with
+/// the configuration it was analyzed in.
+type Plan = Vec<(ConfigId, Rule)>;
+
 #[derive(Debug, Default)]
 pub struct BuildSummary {
     pub outputs: Vec<(Label, PathBuf)>,
@@ -454,39 +455,41 @@ pub struct Engine {
     generated: BTreeMap<Label, (Label, String)>,
     group_nodes: BTreeMap<Label, Arc<GroupNode>>,
     group_budget: HostBudget,
-    /// The (single) configuration builds analyze targets in.
-    configuration: Configuration,
+    /// The configurations of the build: requested targets are analyzed in
+    /// the top-level one, and every dependency edge keeps its parent's
+    /// configuration (no transitions are modelled yet; docs/CONFIGURATION.md).
+    configurations: Configurations,
     /// Declared source files that do not exist (path -> label).
     missing_sources: BTreeMap<PathBuf, Label>,
     /// Warnings in emission order, without Bazel's `WARNING: ` prefix (added
     /// by the CLI): filtered target patterns and analysis warnings.
     warnings: Vec<String>,
-    /// PlatformValue per platform label of the current configuration
+    /// PlatformValue per platform label and configuration
     /// (PlatformFunction, analysis/platform/PlatformFunction.java:57-126).
-    platforms: BTreeMap<Label, Result<Arc<PlatformInfo>, PlatformError>>,
+    platforms: BTreeMap<ConfiguredTargetKey, Result<Arc<PlatformInfo>, PlatformError>>,
     /// Platforms being resolved (reentrancy guard).
-    resolving_platforms: Vec<Label>,
+    resolving_platforms: Vec<ConfiguredTargetKey>,
     /// Whether execution platform registrations were checked in this build.
     registrations_checked: bool,
     /// Rules analyzed while resolving a platform (no toolchain context).
-    empty_configuration_rules: BTreeSet<Label>,
-    /// RegisteredToolchainsValue of the configuration, computed when a rule
+    empty_configuration_rules: BTreeSet<ConfiguredTargetKey>,
+    /// RegisteredToolchainsValue per configuration, computed when a rule
     /// first requests a toolchain type
     /// (skyframe/toolchains/RegisteredToolchainsFunction.java:64-147).
-    registered_toolchains: Option<Result<Arc<RegisteredToolchains>, ResolutionError>>,
+    registered_toolchains: BTreeMap<ConfigId, Result<Arc<RegisteredToolchains>, ResolutionError>>,
     /// Reentrancy guard of [`Self::registered_toolchains`]: the registered
     /// toolchain target being analyzed.
-    computing_toolchains: Option<Label>,
+    computing_toolchains: Option<ConfiguredTargetKey>,
     /// The cycle report of a registered toolchain that needs toolchain
     /// resolution itself (Self::toolchain_cycle).
     toolchain_cycle_report: Option<String>,
     /// The resolved toolchain context of each toolchain-resolving rule of
     /// the build (UnloadedToolchainContext), read by the build loop.
-    toolchain_contexts: BTreeMap<Label, UnloadedToolchainContext>,
+    toolchain_contexts: BTreeMap<ConfiguredTargetKey, UnloadedToolchainContext>,
     /// Targets analyzed as toolchain implementations: their own resolution
     /// forces the parent's execution platform, the host platform
     /// (ToolchainContextUtil.java:136-141; docs/TOOLCHAINS.md).
-    toolchain_implementations: BTreeSet<Label>,
+    toolchain_implementations: BTreeSet<ConfiguredTargetKey>,
 }
 
 impl Engine {
@@ -501,14 +504,14 @@ impl Engine {
             generated: BTreeMap::new(),
             group_nodes: BTreeMap::new(),
             group_budget: HostBudget::default(),
-            configuration: Configuration::default(),
+            configurations: Configurations::default(),
             missing_sources: BTreeMap::new(),
             warnings: Vec::new(),
             platforms: BTreeMap::new(),
             resolving_platforms: Vec::new(),
             registrations_checked: false,
             empty_configuration_rules: BTreeSet::new(),
-            registered_toolchains: None,
+            registered_toolchains: BTreeMap::new(),
             computing_toolchains: None,
             toolchain_cycle_report: None,
             toolchain_contexts: BTreeMap::new(),
@@ -518,9 +521,9 @@ impl Engine {
 
     /// Analyze builds in `configuration` (default: the default configuration).
     pub fn set_configuration(&mut self, configuration: Configuration) {
-        self.configuration = configuration;
+        self.configurations = Configurations::new(configuration);
         self.platforms.clear();
-        self.registered_toolchains = None;
+        self.registered_toolchains.clear();
     }
 
     /// Drain the warnings reported so far (also after a failed build, as
@@ -1024,7 +1027,7 @@ impl Engine {
         )
     }
 
-    /// Analyze one target in the build configuration, in Bazel's per-target
+    /// Analyze one target in configuration `config`, in Bazel's per-target
     /// order (ConfiguredTargetFunction / PrerequisiteProducer): load-time gates
     /// and pre-dependency gaps, configuration conditions in the same
     /// configuration (ConfigConditionsProducer), attribute validation
@@ -1033,9 +1036,10 @@ impl Engine {
     fn analyze(
         &mut self,
         label: &Label,
-        active: &mut Vec<Label>,
+        config: ConfigId,
+        active: &mut Vec<ConfiguredTargetKey>,
         configured: &mut ConfiguredNodes,
-        plan: &mut Vec<Rule>,
+        plan: &mut Plan,
     ) -> Result<(), String> {
         let rule = match self.target(label)? {
             Target::Source(_) => {
@@ -1062,20 +1066,18 @@ impl Engine {
         {
             return Err(custom_gap_error(&rule, &custom.declaration.transition_gaps));
         }
-        let key = ConfiguredTargetKey {
-            label: rule.label.clone(),
-            config: self.configuration.id,
-        };
+        let key = ConfiguredTargetKey::new(rule.label.clone(), config);
         if configured.contains_key(&key) {
             return Ok(());
         }
-        if let Some(start) = active.iter().position(|label| *label == rule.label) {
+        if let Some(start) = active.iter().position(|active| *active == key) {
             return Err(self.cycle_error(&rule, &active[..start], &active[start..]));
         }
         if active.len() >= 256 {
             return Err("native prototype dependency depth limit (256) exceeded".into());
         }
-        active.push(rule.label.clone());
+        let configuration = self.configurations.get(config).clone();
+        active.push(key.clone());
         // constraint_setting and constraint_value are analyzed under
         // NoConfigTransition (rules/platform/ConstraintSettingRule.java:42,
         // ConstraintValueRule.java:41): select() in their configurable
@@ -1101,17 +1103,17 @@ impl Engine {
         // (ToolchainContextUtil.java:79-82: platformConfig == null).
         let in_empty_configuration = !self.resolving_platforms.is_empty();
         if in_empty_configuration {
-            self.empty_configuration_rules.insert(rule.label.clone());
+            self.empty_configuration_rules.insert(key.clone());
         }
         let uses_toolchains = uses_toolchain_resolution(&rule) && !in_empty_configuration;
         let mut target_platform = None;
-        if uses_toolchains && !self.default_target_platform() {
-            target_platform = Some(self.target_platform(configured, plan)?);
+        if uses_toolchains && !self.default_target_platform(config) {
+            target_platform = Some(self.target_platform(config, configured, plan)?);
         }
         // PrerequisiteProducer order (analysis/producers/PrerequisiteProducer.java):
         // select() conditions, then toolchain resolution, then dependency
         // resolution (attribute validation, dependencies), then the factory.
-        let ordered = self.config_conditions(&rule, active, configured, plan)?;
+        let ordered = self.config_conditions(&rule, config, active, configured, plan)?;
         if uses_toolchains {
             self.check_execution_platform_registrations()?;
         }
@@ -1135,7 +1137,7 @@ impl Engine {
         }
         // ToolchainResolutionFunction (skyframe/toolchains/ToolchainResolutionFunction.java:62-131).
         let toolchain_context = if uses_toolchains {
-            self.resolve_toolchains(&rule, active, configured, plan)?
+            self.resolve_toolchains(&rule, config, active, configured, plan)?
         } else {
             None
         };
@@ -1144,7 +1146,7 @@ impl Engine {
         let resolver = configured_attributes::Resolver {
             target: &rule.label,
             conditions: &conditions,
-            config_hash: self.configuration.id.to_string(),
+            config_hash: config.to_string(),
         };
         // DependencyResolutionHelpers.visitRule reports a validation failure
         // at the rule's location (analysis/DependencyResolutionHelpers.java:309-313).
@@ -1164,7 +1166,7 @@ impl Engine {
         // label_setting (rules/LabelBuildSettings.java:62-83).
         let build_setting = self.build_setting_info(&rule)?;
         if forwards(&rule) {
-            rule.srcs = vec![self.alias_actual(&rule, build_setting.as_ref())?];
+            rule.srcs = vec![self.alias_actual(&rule, &configuration, build_setting.as_ref())?];
         }
         // Late-bound attributes skip the visibility check
         // (CommonPrerequisiteValidator.java:159-163); rules that can have any
@@ -1221,13 +1223,13 @@ impl Engine {
                     &describe_with_aliases(&[], &dependency, "target"),
                     skip_testonly,
                 )?;
-                self.analyze(&dependency, active, configured, plan)?;
+                self.analyze(&dependency, config, active, configured, plan)?;
                 continue;
             }
             // The configured alias (its actual's label and kind) is needed to
             // describe and validate the edge (AliasProvider.describeTargetWithAliases).
-            self.analyze(&dependency, active, configured, plan)?;
-            let (chain, actual) = self.alias_chain(configured, &dependency);
+            self.analyze(&dependency, config, active, configured, plan)?;
+            let (chain, actual) = self.alias_chain(configured, config, &dependency);
             let description = describe_with_aliases(&chain, &actual, "target");
             if !visible {
                 let is_source = matches!(self.target(&actual)?, Target::Source(_));
@@ -1242,20 +1244,20 @@ impl Engine {
         if let Some(context) = &toolchain_context {
             for implementation in context.resolved_labels() {
                 self.toolchain_implementations
-                    .insert(implementation.clone());
+                    .insert(ConfiguredTargetKey::new(implementation.clone(), config));
                 self.target(&implementation)
                     .map_err(|error| self.missing_edge_error(&rule, &implementation, error))?;
-                self.analyze(&implementation, active, configured, plan)?;
+                self.analyze(&implementation, config, active, configured, plan)?;
             }
         }
-        self.starlark_file_type_errors(&rule, configured)?;
+        self.starlark_file_type_errors(&rule, config, configured)?;
         // config_setting flag_values/constraint_values and the platform rules'
         // label attributes: prerequisites analyzed, then validated
         // (RuleContext.Builder, analysis/RuleContext.java:1700-1745, 1845-1880, 2165-2172).
         let (flag_prerequisites, constraint_prerequisites) =
-            self.config_setting_prerequisites(&rule, active, configured, plan)?;
+            self.config_setting_prerequisites(&rule, config, active, configured, plan)?;
         let platform_prerequisites =
-            self.platform_rule_prerequisites(&rule, active, configured, plan)?;
+            self.platform_rule_prerequisites(&rule, config, active, configured, plan)?;
         // RuleContext.Builder.validateExtraPrerequisites first checks resolved
         // label lists for duplicates (analysis/RuleContext.java:2110-2113,
         // 1553-1568), attribute errors at the rule's location.
@@ -1276,7 +1278,7 @@ impl Engine {
         // config_setting without an alias description.
         for (condition, _) in &ordered {
             let dependency = self.resolve_rule_src(&rule, condition)?;
-            let (_, actual) = self.alias_chain(configured, &dependency);
+            let (_, actual) = self.alias_chain(configured, config, &dependency);
             if let Target::Rule(dep) = self.target(&actual)? {
                 let description = describe_with_aliases(&[], &actual, "target");
                 if !self.visible(
@@ -1305,12 +1307,12 @@ impl Engine {
                         &|text| repositories.parse(text, &context.repository, &context.package),
                     )
                 };
-                let mut result = run(&self.configuration, target_platform.as_deref());
+                let mut result = run(&configuration, target_platform.as_deref());
                 if result.as_ref().err().map(String::as_str)
                     == Some(crate::config_setting::NEEDS_TARGET_PLATFORM)
                 {
-                    let platform = self.target_platform(configured, plan)?;
-                    result = run(&self.configuration, Some(&platform));
+                    let platform = self.target_platform(config, configured, plan)?;
+                    result = run(&configuration, Some(&platform));
                 }
                 Some(result.map_err(|error| located_lines(rule.location.as_deref(), &error))?)
             }
@@ -1318,11 +1320,11 @@ impl Engine {
         };
         // ConstraintSetting/ConstraintValue/Platform.create (rules/platform/*.java).
         let (mut constraint_setting, mut constraint_value, mut platform) =
-            self.platform_rule_providers(&rule, &platform_prerequisites, configured)?;
+            self.platform_rule_providers(&rule, config, &platform_prerequisites, configured)?;
         // ToolchainType.create / Toolchain.create (rules/ToolchainType.java:40-52,
         // rules/platform/Toolchain.java:42-110).
         let (mut toolchain_type, mut declared_toolchain) =
-            self.toolchain_rule_providers(&rule, &platform_prerequisites, configured)?;
+            self.toolchain_rule_providers(&rule, config, &platform_prerequisites, configured)?;
         // AliasConfiguredTarget forwards the actual's providers; label_flag and
         // label_setting override BuildSettingProvider (LateBoundAlias.java:58-79).
         let mut actual = None;
@@ -1330,10 +1332,7 @@ impl Engine {
         if forwards(&rule) {
             let target = self.resolve_rule_src(&rule, &rule.srcs[0])?;
             let forwarded = configured
-                .get(&ConfiguredTargetKey {
-                    label: target.clone(),
-                    config: self.configuration.id,
-                })
+                .get(&ConfiguredTargetKey::new(target.clone(), config))
                 .cloned()
                 .unwrap_or_default();
             matching = forwarded.matching;
@@ -1349,11 +1348,11 @@ impl Engine {
         }
         // ctx.build_setting_value of a Starlark build setting.
         if let (Some(info), Some(custom)) = (&build_setting, rule.custom.as_mut()) {
-            custom.setting_value = Some(info.value(&self.configuration));
+            custom.setting_value = Some(info.value(&configuration));
         }
         active.pop();
         if let Some(context) = toolchain_context {
-            self.toolchain_contexts.insert(rule.label.clone(), context);
+            self.toolchain_contexts.insert(key.clone(), context);
         }
         configured.insert(
             key,
@@ -1368,7 +1367,7 @@ impl Engine {
                 declared_toolchain,
             },
         );
-        plan.push(rule);
+        plan.push((config, rule));
         Ok(())
     }
 
@@ -1419,27 +1418,26 @@ impl Engine {
     /// configuration is the full native ConfigId, not Bazel's BuildOptions
     /// checksum, and the single native configuration has no separate
     /// top-level key (docs/CONFIGURATION.md).
-    fn cycle_error(&self, head: &Rule, path: &[Label], cycle: &[Label]) -> String {
-        let key = |label: &Label| {
-            format!(
-                "{} ({})",
-                crate::rule_declarations::canonical_form(label),
-                self.configuration.id
-            )
-        };
+    fn cycle_error(
+        &self,
+        head: &Rule,
+        path: &[ConfiguredTargetKey],
+        cycle: &[ConfiguredTargetKey],
+    ) -> String {
+        let key = ConfiguredTargetKey::to_string;
         let mut message = String::from("cycle in dependency graph:");
-        for label in path {
+        for element in path {
             message.push_str("\n    ");
-            message.push_str(&key(label));
+            message.push_str(&key(element));
         }
         message.push_str("\n.-> ");
         message.push_str(&key(&cycle[0]));
         if cycle.len() == 1 {
             message.push_str(" [self-edge]\n`--");
         } else {
-            for label in &cycle[1..] {
+            for element in &cycle[1..] {
                 message.push_str("\n|   ");
-                message.push_str(&key(label));
+                message.push_str(&key(element));
             }
             message.push_str("\n`-- ");
             message.push_str(&key(&cycle[0]));
@@ -1456,14 +1454,16 @@ impl Engine {
 
     /// The alias chain from `label` (AliasProvider.getAliasChain) and its
     /// end (AliasConfiguredTarget.getLabel, rules/AliasConfiguredTarget.java:178-185).
-    fn alias_chain(&self, configured: &ConfiguredNodes, label: &Label) -> (Vec<Label>, Label) {
+    fn alias_chain(
+        &self,
+        configured: &ConfiguredNodes,
+        config: ConfigId,
+        label: &Label,
+    ) -> (Vec<Label>, Label) {
         let mut chain = Vec::new();
         let mut current = label.clone();
         while let Some(actual) = configured
-            .get(&ConfiguredTargetKey {
-                label: current.clone(),
-                config: self.configuration.id,
-            })
+            .get(&ConfiguredTargetKey::new(current.clone(), config))
             .and_then(|node| node.actual.clone())
         {
             if chain.contains(&current) {
@@ -1481,10 +1481,11 @@ impl Engine {
     fn alias_actual(
         &self,
         rule: &Rule,
+        configuration: &Configuration,
         build_setting: Option<&BuildSettingInfo>,
     ) -> Result<String, String> {
         if let Some(info) = build_setting {
-            return match info.value(&self.configuration) {
+            return match info.value(configuration) {
                 SettingValue::Label(label) => Ok(label.to_string()),
                 other => Err(format!(
                     "internal error: label build setting {} has value {other}",
@@ -1584,6 +1585,7 @@ impl Engine {
     fn starlark_file_type_errors(
         &mut self,
         rule: &Rule,
+        config: ConfigId,
         configured: &ConfiguredNodes,
     ) -> Result<(), String> {
         let Some(custom) = &rule.custom else {
@@ -1613,7 +1615,7 @@ impl Engine {
             };
             for text in labels {
                 let dependency = self.resolve_rule_src(rule, &text)?;
-                let (chain, actual) = self.alias_chain(configured, &dependency);
+                let (chain, actual) = self.alias_chain(configured, config, &dependency);
                 if let Some(error) = self.no_files_error(&chain, &actual)? {
                     errors.push(located(
                         rule.location.as_deref(),
@@ -1642,9 +1644,10 @@ impl Engine {
     fn config_setting_prerequisites(
         &mut self,
         rule: &Rule,
-        active: &mut Vec<Label>,
+        config: ConfigId,
+        active: &mut Vec<ConfiguredTargetKey>,
         configured: &mut ConfiguredNodes,
-        plan: &mut Vec<Rule>,
+        plan: &mut Plan,
     ) -> Result<
         (
             Vec<crate::config_setting::FlagPrerequisite>,
@@ -1664,14 +1667,14 @@ impl Engine {
             let dependency = self.resolve_rule_src(rule, &key)?;
             self.target(&dependency)
                 .map_err(|error| self.missing_edge_error(rule, &dependency, error))?;
-            self.analyze(&dependency, active, configured, plan)?;
+            self.analyze(&dependency, config, active, configured, plan)?;
             keys.push(("flag_values", dependency, Some(value)));
         }
         for text in native.labels("constraint_values") {
             let dependency = self.resolve_rule_src(rule, &text)?;
             self.target(&dependency)
                 .map_err(|error| self.missing_edge_error(rule, &dependency, error))?;
-            self.analyze(&dependency, active, configured, plan)?;
+            self.analyze(&dependency, config, active, configured, plan)?;
             keys.push(("constraint_values", dependency, None));
         }
         let shown = crate::rule_declarations::canonical_form(&rule.label);
@@ -1680,7 +1683,7 @@ impl Engine {
         let mut flags = Vec::new();
         let mut constraints = Vec::new();
         for (attribute, dependency, value) in keys {
-            let (chain, actual) = self.alias_chain(configured, &dependency);
+            let (chain, actual) = self.alias_chain(configured, config, &dependency);
             let is_source = matches!(self.target(&actual)?, Target::Source(_));
             if let Some(error) = self.no_files_error(&chain, &actual)? {
                 errors.push(format!(
@@ -1706,10 +1709,7 @@ impl Engine {
             if let Some(error) = self.prerequisite_error(rule, &actual, &description, false)? {
                 errors.push(error);
             }
-            let node = configured.get(&ConfiguredTargetKey {
-                label: dependency.clone(),
-                config: self.configuration.id,
-            });
+            let node = configured.get(&ConfiguredTargetKey::new(dependency.clone(), config));
             match value {
                 Some(value) => flags.push(crate::config_setting::FlagPrerequisite {
                     specified: dependency,
@@ -1741,15 +1741,16 @@ impl Engine {
     fn platform_rule_prerequisites(
         &mut self,
         rule: &Rule,
-        active: &mut Vec<Label>,
+        config: ConfigId,
+        active: &mut Vec<ConfiguredTargetKey>,
         configured: &mut ConfiguredNodes,
-        plan: &mut Vec<Rule>,
+        plan: &mut Plan,
     ) -> Result<Vec<Vec<Label>>, String> {
         let attributes = platform_prerequisite_attributes(rule);
         if attributes.is_empty() {
             return Ok(Vec::new());
         }
-        self.native_prerequisites(rule, &attributes, active, configured, plan)
+        self.native_prerequisites(rule, config, &attributes, active, configured, plan)
     }
 
     /// RuleContext.Builder.createTargetMap for native label attributes
@@ -1761,10 +1762,11 @@ impl Engine {
     fn native_prerequisites(
         &mut self,
         rule: &Rule,
+        config: ConfigId,
         attributes: &[PrerequisiteAttribute],
-        active: &mut Vec<Label>,
+        active: &mut Vec<ConfiguredTargetKey>,
         configured: &mut ConfiguredNodes,
-        plan: &mut Vec<Rule>,
+        plan: &mut Plan,
     ) -> Result<Vec<Vec<Label>>, String> {
         let mut resolved = Vec::new();
         for attribute in attributes {
@@ -1773,7 +1775,7 @@ impl Engine {
                 let dependency = self.resolve_rule_src(rule, text)?;
                 self.target(&dependency)
                     .map_err(|error| self.missing_edge_error(rule, &dependency, error))?;
-                self.analyze(&dependency, active, configured, plan)?;
+                self.analyze(&dependency, config, active, configured, plan)?;
                 labels.push(dependency);
             }
             resolved.push(labels);
@@ -1785,7 +1787,7 @@ impl Engine {
         for (attribute, labels) in attributes.iter().zip(&resolved) {
             let prefix = format!("in {} attribute of {class} rule {shown}: ", attribute.name);
             for dependency in labels {
-                let (chain, actual) = self.alias_chain(configured, dependency);
+                let (chain, actual) = self.alias_chain(configured, config, dependency);
                 let actual_target = self.target(&actual)?;
                 let is_source = matches!(actual_target, Target::Source(_));
                 let type_error = match &actual_target {
@@ -1794,10 +1796,7 @@ impl Engine {
                         &chain,
                         &actual,
                         actual_rule,
-                        configured.get(&ConfiguredTargetKey {
-                            label: actual.clone(),
-                            config: self.configuration.id,
-                        }),
+                        configured.get(&ConfiguredTargetKey::new(actual.clone(), config)),
                     ),
                     _ => self.no_files_error(&chain, &actual)?,
                 };
@@ -1841,6 +1840,7 @@ impl Engine {
     fn platform_rule_providers(
         &mut self,
         rule: &Rule,
+        config: ConfigId,
         prerequisites: &[Vec<Label>],
         configured: &ConfiguredNodes,
     ) -> Result<PlatformProviders, String> {
@@ -1855,13 +1855,7 @@ impl Engine {
                 format!("in {attribute} attribute of {class} rule {shown}: {message}"),
             )
         };
-        let config = self.configuration.id;
-        let node = |label: &Label| {
-            configured.get(&ConfiguredTargetKey {
-                label: label.clone(),
-                config,
-            })
-        };
+        let node = |label: &Label| configured.get(&ConfiguredTargetKey::new(label.clone(), config));
         let internal = |what: &str| {
             format!(
                 "internal error: validated prerequisite of {} lacks {what}",
@@ -1947,7 +1941,7 @@ impl Engine {
                 }
                 let required_settings = provided(2)
                     .iter()
-                    .map(|label| self.alias_chain(configured, label).1)
+                    .map(|label| self.alias_chain(configured, config, label).1)
                     .collect();
                 let mut allowed_toolchain_types = Vec::new();
                 for text in native.labels("allowed_toolchain_types") {
@@ -1995,24 +1989,31 @@ impl Engine {
         }
     }
 
-    /// The target platform of the build configuration
+    /// The target platform of configuration `config`
     /// (PlatformConfiguration.getTargetPlatform, analysis/PlatformConfiguration.java:84-86),
     /// resolved like PlatformFunction. Loading errors carry Bazel's
     /// exception-class prefix (PlatformError::target_text).
     fn target_platform(
         &mut self,
+        config: ConfigId,
         configured: &mut ConfiguredNodes,
-        plan: &mut Vec<Rule>,
+        plan: &mut Plan,
     ) -> Result<Arc<PlatformInfo>, String> {
-        let label = self.configuration.native.target_platform().clone();
-        self.platform_info(&label, configured, plan)
+        let label = self
+            .configurations
+            .get(config)
+            .native
+            .target_platform()
+            .clone();
+        self.platform_info(&label, config, configured, plan)
             .map_err(|error| error.target_text())
     }
 
-    /// Whether the target platform is the default host platform, which the
-    /// native profile resolves only where a constraint needs it.
-    fn default_target_platform(&self) -> bool {
-        *self.configuration.native.target_platform()
+    /// Whether the target platform of `config` is the default host
+    /// platform, which the native profile resolves only where a constraint
+    /// needs it.
+    fn default_target_platform(&self, config: ConfigId) -> bool {
+        *self.configurations.get(config).native.target_platform()
             == crate::configuration::default_host_platform()
     }
 
@@ -2046,8 +2047,14 @@ impl Engine {
     /// ConfiguredTargetFunction (:394-404): `While resolving toolchains for
     /// target L (CONFIG): MESSAGE` at the rule's location, after `events`
     /// (CONFIG is the native identifier, docs/PLATFORMS.md).
-    fn toolchain_error(&self, rule: &Rule, events: &str, message: &str) -> String {
-        let id = self.configuration.id.to_string();
+    fn toolchain_error(
+        &self,
+        rule: &Rule,
+        config: ConfigId,
+        events: &str,
+        message: &str,
+    ) -> String {
+        let id = config.to_string();
         let error = located(
             rule.location.as_deref(),
             format!(
@@ -2070,6 +2077,7 @@ impl Engine {
     fn platform_resolution_error(
         &self,
         rule: &Rule,
+        config: ConfigId,
         label: &Label,
         error: PlatformError,
     ) -> String {
@@ -2078,16 +2086,16 @@ impl Engine {
             PlatformError::Other(text) => text,
         };
         match text.rsplit_once('\n') {
-            Some((events, last)) => self.toolchain_error(rule, events, last),
-            None => self.toolchain_error(rule, "", &text),
+            Some((events, last)) => self.toolchain_error(rule, config, events, last),
+            None => self.toolchain_error(rule, config, "", &text),
         }
     }
 
-    fn resolution_error(&self, rule: &Rule, error: ResolutionError) -> String {
+    fn resolution_error(&self, rule: &Rule, config: ConfigId, error: ResolutionError) -> String {
         match error {
-            ResolutionError::Toolchain(message) => self.toolchain_error(rule, "", &message),
+            ResolutionError::Toolchain(message) => self.toolchain_error(rule, config, "", &message),
             ResolutionError::Reported(events, message) => {
-                self.toolchain_error(rule, &events, &message)
+                self.toolchain_error(rule, config, &events, &message)
             }
             ResolutionError::Propagated(message) => message,
             ResolutionError::Aborted(message) => format!("{ANALYSIS_ABORTED}{message}"),
@@ -2098,9 +2106,15 @@ impl Engine {
     /// (skyframe/toolchains/ToolchainContextUtil.java:60-165): the rule
     /// class's toolchain types and execution constraints; a toolchain
     /// implementation forces its parent's execution platform.
-    fn toolchain_context_key(&self, rule: &Rule) -> Result<ToolchainContextKey, String> {
+    fn toolchain_context_key(
+        &self,
+        rule: &Rule,
+        config: ConfigId,
+    ) -> Result<ToolchainContextKey, String> {
         let mut key = ToolchainContextKey {
-            forced_exec: self.toolchain_implementations.contains(&rule.label),
+            forced_exec: self
+                .toolchain_implementations
+                .contains(&ConfiguredTargetKey::new(rule.label.clone(), config)),
             ..Default::default()
         };
         if let Some(custom) = &rule.custom {
@@ -2146,30 +2160,35 @@ impl Engine {
     fn resolve_toolchains(
         &mut self,
         rule: &Rule,
-        active: &mut Vec<Label>,
+        config: ConfigId,
+        active: &mut Vec<ConfiguredTargetKey>,
         configured: &mut ConfiguredNodes,
-        plan: &mut Vec<Rule>,
+        plan: &mut Plan,
     ) -> Result<Option<UnloadedToolchainContext>, String> {
-        let key = self.toolchain_context_key(rule)?;
-        let host = self.configuration.native.host_platform.clone();
-        let target_label = self.configuration.native.target_platform().clone();
+        let key = self.toolchain_context_key(rule, config)?;
+        let configuration = self.configurations.get(config).clone();
+        let host = configuration.native.host_platform.clone();
+        let target_label = configuration.native.target_platform().clone();
         let default_host = host == crate::configuration::default_host_platform();
         if !key.needs_platforms() {
             if default_host {
                 return Ok(None);
             }
             let host_info = self
-                .platform_info(&host, configured, plan)
-                .map_err(|error| self.platform_resolution_error(rule, &host, error))?;
+                .platform_info(&host, config, configured, plan)
+                .map_err(|error| self.platform_resolution_error(rule, config, &host, error))?;
             // PlatformKeys.isPlatformSuitable (:265-275): without toolchain
             // types a platform that checks toolchain types is unsuitable,
             // unless forced.
             if host_info.check_toolchain_types && !key.forced_exec {
                 let target = self
-                    .platform_info(&target_label, configured, plan)
-                    .map_err(|error| self.platform_resolution_error(rule, &target_label, error))?;
+                    .platform_info(&target_label, config, configured, plan)
+                    .map_err(|error| {
+                        self.platform_resolution_error(rule, config, &target_label, error)
+                    })?;
                 return Err(self.toolchain_error(
                     rule,
+                    config,
                     "",
                     &crate::toolchains::no_matching_platform(&[], &target.label, &[host_info]),
                 ));
@@ -2177,17 +2196,17 @@ impl Engine {
             return Ok(None);
         }
         let target = self
-            .platform_info(&target_label, configured, plan)
-            .map_err(|error| self.platform_resolution_error(rule, &target_label, error))?;
+            .platform_info(&target_label, config, configured, plan)
+            .map_err(|error| self.platform_resolution_error(rule, config, &target_label, error))?;
         let host_info = self
-            .platform_info(&host, configured, plan)
-            .map_err(|error| self.platform_resolution_error(rule, &host, error))?;
+            .platform_info(&host, config, configured, plan)
+            .map_err(|error| self.platform_resolution_error(rule, config, &host, error))?;
         // PlatformKeys.filterExecutionPlatforms (:168-205).
         let mut constraints = Vec::new();
         for label in &key.exec_constraints {
             let value = self
-                .exec_constraint(rule, label, active, configured, plan)
-                .map_err(|error| self.resolution_error(rule, error))?;
+                .exec_constraint(rule, label, config, active, configured, plan)
+                .map_err(|error| self.resolution_error(rule, config, error))?;
             constraints.push(value);
         }
         let exec = if host_info
@@ -2201,8 +2220,8 @@ impl Engine {
         let mut lookups = Vec::new();
         for requirement in &key.types {
             let info = self
-                .toolchain_type_info(rule, requirement, active, configured, plan)
-                .map_err(|error| self.resolution_error(rule, error))?;
+                .toolchain_type_info(rule, requirement, config, active, configured, plan)
+                .map_err(|error| self.resolution_error(rule, config, error))?;
             lookups.push((requirement.clone(), info));
         }
         let types = crate::toolchains::resolved_types(&lookups);
@@ -2212,11 +2231,13 @@ impl Engine {
         let registered = if types.is_empty() {
             Arc::new(RegisteredToolchains::default())
         } else {
-            if self.computing_toolchains.is_some() && self.registered_toolchains.is_none() {
+            if self.computing_toolchains.is_some()
+                && !self.registered_toolchains.contains_key(&config)
+            {
                 return Err(self.toolchain_cycle(active, &key, &types[0].requirement.label));
             }
-            self.registered_toolchains(configured, plan)
-                .map_err(|error| self.resolution_error(rule, error))?
+            self.registered_toolchains(config, configured, plan)
+                .map_err(|error| self.resolution_error(rule, config, error))?
         };
         // PlatformKeys.find (:230-245): the forced platform is the target
         // platform or one of the execution platforms.
@@ -2234,7 +2255,7 @@ impl Engine {
             &registered,
         )
         .map(Some)
-        .map_err(|message| self.toolchain_error(rule, "", &message))
+        .map_err(|message| self.toolchain_error(rule, config, "", &message))
     }
 
     /// RegisteredToolchainsCycleReporter.maybeReportCycle
@@ -2247,18 +2268,21 @@ impl Engine {
     /// resolution (`toolchain type T`); reported without location.
     fn toolchain_cycle(
         &mut self,
-        active: &[Label],
+        active: &[ConfiguredTargetKey],
         key: &ToolchainContextKey,
         first_type: &Label,
     ) -> String {
         let shown = crate::rule_declarations::canonical_form;
-        let head = active.first().map(shown).unwrap_or_default();
+        let head = active
+            .first()
+            .map(|key| shown(&key.label))
+            .unwrap_or_default();
         let mut report = format!(
             "Misconfigured toolchains: {head} is declared as a toolchain but has inappropriate dependencies. Declared toolchains should be created with the 'toolchain' rule and should not have dependencies that themselves require toolchains.\n.-> RegisteredToolchains"
         );
-        for label in active {
+        for element in active {
             report.push_str("\n|   ");
-            report.push_str(&shown(label));
+            report.push_str(&shown(&element.label));
         }
         report.push_str(&format!(
             "\n|   toolchain types {}\n|   toolchain type {}\n`-- RegisteredToolchains",
@@ -2321,21 +2345,19 @@ impl Engine {
         &mut self,
         rule: &Rule,
         label: &Label,
-        active: &mut Vec<Label>,
+        config: ConfigId,
+        active: &mut Vec<ConfiguredTargetKey>,
         configured: &mut ConfiguredNodes,
-        plan: &mut Vec<Rule>,
+        plan: &mut Plan,
     ) -> Result<ConstraintValueInfo, ResolutionError> {
         self.resolution_target(rule, label)?;
-        self.analyze(label, active, configured, plan)
+        self.analyze(label, config, active, configured, plan)
             .map_err(ResolutionError::Propagated)?;
-        let node = configured.get(&ConfiguredTargetKey {
-            label: label.clone(),
-            config: self.configuration.id,
-        });
+        let node = configured.get(&ConfiguredTargetKey::new(label.clone(), config));
         node.and_then(|node| node.constraint_value.clone())
             .ok_or_else(|| {
                 ResolutionError::Toolchain(crate::toolchains::not_a_constraint_value(
-                    &self.alias_chain(configured, label).1,
+                    &self.alias_chain(configured, config, label).1,
                 ))
             })
     }
@@ -2348,18 +2370,16 @@ impl Engine {
         &mut self,
         rule: &Rule,
         requirement: &ToolchainTypeRequirement,
-        active: &mut Vec<Label>,
+        config: ConfigId,
+        active: &mut Vec<ConfiguredTargetKey>,
         configured: &mut ConfiguredNodes,
-        plan: &mut Vec<Rule>,
+        plan: &mut Plan,
     ) -> Result<Option<ToolchainTypeInfo>, ResolutionError> {
         let label = &requirement.label;
         self.resolution_target(rule, label)?;
-        self.analyze(label, active, configured, plan)
+        self.analyze(label, config, active, configured, plan)
             .map_err(ResolutionError::Propagated)?;
-        let node = configured.get(&ConfiguredTargetKey {
-            label: label.clone(),
-            config: self.configuration.id,
-        });
+        let node = configured.get(&ConfiguredTargetKey::new(label.clone(), config));
         if let Some(info) = node.and_then(|node| node.toolchain_type.clone()) {
             return Ok(Some(info));
         }
@@ -2369,7 +2389,7 @@ impl Engine {
         let is_toolchain = node.is_some_and(|node| node.declared_toolchain.is_some());
         Err(ResolutionError::Toolchain(
             crate::toolchains::invalid_toolchain_type(
-                &self.alias_chain(configured, label).1,
+                &self.alias_chain(configured, config, label).1,
                 is_toolchain,
             ),
         ))
@@ -2379,42 +2399,48 @@ impl Engine {
     /// once per configuration (D1: every registered toolchain is analyzed).
     fn registered_toolchains(
         &mut self,
+        config: ConfigId,
         configured: &mut ConfiguredNodes,
-        plan: &mut Vec<Rule>,
+        plan: &mut Plan,
     ) -> Result<Arc<RegisteredToolchains>, ResolutionError> {
-        if let Some(cached) = &self.registered_toolchains {
+        if let Some(cached) = self.registered_toolchains.get(&config) {
             return cached.clone();
         }
-        if let Some(label) = &self.computing_toolchains {
+        if let Some(key) = &self.computing_toolchains {
             // Reached only through resolve_toolchains, which reports the
             // cycle itself (Self::toolchain_cycle).
             return Err(ResolutionError::Propagated(format!(
                 "internal error: registered toolchains needed while analyzing {}",
-                crate::rule_declarations::canonical_form(label)
+                crate::rule_declarations::canonical_form(&key.label)
             )));
         }
         // Set to each registered target while it is analyzed.
-        self.computing_toolchains = Some(Label {
-            repository: String::new(),
-            package: String::new(),
-            name: String::new(),
-        });
-        let result = self.compute_registered_toolchains(configured, plan);
+        self.computing_toolchains = Some(ConfiguredTargetKey::new(
+            Label {
+                repository: String::new(),
+                package: String::new(),
+                name: String::new(),
+            },
+            config,
+        ));
+        let result = self.compute_registered_toolchains(config, configured, plan);
         self.computing_toolchains = None;
-        self.registered_toolchains = Some(result.clone());
+        self.registered_toolchains.insert(config, result.clone());
         result
     }
 
     fn compute_registered_toolchains(
         &mut self,
+        config: ConfigId,
         configured: &mut ConfiguredNodes,
-        plan: &mut Vec<Rule>,
+        plan: &mut Plan,
     ) -> Result<Arc<RegisteredToolchains>, ResolutionError> {
         // --extra_toolchains, reversed so the last one wins, parsed with the
         // main repository mapping (:82-93); then the modules of the
         // dependency graph (:96-104, 149-172).
         let mut patterns = self
-            .configuration
+            .configurations
+            .get(config)
             .native
             .extra_toolchains
             .iter()
@@ -2437,8 +2463,8 @@ impl Engine {
         let mut cycle = None;
         let mut analyzed = Vec::new();
         for label in labels {
-            self.computing_toolchains = Some(label.clone());
-            match self.analyze(&label, &mut Vec::new(), configured, plan) {
+            self.computing_toolchains = Some(ConfiguredTargetKey::new(label.clone(), config));
+            match self.analyze(&label, config, &mut Vec::new(), configured, plan) {
                 Ok(()) => analyzed.push(label),
                 Err(error) => match self.toolchain_cycle_report.take() {
                     Some(report) if error.contains(&report) => cycle = Some(report),
@@ -2451,10 +2477,7 @@ impl Engine {
         }
         for label in analyzed {
             let info = configured
-                .get(&ConfiguredTargetKey {
-                    label: label.clone(),
-                    config: self.configuration.id,
-                })
+                .get(&ConfiguredTargetKey::new(label.clone(), config))
                 .and_then(|node| node.declared_toolchain.clone())
                 .ok_or_else(|| {
                     ResolutionError::Toolchain(crate::toolchains::invalid_registered_toolchain(
@@ -2626,6 +2649,7 @@ impl Engine {
     fn toolchain_rule_providers(
         &self,
         rule: &Rule,
+        config: ConfigId,
         prerequisites: &[Vec<Label>],
         configured: &ConfiguredNodes,
     ) -> Result<
@@ -2647,12 +2671,8 @@ impl Engine {
                 None,
             )),
             RuleKind::Native("toolchain") => {
-                let config = self.configuration.id;
                 let node = |label: &Label| {
-                    configured.get(&ConfiguredTargetKey {
-                        label: label.clone(),
-                        config,
-                    })
+                    configured.get(&ConfiguredTargetKey::new(label.clone(), config))
                 };
                 let internal = |what: &str| {
                     format!(
@@ -2733,30 +2753,33 @@ impl Engine {
     fn platform_info(
         &mut self,
         label: &Label,
+        config: ConfigId,
         configured: &mut ConfiguredNodes,
-        plan: &mut Vec<Rule>,
+        plan: &mut Plan,
     ) -> Result<Arc<PlatformInfo>, PlatformError> {
-        if let Some(cached) = self.platforms.get(label) {
+        let key = ConfiguredTargetKey::new(label.clone(), config);
+        if let Some(cached) = self.platforms.get(&key) {
             return cached.clone();
         }
-        if self.resolving_platforms.contains(label) {
+        if self.resolving_platforms.contains(&key) {
             return Err(PlatformError::Other(format!(
                 "platform {} is needed while it is being resolved; this is not implemented in the native profile",
                 crate::rule_declarations::canonical_form(label)
             )));
         }
-        self.resolving_platforms.push(label.clone());
-        let result = self.compute_platform_info(label, configured, plan);
+        self.resolving_platforms.push(key.clone());
+        let result = self.compute_platform_info(label, config, configured, plan);
         self.resolving_platforms.pop();
-        self.platforms.insert(label.clone(), result.clone());
+        self.platforms.insert(key, result.clone());
         result
     }
 
     fn compute_platform_info(
         &mut self,
         label: &Label,
+        config: ConfigId,
         configured: &mut ConfiguredNodes,
-        plan: &mut Vec<Rule>,
+        plan: &mut Plan,
     ) -> Result<Arc<PlatformInfo>, PlatformError> {
         let shown = crate::rule_declarations::canonical_form(label);
         // An apparent repository the main repository does not see stays an
@@ -2800,7 +2823,7 @@ impl Engine {
             )));
         }
         self.check_platform_tree(label)?;
-        self.analyze(label, &mut Vec::new(), configured, plan)
+        self.analyze(label, config, &mut Vec::new(), configured, plan)
             .map_err(|error| {
                 PlatformError::Other(format!(
                     "{error}\n{}",
@@ -2808,14 +2831,11 @@ impl Engine {
                 ))
             })?;
         let platform = configured
-            .get(&ConfiguredTargetKey {
-                label: label.clone(),
-                config: self.configuration.id,
-            })
+            .get(&ConfiguredTargetKey::new(label.clone(), config))
             .and_then(|node| node.platform.clone())
             .ok_or_else(|| {
                 PlatformError::Other(crate::platforms::not_a_platform(
-                    &self.alias_chain(configured, label).1,
+                    &self.alias_chain(configured, config, label).1,
                 ))
             })?;
         // PlatformFunction parses PlatformInfo.flags into the configuration
@@ -3100,9 +3120,10 @@ impl Engine {
     fn config_conditions(
         &mut self,
         rule: &Rule,
-        active: &mut Vec<Label>,
+        config: ConfigId,
+        active: &mut Vec<ConfiguredTargetKey>,
         configured: &mut ConfiguredNodes,
-        plan: &mut Vec<Rule>,
+        plan: &mut Plan,
     ) -> Result<Vec<(String, ConfigMatching)>, String> {
         let mut keys = Vec::new();
         for text in configured_attributes::rule_config_dependencies(rule) {
@@ -3119,7 +3140,7 @@ impl Engine {
                     .unwrap_or(error)
             });
             loaded
-                .and_then(|()| self.analyze(&label, active, configured, plan))
+                .and_then(|()| self.analyze(&label, config, active, configured, plan))
                 .map_err(|error| {
                     format!(
                         "{error}\n{}",
@@ -3136,14 +3157,11 @@ impl Engine {
         }
         let mut conditions = Vec::new();
         for (text, label) in keys {
-            let key = ConfiguredTargetKey {
-                label: label.clone(),
-                config: self.configuration.id,
-            };
+            let key = ConfiguredTargetKey::new(label.clone(), config);
             // The invalid-condition message names the prerequisite's target,
             // the end of an alias chain (ConfigConditionsProducer.java:156-165,
             // ConfiguredTargetAndData.getTargetLabel).
-            let label = self.alias_chain(configured, &label).1;
+            let label = self.alias_chain(configured, config, &label).1;
             // ConfigConditions.fromConfiguredTarget (analysis/config/ConfigConditions.java:64-83):
             // a ConfigMatchingProvider, or a constraint_value matched against
             // the target platform when the consuming rule uses toolchain
@@ -3154,7 +3172,7 @@ impl Engine {
                 && let Some(value) = node.and_then(|node| node.constraint_value.clone())
                 && uses_toolchain_resolution(rule)
             {
-                let platform = self.target_platform(configured, plan)?;
+                let platform = self.target_platform(config, configured, plan)?;
                 matching = Some(value.config_matching(&platform));
             }
             let Some(matching) = matching else {
@@ -3247,11 +3265,13 @@ impl Engine {
         Ok(testonly_error)
     }
 
+    /// The artifacts of `label` configured in `config`.
     fn artifacts(
         &mut self,
         label: &Label,
-        built: &BTreeMap<Label, Vec<Artifact>>,
-        declared: &BTreeMap<PathBuf, Artifact>,
+        config: ConfigId,
+        built: &BTreeMap<ConfiguredTargetKey, Vec<Artifact>>,
+        declared: &Declared,
     ) -> Result<Vec<Artifact>, String> {
         match self.target(label)? {
             Target::Source(real) => Ok(vec![Artifact {
@@ -3261,13 +3281,16 @@ impl Engine {
                 owner: label.to_string(),
             }]),
             Target::Rule(rule) => built
-                .get(&rule.label)
+                .get(&ConfiguredTargetKey::new(rule.label.clone(), config))
                 .cloned()
                 .ok_or_else(|| format!("internal analysis order error: {label}")),
             Target::Output(rule, out) => {
-                let exec = rule.label.with_name(&out)?.generated_exec_path();
+                let exec = rule
+                    .label
+                    .with_name(&out)?
+                    .generated_exec_path(&self.configurations.output_root(config));
                 declared
-                    .get(&exec)
+                    .get(&(config, exec))
                     .cloned()
                     .map(|artifact| vec![artifact])
                     .ok_or_else(|| format!("missing analyzed output {label}"))
@@ -3278,15 +3301,16 @@ impl Engine {
     fn inputs(
         &mut self,
         rule: &Rule,
-        built: &BTreeMap<Label, Vec<Artifact>>,
-        declared: &BTreeMap<PathBuf, Artifact>,
+        config: ConfigId,
+        built: &BTreeMap<ConfiguredTargetKey, Vec<Artifact>>,
+        declared: &Declared,
     ) -> Result<ResolvedInputs, String> {
         let mut inputs = Vec::new();
         let mut seen: BTreeMap<PathBuf, Artifact> = BTreeMap::new();
         let mut locations = BTreeMap::new();
         for src in &rule.srcs {
             let label = self.resolve_rule_src(rule, src)?;
-            let artifacts = self.artifacts(&label, built, declared)?;
+            let artifacts = self.artifacts(&label, config, built, declared)?;
             let paths = artifacts.iter().map(|a| a.exec.clone()).collect::<Vec<_>>();
             locations.insert(label.to_string(), paths.clone());
             locations.insert(src.clone(), paths);
@@ -3357,12 +3381,13 @@ impl Engine {
         for label in labels {
             self.report_pattern_deprecation(label);
         }
-        // Generated files of this build live under its configuration's root.
-        let _output_root = crate::label::OutputRootScope::new(self.configuration.output_root());
-        let mut plan = Vec::new();
+        // Requested targets are analyzed in the top-level configuration;
+        // generated files live under their own configuration's output root.
+        let top = self.configurations.top();
+        let mut plan = Plan::new();
         let mut configured = ConfiguredNodes::new();
         self.registrations_checked = false;
-        self.registered_toolchains = None;
+        self.registered_toolchains.clear();
         self.toolchain_cycle_report = None;
         self.toolchain_contexts.clear();
         self.toolchain_implementations.clear();
@@ -3375,15 +3400,16 @@ impl Engine {
         // non-default --host_platform by their toolchain resolution
         // (resolve_execution_platform); the default host platform only where
         // a constraint needs it (docs/PLATFORMS.md).
-        let target = self.configuration.native.target_platform().clone();
+        let top_configuration = self.configurations.top_configuration().clone();
+        let target = top_configuration.native.target_platform().clone();
         if target != crate::configuration::default_host_platform()
-            && target != self.configuration.native.host_platform
+            && target != top_configuration.native.host_platform
         {
-            self.platform_info(&target, &mut configured, &mut plan)
+            self.platform_info(&target, top, &mut configured, &mut plan)
                 .map_err(|error| error.target_text())?;
         }
         for label in labels {
-            self.analyze(label, &mut Vec::new(), &mut configured, &mut plan)
+            self.analyze(label, top, &mut Vec::new(), &mut configured, &mut plan)
                 .map_err(|error| match error.split_once(ANALYSIS_ABORTED) {
                     // BuildView: `Analysis of target 'L' failed; build
                     // aborted: MESSAGE` for the requested target.
@@ -3396,36 +3422,41 @@ impl Engine {
         }
         // Alias-like targets and the end of their alias chain: dependents see
         // that target's label, kind and providers (AliasConfiguredTarget).
-        let forwarded: BTreeMap<Label, Label> = configured
+        let forwarded: BTreeMap<ConfiguredTargetKey, Label> = configured
             .iter()
             .filter(|(_, node)| node.actual.is_some())
             .map(|(key, _)| {
                 (
-                    key.label.clone(),
-                    self.alias_chain(&configured, &key.label).1,
+                    key.clone(),
+                    self.alias_chain(&configured, key.config, &key.label).1,
                 )
             })
             .collect();
         let main_ignored = self.ignored("")?;
         // Validate every command before executing any action. The dry artifacts
         // carry the same exec paths as the actual generated files.
-        let mut dry = BTreeMap::new();
+        let mut dry: BTreeMap<ConfiguredTargetKey, Vec<Artifact>> = BTreeMap::new();
         let mut custom_providers: BTreeMap<
-            Label,
+            ConfiguredTargetKey,
             BTreeMap<String, starlark::values::OwnedFrozenValue>,
         > = BTreeMap::new();
-        let mut provider_files: BTreeMap<Label, Vec<File>> = BTreeMap::new();
+        let mut provider_files: BTreeMap<ConfiguredTargetKey, Vec<File>> = BTreeMap::new();
         // File metadata is not a source filesystem path. Keep the real artifact
         // identity even when a custom provider forwards a non-default file.
         let mut artifact_index: BTreeMap<File, Artifact> = BTreeMap::new();
-        let mut declared = BTreeMap::new();
-        let mut producers: BTreeMap<PathBuf, Label> = BTreeMap::new();
+        let mut declared = Declared::new();
+        let mut producers: BTreeMap<PathBuf, ConfiguredTargetKey> = BTreeMap::new();
         let mut nodes = Vec::new();
         // Every source input of every action, before execroot planting drops
         // main-repository inputs under ignored top-level entries: Bazel's
         // ArtifactFunction checks a source artifact regardless of planting.
         let mut source_inputs: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
-        for rule in &plan {
+        for (config, rule) in &plan {
+            let config = *config;
+            let key = ConfiguredTargetKey::new(rule.label.clone(), config);
+            let output_root = self.configurations.output_root(config);
+            let action_owner = key.action_owner(top);
+            let dependency_key = |label: Label| ConfiguredTargetKey::new(label, config);
             if matches!(rule.kind, RuleKind::PackageGroup(_)) {
                 let node = self.resolve_group(&rule.label, &mut Vec::new())?;
                 let info = starlark::environment::Module::with_temp_heap(|module| {
@@ -3437,11 +3468,11 @@ impl Engine {
                     frozen.get("__info").map_err(|error| error.to_string())
                 })?;
                 custom_providers.insert(
-                    rule.label.clone(),
+                    key.clone(),
                     BTreeMap::from([(package_specification::PROVIDER_ID.to_owned(), info)]),
                 );
-                provider_files.insert(rule.label.clone(), Vec::new());
-                dry.insert(rule.label.clone(), Vec::new());
+                provider_files.insert(key.clone(), Vec::new());
+                dry.insert(key, Vec::new());
                 continue;
             }
             if matches!(rule.kind, RuleKind::Custom) {
@@ -3455,7 +3486,7 @@ impl Engine {
                 for src in &rule.srcs {
                     dependency_labels.push(self.resolve_rule_src(rule, src)?);
                 }
-                if let Some(context) = self.toolchain_contexts.get(&rule.label) {
+                if let Some(context) = self.toolchain_contexts.get(&key) {
                     for implementation in context.resolved_labels() {
                         if !dependency_labels.contains(&implementation) {
                             dependency_labels.push(implementation);
@@ -3479,14 +3510,15 @@ impl Engine {
                     }
                 }
                 for label in dependency_labels {
-                    let artifacts = self.artifacts(&label, &dry, &declared)?;
+                    let artifacts = self.artifacts(&label, config, &dry, &declared)?;
                     let files = artifacts.iter().map(Artifact::file).collect();
                     for artifact in artifacts {
                         artifact_index.insert(artifact.file(), artifact.clone());
                         available.insert(artifact.file(), artifact);
                     }
+                    let dependency = dependency_key(label.clone());
                     let target_provider_files =
-                        provider_files.get(&label).cloned().unwrap_or_default();
+                        provider_files.get(&dependency).cloned().unwrap_or_default();
                     for file in &target_provider_files {
                         let artifact = artifact_index.get(file).ok_or_else(|| {
                             format!(
@@ -3496,7 +3528,7 @@ impl Engine {
                         })?;
                         available.insert(file.clone(), artifact.clone());
                     }
-                    let actual = forwarded.get(&label).unwrap_or(&label).clone();
+                    let actual = forwarded.get(&dependency).unwrap_or(&label).clone();
                     let target = self.target(&actual)?;
                     dependency_targets.insert(
                         label.to_string(),
@@ -3506,7 +3538,10 @@ impl Engine {
                             is_source: matches!(target, Target::Source(_)),
                             is_rule: matches!(&target, Target::Rule(rule) if !matches!(rule.kind, RuleKind::PackageGroup(_))),
                             is_package_group: matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::PackageGroup(_))),
-                            providers: custom_providers.get(&label).cloned().unwrap_or_default(),
+                            providers: custom_providers
+                                .get(&dependency)
+                                .cloned()
+                                .unwrap_or_default(),
                             provider_files: target_provider_files,
                         },
                     );
@@ -3517,8 +3552,14 @@ impl Engine {
                 // then the (side-effect free) analysis runs again.
                 let mut analyzed_rule = rule.clone();
                 let uses_toolchains = uses_toolchain_resolution(rule)
-                    && !self.empty_configuration_rules.contains(&rule.label);
-                let target = self.configuration.native.target_platform().clone();
+                    && !self.empty_configuration_rules.contains(&key);
+                let target = dependency_key(
+                    self.configurations
+                        .get(config)
+                        .native
+                        .target_platform()
+                        .clone(),
+                );
                 if let Some(custom) = analyzed_rule.custom.as_mut() {
                     custom.target_platform = match self.platforms.get(&target) {
                         _ if !uses_toolchains => crate::platforms::TargetPlatform::Absent,
@@ -3534,15 +3575,17 @@ impl Engine {
                     custom.toolchains = if uses_toolchains {
                         let mut toolchains = BTreeMap::new();
                         let mut requested = Vec::new();
-                        if let Some(context) = self.toolchain_contexts.get(&rule.label) {
+                        if let Some(context) = self.toolchain_contexts.get(&key) {
                             for (info, implementation) in &context.resolved {
-                                let Some(provider) =
-                                    custom_providers.get(implementation).and_then(|providers| {
+                                let Some(provider) = custom_providers
+                                    .get(&dependency_key(implementation.clone()))
+                                    .and_then(|providers| {
                                         providers.get(crate::toolchain_info::PROVIDER_ID)
                                     })
                                 else {
                                     return Err(self.toolchain_error(
                                         rule,
+                                        config,
                                         "",
                                         &crate::toolchains::not_a_toolchain(
                                             &info.type_label,
@@ -3575,16 +3618,23 @@ impl Engine {
                 // print() output of a discarded attempt is dropped: Bazel
                 // runs the implementation once, after its target platform is
                 // known.
+                let outputs = analysis::ConfiguredOutputs {
+                    output_root: &output_root,
+                    action_owner: &action_owner,
+                };
                 let (mut analyzed, mut printed) = analysis::analyze_buffered(
                     &analyzed_rule,
                     &dependency_targets,
                     self.repositories.clone(),
+                    &outputs,
                 );
                 if analyzed
                     .as_ref()
                     .is_err_and(|error| error.contains(crate::platforms::NEEDS_TARGET_PLATFORM))
                 {
-                    let platform = self.target_platform(&mut configured, &mut Vec::new())?;
+                    // The target's own configuration's target platform.
+                    let platform =
+                        self.target_platform(config, &mut configured, &mut Vec::new())?;
                     if let Some(custom) = analyzed_rule.custom.as_mut() {
                         custom.target_platform =
                             crate::platforms::TargetPlatform::Resolved(platform);
@@ -3593,6 +3643,7 @@ impl Engine {
                         &analyzed_rule,
                         &dependency_targets,
                         self.repositories.clone(),
+                        &outputs,
                     );
                 }
                 for line in printed {
@@ -3600,11 +3651,11 @@ impl Engine {
                 }
                 let analyzed = analyzed?;
                 restricted_to_error(rule)?;
-                custom_providers.insert(rule.label.clone(), analyzed.providers.clone());
-                provider_files.insert(rule.label.clone(), analyzed.provider_files.clone());
+                custom_providers.insert(key.clone(), analyzed.providers.clone());
+                provider_files.insert(key.clone(), analyzed.provider_files.clone());
                 for file in &analyzed.declared {
-                    let package_output = PathBuf::from(crate::label::generated_exec_root())
-                        .join(rule.label.package_exec_path());
+                    let package_output =
+                        PathBuf::from(&output_root).join(rule.label.package_exec_path());
                     let short_name = Path::new(&file.path)
                         .strip_prefix(&package_output)
                         .map_err(|_| format!("output outside declaring package: {}", file.path))?;
@@ -3621,7 +3672,7 @@ impl Engine {
                 for registered in &analyzed.actions {
                     for (index, file) in registered.outputs.iter().enumerate() {
                         let exec = PathBuf::from(&file.path);
-                        register_output(&mut producers, &exec, &rule.label)?;
+                        register_output(&mut producers, &exec, &key)?;
                         let artifact = Artifact {
                             real: exec.clone(),
                             exec: exec.clone(),
@@ -3630,7 +3681,7 @@ impl Engine {
                         };
                         available.insert(file.clone(), artifact.clone());
                         artifact_index.insert(file.clone(), artifact.clone());
-                        declared.insert(exec, artifact);
+                        declared.insert((config, exec), artifact);
                     }
                 }
                 for file in &analyzed.provider_files {
@@ -3669,10 +3720,10 @@ impl Engine {
                         })
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                dry.insert(rule.label.clone(), defaults);
+                dry.insert(key, defaults);
                 continue;
             }
-            let (inputs, mut locations) = self.inputs(rule, &dry, &declared)?;
+            let (inputs, mut locations) = self.inputs(rule, config, &dry, &declared)?;
             for artifact in &inputs {
                 artifact_index.insert(artifact.file(), artifact.clone());
             }
@@ -3682,7 +3733,7 @@ impl Engine {
                 .map(|o| {
                     rule.label
                         .with_name(o)
-                        .map(|label| label.generated_exec_path())
+                        .map(|label| label.generated_exec_path(&output_root))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             if matches!(rule.kind, RuleKind::Genrule) {
@@ -3716,13 +3767,14 @@ impl Engine {
                     &locations,
                     &rule.label,
                     &self.repositories,
+                    &output_root,
                 )?;
                 restricted_to_error(rule)?;
                 for output in &outputs {
-                    register_output(&mut producers, output, &rule.label)?;
+                    register_output(&mut producers, output, &key)?;
                 }
                 let action = Action {
-                    id: rule.label.to_string(),
+                    id: action_owner.clone(),
                     command,
                     inputs: Vec::new(),
                     outputs: outputs.clone(),
@@ -3740,23 +3792,21 @@ impl Engine {
                     .map(|(index, exec)| Artifact {
                         real: exec.clone(),
                         exec,
-                        producer: Some((rule.label.to_string(), index)),
+                        producer: Some((action_owner.clone(), index)),
                         owner: rule.label.to_string(),
                     })
                     .collect::<Vec<_>>();
                 for artifact in &artifacts {
                     artifact_index.insert(artifact.file(), artifact.clone());
-                    declared.insert(artifact.exec.clone(), artifact.clone());
+                    declared.insert((config, artifact.exec.clone()), artifact.clone());
                 }
-                dry.insert(rule.label.clone(), artifacts);
+                dry.insert(key, artifacts);
             } else {
                 restricted_to_error(rule)?;
                 // The native platform providers, visible to Starlark as
                 // dep[platform_common.X] (crate::platform_providers).
-                if let Some(node) = configured.get(&ConfiguredTargetKey {
-                    label: rule.label.clone(),
-                    config: self.configuration.id,
-                }) && !forwards(rule)
+                if let Some(node) = configured.get(&key)
+                    && !forwards(rule)
                 {
                     use crate::platform_providers::Provider;
                     let provider = match (
@@ -3771,28 +3821,28 @@ impl Engine {
                     };
                     if let Some(provider) = provider {
                         let (id, value) = crate::platform_providers::freeze(provider)?;
-                        custom_providers.insert(rule.label.clone(), BTreeMap::from([(id, value)]));
-                        provider_files.insert(rule.label.clone(), Vec::new());
+                        custom_providers.insert(key.clone(), BTreeMap::from([(id, value)]));
+                        provider_files.insert(key.clone(), Vec::new());
                     }
                 }
                 // An alias-like target forwards its actual's files (above) and
                 // providers.
                 if forwards(rule) {
-                    let actual = self.resolve_rule_src(rule, &rule.srcs[0])?;
+                    let actual = dependency_key(self.resolve_rule_src(rule, &rule.srcs[0])?);
                     if let Some(providers) = custom_providers.get(&actual).cloned() {
-                        custom_providers.insert(rule.label.clone(), providers);
+                        custom_providers.insert(key.clone(), providers);
                     }
                     if let Some(files) = provider_files.get(&actual).cloned() {
-                        provider_files.insert(rule.label.clone(), files);
+                        provider_files.insert(key.clone(), files);
                     }
                 }
-                dry.insert(rule.label.clone(), inputs);
+                dry.insert(key, inputs);
             }
         }
-        let mut requested = Vec::new();
+        let mut requested: Vec<(ConfiguredTargetKey, Artifact)> = Vec::new();
         for label in labels {
-            for artifact in self.artifacts(label, &dry, &declared)? {
-                requested.push((label.clone(), artifact));
+            for artifact in self.artifacts(label, top, &dry, &declared)? {
+                requested.push((self.configurations.top_key(label.clone()), artifact));
             }
         }
         // Analyze everything first, but execute only the actions reachable from
@@ -3835,13 +3885,13 @@ impl Engine {
         // Requested targets: `LOC: TARGET: missing input file 'L'` lines, then
         // `LOC: N input file(s) do not exist` (CompletionFunction).
         let mut by_target: Vec<(Label, Vec<String>)> = Vec::new();
-        for (label, artifact) in &requested {
+        for (key, artifact) in &requested {
             if artifact.producer.is_none()
                 && let Some(missing_label) = missing(&artifact.real)
             {
-                match by_target.iter_mut().find(|(seen, _)| seen == label) {
+                match by_target.iter_mut().find(|(seen, _)| *seen == key.label) {
                     Some((_, labels)) => labels.push(missing_label),
-                    None => by_target.push((label.clone(), vec![missing_label])),
+                    None => by_target.push((key.label.clone(), vec![missing_label])),
                 }
             }
         }
@@ -3868,7 +3918,12 @@ impl Engine {
         // (rules/genrule/GenRuleBase.java); custom actions use their action id.
         let rules_by_label = plan
             .iter()
-            .map(|rule| (rule.label.to_string(), rule))
+            .map(|(config, rule)| {
+                (
+                    ConfiguredTargetKey::new(rule.label.clone(), *config).action_owner(top),
+                    rule,
+                )
+            })
             .collect::<BTreeMap<_, _>>();
         for node in &nodes {
             let absent = source_inputs
@@ -3916,11 +3971,11 @@ impl Engine {
                 summary.executed += 1;
             }
         }
-        for (label, mut artifact) in requested {
+        for (key, mut artifact) in requested {
             if let Some((id, index)) = &artifact.producer {
                 artifact.real = results[id].outputs[*index].clone();
             }
-            summary.outputs.push((label, artifact.real));
+            summary.outputs.push((key.label, artifact.real));
         }
         Ok(summary)
     }
@@ -4171,17 +4226,21 @@ fn check_macro_namespace(rule: &Rule, target: &Label) -> Result<(), String> {
     Ok(())
 }
 
+/// Output paths are global across configurations (Bazel's action
+/// conflicts); a conflict names the owning labels.
 fn register_output(
-    producers: &mut BTreeMap<PathBuf, Label>,
+    producers: &mut BTreeMap<PathBuf, ConfiguredTargetKey>,
     output: &Path,
-    owner: &Label,
+    owner: &ConfiguredTargetKey,
 ) -> Result<(), String> {
     for ancestor in output.ancestors() {
         if let Some(previous) = producers.get(ancestor) {
             return Err(format!(
-                "overlapping output paths: {} from {previous} conflicts with {} from {owner}",
+                "overlapping output paths: {} from {} conflicts with {} from {}",
                 ancestor.display(),
-                output.display()
+                previous.label,
+                output.display(),
+                owner.label
             ));
         }
     }
@@ -4189,9 +4248,11 @@ fn register_output(
         && previous_path.starts_with(output)
     {
         return Err(format!(
-            "overlapping output paths: {} from {owner} conflicts with {} from {previous}",
+            "overlapping output paths: {} from {} conflicts with {} from {}",
             output.display(),
-            previous_path.display()
+            owner.label,
+            previous_path.display(),
+            previous.label
         ));
     }
     producers.insert(output.to_path_buf(), owner.clone());
@@ -4415,6 +4476,7 @@ fn expand_command(
         locations,
         &Label::parse(":__command__", package)?,
         &RepositorySet::new(PathBuf::new()),
+        crate::label::GENERATED_EXEC_ROOT,
     )
 }
 
@@ -4425,9 +4487,9 @@ fn expand_command_in(
     locations: &BTreeMap<String, Vec<PathBuf>>,
     label: &Label,
     repositories: &RepositorySet,
+    output_root: &str,
 ) -> Result<String, String> {
-    let rule_dir =
-        PathBuf::from(crate::label::generated_exec_root()).join(label.package_exec_path());
+    let rule_dir = PathBuf::from(output_root).join(label.package_exec_path());
     let mut expanded = String::new();
     let mut chars = command.chars();
     while let Some(c) = chars.next() {
@@ -4660,11 +4722,18 @@ mod tests {
 
     fn analyze_roots(engine: &mut Engine, roots: &[&str]) -> Result<Vec<Rule>, String> {
         let mut done = ConfiguredNodes::new();
-        let mut plan = Vec::new();
+        let mut plan = Plan::new();
+        let top = engine.configurations.top();
         for root in roots {
-            engine.analyze(&test_label(root), &mut Vec::new(), &mut done, &mut plan)?;
+            engine.analyze(
+                &test_label(root),
+                top,
+                &mut Vec::new(),
+                &mut done,
+                &mut plan,
+            )?;
         }
-        Ok(plan)
+        Ok(plan.into_iter().map(|(_, rule)| rule).collect())
     }
 
     fn group(label: &str, specs: &[&str], includes: &[&str]) -> Rule {
@@ -5519,7 +5588,10 @@ m = macro(implementation=emit)
     fn external_make_locations_and_rule_directory_use_execution_paths() {
         let label = Label::parse_canonical("@@dep+//p:target").unwrap();
         let input = label.with_name("in").unwrap().source_exec_path();
-        let output = label.with_name("nested/out").unwrap().generated_exec_path();
+        let output = label
+            .with_name("nested/out")
+            .unwrap()
+            .generated_exec_path(crate::label::GENERATED_EXEC_ROOT);
         let locations = BTreeMap::from([("@@dep+//p:in".into(), vec![input])]);
         let expanded = expand_command_in(
             "$(location //p:in) $(location :in) $(RULEDIR) $(@D)",
@@ -5528,6 +5600,7 @@ m = macro(implementation=emit)
             &locations,
             &label,
             &RepositorySet::new(PathBuf::new()),
+            crate::label::GENERATED_EXEC_ROOT,
         )
         .unwrap();
         assert_eq!(

@@ -44,6 +44,12 @@ mod owned {
     #[derive(ProvidesStaticType)]
     pub(crate) struct Context {
         pub label: Label,
+        /// The output root of the configured target's configuration
+        /// (crate::config_registry::Configurations::output_root).
+        pub output_root: String,
+        /// The owner part of the target's action ids
+        /// (crate::config_registry::ConfiguredTargetKey::action_owner).
+        pub action_owner: String,
         pub dependency_files: BTreeSet<File>,
         pub declared: RefCell<Vec<File>>,
         pub actions: RefCell<Vec<RegisteredAction>>,
@@ -74,7 +80,10 @@ impl Context {
     pub(crate) fn declare(&self, name: &str) -> anyhow::Result<File> {
         let output = self.label.with_name(name).map_err(anyhow::Error::msg)?;
         let file = File {
-            path: output.generated_exec_path().to_string_lossy().into_owned(),
+            path: output
+                .generated_exec_path(&self.output_root)
+                .to_string_lossy()
+                .into_owned(),
             short_path: output.short_path().to_string_lossy().into_owned(),
             owner: self.label.to_string(),
             is_source: false,
@@ -144,7 +153,7 @@ impl Context {
             );
         }
         let action = Action {
-            id: format!("{}#{}", self.label, actions.len()),
+            id: format!("{}#{}", self.action_owner, actions.len()),
             command,
             inputs: Vec::new(),
             outputs: outputs
@@ -279,12 +288,13 @@ fn action_methods(builder: &mut MethodsBuilder) {
                 owner.package_id() == context.label.package_id(),
                 "sibling must be in the current package"
             );
-            let path = std::path::Path::new(&sibling.path);
             let exec = if sibling.is_source {
-                path
+                std::path::Path::new(&sibling.path)
             } else {
-                path.strip_prefix(crate::label::generated_exec_root())
-                    .map_err(|_| anyhow!("invalid generated sibling execution path"))?
+                // Relative to the sibling's own configuration root.
+                crate::label::split_generated_root(&sibling.path)
+                    .map(|(_, relative)| std::path::Path::new(relative))
+                    .ok_or_else(|| anyhow!("invalid generated sibling execution path"))?
             };
             let relative = exec
                 .strip_prefix(context.label.package_exec_path())
@@ -557,6 +567,8 @@ mod tests {
     fn write_context() -> Context {
         Context {
             label: Label::parse_canonical("//:target").unwrap(),
+            output_root: crate::label::GENERATED_EXEC_ROOT.into(),
+            action_owner: "//:target".into(),
             dependency_files: BTreeSet::new(),
             declared: RefCell::new(Vec::new()),
             actions: RefCell::new(Vec::new()),
@@ -754,6 +766,8 @@ r=rule(implementation=_rule,subrules=[S])
         use starlark::environment::Module;
         let make_context = || Context {
             label: Label::parse_canonical("//:target").unwrap(),
+            output_root: crate::label::GENERATED_EXEC_ROOT.into(),
+            action_owner: "//:target".into(),
             dependency_files: BTreeSet::new(),
             declared: RefCell::new(Vec::new()),
             actions: RefCell::new(Vec::new()),

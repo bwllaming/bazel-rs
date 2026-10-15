@@ -70,7 +70,14 @@ build explicitly: platform mappings are not modelled.
 serialization of the modelled values plus the Starlark build settings that
 differ from their defaults. Equal values give equal identities regardless of
 spelling (`-c OPT` = `--compilation_mode=opt`, `--//:s=red` with default `red`
-= unset). Analysis is keyed by `ConfiguredTargetKey { label, config }`.
+= unset). Analysis is keyed by `ConfiguredTargetKey { label, config }`
+(below). The options reserved for the exec configuration (N18b) —
+`host_compilation_mode` (default `opt`), `is exec configuration` (false) and
+`platform_suffix` (null) — are omitted from the serialization at their
+defaults, so every existing identity is byte-identical (pinned in
+`src/configuration.rs` for the default, `-c dbg` and `-c opt`).
+`--host_compilation_mode` is not a command-line option yet (it stays an
+explicit unsupported option until the exec transition uses it, N18b).
 
 ## Starlark build settings (`src/starlark_options.rs`)
 
@@ -155,9 +162,72 @@ for them either: the default `diff_against_dynamic_baseline` naming
 (`analysis/config/CoreOptions.java:759`) hashes only options that differ from
 the baseline (`analysis/config/OutputPathMnemonicComputer.java:160-178`), and
 the baseline is the top-level target configuration itself
-(`analysis/BuildView.java:280`). The root is currently a per-thread value scoped
-by the engine for the build's single configuration; it must become a
-per-configured-target value before transitions (N18).
+(`analysis/BuildView.java:280`). The root is a property of each configured
+target's configuration (below).
+
+## Configured-target keys and output roots (N18a)
+
+Increment N18a makes the configuration of every analyzed target explicit,
+without any visible behavior change; exec transitions (N18b), Starlark 1:1
+transitions (N18c) and split transitions/exec groups (N18d) build on it.
+Code: `src/config_registry.rs`, `src/engine.rs`, `src/analysis.rs`,
+`src/analysis_runtime.rs`, `src/label.rs`.
+
+* **Registry.** `Configurations` interns the build's configurations by
+  `ConfigId` (`Arc<Configuration>`): the top-level configuration (requested
+  targets are analyzed in it), an exec baseline slot (unused until N18b) and
+  the output path mnemonic of each configuration.
+* **Mnemonics** (`OutputPathMnemonicComputer.computeMnemonic`,
+  `analysis/config/OutputPathMnemonicComputer.java:174-245`):
+  `rust-{compilation_mode}[-{platform_suffix}][-ST-{12 hex}]`. `rust` stands
+  for Bazel's CPU descriptor (`k8`); `compilation_mode` and `platform_suffix`
+  are explicit in the path, every other option (native or Starlark) that
+  differs from the baseline — the top-level configuration — enters the
+  `ST-` hash (`computeNameFragmentWithDiff`, `:286-318`: sorted
+  `//command_line_option:NAME=VALUE` / `LABEL=VALUE` / `LABEL@null`
+  strings, each framed like `Fingerprint.addString`, SHA-256, 12 hex digits).
+  The top-level configuration is its own baseline, so its root stays
+  `bazel-out/rust-fastbuild/bin` (default), `bazel-out/rust-dbg/bin` or
+  `bazel-out/rust-opt/bin`; the exec configuration will be
+  `rust-opt-exec-ST-...` (`ExecutionTransitionFactory.java:229-258` sets
+  `platform_suffix = exec` with the default
+  `--experimental_exec_configuration_distinguisher=off`).
+* **Output roots** come from the configured target's configuration: the
+  analysis context of a Starlark rule (`ctx.actions.declare_file`), genrule
+  outputs, `$(RULEDIR)`/`$(@D)`, the package check of declared outputs and
+  `Label::generated_exec_path(root)`. A generated `File`'s root and
+  root-relative path are read from its own path, any
+  `bazel-out/<mnemonic>/bin` (`short_path`, `declare_file(sibling = ...)`,
+  `json.encode(File)`'s `root`). There is no ambient (thread-local) root.
+* **Keys.** Every analysis and planning map is keyed by
+  `ConfiguredTargetKey { label, config }`: configured nodes, the analysis
+  plan, the per-target artifacts, providers and provider files, declared
+  artifacts (`(config, exec path)`), output producers (paths stay global, so
+  overlapping outputs of different configurations still conflict),
+  requested artifacts, the platform memo and the empty-configuration rules,
+  the registered toolchains (per configuration), the toolchain contexts and
+  the toolchain-implementation memo, cycle detection and the depth limit.
+  Cycle reports print each element's own key (`LABEL (CONFIG)`). The
+  re-analysis for `ctx.target_platform_has_constraint` resolves the target
+  platform of the target's own configuration. Package loading stays
+  unconfigured (`Engine::generated`, the output label → generating rule map,
+  is a loading fact like Bazel's package targets; the configuration enters
+  where the output is resolved to an artifact).
+* **Edges.** Requested targets are analyzed in the top-level configuration
+  and every dependency edge (attributes, select() keys, toolchain types and
+  implementations, platforms, registered toolchains) keeps its parent's
+  configuration. Rule and attribute `cfg` transitions keep failing
+  explicitly, exactly as before.
+* **Action identities.** Action ids feed the action cache key
+  (`src/action.rs`). They stay `LABEL#N` (`LABEL` for genrules) in the
+  top-level configuration and become `LABEL[CONFIG8]#N` (the first eight hex
+  digits of the ConfigId) in any other configuration, so the keys and warm
+  caches of every existing build are unchanged.
+  `tests/configured_target_keys.rs` asserts golden action keys and output
+  paths recorded with the pre-N18a binary (default and `-c dbg` builds of a
+  genrule/Starlark/toolchain fixture, and `tests/fixtures/basic`); the
+  recorded check of the change also ran the new binary on caches populated by
+  the old one (all cache hits).
 
 ## Analysis order per target
 

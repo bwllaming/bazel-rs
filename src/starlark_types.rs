@@ -281,7 +281,10 @@ pub fn unpack_file(value: Value<'_>) -> anyhow::Result<File> {
 /// JSON supports only consistent main-repository artifacts. Validate metadata
 /// without deriving a root from dirname or changing any artifact paths. Callers
 /// must charge the owner-label parse before invoking this adapter.
-pub(crate) fn file_json_root(file: &File) -> anyhow::Result<&'static str> {
+///
+/// A generated file's root is the output root of the configuration it was
+/// generated in (`bazel-out/<mnemonic>/bin`, crate::label::split_generated_root).
+pub(crate) fn file_json_root(file: &File) -> anyhow::Result<&str> {
     let owner = crate::label::Label::parse_canonical(&file.owner)
         .map_err(|_| anyhow!("unsupported File JSON profile: invalid canonical owner"))?;
     if !owner.repository.is_empty() {
@@ -312,16 +315,10 @@ pub(crate) fn file_json_root(file: &File) -> anyhow::Result<&'static str> {
         }
         Ok("")
     } else {
-        let root = crate::label::generated_exec_root();
-        if file
-            .path
-            .strip_prefix(root)
-            .and_then(|s| s.strip_prefix('/'))
-            != Some(file.short_path.as_str())
-        {
-            bail!("unsupported File JSON profile: inconsistent generated metadata");
+        match crate::label::split_generated_root(&file.path) {
+            Some((root, relative)) if relative == file.short_path => Ok(root),
+            _ => bail!("unsupported File JSON profile: inconsistent generated metadata"),
         }
-        Ok(root)
     }
 }
 
@@ -1447,7 +1444,10 @@ copies = [Label(main), Label(external)]
             assert_eq!(source, before);
             let output = label.with_name(&format!("generated/{name}")).unwrap();
             let generated = File {
-                path: output.generated_exec_path().to_string_lossy().into_owned(),
+                path: output
+                    .generated_exec_path(crate::label::GENERATED_EXEC_ROOT)
+                    .to_string_lossy()
+                    .into_owned(),
                 short_path: output.short_path().to_string_lossy().into_owned(),
                 // A generated artifact is owned by its declaring rule, not by
                 // its output name. Only its package must match the owner.
@@ -1460,6 +1460,16 @@ copies = [Label(main), Label(external)]
                 "bazel-out/rust-fastbuild/bin"
             );
             assert_eq!(generated, before);
+            // Every configuration's root (crate::config_registry).
+            let root = "bazel-out/rust-opt-exec-ST-0123456789ab/bin";
+            let exec = File {
+                path: output
+                    .generated_exec_path(root)
+                    .to_string_lossy()
+                    .into_owned(),
+                ..generated.clone()
+            };
+            assert_eq!(file_json_root(&exec).unwrap(), root);
         }
     }
 
@@ -1519,10 +1529,12 @@ copies = [Label(main), Label(external)]
             ),
             (
                 "bazel-out/k8-fastbuild/bin/pkg/out",
-                "pkg/out",
+                "pkg/other",
                 "//pkg:rule",
                 false,
             ),
+            ("bazel-out/../bin/pkg/out", "pkg/out", "//pkg:rule", false),
+            ("bazel-out//bin/pkg/out", "pkg/out", "//pkg:rule", false),
             (
                 "bazel-out/rust-fastbuild/bin2/pkg/out",
                 "pkg/out",

@@ -17,6 +17,7 @@ pub mod builtin_tools;
 mod bzl_visibility;
 pub mod bzlmod;
 mod cc_common;
+pub mod config_registry;
 pub mod config_setting;
 pub mod configuration;
 pub mod configured_attributes;

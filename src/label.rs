@@ -10,35 +10,29 @@ use std::fmt;
 use std::path::PathBuf;
 
 /// Generated-file root of the default configuration
-/// (crate::configuration::Configuration::output_root).
+/// (crate::config_registry::Configurations::output_root).
 pub(crate) const GENERATED_EXEC_ROOT: &str = "bazel-out/rust-fastbuild/bin";
 
-thread_local! {
-    /// Generated-file root of the configuration being analyzed on this thread.
-    /// One configuration is analyzed per build (no transitions are modelled);
-    /// crate::engine scopes it with [`OutputRootScope`].
-    static OUTPUT_ROOT: std::cell::Cell<&'static str> =
-        const { std::cell::Cell::new(GENERATED_EXEC_ROOT) };
-}
-
-/// The generated-file root of the configuration being analyzed.
-pub(crate) fn generated_exec_root() -> &'static str {
-    OUTPUT_ROOT.with(std::cell::Cell::get)
-}
-
-/// Sets the generated-file root for this thread until dropped.
-pub(crate) struct OutputRootScope(&'static str);
-
-impl OutputRootScope {
-    pub(crate) fn new(root: &'static str) -> Self {
-        Self(OUTPUT_ROOT.with(|cell| cell.replace(root)))
+/// Split a generated execution path into its configuration's root,
+/// `bazel-out/<mnemonic>/bin` with a single safe mnemonic component, and the
+/// root-relative rest (`None` for any other path). The root is a property of
+/// the configured target (crate::config_registry); every configuration's
+/// root has this shape.
+pub(crate) fn split_generated_root(path: &str) -> Option<(&str, &str)> {
+    let rest = path.strip_prefix("bazel-out/")?;
+    let (mnemonic, rest) = rest.split_once('/')?;
+    if mnemonic.is_empty()
+        || mnemonic == "."
+        || mnemonic == ".."
+        || !mnemonic
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'+'))
+    {
+        return None;
     }
-}
-
-impl Drop for OutputRootScope {
-    fn drop(&mut self) {
-        OUTPUT_ROOT.with(|cell| cell.set(self.0));
-    }
+    let relative = rest.strip_prefix("bin/")?;
+    let root_length = "bazel-out/".len() + mnemonic.len() + "/bin".len();
+    Some((&path[..root_length], relative))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -239,8 +233,10 @@ impl Label {
         }
     }
 
-    pub fn generated_exec_path(&self) -> PathBuf {
-        PathBuf::from(generated_exec_root()).join(self.source_exec_path())
+    /// The execution path of this label's generated file under `root`, the
+    /// output root of the configuration it is generated in.
+    pub fn generated_exec_path(&self, root: &str) -> PathBuf {
+        PathBuf::from(root).join(self.source_exec_path())
     }
 }
 
@@ -516,18 +512,58 @@ mod tests {
         let output = label.with_name("generated/file.txt").unwrap();
         assert_eq!(output.package_id(), label.package_id());
         assert_eq!(
-            output.generated_exec_path(),
+            output.generated_exec_path(GENERATED_EXEC_ROOT),
             PathBuf::from("bazel-out/rust-fastbuild/bin/external/dep+/p/generated/file.txt")
         );
         let main = Label::parse("//p:q/input.txt", "").unwrap();
         assert_eq!(main.source_exec_path(), PathBuf::from("p/q/input.txt"));
         assert_eq!(main.short_path(), main.source_exec_path());
         assert_eq!(
-            main.generated_exec_path(),
+            main.generated_exec_path(GENERATED_EXEC_ROOT),
             PathBuf::from("bazel-out/rust-fastbuild/bin/p/q/input.txt")
+        );
+        assert_eq!(
+            main.generated_exec_path("bazel-out/rust-opt-exec-ST-0123456789ab/bin"),
+            PathBuf::from("bazel-out/rust-opt-exec-ST-0123456789ab/bin/p/q/input.txt")
         );
         for name in ["../x", "/x", "//other:x", "@@other//p:x", "a//b"] {
             assert!(label.with_name(name).is_err());
+        }
+    }
+
+    #[test]
+    fn generated_roots_split_any_configuration_mnemonic() {
+        for (path, root, rest) in [
+            (
+                "bazel-out/rust-fastbuild/bin/p/out",
+                "bazel-out/rust-fastbuild/bin",
+                "p/out",
+            ),
+            (
+                "bazel-out/rust-opt-exec-ST-0123456789ab/bin/external/r+/x",
+                "bazel-out/rust-opt-exec-ST-0123456789ab/bin",
+                "external/r+/x",
+            ),
+            (
+                "bazel-out/k8-fastbuild/bin/out",
+                "bazel-out/k8-fastbuild/bin",
+                "out",
+            ),
+        ] {
+            assert_eq!(split_generated_root(path), Some((root, rest)), "{path}");
+        }
+        for path in [
+            "p/out",
+            "bazel-out/rust-fastbuild/bin",
+            "bazel-out/rust-fastbuild/bin2/p",
+            "bazel-out//bin/p",
+            "bazel-out/../bin/p",
+            "bazel-out/./bin/p",
+            "bazel-out/a b/bin/p",
+            "bazel-out/rust-fastbuild/genfiles/p",
+            "external/bazel-out/rust-fastbuild/bin/p",
+        ] {
+            assert_eq!(split_generated_root(path), None, "{path}");
         }
     }
 

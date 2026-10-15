@@ -627,11 +627,24 @@ pub fn analyze_in(
     dependencies: &BTreeMap<String, DependencyTarget>,
     repositories: Arc<RepositorySet>,
 ) -> Result<AnalysisResult, String> {
-    let (result, printed) = analyze_buffered(rule, dependencies, repositories);
+    let owner = rule.label.to_string();
+    let target = ConfiguredOutputs {
+        output_root: crate::label::GENERATED_EXEC_ROOT,
+        action_owner: &owner,
+    };
+    let (result, printed) = analyze_buffered(rule, dependencies, repositories, &target);
     for line in printed {
         eprintln!("{line}");
     }
     result
+}
+
+/// Where the analysis of a configured target declares its outputs and how
+/// its actions are named (crate::config_registry): the output root of the
+/// target's configuration and the owner part of its action ids.
+pub(crate) struct ConfiguredOutputs<'a> {
+    pub output_root: &'a str,
+    pub action_owner: &'a str,
 }
 
 /// `print()` output of an implementation, kept until the caller decides
@@ -653,9 +666,10 @@ pub(crate) fn analyze_buffered(
     rule: &Rule,
     dependencies: &BTreeMap<String, DependencyTarget>,
     repositories: Arc<RepositorySet>,
+    target: &ConfiguredOutputs<'_>,
 ) -> (Result<AnalysisResult, String>, Vec<String>) {
     let prints = BufferedPrints::default();
-    let result = analyze_inner(rule, dependencies, repositories, &prints)
+    let result = analyze_inner(rule, dependencies, repositories, target, &prints)
         .map_err(|error| format!("analysis of {}: {error:#}", rule.label));
     (result, prints.0.into_inner())
 }
@@ -664,6 +678,7 @@ fn analyze_inner(
     rule: &Rule,
     dependencies: &BTreeMap<String, DependencyTarget>,
     repositories: Arc<RepositorySet>,
+    target: &ConfiguredOutputs<'_>,
     prints: &BufferedPrints,
 ) -> anyhow::Result<AnalysisResult> {
     let invocation = rule
@@ -737,6 +752,8 @@ fn analyze_inner(
     }
     let context = Context {
         label: rule.label.clone(),
+        output_root: target.output_root.to_owned(),
+        action_owner: target.action_owner.to_owned(),
         dependency_files: dependencies
             .values()
             .flat_map(|target| target.files.iter().chain(&target.provider_files).cloned())
@@ -1328,6 +1345,8 @@ r = rule(implementation=impl, attrs={
     fn empty_context() -> Context {
         Context {
             label: Label::parse("//pkg:rule", "").unwrap(),
+            output_root: crate::label::GENERATED_EXEC_ROOT.into(),
+            action_owner: "//pkg:rule".into(),
             dependency_files: BTreeSet::new(),
             declared: RefCell::new(Vec::new()),
             actions: RefCell::new(Vec::new()),

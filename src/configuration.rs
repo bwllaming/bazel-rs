@@ -384,6 +384,28 @@ pub struct NativeOptions {
     /// their value.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub extra_toolchains: Vec<String>,
+    /// `--host_compilation_mode` (CoreOptions.java:406-417, default `opt`):
+    /// the compilation mode of the exec configuration (N18b). Not a
+    /// command-line option of the native profile yet; omitted from the
+    /// identity serialization at its default.
+    #[serde(skip_serializing_if = "is_default_host_compilation_mode")]
+    pub host_compilation_mode: &'static str,
+    /// CoreOptions.isExec (`is exec configuration`, an internal option set
+    /// by the exec transition, N18b); omitted from the identity when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub is_exec: bool,
+    /// CoreOptions.platformSuffix (`--platform_suffix`, default null; the
+    /// exec transition sets `exec`, analysis/config/ExecutionTransitionFactory.java:229-258).
+    /// Omitted from the identity when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform_suffix: Option<&'static str>,
+}
+
+/// The default `--host_compilation_mode` (CoreOptions.java:406-417).
+pub const DEFAULT_HOST_COMPILATION_MODE: &str = "opt";
+
+fn is_default_host_compilation_mode(mode: &&'static str) -> bool {
+    *mode == DEFAULT_HOST_COMPILATION_MODE
 }
 
 fn serialize_labels<S: serde::Serializer>(labels: &[Label], s: S) -> Result<S::Ok, S::Error> {
@@ -415,6 +437,9 @@ impl Default for NativeOptions {
             platforms: vec![host_platform.clone()],
             host_platform,
             extra_toolchains: Vec::new(),
+            host_compilation_mode: DEFAULT_HOST_COMPILATION_MODE,
+            is_exec: false,
+            platform_suffix: None,
         }
     }
 }
@@ -502,19 +527,6 @@ impl Configuration {
             id,
             native,
             starlark,
-        }
-    }
-
-    /// The generated-file root of this configuration: Bazel's
-    /// `bazel-out/<cpu>-<compilation_mode>/bin` mnemonic with the native
-    /// profile's fixed `rust` platform part. The default configuration keeps
-    /// the historical `rust-fastbuild` root, so existing action identities and
-    /// caches are unchanged.
-    pub fn output_root(&self) -> &'static str {
-        match self.native.compilation_mode {
-            "dbg" => "bazel-out/rust-dbg/bin",
-            "opt" => "bazel-out/rust-opt/bin",
-            _ => "bazel-out/rust-fastbuild/bin",
         }
     }
 }
@@ -935,7 +947,10 @@ mod tests {
             [("a".to_owned(), "2".to_owned()), ("b".into(), "3".into())]
         );
         assert_eq!(native.platforms, [default_host_platform()]);
-        assert_eq!(configuration.output_root(), "bazel-out/rust-dbg/bin");
+        assert_eq!(
+            crate::config_registry::mnemonic(&configuration, &configuration),
+            "rust-dbg"
+        );
         let mut options = CommandLineOptions::default();
         for (args, error) in [
             (
@@ -1086,7 +1101,6 @@ mod tests {
     fn config_id_is_stable_and_value_sensitive() {
         let default = Configuration::default();
         assert_eq!(default.id, Configuration::default().id);
-        assert_eq!(default.output_root(), crate::label::GENERATED_EXEC_ROOT);
         // Pinned identity of the default configuration (canonical serialization v1).
         assert_eq!(
             default.id.to_string(),
@@ -1110,7 +1124,7 @@ mod tests {
             parsed(&["--define=a=0", "--define=a=1"]).unwrap().id,
             defined.id
         );
-        assert_eq!(opt.output_root(), "bazel-out/rust-opt/bin");
+        assert_eq!(crate::config_registry::mnemonic(&opt, &opt), "rust-opt");
         // Starlark build settings take part in the identity; only values
         // different from the default are stored (crate::starlark_options).
         let flag = Label::parse_canonical("//:flag").unwrap();
@@ -1129,6 +1143,70 @@ mod tests {
             set(SettingValue::Label(flag.clone())).id,
             set(SettingValue::Label(flag.clone())).id
         );
+    }
+
+    /// N18a: the options added for the exec configuration (N18b) are
+    /// omitted from the identity at their defaults, so the identities of
+    /// existing configurations (and the action cache keys and output roots
+    /// derived from them) are byte-identical. The pinned digests are those
+    /// the pre-N18a binary printed in cycle reports.
+    #[test]
+    fn exec_options_keep_existing_identities_byte_identical() {
+        for (args, mode, id) in [
+            (
+                &[][..],
+                "fastbuild",
+                "25220f3df2bbaeaabb6d1d9090e0350f71be66fbaf6c30d161dbe3a21d6e6f12",
+            ),
+            (
+                &["-c", "dbg"][..],
+                "dbg",
+                "ecf996e106ce543d963831ae33f4558154fe94c658b867a943a6e965f0abe391",
+            ),
+            (
+                &["-c", "opt"][..],
+                "opt",
+                "c4756fdb1db24997bd83626c4e31214644514404335a977e8351493e245b4af7",
+            ),
+        ] {
+            let configuration = parsed(args).unwrap();
+            assert_eq!(configuration.native.host_compilation_mode, "opt");
+            assert!(!configuration.native.is_exec);
+            assert_eq!(configuration.native.platform_suffix, None);
+            let expected = format!(
+                r#"{{"version":1,"native":{{"compilation_mode":"{mode}","stamp":false,"define":[],"strip":"sometimes","force_pic":false,"platforms":["@@bazel_tools//tools:host_platform"],"host_platform":"@@bazel_tools//tools:host_platform"}},"starlark":[]}}"#
+            );
+            assert_eq!(
+                String::from_utf8(canonical_serialization(
+                    &configuration.native,
+                    &configuration.starlark
+                ))
+                .unwrap(),
+                expected
+            );
+            assert_eq!(configuration.id.to_string(), id, "{args:?}");
+        }
+        // Non-default values are part of the identity.
+        let base = NativeOptions::default();
+        for native in [
+            NativeOptions {
+                host_compilation_mode: "dbg",
+                ..base.clone()
+            },
+            NativeOptions {
+                is_exec: true,
+                ..base.clone()
+            },
+            NativeOptions {
+                platform_suffix: Some("exec"),
+                ..base.clone()
+            },
+        ] {
+            assert_ne!(
+                Configuration::new(native, BTreeMap::new()).id,
+                Configuration::default().id
+            );
+        }
     }
 
     #[test]
