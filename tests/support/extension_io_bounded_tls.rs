@@ -34,35 +34,31 @@ mod n3_tls_process {
     }
 
     fn group_exists(group: u32) -> Result<bool, String> {
-        for entry in fs::read_dir("/proc").map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            if entry.file_name().to_string_lossy().parse::<u32>().is_err() {
-                continue;
-            }
-            let file = match File::open(entry.path().join("stat")) {
-                Ok(file) => file,
-                Err(e) if matches!(e.raw_os_error(), Some(2 | 3)) => continue,
-                Err(e) => return Err(e.to_string()),
-            };
-            let mut stat = String::new();
-            match file.take(8192).read_to_string(&mut stat) {
-                Ok(_) => {}
-                Err(e) if matches!(e.raw_os_error(), Some(2 | 3)) => continue,
-                Err(e) => return Err(e.to_string()),
-            }
-            // comm may contain spaces or ')'; fields after final ')' start at state.
-            let rest = stat.rsplit_once(')').ok_or("malformed /proc stat")?.1;
-            let pgrp: u32 = rest
-                .split_whitespace()
-                .nth(2)
-                .ok_or("missing pgrp")?
-                .parse()
-                .map_err(|_| "invalid pgrp")?;
-            if pgrp == group {
-                return Ok(true);
+        // Ask the kernel (kill(2) with signal 0 on the group) instead of
+        // parsing every host process's /proc stat: foreign processes must not
+        // be able to fail this owned-group check. Exit 0 iff the group has a
+        // member; our own group is never EPERM. No shell or inherited env.
+        if group <= 1 {
+            return Err("refusing non-private group".into());
+        }
+        let mut probe = Command::new("/usr/bin/kill")
+            .args(["-0", "--", &format!("-{group}")])
+            .env_clear()
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        match reap(&mut probe, Instant::now() + CLEANUP) {
+            Ok(status) => Ok(status.success()),
+            Err(first) => {
+                let killed = probe.kill();
+                let reaped = reap(&mut probe, Instant::now() + CLEANUP);
+                Err(format!(
+                    "group probe failed: {first}; kill={killed:?}; reap={reaped:?}"
+                ))
             }
         }
-        Ok(false)
     }
 
     fn signal_group(group: u32) -> Result<(), String> {
