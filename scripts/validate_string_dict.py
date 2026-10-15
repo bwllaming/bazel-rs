@@ -82,12 +82,13 @@ DIAGNOSTICS = {
     'configurable': r'string_dict[^\n]*configurable[^\n]*(?:unsupported|not supported)',
     'ascii': r'(?:non.ASCII|ASCII.only|only ASCII|must[^\n]*ASCII)',
 }
+# No native 'frozen' alternative: since N20 the native interpreter prints Bazel's
+# Starlark.checkMutable text (Starlark.java:262-265; docs/STARLARK_VENDOR.md).
 NATIVE = {
     'key': r'(?:string_dict[^\n]*key[^\n]*string|attribute "d"[^\n]*key[^\n]*string|tag dictionary key must be a string)',
     'value': r'(?:string_dict[^\n]*value[^\n]*string|attribute "d"[^\n]*value[^\n]*string)',
     'dict': r'(?:attribute "d": |string_dict[^\n]*)expected a dict of strings to strings',
     'mandatory': r'missing mandatory (?:(?:repository|tag) )?attribute "d"',
-    'frozen': r'(?m:^error: Immutable$)',
     'two-positional': r'Found 1 extra positional argument\(s\) for call to string_dict',
     'values': r'(?:string_dict[^\n]*values|values[^\n]*string_dict)[^\n]*(?:unexpected|parameter|argument)',
     'duplicate': r'(?:allow_empty[^\n]*(?:multiple|twice)|(?:multiple|twice)[^\n]*allow_empty)',

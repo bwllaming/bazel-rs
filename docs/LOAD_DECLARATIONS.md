@@ -126,7 +126,8 @@ Following `StarlarkAttrModuleApi.java` and `StarlarkAttrModule.java:317-565`:
   attribute (`When an attribute value is a function, the attribute must be
   private ...`) and is kept without a resolved value.
 * New `attr.int_list(mandatory, allow_empty, default, doc)` and
-  `attr.label_keyed_string_dict(...)`.
+  `attr.label_keyed_string_dict(...)`; `attr.string_keyed_label_dict(...)`
+  and `attr.label_list_dict(...)` (docs/ATTR_DICTS_COMPUTED_DEFAULTS.md).
 * `allow_empty` on `string_list`, `label_list`, `output_list`, `int_list`
   (checked at analysis, like the existing dict attributes); `values` on
   `string`/`int`.
@@ -149,7 +150,9 @@ A target fails analysis with the message above if it uses any of these:
 * always: a late-bound (`configuration_field`) default;
 * `aspect()` objects are never applied; `transition()` implementations,
   `attr_aspects`/`toolchains_aspects` functions and `propagation_predicate` are
-  never called; `OutputGroupInfo(...)` fails when called.
+  never called; `OutputGroupInfo(...)` and `AnalysisTestResultInfo(...)` fail
+  when called; `analysis_test_transition()` objects are retained, restricted
+  to `analysis_test=True` rules, and never applied.
 
 `toolchains` and `exec_compatible_with` drive toolchain resolution
 (docs/TOOLCHAINS.md).
@@ -165,12 +168,20 @@ explicit attribute error), `doc`, `extendable`, `for_dependency_resolution`,
   extension, inherited attributes and `super()` are not implemented natively).
 * Probes that need `exec_group()` or `configuration_field()` (language-module
   branch) cannot reach the ported checks in this branch.
-* Computed (function) attribute defaults; `configurable=` (unchanged
-  profile); `attr.string_keyed_label_dict`, `attr.label_list_dict`.
+* `configurable=` on the older `attr.*` functions (unchanged profile).
+  `attr.string_keyed_label_dict`, `attr.label_list_dict` (whose `configurable=`
+  is rejected by `rule()`/`aspect()` like Bazel),
+  computed (function) defaults of private `attr.label`/`attr.label_list`
+  attributes and `analysis_test_transition` are implemented by
+  [ATTR_DICTS_COMPUTED_DEFAULTS.md](ATTR_DICTS_COMPUTED_DEFAULTS.md); its
+  remaining explicit failures (computed defaults reading `select()` values or
+  unmodelled built-in defaults, function defaults of label dictionaries,
+  computed defaults of aspects/repository rules/tags) are listed there.
 * `dict | select(...)` (dict on the left) is not supported by the vendored
   Starlark dict `|`; `select(...) | dict` and `+`/`+=` with lists work.
 * `IntList`/`LabelKeyedStringDict` attributes in repository rules and module
-  extension tags fail explicitly when their values are materialized.
+  extension tags fail explicitly when their values are materialized
+  (`string_keyed_label_dict`/`label_list_dict` are supported there).
 * Built-in attributes (`tags`, `testonly`, `size`, ...) are accepted by
   custom rule instantiation since the common-attributes increment
   (docs/COMMON_RULE_ATTRIBUTES.md); defining an attribute with a built-in

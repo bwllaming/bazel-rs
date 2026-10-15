@@ -16,6 +16,7 @@
  */
 
 // Modified for allocation-free integer inspection for native JSON compatibility.
+// Modified for native Bazel 9.3 `dict | select`; see vendor provenance.
 
 // Possible optimisations:
 // Avoid the Box duplication
@@ -91,6 +92,7 @@ use crate::values::ValueError;
 use crate::values::ValueIdentity;
 use crate::values::bool::value::VALUE_FALSE_TRUE;
 use crate::values::demand::request_value_impl;
+use crate::values::dict::DictRef;
 use crate::values::dict::FrozenDictRef;
 use crate::values::dict::value::VALUE_EMPTY_FROZEN_DICT;
 use crate::values::enumeration::EnumType;
@@ -657,7 +659,16 @@ impl<'v> Value<'v> {
     }
 
     /// `x | other`.
+    ///
+    /// Modified: a dict `x` with a non-dict `other` first offers the operation
+    /// to `other` (StarlarkValue::rbit_or), as Bazel does for
+    /// `{...} | select(...)` (SelectorList.binaryOp with thisLeft = false).
     pub fn bit_or(self, other: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {
+        if DictRef::from_value(self).is_some() && DictRef::from_value(other).is_none() {
+            if let Some(result) = other.get_ref().rbit_or(self, heap) {
+                return result;
+            }
+        }
         self.get_ref().bit_or(other, heap)
     }
 

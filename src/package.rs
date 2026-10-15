@@ -303,6 +303,15 @@ pub(crate) fn custom_dependency_labels(attrs: &BTreeMap<String, AttrValue>) -> V
             AttrValue::LabelKeyedStringDict(entries) => {
                 srcs.extend(entries.iter().map(|(label, _)| label.clone()))
             }
+            // DictType.visitLabels (packages/Type.java:504-514): label values.
+            AttrValue::StringKeyedLabelDict(entries) => {
+                srcs.extend(entries.iter().map(|(_, label)| label.clone()))
+            }
+            AttrValue::LabelListDict(entries) => srcs.extend(
+                entries
+                    .iter()
+                    .flat_map(|(_, labels)| labels.iter().cloned()),
+            ),
             _ => {}
         }
     }
@@ -1949,7 +1958,7 @@ fn duplicate_label_errors(rule: &Rule) -> Vec<String> {
     fn lists(value: &AttrValue) -> Vec<&[String]> {
         match value {
             AttrValue::Labels(labels) => vec![labels.as_slice()],
-            AttrValue::StringListDict(entries) => entries
+            AttrValue::StringListDict(entries) | AttrValue::LabelListDict(entries) => entries
                 .iter()
                 .map(|(_, labels)| labels.as_slice())
                 .collect(),
@@ -2009,11 +2018,13 @@ fn duplicate_label_errors(rule: &Rule) -> Vec<String> {
             ));
         }
         for name in &custom.declaration.attr_order {
-            if custom
-                .schema
-                .get(name)
-                .is_some_and(|spec| spec.kind == crate::custom_rule::AttrKind::LabelList)
-            {
+            if custom.schema.get(name).is_some_and(|spec| {
+                matches!(
+                    spec.kind,
+                    crate::custom_rule::AttrKind::LabelList
+                        | crate::custom_rule::AttrKind::LabelListDict
+                )
+            }) {
                 checked.push((
                     name.clone(),
                     possibilities(
@@ -3155,7 +3166,7 @@ def legacy():
         symbolic_error(
             "def impl(name, visibility):\n    visibility.append(Label('//other:__pkg__'))\nm=macro(implementation=impl)",
             "m(name='x')",
-            "immutable",
+            "trying to mutate a frozen list value",
         );
     }
 

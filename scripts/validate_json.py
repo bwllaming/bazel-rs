@@ -324,12 +324,16 @@ DIAGNOSTICS = {
 }
 
 # Exact messages from the preserved first frozen run, except the ceiling-neutral
-# resource message bound to the current candidate source (not yet CLI evidence).
+# resource message bound to the current candidate source (not yet CLI evidence)
+# and 'frozen': since N20 the vendored interpreter reports Bazel's
+# Starlark.checkMutable text for the frozen decoded list
+# (net/starlark/java/eval/Starlark.java:262-265; docs/STARLARK_VENDOR.md),
+# replacing the first run's native "Immutable".
 # No catch-all "nonzero" waiver. Reference patterns above remain unchanged.
 # Fixture/phase/argument and source bindings are mandatory for this projection.
 NATIVE_MESSAGES = {
     'immutable': 'Operation `.encode=` not supported on type `json`',
-    'frozen': 'Immutable',
+    'frozen': 'trying to mutate a frozen list value',
     'type-default': 'JSON argument must be a string',
     'option-type': 'JSON argument must be a string',
     **{'offset'+str(n): 'at offset '+str(n)+', unexpected character' for n in (6,8,10)},

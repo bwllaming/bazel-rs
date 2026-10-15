@@ -55,6 +55,10 @@ pub enum Cfg {
         definition: String,
         inputs: Vec<String>,
         outputs: Vec<String>,
+        /// `analysis_test_transition(settings=...)` (isForAnalysisTesting,
+        /// StarlarkDefinedConfigTransition.java:300-345).
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        analysis_test: bool,
     },
 }
 
@@ -63,12 +67,28 @@ impl Cfg {
         matches!(self, Self::Target)
     }
 
+    /// Attribute.hasAnalysisTestTransition (StarlarkAttrModule.java:486-495).
+    pub(crate) fn is_analysis_test(&self) -> bool {
+        matches!(
+            self,
+            Self::Starlark {
+                analysis_test: true,
+                ..
+            }
+        )
+    }
+
     pub(crate) fn describe(&self) -> String {
         match self {
             Self::Target => "target".to_owned(),
             Self::Exec(None) => "exec".to_owned(),
             Self::Exec(Some(group)) => format!("config.exec({group:?})"),
             Self::NoConfig => "config.none()".to_owned(),
+            Self::Starlark {
+                definition,
+                analysis_test: true,
+                ..
+            } => format!("analysis_test_transition from {definition}"),
             Self::Starlark { definition, .. } => format!("transition from {definition}"),
         }
     }
@@ -221,6 +241,12 @@ mod values {
     #[repr(C)]
     pub(crate) struct TransitionGen<V> {
         pub implementation: V,
+        /// `analysis_test_transition(settings=...)`: the retained frozen-safe
+        /// settings dictionary; `None` for `transition()`.
+        pub settings: V,
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        pub analysis_test: bool,
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
         pub inputs: Vec<String>,
@@ -234,9 +260,14 @@ mod values {
     starlark_complex_value!(pub(crate) Transition);
 
     impl<V> fmt::Display for TransitionGen<V> {
-        // StarlarkDefinedConfigTransition.java:733 RegularTransition.repr.
+        // StarlarkDefinedConfigTransition.java:733 RegularTransition.repr;
+        // AnalysisTestTransition.repr (:354-357).
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("<transition object>")
+            if self.analysis_test {
+                f.write_str("<analysis_test_transition object>")
+            } else {
+                f.write_str("<transition object>")
+            }
         }
     }
 
@@ -320,6 +351,15 @@ mod values {
             Some(concat(pieces_of(lhs), self.pieces(), heap).map_err(starlark::Error::new_other))
         }
 
+        /// `{...} | select(...)`: SelectorList.binaryOp with thisLeft = false
+        /// concatenates when the other operand is a dict (PIPE,
+        /// packages/SelectorList.java:171-182), through the vendored reverse
+        /// `|` hook (docs/STARLARK_VENDOR.md).
+        fn rbit_or(&self, lhs: Value<'v>, heap: Heap<'v>) -> Option<starlark::Result<Value<'v>>> {
+            DictRef::from_value(lhs)?;
+            Some(concat(pieces_of(lhs), self.pieces(), heap).map_err(starlark::Error::new_other))
+        }
+
         fn bit_or(&self, rhs: Value<'v>, heap: Heap<'v>) -> starlark::Result<Value<'v>> {
             if self.native_type != "dict" {
                 return Err(starlark::Error::new_other(anyhow!(
@@ -369,6 +409,61 @@ mod values {
             Err(starlark::Error::new_other(anyhow!(
                 "OutputGroupInfo construction is not implemented in the native profile (analysis-time output groups)"
             )))
+        }
+    }
+
+    /// The analysis-test providers of TestingBootstrap
+    /// (starlarkbuildapi/test/TestingBootstrap.java:46-52): `AnalysisTestResultInfo`
+    /// (analysis/test/AnalysisTestResultInfo.java:56-67, constructor
+    /// AnalysisTestResultInfoApi.java:55-79) and the constructor-less
+    /// `AnalysisFailureInfo` (analysis/test/AnalysisFailureInfo.java:78-86).
+    /// BuiltinProvider repr is `<function NAME>` (packages/BuiltinProvider.java:93-96).
+    /// Only analysis tests (an explicit analysis gap) produce or inspect
+    /// them, so construction fails explicitly like `OutputGroupInfo`.
+    #[derive(
+        Clone,
+        Debug,
+        PartialEq,
+        Eq,
+        ProvidesStaticType,
+        NoSerialize,
+        Allocative,
+        StarlarkPagablePanic,
+    )]
+    pub(crate) struct TestingProvider {
+        #[allocative(skip)]
+        pub name: &'static str,
+    }
+    starlark_simple_value!(TestingProvider);
+
+    impl fmt::Display for TestingProvider {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "<function {}>", self.name)
+        }
+    }
+
+    #[starlark_value(type = "Provider")]
+    impl<'v> StarlarkValue<'v> for TestingProvider {
+        fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
+            Ok(Self::from_value(other) == Some(self))
+        }
+
+        fn invoke(
+            &self,
+            _me: Value<'v>,
+            _args: &Arguments<'v, '_>,
+            _eval: &mut Evaluator<'v, '_, '_>,
+        ) -> starlark::Result<Value<'v>> {
+            Err(starlark::Error::new_other(
+                if self.name == "AnalysisTestResultInfo" {
+                    anyhow!(
+                        "AnalysisTestResultInfo construction is not implemented in the native profile (analysis-test results)"
+                    )
+                } else {
+                    // A BuiltinProvider without @StarlarkConstructor is not callable.
+                    anyhow!("'Provider' object is not callable")
+                },
+            ))
         }
     }
 
@@ -451,7 +546,7 @@ mod values {
 }
 pub(crate) use values::{
     Aspect, AspectGen, ExecTransition, NoOpTransition, OutputGroupInfoConstructor, SelectorList,
-    SelectorListGen, Transition, TransitionGen,
+    SelectorListGen, TestingProvider, Transition, TransitionGen,
 };
 
 /// Owned `aspect()` metadata (StarlarkRuleClassFunctions.java:1323-1520).
@@ -798,6 +893,7 @@ fn transition_cfg(value: Value<'_>) -> Option<Cfg> {
         definition: t.definition.clone(),
         inputs: t.inputs.clone(),
         outputs: t.outputs.clone(),
+        analysis_test: t.analysis_test,
     })
 }
 
@@ -994,15 +1090,75 @@ mod declaration_globals {
             }
             let inputs = cast_strings(inputs, "inputs")?;
             let outputs = cast_strings(outputs, "outputs")?;
-            validate_setting_keys(eval, &inputs, "input")?;
-            validate_setting_keys(eval, &outputs, "output")?;
+            validate_setting_keys(eval, &inputs, "input", false)?;
+            validate_setting_keys(eval, &outputs, "output", false)?;
             // StarlarkDefinedConfigTransition constructor canonicalizes outputs, then inputs
             // (StarlarkDefinedConfigTransition.java:110-117); disallowed options default empty.
             canonicalize_settings(eval, &outputs, "OUTPUTS")?;
             canonicalize_settings(eval, &inputs, "INPUTS")?;
             Ok(eval.heap().alloc(TransitionGen {
                 implementation,
+                settings: Value::new_none(),
+                analysis_test: false,
                 inputs,
+                outputs,
+                definition: definition.to_string(),
+            }))
+        }
+
+        /// ConfigGlobalLibrary.analysisTestTransition
+        /// (rules/config/ConfigGlobalLibrary.java:120-140; ConfigGlobalLibraryApi.java:101-130)
+        /// and StarlarkDefinedConfigTransition.newAnalysisTestTransition
+        /// (StarlarkDefinedConfigTransition.java:300-345): no inputs, the
+        /// settings keys as outputs. Retained for declarations; applying it is
+        /// part of analysis-test analysis (docs/LOAD_DECLARATIONS.md).
+        fn analysis_test_transition<'v>(
+            #[starlark(args)] positional: starlark::values::tuple::UnpackTuple<Value<'v>>,
+            #[starlark(require = named)] settings: Option<Value<'v>>,
+            eval: &mut Evaluator<'v, '_, '_>,
+        ) -> anyhow::Result<Value<'v>> {
+            // `settings` is named-only and mandatory (ConfigGlobalLibraryApi.java:115-124).
+            if !positional.items.is_empty() {
+                bail!("analysis_test_transition() got unexpected positional argument");
+            }
+            let Some(settings) = settings else {
+                bail!("analysis_test_transition() missing 1 required named argument: settings");
+            };
+            let Some(dict) = DictRef::from_value(settings) else {
+                return Err(param_type_error(
+                    "analysis_test_transition",
+                    "settings",
+                    settings,
+                    "dict",
+                ));
+            };
+            let definition = crate::loading::definition_label(eval).ok_or_else(|| {
+                anyhow!("analysis_test_transition() can only be used in a .bzl file")
+            })?;
+            let mut outputs = Vec::new();
+            let mut entries = Vec::new();
+            let mut budget = HostBudget::default();
+            for (key, value) in dict.iter() {
+                budget.node().map_err(anyhow::Error::msg)?;
+                let Some(text) = key.unpack_str() else {
+                    bail!(
+                        "got dict<{}, {}> for 'changed_settings dict', want dict<string, unknown>",
+                        key.get_type(),
+                        value.get_type()
+                    );
+                };
+                budget.string(text).map_err(anyhow::Error::msg)?;
+                outputs.push(text.to_owned());
+                entries.push((key, value));
+            }
+            validate_setting_keys(eval, &outputs, "output", true)?;
+            canonicalize_settings(eval, &outputs, "OUTPUTS")?;
+            let settings = eval.heap().alloc(AllocDict(entries));
+            Ok(eval.heap().alloc(TransitionGen {
+                implementation: Value::new_none(),
+                settings,
+                analysis_test: true,
+                inputs: Vec::new(),
                 outputs,
                 definition: definition.to_string(),
             }))
@@ -1064,11 +1220,12 @@ fn validate_setting_keys(
     eval: &Evaluator<'_, '_, '_>,
     keys: &[String],
     singular: &str,
+    allow_incompatible_and_experimental: bool,
 ) -> anyhow::Result<()> {
     let mut seen = BTreeSet::new();
     for key in keys {
         if let Some(option) = key.strip_prefix(COMMAND_LINE_OPTION_PREFIX) {
-            if !valid_option_name(option) {
+            if !allow_incompatible_and_experimental && !valid_option_name(option) {
                 bail!(
                     "Invalid transition {singular} '{key}'. Cannot transition on --experimental_* or --incompatible_* options"
                 );
@@ -1360,6 +1517,13 @@ fn aspect_attribute(name: &str, spec: &AttrSpec, required: &mut Vec<String>) -> 
         // only attr.label (default None) and outputs (no default) do not.
         bail!("Aspect attribute '{name}' has no default value.");
     }
+    // StarlarkRuleClassFunctions.java:1435-1446, with the Type.toString name.
+    if spec.declaration.computed_default {
+        bail!(
+            "Aspect attribute '{name}' ({}) with computed default value is unsupported.",
+            spec.kind.type_name()
+        );
+    }
     Ok(())
 }
 
@@ -1415,11 +1579,16 @@ fn toolchains_aspects_list(
     Ok(labels)
 }
 
-/// Install `aspect`, `transition`, `select` and `OutputGroupInfo` into `.bzl` globals.
+/// Install `aspect`, `transition`, `analysis_test_transition`, `select`,
+/// `OutputGroupInfo`, `AnalysisTestResultInfo` and `AnalysisFailureInfo`
+/// into `.bzl` globals.
 pub fn install(builder: &mut GlobalsBuilder) {
     bzl_globals(builder);
     select_globals(builder);
     builder.set("OutputGroupInfo", OutputGroupInfoConstructor);
+    for name in ["AnalysisTestResultInfo", "AnalysisFailureInfo"] {
+        builder.set(name, TestingProvider { name });
+    }
 }
 
 /// `select` is a BUILD and .bzl global (SelectorList.java:241 environment = {BUILD, BZL}).
@@ -2360,5 +2529,419 @@ nonempty = rule(impl, attrs = {'counts': attr.int_list(allow_empty = False)})\n"
                 crate::analysis::analyze(target(&package, name), &Default::default()).unwrap_err();
             assert!(error.contains(expected), "{name}: {error}");
         }
+    }
+
+    #[test]
+    fn label_dict_attributes_declare_like_starlark_attr_module() {
+        let module = passes(&format!(
+            "{IMPL}a = attr.string_keyed_label_dict(default = {{'k': ':x', 'l': Label('//other:y')}}, allow_files = True, providers = [P], configurable = False)\n\
+             b = attr.label_list_dict(False, default = {{'k': [':x', '@@//z:z'], 'e': ()}}, skip_validations = True, flags = ['F'], cfg = 'exec')\n\
+             c = attr.string_keyed_label_dict()\n\
+             d = attr.label_list_dict()\n\
+             (type(a) == 'Attribute' and repr(a) == '<attr.string_keyed_label_dict>' and repr(b) == '<attr.label_list_dict>') or fail(repr(a))\n"
+        ));
+        let spec = |name: &str| {
+            crate::custom_rule::attribute_spec(module.get(name).unwrap().value()).unwrap()
+        };
+        let a = spec("a");
+        assert_eq!(
+            a.default,
+            AttrValue::StringKeyedLabelDict(vec![
+                ("k".to_owned(), "//pkg:x".to_owned()),
+                ("l".to_owned(), "//other:y".to_owned()),
+            ])
+        );
+        assert!(a.allow_files && a.declaration.configurable_set);
+        assert_eq!(a.required_providers.len(), 1);
+        let b = spec("b");
+        assert_eq!(
+            b.default,
+            AttrValue::LabelListDict(vec![
+                (
+                    "k".to_owned(),
+                    vec!["//pkg:x".to_owned(), "//z:z".to_owned()]
+                ),
+                ("e".to_owned(), vec![]),
+            ])
+        );
+        assert!(b.non_empty && b.declaration.skip_validations);
+        assert_eq!(b.declaration.cfg, Cfg::Exec(None));
+        assert_eq!(b.declaration.flags, ["F"]);
+        assert_eq!(spec("c").default, AttrValue::StringKeyedLabelDict(vec![]));
+        assert_eq!(spec("d").default, AttrValue::LabelListDict(vec![]));
+        for (expression, expected) in [
+            (
+                "attr.string_keyed_label_dict(default = None)",
+                "in call to string_keyed_label_dict(), parameter 'default' got value of type 'NoneType', want 'dict or function'",
+            ),
+            (
+                "attr.label_list_dict(default = lambda name: {})",
+                "in call to label_list_dict(), parameter 'default' got value of type 'function', want 'dict'",
+            ),
+            (
+                "attr.string_keyed_label_dict(default = {'k': 1})",
+                "expected value of type 'string' for dict value element, but got 1 (int)",
+            ),
+            (
+                "attr.string_keyed_label_dict(default = {1: '//a:b'})",
+                "expected value of type 'string' for dict key element, but got 1 (int)",
+            ),
+            (
+                "attr.label_list_dict(default = {'k': '//a:b'})",
+                "expected value of type 'list(label)' for dict value element, but got \"//a:b\" (string)",
+            ),
+            (
+                "attr.label_list_dict(default = {'k': [1]})",
+                "expected value of type 'string' for element 0 of dict value element, but got 1 (int)",
+            ),
+            (
+                "attr.string_keyed_label_dict(skip_validations = True)",
+                "skip_validations",
+            ),
+            ("attr.label_list_dict(executable = True)", "executable"),
+            (
+                "attr.string_keyed_label_dict(default = lambda name: {})",
+                "computed (function) defaults of attr.string_keyed_label_dict are not supported by the native profile",
+            ),
+            (
+                "attr.label_list_dict(allow_files = 1)",
+                "in call to label_list_dict(), parameter 'allow_files' got value of type 'int', want 'bool, sequence, or NoneType'",
+            ),
+        ] {
+            fails(&format!("{IMPL}x = {expression}\n"), expected);
+        }
+    }
+
+    #[test]
+    fn label_dict_values_bind_select_and_check_duplicates_at_loading() {
+        let defs = "def impl(ctx):\n    return []\n\
+r = rule(impl, attrs = {'m': attr.string_keyed_label_dict(allow_files = True), 'l': attr.label_list_dict(allow_files = True)})\n";
+        let package = evaluate_package(
+            defs,
+            "load(':defs.bzl', 'r')\nconfig_setting(name = 'c', values = {'compilation_mode': 'opt'})\n\
+r(name = 'a', m = {'x': 'a.txt', 'y': '//other:b'}, l = select({':c': {'k': ['s.txt']}, '//conditions:default': {'k': ['t.txt'], 'j': []}}))\n",
+        )
+        .unwrap();
+        let custom = target(&package, "a").custom.as_ref().unwrap();
+        assert_eq!(
+            custom.attrs["m"],
+            AttrValue::StringKeyedLabelDict(vec![
+                ("x".to_owned(), "//:a.txt".to_owned()),
+                ("y".to_owned(), "//other:b".to_owned()),
+            ])
+        );
+        assert!(custom.declaration.configurable.contains_key("l"));
+        let labels = custom
+            .declaration
+            .configurable_labels
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        for expected in ["//:c", "//:s.txt", "//:t.txt"] {
+            assert!(labels.iter().any(|label| label == expected), "{labels:?}");
+        }
+        for (call, expected) in [
+            (
+                "r(name = 'd', l = {'k': ['x', ':x'], 'j': ['y', 'y']})",
+                "Label '//:x' is duplicated in the 'l' attribute of rule 'd'",
+            ),
+            (
+                "r(name = 'd', l = {'p': ['//:a']} | select({'//conditions:default': {'q': ['//:b', '//:b']}}))",
+                "Label '//:b' is duplicated in the 'l' attribute of rule 'd'",
+            ),
+            (
+                "r(name = 'd', m = select({'//conditions:default': {'k': 1}}))",
+                "expected value of type 'string' for dict value element, but got 1 (int)",
+            ),
+        ] {
+            let error =
+                evaluate_package(defs, &format!("load(':defs.bzl', 'r')\n{call}\n")).unwrap_err();
+            assert!(error.contains(expected), "{call}: {error}");
+        }
+        // Duplicate labels across different keys are allowed (each value list
+        // is checked independently, AggregatingAttributeMapper.java:252-264).
+        evaluate_package(
+            defs,
+            "load(':defs.bzl', 'r')\nr(name = 'ok', l = {'k': ['x'], 'j': ['x']}, m = {'a': 'x', 'b': 'x'})\n",
+        )
+        .unwrap();
+    }
+
+    /// Visible attributes of a plain Starlark rule's computed default: the
+    /// nonconfigurable built-ins (genuine capture, B4/cs_t_unset).
+    const AVAILABLE: &str = "Available attributes: $config_dependencies, compatible_with, exec_compatible_with, exec_group_compatible_with, generator_function, generator_location, generator_name, name, restricted_to, tags, transitive_configs, visibility";
+
+    #[test]
+    fn computed_defaults_evaluate_with_other_attribute_values_at_loading() {
+        let defs = "def impl(ctx):\n    return []\n\
+def parser(name, tags):\n    if '__DONT_DEPEND_ON_DEF_PARSER__' in tags or 'def_parser' in name:\n        return None\n    return Label('//tools:def_parser')\n\
+def extra(srcs, flag, name):\n    return [Label('//tools:' + s) for s in srcs] if flag else None\n\
+r = rule(impl, attrs = {'srcs': attr.string_list(), 'flag': attr.bool(default = True), '_def_parser': attr.label(default = parser, allow_single_file = True, cfg = 'exec'), '_extra': attr.label_list(default = extra)})\n\
+(repr(attr.label(default = parser)) == '<attr.label>') or fail('repr')\n\
+def bad(name):\n    return '//tools:x'\n\
+def missing(nope):\n    return None\n\
+def private(_def_parser):\n    return None\n\
+def unset(x):\n    return None\n\
+def chained(_def_parser):\n    return None\n\
+def fails_(name):\n    fail('boom')\n\
+def strings(name):\n    return [name]\n\
+def tupled(name):\n    return (Label('//tools:t'),)\n\
+def selected(srcs):\n    return None\n\
+e_bad = rule(impl, attrs = {'_p': attr.label(default = bad)})\n\
+e_missing = rule(impl, attrs = {'_p': attr.label(default = missing)})\n\
+e_private = rule(impl, attrs = {'_p': attr.label(default = private), '_def_parser': attr.label()})\n\
+e_unset = rule(impl, attrs = {'_p': attr.label(default = unset), 'x': attr.label()})\n\
+e_chained = rule(impl, attrs = {'_p': attr.label(default = unset), 'x': attr.label(default = '//tools:x')})\n\
+e_fails = rule(impl, attrs = {'_p': attr.label(default = fails_)})\n\
+e_strings = rule(impl, attrs = {'_p': attr.label_list(default = strings)})\n\
+ok_tuple = rule(impl, attrs = {'_p': attr.label_list(default = tupled)})\n\
+e_selected = rule(impl, attrs = {'srcs': attr.string_list(), '_p': attr.label(default = selected)})\n\
+e_builtin = rule(impl, attrs = {'_p': attr.label(default = lambda testonly: None)})\n\
+e_deprecation = rule(impl, attrs = {'_p': attr.label(default = lambda name, deprecation: None)})\n\
+e_metadata = rule(impl, attrs = {'_p': attr.label(default = lambda package_metadata: None)})\n\
+e_alt = rule(impl, attrs = {'_p': attr.label(default = lambda applicable_licenses: None)})\n\
+e_timeout_test = rule(impl, test = True, attrs = {'_p': attr.label(default = lambda timeout: None)})\n\
+e_vis_unset = rule(impl, attrs = {'_p': attr.label(default = lambda visibility: None)})\n\
+e_with_s = rule(impl, attrs = {'s': attr.string(), 'n': attr.int(), '_p': attr.label(default = lambda s, n, features, testonly: None)})\n\
+def outs(o, os, visibility, features, exec_properties, size):\n    (str(o) == '@@//:out.txt' and type(o) == 'Label') or fail('output %r' % o)\n    ([str(x) for x in os] == ['@@//:a.txt', '@@//:sub/b.txt']) or fail('outputs %r' % os)\n    ([str(x) for x in visibility] == ['@@//visibility:public']) or fail('vis %r' % visibility)\n    (features == [] and exec_properties == {} and size == 'medium') or fail('defaults')\n    return Label('//tools:outs_' + str(len(visibility)))\n\
+outs_test = rule(impl, test = True, attrs = {'o': attr.output(), 'os': attr.output_list(), '_p': attr.label(default = outs)})\n";
+        let package = evaluate_package(
+            defs,
+            "load(':defs.bzl', 'ok_tuple', 'r')\n\
+r(name = 'a', srcs = ['x', 'y'])\n\
+r(name = 'my_def_parser', flag = False)\n\
+r(name = 'tagged', tags = ['__DONT_DEPEND_ON_DEF_PARSER__'])\n\
+ok_tuple(name = 't')\n",
+        )
+        .unwrap();
+        let attrs = |name: &str| {
+            target(&package, name)
+                .custom
+                .as_ref()
+                .unwrap()
+                .attrs
+                .clone()
+        };
+        assert_eq!(
+            attrs("a")["_def_parser"],
+            AttrValue::Label(Some("//tools:def_parser".to_owned()))
+        );
+        assert_eq!(
+            attrs("a")["_extra"],
+            AttrValue::Labels(vec!["//tools:x".to_owned(), "//tools:y".to_owned()])
+        );
+        assert_eq!(
+            attrs("my_def_parser")["_def_parser"],
+            AttrValue::Label(None)
+        );
+        assert_eq!(attrs("my_def_parser")["_extra"], AttrValue::Labels(vec![]));
+        assert_eq!(attrs("tagged")["_def_parser"], AttrValue::Label(None));
+        assert_eq!(
+            attrs("t")["_p"],
+            AttrValue::Labels(vec!["//tools:t".to_owned()])
+        );
+        // The computed value is an ordinary dependency edge.
+        assert!(
+            target(&package, "a")
+                .srcs
+                .iter()
+                .any(|src| src == "//tools:def_parser")
+        );
+        let prefix = "Cannot compute default value of attribute '_p' in rule '//:e': ";
+        for (rule, expected) in [
+            (
+                "e_bad",
+                format!("{prefix}expected 'label', but got 'string'"),
+            ),
+            (
+                "e_missing",
+                format!("{prefix}No such attribute nope in rule //:e"),
+            ),
+            (
+                "e_private",
+                format!("{prefix}No such attribute _def_parser in rule //:e"),
+            ),
+            (
+                "e_unset",
+                format!("{prefix}No such regular (non computed) attribute 'x'."),
+            ),
+            ("e_fails", prefix.to_owned()),
+            (
+                "e_strings",
+                format!("{prefix}expected 'label', but got 'string'"),
+            ),
+            (
+                "e_builtin",
+                format!("{prefix}No such regular (non computed) attribute 'testonly'.\n{AVAILABLE}"),
+            ),
+            (
+                "e_deprecation",
+                format!("{prefix}No such regular (non computed) attribute 'deprecation'.\n{AVAILABLE}"),
+            ),
+            (
+                "e_metadata",
+                format!("{prefix}No such regular (non computed) attribute 'package_metadata'.\n{AVAILABLE}"),
+            ),
+            (
+                "e_alt",
+                format!("{prefix}No such attribute applicable_licenses in rule //:e"),
+            ),
+            (
+                "e_timeout_test",
+                "Cannot compute default value of attribute '_p' in rule '//:e_test': No such regular (non computed) attribute 'timeout'.\nAvailable attributes: $config_dependencies, $is_executable, compatible_with, exec_compatible_with, exec_group_compatible_with, flaky, generator_function, generator_location, generator_name, local, name, restricted_to, size, tags, transitive_configs, visibility".to_owned(),
+            ),
+            (
+                "e_vis_unset",
+                "reads the unset 'visibility' attribute (genuine Bazel 9.3 crashes on it), which is not supported by the native profile".to_owned(),
+            ),
+            (
+                "e_with_s",
+                format!("{prefix}No such regular (non computed) attribute 'testonly'.\nAvailable attributes: $config_dependencies, compatible_with, exec_compatible_with, exec_group_compatible_with, features, generator_function, generator_location, generator_name, n, name, restricted_to, s, tags, transitive_configs, visibility"),
+            ),
+        ] {
+            let name = if rule.ends_with("_test") { "e_test" } else { "e" };
+            let error = evaluate_package(
+                defs,
+                &format!("load(':defs.bzl', '{rule}')\n{rule}(name = '{name}')\n"),
+            )
+            .unwrap_err();
+            assert!(error.contains(&expected), "{rule}: {error}");
+        }
+        // Explicitly set built-in computed defaults are never regular values.
+        for call in [
+            "e_builtin(name = 'e', testonly = True)",
+            "e_deprecation(name = 'e', deprecation = 'old')",
+        ] {
+            let error = evaluate_package(
+                defs,
+                &format!("load(':defs.bzl', 'e_builtin', 'e_deprecation')\n{call}\n"),
+            )
+            .unwrap_err();
+            assert!(
+                error.contains("No such regular (non computed) attribute"),
+                "{call}: {error}"
+            );
+        }
+        // Output arguments are Labels in the target's package; visibility is
+        // the declared label list; plain built-in defaults.
+        let package = evaluate_package(
+            defs,
+            "load(':defs.bzl', 'outs_test')\nouts_test(name = 'o_test', o = 'out.txt', os = ['a.txt', 'sub/b.txt'], visibility = ['//visibility:public'])\n",
+        )
+        .unwrap();
+        assert_eq!(
+            target(&package, "o_test").custom.as_ref().unwrap().attrs["_p"],
+            AttrValue::Label(Some("//tools:outs_1".to_owned()))
+        );
+        // fail() inside the function: the message without the call stack.
+        let error = evaluate_package(defs, "load(':defs.bzl', 'e_fails')\ne_fails(name = 'e')\n")
+            .unwrap_err();
+        assert!(error.contains(&format!("{prefix}boom\n")), "{error}");
+        evaluate_package(
+            defs,
+            "load(':defs.bzl', 'e_chained')\ne_chained(name = 'e')\n",
+        )
+        .unwrap();
+        let error = evaluate_package(
+            defs,
+            "load(':defs.bzl', 'e_selected')\nconfig_setting(name = 'c', values = {'compilation_mode': 'opt'})\ne_selected(name = 'e', srcs = select({':c': ['a'], '//conditions:default': []}))\n",
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("depends on the configurable attribute 'srcs'")
+                && error.contains("not supported by the native profile"),
+            "{error}"
+        );
+        for (expression, expected) in [
+            (
+                "r = rule(impl, attrs = {'p': attr.label(default = lambda name: None)})",
+                "When an attribute value is a function, the attribute must be private (i.e. start with '_'). Found 'p'",
+            ),
+            (
+                "a = aspect(aimpl, attrs = {'_p': attr.label(default = lambda name: None)})",
+                "Aspect attribute '_p' (label) with computed default value is unsupported.",
+            ),
+            (
+                "a = aspect(aimpl, attrs = {'_p': attr.label_list(default = lambda name: None)})",
+                "Aspect attribute '_p' (list(label)) with computed default value is unsupported.",
+            ),
+            (
+                "r = rule(impl, attrs = {'v': attr.label_list_dict(configurable = False)})",
+                "attribute 'v' has the 'configurable' argument set, which is not allowed in rule definitions",
+            ),
+            (
+                "r = rule(impl, attrs = {'_v': attr.string_keyed_label_dict(configurable = True)})",
+                "attribute '$v' has the 'configurable' argument set, which is not allowed in rule definitions",
+            ),
+            (
+                "a = aspect(aimpl, attrs = {'_v': attr.label_list_dict(configurable = False)})",
+                "attribute '$v' has the 'configurable' argument set, which is not allowed in aspect definitions",
+            ),
+        ] {
+            fails(&format!("{IMPL}{expression}\n"), expected);
+        }
+    }
+
+    #[test]
+    fn analysis_test_transitions_are_retained_for_analysis_test_rules_only() {
+        let module = passes(&format!(
+            "{IMPL}t = analysis_test_transition(settings = {{'//command_line_option:compilation_mode': 'opt', '//command_line_option:experimental_x': True, '//pkg:flag': 1}})\n\
+             (type(t) == 'transition' and repr(t) == '<analysis_test_transition object>') or fail(repr(t))\n\
+             (repr(AnalysisTestResultInfo) == '<function AnalysisTestResultInfo>' and type(AnalysisFailureInfo) == 'Provider') or fail('providers')\n\
+             r_test = rule(impl, analysis_test = True, attrs = {{'target_under_test': attr.label(cfg = t, mandatory = True)}})\n"
+        ));
+        let declaration =
+            crate::custom_rule::rule_declaration(module.get("r_test").unwrap().value()).unwrap();
+        let cfg = &declaration.schema["target_under_test"].declaration.cfg;
+        assert!(cfg.is_analysis_test(), "{cfg:?}");
+        assert_eq!(
+            cfg.describe(),
+            "analysis_test_transition from //pkg:defs.bzl"
+        );
+        for (expression, expected) in [
+            (
+                "rule(impl, attrs = {'d': attr.label(cfg = analysis_test_transition(settings = {}))})",
+                "Only rule definitions with analysis_test=True may have attributes with analysis_test_transition transitions",
+            ),
+            (
+                "analysis_test_transition(settings = [])",
+                "in call to analysis_test_transition(), parameter 'settings' got value of type 'list', want 'dict'",
+            ),
+            (
+                "analysis_test_transition(settings = {1: 2})",
+                "got dict<int, int> for 'changed_settings dict', want dict<string, unknown>",
+            ),
+            (
+                "analysis_test_transition(settings = {'//pkg:a': 1, '@@//pkg:a': 2})",
+                "Transition declares duplicate build setting '//pkg:a' in OUTPUTS",
+            ),
+            (
+                "analysis_test_transition(settings = {'not a label': 1})",
+                "invalid transition output 'not a label'",
+            ),
+            (
+                "analysis_test_transition({})",
+                "analysis_test_transition() got unexpected positional argument",
+            ),
+            (
+                "analysis_test_transition()",
+                "analysis_test_transition() missing 1 required named argument: settings",
+            ),
+            (
+                "AnalysisTestResultInfo(success = True, message = '')",
+                "AnalysisTestResultInfo construction is not implemented in the native profile",
+            ),
+            ("AnalysisFailureInfo()", "'Provider' object is not callable"),
+        ] {
+            fails(&format!("{IMPL}x = {expression}\n"), expected);
+        }
+        let package = evaluate_package(
+            "def impl(ctx):\n    return []\nt = analysis_test_transition(settings = {'//command_line_option:compilation_mode': 'opt'})\nr_test = rule(impl, analysis_test = True, attrs = {'target_under_test': attr.label(cfg = t)})\n",
+            "load(':defs.bzl', 'r_test')\nfilegroup(name = 'subject')\nr_test(name = 'check_test', target_under_test = ':subject')\n",
+        )
+        .unwrap();
+        let error = crate::analysis::analyze(target(&package, "check_test"), &Default::default())
+            .unwrap_err();
+        assert!(error.contains("rule(analysis_test=True)"), "{error}");
     }
 }

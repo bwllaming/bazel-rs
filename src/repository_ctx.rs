@@ -567,6 +567,12 @@ fn alloc_attrs<'v>(
                     "attribute {name:?} kind is not supported for repository rules by the native profile"
                 )
             }
+            AttrValue::StringKeyedLabelDict(entries) => {
+                crate::attribute_values::alloc_string_keyed_label_dict(heap, entries)?
+            }
+            AttrValue::LabelListDict(entries) => {
+                crate::attribute_values::alloc_label_dict(heap, entries, true)?
+            }
             AttrValue::StringDict(entries) => {
                 ensure!(
                     entries

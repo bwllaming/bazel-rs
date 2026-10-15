@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 frozen-mutation messages and `dict | select`; see vendor provenance.
+
 use std::any::TypeId;
 use std::cell::Ref;
 use std::cell::RefCell;
@@ -400,9 +402,9 @@ impl<'v> DictLike<'v> for FrozenDictData {
     }
 
     fn set_at(&self, _index: Hashed<Value<'v>>, _value: Value<'v>) -> crate::Result<()> {
-        Err(crate::Error::new_other(
-            ValueError::CannotMutateImmutableValue,
-        ))
+        Err(crate::Error::new_other(ValueError::CannotMutateFrozenValue(
+            "dict",
+        )))
     }
 }
 

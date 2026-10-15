@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 frozen-mutation messages and `dict | select`; see vendor provenance.
+
 use std::cell::Ref;
 use std::cell::RefCell;
 use std::cell::RefMut;
@@ -97,7 +99,7 @@ impl<'v> DictMut<'v> {
         #[inline(never)]
         fn error<'v>(x: Value<'v>) -> anyhow::Error {
             if x.downcast_ref::<DictGen<FrozenDictData>>().is_some() {
-                ValueError::CannotMutateImmutableValue.into()
+                ValueError::CannotMutateFrozenValue("dict").into()
             } else {
                 NotDictError(x.get_type()).into()
             }

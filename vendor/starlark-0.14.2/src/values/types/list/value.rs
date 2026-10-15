@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 frozen-mutation messages and `dict | select`; see vendor provenance.
+
 use std::any::TypeId;
 use std::cell::Cell;
 use std::cmp;
@@ -119,7 +121,7 @@ impl<'v> ListData<'v> {
         #[inline(never)]
         fn error<'v>(x: Value<'v>) -> anyhow::Error {
             if x.downcast_ref::<ListGen<FrozenListData>>().is_some() {
-                ValueError::CannotMutateImmutableValue.into()
+                ValueError::CannotMutateFrozenValue("list").into()
             } else {
                 NotListError(x.get_type()).into()
             }
@@ -390,9 +392,9 @@ impl<'v> ListLike<'v> for FrozenListData {
     }
 
     fn set_at(&self, _i: usize, _v: Value<'v>) -> crate::Result<()> {
-        Err(crate::Error::new_other(
-            ValueError::CannotMutateImmutableValue,
-        ))
+        Err(crate::Error::new_other(ValueError::CannotMutateFrozenValue(
+            "list",
+        )))
     }
 
     unsafe fn iter_size_hint(&self, index: usize) -> (usize, Option<usize>) {

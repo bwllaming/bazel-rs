@@ -87,6 +87,8 @@ DIAGNOSTICS = {
     'ascii': r'(?:non.ASCII|ASCII.only|must (?:be|contain)[^\n]*ASCII|only ASCII)',
 }
 NATIVE_SHAPE = r'(?m:^error: (?:attribute "d": )?expected a dict of strings to a list of strings \(or tuple of strings\)\s*$)'
+# No native freeze-* alternative: since N20 the native interpreter prints Bazel's
+# Starlark.checkMutable text (Starlark.java:262-265; docs/STARLARK_VENDOR.md).
 NATIVE_DIAGNOSTICS = {
     'key': NATIVE_SHAPE+r'|cannot record MODULE attributes[^\n]*: tag dictionary key must be a string',
     'value': NATIVE_SHAPE,
@@ -98,8 +100,6 @@ NATIVE_DIAGNOSTICS = {
     # RuleErrorConsumer.completeAttributeMessage form (in d attribute of r rule //:x: ...).
     'empty': r'(?:attribute d: attribute must be non empty|in d attribute of [^\n]*: attribute must be non empty)',
     'two-positional': r'Found 1 extra positional argument\(s\) for call to string_list_dict',
-    'freeze-dict': r'(?m:^error: Immutable\s*$)',
-    'freeze-list': r'(?m:^error: Immutable\s*$)',
 }
 
 

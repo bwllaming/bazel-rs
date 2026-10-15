@@ -301,7 +301,12 @@ DIAGNOSTICS = {
     'hidden-flag': r"(?:RunEnvironmentInfo.*unexpected keyword argument 'error_on_non_executable'|Found `error_on_non_executable` extra named parameter)|^error: RunEnvironmentInfo: unknown argument error_on_non_executable$",
     'third-positional': r'RunEnvironmentInfo.*(?:no more than 2 positional arguments but got 3|(?:at most|maximum).*2.*positional)|^error: RunEnvironmentInfo: expected at most two positional arguments$',
     'duplicate': r"RunEnvironmentInfo.*(?:multiple values|duplicate).*environment",
-    'frozen': r'(?:trying to mutate a frozen (?:dict|list)|(?:dict|list).*immutable|cannot mutate.*frozen)|^error: Immutable$',
+    # Starlark.checkMutable (net/starlark/java/eval/Starlark.java:262-265); the
+    # native interpreter prints the same text since N20 (docs/STARLARK_VENDOR.md),
+    # so its former bare 'error: Immutable' is no longer accepted. The text ends
+    # its error line ("trying to mutate a frozen %s value"), so suffixed
+    # excerpts are not proof.
+    'frozen': r'(?:trying to mutate a frozen (?:dict|list) value$|(?:dict|list).*immutable|cannot mutate.*frozen)',
     'immutable': r'(?:cannot set .environment field of RunEnvironmentInfo|Operation `\.environment=` not supported on type `RunEnvironmentInfo`)',
     'required': r'(?:does not have mandatory providers.*RunEnvironmentInfo|missing.*(?:required|mandatory).*RunEnvironmentInfo)',
     'constraint': r'(?:providers.*(?:sequence|Provider|constructor)|Provider.*providers)',

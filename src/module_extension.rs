@@ -196,6 +196,13 @@ pub fn globals(builder: &mut GlobalsBuilder) {
             if matches!(spec.kind, AttrKind::Output | AttrKind::OutputList) {
                 bail!("output tag attributes are unsupported: {name:?}");
             }
+            // StarlarkRepositoryModule.tagClass (StarlarkRepositoryModule.java:240-256).
+            crate::custom_rule::check_value_source_name(name, spec)?;
+            if spec.declaration.computed_default {
+                bail!(
+                    "computed (function) default of tag attribute {name:?} is not supported by the native profile"
+                );
+            }
             budget.string(name).map_err(anyhow::Error::msg)?;
             budget.spec(spec).map_err(anyhow::Error::msg)?;
             schema.insert(name.to_owned(), spec.clone());
@@ -285,8 +292,18 @@ pub fn bind_tag(
         let spec = schema
             .get(name)
             .ok_or_else(|| format!("unknown tag attribute {name:?}"))?;
-        let parsed = parse_attribute(&spec.kind, value, &resolve)
-            .map_err(|e| format!("tag attribute {name:?}: {e}"))?;
+        let parsed = parse_attribute(&spec.kind, value, &resolve).map_err(|e| {
+            if matches!(
+                spec.kind,
+                AttrKind::StringKeyedLabelDict | AttrKind::LabelListDict
+            ) && e.starts_with("expected value of type '")
+            {
+                // TypeCheckedTag where-text (bazel/bzlmod/TypeCheckedTag.java:106-114).
+                format!("in '{tag_name}' tag, {e}")
+            } else {
+                format!("tag attribute {name:?}: {e}")
+            }
+        })?;
         // AttributeUtils.java:90-98 with TypeCheckedTag's where-text
         // "'%s' tag" (bazel/bzlmod/TypeCheckedTag.java:106-114).
         if !spec.declaration.allows(&parsed) {
@@ -321,9 +338,14 @@ pub fn bind_tag(
                 value.as_ref().is_none_or(|value| value.is_ascii())
             }
             AttrValue::Int(_) | AttrValue::Bool(_) | AttrValue::Ints(_) => true,
-            AttrValue::LabelKeyedStringDict(entries) => entries
+            AttrValue::LabelKeyedStringDict(entries) | AttrValue::StringKeyedLabelDict(entries) => {
+                entries
+                    .iter()
+                    .all(|(key, value)| key.is_ascii() && value.is_ascii())
+            }
+            AttrValue::LabelListDict(entries) => entries
                 .iter()
-                .all(|(key, value)| key.is_ascii() && value.is_ascii()),
+                .all(|(key, values)| key.is_ascii() && values.iter().all(|value| value.is_ascii())),
         };
         if !name.is_ascii() || !ascii {
             return Err(format!(
@@ -419,6 +441,9 @@ fn parse_attribute(
                 .map(|text| resolve(text).map(|label| label.to_string()))
                 .collect::<Result<_, _>>()?,
         ),
+        AttrKind::StringKeyedLabelDict | AttrKind::LabelListDict => {
+            crate::repository_rule::label_dict_json(kind, value, resolve)?
+        }
         AttrKind::Output | AttrKind::OutputList => {
             return Err("output tag attributes are unsupported".to_owned());
         }
@@ -513,6 +538,54 @@ mod tests {
         bind_tag(schema, "t", &raw(value), |text| {
             Label::parse(text, "caller")
         })
+    }
+
+    #[test]
+    fn label_dict_tags_resolve_at_caller_and_reject_computed_defaults() {
+        let schema = schema(
+            "{'files': attr.string_keyed_label_dict(default={'k': ':d'}), 'groups': attr.label_list_dict()}",
+        );
+        let defaults = bind(&schema, json!({})).unwrap();
+        assert_eq!(
+            defaults["files"],
+            AttrValue::StringKeyedLabelDict(vec![("k".to_owned(), "//defs:d".to_owned())])
+        );
+        let attrs = bind(
+            &schema,
+            json!({"files": {"BUILD": ":b"}, "groups": {"g": [":x", "//y:z"]}}),
+        )
+        .unwrap();
+        assert_eq!(
+            attrs["files"],
+            AttrValue::StringKeyedLabelDict(vec![("BUILD".to_owned(), "//caller:b".to_owned())])
+        );
+        assert_eq!(
+            attrs["groups"],
+            AttrValue::LabelListDict(vec![(
+                "g".to_owned(),
+                vec!["//caller:x".to_owned(), "//y:z".to_owned()]
+            )])
+        );
+        assert_eq!(
+            bind(&schema, json!({"groups": {"g": ":x"}})).unwrap_err(),
+            "in 't' tag, expected value of type 'list(label)' for dict value element, but got \":x\" (string)"
+        );
+        for (attrs, expected) in [
+            (
+                "{'p': attr.label(default=lambda name: None)}",
+                "When an attribute value is a function, the attribute must be private",
+            ),
+            (
+                "{'_p': attr.label(default=lambda name: None)}",
+                "computed (function) default of tag attribute \"_p\" is not supported by the native profile",
+            ),
+        ] {
+            let error = extension(&format!(
+                "E = module_extension(len, tag_classes={{'t': tag_class({attrs})}})"
+            ))
+            .unwrap_err();
+            assert!(error.contains(expected), "{attrs}: {error}");
+        }
     }
 
     #[test]

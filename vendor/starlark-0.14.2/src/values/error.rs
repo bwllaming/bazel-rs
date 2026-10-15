@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 frozen-mutation messages and `dict | select`; see vendor provenance.
+
 //! Define a common set of errors.
 
 use thiserror::Error;
@@ -54,6 +56,10 @@ pub enum ValueError {
     KeyNotFound(String),
     #[error("Immutable")]
     CannotMutateImmutableValue,
+    /// Modified: Bazel 9.3 `Starlark.checkMutable` text for a frozen
+    /// list/dict (net/starlark/java/eval/Starlark.java:262-265).
+    #[error("trying to mutate a frozen {0} value")]
+    CannotMutateFrozenValue(&'static str),
     #[error("This operation mutates an iterable for an iterator while iterating.")]
     MutationDuringIteration,
     #[error("Object of type `{0}` has no attribute `{1}`")]

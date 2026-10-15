@@ -222,8 +222,9 @@ class DiagnosticTests(unittest.TestCase):
             ('constructor', 'unknown', 'error: RunEnvironmentInfo: unknown argument unrecognized'),
             ('constructor', 'hidden-flag', 'error: RunEnvironmentInfo: unknown argument error_on_non_executable'),
             ('constructor', 'third-positional', 'error: RunEnvironmentInfo: expected at most two positional arguments'),
-            ('ownership', 'saved-dict', 'error: Immutable'),
-            ('ownership', 'saved-list', 'error: Immutable'),
+            # Bazel's Starlark.checkMutable text, printed natively since N20.
+            ('ownership', 'saved-dict', 'error: trying to mutate a frozen dict value'),
+            ('ownership', 'saved-list', 'error: trying to mutate a frozen list value'),
             ('transport', 'missing-key', 'error: Target @@//app:producer does not provide builtin:RunEnvironmentInfo'),
             ('phase', 'duplicate', 'bazel-rs: analysis of //app:check: implementation returned provider builtin:RunEnvironmentInfo more than once'),
         ]
@@ -253,6 +254,7 @@ class DiagnosticTests(unittest.TestCase):
             ('third-positional', 'error: OtherInfo: expected at most two positional arguments'),
             ('third-positional', 'error: RunEnvironmentInfo: expected at most three positional arguments'),
             ('frozen', 'error: ImmutableSomething'),
+            ('frozen', 'error: Immutable'),
             ('missing-provider', 'error: Target @@//app:producer does not provide builtin:OtherInfo'),
             ('missing-provider', 'error: Target @@//app:other does not provide builtin:RunEnvironmentInfo'),
             ('duplicate-provider', 'bazel-rs: analysis of //app:check: implementation returned provider builtin:OtherInfo more than once'),

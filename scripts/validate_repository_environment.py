@@ -167,6 +167,10 @@ def success(row):
         raise ValueError('expected successful fixture command: '+row['name'])
 
 
+# Starlark.checkMutable (net/starlark/java/eval/Starlark.java:262-265) for a list.
+FROZEN_LIST_ERROR = 'trying to mutate a frozen list value'
+
+
 def require_rejection(row, diagnostic, engine='reference', probe=None):
     healthy(row)
     if engine not in ('reference', 'native'):
@@ -179,18 +183,22 @@ def require_rejection(row, diagnostic, engine='reference', probe=None):
         if key in NATIVE_ERRORS:
             pattern = r'(?m)(?:^|: )'+re.escape(NATIVE_ERRORS[key])+r'[ \t]*$'
         if diagnostic == 'frozen':
-            # Rust's unmarked immutable-list error retains its full source trace.
-            # Accept it only for this planned post-load mutation, not arbitrary
-            # occurrences of "Immutable" or another evaluation phase/site.
+            # NAMES is an ordinary list global of the frozen defs.bzl module;
+            # appending from consumer.bzl fails with Bazel's Starlark.checkMutable
+            # text (net/starlark/java/eval/Starlark.java:262-265), which the
+            # vendored interpreter reports since N20 (docs/STARLARK_VENDOR.md;
+            # before N20 the native text was "Immutable"). The full source trace
+            # is still required: accept it only for this planned post-load
+            # mutation, not at another evaluation phase/site.
             text = row['stderr']
             call = fixture('binding', 'frozen')['files']['consumer.bzl'].decode().splitlines()[1]
             if (probe != 'frozen'
-                    or re.findall(r'(?m)^error: [^\n]*$', text) != ['error: Immutable']
+                    or re.findall(r'(?m)^error: [^\n]*$', text) != ['error: '+FROZEN_LIST_ERROR]
                     or not re.search(r'(?m)^bazel-rs: cannot evaluate //:consumer\.bzl: Traceback \(most recent call last\):$', text)
                     or not re.search(r'(?m)^ --> //:consumer\.bzl:2:1$', text)
                     or not re.search(r'(?m)^2 \| '+re.escape(call)+r'$', text)):
                 raise ValueError('expected native frozen mutation at bound consumer source')
-            pattern = r'(?m)^error: Immutable$'
+            pattern = r'(?m)^error: '+re.escape(FROZEN_LIST_ERROR)+r'$'
     if (not 0 < row['returncode'] < 128 or row['stdout'].strip()
             or not re.search(pattern, row['stderr'], re.I if engine == 'reference' else 0)
             or SECRET in row['stdout']+row['stderr']):

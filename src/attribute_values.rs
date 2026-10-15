@@ -73,6 +73,65 @@ pub(crate) fn alloc_string_dict<'v>(
     Ok(heap.access_owned_frozen_value(&owned))
 }
 
+/// Frozen `dict(string, label)` / `dict(string, list(label))` projection
+/// (Attribute.valueToStarlark, packages/Attribute.java:2442-2450): fresh
+/// immutable dictionary of Label values (lists for label-list dictionaries).
+pub(crate) fn alloc_label_dict<'v>(
+    heap: Heap<'v>,
+    entries: &[(String, Vec<String>)],
+    lists: bool,
+) -> anyhow::Result<Value<'v>> {
+    let mut budget = crate::repository_budget::HostBudget::default();
+    budget.node().map_err(anyhow::Error::msg)?;
+    for (key, values) in entries {
+        budget.string(key).map_err(anyhow::Error::msg)?;
+        budget.node().map_err(anyhow::Error::msg)?;
+        for value in values {
+            budget.string(value).map_err(anyhow::Error::msg)?;
+        }
+    }
+    let owned = Module::with_temp_heap(|module| -> anyhow::Result<_> {
+        let local = module.heap();
+        let mut items = Vec::new();
+        for (key, values) in entries {
+            let labels = values
+                .iter()
+                .map(|label| crate::starlark_types::alloc_label(local, label))
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let value = if lists {
+                local.alloc(labels)
+            } else {
+                *labels
+                    .first()
+                    .ok_or_else(|| anyhow!("label dictionary entry without a label"))?
+            };
+            items.push((key.as_str(), value));
+        }
+        module.set("attribute", local.alloc(AllocDict(items)));
+        let frozen = module
+            .freeze_named(FrozenHeapName::User(Box::new(
+                "label dictionary attribute".to_owned(),
+            )))
+            .map_err(|error| anyhow!("cannot freeze dictionary attribute: {error:?}"))?;
+        frozen
+            .get("attribute")
+            .map_err(|error| anyhow!(error.to_string()))
+    })?;
+    Ok(heap.access_owned_frozen_value(&owned))
+}
+
+/// [`alloc_label_dict`] of a `dict(string, label)` value.
+pub(crate) fn alloc_string_keyed_label_dict<'v>(
+    heap: Heap<'v>,
+    entries: &[(String, String)],
+) -> anyhow::Result<Value<'v>> {
+    let entries = entries
+        .iter()
+        .map(|(key, label)| (key.clone(), vec![label.clone()]))
+        .collect::<Vec<_>>();
+    alloc_label_dict(heap, &entries, false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

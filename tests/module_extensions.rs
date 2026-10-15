@@ -235,7 +235,10 @@ fn projected_module_and_tag_lists_are_immutable_on_the_real_surface() {
         let f = Fixture::new();
         f.file("MODULE.bazel", "module(name='main')\ne=use_extension('//:ext.bzl','files')\ne.input(words=['before'])\nuse_repo(e,chosen='made')\n");
         f.file("ext.bzl", format!("load(':rules.bzl','maker')\ndef _impl(ctx):\n    maker(name='made',text='never published')\n    {mutation}\nfiles=module_extension(_impl,tag_classes={{'input':tag_class({{'words':attr.string_list()}})}})\n"));
-        reject(&f.run(&["query", "@chosen//:data.txt"]), "Immutable");
+        reject(
+            &f.run(&["query", "@chosen//:data.txt"]),
+            "trying to mutate a frozen list value",
+        );
         assert!(f.roots().is_empty());
     }
 }

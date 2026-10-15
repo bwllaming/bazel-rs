@@ -106,7 +106,9 @@ impl ValueType {
             | AttrValue::Ints(_) => Self::List,
             AttrValue::StringDict(_)
             | AttrValue::StringListDict(_)
-            | AttrValue::LabelKeyedStringDict(_) => Self::Dict,
+            | AttrValue::LabelKeyedStringDict(_)
+            | AttrValue::StringKeyedLabelDict(_)
+            | AttrValue::LabelListDict(_) => Self::Dict,
             AttrValue::Bool(_) | AttrValue::Label(_) | AttrValue::Output(_) => Self::Scalar,
         }
     }
@@ -158,6 +160,14 @@ pub fn concat(values: Vec<AttrValue>) -> Option<AttrValue> {
             (AttrValue::LabelKeyedStringDict(mut a), AttrValue::LabelKeyedStringDict(b)) => {
                 union(&mut a, b);
                 AttrValue::LabelKeyedStringDict(a)
+            }
+            (AttrValue::StringKeyedLabelDict(mut a), AttrValue::StringKeyedLabelDict(b)) => {
+                union(&mut a, b);
+                AttrValue::StringKeyedLabelDict(a)
+            }
+            (AttrValue::LabelListDict(mut a), AttrValue::LabelListDict(b)) => {
+                union(&mut a, b);
+                AttrValue::LabelListDict(a)
             }
             _ => return None,
         };
@@ -438,10 +448,12 @@ fn java_equals(a: Option<&AttrValue>, b: Option<&AttrValue>) -> bool {
     }
     match (a, b) {
         (Some(AttrValue::StringDict(a)), Some(AttrValue::StringDict(b)))
-        | (Some(AttrValue::LabelKeyedStringDict(a)), Some(AttrValue::LabelKeyedStringDict(b))) => {
+        | (Some(AttrValue::LabelKeyedStringDict(a)), Some(AttrValue::LabelKeyedStringDict(b)))
+        | (Some(AttrValue::StringKeyedLabelDict(a)), Some(AttrValue::StringKeyedLabelDict(b))) => {
             sorted(a) == sorted(b)
         }
-        (Some(AttrValue::StringListDict(a)), Some(AttrValue::StringListDict(b))) => {
+        (Some(AttrValue::StringListDict(a)), Some(AttrValue::StringListDict(b)))
+        | (Some(AttrValue::LabelListDict(a)), Some(AttrValue::LabelListDict(b))) => {
             sorted(a) == sorted(b)
         }
         _ => a == b,

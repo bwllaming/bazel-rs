@@ -534,6 +534,17 @@ impl Engine {
     }
 
     fn load_package(&mut self, package: &PackageId) -> Result<(), String> {
+        // A label whose apparent repository the main repository does not see
+        // (crate::label::unknown_repository_name) names no loadable package:
+        // RepositoryMapping's unresolved name (cmdline/RepositoryName.java),
+        // reported like PackageLookupFunction's repository error.
+        if let Some(name) = crate::label::unknown_repository_name(&package.repository) {
+            return Err(format!(
+                "no such package '@@{repository}//{}': The repository '@@{repository}' could not be resolved: No repository visible as '@{name}' from main repository",
+                package.package,
+                repository = package.repository
+            ));
+        }
         if !self.packages.contains_key(package) {
             let rules = package::evaluate_in(self.repositories.clone(), package)?;
             let ignored = self.ignored(&package.repository)?;
@@ -1591,6 +1602,13 @@ impl Engine {
             let labels = match value {
                 crate::custom_rule::AttrValue::Label(Some(label)) => vec![label.clone()],
                 crate::custom_rule::AttrValue::Labels(labels) => labels.clone(),
+                crate::custom_rule::AttrValue::StringKeyedLabelDict(entries) => {
+                    entries.iter().map(|(_, label)| label.clone()).collect()
+                }
+                crate::custom_rule::AttrValue::LabelListDict(entries) => entries
+                    .iter()
+                    .flat_map(|(_, labels)| labels.iter().cloned())
+                    .collect(),
                 _ => continue,
             };
             for text in labels {

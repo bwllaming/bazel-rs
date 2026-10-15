@@ -16,6 +16,7 @@
  */
 
 // Modified for native Bazel 9.3 set assignment compatibility; see vendor provenance.
+// Modified for native Bazel 9.3 `dict |= select`; see vendor provenance.
 
 //! Evaluation environment, provide converters from Ast* element to value.
 //!
@@ -579,6 +580,14 @@ pub(crate) fn bit_or_assign<'v>(
     let lhs_ty = lhs_aref.vtable().static_type_of_value.get();
 
     if Dict::is_dict_type(lhs_ty) {
+        // Modified: a non-dict right operand may implement the reverse `|`
+        // (StarlarkValue::rbit_or, e.g. `x |= select(...)`); the result
+        // replaces `x` instead of mutating it.
+        if DictRef::from_value(rhs).is_none() {
+            if let Some(result) = rhs.get_ref().rbit_or(lhs, heap) {
+                return result;
+            }
+        }
         let mut dict = DictMut::from_value(lhs)?;
         if lhs.ptr_eq(rhs) {
             // Nothing to do as union is idempotent

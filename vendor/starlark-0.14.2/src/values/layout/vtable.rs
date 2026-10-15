@@ -16,7 +16,8 @@
  */
 
 // Modified for native Bazel 9.3 ctx.toolchains string keys: location-aware
-// indexing and `in` hooks; see vendor provenance.
+// indexing and `in` hooks; frozen-mutation messages and `dict | select`;
+// see vendor provenance.
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -530,6 +531,16 @@ impl<'v> AValueDyn<'v> {
     #[inline]
     pub(crate) fn bit_or(self, other: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {
         (self.vtable.starlark_value.bit_or)(self.value, other, heap)
+    }
+
+    // Modified: reverse `|` hook (see StarlarkValue::rbit_or).
+    #[inline]
+    pub(crate) fn rbit_or(
+        self,
+        other: Value<'v>,
+        heap: Heap<'v>,
+    ) -> Option<crate::Result<Value<'v>>> {
+        (self.vtable.starlark_value.rbit_or)(self.value, other, heap)
     }
 
     #[inline]

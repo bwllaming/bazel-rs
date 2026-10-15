@@ -299,7 +299,8 @@ class DiagnosticTests(unittest.TestCase):
     def test_native_projection_never_weakens_reference_diagnostics(self):
         for d,message in s.NATIVE_MESSAGES.items():
             s.require_rejection(record('error: '+message,1),d,'native')
-            if d not in ('native-info','external-file','depth65','range-quota','default-quota'):
+            # 'frozen': the native text is Bazel's own Starlark.checkMutable text.
+            if d not in ('native-info','external-file','depth65','range-quota','default-quota','frozen'):
                 with self.assertRaises(ValueError):s.require_rejection(record('Error: '+message,1),d,'reference')
             for wrong in (message+' unrelated', 'unrelated '+message, '    error: '+message):
                 with self.assertRaises(ValueError):s.require_rejection(record('error: '+wrong if not wrong.startswith('    ') else wrong,1),d,'native')
@@ -308,6 +309,14 @@ class DiagnosticTests(unittest.TestCase):
         text="ERROR: MODULE.bazel:2:3: name 'json' is not defined\nERROR: Error computing the main repository mapping: syntax error in MODULE.bazel file for <root>\n"
         s.require_rejection(record(text,48),'module-global','reference')
         with self.assertRaises(ValueError):s.require_rejection(record(text,1),'module-global','reference')
+
+    def test_frozen_native_text_is_bazels_and_obsolete_immutable_is_rejected(self):
+        self.assertEqual(s.NATIVE_MESSAGES['frozen'],MESSAGES['frozen'])
+        s.require_rejection(record('error: trying to mutate a frozen list value',1),'frozen','native')
+        s.require_rejection(record('Error in append: trying to mutate a frozen list value',1),'frozen','reference')
+        for which in ('native','reference'):
+            with self.assertRaises(ValueError):s.require_rejection(record('error: Immutable',1),'frozen',which)
+        with self.assertRaises(ValueError):s.require_rejection(record('error: trying to mutate a frozen dict value',1),'frozen','native')
 
     def test_resource_message_is_exact_neutral_and_never_fallback(self):
         for probe in ('range-quota','default-quota'):

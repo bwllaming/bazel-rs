@@ -536,7 +536,8 @@ m=macro(implementation=_impl)
         &format!("{LOAD}m(name='demo')\n"),
     );
     let output = frozen.run(&["query", "//:all"]);
-    rejected(&output, "Immutable");
+    // Bazel 9.3 Starlark.checkMutable text (Starlark.java:262-265; docs/STARLARK_VENDOR.md).
+    rejected(&output, "trying to mutate a frozen list value");
     frozen.untouched();
 }
 

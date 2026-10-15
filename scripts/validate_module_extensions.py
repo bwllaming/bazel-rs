@@ -95,7 +95,10 @@ DIAGNOSTICS = {
     'cycle': r'(?:extension|repository|prepar)[^\n]*(?:cycle|cyclic)|(?:cycle|cyclic)[^\n]*(?:extension|repository|a_repo|b_repo)',
     'return': r'(?:return|returned)[^\n]*(?:None|unsupported|not supported)|(?:only|must)[^\n]*None',
     'isolated': r'isolat[^\n]*(?:unsupported|not supported)|(?:unsupported|not supported)[^\n]*isolat',
-    'immutable': r'\bImmutable\b|(?:frozen|immutable)[^\n]*(?:list|value|mutat)|(?:mutat|append)[^\n]*(?:frozen|immutable)',
+    # ctx.modules / tags / string_list values are frozen lists: Starlark.checkMutable
+    # (Starlark.java:262-265), printed natively since N20 (docs/STARLARK_VENDOR.md);
+    # the former bare native 'Immutable' is no longer accepted.
+    'immutable': r'(?:frozen|immutable)[^\n]*(?:list|value|mutat)|(?:mutat|append)[^\n]*(?:frozen|immutable)',
     'name': r'invalid repository name[^\n]*a\+b|a\+b[^\n]*(?:invalid|valid repository name)',
     'canonical': r'(?:unknown|not found|not visible|not defined|unavailable|unrecognized)[^\n]*\+unknown\+made|\+unknown\+made[^\n]*(?:unknown|not found|not visible|not defined|unavailable|unrecognized)',
     'ticks': direct.DIAGNOSTICS['ticks'],

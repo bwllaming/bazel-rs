@@ -36,6 +36,12 @@ pub enum AttrKind {
     IntList,
     /// `attr.label_keyed_string_dict` (StarlarkAttrModuleApi.java:889).
     LabelKeyedStringDict,
+    /// `attr.string_keyed_label_dict` (StarlarkAttrModuleApi.java:770-886;
+    /// BuildType.LABEL_DICT_UNARY, packages/BuildType.java:63-64).
+    StringKeyedLabelDict,
+    /// `attr.label_list_dict` (StarlarkAttrModuleApi.java:1013-1133;
+    /// BuildType.LABEL_LIST_DICT, packages/BuildType.java:74-75).
+    LabelListDict,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Allocative, serde::Serialize)]
 pub enum AttrValue {
@@ -52,6 +58,10 @@ pub enum AttrValue {
     Ints(Vec<i32>),
     /// Canonical label keys with their string values, in insertion order.
     LabelKeyedStringDict(Vec<(String, String)>),
+    /// String keys with canonical label values, in insertion order.
+    StringKeyedLabelDict(Vec<(String, String)>),
+    /// String keys with canonical label-list values, in insertion order.
+    LabelListDict(Vec<(String, Vec<String>)>),
 }
 #[derive(Clone, Debug, PartialEq, Eq, Allocative, serde::Serialize)]
 pub struct AttrSpec {
@@ -113,6 +123,16 @@ pub struct AttrDeclaration {
     /// Whether `default` was supplied (Descriptor.hasDefault, used by aspect()).
     #[serde(skip)]
     pub explicit_default: bool,
+    /// `default` is a Starlark function (AttributeValueSource.COMPUTED_DEFAULT,
+    /// StarlarkAttrModule.java:358-368); the function is retained by the
+    /// `Attribute` value and the rule, and evaluated per target at loading.
+    #[serde(skip_serializing_if = "is_false")]
+    pub computed_default: bool,
+    /// `configurable=` was given (Attribute.configurableAttrWasUserSet,
+    /// StarlarkAttrModule.java:402-410): only symbolic-macro attributes may
+    /// set it (StarlarkRuleClassFunctions.java:964-970, :1374-1379).
+    #[serde(skip_serializing_if = "is_false")]
+    pub configurable_set: bool,
 }
 
 impl AttrDeclaration {
@@ -447,11 +467,13 @@ impl AttrKind {
             Self::OutputList => "output_list",
             Self::IntList => "int_list",
             Self::LabelKeyedStringDict => "label_keyed_string_dict",
+            Self::StringKeyedLabelDict => "string_keyed_label_dict",
+            Self::LabelListDict => "label_list_dict",
         }
     }
 
     /// Bazel `Type.toString` (packages/Type.java, BuildType.java).
-    fn type_name(&self) -> &'static str {
+    pub(crate) fn type_name(&self) -> &'static str {
         match self {
             Self::String => "string",
             Self::StringList => "list(string)",
@@ -465,6 +487,8 @@ impl AttrKind {
             Self::OutputList => "list(output)",
             Self::IntList => "list(int)",
             Self::LabelKeyedStringDict => "dict(label, string)",
+            Self::StringKeyedLabelDict => "dict(string, label)",
+            Self::LabelListDict => "dict(string, list(label))",
         }
     }
 
@@ -530,6 +554,16 @@ impl AttrKind {
             Self::IntList => list(value, &int),
             Self::StringDict => dict(&string, &string),
             Self::LabelKeyedStringDict => dict(&label, &string),
+            Self::StringKeyedLabelDict => dict(&string, &label),
+            Self::LabelListDict => dict(&string, &|value, what| {
+                let Some(items) = sequence_ref(value) else {
+                    return Some(expected("list(label)", value, what));
+                };
+                items
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, item)| label(*item, &format!("element {index} of {what}")))
+            }),
             Self::StringListDict => dict(&string, &|value, what| {
                 let Some(items) = sequence_ref(value) else {
                     return Some(expected("list(string)", value, what));
@@ -611,6 +645,25 @@ impl AttrKind {
             {
                 Some("a dict of strings or Labels to strings")
             }
+            Self::StringKeyedLabelDict
+                if !DictRef::from_value(value).is_some_and(|dict| {
+                    dict.iter()
+                        .all(|(key, value)| key.unpack_str().is_some() && is_label(value))
+                }) =>
+            {
+                Some("a dict of strings to strings or Labels")
+            }
+            Self::LabelListDict
+                if !DictRef::from_value(value).is_some_and(|dict| {
+                    dict.iter().all(|(key, values)| {
+                        key.unpack_str().is_some()
+                            && sequence_ref(values)
+                                .is_some_and(|values| values.iter().copied().all(is_label))
+                    })
+                }) =>
+            {
+                Some("a dict of strings to lists of strings or Labels")
+            }
             Self::Bool if value.unpack_bool().is_none() => Some("a bool"),
             Self::Label if !value.is_none() && !is_label(value) => Some("a string or Label"),
             Self::LabelList
@@ -629,7 +682,11 @@ impl AttrKind {
             if let Some(text) = value.unpack_str() {
                 let bytes = if matches!(
                     self,
-                    Self::Label | Self::LabelList | Self::LabelKeyedStringDict
+                    Self::Label
+                        | Self::LabelList
+                        | Self::LabelKeyedStringDict
+                        | Self::StringKeyedLabelDict
+                        | Self::LabelListDict
                 ) {
                     // Covers canonical parsing/formatting even without a resolver.
                     crate::label::Label::resolution_size_bound(text, "", "", &BTreeMap::new())
@@ -661,7 +718,7 @@ impl AttrKind {
                 charge(key).map_err(anyhow::Error::msg)?;
                 charge(values).map_err(anyhow::Error::msg)?;
                 // The complete shape was checked above, before any budget errors.
-                if matches!(self, Self::StringListDict) {
+                if matches!(self, Self::StringListDict | Self::LabelListDict) {
                     for &value in sequence_ref(values).expect("validated attribute sequence") {
                         charge(value).map_err(anyhow::Error::msg)?;
                     }
@@ -685,6 +742,8 @@ impl AttrKind {
             Self::OutputList => AttrValue::Outputs(Vec::new()),
             Self::IntList => AttrValue::Ints(Vec::new()),
             Self::LabelKeyedStringDict => AttrValue::LabelKeyedStringDict(Vec::new()),
+            Self::StringKeyedLabelDict => AttrValue::StringKeyedLabelDict(Vec::new()),
+            Self::LabelListDict => AttrValue::LabelListDict(Vec::new()),
         }
     }
     fn parse(
@@ -789,6 +848,39 @@ impl AttrKind {
                 }
                 AttrValue::LabelKeyedStringDict(entries)
             }
+            // DictType.convert (packages/Type.java:565-580): string keys,
+            // each value converted by the label (list) type.
+            Self::StringKeyedLabelDict => AttrValue::StringKeyedLabelDict(
+                DictRef::from_value(value)
+                    .ok_or_else(|| anyhow!("expected a dict of strings to strings or Labels"))?
+                    .iter()
+                    .map(|(key, value)| {
+                        let key = key
+                            .unpack_str()
+                            .ok_or_else(|| anyhow!("expected dict keys to be strings"))?;
+                        Ok((key.to_owned(), label_value(value, resolver)?))
+                    })
+                    .collect::<anyhow::Result<_>>()?,
+            ),
+            Self::LabelListDict => AttrValue::LabelListDict(
+                DictRef::from_value(value)
+                    .ok_or_else(|| {
+                        anyhow!("expected a dict of strings to lists of strings or Labels")
+                    })?
+                    .iter()
+                    .map(|(key, values)| {
+                        let key = key
+                            .unpack_str()
+                            .ok_or_else(|| anyhow!("expected dict keys to be strings"))?;
+                        let labels = sequence_ref(values)
+                            .ok_or_else(|| anyhow!("expected a list of strings or Labels"))?
+                            .iter()
+                            .map(|value| label_value(*value, resolver))
+                            .collect::<anyhow::Result<Vec<_>>>()?;
+                        Ok((key.to_owned(), labels))
+                    })
+                    .collect::<anyhow::Result<_>>()?,
+            ),
         })
     }
 
@@ -810,6 +902,8 @@ impl AttrKind {
             Self::OutputList => AttrValue::Outputs(Vec::new()),
             Self::IntList => AttrValue::Ints(Vec::new()),
             Self::LabelKeyedStringDict => AttrValue::LabelKeyedStringDict(Vec::new()),
+            Self::StringKeyedLabelDict => AttrValue::StringKeyedLabelDict(Vec::new()),
+            Self::LabelListDict => AttrValue::LabelListDict(Vec::new()),
         }
     }
 
@@ -819,10 +913,12 @@ impl AttrKind {
             AttrValue::Strings(values) | AttrValue::Labels(values) | AttrValue::Outputs(values) => {
                 values.is_empty()
             }
-            AttrValue::StringListDict(entries) => entries.is_empty(),
-            AttrValue::StringDict(entries) | AttrValue::LabelKeyedStringDict(entries) => {
+            AttrValue::StringListDict(entries) | AttrValue::LabelListDict(entries) => {
                 entries.is_empty()
             }
+            AttrValue::StringDict(entries)
+            | AttrValue::LabelKeyedStringDict(entries)
+            | AttrValue::StringKeyedLabelDict(entries) => entries.is_empty(),
             AttrValue::Label(value) | AttrValue::Output(value) => value.is_none(),
             AttrValue::Ints(values) => values.is_empty(),
         }
@@ -853,6 +949,38 @@ mod values {
     #[starlark_value(type = "Attribute")]
     impl<'v> StarlarkValue<'v> for Descriptor {}
 
+    /// An `Attribute` whose `default` is a Starlark function
+    /// (StarlarkComputedDefaultTemplate, packages/Attribute.java:1370-1513):
+    /// the same owned schema plus the traced, retained function.
+    #[derive(
+        Debug,
+        ProvidesStaticType,
+        NoSerialize,
+        Allocative,
+        Trace,
+        Freeze,
+        Coerce,
+        StarlarkPagablePanic,
+    )]
+    #[repr(C)]
+    pub(super) struct ComputedDescriptorGen<V> {
+        pub function: V,
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        pub spec: AttrSpec,
+    }
+    impl<V> fmt::Display for ComputedDescriptorGen<V> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "<attr.{}>", self.spec.kind.starlark_name())
+        }
+    }
+    starlark_complex_value!(pub(super) ComputedDescriptor);
+    #[starlark_value(type = "Attribute")]
+    impl<'v, V: ValueLike<'v>> StarlarkValue<'v> for ComputedDescriptorGen<V> where
+        Self: ProvidesStaticType<'v>
+    {
+    }
+
     #[derive(
         Debug,
         ProvidesStaticType,
@@ -871,6 +999,14 @@ mod values {
         pub initializer: Vec<V>,
         /// `rule(outputs=<function>)`: zero or one retained, never-called function.
         pub outputs_function: Vec<V>,
+        /// Computed-default functions, parallel to `computed`.
+        pub computed_functions: Vec<V>,
+        /// Computed-default attributes (Starlark name) with the function's
+        /// parameter names (StarlarkCallbackHelper.getParameterNames), in
+        /// rule-class attribute order.
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        pub computed: Vec<(String, Vec<String>)>,
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
         pub build_setting: Option<BuildSetting>,
@@ -968,7 +1104,21 @@ mod values {
                     .parse(text, repository, package)
                     .map_err(anyhow::Error::msg)
             };
-            let resolve = |text: &str| resolve_in(text, &package.repository, &package.package);
+            // Bazel converts an apparent repository the main repository does
+            // not see into `@@[unknown repo 'R' requested from @@]`
+            // (RepositoryMapping.get, cmdline/RepositoryName.java); the target
+            // loads and only its dependency edge fails at analysis.
+            let resolve = |text: &str| {
+                resolve_in(text, &package.repository, &package.package).or_else(|error| {
+                    if package.repository.is_empty()
+                        && error.to_string().starts_with("unknown apparent repository")
+                        && let Some(label) = crate::configuration::deferred_unknown_repository(text)
+                    {
+                        return Ok(label);
+                    }
+                    Err(error)
+                })
+            };
             let definition =
                 crate::label::Label::parse_canonical(&self.declaration.definition_label)
                     .map_err(|e| starlark::Error::new_other(anyhow!(e)))?;
@@ -1169,7 +1319,12 @@ mod values {
             for (key, spec) in &self.schema {
                 // A select()-valued attribute is resolved at analysis
                 // (crate::configured_attributes); its default is not a value.
-                if !attrs.contains_key(key) && !configurable.contains_key(key) {
+                // Computed defaults are evaluated after every other attribute
+                // (AttributeProvider.java:335-341, 400-435).
+                if !attrs.contains_key(key)
+                    && !configurable.contains_key(key)
+                    && !spec.declaration.computed_default
+                {
                     if spec.mandatory {
                         return Err(starlark::Error::new_other(anyhow!(
                             "missing mandatory attribute {key:?}"
@@ -1206,6 +1361,38 @@ mod values {
                 }
             }
             builtin.tags = builtin.strings("tags");
+            for ((key, parameters), function) in self.computed.iter().zip(&self.computed_functions)
+            {
+                // An initializer-supplied private value is not a default.
+                if attrs.contains_key(key) || configurable.contains_key(key) {
+                    continue;
+                }
+                let spec = &self.schema[key];
+                let value = computed_default(
+                    ComputedInputs {
+                        attribute: key,
+                        parameters,
+                        target: &target,
+                        attrs: &attrs,
+                        configurable: &configurable,
+                        schema: &self.schema,
+                        builtin: &builtin,
+                        builtins: &builtins,
+                        kind,
+                        visibility,
+                        resolve: &resolve,
+                    },
+                    function.to_value(),
+                    &spec.kind,
+                    eval,
+                )
+                .map_err(starlark::Error::new_other)?;
+                budget
+                    .borrow_mut()
+                    .attr_value(&value)
+                    .map_err(|e| starlark::Error::new_other(anyhow!(e)))?;
+                attrs.insert(key.clone(), value);
+            }
             builtin.input_labels = crate::native_rules::input_labels(&builtin, |key| {
                 builtins.attribute(key).is_some_and(|attribute| {
                     matches!(
@@ -1254,7 +1441,7 @@ mod values {
         }
     }
 }
-use values::{Definition, DefinitionGen, Descriptor};
+use values::{ComputedDescriptor, ComputedDescriptorGen, Definition, DefinitionGen, Descriptor};
 
 /// Owned `rule()` metadata (StarlarkRuleClassFunctions.createRule, :717-1171).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Allocative)]
@@ -1517,6 +1704,30 @@ fn lift<'v>(
             }
             heap.alloc(starlark::values::dict::AllocDict(entries))
         }
+        AttrKind::StringKeyedLabelDict => {
+            let dict = DictRef::from_value(value)
+                .ok_or_else(|| anyhow!("expected a dict of strings to strings or Labels"))?;
+            let mut entries = Vec::new();
+            for (key, value) in dict.iter() {
+                entries.push((key, label(value)?));
+            }
+            heap.alloc(starlark::values::dict::AllocDict(entries))
+        }
+        AttrKind::LabelListDict => {
+            let dict = DictRef::from_value(value).ok_or_else(|| {
+                anyhow!("expected a dict of strings to lists of strings or Labels")
+            })?;
+            let mut entries = Vec::new();
+            for (key, values) in dict.iter() {
+                let labels = sequence_ref(values)
+                    .ok_or_else(|| anyhow!("expected a list of strings or Labels"))?
+                    .iter()
+                    .map(|value| label(*value))
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                entries.push((key, heap.alloc(labels)));
+            }
+            heap.alloc(starlark::values::dict::AllocDict(entries))
+        }
         _ => value,
     })
 }
@@ -1746,6 +1957,329 @@ fn check_allowed_values(
     Ok(())
 }
 
+/// The rule instance a computed default reads (AttributeMap of
+/// StarlarkComputedDefaultTemplate.computeValue, packages/Attribute.java:1457-1472).
+struct ComputedInputs<'a, 'v> {
+    attribute: &'a str,
+    parameters: &'a [String],
+    target: &'a crate::label::Label,
+    attrs: &'a BTreeMap<String, AttrValue>,
+    configurable: &'a BTreeMap<String, Vec<ConfigurablePart>>,
+    schema: &'a BTreeMap<String, AttrSpec>,
+    builtin: &'a crate::native_rules::NativeTarget,
+    builtins: &'a crate::native_rules::StarlarkBuiltins,
+    kind: crate::native_rules::StarlarkRuleKind,
+    /// The explicit BUILD `visibility` value, if any.
+    visibility: Option<Value<'v>>,
+    resolve: &'a LabelResolver<'a>,
+}
+
+/// `Attribute.valueToStarlark` (packages/Attribute.java:2442-2490) of a plain
+/// value; `None` for a null (unset) label or output.
+///
+/// Output values are Labels in the target's package (BuildType.OUTPUT holds a
+/// Label, packages/BuildType.java:540-560), so `package` is the target.
+pub(crate) fn attr_value_to_starlark<'v>(
+    heap: starlark::values::Heap<'v>,
+    value: &AttrValue,
+    package: &crate::label::Label,
+) -> anyhow::Result<Option<Value<'v>>> {
+    let label = |text: &str| crate::starlark_types::alloc_label(heap, text);
+    let output = |name: &str| -> anyhow::Result<Value<'v>> {
+        let label = package.with_name(name).map_err(anyhow::Error::msg)?;
+        crate::starlark_types::alloc_label(heap, &label.to_string())
+    };
+    let labels = |values: &[String]| -> anyhow::Result<Value<'v>> {
+        Ok(heap.alloc(
+            values
+                .iter()
+                .map(|text| label(text))
+                .collect::<anyhow::Result<Vec<_>>>()?,
+        ))
+    };
+    Ok(Some(match value {
+        AttrValue::String(text) => heap.alloc(text.as_str()),
+        AttrValue::Strings(values) => heap.alloc(values.clone()),
+        AttrValue::Outputs(values) => heap.alloc(
+            values
+                .iter()
+                .map(|name| output(name))
+                .collect::<anyhow::Result<Vec<_>>>()?,
+        ),
+        AttrValue::Int(number) => heap.alloc(*number),
+        AttrValue::Ints(numbers) => heap.alloc(numbers.clone()),
+        AttrValue::Bool(flag) => heap.alloc(*flag),
+        AttrValue::Label(None) | AttrValue::Output(None) => return Ok(None),
+        AttrValue::Label(Some(text)) => label(text)?,
+        AttrValue::Output(Some(text)) => output(text)?,
+        AttrValue::Labels(values) => labels(values)?,
+        AttrValue::StringDict(entries) => heap.alloc(starlark::values::dict::AllocDict(
+            entries
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str())),
+        )),
+        AttrValue::StringListDict(entries) => heap.alloc(starlark::values::dict::AllocDict(
+            entries
+                .iter()
+                .map(|(key, values)| (key.as_str(), heap.alloc(values.clone()))),
+        )),
+        AttrValue::LabelKeyedStringDict(entries) => {
+            let mut items = Vec::new();
+            for (key, value) in entries {
+                items.push((label(key)?, heap.alloc(value.as_str())));
+            }
+            heap.alloc(starlark::values::dict::AllocDict(items))
+        }
+        AttrValue::StringKeyedLabelDict(entries) => {
+            let mut items = Vec::new();
+            for (key, value) in entries {
+                items.push((key.as_str(), label(value)?));
+            }
+            heap.alloc(starlark::values::dict::AllocDict(items))
+        }
+        AttrValue::LabelListDict(entries) => {
+            let mut items = Vec::new();
+            for (key, values) in entries {
+                items.push((key.as_str(), labels(values)?));
+            }
+            heap.alloc(starlark::values::dict::AllocDict(items))
+        }
+    }))
+}
+
+/// StarlarkComputedDefaultTemplate.computePossibleValues/computeValue/invokeCallback
+/// (packages/Attribute.java:1405-1500) for one rule instance. Each parameter
+/// names an attribute (StarlarkCallbackHelper.buildArgumentList,
+/// StarlarkCallbackHelper.java:83-99); unknown names fail
+/// (AttributeNotFoundException), as do attributes without a regular value
+/// (null values and other computed defaults). Parameters reading `select()`
+/// values would need Bazel's per-combination lookup table and fail explicitly.
+fn computed_default<'v>(
+    inputs: ComputedInputs<'_, 'v>,
+    function: Value<'v>,
+    kind: &AttrKind,
+    eval: &mut Evaluator<'v, '_, '_>,
+) -> anyhow::Result<AttrValue> {
+    let shown = crate::rule_declarations::canonical_form(inputs.target);
+    let attribute = inputs.attribute;
+    let error = |message: String| {
+        anyhow!(
+            "Cannot compute default value of attribute '{attribute}' in rule '{shown}': {message}"
+        )
+    };
+    // Starlark names of the rule's attributes: native `$x` private names are
+    // not addressable by a Starlark parameter (AttributeValueSource.java:62-70).
+    let exists = |name: &str| {
+        name == "name"
+            || (!name.starts_with('_') && inputs.schema.contains_key(name))
+            || inputs.builtins.attribute(name).is_some()
+    };
+    let mut dependencies = inputs.parameters.to_vec();
+    dependencies.sort();
+    for dependency in &dependencies {
+        if !exists(dependency) {
+            return Err(error(format!(
+                "No such attribute {dependency} in rule {shown}"
+            )));
+        }
+        if inputs.configurable.contains_key(dependency)
+            || inputs.builtin.configurable.contains_key(dependency)
+        {
+            bail!(
+                "{shown}: computed default of attribute '{attribute}' depends on the configurable attribute '{dependency}' (per-configuration lookup table, StarlarkComputedDefault), which is not supported by the native profile"
+            );
+        }
+    }
+    if inputs.kind.dependency_resolution {
+        // Dependency attributes of these rules are made nonconfigurable
+        // (StarlarkRuleClassFunctions.java:949-961), which changes the visible set.
+        bail!(
+            "{shown}: computed default of attribute '{attribute}' on a dependency_resolution_rule is not supported by the native profile"
+        );
+    }
+    let heap = eval.heap();
+    // Built-in computed defaults never have a regular value: testonly,
+    // deprecation, package_metadata (BaseRuleClasses.java:67-108, 244, 265, 293)
+    // and the test `timeout` (StarlarkRuleClassFunctions.java:272-276).
+    let builtin_computed = |name: &str| {
+        matches!(name, "testonly" | "deprecation" | "package_metadata")
+            || (name == "timeout" && inputs.kind.test)
+    };
+    let mut values: Vec<Option<Value<'v>>> = Vec::new();
+    for parameter in inputs.parameters {
+        let value = if parameter == "name" {
+            Some(heap.alloc(inputs.target.name.as_str()))
+        } else if let Some(spec) = inputs
+            .schema
+            .get(parameter)
+            .filter(|_| !parameter.starts_with('_'))
+        {
+            if spec.declaration.computed_default {
+                None
+            } else {
+                match inputs.attrs.get(parameter) {
+                    Some(value) => attr_value_to_starlark(heap, value, inputs.target)?,
+                    None => None,
+                }
+            }
+        } else if builtin_computed(parameter) {
+            None
+        } else if parameter == "tags" {
+            Some(heap.alloc(inputs.builtin.tags.clone()))
+        } else if parameter == "visibility" {
+            // A nonconfigurable NODEP_LABEL_LIST: the declared labels.
+            let Some(visibility) = inputs.visibility else {
+                bail!(
+                    "{shown}: computed default of attribute '{attribute}' reads the unset 'visibility' attribute (genuine Bazel 9.3 crashes on it), which is not supported by the native profile"
+                );
+            };
+            let items = sequence_ref(visibility)
+                .ok_or_else(|| anyhow!("visibility must be a list of labels"))?;
+            let mut labels = Vec::new();
+            for item in items {
+                let label = match crate::starlark_types::unpack_label(*item) {
+                    Some(label) => label,
+                    None => (inputs.resolve)(
+                        item.unpack_str()
+                            .ok_or_else(|| anyhow!("visibility must be a list of labels"))?,
+                    )?
+                    .to_string(),
+                };
+                labels.push(crate::starlark_types::alloc_label(heap, &label)?);
+            }
+            Some(heap.alloc(labels))
+        } else if let Some(value) = inputs.builtin.attrs.get(parameter.as_str()) {
+            attr_value_to_starlark(heap, value, inputs.target)?
+        } else if let Some(value) = builtin_default(parameter, heap) {
+            Some(value)
+        } else {
+            bail!(
+                "{shown}: computed default of attribute '{attribute}' reads the unset built-in attribute '{parameter}', whose default value is not modeled by the native profile"
+            );
+        };
+        values.push(value);
+    }
+    // buildArgumentList fails at the first parameter without a value, with
+    // StructImpl's message and every visible field
+    // (StarlarkCallbackHelper.java:83-99, packages/StructImpl.java:86-95): the
+    // rule's nonconfigurable attributes and the declared dependencies
+    // (AggregatingAttributeMapper.createMapBackedAttributeMap, :533-566),
+    // except computed defaults and null values (Attribute.java:1457-1472).
+    if let Some(index) = values.iter().position(Option::is_none) {
+        let mut visible = nonconfigurable_builtins(inputs.kind)
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect::<std::collections::BTreeSet<_>>();
+        for (parameter, value) in inputs.parameters.iter().zip(&values) {
+            if value.is_some() {
+                visible.insert(parameter.clone());
+            }
+        }
+        return Err(error(format!(
+            "No such regular (non computed) attribute '{}'.\nAvailable attributes: {}",
+            inputs.parameters[index],
+            visible.into_iter().collect::<Vec<_>>().join(", ")
+        )));
+    }
+    let arguments = values.into_iter().flatten().collect::<Vec<_>>();
+    let result = eval
+        .eval_function(function, &arguments, &[])
+        .map_err(|e| error(evaluation_message(&e)))?;
+    // invokeCallback: None is the type default; otherwise Type.cast (and the
+    // element casts of list types).
+    if result.is_none() {
+        return Ok(kind.type_default());
+    }
+    let mismatch = |ty: &str, value: Value<'_>| {
+        error(format!("expected '{ty}', but got '{}'", value.get_type()))
+    };
+    match kind {
+        AttrKind::Label => crate::starlark_types::unpack_label(result)
+            .map(|label| AttrValue::Label(Some(label)))
+            .ok_or_else(|| mismatch("label", result)),
+        AttrKind::LabelList => {
+            let items = sequence_ref(result).ok_or_else(|| mismatch("list(label)", result))?;
+            items
+                .iter()
+                .map(|item| {
+                    crate::starlark_types::unpack_label(*item)
+                        .ok_or_else(|| mismatch("label", *item))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()
+                .map(AttrValue::Labels)
+        }
+        other => bail!(
+            "computed (function) defaults of attr.{} are not supported by the native profile",
+            other.starlark_name()
+        ),
+    }
+}
+
+/// EvalException.getMessage of a Starlark failure: the message without the
+/// call stack (`fail("boom")` is `boom`).
+fn evaluation_message(error: &starlark::Error) -> String {
+    match error.kind() {
+        // `fail(*args, sep = " ")` joins after an empty `msg` prefix.
+        starlark::ErrorKind::Fail(inner) => inner.to_string().trim_start().to_owned(),
+        starlark::ErrorKind::Value(inner)
+        | starlark::ErrorKind::Function(inner)
+        | starlark::ErrorKind::Native(inner)
+        | starlark::ErrorKind::Other(inner) => inner.to_string(),
+        _ => error.without_diagnostic().to_string(),
+    }
+}
+
+/// Nonconfigurable built-in attributes of Starlark rule classes with a
+/// non-null value, by native name (StarlarkRuleClassFunctions.java:159-241,
+/// 255-378; BaseRuleClasses.java:197-296): visible to every computed default.
+fn nonconfigurable_builtins(kind: crate::native_rules::StarlarkRuleKind) -> Vec<&'static str> {
+    let mut names = vec![
+        "$config_dependencies",
+        "compatible_with",
+        "exec_compatible_with",
+        "exec_group_compatible_with",
+        "generator_function",
+        "generator_location",
+        "generator_name",
+        "name",
+        "restricted_to",
+        "tags",
+        "transitive_configs",
+        "visibility",
+    ];
+    if kind.test {
+        names.extend(["$is_executable", "flaky", "local", "size"]);
+    } else if kind.executable {
+        names.push("$is_executable");
+    }
+    names
+}
+
+/// Unset built-in attribute values that are a plain default
+/// (StarlarkRuleClassFunctions.java:159-241, 255-378, BaseRuleClasses.java:197-296).
+fn builtin_default<'v>(name: &str, heap: starlark::values::Heap<'v>) -> Option<Value<'v>> {
+    Some(match name {
+        "features"
+        | "toolchains"
+        | "target_compatible_with"
+        | "aspect_hints"
+        | "compatible_with"
+        | "restricted_to"
+        | "exec_compatible_with"
+        | "transitive_configs"
+        | "args"
+        | "output_licenses" => heap.alloc(Vec::<Value<'v>>::new()),
+        "exec_properties" | "exec_group_compatible_with" => {
+            heap.alloc(starlark::values::dict::AllocDict::EMPTY)
+        }
+        "expect_failure" => heap.alloc(""),
+        "shard_count" => heap.alloc(-1),
+        "size" => heap.alloc("medium"),
+        "flaky" | "local" => Value::new_bool(false),
+        _ => return None,
+    })
+}
+
 /// StarlarkImplicitOutputsFunctionWithMap with the `%{name}` placeholder only.
 fn implicit_outputs(
     outputs: &ImplicitOutputs,
@@ -1833,6 +2367,13 @@ fn configurable_labels(
             AttrValue::LabelKeyedStringDict(entries) => {
                 entries.iter().for_each(|(text, _)| add(text))
             }
+            AttrValue::StringKeyedLabelDict(entries) => {
+                entries.iter().for_each(|(_, text)| add(text))
+            }
+            AttrValue::LabelListDict(entries) => entries
+                .iter()
+                .flat_map(|(_, values)| values)
+                .for_each(|text| add(text)),
             _ => {}
         }
     }
@@ -1882,14 +2423,35 @@ pub(crate) fn rule_declaration(value: Value<'_>) -> Option<RuleDeclarationView> 
 
 /// Copy the owned schema without exposing the private Starlark descriptor type.
 pub(crate) fn attribute_spec(value: Value<'_>) -> Option<AttrSpec> {
-    value
-        .downcast_ref::<Descriptor>()
-        .map(|value| value.0.clone())
+    attribute_spec_ref(value).cloned()
 }
 
 /// Borrow a descriptor so host preparation can charge defaults before copying.
+/// Computed-default descriptors expose the same owned schema, with
+/// `declaration.computed_default` set.
 pub(crate) fn attribute_spec_ref(value: Value<'_>) -> Option<&AttrSpec> {
-    value.downcast_ref::<Descriptor>().map(|value| &value.0)
+    value
+        .downcast_ref::<Descriptor>()
+        .map(|value| &value.0)
+        .or_else(|| ComputedDescriptor::from_value(value).map(|value| &value.spec))
+}
+
+/// The retained function of a computed-default descriptor.
+fn computed_default_function(value: Value<'_>) -> Option<Value<'_>> {
+    ComputedDescriptor::from_value(value).map(|value| value.function.to_value())
+}
+
+/// AttributeValueSource.validateStarlarkName (packages/AttributeValueSource.java:47-58):
+/// computed (COMPUTED_DEFAULT) and late-bound (LATE_BOUND) attributes must be
+/// private. Shared by rule(), repository_rule() and tag_class().
+pub(crate) fn check_value_source_name(name: &str, spec: &AttrSpec) -> anyhow::Result<()> {
+    if (spec.declaration.late_bound || spec.declaration.computed_default) && !name.starts_with('_')
+    {
+        bail!(
+            "When an attribute value is a function, the attribute must be private (i.e. start with '_'). Found '{name}'"
+        );
+    }
+    Ok(())
 }
 
 /// `Dict.cast(attrs, String, Descriptor, "attrs")` plus checkAttributeName
@@ -1898,7 +2460,7 @@ pub(crate) fn attribute_dict(value: Value<'_>) -> anyhow::Result<Vec<(String, At
     let dict = DictRef::from_value(value)
         .ok_or_else(|| anyhow!("got {} for 'attrs', want dict", value.get_type()))?;
     for (name, spec) in dict.iter() {
-        if name.unpack_str().is_none() || spec.downcast_ref::<Descriptor>().is_none() {
+        if name.unpack_str().is_none() || attribute_spec_ref(spec).is_none() {
             bail!(
                 "got dict<{}, {}> for 'attrs', want dict<string, Attribute>",
                 name.get_type(),
@@ -1913,7 +2475,15 @@ pub(crate) fn attribute_dict(value: Value<'_>) -> anyhow::Result<Vec<(String, At
         if !crate::rule_declarations::is_identifier(name) {
             bail!("attribute name `{name}` is not a valid identifier.");
         }
-        let spec = &spec.downcast_ref::<Descriptor>().expect("checked").0;
+        let spec = attribute_spec_ref(spec).expect("checked");
+        check_value_source_name(name, spec)?;
+        // StarlarkRuleClassFunctions.java:1374-1379.
+        if spec.declaration.configurable_set {
+            bail!(
+                "attribute '{}' has the 'configurable' argument set, which is not allowed in aspect definitions",
+                native_attribute_name(name, spec.declaration.late_bound)
+            );
+        }
         budget.string(name).map_err(anyhow::Error::msg)?;
         budget.spec(spec).map_err(anyhow::Error::msg)?;
         attributes.push((name.to_owned(), spec.clone()));
@@ -2055,7 +2625,8 @@ fn file_types(param: &str, value: Value<'_>) -> anyhow::Result<(bool, Option<Vec
     bail!("{param} should be a boolean or a string list")
 }
 
-/// Dependency-attribute options shared by label, label_list and label_keyed_string_dict.
+/// Dependency-attribute options shared by label, label_list and the
+/// label-valued dictionaries.
 struct DependencyOptions<'v> {
     /// `attr` function name for parameter type errors.
     function: &'static str,
@@ -2069,6 +2640,9 @@ struct DependencyOptions<'v> {
     cfg: Value<'v>,
     aspects: Value<'v>,
     flags: Value<'v>,
+    /// `configurable=` (bool or unbound), recorded as user-set
+    /// (StarlarkAttrModule.java:402-410).
+    configurable: Option<bool>,
 }
 
 /// StarlarkAttrModule.createAttribute for dependency attributes, in Bazel's
@@ -2080,20 +2654,31 @@ fn dependency_descriptor<'v>(
     allow_empty: bool,
     options: DependencyOptions<'v>,
     eval: &mut Evaluator<'v, '_, '_>,
-) -> anyhow::Result<Descriptor> {
+) -> anyhow::Result<Value<'v>> {
     use crate::rule_declarations::{param_type_error, require_sequence};
     let function = options.function;
-    // BuiltinFunction @Param allowedTypes, in parameter order (StarlarkAttrModuleApi.java).
-    if kind == AttrKind::LabelKeyedStringDict
+    // BuiltinFunction @Param allowedTypes, in parameter order (StarlarkAttrModuleApi.java):
+    // Dict|StarlarkFunction for the label-keyed and string-keyed label
+    // dictionaries (:788-805, :906-914), Dict only for label_list_dict (:1031-1046).
+    let dict_default = match kind {
+        AttrKind::LabelKeyedStringDict | AttrKind::StringKeyedLabelDict => Some(true),
+        AttrKind::LabelListDict => Some(false),
+        _ => None,
+    };
+    if let Some(function_allowed) = dict_default
         && let Some(value) = default
         && DictRef::from_value(value).is_none()
-        && value.parameters_spec().is_none()
+        && !(function_allowed && value.parameters_spec().is_some())
     {
         return Err(param_type_error(
             function,
             "default",
             value,
-            "dict or function",
+            if function_allowed {
+                "dict or function"
+            } else {
+                "dict"
+            },
         ));
     }
     if !options.allow_files.is_none()
@@ -2120,25 +2705,40 @@ fn dependency_descriptor<'v>(
     require_sequence(function, "flags", options.flags)?;
     let late_bound = kind == AttrKind::Label
         && default.is_some_and(crate::rule_declarations::is_late_bound_default);
-    if default.is_some_and(|value| value.parameters_spec().is_some()) {
-        bail!("computed (function) attribute defaults are not supported by the native profile");
+    // A Starlark function default is a computed default
+    // (StarlarkAttrModule.java:358-368, StarlarkComputedDefaultTemplate).
+    let computed = default.filter(|value| value.parameters_spec().is_some());
+    if computed.is_some() && !matches!(kind, AttrKind::Label | AttrKind::LabelList) {
+        bail!(
+            "computed (function) defaults of attr.{} are not supported by the native profile",
+            kind.starlark_name()
+        );
     }
-    // A late-bound default is retained as metadata only; it never reaches the
-    // ordinary default coercion and resolves (explicitly unsupported) at analysis.
-    let default = if late_bound { None } else { default };
+    // Late-bound and computed defaults are retained as metadata (and the
+    // function); they never reach the ordinary default coercion.
+    let default = if late_bound || computed.is_some() {
+        None
+    } else {
+        default
+    };
     let budget = std::cell::RefCell::new(crate::repository_budget::HostBudget::default());
     let resolve =
         |text: &str| crate::loading::resolve_label_bounded(eval, text, &mut budget.borrow_mut());
-    if kind == AttrKind::LabelKeyedStringDict
+    if dict_default.is_some()
         && let Some(value) = default
     {
         // Attribute.Builder.defaultValue: what = "parameter 'default' of attribute
-        // 'label_keyed_string_dict'" (Attribute.java:700-708).
-        let what = "parameter 'default' of attribute 'label_keyed_string_dict'";
-        if let Some(error) = kind.conversion_error(value, what) {
+        // 'KIND'" (Attribute.java:700-708), with KIND the createAttribute name.
+        let what = format!(
+            "parameter 'default' of attribute '{}'",
+            kind.starlark_name()
+        );
+        if let Some(error) = kind.conversion_error(value, &what) {
             bail!("{error}");
         }
-        label_keyed_duplicates(value, what, &resolve)?;
+        if kind == AttrKind::LabelKeyedStringDict {
+            label_keyed_duplicates(value, &what, &resolve)?;
+        }
     }
     let mut descriptor = descriptor_in_package(
         kind,
@@ -2150,7 +2750,9 @@ fn dependency_descriptor<'v>(
     )?;
     let declaration = &mut descriptor.0.declaration;
     declaration.late_bound = late_bound;
-    declaration.explicit_default |= late_bound;
+    declaration.computed_default = computed.is_some();
+    declaration.explicit_default |= late_bound || computed.is_some();
+    declaration.configurable_set = options.configurable.is_some();
     declaration.flags = crate::rule_declarations::noneable_strings(options.flags, "flags")?;
     declaration.for_dependency_resolution = options.for_dependency_resolution;
     declaration.skip_validations = options.skip_validations;
@@ -2190,7 +2792,13 @@ fn dependency_descriptor<'v>(
     crate::repository_budget::HostBudget::default()
         .spec(&descriptor.0)
         .map_err(anyhow::Error::msg)?;
-    Ok(descriptor)
+    Ok(match computed {
+        Some(function) => eval.heap().alloc(ComputedDescriptorGen {
+            function,
+            spec: descriptor.0,
+        }),
+        None => eval.heap().alloc(descriptor),
+    })
 }
 
 #[starlark_module]
@@ -2311,7 +2919,7 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named, default = AllocList::EMPTY)] aspects: Value<'v>,
         #[starlark(require = named, default = AllocList::EMPTY)] flags: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<Descriptor> {
+    ) -> anyhow::Result<Value<'v>> {
         let _ = doc;
         const KIND_FUNCTION: &str = "label";
         dependency_descriptor(
@@ -2331,6 +2939,7 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
                 cfg,
                 aspects,
                 flags,
+                configurable: None,
             },
             eval,
         )
@@ -2349,7 +2958,7 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named, default = NoneType)] cfg: Value<'v>,
         #[starlark(require = named, default = AllocList::EMPTY)] aspects: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<Descriptor> {
+    ) -> anyhow::Result<Value<'v>> {
         let _ = doc;
         const KIND_FUNCTION: &str = "label_list";
         dependency_descriptor(
@@ -2369,6 +2978,7 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
                 cfg,
                 aspects,
                 flags,
+                configurable: None,
             },
             eval,
         )
@@ -2387,7 +2997,7 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named, default = NoneType)] cfg: Value<'v>,
         #[starlark(require = named, default = AllocList::EMPTY)] aspects: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<Descriptor> {
+    ) -> anyhow::Result<Value<'v>> {
         let _ = doc;
         const KIND_FUNCTION: &str = "label_keyed_string_dict";
         dependency_descriptor(
@@ -2407,6 +3017,88 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
                 cfg,
                 aspects,
                 flags,
+                configurable: None,
+            },
+            eval,
+        )
+    }
+    /// StarlarkAttrModule.stringKeyedLabelDictAttribute (StarlarkAttrModule.java:918-967).
+    fn string_keyed_label_dict<'v>(
+        #[starlark(default = true)] allow_empty: bool,
+        #[starlark(require = named)] configurable: Option<bool>,
+        #[starlark(require = named)] default: Option<Value<'v>>,
+        #[starlark(require = named)] doc: Option<&str>,
+        #[starlark(require = named, default = NoneType)] allow_files: Value<'v>,
+        #[starlark(require = named, default = NoneType)] allow_rules: Value<'v>,
+        #[starlark(require = named, default = AllocList::EMPTY)] providers: Value<'v>,
+        #[starlark(require = named)] for_dependency_resolution: Option<bool>,
+        #[starlark(require = named, default = AllocList::EMPTY)] flags: Value<'v>,
+        #[starlark(require = named, default = false)] mandatory: bool,
+        #[starlark(require = named, default = NoneType)] cfg: Value<'v>,
+        #[starlark(require = named, default = AllocList::EMPTY)] aspects: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let _ = doc;
+        const KIND_FUNCTION: &str = "string_keyed_label_dict";
+        dependency_descriptor(
+            AttrKind::StringKeyedLabelDict,
+            default,
+            mandatory,
+            allow_empty,
+            DependencyOptions {
+                function: KIND_FUNCTION,
+                executable: false,
+                allow_files,
+                allow_single_file: Value::new_none(),
+                skip_validations: false,
+                providers,
+                for_dependency_resolution,
+                allow_rules,
+                cfg,
+                aspects,
+                flags,
+                configurable,
+            },
+            eval,
+        )
+    }
+    /// StarlarkAttrModule.labelListDictAttribute (StarlarkAttrModule.java:1023-1075).
+    fn label_list_dict<'v>(
+        #[starlark(default = true)] allow_empty: bool,
+        #[starlark(require = named)] configurable: Option<bool>,
+        #[starlark(require = named)] default: Option<Value<'v>>,
+        #[starlark(require = named)] doc: Option<&str>,
+        #[starlark(require = named, default = NoneType)] allow_files: Value<'v>,
+        #[starlark(require = named, default = NoneType)] allow_rules: Value<'v>,
+        #[starlark(require = named, default = AllocList::EMPTY)] providers: Value<'v>,
+        #[starlark(require = named)] for_dependency_resolution: Option<bool>,
+        #[starlark(require = named, default = AllocList::EMPTY)] flags: Value<'v>,
+        #[starlark(require = named, default = false)] mandatory: bool,
+        #[starlark(require = named, default = false)] skip_validations: bool,
+        #[starlark(require = named, default = NoneType)] cfg: Value<'v>,
+        #[starlark(require = named, default = AllocList::EMPTY)] aspects: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let _ = doc;
+        const KIND_FUNCTION: &str = "label_list_dict";
+        dependency_descriptor(
+            AttrKind::LabelListDict,
+            default,
+            mandatory,
+            allow_empty,
+            DependencyOptions {
+                function: KIND_FUNCTION,
+                executable: false,
+                allow_files,
+                allow_single_file: Value::new_none(),
+                skip_validations,
+                providers,
+                for_dependency_resolution,
+                allow_rules,
+                cfg,
+                aspects,
+                flags,
+                configurable,
             },
             eval,
         )
@@ -2622,6 +3314,8 @@ fn define_rule<'v>(
     };
     let mut schema = BTreeMap::new();
     let mut attr_order = Vec::new();
+    let mut computed = Vec::new();
+    let mut computed_functions = Vec::new();
     let mut budget = crate::repository_budget::HostBudget::default();
     budget.node().map_err(anyhow::Error::msg)?;
     let subrules = crate::subrule::snapshot(args.subrules, &mut budget)?;
@@ -2644,17 +3338,13 @@ fn define_rule<'v>(
             {
                 bail!("invalid attribute name {name:?}");
             }
-            let spec = spec
-                .downcast_ref::<Descriptor>()
+            let function = computed_default_function(spec);
+            let spec = attribute_spec_ref(spec)
                 .ok_or_else(|| anyhow!("attribute {name:?} must be an attr descriptor"))?;
-            // AttributeValueSource.LATE_BOUND requires the Starlark '_' prefix
-            // (packages/AttributeValueSource.java:47-58).
-            if spec.0.declaration.late_bound && !name.starts_with('_') {
-                bail!(
-                    "When an attribute value is a function, the attribute must be private (i.e. start with '_'). Found '{name}'"
-                );
-            }
-            descriptors.push((name, spec));
+            // AttributeValueSource.LATE_BOUND/COMPUTED_DEFAULT require the
+            // Starlark '_' prefix (packages/AttributeValueSource.java:47-58).
+            check_value_source_name(name, spec)?;
+            descriptors.push((name, spec, function));
         }
         let builtins =
             crate::native_rules::starlark_builtins(crate::native_rules::StarlarkRuleKind {
@@ -2662,22 +3352,44 @@ fn define_rule<'v>(
                 executable,
                 dependency_resolution: args.dependency_resolution_rule,
             });
-        for (name, spec) in descriptors {
+        for (name, spec, function) in descriptors {
+            // "configurable" may only be user-set for symbolic macros
+            // (StarlarkRuleClassFunctions.java:964-970), named natively.
+            if spec.declaration.configurable_set {
+                bail!(
+                    "attribute '{}' has the 'configurable' argument set, which is not allowed in rule definitions",
+                    native_attribute_name(name, spec.declaration.late_bound)
+                );
+            }
             // RuleClass.Builder.override (packages/RuleClass.java:1301-1306):
             // built-in attributes, including `name` and the private `$x`/`:x`
             // ones (reported by public name), cannot be overridden.
-            if builtins.contains(&native_attribute_name(name, spec.0.declaration.late_bound)) {
+            if builtins.contains(&native_attribute_name(name, spec.declaration.late_bound)) {
                 bail!("attribute `{name}`: built-in attributes cannot be overridden.");
             }
-            if name.starts_with('_') && spec.0.mandatory {
+            if name.starts_with('_') && spec.mandatory {
                 bail!(
                     "private attribute {name:?} cannot be mandatory because it cannot be set explicitly"
                 );
             }
-            propagates_aspects |= !spec.0.declaration.aspects.is_empty();
+            // StarlarkRuleClassFunctions.java:991-998.
+            if spec.declaration.cfg.is_analysis_test() && !args.analysis_test {
+                bail!(
+                    "Only rule definitions with analysis_test=True may have attributes with analysis_test_transition transitions"
+                );
+            }
+            propagates_aspects |= !spec.declaration.aspects.is_empty();
             budget.string(name).map_err(anyhow::Error::msg)?;
-            budget.spec(&spec.0).map_err(anyhow::Error::msg)?;
-            schema.insert(name.to_owned(), spec.0.clone());
+            budget.spec(spec).map_err(anyhow::Error::msg)?;
+            if let Some(function) = function {
+                let parameters = parameter_names(function)?;
+                for parameter in &parameters {
+                    budget.string(parameter).map_err(anyhow::Error::msg)?;
+                }
+                computed.push((name.to_owned(), parameters));
+                computed_functions.push(function);
+            }
+            schema.insert(name.to_owned(), spec.clone());
             attr_order.push(name.to_owned());
         }
     }
@@ -2787,12 +3499,35 @@ fn define_rule<'v>(
         subrules,
         initializer,
         outputs_function,
+        computed_functions,
+        computed,
         schema,
         attr_order,
         build_setting,
         declaration,
         exported: OnceLock::new(),
     }))
+}
+
+/// StarlarkFunction.getParameterNames (StarlarkCallbackHelper.java:58-60):
+/// every parameter, in declaration order.
+fn parameter_names(function: Value<'_>) -> anyhow::Result<Vec<String>> {
+    let spec = function
+        .parameters_spec()
+        .ok_or_else(|| anyhow!("computed default must be a Starlark function"))?;
+    let docs = spec.documentation(
+        vec![starlark::typing::Ty::any(); spec.len()],
+        std::collections::HashMap::new(),
+    );
+    Ok(docs
+        .pos_only
+        .iter()
+        .chain(&docs.pos_or_named)
+        .chain(&docs.args)
+        .chain(&docs.named_only)
+        .chain(&docs.kwargs)
+        .map(|param| param.name.clone())
+        .collect())
 }
 
 // The public Starlark rule signature has independently named Bazel options.

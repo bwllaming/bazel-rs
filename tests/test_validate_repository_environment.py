@@ -21,7 +21,7 @@ def record(text='', code=1, **changes):
 FROZEN_NATIVE_ERROR = '''bazel-rs: cannot evaluate //:consumer.bzl: Traceback (most recent call last):
   * //:consumer.bzl:2, in <module>
       NAMES.append('BAZEL_RS_ENV_B')
-error: Immutable
+error: trying to mutate a frozen list value
  --> //:consumer.bzl:2:1
   |
 2 | NAMES.append('BAZEL_RS_ENV_B')
@@ -188,12 +188,17 @@ class PrivacyTests(unittest.TestCase):
 class DiagnosticTests(unittest.TestCase):
     def test_native_frozen_error_requires_exact_error_and_bound_mutation_site(self):
         suite.require_rejection(record(FROZEN_NATIVE_ERROR), 'frozen', 'native', 'frozen')
+        error = 'error: trying to mutate a frozen list value'
+        self.assertIn(error, FROZEN_NATIVE_ERROR.splitlines())
         for wrong in (
-                'error: Immutable',
-                FROZEN_NATIVE_ERROR.replace('error: Immutable', 'error: immutable'),
-                FROZEN_NATIVE_ERROR.replace('error: Immutable', 'error: Immutable list'),
-                FROZEN_NATIVE_ERROR.replace('error: Immutable', 'note: Immutable'),
-                FROZEN_NATIVE_ERROR.replace('error: Immutable', 'error: Other'),
+                error,
+                # The pre-N20 native text is no longer the faithful one.
+                FROZEN_NATIVE_ERROR.replace(error, 'error: Immutable'),
+                FROZEN_NATIVE_ERROR.replace(error, 'error: Trying to mutate a frozen list value'),
+                FROZEN_NATIVE_ERROR.replace(error, 'error: trying to mutate a frozen dict value'),
+                FROZEN_NATIVE_ERROR.replace(error, error+' (list)'),
+                FROZEN_NATIVE_ERROR.replace(error, 'note: trying to mutate a frozen list value'),
+                FROZEN_NATIVE_ERROR.replace(error, 'error: Other'),
                 FROZEN_NATIVE_ERROR.replace('//:consumer.bzl', '//:defs.bzl'),
                 FROZEN_NATIVE_ERROR.replace('//:consumer.bzl:2:1', '//:consumer.bzl:3:1'),
                 FROZEN_NATIVE_ERROR.replace("2 | NAMES.append('BAZEL_RS_ENV_B')", '2 | fail("Immutable")'),
@@ -205,10 +210,13 @@ class DiagnosticTests(unittest.TestCase):
         for probe in (None, 'default-present', 'environ-element'):
             with self.assertRaises(ValueError):
                 suite.require_rejection(record(FROZEN_NATIVE_ERROR), 'frozen', 'native', probe)
-        # The genuine reference classifier is intentionally unchanged.
+        # The genuine reference classifier is intentionally unchanged; it accepts
+        # Bazel's form and never the obsolete native 'Immutable' text.
         suite.require_rejection(record('cannot mutate frozen list'), 'frozen', 'reference', 'frozen')
+        suite.require_rejection(record('Error in append: trying to mutate a frozen list value'), 'frozen', 'reference', 'frozen')
         with self.assertRaises(ValueError):
-            suite.require_rejection(record(FROZEN_NATIVE_ERROR), 'frozen', 'reference', 'frozen')
+            suite.require_rejection(record(FROZEN_NATIVE_ERROR.replace(
+                'error: trying to mutate a frozen list value', 'error: Immutable')), 'frozen', 'reference', 'frozen')
 
     def test_precise_categories_reject_infrastructure_and_missing_globals(self):
         messages = {'keyword': 'getenv got unexpected keyword argument name',

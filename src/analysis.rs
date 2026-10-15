@@ -118,6 +118,54 @@ fn dependency<'a>(
     Ok(target)
 }
 
+/// Configured prerequisites of a label-valued dictionary attribute.
+struct DictPrerequisites<'v, 'a> {
+    /// One Target value per distinct label.
+    values: BTreeMap<&'a str, Value<'v>>,
+    /// `ctx.files` entry: PrerequisiteArtifacts.nestedSet, a stable-order
+    /// deduplicated union over the distinct prerequisites in label-visitation
+    /// order (analysis/PrerequisiteArtifacts.java:64-72; DictType.visitLabels,
+    /// packages/Type.java:504-514).
+    files: Value<'v>,
+}
+
+fn dict_prerequisites<'v, 'a>(
+    labels: impl Iterator<Item = &'a str>,
+    name: &str,
+    spec: &AttrSpec,
+    dependencies: &BTreeMap<String, DependencyTarget>,
+    prefix: &str,
+    heap: Heap<'v>,
+) -> anyhow::Result<DictPrerequisites<'v, 'a>> {
+    let mut values = BTreeMap::new();
+    let mut files = Vec::new();
+    let mut seen_files = BTreeSet::new();
+    for label in labels {
+        if values.contains_key(label) {
+            continue;
+        }
+        let target = dependency(label, name, spec, dependencies, prefix)?;
+        for file in &target.files {
+            if seen_files.insert(file) {
+                files.push(alloc_file(heap, file.clone()));
+            }
+        }
+        values.insert(
+            label,
+            crate::starlark_types::alloc_target_with_providers(
+                heap,
+                &target.label,
+                target.files.clone(),
+                target.providers.clone(),
+            ),
+        );
+    }
+    Ok(DictPrerequisites {
+        values,
+        files: heap.alloc(files),
+    })
+}
+
 fn make_ctx<'v>(
     rule: &Rule,
     context: &Context,
@@ -128,6 +176,78 @@ fn make_ctx<'v>(
         .custom
         .as_ref()
         .ok_or_else(|| anyhow!("{} is not a custom rule", rule.label))?;
+    // ctx.attr/files/file/outputs values are immutable in Bazel
+    // (Attribute.valueToStarlark / StarlarkList.immutableCopyOf /
+    // Dict.immutableCopyOf, analysis/starlark/StarlarkAttributesCollection.java:300-390):
+    // mutating one fails with `trying to mutate a frozen list value`. Build
+    // them on a private heap and freeze it.
+    let owned = Module::with_temp_heap(|module| -> anyhow::Result<_> {
+        let structs =
+            ctx_attribute_structs(rule, invocation, context, dependencies, module.heap())?;
+        for (name, value) in ["attr", "files", "file", "outputs"]
+            .into_iter()
+            .zip(structs)
+        {
+            module.set(name, value);
+        }
+        let frozen = module
+            .freeze_named(FrozenHeapName::User(Box::new(
+                "rule context attributes".to_owned(),
+            )))
+            .map_err(|error| anyhow!("cannot freeze rule context attributes: {error:?}"))?;
+        ["attr", "files", "file", "outputs"]
+            .map(|name| frozen.get(name).map_err(|error| anyhow!(error.to_string())))
+            .into_iter()
+            .collect::<anyhow::Result<Vec<_>>>()
+    })?;
+    let [attr, files, file, outputs] = <[OwnedFrozenValue; 4]>::try_from(owned)
+        .map_err(|_| anyhow!("internal error: rule context attribute structs"))?
+        .map(|value| heap.access_owned_frozen_value(&value));
+    let label = alloc_target(heap, &rule.label.to_string(), Vec::new())
+        .get_attr_error("label", heap)
+        .map_err(|error| anyhow!(error.to_string()))?;
+    let backing = heap.alloc(AllocStruct([
+        ("attr", attr),
+        ("files", files),
+        ("file", file),
+        ("outputs", outputs),
+        ("label", label),
+        ("actions", alloc_actions(heap, context.scope.root())),
+    ]));
+    if invocation.build_setting.is_some() {
+        // The configured value (StarlarkRuleContext.getBuildSettingValue,
+        // analysis/starlark/StarlarkRuleContext.java:738-757): the command-line
+        // value set by crate::engine, else build_setting_default.
+        let value = match &invocation.setting_value {
+            Some(value) => value.clone(),
+            None => setting_default(invocation)?,
+        };
+        Ok(crate::build_setting_ctx::wrap(
+            heap,
+            backing,
+            value,
+            context.scope.root(),
+        ))
+    } else {
+        Ok(crate::analysis_ctx::alloc_rule(
+            heap,
+            backing,
+            context.scope.root(),
+            None,
+            invocation.target_platform.clone(),
+            invocation.toolchains.clone(),
+        ))
+    }
+}
+
+/// The `ctx.attr`, `ctx.files`, `ctx.file` and `ctx.outputs` structs.
+fn ctx_attribute_structs<'v>(
+    rule: &Rule,
+    invocation: &crate::custom_rule::CustomInvocation,
+    context: &Context,
+    dependencies: &BTreeMap<String, DependencyTarget>,
+    heap: Heap<'v>,
+) -> anyhow::Result<[Value<'v>; 4]> {
     // RuleContext attribute errors: `in A attribute of KIND rule L: `
     // (analysis/EventHandlingErrorReporter.java:92-101).
     let attribute_prefix = |name: &str| {
@@ -166,6 +286,49 @@ fn make_ctx<'v>(
                     crate::rule_declarations::NOT_ANALYZED
                 );
                 heap.alloc(starlark::values::dict::AllocDict::EMPTY)
+            }
+            AttrValue::StringKeyedLabelDict(entries) => {
+                // StarlarkAttributesCollection.convertStringToLabelMap
+                // (analysis/starlark/StarlarkAttributesCollection.java:214-222).
+                let labels = entries.iter().map(|(_, label)| label.as_str());
+                let targets = dict_prerequisites(
+                    labels,
+                    name,
+                    spec,
+                    dependencies,
+                    &attribute_prefix(name),
+                    heap,
+                )?;
+                files.insert(name.clone(), targets.files);
+                let mut items = Vec::new();
+                for (key, label) in entries {
+                    items.push((key.as_str(), targets.values[label.as_str()]));
+                }
+                heap.alloc(starlark::values::dict::AllocDict(items))
+            }
+            AttrValue::LabelListDict(entries) => {
+                // StarlarkAttributesCollection.convertStringToLabelListMap (:224-235).
+                let labels = entries
+                    .iter()
+                    .flat_map(|(_, labels)| labels.iter().map(String::as_str));
+                let targets = dict_prerequisites(
+                    labels,
+                    name,
+                    spec,
+                    dependencies,
+                    &attribute_prefix(name),
+                    heap,
+                )?;
+                files.insert(name.clone(), targets.files);
+                let mut items = Vec::new();
+                for (key, labels) in entries {
+                    let values = labels
+                        .iter()
+                        .map(|label| targets.values[label.as_str()])
+                        .collect::<Vec<_>>();
+                    items.push((key.as_str(), heap.alloc(values)));
+                }
+                heap.alloc(starlark::values::dict::AllocDict(items))
             }
             AttrValue::Bool(value) => heap.alloc(*value),
             AttrValue::Label(value) => {
@@ -265,41 +428,12 @@ fn make_ctx<'v>(
         attrs.insert(name.clone(), attr);
     }
     builtin_ctx_attrs(rule, invocation, dependencies, &mut attrs, &mut files, heap)?;
-    let label = alloc_target(heap, &rule.label.to_string(), Vec::new())
-        .get_attr_error("label", heap)
-        .map_err(|error| anyhow!(error.to_string()))?;
-    let backing = heap.alloc(AllocStruct([
-        ("attr", heap.alloc(AllocStruct(attrs))),
-        ("files", heap.alloc(AllocStruct(files))),
-        ("file", heap.alloc(AllocStruct(single_files))),
-        ("outputs", heap.alloc(AllocStruct(outputs))),
-        ("label", label),
-        ("actions", alloc_actions(heap, context.scope.root())),
-    ]));
-    if invocation.build_setting.is_some() {
-        // The configured value (StarlarkRuleContext.getBuildSettingValue,
-        // analysis/starlark/StarlarkRuleContext.java:738-757): the command-line
-        // value set by crate::engine, else build_setting_default.
-        let value = match &invocation.setting_value {
-            Some(value) => value.clone(),
-            None => setting_default(invocation)?,
-        };
-        Ok(crate::build_setting_ctx::wrap(
-            heap,
-            backing,
-            value,
-            context.scope.root(),
-        ))
-    } else {
-        Ok(crate::analysis_ctx::alloc_rule(
-            heap,
-            backing,
-            context.scope.root(),
-            None,
-            invocation.target_platform.clone(),
-            invocation.toolchains.clone(),
-        ))
-    }
+    Ok([
+        heap.alloc(AllocStruct(attrs)),
+        heap.alloc(AllocStruct(files)),
+        heap.alloc(AllocStruct(single_files)),
+        heap.alloc(AllocStruct(outputs)),
+    ])
 }
 
 /// The typed `build_setting_default` of a build-setting rule invocation.
@@ -563,11 +697,23 @@ fn analyze_inner(
             gaps.join("; ")
         );
     }
-    for (name, spec) in &invocation.schema {
+    // RuleContext.checkAttributesNonEmpty reports every empty attribute, in
+    // rule-class attribute order (analysis/RuleContext.java:1532-1550).
+    let mut empty = Vec::new();
+    for name in &invocation.declaration.attr_order {
+        let Some(spec) = invocation.schema.get(name) else {
+            continue;
+        };
         if spec.non_empty
             && match invocation.attrs.get(name) {
-                Some(AttrValue::StringListDict(entries)) => entries.is_empty(),
-                Some(AttrValue::StringDict(entries)) => entries.is_empty(),
+                Some(AttrValue::StringListDict(entries) | AttrValue::LabelListDict(entries)) => {
+                    entries.is_empty()
+                }
+                Some(
+                    AttrValue::StringDict(entries)
+                    | AttrValue::LabelKeyedStringDict(entries)
+                    | AttrValue::StringKeyedLabelDict(entries),
+                ) => entries.is_empty(),
                 Some(
                     value @ (AttrValue::Strings(_)
                     | AttrValue::Labels(_)
@@ -579,12 +725,15 @@ fn analyze_inner(
         {
             // RuleContext.java:1548 via EventHandlingErrorReporter.completeAttributeMessage
             // (analysis/EventHandlingErrorReporter.java:92-101).
-            return Err(anyhow!(
+            empty.push(format!(
                 "in {name} attribute of {} rule {}: attribute must be non empty",
                 invocation.declaration.rule_class,
                 crate::rule_declarations::canonical_form(&rule.label)
             ));
         }
+    }
+    if !empty.is_empty() {
+        bail!("{}", empty.join("\n"));
     }
     let context = Context {
         label: rule.label.clone(),

@@ -156,10 +156,16 @@ class DiagnosticTests(unittest.TestCase):
                     suite.require_rejection(value, diagnostic)
             with self.assertRaises(ValueError):
                 suite.require_rejection(record('generic build failed'), diagnostic)
-        suite.require_rejection(record('error: Immutable'), 'freeze-dict', 'native')
-        suite.require_rejection(record('error: Immutable'), 'freeze-list', 'native')
+        # Since N20 the native text is Bazel's Starlark.checkMutable text; the
+        # former native 'error: Immutable' is rejected for both engines.
+        suite.require_rejection(record('error: trying to mutate a frozen dict value'), 'freeze-dict', 'native')
+        suite.require_rejection(record('error: trying to mutate a frozen list value'), 'freeze-list', 'native')
+        for diagnostic in ('freeze-dict', 'freeze-list'):
+            for engine in ('native', 'reference'):
+                with self.assertRaises(ValueError):
+                    suite.require_rejection(record('error: Immutable'), diagnostic, engine)
         with self.assertRaises(ValueError):
-            suite.require_rejection(record('error: Immutable'), 'freeze-dict')
+            suite.require_rejection(record('error: trying to mutate a frozen list value'), 'freeze-dict', 'native')
         for text in ('Immutable download failed', 'something Immutable elsewhere', 'Immutable'):
             with self.assertRaises(ValueError):
                 suite.require_rejection(record(text), 'freeze-list')

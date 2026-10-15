@@ -805,7 +805,7 @@ fn unknown_repository(name: &str) -> String {
 }
 
 /// `@R//pkg:name` with an apparent repository R as an unresolvable label.
-fn deferred_unknown_repository(text: &str) -> Option<Label> {
+pub(crate) fn deferred_unknown_repository(text: &str) -> Option<Label> {
     let parts = crate::bazel_label::Parts::parse(text).ok()?;
     let repository = parts.repo.filter(|_| !parts.repo_is_canonical)?;
     if repository.is_empty() {
@@ -821,10 +821,7 @@ fn deferred_unknown_repository(text: &str) -> Option<Label> {
 /// The apparent repository name of a label made by
 /// [`deferred_unknown_repository`].
 pub fn unknown_repository_name(label: &Label) -> Option<&str> {
-    label
-        .repository
-        .strip_prefix("[unknown repo '")?
-        .strip_suffix("' requested from @@]")
+    crate::label::unknown_repository_name(&label.repository)
 }
 
 /// FragmentOptions.normalizeEntries then sortEntries (CoreOptions.java:1199-1208).

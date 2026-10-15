@@ -341,7 +341,9 @@ DIAGNOSTICS = {
     'return': r'(?:macro[^\n]*return[^\n]*(?:None|none)|macro[^\n]*(?:non-None|non.None))',
     'unexported': r'(?:macro[^\n]*(?:not been exported|not exported|unexported|must be exported before invocation)|unexported[^\n]*macro)',
     'implementation': r'implementation[^\n]*(?:Starlark|function|def|callable)',
-    'frozen': r'(?:trying to mutate a frozen list|Cannot mutate frozen|^error: Immutable$)',
+    # Starlark.checkMutable (Starlark.java:262-265); native prints it since N20
+    # (docs/STARLARK_VENDOR.md), so the former native 'error: Immutable' is gone.
+    'frozen': r'(?:trying to mutate a frozen list|Cannot mutate frozen)',
     'constructor-phase': r'macro\(\)[^\n]*(?:only|initialization|top.level)',
     'invocation-phase': r'(?:symbolic macro[^\n]*(?:only|BUILD)|macro[^\n]*only[^\n]*BUILD)',
     'glob-phase': r'glob\(\)[^\n]*(?:only[^\n]*(?:BUILD|legacy)|not allowed inside a symbolic macro)',

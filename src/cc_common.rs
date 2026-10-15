@@ -701,7 +701,7 @@ explicit = cc_internal.create_header_info(header_module = None, modular_public_h
             (
                 "cc_internal.create_header_info().textual_headers.append('a.h')",
                 // Bazel: immutable StarlarkList; native: the frozen empty list.
-                "Immutable",
+                "trying to mutate a frozen list value",
             ),
             (
                 "cc_internal.create_header_info(textual_headers = ['a.h'])",

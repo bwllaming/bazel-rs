@@ -33,7 +33,7 @@ MESSAGES = {
     'cycle': 'repository preparation cycle: a_repo -> b_repo -> a_repo',
     'return': 'expected module extension @@//:ext.bzl%files to return None or extension_metadata, got int',
     'isolated': 'isolated extension usage is not supported',
-    'immutable': 'Immutable',
+    'immutable': 'trying to mutate a frozen list value',
     'name': 'invalid repository name "a+b"',
     'canonical': 'unknown canonical repository @@+unknown+made; extension repository not materialized',
     'ticks': 'Maximum number of ticks exceeded',
@@ -433,6 +433,9 @@ class DiagnosticTests(unittest.TestCase):
 
     def test_frozen_list_diagnostic_and_no_generic_evaluation_limit(self):
         extensions.require_rejection(record(stderr='trying to mutate a frozen list value', returncode=1), 'immutable')
+        # The pre-N20 bare native text no longer satisfies the classifier.
+        with self.assertRaises(ValueError):
+            extensions.require_rejection(record(stderr='error: Immutable', returncode=1), 'immutable')
         for text in ('evaluation limit exceeded', 'memory exhausted', 'ticks: 1000000', 'timeout'):
             with self.assertRaises(ValueError):
                 extensions.require_rejection(record(stderr=text, returncode=1), 'ticks')

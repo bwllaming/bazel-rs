@@ -1149,6 +1149,12 @@ fn alloc_attrs<'v>(
                     "attribute {name:?} kind is not supported for module extension tags by the native profile"
                 )
             }
+            AttrValue::StringKeyedLabelDict(entries) => {
+                crate::attribute_values::alloc_string_keyed_label_dict(heap, entries)?
+            }
+            AttrValue::LabelListDict(entries) => {
+                crate::attribute_values::alloc_label_dict(heap, entries, true)?
+            }
             AttrValue::Bool(value) => heap.alloc(*value),
             AttrValue::Label(None) => Value::new_none(),
             AttrValue::Label(Some(label)) => alloc_label(heap, label)?,
@@ -1635,7 +1641,7 @@ ctx.is_dev_dependency(t) or fail('hidden dev flag')
                 &format!("{expression}.append(None)"),
                 classes,
                 &participants,
-                "Immutable",
+                "trying to mutate a frozen list value",
             );
         }
         for assignment in [

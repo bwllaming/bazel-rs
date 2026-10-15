@@ -16,7 +16,8 @@
  */
 
 // Modified for native Bazel 9.3 ctx.toolchains string keys: location-aware
-// indexing and `in` hooks; see vendor provenance.
+// indexing and `in` hooks; frozen-mutation messages and `dict | select`;
+// see vendor provenance.
 
 //! The values module define a trait `StarlarkValue` that defines the attribute of
 //! any value in Starlark and a few macro to help implementing this trait.
@@ -858,6 +859,14 @@ pub trait StarlarkValue<'v>:
     /// ```
     fn bit_or(&self, other: Value<'v>, _heap: Heap<'v>) -> crate::Result<Value<'v>> {
         ValueError::unsupported_with(self, "|", other)
+    }
+
+    /// Modified: `lhs | self` with the arguments the other way around, tried
+    /// when a dict `lhs` meets a non-dict right operand (Bazel's
+    /// `HasBinary.binaryOp(op, that, thisLeft = false)`, used by
+    /// `{...} | select(...)`). Return [`None`] to keep the ordinary error.
+    fn rbit_or(&self, _lhs: Value<'v>, _heap: Heap<'v>) -> Option<crate::Result<Value<'v>>> {
+        None
     }
 
     /// Bitwise `^` operator.

@@ -149,6 +149,7 @@ impl HostBudget {
                 definition,
                 inputs,
                 outputs,
+                ..
             } = &declaration.cfg
             {
                 self.string(definition)?;
@@ -175,7 +176,7 @@ impl HostBudget {
                     self.string(value)?;
                 }
             }
-            AttrValue::StringListDict(entries) => {
+            AttrValue::StringListDict(entries) | AttrValue::LabelListDict(entries) => {
                 for (key, values) in entries {
                     self.string(key)?;
                     self.node()?;
@@ -195,7 +196,7 @@ impl HostBudget {
                     self.node()?;
                 }
             }
-            AttrValue::LabelKeyedStringDict(entries) => {
+            AttrValue::LabelKeyedStringDict(entries) | AttrValue::StringKeyedLabelDict(entries) => {
                 for (key, value) in entries {
                     self.string(key)?;
                     self.string(value)?;

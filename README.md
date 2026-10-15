@@ -154,6 +154,9 @@ analysis follow [CONFIGURATION.md](docs/CONFIGURATION.md); implicit Make expansi
 unsupported.
 [Ordered dictionary attributes](docs/STRING_LIST_DICT.md) preserve typed values,
 snapshot timing and frozen ownership across rules, repositories and extension tags.
+[Label dictionaries and computed defaults](docs/ATTR_DICTS_COMPUTED_DEFAULTS.md)
+cover `attr.string_keyed_label_dict`, `attr.label_list_dict`, private function
+defaults and the retained `analysis_test_transition`.
 [Local repository metadata](docs/LOCAL_REPOSITORIES.md) retains the local flag and
 provides the compatibility version only in MODULE-loaded native bindings.
 [Extension introspection](docs/EXISTING_RULES.md) enforces active-callback phase

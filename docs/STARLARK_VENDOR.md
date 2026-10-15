@@ -35,6 +35,18 @@ crate's own tests cannot run in this workspace (`starlark` is not a member and
 needs dev-dependencies); the behaviour is covered by `src/toolchain_info.rs`
 unit tests and `tests/toolchains.rs`.
 
+The [label-dictionary increment](ATTR_DICTS_COMPUTED_DEFAULTS.md) (N20) patches
+`src/values/{error,traits}.rs`, `src/values/layout/{value,vtable}.rs`,
+`src/values/types/{list/value,dict/refs,dict/value}.rs` and
+`src/eval/compiler/stmt.rs`: mutating a frozen list or dict reports Bazel's
+`Starlark.checkMutable` text (`net/starlark/java/eval/Starlark.java:262-265`), `trying to mutate a frozen list value` /
+`trying to mutate a frozen dict value` (other immutable values keep
+`Immutable`), and a new `StarlarkValue::rbit_or` hook (default `None`) lets a
+non-dict right operand of a dict `|` / `|=` answer first, as Bazel's
+`SelectorList.binaryOp(op, that, thisLeft = false)` does for
+`{...} | select(...)` (`packages/SelectorList.java:171-182`). These files are
+declared with their original archive hashes in the same provenance.
+
 ## Original published contents
 
 The source archive is

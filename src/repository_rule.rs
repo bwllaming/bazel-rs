@@ -94,14 +94,18 @@ mod values {
     }
 
     impl<V> fmt::Display for RepoDefinitionGen<V> {
+        // StarlarkRepoRule.repr (bazel/repository/starlark/StarlarkRepositoryModule.java:152-159)
+        // with RepoRuleId.toString, the unambiguous canonical .bzl label
+        // (bazel/bzlmod/RepoRuleId.java:31-34).
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            match self.identity() {
-                Some(identity) => write!(f, "<repository_rule {identity}>"),
-                None => write!(
-                    f,
-                    "<unexported repository_rule from {}>",
-                    self.definition_label
-                ),
+            match self.exported.get() {
+                Some(name) => {
+                    let label = Label::parse_canonical(&self.definition_label)
+                        .map(|label| label.canonical_starlark())
+                        .unwrap_or_else(|_| self.definition_label.clone());
+                    write!(f, "<starlark repository rule {label}%{name}>")
+                }
+                None => f.write_str("<anonymous starlark repository rule>"),
             }
         }
     }
@@ -272,6 +276,13 @@ pub fn globals(builder: &mut GlobalsBuilder) {
                 if matches!(spec.kind, AttrKind::Output | AttrKind::OutputList) {
                     bail!("output attributes are invalid for repository rules: {name:?}");
                 }
+                // StarlarkRepositoryModule.java:80-90 (convertToNativeName).
+                crate::custom_rule::check_value_source_name(name, spec)?;
+                if spec.declaration.computed_default {
+                    bail!(
+                        "computed (function) default of repository attribute {name:?} is not supported by the native profile"
+                    );
+                }
                 budget.string(name).map_err(anyhow::Error::msg)?;
                 budget.spec(spec).map_err(anyhow::Error::msg)?;
                 schema.insert(
@@ -322,23 +333,31 @@ pub fn bind_attributes(
             .schema
             .get(name)
             .ok_or_else(|| format!("unknown repository attribute {name:?}"))?;
-        let parsed = parse_attribute(&spec.kind, value, &resolve)
-            .map_err(|e| format!("repository attribute {name:?}: {e}"))?;
+        let parsed = parse_attribute(&spec.kind, value, &resolve).map_err(|e| {
+            if matches!(
+                spec.kind,
+                AttrKind::StringKeyedLabelDict | AttrKind::LabelListDict
+            ) && e.starts_with("expected value of type '")
+            {
+                // AttributeUtils.typeCheckAttrValues where-text
+                // (bazel/repository/RepoRule.java:95-105).
+                format!(
+                    "in call to '{}' repo rule{}, {e}",
+                    rule_display_name(definition),
+                    with_name(raw)
+                )
+            } else {
+                format!("repository attribute {name:?}: {e}")
+            }
+        })?;
         // AttributeUtils.typeCheckAttrValues allowed-values check
         // (bazel/repository/AttributeUtils.java:90-98), where-text from
         // RepoRule.instantiate (bazel/repository/RepoRule.java:95-105).
         if !spec.declaration.allows(&parsed) {
-            let rule = definition
-                .identity
-                .rsplit_once('%')
-                .map_or(definition.identity.as_str(), |(_, name)| name);
-            let with_name = raw
-                .get("name")
-                .and_then(|value| value.as_str())
-                .map(|name| format!(" with name '{name}'"))
-                .unwrap_or_default();
             return Err(format!(
-                "in call to '{rule}' repo rule{with_name}, the value for attribute '{name}' {}",
+                "in call to '{}' repo rule{}, the value for attribute '{name}' {}",
+                rule_display_name(definition),
+                with_name(raw),
                 spec.declaration.allowed_values_reason(&parsed)
             ));
         }
@@ -379,6 +398,12 @@ pub fn bind_attributes(
             AttrValue::LabelKeyedStringDict(entries) => entries
                 .iter()
                 .all(|(key, value)| key.is_ascii() && is_latin1(value)),
+            AttrValue::StringKeyedLabelDict(entries) => entries
+                .iter()
+                .all(|(key, value)| is_latin1(key) && value.is_ascii()),
+            AttrValue::LabelListDict(entries) => entries
+                .iter()
+                .all(|(key, values)| is_latin1(key) && values.iter().all(|value| value.is_ascii())),
         };
         if !name.is_ascii() || !representable {
             return Err(format!(
@@ -388,6 +413,22 @@ pub fn bind_attributes(
         }
     }
     Ok(attrs)
+}
+
+/// The exported rule name of a definition identity (`<bzl>%<name>`).
+fn rule_display_name(definition: &RuleDefinition) -> &str {
+    definition
+        .identity
+        .rsplit_once('%')
+        .map_or(definition.identity.as_str(), |(_, name)| name)
+}
+
+/// RepoRule.instantiate's ` with name 'N'` (bazel/repository/RepoRule.java:95-105).
+fn with_name(raw: &BTreeMap<String, serde_json::Value>) -> String {
+    raw.get("name")
+        .and_then(|value| value.as_str())
+        .map(|name| format!(" with name '{name}'"))
+        .unwrap_or_default()
 }
 
 /// Bazel represents Starlark strings internally as Latin-1 byte strings. Native
@@ -421,11 +462,21 @@ pub fn bind_recorded_attributes(
         budget.string(name)?;
         budget.recorded(value, 0)?;
     }
-    fn json_value(
-        value: &RecordedValue,
-        label_allowed: bool,
-        label_list_allowed: bool,
-    ) -> Result<serde_json::Value, String> {
+    /// Where genuine Label values may appear in a recorded attribute value.
+    #[derive(Clone, Copy)]
+    struct Shape {
+        label: bool,
+        label_list: bool,
+        /// Dictionary values: `dict(string, label)` / `dict(string, list(label))`.
+        dict_values: (bool, bool),
+    }
+    const PLAIN: Shape = Shape {
+        label: false,
+        label_list: false,
+        dict_values: (false, false),
+    };
+    fn json_value(value: &RecordedValue, shape: Shape) -> Result<serde_json::Value, String> {
+        let label_allowed = shape.label;
         Ok(match value {
             RecordedValue::None => serde_json::Value::Null,
             RecordedValue::Bool(value) => (*value).into(),
@@ -442,15 +493,31 @@ pub fn bind_recorded_attributes(
             RecordedValue::List(values) => serde_json::Value::Array(
                 values
                     .iter()
-                    .map(|value| json_value(value, label_list_allowed, false))
+                    .map(|value| {
+                        json_value(
+                            value,
+                            Shape {
+                                label: shape.label_list,
+                                ..PLAIN
+                            },
+                        )
+                    })
                     .collect::<Result<_, _>>()?,
             ),
-            RecordedValue::Dict(values) => serde_json::Value::Object(
-                values
-                    .iter()
-                    .map(|(key, value)| Ok((key.clone(), json_value(value, false, false)?)))
-                    .collect::<Result<_, String>>()?,
-            ),
+            RecordedValue::Dict(values) => {
+                let (label, label_list) = shape.dict_values;
+                let inner = Shape {
+                    label,
+                    label_list,
+                    ..PLAIN
+                };
+                serde_json::Value::Object(
+                    values
+                        .iter()
+                        .map(|(key, value)| Ok((key.clone(), json_value(value, inner)?)))
+                        .collect::<Result<_, String>>()?,
+                )
+            }
         })
     }
 
@@ -472,8 +539,14 @@ pub fn bind_recorded_attributes(
         };
         let value = json_value(
             value,
-            matches!(kind, AttrKind::Label),
-            matches!(kind, AttrKind::LabelList),
+            Shape {
+                label: matches!(kind, AttrKind::Label),
+                label_list: matches!(kind, AttrKind::LabelList),
+                dict_values: (
+                    matches!(kind, AttrKind::StringKeyedLabelDict),
+                    matches!(kind, AttrKind::LabelListDict),
+                ),
+            },
         )
         .map_err(|e| format!("repository attribute {name:?}: {e}"))?;
         converted.insert(name.clone(), value);
@@ -566,10 +639,111 @@ fn parse_attribute(
                 .map(|text| resolve(text).map(|label| label.to_string()))
                 .collect::<Result<_, _>>()?,
         ),
+        AttrKind::StringKeyedLabelDict | AttrKind::LabelListDict => {
+            label_dict_json(kind, value, resolve)?
+        }
         AttrKind::Output | AttrKind::OutputList => {
             return Err("output attributes are invalid for repository rules".to_owned());
         }
     })
+}
+
+/// Bind a JSON-transported `dict(string, label)` / `dict(string, list(label))`
+/// value (DictType.convert, packages/Type.java:565-580): each label string is
+/// converted with the binding's repository mapping (canonical `@@` forms of
+/// genuine Label values keep their identity). Shared with module extension
+/// tags. Type failures use Type.ConversionException's text
+/// (packages/Type.java:296-321); callers add the where-text.
+pub(crate) fn label_dict_json(
+    kind: &AttrKind,
+    value: &serde_json::Value,
+    resolve: &impl Fn(&str) -> Result<Label, String>,
+) -> Result<AttrValue, String> {
+    let lists = matches!(kind, AttrKind::LabelListDict);
+    let ty = if lists {
+        "dict(string, list(label))"
+    } else {
+        "dict(string, label)"
+    };
+    let entries = value
+        .as_object()
+        .ok_or_else(|| conversion_error(ty, value, "attribute value"))?;
+    let label = |value: &serde_json::Value, what: &str| -> Result<String, String> {
+        let text = value
+            .as_str()
+            .ok_or_else(|| conversion_error("string", value, what))?;
+        resolve(text).map(|label| label.to_string())
+    };
+    if lists {
+        let mut bound = Vec::new();
+        for (key, values) in entries {
+            let items = values
+                .as_array()
+                .ok_or_else(|| conversion_error("list(label)", values, "dict value element"))?;
+            let labels = items
+                .iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    label(value, &format!("element {index} of dict value element"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            bound.push((key.clone(), labels));
+        }
+        Ok(AttrValue::LabelListDict(bound))
+    } else {
+        let mut bound = Vec::new();
+        for (key, value) in entries {
+            bound.push((key.clone(), label(value, "dict value element")?));
+        }
+        Ok(AttrValue::StringKeyedLabelDict(bound))
+    }
+}
+
+/// `expected value of type 'T' for WHAT, but got REPR (TYPE)` of a
+/// JSON-transported Starlark value (Type.ConversionException, packages/Type.java:296-321).
+fn conversion_error(ty: &str, value: &serde_json::Value, what: &str) -> String {
+    let (repr, type_name) = starlark_repr(value);
+    format!("expected value of type '{ty}' for {what}, but got {repr} ({type_name})")
+}
+
+/// Starlark `repr` and `type` of a transported attribute value.
+fn starlark_repr(value: &serde_json::Value) -> (String, &'static str) {
+    use serde_json::Value as Json;
+    match value {
+        Json::Null => ("None".to_owned(), "NoneType"),
+        Json::Bool(flag) => (if *flag { "True" } else { "False" }.to_owned(), "bool"),
+        Json::Number(number) => (number.to_string(), "int"),
+        Json::String(text) => (
+            serde_json::to_string(text).unwrap_or_else(|_| format!("{text:?}")),
+            "string",
+        ),
+        Json::Array(items) => (
+            format!(
+                "[{}]",
+                items
+                    .iter()
+                    .map(|item| starlark_repr(item).0)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            "list",
+        ),
+        Json::Object(entries) => (
+            format!(
+                "{{{}}}",
+                entries
+                    .iter()
+                    .map(|(key, item)| format!(
+                        "{}: {}",
+                        starlark_repr(&Json::String(key.clone())).0,
+                        starlark_repr(item).0
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            "dict",
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -1555,6 +1729,157 @@ mod tests {
                 "@@remapped//pkg:data".to_owned(),
             ])
         );
+    }
+
+    #[test]
+    fn label_dicts_bind_strings_at_caller_and_preserve_recorded_label_identity() {
+        let definition = definition(
+            "{'files': attr.string_keyed_label_dict(default={'BUILD': ':build'}), 'groups': attr.label_list_dict()}",
+        );
+        let defaults = bind_attributes(&definition, &raw(json!({})), "repo", |_| {
+            panic!("canonical defaults must not be resolved again")
+        })
+        .unwrap();
+        assert_eq!(
+            defaults["files"],
+            AttrValue::StringKeyedLabelDict(vec![("BUILD".to_owned(), "//defs:build".to_owned())])
+        );
+        assert_eq!(defaults["groups"], AttrValue::LabelListDict(vec![]));
+        let supplied = bind(
+            &definition,
+            json!({"files": {"a": ":x"}, "groups": {"g": [":one", "//other:two"], "e": []}}),
+        )
+        .unwrap();
+        assert_eq!(
+            supplied["files"],
+            AttrValue::StringKeyedLabelDict(vec![("a".to_owned(), "//caller:x".to_owned())])
+        );
+        assert_eq!(
+            supplied["groups"],
+            AttrValue::LabelListDict(vec![
+                (
+                    "g".to_owned(),
+                    vec!["//caller:one".to_owned(), "//other:two".to_owned()]
+                ),
+                ("e".to_owned(), vec![]),
+            ])
+        );
+        for (value, expected) in [
+            (json!({"files": [":x"]}), "dict(string, label)"),
+            (
+                json!({"files": {"a": 1}}),
+                "in call to 'R' repo rule, expected value of type 'string' for dict value element, but got 1 (int)",
+            ),
+            (
+                json!({"files": {"a": ["//:x", 2]}}),
+                "expected value of type 'string' for dict value element, but got [\"//:x\", 2] (list)",
+            ),
+            (
+                json!({"name": "n", "groups": {"g": ":x"}}),
+                "in call to 'R' repo rule with name 'n', expected value of type 'list(label)' for dict value element, but got \":x\" (string)",
+            ),
+            (
+                json!({"groups": {"g": [1]}}),
+                "expected value of type 'string' for element 0 of dict value element, but got 1 (int)",
+            ),
+        ] {
+            let error = bind(&definition, value.clone()).unwrap_err();
+            assert!(error.contains(expected), "{value}: {error}");
+        }
+        let recorded = BTreeMap::from([
+            (
+                "files".to_owned(),
+                RecordedValue::Dict(vec![
+                    (
+                        "a".to_owned(),
+                        RecordedValue::Label("@@original//pkg:a".to_owned()),
+                    ),
+                    (
+                        "b".to_owned(),
+                        RecordedValue::String("@original//pkg:b".to_owned()),
+                    ),
+                ]),
+            ),
+            (
+                "groups".to_owned(),
+                RecordedValue::Dict(vec![(
+                    "g".to_owned(),
+                    RecordedValue::List(vec![
+                        RecordedValue::Label("//original:data".to_owned()),
+                        RecordedValue::String(":local".to_owned()),
+                    ]),
+                )]),
+            ),
+        ]);
+        let attrs = bind_recorded_attributes(&definition, &recorded, "canonical", |text| {
+            Label::parse_in(
+                text,
+                "extension",
+                "export",
+                &BTreeMap::from([("original".to_owned(), "remapped".to_owned())]),
+            )
+        })
+        .unwrap();
+        assert_eq!(
+            attrs["files"],
+            AttrValue::StringKeyedLabelDict(vec![
+                ("a".to_owned(), "@@original//pkg:a".to_owned()),
+                ("b".to_owned(), "@@remapped//pkg:b".to_owned()),
+            ])
+        );
+        assert_eq!(
+            attrs["groups"],
+            AttrValue::LabelListDict(vec![(
+                "g".to_owned(),
+                vec![
+                    "//original:data".to_owned(),
+                    "@@extension//export:local".to_owned()
+                ]
+            )])
+        );
+        // Labels are values of these dictionaries only, never keys or nested lists.
+        for (name, value) in [
+            (
+                "files",
+                RecordedValue::Dict(vec![(
+                    "a".to_owned(),
+                    RecordedValue::List(vec![RecordedValue::Label("//:x".to_owned())]),
+                )]),
+            ),
+            (
+                "groups",
+                RecordedValue::Dict(vec![(
+                    "g".to_owned(),
+                    RecordedValue::Label("//:x".to_owned()),
+                )]),
+            ),
+        ] {
+            let error = bind_recorded_attributes(
+                &definition,
+                &BTreeMap::from([(name.to_owned(), value)]),
+                "canonical",
+                Label::parse_canonical,
+            )
+            .unwrap_err();
+            assert!(error.contains("Label"), "{name}: {error}");
+        }
+    }
+
+    #[test]
+    fn computed_defaults_are_private_and_explicitly_unsupported_for_repository_rules() {
+        for (attrs, expected) in [
+            (
+                "{'p': attr.label(default=lambda name: None)}",
+                "When an attribute value is a function, the attribute must be private (i.e. start with '_'). Found 'p'",
+            ),
+            (
+                "{'_p': attr.label(default=lambda name: None)}",
+                "computed (function) default of repository attribute \"_p\" is not supported by the native profile",
+            ),
+        ] {
+            let error = extension(&format!("def impl(ctx):\n    pass\nr = repository_rule(implementation=impl, attrs={attrs})\n")).unwrap_err();
+            assert!(error.contains(expected), "{attrs}: {error}");
+        }
     }
 
     #[test]

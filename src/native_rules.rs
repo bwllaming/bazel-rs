@@ -1353,7 +1353,8 @@ fn collect_labels(value: &AttrValue, labels: &mut Vec<Label>) {
         AttrValue::Label(Some(text)) => push(text),
         AttrValue::Labels(values) => values.iter().for_each(|text| push(text)),
         AttrValue::LabelKeyedStringDict(entries) => entries.iter().for_each(|(text, _)| push(text)),
-        AttrValue::StringListDict(entries) => entries
+        AttrValue::StringKeyedLabelDict(entries) => entries.iter().for_each(|(_, text)| push(text)),
+        AttrValue::StringListDict(entries) | AttrValue::LabelListDict(entries) => entries
             .iter()
             .flat_map(|(_, values)| values)
             .for_each(|text| push(text)),

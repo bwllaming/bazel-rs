@@ -124,6 +124,20 @@ impl Label {
             let (canonical, rest) = explicit.split_once("//").ok_or_else(|| {
                 format!("repository-only label shorthand is unsupported: {input:?}; use @@repository//:target")
             })?;
+            // An apparent repository the requesting main repository does not see
+            // (RepositoryName.createUnvalidated, cmdline/RepositoryName.java):
+            // kept so the failure belongs to the dependency edge at analysis.
+            if let Some(name) = unknown_repository_name(canonical) {
+                validate_repository_name(name)?;
+                let (package, target) = split_absolute(&input[input.len() - rest.len() - 2..]);
+                validate_package_path(package)?;
+                validate_path(target, "target name", false)?;
+                return Ok(Label {
+                    repository: canonical.to_owned(),
+                    package: package.to_owned(),
+                    name: target.to_owned(),
+                });
+            }
             (canonical, &input[input.len() - rest.len() - 2..])
         } else if let Some(apparent) = input.strip_prefix('@') {
             let (alias, rest) = apparent.split_once("//").ok_or_else(|| {
@@ -236,6 +250,25 @@ impl fmt::Display for Label {
             write!(f, "@@{}", self.repository)?;
         }
         write!(f, "//{}:{}", self.package, self.name)
+    }
+}
+
+/// The apparent name in `[unknown repo 'NAME' requested from @@]`, the
+/// repository Bazel gives an apparent repository the main repository does not
+/// see (cmdline/RepositoryName.java, RepositoryMapping.get).
+pub fn unknown_repository_name(repository: &str) -> Option<&str> {
+    repository
+        .strip_prefix("[unknown repo '")?
+        .strip_suffix("' requested from @@]")
+        .filter(|name| !name.is_empty() && !name.contains('\''))
+}
+
+/// `//pkg:name` or `//pkg` (name = last component) into (package, name).
+fn split_absolute(input: &str) -> (&str, &str) {
+    let absolute = input.strip_prefix("//").unwrap_or(input);
+    match absolute.split_once(':') {
+        Some((package, name)) => (package, name),
+        None => (absolute, absolute.rsplit('/').next().unwrap_or("")),
     }
 }
 
