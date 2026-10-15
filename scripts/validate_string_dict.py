@@ -287,7 +287,7 @@ def fixture(name, probe):
         labels, query, build = ['@one//:data']+(['@two//:data'] if two else []), '@one//:data', ''
     if name == 'native-profile' and probe.startswith('loaded-build'):
         definitions += ('ctor=attr.string_dict\ndef helper():\n    return ctor()\n'
-            'def observe(a):\n    if type(a)!="attribute" or repr(a)!="attr.StringDict":\n'
+            'def observe(a):\n    if type(a)!="Attribute" or repr(a)!="<attr.string_dict>":\n'
             '        fail("INVALID_NATIVE_STRING_DICT_METADATA")\n'
             '    print("NATIVE_METADATA",type(a),repr(a))\n')
         # BUILD has neither attr nor print. The direct case still invokes the
@@ -394,7 +394,7 @@ def run_phase(args, runner, scratch, workspace, ref, item, probe, engine):
 
 
 def require_metadata(row):
-    if not re.search(r'(?m)(?:^|: )NATIVE_METADATA attribute attr\.StringDict$',row['stderr']):
+    if not re.search(r'(?m)(?:^|: )NATIVE_METADATA Attribute <attr\.string_dict>$',row['stderr']):
         raise ValueError('native BUILD constructor did not expose valid metadata')
 
 

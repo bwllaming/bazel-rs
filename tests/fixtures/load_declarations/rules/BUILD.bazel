@@ -1,0 +1,16 @@
+# Implicit dependency targets referenced by the fixture rule definitions.
+[
+    filegroup(name = name, visibility = ["//visibility:public"])
+    for name in [
+        "cc_proto_toolchain",
+        "data",
+        "go_context_data",
+        "jdk",
+        "launcher",
+        "lcov_merger",
+        "link_extra_lib",
+        "malloc",
+        "py_launcher",
+        "stdlib",
+    ]
+]

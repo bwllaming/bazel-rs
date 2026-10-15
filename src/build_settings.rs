@@ -3,7 +3,9 @@ use allocative::Allocative;
 use anyhow::bail;
 use starlark::environment::GlobalsBuilder;
 use starlark::starlark_module;
+use starlark::values::none::NoneType;
 use starlark::values::structs::AllocStruct;
+use starlark::values::{Heap, Value};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Allocative)]
 pub enum BuildSettingKind {
@@ -108,6 +110,34 @@ fn config_globals(builder: &mut GlobalsBuilder) {
             flag,
             repeatable,
         })
+    }
+
+    /// `config.exec(exec_group=None)` (StarlarkConfigApi.java:174-191,
+    /// StarlarkConfig.java:68-73): a retained, unanalyzed exec transition.
+    fn exec<'v>(
+        #[starlark(default = NoneType)] exec_group: Value<'v>,
+        heap: Heap<'v>,
+    ) -> anyhow::Result<Value<'v>> {
+        if !exec_group.is_none() && exec_group.unpack_str().is_none() {
+            bail!(
+                "in call to exec(), parameter 'exec_group' got value of type '{}', want 'string or NoneType'",
+                exec_group.get_type()
+            );
+        }
+        Ok(crate::rule_declarations::config_exec(
+            heap,
+            exec_group.unpack_str(),
+        ))
+    }
+
+    /// `config.target()` (StarlarkConfig.java:75-78): NoTransition.
+    fn target<'v>(heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        Ok(crate::rule_declarations::config_noop(heap, false))
+    }
+
+    /// `config.none()` (StarlarkConfig.java:80-83): NoConfigTransition.
+    fn none<'v>(heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        Ok(crate::rule_declarations::config_noop(heap, true))
     }
 }
 

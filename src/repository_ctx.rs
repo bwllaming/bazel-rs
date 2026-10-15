@@ -562,6 +562,11 @@ fn alloc_attrs<'v>(
                 heap.alloc(value.clone())
             }
             AttrValue::Int(value) => heap.alloc(*value),
+            AttrValue::Ints(_) | AttrValue::LabelKeyedStringDict(_) => {
+                anyhow::bail!(
+                    "attribute {name:?} kind is not supported for repository rules by the native profile"
+                )
+            }
             AttrValue::StringDict(entries) => {
                 ensure!(
                     entries

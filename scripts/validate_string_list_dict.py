@@ -95,7 +95,8 @@ NATIVE_DIAGNOSTICS = {
     'default-none': NATIVE_SHAPE,
     'default-callable': NATIVE_SHAPE,
     'mandatory': r'missing mandatory (?:(?:repository|tag) )?attribute "d"',
-    'empty': r'attribute d: attribute must be non empty',
+    # RuleErrorConsumer.completeAttributeMessage form (in d attribute of r rule //:x: ...).
+    'empty': r'(?:attribute d: attribute must be non empty|in d attribute of [^\n]*: attribute must be non empty)',
     'two-positional': r'Found 1 extra positional argument\(s\) for call to string_list_dict',
     'freeze-dict': r'(?m:^error: Immutable\s*$)',
     'freeze-list': r'(?m:^error: Immutable\s*$)',

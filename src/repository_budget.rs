@@ -125,6 +125,38 @@ impl HostBudget {
                 }
             }
         }
+        // Retained load-time declarations; empty metadata keeps the old cost.
+        if !spec.declaration.is_default() {
+            let declaration = &spec.declaration;
+            self.node()?;
+            for text in declaration
+                .file_types
+                .iter()
+                .flatten()
+                .chain(&declaration.aspects)
+                .chain(declaration.allow_rules.iter().flatten())
+                .chain(&declaration.flags)
+            {
+                self.string(text)?;
+            }
+            for allowed in &declaration.values {
+                self.string(&allowed.display)?;
+                if let Some(value) = &allowed.value {
+                    self.attr_value(value)?;
+                }
+            }
+            if let crate::rule_declarations::Cfg::Starlark {
+                definition,
+                inputs,
+                outputs,
+            } = &declaration.cfg
+            {
+                self.string(definition)?;
+                for text in inputs.iter().chain(outputs) {
+                    self.string(text)?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -158,6 +190,17 @@ impl HostBudget {
                 }
             }
             AttrValue::Int(_) | AttrValue::Bool(_) => {}
+            AttrValue::Ints(values) => {
+                for _ in values {
+                    self.node()?;
+                }
+            }
+            AttrValue::LabelKeyedStringDict(entries) => {
+                for (key, value) in entries {
+                    self.string(key)?;
+                    self.string(value)?;
+                }
+            }
         }
         Ok(())
     }
@@ -357,6 +400,7 @@ mod tests {
             allow_single_file: false,
             non_empty: false,
             required_providers: Vec::new(),
+            declaration: Default::default(),
         };
         let mut empty = HostBudget::default();
         empty.spec(&spec).unwrap();
@@ -455,6 +499,7 @@ mod tests {
                 allow_single_file: false,
                 non_empty: false,
                 required_providers: Vec::new(),
+                declaration: Default::default(),
             },
         )]);
         let mut budget = HostBudget::default();

@@ -19,7 +19,7 @@ use starlark::values::structs::AllocStruct;
 use starlark::values::tuple::TupleRef;
 
 use crate::build_settings::BuildSetting;
-use crate::custom_rule::{AttrSpec, AttrValue, CustomInvocation};
+use crate::custom_rule::{AttrSpec, AttrValue, CustomInvocation, InvocationDeclaration};
 use crate::label::{Label, PackageId};
 use crate::package_specification::{self, GroupDefinition};
 use crate::repository::RepositorySet;
@@ -102,6 +102,7 @@ struct PendingCustom {
     attrs: BTreeMap<String, AttrValue>,
     schema: BTreeMap<String, AttrSpec>,
     build_setting: Option<BuildSetting>,
+    declaration: InvocationDeclaration,
 }
 
 pub(crate) fn repository_context(eval: &Evaluator<'_, '_, '_>) -> Option<Arc<RepositorySet>> {
@@ -127,6 +128,7 @@ pub(crate) fn register_custom<'v>(
     attrs: BTreeMap<String, AttrValue>,
     schema: BTreeMap<String, AttrSpec>,
     build_setting: Option<BuildSetting>,
+    declaration: InvocationDeclaration,
 ) -> anyhow::Result<()> {
     let context = declarations(eval)?;
     let mut srcs = Vec::new();
@@ -135,11 +137,21 @@ pub(crate) fn register_custom<'v>(
         match value {
             AttrValue::Label(Some(value)) => srcs.push(value.clone()),
             AttrValue::Labels(values) => srcs.extend(values.iter().cloned()),
+            AttrValue::LabelKeyedStringDict(entries) => {
+                srcs.extend(entries.iter().map(|(label, _)| label.clone()))
+            }
             AttrValue::Output(Some(value)) => outs.push(value.clone()),
             AttrValue::Outputs(values) => outs.extend(values.iter().cloned()),
             _ => {}
         }
     }
+    // rule(outputs={...}) implicit outputs are package output files too.
+    outs.extend(
+        declaration
+            .implicit_outputs
+            .iter()
+            .map(|(_, output)| output.clone()),
+    );
     let index = context.rules.borrow().len();
     context.declare(
         name,
@@ -168,6 +180,7 @@ pub(crate) fn register_custom<'v>(
         attrs,
         schema,
         build_setting,
+        declaration,
     });
     Ok(())
 }
@@ -270,6 +283,9 @@ fn local_label(name: &str, package: &PackageId, what: &str) -> anyhow::Result<La
 }
 
 fn strings(value: Value<'_>, attribute: &str) -> anyhow::Result<Vec<String>> {
+    if crate::rule_declarations::select_pieces(value).is_some() {
+        bail!("select() in native rule attribute {attribute} is unsupported by the native profile");
+    }
     let list = ListRef::from_value(value)
         .ok_or_else(|| anyhow!("{attribute} must be a list of strings"))?;
     list.iter()
@@ -747,6 +763,7 @@ fn bzl_globals_for(phase: BzlPhase) -> Globals {
     bzl.set("native", AllocStruct(native.iter()));
     crate::custom_rule::rule_globals(&mut bzl);
     crate::build_settings::install(&mut bzl);
+    crate::rule_declarations::install(&mut bzl);
     crate::template_variable_info::install(&mut bzl);
     crate::run_environment_info::install(&mut bzl);
     package_specification::install(&mut bzl);
@@ -826,6 +843,7 @@ fn evaluate_at(
         .with(rule_globals)
         .with(package_globals);
     crate::json::install(&mut globals);
+    crate::rule_declarations::install_build(&mut globals);
     let globals = globals.build();
     let bzl_globals = bzl_globals();
     let loaded = crate::loading::load_modules_with_functions_in(
@@ -896,6 +914,7 @@ fn evaluate_at(
             attrs: pending.attrs,
             schema: pending.schema,
             build_setting: pending.build_setting,
+            declaration: pending.declaration,
         });
     }
     let mut rules = validate_rules(declared_rules).map_err(|e| format!("{filename}: {e}"))?;

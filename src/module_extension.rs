@@ -273,6 +273,7 @@ pub fn globals(builder: &mut GlobalsBuilder) {
 /// using this copying binder across a module projection.
 pub fn bind_tag(
     schema: &BTreeMap<String, AttrSpec>,
+    tag_name: &str,
     raw: &BTreeMap<String, serde_json::Value>,
     resolve: impl Fn(&str) -> Result<Label, String>,
 ) -> Result<BTreeMap<String, AttrValue>, String> {
@@ -286,6 +287,14 @@ pub fn bind_tag(
             .ok_or_else(|| format!("unknown tag attribute {name:?}"))?;
         let parsed = parse_attribute(&spec.kind, value, &resolve)
             .map_err(|e| format!("tag attribute {name:?}: {e}"))?;
+        // AttributeUtils.java:90-98 with TypeCheckedTag's where-text
+        // "'%s' tag" (bazel/bzlmod/TypeCheckedTag.java:106-114).
+        if !spec.declaration.allows(&parsed) {
+            return Err(format!(
+                "in '{tag_name}' tag, the value for attribute '{name}' {}",
+                spec.declaration.allowed_values_reason(&parsed)
+            ));
+        }
         attrs.insert(name.clone(), parsed);
     }
     for (name, spec) in schema {
@@ -311,7 +320,10 @@ pub fn bind_tag(
             AttrValue::Label(value) | AttrValue::Output(value) => {
                 value.as_ref().is_none_or(|value| value.is_ascii())
             }
-            AttrValue::Int(_) | AttrValue::Bool(_) => true,
+            AttrValue::Int(_) | AttrValue::Bool(_) | AttrValue::Ints(_) => true,
+            AttrValue::LabelKeyedStringDict(entries) => entries
+                .iter()
+                .all(|(key, value)| key.is_ascii() && value.is_ascii()),
         };
         if !name.is_ascii() || !ascii {
             return Err(format!(
@@ -342,6 +354,11 @@ fn parse_attribute(
             .collect::<Result<Vec<_>, _>>()
     };
     Ok(match kind {
+        AttrKind::IntList | AttrKind::LabelKeyedStringDict => {
+            return Err(format!(
+                "attribute kind {kind:?} is not supported for module extension tags by the native profile"
+            ));
+        }
         AttrKind::String => AttrValue::String(string()?.to_owned()),
         AttrKind::StringList => AttrValue::Strings(strings()?),
         AttrKind::StringDict => {
@@ -476,11 +493,26 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn supplied_tag_values_are_checked_against_values_like_attribute_utils() {
+        let schema = schema("{'mode': attr.string(default = 'z', values = ['a', 'b'])}");
+        assert_eq!(
+            bind(&schema, json!({})).unwrap()["mode"],
+            AttrValue::String("z".to_owned())
+        );
+        assert_eq!(
+            bind(&schema, json!({"mode": "c"})).unwrap_err(),
+            "in 't' tag, the value for attribute 'mode' has to be one of 'a' or 'b' instead of 'c'"
+        );
+    }
+
     fn bind(
         schema: &BTreeMap<String, AttrSpec>,
         value: serde_json::Value,
     ) -> Result<BTreeMap<String, AttrValue>, String> {
-        bind_tag(schema, &raw(value), |text| Label::parse(text, "caller"))
+        bind_tag(schema, "t", &raw(value), |text| {
+            Label::parse(text, "caller")
+        })
     }
 
     #[test]
@@ -553,7 +585,7 @@ mod tests {
         let schema = schema("{'d':attr.string_dict(allow_empty=False)}");
         let supplied = raw(json!({"d":{"z":"@missing//p:t", "a":""}}));
         assert_eq!(
-            bind_tag(&schema, &supplied, |_| panic!("not a label")).unwrap()["d"],
+            bind_tag(&schema, "t", &supplied, |_| panic!("not a label")).unwrap()["d"],
             AttrValue::StringDict(vec![
                 ("z".into(), "@missing//p:t".into()),
                 ("a".into(), "".into())
@@ -662,7 +694,7 @@ mod tests {
         ] {
             let supplied = raw(json!({"a":{"ok":["first"]}, "z":value}));
             let original = supplied.clone();
-            let error = bind_tag(&schema, &supplied, |_| panic!("not a label")).unwrap_err();
+            let error = bind_tag(&schema, "t", &supplied, |_| panic!("not a label")).unwrap_err();
             assert!(
                 error.contains("tag attribute \"z\": expected")
                     || error.contains("tag attribute \"z\": dict key"),
@@ -1046,7 +1078,7 @@ mod tests {
         let module = extension_in("//defs:extensions.bzl", "load('//helper:factory.bzl', 'make')\nE = module_extension(len, tag_classes={'t': make()})", &HashMap::from([("//helper:factory.bzl", &helper)])).unwrap();
         let definition = unpack(&module.get("E").unwrap()).unwrap();
         let schema = &definition.tag_classes["t"];
-        let defaults = bind_tag(schema, &raw(json!({"l":null})), |_| {
+        let defaults = bind_tag(schema, "t", &raw(json!({"l":null})), |_| {
             panic!("defaults must not be rebound")
         })
         .unwrap();
@@ -1068,7 +1100,7 @@ mod tests {
             AttrValue::Labels(vec!["//caller:one".to_owned(), "//other:two".to_owned()])
         );
         assert!(
-            bind_tag(schema, &raw(json!({"l":"@missing//:tool"})), |_| Err(
+            bind_tag(schema, "t", &raw(json!({"l":"@missing//:tool"})), |_| Err(
                 "not visible from caller".to_owned()
             ))
             .unwrap_err()
@@ -1100,7 +1132,7 @@ mod tests {
         }
         for value in [json!({"l":":x"}), json!({"ls":[":x"]})] {
             assert!(
-                bind_tag(&schema, &raw(value), |_| Ok(Label {
+                bind_tag(&schema, "t", &raw(value), |_| Ok(Label {
                     repository: String::new(),
                     package: "é".to_owned(),
                     name: "x".to_owned()

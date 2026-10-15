@@ -65,6 +65,11 @@ pub(crate) fn requirement_info(value: Value<'_>) -> anyhow::Result<ProviderRequi
             crate::template_variable_info::PROVIDER_ID,
             "TemplateVariableInfo",
         )
+    } else if crate::rule_declarations::is_output_group_info(value) {
+        (
+            crate::rule_declarations::OUTPUT_GROUP_INFO_ID,
+            "OutputGroupInfo",
+        )
     } else if crate::run_environment_info::is_constructor(value) {
         (
             crate::run_environment_info::PROVIDER_ID,

@@ -201,7 +201,7 @@ class PlanTests(unittest.TestCase):
             self.assertNotIn(b'print(',build)
             self.assertNotIn(b'attr.',build)
             self.assertIn(b'def observe(a):',defs)
-            self.assertIn(b'type(a)!="attribute" or repr(a)!="attr.StringDict"',defs)
+            self.assertIn(b'type(a)!="Attribute" or repr(a)!="<attr.string_dict>"',defs)
             self.assertIn(b'print("NATIVE_METADATA",type(a),repr(a))',defs)
         self.assertIn(b'print("ALIAS_TYPE",type(ctor()))',suite.defect_fixture()['BUILD.bazel'])
 
@@ -332,11 +332,11 @@ class DiagnosticTests(unittest.TestCase):
             suite.require_rejection(record(text,37),'value','native')
 
     def test_metadata_success_is_not_phase_guard_error(self):
-        suite.require_metadata(record('NATIVE_METADATA attribute attr.StringDict',0))
+        suite.require_metadata(record('NATIVE_METADATA Attribute <attr.string_dict>',0))
         with self.assertRaises(ValueError):
             suite.require_metadata(record('only permitted in bzl initialization'))
-        for bad in ('NATIVE_METADATA attribute attr.StringListDict','NATIVE_METADATA dict attr.StringDict',
-                    'NATIVE_METADATA attribute <attr.string_dict>','NATIVE_METADATA attribute attr.StringDict extra'):
+        for bad in ('NATIVE_METADATA Attribute <attr.string_list_dict>','NATIVE_METADATA dict <attr.string_dict>',
+                    'NATIVE_METADATA attribute attr.StringDict','NATIVE_METADATA Attribute <attr.string_dict> extra'):
             with self.assertRaises(ValueError):
                 suite.require_metadata(record(bad,0))
 

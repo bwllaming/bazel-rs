@@ -547,7 +547,7 @@ S = subrule(*[], **{'implementation': impl, 'attrs': {}, 'toolchains': (), 'frag
                 ("rule(implementation=impl, subrules=[impl])", "Subrule"),
                 (
                     "rule(implementation=impl, subrules=subrule(implementation=impl))",
-                    "list or tuple",
+                    "in call to rule(), parameter 'subrules' got value of type 'Subrule', want 'sequence'",
                 ),
                 (
                     "rule(implementation=impl, subrules=[subrule(implementation=impl)])",

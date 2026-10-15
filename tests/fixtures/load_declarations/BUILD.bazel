@@ -1,0 +1,30 @@
+load("//rules:cc_like.bzl", "cc_binary", "cc_test")
+load("//rules:go_like.bzl", "go_binary", "go_library", "go_select_macro", "go_test")
+load("//rules:proto_like.bzl", "cc_proto_library", "java_import_like", "py_binary_like")
+load("//rules:simple.bzl", "simple_write")
+
+simple_write(name = "simple", content = "hello", mode = "b", counts = [1, 2])
+
+go_library(name = "golib", srcs = ["lib.go"], importpath = "example.com/lib")
+
+go_select_macro(name = "goselect")
+
+go_binary(name = "gobin", srcs = ["main.go"], deps = [":golib"])
+
+go_test(name = "go_default_test", srcs = ["main_test.go"])
+
+cc_binary(name = "ccbin", srcs = ["main.cc"], stamp = 0)
+
+cc_test(name = "cc_unit_test", srcs = ["test.cc"])
+
+cc_proto_library(name = "cc_proto")
+
+java_import_like(
+    name = "jars",
+    jars = ["a.jar"],
+    exports = [":golib"],
+    constraints = {":golib": "x"},
+    out = "jars.out",
+)
+
+py_binary_like(name = "pybin", srcs = ["main.py"])

@@ -133,6 +133,16 @@ fn make_ctx<'v>(
                 crate::attribute_values::alloc_string_list_dict(heap, entries)?
             }
             AttrValue::Int(value) => heap.alloc(*value),
+            AttrValue::Ints(values) => heap.alloc(values.clone()),
+            AttrValue::LabelKeyedStringDict(entries) => {
+                // Nonempty values are rejected by the unanalyzed-feature gate.
+                ensure!(
+                    entries.is_empty(),
+                    "attribute {name}: attr.label_keyed_string_dict values are {}",
+                    crate::rule_declarations::NOT_ANALYZED
+                );
+                heap.alloc(starlark::values::dict::AllocDict::EMPTY)
+            }
             AttrValue::Bool(value) => heap.alloc(*value),
             AttrValue::Label(value) => {
                 let target = value
@@ -287,15 +297,36 @@ fn analyze_inner(
         .custom
         .as_ref()
         .ok_or_else(|| anyhow!("not a custom rule"))?;
+    // Declared load-time features without native analysis semantics fail
+    // explicitly instead of being silently ignored (docs/LOAD_DECLARATIONS.md).
+    if !invocation.declaration.unanalyzed.is_empty() {
+        bail!(
+            "declared rule features {}: {}",
+            crate::rule_declarations::NOT_ANALYZED,
+            invocation.declaration.unanalyzed.join("; ")
+        );
+    }
     for (name, spec) in &invocation.schema {
         if spec.non_empty
             && match invocation.attrs.get(name) {
                 Some(AttrValue::StringListDict(entries)) => entries.is_empty(),
                 Some(AttrValue::StringDict(entries)) => entries.is_empty(),
+                Some(
+                    value @ (AttrValue::Strings(_)
+                    | AttrValue::Labels(_)
+                    | AttrValue::Outputs(_)
+                    | AttrValue::Ints(_)),
+                ) => crate::custom_rule::AttrKind::is_empty_value(value),
                 _ => false,
             }
         {
-            return Err(anyhow!("attribute {name}: attribute must be non empty"));
+            // RuleContext.java:1548 via EventHandlingErrorReporter.completeAttributeMessage
+            // (analysis/EventHandlingErrorReporter.java:92-101).
+            return Err(anyhow!(
+                "in {name} attribute of {} rule {}: attribute must be non empty",
+                invocation.declaration.rule_class,
+                crate::rule_declarations::canonical_form(&rule.label)
+            ));
         }
     }
     let context = Context {
@@ -337,9 +368,20 @@ fn analyze_inner(
             let returned = returned.map_err(|error| anyhow!(error.to_string()))?;
             let files = default_files(returned)?.unwrap_or(predeclared);
             let custom = crate::providers::returned_custom_providers(returned)?;
-            // All current custom rules are non-executable/non-test (true flags
-            // are rejected at definition). Future executable support MUST use
-            // real rule classification here. The regular constructor sets
+            // checkDeclaredProviders (analysis/starlark/StarlarkRuleConfiguredTargetUtil.java:138-148)
+            // iterates getStarlarkProviders() only: built-in provider keys
+            // (DefaultInfo, OutputGroupInfo, ...) are never checked (:141).
+            for provider in &invocation.declaration.provides {
+                ensure!(
+                    provider.id.starts_with("builtin:") || custom.contains_key(&provider.id),
+                    "rule advertised the '{}' provider, but this provider was not among those returned",
+                    provider.display_name
+                );
+            }
+            // Executable/test rules are accepted at load time but rejected by the
+            // unanalyzed-feature gate above, so every rule analyzed here is
+            // non-executable/non-test. Future executable support MUST use real
+            // rule classification here. The regular constructor sets
             // error_on_non_executable=true; testing.TestEnvironment sets it to
             // false (StarlarkRuleConfiguredTargetUtil: ruleWarning, provider kept).
             if custom

@@ -324,6 +324,24 @@ pub fn bind_attributes(
             .ok_or_else(|| format!("unknown repository attribute {name:?}"))?;
         let parsed = parse_attribute(&spec.kind, value, &resolve)
             .map_err(|e| format!("repository attribute {name:?}: {e}"))?;
+        // AttributeUtils.typeCheckAttrValues allowed-values check
+        // (bazel/repository/AttributeUtils.java:90-98), where-text from
+        // RepoRule.instantiate (bazel/repository/RepoRule.java:95-105).
+        if !spec.declaration.allows(&parsed) {
+            let rule = definition
+                .identity
+                .rsplit_once('%')
+                .map_or(definition.identity.as_str(), |(_, name)| name);
+            let with_name = raw
+                .get("name")
+                .and_then(|value| value.as_str())
+                .map(|name| format!(" with name '{name}'"))
+                .unwrap_or_default();
+            return Err(format!(
+                "in call to '{rule}' repo rule{with_name}, the value for attribute '{name}' {}",
+                spec.declaration.allowed_values_reason(&parsed)
+            ));
+        }
         attrs.insert(name.clone(), parsed);
     }
     for (name, spec) in &definition.schema {
@@ -357,7 +375,10 @@ pub fn bind_attributes(
             AttrValue::Label(value) | AttrValue::Output(value) => {
                 value.as_ref().is_none_or(|value| value.is_ascii())
             }
-            AttrValue::Int(_) | AttrValue::Bool(_) => true,
+            AttrValue::Int(_) | AttrValue::Bool(_) | AttrValue::Ints(_) => true,
+            AttrValue::LabelKeyedStringDict(entries) => entries
+                .iter()
+                .all(|(key, value)| key.is_ascii() && is_latin1(value)),
         };
         if !name.is_ascii() || !representable {
             return Err(format!(
@@ -480,6 +501,11 @@ fn parse_attribute(
             .collect::<Result<Vec<_>, _>>()
     };
     Ok(match kind {
+        AttrKind::IntList | AttrKind::LabelKeyedStringDict => {
+            return Err(format!(
+                "attribute kind {kind:?} is not supported for repository rules by the native profile"
+            ));
+        }
         AttrKind::String => AttrValue::String(string()?.to_owned()),
         AttrKind::StringList => AttrValue::Strings(strings()?),
         AttrKind::StringDict => {
@@ -603,6 +629,34 @@ mod tests {
         ))
         .unwrap();
         unpack(&module.get("R").unwrap()).unwrap()
+    }
+
+    #[test]
+    fn supplied_values_are_checked_against_values_like_attribute_utils() {
+        let definition = definition(
+            "{'mode': attr.string(default = 'z', values = ['a', 'b']), 'n': attr.int(values = [1, 2])}",
+        );
+        // Defaults are never checked; only supplied values (AttributeUtils.java:90-98).
+        let bound = bind_attributes(&definition, &raw(json!({"name": "x"})), "repo", |_| {
+            panic!("not a label")
+        })
+        .unwrap();
+        assert_eq!(bound["mode"], AttrValue::String("z".to_owned()));
+        for (value, expected) in [
+            (
+                json!({"name": "x", "mode": "c"}),
+                "in call to 'R' repo rule with name 'x', the value for attribute 'mode' has to be one of 'a' or 'b' instead of 'c'",
+            ),
+            (
+                json!({"n": 3}),
+                "in call to 'R' repo rule, the value for attribute 'n' has to be one of '1' or '2' instead of '3'",
+            ),
+        ] {
+            let error =
+                bind_attributes(&definition, &raw(value), "repo", |_| panic!("not a label"))
+                    .unwrap_err();
+            assert_eq!(error, expected);
+        }
     }
 
     fn raw(value: serde_json::Value) -> BTreeMap<String, serde_json::Value> {

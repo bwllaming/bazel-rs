@@ -1072,7 +1072,7 @@ fn bind_modules(
                         tag.name, participant.owner
                     )
                 })?;
-                let attributes = bind_tag(schema, &tag.attributes, |text| {
+                let attributes = bind_tag(schema, &tag.name, &tag.attributes, |text| {
                     let mapping = repositories.mapping(&participant.owner)?;
                     resolution_budget
                         .borrow_mut()
@@ -1131,6 +1131,11 @@ fn alloc_attrs<'v>(
                 crate::attribute_values::alloc_string_list_dict(heap, entries)?
             }
             AttrValue::Int(value) => heap.alloc(*value),
+            AttrValue::Ints(_) | AttrValue::LabelKeyedStringDict(_) => {
+                anyhow::bail!(
+                    "attribute {name:?} kind is not supported for module extension tags by the native profile"
+                )
+            }
             AttrValue::Bool(value) => heap.alloc(*value),
             AttrValue::Label(None) => Value::new_none(),
             AttrValue::Label(Some(label)) => alloc_label(heap, label)?,
