@@ -278,6 +278,8 @@ struct PendingCustom {
     index: usize,
     slot: String,
     subrule_slots: Vec<String>,
+    /// (`""` for the rule's `cfg`, else the attribute name, module slot).
+    transition_slots: Vec<(String, String)>,
     attrs: BTreeMap<String, AttrValue>,
     schema: BTreeMap<String, AttrSpec>,
     build_setting: Option<BuildSetting>,
@@ -332,6 +334,7 @@ pub(crate) fn register_custom<'v>(
     visibility: Option<Value<'v>>,
     implementation: Value<'v>,
     subrules: Vec<Value<'v>>,
+    transitions: Vec<(String, Value<'v>)>,
     attrs: BTreeMap<String, AttrValue>,
     schema: BTreeMap<String, AttrSpec>,
     build_setting: Option<BuildSetting>,
@@ -382,10 +385,20 @@ pub(crate) fn register_custom<'v>(
             slot
         })
         .collect();
+    let transition_slots = transitions
+        .into_iter()
+        .enumerate()
+        .map(|(i, (key, value))| {
+            let slot = format!("__custom_transition${index}${i}");
+            eval.module().set(&slot, value);
+            (key, slot)
+        })
+        .collect();
     context.custom.borrow_mut().push(PendingCustom {
         index,
         slot,
         subrule_slots,
+        transition_slots,
         attrs,
         schema,
         build_setting,
@@ -1964,6 +1977,16 @@ fn evaluate_at(
                 })
                 .collect::<Result<_, _>>()?,
             top_level_functions: loaded.functions.clone(),
+            transitions: pending
+                .transition_slots
+                .iter()
+                .map(|(key, slot)| {
+                    frozen
+                        .get_any_visibility(slot)
+                        .map(|(value, _)| (key.clone(), value))
+                        .map_err(|error| error.to_string())
+                })
+                .collect::<Result<_, _>>()?,
             attrs: pending.attrs,
             schema: pending.schema,
             build_setting: pending.build_setting,

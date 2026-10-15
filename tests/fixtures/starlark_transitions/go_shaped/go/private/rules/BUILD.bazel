@@ -1,0 +1,19 @@
+load("@bazel_skylib//rules:common_settings.bzl", "string_setting")
+load(
+    ":transition.bzl",
+    "TOOL_INHERITED_SETTING_KEYS",
+    "TRANSITIONED_GO_SETTING_KEYS",
+)
+
+# As rules_go 0.63.0 go/private/rules/BUILD.bazel.
+[
+    string_setting(
+        name = "original_" + setting.split(":")[1],
+        build_setting_default = "",
+        scope = "universal" if setting in TOOL_INHERITED_SETTING_KEYS else None,
+        # rules_go: //visibility:private; the native profile checks implicit
+        # dependencies from the consuming target (docs/CONFIGURATION.md).
+        visibility = ["//visibility:public"],
+    )
+    for setting in TRANSITIONED_GO_SETTING_KEYS
+]

@@ -1,0 +1,23 @@
+load("//go/private/rules:shaped.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "lib",
+    srcs = ["lib.go"],
+    data = [":data"],
+    embedsrcs = ["embed.txt"],
+    cdeps = [":c"],
+    importpath = "example.com/app/lib",
+)
+
+go_library(name = "data", srcs = ["data.go"], importpath = "example.com/app/data")
+
+filegroup(name = "c", srcs = ["c.h"])
+
+go_binary(
+    name = "bin",
+    srcs = ["main.go"],
+    data = [":data"],
+    deps = [":lib"],
+    race = "on",
+    gotags = ["b", "a", "b"],
+)

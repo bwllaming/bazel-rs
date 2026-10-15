@@ -9,7 +9,8 @@
 //! the identity of the configuration the target is analyzed in. One build
 //! has a top-level configuration; dependency edges keep their parent's
 //! configuration except across the exec transition ([`exec_transition`],
-//! N18b; Starlark and split transitions are N18c-d).
+//! N18b) and Starlark 1:1 transitions (crate::starlark_transitions, N18c;
+//! [`Configurations::intern_derived`]); split transitions are N18d.
 use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -25,11 +26,31 @@ use crate::label::Label;
 pub struct ConfiguredTargetKey {
     pub label: Label,
     pub config: ConfigId,
+    /// ConfiguredTargetKey.shouldApplyRuleTransition
+    /// (skyframe/ConfiguredTargetKey.java; analysis/producers/RuleTransitionApplier.java:69-110):
+    /// false only for the delegate of a non-idempotent rule transition,
+    /// which is analyzed in the transitioned configuration without applying
+    /// the transition again. Every dependency edge requests `true`.
+    pub apply_rule_transition: bool,
 }
 
 impl ConfiguredTargetKey {
     pub fn new(label: Label, config: ConfigId) -> Self {
-        Self { label, config }
+        Self {
+            label,
+            config,
+            apply_rule_transition: true,
+        }
+    }
+
+    /// The delegate key of a non-idempotent rule transition
+    /// (`shouldApplyRuleTransition = false`).
+    pub fn without_rule_transition(label: Label, config: ConfigId) -> Self {
+        Self {
+            label,
+            config,
+            apply_rule_transition: false,
+        }
     }
 
     /// The owner part of the action identifiers of this target: the label in
@@ -138,6 +159,34 @@ impl Configurations {
         Ok(id)
     }
 
+    /// Intern a configuration produced by a Starlark transition. Its output
+    /// path mnemonic uses the baseline Bazel picks for it
+    /// (BuildConfigurationFunction.getBaselineOptions,
+    /// skyframe/config/BuildConfigurationFunction.java:133-174): the exec
+    /// baseline with its own platform for an exec configuration (a
+    /// transition below an exec edge keeps `is exec configuration`), the
+    /// top-level configuration otherwise (`diff_against_dynamic_baseline`).
+    pub fn intern_derived(
+        &mut self,
+        configuration: Configuration,
+        target_scoped: &BTreeSet<Label>,
+    ) -> Result<ConfigId, String> {
+        if let Some(existing) = self.by_id.get(&configuration.id) {
+            return Ok(existing.id);
+        }
+        if configuration.native.is_exec {
+            let mut baseline = self.exec_baseline(target_scoped).as_ref().clone();
+            if let [platform] = configuration.native.platforms.as_slice() {
+                let mut native = baseline.native.clone();
+                native.platforms = vec![platform.clone()];
+                baseline = Configuration::new(native, baseline.starlark.clone());
+            }
+            return self.intern(configuration, &baseline);
+        }
+        let top = self.top_configuration().as_ref().clone();
+        self.intern(configuration, &top)
+    }
+
     /// The mnemonic baseline of exec configurations before its platform is
     /// replaced (BuildConfigurationFunction.getBaselineOptions,
     /// skyframe/config/BuildConfigurationFunction.java:133-174, and
@@ -146,8 +195,11 @@ impl Configurations {
     /// configuration uses the exec-transitioned top-level options
     /// (SkyframeExecutor.adjustForExec, skyframe/SkyframeExecutor.java:1525-1572,
     /// whose execution platform is the top-level `--host_platform` label as
-    /// given). `target_scoped` are the top-level Starlark flags that the exec
-    /// transition resets.
+    /// given). `target_scoped` must contain every top-level Starlark flag
+    /// whose scope is `target` (those the exec transition resets; callers
+    /// pass a set that covers the top-level configuration's own flags, so
+    /// the memoized baseline does not depend on which configuration first
+    /// asks for it).
     pub fn exec_baseline(&self, target_scoped: &BTreeSet<Label>) -> &Arc<Configuration> {
         self.exec_baseline.get_or_init(|| {
             let top = self.top_configuration();
@@ -259,7 +311,9 @@ const DEFAULT_PLATFORM_NAMES: [&str; 5] = [
 fn cpu_descriptor(configuration: &Configuration) -> (&str, bool) {
     let native = &configuration.native;
     if !native.is_exec {
-        return (NATIVE_CPU, false);
+        // A `--cpu` a Starlark transition set (N18c) is the descriptor
+        // itself, as in Bazel (`arm-fastbuild`); the host CPU is `rust`.
+        return (native.cpu.as_deref().unwrap_or(NATIVE_CPU), false);
     }
     match native.platforms.as_slice() {
         [platform] if DEFAULT_PLATFORM_NAMES.contains(&platform.name.as_str()) => {
@@ -382,6 +436,9 @@ pub fn exec_transition(
         // An exec edge of a no-config target has no execution platform and
         // never reaches here (ExecutionTransitionFactory.java:192-197).
         no_config: false,
+        // `cpu` = the parent's `--host_cpu` (builtin_exec_platforms.bzl:225),
+        // which is not modelled: the host CPU default.
+        cpu: None,
     };
     let starlark = from
         .starlark
@@ -408,7 +465,7 @@ pub fn no_config() -> Configuration {
 /// Options whose value is explicit in the mnemonic
 /// (markAsExplicitInOutputPathFor, OutputPathMnemonicComputer.java:187-198;
 /// `cpu` is the native profile's fixed `rust`).
-const EXPLICIT_IN_OUTPUT_PATH: &[&str] = &["compilation_mode", "platform_suffix"];
+const EXPLICIT_IN_OUTPUT_PATH: &[&str] = &["compilation_mode", "platform_suffix", "cpu"];
 
 /// The native options in their `//command_line_option:NAME=VALUE` hash form
 /// (hashChosenOptions, OutputPathMnemonicComputer.java:368-410): Java
@@ -423,6 +480,16 @@ fn native_option_strings(native: &NativeOptions) -> BTreeMap<&'static str, Strin
     let list = |items: &[String]| format!("=[{}]", items.join(", "));
     options.insert("extra_toolchains", list(&native.extra_toolchains));
     options.insert("is exec configuration", format!("={}", native.is_exec));
+    options.insert(
+        "cpu",
+        format!(
+            "={}",
+            native
+                .cpu
+                .as_deref()
+                .unwrap_or(crate::configuration::host_cpu())
+        ),
+    );
     options.insert(
         "platform_suffix",
         native
@@ -670,6 +737,76 @@ mod tests {
             mnemonic(&top, &flag(true))
                 .unwrap()
                 .starts_with("rust-fastbuild-ST-")
+        );
+    }
+
+    /// N18c: configurations produced by Starlark transitions are named
+    /// against the top-level configuration (target configurations) or the
+    /// exec baseline with their own platform (exec configurations), and the
+    /// memoized exec baseline only depends on the top-level flags.
+    #[test]
+    fn starlark_transition_results_use_bazel_baselines() {
+        let top = parsed(&["--host_platform=//p:h"]);
+        let mut configurations = Configurations::new(top.clone());
+        // Equal to the top-level configuration: its own identity and root.
+        assert_eq!(
+            configurations.intern_derived(top.clone(), &BTreeSet::new()),
+            Ok(configurations.top())
+        );
+        // A transitioned target configuration: compilation_mode explicit,
+        // the Starlark flag hashed against the top-level configuration.
+        let mut native = top.native.clone();
+        native.compilation_mode = "dbg";
+        let transitioned = Configuration::new(
+            native,
+            BTreeMap::from([(label("//f:color"), SettingValue::String("red".into()))]),
+        );
+        let id = configurations
+            .intern_derived(transitioned.clone(), &BTreeSet::new())
+            .unwrap();
+        assert_eq!(
+            configurations.mnemonic(id),
+            mnemonic(&transitioned, &top).unwrap()
+        );
+        assert!(configurations.mnemonic(id).starts_with("rust-dbg-ST-"));
+        // A `--cpu` a transition set is explicit in the name (Bazel's
+        // `arm-fastbuild`); the host CPU is the native `rust`.
+        let mut native = top.native.clone();
+        native.cpu = Some("arm".to_owned());
+        let arm = Configuration::new(native, BTreeMap::new());
+        assert_eq!(mnemonic(&arm, &top), Ok("arm-fastbuild".to_owned()));
+        // A transition below an exec edge keeps `is exec configuration` and
+        // is named against the exec baseline with its platform.
+        let scoped = BTreeSet::from([label("//f:target")]);
+        let exec = configurations
+            .intern_exec(configurations.top(), label("//p:h"), &scoped)
+            .unwrap();
+        assert_eq!(configurations.mnemonic(exec), "h-opt-exec");
+        let mut exec_flagged = configurations.get(exec).as_ref().clone();
+        exec_flagged
+            .starlark
+            .insert(label("//f:color"), SettingValue::String("red".into()));
+        let exec_flagged = Configuration::new(exec_flagged.native, exec_flagged.starlark);
+        let id = configurations
+            .intern_derived(exec_flagged, &scoped)
+            .unwrap();
+        assert!(
+            configurations.mnemonic(id).starts_with("h-opt-exec-ST-"),
+            "{}",
+            configurations.mnemonic(id)
+        );
+        // The exec transition drops a target-scoped flag that a Starlark
+        // transition set (it is in the caller's set even though the
+        // top-level configuration does not hold it): the same exec
+        // configuration as the top-level one's.
+        let with_target = Configuration::new(
+            top.native.clone(),
+            BTreeMap::from([(label("//f:target"), SettingValue::String("x".into()))]),
+        );
+        let with_target = configurations.intern_derived(with_target, &scoped).unwrap();
+        assert_eq!(
+            configurations.intern_exec(with_target, label("//p:h"), &scoped),
+            Ok(exec)
         );
     }
 

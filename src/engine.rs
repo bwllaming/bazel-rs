@@ -451,6 +451,9 @@ enum EdgeCfg {
     /// (analysis/BaseRuleClasses.java:291-297), analyzed in the no-config
     /// configuration (crate::config_registry::no_config).
     NoConfig,
+    /// The Starlark `transition()` of the named attribute
+    /// (StarlarkAttributeTransitionProvider; crate::starlark_transitions).
+    Starlark(String),
 }
 
 /// A dependency edge of a configured rule: the label text, its attribute
@@ -492,6 +495,10 @@ fn attribute_edges(rule: &Rule) -> Vec<Edge> {
                         // (DeclaredExecGroup.DEFAULT_EXEC_GROUP_NAME).
                         .filter(|group| group != "default-exec-group"),
                 ),
+                Some(crate::rule_declarations::Cfg::Starlark {
+                    analysis_test: false,
+                    ..
+                }) => EdgeCfg::Starlark(name.clone()),
                 _ => EdgeCfg::Target,
             };
             // As crate::package::custom_dependency_labels, per attribute.
@@ -550,8 +557,25 @@ fn attribute_edges(rule: &Rule) -> Vec<Edge> {
 type BuildPlan = (Vec<PlannedAction>, Vec<(ConfiguredTargetKey, Artifact)>);
 
 /// The analyzed rules of a build in analysis (postorder) order, each with
-/// the configuration it was analyzed in.
-type Plan = Vec<(ConfigId, Rule)>;
+/// its configured target key (the configuration it was analyzed in).
+type Plan = Vec<(ConfiguredTargetKey, Rule)>;
+
+/// StarlarkBuildSettingsDetailsValue: the details of each setting a
+/// transition references, keyed by the label as referenced.
+type TransitionDetails = BTreeMap<Label, crate::starlark_transitions::SettingDetail>;
+
+/// A loaded build-setting candidate (verifyBuildSettingsAndGetAliases).
+enum SettingTarget {
+    Alias(Label),
+    Setting(crate::starlark_transitions::SettingDetail),
+}
+
+/// The key of the Starlark transition cache: the transition, the source
+/// configuration and a digest of the target and attribute values the
+/// transition reads (StarlarkTransitionCache.Key,
+/// analysis/config/StarlarkTransitionCache.java:189-225: the transition
+/// instance encapsulates the target's attributes).
+type TransitionCacheKey = (u64, ConfigId, [u8; 32]);
 
 #[derive(Debug, Default)]
 pub struct BuildSummary {
@@ -567,8 +591,9 @@ pub struct Engine {
     group_nodes: BTreeMap<Label, Arc<GroupNode>>,
     group_budget: HostBudget,
     /// The configurations of the build: requested targets are analyzed in
-    /// the top-level one, and every dependency edge keeps its parent's
-    /// configuration (no transitions are modelled yet; docs/CONFIGURATION.md).
+    /// the top-level one; dependency edges keep their parent's configuration
+    /// except across the exec transition and Starlark rule/attribute
+    /// transitions (docs/CONFIGURATION.md).
     configurations: Configurations,
     /// Declared source files that do not exist (path -> label).
     missing_sources: BTreeMap<PathBuf, Label>,
@@ -600,9 +625,22 @@ pub struct Engine {
     /// (its parent configuration when the exec transition is a no-op), for
     /// targets with exec-transition dependency edges.
     exec_configurations: BTreeMap<ConfiguredTargetKey, ConfigId>,
-    /// The top-level Starlark flags with `scope = "target"`, reset by the
-    /// exec transition (computed on first use).
-    target_scoped_flags: Option<BTreeSet<Label>>,
+    /// Whether a Starlark flag's rule explicitly sets `scope = "target"`
+    /// (reset by the exec transition), per flag (computed on first use).
+    flag_scopes: BTreeMap<Label, bool>,
+    /// Applied Starlark transitions: the resulting configuration
+    /// (StarlarkTransitionCache; failures are not cached).
+    transition_cache: BTreeMap<TransitionCacheKey, (ConfigId, Vec<String>)>,
+    /// StarlarkBuildSettingsDetailsValue per referenced setting label.
+    transition_details: BTreeMap<Vec<Label>, Result<TransitionDetails, String>>,
+    /// The configuration of each Starlark-transition attribute of each
+    /// analyzed target (read by the build loop).
+    edge_configs: BTreeMap<ConfiguredTargetKey, BTreeMap<String, ConfigId>>,
+    /// A target requested with a rule transition that changed its
+    /// configuration delegates to the key it was analyzed under
+    /// (RuleTransitionApplier, analysis/producers/RuleTransitionApplier.java:69-110,
+    /// 340-378): requested key -> analyzed key.
+    rule_delegations: BTreeMap<ConfiguredTargetKey, ConfiguredTargetKey>,
     /// The requested top-level rule being analyzed when its rule is test
     /// trimmed (not alias-like): its top-level key precedes it in cycle paths
     /// (Self::cycle_error).
@@ -639,7 +677,11 @@ impl Engine {
             computing_toolchains: Vec::new(),
             toolchain_cycle_reports: BTreeMap::new(),
             exec_configurations: BTreeMap::new(),
-            target_scoped_flags: None,
+            flag_scopes: BTreeMap::new(),
+            transition_cache: BTreeMap::new(),
+            transition_details: BTreeMap::new(),
+            edge_configs: BTreeMap::new(),
+            rule_delegations: BTreeMap::new(),
             requested_trimmed_root: None,
             toolchain_contexts: BTreeMap::new(),
             toolchain_implementations: BTreeSet::new(),
@@ -651,7 +693,9 @@ impl Engine {
         self.configurations = Configurations::new(configuration);
         self.platforms.clear();
         self.registered_toolchains.clear();
-        self.target_scoped_flags = None;
+        self.flag_scopes.clear();
+        self.transition_cache.clear();
+        self.transition_details.clear();
     }
 
     /// Drain the warnings reported so far (also after a failed build, as
@@ -1189,6 +1233,21 @@ impl Engine {
         configured: &mut ConfiguredNodes,
         plan: &mut Plan,
     ) -> Result<(), String> {
+        self.analyze_key(label, config, true, active, configured, plan)
+    }
+
+    /// [`Self::analyze`] for a ConfiguredTargetKey with an explicit
+    /// `shouldApplyRuleTransition` (false only for the delegate of a
+    /// non-idempotent rule transition).
+    fn analyze_key(
+        &mut self,
+        label: &Label,
+        config: ConfigId,
+        apply_rule_transition: bool,
+        active: &mut Vec<ConfiguredTargetKey>,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Plan,
+    ) -> Result<(), String> {
         let rule = match self.target(label)? {
             Target::Source(_) => {
                 self.visible(&self.source_visibility(label), &label.package_id(), None)?;
@@ -1208,13 +1267,18 @@ impl Engine {
             self.resolve_group(&rule.label, &mut Vec::new())?;
         }
         // A rule transition decides the configuration everything else is
-        // evaluated in (TargetAndConfigurationProducer); it is not modelled.
+        // evaluated in (TargetAndConfigurationProducer); `config.none()` is
+        // not modelled.
         if let Some(custom) = &rule.custom
             && !custom.declaration.transition_gaps.is_empty()
         {
             return Err(custom_gap_error(&rule, &custom.declaration.transition_gaps));
         }
-        let key = ConfiguredTargetKey::new(rule.label.clone(), config);
+        let key = ConfiguredTargetKey {
+            label: rule.label.clone(),
+            config,
+            apply_rule_transition,
+        };
         if configured.contains_key(&key) {
             return Ok(());
         }
@@ -1223,6 +1287,34 @@ impl Engine {
         }
         if active.len() >= 256 {
             return Err("native prototype dependency depth limit (256) exceeded".into());
+        }
+        // A Starlark rule transition (RuleTransitionApplier): a target whose
+        // configuration it changes is the target analyzed under the
+        // transitioned key.
+        if apply_rule_transition
+            && rule
+                .custom
+                .as_ref()
+                .is_some_and(|custom| custom.transitions.contains_key(""))
+        {
+            active.push(key.clone());
+            let delegate = self.rule_transition(&rule, config, active, configured, plan)?;
+            if let Some(owner) = delegate {
+                self.analyze_key(
+                    &rule.label,
+                    owner.config,
+                    owner.apply_rule_transition,
+                    active,
+                    configured,
+                    plan,
+                )?;
+                active.pop();
+                let node = configured.get(&owner).cloned().unwrap_or_default();
+                configured.insert(key.clone(), node);
+                self.rule_delegations.insert(key, owner);
+                return Ok(());
+            }
+            active.pop();
         }
         let configuration = self.configurations.get(config).clone();
         let no_config = configuration.native.no_config;
@@ -1382,6 +1474,10 @@ impl Engine {
                 ));
             }
         }
+        // The configuration of each Starlark-transition attribute, computed
+        // at its first edge (an error names that edge, DependencyProducer
+        // getMessageWithEdgeTransitionInfo, analysis/producers/DependencyProducer.java:258-266).
+        let mut attribute_configs: BTreeMap<String, ConfigId> = BTreeMap::new();
         let exec_config =
             if uses_toolchains && edges.iter().any(|edge| edge.cfg == EdgeCfg::Exec(None)) {
                 let exec_config = self.exec_configuration(
@@ -1420,10 +1516,35 @@ impl Engine {
                     }
                     config
                 }
+                // Applied per dependency edge (DependencyProducer), so
+                // print() output repeats per edge; the result is per
+                // attribute (its values do not depend on the edge).
+                EdgeCfg::Starlark(attribute) => {
+                    let dependency = self.resolve_rule_src(&rule, &edge.label)?;
+                    let id = self.attribute_transition(&rule, config, attribute, &dependency)?;
+                    attribute_configs.insert(attribute.clone(), id);
+                    id
+                }
             };
             let src = edge.label;
             let late_bound = late_bound_rule || analysis_dependent.contains(&src);
             let dependency = self.resolve_rule_src(&rule, &src)?;
+            // The allowlist Bazel adds to rules with a Starlark transition
+            // lives in @bazel_tools, which only the built-in module profile
+            // provides natively.
+            if edge.attribute == crate::custom_rule::FUNCTION_TRANSITION_ALLOWLIST_ATTRIBUTE
+                && dependency.repository == "bazel_tools"
+                && self.repositories.root("bazel_tools").is_err()
+            {
+                return Err(located(
+                    rule.location.as_deref(),
+                    format!(
+                        "the Starlark transition allowlist {} of {} needs the built-in @bazel_tools repository, which this module profile does not provide; use --experimental-builtin-modules, or declare `_allowlist_function_transition = attr.label(default = \"//tools/allowlists/function_transition_allowlist\")` with a package_group of that name",
+                        crate::rule_declarations::canonical_form(&dependency),
+                        crate::rule_declarations::canonical_form(&rule.label)
+                    ),
+                ));
+            }
             let target = self.target(&dependency).map_err(|error| {
                 let error = self.missing_edge_error(&rule, &dependency, error);
                 if analysis_dependent.contains(&src) {
@@ -1542,8 +1663,11 @@ impl Engine {
                 self.analyze(&implementation, config, active, configured, plan)?;
             }
         }
-        self.starlark_file_type_errors(&rule, config, exec_config, configured)?;
+        self.starlark_file_type_errors(&rule, config, exec_config, &attribute_configs, configured)?;
         self.package_metadata_file_errors(&rule, configured)?;
+        if !attribute_configs.is_empty() {
+            self.edge_configs.insert(key.clone(), attribute_configs);
+        }
         // config_setting flag_values/constraint_values and the platform rules'
         // label attributes: prerequisites analyzed, then validated
         // (RuleContext.Builder, analysis/RuleContext.java:1700-1745, 1845-1880, 2165-2172).
@@ -1648,7 +1772,7 @@ impl Engine {
             self.toolchain_contexts.insert(key.clone(), context);
         }
         configured.insert(
-            key,
+            key.clone(),
             ConfiguredNode {
                 matching,
                 build_setting,
@@ -1660,7 +1784,7 @@ impl Engine {
                 declared_toolchain,
             },
         );
-        plan.push((config, rule));
+        plan.push((key, rule));
         Ok(())
     }
 
@@ -1688,7 +1812,7 @@ impl Engine {
                     .clone()
             }
         };
-        let target_scoped = self.target_scoped_flags()?;
+        let target_scoped = self.target_scoped_flags(config)?;
         // An invalid exec output directory name fails the dependency's
         // configuration (InvalidMnemonicException), reported at the rule.
         self.configurations
@@ -1696,31 +1820,428 @@ impl Engine {
             .map_err(|error| located(rule.location.as_deref(), error))
     }
 
-    /// The top-level Starlark flags whose rule explicitly sets
-    /// `scope = "target"` (Scope.ScopeType.TARGET, analysis/config/Scope.java:31-46).
-    fn target_scoped_flags(&mut self) -> Result<BTreeSet<Label>, String> {
-        if let Some(flags) = &self.target_scoped_flags {
-            return Ok(flags.clone());
-        }
-        let mut flags = BTreeSet::new();
-        let labels = self
+    /// The Starlark flags of the top-level configuration and of `config`
+    /// whose rule explicitly sets `scope = "target"` (Scope.ScopeType.TARGET,
+    /// analysis/config/Scope.java:31-46): the flags the exec transition of
+    /// `config` resets, also covering the top-level configuration's own so
+    /// that the memoized exec baseline (crate::config_registry) is the same
+    /// whichever configuration computes it first.
+    fn target_scoped_flags(&mut self, config: ConfigId) -> Result<BTreeSet<Label>, String> {
+        let mut labels = self
             .configurations
             .top_configuration()
             .starlark
             .keys()
             .cloned()
-            .collect::<Vec<_>>();
+            .collect::<BTreeSet<_>>();
+        labels.extend(self.configurations.get(config).starlark.keys().cloned());
+        let mut flags = BTreeSet::new();
         for label in labels {
-            if let Target::Rule(rule) = self.target(&label)?
-                && self
-                    .build_setting_info(&rule)?
-                    .is_some_and(|info| info.scope.is_target())
-            {
+            let scoped = match self.flag_scopes.get(&label) {
+                Some(scoped) => *scoped,
+                None => {
+                    let scoped = match self.target(&label)? {
+                        Target::Rule(rule) => self
+                            .build_setting_info(&rule)?
+                            .is_some_and(|info| info.scope.is_target()),
+                        _ => false,
+                    };
+                    self.flag_scopes.insert(label.clone(), scoped);
+                    scoped
+                }
+            };
+            if scoped {
                 flags.insert(label);
             }
         }
-        self.target_scoped_flags = Some(flags.clone());
         Ok(flags)
+    }
+
+    /// The retained Starlark transition of `rule` under `key` (`""` for
+    /// the rule's `cfg`, else the attribute name).
+    fn transition_def(
+        rule: &Rule,
+        key: &str,
+    ) -> Result<Option<crate::starlark_transitions::TransitionDef>, String> {
+        rule.custom
+            .as_ref()
+            .and_then(|custom| custom.transitions.get(key))
+            .map(crate::starlark_transitions::TransitionDef::of)
+            .transpose()
+    }
+
+    /// StarlarkBuildSettingsDetailsFunction
+    /// (skyframe/StarlarkBuildSettingsDetailsFunction.java:60-330) for the
+    /// Starlark settings a transition reads or writes (inputs then outputs,
+    /// StarlarkTransitionCache.getAllStarlarkBuildSettings): each must be a
+    /// build setting, possibly through unconfigured aliases. Errors are the
+    /// TransitionException texts (a loading exception as `CLASS: MESSAGE`).
+    fn transition_details(
+        &mut self,
+        def: &crate::starlark_transitions::TransitionDef,
+    ) -> Result<TransitionDetails, String> {
+        let settings = def.starlark_settings();
+        if let Some(details) = self.transition_details.get(&settings) {
+            return details.clone();
+        }
+        let details = self.compute_transition_details(&settings);
+        self.transition_details.insert(settings, details.clone());
+        details
+    }
+
+    /// getBuildSettingPackages (:139-195): rounds over the not yet verified
+    /// labels — every label (also an alias's actual) may be seen once, so a
+    /// transition naming both an alias and its actual, or an alias cycle,
+    /// is `Dependency cycle involving 'L' detected in aliased build
+    /// settings`; their packages are loaded, then each is verified
+    /// (verifyBuildSettingsAndGetAliases, :210-262) and the next round holds
+    /// the aliases' actuals. Then each setting's details are those of the
+    /// end of its alias chain (getActual, :272-290).
+    fn compute_transition_details(
+        &mut self,
+        settings: &[Label],
+    ) -> Result<TransitionDetails, String> {
+        let mut seen = BTreeSet::new();
+        let mut targets: BTreeMap<Label, SettingTarget> = BTreeMap::new();
+        let mut unverified = settings.to_vec();
+        while !unverified.is_empty() {
+            for label in &unverified {
+                if !seen.insert(label.clone()) {
+                    return Err(format!(
+                        "Dependency cycle involving '{}' detected in aliased build settings",
+                        crate::rule_declarations::canonical_form(label)
+                    ));
+                }
+            }
+            let mut packages: Vec<PackageId> = Vec::new();
+            for label in &unverified {
+                let package = label.package_id();
+                if !packages.contains(&package) {
+                    packages.push(package);
+                }
+            }
+            for package in &packages {
+                self.load_package(package)
+                    .map_err(|error| PlatformError::loading(error).target_text())?;
+            }
+            let mut next = Vec::new();
+            for label in &unverified {
+                let target = self.setting_target(label)?;
+                if let SettingTarget::Alias(actual) = &target
+                    && !next.contains(actual)
+                {
+                    next.push(actual.clone());
+                }
+                targets.insert(label.clone(), target);
+            }
+            unverified = next;
+        }
+        let mut details = BTreeMap::new();
+        for label in settings {
+            let mut current = label;
+            let detail = loop {
+                match targets.get(current) {
+                    Some(SettingTarget::Alias(actual)) => current = actual,
+                    Some(SettingTarget::Setting(detail)) => break detail.clone(),
+                    None => {
+                        return Err(format!(
+                            "internal error: build setting {current} was not loaded"
+                        ));
+                    }
+                }
+            };
+            details.insert(label.clone(), detail);
+        }
+        Ok(details)
+    }
+
+    /// One label of verifyBuildSettingsAndGetAliases (:210-262).
+    fn setting_target(&mut self, label: &Label) -> Result<SettingTarget, String> {
+        let shown = crate::rule_declarations::canonical_form(label);
+        let not_a_setting =
+            || format!("attempting to transition on '{shown}' which is not a build setting");
+        let rule = match self
+            .target(label)
+            .map_err(|error| PlatformError::loading(error).target_text())?
+        {
+            Target::Source(_) => return Err(not_a_setting()),
+            // Target.getAssociatedRule of an output file is its generating
+            // rule, which is not a build setting.
+            Target::Output(..) => return Err(not_a_setting()),
+            Target::Rule(rule) => rule,
+        };
+        if let (RuleKind::Native("alias"), Some(native)) = (&rule.kind, &rule.native) {
+            if native.configurable.contains_key("actual") {
+                return Err(format!(
+                    "attempting to transition on aliased build setting '{shown}', the actual value of which uses select(). Aliased build settings with configured actual values is not supported."
+                ));
+            }
+            let Some(crate::custom_rule::AttrValue::Label(Some(actual))) =
+                native.attrs.get("actual")
+            else {
+                return Err(not_a_setting());
+            };
+            return Ok(SettingTarget::Alias(self.resolve_rule_src(&rule, actual)?));
+        }
+        let Some(info) = self.build_setting_info(&rule)? else {
+            return Err(not_a_setting());
+        };
+        Ok(SettingTarget::Setting(
+            crate::starlark_transitions::SettingDetail {
+                actual: info.label.clone(),
+                ty: info.ty,
+                default: info.default,
+            },
+        ))
+    }
+
+    /// Apply a Starlark transition attached to `target` to `from`
+    /// (TransitionApplier with StarlarkTransitionCache): the resulting
+    /// configuration, interned with its output path mnemonic.
+    fn apply_transition(
+        &mut self,
+        def: &crate::starlark_transitions::TransitionDef,
+        kind: crate::starlark_transitions::Kind,
+        target: &Label,
+        from: ConfigId,
+        attributes: &crate::starlark_transitions::AttributeValues,
+    ) -> Result<ConfigId, crate::starlark_transitions::Failure> {
+        use sha2::Digest;
+        let failure = |message: String| crate::starlark_transitions::Failure {
+            events: Vec::new(),
+            message,
+        };
+        let digest: [u8; 32] = sha2::Sha256::digest(
+            serde_json::to_vec(&(
+                target.to_string(),
+                kind == crate::starlark_transitions::Kind::Rule,
+                attributes,
+            ))
+            .map_err(|error| failure(error.to_string()))?,
+        )
+        .into();
+        let cache_key = (def.id, from, digest);
+        // StarlarkTransitionCache.computeIfAbsent (:128-185): a hit replays
+        // the application's non-error events (print() output), so every
+        // application prints, also the IdempotencyChecker's and a
+        // delegate's re-application (RuleTransitionApplier).
+        if let Some((id, printed)) = self.transition_cache.get(&cache_key) {
+            for line in printed {
+                eprintln!("{line}");
+            }
+            return Ok(*id);
+        }
+        let details = self.transition_details(def).map_err(failure)?;
+        let configuration = self.configurations.get(from).clone();
+        let applied = crate::starlark_transitions::apply(
+            def,
+            &crate::starlark_transitions::Application {
+                kind,
+                from: &configuration,
+                details: &details,
+                target,
+                attributes,
+                repositories: &self.repositories,
+            },
+        )?;
+        for line in &applied.printed {
+            eprintln!("{line}");
+        }
+        let target_scoped = self.target_scoped_flags(from).map_err(failure)?;
+        let id = self
+            .configurations
+            .intern_derived(applied.configuration, &target_scoped)
+            .map_err(failure)?;
+        self.transition_cache
+            .insert(cache_key, (id, applied.printed));
+        Ok(id)
+    }
+
+    /// RuleTransitionApplier (analysis/producers/RuleTransitionApplier.java:130-378):
+    /// the target platform and select() conditions of `rule` in its
+    /// requested configuration, the rule's Starlark transition over its
+    /// attributes (StarlarkRuleTransitionProvider.createTransition,
+    /// analysis/starlark/StarlarkRuleTransitionProvider.java:94-200), then
+    /// the idempotency check: `None` for an identity transition (the target
+    /// is analyzed under its requested key), else the key it is analyzed
+    /// under — with `shouldApplyRuleTransition` only when applying the
+    /// transition again gives the same configuration (IDEMPOTENT), without
+    /// it otherwise (NON_IDEMPOTENT). Errors are reported at the rule.
+    fn rule_transition(
+        &mut self,
+        rule: &Rule,
+        config: ConfigId,
+        active: &mut Vec<ConfiguredTargetKey>,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Plan,
+    ) -> Result<Option<ConfiguredTargetKey>, String> {
+        let Some(def) = Self::transition_def(rule, "")? else {
+            return Ok(None);
+        };
+        let uses_toolchains =
+            uses_toolchain_resolution(rule) && self.resolving_platforms.is_empty();
+        if uses_toolchains && !self.default_target_platform(config) {
+            self.target_platform(config, configured, plan)?;
+        }
+        let ordered = self.config_conditions(rule, config, active, configured, plan)?;
+        let conditions = ordered.into_iter().collect::<BTreeMap<_, _>>();
+        let resolver = configured_attributes::Resolver {
+            target: &rule.label,
+            conditions: &conditions,
+            config_hash: config.to_string(),
+        };
+        let attributes = configured_attributes::transition_attributes(
+            rule,
+            Some(&resolver),
+            &def.given_outputs(),
+        );
+        let report = |failure: crate::starlark_transitions::Failure| {
+            let mut lines = failure.events;
+            lines.push(located(rule.location.as_deref(), failure.message));
+            lines.join("\n")
+        };
+        let kind = crate::starlark_transitions::Kind::Rule;
+        let post = self
+            .apply_transition(&def, kind, &rule.label, config, &attributes)
+            .map_err(report)?;
+        if post == config {
+            return Ok(None);
+        }
+        let again = self
+            .apply_transition(&def, kind, &rule.label, post, &attributes)
+            .map_err(report)?;
+        Ok(Some(if again == post {
+            ConfiguredTargetKey::new(rule.label.clone(), post)
+        } else {
+            ConfiguredTargetKey::without_rule_transition(rule.label.clone(), post)
+        }))
+    }
+
+    /// The configuration of the dependencies of `rule`'s attribute
+    /// `attribute`, whose `cfg` is a Starlark transition
+    /// (StarlarkAttributeTransitionProvider, analysis/starlark/StarlarkAttributeTransitionProvider.java:105-135):
+    /// the transition over the rule's configured attribute values. A
+    /// failure is reported at the rule as `on dependency edge L (CONFIG)
+    /// -|ATTR|-> DEP: MESSAGE` (DependencyProducer.java:230-266; CONFIG is
+    /// the first 7 hex digits of the native ConfigId).
+    fn attribute_transition(
+        &mut self,
+        rule: &Rule,
+        config: ConfigId,
+        attribute: &str,
+        dependency: &Label,
+    ) -> Result<ConfigId, String> {
+        let def = Self::transition_def(rule, attribute)?.ok_or_else(|| {
+            format!(
+                "{}: attribute '{attribute}' declares a Starlark transition that the native profile did not retain (a lifted subrule attribute); {}",
+                rule.label,
+                crate::rule_declarations::NOT_ANALYZED
+            )
+        })?;
+        let attributes = configured_attributes::transition_attributes(rule, None, &[]);
+        self.apply_transition(
+            &def,
+            crate::starlark_transitions::Kind::Attribute,
+            &rule.label,
+            config,
+            &attributes,
+        )
+        .map_err(|failure| {
+            let mut lines = failure.events;
+            lines.push(located(
+                rule.location.as_deref(),
+                format!(
+                    "on dependency edge {} ({}) -|{attribute}|-> {}: {}",
+                    crate::rule_declarations::canonical_form(&rule.label),
+                    &config.to_string()[..7],
+                    crate::rule_declarations::canonical_form(dependency),
+                    failure.message
+                ),
+            ));
+            lines.join("\n")
+        })
+    }
+
+    /// RuleConfiguredTargetBuilder.handleAllowlistChecker for the Starlark
+    /// function transition allowlist (analysis/RuleConfiguredTargetBuilder.java:104-112,
+    /// 299-320; StarlarkRuleClassFunctions.java:2052-2057): after the
+    /// implementation, a rule with a Starlark transition must be
+    /// instantiated in (INSTANCE) or defined in (DEFINITION) a package of
+    /// its `_allowlist_function_transition` package group
+    /// (Allowlist.isAvailableFor, analysis/Allowlist.java:62-98), else the
+    /// rule error `Non-allowlisted use of Starlark transition`.
+    fn check_transition_allowlist(
+        &mut self,
+        rule: &Rule,
+        key: &ConfiguredTargetKey,
+        forwarded: &BTreeMap<ConfiguredTargetKey, Label>,
+    ) -> Result<(), String> {
+        let Some(custom) = &rule.custom else {
+            return Ok(());
+        };
+        if custom.transitions.is_empty() {
+            return Ok(());
+        }
+        // Allowlist.getAttributeNameFromAllowlistName: `$whitelist_` then
+        // `$allowlist_` (analysis/Allowlist.java:140-144).
+        let Some((name, text)) = [
+            "_whitelist_function_transition",
+            "_allowlist_function_transition",
+        ]
+        .into_iter()
+        .find_map(|name| match custom.attrs.get(name) {
+            Some(crate::custom_rule::AttrValue::Label(Some(text))) => Some((name, text)),
+            _ => None,
+        }) else {
+            return Err(format!(
+                "{}: the function transition allowlist attribute has no value; {}",
+                rule.label,
+                crate::rule_declarations::NOT_ANALYZED
+            ));
+        };
+        let label = self.resolve_rule_src(rule, text)?;
+        let edge_config = match custom.schema.get(name).map(|spec| &spec.declaration.cfg) {
+            Some(crate::rule_declarations::Cfg::Exec(_)) => self
+                .exec_configurations
+                .get(key)
+                .copied()
+                .unwrap_or(key.config),
+            Some(crate::rule_declarations::Cfg::Starlark { .. }) => self
+                .edge_configs
+                .get(key)
+                .and_then(|configs| configs.get(name))
+                .copied()
+                .unwrap_or(key.config),
+            _ => key.config,
+        };
+        let actual = forwarded
+            .get(&ConfiguredTargetKey::new(label.clone(), edge_config))
+            .cloned()
+            .unwrap_or(label);
+        let group = match self.target(&actual)? {
+            Target::Rule(group) if matches!(group.kind, RuleKind::PackageGroup(_)) => {
+                self.resolve_group(&actual, &mut Vec::new())?
+            }
+            _ => {
+                return Err(format!(
+                    "{}: the function transition allowlist {} is not a package_group (a PackageSpecificationProvider that is not a package_group is not modelled natively)",
+                    rule.label,
+                    crate::rule_declarations::canonical_form(&actual)
+                ));
+            }
+        };
+        let definition = Label::parse_canonical(&custom.declaration.definition_environment_label)?;
+        if group.contains(&rule.label.package_id()) || group.contains(&definition.package_id()) {
+            return Ok(());
+        }
+        Err(located(
+            rule.location.as_deref(),
+            format!(
+                "in {} rule {}: Non-allowlisted use of Starlark transition",
+                rule.rule_class_name(),
+                crate::rule_declarations::canonical_form(&rule.label)
+            ),
+        ))
     }
 
     /// A missing dependency edge (missing_edge), preceded by the target
@@ -2001,6 +2522,7 @@ impl Engine {
         rule: &Rule,
         config: ConfigId,
         exec_config: ConfigId,
+        attribute_configs: &BTreeMap<String, ConfigId>,
         configured: &ConfiguredNodes,
     ) -> Result<(), String> {
         let Some(custom) = &rule.custom else {
@@ -2036,7 +2558,7 @@ impl Engine {
                 {
                     exec_config
                 }
-                _ => config,
+                _ => attribute_configs.get(name).copied().unwrap_or(config),
             };
             for text in labels {
                 let dependency = self.resolve_rule_src(rule, &text)?;
@@ -3732,6 +4254,13 @@ impl Engine {
                 .cloned()
                 .ok_or_else(|| format!("internal analysis order error: {label}")),
             Target::Output(rule, out) => {
+                // The generating rule's configuration, after its rule
+                // transition (RuleTransitionApplier uses the output's
+                // associated rule).
+                let config = self
+                    .rule_delegations
+                    .get(&ConfiguredTargetKey::new(rule.label.clone(), config))
+                    .map_or(config, |owner| owner.config);
                 let exec = rule
                     .label
                     .with_name(&out)?
@@ -3861,6 +4390,8 @@ impl Engine {
         self.exec_configurations.clear();
         self.toolchain_contexts.clear();
         self.toolchain_implementations.clear();
+        self.edge_configs.clear();
+        self.rule_delegations.clear();
         // BuildConfigurationKeyProducer resolves an explicit --platforms
         // entry when the top-level configuration is created, before analysis
         // (analysis/producers/BuildConfigurationKeyProducer.java:126-145). A
@@ -3941,9 +4472,25 @@ impl Engine {
         // main-repository inputs under ignored top-level entries: Bazel's
         // ArtifactFunction checks a source artifact regardless of planting.
         let mut source_inputs: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
-        for (config, rule) in &plan {
-            let config = *config;
-            let key = ConfiguredTargetKey::new(rule.label.clone(), config);
+        // Requested keys delegating to the key a rule transition analyzed
+        // them under see that key's files and providers (copied once the
+        // delegate is planned; dependents follow it in analysis order).
+        let mut delegations = self
+            .rule_delegations
+            .iter()
+            .map(|(requested, owner)| (requested.clone(), owner.clone()))
+            .collect::<Vec<_>>();
+        for (key, rule) in &plan {
+            flush_delegations(
+                &mut delegations,
+                &mut dry,
+                &mut custom_providers,
+                &mut provider_files,
+                &mut provider_keys,
+                &mut runfiles_info,
+            );
+            let key = key.clone();
+            let config = key.config;
             let output_root = self.configurations.output_root(config);
             let action_owner = key.action_owner(top);
             // The configuration of the target's exec-transition edges.
@@ -3984,7 +4531,7 @@ impl Engine {
                 let mut dependency_labels: Vec<(Label, ConfigId, String)> = Vec::new();
                 for edge in dependency_edges(rule) {
                     let label = self.resolve_rule_src(rule, &edge.label)?;
-                    let (edge_config, map_key) = match edge.cfg {
+                    let (edge_config, map_key) = match &edge.cfg {
                         EdgeCfg::Target => {
                             (config, analysis::dependency_key(&label.to_string(), false))
                         }
@@ -3995,6 +4542,19 @@ impl Engine {
                         EdgeCfg::NoConfig => (
                             self.configurations.intern_no_config(),
                             analysis::metadata_dependency_key(&label.to_string()),
+                        ),
+                        EdgeCfg::Starlark(attribute) => (
+                            self.edge_configs
+                                .get(&key)
+                                .and_then(|configs| configs.get(attribute))
+                                .copied()
+                                .ok_or_else(|| {
+                                    format!(
+                                        "internal error: no transitioned configuration for {} attribute {attribute}",
+                                        rule.label
+                                    )
+                                })?,
+                            analysis::transition_dependency_key(&label.to_string(), attribute),
                         ),
                     };
                     dependency_labels.push((label, edge_config, map_key));
@@ -4198,6 +4758,7 @@ impl Engine {
                 }
                 let analyzed = analyzed?;
                 restricted_to_error(rule)?;
+                self.check_transition_allowlist(rule, &key, &forwarded)?;
                 custom_providers.insert(key.clone(), analyzed.providers.clone());
                 provider_keys.insert(key.clone(), analyzed.provider_keys.clone());
                 provider_files.insert(key.clone(), analyzed.provider_files.clone());
@@ -4461,6 +5022,14 @@ impl Engine {
                 dry.insert(key, inputs);
             }
         }
+        flush_delegations(
+            &mut delegations,
+            &mut dry,
+            &mut custom_providers,
+            &mut provider_files,
+            &mut provider_keys,
+            &mut runfiles_info,
+        );
         let mut requested: Vec<(ConfiguredTargetKey, Artifact)> = Vec::new();
         for label in labels {
             for artifact in self.artifacts(label, top, &dry, &declared)? {
@@ -4567,12 +5136,7 @@ impl Engine {
         // (rules/genrule/GenRuleBase.java); custom actions use their action id.
         let rules_by_label = plan
             .iter()
-            .map(|(config, rule)| {
-                (
-                    ConfiguredTargetKey::new(rule.label.clone(), *config).action_owner(top),
-                    rule,
-                )
-            })
+            .map(|(key, rule)| (key.action_owner(top), rule))
             .collect::<BTreeMap<_, _>>();
         for node in &nodes {
             let absent = source_inputs
@@ -4634,6 +5198,41 @@ fn dependency_runfiles(
             .unwrap_or_default()
             .with_files_to_run(files),
     }
+}
+
+/// Copy the files and providers of each delegate key planned so far to the
+/// requested key that delegates to it (a rule transition's key).
+fn flush_delegations(
+    delegations: &mut Vec<(ConfiguredTargetKey, ConfiguredTargetKey)>,
+    dry: &mut BTreeMap<ConfiguredTargetKey, Vec<Artifact>>,
+    custom_providers: &mut BTreeMap<
+        ConfiguredTargetKey,
+        BTreeMap<String, starlark::values::OwnedFrozenValue>,
+    >,
+    provider_files: &mut BTreeMap<ConfiguredTargetKey, Vec<File>>,
+    provider_keys: &mut BTreeMap<ConfiguredTargetKey, Vec<String>>,
+    runfiles_info: &mut BTreeMap<ConfiguredTargetKey, crate::runfiles::TargetRunfiles>,
+) {
+    delegations.retain(|(requested, owner)| {
+        let Some(files) = dry.get(owner).cloned() else {
+            return true;
+        };
+        dry.insert(requested.clone(), files);
+        if let Some(providers) = custom_providers.get(owner).cloned() {
+            custom_providers.insert(requested.clone(), providers);
+        }
+        if let Some(files) = provider_files.get(owner).cloned() {
+            provider_files.insert(requested.clone(), files);
+        }
+        if let Some(keys) = provider_keys.get(owner).cloned() {
+            provider_keys.insert(requested.clone(), keys);
+        }
+        // N23a's RunfilesProvider/FilesToRunProvider follow the delegate too.
+        if let Some(runfiles) = runfiles_info.get(owner).cloned() {
+            runfiles_info.insert(requested.clone(), runfiles);
+        }
+        false
+    });
 }
 
 /// Marks an error that aborts the analysis of a requested target; the

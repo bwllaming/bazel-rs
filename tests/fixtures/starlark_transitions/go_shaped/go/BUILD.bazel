@@ -1,0 +1,27 @@
+load("//go/private/rules:shaped.bzl", "go_context_data", "go_library", "go_tool_library", "nogo")
+
+package(default_visibility = ["//visibility:public"])
+
+# Shaped after rules_go 0.63.0 //:go_context_data, //go/tools/coverdata and
+# the nogo() macro (go/private/rules/nogo.bzl:123-134).
+go_context_data(name = "go_context_data", coverdata = ":coverdata")
+
+go_tool_library(
+    name = "coverdata",
+    srcs = ["coverdata.go"],
+    importpath = "github.com/bazelbuild/rules_go/go/tools/coverdata",
+)
+
+alias(
+    name = "nogo",
+    actual = select({
+        "//go/private:nogo_active": ":nogo_actual",
+        "//conditions:default": ":default_nogo",
+    }),
+)
+
+nogo(name = "nogo_actual", deps = [":analyzer"])
+
+go_library(name = "analyzer", srcs = ["analyzer.go"], importpath = "analyzer")
+
+filegroup(name = "default_nogo")

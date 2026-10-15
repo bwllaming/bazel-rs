@@ -655,6 +655,145 @@ pub fn concatenated_duplicate_errors(rule: &Rule, configured: &Rule) -> Vec<Stri
     errors
 }
 
+/// The `attr` struct values of a Starlark transition attached to `rule`:
+/// every attribute of the rule (`rule.getAttributes()`, under its Starlark
+/// name `Attribute.getStarlarkName(publicName)`, so `$x`/`:x` are `_x`):
+/// `name`, the built-in attributes of the Starlark rule class and the
+/// Starlark attributes. For a configured (resolved) rule — an attribute
+/// transition (StarlarkAttributeTransitionProvider.java:105-128) — these are
+/// its values; for an unconfigured rule — a rule transition
+/// (StarlarkRuleTransitionProvider.createTransition, :94-200) — `select()`
+/// values are resolved with `resolver` (the pre-transition configuration's
+/// conditions) unless one of their keys reads a setting the transition
+/// writes (`outputs`, in their given forms: `//command_line_option:NAME`
+/// for `values` keys, the canonical label of `flag_values` keys,
+/// :176-206) or resolution fails (:160-174): such attributes are omitted.
+/// Natively the private built-in attributes have the value `None` except
+/// `_config_dependencies` (the rule's select() keys).
+pub fn transition_attributes(
+    rule: &Rule,
+    resolver: Option<&Resolver<'_>>,
+    outputs: &[String],
+) -> Vec<(String, Option<AttrValue>)> {
+    let mut values = vec![(
+        "name".to_owned(),
+        Some(AttrValue::String(rule.label.name.clone())),
+    )];
+    let Some(custom) = &rule.custom else {
+        return values;
+    };
+    let reads_outputs =
+        |parts: &[ConfigurablePart], resolver: &Resolver<'_>| {
+            parts.iter().any(|part| match part {
+                ConfigurablePart::Select { branches, .. } => branches.iter().any(|(key, _)| {
+                    resolver.conditions.get(key).is_some_and(|condition| {
+                        condition.settings.iter().any(|(name, _)| {
+                            outputs.contains(&format!("//command_line_option:{name}"))
+                        }) || condition.flags.keys().any(|flag| {
+                            outputs.contains(&crate::rule_declarations::canonical_form(flag))
+                        })
+                    })
+                }),
+                ConfigurablePart::Plain(_) => false,
+            })
+        };
+    // A select() value: resolved, or None when the attribute is omitted.
+    let resolve =
+        |info: AttributeInfo<'_>, parts: &[ConfigurablePart]| -> Option<Option<AttrValue>> {
+            let resolver = resolver?;
+            if resolver.conditions.is_empty() || reads_outputs(parts, resolver) {
+                return None;
+            }
+            resolver
+                .resolve_attribute(&info, parts)
+                .ok()
+                .map(|resolved| resolved.value)
+        };
+    let builtin = &custom.declaration.builtin;
+    let target = &builtin.target;
+    for (native, attribute) in crate::native_rules::starlark_builtins(builtin.kind).entries() {
+        let name = native.trim_start_matches(['$', ':']);
+        let starlark_name = if name.len() == native.len() {
+            name.to_owned()
+        } else {
+            format!("_{name}")
+        };
+        let Some(attribute) = attribute else {
+            let value = (native == "$config_dependencies").then(|| {
+                AttrValue::Labels(
+                    rule_config_dependencies(rule)
+                        .iter()
+                        .map(|text| {
+                            Label::parse_canonical(text)
+                                .map(|label| label.to_string())
+                                .unwrap_or_else(|_| text.clone())
+                        })
+                        .collect(),
+                )
+            });
+            values.push((starlark_name, value));
+            continue;
+        };
+        if let Some(parts) = target.configurable.get(native) {
+            let info = AttributeSource::Native(attribute.clone());
+            if let Some(value) = resolve(info.info(), parts) {
+                values.push((starlark_name, value));
+            }
+            continue;
+        }
+        let explicit = target.attrs.get(native).cloned();
+        let value = match native {
+            "tags" => Some(AttrValue::Strings(target.tags.clone())),
+            "testonly" => Some(AttrValue::Bool(builtin.testonly)),
+            "deprecation" => builtin.deprecation.clone().map(AttrValue::String),
+            "visibility" => Some(AttrValue::Labels(
+                builtin.visibility.clone().unwrap_or_default(),
+            )),
+            "generator_name" | "generator_function" | "generator_location"
+                if !matches!(explicit, Some(AttrValue::String(_))) =>
+            {
+                Some(AttrValue::String(
+                    builtin
+                        .generator
+                        .as_ref()
+                        .and_then(|generator| match native {
+                            "generator_name" => Some(generator.name.clone()),
+                            "generator_function" => Some(generator.function.clone()),
+                            _ => generator.location.clone(),
+                        })
+                        .unwrap_or_default(),
+                ))
+            }
+            _ => explicit.or_else(|| crate::native_rules::type_default(attribute.ty)),
+        };
+        values.push((starlark_name, value));
+    }
+    for name in &custom.declaration.attr_order {
+        let Some(spec) = custom.schema.get(name) else {
+            continue;
+        };
+        match custom.declaration.configurable.get(name) {
+            Some(parts) => {
+                let info = AttributeSource::Starlark(name, spec);
+                if let Some(value) = resolve(info.info(), parts) {
+                    values.push((name.clone(), value));
+                }
+            }
+            None => values.push((
+                name.clone(),
+                Some(
+                    custom
+                        .attrs
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_else(|| spec.default.clone()),
+                ),
+            )),
+        }
+    }
+    values
+}
+
 /// The configured rule: every `select()` resolved by
 /// ConfiguredAttributeMapper.validateAttributes (ConfiguredAttributeMapper.java:121-125,
 /// called by DependencyResolutionHelpers.visitRule, analysis/DependencyResolutionHelpers.java:309-313)

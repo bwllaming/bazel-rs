@@ -80,9 +80,8 @@ ordinary `has no attribute` error, so `ctx.outputs` and `ctx.executable` report
 Bazel's `Structure.getErrorMessageForUnknownField` texts
 (`analysis/starlark/StarlarkRuleContext.java:402-408`,
 `analysis/starlark/StarlarkAttributesCollection.java:82-86`,
-`packages/StructImpl.java:86-95`). `getattr()` without a default keeps the
-ordinary message. `src/eval/compiler/expr.rs` is declared with its original
-archive hash in the same provenance.
+`packages/StructImpl.java:86-95`). `src/eval/compiler/expr.rs` is declared
+with its original archive hash in the same provenance.
 
 The [N26 string increment](STRING_METHODS.md) patches `src/eval.rs`,
 `src/values/types/string.rs` and `src/values/types/string/methods.rs`:
@@ -103,6 +102,16 @@ five pre-existing lib failures as its unmodified base tree (whose vendored tests
 still expected the pre-N20 `Immutable` text) and no new failure. On the merged
 tree (with the N20 vendored test expectations, N22, N23a and N26) the same
 procedure passes all 967 lib tests and 157 doc tests (17 ignored).
+
+[Starlark transitions](CONFIGURATION.md) (N18c) use the same N23a hook (the
+N18c branch carried identical hunks; one copy is kept). N18c additionally makes
+`getattr(x, name)` without a default consult the hook
+(`src/stdlib/funcs/other.rs`), as Bazel's `Starlark.getattr` uses
+`Structure.getErrorMessageForUnknownField`
+(`net/starlark/java/eval/Starlark.java:1002-1008`). The transition `attr`
+struct uses it for Bazel's `No attribute '%s'. ...` texts with
+`Available attributes: ...`. The patched file carries an inline notice and its
+current hash is updated in the provenance; no vendored test changes.
 
 ## Original published contents
 

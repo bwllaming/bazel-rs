@@ -5,7 +5,9 @@ callbacks for build settings. Since N16b, `flag` and `repeatable` drive the
 command-line parser (`--//pkg:flag=value`) and `ctx.build_setting_value`
 receives the configured value; docs/CONFIGURATION.md describes the options,
 `config_setting(flag_values = ...)` and the native BuildSettingProvider.
-Transitions and multi-configuration analysis remain unsupported.
+Since N18c, Starlark 1:1 transitions read and write build settings
+(docs/CONFIGURATION.md "Starlark transitions"); split transitions remain
+unsupported.
 
 ## Supported declarations and analysis
 
@@ -62,8 +64,9 @@ expansion, `ctx.var`, platform selection, or genrule toolchain dependencies
 
 `--//:flag=value`, the positive/negative boolean forms, alias resolution,
 `select()` on `flag_values` and the configuration identity are N16b
-(docs/CONFIGURATION.md). Transitions and multi-configuration analysis remain
-unsupported. Defaults and command-line values flow through actual providers
+(docs/CONFIGURATION.md). Starlark 1:1 transitions (N18c) and the exec
+transition (N18b) analyze targets in further configurations; split
+transitions remain unsupported. Defaults and command-line values flow through actual providers
 into action bytes/arguments and existing content-based cache keys (output
 paths do not change with Starlark settings, like Bazel's top-level
 configuration). The default-change cache round trip below predates N16b.

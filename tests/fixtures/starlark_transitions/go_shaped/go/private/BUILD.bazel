@@ -1,0 +1,25 @@
+load("@bazel_skylib//rules:common_settings.bzl", "bool_setting")
+
+# Shaped after rules_go 0.63.0 go/private/BUILD.bazel.
+bool_setting(
+    name = "bootstrap_nogo",
+    build_setting_default = False,
+    scope = "universal",
+    visibility = ["//visibility:public"],
+)
+
+bool_setting(
+    name = "request_nogo",
+    build_setting_default = True,
+    scope = "universal",
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "nogo_active",
+    flag_values = {
+        ":bootstrap_nogo": "False",
+        ":request_nogo": "True",
+    },
+    visibility = ["//visibility:public"],
+)

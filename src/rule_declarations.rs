@@ -59,6 +59,12 @@ pub enum Cfg {
         /// StarlarkDefinedConfigTransition.java:300-345).
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         analysis_test: bool,
+        /// The identity of the `transition()` object (Bazel compares
+        /// RegularTransition by inputs, outputs and implementation identity,
+        /// analysis/config/StarlarkDefinedConfigTransition.java:707-720; one
+        /// object per `transition()` call is the same up to equal copies).
+        #[serde(skip)]
+        id: u64,
     },
 }
 
@@ -256,6 +262,25 @@ mod values {
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
         pub definition: String,
+        /// The canonical forms of `inputs`/`outputs`
+        /// (getCanonicalizedSettings, StarlarkDefinedConfigTransition.java:153-186):
+        /// labels relative to the defining `.bzl` file's package and
+        /// repository mapping, native options unchanged.
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        pub canonical_inputs: Vec<String>,
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        pub canonical_outputs: Vec<String>,
+        /// The location of the `transition()` call (its left parenthesis,
+        /// StarlarkThread.getCallerLocation): `LABEL:LINE:COLUMN`.
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        pub location: String,
+        /// A per-process identity (crate::rule_declarations::Cfg::Starlark).
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        pub id: u64,
     }
     starlark_complex_value!(pub(crate) Transition);
 
@@ -898,7 +923,64 @@ fn transition_cfg(value: Value<'_>) -> Option<Cfg> {
         inputs: t.inputs.clone(),
         outputs: t.outputs.clone(),
         analysis_test: t.analysis_test,
+        id: t.id,
     })
+}
+
+/// Whether `value` is a Starlark `transition()` object (not an
+/// `analysis_test_transition`): the transition value an attribute or rule
+/// retains for analysis (crate::starlark_transitions).
+pub(crate) fn is_starlark_transition(value: Value<'_>) -> bool {
+    Transition::from_value(value).is_some_and(|t| !t.analysis_test)
+}
+
+/// A fresh transition identity.
+fn next_transition_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The location of the current call's left parenthesis, `FILE:LINE:COLUMN`
+/// (StarlarkThread.getCallerLocation: the call expression's lparen).
+fn caller_lparen_location(eval: &Evaluator<'_, '_, '_>) -> String {
+    let Some(location) = eval.call_stack_top_location() else {
+        return String::new();
+    };
+    let source = location.file.source();
+    let begin = location.span.begin().get() as usize;
+    let end = (location.span.end().get() as usize).min(source.len());
+    let lparen = source
+        .get(begin..end)
+        .and_then(|text| text.find('('))
+        .map_or(begin, |offset| begin + offset);
+    let position = starlark::codemap::Pos::new(lparen as u32);
+    let resolved = location
+        .file
+        .resolve_span(starlark::codemap::Span::new(position, position));
+    format!(
+        "{}:{}:{}",
+        location.filename(),
+        resolved.begin.line + 1,
+        resolved.begin.column + 1
+    )
+}
+
+/// The canonical forms of transition settings: native options unchanged,
+/// labels relative to the defining `.bzl` file.
+fn canonical_settings(
+    eval: &Evaluator<'_, '_, '_>,
+    settings: &[String],
+) -> anyhow::Result<Vec<String>> {
+    settings
+        .iter()
+        .map(|setting| {
+            if setting.starts_with(COMMAND_LINE_OPTION_PREFIX) {
+                Ok(setting.clone())
+            } else {
+                bzl_label(eval, setting).map(|label| canonical_form(&label))
+            }
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1100,6 +1182,8 @@ mod declaration_globals {
             // (StarlarkDefinedConfigTransition.java:110-117); disallowed options default empty.
             canonicalize_settings(eval, &outputs, "OUTPUTS")?;
             canonicalize_settings(eval, &inputs, "INPUTS")?;
+            let canonical_inputs = canonical_settings(eval, &inputs)?;
+            let canonical_outputs = canonical_settings(eval, &outputs)?;
             Ok(eval.heap().alloc(TransitionGen {
                 implementation,
                 settings: Value::new_none(),
@@ -1107,6 +1191,10 @@ mod declaration_globals {
                 inputs,
                 outputs,
                 definition: definition.to_string(),
+                canonical_inputs,
+                canonical_outputs,
+                location: caller_lparen_location(eval),
+                id: next_transition_id(),
             }))
         }
 
@@ -1158,6 +1246,7 @@ mod declaration_globals {
             validate_setting_keys(eval, &outputs, "output", true)?;
             canonicalize_settings(eval, &outputs, "OUTPUTS")?;
             let settings = eval.heap().alloc(AllocDict(entries));
+            let canonical_outputs = canonical_settings(eval, &outputs)?;
             Ok(eval.heap().alloc(TransitionGen {
                 implementation: Value::new_none(),
                 settings,
@@ -1165,6 +1254,10 @@ mod declaration_globals {
                 inputs: Vec::new(),
                 outputs,
                 definition: definition.to_string(),
+                canonical_inputs: Vec::new(),
+                canonical_outputs,
+                location: caller_lparen_location(eval),
+                id: next_transition_id(),
             }))
         }
 

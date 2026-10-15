@@ -1,0 +1,17 @@
+load(
+    "@bazel_skylib//rules:common_settings.bzl",
+    "bool_flag",
+    "string_flag",
+    "string_list_flag",
+)
+
+# Shaped after rules_go 0.63.0 go/config/BUILD.bazel.
+bool_flag(name = "static", build_setting_default = False, scope = "universal", visibility = ["//visibility:public"])
+bool_flag(name = "race", build_setting_default = False, visibility = ["//visibility:public"])
+bool_flag(name = "msan", build_setting_default = False, visibility = ["//visibility:public"])
+bool_flag(name = "pure", build_setting_default = False, scope = "universal", visibility = ["//visibility:public"])
+bool_flag(name = "debug", build_setting_default = False, visibility = ["//visibility:public"])
+string_flag(name = "linkmode", build_setting_default = "auto", visibility = ["//visibility:public"])
+string_list_flag(name = "tags", build_setting_default = [], visibility = ["//visibility:public"])
+label_flag(name = "pgoprofile", build_setting_default = ":empty", visibility = ["//visibility:public"])
+filegroup(name = "empty", visibility = ["//visibility:public"])

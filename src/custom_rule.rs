@@ -210,11 +210,17 @@ impl AttrDeclaration {
     /// Features a target exercises at analysis when this attribute has a value.
     pub(crate) fn unanalyzed(&self, name: &str) -> Vec<String> {
         let mut features = Vec::new();
-        // The exec transition is modelled (crate::engine, docs/CONFIGURATION.md);
-        // Starlark transitions and config.none() are not.
+        // The exec transition and Starlark `transition()`s are modelled
+        // (crate::engine, crate::starlark_transitions, docs/CONFIGURATION.md);
+        // config.none() and analysis_test_transition are not.
         if !matches!(
             self.cfg,
-            crate::rule_declarations::Cfg::Target | crate::rule_declarations::Cfg::Exec(_)
+            crate::rule_declarations::Cfg::Target
+                | crate::rule_declarations::Cfg::Exec(_)
+                | crate::rule_declarations::Cfg::Starlark {
+                    analysis_test: false,
+                    ..
+                }
         ) {
             features.push(format!(
                 "attribute '{name}' cfg={} (configuration transition)",
@@ -408,6 +414,10 @@ pub struct CustomInvocation {
     /// Strong frozen roots for direct declarations, including factory closures.
     pub subrules: Vec<OwnedFrozenValue>,
     pub top_level_functions: Vec<OwnedFrozenValue>,
+    /// Retained Starlark `transition()` objects: `""` for the rule's `cfg`
+    /// (an incoming rule transition), else the attribute name (an outgoing
+    /// attribute transition); crate::starlark_transitions.
+    pub transitions: BTreeMap<String, OwnedFrozenValue>,
     pub attrs: BTreeMap<String, AttrValue>,
     pub schema: BTreeMap<String, AttrSpec>,
     pub declaration: InvocationDeclaration,
@@ -1027,9 +1037,12 @@ mod values {
     #[starlark_value(type = "Attribute")]
     impl<'v> StarlarkValue<'v> for Descriptor {}
 
-    /// An `Attribute` whose `default` is a Starlark function
-    /// (StarlarkComputedDefaultTemplate, packages/Attribute.java:1370-1513):
-    /// the same owned schema plus the traced, retained function.
+    /// An `Attribute` that retains Starlark values: a `default` that is a
+    /// Starlark function (StarlarkComputedDefaultTemplate,
+    /// packages/Attribute.java:1370-1513) and/or a `cfg` that is a Starlark
+    /// `transition()` (StarlarkAttributeTransitionProvider,
+    /// analysis/starlark/StarlarkAttributeTransitionProvider.java:52-75):
+    /// the same owned schema plus the traced values (`None` when absent).
     #[derive(
         Debug,
         ProvidesStaticType,
@@ -1043,6 +1056,7 @@ mod values {
     #[repr(C)]
     pub(super) struct ComputedDescriptorGen<V> {
         pub function: V,
+        pub transition: V,
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
         pub spec: AttrSpec,
@@ -1079,6 +1093,13 @@ mod values {
         pub outputs_function: Vec<V>,
         /// Computed-default functions, parallel to `computed`.
         pub computed_functions: Vec<V>,
+        /// Starlark `transition()` objects of the rule (`cfg`, keyed "") and
+        /// of its attributes (keyed by attribute name), parallel to
+        /// `transition_keys` (crate::starlark_transitions).
+        pub transitions: Vec<V>,
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        pub transition_keys: Vec<String>,
         /// Computed-default attributes (Starlark name) with the function's
         /// parameter names (StarlarkCallbackHelper.getParameterNames), in
         /// rule-class attribute order.
@@ -1514,6 +1535,11 @@ mod values {
                 visibility,
                 self.implementation.to_value(),
                 self.subrules.iter().map(|value| value.to_value()).collect(),
+                self.transition_keys
+                    .iter()
+                    .cloned()
+                    .zip(self.transitions.iter().map(|value| value.to_value()))
+                    .collect(),
                 attrs,
                 self.schema.clone(),
                 self.build_setting,
@@ -1559,7 +1585,9 @@ pub(crate) struct RuleDeclaration {
     /// outermost frame; StarlarkRuleClassFunctions.java:626-631, 1056-1062),
     /// which differs from [`Self::definition_label`] (the innermost frame)
     /// when a helper in another `.bzl` calls rule(). The owner location of
-    /// implicit dependencies (CommonPrerequisiteValidator.java:133-143).
+    /// implicit dependencies (CommonPrerequisiteValidator.java:133-143) and
+    /// the DEFINITION location of the function-transition allowlist check
+    /// (StarlarkRuleClassFunctions.createRule, :714-722).
     pub definition_environment_label: String,
     pub executable: bool,
     /// `test=True` or `analysis_test=True` (createRule: "analysis_test=true implies test=true").
@@ -1630,7 +1658,11 @@ impl RuleDeclaration {
                 self.exec_groups.join(", ")
             ));
         }
-        if !self.cfg.is_target() {
+        // A Starlark rule transition is modelled (crate::starlark_transitions);
+        // config.none() is not.
+        if !self.cfg.is_target()
+            && !matches!(self.cfg, crate::rule_declarations::Cfg::Starlark { .. })
+        {
             transition.push(format!(
                 "rule(cfg={}) (configuration transition)",
                 self.cfg.describe()
@@ -2551,7 +2583,16 @@ pub(crate) fn attribute_spec_ref(value: Value<'_>) -> Option<&AttrSpec> {
 
 /// The retained function of a computed-default descriptor.
 fn computed_default_function(value: Value<'_>) -> Option<Value<'_>> {
-    ComputedDescriptor::from_value(value).map(|value| value.function.to_value())
+    ComputedDescriptor::from_value(value)
+        .map(|value| value.function.to_value())
+        .filter(|function| !function.is_none())
+}
+
+/// The retained Starlark `transition()` of an attribute descriptor.
+fn attribute_transition(value: Value<'_>) -> Option<Value<'_>> {
+    ComputedDescriptor::from_value(value)
+        .map(|value| value.transition.to_value())
+        .filter(|transition| !transition.is_none())
 }
 
 /// The attribute name in `in A attribute of ...` errors:
@@ -2942,12 +2983,19 @@ fn dependency_descriptor<'v>(
     crate::repository_budget::HostBudget::default()
         .spec(&descriptor.0)
         .map_err(anyhow::Error::msg)?;
-    Ok(match computed {
-        Some(function) => eval.heap().alloc(ComputedDescriptorGen {
-            function,
+    let transition = if crate::rule_declarations::is_starlark_transition(options.cfg) {
+        Some(options.cfg)
+    } else {
+        None
+    };
+    Ok(if computed.is_some() || transition.is_some() {
+        eval.heap().alloc(ComputedDescriptorGen {
+            function: computed.unwrap_or_else(Value::new_none),
+            transition: transition.unwrap_or_else(Value::new_none),
             spec: descriptor.0,
-        }),
-        None => eval.heap().alloc(descriptor),
+        })
+    } else {
+        eval.heap().alloc(descriptor)
     })
 }
 
@@ -3466,6 +3514,8 @@ fn define_rule<'v>(
     let mut attr_order = Vec::new();
     let mut computed = Vec::new();
     let mut computed_functions = Vec::new();
+    let mut transitions = Vec::new();
+    let mut transition_keys = Vec::new();
     let mut budget = crate::repository_budget::HostBudget::default();
     budget.node().map_err(anyhow::Error::msg)?;
     let subrules = crate::subrule::snapshot(args.subrules, &mut budget)?;
@@ -3489,12 +3539,13 @@ fn define_rule<'v>(
                 bail!("invalid attribute name {name:?}");
             }
             let function = computed_default_function(spec);
+            let transition = attribute_transition(spec);
             let spec = attribute_spec_ref(spec)
                 .ok_or_else(|| anyhow!("attribute {name:?} must be an attr descriptor"))?;
             // AttributeValueSource.LATE_BOUND/COMPUTED_DEFAULT require the
             // Starlark '_' prefix (packages/AttributeValueSource.java:47-58).
             check_value_source_name(name, spec)?;
-            descriptors.push((name, spec, function));
+            descriptors.push((name, spec, function, transition));
         }
         let builtins =
             crate::native_rules::starlark_builtins(crate::native_rules::StarlarkRuleKind {
@@ -3502,7 +3553,7 @@ fn define_rule<'v>(
                 executable,
                 dependency_resolution: args.dependency_resolution_rule,
             });
-        for (name, spec, function) in descriptors {
+        for (name, spec, function, transition) in descriptors {
             // "configurable" may only be user-set for symbolic macros
             // (StarlarkRuleClassFunctions.java:964-970), named natively.
             if spec.declaration.configurable_set {
@@ -3538,6 +3589,10 @@ fn define_rule<'v>(
                 }
                 computed.push((name.to_owned(), parameters));
                 computed_functions.push(function);
+            }
+            if let Some(transition) = transition {
+                transition_keys.push(name.to_owned());
+                transitions.push(transition);
             }
             schema.insert(name.to_owned(), spec.clone());
             attr_order.push(name.to_owned());
@@ -3580,6 +3635,10 @@ fn define_rule<'v>(
         bail!("Build setting rules cannot use the `cfg` param to apply transitions to themselves.");
     }
     let rule_cfg = crate::rule_declarations::rule_cfg(cfg)?;
+    if crate::rule_declarations::is_starlark_transition(cfg) {
+        transition_keys.push(String::new());
+        transitions.push(cfg);
+    }
     if args.dependency_resolution_rule {
         // StarlarkRuleClassFunctions.java:1133-1146.
         if !subrules.is_empty() {
@@ -3623,6 +3682,24 @@ fn define_rule<'v>(
             attr_order.push(name.to_owned());
         }
     }
+    // checkAndAddAllowlistIfNecessary for the function transition allowlist
+    // (StarlarkRuleClassFunctions.java:1121-1132, 1173-1179, 1195-1243):
+    // a declared `_allowlist_function_transition` must be a label attribute
+    // whose default names `function_transition_allowlist` in package
+    // `tools/allowlists/function_transition_allowlist` (any repository);
+    // a rule with a Starlark transition gets it added when undeclared; a
+    // rule without one must not declare it.
+    let environment = eval
+        .extra
+        .and_then(|extra| extra.downcast_ref::<crate::loading::ExtensionContext>())
+        .map_or_else(|| definition.clone(), |context| context.label.clone());
+    function_transition_allowlist(
+        &mut schema,
+        &mut attr_order,
+        !transitions.is_empty(),
+        &environment,
+        test,
+    )?;
     // Subrule attributes are lifted to the rule class as if declared there,
     // after its own attributes (StarlarkRuleFunction.export,
     // StarlarkRuleClassFunctions.java:1940-1964), and their toolchain types
@@ -3640,16 +3717,9 @@ fn define_rule<'v>(
         }
     }
     let toolchains = toolchains_with_subrules;
-    let definition_environment_label = eval
-        .extra
-        .and_then(|extra| extra.downcast_ref::<crate::loading::ExtensionContext>())
-        .map_or_else(
-            || definition.to_string(),
-            |context| context.label.to_string(),
-        );
     let declaration = RuleDeclaration {
         definition_label: definition.to_string(),
-        definition_environment_label,
+        definition_environment_label: environment.to_string(),
         executable,
         test,
         analysis_test: args.analysis_test,
@@ -3676,6 +3746,8 @@ fn define_rule<'v>(
         initializer,
         outputs_function,
         computed_functions,
+        transitions,
+        transition_keys,
         computed,
         schema,
         attr_order,
@@ -3683,6 +3755,71 @@ fn define_rule<'v>(
         declaration,
         exported: OnceLock::new(),
     }))
+}
+
+/// The Starlark name of FunctionSplitTransitionAllowlist.ATTRIBUTE_NAME
+/// (`$allowlist_function_transition`, packages/FunctionSplitTransitionAllowlist.java:20-25).
+pub(crate) const FUNCTION_TRANSITION_ALLOWLIST_ATTRIBUTE: &str = "_allowlist_function_transition";
+
+/// `env.getToolsLabel(FunctionSplitTransitionAllowlist.LABEL_STR)`: the
+/// default allowlist, `@bazel_tools//tools/allowlists/function_transition_allowlist`
+/// (a `package_group` with `packages = ["public"]`,
+/// tools/allowlists/function_transition_allowlist/BUILD.tools).
+pub(crate) const FUNCTION_TRANSITION_ALLOWLIST_DEFAULT: &str =
+    "@@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist";
+
+/// checkAndAddAllowlistIfNecessary (StarlarkRuleClassFunctions.java:1195-1243)
+/// for the Starlark function transition allowlist (:1121-1132): a declared
+/// `_allowlist_function_transition` must be a label attribute with a default
+/// whose package and name are those of FunctionSplitTransitionAllowlist.LABEL;
+/// a rule using a Starlark transition gets the attribute (cfg = exec, default
+/// the `@bazel_tools` allowlist, :1173-1179) when it is not declared, and its
+/// targets are checked (crate::engine); a declared allowlist without a
+/// transition is `Unused function-based split transition allowlist: BZL TYPE`.
+fn function_transition_allowlist(
+    schema: &mut BTreeMap<String, AttrSpec>,
+    attr_order: &mut Vec<String>,
+    uses_transitions: bool,
+    definition: &crate::label::Label,
+    test: bool,
+) -> anyhow::Result<()> {
+    let name = FUNCTION_TRANSITION_ALLOWLIST_ATTRIBUTE;
+    let declared = if let Some(spec) = schema.get(name) {
+        if !matches!(spec.kind, AttrKind::Label) {
+            bail!("{name} attribute must be a label type");
+        }
+        let AttrValue::Label(Some(default)) = &spec.default else {
+            bail!("{name} attribute must have a default value");
+        };
+        let default = crate::label::Label::parse_canonical(default).map_err(anyhow::Error::msg)?;
+        if default.package != "tools/allowlists/function_transition_allowlist"
+            || default.name != "function_transition_allowlist"
+        {
+            bail!(
+                "{name} attribute ({default}) does not have the expected value //tools/allowlists/function_transition_allowlist:function_transition_allowlist"
+            );
+        }
+        true
+    } else {
+        false
+    };
+    if uses_transitions {
+        if !declared {
+            let mut spec = descriptor(AttrKind::Label, None, false, false, false)?.0;
+            spec.default = AttrValue::Label(Some(FUNCTION_TRANSITION_ALLOWLIST_DEFAULT.to_owned()));
+            spec.declaration.explicit_default = true;
+            spec.declaration.cfg = crate::rule_declarations::Cfg::Exec(None);
+            schema.insert(name.to_owned(), spec);
+            attr_order.push(name.to_owned());
+        }
+    } else if declared {
+        // RuleClass.Builder.getType: the RuleClassType enum name.
+        bail!(
+            "Unused function-based split transition allowlist: {definition} {}",
+            if test { "TEST" } else { "NORMAL" }
+        );
+    }
+    Ok(())
 }
 
 /// StarlarkFunction.getParameterNames (StarlarkCallbackHelper.java:58-60):

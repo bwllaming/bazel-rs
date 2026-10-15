@@ -120,6 +120,37 @@ pub(crate) fn metadata_dependency_key(label: &str) -> String {
     format!("{label} (noconfig)")
 }
 
+/// The key of a dependency through attribute `attribute`'s Starlark
+/// transition: `LABEL (transition ATTRIBUTE)` (crate::engine; the
+/// dependency is configured in that attribute's transitioned configuration).
+pub(crate) fn transition_dependency_key(label: &str, attribute: &str) -> String {
+    format!("{label} (transition {attribute})")
+}
+
+/// The key of `label` in the dependency map through attribute `name`: its
+/// edge configuration (target, exec or the attribute's Starlark transition).
+fn attribute_dependency_key(label: &str, name: &str, spec: &AttrSpec) -> String {
+    if starlark_transition(spec) {
+        transition_dependency_key(label, name)
+    } else {
+        dependency_key(
+            label,
+            matches!(spec.declaration.cfg, crate::rule_declarations::Cfg::Exec(_)),
+        )
+    }
+}
+
+/// Whether `spec`'s `cfg` is a Starlark (non analysis-test) transition.
+fn starlark_transition(spec: &AttrSpec) -> bool {
+    matches!(
+        spec.declaration.cfg,
+        crate::rule_declarations::Cfg::Starlark {
+            analysis_test: false,
+            ..
+        }
+    )
+}
+
 fn dependency<'a>(
     label: &str,
     name: &str,
@@ -127,9 +158,8 @@ fn dependency<'a>(
     dependencies: &'a BTreeMap<String, DependencyTarget>,
     prefix: &str,
 ) -> anyhow::Result<&'a DependencyTarget> {
-    let exec = matches!(spec.declaration.cfg, crate::rule_declarations::Cfg::Exec(_));
     let target = dependencies
-        .get(&dependency_key(label, exec))
+        .get(&attribute_dependency_key(label, name, spec))
         .ok_or_else(|| anyhow!("attribute {name}: dependency {label} was not resolved"))?;
     ensure!(
         !target.is_source || spec.allow_files || spec.allow_single_file,
@@ -377,17 +407,16 @@ fn collected_runfiles(
             (Some(spec), Some(AttrValue::Labels(labels)))
                 if spec.kind == crate::custom_rule::AttrKind::LabelList =>
             {
-                // The edge's configuration (crate::engine, dependency_key).
-                let exec = matches!(spec.declaration.cfg, crate::rule_declarations::Cfg::Exec(_));
+                // The edge's configuration (crate::engine; exec or Starlark
+                // transition keys, attribute_dependency_key).
                 labels
                     .iter()
                     .map(|label| {
-                        let target =
-                            dependencies
-                                .get(&dependency_key(label, exec))
-                                .ok_or_else(|| {
-                                    anyhow!("attribute {name}: dependency {label} was not resolved")
-                                })?;
+                        let target = dependencies
+                            .get(&attribute_dependency_key(label, name, spec))
+                            .ok_or_else(|| {
+                                anyhow!("attribute {name}: dependency {label} was not resolved")
+                            })?;
                         Ok(Prerequisite {
                             files: &target.files,
                             runfiles: &target.runfiles,
@@ -607,11 +636,19 @@ fn ctx_attribute_structs<'v>(
                     };
                     executables.insert(name.clone(), executable);
                 }
-                value
+                let dependency = value
                     .as_deref()
                     .zip(target)
-                    .map(|(requested, target)| alloc_dependency(heap, requested, target))
-                    .unwrap_or_else(Value::new_none)
+                    .map(|(requested, target)| alloc_dependency(heap, requested, target));
+                // A label attribute with a Starlark (split) transition is a
+                // list of its prerequisites
+                // (StarlarkAttributesCollection.convertAttributeValue,
+                // analysis/starlark/StarlarkAttributesCollection.java:351-357).
+                if starlark_transition(spec) {
+                    heap.alloc(dependency.into_iter().collect::<Vec<_>>())
+                } else {
+                    dependency.unwrap_or_else(Value::new_none)
+                }
             }
             AttrValue::Labels(labels) => {
                 let targets = labels

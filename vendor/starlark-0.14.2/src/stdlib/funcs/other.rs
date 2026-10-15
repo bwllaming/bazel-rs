@@ -15,8 +15,8 @@
  * limitations under the License.
  */
 
-// Modified for native Bazel 9.3 debugPrint (print/fail) compatibility; see vendor
-// provenance.
+// Modified for native Bazel 9.3 debugPrint (print/fail) compatibility and
+// getattr unknown-attribute messages; see vendor provenance.
 
 //! A module with the standard function and constants that are by default in all
 //! dialect of Starlark
@@ -203,7 +203,14 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
             Some(v) => Ok(v),
             None => match default {
                 Some(x) => Ok(x),
-                None => ValueError::unsupported_owned(a.get_type(), &format!(".{attr}"), None),
+                // Modified: a value-specific message
+                // (StarlarkValue::unknown_attribute_message), as Bazel's
+                // Starlark.getattr uses Structure.getErrorMessageForUnknownField
+                // (net/starlark/java/eval/Starlark.java:1002-1008).
+                None => match a.get_ref().unknown_attribute_message(attr) {
+                    Some(message) => Err(starlark::Error::new_value(anyhow::anyhow!(message))),
+                    None => ValueError::unsupported_owned(a.get_type(), &format!(".{attr}"), None),
+                },
             },
         }
     }

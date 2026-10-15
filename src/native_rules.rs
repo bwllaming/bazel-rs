@@ -297,6 +297,16 @@ pub struct StarlarkBuiltins {
 }
 
 impl StarlarkBuiltins {
+    /// Every built-in attribute in declaration order: the user-settable
+    /// ones with their definition, and the private (`$x`/`:x`) ones by
+    /// native name.
+    pub fn entries(&self) -> impl Iterator<Item = (&str, Option<&NativeAttr>)> {
+        self.entries.iter().map(|entry| match entry {
+            Entry::Attr(attribute) => (attribute.name, Some(attribute)),
+            Entry::Private(name) => (*name, None),
+        })
+    }
+
     /// User-settable built-in attributes, in declaration order.
     pub fn attrs(&self) -> impl Iterator<Item = &NativeAttr> {
         self.entries.iter().filter_map(|entry| match entry {

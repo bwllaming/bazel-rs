@@ -144,18 +144,21 @@ cfg="target")` are analyzed since N23a (docs/RUNFILES.md).
 A target fails analysis with the message above if it uses any of these:
 
 * rule level: `analysis_test=True`, `_skylark_testable=True`, `output_to_genfiles=True`,
-  `dependency_resolution_rule=True`, non-empty `exec_groups`, `cfg` other
-  than none/target, dict `outputs`
+  `dependency_resolution_rule=True`, non-empty `exec_groups`, `cfg =
+  config.none()` (a Starlark `transition()` is applied since N18c,
+  docs/CONFIGURATION.md), dict `outputs`
   (the implicit outputs exist for loading, but not as `ctx.outputs`);
 * attribute level, when the attribute's resolved value (explicit, default or
   chosen `select()` branch, docs/CONFIGURATION.md) is non-empty:
-  `cfg` other than target and exec (`config.none()`, Starlark transitions),
+  `cfg` other than target, exec and a Starlark `transition()` (N18c:
+  `config.none()`, `analysis_test_transition`),
   non-empty `aspects`, extension-list `allow_files`/`allow_single_file`,
   `allow_rules`, non-empty `flags`, `skip_validations=True`, any
   `label_keyed_string_dict` value;
 * always: a late-bound (`configuration_field`) default whose field is not
   resolved natively (resolved fields are ordinary values, docs/SUBRULES.md);
-* `aspect()` objects are never applied; `transition()` implementations,
+* `aspect()` objects are never applied; `transition()` implementations are
+  called at analysis (N18c, docs/CONFIGURATION.md);
   `attr_aspects`/`toolchains_aspects` functions and `propagation_predicate` are
   never called; `OutputGroupInfo(...)` and `AnalysisTestResultInfo(...)` fail
   when called; `analysis_test_transition()` objects are retained, restricted

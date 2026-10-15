@@ -505,6 +505,12 @@ pub struct NativeOptions {
     /// Omitted from the identity when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub platform_suffix: Option<&'static str>,
+    /// CoreOptions.cpu (`--cpu`, CoreOptions.java:279-292; AutoCpuConverter
+    /// gives the host CPU for the default ""): `None` is the host CPU, a
+    /// value only a Starlark transition can set natively (the command-line
+    /// option stays unsupported). Omitted from the identity when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu: Option<String>,
     /// `--java_runtime_version`, `--java_language_version`,
     /// `--tool_java_runtime_version`, `--tool_java_language_version`
     /// (JavaOptions.java:373-403). Serialized separately
@@ -560,6 +566,22 @@ impl JavaVersions {
     }
 }
 
+/// AutoCpuConverter.convert("") on Linux (analysis/config/AutoCpuConverter.java:30-62):
+/// the default `--cpu` of this host.
+pub fn host_cpu() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86" => "piii",
+        "x86_64" => "k8",
+        "powerpc" | "powerpc64" => "ppc",
+        "arm" => "arm",
+        "aarch64" => "aarch64",
+        "s390x" => "s390x",
+        "mips64" => "mips64",
+        "riscv64" => "riscv64",
+        _ => "unknown",
+    }
+}
+
 /// The default `--host_compilation_mode` (CoreOptions.java:406-417).
 pub const DEFAULT_HOST_COMPILATION_MODE: &str = "opt";
 
@@ -601,6 +623,7 @@ impl Default for NativeOptions {
             platform_suffix: None,
             java: JavaVersions::default(),
             no_config: false,
+            cpu: None,
         }
     }
 }

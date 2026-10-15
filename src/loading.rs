@@ -58,6 +58,7 @@ pub(crate) fn repositories(eval: &Evaluator<'_, '_, '_>) -> Option<Arc<Repositor
         .or_else(|| crate::analysis::repository_context(eval))
         .or_else(|| crate::repository_ctx::repository_context(eval))
         .or_else(|| crate::extension_ctx::repository_context(eval))
+        .or_else(|| crate::starlark_transitions::repository_context(eval))
 }
 
 pub fn resolve_label(eval: &Evaluator<'_, '_, '_>, text: &str) -> anyhow::Result<Label> {

@@ -1,0 +1,59 @@
+//app:bin
+//app:bin
+//app:bin
+//app:bin
+//app:bin
+//app:bin
+//app:bin
+//app:lib
+//app:lib
+//app:lib
+//app:lib
+coverdata race=False pure=False linkmode=auto tags=[] request_nogo=False bootstrap_nogo=False original_race=""
+  srcs=["go/coverdata.go"]
+go_context_data race=False pure=False linkmode=auto tags=[] request_nogo=True bootstrap_nogo=False original_race=""
+  coverdata=["bazel-out/rust-fastbuild-ST-#/bin/go/coverdata.txt"]
+data race=False pure=False linkmode=auto tags=[] request_nogo=True bootstrap_nogo=False original_race=""
+  srcs=["app/data.go"]
+  data=[]
+  embedsrcs=[]
+  cdeps=[]
+  deps=[]
+  nogo=["bazel-out/linux-opt-exec-ST-#/bin/go/coverdata.txt", "bazel-out/linux-opt-exec-ST-#/bin/go/go_context_data.txt", "bazel-out/linux-opt-exec-ST-#/bin/go/analyzer.txt", "bazel-out/linux-opt-exec-ST-#/bin/go/nogo_actual.txt"]
+  context=["bazel-out/rust-fastbuild-ST-#/bin/go/coverdata.txt", "bazel-out/rust-fastbuild/bin/go/go_context_data.txt"]
+coverdata race=True pure=False linkmode=auto tags=["a", "b"] request_nogo=False bootstrap_nogo=False original_race="false"
+  srcs=["go/coverdata.go"]
+go_context_data race=True pure=False linkmode=auto tags=["a", "b"] request_nogo=True bootstrap_nogo=False original_race="false"
+  coverdata=["bazel-out/rust-fastbuild-ST-#/bin/go/coverdata.txt"]
+lib race=True pure=False linkmode=auto tags=["a", "b"] request_nogo=True bootstrap_nogo=False original_race="false"
+  srcs=["app/lib.go"]
+  data=["bazel-out/rust-fastbuild-ST-#/bin/go/coverdata.txt", "bazel-out/rust-fastbuild/bin/go/go_context_data.txt", "bazel-out/rust-fastbuild/bin/app/data.txt"]
+  embedsrcs=["app/embed.txt"]
+  cdeps=["app/c.h"]
+  deps=[]
+  nogo=["bazel-out/linux-opt-exec-ST-#/bin/go/coverdata.txt", "bazel-out/linux-opt-exec-ST-#/bin/go/go_context_data.txt", "bazel-out/linux-opt-exec-ST-#/bin/go/analyzer.txt", "bazel-out/linux-opt-exec-ST-#/bin/go/nogo_actual.txt"]
+  context=["bazel-out/rust-fastbuild-ST-#/bin/go/coverdata.txt", "bazel-out/rust-fastbuild-ST-#/bin/go/go_context_data.txt"]
+bin race=True pure=False linkmode=auto tags=["a", "b"] request_nogo=True bootstrap_nogo=False original_race="false"
+  srcs=["app/main.go"]
+  data=["bazel-out/rust-fastbuild-ST-#/bin/go/coverdata.txt", "bazel-out/rust-fastbuild/bin/go/go_context_data.txt", "bazel-out/rust-fastbuild/bin/app/data.txt"]
+  deps=["bazel-out/rust-fastbuild-ST-#/bin/go/coverdata.txt", "bazel-out/rust-fastbuild/bin/go/go_context_data.txt", "bazel-out/rust-fastbuild/bin/app/data.txt", "bazel-out/rust-fastbuild-ST-#/bin/go/coverdata.txt", "bazel-out/rust-fastbuild-ST-#/bin/go/go_context_data.txt", "bazel-out/rust-fastbuild-ST-#/bin/app/lib.txt"]
+coverdata race=False pure=False linkmode=auto tags=[] request_nogo=False bootstrap_nogo=False original_race=""
+  srcs=["go/coverdata.go"]
+go_context_data race=False pure=False linkmode=auto tags=[] request_nogo=True bootstrap_nogo=False original_race=""
+  coverdata=["bazel-out/rust-fastbuild-ST-#/bin/go/coverdata.txt"]
+data race=False pure=False linkmode=auto tags=[] request_nogo=True bootstrap_nogo=False original_race=""
+  srcs=["app/data.go"]
+  data=[]
+  embedsrcs=[]
+  cdeps=[]
+  deps=[]
+  nogo=["bazel-out/linux-opt-exec-ST-#/bin/go/coverdata.txt", "bazel-out/linux-opt-exec-ST-#/bin/go/go_context_data.txt", "bazel-out/linux-opt-exec-ST-#/bin/go/analyzer.txt", "bazel-out/linux-opt-exec-ST-#/bin/go/nogo_actual.txt"]
+  context=["bazel-out/rust-fastbuild-ST-#/bin/go/coverdata.txt", "bazel-out/rust-fastbuild/bin/go/go_context_data.txt"]
+lib race=False pure=False linkmode=auto tags=[] request_nogo=True bootstrap_nogo=False original_race=""
+  srcs=["app/lib.go"]
+  data=["bazel-out/rust-fastbuild-ST-#/bin/go/coverdata.txt", "bazel-out/rust-fastbuild/bin/go/go_context_data.txt", "bazel-out/rust-fastbuild/bin/app/data.txt"]
+  embedsrcs=["app/embed.txt"]
+  cdeps=["app/c.h"]
+  deps=[]
+  nogo=["bazel-out/linux-opt-exec-ST-#/bin/go/coverdata.txt", "bazel-out/linux-opt-exec-ST-#/bin/go/go_context_data.txt", "bazel-out/linux-opt-exec-ST-#/bin/go/analyzer.txt", "bazel-out/linux-opt-exec-ST-#/bin/go/nogo_actual.txt"]
+  context=["bazel-out/rust-fastbuild-ST-#/bin/go/coverdata.txt", "bazel-out/rust-fastbuild/bin/go/go_context_data.txt"]

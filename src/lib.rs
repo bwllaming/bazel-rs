@@ -70,6 +70,7 @@ pub mod runfiles;
 pub mod scheduler;
 pub mod source_links;
 pub mod starlark_options;
+mod starlark_transitions;
 pub mod starlark_types;
 mod subrule;
 mod subrule_fragments;

@@ -143,15 +143,23 @@ fn exercised_declarations_fail_explicitly_at_analysis() {
                 "no such target '//rules:linux': target 'linux' not declared in package 'rules' defined by ",
             ][..],
         ),
-        // A rule transition fails first: it decides the configuration the
-        // rest is analyzed in (docs/CONFIGURATION.md).
+        // A rule transition is applied first: it decides the configuration
+        // the rest is analyzed in (docs/CONFIGURATION.md, N18c). Both match
+        // the genuine Bazel 9.3 capture (reference_receipt.json: the
+        // transition's settings loading error at the rule, 14:8, and the
+        // invalid native output at the transition() call, 65:39).
         (
             "//:go_default_test",
-            &["rule(cfg=transition from //rules:go_like.bzl) (configuration transition)"][..],
+            &[
+                "BUILD.bazel:14:8: com.google.devtools.build.lib.packages.NoSuchTargetException: no such target '//rules:pure': target 'pure' not declared in package 'rules' defined by ",
+            ][..],
         ),
         (
             "//:pybin",
-            &["rule(cfg=transition from //rules:proto_like.bzl) (configuration transition)"][..],
+            &[
+                "rules/proto_like.bzl:65:39: transition outputs [//command_line_option:python_version] do not correspond to valid settings\n",
+                "BUILD.bazel:30:15: Errors encountered while applying Starlark transition",
+            ][..],
         ),
         (
             "//:ccbin",
