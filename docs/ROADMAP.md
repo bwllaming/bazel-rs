@@ -55,7 +55,12 @@ its receipt is recorded in `artifacts/n20-n21-promotion.json` at promotion. With
 attrs/toolchains/late-bound defaults (N24) that file loads and the build stops
 later, while expanding registered toolchains: the `@build_stack_rules_proto`
 http_archive needs `repository_ctx.patch()` (being added in N26); its receipt is
-recorded in `artifacts/n18-n22-n24-promotion.json` at promotion. This
+recorded in `artifacts/n18-n22-n24-promotion.json` at promotion. With runfiles/executable rules (N23a) and repository patches, lexer and
+string semantics (N26) that archive is fetched and patched, and the build
+stops later while expanding the rules_java toolchain registrations
+(`java_common.google_legacy_api_enabled`, an analysis-time Java API not yet
+implemented natively); its receipt is recorded in
+`artifacts/n23a-n26-promotion.json` at promotion. This
 is a query and loading result only: application build/test and performance
 remain unproven.
 
