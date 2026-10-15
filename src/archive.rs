@@ -1,13 +1,22 @@
 //! Native extraction into caller-owned, private staging directories.
 //!
-//! Links, special files, non-UTF-8 names, and semantic tar extensions are
-//! deliberately unsupported. Only strictly framed global PAX comments are
-//! consumed as inert metadata; local PAX and GNU extensions remain rejected.
-//! File permissions are normalized to 0755 when any executable bit is set, or
-//! 0644 otherwise; directories use 0755. Ownership and privileged bits are not
-//! preserved. The caller must remove staging on failure and exclude concurrent
-//! writers: metadata checks are not a defense against a hostile concurrent rename.
+//! Symbolic links (tar type `2`, zip `S_IFLNK` entries) and tar hard links
+//! (type `1`) follow Bazel 9.3's decompressors (docs/ARCHIVE_SYMLINKS.md):
+//! link targets are normalized and strip-prefixed like
+//! `StripPrefixedPath.maybeDeprefixSymlink`, hard links are real hard links
+//! created while streaming, and symbolic links are created only after every
+//! other entry has been written. Special files, non-UTF-8 names, and semantic
+//! tar extensions are deliberately unsupported. Only strictly framed global PAX
+//! comments are consumed as inert metadata; local PAX and GNU extensions remain
+//! rejected. File permissions are normalized to 0755 when any executable bit is
+//! set, or 0644 otherwise; directories use 0755. Ownership and privileged bits
+//! are not preserved. Extraction never writes, links or creates a directory
+//! through a symlink and never creates a hard link to a path outside the
+//! extraction root. The caller must remove staging on failure and exclude
+//! concurrent writers: metadata checks are not a defense against a hostile
+//! concurrent rename.
 
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, Cursor, Read};
 use std::path::{Path, PathBuf};
@@ -15,6 +24,9 @@ use std::path::{Path, PathBuf};
 const MAX_EXPANDED: u64 = 1024 * 1024 * 1024;
 const MAX_ENTRIES: usize = 100_000;
 const MAX_PAX_RECORDS: usize = 100_000;
+const MAX_LINK_TARGET: usize = 4096;
+// ZipDecompressor.MAX_PATH_LENGTH: Bazel requires `entry.getSize() < 256`.
+const MAX_ZIP_LINK_TARGET: u64 = 256;
 
 /// Extract a verified archive without invoking external programs.
 ///
@@ -25,6 +37,18 @@ pub fn extract(
     archive_type: &str,
     strip_prefix: &str,
     destination: &Path,
+) -> Result<(), String> {
+    extract_named(bytes, archive_type, strip_prefix, destination, "archive")
+}
+
+/// [`extract`] with the archive's display name, used where Bazel's own
+/// diagnostics name the archive (the zip link-escape error).
+pub fn extract_named(
+    bytes: &[u8],
+    archive_type: &str,
+    strip_prefix: &str,
+    destination: &Path,
+    archive_name: &str,
 ) -> Result<(), String> {
     let prefix = prefix_components(strip_prefix)?;
     check_directory(destination)?;
@@ -41,6 +65,8 @@ pub fn extract(
         matched: strip_prefix.is_empty(),
         entries: 0,
         expanded: 0,
+        archive: archive_name,
+        symlinks: BTreeMap::new(),
     };
     match archive_type {
         "tar" => extract_tar(Cursor::new(bytes), &mut state)?,
@@ -55,7 +81,43 @@ pub fn extract(
             "archive strip_prefix {strip_prefix:?} did not match"
         ));
     }
-    Ok(())
+    state.create_symlinks(archive_type != "zip")
+}
+
+/// `PathFragment.create` normalization (UnixOsPathPolicy.normalize and
+/// OsPathPolicy.removeRelativePaths): empty and `.` segments vanish, `..`
+/// removes a preceding non-`..` segment, is dropped at an absolute root and is
+/// otherwise kept, so relative paths may still start with `..`.
+fn normalize(path: &str) -> (bool, Vec<&str>) {
+    let absolute = path.starts_with('/');
+    let mut parts: Vec<&str> = Vec::new();
+    for segment in path.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." if parts.last().is_some_and(|last| *last != "..") => {
+                parts.pop();
+            }
+            ".." if absolute => {}
+            other => parts.push(other),
+        }
+    }
+    (absolute, parts)
+}
+
+fn link_text(raw: &[u8]) -> Result<&str, String> {
+    let text = std::str::from_utf8(raw).map_err(|_| "archive link target is not UTF-8")?;
+    if text.is_empty() {
+        return Err("archive link has an empty target".into());
+    }
+    if text.len() > MAX_LINK_TARGET {
+        return Err(format!(
+            "archive link target exceeds {MAX_LINK_TARGET} bytes"
+        ));
+    }
+    if text.contains('\0') {
+        return Err("archive link target contains NUL".into());
+    }
+    Ok(text)
 }
 
 fn prefix_components(prefix: &str) -> Result<Vec<&str>, String> {
@@ -90,7 +152,15 @@ struct Extraction<'a> {
     matched: bool,
     entries: usize,
     expanded: u64,
+    archive: &'a str,
+    // Like Bazel's deferred `Map<Path, PathFragment> symlinks`, a later entry
+    // for the same path replaces an earlier one. Keys are stripped components.
+    symlinks: BTreeMap<Vec<String>, String>,
 }
+
+/// Output location of an included entry: absolute staging path and its
+/// stripped, root-relative components.
+type Output = (PathBuf, Vec<String>);
 
 impl Extraction<'_> {
     fn account(&mut self, size: u64) -> Result<(), String> {
@@ -106,7 +176,7 @@ impl Extraction<'_> {
         Ok(())
     }
 
-    fn output(&mut self, raw: &[u8], directory: bool) -> Result<Option<PathBuf>, String> {
+    fn output(&mut self, raw: &[u8], directory: bool) -> Result<Option<Output>, String> {
         let parts = safe_components(raw)?;
         if parts.is_empty() && !directory {
             return Err("archive file has an empty normalized path".into());
@@ -123,7 +193,154 @@ impl Extraction<'_> {
         for part in stripped {
             output.push(part);
         }
-        Ok(Some(output))
+        Ok(Some((
+            output,
+            stripped.iter().map(|part| (*part).to_owned()).collect(),
+        )))
+    }
+
+    /// `StripPrefixedPath.maybeDeprefixSymlink`: normalize, make relative,
+    /// strip the prefix when the target starts with it (relative targets too),
+    /// and report whether the raw target was absolute.
+    fn deprefixed_target<'t>(&self, target: &'t str) -> (bool, Vec<&'t str>) {
+        let (absolute, mut parts) = normalize(target);
+        if !self.prefix.is_empty() && parts.starts_with(&self.prefix) {
+            parts.drain(..self.prefix.len());
+        }
+        (absolute, parts)
+    }
+
+    /// Record a symbolic link for creation after all other entries, with the
+    /// target text Bazel's repository ends up with. An absolute target is
+    /// re-rooted at the extraction root (`root.getRelative(...)`) and then
+    /// replanted by `RepositoryUtils.replantSymlinks` (RepositoryUtils.java:
+    /// 160-164) as `"../" x depth` + the repository-relative target; native
+    /// writes that relative text directly.
+    fn symlink(&mut self, link: Vec<String>, raw: &str) -> Result<(), String> {
+        let (absolute, parts) = self.deprefixed_target(raw);
+        let mut target: Vec<&str> = Vec::new();
+        if absolute {
+            target.resize(link.len() - 1, "..");
+        }
+        target.extend(parts);
+        let target = if target.is_empty() && absolute {
+            ".".to_owned()
+        } else {
+            target.join("/")
+        };
+        if target.is_empty() {
+            // Bazel would ask the OS for an empty-target symlink, which fails.
+            return Err(format!(
+                "archive symlink {:?} has an empty normalized target {raw:?}",
+                link.join("/")
+            ));
+        }
+        self.symlinks.insert(link, target);
+        Ok(())
+    }
+
+    /// CompressedTarFunction hard links: `destinationPath().getRelative(target)`
+    /// with the deprefixed target; a link to itself is dropped; an existing
+    /// path is replaced. Bazel would link to a file outside the root for a
+    /// relative target starting with `..`; native extraction refuses.
+    fn hard_link(&self, path: &Path, link: &[String], raw: &str) -> Result<(), String> {
+        let shown = link.join("/");
+        let (_, parts) = self.deprefixed_target(raw);
+        if parts.first() == Some(&"..") {
+            return Err(format!(
+                "archive hard link {shown:?} target {raw:?} escapes the extraction root (native extraction never links outside it)"
+            ));
+        }
+        if parts.is_empty() {
+            return Err(format!(
+                "archive hard link {shown:?} targets the extraction root itself"
+            ));
+        }
+        if parts.iter().copied().eq(link.iter().map(String::as_str)) {
+            // CompressedTarFunction drops a hard link to itself.
+            return Ok(());
+        }
+        // FileSystem.createHardLink (FileSystem.java:768-777): a target that does
+        // not exist (missing, not yet extracted, outside the prefix, or below a
+        // non-directory) fails with Bazel's exact text.
+        let missing = || {
+            format!(
+                "File \"{}\" linked from \"{}\" does not exist",
+                parts.last().expect("nonempty target"),
+                link.last().expect("nonempty link")
+            )
+        };
+        let mut target = self.destination.to_path_buf();
+        for (index, part) in parts.iter().enumerate() {
+            target.push(part);
+            let metadata = match fs::symlink_metadata(&target) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Err(missing()),
+                Err(error) => return Err(format!("inspect archive hard link target: {error}")),
+            };
+            if metadata.file_type().is_symlink() {
+                return Err(format!(
+                    "archive hard link {shown:?} target {raw:?} passes through a symlink"
+                ));
+            }
+            if index + 1 < parts.len() && !metadata.is_dir() {
+                return Err(missing());
+            }
+            if index + 1 == parts.len() && !metadata.is_file() {
+                return Err(format!(
+                    "archive hard link {shown:?} target {raw:?} is not a regular file (directory hard links are unsupported)"
+                ));
+            }
+        }
+        self.directory(path.parent().ok_or("archive hard link has no parent")?)?;
+        replace_existing(path, &shown)?;
+        fs::hard_link(&target, path)
+            .map_err(|e| format!("create archive hard link {shown:?} to {raw:?}: {e}"))
+    }
+
+    /// Bazel creates symbolic links after the stream. Tar deletes an existing
+    /// path first (CompressedTarFunction.java:160-166); zip calls
+    /// `ensureSymbolicLink` directly (ZipDecompressor.java:118-120), whose
+    /// `readSymbolicLink` of an existing regular file or directory throws
+    /// `NotASymlinkException` (FileSystemUtils.java:329-349,
+    /// UnixFileSystem.java:311-320, FileSystem.java:76-83): `<path> is not a
+    /// symlink`. Bazel's map is unordered: a link below another link is either
+    /// written through the first link or fails on a nonempty directory. Native
+    /// extraction rejects that layout explicitly before creating any link.
+    fn create_symlinks(&self, replace_existing_paths: bool) -> Result<(), String> {
+        for link in self.symlinks.keys() {
+            for depth in 1..link.len() {
+                if self.symlinks.contains_key(&link[..depth]) {
+                    return Err(format!(
+                        "archive symlink {:?} is below archive symlink {:?} (native extraction never creates entries through a symlink)",
+                        link.join("/"),
+                        link[..depth].join("/")
+                    ));
+                }
+            }
+        }
+        for (link, target) in &self.symlinks {
+            let shown = link.join("/");
+            let mut path = self.destination.to_path_buf();
+            for part in link {
+                path.push(part);
+            }
+            self.directory(path.parent().ok_or("archive symlink has no parent")?)?;
+            if replace_existing_paths {
+                replace_existing(&path, &shown)?;
+            } else {
+                match fs::symlink_metadata(&path) {
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(format!("inspect archive link path {shown:?}: {error}"));
+                    }
+                    Ok(_) => return Err(format!("{} is not a symlink", path.display())),
+                }
+            }
+            create_symlink(target, &path)
+                .map_err(|e| format!("create archive symlink {shown:?} -> {target:?}: {e}"))?;
+        }
+        Ok(())
     }
 
     fn directory(&self, path: &Path) -> Result<(), String> {
@@ -149,11 +366,34 @@ impl Extraction<'_> {
 
     fn file(&self, path: &Path, mode: u32, size: u64, reader: impl Read) -> Result<(), String> {
         self.directory(path.parent().ok_or("archive file has no parent")?)?;
+        // Bazel writes every regular entry with `filePath.getOutputStream()`
+        // (CompressedTarFunction.java:142-144, ZipDecompressor.java:168-170), a
+        // truncating FileOutputStream (DiskBackedFileSystem.java:90-104): a later
+        // entry for the same path wins, in place. Native extraction does the same
+        // for an existing regular file (which can only be an earlier entry or an
+        // in-root hard link, since no symlink exists before the final pass) and
+        // never opens anything that is not a regular file.
+        let existing = match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.is_file() => true,
+            Ok(metadata) if metadata.is_dir() => {
+                return Err(format!(
+                    "archive file {path:?} conflicts with an existing directory"
+                ));
+            }
+            Ok(_) => {
+                return Err(format!(
+                    "archive file {path:?} conflicts with a symlink or special file"
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(format!("inspect archive file {path:?}: {error}")),
+        };
         let mut output = OpenOptions::new()
             .write(true)
-            .create_new(true)
+            .create_new(!existing)
+            .truncate(existing)
             .open(path)
-            .map_err(|e| format!("create archive file {path:?} (duplicate or conflict): {e}"))?;
+            .map_err(|e| format!("create archive file {path:?}: {e}"))?;
         // The extra byte detects streams larger than the declared size without
         // allowing an attacker-controlled stream to expand without a bound.
         let copied = io::copy(&mut reader.take(size + 1), &mut output)
@@ -165,6 +405,37 @@ impl Extraction<'_> {
         }
         set_file_mode(&output, if mode & 0o111 != 0 { 0o755 } else { 0o644 })
     }
+}
+
+/// `if (path.exists()) path.delete()` for a link entry: a regular file or an
+/// empty directory is removed; a nonempty directory is an error, as Bazel's
+/// delete fails. Nothing is followed (no symlink exists before the final pass).
+fn replace_existing(path: &Path, shown: &str) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("inspect archive link path {shown:?}: {error}")),
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err(format!("archive link path {shown:?} is already a symlink"))
+        }
+        Ok(metadata) if metadata.is_dir() => fs::remove_dir(path).map_err(|e| {
+            format!("archive link {shown:?} conflicts with a directory that cannot be deleted: {e}")
+        }),
+        Ok(metadata) if metadata.is_file() => fs::remove_file(path)
+            .map_err(|e| format!("replace archive file with link {shown:?}: {e}")),
+        Ok(_) => Err(format!("archive link path {shown:?} is a special file")),
+    }
+}
+
+#[cfg(unix)]
+fn create_symlink(target: &str, path: &Path) -> io::Result<()> {
+    std::os::unix::fs::symlink(target, path)
+}
+
+#[cfg(not(unix))]
+fn create_symlink(_target: &str, _path: &Path) -> io::Result<()> {
+    Err(io::Error::other(
+        "archive symlinks are supported only on Unix",
+    ))
 }
 
 fn check_directory(path: &Path) -> Result<(), String> {
@@ -321,14 +592,23 @@ fn extract_tar(reader: impl Read, state: &mut Extraction<'_>) -> Result<(), Stri
         let kind = header.entry_type();
         let directory = kind.is_dir();
         let global = kind == tar::EntryType::XGlobalHeader;
-        if !directory && !kind.is_file() && !global {
+        // TarArchiveEntry.isSymbolicLink() / isLink(): ustar types '2' and '1'.
+        let symlink = kind == tar::EntryType::Symlink;
+        let hard_link = kind == tar::EntryType::Link;
+        if !directory && !kind.is_file() && !global && !symlink && !hard_link {
             return Err(format!(
-                "unsupported tar entry type (links, special files and extension records are rejected): {kind:?}"
+                "unsupported tar entry type (special files and extension records are rejected): {kind:?}"
             ));
         }
-        if entry.link_name_bytes().is_some() {
-            return Err("tar link names are unsupported, including on regular entries".into());
+        let link_target = entry.link_name_bytes().map(|name| name.into_owned());
+        if (symlink || hard_link) != link_target.is_some() {
+            return Err(if link_target.is_some() {
+                "tar link names are unsupported on regular, directory and metadata entries".into()
+            } else {
+                "tar link entry has an empty link name".into()
+            });
         }
+        let link_target = link_target.as_deref().map(link_text).transpose()?;
         let size = entry.size();
         if directory && size != 0 {
             return Err("tar directory has nonempty file data".into());
@@ -348,9 +628,17 @@ fn extract_tar(reader: impl Read, state: &mut Extraction<'_>) -> Result<(), Stri
             continue;
         }
         let output = state.output(&entry.path_bytes(), directory)?;
-        if let Some(output) = output {
+        if let Some((output, parts)) = output {
             if directory {
                 state.directory(&output)?;
+            } else if let Some(target) = link_target {
+                // CompressedTarFunction.java:110 creates the parent first.
+                state.directory(output.parent().ok_or("archive link has no parent")?)?;
+                if symlink {
+                    state.symlink(parts, target)?;
+                } else {
+                    state.hard_link(&output, &parts, target)?;
+                }
             } else {
                 state.file(&output, mode, size, &mut entry)?;
             }
@@ -379,24 +667,56 @@ fn extract_tar(reader: impl Read, state: &mut Extraction<'_>) -> Result<(), Stri
     Ok(())
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ZipKind {
+    Directory,
+    File,
+    Symlink,
+}
+
 fn zip_entry_info<R: Read + ?Sized>(
     entry: &zip::read::ZipFile<'_, R>,
-) -> Result<(bool, u32), String> {
+) -> Result<(ZipKind, u32), String> {
     safe_components(entry.name_raw())?;
     let directory = entry.is_dir();
     let mode = entry.unix_mode().unwrap_or(0o644);
-    match mode & 0o170000 {
-        0 => (),
-        0o040000 if directory => (),
-        0o100000 if !directory => (),
+    let kind = match mode & 0o170000 {
+        0 | 0o040000 if directory => ZipKind::Directory,
+        0 | 0o100000 if !directory => ZipKind::File,
+        // ZipDecompressor S_IFLNK: the entry data is the link target.
+        0o120000 if !directory => ZipKind::Symlink,
         _ => {
-            return Err("unsupported zip entry type (links and special files are rejected)".into());
+            return Err("unsupported zip entry type (special files are rejected)".into());
         }
-    }
+    };
     if directory && entry.size() != 0 {
         return Err("zip directory has nonempty file data".into());
     }
-    Ok((directory, mode))
+    if kind == ZipKind::Symlink && entry.size() >= MAX_ZIP_LINK_TARGET {
+        // Bazel's Preconditions.checkState(entry.getSize() < MAX_PATH_LENGTH).
+        return Err(format!(
+            "zip symlink target must be shorter than {MAX_ZIP_LINK_TARGET} bytes"
+        ));
+    }
+    Ok((kind, mode))
+}
+
+/// ZipDecompressor's escape check on the stripped link path and the
+/// normalized (not yet deprefixed) target; absolute targets are not checked.
+fn zip_link_escapes(link: &[String], target: &str) -> bool {
+    let (absolute, parts) = normalize(target);
+    if absolute || parts.first() != Some(&"..") {
+        return false;
+    }
+    let mut points: Vec<&str> = link[..link.len() - 1].iter().map(String::as_str).collect();
+    for part in parts {
+        if part == ".." && points.last().is_some_and(|last| *last != "..") {
+            points.pop();
+        } else {
+            points.push(part);
+        }
+    }
+    points.first() == Some(&"..")
 }
 
 fn extract_zip(bytes: &[u8], state: &mut Extraction<'_>) -> Result<(), String> {
@@ -405,6 +725,9 @@ fn extract_zip(bytes: &[u8], state: &mut Extraction<'_>) -> Result<(), String> {
     if archive.len() > MAX_ENTRIES {
         return Err("archive exceeds entry limit (100000)".into());
     }
+    // Like Bazel's ZipReader (ZipFileData.java:39, 54, 203-204: a LinkedHashMap
+    // keyed by name), ZipArchive keeps one record per name: the later record's
+    // data at the first record's position.
     // Preflight every path, type and declared size, even outside strip_prefix.
     for index in 0..archive.len() {
         let entry = archive
@@ -417,13 +740,35 @@ fn extract_zip(bytes: &[u8], state: &mut Extraction<'_>) -> Result<(), String> {
         let mut entry = archive
             .by_index(index)
             .map_err(|e| format!("read zip entry: {e}"))?;
-        let (directory, mode) = zip_entry_info(&entry)?;
+        let (kind, mode) = zip_entry_info(&entry)?;
+        let directory = kind == ZipKind::Directory;
         let output = state.output(entry.name_raw(), directory)?;
-        if let Some(output) = &output {
-            if directory {
-                state.directory(output)?;
-            } else {
-                state.file(output, mode, entry.size(), &mut entry)?;
+        if let Some((output, parts)) = &output {
+            match kind {
+                ZipKind::Directory => state.directory(output)?,
+                ZipKind::File => state.file(output, mode, entry.size(), &mut entry)?,
+                ZipKind::Symlink => {
+                    let size = entry.size();
+                    let mut raw = Vec::new();
+                    (&mut entry)
+                        .take(size + 1)
+                        .read_to_end(&mut raw)
+                        .map_err(|e| format!("read zip symlink target: {e}"))?;
+                    if raw.len() as u64 != size {
+                        return Err("zip symlink has an incorrect expanded size".into());
+                    }
+                    let target = link_text(&raw)?;
+                    if zip_link_escapes(parts, target) {
+                        // ZipDecompressor.java:152-164, verbatim.
+                        return Err(format!(
+                            "Zip entries cannot refer to files outside of their directory: {} has a symlink {} pointing to {target}",
+                            state.archive,
+                            parts.join("/")
+                        ));
+                    }
+                    state.directory(output.parent().ok_or("archive link has no parent")?)?;
+                    state.symlink(parts.clone(), target)?;
+                }
             }
         }
         if directory || output.is_none() {
@@ -624,8 +969,8 @@ mod tests {
     }
 
     #[test]
-    fn tar_links_special_files_and_extensions_are_explicit_errors() {
-        for kind in *b"123467xLKS" {
+    fn tar_special_files_and_extensions_are_explicit_errors() {
+        for kind in *b"3467xLKS" {
             let bytes = tar_fixture(&[("unrelated", kind, 0o644, b"")]);
             assert!(
                 run(&bytes, "tar", "wanted")
@@ -877,8 +1222,8 @@ mod tests {
     }
 
     #[test]
-    fn zip_links_and_special_files_are_rejected_before_filtering() {
-        for kind in [0o120000u32, 0o010000, 0o060000] {
+    fn zip_special_files_are_rejected_before_filtering() {
+        for kind in [0o010000u32, 0o060000, 0o140000] {
             let mut bytes = zip_fixture(&[("unrelated", 0o644, b"target")]);
             let central = bytes
                 .windows(4)
@@ -896,18 +1241,33 @@ mod tests {
     }
 
     #[test]
-    fn directory_duplicates_allowed_but_file_conflicts_rejected() {
+    fn directory_duplicates_and_later_files_win_but_kind_conflicts_are_rejected() {
         let good = tar_fixture(&[
             ("dir/", b'5', 0o755, b""),
             ("dir/", b'5', 0o755, b""),
             ("dir/file", b'0', 0o644, b"ok"),
         ]);
         assert!(run(&good, "tar", "").is_ok());
+        // Bazel's truncating getOutputStream: the later regular entry wins.
+        let later = [
+            ("file", 0o644, &b"one, longer"[..]),
+            ("./file", 0o755, &b"two"[..]),
+        ];
+        let tar = tar_fixture(&later.map(|(name, mode, data)| (name, b'0', mode, data)));
+        for (kind, bytes) in [("tar", tar), ("zip", zip_fixture(&later))] {
+            let destination = run(&bytes, kind, "").unwrap();
+            assert_eq!(fs::read(destination.path().join("file")).unwrap(), b"two");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = fs::metadata(destination.path().join("file"))
+                    .unwrap()
+                    .permissions()
+                    .mode();
+                assert_eq!(mode & 0o777, 0o755, "{kind}");
+            }
+        }
         for entries in [
-            vec![
-                ("file", b'0', 0o644, &b"one"[..]),
-                ("./file", b'0', 0o644, &b"two"[..]),
-            ],
             vec![
                 ("dir", b'0', 0o644, &b"one"[..]),
                 ("dir/file", b'0', 0o644, &b"two"[..]),
@@ -1007,6 +1367,8 @@ mod tests {
             matched: true,
             entries: MAX_ENTRIES,
             expanded: 0,
+            archive: "archive",
+            symlinks: BTreeMap::new(),
         };
         assert!(state.account(0).unwrap_err().contains("entry limit"));
         let mut limited = BoundedReader {
@@ -1029,6 +1391,8 @@ mod tests {
             matched: true,
             entries: 0,
             expanded: 0,
+            archive: "archive",
+            symlinks: BTreeMap::new(),
         };
         assert!(
             state
@@ -1038,5 +1402,512 @@ mod tests {
         assert!(!outside.path().join("subdir").exists());
         let bytes = tar_fixture(&[("file", b'0', 0o644, b"bad")]);
         assert!(extract(&bytes, "tar", "", &destination.path().join("link")).is_err());
+    }
+
+    type LinkEntry<'a> = (&'a str, u8, &'a str, &'a [u8]);
+
+    fn tar_links(entries: &[LinkEntry<'_>]) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        for (name, kind, link, data) in entries {
+            let mut header = tar::Header::new_ustar();
+            header.set_mode(0o644);
+            header.set_size(data.len() as u64);
+            header.set_entry_type(tar::EntryType::new(*kind));
+            header.as_mut_bytes()[..name.len()].copy_from_slice(name.as_bytes());
+            header.as_mut_bytes()[157..157 + link.len()].copy_from_slice(link.as_bytes());
+            header.set_cksum();
+            builder.append(&header, *data).unwrap();
+        }
+        builder.into_inner().unwrap()
+    }
+
+    /// `(name, Some(target))` is a symlink; `(name, None)` a file or directory.
+    fn zip_links(entries: &[(&str, Option<&str>, &[u8])]) -> Vec<u8> {
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, link, data) in entries {
+            let options = zip::write::SimpleFileOptions::default().unix_permissions(0o644);
+            match link {
+                Some(target) => writer.add_symlink(*name, *target, options).unwrap(),
+                None if name.ends_with('/') => writer.add_directory(*name, options).unwrap(),
+                None => {
+                    writer.start_file(*name, options).unwrap();
+                    writer.write_all(data).unwrap();
+                }
+            }
+        }
+        writer.finish().unwrap().into_inner()
+    }
+
+    fn tar_formats(tar: &[u8]) -> Vec<(&'static str, Vec<u8>)> {
+        vec![
+            ("tar", tar.to_vec()),
+            ("tar.gz", gzip(tar)),
+            ("tgz", gzip(tar)),
+        ]
+    }
+
+    fn link(root: &Path, name: &str) -> String {
+        let path = root.join(name);
+        assert!(
+            fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "{name} is not a symlink"
+        );
+        fs::read_link(path).unwrap().to_str().unwrap().to_owned()
+    }
+
+    const LINKS: [(&str, &str, &str); 8] = [
+        // (entry, raw target, created target)
+        ("pkg/early.txt", "data/real.txt", "data/real.txt"),
+        ("pkg/link.txt", "data/real.txt", "data/real.txt"),
+        ("pkg/sub/up.txt", "../data/./real.txt", "../data/real.txt"),
+        ("pkg/dirlink", "data/", "data"),
+        ("pkg/abs.txt", "/pkg/data/real.txt", "data/real.txt"),
+        (
+            "pkg/sub/abs.txt",
+            "//pkg/../pkg/data/real.txt",
+            "../data/real.txt",
+        ),
+        ("pkg/prefixed.txt", "pkg/data/real.txt", "data/real.txt"),
+        ("pkg/root", "/", "."),
+    ];
+
+    fn check_links(root: &Path) {
+        for (entry, _, expected) in LINKS {
+            let name = entry.strip_prefix("pkg/").unwrap();
+            assert_eq!(link(root, name), expected, "{name}");
+        }
+        for name in [
+            "early.txt",
+            "link.txt",
+            "sub/up.txt",
+            "abs.txt",
+            "sub/abs.txt",
+            "prefixed.txt",
+            "dirlink/real.txt",
+            "root/data/real.txt",
+        ] {
+            assert_eq!(fs::read(root.join(name)).unwrap(), b"real", "{name}");
+        }
+    }
+
+    #[test]
+    fn relative_nested_absolute_and_prefixed_symlinks_for_every_format() {
+        let mut tar_entries: Vec<LinkEntry<'_>> = vec![(LINKS[0].0, b'2', LINKS[0].1, b"")];
+        tar_entries.push(("pkg/data/real.txt", b'0', "", b"real"));
+        tar_entries.extend(
+            LINKS[1..]
+                .iter()
+                .map(|(name, raw, _)| (*name, b'2', *raw, &b""[..])),
+        );
+        tar_entries.push(("other/ignored", b'2', "../../anything", b""));
+        let mut zip_entries: Vec<(&str, Option<&str>, &[u8])> =
+            vec![(LINKS[0].0, Some(LINKS[0].1), b"")];
+        zip_entries.push(("pkg/data/real.txt", None, b"real"));
+        zip_entries.extend(
+            LINKS[1..]
+                .iter()
+                .map(|(name, raw, _)| (*name, Some(*raw), &b""[..])),
+        );
+        let mut formats = tar_formats(&tar_links(&tar_entries));
+        formats.push(("zip", zip_links(&zip_entries)));
+        for (kind, bytes) in formats {
+            let destination = run(&bytes, kind, "pkg").unwrap_or_else(|e| panic!("{kind}: {e}"));
+            check_links(destination.path());
+            assert!(!destination.path().join("other").exists(), "{kind}");
+        }
+    }
+
+    #[test]
+    fn hard_links_are_real_links_to_deprefixed_root_paths() {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        let tar = tar_links(&[
+            ("pkg/data/real.txt", b'0', "", b"real"),
+            ("pkg/hard.txt", b'1', "pkg/data/real.txt", b""),
+            ("pkg/sub/abs.txt", b'1', "/pkg/./data/real.txt", b""),
+            ("pkg/self.txt", b'0', "", b"self"),
+            // GNU tar's repeated-file form: a hard link to itself is dropped.
+            ("pkg/self.txt", b'1', "pkg/self.txt", b""),
+            // A later hard link replaces an existing regular file.
+            ("pkg/replaced.txt", b'0', "", b"old"),
+            ("pkg/replaced.txt", b'1', "pkg/data/real.txt", b""),
+        ]);
+        for (kind, bytes) in tar_formats(&tar) {
+            let destination = run(&bytes, kind, "pkg").unwrap_or_else(|e| panic!("{kind}: {e}"));
+            let root = destination.path();
+            for name in ["hard.txt", "sub/abs.txt", "replaced.txt"] {
+                assert_eq!(fs::read(root.join(name)).unwrap(), b"real");
+                assert!(
+                    !fs::symlink_metadata(root.join(name))
+                        .unwrap()
+                        .file_type()
+                        .is_symlink()
+                );
+                #[cfg(unix)]
+                assert_eq!(
+                    fs::metadata(root.join(name)).unwrap().ino(),
+                    fs::metadata(root.join("data/real.txt")).unwrap().ino()
+                );
+            }
+            #[cfg(unix)]
+            assert_eq!(fs::metadata(root.join("data/real.txt")).unwrap().nlink(), 4);
+            assert_eq!(fs::read(root.join("self.txt")).unwrap(), b"self");
+        }
+    }
+
+    #[test]
+    fn hard_links_never_reach_outside_missing_or_directory_targets() {
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("secret"), b"secret").unwrap();
+        for (target, message) in [
+            ("../secret", "escapes the extraction root"),
+            ("pkg/../../secret", "escapes the extraction root"),
+            (
+                "pkg/missing",
+                "File \"missing\" linked from \"hard\" does not exist",
+            ),
+            (
+                "other/file",
+                "File \"file\" linked from \"hard\" does not exist",
+            ),
+            (
+                "pkg/later",
+                "File \"later\" linked from \"hard\" does not exist",
+            ),
+            ("pkg/data", "not a regular file"),
+            (
+                "pkg/data/real.txt/x",
+                "File \"x\" linked from \"hard\" does not exist",
+            ),
+            ("pkg", "extraction root itself"),
+        ] {
+            let tar = tar_links(&[
+                ("other/file", b'0', "", b"outside the prefix"),
+                ("pkg/data/real.txt", b'0', "", b"real"),
+                ("pkg/hard", b'1', target, b""),
+                ("pkg/later", b'0', "", b"later"),
+            ]);
+            let error = run(&tar, "tar", "pkg").unwrap_err();
+            assert!(error.contains(message), "{target}: {error}");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(
+                fs::metadata(outside.path().join("secret")).unwrap().nlink(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn escaping_tar_symlinks_are_preserved_but_zip_escapes_use_bazel_error() {
+        let tar = tar_links(&[
+            ("pkg/a/esc", b'2', "../../outside", b""),
+            ("pkg/a/sibling", b'2', "../../pkg-sibling/file", b""),
+            ("pkg/a/abs", b'2', "/../../etc/passwd", b""),
+        ]);
+        for (kind, bytes) in tar_formats(&tar) {
+            let destination = run(&bytes, kind, "pkg").unwrap();
+            assert_eq!(link(destination.path(), "a/esc"), "../../outside");
+            assert_eq!(
+                link(destination.path(), "a/sibling"),
+                "../../pkg-sibling/file"
+            );
+            // Absolute targets are re-rooted, so `..` cannot leave the root.
+            assert_eq!(link(destination.path(), "a/abs"), "../etc/passwd");
+        }
+        let extract_zip = |entries: &[(&str, Option<&str>, &[u8])], prefix: &str| {
+            let destination = tempfile::tempdir().unwrap();
+            extract_named(
+                &zip_links(entries),
+                "zip",
+                prefix,
+                destination.path(),
+                "/downloads/test.zip",
+            )
+            .map(|()| destination)
+        };
+        assert_eq!(
+            extract_zip(&[("pkg/a/esc", Some("../../outside"), b"")], "pkg").unwrap_err(),
+            "Zip entries cannot refer to files outside of their directory: /downloads/test.zip has a symlink a/esc pointing to ../../outside"
+        );
+        // The check uses the stripped path: inside the archive root, but not
+        // inside the stripped repository root.
+        assert_eq!(
+            extract_zip(
+                &[("pkg/a/sibling", Some("../../pkg-sibling/f"), b"")],
+                "pkg"
+            )
+            .unwrap_err(),
+            "Zip entries cannot refer to files outside of their directory: /downloads/test.zip has a symlink a/sibling pointing to ../../pkg-sibling/f"
+        );
+        extract_zip(&[("pkg/a/sibling", Some("../../pkg-sibling/f"), b"")], "").unwrap();
+        let fine = extract_zip(
+            &[
+                ("pkg/a/up", Some("../x"), b""),
+                ("pkg/a/cancelled", Some("sub/../../x"), b""),
+                ("pkg/a/abs", Some("/../../x"), b""),
+            ],
+            "pkg",
+        )
+        .unwrap();
+        assert_eq!(link(fine.path(), "a/up"), "../x");
+        assert_eq!(link(fine.path(), "a/cancelled"), "../x");
+        assert_eq!(link(fine.path(), "a/abs"), "../x");
+        // Entries outside the prefix are skipped before the check.
+        extract_zip(
+            &[
+                ("other/esc", Some("../../../x"), b""),
+                ("pkg/f", None, b"f"),
+            ],
+            "pkg",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn later_entries_cannot_write_through_links() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = temp.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        let attacks: Vec<(&str, Vec<u8>, &str)> = vec![
+            (
+                "tar",
+                tar_links(&[
+                    ("evil", b'2', "../../outside", b""),
+                    ("evil/payload", b'0', "", b"payload"),
+                ]),
+                "cannot be deleted",
+            ),
+            (
+                "tar",
+                tar_links(&[
+                    ("evil/payload", b'0', "", b"payload"),
+                    ("evil", b'2', "../../outside", b""),
+                ]),
+                "cannot be deleted",
+            ),
+            (
+                "tar",
+                tar_links(&[
+                    ("evil", b'2', "../../outside", b""),
+                    ("evil/inner", b'2', "x", b""),
+                ]),
+                "is below archive symlink \"evil\"",
+            ),
+            (
+                "tar",
+                tar_links(&[
+                    ("evil", b'2', "../../outside", b""),
+                    ("hard", b'1', "evil/secret", b""),
+                ]),
+                "does not exist",
+            ),
+            (
+                "zip",
+                zip_links(&[("evil", Some("x"), b""), ("evil/payload", None, b"payload")]),
+                "/evil is not a symlink",
+            ),
+            (
+                "zip",
+                zip_links(&[("evil", Some("x"), b""), ("evil/inner", Some("y"), b"")]),
+                "is below archive symlink",
+            ),
+        ];
+        fs::write(outside.join("secret"), b"secret").unwrap();
+        for (index, (kind, bytes, message)) in attacks.into_iter().enumerate() {
+            let destination = temp.path().join(format!("stage-{index}/repo"));
+            fs::create_dir_all(&destination).unwrap();
+            let error = extract(&bytes, kind, "", &destination).unwrap_err();
+            assert!(error.contains(message), "{index}: {error}");
+            assert_eq!(
+                fs::read_dir(&outside).unwrap().count(),
+                1,
+                "{index} wrote outside"
+            );
+        }
+    }
+
+    #[test]
+    fn links_replace_files_and_empty_directories_last_entry_wins() {
+        let tar = tar_links(&[
+            ("f", b'0', "", b"file"),
+            ("f", b'2', "first", b""),
+            ("f", b'2', "second", b""),
+            ("d/", b'5', "", b""),
+            ("d", b'2', "third", b""),
+            ("g", b'2', "fourth", b""),
+            ("g", b'0', "", b"written before the deferred link"),
+        ]);
+        let destination = run(&tar, "tar", "").unwrap();
+        assert_eq!(link(destination.path(), "f"), "second");
+        assert_eq!(link(destination.path(), "d"), "third");
+        assert_eq!(link(destination.path(), "g"), "fourth");
+        let zip = zip_links(&[("f", None, b"file"), ("f2", Some("x"), b"")]);
+        let destination = run(&zip, "zip", "").unwrap();
+        assert_eq!(link(destination.path(), "f2"), "x");
+    }
+
+    #[test]
+    fn empty_oversized_and_non_utf8_link_targets_are_rejected() {
+        for (target, prefix, message) in [
+            (".", "", "empty normalized target"),
+            ("a/..", "", "empty normalized target"),
+            ("pkg", "pkg", "empty normalized target"),
+        ] {
+            let tar = tar_links(&[("pkg/l", b'2', target, b"")]);
+            let error = run(&tar, "tar", prefix).unwrap_err();
+            assert!(error.contains(message), "{target}: {error}");
+            let zip = zip_links(&[("pkg/l", Some(target), b"")]);
+            let error = run(&zip, "zip", prefix).unwrap_err();
+            assert!(error.contains(message), "{target}: {error}");
+        }
+        let long = "x".repeat(256);
+        let error = run(&zip_links(&[("l", Some(&long), b"")]), "zip", "").unwrap_err();
+        assert!(error.contains("shorter than 256 bytes"), "{error}");
+        run(&zip_links(&[("l", Some(&long[1..]), b"")]), "zip", "").unwrap();
+        let mut tar = tar_links(&[("l", b'2', "x", b"")]);
+        tar[157] = 0xff;
+        let mut header = tar::Header::new_ustar();
+        header.as_mut_bytes().copy_from_slice(&tar[..512]);
+        header.set_cksum();
+        tar[..512].copy_from_slice(header.as_bytes());
+        assert!(run(&tar, "tar", "").unwrap_err().contains("not UTF-8"));
+        // A link entry must carry a link name; other entries must not.
+        assert!(
+            run(&tar_links(&[("l", b'2', "", b"")]), "tar", "")
+                .unwrap_err()
+                .contains("empty link name")
+        );
+        assert!(
+            run(&tar_links(&[("f", b'0', "x", b"")]), "tar", "")
+                .unwrap_err()
+                .contains("tar link names are unsupported")
+        );
+    }
+
+    /// Rewrite one same-length entry name in both zip headers, producing two
+    /// entries with one name (ZipWriter refuses duplicates).
+    fn rename_zip(mut bytes: Vec<u8>, from: &str, to: &str) -> Vec<u8> {
+        assert_eq!(from.len(), to.len());
+        let positions: Vec<_> = bytes
+            .windows(from.len())
+            .enumerate()
+            .filter(|(_, window)| *window == from.as_bytes())
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(positions.len(), 2, "local and central header names");
+        for index in positions {
+            bytes[index..index + to.len()].copy_from_slice(to.as_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn zip_links_never_replace_existing_paths_but_later_entries_win() {
+        // ZipDecompressor.java:118-120: ensureSymbolicLink without a delete; an
+        // existing regular file or directory is `<path> is not a symlink`.
+        for link_first in [false, true] {
+            let mut entries = vec![
+                ("dup.txt", Some("real.txt"), &b""[..]),
+                ("./dup.txt", None, &b"file"[..]),
+            ];
+            if link_first {
+                entries.reverse();
+            }
+            let destination = tempfile::tempdir().unwrap();
+            let error = extract(&zip_links(&entries), "zip", "", destination.path()).unwrap_err();
+            assert_eq!(
+                error,
+                format!(
+                    "{} is not a symlink",
+                    destination.path().join("dup.txt").display()
+                )
+            );
+        }
+        // Records with one raw name collapse to the later record, as in Bazel's
+        // ZipReader: a later link replaces an earlier file record and vice versa.
+        for (first, second, is_link) in [
+            (
+                ("one.a", None, &b"file"[..]),
+                ("one.b", Some("real.txt"), &b""[..]),
+                true,
+            ),
+            (
+                ("one.a", Some("real.txt"), &b""[..]),
+                ("one.b", None, &b"file"[..]),
+                false,
+            ),
+        ] {
+            let bytes = rename_zip(zip_links(&[first, second]), "one.b", "one.a");
+            let destination = run(&bytes, "zip", "").unwrap();
+            let metadata = fs::symlink_metadata(destination.path().join("one.a")).unwrap();
+            assert_eq!(metadata.file_type().is_symlink(), is_link);
+        }
+        // Two zip links for one path: the later entry wins.
+        let bytes = rename_zip(
+            zip_links(&[
+                ("two.a", Some("first"), b""),
+                ("two.b", Some("second"), b""),
+            ]),
+            "two.b",
+            "two.a",
+        );
+        let destination = run(&bytes, "zip", "").unwrap();
+        assert_eq!(link(destination.path(), "two.a"), "second");
+        // Two regular zip entries for one path: the later entry wins.
+        let bytes = rename_zip(
+            zip_links(&[
+                ("same.a", None, b"first longer"),
+                ("same.b", None, b"second"),
+            ]),
+            "same.b",
+            "same.a",
+        );
+        let destination = run(&bytes, "zip", "").unwrap();
+        assert_eq!(
+            fs::read(destination.path().join("same.a")).unwrap(),
+            b"second"
+        );
+        // Tar keeps delete-then-create for a link over a file or empty directory.
+        let tar = tar_links(&[
+            ("d.txt", b'0', "", b"file"),
+            ("d.txt", b'2', "real.txt", b""),
+        ]);
+        assert_eq!(
+            link(run(&tar, "tar", "").unwrap().path(), "d.txt"),
+            "real.txt"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn later_tar_file_rewrites_a_hard_linked_path_in_place_like_bazel() {
+        use std::os::unix::fs::MetadataExt;
+        // FileOutputStream truncates the existing inode, so both names change.
+        let tar = tar_links(&[
+            ("a.txt", b'0', "", b"first"),
+            ("b.txt", b'1', "a.txt", b""),
+            ("b.txt", b'0', "", b"second"),
+        ]);
+        let destination = run(&tar, "tar", "").unwrap();
+        let root = destination.path();
+        assert_eq!(fs::read(root.join("a.txt")).unwrap(), b"second");
+        assert_eq!(fs::read(root.join("b.txt")).unwrap(), b"second");
+        assert_eq!(
+            fs::metadata(root.join("a.txt")).unwrap().ino(),
+            fs::metadata(root.join("b.txt")).unwrap().ino()
+        );
+        // A regular entry never replaces a directory.
+        let tar = tar_links(&[("d/x", b'0', "", b"x"), ("d", b'0', "", b"file")]);
+        assert!(
+            run(&tar, "tar", "")
+                .unwrap_err()
+                .contains("conflicts with an existing directory")
+        );
     }
 }

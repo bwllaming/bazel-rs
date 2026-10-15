@@ -501,16 +501,19 @@ fn git_internal_build_and_unselected_file_links_survive_cold_and_offline_warm_bu
 
 #[cfg(unix)]
 #[test]
-fn git_preserved_links_do_not_relax_source_load_or_glob_boundaries() {
+fn git_preserved_links_build_as_sources_but_do_not_relax_load_or_glob_boundaries() {
     use std::os::unix::fs::symlink;
+    // Source artifacts follow internal links like Bazel (docs/ARCHIVE_SYMLINKS.md).
+    let f = Fixture::new();
+    f.file(
+        "repos/alpha/p/BUILD.bazel",
+        "exports_files(['linked'])\ngenrule(name='copy',srcs=['linked'],outs=['copy.txt'],cmd='cat $(SRCS) > $@')\n",
+    );
+    symlink("data.txt", f.0.join("repos/alpha/p/linked")).unwrap();
+    f.git_override();
+    let built = f.run(&["--cache-dir=chosen", "build", "@first//p:copy"]);
+    assert_eq!(fs::read(&files(&built)[0].1).unwrap(), b"alpha");
     for (kind, build, command, target, diagnostic) in [
-        (
-            "source",
-            "exports_files(['linked'])\n",
-            "build",
-            "@first//p:linked",
-            "source symlinks are not supported",
-        ),
         (
             "load",
             "load(':linked.bzl','VALUE')\nfilegroup(name='probe')\n",

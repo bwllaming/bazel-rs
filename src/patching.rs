@@ -16,9 +16,15 @@
 //! Tree roots and their ancestors must be private and trusted against concurrent
 //! mutation. All affected paths and contents are preflighted before any writes;
 //! this does NOT publish a repository or promise rollback on filesystem errors.
-//! The caller must discard its staging tree on failure. Symlinks, special files,
-//! and (on Unix) multiply-linked files are rejected. Existing permissions become
-//! 0755 if owner-executable, otherwise 0644; new files are 0644, directories 0755.
+//! The caller must discard its staging tree on failure. Like Bazel's PatchUtil
+//! (`applyPatchToFile`, PatchUtil.java:200-260: read the old file following
+//! links, `oldFile.delete()`, then write a fresh file), a patched path that is a
+//! symlink or a hard-linked file is read through the link and then replaced by
+//! a new regular file: the referent and other hard-link names are never
+//! written. Native reads follow only links resolving inside the tree; a leaf
+//! link escaping it, symlinked ancestor directories and special files are
+//! rejected. Existing permissions (of the referent) become 0755 if
+//! owner-executable, otherwise 0644; new files are 0644, directories 0755.
 //! File-to-directory transitions within one patch are unsupported.
 
 use std::collections::BTreeMap;
@@ -531,19 +537,21 @@ impl Patch {
         // caller rollback; no attempt is made to publish individual files.
         for path in changed.keys() {
             let destination = root.join(path);
+            // `oldFile.delete()` before writing: an existing file, hard-link name
+            // or symlink at the path is removed, never written through.
             if let Some(contents) = &state[path] {
                 create_parents(root, Path::new(path))?;
+                remove_leaf(&destination)?;
                 let mut file = OpenOptions::new()
                     .write(true)
-                    .create(true)
-                    .truncate(true)
+                    .create_new(true)
                     .open(&destination)
                     .map_err(|e| format!("write patch file {destination:?}: {e}"))?;
                 file.write_all(&contents.bytes)
                     .map_err(|e| format!("write patch content: {e}"))?;
                 set_mode(&destination, contents.mode)?;
-            } else if destination.exists() {
-                fs::remove_file(&destination).map_err(|e| format!("delete patch file: {e}"))?;
+            } else {
+                remove_leaf(&destination)?;
             }
         }
         Ok(())
@@ -601,7 +609,7 @@ fn read_checked(root: &Path, path: &str) -> Result<Option<Contents>, String> {
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(format!("inspect patch path {current:?}: {e}")),
         };
-        if meta.file_type().is_symlink() {
+        if meta.file_type().is_symlink() && i + 1 != parts.len() {
             return Err(format!("unsafe patch symlink: {current:?}"));
         }
         if i + 1 != parts.len() {
@@ -610,16 +618,29 @@ fn read_checked(root: &Path, path: &str) -> Result<Option<Contents>, String> {
             }
             continue;
         }
+        let (current, meta) = if meta.file_type().is_symlink() {
+            // A leaf link is read through (`oldFile.exists()`/`readFile` follow
+            // it) and later replaced by the patched regular file.
+            match crate::source_links::resolve_in_root(root, Path::new(path))
+                .map_err(|e| format!("unsafe patch symlink {current:?}: {e}"))?
+            {
+                crate::source_links::Resolution::Missing(_) => return Ok(None),
+                crate::source_links::Resolution::Resolved(referent) => {
+                    let meta = fs::symlink_metadata(&referent)
+                        .map_err(|e| format!("inspect patch link referent {referent:?}: {e}"))?;
+                    (referent, meta)
+                }
+            }
+        } else {
+            (current, meta)
+        };
         if !meta.is_file() {
             return Err("patch target is not a regular file".into());
         }
         let mut mode = 0o644;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::{MetadataExt, PermissionsExt};
-            if meta.nlink() != 1 {
-                return Err("unsafe multiply-linked patch file".into());
-            }
+            use std::os::unix::fs::PermissionsExt;
             if meta.permissions().mode() & 0o100 != 0 {
                 mode = 0o755;
             }
@@ -639,6 +660,16 @@ fn read_checked(root: &Path, path: &str) -> Result<Option<Contents>, String> {
         return Ok(Some(Contents { bytes, mode }));
     }
     unreachable!("nonempty safe path")
+}
+
+/// Remove a regular file or symlink at `path` without following it.
+fn remove_leaf(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("inspect patch file {path:?}: {e}")),
+        Ok(meta) if meta.is_dir() => Err(format!("patch target is a directory: {path:?}")),
+        Ok(_) => fs::remove_file(path).map_err(|e| format!("delete patch file: {e}")),
+    }
 }
 
 fn create_parents(root: &Path, path: &Path) -> Result<(), String> {
@@ -1125,13 +1156,20 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn hardlinks_are_rejected_and_modes_normalized() {
-        use std::os::unix::fs::PermissionsExt;
+    fn hardlinks_are_broken_like_bazel_and_modes_normalized() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let t = Temp::new();
         t.write("f", b"a");
         fs::hard_link(t.0.join("f"), t.0.join("link")).unwrap();
-        assert!(patch(&change("f", "a", "b")).apply_tree(&t.0).is_err());
+        // PatchUtil deletes the old name and writes a fresh file: the other
+        // hard-link name keeps the original bytes.
+        patch(&change("f", "a", "b")).apply_tree(&t.0).unwrap();
+        assert_eq!(t.read("f"), b"b\n");
+        assert_eq!(t.read("link"), b"a");
+        assert_eq!(fs::metadata(t.0.join("f")).unwrap().nlink(), 1);
+        assert_eq!(fs::metadata(t.0.join("link")).unwrap().nlink(), 1);
         fs::remove_file(t.0.join("link")).unwrap();
+        t.write("f", b"a");
         set_mode(&t.0.join("f"), 0o4751).unwrap();
         let input = format!(
             "{}diff --git nested/new nested/new\n--- /dev/null\n+++ nested/new\n@@ -0,0 +1 @@\n+x\n",
@@ -1144,5 +1182,43 @@ mod tests {
                 mode
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn internal_leaf_links_are_read_through_and_replaced_never_written_through() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let t = Temp::new();
+        fs::create_dir(t.0.join("data")).unwrap();
+        t.write("data/real.txt", b"real\n");
+        set_mode(&t.0.join("data/real.txt"), 0o755).unwrap();
+        symlink("data/real.txt", t.0.join("rel.txt")).unwrap();
+        symlink("missing", t.0.join("dangling")).unwrap();
+        patch(&change("rel.txt", "real", "patched"))
+            .apply_tree(&t.0)
+            .unwrap();
+        let meta = fs::symlink_metadata(t.0.join("rel.txt")).unwrap();
+        assert!(meta.is_file(), "the link itself is replaced");
+        assert_eq!(meta.permissions().mode() & 0o777, 0o755, "referent mode");
+        assert_eq!(t.read("rel.txt"), b"patched\n");
+        assert_eq!(t.read("data/real.txt"), b"real\n", "referent unchanged");
+        // Deleting a link removes the link, not its referent.
+        symlink("data/real.txt", t.0.join("gone.txt")).unwrap();
+        patch("--- gone.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-real")
+            .apply_tree(&t.0)
+            .unwrap();
+        assert!(fs::symlink_metadata(t.0.join("gone.txt")).is_err());
+        assert_eq!(t.read("data/real.txt"), b"real\n");
+        // A dangling leaf is a missing file to patch.
+        assert!(
+            patch(&change("dangling", "a", "b"))
+                .apply_tree(&t.0)
+                .unwrap_err()
+                .contains("cannot find file to patch")
+        );
+        assert_eq!(
+            fs::read_link(t.0.join("dangling")).unwrap(),
+            Path::new("missing")
+        );
     }
 }

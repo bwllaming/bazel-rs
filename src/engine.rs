@@ -641,13 +641,12 @@ impl Engine {
         if !declared_source {
             return Err(self.no_such_target(label)?);
         }
-        let package_dir = self
-            .repositories
-            .root(&label.repository)?
-            .join(&label.package);
+        let repository_root = self.repositories.root(&label.repository)?.to_path_buf();
+        let package_dir = repository_root.join(&label.package);
         let ignored = self.ignored(&label.repository)?;
         let mut path = package_dir.clone();
         let mut relative = label.package.clone();
+        let mut linked = false;
         let parts: Vec<_> = Path::new(&label.name).components().collect();
         if parts
             .iter()
@@ -674,12 +673,9 @@ impl Engine {
                 }
                 Err(error) => return Err(format!("no target or source {label}: {error}")),
             };
-            if metadata.file_type().is_symlink() {
-                return Err(format!(
-                    "source symlinks are not supported: {}",
-                    path.display()
-                ));
-            }
+            // Bazel follows source symlinks (docs/ARCHIVE_SYMLINKS.md); package
+            // boundaries below stay checked on the logical label path.
+            linked |= metadata.file_type().is_symlink();
             if i + 1 < parts.len()
                 && ((ignored.matching_entry(&relative).is_none()
                     && (path.join("BUILD.bazel").is_file() || path.join("BUILD").is_file()))
@@ -689,6 +685,20 @@ impl Engine {
                     "{label} crosses a package or nested workspace boundary at {}",
                     path.display()
                 ));
+            }
+        }
+        if linked {
+            let relative = Path::new(&label.package).join(&label.name);
+            match crate::source_links::resolve_in_root(&repository_root, &relative)
+                .map_err(|error| format!("source {label}: {error}"))?
+            {
+                crate::source_links::Resolution::Resolved(resolved) => path = resolved,
+                // A dangling source symlink is a missing input file, like a
+                // declared source that does not exist.
+                crate::source_links::Resolution::Missing(missing) => {
+                    self.missing_sources.insert(missing.clone(), label.clone());
+                    return Ok(Target::Source(missing));
+                }
             }
         }
         if !path.is_file() {

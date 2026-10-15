@@ -51,8 +51,12 @@ UTF-8 and NUL text fail explicitly. Strict path validation rejects absolute path
 parent traversal, backslashes and ambiguous paths even in skipped sections; this
 is stricter than Bazel's path normalization. Stripping counts lexical slash
 components **before** normalizing `.` or empty components, so a prefix cannot
-silently redirect a patch to a different file. Sources are checked for symlinks,
-special files and multiply-linked files before modification.
+silently redirect a patch to a different file. Sources are checked for special
+files and symlinked ancestors before modification. As in Bazel's PatchUtil, a
+patched leaf that is a symlink resolving inside the tree, or a hard-linked file,
+is read through and then replaced by a fresh regular file, so the referent and
+other hard-link names keep their bytes (docs/ARCHIVE_SYMLINKS.md); a leaf link
+escaping the tree is rejected.
 
 Limits are 16 MiB per patch/text file, 100000 lines/hunks, 64 MiB of snapshotted
 local patches, 256 MiB of patched-tree working data and 100 million context-line

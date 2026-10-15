@@ -44,9 +44,11 @@ entry in a demanded archive. General PAX support is not implied by accepting
 documentation metadata. See `artifacts/archive-docs-url-validation.json` and
 `artifacts/mainrepo-archive-docs-url-loading.json`.
 
-Extraction uses a private staging directory. Only regular UTF-8 files/directories
-are accepted; traversal, absolute paths, links, special entries, semantic PAX
-metadata, local PAX/GNU extension records and conflicting files fail explicitly.
+Extraction uses a private staging directory. Regular UTF-8 files/directories,
+tar/zip symbolic links and tar hard links are accepted (links follow Bazel 9.3,
+see `docs/ARCHIVE_SYMLINKS.md`); traversal, absolute entry paths, special entries,
+semantic PAX metadata, local PAX/GNU extension records and conflicting files fail
+explicitly.
 Global PAX headers containing only inert `comment` records are supported as
 described below. This is stricter than Bazel's
 extraction semantics. Executable files become 0755, others 0644. Downloads are
@@ -68,7 +70,7 @@ Metadata names must still be safe, nonempty relative paths; mode syntax and link
 fields are validated. These are explicit native restrictions on pseudo-header
 names, not complete Bazel/POSIX metadata-name compatibility. Headers are never
 written as files and cannot satisfy `strip_prefix`. Each global header must have
-a following validated regular-file or directory entry, even if that entry is
+a following validated regular-file, directory or link entry, even if that entry is
 filtered out by the prefix. A dangling global is rejected after trailer checks.
 
 All other global keys—including path, size, link, ownership, time, sparse and

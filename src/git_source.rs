@@ -1898,21 +1898,34 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn patches_reject_links_in_both_old_and_unused_new_paths() {
+    fn patches_replace_link_leaves_and_read_unused_new_link_paths_like_patch_util() {
         use std::os::unix::fs::symlink;
-        for text in [
-            change("link", "original", "patched"),
-            "diff --git a/data b/link\n--- a/data\n+++ b/link\n@@ -1 +1 @@\n-original\n+patched\n"
-                .into(),
+        for (text, link_patched) in [
+            (change("link", "original", "patched"), true),
+            (
+                "diff --git a/data b/link\n--- a/data\n+++ b/link\n@@ -1 +1 @@\n-original\n+patched\n"
+                    .into(),
+                false,
+            ),
         ] {
             let mut fixture = Fixture::new("");
             symlink("data", fixture.origin.join("link")).unwrap();
             fixture.commit();
             let plan = patch_plan(fixture.temp.path(), &text);
-            let error =
-                materialize(&fixture.spec, &plan, &fixture.cache, true, |_, _| Ok(())).unwrap_err();
-            assert!(error.contains("patch symlink"), "{error}");
-            fixture.assert_no_publication();
+            let (git_tree, _) = materialize(&fixture.spec, &plan, &fixture.cache, true, |_, _| Ok(()))
+                .unwrap();
+            let link = fs::symlink_metadata(git_tree.root.join("link")).unwrap();
+            if link_patched {
+                // PatchUtil deletes the link and writes a fresh regular file;
+                // the referent is untouched.
+                assert!(link.is_file());
+                assert_eq!(fs::read(git_tree.root.join("link")).unwrap(), b"patched\n");
+                assert_eq!(fs::read(git_tree.root.join("data")).unwrap(), b"original\n");
+            } else {
+                // The existing old path is patched; the link still points at it.
+                assert!(link.file_type().is_symlink());
+                assert_eq!(fs::read(git_tree.root.join("data")).unwrap(), b"patched\n");
+            }
             assert_eq!(
                 fs::read(fixture.origin.join("data")).unwrap(),
                 b"original\n"

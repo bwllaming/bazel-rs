@@ -33,10 +33,8 @@ MESSAGES = {
     'dangling': 'Git symlink e2e/smoke/.bazelversion has a dangling target',
     'cycle': 'Git symlink e2e/smoke/.bazelversion has a cycle',
     'directory': 'Git symlink e2e/smoke/.bazelversion has a directory target',
-    'patch_link': 'patch symlink leaves are unsupported',
     'module_link': 'MODULE.bazel symlink is unsupported',
     'bzl_link': 'native.bzl symlink is unsupported',
-    'source_link': 'source artifact symlink is unsupported',
     'malformed_target': 'Git committed symlink malformedlink has an unsafe target containing a NUL control byte',
 }
 
@@ -45,12 +43,17 @@ MESSAGES = {
 # Native SHA256 eb9b5f2cf26d281ea7fd3cef43aba468cbd2c1b2aeb54082011ebd6002488992.
 # No runtime dependency on that report or its removed private scratch tree.
 CAPTURED = {
-    'patch_link': 'bazel-rs: cannot apply patch //:git-local.patch: unsafe patch symlink: "/tmp/opencode/git-links-validation-hbpmlh83/native/native.patch-symlink-leaf/repositories/git/trees/.stage-ts1Jlm/e2e/smoke/.bazelversion"\n',
     'module_link': 'bazel-rs: Git file is not regular (symlinks/special files forbidden): /tmp/opencode/git-links-validation-hbpmlh83/native/native.root-module-link/repositories/git/trees/.stage-SkXhqh/MODULE.bazel\n',
     'bzl_link': 'bazel-rs: symlink load sources are unsupported: @@opencode_gitcheck_dep+//bzl:native.bzl (/tmp/opencode/git-links-validation-hbpmlh83/native/native.selected-consumer-boundaries/repositories/git/trees/34daeec2a87e5feababbec9d39617960b7f65f9f7ffdaafd222b8e136ca08049/bzl/native.bzl)\n',
 }
-# Source ordering only: engine.rs diagnostic, not yet observed for this fixture.
-SOURCE_CONTRACT = 'bazel-rs: source symlinks are not supported: /private/git/tree/artifact/link\n'
+# Retired with N19 (docs/ARCHIVE_SYMLINKS.md): native no longer rejects a patched
+# link leaf ('unsafe patch symlink', the former 'patch_link' class) or a source
+# artifact through an internal link (the former uncaptured 'source_link'
+# contract); genuine Bazel builds both, so both phases now require success.
+RETIRED_REJECTIONS = (
+    'bazel-rs: cannot apply patch //:git-local.patch: unsafe patch symlink: "/tmp/opencode/git-links-validation-hbpmlh83/native/native.patch-symlink-leaf/repositories/git/trees/.stage-ts1Jlm/e2e/smoke/.bazelversion"\n',
+    'bazel-rs: source symlinks are not supported: /private/git/tree/artifact/link\n',
+)
 
 
 class CapturedDiagnosticTests(unittest.TestCase):
@@ -63,7 +66,7 @@ class CapturedDiagnosticTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 links.require_rejection(record(stderr=wrong, returncode=1), 'malformed_target')
 
-    def test_captured_three_diagnostics_match_only_their_own_classes(self):
+    def test_captured_diagnostics_match_only_their_own_classes(self):
         for diagnostic, text in CAPTURED.items():
             links.require_rejection(record(stderr=text, returncode=1), diagnostic)
             for other in MESSAGES:
@@ -73,10 +76,6 @@ class CapturedDiagnosticTests(unittest.TestCase):
 
     def test_captured_diagnostics_reject_nearby_paths_modules_and_split_lines(self):
         wrong = {
-            'patch_link': [CAPTURED['patch_link'].replace('/e2e/smoke/.bazelversion', '/e2e/smoke/other'),
-                           CAPTURED['patch_link'].replace('//:git-local.patch', '//:unrelated.patch'),
-                           CAPTURED['patch_link'].replace('unsafe patch symlink', 'unsafe patch path'),
-                           CAPTURED['patch_link'].replace('unsafe patch symlink: ', 'unsafe patch symlink:\n')],
             'module_link': [CAPTURED['module_link'].replace('/MODULE.bazel', '/' + other)
                             for other in ('BUILD.bazel', 'OTHER_MODULE.bazel', 'MODULE.bazel.backup', 'native.bzl')]
                            + [CAPTURED['module_link'].replace('forbidden): ', 'forbidden):\n'),
@@ -102,18 +101,43 @@ class CapturedDiagnosticTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     links.require_rejection(dict(record(stderr=text, returncode=1), **change), diagnostic)
 
-    def test_unrun_source_artifact_contract_is_narrow_and_not_a_captured_claim(self):
-        links.require_rejection(record(stderr=SOURCE_CONTRACT, returncode=1), 'source_link')
-        for text in (SOURCE_CONTRACT.replace('/artifact/link', '/bzl/native.bzl'),
-                     SOURCE_CONTRACT.replace('/artifact/link', '/MODULE.bazel'),
-                     SOURCE_CONTRACT.replace('/artifact/link', '/artifact/link-other'),
-                     SOURCE_CONTRACT.replace('supported: ', 'supported:\n'),
-                     'source symlinks are not supported'):
+    def test_retired_link_rejections_no_longer_satisfy_any_rejection_class(self):
+        self.assertNotIn('patch_link', links.DIAGNOSTICS)
+        self.assertNotIn('source_link', links.DIAGNOSTICS)
+        self.assertIsNone(item('native.patch-symlink-leaf')['diagnostic'])
+        for text in RETIRED_REJECTIONS:
+            for diagnostic in links.DIAGNOSTICS:
+                with self.subTest(text=text, diagnostic=diagnostic), self.assertRaises(ValueError):
+                    links.require_rejection(record(stderr=text, returncode=1), diagnostic)
+
+    def test_patched_link_leaf_layout_is_a_regular_file_and_referent_is_unchanged(self):
+        files = links.layout(item('native.patch-symlink-leaf'), Path('/unused'), patched=True)
+        self.assertEqual(files[links.LINK], ('file', links.PATCHED_VERSION))
+        self.assertEqual(files['.bazelversion'], ('file', links.VERSION))
+        self.assertEqual(links.layout(item('native.patch-symlink-leaf'), Path('/unused'))[links.LINK],
+                         ('symlink', links.RAW.encode()))
+
+    def test_linked_source_artifact_identity_and_bytes(self):
+        value = item('native.selected-consumer-boundaries')
+        with tempfile.TemporaryDirectory(dir='/tmp/opencode') as temporary:
+            scratch = Path(temporary)
+            output_base = scratch / 'git-links-output-base'
+            tree = links.shared.trees_directory(scratch / 'native' / value['name']) / 'opaque'
+            write_tree(tree, links.layout(value, scratch, patched=True))
+            native = links.artifact_manifest('native', [tree / 'data'], scratch, value, output_base)
+            self.assertTrue(links.evidence_matches(native['link'], links.shared.data()))
+            reference = output_base / 'execroot/_main/external' / (links.shared.DEP + '+')
+            write_tree(reference, links.layout(value, scratch, patched=True))
+            evidence = links.artifact_manifest('reference', [reference / 'artifact/link'], scratch, value, output_base)
+            self.assertTrue(links.evidence_matches(evidence['link'], links.shared.data()))
+            for engine, paths in (('native', [tree / 'artifact/link']), ('native', [tree / 'data', tree / 'MODULE.bazel']),
+                                  ('native', [reference / 'data']), ('reference', [reference / 'data']),
+                                  ('reference', [tree / 'data']), ('native', [])):
+                with self.subTest(engine=engine, paths=paths), self.assertRaises(ValueError):
+                    links.artifact_manifest(engine, paths, scratch, value, output_base)
+            (tree / 'data').write_bytes(b'other bytes\n')
             with self.assertRaises(ValueError):
-                links.require_rejection(record(stderr=text, returncode=1), 'source_link')
-        for diagnostic in set(MESSAGES) - {'source_link'}:
-            with self.assertRaises(ValueError):
-                links.require_rejection(record(stderr=SOURCE_CONTRACT, returncode=1), diagnostic)
+                links.artifact_manifest('native', [tree / 'data'], scratch, value, output_base)
 
 
 def write_tree(root, files):
@@ -508,14 +532,28 @@ class MainTests(unittest.TestCase):
                     raise RuntimeError('injected while origin is unavailable')
                 if fault == 'input':
                     (cwd / 'git-local.patch').write_bytes(b'changed')
-                if value['diagnostic'] or phase in ('bzl', 'artifact'):
-                    diagnostic = value['diagnostic'] or ('bzl_link' if phase == 'bzl' else 'source_link')
+                if value['diagnostic'] or phase == 'bzl':
+                    diagnostic = value['diagnostic'] or 'bzl_link'
                     # Captured word-order regressions are exercised end-to-end in
                     # the harness; new cases remain explicitly synthetic contracts.
-                    message = CAPTURED.get(diagnostic, SOURCE_CONTRACT if diagnostic == 'source_link' else MESSAGES[diagnostic])
+                    message = CAPTURED.get(diagnostic, MESSAGES[diagnostic])
                     result = record(stderr=message, returncode=1)
                     if fault == 'publication' and value['diagnostic']:
                         (links.shared.trees_directory(scratch / 'native' / value['name']) / '.leaked').mkdir(parents=True)
+                elif phase.startswith('artifact'):
+                    if engine == 'native':
+                        tree = links.shared.trees_directory(scratch / 'native' / value['name']) / 'opaque'
+                        write_tree(tree, links.layout(value, case_root, patched=True))
+                        if fault == 'artifact':
+                            (tree / 'data').write_bytes(b'wrong artifact')
+                        result = record(links.shared.canonical(links.ARTIFACT) + '\t' + str(tree / 'data') + '\n')
+                    else:
+                        base = scratch / 'git-links-output-base/execroot/_main'
+                        tree = base / 'external' / (links.shared.DEP + '+')
+                        if tree.is_symlink():
+                            tree.unlink()
+                        write_tree(tree, links.layout(value, case_root, patched=True))
+                        result = record('external/' + links.shared.DEP + '+/artifact/link\n' if phase.endswith('.files') else '')
                 elif phase == 'query':
                     prefix = '@@' + links.shared.DEP + '+' if engine == 'native' else '@gitdep'
                     result = record(prefix + '//:copy\n' + prefix + '//:sources\n')
@@ -593,11 +631,16 @@ class MainTests(unittest.TestCase):
         self.assertEqual(sum(r['argv'][0] == '/usr/bin/git' for r in report['runs']), 123)
         self.assertTrue(report['build_commands_executed'])
         self.assertFalse(report['test_commands_executed'])
-        self.assertTrue(all(engine == 'native' for name, engine, _ in observations if name.startswith('native.')))
+        # Native-only cases invoke only native, except the reference comparison
+        # of the consumer case's linked source artifact.
+        self.assertTrue(all(engine == 'native' or (name == 'native.selected-consumer-boundaries' and phase.startswith('artifact'))
+                            for name, engine, phase in observations if name.startswith('native.')))
+        self.assertIn(('native.selected-consumer-boundaries', 'reference', 'artifact.files'), observations)
         for mutation in ('case', 'plan', 'parity', 'kind', 'pin', 'native-hash', 'sources', 'shutdown', 'shutdown-code',
                          'scratch', 'run-id', 'extra-run', 'stdout-hash', 'stdout-raw', 'argv', 'cwd', 'git-mode',
                          'commit', 'input', 'marker', 'link-kind', 'link-target', 'link-bytes', 'read-bytes',
                          'reference-root', 'artifact', 'publication', 'tamper', 'warm', 'counts',
+                         'linked-artifact-bytes', 'linked-artifact-path', 'linked-artifact-missing',
                          'blob-evidence', 'blob-run', 'blob-index', 'blob-oid', 'blob-size', 'blob-parent',
                          'blob-pin', 'blob-payload', 'blob-worktree', 'blob-inputs'):
             changed = copy.deepcopy(report)
@@ -647,6 +690,14 @@ class MainTests(unittest.TestCase):
                 first['trees']['reference.sources']['root'] = str(Path(changed['scratch_directory']) / 'native')
             elif mutation == 'artifact':
                 first['artifacts']['native.copy']['copy.txt']['bytes_base64'] = ''
+            elif mutation.startswith('linked-artifact'):
+                consumers = next(c for c in changed['checks'] if c['input']['mode'] == 'consumers')
+                if mutation == 'linked-artifact-bytes':
+                    consumers['artifacts']['native.artifact']['link']['bytes_base64'] = base64.b64encode(b'x').decode()
+                elif mutation == 'linked-artifact-path':
+                    consumers['artifacts']['reference.artifact']['link']['path'] = '/elsewhere/link'
+                else:
+                    del consumers['artifacts']['reference.artifact']
             elif mutation == 'publication':
                 next(c for c in changed['checks'] if c['input']['diagnostic'])['no_publication'] = False
             elif mutation == 'tamper':
@@ -682,7 +733,7 @@ class MainTests(unittest.TestCase):
             self.assertFalse(links.report_passes(malformed))
 
     def test_synthetic_failures_restore_origins_and_cleanup(self):
-        for fault in ('reference', 'shutdown', 'interrupt', 'unexpected', 'input', 'bytes', 'publication', 'repair', 'warm-retry'):
+        for fault in ('reference', 'shutdown', 'interrupt', 'unexpected', 'input', 'bytes', 'publication', 'repair', 'warm-retry', 'artifact'):
             with self.subTest(fault=fault), tempfile.TemporaryDirectory(dir='/tmp/opencode') as temporary:
                 code, report, _ = self.run_main(temporary, fault)
                 self.assertEqual(code, 130 if fault == 'interrupt' else 1)

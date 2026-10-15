@@ -57,7 +57,8 @@ CASES = [
     case('native.prefix-containment', diagnostic='escape', shape='prefix_escape', prefix='nested/pkg'),
     case('native.patch-regular-referent', patch='referent'),
     case('native.patch-delete-referent', diagnostic='dangling', patch='delete'),
-    case('native.patch-symlink-leaf', diagnostic='patch_link', patch='link'),
+    # PatchUtil replaces a patched link leaf with a regular file (referent kept).
+    case('native.patch-symlink-leaf', patch='link'),
     case('native.root-module-link', diagnostic='module_link', shape='module'),
     case('native.selected-consumer-boundaries', mode='consumers', shape='consumers'),
     case('native.reject-committed-nul-target', diagnostic='malformed_target', shape='nul_blob'),
@@ -69,17 +70,11 @@ DIAGNOSTICS = {
     'dangling': r'(?:symlink|symbolic link)[^\n]*(?:dangling|missing|nonexistent|does not exist|not found)',
     'cycle': r'(?:symlink|symbolic link)[^\n]*(?:cycle|cyclic|loop|too many|hop limit)',
     'directory': r'(?:symlink|symbolic link)[^\n]*(?:directory target|targets? (?:a )?director|resolves? to (?:a )?director)',
-    'patch_link': (r'patch[^\n]*(?:symlink|symbolic link)[^\n]*(?:unsupported|not supported|forbidden|refus|cannot)'
-                   r'|(?m:^bazel-rs: cannot apply patch //:git-local\.patch: unsafe patch symlink: '
-                   r'"/[^\n"]*/e2e/smoke/\.bazelversion"$)'),
     'module_link': (r'(?<![\w./])MODULE\.bazel[^\n]*(?:symlink|symbolic link)[^\n]*(?:unsupported|not supported|forbidden|refus|cannot)'
                     r'|(?m:^bazel-rs: Git file is not regular \(symlinks/special files forbidden\): /[^\n]*/MODULE\.bazel$)'),
     'bzl_link': (r'(?<![\w./])(?:native\.bzl|\.bzl file)[^\n]*(?:symlink|symbolic link)[^\n]*(?:unsupported|not supported|forbidden|refus|cannot)'
                  r'|(?m:^bazel-rs: symlink load sources are unsupported: @@opencode_gitcheck_dep\+//bzl:native\.bzl '
                  r'\(/[^\n]*/bzl/native\.bzl\)$)'),
-    # The latter ordering is from engine.rs, not yet captured for this fixture.
-    'source_link': (r'(?:source artifact|artifact/link)[^\n]*(?:symlink|symbolic link)[^\n]*(?:unsupported|not supported|forbidden|refus|cannot)'
-                    r'|(?m:^bazel-rs: source symlinks are not supported: /[^\n]*/artifact/link$)'),
     # New native-only contract: require the malformed committed entry identity,
     # target semantics and explicit unsafe/control/NUL reason on the SAME line.
     'malformed_target': (r'(?m:^(?=[^\n]*(?:symlink|symbolic link))(?=[^\n]*\btarget\b)'
@@ -167,6 +162,9 @@ def layout(item, case_root, *, patched=False):
              'BUILD.bazel': ('file', shared.BUILD.encode()), 'data': ('file', shared.data()),
              '.bazelversion': ('file', PATCHED_VERSION if patched and item.get('patch') == 'referent' else VERSION),
              '.bazelversion.same': ('file', VERSION), LINK: ('symlink', RAW.encode())}
+    if patched and item.get('patch') == 'link':
+        # Bazel's PatchUtil deletes the link and writes a fresh regular file.
+        files[LINK] = ('file', PATCHED_VERSION)
     shape = item.get('shape')
     if shape == 'build':
         files['BUILD.real'] = files['BUILD.bazel']
@@ -490,12 +488,33 @@ def invocation(phase):
         return 'mod', None
     if phase == 'bzl':
         return 'query', '@gitdep//bzl:all'
-    if phase == 'artifact':
-        return 'build', '@gitdep//artifact:selected'
+    if phase.startswith('artifact'):
+        return 'cquery' if phase.endswith('.files') else 'build', ARTIFACT
     if phase == 'query':
         return 'query', '@gitdep//:all'
     return ('cquery' if phase.endswith('.files') else 'build',
             '@gitdep//:' + ('sources' if 'sources' in phase else 'copy'))
+
+
+ARTIFACT = '@gitdep//artifact:selected'
+
+
+def artifact_path_ok(engine, path, scratch, item, output_base):
+    """The filegroup's one source is artifact/link -> ../data.
+
+    Native lists the resolved, symlink-free referent in its own Git cache; the
+    reference cquery lists the link's own path under its execroot.
+    """
+    if engine == 'native':
+        trees = shared.trees_directory(scratch / 'native' / item['name'])
+        return path.name == 'data' and path.is_absolute() and '..' not in path.parts and path.is_relative_to(trees)
+    return path == output_base / 'execroot/_main/external' / (shared.DEP + '+') / 'artifact/link'
+
+
+def artifact_manifest(engine, paths, scratch, item, output_base):
+    if len(paths) != 1 or not artifact_path_ok(engine, paths[0], scratch, item, output_base):
+        raise ValueError('linked source artifact has the wrong identity: ' + engine)
+    return {'link': file_evidence(paths[0], shared.data(), include_bytes=True)}
 
 
 def expected_argv(report, item, key):
@@ -547,6 +566,17 @@ def run_case(args, runner, scratch, workspace, reference, item):
         check['artifacts'][engine + '.' + phase] = shared.output_manifest(paths, expected, source)
         return root
 
+    def artifact(engine):
+        # A source artifact through an internal Git link builds in Bazel and
+        # natively, reading the referent's bytes.
+        result = invoke(engine, 'artifact')
+        if engine == 'native':
+            paths = shared.native_paths(result, ARTIFACT, scratch)
+        else:
+            shared.success(result)
+            paths = reference_output_paths(shared.success(invoke(engine, 'artifact.files')), workspace, reference.output_base)
+        check['artifacts'][engine + '.artifact'] = artifact_manifest(engine, paths, scratch, item, reference.output_base)
+
     try:
         fixture = materialize(case_root, workspace, item, runner, check)
         check['inputs_before'] = inputs_snapshot(fixture)
@@ -578,7 +608,10 @@ def run_case(args, runner, scratch, workspace, reference, item):
                             raise ValueError('repair did not restore the same immutable cache tree')
                 if item['mode'] == 'consumers':
                     require_rejection(invoke(engine, 'bzl'), 'bzl_link')
-                    require_rejection(invoke(engine, 'artifact'), 'source_link')
+                    artifact(engine)
+            if item['mode'] == 'consumers' and item['kind'] != 'differential':
+                # Reference comparison for the source-artifact phase only.
+                artifact('reference')
         check.update(status='PASS', parity_claim=item['kind'] == 'differential')
     except (OSError, ValueError) as exc:
         check['error'] = str(exc)
@@ -710,13 +743,17 @@ def report_passes(report):
             wanted = {engine + '.' + phase for engine in engines for phase in phases(item)}
             if item['kind'] == 'differential':
                 wanted.update(('reference.sources.files', 'reference.copy.files'))
+            link_artifacts = set()
+            if item['mode'] == 'consumers':
+                wanted.update(('reference.artifact', 'reference.artifact.files'))
+                link_artifacts = {'native.artifact', 'reference.artifact'}
             if set(check['run_ids']) != wanted:
                 return False
             records = {}
             for key, index in check['run_ids'].items():
                 record = linked(index, item['name'] + '.' + key, expected_argv(report, item, key), workspace)
                 records[key] = record
-                diagnostic = item['diagnostic'] or ('bzl_link' if key.endswith('.bzl') else 'source_link' if key.endswith('.artifact') else None)
+                diagnostic = item['diagnostic'] or ('bzl_link' if key.endswith('.bzl') else None)
                 if diagnostic:
                     require_rejection(record, diagnostic)
                 else:
@@ -725,8 +762,17 @@ def report_passes(report):
                         shared.query_result(record, key.startswith('native.'))
             artifact_keys = {key for key in wanted if key.endswith(('.sources', '.copy'))}
             tree_keys = {key for key in artifact_keys if key.endswith('.sources')}
-            if set(check['artifacts']) != artifact_keys or set(check['trees']) != tree_keys:
+            if set(check['artifacts']) != artifact_keys | link_artifacts or set(check['trees']) != tree_keys:
                 return False
+            for key in link_artifacts:
+                engine = key.split('.', 1)[0]
+                evidence = check['artifacts'][key]
+                paths = (shared.native_paths(records[key], ARTIFACT, scratch) if engine == 'native'
+                         else reference_output_paths(shared.success(records[key + '.files']), workspace, ref.output_base))
+                if (set(evidence) != {'link'} or not evidence_matches(evidence['link'], shared.data())
+                        or [Path(evidence['link']['path'])] != paths
+                        or not artifact_path_ok(engine, paths[0], scratch, item, ref.output_base)):
+                    return False
             if item['diagnostic'] and check['no_publication'] is not True:
                 return False
             for key in artifact_keys:
@@ -802,10 +848,10 @@ def main(argv=None):
                                'Real private file-URL origins; genuine Bazel 9.3.0 may use BCR only for its built-in closure.',
                                'Reference trees come from regular cquery sources in private reference caches, never native caches.',
                                'Complete lstat/readlink inventory precedes positive link reads; malicious origins are never followed.',
-                               'Directory links, root MODULE links, selected .bzl/source artifacts and patch link leaves remain unsupported.',
+                               'Directory links, root MODULE links and selected .bzl links remain unsupported. A source artifact through an internal link builds and is compared with the reference; a patched link leaf becomes a regular file (PatchUtil), see docs/ARCHIVE_SYMLINKS.md.',
                                'A real mode-120000 NUL-target blob is committed via the Git index, never created as an OS link; raw blob bytes and both commits are proven.',
                                'Archive links, other unsafe-character permutations, 40-hop limits and old/new patch-path matrices need native unit coverage.',
-                               'Patch/MODULE/load/source and committed-NUL-target diagnostic classes have captured CLI regressions; only this report records actual invocation outcomes.'])
+                               'MODULE/load and committed-NUL-target diagnostic classes have captured CLI regressions; only this report records actual invocation outcomes.'])
     runner = RecordingRunner(report, args.timeout)
     scratch = reference = None
     interrupted = False

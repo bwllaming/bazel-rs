@@ -290,7 +290,18 @@ pub fn materialize_with_download_policy(
         .prefix(".stage-")
         .tempdir_in(&trees)
         .map_err(|e| format!("cannot stage repository: {e}"))?;
-    crate::archive::extract(&bytes, &archive_type, prefix, staging.path())?;
+    // Bazel names the archive by its downloaded file, the URL's last path
+    // segment (e.g. in the zip link-escape error).
+    let archive_name = reqwest::Url::parse(url)
+        .ok()
+        .and_then(|parsed| {
+            parsed
+                .path_segments()
+                .and_then(|mut segments| segments.next_back().map(str::to_owned))
+        })
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| url.to_owned());
+    crate::archive::extract_named(&bytes, &archive_type, prefix, staging.path(), &archive_name)?;
     for (path, value) in &overlays {
         let relative = relative_path(path)?;
         let integrity = Integrity::parse(value.as_str().expect("validated overlay integrity"))?;
@@ -506,7 +517,20 @@ fn write_source_file(
 ) -> Result<(), String> {
     let path = root.join(relative);
     ensure_directory(path.parent().ok_or("source file has no parent")?)?;
-    reject_symlink(&path)?;
+    // Archive symlinks and hard links may occupy an overlay or MODULE.bazel
+    // path. Replace that path itself, as Bazel's repository-cache copy does
+    // (FileSystemUtils.copyFile: Files.copy REPLACE_EXISTING), rather than
+    // writing through a link to another tree entry or outside the tree.
+    if let Ok(metadata) = fs::symlink_metadata(&path)
+        && (metadata.file_type().is_symlink() || multiply_linked(&metadata))
+    {
+        fs::remove_file(&path).map_err(|e| {
+            format!(
+                "cannot replace linked source file {}: {e}",
+                relative.display()
+            )
+        })?;
+    }
     fs::write(&path, bytes)
         .map_err(|e| format!("cannot write source file {}: {e}", relative.display()))?;
     #[cfg(unix)]
@@ -521,6 +545,17 @@ fn write_source_file(
     Ok(())
 }
 
+#[cfg(unix)]
+fn multiply_linked(metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    metadata.is_file() && metadata.nlink() > 1
+}
+
+#[cfg(not(unix))]
+fn multiply_linked(_metadata: &fs::Metadata) -> bool {
+    false
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct Manifest {
     format: String,
@@ -532,6 +567,11 @@ struct Entry {
     directory: bool,
     mode: u32,
     sha256: String,
+    /// Literal target of a symbolic link, never followed for hashing or
+    /// recursion. Omitted for files/directories so link-free manifests keep
+    /// their exact pre-link bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    symlink: Option<String>,
 }
 
 fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
@@ -539,15 +579,34 @@ fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
         for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
             let path = entry.map_err(|e| e.to_string())?.path();
             let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-            if !metadata.is_file() && !metadata.is_dir() {
-                return Err("unsupported file type in repository tree".into());
-            }
             let name = path
                 .strip_prefix(root)
                 .map_err(|e| e.to_string())?
                 .to_str()
                 .ok_or("non-UTF-8 repository paths unsupported")?
                 .to_owned();
+            if metadata.file_type().is_symlink() {
+                // Record the literal target only: no hashing, mode or recursion
+                // through the link, whether it is internal, dangling or external.
+                let target = fs::read_link(&path)
+                    .map_err(|e| e.to_string())?
+                    .into_os_string()
+                    .into_string()
+                    .map_err(|_| "non-UTF-8 repository symlink targets unsupported")?;
+                result.insert(
+                    name,
+                    Entry {
+                        directory: false,
+                        mode: 0,
+                        sha256: String::new(),
+                        symlink: Some(target),
+                    },
+                );
+                continue;
+            }
+            if !metadata.is_file() && !metadata.is_dir() {
+                return Err("unsupported file type in repository tree".into());
+            }
             #[cfg(unix)]
             let mode = {
                 use std::os::unix::fs::PermissionsExt;
@@ -569,6 +628,7 @@ fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
                     directory: metadata.is_dir(),
                     mode,
                     sha256,
+                    symlink: None,
                 },
             );
             if metadata.is_dir() {
@@ -677,6 +737,8 @@ mod tests {
         );
         let manifest = first.with_extension("json");
         let before = fs::read(&manifest).unwrap();
+        // Link-free manifests keep their pre-link serialization exactly.
+        assert!(!String::from_utf8_lossy(&before).contains("symlink"));
         let blob = cache
             .join("downloads/sha256")
             .join(hex(&Sha256::digest(archive)));
@@ -706,6 +768,107 @@ mod tests {
         );
         assert_eq!(fs::read(blob).unwrap(), b"corrupt");
         assert!(!first.exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn archive_links_are_recorded_literally_and_authoritative_writes_replace_links() {
+        use std::os::unix::fs::{MetadataExt, symlink};
+        let temp = tempfile::tempdir().unwrap();
+        let registry = root_registry(temp.path());
+        let mut archive = tar::Builder::new(Vec::new());
+        for (name, kind, link, bytes) in [
+            ("pkg/data", b'0', "", b"original".as_slice()),
+            ("pkg/link", b'2', "data", b""),
+            ("pkg/dangling", b'2', "missing", b""),
+            ("pkg/external", b'2', "../../outside", b""),
+            ("pkg/MODULE.bazel", b'2', "data", b""),
+            ("pkg/hard", b'1', "pkg/data", b""),
+            ("pkg/overlaid", b'1', "pkg/data", b""),
+        ] {
+            let mut header = tar::Header::new_ustar();
+            header.set_mode(0o644);
+            header.set_size(bytes.len() as u64);
+            header.set_entry_type(tar::EntryType::new(kind));
+            header.as_mut_bytes()[..name.len()].copy_from_slice(name.as_bytes());
+            header.as_mut_bytes()[157..157 + link.len()].copy_from_slice(link.as_bytes());
+            header.set_cksum();
+            archive.append(&header, bytes).unwrap();
+        }
+        let archive = archive.into_inner().unwrap();
+        fs::write(temp.path().join("source.tar"), &archive).unwrap();
+        let overlay = registry.local_path().unwrap().join("modules/dep/1/overlay");
+        fs::create_dir_all(&overlay).unwrap();
+        fs::write(overlay.join("overlaid"), b"overlay").unwrap();
+        let source = json!({
+            "url": reqwest::Url::from_file_path(temp.path().join("source.tar")).unwrap().as_str(),
+            "integrity": sri(&archive),
+            "strip_prefix": "pkg",
+            "overlay": {"overlaid": sri(b"overlay")},
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let cache = temp.path().join("cache");
+        let module = b"module(name='dep',version='1')\n";
+        let root = materialize(&registry, "dep", "1", module, &source, &cache).unwrap();
+        assert_eq!(fs::read_link(root.join("link")).unwrap(), Path::new("data"));
+        assert_eq!(
+            fs::read_link(root.join("external")).unwrap(),
+            Path::new("../../outside")
+        );
+        // Authoritative MODULE and overlay writes replace links, never write through.
+        assert!(
+            fs::symlink_metadata(root.join("MODULE.bazel"))
+                .unwrap()
+                .is_file()
+        );
+        assert_eq!(fs::read(root.join("MODULE.bazel")).unwrap(), module);
+        assert_eq!(fs::read(root.join("overlaid")).unwrap(), b"overlay");
+        assert_eq!(fs::read(root.join("data")).unwrap(), b"original");
+        assert_eq!(fs::metadata(root.join("data")).unwrap().nlink(), 2);
+        assert_eq!(
+            fs::metadata(root.join("hard")).unwrap().ino(),
+            fs::metadata(root.join("data")).unwrap().ino()
+        );
+        let manifest_path = root.with_extension("json");
+        let manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        assert_eq!(
+            manifest["files"]["link"],
+            json!({"directory": false, "mode": 0, "sha256": "", "symlink": "data"})
+        );
+        assert_eq!(manifest["files"]["dangling"]["symlink"], "missing");
+        assert_eq!(manifest["files"]["external"]["symlink"], "../../outside");
+        assert!(manifest["files"]["data"].get("symlink").is_none());
+        let before = fs::read(&manifest_path).unwrap();
+        // Warm reuse does not follow dangling or external links.
+        fs::remove_file(temp.path().join("source.tar")).unwrap();
+        assert_eq!(
+            materialize(&registry, "dep", "1", module, &source, &cache).unwrap(),
+            root
+        );
+        // Retargeting to identical content, or replacing a link with a regular
+        // copy of its referent, is a cache mismatch repaired from the blob.
+        for tamper in [0, 1] {
+            fs::remove_file(root.join("link")).unwrap();
+            if tamper == 0 {
+                symlink("hard", root.join("link")).unwrap();
+            } else {
+                fs::write(root.join("link"), b"original").unwrap();
+            }
+            assert_eq!(
+                materialize(&registry, "dep", "1", module, &source, &cache).unwrap(),
+                root
+            );
+            assert_eq!(fs::read_link(root.join("link")).unwrap(), Path::new("data"));
+            assert_eq!(fs::read(&manifest_path).unwrap(), before);
+        }
+    }
+
+    fn root_registry(root: &Path) -> Registry {
+        let registry = root.join("registry");
+        fs::create_dir(&registry).unwrap();
+        Registry::LocalPath(registry)
     }
 
     #[test]

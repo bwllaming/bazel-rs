@@ -57,11 +57,19 @@ mutation, as with the existing materializers; this is not an OS sandbox.
 ## Adjacent behavior remains restricted
 
 Internal BUILD-file links already accepted by package loading can be preserved.
-Selected `.bzl` links, source-artifact links and relevant glob links remain
-controlled unsupported cases. Action inputs are still regular-file-only.
-Patches targeting a link, including an unused alternative header path, still
-fail before mutation. Archive links and directory links are not implemented by
-this change. Full Bazel 9.3 and application build/test parity remain incomplete.
+Selected `.bzl` links and relevant glob links remain controlled unsupported cases.
+Since N19 (`docs/ARCHIVE_SYMLINKS.md`), source-artifact labels follow links that
+resolve inside their repository, so a preserved internal file link builds; action
+inputs are the resolved, symlink-free files.
+Since N19, a patch targeting an internal link leaf follows Bazel's PatchUtil: the
+link is read through and replaced by a regular patched file, leaving its referent
+unchanged (links escaping the tree and symlinked ancestors still fail before
+mutation). `artifacts/git-links-validation.json` predates both changes and must be
+regenerated: `scripts/validate_git_links.py` now requires the
+`native.patch-symlink-leaf` case to succeed with a regular patched leaf, and the
+consumer case to build `@gitdep//artifact:selected` with the bytes of `data`,
+compared with genuine Bazel. Directory links are not implemented by this change;
+archive links are covered by `docs/ARCHIVE_SYMLINKS.md`. Full Bazel 9.3 and application build/test parity remain incomplete.
 
 The initial read-only application probe preserved the required `rules_distroless`
 link and advanced to the unmaterialized extension repository
@@ -73,8 +81,10 @@ evidence is in `artifacts/mainrepo-git-links-loading.json`.
 
 The reviewed increment passes 497 Rust tests and 240 Python tests, formatting,
 strict Clippy, release compilation and error-level Rust Analyzer diagnostics.
-`artifacts/git-links-validation.json` passes four genuine Bazel differentials and
-15 native-only checks, including malformed committed-blob rejection. Six adjacent
+Before N19, `artifacts/git-links-validation.json` passed four genuine Bazel
+differentials and 15 native-only checks, including malformed committed-blob
+rejection. N19 changed the artifact and patch-symlink-leaf phases, so that report
+is stale until regenerated with the updated validator. Six adjacent
 Git, patch, repository, module and declaration reports pass against the same
 release binary. Reports retain exact link/output evidence, executable/source
 hashes, successful reference shutdown and scratch removal. This approval covers
