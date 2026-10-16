@@ -99,9 +99,10 @@ select on `java_runtime_version`/`java_language_version` with
 `config_setting(values = ...)`; the four options are modelled for the command
 line, `config_setting` and `select()`. `query` does not register JavaOptions:
 `--java_runtime_version=X :: Unrecognized option: --java_runtime_version=X`
-(also `--no...` forms; Bazel exits 2, the native CLI 1). Starlark transitions are not modelled
-in this tree (N18c), so reading `//command_line_option:java_runtime_version`
-from a transition stays an explicit rule-transition gap. The exec transition
+(also `--no...` forms; Bazel exits 2, the native CLI 1). Starlark transitions
+(N18c, below) read them as strings and write string values as given (another
+value type is `Invalid value type for option 'NAME'`; `None` stays an explicit
+gap). The exec transition
 maps `java_*` from the parent's `tool_java_*` and propagates `tool_java_*`
 (`_java_options`, `builtin_exec_platforms.bzl:350-385`).
 
@@ -499,7 +500,10 @@ configuration.` (`:247-262`).
    '//command_line_option:copt' is not implemented in the native profile
    (modelled native options: ...; read only: define, copt)`. Modelled are
    `compilation_mode`, `host_compilation_mode`, `stamp`, `strip`,
-   `force_pic`, `platforms`, `host_platform`, `extra_toolchains` and `cpu`
+   `force_pic`, `platforms`, `host_platform`, `extra_toolchains`, the
+   JavaOptions version strings `java_runtime_version`,
+   `java_language_version`, `tool_java_runtime_version` and
+   `tool_java_language_version` (N28b) and `cpu`
    (which only a transition sets natively; `--cpu` stays an unsupported
    command-line option); `define` (never writable in Bazel) and `copt`
    (always its default natively, `--copt` being unsupported) may only be
@@ -518,7 +522,7 @@ configuration.` (`:247-262`).
    the type names are the enum classes' simple names, Starlark.classType,
    `net/starlark/java/eval/Starlark.java:337-418`), `platforms` a list of
    Labels, `host_platform` a Label, `stamp`/`force_pic` bools,
-   `extra_toolchains` strings, `cpu` the host CPU string (AutoCpuConverter,
+   `extra_toolchains` strings, the Java version options strings, `cpu` the host CPU string (AutoCpuConverter,
    `analysis/config/AutoCpuConverter.java:30-62`: `k8` here), `copt` `[]`,
    `define` `[]` without `--define`; a non-empty `--define` list is
    unreadable (RegularTransition.createBuildSettingsDict / getTransitionSafeString,

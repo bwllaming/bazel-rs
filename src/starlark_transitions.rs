@@ -40,8 +40,9 @@ use crate::starlark_options::SettingType;
 pub(crate) const COMMAND_LINE_OPTION_PREFIX: &str = "//command_line_option:";
 
 /// The native options a transition may read and write natively: the
-/// modelled options of crate::configuration (docs/CONFIGURATION.md) and
-/// `--cpu`, which only a transition sets natively.
+/// modelled options of crate::configuration (docs/CONFIGURATION.md),
+/// including N28b's JavaOptions version strings, and `--cpu`, which only a
+/// transition sets natively.
 const MODELLED_NATIVE_OPTIONS: &[&str] = &[
     "compilation_mode",
     "host_compilation_mode",
@@ -52,6 +53,10 @@ const MODELLED_NATIVE_OPTIONS: &[&str] = &[
     "host_platform",
     "extra_toolchains",
     "cpu",
+    "java_runtime_version",
+    "java_language_version",
+    "tool_java_runtime_version",
+    "tool_java_language_version",
 ];
 
 /// Native options a transition may only read: `define` (Bazel forbids
@@ -742,6 +747,12 @@ fn native_input<'v>(
                 .as_deref()
                 .unwrap_or(crate::configuration::host_cpu()),
         ),
+        // JavaOptions String fields (JavaOptions.java:373-403), read as
+        // Starlark strings.
+        "java_runtime_version" => heap.alloc(native.java.java_runtime_version.as_str()),
+        "java_language_version" => heap.alloc(native.java.java_language_version.as_str()),
+        "tool_java_runtime_version" => heap.alloc(native.java.tool_java_runtime_version.as_str()),
+        "tool_java_language_version" => heap.alloc(native.java.tool_java_language_version.as_str()),
         // An empty `--define` list is a readable empty list (a non-empty
         // one is unreadable, see unreadable_input); `--copt` is always its
         // default natively.
@@ -1529,6 +1540,23 @@ fn convert_native(
             }
             _ => return Err(invalid()),
         },
+        // JavaOptions String options: a string value is stored as is
+        // (`def.getType().isInstance`, :726-728, before any converter).
+        "java_runtime_version"
+        | "java_language_version"
+        | "tool_java_runtime_version"
+        | "tool_java_language_version" => {
+            let RawKind::String(text) = &raw.kind else {
+                return Err(invalid());
+            };
+            let field = match name {
+                "java_runtime_version" => &mut native.java.java_runtime_version,
+                "java_language_version" => &mut native.java.java_language_version,
+                "tool_java_runtime_version" => &mut native.java.tool_java_runtime_version,
+                _ => &mut native.java.tool_java_language_version,
+            };
+            *field = text.clone();
+        }
         "extra_toolchains" => {
             // allowMultiple: each element's toString converted with
             // CommaSeparatedOptionListConverter, concatenated; then

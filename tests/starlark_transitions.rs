@@ -770,7 +770,7 @@ bool_for_int(name = "bool_for_int")
         at_rule(
             14,
             5,
-            "Starlark transition on '//command_line_option:copt' is not implemented in the native profile (modelled native options: compilation_mode, host_compilation_mode, stamp, strip, force_pic, platforms, host_platform, extra_toolchains, cpu; read only: define, copt)"
+            "Starlark transition on '//command_line_option:copt' is not implemented in the native profile (modelled native options: compilation_mode, host_compilation_mode, stamp, strip, force_pic, platforms, host_platform, extra_toolchains, cpu, java_runtime_version, java_language_version, tool_java_runtime_version, tool_java_language_version; read only: define, copt)"
         )
     );
     assert_eq!(
@@ -1333,5 +1333,84 @@ missing(name = "missing", deps = [":printing"])
     assert!(
         error.contains("No attribute 'nope' in attr. Make sure you declared a rule attribute with this name.\nAvailable attributes: _action_listener, _allowlist_function_transition, _color, _config_dependencies, _lf, _n, aspect_hints, compatible_with, deprecation, deps, exec_compatible_with, exec_group_compatible_with, exec_properties, expect_failure, features, generator_function, generator_location, generator_name, name, package_metadata, restricted_to, tags, target_compatible_with, testonly, toolchains, transitive_configs, visibility\n"),
         "{error}"
+    );
+}
+
+/// N28b's JavaOptions version strings in Starlark transitions: read as
+/// strings, written as given, selectable after the transition, part of the
+/// transitioned identity (an ST hash; StringConverter options are not
+/// explicit in the path); a non-string value is Bazel's invalid type.
+#[test]
+fn java_version_options_in_transitions() {
+    let ws = Workspace::new(&[
+        (
+            "j/defs.bzl",
+            r#"load("//r:defs.bzl", "ALLOW")
+
+def _jdk_impl(settings, attr):
+    print("READ", settings["//command_line_option:java_runtime_version"], repr(settings["//command_line_option:java_language_version"]), settings["//command_line_option:tool_java_runtime_version"])
+    return {
+        "//command_line_option:java_runtime_version": "remotejdk_17",
+        "//command_line_option:java_language_version": "17",
+    }
+
+jdk17 = transition(
+    implementation = _jdk_impl,
+    inputs = [
+        "//command_line_option:java_runtime_version",
+        "//command_line_option:java_language_version",
+        "//command_line_option:tool_java_runtime_version",
+    ],
+    outputs = [
+        "//command_line_option:java_runtime_version",
+        "//command_line_option:java_language_version",
+    ],
+)
+
+def _bad_impl(settings, attr):
+    return {"//command_line_option:java_runtime_version": 17}
+
+bad = transition(implementation = _bad_impl, inputs = [], outputs = ["//command_line_option:java_runtime_version"])
+
+def _r_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.write(out, ctx.attr.v + "\n")
+    return [DefaultInfo(files = depset([out]))]
+
+ATTRS = dict(ALLOW)
+ATTRS["v"] = attr.string()
+jdk_rule = rule(_r_impl, cfg = jdk17, attrs = ATTRS)
+bad_rule = rule(_r_impl, cfg = bad, attrs = ATTRS)
+"#,
+        ),
+        (
+            "j/BUILD.bazel",
+            r#"load(":defs.bzl", "bad_rule", "jdk_rule")
+config_setting(name = "jdk17", values = {"java_runtime_version": "remotejdk_17", "java_language_version": "17"})
+V = select({":jdk17": "jdk17", "//conditions:default": "other"})
+jdk_rule(name = "j", v = V)
+bad_rule(name = "bad", v = V)
+"#,
+        ),
+    ]);
+    let (lines, contents, stderr) = ws.built(&["//j:j"]);
+    assert!(
+        stderr.contains("READ local_jdk \"\" remotejdk_11"),
+        "{stderr}"
+    );
+    assert_eq!(contents, "jdk17\n");
+    let mnemonic = root(&lines[0]);
+    assert!(mnemonic.starts_with("rust-fastbuild-ST-"), "{lines:?}");
+    // Writing the values the configuration already has is a no-op.
+    let (lines, contents, _) = ws.built(&[
+        "//j:j",
+        "--java_runtime_version=remotejdk_17",
+        "--java_language_version=17",
+    ]);
+    assert_eq!(root(&lines[0]), "rust-fastbuild");
+    assert_eq!(contents, "jdk17\n");
+    assert!(
+        ws.rejected(&["//j:bad"])
+            .contains("Invalid value type for option 'java_runtime_version'"),
     );
 }
