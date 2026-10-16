@@ -443,17 +443,20 @@ opt_test(name = "check", target_under_test = ":subject")
     // N28c: skylib's unittest toolchain_type now analyzes (its package
     // default metadata is analyzed in the no-config configuration instead
     // of failing as a gap), so the analysis test's toolchain resolution
-    // expands every registered toolchain, including the built-in
-    // `@bazel_tools//tools/test:all`, whose package loads @rules_shell: the
-    // offline fixture registry cannot fetch that source, an explicit
-    // repository failure before the analysis_test_transition gap.
+    // expands every registered toolchain. The built-in fixture registry
+    // carries the BCR patches of @rules_shell and the other registered
+    // toolchain modules (tests/fixtures/builtin_modules/provenance.json), so
+    // their packages load; rules_java's `@local_jdk` package then needs a
+    // glob over the JDK's `bin` symlink (N28d), an explicit failure before
+    // the analysis_test_transition gap.
     let stderr = f.rejected(
         &f.run_builtin("build", &["//:check"]),
         "While resolving toolchains for target //:check (",
     );
     assert!(
-        stderr.contains("invalid registered toolchain '//tools/test:all'")
-            && stderr.contains("repository @@rules_shell+ is not materialized"),
+        stderr.contains("invalid registered toolchain '@local_jdk//:runtime_toolchain_definition'")
+            && stderr.contains("glob could match unsupported symlink")
+            && stderr.contains("(symlinks are never followed)"),
         "{stderr}"
     );
     assert!(!stderr.contains("unittest.bzl"), "{stderr}");
