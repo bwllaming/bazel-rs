@@ -4,7 +4,7 @@
 use crate::bzl_visibility::{BzlVisibility, InitGuard, check_load_visibilities};
 use crate::label::{Label, PackageId};
 use crate::repository::RepositorySet;
-use crate::workspace::{has_marker, package_build_file};
+use crate::workspace::package_build_file;
 use starlark::environment::{FrozenModule, Globals, Module};
 use starlark::eval::{Evaluator, ReturnFileLoader};
 use starlark::syntax::ast::{AstLiteral, Expr, Stmt};
@@ -520,9 +520,10 @@ impl<'a> Loader<'a> {
         let mut components = label.name.split('/').peekable();
         // Bazel reads a .bzl through symlinks (its FileValue follows them);
         // package boundaries stay checked on the logical label path, as for
-        // source artifacts (engine.rs). Links resolve inside the repository or
-        // into a repository already materialized in this invocation
-        // (source_links::resolve_across); the label keeps its logical identity
+        // source artifacts (engine.rs). Links resolve inside the repository,
+        // into a repository already materialized in this invocation, or (for
+        // repository-rule-generated repositories) into a host path
+        // (source_links::LinkPolicy); the label keeps its logical identity
         // and only the resolved file's bytes are read.
         let mut linked: Option<PathBuf> = None;
         // BzlCompileFunction.java:109-136.
@@ -547,14 +548,9 @@ impl<'a> Loader<'a> {
                 Err(e) => return Err(inspect(e)),
             };
             if metadata.file_type().is_symlink() || linked.is_some() {
-                let others = self.repositories.materialized_roots();
-                let blocked = self.repositories.link_blocked_prefixes();
-                match crate::source_links::resolve_across(
-                    root,
-                    Path::new(&relative),
-                    &others,
-                    &blocked,
-                ) {
+                let policy = self.repositories.link_policy(&label.repository);
+                match crate::source_links::resolve_with_policy(root, Path::new(&relative), &policy)
+                {
                     Err(error) if error.starts_with("circular symlinks detected") => {
                         return Err(error);
                     }
@@ -584,12 +580,9 @@ impl<'a> Loader<'a> {
                         path.display()
                     ));
                 }
-                if has_marker(&path)? {
-                    return Err(format!(
-                        "load {label} crosses a nested workspace boundary at {}",
-                        path.display()
-                    ));
-                }
+                // Bazel 9.3 has no nested repositories: MODULE.bazel,
+                // REPO.bazel and WORKSPACE files are no boundaries
+                // (LocalRepositoryLookupFunction.java:27-35).
                 // An ignored directory with a BUILD file is no subpackage.
                 let names: &[&str] = if ignored.matching_entry(&relative).is_some() {
                     &[]
@@ -1521,15 +1514,14 @@ lambda_mapper = lambda value: value
         temp.file("other/BUILD.bazel", "");
         temp.file("other/defs.bzl", "x = 1\n");
         temp.error("load(':other/defs.bzl', 'x')", "subpackage boundary");
+        // Bazel 9.3 has no nested repositories: markers are no boundaries.
         for marker in ["MODULE.bazel", "REPO.bazel", "WORKSPACE", "WORKSPACE.bazel"] {
             temp.file(&format!("nested/{marker}"), "");
             temp.file("nested/defs.bzl", "x = 1\n");
-            temp.error("load(':nested/defs.bzl', 'x')", "nested workspace boundary");
+            assert!(temp.load("load(':nested/defs.bzl', 'x')").is_ok());
             temp.file("nested/BUILD", "");
-            temp.error(
-                "load('//nested:defs.bzl', 'x')",
-                "nested workspace boundary",
-            );
+            assert!(temp.load("load('//nested:defs.bzl', 'x')").is_ok());
+            fs::remove_file(temp.0.join("nested/BUILD")).unwrap();
             fs::remove_file(temp.0.join("nested").join(marker)).unwrap();
         }
     }

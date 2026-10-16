@@ -501,7 +501,7 @@ fn git_internal_build_and_unselected_file_links_survive_cold_and_offline_warm_bu
 
 #[cfg(unix)]
 #[test]
-fn git_preserved_links_build_as_sources_and_load_but_do_not_relax_glob_boundaries() {
+fn git_preserved_links_build_as_sources_load_and_glob_like_bazel() {
     use std::os::unix::fs::symlink;
     // Source artifacts follow internal links like Bazel (docs/ARCHIVE_SYMLINKS.md).
     let f = Fixture::new();
@@ -537,12 +537,12 @@ fn git_preserved_links_build_as_sources_and_load_but_do_not_relax_glob_boundarie
     );
     symlink("data.txt", f.0.join("repos/alpha/p/linked")).unwrap();
     f.git_override();
+    // glob() follows the link like Bazel's (N28d, docs/ARCHIVE_SYMLINKS.md).
     let result = f.run(&["--cache-dir=chosen", "query", "@first//p:probe"]);
-    assert!(!result.status.success());
+    assert!(result.status.success(), "{}", stderr(&result));
     assert!(
-        stderr(&result).contains("glob could match unsupported symlink"),
+        String::from_utf8_lossy(&result.stdout).contains("//p:probe"),
         "{}",
-        stderr(&result)
+        String::from_utf8_lossy(&result.stdout)
     );
-    assert!(result.stdout.is_empty());
 }

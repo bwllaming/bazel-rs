@@ -30,6 +30,10 @@ pub enum RecordedValue {
     Label(String),
     List(Vec<RecordedValue>),
     Dict(Vec<(String, RecordedValue)>),
+    /// A dict with at least one Label key, in insertion order; each key is a
+    /// `String` or `Label` snapshot. Only `attr.label_keyed_string_dict`
+    /// accepts it (BuildType.LabelKeyedDictType, packages/BuildType.java:436-490).
+    LabelKeyedDict(Vec<(RecordedValue, RecordedValue)>),
 }
 
 #[derive(Debug)]
@@ -243,10 +247,28 @@ fn snapshot(
         }
         RecordedValue::List(values)
     } else if let Some(dict) = DictRef::from_value(value) {
+        // Label keys are meaningful only for attr.label_keyed_string_dict
+        // (BuildType.LabelKeyedDictType); string-keyed snapshots keep the
+        // pre-existing shape.
+        if dict
+            .iter()
+            .any(|(key, _)| crate::starlark_types::label_parts(key).is_some())
+        {
+            let mut values = Vec::new();
+            for (key, item) in dict.iter() {
+                if key.unpack_str().is_none() && crate::starlark_types::label_parts(key).is_none() {
+                    bail!("repository snapshot dict keys must be strings or Labels");
+                }
+                let key = snapshot(key, depth + 1, budget, host)?;
+                let item = snapshot(item, depth + 1, budget, host)?;
+                values.push((key, item));
+            }
+            return Ok(RecordedValue::LabelKeyedDict(values));
+        }
         let mut values = Vec::new();
         for (key, item) in dict.iter() {
             let key = key.unpack_str().ok_or_else(|| {
-                anyhow!("repository snapshot dict keys must be ASCII strings; label-keyed dicts are unsupported")
+                anyhow!("repository snapshot dict keys must be strings or Labels")
             })?;
             budget.key(key, depth + 1)?;
             host.string(key).map_err(anyhow::Error::msg)?;
@@ -518,7 +540,10 @@ mod tests {
             ("{'k': ('Ā',)}", "above U+00FF"),
             ("{'Ā': 'ok'}", "above U+00FF"),
             ("{1: 'ok'}", "dict keys"),
-            ("{main_label(): 'ok'}", "label-keyed dicts"),
+            (
+                "{main_label(): 'ok', 1: 'no'}",
+                "dict keys must be strings or Labels",
+            ),
         ] {
             let source = format!("capture(name='made', value={expression})");
             let error = capture(&source).unwrap_err();
@@ -529,6 +554,28 @@ mod tests {
         // Latin-1 runtime byte data (U+0000..U+00FF) is representable.
         capture("capture(name='made', value={'k' + chr(255): [chr(0) + chr(233) + chr(255)]})")
             .unwrap();
+        // Label keys (attr.label_keyed_string_dict) keep their identity, in
+        // insertion order, next to string keys.
+        let calls =
+            capture("capture(name='made', value={'//:s': 'a', main_label(): 'b'})").unwrap();
+        assert_eq!(
+            calls[0].attributes["value"],
+            RecordedValue::LabelKeyedDict(vec![
+                (
+                    RecordedValue::String("//:s".to_owned()),
+                    RecordedValue::String("a".to_owned())
+                ),
+                (
+                    RecordedValue::Label("//original:data".to_owned()),
+                    RecordedValue::String("b".to_owned())
+                ),
+            ])
+        );
+        // String-keyed snapshots keep their pre-existing shape.
+        assert!(matches!(
+            capture("capture(name='made', value={'k': 'v'})").unwrap()[0].attributes["value"],
+            RecordedValue::Dict(_)
+        ));
     }
 
     #[test]

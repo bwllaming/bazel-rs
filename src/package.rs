@@ -256,6 +256,12 @@ mod collector {
         pub macro_site: RefCell<Option<super::CallSite>>,
         /// Call expressions of the BUILD file (generator names, locations).
         pub calls: super::CallExpressions,
+        /// The last legacy glob I/O error (TargetDefinitionContext.setIOException,
+        /// packages/TargetDefinitionContext.java:499-504): the package fails
+        /// with it whatever else happens (:823-826).
+        pub glob_io_error: RefCell<Option<String>>,
+        /// The first Skyframe glob symlink issue (GlobsFunction).
+        pub glob_symlink_issue: RefCell<Option<crate::source_links::SymlinkIssue>>,
     }
 
     /// REPO.bazel evaluation state (packages/RepoThreadContext.java).
@@ -1355,7 +1361,7 @@ fn package_globals(builder: &mut GlobalsBuilder) {
             .map(|v| strings(v, "glob exclude"))
             .transpose()?
             .unwrap_or_default();
-        crate::glob::glob(
+        let outcome = crate::glob::glob(
             &context.root,
             &context.package,
             &includes,
@@ -1363,8 +1369,20 @@ fn package_globals(builder: &mut GlobalsBuilder) {
             exclude_directories != 0,
             allow_empty,
             &context.ignored,
+            &context.repositories.link_policy(&context.repository),
         )
-        .map_err(anyhow::Error::msg)
+        .map_err(anyhow::Error::msg)?;
+        // StarlarkNativeModule.runGlobOperation (StarlarkNativeModule.java:851-876):
+        // an I/O error is an error event plus the package's IOException; the
+        // call returns an empty list and evaluation continues.
+        if let Some(error) = outcome.io_error {
+            *context.glob_io_error.borrow_mut() = Some(error);
+            return Ok(Vec::new());
+        }
+        if let Some(issue) = outcome.symlink_issue {
+            context.glob_symlink_issue.borrow_mut().get_or_insert(issue);
+        }
+        Ok(outcome.paths)
     }
 
     fn package_name(eval: &mut Evaluator<'_, '_, '_>) -> anyhow::Result<String> {
@@ -1941,8 +1959,10 @@ fn evaluate_at(
         group_budget: RefCell::new(HostBudget::default()),
         macro_site: RefCell::new(None),
         calls: call_expressions(&ast),
+        glob_io_error: RefCell::new(None),
+        glob_symlink_issue: RefCell::new(None),
     };
-    let frozen = Module::with_temp_heap(|module| {
+    let evaluated = Module::with_temp_heap(|module| {
         let mut evaluator = Evaluator::new(&module);
         evaluator.extra = Some(&declarations);
         evaluator.set_loader(&loader);
@@ -1958,7 +1978,22 @@ fn evaluate_at(
                 filename.to_owned(),
             )))
             .map_err(|e| format!("cannot freeze BUILD module: {e:?}"))
-    })?;
+    });
+    // PackageFunction.java:551-591: a legacy glob I/O error fails the package
+    // first (TargetDefinitionContext.beforeBuild, :822-826); otherwise a
+    // Skyframe glob symlink issue does (:567-585).
+    let package_display = if package.repository.is_empty() {
+        package.package.clone()
+    } else {
+        format!("@@{}//{}", package.repository, package.package)
+    };
+    if let Some(error) = declarations.glob_io_error.borrow_mut().take() {
+        return Err(format!("no such package '{package_display}': {error}"));
+    }
+    let frozen = evaluated?;
+    if let Some(issue) = declarations.glob_symlink_issue.borrow_mut().take() {
+        return Err(crate::glob::symlink_issue_error(&issue, &package_display));
+    }
     let mut declared_rules = declarations.rules.into_inner();
     for pending in declarations.custom.into_inner() {
         let (implementation, _) = frozen
@@ -3411,6 +3446,8 @@ def legacy():
                 group_budget: RefCell::new(HostBudget::default()),
                 macro_site: RefCell::new(None),
                 calls: HashMap::new(),
+                glob_io_error: RefCell::new(None),
+                glob_symlink_issue: RefCell::new(None),
             };
             Module::with_temp_heap(|module| {
                 module.set(

@@ -101,7 +101,8 @@ or `allow_single_file`. The types are `BuildType.LABEL_DICT_UNARY`
   `StarlarkRepositoryModule.java:152-159`, `bazel/bzlmod/RepoRuleId.java:31-34`). `ctx.attr`
   / tag values are immutable dicts of `Label` (lists of `Label`)
   (`Attribute.valueToStarlark`, `packages/Attribute.java:2442-2450`).
-  `attr.label_keyed_string_dict` and `attr.int_list` remain unsupported there.
+  `attr.label_keyed_string_dict` is supported there since N29 (Label-keyed
+  frozen dicts, docs/GLOB_SYMLINKS.md); `attr.int_list` remains unsupported.
 
 `attr.label_keyed_string_dict` values remain an explicit analysis gap
 (N12): its `ctx.attr` keys would be Targets.

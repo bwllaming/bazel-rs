@@ -81,7 +81,8 @@ remote services, no lockfile updates and no convenience symlink writes.
 Local macros are not custom `rule(...)` implementations or symbolic macros.
 Bzlmod/external loads, providers, toolchains, configured-target analysis, remote
 execution, process timeouts and actual Bazel test execution remain missing.
-Globs and artifacts deliberately do not follow symlinks. License metadata,
+Globs, `.bzl` loads and source artifacts follow symlinks under the shared
+link policy (docs/GLOB_SYMLINKS.md, docs/ARCHIVE_SYMLINKS.md). License metadata,
 package groups and other package defaults are rejected rather than ignored.
 Modules are cached only within each package evaluation.
 

@@ -253,9 +253,10 @@ explicit attribute error), `doc`, `extendable`, `for_dependency_resolution`,
   computed defaults of aspects/repository rules/tags) are listed there.
 * `dict | select(...)` (dict on the left) is not supported by the vendored
   Starlark dict `|`; `select(...) | dict` and `+`/`+=` with lists work.
-* `IntList`/`LabelKeyedStringDict` attributes in repository rules and module
-  extension tags fail explicitly when their values are materialized
-  (`string_keyed_label_dict`/`label_list_dict` are supported there).
+* `IntList` attributes in repository rules and module extension tags fail
+  explicitly when their values are materialized (`string_keyed_label_dict`,
+  `label_list_dict` and, since N29, `label_keyed_string_dict` are supported
+  there; docs/GLOB_SYMLINKS.md).
 * Built-in attributes (`tags`, `testonly`, `size`, ...) are accepted by
   custom rule instantiation since the common-attributes increment
   (docs/COMMON_RULE_ATTRIBUTES.md); defining an attribute with a built-in

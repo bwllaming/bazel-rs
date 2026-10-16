@@ -157,6 +157,10 @@ snapshot timing and frozen ownership across rules, repositories and extension ta
 [Label dictionaries and computed defaults](docs/ATTR_DICTS_COMPUTED_DEFAULTS.md)
 cover `attr.string_keyed_label_dict`, `attr.label_list_dict`, private function
 defaults and the retained `analysis_test_transition`.
+[Glob symlinks and label-keyed repository dictionaries](docs/GLOB_SYMLINKS.md)
+follow links in `glob()` like Bazel (cycles and infinite expansions included,
+host-path reads only for repository-rule-generated repositories such as
+`local_jdk`) and accept `attr.label_keyed_string_dict` in repository rules and tags.
 [Runfiles](docs/RUNFILES.md) cover the analysis of `runfiles`, `ctx.runfiles`,
 DefaultInfo runfiles/executables, FilesToRunProvider and executable/test rules
 (no runfiles trees or manifest actions yet).

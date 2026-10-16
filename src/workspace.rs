@@ -2,7 +2,10 @@
 //!
 //! Package paths use the bounded label grammar from `label`. Symlink package
 //! directories are not supported; discovery never follows directory symlinks.
-//! Nested repositories are boundaries, not packages in the outer repository.
+//! MODULE.bazel, REPO.bazel and WORKSPACE markers only locate the workspace
+//! root: Bazel 9.3 has no nested repositories inside a repository
+//! (`skyframe/LocalRepositoryLookupFunction.java:27-35` always answers the
+//! main repository), so they are neither package nor glob boundaries.
 
 use crate::ignored::IgnoredSubdirectories;
 use crate::label::validate_package_path;
@@ -61,8 +64,24 @@ pub fn discover_packages(
     package: &str,
     ignored: &IgnoredSubdirectories,
 ) -> Result<Vec<String>, String> {
+    discover_packages_skipping(root, package, ignored, &[])
+}
+
+/// [`discover_packages`] that does not descend into `skip` (canonical native
+/// store / `--cache-dir` prefixes that do not contain `root`; Bazel's output
+/// base is never below the workspace).
+pub fn discover_packages_skipping(
+    root: &Path,
+    package: &str,
+    ignored: &IgnoredSubdirectories,
+    skip: &[PathBuf],
+) -> Result<Vec<String>, String> {
     validate_package_path(package)?;
     let root = canonical_root(root)?;
+    let skip: Vec<&PathBuf> = skip
+        .iter()
+        .filter(|prefix| !root.starts_with(prefix))
+        .collect();
     let directory = package_directory(&root, package)?;
     let mut pending = vec![(directory, package.to_owned())];
     let mut packages = Vec::new();
@@ -106,7 +125,7 @@ pub fn discover_packages(
                 continue;
             }
             let path = entry.path();
-            if has_marker(&path)? {
+            if skip.iter().any(|prefix| path.starts_with(prefix)) {
                 continue;
             }
             // Do not silently omit directories that could contain unsupported
@@ -156,12 +175,6 @@ fn package_directory(root: &Path, package: &str) -> Result<PathBuf, String> {
             if !metadata.is_dir() {
                 return Err(format!(
                     "package path is not a directory: {}",
-                    directory.display()
-                ));
-            }
-            if has_marker(&directory)? {
-                return Err(format!(
-                    "package //{package} crosses a nested workspace boundary at {}",
                     directory.display()
                 ));
             }
@@ -526,23 +539,33 @@ mod tests {
     }
 
     #[test]
-    fn nested_workspaces_are_never_discovered_or_explicitly_crossed() {
+    fn nested_markers_are_ordinary_packages_like_bazel() {
+        // LocalRepositoryLookupFunction.java:27-35: no nested repositories.
         let temp = Temp::new();
         temp.file("MODULE.bazel");
         temp.file("BUILD");
+        let mut expected = vec![String::new()];
         for (index, marker) in MARKERS.iter().enumerate() {
             let nested = format!("nested{index}");
             temp.file(&format!("{nested}/{marker}"));
             temp.file(&format!("{nested}/BUILD"));
             temp.file(&format!("{nested}/child/BUILD"));
-            assert!(
-                discover_packages(&temp.0, &nested, &none())
-                    .unwrap_err()
-                    .contains("nested workspace")
+            assert_eq!(
+                discover_packages(&temp.0, &nested, &none()).unwrap(),
+                [nested.clone(), format!("{nested}/child")]
             );
-            assert!(package_build_file(&temp.0, &format!("{nested}/child")).is_err());
+            assert!(package_build_file(&temp.0, &format!("{nested}/child")).is_ok());
+            expected.push(nested.clone());
+            expected.push(format!("{nested}/child"));
         }
-        assert_eq!(discover_packages(&temp.0, "", &none()).unwrap(), [""]);
+        assert_eq!(discover_packages(&temp.0, "", &none()).unwrap(), expected);
+        // The native store below the workspace is skipped.
+        temp.file("cache/repositories/trees/x/BUILD");
+        let canonical = fs::canonicalize(&temp.0).unwrap();
+        assert_eq!(
+            discover_packages_skipping(&temp.0, "", &none(), &[canonical.join("cache")]).unwrap(),
+            expected
+        );
     }
 
     #[test]

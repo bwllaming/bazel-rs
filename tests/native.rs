@@ -173,25 +173,35 @@ fn flags_test_command_and_rc_are_not_silently_ignored() {
 }
 
 #[test]
-fn artifact_paths_cannot_cross_package_or_workspace_boundaries() {
+fn artifact_paths_cannot_cross_package_boundaries() {
+    // Only BUILD files make packages: Bazel 9.3 has no nested repositories
+    // (LocalRepositoryLookupFunction.java:27-35), so MODULE.bazel, REPO.bazel
+    // and WORKSPACE files below a package are ordinary files.
     for marker in ["BUILD.bazel", "MODULE.bazel", "REPO.bazel", "WORKSPACE"] {
+        let crosses = marker == "BUILD.bazel";
         let ws = Workspace::new("genrule(name='bad',outs=['sub/file'],cmd='echo bad > $@')\n");
         ws.file(&format!("sub/{marker}"), "");
         ws.file("sub/input.txt", "nested");
         let result = ws.run(&["build", ":bad"]);
-        assert!(
-            !result.status.success(),
-            "accepted output crossing {marker}"
+        assert_eq!(
+            result.status.success(),
+            !crosses,
+            "output below {marker}: {}",
+            stderr(&result)
         );
-        assert!(!ws.0.join("bazel-rs-out").exists());
+        if crosses {
+            assert!(!ws.0.join("bazel-rs-out").exists());
+        }
         ws.file(
             "BUILD.bazel",
             "filegroup(name='bad',srcs=['sub/input.txt'])\n",
         );
         let result = ws.run(&["build", ":bad"]);
-        assert!(
-            !result.status.success(),
-            "accepted source crossing {marker}"
+        assert_eq!(
+            result.status.success(),
+            !crosses,
+            "source below {marker}: {}",
+            stderr(&result)
         );
     }
 }

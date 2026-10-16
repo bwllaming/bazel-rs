@@ -2623,7 +2623,10 @@ fn alloc_attr_value<'v>(heap: Heap<'v>, name: &str, attr: &AttrValue) -> anyhow:
             heap.alloc(value.clone())
         }
         AttrValue::Int(value) => heap.alloc(*value),
-        AttrValue::Ints(_) | AttrValue::LabelKeyedStringDict(_) => {
+        AttrValue::LabelKeyedStringDict(entries) => {
+            crate::attribute_values::alloc_label_keyed_string_dict(heap, entries)?
+        }
+        AttrValue::Ints(_) => {
             anyhow::bail!(
                 "attribute {name:?} kind is not supported for repository rules by the native profile"
             )

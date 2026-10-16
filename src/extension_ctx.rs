@@ -26,7 +26,7 @@ use std::sync::Arc;
 use crate::custom_rule::AttrValue;
 use crate::extension_calls::{CallRecorder, RecordedRepository};
 use crate::label::{Label, PackageId};
-use crate::module_extension::{ExtensionDefinition, bind_tag};
+use crate::module_extension::ExtensionDefinition;
 use crate::repository::RepositorySet;
 use crate::repository_budget::HostBudget;
 use crate::repository_catalog::OrdinaryParticipant;
@@ -1171,18 +1171,27 @@ fn bind_modules(
                         tag.name, participant.owner
                     )
                 })?;
-                let attributes = bind_tag(schema, &tag.name, &tag.attributes, |text| {
-                    let mapping = repositories.mapping(&participant.owner)?;
-                    resolution_budget
-                        .borrow_mut()
-                        .bytes(Label::resolution_size_bound(
-                            text,
-                            &participant.owner,
-                            "",
-                            mapping,
-                        ))?;
-                    repositories.parse(text, &participant.owner, "")
-                })
+                let repo_mapping_where =
+                    format!("to the {}", repositories.module_display(&participant.owner));
+                let attributes = crate::module_extension::bind_tag_where(
+                    schema,
+                    &tag.name,
+                    &tag.attributes,
+                    |text| {
+                        let mapping = repositories.mapping(&participant.owner)?;
+                        resolution_budget
+                            .borrow_mut()
+                            .bytes(Label::resolution_size_bound(
+                                text,
+                                &participant.owner,
+                                "",
+                                mapping,
+                            ))?;
+                        repositories.parse(text, &participant.owner, "")
+                    },
+                    &repo_mapping_where,
+                    &[],
+                )
                 .map_err(|error| {
                     format!(
                         "MODULE owner {:?}, tag {:?}: {error}",
@@ -1230,7 +1239,10 @@ fn alloc_attrs<'v>(
                 crate::attribute_values::alloc_string_list_dict(heap, entries)?
             }
             AttrValue::Int(value) => heap.alloc(*value),
-            AttrValue::Ints(_) | AttrValue::LabelKeyedStringDict(_) => {
+            AttrValue::LabelKeyedStringDict(entries) => {
+                crate::attribute_values::alloc_label_keyed_string_dict(heap, entries)?
+            }
+            AttrValue::Ints(_) => {
                 anyhow::bail!(
                     "attribute {name:?} kind is not supported for module extension tags by the native profile"
                 )

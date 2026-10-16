@@ -476,9 +476,22 @@ host = repository_rule(_host, attrs = {"target": attr.string()})
     // through under the logical label (main repository and a module).
     assert_eq!(f.built("@cross//:out"), b"from main\n");
     assert_eq!(f.built("@cc_config//:out"), b"from cclike\n");
-    // An arbitrary host path stays an explicit error (Bazel would read it).
+    // A host path linked by a repository rule is read like Bazel (N28d
+    // LinkPolicy host reads, docs/GLOB_SYMLINKS.md).
+    assert_eq!(f.built("@host//:out"), b"outside\n");
+    // A checked-in main-repository link to the same host file stays an
+    // explicit error.
+    f.file(
+        "linked/BUILD.bazel",
+        "load(':config.bzl', 'VALUE')\ngenrule(name = 'out', outs = ['out.txt'], cmd = 'echo %s > $@' % VALUE)\n",
+    );
+    std::os::unix::fs::symlink(
+        outside.path().join("config.bzl"),
+        f.0.path().join("linked/config.bzl"),
+    )
+    .unwrap();
     rejected(
-        &f.run(&["build", "@host//:out"]),
+        &f.run(&["build", "//linked:out"]),
         "outside its repository root",
     );
 }

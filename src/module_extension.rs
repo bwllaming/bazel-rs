@@ -304,6 +304,20 @@ pub fn bind_tag(
     raw: &BTreeMap<String, serde_json::Value>,
     resolve: impl Fn(&str) -> Result<Label, String>,
 ) -> Result<BTreeMap<String, AttrValue>, String> {
+    bind_tag_where(schema, tag_name, raw, resolve, "to the root module", &[])
+}
+
+/// [`bind_tag`] with TypeCheckedTag's `repoMappingWhere` (`to the root
+/// module` / `to the module 'NAME@VERSION'`, bzlmod/TypeCheckedTag.java:104-114)
+/// and the tag class's attribute declaration order for the visibility check.
+pub fn bind_tag_where(
+    schema: &BTreeMap<String, AttrSpec>,
+    tag_name: &str,
+    raw: &BTreeMap<String, serde_json::Value>,
+    resolve: impl Fn(&str) -> Result<Label, String>,
+    repo_mapping_where: &str,
+    attribute_order: &[String],
+) -> Result<BTreeMap<String, AttrValue>, String> {
     let mut attrs = BTreeMap::new();
     for (name, value) in raw {
         if value.is_null() {
@@ -312,12 +326,8 @@ pub fn bind_tag(
         let spec = schema
             .get(name)
             .ok_or_else(|| format!("unknown tag attribute {name:?}"))?;
-        let parsed = parse_attribute(&spec.kind, value, &resolve).map_err(|e| {
-            if matches!(
-                spec.kind,
-                AttrKind::StringKeyedLabelDict | AttrKind::LabelListDict
-            ) && e.starts_with("expected value of type '")
-            {
+        let parsed = parse_attribute(name, &spec.kind, value, &resolve).map_err(|e| {
+            if crate::repository_rule::bazel_conversion_error(&spec.kind, &e) {
                 // TypeCheckedTag where-text (bazel/bzlmod/TypeCheckedTag.java:106-114).
                 format!("in '{tag_name}' tag, {e}")
             } else {
@@ -341,6 +351,20 @@ pub fn bind_tag(
             }
             attrs.insert(name.clone(), spec.default.clone());
         }
+    }
+    // AttributeUtils.java:104-135 (declaration order when known).
+    let ordered: Vec<&String> = if attribute_order.is_empty() {
+        attrs.keys().collect()
+    } else {
+        attribute_order.iter().collect()
+    };
+    if let Some(error) = crate::repository_rule::unknown_repository_error(
+        ordered
+            .into_iter()
+            .filter_map(|name| attrs.get(name).map(|value| (name.as_str(), value))),
+        repo_mapping_where,
+    ) {
+        return Err(format!("in '{tag_name}' tag, {error}"));
     }
     for (name, value) in &attrs {
         let ascii = match value {
@@ -377,6 +401,7 @@ pub fn bind_tag(
 }
 
 fn parse_attribute(
+    name: &str,
     kind: &AttrKind,
     value: &serde_json::Value,
     resolve: &impl Fn(&str) -> Result<Label, String>,
@@ -396,13 +421,19 @@ fn parse_attribute(
             .collect::<Result<Vec<_>, _>>()
     };
     Ok(match kind {
-        AttrKind::IntList | AttrKind::LabelKeyedStringDict => {
+        AttrKind::IntList => {
             return Err(format!(
                 "attribute kind {kind:?} is not supported for module extension tags by the native profile"
             ));
         }
         AttrKind::String => AttrValue::String(string()?.to_owned()),
         AttrKind::StringList => AttrValue::Strings(strings()?),
+        AttrKind::StringDict | AttrKind::StringListDict
+            if crate::repository_rule::reject_non_string_keys(value).is_err() =>
+        {
+            return crate::repository_rule::reject_non_string_keys(value)
+                .map(|()| AttrValue::Bool(false));
+        }
         AttrKind::StringDict => {
             let entries = value
                 .as_object()
@@ -461,8 +492,10 @@ fn parse_attribute(
                 .map(|text| resolve(text).map(|label| label.to_string()))
                 .collect::<Result<_, _>>()?,
         ),
-        AttrKind::StringKeyedLabelDict | AttrKind::LabelListDict => {
-            crate::repository_rule::label_dict_json(kind, value, resolve)?
+        AttrKind::StringKeyedLabelDict
+        | AttrKind::LabelListDict
+        | AttrKind::LabelKeyedStringDict => {
+            crate::repository_rule::label_dict_json(name, kind, value, resolve)?
         }
         AttrKind::Output | AttrKind::OutputList => {
             return Err("output tag attributes are unsupported".to_owned());
@@ -558,6 +591,64 @@ mod tests {
         bind_tag(schema, "t", &raw(value), |text| {
             Label::parse(text, "caller")
         })
+    }
+
+    #[test]
+    fn label_keyed_string_dict_tags_resolve_keys_at_caller() {
+        let schema = schema("{'platforms': attr.label_keyed_string_dict()}");
+        assert_eq!(
+            bind(&schema, json!({})).unwrap()["platforms"],
+            AttrValue::LabelKeyedStringDict(vec![])
+        );
+        assert_eq!(
+            bind(&schema, json!({"platforms": {":p": "linux/amd64"}})).unwrap()["platforms"],
+            AttrValue::LabelKeyedStringDict(vec![(
+                "//caller:p".to_owned(),
+                "linux/amd64".to_owned()
+            )])
+        );
+        assert_eq!(
+            bind(
+                &schema,
+                json!({"platforms": {":p": "a", "//caller:p": "b"}})
+            )
+            .unwrap_err(),
+            "in 't' tag, duplicate labels in attribute 'platforms': //caller:p (as [\":p\", \"//caller:p\"])"
+        );
+        assert_eq!(
+            bind(&schema, json!({"platforms": {":p": ["a"]}})).unwrap_err(),
+            "in 't' tag, expected value of type 'string' for dict value element, but got [\"a\"] (list)"
+        );
+    }
+
+    #[test]
+    fn label_keyed_tag_conversion_errors_use_bazel_texts() {
+        use crate::repository_rule::{DICT_ENTRIES, KEY_REPR, KEY_TYPE};
+        let schema = schema("{'platforms': attr.label_keyed_string_dict()}");
+        assert_eq!(
+            bind(
+                &schema,
+                json!({"platforms": {DICT_ENTRIES: [[{KEY_REPR: "1", KEY_TYPE: "int"}, "x"]]}})
+            )
+            .unwrap_err(),
+            "in 't' tag, expected value of type 'string' for dict key element, but got 1 (int)"
+        );
+        assert_eq!(
+            bind(&schema, json!({"platforms": {"//:a:b": "x"}})).unwrap_err(),
+            "in 't' tag, invalid label '//:a:b' in dict key element: invalid target name 'a:b': target names may not contain ':'"
+        );
+        assert_eq!(
+            bind_tag_where(
+                &schema,
+                "t",
+                &raw(json!({"platforms": {"@nope//:a": "x"}})),
+                |text| Label::parse_in(text, "", "", &BTreeMap::new()),
+                "to the module 'dep@1.0'",
+                &[],
+            )
+            .unwrap_err(),
+            "in 't' tag, no repository visible as '@nope' to the module 'dep@1.0', but referenced by label '@nope//:a' in attribute 'platforms'"
+        );
     }
 
     #[test]

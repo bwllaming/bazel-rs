@@ -403,6 +403,21 @@ impl<'v> StarlarkValue<'v> for LabelValue {
         Ok(Self::from_value(other) == Some(self))
     }
 
+    /// Label.compareTo (cmdline/Label.java:677-685): the package identifier
+    /// (repository name, then package path, PackageIdentifier.java:295-307),
+    /// then the target name; Starlark orders Comparable values of one class
+    /// with it (`sorted`, `<`).
+    fn compare(&self, other: Value<'v>) -> starlark::Result<std::cmp::Ordering> {
+        match Self::from_value(other) {
+            Some(other) => Ok((&self.repository, &self.package, &self.name).cmp(&(
+                &other.repository,
+                &other.package,
+                &other.name,
+            ))),
+            None => starlark::values::ValueError::unsupported_with(self, "compare", other),
+        }
+    }
+
     fn get_attr(&self, name: &str, heap: Heap<'v>) -> Option<Value<'v>> {
         Some(match name {
             "name" => heap.alloc(self.name.as_str()),
@@ -2358,6 +2373,11 @@ ok = (len(labels.to_list()) == 2 and owner == target.label and
         pass("str(Label('//p:a')) == '@@//p:a' and str(Label('@@r+//p:a')) == '@@r+//p:a'");
         pass("'%s|%r' % (Label('//p:a'), Label('//p:a')) == '@@//p:a|Label(\"//p:a\")'");
         pass("repr([Label('//p:a')]) == '[Label(\"//p:a\")]'");
+        // Label.compareTo (cmdline/Label.java:677-685): repository, package, name.
+        pass(
+            "sorted([Label('//p:b'), Label('@@r+//a:a'), Label('//p:a'), Label('//o:z')]) == [Label('//o:z'), Label('//p:a'), Label('//p:b'), Label('@@r+//a:a')]",
+        );
+        pass("Label('//p:a') < Label('//p:b') and not (Label('//q:a') < Label('//p:b'))");
         // Artifact.repr (actions/Artifact.java:1256-1262).
         pass("repr(a) == '<source file pkg/a.txt>' and str(a) == repr(a)");
         // Depset.repr (collect/nestedset/Depset.java:319-328).

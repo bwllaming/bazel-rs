@@ -250,6 +250,12 @@ impl HostBudget {
                     self.recorded(value, depth + 1)?;
                 }
             }
+            RecordedValue::LabelKeyedDict(values) => {
+                for (key, value) in values {
+                    self.recorded(key, depth + 1)?;
+                    self.recorded(value, depth + 1)?;
+                }
+            }
             _ => {}
         }
         Ok(())

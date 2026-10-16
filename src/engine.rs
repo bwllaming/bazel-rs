@@ -656,7 +656,8 @@ pub struct Engine {
     /// their other prerequisite errors (Self::starlark_prerequisite_errors).
     deferred_duplicates: BTreeMap<ConfiguredTargetKey, Vec<String>>,
     /// Source directories used as file targets (path -> label).
-    source_directories: BTreeMap<PathBuf, Label>,
+    /// Several labels (a directory and links to it, N28d) may name one.
+    source_directories: BTreeMap<PathBuf, BTreeSet<Label>>,
 }
 
 impl Engine {
@@ -784,9 +785,11 @@ impl Engine {
             // (ContainingPackageLookupFunction).
             let subpackage = ignored.matching_entry(&relative).is_none()
                 && (directory.join("BUILD.bazel").is_file() || directory.join("BUILD").is_file());
-            if subpackage || workspace::has_marker(&directory)? {
+            // No nested repositories in Bazel 9.3
+            // (LocalRepositoryLookupFunction.java:27-35).
+            if subpackage {
                 return Err(format!(
-                    "output {out} crosses a package or nested workspace boundary at {}",
+                    "output {out} crosses a package boundary at {}",
                     directory.display()
                 ));
             }
@@ -876,12 +879,11 @@ impl Engine {
             // boundaries below stay checked on the logical label path.
             linked |= metadata.file_type().is_symlink();
             if i + 1 < parts.len()
-                && ((ignored.matching_entry(&relative).is_none()
-                    && (path.join("BUILD.bazel").is_file() || path.join("BUILD").is_file()))
-                    || workspace::has_marker(&path)?)
+                && ignored.matching_entry(&relative).is_none()
+                && (path.join("BUILD.bazel").is_file() || path.join("BUILD").is_file())
             {
                 return Err(format!(
-                    "{label} crosses a package or nested workspace boundary at {}",
+                    "{label} crosses a package boundary at {}",
                     path.display()
                 ));
             }
@@ -889,16 +891,11 @@ impl Engine {
         if linked {
             let relative = Path::new(&label.package).join(&label.name);
             // Links may continue into a repository already materialized in
-            // this invocation (reads only; the label stays logical).
-            let others = self.repositories.materialized_roots();
-            let blocked = self.repositories.link_blocked_prefixes();
-            match crate::source_links::resolve_across(
-                &repository_root,
-                &relative,
-                &others,
-                &blocked,
-            )
-            .map_err(|error| format!("source {label}: {error}"))?
+            // this invocation, or (repository-rule-generated repositories
+            // only) a host path; reads only (source_links::LinkPolicy).
+            let policy = self.repositories.link_policy(&label.repository);
+            match crate::source_links::resolve_with_policy(&repository_root, &relative, &policy)
+                .map_err(|error| format!("source {label}: {error}"))?
             {
                 crate::source_links::Resolution::Resolved(resolved) => path = resolved,
                 // A dangling source symlink is a missing input file, like a
@@ -913,7 +910,10 @@ impl Engine {
         // like any file (Package.java:893-920, RuleContext.java:1865); only
         // its use as an action input or requested output is not modelled.
         if path.is_dir() {
-            self.source_directories.insert(path.clone(), label.clone());
+            self.source_directories
+                .entry(path.clone())
+                .or_default()
+                .insert(label.clone());
             return Ok(Target::Source(path));
         }
         if !path.is_file() {
@@ -1098,7 +1098,10 @@ impl Engine {
                 }
                 let ignored = ignored.filter_for_directory(&context.package);
                 let root = self.repositories.root(&context.repository)?;
-                for package in workspace::discover_packages(root, &context.package, &ignored)? {
+                let skip = self.repositories.link_policy(&context.repository).blocked;
+                for package in
+                    workspace::discover_packages_skipping(root, &context.package, &ignored, &skip)?
+                {
                     let id = PackageId {
                         repository: context.repository.clone(),
                         package,
@@ -3703,8 +3706,13 @@ impl Engine {
                     .map_err(invalid)?
                     .to_path_buf();
                 let mut packages = if root.join(&context.package).is_dir() {
-                    workspace::discover_packages(&root, &context.package, &ignored)
-                        .map_err(invalid)?
+                    workspace::discover_packages_skipping(
+                        &root,
+                        &context.package,
+                        &ignored,
+                        &self.repositories.link_policy(&context.repository).blocked,
+                    )
+                    .map_err(invalid)?
                 } else {
                     Vec::new()
                 };
@@ -5260,39 +5268,43 @@ impl Engine {
         // Bazel accepts source directories as inputs with unsound change
         // tracking; the native executor does not plant or digest them.
         let directories = self.source_directories.clone();
-        let directory = |real: &Path| {
+        // Every label naming the directory (it and links to it, N28d).
+        let directory = |real: &Path| -> Vec<String> {
             directories
                 .get(real)
                 .filter(|_| real.is_dir())
+                .into_iter()
+                .flatten()
                 .map(crate::rule_declarations::canonical_form)
+                .collect()
         };
         let mut unsupported = Vec::new();
         for (key, artifact) in &requested {
-            if artifact.producer.is_none()
-                && let Some(label) = directory(&artifact.real)
-            {
-                unsupported.push(format!(
-                    "{}: source directory '{label}' as a requested output is not supported by the native profile",
-                    crate::rule_declarations::canonical_form(&key.label)
-                ));
+            if artifact.producer.is_none() {
+                for label in directory(&artifact.real) {
+                    unsupported.push(format!(
+                        "{}: source directory '{label}' as a requested output is not supported by the native profile",
+                        crate::rule_declarations::canonical_form(&key.label)
+                    ));
+                }
             }
         }
         // N23a: a requested target's default runfiles are built (staged)
         // with it (OutputGroupInfo.HIDDEN_TOP_LEVEL); a source directory
         // among them is the same unmodelled input.
         for (key, artifact) in &hidden {
-            if artifact.producer.is_none()
-                && let Some(label) = directory(&artifact.real)
-            {
-                unsupported.push(format!(
-                    "{}: source directory '{label}' in its runfiles is not supported by the native profile",
-                    crate::rule_declarations::canonical_form(&key.label)
-                ));
+            if artifact.producer.is_none() {
+                for label in directory(&artifact.real) {
+                    unsupported.push(format!(
+                        "{}: source directory '{label}' in its runfiles is not supported by the native profile",
+                        crate::rule_declarations::canonical_form(&key.label)
+                    ));
+                }
             }
         }
         for node in &nodes {
             for real in source_inputs.get(&node.action.id).into_iter().flatten() {
-                if let Some(label) = directory(real) {
+                for label in directory(real) {
                     unsupported.push(format!(
                         "{}: source directory '{label}' as an action input is not supported by the native profile",
                         node.action.id
@@ -5301,7 +5313,8 @@ impl Engine {
             }
         }
         if !unsupported.is_empty() {
-            unsupported.dedup();
+            let mut seen = BTreeSet::new();
+            unsupported.retain(|line| seen.insert(line.clone()));
             return Err(unsupported.join("\n"));
         }
         let mut errors = Vec::new();

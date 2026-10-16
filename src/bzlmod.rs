@@ -1337,6 +1337,42 @@ fn owned_json(value: Value<'_>, depth: usize, host: &mut HostBudget) -> anyhow::
         return Ok(Json::Array(values));
     }
     if let Some(dict) = DictRef::from_value(value) {
+        // A key that is not a string reaches the attribute's type check, which
+        // reports Bazel's `dict key element` conversion error
+        // (repository_rule::DICT_ENTRIES transport, packages/Type.java:574-577).
+        if dict.iter().any(|(k, _)| k.unpack_str().is_none()) {
+            let mut entries = Vec::new();
+            for (k, v) in dict.iter() {
+                let key = match k.unpack_str() {
+                    Some(key) => {
+                        host.string(key).map_err(anyhow::Error::msg)?;
+                        Json::String(key.to_owned())
+                    }
+                    None => {
+                        let repr = k.to_repr();
+                        host.string(&repr).map_err(anyhow::Error::msg)?;
+                        let mut marker = serde_json::Map::new();
+                        marker.insert(
+                            crate::repository_rule::KEY_REPR.to_owned(),
+                            Json::String(repr),
+                        );
+                        marker.insert(
+                            crate::repository_rule::KEY_TYPE.to_owned(),
+                            Json::String(k.get_type().to_owned()),
+                        );
+                        Json::Object(marker)
+                    }
+                };
+                let value = owned_json(v, depth + 1, host)?;
+                entries.push(Json::Array(vec![key, value]));
+            }
+            let mut map = serde_json::Map::new();
+            map.insert(
+                crate::repository_rule::DICT_ENTRIES.to_owned(),
+                Json::Array(entries),
+            );
+            return Ok(Json::Object(map));
+        }
         let mut map = serde_json::Map::new();
         for (k, v) in dict.iter() {
             let key = k
@@ -2001,13 +2037,19 @@ archive_override(module_name="archive", urls="https://invalid.invalid/a.tar.gz",
                 "x=use_extension('//:x.bzl','x')\nx.tag(value=x)",
                 "unsupported extension tag attribute",
             ),
-            (
-                "x=use_extension('//:x.bzl','x')\nx.tag(value={1:'x'})",
-                "dictionary key must be a string",
-            ),
         ] {
             fails(source, expected);
         }
+        // A non-string dict key is recorded for the attribute's type check,
+        // which reports Bazel's `dict key element` conversion error.
+        let file = run("x=use_extension('//:x.bzl','x')\nx.tag(value={'a':'b', 1:'x'})");
+        assert_eq!(
+            file.extension_usages[0].tags[0].attributes["value"],
+            serde_json::json!({crate::repository_rule::DICT_ENTRIES: [
+                ["a", "b"],
+                [{crate::repository_rule::KEY_REPR: "1", crate::repository_rule::KEY_TYPE: "int"}, "x"],
+            ]})
+        );
     }
 
     #[test]
@@ -2469,7 +2511,6 @@ r(name="second",result=result)
         );
         for (setup, value, expected) in [
             ("", "r", "unsupported extension tag attribute"),
-            ("", "{1:'x'}", "dictionary key must be a string"),
             ("a=[]\na.append(a)", "a", "cyclic or exceed nesting depth"),
         ] {
             fails(

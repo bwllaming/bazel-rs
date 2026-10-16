@@ -233,7 +233,7 @@ fn registry_archive_links_materialize_and_build_through_links() {
 }
 
 #[test]
-fn dangling_escaping_and_globbed_archive_links_fail_explicitly() {
+fn dangling_and_escaping_archive_links_fail_and_globbed_links_follow() {
     let fixture = Fixture::new();
     // A dangling source symlink is a missing input file, as in Bazel.
     failed(
@@ -246,10 +246,12 @@ fn dangling_escaping_and_globbed_archive_links_fail_explicitly() {
         &fixture.run(&["build", "@linked//:escape"]),
         "missing input file '@@linked+//:escape.txt'",
     );
-    // Bazel's glob follows links; the native glob policy still rejects them.
-    failed(
-        &fixture.run(&["query", "@linked//globbed:all"]),
-        "glob could match unsupported symlink",
+    // glob() follows the in-repository link like Bazel's (N28d).
+    let globbed = fixture.run(&["query", "@linked//globbed:all"]);
+    assert!(globbed.status.success(), "{}", stderr(&globbed));
+    assert_eq!(
+        String::from_utf8_lossy(&globbed.stdout),
+        "@@linked+//globbed:g\n"
     );
     assert_eq!(
         fs::read_to_string(fixture.path().join("outside.txt")).unwrap(),

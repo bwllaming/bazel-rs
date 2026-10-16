@@ -118,9 +118,12 @@ the published location (relative symlinks into it are replanted, below).
   N26, into the root of any repository already materialized in the current
   invocation (main workspace, a module, the rules_cc `local_config_cc` link from
   `unix_cc_configure.bzl:362-370` into `rules_cc`); see
-  docs/ARCHIVE_SYMLINKS.md "Cross-repository links". Other host paths remain the
-  explicit `points outside its repository root` error where Bazel would read the
-  target; globs and package directories through links stay unsupported.
+  docs/ARCHIVE_SYMLINKS.md "Cross-repository links". Since N28d these
+  repository-rule-generated trees may also be read through links to other host
+  paths (the `local_jdk` shape), for source artifacts, `.bzl` loads and `glob()`,
+  never into the repository store (`source_links::LinkPolicy`,
+  docs/GLOB_SYMLINKS.md); `glob()` follows links like Bazel. Package
+  directories through links stay unsupported.
 * `path.realpath` resolves component by component; a dangling link fails naming
   the missing target: `[unix_jni.cc:382] TARGET (No such file or directory)`.
 * `ctx.extract(archive, output="", strip_prefix="", ...)` and
