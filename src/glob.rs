@@ -456,6 +456,21 @@ impl Walker<'_> {
                         }
                         Err(error) => return Ok(Walk::Io(jni_error(&logical, &error))),
                     };
+                    // An ignored directory link is neither a result nor
+                    // traversed (GlobCache.globCacheShouldTraverseDirectory),
+                    // so nothing is read through it: skip it before the native
+                    // link policy (e.g. `bazel-*` convenience links listed in
+                    // .bazelignore or REPO.bazel ignore_directories()).
+                    if metadata.is_dir() {
+                        let repository_path = if self.package.is_empty() {
+                            path.clone()
+                        } else {
+                            format!("{}/{path}", self.package)
+                        };
+                        if self.ignored.matching_entry(&repository_path).is_some() {
+                            continue;
+                        }
+                    }
                     let real = match fs::canonicalize(&logical) {
                         Ok(real) => real,
                         Err(error) => return Ok(Walk::Io(jni_error(&logical, &error))),
@@ -1448,6 +1463,40 @@ mod tests {
             run(&["**"], false, false, &ignored).unwrap(),
             run(&["**"], false, false, &ignored).unwrap()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ignored_host_directory_links_are_skipped_before_the_link_policy() {
+        use std::os::unix::fs::symlink;
+        let temp = Temp::new();
+        let host = Temp::new();
+        temp.file("a.txt");
+        host.file("x/h.txt");
+        // A `bazel-out`-shaped convenience link to a host directory.
+        symlink(&host.0, temp.0.join("bazel-out")).unwrap();
+        let run = |ignored: &IgnoredSubdirectories| {
+            glob(
+                &temp.0,
+                "",
+                &strings(&["**/*.txt"]),
+                &[],
+                true,
+                true,
+                ignored,
+                &LinkPolicy::default(),
+            )
+        };
+        // Not ignored: the main repository's explicit host-link refusal.
+        assert!(
+            run(&none())
+                .unwrap_err()
+                .contains("outside its repository root")
+        );
+        // Ignored (.bazelignore entry or REPO.bazel ignore_directories):
+        // neither traversed nor read, so no refusal.
+        assert_eq!(run(&ignoring(&["bazel-out"], &[])).unwrap(), ["a.txt"]);
+        assert_eq!(run(&ignoring(&[], &["bazel-*"])).unwrap(), ["a.txt"]);
     }
 
     #[cfg(unix)]
