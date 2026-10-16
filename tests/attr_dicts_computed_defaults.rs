@@ -445,19 +445,15 @@ opt_test(name = "check", target_under_test = ":subject")
     // of failing as a gap), so the analysis test's toolchain resolution
     // expands every registered toolchain. The built-in fixture registry
     // carries the BCR patches of @rules_shell and the other registered
-    // toolchain modules (tests/fixtures/builtin_modules/provenance.json), so
-    // their packages load; rules_java's `@local_jdk` package then needs a
-    // glob over the JDK's `bin` symlink (N28d), an explicit failure before
-    // the analysis_test_transition gap.
+    // toolchain modules (tests/fixtures/builtin_modules/provenance.json), and
+    // rules_java's `@local_jdk` package globs through the JDK's `bin` link
+    // since N28d, so resolution reaches `@bazel_tools//tools/test`'s
+    // `use_default_test_toolchain` config_setting, whose
+    // `use_target_platform_for_tests` option is not modelled: an explicit
+    // failure before the analysis_test_transition gap.
     let stderr = f.rejected(
         &f.run_builtin("build", &["//:check"]),
-        "While resolving toolchains for target //:check (",
-    );
-    assert!(
-        stderr.contains("invalid registered toolchain '@local_jdk//:runtime_toolchain_definition'")
-            && stderr.contains("glob could match unsupported symlink")
-            && stderr.contains("(symlinks are never followed)"),
-        "{stderr}"
+        "in values attribute of config_setting rule @@bazel_tools//tools/test:use_default_test_toolchain: select() on build option 'use_target_platform_for_tests' is not implemented in the native profile",
     );
     assert!(!stderr.contains("unittest.bzl"), "{stderr}");
     // analysis_test_transition is restricted to analysis_test rules.
