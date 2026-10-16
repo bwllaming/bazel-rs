@@ -509,3 +509,119 @@ fn source_directories_are_file_targets_matched_by_name() {
         "{stderr}"
     );
 }
+
+/// Merge adaptations of N27 with N18c, N23a and N28c: a transitioned
+/// attribute's prerequisites are validated in its edge configuration (the
+/// dependency analyzed there), a source directory among a requested
+/// target's runfiles is the explicit gap, and package_metadata file errors
+/// precede the rule's own attribute errors in one prerequisite pass.
+#[test]
+fn transitioned_runfiles_and_metadata_prerequisites() {
+    let f = Fixture::new();
+    f.file(
+        "tools/allowlists/function_transition_allowlist/BUILD.bazel",
+        "package_group(name = 'function_transition_allowlist', packages = ['public'])\n",
+    );
+    f.file(
+        "flags.bzl",
+        r#"def _flag_impl(ctx):
+    return []
+string_flag = rule(implementation = _flag_impl, build_setting = config.string(flag = True))
+"#,
+    );
+    f.file(
+        "tr.bzl",
+        r#"P = provider(fields = ["mode"])
+
+def _t_impl(settings, attr):
+    return {"//:mode": "on"}
+
+t = transition(implementation = _t_impl, inputs = [], outputs = ["//:mode"])
+
+def _lib_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".srcs")
+    ctx.actions.write(out, "srcs=%s\n" % ",".join([f.basename for f in ctx.files.srcs]))
+    return [DefaultInfo(files = depset([out]))]
+
+ALLOW = {"_allowlist_function_transition": attr.label(default = "//tools/allowlists/function_transition_allowlist")}
+ATTRS = dict(ALLOW)
+ATTRS["srcs"] = attr.label_list(allow_files = [".go"], cfg = t)
+tlib = rule(_lib_impl, attrs = ATTRS)
+
+def _prov_impl(ctx):
+    return [P(mode = "x")]
+
+prov = rule(_prov_impl)
+NEEDS = dict(ALLOW)
+NEEDS["deps"] = attr.label_list(providers = [P], cfg = t)
+def _needs_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".modes")
+    ctx.actions.write(out, "modes=%s\n" % ",".join([d[P].mode for d in ctx.attr.deps]))
+    return [DefaultInfo(files = depset([out]))]
+
+needs = rule(_needs_impl, attrs = NEEDS)
+
+def _rf_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".out")
+    ctx.actions.write(out, "x")
+    return [DefaultInfo(files = depset([out]), runfiles = ctx.runfiles(files = ctx.files.data))]
+
+rf = rule(_rf_impl, attrs = {"data": attr.label_list(allow_files = True)})
+"#,
+    );
+    f.file(
+        "BUILD.bazel",
+        &format!(
+            r#"{BUILD}
+load(":flags.bzl", "string_flag")
+load(":tr.bzl", "needs", "prov", "rf", "tlib")
+string_flag(name = "mode", build_setting_default = "off")
+config_setting(name = "on", flag_values = {{":mode": "on"}})
+alias(name = "picked", actual = select({{":on": "a.go", "//conditions:default": "notes.txt"}}))
+tlib(name = "t_ok", srcs = [":picked"])
+alias(name = "picked_bad", actual = select({{":on": "notes.txt", "//conditions:default": "a.go"}}))
+tlib(name = "t_bad", srcs = [":picked_bad"])
+filegroup(name = "pr_or_none", srcs = [])
+alias(name = "maybe_prov", actual = select({{":on": ":p", "//conditions:default": ":pr_or_none"}}))
+prov(name = "p")
+needs(name = "n_ok", deps = [":maybe_prov"])
+rf(name = "rf_dir", data = ["godir.go"])
+"#
+        ),
+    );
+    // The alias resolves in the transitioned configuration (`a.go`), which
+    // passes `.go`; the target configuration would pick `notes.txt`.
+    assert_eq!(f.built("//:t_ok"), "srcs=a.go\n");
+    let stderr = f.rejected("//:t_bad");
+    assert_eq!(
+        stderr,
+        "bazel-rs: WS/BUILD.bazel:42:5: in srcs attribute of tlib rule //:t_bad: alias '//:picked_bad' referring to source file '//:notes.txt' is misplaced here (expected .go)\nWS/BUILD.bazel:42:5: in srcs attribute of tlib rule //:t_bad: '//:notes.txt' does not produce any tlib srcs files (expected .go)\n"
+    );
+    // Providers are those of the dependency in the transitioned
+    // configuration (`:p` provides P).
+    assert_eq!(f.built("//:n_ok"), "modes=x\n");
+    // package_metadata (a built-in attribute, no-config edges) is checked
+    // first in the same pass, then the rule's own attributes.
+    f.file(
+        "md/BUILD.bazel",
+        "load('//:defs.bzl', 'go_library')\ngo_library(name = 'm', srcs = ['x.txt'], package_metadata = ['meta.txt'])\n",
+    );
+    f.file("md/x.txt", "x\n");
+    f.file("md/meta.txt", "x\n");
+    let stderr = f.rejected("//md:m");
+    let metadata = stderr
+        .find("in package_metadata attribute of go_library rule //md:m: source file '//md:meta.txt' is misplaced here (expected no files)")
+        .unwrap_or_else(|| panic!("{stderr}"));
+    let srcs = stderr
+        .find("in srcs attribute of go_library rule //md:m: source file '//md:x.txt' is misplaced here (expected .go or .s)")
+        .unwrap_or_else(|| panic!("{stderr}"));
+    assert!(metadata < srcs, "{stderr}");
+    // A source directory among the requested target's runfiles.
+    let stderr = f.rejected("//:rf_dir");
+    assert!(
+        stderr.contains(
+            "//:rf_dir: source directory '//:godir.go' in its runfiles is not supported by the native profile"
+        ),
+        "{stderr}"
+    );
+}

@@ -1142,8 +1142,9 @@ fn rules_go_shaped_transitions() {
         contents.contains("\nnogo_actual race=False pure=True linkmode=normal tags=[] request_nogo=False bootstrap_nogo=True original_race=\"\"\n"),
         "{contents}"
     );
-    // How far rules_go's own go_library declaration gets: its `srcs`
-    // extension list (library.bzl:89-91) is an explicit native gap.
+    // rules_go's own go_library declaration: its `srcs` extension list
+    // (library.bzl:89-91) is analyzed since N27; the prerequisites of the
+    // transitioned `srcs` are validated in their edge configuration.
     let shaped = fs::read_to_string(ws.path().join("go/private/rules/shaped.bzl")).unwrap();
     ws.file(
         "go/private/rules/shaped.bzl",
@@ -1153,10 +1154,10 @@ fn rules_go_shaped_transitions() {
             1,
         ),
     );
-    let error = ws.rejected(&[&profile[..], &["//app:lib"]].concat());
-    assert_eq!(
-        error,
-        "bazel-rs: analysis of //app:lib: declared rule features accepted at load time but not analyzed by the native profile: attribute 'srcs' allowed file types [.go, .s]\n"
+    let (lines, _, _) = ws.built(&[&profile[..], &["//app:lib"]].concat());
+    assert!(
+        lines.iter().any(|line| line.starts_with("//app:lib\t")),
+        "{lines:?}"
     );
 }
 
