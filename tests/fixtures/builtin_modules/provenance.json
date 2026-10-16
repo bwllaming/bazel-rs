@@ -1304,6 +1304,64 @@
   "reference_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
   "reference_version": "9.3.0",
   "registry": "https://bcr.bazel.build",
+  "registry_patches": {
+    "registry/modules/apple_support/2.5.2/patches/module_dot_bazel_version.patch": {
+      "acquisition": "offline copy of a genuine Bazel repository-cache CAS blob /tmp/opencode/package-specification-contract/output/cache/repos/v1/content_addressable/sha256/5146c085fd73eb3f5ef2197b932d885532eebc43b76eb03091e5725426b1b8ce/file; SHA256 equals the mirrored source.json SRI",
+      "required_by": "genuine Bazel 9.3 test-rule toolchain resolution fetches this selected builtin module (validate_run_environment_info rule-build test/test-missing)",
+      "sha256": "5146c085fd73eb3f5ef2197b932d885532eebc43b76eb03091e5725426b1b8ce",
+      "size_bytes": 405,
+      "source_json_integrity": "sha256-UUbAhf1z6z9e8hl7ky2IVTLuvEO3brAwkeVyVCaxuM4=",
+      "source_url": "https://bcr.bazel.build/modules/apple_support/2.5.2/patches/module_dot_bazel_version.patch"
+    },
+    "registry/modules/bazel_features/1.42.1/patches/module_dot_bazel_version.patch": {
+      "acquisition": "offline copy of a genuine Bazel repository-cache CAS blob /home/coder/.cache/bazel/_bazel_coder/cache/repos/v1/content_addressable/sha256/b69c27e64c4ac5043a3f254d88ef2d8383bbfaefd20881a24ed5b6eb13d4b818/file; SHA256 equals the mirrored source.json SRI",
+      "required_by": "genuine Bazel 9.3 test-rule toolchain resolution fetches this selected builtin module (validate_run_environment_info rule-build test/test-missing)",
+      "sha256": "b69c27e64c4ac5043a3f254d88ef2d8383bbfaefd20881a24ed5b6eb13d4b818",
+      "size_bytes": 270,
+      "source_json_integrity": "sha256-tpwn5kxKxQQ6PyVNiO8tg4O7+u/SCIGiTtW26xPUuBg=",
+      "source_url": "https://bcr.bazel.build/modules/bazel_features/1.42.1/patches/module_dot_bazel_version.patch"
+    },
+    "registry/modules/rules_cc/0.2.17/patches/module_dot_bazel_version.patch": {
+      "acquisition": "offline copy of a genuine Bazel repository-cache CAS blob /home/coder/.cache/bazel/_bazel_coder/cache/repos/v1/content_addressable/sha256/a89845ad52cb03845e5c57eb74a50d1fb4bc34e377555ad6dc08d00b460bf799/file; SHA256 equals the mirrored source.json SRI",
+      "required_by": "genuine Bazel 9.3 test-rule toolchain resolution fetches this selected builtin module (validate_run_environment_info rule-build test/test-missing)",
+      "sha256": "a89845ad52cb03845e5c57eb74a50d1fb4bc34e377555ad6dc08d00b460bf799",
+      "size_bytes": 295,
+      "source_json_integrity": "sha256-qJhFrVLLA4ReXFfrdKUNH7S8NON3VVrW3AjQC0YL95k=",
+      "source_url": "https://bcr.bazel.build/modules/rules_cc/0.2.17/patches/module_dot_bazel_version.patch"
+    },
+    "registry/modules/rules_kotlin/1.9.6/patches/module_dot_bazel_version.patch": {
+      "acquisition": "offline copy of a genuine Bazel repository-cache CAS blob /home/coder/.cache/bazel/_bazel_coder/cache/repos/v1/content_addressable/sha256/0f3709e770aa0ea0fe0226e8025f13ab6fdf2894579f48393b68385107cbadb1/file; SHA256 equals the mirrored source.json SRI",
+      "required_by": "genuine Bazel 9.3 test-rule toolchain resolution fetches this selected builtin module (validate_run_environment_info rule-build test/test-missing)",
+      "sha256": "0f3709e770aa0ea0fe0226e8025f13ab6fdf2894579f48393b68385107cbadb1",
+      "size_bytes": 275,
+      "source_json_integrity": "sha256-DzcJ53CqDqD+AiboAl8Tq2/fKJRXn0g5O2g4UQfLrbE=",
+      "source_url": "https://bcr.bazel.build/modules/rules_kotlin/1.9.6/patches/module_dot_bazel_version.patch"
+    },
+    "registry/modules/rules_python/1.7.0/patches/module_dot_bazel_version.patch": {
+      "acquisition": "offline copy of a genuine Bazel repository-cache CAS blob /home/coder/.cache/bazel/_bazel_coder/cache/repos/v1/content_addressable/sha256/a9ffb62ba1d8e9ebad5225bd2cde6e8ff20688060fff8d14133ca9bb237fb48b/file; SHA256 equals the mirrored source.json SRI",
+      "required_by": "genuine Bazel 9.3 test-rule toolchain resolution fetches this selected builtin module (validate_run_environment_info rule-build test/test-missing)",
+      "sha256": "a9ffb62ba1d8e9ebad5225bd2cde6e8ff20688060fff8d14133ca9bb237fb48b",
+      "size_bytes": 298,
+      "source_json_integrity": "sha256-qf+2K6HY6eutUiW9LN5uj/IGiAYP/40UEzypuyN/tIs=",
+      "source_url": "https://bcr.bazel.build/modules/rules_python/1.7.0/patches/module_dot_bazel_version.patch"
+    },
+    "registry/modules/rules_shell/0.6.1/patches/module_dot_bazel_version.patch": {
+      "acquisition": "offline copy of a genuine Bazel repository-cache CAS blob /home/coder/.cache/bazel/_bazel_coder/cache/repos/v1/content_addressable/sha256/5f0700eaa9a33770aae4ae8b06bec8e433f518eb50711378c8cd3a5d7854ff2d/file; SHA256 equals the mirrored source.json SRI",
+      "required_by": "genuine Bazel 9.3 test-rule toolchain resolution fetches this selected builtin module (validate_run_environment_info rule-build test/test-missing)",
+      "sha256": "5f0700eaa9a33770aae4ae8b06bec8e433f518eb50711378c8cd3a5d7854ff2d",
+      "size_bytes": 320,
+      "source_json_integrity": "sha256-XwcA6qmjN3Cq5K6LBr7I5DP1GOtQcRN4yM06XXhU/y0=",
+      "source_url": "https://bcr.bazel.build/modules/rules_shell/0.6.1/patches/module_dot_bazel_version.patch"
+    },
+    "registry/modules/rules_swift/3.1.2/patches/module_dot_bazel_version.patch": {
+      "acquisition": "offline copy of a genuine Bazel repository-cache CAS blob /home/coder/.cache/bazel/_bazel_coder/cache/repos/v1/content_addressable/sha256/4386831f878dc47f89103c2359aa36b880391cdcf05b7d0758d01a807b70198c/file; SHA256 equals the mirrored source.json SRI",
+      "required_by": "genuine Bazel 9.3 test-rule toolchain resolution fetches this selected builtin module (validate_run_environment_info rule-build test/test-missing)",
+      "sha256": "4386831f878dc47f89103c2359aa36b880391cdcf05b7d0758d01a807b70198c",
+      "size_bytes": 358,
+      "source_json_integrity": "sha256-Q4aDH4eNxH+JEDwjWao2uIA5HNzwW30HWNAagHtwGYw=",
+      "source_url": "https://bcr.bazel.build/modules/rules_swift/3.1.2/patches/module_dot_bazel_version.patch"
+    }
+  },
   "requested_module_count": 156,
   "schema_version": 1,
   "source_archives_included": false

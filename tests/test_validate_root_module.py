@@ -54,7 +54,8 @@ def synthetic_report(root, reference_only=False):
     registry = {str(root / 'registry' / Path(p).relative_to(h.REGISTRY)): dict(e,
         path=str(root / 'registry' / Path(p).relative_to(h.REGISTRY)))
         for p, e in sources.items() if Path(p).is_relative_to(h.REGISTRY)}
-    report.update(registry_before=registry, registry_after=copy.deepcopy(registry))
+    report.update(registry_before=registry, registry_after=copy.deepcopy(registry),
+                  registry_patches=h.require_registry_patches(h.REGISTRY))
 
     def append(name, argv, cwd, stdout='', stderr='', code=0, timeout=args.timeout):
         engine = 'reference' if argv[0] == str(args.reference) else 'native'
@@ -235,6 +236,7 @@ class ReplayTests(unittest.TestCase):
                 lambda r: r['historical_parity_gaps'][0]['observations']['native'].update(returncode=1),
                 lambda r: r['historical_baseline_verification']['historical_sources'].clear(),
                 lambda r: r['sources_after'].clear(), lambda r: r['registry_after'].clear(),
+                lambda r: r.pop('registry_patches'),
                 lambda r: r['executables_after']['native'].update(sha256='b'*64),
                 lambda r: r['configuration'].update(native_sha256='b'*64),
                 lambda r: r['runs'][native_id].update(preflight_binding_sha256='0'*64),

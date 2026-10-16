@@ -9,6 +9,7 @@ historical mismatch is retained separately from the new local closure probe.
 
 import base64
 import datetime
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -106,7 +107,34 @@ LIMITATIONS = [
     'PASS is bounded metadata-profile PASS, not original-matrix or full Bazel parity.',
     'historical_parity_gaps preserves the original native0/reference48 FAIL unchanged; closure requires new paired local-query evidence.',
     'The external @missing//:all MODULE-availability regression remains separate from local root validation.',
+    'rule-build test probes make the reference resolve the test toolchain type, fetching selected builtin modules; '
+    'their genuine registry patches are pinned in the registry fixture, their source archives come from the '
+    'network or a pre-seeded private repository cache (not bundled).',
 ]
+# Selected builtin modules whose registry patches genuine Bazel 9.3 downloads when
+# analysis of a test rule resolves @bazel_tools//tools/test:default_test_toolchain_type
+# (observed: these modules' repositories are fetched for rule-build test/test-missing).
+TEST_TOOLCHAIN_PATCHED_MODULES = ('apple_support/2.5.2', 'bazel_features/1.42.1', 'rules_cc/0.2.17',
+    'rules_kotlin/1.9.6', 'rules_python/1.7.0', 'rules_shell/0.6.1', 'rules_swift/3.1.2')
+
+
+def require_registry_patches(registry):
+    """Fail before any command if a reference-needed registry patch is absent or not SRI-pinned."""
+    result = {}
+    for module in TEST_TOOLCHAIN_PATCHED_MODULES:
+        entry = registry / 'modules' / module
+        declared = json.loads((entry / 'source.json').read_bytes()).get('patches')
+        if not declared:
+            raise ValueError('builtin module no longer declares registry patches: ' + module)
+        for name, integrity in sorted(declared.items()):
+            path = entry / 'patches' / name
+            if path.is_symlink() or not path.is_file():
+                raise ValueError('registry patch missing for test-rule toolchain resolution: ' + module + '/' + name)
+            raw = path.read_bytes()
+            if 'sha256-' + base64.b64encode(hashlib.sha256(raw).digest()).decode() != integrity:
+                raise ValueError('registry patch does not match source.json integrity: ' + module + '/' + name)
+            result[module + '/' + name] = dict(sha256=digest(raw), integrity=integrity)
+    return result
 MODULE = 'module(name="runenv_contract")\n'
 READY, ENTERED = 'RUNENV_READY', 'RUNENV_CONSUMER'
 HOST = {'RUNENV_CONTRACT_LITERAL': 'HOST_SYNTHETIC', 'RUNENV_CONTRACT_SECOND': 'HOST_SECOND'}
@@ -764,7 +792,8 @@ def report_passes(report):
         registry = {str(scratch / 'registry' / Path(p).relative_to(REGISTRY)): dict(e,
             path=str(scratch / 'registry' / Path(p).relative_to(REGISTRY)))
             for p, e in report['sources_before'].items() if Path(p).is_relative_to(REGISTRY)}
-        if report['registry_before'] != registry or report['registry_after'] != registry:
+        if (report['registry_before'] != registry or report['registry_after'] != registry
+                or report.get('registry_patches') != require_registry_patches(REGISTRY)):
             return False
         runs = report['runs']
         binding = digest(json.dumps(dict(executables=report['executables'], source=report['official_source_before']), sort_keys=True).encode())
@@ -830,6 +859,7 @@ def main(argv=None):
         (workspace / 'MODULE.bazel').write_text(MODULE)
         shutil.copytree(REGISTRY, scratch / 'registry')
         report['registry_before'] = snapshot(p for p in (scratch / 'registry').rglob('*') if p.is_file())
+        report['registry_patches'] = require_registry_patches(scratch / 'registry')
         reference = DirectReference(args.reference, workspace, scratch, runner, SUITE_NAME)
         report['reference_release'] = success(runner.run('reference.version', reference.startup+['version', '--gnu_format'], workspace)).strip()
         if report['reference_release'] != 'bazel 9.3.0':

@@ -7,6 +7,7 @@ Publication is atomic and new-only; a failed capture only writes the report.
 """
 
 import argparse
+import base64
 import concurrent.futures
 import datetime
 import hashlib
@@ -166,8 +167,9 @@ def verify_fixture(directory):
     plan = registry_plan(locks)
     files = provenance["files"]
     expected_paths = {"registry/" + registry_path(url) for url in plan}
+    patches = verify_registry_patches(directory, provenance.get("registry_patches", {}), files)
     actual_paths = {str(path.relative_to(directory)) for path in (directory / "registry").rglob("*") if path.is_file()}
-    if set(files) != expected_paths or actual_paths != expected_paths:
+    if set(files) != expected_paths or actual_paths != expected_paths | set(patches):
         raise ValueError("registry mirror has missing or extra files")
     for url, expected in plan.items():
         relative = "registry/" + registry_path(url)
@@ -187,7 +189,39 @@ def verify_fixture(directory):
     if any(provenance[key] != value for key, value in counts.items()):
         raise ValueError("registry provenance counts mismatch")
     return {**counts, "registry_file_count": len(files),
-            "registry_size_bytes": sum(value["size_bytes"] for value in files.values())}
+            "registry_size_bytes": sum(value["size_bytes"] for value in files.values()),
+            "registry_patch_count": len(patches)}
+
+
+PATCH_EVIDENCE_KEYS = {"source_url", "sha256", "size_bytes", "source_json_integrity", "acquisition", "required_by"}
+
+
+def verify_registry_patches(directory, patches, files):
+    """Supplemental genuine registry patch files, not lockfile registry inputs.
+
+    A capture never writes them (lockfile registryFileHashes omit patches). Each one
+    must be declared by a mirrored source.json whose SRI equals the file's SHA256."""
+    if not isinstance(patches, dict):
+        raise ValueError("registry_patches must be an object")
+    for relative, evidence in patches.items():
+        parts = relative.split("/")
+        if (len(parts) != 6 or parts[:2] != ["registry", "modules"] or parts[4] != "patches"
+                or not isinstance(evidence, dict) or set(evidence) != PATCH_EVIDENCE_KEYS):
+            raise ValueError("invalid supplemental registry patch entry: " + relative)
+        url = BCR + "/" + "/".join(parts[1:])
+        if registry_path(url) != "/".join(parts[1:]) or evidence["source_url"] != url:
+            raise ValueError("supplemental patch URL mismatch: " + relative)
+        source_relative = "/".join(parts[:4]) + "/source.json"
+        if source_relative not in files:
+            raise ValueError("supplemental patch without mirrored source.json: " + relative)
+        declared = json.loads((directory / source_relative).read_bytes()).get("patches", {})
+        integrity = declared.get(parts[5])
+        data = (directory / relative).read_bytes()
+        sri = "sha256-" + base64.b64encode(hashlib.sha256(data).digest()).decode("ascii")
+        if (integrity is None or integrity != sri or evidence["source_json_integrity"] != integrity
+                or evidence["sha256"] != digest(data) or evidence["size_bytes"] != len(data)):
+            raise ValueError("supplemental patch is not the source.json-pinned genuine file: " + relative)
+    return patches
 
 
 def capture(args):

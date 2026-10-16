@@ -4,6 +4,7 @@ import ast
 import base64
 import copy
 import json
+import shutil
 from pathlib import Path
 import sys
 import tempfile
@@ -133,6 +134,32 @@ class PlanTests(unittest.TestCase):
             for text in (message.replace("'"+symbol+"'", "'"+other+"'"), message+' x', message[:-1]):
                 with self.subTest(probe=probe, text=text), self.assertRaises(ValueError):
                     suite.require_rejection(record(text), v['diagnostic'], 1)
+
+    def test_reference_test_rule_registry_patches_are_preflighted_and_sri_pinned(self):
+        # Genuine Bazel fetches these modules to resolve the test toolchain type for a
+        # test rule; a file registry without their patches fails the reference (i11 run).
+        pins = suite.require_registry_patches(suite.REGISTRY)
+        self.assertEqual(sorted(pins), sorted(m+'/module_dot_bazel_version.patch' for m in suite.TEST_TOOLCHAIN_PATCHED_MODULES))
+        self.assertEqual(pins['rules_shell/0.6.1/module_dot_bazel_version.patch']['sha256'],
+                         '5f0700eaa9a33770aae4ae8b06bec8e433f518eb50711378c8cd3a5d7854ff2d')
+        self.assertTrue(any('test toolchain' in line or 'test probes' in line for line in suite.LIMITATIONS))
+        target = 'modules/rules_shell/0.6.1/patches/module_dot_bazel_version.patch'
+        for fault in ('missing', 'changed', 'symlink'):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory(dir='/tmp/opencode') as tmp:
+                registry = Path(tmp) / 'registry'
+                shutil.copytree(suite.REGISTRY, registry)
+                path = registry / target
+                if fault == 'missing':
+                    path.unlink()
+                elif fault == 'changed':
+                    path.write_bytes(path.read_bytes() + b'\n')
+                else:
+                    raw = path.read_bytes()
+                    path.unlink()
+                    (Path(tmp) / 'outside.patch').write_bytes(raw)
+                    path.symlink_to(Path(tmp) / 'outside.patch')
+                with self.assertRaisesRegex(ValueError, 'registry patch'):
+                    suite.require_registry_patches(registry)
 
     def test_test_and_run_commands_are_the_exact_native_boundary(self):
         item = suite.CASEPLAN[-1]
@@ -471,7 +498,7 @@ class ReplayTests(unittest.TestCase):
             completed_phases=1, completed_checks=1, scratch_directory=str(root), cleanup_receipt=dict(path=str(root), removed=True),
             server_receipt=dict(pidfile=str(reference.output_base / 'server/server.pid.txt'), pid=4321,
                 proc_exists_after=False, remaining_pidfiles=[]), registry_before=registry, registry_after=copy.deepcopy(registry),
-            runs=runs, checks=[dict(name='constructor', kind='differential', status='PASS', phases=[phase])])
+            registry_patches=suite.require_registry_patches(suite.REGISTRY), runs=runs, checks=[dict(name='constructor', kind='differential', status='PASS', phases=[phase])])
         report['gap_closure'] = suite.closure_receipt(report, args.reference_only)
         return phase, report, args, workspace, reference, item
 
@@ -518,6 +545,8 @@ class ReplayTests(unittest.TestCase):
                     lambda r: r['gap_closure'].update(status='RESOLVED_BY_ROOT_RECORDING_VALIDATION'),
                     lambda r: r['historical_baseline_verification'].update(verified_from_git=False),
                     lambda r: r['plan'].update(sha256='0'*64), lambda r: r['plan'].update(commands=1),
+                    lambda r: r.pop('registry_patches'), lambda r: r.update(registry_patches={}),
+                    lambda r: r['registry_patches'].popitem(),
                     lambda r: r['checks'][0]['phases'].clear(),
                     lambda r: r['checks'][0]['phases'].append(copy.deepcopy(r['checks'][0]['phases'][0])),
                     lambda r: r['checks'][0]['phases'][0].update(engine='native'),

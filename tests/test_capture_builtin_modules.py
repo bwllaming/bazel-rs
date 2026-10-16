@@ -151,6 +151,47 @@ class CapturedFixtureIntegrityTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "projection"):
                 capture.verify_fixture(fixture)
 
+    def test_supplemental_patches_are_exactly_the_source_json_pinned_genuine_files(self):
+        counts = capture.verify_fixture(FIXTURE)
+        self.assertEqual(counts["registry_patch_count"], 7)
+        provenance = json.loads((FIXTURE / "provenance.json").read_bytes())
+        on_disk = sorted(str(p.relative_to(FIXTURE)) for p in (FIXTURE / "registry").rglob("patches/*"))
+        self.assertEqual(sorted(provenance["registry_patches"]), on_disk)
+        self.assertNotIn("registry_patches", json.dumps(provenance["files"]))
+        self.assertTrue(all("/patches/" not in path for path in provenance["files"]))
+        shell = "registry/modules/rules_shell/0.6.1/patches/module_dot_bazel_version.patch"
+        self.assertEqual(provenance["registry_patches"][shell]["sha256"],
+                         "5f0700eaa9a33770aae4ae8b06bec8e433f518eb50711378c8cd3a5d7854ff2d")
+        self.assertIn(b'-    version = "0.0.0",\n+    version = "0.6.1",\n', (FIXTURE / shell).read_bytes())
+
+    def test_unpinned_changed_or_undeclared_patch_files_are_rejected(self):
+        shell = "registry/modules/rules_shell/0.6.1/patches/module_dot_bazel_version.patch"
+        for fault in ("unlisted", "changed", "missing-file", "undeclared", "wrong-url", "extra-key"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory(dir="/tmp/opencode") as temp:
+                fixture = Path(temp) / "fixture"
+                shutil.copytree(FIXTURE, fixture)
+                path = fixture / "provenance.json"
+                provenance = json.loads(path.read_bytes())
+                entry = provenance["registry_patches"][shell]
+                if fault == "unlisted":
+                    del provenance["registry_patches"][shell]
+                elif fault == "changed":
+                    (fixture / shell).write_bytes((fixture / shell).read_bytes() + b"\n")
+                elif fault == "missing-file":
+                    (fixture / shell).unlink()
+                elif fault == "undeclared":
+                    other = shell.replace("module_dot_bazel_version.patch", "other.patch")
+                    shutil.copy(fixture / shell, fixture / other)
+                    provenance["registry_patches"][other] = dict(entry, source_url=entry["source_url"].replace(
+                        "module_dot_bazel_version.patch", "other.patch"))
+                elif fault == "wrong-url":
+                    entry["source_url"] = entry["source_url"].replace("0.6.1", "0.3.0")
+                else:
+                    entry["extra"] = True
+                capture.save_json(path, provenance)
+                with self.assertRaises((ValueError, OSError)):
+                    capture.verify_fixture(fixture)
+
     def test_rewritten_metadata_is_rejected_even_without_lockfile_hash(self):
         with tempfile.TemporaryDirectory(dir="/tmp/opencode") as temp:
             fixture = Path(temp) / "fixture"

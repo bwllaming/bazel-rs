@@ -28,7 +28,22 @@ registry files total 316,062 bytes. No source archives, generated repositories,
 SDKs, copied repository caches, or replacement builtin MODULEs are bundled.
 
 `provenance.json` records every registry file's exact source URL, SHA256, byte
-count, and expected official lockfile hash when present. The captured lockfiles
+count, and expected official lockfile hash when present.
+
+Supplemental registry patches (not lockfile inputs, so a capture never writes
+them): seven genuine `patches/*.patch` files for apple_support 2.5.2,
+bazel_features 1.42.1, rules_cc 0.2.17, rules_kotlin 1.9.6, rules_python 1.7.0,
+rules_shell 0.6.1 and rules_swift 3.1.2 (2,221 bytes). Genuine Bazel fetches
+these selected modules when analysis resolves the test toolchain type for a
+`test = True` rule; without the files a file-registry reference fails with
+`Error downloading [file:///…/patches/module_dot_bazel_version.patch]`. Each was
+copied offline from an existing genuine Bazel repository-cache CAS blob whose
+SHA256 equals the mirrored `source.json` SRI; `provenance.json`
+`registry_patches` records URL, SHA256, size, SRI and acquisition, and
+`verify_fixture` rejects any patch file not pinned that way. Patches of
+unselected or not-fetched versions are deliberately absent. Source archives are
+still not bundled: the reference downloads them (or uses a pre-seeded private
+repository cache). The captured lockfiles
 also preserve `selectedYankedVersions`. Complete reference argv, stdout/stderr,
 hashes, timeouts, and private-server/scratch cleanup evidence live in
 `artifacts/builtin-module-contract/registry-capture.json`.
