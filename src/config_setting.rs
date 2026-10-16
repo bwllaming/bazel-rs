@@ -515,6 +515,39 @@ mod tests {
         .result
     }
 
+    /// N28b: the JavaOptions version strings match exactly (no case
+    /// folding), "" included.
+    #[test]
+    fn values_match_java_versions() {
+        let matched = MatchResult::Match;
+        for (name, default) in [
+            ("java_runtime_version", "local_jdk"),
+            ("java_language_version", ""),
+            ("tool_java_runtime_version", "remotejdk_11"),
+            ("tool_java_language_version", ""),
+        ] {
+            assert_eq!(result(&[(name, default)], &[], &[]), matched, "{name}");
+            let set = format!("--{name}=17");
+            assert_eq!(result(&[(name, "17")], &[], &[&set]), matched, "{name}");
+            assert_eq!(
+                result(&[(name, "17")], &[], &[]),
+                MatchResult::NoMatch(vec![Diff {
+                    what: option_label(name),
+                    got: default.into(),
+                    want: "17".into(),
+                }])
+            );
+        }
+        assert!(matches!(
+            result(
+                &[("java_runtime_version", "RemoteJDK_11")],
+                &[],
+                &["--java_runtime_version=remotejdk_11"]
+            ),
+            MatchResult::NoMatch(_)
+        ));
+    }
+
     #[test]
     fn values_match_modelled_options_like_bazel() {
         let matched = MatchResult::Match;

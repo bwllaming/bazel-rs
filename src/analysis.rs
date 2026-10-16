@@ -114,6 +114,12 @@ pub(crate) fn dependency_key(label: &str, exec: bool) -> String {
     }
 }
 
+/// The key of a `package_metadata` dependency, configured in the no-config
+/// configuration (crate::engine, EdgeCfg::NoConfig).
+pub(crate) fn metadata_dependency_key(label: &str) -> String {
+    format!("{label} (noconfig)")
+}
+
 fn dependency<'a>(
     label: &str,
     name: &str,
@@ -780,6 +786,32 @@ fn builtin_ctx_attrs<'v>(
                 }
             }
             ("visibility", _) => labels(builtin.visibility.as_deref().unwrap_or_default())?,
+            // The effective package metadata (explicit or the package
+            // default), configured in the no-config configuration.
+            ("package_metadata", NativeType::LabelList) => {
+                let mut targets = Vec::new();
+                let mut metadata_files = Vec::new();
+                for label in &rule.package_metadata {
+                    let key = crate::label::Label::parse_canonical(label)
+                        .map(|label| label.to_string())
+                        .unwrap_or(label.clone());
+                    let dependency = dependencies
+                        .get(&metadata_dependency_key(&key))
+                        .ok_or_else(|| {
+                            anyhow!("attribute {name}: dependency {label} was not resolved")
+                        })?;
+                    metadata_files.extend(
+                        dependency
+                            .files
+                            .iter()
+                            .cloned()
+                            .map(|file| alloc_file(heap, file)),
+                    );
+                    targets.push(alloc_dependency(heap, &key, dependency));
+                }
+                files.insert(name.to_owned(), heap.alloc(metadata_files));
+                heap.alloc(targets)
+            }
             // The constraint values of the target's toolchain resolution
             // (crate::engine): Targets with their ConstraintValueInfo.
             ("exec_compatible_with", NativeType::LabelList) => {

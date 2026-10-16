@@ -76,6 +76,13 @@ pub struct Rule {
     /// Load-time facts native analysis does not model; analysis of this rule
     /// fails explicitly when nonempty.
     pub unanalyzed: Vec<String>,
+    /// The effective `package_metadata` (alias `applicable_licenses`)
+    /// labels: the explicit value, else the package's
+    /// `default_package_metadata` (BaseRuleClasses.packageMetadataDefault,
+    /// analysis/BaseRuleClasses.java:100-107), as canonical label texts.
+    /// Analyzed in the no-config configuration (BaseRuleClasses.java:291-297,
+    /// crate::engine). Empty for rule classes without the attribute.
+    pub package_metadata: Vec<String>,
     /// `Rule.getLocation()`: the BUILD-level call (`/abs/BUILD:L:C`, the
     /// call's left parenthesis), as Bazel prefixes rule events.
     pub location: Option<String>,
@@ -470,6 +477,7 @@ impl Declarations {
             macro_owner,
             native: None,
             unanalyzed: Vec::new(),
+            package_metadata: Vec::new(),
             location: None,
         });
         Ok(NoneType)
@@ -1979,6 +1987,7 @@ fn evaluate_at(
     let args = declarations.package_args.into_inner();
     for rule in rules.values_mut() {
         rule.unanalyzed.extend(package_default_gaps(rule, &args));
+        rule.package_metadata = effective_package_metadata(rule, &args);
         // Computed defaults are resolved against the final package arguments.
         let testonly = rule.is_test_only(&args);
         let deprecation = rule.deprecation_warning(&args);
@@ -2145,15 +2154,9 @@ fn duplicate_label_errors(rule: &Rule) -> Vec<String> {
 /// (scripts/validate_label_passthrough.py, scripts/validate_string_dict.py).
 pub const NATIVE_LOADING_FOOTER: &str = "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).";
 
-/// Computed package defaults that would change a rule's analysis in Bazel
-/// (BaseRuleClasses.java:100-108 package_metadata default,
-/// RuleClass.java:286-296 default environments). Explicit values win.
-/// `default_testonly`/`default_deprecation` need no gap: the testonly check and
-/// the deprecation warning use the effective values (crate::engine).
-fn package_default_gaps(rule: &Rule, args: &PackageArgs) -> Vec<String> {
-    if matches!(rule.kind, RuleKind::PackageGroup(_)) {
-        return Vec::new();
-    }
+/// Whether `rule`'s class has the attribute `name`, and whether `rule` sets it
+/// explicitly.
+fn builtin_attribute(rule: &Rule, name: &str) -> (bool, bool) {
     let class = rule
         .native
         .as_ref()
@@ -2167,33 +2170,69 @@ fn package_default_gaps(rule: &Rule, args: &PackageArgs) -> Vec<String> {
         (None, Some(class)) => class.attribute(name).is_some(),
         (None, None) => true,
     };
-    let explicit = |name: &str| {
-        rule.native
-            .as_ref()
-            .is_some_and(|native| native.explicit(name))
-            || rule
-                .custom
-                .as_ref()
-                .is_some_and(|custom| custom.declaration.builtin.target.explicit(name))
-    };
-    let mut gaps = Vec::new();
-    if args
-        .default_package_metadata
+    let explicit = rule
+        .native
         .as_ref()
-        .is_some_and(|labels| !labels.is_empty())
-        && has("package_metadata")
-        && !explicit("package_metadata")
-    {
-        gaps.push("package default_package_metadata (package metadata dependencies)".to_owned());
+        .is_some_and(|native| native.explicit(name))
+        || rule
+            .custom
+            .as_ref()
+            .is_some_and(|custom| custom.declaration.builtin.target.explicit(name));
+    (has(name), explicit)
+}
+
+/// The effective `package_metadata` of `rule` ([`Rule::package_metadata`]).
+/// AttributeProvider's pruning of a package metadata rule's own default
+/// (packages/AttributeProvider.java:347-372, RuleClass.isPackageMetadataRule
+/// :2404-2425) is unreachable for this attribute: it has a computed default,
+/// so the earlier `hasComputedDefault()` branch (:334-340) always applies (and
+/// the repository check compares the canonical name to `rules_license`,
+/// which a Bzlmod `rules_license+` never equals). rules_license's own
+/// macros set `applicable_licenses = []` (rules/license.bzl:132). A metadata
+/// rule that receives its own package default is a dependency cycle.
+fn effective_package_metadata(rule: &Rule, args: &PackageArgs) -> Vec<String> {
+    if matches!(rule.kind, RuleKind::PackageGroup(_)) {
+        return Vec::new();
     }
+    let (has, explicit) = builtin_attribute(rule, "package_metadata");
+    if !has {
+        return Vec::new();
+    }
+    if explicit {
+        return rule
+            .native
+            .as_ref()
+            .map(|native| native.labels("package_metadata"))
+            .or_else(|| {
+                rule.custom
+                    .as_ref()
+                    .map(|custom| custom.declaration.builtin.target.labels("package_metadata"))
+            })
+            .unwrap_or_default();
+    }
+    args.default_package_metadata
+        .iter()
+        .flatten()
+        .map(crate::rule_declarations::canonical_form)
+        .collect()
+}
+
+/// Computed package defaults that would change a rule's analysis in Bazel
+/// (RuleClass.java:286-296 default environments). Explicit values win.
+/// `default_testonly`/`default_deprecation` need no gap: the testonly check and
+/// the deprecation warning use the effective values (crate::engine), and
+/// `default_package_metadata` is analyzed ([`effective_package_metadata`]).
+fn package_default_gaps(rule: &Rule, args: &PackageArgs) -> Vec<String> {
+    if matches!(rule.kind, RuleKind::PackageGroup(_)) {
+        return Vec::new();
+    }
+    let mut gaps = Vec::new();
     for (attribute, value) in [
         ("compatible_with", &args.default_compatible_with),
         ("restricted_to", &args.default_restricted_to),
     ] {
-        if value.as_ref().is_some_and(|labels| !labels.is_empty())
-            && has(attribute)
-            && !explicit(attribute)
-        {
+        let (has, explicit) = builtin_attribute(rule, attribute);
+        if value.as_ref().is_some_and(|labels| !labels.is_empty()) && has && !explicit {
             gaps.push(format!(
                 "package default_{attribute} (constraint environments)"
             ));
@@ -4361,9 +4400,21 @@ filegroup(name='explicit', testonly=False, package_metadata=[])
 "#,
         )
         .unwrap();
+        // N28c: the default is the effective package_metadata (analyzed in
+        // the no-config configuration), not a gap.
+        assert!(
+            rules[&Label::parse(":f", "pkg").unwrap()]
+                .unanalyzed
+                .is_empty()
+        );
         assert_eq!(
-            rules[&Label::parse(":f", "pkg").unwrap()].unanalyzed,
-            ["package default_package_metadata (package metadata dependencies)"]
+            rules[&Label::parse(":f", "pkg").unwrap()].package_metadata,
+            ["//pkg:m"]
+        );
+        assert!(
+            rules[&Label::parse(":explicit", "pkg").unwrap()]
+                .package_metadata
+                .is_empty()
         );
         let f = &rules[&Label::parse(":f", "pkg").unwrap()];
         let args = PackageArgs {
@@ -4429,15 +4480,14 @@ filegroup(name='explicit', testonly=False, package_metadata=[])
         let package = evaluate(&root.0, "pkg").unwrap();
         let rule = &package[&Label::parse(":f", "pkg").unwrap()];
         assert_eq!(rule.visibility, Visibility::Public);
-        assert_eq!(
-            rule.unanalyzed,
-            ["package default_package_metadata (package metadata dependencies)"]
-        );
+        assert!(rule.unanalyzed.is_empty());
+        assert_eq!(rule.package_metadata, ["//:license"]);
         std::fs::write(root.0.join("pkg/BUILD"), "package(default_visibility=['//visibility:private'], default_package_metadata=[])\nfilegroup(name='f')").unwrap();
         let package = evaluate(&root.0, "pkg").unwrap();
         let rule = &package[&Label::parse(":f", "pkg").unwrap()];
         assert_eq!(rule.visibility, Visibility::Private);
         assert!(rule.unanalyzed.is_empty());
+        assert!(rule.package_metadata.is_empty());
         for (repo, expected) in [
             (
                 "repo()",

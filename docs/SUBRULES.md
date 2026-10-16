@@ -103,6 +103,11 @@ DECLARED fragments: `dir(ctx.fragments)` lists them sorted, and `hasattr`/dot/
 a required fragment in order to access it. Please update the 'fragments'
 argument of the subrule definition (for example: fragments = ["F"])` (the
 `.bzl` `hasattr`/`dir` builtins apply Structure semantics to this one type).
+In the no-config configuration (a `package_metadata` dependency, N28c) no
+fragment class exists, so getValue returns null before the declaration check:
+`hasattr` is False and a field access fails with `There is no configuration
+fragment named 'F'. Available fragments: 'D1', ...` over the declared fields
+(`FragmentCollectionApi.java:39-49`).
 Starlark fragments are the configuration's (`analysis/config/BuildConfigurationValue.java:360-370`):
 android, apple, bazel_android, coverage, cpp, j2objc, java, objc, platform,
 proto — `py`/`bazel_py` are dropped by `Fragment.shouldInclude`

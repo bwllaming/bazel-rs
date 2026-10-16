@@ -262,11 +262,13 @@ too (docs/COMMON_RULE_ATTRIBUTES.md).
   [IGNORED_DIRECTORIES.md](IGNORED_DIRECTORIES.md).
 * Package defaults that change analysis in Bazel are recorded per rule and make
   its analysis fail explicitly unless the rule sets the attribute itself:
-  non-empty `default_package_metadata` (computed
-  `package_metadata` dependencies, `BaseRuleClasses.java:102-108`),
   non-empty `default_compatible_with`/`default_restricted_to`, and
-  `transitive_visibility`. Classes that removed the attribute (for example
-  `platform` has no `package_metadata`) are unaffected. `default_testonly` and
+  `transitive_visibility`. `default_package_metadata` (computed
+  `package_metadata`, `BaseRuleClasses.java:100-107`) and explicit
+  `package_metadata`/`applicable_licenses` are analyzed (N28c): the targets
+  are dependencies in the no-config configuration
+  (docs/COMMON_RULE_ATTRIBUTES.md "Package metadata"). Classes that removed
+  the attribute (for example `platform` has no `package_metadata`) have none. `default_testonly` and
   `default_deprecation` are applied as computed defaults by the testonly check
   and the deprecation warning (docs/COMMON_RULE_ATTRIBUTES.md); Starlark rules
   follow the same rules with their own attribute sets.

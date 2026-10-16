@@ -57,6 +57,22 @@ pub struct ResolverOptions {
     /// default false): `attr.*(cfg = "host")` fails at .bzl evaluation
     /// (analysis/starlark/StarlarkAttrModule.java:520-531).
     pub disable_starlark_host_transitions: bool,
+    /// The Java Starlark semantics options read by
+    /// `java_common.internal_DO_NOT_USE()` (JavaStarlarkCommon.java:383-402):
+    /// `--experimental_google_legacy_api`
+    /// (packages/semantics/BuildLanguageOptions.java:313-321),
+    /// `--incompatible_java_info_merge_runtime_module_flags` (:559-567) and
+    /// `--incompatible_disable_non_executable_java_binary` (:653-660), all
+    /// default false and accepted by every loading command.
+    pub java_semantics: JavaSemantics,
+}
+
+/// [`ResolverOptions::java_semantics`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct JavaSemantics {
+    pub google_legacy_api: bool,
+    pub java_info_merge_runtime_module_flags: bool,
+    pub disable_non_executable_java_binary: bool,
 }
 
 impl ResolverOptions {

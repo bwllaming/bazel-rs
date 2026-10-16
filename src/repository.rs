@@ -257,6 +257,11 @@ impl RepositorySet {
         self.state.options.disable_starlark_host_transitions
     }
 
+    /// The Java Starlark semantics options (ResolverOptions::java_semantics).
+    pub(crate) fn java_semantics(&self) -> crate::module_graph::JavaSemantics {
+        self.state.options.java_semantics
+    }
+
     pub(crate) fn environment(&self) -> &crate::repository_environment::Snapshot {
         &self.state.environment
     }

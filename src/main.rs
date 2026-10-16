@@ -116,6 +116,27 @@ fn run() -> Result<(), String> {
                 // A Starlark semantics option of every loading command
                 // (packages/semantics/BuildLanguageOptions.java:590-598).
                 resolver_options.disable_starlark_host_transitions = value?;
+            } else if let Some(value) =
+                bazel_rs::configuration::boolean_option(&arg, "experimental_google_legacy_api")
+            {
+                // Starlark semantics options of every loading command
+                // (packages/semantics/BuildLanguageOptions.java:313-321,
+                // 559-567, 653-660), read by java_common's getters.
+                resolver_options.java_semantics.google_legacy_api = value?;
+            } else if let Some(value) = bazel_rs::configuration::boolean_option(
+                &arg,
+                "incompatible_java_info_merge_runtime_module_flags",
+            ) {
+                resolver_options
+                    .java_semantics
+                    .java_info_merge_runtime_module_flags = value?;
+            } else if let Some(value) = bazel_rs::configuration::boolean_option(
+                &arg,
+                "incompatible_disable_non_executable_java_binary",
+            ) {
+                resolver_options
+                    .java_semantics
+                    .disable_non_executable_java_binary = value?;
             } else if let Some(profile) = bazel_rs::module_cli::builtin_profile_argument(&arg)? {
                 resolver_options.builtin_profile = profile;
             } else if arg == "--override_repository" || arg.starts_with("--override_repository=") {

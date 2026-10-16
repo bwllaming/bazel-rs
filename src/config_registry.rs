@@ -186,6 +186,27 @@ impl Configurations {
         self.intern(exec, &baseline)
     }
 
+    /// The no-config configuration (NoConfigTransition, N28c): CoreOptions
+    /// defaults only and no Starlark build settings
+    /// (CommonOptions.EMPTY_OPTIONS, analysis/config/CommonOptions.java:32-42),
+    /// whatever the parent configuration; interned on first use.
+    pub fn intern_no_config(&mut self) -> ConfigId {
+        let configuration = no_config();
+        let id = configuration.id;
+        self.mnemonics
+            .entry(id)
+            .or_insert_with(|| format!("{}-noconfig", configuration.native.compilation_mode));
+        self.by_id
+            .entry(id)
+            .or_insert_with(|| Arc::new(configuration));
+        id
+    }
+
+    /// Whether `id` is the no-config configuration.
+    pub fn is_no_config(&self, id: ConfigId) -> bool {
+        self.get(id).native.no_config
+    }
+
     /// The output path mnemonic of an interned configuration.
     pub fn mnemonic(&self, id: ConfigId) -> &str {
         self.mnemonics
@@ -270,6 +291,11 @@ fn cpu_descriptor(configuration: &Configuration) -> (&str, bool) {
 /// contain /`, :55-61, 134-144; vfs/PathFragment.java:948-957).
 pub fn mnemonic(configuration: &Configuration, baseline: &Configuration) -> Result<String, String> {
     let native = &configuration.native;
+    // BuildOptions.hasNoConfig: `<compilation_mode>-noconfig`
+    // (OutputPathMnemonicComputer.java:187-190).
+    if native.no_config {
+        return Ok(format!("{}-noconfig", native.compilation_mode));
+    }
     let (cpu, platforms_explicit) = cpu_descriptor(configuration);
     if cpu.contains('/') {
         return Err(format!(
@@ -310,6 +336,9 @@ pub fn mnemonic(configuration: &Configuration, baseline: &Configuration) -> Resu
 ///   propagated, so it is the default;
 /// * `--define` is carried (`experimental_exclude_defines_from_exec_config`
 ///   is false, FunctionTransitionUtil.java:210-223);
+/// * `java_runtime_version`/`java_language_version` become
+///   `tool_java_runtime_version`/`tool_java_language_version`, which
+///   propagate (`_java_options`, builtin_exec_platforms.bzl:350-385);
 /// * `host_platform` and `extra_toolchains` propagate (PlatformOptions,
 ///   builtin_exec_platforms.bzl:411-419); `platforms` becomes the parent's
 ///   execution platform (ExecutionTransitionFactory.java:203-207);
@@ -342,6 +371,17 @@ pub fn exec_transition(
         host_compilation_mode: from.native.host_compilation_mode,
         is_exec: true,
         platform_suffix: Some("exec"),
+        // `_java_options` (builtin_exec_platforms.bzl:350-360): java_* from
+        // tool_java_*; tool_java_* propagate (:362-385).
+        java: crate::configuration::JavaVersions {
+            java_runtime_version: from.native.java.tool_java_runtime_version.clone(),
+            java_language_version: from.native.java.tool_java_language_version.clone(),
+            tool_java_runtime_version: from.native.java.tool_java_runtime_version.clone(),
+            tool_java_language_version: from.native.java.tool_java_language_version.clone(),
+        },
+        // An exec edge of a no-config target has no execution platform and
+        // never reaches here (ExecutionTransitionFactory.java:192-197).
+        no_config: false,
     };
     let starlark = from
         .starlark
@@ -350,6 +390,19 @@ pub fn exec_transition(
         .map(|(label, value)| (label.clone(), value.clone()))
         .collect();
     Configuration::new(native, starlark)
+}
+
+/// The no-config configuration (CommonOptions.EMPTY_OPTIONS,
+/// analysis/config/CommonOptions.java:32-42; NoConfigTransition.patch,
+/// analysis/config/transitions/NoConfigTransition.java:52-55).
+pub fn no_config() -> Configuration {
+    Configuration::new(
+        NativeOptions {
+            no_config: true,
+            ..NativeOptions::default()
+        },
+        BTreeMap::new(),
+    )
 }
 
 /// Options whose value is explicit in the mnemonic
@@ -667,6 +720,94 @@ mod tests {
         let default = exec_transition(&Configuration::default(), label("//p:exec"), &none);
         assert_eq!(default.native.compilation_mode, "opt");
         assert_eq!(mnemonic(&default, &default), Ok("exec-opt-exec".to_owned()));
+    }
+
+    /// N28b: `_java_options` (builtin_exec_platforms.bzl:350-385): the exec
+    /// configuration's java_* are the parent's tool_java_*, which propagate.
+    /// At the defaults the exec identity is the pre-N28b one.
+    #[test]
+    fn exec_transition_maps_java_versions_from_the_tool_versions() {
+        let none = BTreeSet::new();
+        let default = exec_transition(&Configuration::default(), label("//p:exec"), &none);
+        let java = &default.native.java;
+        assert_eq!(
+            (
+                java.java_runtime_version.as_str(),
+                java.java_language_version.as_str(),
+                java.tool_java_runtime_version.as_str(),
+                java.tool_java_language_version.as_str()
+            ),
+            ("remotejdk_11", "", "remotejdk_11", "")
+        );
+        // The identity serialization omits the kind's default versions, so
+        // the exec configuration keeps its pre-N28b identity.
+        let pre_n28b = br#"{"version":1,"native":{"compilation_mode":"opt","stamp":false,"define":[],"strip":"always","force_pic":false,"platforms":["//p:exec"],"host_platform":"@@bazel_tools//tools:host_platform","is_exec":true,"platform_suffix":"exec"},"starlark":[]}"#;
+        assert_eq!(
+            default.id.to_string(),
+            format!("{:x}", Sha256::digest(pre_n28b))
+        );
+        let from = parsed(&[
+            "--java_runtime_version=remotejdk_17",
+            "--java_language_version=17",
+            "--tool_java_runtime_version=remotejdk_21",
+            "--tool_java_language_version=21",
+        ]);
+        let exec = exec_transition(&from, label("//p:exec"), &none);
+        let java = &exec.native.java;
+        assert_eq!(
+            (
+                java.java_runtime_version.as_str(),
+                java.java_language_version.as_str(),
+                java.tool_java_runtime_version.as_str(),
+                java.tool_java_language_version.as_str()
+            ),
+            ("remotejdk_21", "21", "remotejdk_21", "21")
+        );
+        assert_ne!(exec.id, default.id);
+        // The target java versions do not reach the exec configuration.
+        let target_only = parsed(&["--java_runtime_version=remotejdk_17"]);
+        assert_ne!(target_only.id, Configuration::default().id);
+        assert_eq!(
+            exec_transition(&target_only, label("//p:exec"), &none).id,
+            default.id
+        );
+        // Against its own baseline the top-level configuration keeps its root.
+        assert_eq!(
+            mnemonic(&target_only, &target_only),
+            Ok("rust-fastbuild".to_owned())
+        );
+        // Against the default baseline the version is hashed into ST-.
+        assert!(
+            mnemonic(&target_only, &Configuration::default())
+                .unwrap()
+                .starts_with("rust-fastbuild-ST-")
+        );
+    }
+
+    /// N28c: the no-config configuration (CommonOptions.EMPTY_OPTIONS) and
+    /// its `<compilation_mode>-noconfig` mnemonic
+    /// (OutputPathMnemonicComputer.java:187-190), whatever the parent.
+    #[test]
+    fn no_config_configuration_is_core_defaults_only() {
+        let mut configurations = Configurations::new(parsed(&["-c", "opt", "--stamp"]));
+        let id = configurations.intern_no_config();
+        assert_eq!(configurations.intern_no_config(), id);
+        assert!(configurations.is_no_config(id));
+        assert!(!configurations.is_no_config(configurations.top()));
+        assert_eq!(configurations.mnemonic(id), "fastbuild-noconfig");
+        assert_eq!(
+            configurations.output_root(id),
+            "bazel-out/fastbuild-noconfig/bin"
+        );
+        let configuration = configurations.get(id);
+        assert_eq!(configuration.native.compilation_mode, "fastbuild");
+        assert!(!configuration.native.stamp && configuration.starlark.is_empty());
+        assert_ne!(id, Configuration::default().id);
+        assert_eq!(
+            mnemonic(configuration, &Configuration::default()),
+            Ok("fastbuild-noconfig".to_owned())
+        );
+        assert_eq!(no_config().id, id);
     }
 
     #[test]

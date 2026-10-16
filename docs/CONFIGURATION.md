@@ -33,6 +33,10 @@ transitions). Modelled options, with Bazel's defaults and converters:
 | `--[no]force_pic` | `false` | BooleanConverter | `CppOptions.java:218-227` |
 | `--platforms` (`--experimental_platforms`) | `--host_platform` | comma list, empty entries dropped, `//` prefixed unless `/`/`@`; only the first entry is kept (the target platform); empty becomes `--host_platform` | `analysis/PlatformOptions.java:82-96, 189-212`, `skyframe/config/PlatformMappingValue.java:154-158`, `CoreOptionConverters.java:143-158, 331-361` |
 | `--host_platform` (`--experimental_host_platform`) | `@bazel_tools//tools:host_platform` | label; empty means the default | `PlatformOptions.java:46-64, 218-227` |
+| `--java_runtime_version` | `local_jdk` | String option (the value as given, Converters.StringConverter); selectable in `config_setting(values)`; not a `query` option (JavaOptions) | `rules/java/JavaOptions.java:373-379`, `common/options/Converters.java:69-79, 226` |
+| `--java_language_version` | `""` | String option, as above | `JavaOptions.java:389-395` |
+| `--tool_java_runtime_version` | `remotejdk_11` | String option; the exec configuration's `java_runtime_version` (below) | `JavaOptions.java:381-387` |
+| `--tool_java_language_version` | `""` | String option; the exec configuration's `java_language_version` | `JavaOptions.java:397-403` |
 | `--extra_toolchains` | `[]` | repeatable comma list of target patterns (empty values kept, an empty value adds nothing); duplicates keep the last copy; part of the identity only when non-empty; not a `query` option (docs/TOOLCHAINS.md) | `PlatformOptions.java:98-116, 164-201`, `common/options/Converters.java:253-287` |
 
 Values that resolve to `@@bazel_tools//tools:host_platform` (or are empty)
@@ -77,7 +81,26 @@ spelling (`-c OPT` = `--compilation_mode=opt`, `--//:s=red` with default `red`
 (default `opt`), `is exec configuration` (false) and `platform_suffix`
 (null) — are omitted from the serialization at their defaults, so every
 existing identity is byte-identical (pinned in `src/configuration.rs` for the
-default, `-c dbg` and `-c opt`).
+default, `-c dbg` and `-c opt`). The JavaOptions version strings (N28b) are
+serialized as a separate `java` object only when they differ from the values
+the configuration kind has by default — the option defaults in a target
+configuration, the exec transition of the defaults (`java_runtime_version =
+remotejdk_11`) in an exec configuration (`is exec configuration` is itself part
+of the identity, so the serialization stays injective) — so target and exec
+identities at defaults are unchanged (pinned in `src/configuration.rs` and
+`src/config_registry.rs`). The no-config configuration (N28c, below) adds
+`"no_config":true`.
+
+**JavaOptions version strings (N28b).** rules_java's toolchain packages
+select on `java_runtime_version`/`java_language_version` with
+`config_setting(values = ...)`; the four options are modelled for the command
+line, `config_setting` and `select()`. `query` does not register JavaOptions:
+`--java_runtime_version=X :: Unrecognized option: --java_runtime_version=X`
+(also `--no...` forms; Bazel exits 2, the native CLI 1). Starlark transitions are not modelled
+in this tree (N18c), so reading `//command_line_option:java_runtime_version`
+from a transition stays an explicit rule-transition gap. The exec transition
+maps `java_*` from the parent's `tool_java_*` and propagates `tool_java_*`
+(`_java_options`, `builtin_exec_platforms.bzl:350-385`).
 
 ## Starlark build settings (`src/starlark_options.rs`)
 
@@ -486,15 +509,29 @@ not visible from\ntarget 'L'\nRecommendation: modify the visibility declaration
 if you think the dependency is legitimate. For more info see
 https://bazel.build/concepts/visibility` (plus `. To set the visibility of that
 source file target, use the exports_files() function` for source files).
-Known divergences:
+Implicit (private, `_x`, including subrule-lifted) attributes of Starlark
+rules are checked from the package of the `.bzl` that defines the rule class
+first and from the consuming target only as a fallback; a failure prints that
+`.bzl` as the consumer (`target '//pkg:defs.bzl'`; `isImplicitDep` and the
+fallback, `analysis/CommonPrerequisiteValidator.java:181-221`;
+`consumerOrOwnerLocation`, `:384-386`). Defaults of public attributes are
+checked from the consumer only (`:183-187`). The defining `.bzl` is the rule
+class's definition environment label (`getOwnerDefinitionBzl`, `:133-143`):
+the `.bzl` being initialized when `rule()` ran (BzlInitThreadContext.getBzlFile,
+`StarlarkRuleClassFunctions.java:626-631, 1056-1062`), not a helper `.bzl`
+that calls `rule()` for it (the native `RuleDeclaration::definition_environment_label`;
+the lexical `definition_label` keeps its other uses). Genuine Bazel 9.3
+capture by the N28 rereview (`/tmp/opencode/n28/gb/ws`, packages
+`lib`/`pub`/`c2`; mirrored by `tests/java_parity.rs`
+`implicit_dependency_owner_is_the_initialized_bzl`): `//lib:helpers.bzl`
+defines `make()` calling `rule()`, `//pub:defs.bzl` calls it with a private
+`_d` default; `//c2:p` (`_d = //pub:dep`) builds and `//c2:l`
+(`_d = //lib:dep`) fails with `Visibility error:\ntarget '//lib:dep' is not
+visible from\ntarget '//pub:defs.bzl'`. These two rows are not part of the
+N28 run-4 receipt (`tests/fixtures/java_parity/reference_receipt.json`),
+which was written before this fix; its scenarios A9/B8/B10 have the rule
+defined directly in the initialized `.bzl`, where both labels coincide. Known divergences:
 
-* Implicit (private Starlark attribute) dependencies: Bazel checks their
-  visibility from the package of the rule definition's `.bzl` (falling back to
-  the target's package) and prints that `.bzl` file as the consumer
-  (`target '//pkg:defs.bzl'`; `consumerOrOwnerLocation`,
-  `analysis/CommonPrerequisiteValidator.java:386-387`, with `isImplicitDep`
-  at `:180-190`). The native profile still checks and reports them from the
-  consuming target.
 * Implicit Starlark attributes with `doc`: Bazel's missing-edge message adds
   `\nDocumentation for implicit attribute A of rules of type K:\nDOC`
   (`TargetUtils.java:405-412`); the native schema does not retain `doc`.
@@ -819,7 +856,12 @@ documented divergences:
 * `dict | select(...)` (dict on the left) and Starlark binary-operator error
   wording (`Operation ... not supported` versus `unsupported binary
   operation: X op Y`) come from the vendored interpreter.
-* `ctx.var` and `ctx.bin_dir` are absent from the native `ctx` (pre-existing).
+* `ctx.var`, `ctx.bin_dir` and `ctx.fragments` are absent from the native
+  rule `ctx` (pre-existing, N23c); in the no-config configuration Bazel's
+  `ctx.var["COMPILATION_MODE"]` is `fastbuild`, `ctx.bin_dir.path`
+  `bazel-out/fastbuild-noconfig/bin` and `ctx.fragments.cpp` fails with
+  `There is no configuration fragment named 'cpp'. Available fragments: ''`
+  (paired capture N28 B4/p_var, p_bindir, p_cpp).
 * The CLI lists source files of a source-only filegroup; Bazel prints
   `(nothing to build)`.
 * Starlark-level locations (load-time conversion errors, `fail()` in a rule

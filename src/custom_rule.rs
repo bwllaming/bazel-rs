@@ -298,6 +298,9 @@ pub struct InvocationDeclaration {
     pub exec_compatible_with: Vec<String>,
     /// The `.bzl` that called rule() (`ctx.toolchains` string keys).
     pub definition_label: String,
+    /// RuleClass.getRuleDefinitionEnvironmentLabel: the `.bzl` being
+    /// initialized when rule() ran ([`RuleDeclaration::definition_environment_label`]).
+    pub definition_environment_label: String,
     /// `rule(provides=[...])` identities checked against returned providers.
     #[allow(private_interfaces)]
     pub provides: Vec<ProviderRequirement>,
@@ -352,6 +355,9 @@ pub struct CppConfigurationView {
     pub compilation_mode: &'static str,
     pub strip: &'static str,
     pub force_pic: bool,
+    /// The no-config configuration has no configuration fragments at all
+    /// (CommonOptions.EMPTY_OPTIONS, analysis/config/CommonOptions.java:32-42).
+    pub no_fragments: bool,
 }
 
 impl Default for CppConfigurationView {
@@ -360,6 +366,7 @@ impl Default for CppConfigurationView {
             compilation_mode: "fastbuild",
             strip: "sometimes",
             force_pic: false,
+            no_fragments: false,
         }
     }
 }
@@ -370,6 +377,7 @@ impl CppConfigurationView {
             compilation_mode: native.compilation_mode,
             strip: native.strip,
             force_pic: native.force_pic,
+            no_fragments: native.no_config,
         }
     }
 
@@ -1517,6 +1525,10 @@ mod values {
                     toolchain_types: self.declaration.toolchains.clone(),
                     exec_compatible_with: self.declaration.exec_compatible_with.clone(),
                     definition_label: self.declaration.definition_label.clone(),
+                    definition_environment_label: self
+                        .declaration
+                        .definition_environment_label
+                        .clone(),
                     provides: self.declaration.provides.clone(),
                     configurable,
                     attr_order: self.attr_order.clone(),
@@ -1542,6 +1554,13 @@ use values::{ComputedDescriptor, ComputedDescriptorGen, Definition, DefinitionGe
 pub(crate) struct RuleDeclaration {
     /// Canonical `.bzl` label whose evaluation called rule().
     pub definition_label: String,
+    /// The rule class's definition environment label: the `.bzl` being
+    /// INITIALIZED when rule() ran (BzlInitThreadContext.getBzlFile, the
+    /// outermost frame; StarlarkRuleClassFunctions.java:626-631, 1056-1062),
+    /// which differs from [`Self::definition_label`] (the innermost frame)
+    /// when a helper in another `.bzl` calls rule(). The owner location of
+    /// implicit dependencies (CommonPrerequisiteValidator.java:133-143).
+    pub definition_environment_label: String,
     pub executable: bool,
     /// `test=True` or `analysis_test=True` (createRule: "analysis_test=true implies test=true").
     pub test: bool,
@@ -1728,7 +1747,6 @@ fn builtin_gaps(builtin: &crate::native_rules::NativeTarget) -> Vec<String> {
             // native toolchain resolution (crate::engine, docs/TOOLCHAINS.md).
             "exec_group_compatible_with" => "execution platform resolution",
             "toolchains" => "TemplateVariableInfo Make variables",
-            "package_metadata" => "package metadata dependencies",
             "aspect_hints" => "aspect hints",
             "transitive_configs" => "configuration trimming",
             "expect_failure" => "expected analysis failure",
@@ -3622,8 +3640,16 @@ fn define_rule<'v>(
         }
     }
     let toolchains = toolchains_with_subrules;
+    let definition_environment_label = eval
+        .extra
+        .and_then(|extra| extra.downcast_ref::<crate::loading::ExtensionContext>())
+        .map_or_else(
+            || definition.to_string(),
+            |context| context.label.to_string(),
+        );
     let declaration = RuleDeclaration {
         definition_label: definition.to_string(),
+        definition_environment_label,
         executable,
         test,
         analysis_test: args.analysis_test,
@@ -3642,6 +3668,7 @@ fn define_rule<'v>(
     };
     budget
         .string(&declaration.definition_label)
+        .and_then(|()| budget.string(&declaration.definition_environment_label))
         .map_err(anyhow::Error::msg)?;
     Ok(eval.heap().alloc(DefinitionGen {
         implementation,
@@ -4811,12 +4838,13 @@ r(name='z')",
         assert!(!custom.attrs.contains_key("target_compatible_with"));
         let gaps = value_gaps(custom).join("; ");
         for expected in [
-            "attribute 'package_metadata' = [\"//:lic\"] (package metadata dependencies)",
             "attribute 'transitive_configs' = [\"//:t\"] (configuration trimming)",
             "attribute 'exec_group_compatible_with' = ",
         ] {
             assert!(gaps.contains(expected), "{expected}: {gaps}");
         }
+        // package_metadata edges are analyzed (N28c, crate::engine).
+        assert!(!gaps.contains("package_metadata"), "{gaps}");
         let y = rule(":y").custom.as_ref().unwrap();
         assert_eq!(y.declaration.builtin.deprecation.as_deref(), Some("own"));
         assert!(!y.declaration.builtin.testonly);

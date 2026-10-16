@@ -1726,7 +1726,12 @@ pub(crate) fn analysis_gaps(target: &NativeTarget) -> Vec<String> {
         _ => &[],
     };
     for (key, value) in &target.attrs {
-        if neutral.contains(&key.as_str()) || crate::custom_rule::AttrKind::is_empty_value(value) {
+        // `package_metadata` edges are analyzed in the no-config
+        // configuration by crate::engine (Rule::package_metadata).
+        if neutral.contains(&key.as_str())
+            || key == "package_metadata"
+            || crate::custom_rule::AttrKind::is_empty_value(value)
+        {
             continue;
         }
         let neutral_value = match (key.as_str(), value) {

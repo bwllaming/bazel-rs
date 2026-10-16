@@ -447,6 +447,10 @@ enum EdgeCfg {
     /// group: Starlark `cfg = "exec"`/`"host"`/`config.exec(...)`, genrule
     /// `tools` (rules/genrule/GenRuleBaseRule.java:89-92).
     Exec(Option<String>),
+    /// NoConfigTransition: the `package_metadata` edges
+    /// (analysis/BaseRuleClasses.java:291-297), analyzed in the no-config
+    /// configuration (crate::config_registry::no_config).
+    NoConfig,
 }
 
 /// A dependency edge of a configured rule: the label text, its attribute
@@ -459,8 +463,19 @@ struct Edge {
 
 /// The dependency edges of a configured (select-resolved) rule, in the
 /// order of `rule.srcs` (Starlark attributes in name order,
-/// crate::package::custom_dependency_labels), then genrule `tools`.
+/// crate::package::custom_dependency_labels), then genrule `tools`, then
+/// the effective `package_metadata` (nonconfigurable, NoConfigTransition).
 fn dependency_edges(rule: &Rule) -> Vec<Edge> {
+    let mut edges = attribute_edges(rule);
+    edges.extend(rule.package_metadata.iter().map(|label| Edge {
+        label: label.clone(),
+        attribute: "package_metadata".to_owned(),
+        cfg: EdgeCfg::NoConfig,
+    }));
+    edges
+}
+
+fn attribute_edges(rule: &Rule) -> Vec<Edge> {
     let edge = |label: &String, attribute: &str, cfg: EdgeCfg| Edge {
         label: label.clone(),
         attribute: attribute.to_owned(),
@@ -764,6 +779,12 @@ impl Engine {
                                     // Starlark select() keys and branches.
                                     || custom.declaration.configurable_labels.contains(label)
                             })
+                            // The computed package_metadata default (Rule.getLabels
+                            // visits computed defaults too; paired capture N28
+                            // B4/missing_default: `rule '//p:nope' does not exist`).
+                            || rule.package_metadata.iter().any(|text| {
+                                Label::parse_canonical(text).as_ref() == Ok(label)
+                            })
                     }));
         if !declared_source {
             return Err(self.no_such_target(label)?);
@@ -928,6 +949,11 @@ impl Engine {
                 );
                 labels.extend(custom.declaration.configurable_labels.iter().cloned());
             }
+            labels.extend(
+                rule.package_metadata
+                    .iter()
+                    .filter_map(|text| Label::parse_canonical(text).ok()),
+            );
             names.extend(
                 labels
                     .into_iter()
@@ -1199,6 +1225,7 @@ impl Engine {
             return Err("native prototype dependency depth limit (256) exceeded".into());
         }
         let configuration = self.configurations.get(config).clone();
+        let no_config = configuration.native.no_config;
         active.push(key.clone());
         // constraint_setting and constraint_value are analyzed under
         // NoConfigTransition (rules/platform/ConstraintSettingRule.java:42,
@@ -1213,6 +1240,15 @@ impl Engine {
                 rule.label
             ));
         }
+        // select() in the no-config configuration would match config_settings
+        // against CoreOptions defaults only, with every other fragment
+        // missing: not modelled.
+        if no_config && !configured_attributes::rule_config_dependencies(&rule).is_empty() {
+            return Err(format!(
+                "{}: select() in the no-config configuration (a package_metadata dependency, NoConfigTransition) is not implemented in the native profile",
+                rule.label
+            ));
+        }
         // DependencyContextProducerWithCompatibilityCheck
         // (analysis/producers/DependencyContextProducerWithCompatibilityCheck.java:80-110, 132-145):
         // a rule that uses toolchain resolution resolves its target platform
@@ -1223,7 +1259,11 @@ impl Engine {
         // Inside a platform's tree (the empty configuration, no
         // PlatformConfiguration) no rule resolves toolchains
         // (ToolchainContextUtil.java:79-82: platformConfig == null).
-        let in_empty_configuration = !self.resolving_platforms.is_empty();
+        // The no-config configuration has no PlatformConfiguration either
+        // (CommonOptions.EMPTY_OPTIONS): no toolchain resolution, so no
+        // execution platform and exec edges keep it
+        // (ExecutionTransitionFactory.java:192-197).
+        let in_empty_configuration = !self.resolving_platforms.is_empty() || no_config;
         if in_empty_configuration {
             self.empty_configuration_rules.insert(key.clone());
         }
@@ -1309,6 +1349,39 @@ impl Engine {
         // transition needs the parent's execution platform, which toolchain
         // resolution chose before any dependency (ExecutionTransitionFactory).
         let edges = dependency_edges(&rule);
+        // ExecutionTransitionFactory.create (analysis/config/ExecutionTransitionFactory.java:76-114):
+        // in the no-config (and a platform's empty) configuration
+        // CommonOptions.EMPTY_OPTIONS has no Starlark exec transition
+        // (`starlarkExecConfig = null`, analysis/config/CommonOptions.java:34-41),
+        // so every exec-transition dependency edge fails to create its
+        // transition before any dependency is analyzed - unless the rule has
+        // an attribute named `license_kinds` (AttributeMap.has, :109-111, the
+        // rules_license license() hack), whose exec edges become
+        // NoConfigTransition. Genrules always have the exec edge
+        // `$genrule_setup` (bazel/rules/genrule/BazelGenRuleRule.java:44-46),
+        // Starlark test rules their `$test_*` tool edges
+        // (StarlarkRuleClassFunctions.java:290-352).
+        if in_empty_configuration {
+            let custom_exec = rule.custom.as_ref().is_some_and(|custom| {
+                custom.declaration.builtin.kind.test && !custom.schema.contains_key("license_kinds")
+            });
+            let has_license_kinds = rule
+                .custom
+                .as_ref()
+                .is_some_and(|custom| custom.schema.contains_key("license_kinds"));
+            let exec_edge = edges
+                .iter()
+                .any(|edge| matches!(edge.cfg, EdgeCfg::Exec(_)));
+            if matches!(rule.kind, RuleKind::Genrule)
+                || custom_exec
+                || (exec_edge && !has_license_kinds)
+            {
+                return Err(located(
+                    rule.location.as_deref(),
+                    "expected a Starlark exec transition definition, but was null".to_owned(),
+                ));
+            }
+        }
         let exec_config =
             if uses_toolchains && edges.iter().any(|edge| edge.cfg == EdgeCfg::Exec(None)) {
                 let exec_config = self.exec_configuration(
@@ -1329,6 +1402,7 @@ impl Engine {
             let dep_config = match &edge.cfg {
                 EdgeCfg::Target => config,
                 EdgeCfg::Exec(None) => exec_config,
+                EdgeCfg::NoConfig => self.configurations.intern_no_config(),
                 // Named exec groups (exec_groups fail before, so the group
                 // never exists): a dependency error when the rule has
                 // toolchain contexts (DependencyResolutionHelpers.java:243-253,
@@ -1363,40 +1437,71 @@ impl Engine {
             })?;
             let is_source = matches!(target, Target::Source(_));
             let forwarding = matches!(&target, Target::Rule(dep) if forwards(dep));
-            let visible = match target {
+            // CommonPrerequisiteValidator.validateDirectPrerequisiteVisibility
+            // (analysis/CommonPrerequisiteValidator.java:181-221): an implicit
+            // (private, `_x`) attribute of a Starlark rule - subrule-lifted
+            // attributes included - is checked against the package of the
+            // `.bzl` that defines the rule class first, then against the
+            // consumer; a failure names that `.bzl` (:384-386). That `.bzl`
+            // is the rule class's definition environment label
+            // (getOwnerDefinitionBzl, :133-143): the module being initialized
+            // when rule() ran, not a helper `.bzl` that called rule().
+            let implicit_owner = rule
+                .custom
+                .as_ref()
+                .filter(|_| edge.attribute.starts_with('_') && !late_bound)
+                .and_then(|custom| {
+                    Label::parse_canonical(&custom.declaration.definition_environment_label).ok()
+                });
+            let (dep_visibility, dep_declaring) = match &target {
                 Target::Rule(dep) | Target::Output(dep, _) => {
-                    check_macro_namespace(&dep, &dependency)?;
-                    check_macro_namespace(&dep, &dep.label)?;
-                    if matches!(dep.kind, RuleKind::PackageGroup(_))
-                        && !matches!(rule.kind, RuleKind::Custom)
-                    {
-                        return Err(format!(
-                            "{}: package group '{dependency}' is misplaced in {}",
-                            rule.label, edge.attribute
-                        ));
-                    }
-                    late_bound
-                        || self.visible(
-                            &dep.visibility,
-                            &rule_authority(&dep),
-                            Some(&requesting_package),
-                        )?
+                    (dep.visibility.clone(), rule_authority(dep))
                 }
-                Target::Source(_) => {
-                    late_bound
-                        || self.visible(
-                            &self.source_visibility(&dependency),
-                            &dependency.package_id(),
-                            Some(&requesting_package),
-                        )?
-                }
+                Target::Source(_) => (self.source_visibility(&dependency), dependency.package_id()),
             };
+            let owner_visible = match &implicit_owner {
+                Some(owner) => {
+                    self.visible(&dep_visibility, &dep_declaring, Some(&owner.package_id()))?
+                }
+                None => false,
+            };
+            let visible_from = implicit_owner.as_ref();
+            let visible = owner_visible
+                || match target {
+                    Target::Rule(dep) | Target::Output(dep, _) => {
+                        check_macro_namespace(&dep, &dependency)?;
+                        check_macro_namespace(&dep, &dep.label)?;
+                        if matches!(dep.kind, RuleKind::PackageGroup(_))
+                            && !matches!(rule.kind, RuleKind::Custom)
+                        {
+                            return Err(format!(
+                                "{}: package group '{dependency}' is misplaced in {}",
+                                rule.label, edge.attribute
+                            ));
+                        }
+                        late_bound
+                            || self.visible(
+                                &dep.visibility,
+                                &rule_authority(&dep),
+                                Some(&requesting_package),
+                            )?
+                    }
+                    Target::Source(_) => {
+                        late_bound
+                            || self.visible(
+                                &self.source_visibility(&dependency),
+                                &dependency.package_id(),
+                                Some(&requesting_package),
+                            )?
+                    }
+                };
             if !forwarding {
                 if !visible {
                     return Err(visibility_error(
                         &rule,
                         &describe_with_aliases(&[], &dependency, "target"),
                         is_source,
+                        visible_from,
                     ));
                 }
                 self.validate_prerequisite(
@@ -1415,7 +1520,12 @@ impl Engine {
             let description = describe_with_aliases(&chain, &actual, "target");
             if !visible {
                 let is_source = matches!(self.target(&actual)?, Target::Source(_));
-                return Err(visibility_error(&rule, &description, is_source));
+                return Err(visibility_error(
+                    &rule,
+                    &description,
+                    is_source,
+                    visible_from,
+                ));
             }
             self.validate_prerequisite(&rule, &actual, &description, skip_testonly)?;
         }
@@ -1433,6 +1543,7 @@ impl Engine {
             }
         }
         self.starlark_file_type_errors(&rule, config, exec_config, configured)?;
+        self.package_metadata_file_errors(&rule, configured)?;
         // config_setting flag_values/constraint_values and the platform rules'
         // label attributes: prerequisites analyzed, then validated
         // (RuleContext.Builder, analysis/RuleContext.java:1700-1745, 1845-1880, 2165-2172).
@@ -1468,7 +1579,7 @@ impl Engine {
                     &rule_authority(&dep),
                     Some(&requesting_package),
                 )? {
-                    return Err(visibility_error(&rule, &description, false));
+                    return Err(visibility_error(&rule, &description, false, None));
                 }
                 self.validate_prerequisite(&rule, &actual, &description, skip_testonly)?;
             }
@@ -1844,6 +1955,42 @@ impl Engine {
         })
     }
 
+    /// `package_metadata` allows no files (`allowedFileTypes(FileTypeSet.NO_FILE)`,
+    /// analysis/BaseRuleClasses.java:291-297): every file prerequisite is an
+    /// attribute error, like [`Self::starlark_file_type_errors`], all
+    /// reported at the rule's location. The edges are analyzed in the
+    /// no-config configuration.
+    fn package_metadata_file_errors(
+        &mut self,
+        rule: &Rule,
+        configured: &ConfiguredNodes,
+    ) -> Result<(), String> {
+        if rule.package_metadata.is_empty() {
+            return Ok(());
+        }
+        let no_config = self.configurations.intern_no_config();
+        let shown = crate::rule_declarations::canonical_form(&rule.label);
+        let mut errors = Vec::new();
+        for text in &rule.package_metadata {
+            let dependency = self.resolve_rule_src(rule, text)?;
+            let (chain, actual) = self.alias_chain(configured, no_config, &dependency);
+            if let Some(error) = self.no_files_error(&chain, &actual)? {
+                errors.push(located(
+                    rule.location.as_deref(),
+                    format!(
+                        "in package_metadata attribute of {} rule {shown}: {error}",
+                        rule.rule_class_name()
+                    ),
+                ));
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("\n"))
+        }
+    }
+
     /// Starlark `attr.label`/`attr.label_list` without `allow_files` allow no
     /// files and check labels strictly (StarlarkAttrModule.java:431-445,
     /// Attribute.java:2349): every file prerequisite is an attribute error
@@ -1983,7 +2130,7 @@ impl Engine {
             };
             let description = describe_with_aliases(&chain, &actual, "target");
             if !visible {
-                errors.push(visibility_message(rule, &description, is_source));
+                errors.push(visibility_message(rule, &description, is_source, None));
             }
             if let Some(error) = self.prerequisite_error(rule, &actual, &description, false)? {
                 errors.push(error);
@@ -2096,7 +2243,7 @@ impl Engine {
                 };
                 let description = describe_with_aliases(&chain, &actual, "target");
                 if !visible {
-                    errors.push(visibility_message(rule, &description, is_source));
+                    errors.push(visibility_message(rule, &description, is_source, None));
                 }
                 if let Some(error) = self.prerequisite_error(rule, &actual, &description, false)? {
                     errors.push(error);
@@ -3837,12 +3984,19 @@ impl Engine {
                 let mut dependency_labels: Vec<(Label, ConfigId, String)> = Vec::new();
                 for edge in dependency_edges(rule) {
                     let label = self.resolve_rule_src(rule, &edge.label)?;
-                    let edge_config = match edge.cfg {
-                        EdgeCfg::Target => config,
-                        EdgeCfg::Exec(_) => exec_config,
+                    let (edge_config, map_key) = match edge.cfg {
+                        EdgeCfg::Target => {
+                            (config, analysis::dependency_key(&label.to_string(), false))
+                        }
+                        EdgeCfg::Exec(_) => (
+                            exec_config,
+                            analysis::dependency_key(&label.to_string(), true),
+                        ),
+                        EdgeCfg::NoConfig => (
+                            self.configurations.intern_no_config(),
+                            analysis::metadata_dependency_key(&label.to_string()),
+                        ),
                     };
-                    let map_key =
-                        analysis::dependency_key(&label.to_string(), edge.cfg != EdgeCfg::Target);
                     dependency_labels.push((label, edge_config, map_key));
                 }
                 let mut add_target = |label: Label| {
@@ -4593,19 +4747,32 @@ fn suggest_targets(input: &str, words: &BTreeSet<String>) -> String {
 /// whether the (alias chain's end) target is a source file. Implicit
 /// (private Starlark) attributes are attributed to the consumer target here,
 /// not to its rule's `.bzl` (divergence, docs/CONFIGURATION.md).
-fn visibility_error(rule: &Rule, description: &str, is_source: bool) -> String {
+/// `owner` is the defining `.bzl` of an implicit dependency's rule class
+/// (CommonPrerequisiteValidator.generateVisibilityConflictMessage,
+/// analysis/CommonPrerequisiteValidator.java:376-397: `consumerOrOwnerLocation`).
+fn visibility_error(
+    rule: &Rule,
+    description: &str,
+    is_source: bool,
+    owner: Option<&Label>,
+) -> String {
     located(
         rule.location.as_deref(),
-        visibility_message(rule, description, is_source),
+        visibility_message(rule, description, is_source, owner),
     )
 }
 
-fn visibility_message(rule: &Rule, description: &str, is_source: bool) -> String {
+fn visibility_message(
+    rule: &Rule,
+    description: &str,
+    is_source: bool,
+    owner: Option<&Label>,
+) -> String {
     let mut message = format!(
         "in {} rule {}: Visibility error:\n{description} is not visible from\ntarget '{}'\nRecommendation: modify the visibility declaration if you think the dependency is legitimate. For more info see https://bazel.build/concepts/visibility",
         rule.rule_class_name(),
         crate::rule_declarations::canonical_form(&rule.label),
-        crate::rule_declarations::canonical_form(&rule.label),
+        crate::rule_declarations::canonical_form(owner.unwrap_or(&rule.label)),
     );
     if is_source {
         message.push_str(
@@ -5182,6 +5349,7 @@ mod tests {
             }),
             native: None,
             unanalyzed: Vec::new(),
+            package_metadata: Vec::new(),
             location: None,
         }
     }
@@ -6072,6 +6240,7 @@ m = macro(implementation=emit)
             macro_owner: None,
             native: None,
             unanalyzed: Vec::new(),
+            package_metadata: Vec::new(),
             location: None,
         };
         assert_eq!(

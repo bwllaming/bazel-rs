@@ -11,8 +11,8 @@
 
 use crate::label::Label;
 use crate::language_modules::{
-    Behavior, BuiltinMethod, CcInternal, Domain, bind, builtins_function, failure, param, sequence,
-    sorted_struct, type_error,
+    Behavior, BuiltinMethod, CcInternal, Domain, JavaFlag, bind, builtins_function, failure, param,
+    sequence, sorted_struct, type_error,
 };
 use allocative::Allocative;
 use starlark::collections::StarlarkHasher;
@@ -66,34 +66,66 @@ cc_functions!(
     "legacy_cc_flags_make_variable_do_not_use",
 );
 
-/// java_common.bzl `_internal_exports()` struct: (field, Java method name).
-const JAVA_INTERNAL_METHODS: [(&str, &str); 11] = [
+/// java_common.bzl `_internal_exports()` struct (java_common.bzl:26-38):
+/// (field, Java method name, behaviour). Only the three semantics-flag
+/// getters are implemented (JavaStarlarkCommon.java:383-402, flags at their
+/// defaults); the analysis-time methods fail explicitly.
+const JAVA_INTERNAL_METHODS: [(&str, &str, Behavior); 11] = [
     (
         "check_java_toolchain_is_declared_on_rule",
         "_check_java_toolchain_is_declared_on_rule",
+        Behavior::Unimplemented(Domain::Java),
     ),
-    ("check_provider_instances", "check_provider_instances"),
-    ("collect_native_deps_dirs", "collect_native_deps_dirs"),
-    ("create_compilation_action", "create_compilation_action"),
+    (
+        "check_provider_instances",
+        "check_provider_instances",
+        Behavior::Unimplemented(Domain::Java),
+    ),
+    (
+        "collect_native_deps_dirs",
+        "collect_native_deps_dirs",
+        Behavior::Unimplemented(Domain::Java),
+    ),
+    (
+        "create_compilation_action",
+        "create_compilation_action",
+        Behavior::Unimplemented(Domain::Java),
+    ),
     (
         "create_header_compilation_action",
         "create_header_compilation_action",
+        Behavior::Unimplemented(Domain::Java),
     ),
-    ("expand_java_opts", "expand_java_opts"),
+    (
+        "expand_java_opts",
+        "expand_java_opts",
+        Behavior::Unimplemented(Domain::Java),
+    ),
     (
         "get_runtime_classpath_for_archive",
         "get_runtime_classpath_for_archive",
+        Behavior::Unimplemented(Domain::Java),
     ),
-    ("google_legacy_api_enabled", "_google_legacy_api_enabled"),
+    (
+        "google_legacy_api_enabled",
+        "_google_legacy_api_enabled",
+        Behavior::JavaSemanticsFlag(JavaFlag::GoogleLegacyApi),
+    ),
     (
         "incompatible_disable_non_executable_java_binary",
         "incompatible_disable_non_executable_java_binary",
+        Behavior::JavaSemanticsFlag(JavaFlag::DisableNonExecutableJavaBinary),
     ),
     (
         "incompatible_java_info_merge_runtime_module_flags",
         "_incompatible_java_info_merge_runtime_module_flags",
+        Behavior::JavaSemanticsFlag(JavaFlag::MergeRuntimeModuleFlags),
     ),
-    ("target_kind", "target_kind"),
+    (
+        "target_kind",
+        "target_kind",
+        Behavior::Unimplemented(Domain::Java),
+    ),
 ];
 
 static NEXT_HEADER_INFO: AtomicU64 = AtomicU64::new(1);
@@ -309,18 +341,51 @@ pub(crate) fn java_internal_exports<'v>(
     check_private_api(eval, 0, &owned_allowlist(&JAVA_ALLOWLIST))?;
     let heap = eval.heap();
     Ok(heap.alloc(AllocStruct(JAVA_INTERNAL_METHODS.iter().map(
-        |(field, method)| {
+        |(field, method, behavior)| {
             (
                 *field,
                 heap.alloc(BuiltinMethod {
                     receiver: "java_common",
                     name: method,
                     qualified_owner: "java_common",
-                    behavior: Behavior::Unimplemented(Domain::Java),
+                    behavior: *behavior,
                 }),
             )
         },
     ))))
+}
+
+/// The Starlark-semantics getters of `java_common.internal_DO_NOT_USE()`
+/// (JavaStarlarkCommon.java:383-402). The two restricted getters first run
+/// checkPrivateAccess (:291-293): BuiltinRestriction.failIfCalledOutsideDefaultAllowlist
+/// (packages/BuiltinRestriction.java:178-183) for the innermost `.bzl`
+/// (`file '<label>' cannot use private API`), whose rules_java entry is
+/// `("rules_java", "java")` (:65-66): `@rules_java//java/...` passes,
+/// `@rules_java//toolchains/...` does not. The value is the semantics flag
+/// of the invocation: `--experimental_google_legacy_api`
+/// (BuildLanguageOptions.java:313-321),
+/// `--incompatible_java_info_merge_runtime_module_flags` (:559-567) or
+/// `--incompatible_disable_non_executable_java_binary` (:653-660), all
+/// default false (also without a repository set, e.g. unit tests).
+pub(crate) fn java_semantics_flag<'v>(
+    eval: &mut Evaluator<'v, '_, '_>,
+    flag: JavaFlag,
+) -> starlark::Result<Value<'v>> {
+    if flag != JavaFlag::DisableNonExecutableJavaBinary {
+        check_private_api(
+            eval,
+            0,
+            &owned_allowlist(&crate::subrule_fragments::INTERNAL_STARLARK_API_ALLOWLIST),
+        )?;
+    }
+    let semantics = crate::loading::repositories(eval)
+        .map(|repositories| repositories.java_semantics())
+        .unwrap_or_default();
+    Ok(Value::new_bool(match flag {
+        JavaFlag::GoogleLegacyApi => semantics.google_legacy_api,
+        JavaFlag::MergeRuntimeModuleFlags => semantics.java_info_merge_runtime_module_flags,
+        JavaFlag::DisableNonExecutableJavaBinary => semantics.disable_non_executable_java_binary,
+    }))
 }
 
 /// `cc_internal.check_private_api(allowlist=[(repo, prefix), ...], depth=1)`.
@@ -754,6 +819,58 @@ j = get_internal_java_common()
             "@@rules_cc+//cc:x.bzl",
             "java_common.internal_DO_NOT_USE()",
             "file '@@rules_cc+//cc:x.bzl' cannot use private API",
+        );
+    }
+
+    /// N28a: the semantics getters (JavaStarlarkCommon.java:383-402). The
+    /// restricted two check the default allowlist (rules_java entry
+    /// `("rules_java", "java")`, BuiltinRestriction.java:65-66) for the
+    /// innermost `.bzl`; `internal_DO_NOT_USE()` itself allows all of
+    /// rules_java (java_common.bzl:20-25).
+    #[test]
+    fn java_common_semantics_getters() {
+        const GETTERS: &str = r#"
+j = java_common.internal_DO_NOT_USE()
+(j.incompatible_disable_non_executable_java_binary() == False) or fail("disable")
+"#;
+        for file in [
+            "@@rules_java+//java:x.bzl",
+            "@@rules_java+//java/private:native.bzl",
+            "@@my_rules_java+//java:x.bzl",
+        ] {
+            let source = format!(
+                "{GETTERS}(j.google_legacy_api_enabled() == False) or fail(\"legacy\")\n(j.incompatible_java_info_merge_runtime_module_flags() == False) or fail(\"merge\")\n"
+            );
+            if file.contains("my_") {
+                // Not a `rules_java+` repository: internal_DO_NOT_USE() is denied.
+                fails(file, &source, "cannot use private API");
+            } else {
+                pass(file, &source);
+            }
+        }
+        // `@rules_java//toolchains` may call internal_DO_NOT_USE() and the
+        // unrestricted getter, but not the restricted ones.
+        pass("@@rules_java+//toolchains:x.bzl", GETTERS);
+        for getter in [
+            "google_legacy_api_enabled",
+            "incompatible_java_info_merge_runtime_module_flags",
+        ] {
+            fails(
+                "@@rules_java+//toolchains:x.bzl",
+                &format!("{GETTERS}j.{getter}()\n"),
+                "file '@@rules_java+//toolchains:x.bzl' cannot use private API",
+            );
+            // StarlarkMethod without parameters.
+            fails(
+                "@@rules_java+//java:x.bzl",
+                &format!("{GETTERS}j.{getter}(1)\n"),
+                "unexpected positional argument",
+            );
+        }
+        fails(
+            "@@rules_java+//java:x.bzl",
+            "java_common.internal_DO_NOT_USE().expand_java_opts(None, 'a', True, False)",
+            "java_common.expand_java_opts is not implemented in the native profile (analysis-time Java API)",
         );
     }
 }

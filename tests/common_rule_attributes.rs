@@ -474,10 +474,6 @@ fn unmodeled_builtin_values_fail_analysis_explicitly() {
             "attribute 'toolchains' = [\"//:c\"] (TemplateVariableInfo Make variables)",
         ),
         (
-            "applicable_licenses = ['//:c']",
-            "attribute 'package_metadata' = [\"//:c\"] (package metadata dependencies)",
-        ),
-        (
             "aspect_hints = ['//:c']",
             "attribute 'aspect_hints' = [\"//:c\"] (aspect hints)",
         ),
@@ -493,15 +489,20 @@ fn unmodeled_builtin_values_fail_analysis_explicitly() {
         assert!(query.status.success(), "{argument}: {}", errors(&query));
         rejected(&ws.run(&["build", "//:x"]), feature);
     }
-    // Explicit empty values are modeled; package metadata defaults are not.
+    // Package metadata (explicit, the applicable_licenses alias, or the
+    // package default) is analyzed in the no-config configuration (N28c,
+    // tests/java_parity.rs): ctx.attr.package_metadata are its targets.
     let ws = workspace(
-        "load(':defs.bzl', 'show')\npackage(default_package_metadata = ['//:m'])\nshow(name = 'm', package_metadata = [])\nshow(name = 'x')\n",
+        "load(':defs.bzl', 'show')\npackage(default_package_metadata = ['//:m'])\nshow(name = 'm', package_metadata = [])\nshow(name = 'x')\nshow(name = 'y', applicable_licenses = ['//:m'])\n",
     );
     assert!(ws.run(&["build", "//:m"]).status.success());
-    rejected(
-        &ws.run(&["build", "//:x"]),
-        "package default_package_metadata (package metadata dependencies)",
-    );
+    for target in ["//:x", "//:y"] {
+        let built = contents(&ws.run(&["build", target]));
+        assert!(
+            built[0].contains("dependency_lists=[[], [], [], [<target //:m>], "),
+            "{target}: {built:?}"
+        );
+    }
 }
 
 #[test]

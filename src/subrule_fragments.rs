@@ -211,9 +211,20 @@ fn require_declared(collection: &FragmentCollection, name: &str) -> anyhow::Resu
     Ok(())
 }
 
-/// SubruleFragmentCollection.getValue (StarlarkSubrule.java:570-586).
+/// SubruleFragmentCollection.getValue (StarlarkSubrule.java:570-586). In
+/// the no-config configuration no fragment class exists, so getValue returns
+/// null before the declaration check and the field access fails with
+/// FragmentCollectionApi.getErrorMessageForUnknownField
+/// (starlarkbuildapi/FragmentCollectionApi.java:39-49), listing the
+/// collection's field names (the declared fragments, StarlarkSubrule.java:588-591).
 fn fragment<'v>(this: Value<'v>, name: &str, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
     let collection = collection(this)?;
+    if collection.cpp.no_fragments {
+        bail!(
+            "There is no configuration fragment named '{name}'. Available fragments: '{}'",
+            collection.declared.join("', '")
+        );
+    }
     require_declared(collection, name)?;
     match name {
         "cpp" => Ok(heap.alloc(CppFragment {
@@ -279,7 +290,8 @@ fn structure_hasattr(value: Value<'_>, name: &str) -> Option<anyhow::Result<bool
     value.downcast_ref::<FragmentCollection>()?;
     Some((|| {
         let collection = collection(value)?;
-        if !STARLARK_FRAGMENTS.contains(&name) {
+        // No fragment exists in the no-config configuration: getValue is null.
+        if !STARLARK_FRAGMENTS.contains(&name) || collection.cpp.no_fragments {
             return Ok(false);
         }
         require_declared(collection, name)?;
@@ -924,6 +936,59 @@ mod tests {
                     .to_string();
                 assert!(
                     error.contains("S has to declare 'apple' as a required fragment"),
+                    "{expression}: {error}"
+                );
+            }
+        });
+        scope.finish();
+        // N28c: in the no-config configuration no fragment exists: hasattr is
+        // False, and a field access fails with FragmentCollectionApi's
+        // unknown-field message over the declared fields, before the
+        // declaration check.
+        let scope = crate::analysis_runtime::ScopeState::new("rule".into(), Default::default());
+        Module::with_temp_heap(|module| {
+            let collection = alloc_collection(
+                module.heap(),
+                "S",
+                &["cpp".into()],
+                scope.root(),
+                CppConfigurationView {
+                    no_fragments: true,
+                    ..view("fastbuild")
+                },
+            );
+            module.set("f", collection);
+            let mut builder = GlobalsBuilder::standard();
+            structure_builtins(&mut builder);
+            let globals = builder.build();
+            let mut eval = Evaluator::new(&module);
+            eval.eval_module(
+                AstModule::parse(
+                    "//pkg:defs.bzl",
+                    "r = repr((dir(f), hasattr(f, 'cpp'), hasattr(f, 'apple')))\n".into(),
+                    &Dialect::Standard,
+                )
+                .unwrap(),
+                &globals,
+            )
+            .unwrap();
+            assert_eq!(
+                module.get("r").unwrap().unpack_str().unwrap(),
+                "([\"cpp\"], False, False)"
+            );
+            for (expression, name) in [("f.cpp", "cpp"), ("f.apple", "apple")] {
+                let error = eval
+                    .eval_module(
+                        AstModule::parse("//pkg:defs.bzl", expression.into(), &Dialect::Standard)
+                            .unwrap(),
+                        &globals,
+                    )
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    error.contains(&format!(
+                        "There is no configuration fragment named '{name}'. Available fragments: 'cpp'"
+                    )),
                     "{expression}: {error}"
                 );
             }

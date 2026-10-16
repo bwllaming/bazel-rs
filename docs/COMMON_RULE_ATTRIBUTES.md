@@ -124,11 +124,50 @@ built-in attributes of Starlark test rules in 9.3.
 `default_deprecation` (and `repo()`) apply unless the attribute is set; test
 rules ignore `default_testonly` (always `True` unless explicit). The values are
 finalized with the package (`package()` may follow the rule call). As for
-native rules, a non-empty `default_package_metadata` (computed
-`package_metadata`, `BaseRuleClasses.java:100-108`), non-empty
-`default_compatible_with`/`default_restricted_to` and `transitive_visibility`
-make analysis of rules that do not set the attribute fail explicitly;
-explicit values (also `[]`) win. `default_testonly` no longer makes any rule
+native rules, non-empty `default_compatible_with`/`default_restricted_to` and
+`transitive_visibility` make analysis of rules that do not set the attribute
+fail explicitly; explicit values (also `[]`) win.
+
+**Package metadata (N28c).** `package_metadata` (input alias
+`applicable_licenses`; computed default `default_package_metadata` /
+`default_applicable_licenses`, `BaseRuleClasses.java:100-107`) is a
+nonconfigurable `NO_FILE` label list with `NoConfigTransition` and no
+constraint check (`BaseRuleClasses.java:291-297`). Its targets (explicit, or
+the package/`repo()` default) are dependency edges of every rule that has the
+attribute, analyzed after the attribute dependencies in the **no-config
+configuration** (`CommonOptions.EMPTY_OPTIONS`,
+`analysis/config/CommonOptions.java:32-42`: CoreOptions defaults, no Starlark
+build settings; output root `bazel-out/fastbuild-noconfig/bin`,
+`OutputPathMnemonicComputer.java:187-190`). Visibility and testonly are
+checked as for any prerequisite; a file is `in package_metadata attribute of
+KIND rule L: source file 'F' is misplaced here (expected no files)`; a
+same-package default naming no target is an assumed input file (Rule.getLabels
+visits computed defaults): `rule '//p:nope' does not exist`. In the
+no-config configuration rules resolve no toolchains (no
+PlatformConfiguration), and `EMPTY_OPTIONS` has no Starlark exec transition
+(`starlarkExecConfig = null`, `CommonOptions.java:34-41`): a target there
+with any exec-transition dependency edge fails before its dependencies with
+`LOC: expected a Starlark exec transition definition, but was null`
+(`ExecutionTransitionFactory.java:92-114`, at the target's location) -
+unless its rule has an attribute named `license_kinds` (`AttributeMap.has`,
+`:109-111`, the rules_license `license()` hack), whose exec edges are
+`NoConfigTransition` and stay in the no-config configuration. Genrules always
+have the exec edge `$genrule_setup` (`BazelGenRuleRule.java:44-46`) and
+Starlark test rules their `$test_*` tools (`StarlarkRuleClassFunctions.java:290-352`),
+so both always fail there. No configuration fragment exists there: a
+subrule's `ctx.fragments.X` fails with `There is no configuration fragment
+named 'X'. Available fragments: 'D'` over its declared fragments
+(`StarlarkSubrule.java:570-591`, `FragmentCollectionApi.java:39-49`);
+`select()` there fails explicitly. `ctx.attr.package_metadata` /
+`ctx.files.package_metadata` are the no-config targets and their files.
+AttributeProvider's pruning of a metadata rule's own default
+(`AttributeProvider.java:347-372`, `RuleClass.isPackageMetadataRule`
+`:2404-2425`) is unreachable for this computed-default attribute (the
+`hasComputedDefault()` branch, `:334-340`, comes first) and would not match a
+Bzlmod `rules_license+` anyway: rules_license's macros set
+`applicable_licenses = []` themselves (`rules/license.bzl:132`); a metadata
+rule that receives its own package default is a dependency cycle
+(`[self-edge]`). `default_testonly` no longer makes any rule
 fail analysis: the testonly check below uses the effective value.
 
 ## Analysis
@@ -184,7 +223,8 @@ fail analysis: the testonly check below uses the effective value.
   dependency lists `toolchains`, `compatible_with`, `restricted_to`,
   `package_metadata`, `exec_compatible_with`, `target_compatible_with`,
   `_action_listener`, `_config_dependencies` as (empty) Target lists with
-  matching `ctx.files` entries. `aspect_hints` and
+  matching `ctx.files` entries; `package_metadata` holds the effective
+  metadata targets, configured in the no-config configuration (N28c, above). `aspect_hints` and
   `exec_group_compatible_with` are not exposed, as in Bazel
   (`StarlarkRuleContext.java:207-209`, `StarlarkAttributesCollection.java:255-259`).
 * `generator_*` (`packages/Rule.java:395-405`, `RuleFactory.getGeneratorName`,
@@ -212,8 +252,7 @@ fail analysis: the testonly check below uses the effective value.
   incompatible target skipping), `compatible_with`/`restricted_to`
   (constraint environments), `exec_group_compatible_with`
   (execution platform resolution), `toolchains` (TemplateVariableInfo Make
-  variables), `package_metadata`/`applicable_licenses`, `aspect_hints`,
-  `transitive_configs`, a non-empty `expect_failure` (expected-failure
+  variables), `aspect_hints`, `transitive_configs`, a non-empty `expect_failure` (expected-failure
   analysis; `""` has no effect, `StarlarkRuleConfiguredTargetUtil.java:80-131`).
   `exec_compatible_with` takes part in toolchain resolution (it filters the
   execution platforms; `ctx.attr.exec_compatible_with` holds the constraint

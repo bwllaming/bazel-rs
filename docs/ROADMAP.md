@@ -60,7 +60,11 @@ string semantics (N26) that archive is fetched and patched, and the build
 stops later while expanding the rules_java toolchain registrations
 (`java_common.google_legacy_api_enabled`, an analysis-time Java API not yet
 implemented natively); its receipt is recorded in
-`artifacts/n23a-n26-promotion.json` at promotion. This
+`artifacts/n23a-n26-promotion.json` at promotion. N28 implements the Java
+semantics getters (N28a), the JavaOptions version strings in
+`config_setting`/`select()` (N28b) and `package_metadata` analysis in the
+no-config configuration (N28c), which the rules_java toolchain packages need
+next. This
 is a query and loading result only: application build/test and performance
 remain unproven.
 

@@ -31,6 +31,10 @@ pub enum OptionKind {
     LabelList,
     /// PlatformOptions.HostPlatformConverter (build/lib/analysis/PlatformOptions.java:218-227).
     Label,
+    /// A `String` option without a converter: the default converter of
+    /// `String` (Converters.StringConverter, common/options/Converters.java:69-79,
+    /// 226): the value as given.
+    String,
 }
 
 /// One modelled native option (an `@Option` of a FragmentOptions class).
@@ -152,7 +156,55 @@ pub const OPTIONS: &[OptionDef] = &[
         non_configurable: false,
         source: "build/lib/analysis/PlatformOptions.java:52-64",
     },
+    // JavaOptions (N28b): the Java runtime/language version strings that
+    // rules_java's toolchain config_settings select on. Not CoreOptions, so
+    // `query` does not accept them (QueryCommand.java:59-67).
+    OptionDef {
+        name: "java_runtime_version",
+        old_name: None,
+        abbrev: None,
+        kind: OptionKind::String,
+        default: DEFAULT_JAVA_RUNTIME_VERSION,
+        allow_multiple: false,
+        non_configurable: false,
+        source: "build/lib/rules/java/JavaOptions.java:373-379",
+    },
+    OptionDef {
+        name: "java_language_version",
+        old_name: None,
+        abbrev: None,
+        kind: OptionKind::String,
+        default: "",
+        allow_multiple: false,
+        non_configurable: false,
+        source: "build/lib/rules/java/JavaOptions.java:389-395",
+    },
+    OptionDef {
+        name: "tool_java_runtime_version",
+        old_name: None,
+        abbrev: None,
+        kind: OptionKind::String,
+        default: DEFAULT_TOOL_JAVA_RUNTIME_VERSION,
+        allow_multiple: false,
+        non_configurable: false,
+        source: "build/lib/rules/java/JavaOptions.java:381-387",
+    },
+    OptionDef {
+        name: "tool_java_language_version",
+        old_name: None,
+        abbrev: None,
+        kind: OptionKind::String,
+        default: "",
+        allow_multiple: false,
+        non_configurable: false,
+        source: "build/lib/rules/java/JavaOptions.java:397-403",
+    },
 ];
+
+/// `--java_runtime_version` default (JavaOptions.java:373-379).
+pub const DEFAULT_JAVA_RUNTIME_VERSION: &str = "local_jdk";
+/// `--tool_java_runtime_version` default (JavaOptions.java:381-387).
+pub const DEFAULT_TOOL_JAVA_RUNTIME_VERSION: &str = "remotejdk_11";
 
 /// The modelled option named `name` (its canonical name only).
 pub fn option(name: &str) -> Option<&'static OptionDef> {
@@ -274,6 +326,7 @@ pub enum OptionValue {
     Assignments(Vec<(String, String)>),
     Labels(Vec<Label>),
     Label(Label),
+    String(String),
 }
 
 impl fmt::Display for OptionValue {
@@ -299,6 +352,7 @@ impl fmt::Display for OptionValue {
                 write!(f, "[{}]", items.join(", "))
             }
             Self::Label(label) => f.write_str(&crate::rule_declarations::canonical_form(label)),
+            Self::String(value) => f.write_str(value),
         }
     }
 }
@@ -387,6 +441,7 @@ pub fn convert(
             input
         })
         .map(OptionValue::Label),
+        OptionKind::String => Ok(OptionValue::String(input.to_owned())),
     }
 }
 
@@ -450,6 +505,59 @@ pub struct NativeOptions {
     /// Omitted from the identity when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub platform_suffix: Option<&'static str>,
+    /// `--java_runtime_version`, `--java_language_version`,
+    /// `--tool_java_runtime_version`, `--tool_java_language_version`
+    /// (JavaOptions.java:373-403). Serialized separately
+    /// ([`JavaVersions::identity`]): omitted from the identity at the values
+    /// the configuration kind has by default, so existing identities
+    /// (target and exec) are unchanged.
+    #[serde(skip)]
+    pub java: JavaVersions,
+    /// The no-config configuration of NoConfigTransition
+    /// (analysis/config/transitions/NoConfigTransition.java:52-55):
+    /// CommonOptions.EMPTY_OPTIONS (analysis/config/CommonOptions.java:32-42),
+    /// only CoreOptions at their defaults. The other modelled options keep
+    /// their defaults here but do not exist in Bazel's configuration
+    /// (selects in it fail explicitly, crate::engine). Omitted from the
+    /// identity when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub no_config: bool,
+}
+
+/// The JavaOptions version strings (N28b).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct JavaVersions {
+    pub java_runtime_version: String,
+    pub java_language_version: String,
+    pub tool_java_runtime_version: String,
+    pub tool_java_language_version: String,
+}
+
+impl Default for JavaVersions {
+    fn default() -> Self {
+        Self {
+            java_runtime_version: DEFAULT_JAVA_RUNTIME_VERSION.to_owned(),
+            java_language_version: String::new(),
+            tool_java_runtime_version: DEFAULT_TOOL_JAVA_RUNTIME_VERSION.to_owned(),
+            tool_java_language_version: String::new(),
+        }
+    }
+}
+
+impl JavaVersions {
+    /// The versions in the identity serialization: `None` at the values a
+    /// target configuration (the option defaults) or an exec configuration
+    /// (the exec transition of the defaults: java_* = tool_java_*,
+    /// builtin_exec_platforms.bzl:358-359) has by default. `is_exec` is
+    /// itself part of the identity, so the serialization stays injective.
+    fn identity(&self, is_exec: bool) -> Option<&Self> {
+        let mut default = Self::default();
+        if is_exec {
+            default.java_runtime_version = default.tool_java_runtime_version.clone();
+            default.java_language_version = default.tool_java_language_version.clone();
+        }
+        (*self != default).then_some(self)
+    }
 }
 
 /// The default `--host_compilation_mode` (CoreOptions.java:406-417).
@@ -491,6 +599,8 @@ impl Default for NativeOptions {
             host_compilation_mode: DEFAULT_HOST_COMPILATION_MODE,
             is_exec: false,
             platform_suffix: None,
+            java: JavaVersions::default(),
+            no_config: false,
         }
     }
 }
@@ -514,6 +624,14 @@ impl NativeOptions {
             "force_pic" => OptionValue::Bool(self.force_pic),
             "platforms" => OptionValue::Labels(self.platforms.clone()),
             "host_platform" => OptionValue::Label(self.host_platform.clone()),
+            "java_runtime_version" => OptionValue::String(self.java.java_runtime_version.clone()),
+            "java_language_version" => OptionValue::String(self.java.java_language_version.clone()),
+            "tool_java_runtime_version" => {
+                OptionValue::String(self.java.tool_java_runtime_version.clone())
+            }
+            "tool_java_language_version" => {
+                OptionValue::String(self.java.tool_java_language_version.clone())
+            }
             _ => return None,
         })
     }
@@ -605,6 +723,9 @@ fn canonical_serialization(
     struct Canonical<'a> {
         version: u32,
         native: &'a NativeOptions,
+        /// The JavaOptions versions when not at their defaults (N28b).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        java: Option<&'a JavaVersions>,
         starlark: Vec<(String, &'a SettingValue)>,
         /// The (unmodelled) TestOptions fragment of an untrimmed
         /// configuration; omitted otherwise, so identities are unchanged.
@@ -614,6 +735,7 @@ fn canonical_serialization(
     serde_json::to_vec(&Canonical {
         version: 1,
         native,
+        java: native.java.identity(native.is_exec),
         test_options,
         starlark: starlark
             .iter()
@@ -728,9 +850,17 @@ impl CommandLineOptions {
             // `query` registers no PlatformOptions (QueryCommand.java:59-67):
             // OptionsParserImpl reports them as unknown (paired capture
             // B1/query_platforms_mac: `--platforms=//:mac :: Unrecognized
-            // option: --platforms=//:mac`).
+            // option: --platforms=//:mac`). Nor JavaOptions (paired capture
+            // N28 A2/query_jrv: `--java_runtime_version=remotejdk_11 ::
+            // Unrecognized option: --java_runtime_version=remotejdk_11`).
+            const JAVA_VERSIONS: [&str; 4] = [
+                "java_runtime_version",
+                "java_language_version",
+                "tool_java_runtime_version",
+                "tool_java_language_version",
+            ];
             if query
-                && [
+                && ([
                     "platforms",
                     "experimental_platforms",
                     "host_platform",
@@ -738,6 +868,10 @@ impl CommandLineOptions {
                     "extra_toolchains",
                 ]
                 .contains(&name)
+                    || JAVA_VERSIONS.contains(&name)
+                    || name
+                        .strip_prefix("no")
+                        .is_some_and(|name| JAVA_VERSIONS.contains(&name)))
             {
                 return Err(invalid_argument(arg, format!("Unrecognized option: {arg}")));
             }
@@ -854,6 +988,18 @@ impl CommandLineOptions {
                 ("define", OptionValue::Assignments(entries)) => defines.extend(entries),
                 ("platforms", OptionValue::Labels(labels)) => platforms = labels,
                 ("host_platform", OptionValue::Label(label)) => native.host_platform = label,
+                ("java_runtime_version", OptionValue::String(value)) => {
+                    native.java.java_runtime_version = value
+                }
+                ("java_language_version", OptionValue::String(value)) => {
+                    native.java.java_language_version = value
+                }
+                ("tool_java_runtime_version", OptionValue::String(value)) => {
+                    native.java.tool_java_runtime_version = value
+                }
+                ("tool_java_language_version", OptionValue::String(value)) => {
+                    native.java.tool_java_language_version = value
+                }
                 _ => unreachable!("converter shape of {}", option.name),
             }
         }
@@ -1313,6 +1459,99 @@ mod tests {
                 Configuration::default().id
             );
         }
+    }
+
+    /// N28b: the JavaOptions version strings (JavaOptions.java:373-403) are
+    /// String options (the value as given), settable in every command-line
+    /// form, part of the identity only when not at their defaults: the
+    /// pinned default identity is unchanged.
+    #[test]
+    fn java_versions_are_string_options_omitted_from_the_identity_at_defaults() {
+        let default = Configuration::default();
+        assert_eq!(
+            default.id.to_string(),
+            "25220f3df2bbaeaabb6d1d9090e0350f71be66fbaf6c30d161dbe3a21d6e6f12"
+        );
+        for args in [
+            &["--java_runtime_version=local_jdk"][..],
+            &["--java_runtime_version", "local_jdk"][..],
+            &["--java_language_version="][..],
+            &["--tool_java_runtime_version=remotejdk_11"][..],
+            &["--tool_java_language_version", ""][..],
+        ] {
+            let configuration = parsed(args).unwrap();
+            assert_eq!(configuration.id, default.id, "{args:?}");
+            assert_eq!(configuration.native.java, JavaVersions::default());
+        }
+        let java = parsed(&[
+            "--java_runtime_version=remotejdk_11",
+            "--java_language_version",
+            "17",
+            "--tool_java_runtime_version=Remotejdk_21",
+            "--tool_java_language_version=21",
+        ])
+        .unwrap();
+        assert_eq!(
+            java.native.java,
+            JavaVersions {
+                java_runtime_version: "remotejdk_11".into(),
+                java_language_version: "17".into(),
+                // No case folding (Converters.StringConverter).
+                tool_java_runtime_version: "Remotejdk_21".into(),
+                tool_java_language_version: "21".into(),
+            }
+        );
+        assert_eq!(
+            String::from_utf8(canonical_serialization(&java.native, &java.starlark, false))
+                .unwrap(),
+            r#"{"version":1,"native":{"compilation_mode":"fastbuild","stamp":false,"define":[],"strip":"sometimes","force_pic":false,"platforms":["@@bazel_tools//tools:host_platform"],"host_platform":"@@bazel_tools//tools:host_platform"},"java":{"java_runtime_version":"remotejdk_11","java_language_version":"17","tool_java_runtime_version":"Remotejdk_21","tool_java_language_version":"21"},"starlark":[]}"#
+        );
+        for (args, value) in [
+            (&["--java_runtime_version=remotejdk_11"][..], "remotejdk_11"),
+            (&["--java_language_version=11"][..], "11"),
+            (&["--tool_java_runtime_version=local_jdk"][..], "local_jdk"),
+            (&["--tool_java_language_version=8"][..], "8"),
+        ] {
+            let configuration = parsed(args).unwrap();
+            assert_ne!(configuration.id, default.id, "{args:?}");
+            let name = args[0][2..].split_once('=').unwrap().0;
+            assert_eq!(
+                configuration.native.value(name),
+                Some(OptionValue::String(value.to_owned()))
+            );
+        }
+        assert_eq!(
+            default.native.value("java_runtime_version"),
+            Some(OptionValue::String("local_jdk".into()))
+        );
+        assert_eq!(
+            default.native.value("tool_java_runtime_version"),
+            Some(OptionValue::String("remotejdk_11".into()))
+        );
+        assert_eq!(
+            parsed(&["--nojava_runtime_version"]).unwrap_err(),
+            "--nojava_runtime_version :: Illegal use of 'no' prefix on non-boolean option: --nojava_runtime_version"
+        );
+        assert_eq!(
+            parsed(&["--java_runtime_version"]).unwrap_err(),
+            "Expected value after --java_runtime_version"
+        );
+        // Not CoreOptions: `query` does not register them (QueryCommand.java:59-67).
+        for arg in ["--java_runtime_version=x", "--notool_java_language_version"] {
+            assert_eq!(
+                CommandLineOptions::for_query().parse(arg, None).err(),
+                Some(format!("{arg} :: Unrecognized option: {arg}"))
+            );
+        }
+        // The no-config marker is part of the identity only when set.
+        let no_config = NativeOptions {
+            no_config: true,
+            ..NativeOptions::default()
+        };
+        assert_ne!(
+            Configuration::new(no_config, BTreeMap::new()).id,
+            default.id
+        );
     }
 
     #[test]

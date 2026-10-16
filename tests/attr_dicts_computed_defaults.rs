@@ -440,11 +440,23 @@ opt_test(name = "check", target_under_test = ":subject")
     assert!(String::from_utf8_lossy(&output.stderr).contains(
         "TRANSITION <analysis_test_transition object> transition <function AnalysisTestResultInfo>"
     ));
+    // N28c: skylib's unittest toolchain_type now analyzes (its package
+    // default metadata is analyzed in the no-config configuration instead
+    // of failing as a gap), so the analysis test's toolchain resolution
+    // expands every registered toolchain, including the built-in
+    // `@bazel_tools//tools/test:all`, whose package loads @rules_shell: the
+    // offline fixture registry cannot fetch that source, an explicit
+    // repository failure before the analysis_test_transition gap.
     let stderr = f.rejected(
         &f.run_builtin("build", &["//:check"]),
-        "not analyzed by the native profile",
+        "While resolving toolchains for target //:check (",
     );
-    assert!(!stderr.contains("not found"), "{stderr}");
+    assert!(
+        stderr.contains("invalid registered toolchain '//tools/test:all'")
+            && stderr.contains("repository @@rules_shell+ is not materialized"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("unittest.bzl"), "{stderr}");
     // analysis_test_transition is restricted to analysis_test rules.
     f.file(
         "misuse.bzl",

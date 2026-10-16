@@ -75,7 +75,32 @@ helper defined in `rules_cc+` therefore succeeds even when a file elsewhere
 calls it, as in Bazel. If no module is found on the stack (Bazel's `null`
 module), the call is permitted, as in `CcStarlarkInternal.checkPrivateApi`.
 `java_common.internal_DO_NOT_USE()` follows the same rules with the rules_java
-allowlist. It returns the 11-field struct of `java_common` builtin methods.
+allowlist (`java_common.bzl:19-25`: `("rules_java", "")` and three
+main-repository prefixes). It returns the 11-field struct of `java_common`
+builtin methods. Three are implemented (N28a, `JavaStarlarkCommon.java:383-402`):
+
+- `google_legacy_api_enabled()` and
+  `incompatible_java_info_merge_runtime_module_flags()` first run
+  `BuiltinRestriction.failIfCalledOutsideDefaultAllowlist` for the innermost
+  `.bzl` (`BuiltinRestriction.java:36-104, 178-183`; the rules_java entry is
+  `("rules_java", "java")`): a call from `@rules_java//toolchains:x.bzl` fails
+  with `file '@@rules_java+//toolchains:x.bzl' cannot use private API`, while
+  a function defined under `@rules_java//java` passes wherever it is called
+  from. They return `--[no]experimental_google_legacy_api`
+  (`BuildLanguageOptions.java:313-321`) and
+  `--[no]incompatible_java_info_merge_runtime_module_flags` (`:559-567`).
+- `incompatible_disable_non_executable_java_binary()` has no check and returns
+  `--[no]incompatible_disable_non_executable_java_binary` (`:653-660`).
+
+The three are Starlark semantics options (default false) accepted by `query`
+and `build` (BooleanConverter forms). The only other Bazel 9.3 use of
+`--experimental_google_legacy_api` gates `Action.execution_info` and a
+JavaInfo field (`ActionApi.java:145`, `JavaInfoApi.java:158`), which the
+native profile does not expose.
+
+The other eight (compilation actions, `target_kind`, `expand_java_opts`, ...)
+remain explicit `java_common.X is not implemented in the native profile
+(analysis-time Java API)` failures.
 
 ### `cc_internal`
 

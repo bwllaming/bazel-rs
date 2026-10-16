@@ -250,16 +250,17 @@ fn analysis_of_unmodeled_native_rules_fails_explicitly() {
         ),
         ("//misc:copy", HOST_PLATFORM_UNAVAILABLE),
         ("//misc:configured_files", HOST_PLATFORM_UNAVAILABLE),
-        (
-            "@platforms//os:srcs",
-            "filegroup accepted at load time but not analyzed by the native profile: package default_package_metadata (package metadata dependencies)",
-        ),
     ] {
         let build = ws.run(&["build", target]);
         rejected(&build, diagnostic);
         assert!(!errors(&build).contains("actions executed"), "{target}");
     }
     assert!(!ws.path().join("private-cache/actions").exists());
+    // The REPO.bazel default_package_metadata (@platforms//:license, a
+    // filegroup with applicable_licenses = []) is analyzed in the no-config
+    // configuration (N28c); the source-only filegroup builds.
+    let build = ws.run(&["build", "@platforms//os:srcs"]);
+    assert!(build.status.success(), "{}", errors(&build));
 }
 
 const HOST_PLATFORM_UNAVAILABLE: &str = "bazel-rs: the target platform @@bazel_tools//tools:host_platform (the default host platform) needs the built-in @bazel_tools repository, which this module profile does not provide (";

@@ -61,12 +61,28 @@ impl Domain {
     }
 }
 
+/// A Java Starlark semantics flag read by `java_common.internal_DO_NOT_USE()`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Allocative)]
+pub(crate) enum JavaFlag {
+    /// isLegacyGoogleApiEnabled (:383-387): checkPrivateAccess, then
+    /// `--experimental_google_legacy_api`.
+    GoogleLegacyApi,
+    /// isJavaInfoMergeRuntimeModuleFlagsEnabled (:389-395): checkPrivateAccess,
+    /// then `--incompatible_java_info_merge_runtime_module_flags`.
+    MergeRuntimeModuleFlags,
+    /// incompatibleDisableNonExecutableJavaBinary (:397-402): no check.
+    DisableNonExecutableJavaBinary,
+}
+
 /// What a native callable does when invoked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Allocative)]
 pub(crate) enum Behavior {
     Unimplemented(Domain),
     CcInternalExports,
     JavaInternalExports,
+    /// The Starlark-semantics getters of JavaStarlarkCommon
+    /// (rules/java/JavaStarlarkCommon.java:383-402).
+    JavaSemanticsFlag(JavaFlag),
     CheckPrivateApi,
     CreateHeaderInfo,
     Freeze,
@@ -896,6 +912,10 @@ fn call<'v>(
         Behavior::JavaInternalExports => {
             bind_styled(style, name, &[], args, heap)?;
             crate::cc_common::java_internal_exports(eval)
+        }
+        Behavior::JavaSemanticsFlag(flag) => {
+            bind_styled(style, name, &[], args, heap)?;
+            crate::cc_common::java_semantics_flag(eval, flag)
         }
         Behavior::CheckPrivateApi => crate::cc_common::check_private_api_call(args, eval),
         Behavior::CreateHeaderInfo => crate::cc_common::create_header_info(args, eval),
