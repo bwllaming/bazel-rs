@@ -43,6 +43,9 @@ const ENOENT: i32 = 2;
 const EACCES: i32 = 13;
 const ENOEXEC: i32 = 8;
 const ENOTDIR: i32 = 20;
+const ENODEV: i32 = 19;
+const ESTALE: i32 = 116;
+const ETIMEDOUT: i32 = 110;
 /// glibc's `execvp` search path when PATH is unset (confstr _CS_PATH).
 const DEFAULT_PATH: &[u8] = b"/bin:/usr/bin";
 
@@ -244,11 +247,14 @@ pub(crate) fn run(request: &Request<'_>) -> Result<Outcome, String> {
             .process_group(0)
             .spawn()
     };
-    // execvp semantics: ENOENT/ENOTDIR/EACCES continue the search; EACCES is
-    // reported if seen, otherwise the last error.
+    // glibc __execvpe (posix/execvpe.c): EACCES, ENOENT, ESTALE, ENOTDIR,
+    // ENODEV and ETIMEDOUT continue the search; any other error (e.g.
+    // ETXTBSY) returns immediately with that errno. Only an exhausted search
+    // reports EACCES if it was seen, otherwise the last error.
     let mut child = None;
     let mut failure = ENOENT;
     let mut denied = false;
+    let mut hard = false;
     for candidate in candidates(request, &first) {
         let spawned = match spawn(&candidate, false) {
             Err(error) if error.raw_os_error() == Some(ENOEXEC) => spawn(&candidate, true),
@@ -263,14 +269,21 @@ pub(crate) fn run(request: &Request<'_>) -> Result<Outcome, String> {
                 let errno = error.raw_os_error().unwrap_or(ENOENT);
                 denied |= errno == EACCES;
                 failure = errno;
-                if !matches!(errno, ENOENT | ENOTDIR | EACCES) || first.contains(&b'/') {
+                if !matches!(
+                    errno,
+                    ENOENT | ENOTDIR | EACCES | ESTALE | ENODEV | ETIMEDOUT
+                ) {
+                    hard = true;
+                    break;
+                }
+                if first.contains(&b'/') {
                     break;
                 }
             }
         }
     }
     let Some(mut child) = child else {
-        let errno = if denied { EACCES } else { failure };
+        let errno = if denied && !hard { EACCES } else { failure };
         return Ok(Outcome::Completed(
             1,
             Vec::new(),
@@ -394,6 +407,22 @@ mod tests {
         }
     }
 
+    /// Runs a request, retrying while exec fails with ETXTBSY: a script this
+    /// test just wrote can still be open in a child forked concurrently by
+    /// another test thread (before its CLOEXEC exec), so execve reports
+    /// "Text file busy" for a moment. That race is a property of the test
+    /// harness, not of the search being tested.
+    fn settled(request: &Request<'_>) -> (i64, Vec<u8>, Vec<u8>) {
+        for _ in 0..200 {
+            let result = completed(run(request).unwrap());
+            if !(result.0 == 1 && result.2.ends_with(b": Text file busy\n")) {
+                return result;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("exec stayed ETXTBSY");
+    }
+
     #[test]
     fn exit_codes_streams_signals_and_spawn_failures_match_bazel_results() {
         let cwd = tempfile::tempdir_in("/tmp/opencode").unwrap();
@@ -450,7 +479,7 @@ mod tests {
             ("./missing.sh", "./missing.sh", "No such file or directory"),
         ] {
             assert_eq!(
-                completed(run(&request(&[argv, "x"], cwd.path(), path)).unwrap()),
+                settled(&request(&[argv, "x"], cwd.path(), path)),
                 (
                     1,
                     Vec::new(),
@@ -462,13 +491,10 @@ mod tests {
             );
         }
         // An unset PATH uses glibc's default /bin:/usr/bin, like execvp.
-        assert_eq!(
-            completed(run(&request(&["true"], cwd.path(), None)).unwrap()).0,
-            0
-        );
+        assert_eq!(settled(&request(&["true"], cwd.path(), None)).0, 0);
         // The CHILD environment's PATH is searched (process-wrapper's execvp).
         assert_eq!(
-            completed(run(&request(&["true"], cwd.path(), Some(b"/n21-missing"))).unwrap()).0,
+            settled(&request(&["true"], cwd.path(), Some(b"/n21-missing"))).0,
             1
         );
     }
@@ -477,7 +503,7 @@ mod tests {
     fn empty_command_and_permission_denied_follow_process_wrapper() {
         use std::os::unix::fs::PermissionsExt;
         let cwd = tempfile::tempdir_in("/tmp/opencode").unwrap();
-        let (code, stdout, stderr) = completed(run(&request(&[], cwd.path(), None)).unwrap());
+        let (code, stdout, stderr) = settled(&request(&[], cwd.path(), None));
         assert_eq!((code, stdout.len()), (1, 0));
         let stderr = String::from_utf8(stderr).unwrap();
         assert!(
@@ -493,7 +519,7 @@ mod tests {
         let search = format!("{}:/usr/bin:/bin", bin.display());
         for (argv, path) in [("./bin/ne.sh", None), ("ne.sh", Some(search.as_bytes()))] {
             assert_eq!(
-                completed(run(&request(&[argv], cwd.path(), path)).unwrap()),
+                settled(&request(&[argv], cwd.path(), path)),
                 (
                     1,
                     Vec::new(),
@@ -510,9 +536,49 @@ mod tests {
             .unwrap();
         let search = format!("{}:{}", bin.display(), later.display());
         assert_eq!(
-            completed(run(&request(&["ne.sh"], cwd.path(), Some(search.as_bytes()))).unwrap()),
+            settled(&request(&["ne.sh"], cwd.path(), Some(search.as_bytes()))),
             (0, b"later\n".to_vec(), Vec::new())
         );
+    }
+
+    #[test]
+    fn a_hard_exec_error_stops_the_search_with_its_own_errno() {
+        // glibc __execvpe: ETXTBSY is not a "continue" errno, so the search
+        // stops there and reports it even after an earlier EACCES candidate.
+        use std::os::unix::fs::PermissionsExt;
+        let cwd = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let denied = cwd.path().join("denied");
+        let busy = cwd.path().join("busy");
+        let later = cwd.path().join("later");
+        for dir in [&denied, &busy, &later] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        std::fs::write(denied.join("t.sh"), "#!/bin/sh\necho denied\n").unwrap();
+        std::fs::set_permissions(denied.join("t.sh"), std::fs::Permissions::from_mode(0o644))
+            .unwrap();
+        std::fs::write(later.join("t.sh"), "#!/bin/sh\necho later\n").unwrap();
+        std::fs::set_permissions(later.join("t.sh"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        let mut open = std::fs::File::create(busy.join("t.sh")).unwrap();
+        std::io::Write::write_all(&mut open, b"#!/bin/sh\necho busy\n").unwrap();
+        std::fs::set_permissions(busy.join("t.sh"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        let search = format!(
+            "{}:{}:{}",
+            denied.display(),
+            busy.display(),
+            later.display()
+        );
+        assert_eq!(
+            completed(run(&request(&["t.sh"], cwd.path(), Some(search.as_bytes()))).unwrap()),
+            (
+                1,
+                Vec::new(),
+                b"src/main/tools/process-wrapper-legacy.cc:80: \"execvp(t.sh, ...)\": Text file busy\n"
+                    .to_vec()
+            )
+        );
+        drop(open);
     }
 
     #[test]
@@ -524,11 +590,7 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        let Outcome::Completed(code, stdout, _) =
-            run(&request(&["./tool", "x"], cwd.path(), None)).unwrap()
-        else {
-            panic!()
-        };
+        let (code, stdout, _) = settled(&request(&["./tool", "x"], cwd.path(), None));
         assert_eq!(code, 0);
         let text = String::from_utf8(stdout).unwrap();
         assert!(
