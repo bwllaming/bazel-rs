@@ -129,6 +129,13 @@ integrity/path failures and the two reviewer regressions. They are not negative
 diagnostic parity claims. HTTP request logs, raw command results, artifact hashes
 and HTTP/reference/scratch cleanup receipts are retained in that report.
 
+Since N26 (PatchUtil port) the former native-only `binary-patch-unsupported`
+rejection is retired: genuine Bazel 9.3 applies a header-less `GIT binary patch`
+registry patch as a no-op, so the plan now has four differential groups
+(`differential.binary-patch-text` compares exact query/build bytes, one patch
+fetch per engine and the full unpatched tree inventory) and thirteen native-only
+checks. That historical report predates this change.
+
 At that increment, the full check passed 328 Rust tests and 143 Python harness tests, strict Clippy,
 formatting, release compilation and rust-analyzer error diagnostics. The existing
 local/custom/loading/module suites remain passing; their reports record their own

@@ -26,15 +26,20 @@ def record(stdout="", stderr="", returncode=0, **extra):
 
 
 class FixtureTests(unittest.TestCase):
-    def test_unsupported_patch_fixture_serves_sri_pinned_binary_format(self):
+    def test_binary_text_patch_fixture_serves_sri_pinned_headerless_binary_literal(self):
         server = remote.FixtureServer({"requests": []})
         try:
             fixture = server.install("/binary", patches=True)
-            path = fixture["prefix"] + "/registry/modules/dep/1.0/patches/unsupported.patch"
+            path = fixture["prefix"] + "/registry/modules/dep/1.0/patches/binary-text.patch"
+            self.assertEqual(fixture["patch_path"], path)
             status, data = server.routes[path]
             self.assertEqual(status, 200)
-            self.assertTrue(data.startswith(b"GIT binary patch\n"))
-            self.assertEqual(fixture["source"]["patches"]["unsupported.patch"], remote.sri(data))
+            self.assertEqual(data, b"GIT binary patch\nliteral 1\nA\n")
+            # No diff --git / --- / +++ header: PatchUtil sees no file section.
+            self.assertFalse(any(line.startswith((b"diff ", b"--- ", b"+++ ")) for line in data.splitlines()))
+            self.assertEqual(fixture["source"]["patches"], {"binary-text.patch": remote.sri(data)})
+            self.assertFalse(any(route.endswith("unsupported.patch") for route in server.routes))
+            self.assertIsNone(server.install("/plain")["patch_path"])
         finally:
             self.assertTrue(server.close()["closed"])
 
@@ -347,6 +352,100 @@ class RegressionProbeTests(unittest.TestCase):
                     server.close()
 
 
+class BinaryPatchTextTests(unittest.TestCase):
+    """N26 PatchUtil port: the old native-only rejection is retired for a differential."""
+
+    def test_old_native_rejection_boundary_is_retired_not_expected(self):
+        self.assertNotIn("binary-patch-unsupported", remote.NATIVE_PROBES)
+        names = [name for name, _ in remote.PLAN]
+        self.assertNotIn("native.binary-patch-unsupported", names)
+        self.assertIn(("differential.binary-patch-text", "differential"), remote.PLAN)
+        self.assertEqual(names.index("differential.binary-patch-text"), len(remote.FORMATS))
+        self.assertEqual([n for n, k in remote.PLAN if k == "native_only"],
+                         ["native.cache." + kind for kind in remote.FORMATS]
+                         + ["native." + name for name in remote.NATIVE_PROBES])
+        runner = mock.Mock()
+        runner.run.side_effect = AssertionError("no subprocess")
+        server = remote.FixtureServer({"requests": []})
+        try:
+            with self.assertRaisesRegex(ValueError, "unknown native-only remote probe"):
+                remote.native_probe(remote.argument_parser().parse_args([]), runner, Path("/unused"),
+                                    Path("/unused"), server, "binary-patch-unsupported")
+        finally:
+            server.close()
+        self.assertFalse(server.routes)
+        source = Path(remote.__file__).read_text()
+        self.assertNotIn("not implemented|unsupported", source)
+        self.assertNotIn("unsupported.patch", source)
+
+    def scenario(self, scratch, fault=None):
+        server = remote.FixtureServer({"requests": []})
+        report = {"requests": server.requests}
+        runner = mock.Mock(report=report)
+        reference = mock.Mock(output_base=scratch / "reference-output-base")
+        fixture = server.install("/binary-patch-text", patches=True)
+        name = "differential.binary-patch-text"
+
+        def fetch(phase, count=1, data=remote.BINARY_PATCH):
+            for _ in range(count):
+                report["requests"].append({"id": len(report["requests"]), "phase": phase,
+                                           "path": fixture["patch_path"], "status": 200,
+                                           "sha256": remote.sha256(data)})
+
+        def write_tree(root, files):
+            for relative, data in files.items():
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+
+        def compare(args, runner_, scratch_, workspace, fixture_, reference_, check):
+            self.assertEqual(check, name)
+            self.assertIs(fixture_, fixture)
+            fetch(name + ".native.query", 2 if fault == "native-twice" else 1)
+            if fault != "reference-missing":
+                fetch(name + ".reference.query",
+                      data=b"other" if fault == "reference-wrong-bytes" else remote.BINARY_PATCH)
+            native = dict(remote.EXPECTED_TREE)
+            if fault == "native-patched":
+                native["data.bin"] = b"patched\n"
+            if fault == "native-extra":
+                native["unsupported.patch"] = remote.BINARY_PATCH
+            write_tree(scratch / (name + "-cache/repositories/trees/key"), native)
+            contents = scratch / "reference-user-root/contents/repo"
+            write_tree(contents, remote.EXPECTED_TREE)
+            if fault == "reference-inner-link":
+                (contents / "link").symlink_to("data.bin")
+            (reference.output_base / "external").mkdir(parents=True)
+            (reference.output_base / "external/dep+").symlink_to(
+                "/etc" if fault == "reference-outside" else contents)
+            return {"builds": {}}
+
+        if fault == "fixture-unpinned":
+            fixture["source"]["patches"] = {}
+        try:
+            with mock.patch.object(remote, "compare", side_effect=compare):
+                return remote.binary_patch_text(None, runner, scratch, scratch / "workspace", fixture, reference)
+        finally:
+            server.close()
+
+    def test_both_engines_fetch_patch_once_and_publish_exact_unpatched_tree(self):
+        with tempfile.TemporaryDirectory(dir="/tmp/opencode") as directory:
+            details = self.scenario(Path(directory))
+        expected = remote.expected_inventory(remote.EXPECTED_TREE)
+        self.assertEqual(list(expected), ["BUILD.bazel", "MODULE.bazel", "data.bin", "nested", "nested/raw.bin"])
+        self.assertEqual(details["trees"], {"native": expected, "reference": expected})
+        self.assertEqual({engine: len(ids) for engine, ids in details["patch_fetch_request_ids"].items()},
+                         {"native": 1, "reference": 1})
+        self.assertEqual(base64.b64decode(details["patch"]["bytes_base64"]), remote.BINARY_PATCH)
+
+    def test_patch_differential_fails_on_any_fetch_tree_or_pinning_difference(self):
+        for fault in ("native-twice", "reference-missing", "reference-wrong-bytes", "native-patched",
+                      "native-extra", "reference-inner-link", "reference-outside", "fixture-unpinned"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory(dir="/tmp/opencode") as directory:
+                with self.assertRaises(ValueError):
+                    self.scenario(Path(directory), fault)
+
+
 class LifecycleTests(unittest.TestCase):
     def test_main_wires_each_requested_format_to_descriptor_and_served_payload(self):
         observed = {}
@@ -368,11 +467,20 @@ class LifecycleTests(unittest.TestCase):
             observed[kind] = remote.sha256(data)
             return {"format_verified": kind}
 
+        def inspect_patch_fixture(args, runner, scratch, workspace, fixture, reference):
+            self.assertEqual(runner.server.routes[fixture["patch_path"]], (200, remote.BINARY_PATCH))
+            self.assertEqual(fixture["source"]["patches"], {"binary-text.patch": remote.sri(remote.BINARY_PATCH)})
+            self.assertTrue(fixture["source"]["url"].endswith("/binary-patch-text/source.tar"))
+            observed["binary-patch-text"] = fixture["patch_path"]
+            return {"patch_verified": True}
+
         with tempfile.TemporaryDirectory(dir="/tmp/opencode") as directory:
-            code, report = self.run_lifecycle(directory, inspect_fixture)
+            code, report = self.run_lifecycle(directory, inspect_fixture, patch_check=inspect_patch_fixture)
         self.assertEqual(code, 0, report["errors"])
-        self.assertEqual(set(observed), set(remote.FORMATS))
-        self.assertEqual(len(set(observed.values())), len(remote.FORMATS))
+        self.assertEqual(set(observed), set(remote.FORMATS) | {"binary-patch-text"})
+        self.assertEqual(len({observed[kind] for kind in remote.FORMATS}), len(remote.FORMATS))
+        self.assertEqual([c["name"] for c in report["checks"]], [name for name, _ in remote.PLAN])
+        self.assertEqual(report["checks"][len(remote.FORMATS)]["details"], {"patch_verified": True})
 
     def test_fail_closed_report_predicate_rejects_missing_duplicate_reordered_or_wrong_kind(self):
         report = {"checks": [{"name": name, "kind": kind, "status": "PASS"} for name, kind in remote.PLAN],
@@ -418,7 +526,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(report["runs"], [])
         server.assert_not_called()
 
-    def run_lifecycle(self, directory, failure, shutdown_failure=None):
+    def run_lifecycle(self, directory, failure, shutdown_failure=None, patch_check=None):
         output = Path(directory) / "report.json"
         reference = mock.Mock(output_base=Path(directory) / "mock-output-base")
         reference.run.return_value = record("release 9.3.0\n")
@@ -435,6 +543,7 @@ class LifecycleTests(unittest.TestCase):
                 mock.patch.object(remote, "RemoteReference", return_value=reference), \
                 mock.patch.object(remote, "FixtureServer", side_effect=factory), \
                 mock.patch.object(remote, "differential", side_effect=failure), \
+                mock.patch.object(remote, "binary_patch_text", side_effect=patch_check or (lambda *a: {})), \
                 mock.patch.object(remote, "cache_check", return_value={}), \
                 mock.patch.object(remote, "native_probe", return_value={}), \
                 mock.patch.object(remote.Runner, "run", side_effect=AssertionError("no subprocess")), \

@@ -44,12 +44,22 @@ BUILD = (b'package(default_visibility = ["//visibility:public"])\n'
 EXPECTED_SOURCES = {"data.bin": DATA, "nested/raw.bin": RAW, "MODULE.bazel": MODULE}
 LABEL = re.compile(r"(?:(?:@@?)[A-Za-z0-9_.+~-]+|@@)?//[^\s:]*:[^\s:]+\Z")
 GRAPH_FLAGS = ["--output=json", "--noinclude_builtin", "--extension_info=hidden"]
+# A registry patch whose text is only a "GIT binary patch" literal, with no
+# diff --git/---/+++ headers. Bazel 9.3's PatchUtil finds no file section and
+# applies nothing (genuine run: exit 0, tree bytes identical to the unpatched
+# overlay tree). N26 ports PatchUtil to native, so this is now a differential
+# instead of the pre-N26 native-only "patch ... unsupported" rejection.
+BINARY_PATCH_NAME = "binary-text.patch"
+BINARY_PATCH = b"GIT binary patch\nliteral 1\nA\n"
+BINARY_PATCH_CHECK = "differential.binary-patch-text"
+EXPECTED_TREE = {"BUILD.bazel": BUILD, "MODULE.bazel": MODULE, "data.bin": DATA, "nested/raw.bin": RAW}
+NATIVE_PROBES = ("graph-only", "empty-registries", "fallback-404", "fallback-410", "hard-500",
+                 "selected-source-origin", "wrong-digest", "hostile-tar",
+                 "warm-blob-url-policy", "zip-skipped-crc")
 PLAN = ([("differential." + kind, "differential") for kind in FORMATS]
+        + [(BINARY_PATCH_CHECK, "differential")]
         + [("native.cache." + kind, "native_only") for kind in FORMATS]
-        + [("native." + name, "native_only") for name in (
-            "graph-only", "empty-registries", "fallback-404", "fallback-410", "hard-500",
-            "selected-source-origin", "wrong-digest", "hostile-tar", "binary-patch-unsupported",
-            "warm-blob-url-policy", "zip-skipped-crc")])
+        + [("native." + name, "native_only") for name in NATIVE_PROBES])
 
 
 def sha256(data):
@@ -174,7 +184,7 @@ class FixtureServer:
         source = {"url": self.url + archive_path, "integrity": sri(b"wrong") if wrong_digest else sri(archive),
                   "strip_prefix": "pkg", "overlay": {"data.bin": sri(DATA), "MODULE.bazel": sri(OVERLAY_MODULE)}}
         if patches:
-            source["patches"] = {"unsupported.patch": sri(b"GIT binary patch\nliteral 1\nA\n")}
+            source["patches"] = {BINARY_PATCH_NAME: sri(BINARY_PATCH)}
         routes = {archive_path: (200, archive),
                   prefix + "/registry/bazel_registry.json": (200, b"{}\n"),
                   prefix + "/registry/modules/dep/metadata.json": (200, b'{"versions":["1.0"],"yanked_versions":{}}\n'),
@@ -183,9 +193,10 @@ class FixtureServer:
                   entry + "overlay/data.bin": (200, DATA),
                   entry + "overlay/MODULE.bazel": (200, OVERLAY_MODULE)}
         if patches:
-            routes[entry + "patches/unsupported.patch"] = (200, b"GIT binary patch\nliteral 1\nA\n")
+            routes[entry + "patches/" + BINARY_PATCH_NAME] = (200, BINARY_PATCH)
         self.routes.update(routes)
         return {"registry": self.url + prefix + "/registry", "prefix": prefix,
+                "patch_path": entry + "patches/" + BINARY_PATCH_NAME if patches else None,
                 "module_path": entry + "MODULE.bazel", "source_path": entry + "source.json",
                 "archive_path": archive_path, "archive_sha256": sha256(archive),
                 "archive_size_bytes": len(archive), "source": source}
@@ -322,7 +333,66 @@ def invoke(args, runner, workspace, cache, name, command="query", target="@remot
 
 
 def differential(args, runner, scratch, workspace, fixture, reference, kind):
-    name = "differential." + kind
+    return compare(args, runner, scratch, workspace, fixture, reference, "differential." + kind)
+
+
+def directory_inventory(root, scratch):
+    """Every entry below one private repository root; inner symlinks rejected.
+
+    Bazel's external/<repo> may itself be a link into the private repo contents
+    cache, so only the root is resolved and it must stay inside scratch."""
+    resolved = root.resolve()
+    if not resolved.is_dir() or not resolved.is_relative_to(scratch.resolve()):
+        raise ValueError("repository tree missing or outside private scratch: " + str(root))
+    result = {}
+    for path in sorted(resolved.rglob("*")):
+        if path.is_symlink():
+            raise ValueError("unexpected symlink in repository tree: " + str(path))
+        result[path.relative_to(resolved).as_posix()] = (
+            {"kind": "directory"} if path.is_dir() else
+            {"kind": "file", "sha256": sha256(path.read_bytes())})
+    return result
+
+
+def expected_inventory(files):
+    result = {}
+    for relative, data in files.items():
+        parts = relative.split("/")
+        for index in range(1, len(parts)):
+            result["/".join(parts[:index])] = {"kind": "directory"}
+        result[relative] = {"kind": "file", "sha256": sha256(data)}
+    return dict(sorted(result.items()))
+
+
+def binary_patch_text(args, runner, scratch, workspace, fixture, reference):
+    """Both engines apply a header-less "GIT binary patch" registry patch as a no-op."""
+    name = BINARY_PATCH_CHECK
+    if fixture["source"].get("patches") != {BINARY_PATCH_NAME: sri(BINARY_PATCH)} or not fixture["patch_path"]:
+        raise ValueError("binary-text fixture does not pin the served patch by SRI")
+    start = len(runner.report["requests"])
+    details = compare(args, runner, scratch, workspace, fixture, reference, name)
+    requests = runner.report["requests"][start:]
+    fetches = {engine: [r for r in requests if r["path"] == fixture["patch_path"]
+                        and r["phase"].startswith(name + "." + engine + ".")] for engine in ("native", "reference")}
+    if any(len(items) != 1 or items[0]["status"] != 200 or items[0]["sha256"] != sha256(BINARY_PATCH)
+           for items in fetches.values()):
+        raise ValueError("binary-text patch not fetched exactly once per engine: "
+                         + str({engine: len(items) for engine, items in fetches.items()}))
+    expected = expected_inventory(EXPECTED_TREE)
+    trees = {"native": directory_inventory(tree_root(scratch / (name + "-cache")), scratch),
+             "reference": directory_inventory(reference.output_base / "external/dep+", scratch)}
+    for engine, tree in trees.items():
+        if tree != expected:
+            raise ValueError(engine + " patched repository tree differs from the unpatched overlay tree")
+    details.update(patch={"name": BINARY_PATCH_NAME, "sha256": sha256(BINARY_PATCH),
+                          "bytes_base64": base64.b64encode(BINARY_PATCH).decode("ascii")},
+                   patch_fetch_request_ids={engine: [r["id"] for r in items] for engine, items in fetches.items()},
+                   trees=trees, expected_tree=expected,
+                   semantics="PatchUtil finds no file section in header-less binary text; no-op in both engines")
+    return details
+
+
+def compare(args, runner, scratch, workspace, fixture, reference, name):
     cache = scratch / (name + "-cache")
     expected = ["@@dep+//:copy", "@@dep+//:sources"]
     native = invoke(args, runner, workspace, cache, name + ".native.query", registries=[fixture["registry"]])
@@ -451,8 +521,9 @@ def native_probe(args, runner, scratch, workspace, server, scenario):
         return warm_blob_url_policy(args, runner, scratch, workspace, server)
     name = "native." + scenario
     cache = scratch / (name + "-cache")
+    if scenario not in NATIVE_PROBES:
+        raise ValueError("unknown native-only remote probe: " + scenario)
     options = {"wrong-digest": {"wrong_digest": True}, "hostile-tar": {"hostile": True},
-               "binary-patch-unsupported": {"patches": True},
                "zip-skipped-crc": {"kind": "zip", "skipped_crc": True}}
     fixture = server.install("/" + scenario + "/first", **options.get(scenario, {}))
     registries = [fixture["registry"]]
@@ -497,16 +568,11 @@ def native_probe(args, runner, scratch, workspace, server, scenario):
         patterns = {"empty-registries": r"not found|registr", "hard-500": r"500",
                     "selected-source-origin": r"source.*(?:missing|404)|missing.*source",
                     "wrong-digest": r"integrity.*mismatch", "hostile-tar": r"unsafe.*path",
-                    "binary-patch-unsupported": r"patch.*(?:not implemented|unsupported)",
                     "zip-skipped-crc": r"(?:CRC|checksum)"}
         require_rejection(result, patterns[scenario])
         if scenario == "zip-skipped-crc" and not re.search(r"zip", result["stderr"], re.I):
             raise ValueError("CRC rejection must identify ZIP reading, not SRI validation")
         no_published_tree(cache)
-        if scenario == "binary-patch-unsupported":
-            patch_path = fixture["prefix"] + "/registry/modules/dep/1.0/patches/unsupported.patch"
-            if counts.get(patch_path, 0) != 1 or "binary" not in result["stderr"].lower():
-                raise ValueError("binary patch rejection did not exercise the verified patch payload")
         if second and any(r["path"].startswith(second["prefix"] + "/") for r in requests):
             raise ValueError("hard/selected-source failure fell back to second registry")
         if scenario == "empty-registries" and requests:
@@ -581,7 +647,8 @@ def main(argv=None):
                               "Private output roots and native caches; OS cache not flushed; no performance claim.",
                               "No credential environment changes or wrapper invocation; not a network sandbox.",
                               "Traversal rejection is intentionally stricter, not claimed equivalent to official extraction.",
-                              "Patches unsupported; report records a native-only controlled rejection."]}
+                              "Registry patches: one header-less 'GIT binary patch' text is a PatchUtil no-op differential "
+                              "(exact query/build bytes and full tree inventory); no general binary/Git patch parity claim."]}
     runner = RecordingRunner(report, args.timeout)
     scratch = server = None
     references = []
@@ -610,12 +677,19 @@ def main(argv=None):
                     raise ValueError("reference is not official release 9.3.0")
             run_check(report, "differential." + kind, "differential", lambda k=kind, r=reference: differential(
                 args, runner, scratch, workspace, fixtures[k], r, k))
+        patched = server.install("/binary-patch-text", patches=True)
+        report["fixtures"]["binary-patch-text"] = patched
+        reference = RemoteReference(args.reference, workspace, scratch, runner, "reference-binary-patch-text")
+        reference.registry = patched["registry"]
+        references.append(reference)
+        run_check(report, BINARY_PATCH_CHECK, "differential", lambda r=reference: binary_patch_text(
+            args, runner, scratch, workspace, patched, r))
         for kind in FORMATS:
             run_check(report, "native.cache." + kind, "native_only", lambda k=kind: cache_check(
                 args, runner, scratch, workspace, fixtures[k], k))
-        for name, _ in PLAN[6:]:
-            run_check(report, name, "native_only", lambda n=name: native_probe(
-                args, runner, scratch, workspace, server, n.removeprefix("native.")))
+        for name in NATIVE_PROBES:
+            run_check(report, "native." + name, "native_only", lambda n=name: native_probe(
+                args, runner, scratch, workspace, server, n))
     except KeyboardInterrupt:
         interrupted = True
         report["errors"].append("interrupted")
