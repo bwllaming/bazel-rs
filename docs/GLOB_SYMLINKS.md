@@ -126,6 +126,17 @@ artifacts (`engine.rs`), `.bzl` loads (`loading.rs`) and `glob()`:
   (`outside its repository root`): their links are author content, not
   repository-rule output, and following them would let checked-in or archived
   links read arbitrary host files. Nothing is ever written through a link.
+* **Convenience links in the main repository.** Bazel's `bazel-bin`,
+  `bazel-out`, `bazel-testlogs` and `bazel-<workspace>` links point into the
+  output base, a host path. A main-repository `glob()` that reaches one (for
+  example `glob(["**/*.txt"])` in the root package) fails explicitly with
+  `glob symlink …/bazel-out resolves to …, outside its repository root …`.
+  Keep them out of globs and `//...` by ignoring them: list each link in
+  `.bazelignore` (its lines are literal path prefixes) or match them all with
+  `ignore_directories(["bazel-*"])` in the root `REPO.bazel`
+  (docs/IGNORED_DIRECTORIES.md). An ignored directory link is neither
+  traversed nor read, so the policy check is skipped for it, as Bazel skips
+  ignored directories (GlobCache.globCacheShouldTraverseDirectory).
 * Dangling links are skipped by `glob()` and are `missing input file` for
   source artifacts under every policy.
 * Archive data in generated repositories: entries extracted by

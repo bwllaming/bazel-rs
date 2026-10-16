@@ -210,6 +210,20 @@ hidden from output. Load caching is per package evaluation,
 not a persistent incremental graph.
 Action logs spool to temporary files and bounded tails are replayed to stderr.
 
+## Behavior changes
+
+* **Nested `MODULE.bazel`/`REPO.bazel` are no longer boundaries (N28d).** Only
+  `BUILD`/`BUILD.bazel` files delimit packages, as in Bazel 9.3, which has no
+  nested repositories: directories below a nested `MODULE.bazel` or
+  `REPO.bazel` (an example or vendored module, test fixtures) are now part of
+  the enclosing repository, so `//...` patterns and `glob()` see their
+  packages and files. List such directories in `.bazelignore` (or match them
+  with `ignore_directories()` in the root `REPO.bazel`) to keep them out, as
+  with Bazel (docs/IGNORED_DIRECTORIES.md, docs/GLOB_SYMLINKS.md).
+* **`glob()` follows symlinks (N28d).** A main-repository glob reaching a link
+  to a host path, such as Bazel's `bazel-*` convenience links, fails
+  explicitly; ignore those links (see docs/GLOB_SYMLINKS.md).
+
 ## Differential checks and measurements
 
 ```sh
