@@ -848,12 +848,13 @@ pub fn download_credentials(url: &str) -> Option<Vec<(String, String)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
+    include!("../tests/support/executable_script.rs");
+
+    // Never fs::write a helper this process then executes (ETXTBSY race).
     fn helper(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
-        std::fs::write(&path, format!("#!/bin/bash\n{body}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable_script(&path, format!("#!/bin/bash\n{body}\n"), 0o755);
         path
     }
 

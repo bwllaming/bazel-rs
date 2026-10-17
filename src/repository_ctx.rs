@@ -4499,10 +4499,12 @@ R = repository_rule(implementation = _impl)
         }
     }
 
+    include!("../tests/support/executable_script.rs");
+
+    /// A fake tool that `ctx.which` finds and `ctx.execute` runs; see
+    /// `write_executable_script` for why `fs::write` here made exec flaky.
     fn executable(path: &Path, text: &str) {
-        use std::os::unix::fs::PermissionsExt;
-        fs::write(path, text).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable_script(path, text, 0o755);
     }
 
     #[test]

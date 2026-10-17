@@ -5,11 +5,14 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+
+// Scripts the CLI executes are never written through a descriptor of this
+// multi-threaded, spawning test process (ETXTBSY race).
+include!("support/executable_script.rs");
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -183,12 +186,11 @@ shell = rule(_shell, attrs = {"src": attr.label(allow_single_file = True)})
 "#,
         );
         ws.file("pkg/in.txt", "hello\n");
-        ws.file("pkg/tool.sh", "#!/bin/bash\ncp \"$1\" \"$2\"\n");
-        fs::set_permissions(
-            ws.0.join("ws/pkg/tool.sh"),
-            fs::Permissions::from_mode(0o755),
-        )
-        .unwrap();
+        write_executable_script(
+            &ws.0.join("ws/pkg/tool.sh"),
+            "#!/bin/bash\ncp \"$1\" \"$2\"\n",
+            0o755,
+        );
         ws
     }
 
@@ -201,15 +203,14 @@ shell = rule(_shell, attrs = {"src": attr.label(allow_single_file = True)})
     /// A helper script logging `ARGV|CWD|STDIN` lines, answering `response`.
     fn helper(&self, name: &str, response: &str) -> PathBuf {
         let path = self.0.join(name);
-        fs::write(
+        write_executable_script(
             &path,
             format!(
                 "#!/bin/bash\nprintf '%s|%s|%s|%s\\n' \"$*\" \"$PWD\" \"$(cat)\" \"$N41_MARK\" >> {}\n{response}\n",
                 self.0.join(format!("{name}.log")).display()
             ),
-        )
-        .unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            0o755,
+        );
         path
     }
 
@@ -867,12 +868,11 @@ def _bare(ctx):
 envbare = rule(_bare)
 "#,
     );
-    ws.file("envs/tool.sh", "#!/bin/bash\nexport -p > \"$1\"\n");
-    fs::set_permissions(
-        ws.ws().join("envs/tool.sh"),
-        fs::Permissions::from_mode(0o755),
-    )
-    .unwrap();
+    write_executable_script(
+        &ws.ws().join("envs/tool.sh"),
+        "#!/bin/bash\nexport -p > \"$1\"\n",
+        0o755,
+    );
     ws.file(
         "envs/BUILD.bazel",
         "load(\":defs.bzl\", \"envbare\", \"envrun\", \"envshell\")\ngenrule(name = \"gen\", outs = [\"gen.txt\"], cmd = \"export -p > $@\")\nenvrun(name = \"run\", tool = \"tool.sh\")\nenvshell(name = \"shell\")\nenvbare(name = \"bare\")\n",

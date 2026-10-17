@@ -368,10 +368,14 @@ fn cache_corruption_is_repaired_and_concurrent_cli_publication_is_complete() {
     }
 }
 
+include!("support/executable_script.rs");
+
+/// A fake tool the CLI under test executes; never `fs::write`n here, because a
+/// process another test thread spawns meanwhile would inherit the descriptor
+/// and make that exec fail with ETXTBSY.
 fn tool(path: &Path, script: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(path, script).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    write_executable_script(path, script, 0o755);
 }
 
 const CC_CONFIGURE: &str = r##"def _impl(ctx):

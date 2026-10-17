@@ -386,20 +386,44 @@ mod tests {
         }
     }
 
-    /// Runs a request, retrying while exec fails with ETXTBSY: a script this
-    /// test just wrote can still be open in a child forked concurrently by
-    /// another test thread (before its CLOEXEC exec), so execve reports
-    /// "Text file busy" for a moment. That race is a property of the test
-    /// harness, not of the search being tested.
-    fn settled(request: &Request<'_>) -> (i64, Vec<u8>, Vec<u8>) {
-        for _ in 0..200 {
-            let result = completed(run(request).unwrap());
-            if !(result.0 == 1 && result.2.ends_with(b": Text file busy\n")) {
-                return result;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        panic!("exec stayed ETXTBSY");
+    // Scripts the tests run are written by `write_executable_script`, never
+    // through a descriptor of this process, so exec cannot see ETXTBSY.
+    include!("../tests/support/executable_script.rs");
+
+    fn run_completed(request: &Request<'_>) -> (i64, Vec<u8>, Vec<u8>) {
+        completed(run(request).unwrap())
+    }
+
+    /// Regression guard for the test-harness ETXTBSY flake of the
+    /// cc_configure-shaped repository_ctx test. A script written through a
+    /// descriptor of this process cannot be executed while any copy of that
+    /// descriptor is open, and a child that another test thread spawns during
+    /// the write holds such a copy until its own exec. With that leaked copy
+    /// simulated deterministically, exec fails like process-wrapper's execvp
+    /// with empty stdout (the flake); `write_executable_script` writes from
+    /// another process and renames a fresh inode into place, so the same
+    /// leaked descriptor cannot touch the script it produces.
+    #[test]
+    fn leaked_write_descriptors_make_exec_busy_but_never_for_written_scripts() {
+        use std::os::unix::fs::PermissionsExt;
+        let cwd = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let script = cwd.path().join("tool");
+        let mut leaked = std::fs::File::create(&script).unwrap();
+        leaked.write_all(b"#!/bin/sh\necho stale\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let stale = cwd.path().join("stale");
+        std::fs::hard_link(&script, &stale).unwrap();
+        let stale = stale.to_str().unwrap();
+        assert_eq!(
+            run_completed(&request(&[stale], cwd.path(), None)),
+            (1, Vec::new(), execvp_failure(stale.as_bytes(), 26))
+        );
+        write_executable_script(&script, "#!/bin/sh\necho ran\n", 0o755);
+        assert_eq!(
+            run_completed(&request(&[script.to_str().unwrap()], cwd.path(), None)),
+            (0, b"ran\n".to_vec(), Vec::new())
+        );
+        drop(leaked);
     }
 
     #[test]
@@ -458,7 +482,7 @@ mod tests {
             ("./missing.sh", "./missing.sh", "No such file or directory"),
         ] {
             assert_eq!(
-                settled(&request(&[argv, "x"], cwd.path(), path)),
+                run_completed(&request(&[argv, "x"], cwd.path(), path)),
                 (
                     1,
                     Vec::new(),
@@ -470,19 +494,18 @@ mod tests {
             );
         }
         // An unset PATH uses glibc's default /bin:/usr/bin, like execvp.
-        assert_eq!(settled(&request(&["true"], cwd.path(), None)).0, 0);
+        assert_eq!(run_completed(&request(&["true"], cwd.path(), None)).0, 0);
         // The CHILD environment's PATH is searched (process-wrapper's execvp).
         assert_eq!(
-            settled(&request(&["true"], cwd.path(), Some(b"/n21-missing"))).0,
+            run_completed(&request(&["true"], cwd.path(), Some(b"/n21-missing"))).0,
             1
         );
     }
 
     #[test]
     fn empty_command_and_permission_denied_follow_process_wrapper() {
-        use std::os::unix::fs::PermissionsExt;
         let cwd = tempfile::tempdir_in("/tmp/opencode").unwrap();
-        let (code, stdout, stderr) = settled(&request(&[], cwd.path(), None));
+        let (code, stdout, stderr) = run_completed(&request(&[], cwd.path(), None));
         assert_eq!((code, stdout.len()), (1, 0));
         let stderr = String::from_utf8(stderr).unwrap();
         assert!(
@@ -492,13 +515,12 @@ mod tests {
         );
         let denied = cwd.path().join("bin/ne.sh");
         std::fs::create_dir(cwd.path().join("bin")).unwrap();
-        std::fs::write(&denied, "#!/bin/sh\necho no\n").unwrap();
-        std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_executable_script(&denied, "#!/bin/sh\necho no\n", 0o644);
         let bin = cwd.path().join("bin");
         let search = format!("{}:/usr/bin:/bin", bin.display());
         for (argv, path) in [("./bin/ne.sh", None), ("ne.sh", Some(search.as_bytes()))] {
             assert_eq!(
-                settled(&request(&[argv], cwd.path(), path)),
+                run_completed(&request(&[argv], cwd.path(), path)),
                 (
                     1,
                     Vec::new(),
@@ -510,12 +532,10 @@ mod tests {
         // EACCES does not stop the search: a later executable candidate runs.
         let later = cwd.path().join("later");
         std::fs::create_dir(&later).unwrap();
-        std::fs::write(later.join("ne.sh"), "#!/bin/sh\necho later\n").unwrap();
-        std::fs::set_permissions(later.join("ne.sh"), std::fs::Permissions::from_mode(0o755))
-            .unwrap();
+        write_executable_script(&later.join("ne.sh"), "#!/bin/sh\necho later\n", 0o755);
         let search = format!("{}:{}", bin.display(), later.display());
         assert_eq!(
-            settled(&request(&["ne.sh"], cwd.path(), Some(search.as_bytes()))),
+            run_completed(&request(&["ne.sh"], cwd.path(), Some(search.as_bytes()))),
             (0, b"later\n".to_vec(), Vec::new())
         );
     }
@@ -532,12 +552,9 @@ mod tests {
         for dir in [&denied, &busy, &later] {
             std::fs::create_dir(dir).unwrap();
         }
-        std::fs::write(denied.join("t.sh"), "#!/bin/sh\necho denied\n").unwrap();
-        std::fs::set_permissions(denied.join("t.sh"), std::fs::Permissions::from_mode(0o644))
-            .unwrap();
-        std::fs::write(later.join("t.sh"), "#!/bin/sh\necho later\n").unwrap();
-        std::fs::set_permissions(later.join("t.sh"), std::fs::Permissions::from_mode(0o755))
-            .unwrap();
+        write_executable_script(&denied.join("t.sh"), "#!/bin/sh\necho denied\n", 0o644);
+        write_executable_script(&later.join("t.sh"), "#!/bin/sh\necho later\n", 0o755);
+        // Deliberately held open for writing: this candidate is the ETXTBSY.
         let mut open = std::fs::File::create(busy.join("t.sh")).unwrap();
         std::io::Write::write_all(&mut open, b"#!/bin/sh\necho busy\n").unwrap();
         std::fs::set_permissions(busy.join("t.sh"), std::fs::Permissions::from_mode(0o755))
@@ -564,12 +581,8 @@ mod tests {
     fn relative_argv0_is_working_directory_relative_and_scripts_without_shebang_run_with_sh() {
         let cwd = tempfile::tempdir_in("/tmp/opencode").unwrap();
         let script = cwd.path().join("tool");
-        std::fs::write(&script, "printf \"$0:$1:$PWD\"\n").unwrap();
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        let (code, stdout, _) = settled(&request(&["./tool", "x"], cwd.path(), None));
+        write_executable_script(&script, "printf \"$0:$1:$PWD\"\n", 0o755);
+        let (code, stdout, _) = run_completed(&request(&["./tool", "x"], cwd.path(), None));
         assert_eq!(code, 0);
         let text = String::from_utf8(stdout).unwrap();
         assert!(
