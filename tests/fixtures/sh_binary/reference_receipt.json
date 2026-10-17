@@ -28,7 +28,45 @@
   "EXPECTED_NATIVE_UNSUPPORTED: R1/R2 bazel run and runfiles trees (N23f, unmerged; reference outputs and trees recorded in reference_run_outputs), T1 bazel test (N23g, unmerged; reference PASSED), G1 flags other than SKIP_CONSTRAINTS_OVERRIDE.",
   "bazel_skylib 1.6.1: not needed; the genuine builtin closure selects 1.8.2 (source.json in the fixture registry, archive in the seeded CAS)."
  ],
- "post_capture_changes": [],
+ "post_capture_changes": [
+  {
+   "compared": "R*: run stdout, runfiles tree listing (names and kinds), MANIFEST link paths and _repo_mapping bytes against reference_run_outputs; T1: --test_output=all stdout (durations normalized) against the logged reference",
+   "native_sha256": "7090699b0bdc8d618db1000d27aebd4240cd1a1e25c19fb4e577095d32580f03",
+   "other_rows": "all 19 other rows keep their recorded verdicts",
+   "replay_counts": {
+    "EXACT": 14,
+    "EXACT_MESSAGE": 7,
+    "EXPECTED_NATIVE_UNSUPPORTED": 1
+   },
+   "rows": {
+    "R1/run_bin": {
+     "checks": {
+      "exit": true,
+      "manifest_paths": true,
+      "repo_mapping": true,
+      "runfiles_tree": true,
+      "stdout": true
+     },
+     "replay": "EXACT"
+    },
+    "R2/run_launcher": {
+     "checks": {
+      "exit": true,
+      "manifest_paths": true,
+      "repo_mapping": true,
+      "runfiles_tree": true,
+      "stdout": true
+     },
+     "replay": "EXACT"
+    },
+    "T1/test_sh_test": {
+     "checks": null,
+     "replay": "EXACT"
+    }
+   },
+   "what": "integration-15 native replay against the logged genuine reference (no genuine run), with N23f (runfiles trees, bazel run) and N23g (bazel test) merged: the three rows recorded EXPECTED_NATIVE_UNSUPPORTED are re-paired"
+  }
+ ],
  "reference_run_outputs": {
   "R1/run_bin": {
    "manifest": "_main/sh/bin <ob>/execroot/_main/bazel-out/k8-fastbuild/bin/sh/bin\n_main/sh/bin.sh <ws>/sh/bin.sh\n_main/sh/data.txt <ws>/sh/data.txt\n_main/sh/greeting.txt <ws>/sh/greeting.txt\n_main/sh/lib.sh <ws>/sh/lib.sh\n_repo_mapping <ob>/execroot/_main/bazel-out/k8-fastbuild/bin/sh/bin.repo_mapping\n",

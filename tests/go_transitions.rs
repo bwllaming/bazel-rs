@@ -330,14 +330,19 @@ def _impl(ctx):
     return [DefaultInfo(executable = out)]
 t_test = rule(_impl, test = True)
 late = rule(_impl, executable = True, attrs = {"_gen": attr.label(default = configuration_field(fragment = "coverage", name = "output_generator"))})
+def _ifi(ctx):
+    return [coverage_common.instrumented_files_info(ctx, source_attributes = ["srcs"])]
+ifi = rule(_ifi, attrs = {"srcs": attr.label_list(allow_files = True)})
 "#,
     );
     ws.file(
         "cov/BUILD.bazel",
         r#"load("//probe:defs.bzl", "cov_edge")
-load(":defs.bzl", "late", "t_test")
+load(":defs.bzl", "ifi", "late", "t_test")
 t_test(name = "t_test")
 late(name = "late")
+ifi(name = "ifi")
+cov_edge(name = "cov_ifi", dep = ":ifi", value = "@bool_true")
 cov_edge(name = "cov_test", dep = ":t_test", value = "@bool_true", testonly = True)
 cov_edge(name = "cov_late", dep = ":late", value = "@bool_true")
 "#,
@@ -354,10 +359,21 @@ cov_edge(name = "cov_late", dep = ":late", value = "@bool_true")
         stderr.contains("//cov:late: the late-bound attribute '_gen' (configuration_field(\"coverage\", ...)) in a configuration with --collect_code_coverage"),
         "{stderr}"
     );
-    // Without coverage the late-bound default analyzes. (The test rule's
-    // implicit test-runner edges, N23g, reach rules_shell's sh_binary in
-    // the built-in profile, analyzable only with N50.)
-    ws.report(&args(&profile, &[], &["//cov:late".to_owned()]));
+    // N50's coverage_common.instrumented_files_info is InstrumentedFilesInfo.EMPTY
+    // only outside a coverage configuration (integration-15).
+    let stderr = ws.rejected(&args(&profile, &[], &["//cov:cov_ifi".to_owned()]));
+    assert!(
+        stderr.contains("coverage_common.instrumented_files_info in a configuration with --collect_code_coverage (set by a Starlark transition) is not implemented in the native profile"),
+        "{stderr}"
+    );
+    ws.report(&args(&profile, &[], &["//cov:ifi".to_owned()]));
+    // Without coverage both analyze (the test rule's implicit test-runner
+    // edges, N23g, reach rules_shell's sh_binary, analyzable since N50).
+    ws.report(&args(
+        &profile,
+        &[],
+        &["//cov:t_test".to_owned(), "//cov:late".to_owned()],
+    ));
 }
 
 /// Args.validateMapEach accepts any global function (Args.java:366-385):

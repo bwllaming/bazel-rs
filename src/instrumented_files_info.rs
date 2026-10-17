@@ -2,8 +2,9 @@
 //! returns (analysis/test/CoverageCommon.java:46-117,
 //! analysis/test/InstrumentedFilesInfo.java).
 //!
-//! Coverage is never enabled natively (`--collect_code_coverage` is
-//! rejected), so InstrumentedFilesCollector.collect returns
+//! The command-line `--collect_code_coverage` is rejected, so outside a
+//! coverage configuration (one a Starlark transition enabled it in fails
+//! explicitly, N47) InstrumentedFilesCollector.collect returns
 //! InstrumentedFilesInfo.EMPTY after the arguments are checked
 //! (analysis/test/InstrumentedFilesCollector.java:96-109). The checks run in
 //! Bazel's order: parameter types (BuiltinFunction/ParamDescriptor), then the
@@ -302,6 +303,16 @@ pub(crate) fn call<'v>(
         |item| item.unpack_str().is_some(),
     )?;
     cast_elements(&metadata_files, "metadata_files", "File", is_file)?;
-    // InstrumentedFilesCollector.collect without coverage (:107-109).
+    // InstrumentedFilesCollector.collect without coverage (:107-109). With
+    // `--collect_code_coverage` set by a Starlark transition (N47) Bazel
+    // collects instrumented files (--instrumentation_filter etc.), which the
+    // native profile does not model: explicit, like ctx.coverage_instrumented().
+    if crate::analysis_ctx::current_surface(ctx)
+        .is_ok_and(|surface| surface.config.coverage_enabled)
+    {
+        return Err(failure(crate::ctx_surface::coverage_gap(&format!(
+            "coverage_common.{FUNCTION}"
+        ))));
+    }
     Ok(eval.heap().alloc(InstrumentedFilesInfo))
 }

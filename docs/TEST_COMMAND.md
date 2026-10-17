@@ -196,7 +196,9 @@ codes 0/1/3/4, the build-failure summary, rc `test` inheriting `build`,
 test target. EXACT_MESSAGE: option errors (Bazel exits 2 with `ERROR:`, the
 native CLI exits 1 with `bazel-rs:`). UNAVAILABLE: a genuine rules_shell
 `sh_test` (the fixture registry lacks `bazel_skylib@1.6.1`; natively genuine
-rules_shell rules also hit the N23f analysis gaps). Normalized: execution
+rules_shell rules then hit analysis gaps that N50 closed: on integration-15 the
+genuine `sh_test` of N50's receipt passes under `bazel test` with Bazel's exact
+output, docs/SH_BINARY.md). Normalized: execution
 roots (Bazel sandbox vs native work directories), testlogs roots, the
 configuration mnemonic (`k8-fastbuild` vs the then-native `rust-fastbuild`, D1), `_tmp`
 fingerprints (they hash that exec path), durations and dates. Since N41 closed D1

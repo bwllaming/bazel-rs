@@ -70,8 +70,11 @@ source_attributes, got element of type int, want string`, coverage support
 files, `coverage_environment` dict types), the private-API restriction of
 non-empty support files / environment / reported sources (`file
 '//cov:defs.bzl' cannot use private API`), then InstrumentedFilesInfo.EMPTY:
-coverage is never enabled natively (`--collect_code_coverage` is rejected), so
-InstrumentedFilesCollector.collect returns it (`:96-109`). The value has type
+the command-line `--collect_code_coverage` is rejected, so outside a coverage
+configuration InstrumentedFilesCollector.collect returns it (`:96-109`). In a
+configuration where a Starlark transition set `--collect_code_coverage` (N47)
+the call fails explicitly after the checks, like `ctx.coverage_instrumented()`
+(instrumentation filters are not modelled). The value has type
 `InstrumentedFilesInfo`, empty `instrumented_files`/`metadata_files` depsets,
 NativeInfo's repr `struct(instrumented_files = depset([]), metadata_files =
 depset([]))` and equality; it is a returned provider of the target. Non-empty
@@ -114,12 +117,10 @@ receipt (`reference_run_outputs`); genuine `bazel test //sh:t` PASSED.
 
 ## Remaining
 
-* Runfiles trees, MANIFEST/`_repo_mapping` materialization and `bazel run`
-  are N23f; `bazel test` (test runner, implicit test attributes and the
-  `collect_coverage` edge) is N23g. Neither is merged on this base, so the
-  sh_binary run output and a genuine `sh_test` under `bazel test` are not
-  native yet; the analysis/build they need is (see the receipt for the
-  genuine outputs to match).
+* (Merged in integration-15: N23f runfiles trees/`bazel run` and N23g
+  `bazel test`, which also analyzes the implicit `collect_coverage` edge.
+  The integration-15 native replay against N50's recorded genuine reference re-pairs them: `bazel run //sh:bin` and `//sh:launcher` (stdout, runfiles tree listing, MANIFEST paths, `_repo_mapping` bytes including rules_shell's `@bazel_tools` lines) and `bazel test --test_output=all //sh:t` (test output and summary) are EXACT
+  (receipt `post_capture_changes`).)
 * `ctx.expand_location` with location functions (sh_binary
   `env = {"X": "$(rlocationpath ...)"}`) fails explicitly
   (crate::ctx_surface).

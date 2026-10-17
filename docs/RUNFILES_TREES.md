@@ -210,10 +210,11 @@ execution. The mismatches, all explained in the receipt:
 Unavailable: a genuine rules_shell `sh_binary` (and the test-target row, whose
 test toolchain needs rules_shell): the offline reference could not fetch
 `@@rules_shell+` (seeded repository-cache entries lacked the default canonical
-id marker). Natively a genuine `sh_binary` is not feasible yet: analysis stops
-at pre-existing gaps (attribute flag `SKIP_CONSTRAINTS_OVERRIDE` on rules_shell's
-`data` attributes, then `attr.label_keyed_string_dict` values of
-`@rules_shell//shell/runfiles:runfiles_at_legacy_location`).
+id marker). Natively a genuine `sh_binary` was not feasible then (attribute
+flag `SKIP_CONSTRAINTS_OVERRIDE`, `attr.label_keyed_string_dict` values); N50
+closed both, and on integration-15 `bazel run` of N50's genuine `sh_binary`
+targets matches the recorded genuine runfiles trees, MANIFEST paths,
+`_repo_mapping` bytes and output (docs/SH_BINARY.md).
 
 ## Not covered
 
