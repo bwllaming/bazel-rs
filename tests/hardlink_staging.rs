@@ -4,6 +4,7 @@
 //! is one inode inside the action, as in genuine Bazel 9.3; actions.symlink
 //! outputs are real symlinks to the target's path. Paired capture:
 //! tests/fixtures/hardlink_staging/reference_receipt.json.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
 use std::os::unix::fs::MetadataExt;

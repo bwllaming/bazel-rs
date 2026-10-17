@@ -645,15 +645,18 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
     if let Some(script) = &options.script_path {
         // handleScriptPath/writeScript (RunCommand.java:653-686, 1042-1049).
         let path = cwd.join(script);
-        std::fs::write(&path, line.script(&options.shell))
-            .map_err(|e| format!("Error writing run script: {e}"))?;
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&path)
-            .map_err(|e| format!("Error writing run script: {e}"))?
-            .permissions()
-            .mode();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode | 0o111))
-            .map_err(|e| format!("Error writing run script: {e}"))?;
+        // An executable written in-process: under the exclusive spawn lock.
+        bazel_rs::spawn_lock::exclusive(true, || {
+            std::fs::write(&path, line.script(&options.shell))
+                .map_err(|e| format!("Error writing run script: {e}"))?;
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path)
+                .map_err(|e| format!("Error writing run script: {e}"))?
+                .permissions()
+                .mode();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode | 0o111))
+                .map_err(|e| format!("Error writing run script: {e}"))
+        })?;
         return Ok(());
     }
     let prefix = if options.run { "Running" } else { "Runnable" };
@@ -674,8 +677,7 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
     }
     process.envs(&line.environment);
     process.current_dir(&line.working_directory);
-    use std::os::unix::process::CommandExt;
-    let error = process.exec();
+    let error = bazel_rs::spawn_lock::exec(&mut process);
     Err(format!("cannot execute {}: {error}", argv[0]))
 }
 
@@ -985,17 +987,15 @@ fn run_test(context: RunTest<'_>) -> Result<(), String> {
     };
     let execroot = cache.join("test-run").join(key).join("execroot");
     if execroot.exists() {
-        let _ = std::process::Command::new("chmod")
-            .args(["-R", "u+w"])
-            .arg(&execroot)
-            .status();
+        add_user_write(&execroot);
         std::fs::remove_dir_all(&execroot)
             .map_err(|e| format!("cannot remove {}: {e}", execroot.display()))?;
     }
     let setup = execroot.join(bazel_rs::test_runner::SETUP_EXEC_PATH);
     std::fs::create_dir_all(setup.parent().expect("setup parent"))
         .map_err(|e| format!("cannot create {}: {e}", execroot.display()))?;
-    std::fs::copy(&tools.setup, &setup)
+    // test-setup.sh is executed below: copied under the exclusive spawn lock.
+    bazel_rs::spawn_lock::exclusive(true, || std::fs::copy(&tools.setup, &setup))
         .map_err(|e| format!("cannot write {}: {e}", setup.display()))?;
     let link = execroot.join(format!("{}.runfiles", spec.executable_exec));
     std::fs::create_dir_all(link.parent().expect("runfiles parent"))
@@ -1102,9 +1102,35 @@ fn run_test(context: RunTest<'_>) -> Result<(), String> {
     }
     process.envs(&environment);
     process.current_dir(&execroot);
-    use std::os::unix::process::CommandExt;
-    let error = process.exec();
+    let error = bazel_rs::spawn_lock::exec(&mut process);
     Err(format!("cannot execute {}: {error}", options.shell))
+}
+
+/// `chmod -R u+w PATH`, in process and with its semantics: the named path
+/// is followed, symbolic links met during the traversal are not changed or
+/// followed, a directory gets u+w before it is read, and failures are
+/// ignored (the former helper's status was ignored too).
+fn add_user_write(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    fn visit(path: &Path, metadata: std::fs::Metadata) {
+        let mode = metadata.permissions().mode() & 0o7777;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | 0o200));
+        if metadata.is_dir()
+            && let Ok(entries) = std::fs::read_dir(path)
+        {
+            for entry in entries.flatten() {
+                let child = entry.path();
+                if let Ok(metadata) = std::fs::symlink_metadata(&child)
+                    && !metadata.file_type().is_symlink()
+                {
+                    visit(&child, metadata);
+                }
+            }
+        }
+    }
+    if let Ok(metadata) = std::fs::metadata(path) {
+        visit(path, metadata);
+    }
 }
 
 fn parse_jobs(value: &str) -> Result<usize, String> {

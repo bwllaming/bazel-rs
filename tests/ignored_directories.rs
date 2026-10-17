@@ -4,6 +4,7 @@
 //! REPO.bazel plus `.bazelignore` prefixes (with duplicates and a comment)
 //! for `node_modules` trees, a Python `.venv`, a nested `.venv/lib`, and
 //! top-level tool directories.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
 use std::path::{Path, PathBuf};

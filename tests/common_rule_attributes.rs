@@ -5,6 +5,7 @@
 //! `nogo` macro shape (tags/visibility through **kwargs), ctx.attr exposure,
 //! package defaults, the testonly prerequisite error, deprecation warnings,
 //! select() on configurable common attributes and explicit analysis gaps.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
 use std::path::{Path, PathBuf};

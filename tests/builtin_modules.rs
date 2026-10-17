@@ -1,4 +1,5 @@
 //! Genuine embedded resources and captured public-registry closure, offline.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use bazel_rs::module_graph::{self, BuiltinProfile, ModuleSource, ResolverOptions};
 use bazel_rs::repository::RepositorySet;
 use serde_json::Value;

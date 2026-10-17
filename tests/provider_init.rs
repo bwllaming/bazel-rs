@@ -1,5 +1,6 @@
 //! CLI coverage for `provider(init=...)` and its raw constructor, mirroring the
 //! shape of @package_metadata//providers:package_metadata_info.bzl.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
 use std::path::{Path, PathBuf};

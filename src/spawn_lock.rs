@@ -47,22 +47,43 @@ use std::fs::{self, OpenOptions};
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::process::{Child, Command};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::RwLock;
 
 static LOCK: RwLock<()> = RwLock::new(());
 
+// This module is the only place that starts processes (clippy.toml's
+// disallowed-methods; tests/spawn_discipline.rs checks src/ for the rest).
+
 /// `command.spawn()` while no executable is open for writing in this process.
 /// Only the start is guarded; never wait for the child while holding it.
-pub(crate) fn spawn(command: &mut Command) -> io::Result<Child> {
+#[allow(clippy::disallowed_methods)]
+pub fn spawn(command: &mut Command) -> io::Result<Child> {
     let _shared = LOCK.read().unwrap_or_else(|e| e.into_inner());
     command.spawn()
+}
+
+/// `command.output()` with the start through [`spawn`]: stdout and stderr
+/// captured (Command::output's defaults for them; the caller sets stdin),
+/// the wait outside the lock.
+pub fn output(command: &mut Command) -> io::Result<Output> {
+    spawn(command.stdout(Stdio::piped()).stderr(Stdio::piped()))?.wait_with_output()
+}
+
+/// `CommandExt::exec` holding the shared lock: the new program image starts
+/// while no executable is open for writing in this process. Returns only on
+/// failure (the lock is released then).
+#[allow(clippy::disallowed_methods)]
+pub fn exec(command: &mut Command) -> io::Error {
+    use std::os::unix::process::CommandExt;
+    let _shared = LOCK.read().unwrap_or_else(|e| e.into_inner());
+    command.exec()
 }
 
 /// Run `write` (which must open, write and close the file; no process start
 /// inside) with no process start in flight, when `executable`; otherwise
 /// just run it.
-pub(crate) fn exclusive<T>(executable: bool, write: impl FnOnce() -> T) -> T {
+pub fn exclusive<T>(executable: bool, write: impl FnOnce() -> T) -> T {
     if !executable {
         return write();
     }
@@ -74,7 +95,7 @@ pub(crate) fn exclusive<T>(executable: bool, write: impl FnOnce() -> T) -> T {
 /// network download) by a fresh inode with the same bytes and mode, written
 /// under the exclusive lock. Descriptors of the old inode that children may
 /// still hold refer to the unlinked inode and cannot make `path` busy.
-pub(crate) fn seal(path: &Path) -> io::Result<()> {
+pub fn seal(path: &Path) -> io::Result<()> {
     let name = path
         .file_name()
         .ok_or_else(|| io::Error::other("cannot seal a path without a file name"))?;

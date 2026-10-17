@@ -5,6 +5,7 @@
 //! Other compile targets are explicitly unsupported, not runtime-emulated here.
 //! Cross-host factor/hash injection and frozen OS ownership belong to core units.
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use bazel_rs::label::Label;
 use serde_json::Value;

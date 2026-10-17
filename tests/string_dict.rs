@@ -1,6 +1,7 @@
 //! Scalar string-dictionary CLI behavior records. No ignored research artifact is
 //! a compile dependency. Outputs deliberately join keys/values, never JSON-sort.
 //! NATIVE_PROFILE and INTENTIONAL_DIVERGENCE cases are not reference parity claims.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use bazel_rs::label::Label;
 use std::collections::BTreeMap;
 use std::fs;

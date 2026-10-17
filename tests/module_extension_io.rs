@@ -1,5 +1,6 @@
 //! Real CLI/module callback -> checksummed local HTTP -> JSON -> generated
 //! repository -> consumer bytes. No N2/passthrough rule or public network.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Write};

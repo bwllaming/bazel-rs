@@ -1,5 +1,6 @@
 //! Genuine archive/registry inputs, private counted HTTP, and the Cargo-built CLI.
 //! Download policy is not a registry-metadata, Git, or general network prohibition.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use base64::Engine;
 use bazel_rs::{materializer, patch_inputs::LocalPatchPlan, registry::Registry};
 use serde_json::{Map, Value, json};

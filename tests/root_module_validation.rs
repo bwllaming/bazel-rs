@@ -1,5 +1,6 @@
 //! CLI root recording preflight, not eager graph or repository resolution.
 //! NATIVE_BOUNDARY cases protect native laziness; they are not Bazel parity claims.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

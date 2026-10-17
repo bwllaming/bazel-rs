@@ -8,6 +8,7 @@
 //! copy-staging baseline.
 //!
 //! cargo test --release --test staging_bench -- --ignored --nocapture
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use bazel_rs::action::{Action, ActionExtra};
 use bazel_rs::scheduler::{self, PlannedAction};

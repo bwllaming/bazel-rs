@@ -1,5 +1,6 @@
 //! Registry archive symlinks and hard links through the Cargo-built CLI.
 #![cfg(unix)]
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use base64::Engine;
 use sha2::{Digest, Sha256};

@@ -1,4 +1,5 @@
 //! Real CLI scenarios for the bounded direct repository-rule executor.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

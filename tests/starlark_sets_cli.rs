@@ -2,6 +2,7 @@
 //! families use the exact pinned-reference fixtures and output bytes recorded in
 //! fixtures/starlark_sets/integration_reference.json, a source/output subset of
 //! the reference-only integration contract. No synthetic Files/providers.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

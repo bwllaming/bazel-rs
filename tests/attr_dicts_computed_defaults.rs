@@ -1,5 +1,6 @@
 //! `attr.string_keyed_label_dict`, `attr.label_list_dict`, computed (function)
 //! defaults and `analysis_test_transition` through the CLI (docs/ATTR_DICTS_COMPUTED_DEFAULTS.md).
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};

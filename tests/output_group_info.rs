@@ -3,6 +3,7 @@
 //! `_validation_transitive` group is restricted like Bazel's
 //! RuleConfiguredTargetBuilder, and a File reachable only through a closure
 //! in a provider is not a known action input.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};

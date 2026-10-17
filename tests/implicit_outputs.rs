@@ -5,6 +5,7 @@
 //! Expected texts are genuine Bazel 9.3 strings (paired capture
 //! tests/fixtures/implicit_outputs/reference_receipt.json); the workspace is
 //! tests/fixtures/implicit_outputs/workspace.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

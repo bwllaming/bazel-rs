@@ -5,6 +5,7 @@
 //! Bazel's parameter-validation and private-API texts; coverage
 //! configurations from a Starlark transition stay explicit. Expected values
 //! equal genuine Bazel 9.3.0's (tests/fixtures/instrumented_files/reference_receipt.json).
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

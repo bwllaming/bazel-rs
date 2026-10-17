@@ -1,4 +1,5 @@
 //! Real native CLI contracts for bounded ordinary module-extension execution.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};

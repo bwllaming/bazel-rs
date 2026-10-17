@@ -4,6 +4,7 @@
 //! attempts, timeouts, test_suite expansion and filters) and `run` of test
 //! targets (docs/TEST_COMMAND.md). The fixture constants are shared verbatim
 //! with the paired capture (artifacts/bazel_test-capture.py extracts them).
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;

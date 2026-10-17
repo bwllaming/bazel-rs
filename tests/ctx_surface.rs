@@ -7,6 +7,7 @@
 //! and messages of the paired capture against Bazel 9.3
 //! (tests/fixtures/ctx_surface/reference_receipt.json; the receipt's native
 //! `rust-` roots are historical: N41 closed divergence D1, roots are `k8-`).
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use base64::Engine as _;
 use std::fs;
 use std::io::Read;

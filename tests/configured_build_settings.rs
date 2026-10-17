@@ -4,6 +4,7 @@
 //! settings of tests/fixtures/build_settings. Expected texts follow the
 //! pinned Bazel 9.3 sources cited in src/starlark_options.rs,
 //! src/config_setting.rs and src/engine.rs.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

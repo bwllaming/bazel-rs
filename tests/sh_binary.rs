@@ -8,6 +8,7 @@
 //! workspace is tests/fixtures/sh_binary/workspace, whose expected outputs
 //! and texts are genuine Bazel 9.3.0's (paired capture
 //! tests/fixtures/sh_binary/reference_receipt.json).
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};

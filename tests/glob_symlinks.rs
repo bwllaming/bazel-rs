@@ -3,6 +3,7 @@
 //! repository rules / module extension tags accept
 //! attr.label_keyed_string_dict (rules_oci shape).
 #![cfg(unix)]
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
 use std::os::unix::fs::symlink;

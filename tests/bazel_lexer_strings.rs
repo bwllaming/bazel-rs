@@ -3,6 +3,7 @@
 //! raw strings, byte escapes in BUILD actions, Bazel's split()/isspace/title/
 //! elems in repository evaluation, .bzl load failure texts and the DEBUG
 //! reproducibility lines of repository rules.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};

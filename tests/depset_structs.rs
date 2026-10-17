@@ -4,6 +4,7 @@
 //! every order, nested depsets/None/Target/runfiles/global-def fields, the
 //! element type errors and the explicit gaps. The expected reports are equal
 //! to genuine Bazel 9.3.0's after D1 (tests/fixtures/depset_structs/reference_receipt.json).
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

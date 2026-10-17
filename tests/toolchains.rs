@@ -4,6 +4,7 @@
 //! the host execution platform, and `platform_common.ToolchainInfo` /
 //! `ctx.toolchains`. Expected texts follow the pinned Bazel 9.3 sources cited
 //! in src/toolchains.rs, src/toolchain_info.rs and src/engine.rs.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

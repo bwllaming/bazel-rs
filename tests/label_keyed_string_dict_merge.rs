@@ -1,6 +1,7 @@
 //! integration-15: N50's rule `attr.label_keyed_string_dict` values with N45's
 //! deferred unresolvable repositories (also inside select() branches) and
 //! N46's implicit-outputs template check.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};

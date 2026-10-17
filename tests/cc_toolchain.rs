@@ -15,6 +15,7 @@
 //! local_path_override with N30's builtin-closure stubs. The expected
 //! documents are the native outputs; the paired genuine Bazel 9.3 capture is
 //! tests/fixtures/cc_toolchain/reference_receipt.json.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
 use std::path::{Path, PathBuf};

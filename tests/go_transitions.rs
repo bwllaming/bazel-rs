@@ -9,6 +9,7 @@
 //! `map_each` with a top-level function another package's `.bzl` defines
 //! (rules_go's toolchain-provided `go.toolchain.actions.stdlib`) and
 //! `File.root`.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

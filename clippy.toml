@@ -1,0 +1,12 @@
+# Process starts go through src/spawn_lock.rs (the ETXTBSY discipline): it is
+# the only production code allowed to call these (#[allow] there). Test code
+# may start processes directly: the library's test modules through
+# lib.rs's cfg_attr(test, allow), each integration-test crate through its
+# crate-level allow; tests/spawn_discipline.rs checks that nothing else in
+# src/ allows them.
+disallowed-methods = [
+    { path = "std::process::Command::spawn", reason = "start processes through crate::spawn_lock::spawn" },
+    { path = "std::process::Command::output", reason = "use crate::spawn_lock::output" },
+    { path = "std::process::Command::status", reason = "use crate::spawn_lock::spawn and wait" },
+    { path = "std::os::unix::process::CommandExt::exec", reason = "use crate::spawn_lock::exec" },
+]

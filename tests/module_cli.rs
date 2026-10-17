@@ -1,5 +1,6 @@
 //! Isolated filesystem and loopback registries: these tests never use a public registry,
 //! the checked-out workspace's MODULE.bazel, or a reference Bazel executable.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fs;

@@ -1,6 +1,7 @@
 //! CLI: `.bzl` loading of rules_cc/rules_python/rules_go-shaped top-level
 //! patterns against the native language-module globals (cc_common,
 //! apple_common, py_internal, ...). Local fixtures only; no analysis-time C++.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};

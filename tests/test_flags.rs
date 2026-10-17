@@ -2,6 +2,7 @@
 //! `config_common.FeatureFlagInfo` and `config_feature_flag` through the CLI
 //! (docs/TEST_FLAGS.md). Expected texts are genuine Bazel 9.3 strings
 //! (paired capture tests/fixtures/test_flags/reference_receipt.json).
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};

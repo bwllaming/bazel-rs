@@ -1,4 +1,6 @@
 //! Experimental native Bazel-compatible primitives. Not a Bazel replacement yet.
+// Test modules may start processes directly (clippy.toml).
+#![cfg_attr(test, allow(clippy::disallowed_methods))]
 /// Semantics targeted by the native implementation, not a full-parity claim.
 pub const COMPATIBILITY_VERSION: &str = "9.3.0";
 
@@ -98,7 +100,7 @@ pub mod runfiles;
 pub mod runfiles_tree;
 pub mod scheduler;
 pub mod source_links;
-mod spawn_lock;
+pub mod spawn_lock;
 pub mod starlark_options;
 mod starlark_transitions;
 pub mod starlark_types;

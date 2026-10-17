@@ -5,6 +5,7 @@
 //! bazel_skylib files it reaches (see that directory's PROVENANCE.md).
 //! Expected values follow Bazel 9.3's CcToolchainFeatures, FeatureSelection
 //! and CcToolchainVariables semantics; a paired genuine capture is pending.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
 use std::path::{Path, PathBuf};

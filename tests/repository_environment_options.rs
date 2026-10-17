@@ -1,5 +1,6 @@
 //! Value-safe handling of `--repo_env` on the command line (N40: the option
 //! is modelled, crate::repo_env), and the library `mod` entry's rejection.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::process::Command;
 
 const SECRET: &str = "SYNTHETIC_SECRET_42";

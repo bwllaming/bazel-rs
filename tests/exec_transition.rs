@@ -4,6 +4,7 @@
 //! ExecutionTransitionFactory's finalizer), its output root, select() and
 //! toolchain resolution in it, Starlark flag scopes, no-op transitions of
 //! parents without an execution platform and exec-group errors.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};

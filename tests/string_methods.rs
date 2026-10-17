@@ -6,6 +6,7 @@
 //! Bazel 9.3 capture (`fixtures/string_methods/reference_receipt.json`). Rows tagged `divergent` are inputs for
 //! which Bazel's byte-wise result is invalid UTF-8; they pin the documented
 //! bazel-rs behaviour instead (see docs/STRING_METHODS.md).
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};

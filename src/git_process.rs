@@ -276,9 +276,16 @@ fn group_pid(group: u32) -> Result<rustix::process::Pid, String> {
 /// no member is left, which is the goal; any other errno (EPERM, ...) is a
 /// cleanup error, never success.
 pub(crate) fn kill_group(group: u32) -> Result<(), String> {
-    match rustix::process::kill_process_group(group_pid(group)?, rustix::process::Signal::KILL) {
+    signal_group(group, rustix::process::Signal::KILL)
+        .map_err(|error| format!("cannot kill process group {group}: {error}"))
+}
+
+/// Send `signal` to every member of process group `group` (kill(2) on
+/// `-group`); [`kill_group`] is SIGKILL. ESRCH (no member left) is success.
+pub(crate) fn signal_group(group: u32, signal: rustix::process::Signal) -> Result<(), String> {
+    match rustix::process::kill_process_group(group_pid(group)?, signal) {
         Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
-        Err(error) => Err(format!("cannot kill process group {group}: {error}")),
+        Err(error) => Err(error.to_string()),
     }
 }
 

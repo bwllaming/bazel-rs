@@ -3,6 +3,7 @@
 //! expand_template/template_dict, Starlark spawn environments, and cache keys
 //! that cover parameter-file and tree contents. Expected bytes follow the
 //! paired genuine Bazel 9.3 capture (tests/fixtures/actions_params).
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;

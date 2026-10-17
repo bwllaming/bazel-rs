@@ -6,6 +6,7 @@
 //! matching file (validateDirectPrerequisiteFileTypes, :1945-1994), and
 //! `ctx.files` stays the unfiltered files to build
 //! (PrerequisiteArtifacts.nestedSet, analysis/PrerequisiteArtifacts.java:64-72).
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
 use std::process::{Command, Output};

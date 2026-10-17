@@ -1,4 +1,5 @@
 //! Complete extraction of an unchanged genuine Git-generated release archive.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use bazel_rs::archive::extract;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};

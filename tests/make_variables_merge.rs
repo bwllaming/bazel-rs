@@ -1,6 +1,7 @@
 //! integration-15: N53's Make variables never read the action environment
 //! (N42): `--action_env` values are not `$(VAR)`s
 //! (ConfigurationMakeVariableContext has no action-environment source).
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::process::Command;
 

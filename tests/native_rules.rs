@@ -11,6 +11,7 @@
 //! labels, rules only, `manual` included), and analysis of the new classes,
 //! or of filegroup/genrule values that need select() resolution, fails
 //! explicitly before any action runs.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
 use std::path::Path;

@@ -835,8 +835,7 @@ impl Runner<'_> {
             .stderr(err);
         let timeout = Duration::from_secs(options.timeout_seconds(unit.spec.info.timeout));
         let start = Instant::now();
-        let mut child = command
-            .spawn()
+        let mut child = crate::spawn_lock::spawn(&mut command)
             .map_err(|e| format!("cannot start {}: {e}", args[0]))?;
         let pid = child.id();
         let mut streamer = (options.output == TestOutput::Streamed).then(Streamer::default);
@@ -853,17 +852,17 @@ impl Runner<'_> {
             if !timed_out && elapsed >= timeout {
                 timed_out = true;
                 terminated_at = Some(Instant::now());
-                signal_group(pid, "TERM");
+                signal_group(pid, rustix::process::Signal::TERM);
             } else if let Some(at) = terminated_at
                 && at.elapsed() >= TERMINATION_GRACE
             {
-                signal_group(pid, "KILL");
+                signal_group(pid, rustix::process::Signal::KILL);
                 terminated_at = None;
             }
             std::thread::sleep(Duration::from_millis(10));
         };
         // Kill any process the test left behind in its group.
-        signal_group(pid, "KILL");
+        signal_group(pid, rustix::process::Signal::KILL);
         let millis = start.elapsed().as_millis() as u64;
         if let Some(streamer) = streamer.as_mut() {
             streamer.pump(&log_path);
@@ -932,7 +931,7 @@ impl Runner<'_> {
                 xml_env.insert("TEST_SHARD_INDEX".to_owned(), "0".to_owned());
                 xml_env.insert("TEST_TOTAL_SHARDS".to_owned(), "0".to_owned());
             }
-            let output = command
+            command
                 .args([
                     format!("{}/test.log", paths.base),
                     format!("{}/test.xml", paths.base),
@@ -950,8 +949,8 @@ impl Runner<'_> {
                         .unwrap_or("/tmp"),
                 )
                 .current_dir(execroot)
-                .stdin(std::process::Stdio::null())
-                .output()
+                .stdin(std::process::Stdio::null());
+            let output = crate::spawn_lock::output(&mut command)
                 .map_err(|e| format!("cannot start {XML_EXEC_PATH}: {e}"))?;
             if !output.status.success() {
                 return Err(format!(
@@ -1046,13 +1045,11 @@ fn rename_attempt(execroot: &Path, base: &str, number: usize) -> Result<PathBuf,
         .join(format!("{prefix}.log")))
 }
 
-/// Send a signal to a process group (`kill -SIG -- -PGID`).
-fn signal_group(pid: u32, signal: &str) {
-    let _ = std::process::Command::new("kill")
-        .args([format!("-{signal}"), "--".to_owned(), format!("-{pid}")])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+/// Send a signal to the test's process group (kill(2) on `-PGID`, like the
+/// former `kill -SIG -- -PGID` helper; errors are ignored as before, ESRCH
+/// once the group is gone).
+fn signal_group(pid: u32, signal: rustix::process::Signal) {
+    let _ = crate::git_process::signal_group(pid, signal);
 }
 
 /// `--test_output=streamed`: the test log after its header, copied to

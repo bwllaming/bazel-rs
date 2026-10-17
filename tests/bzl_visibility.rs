@@ -1,6 +1,7 @@
 //! Real native CLI contracts for Bazel 9.3 `.bzl` load visibility
 //! (BazelBuildApiGlobals.visibility, BzlLoadFunction.checkLoadVisibilities).
 //! All fixtures are offline/local; no genuine Bazel is executed here.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

@@ -2,6 +2,7 @@
 //! tool runfiles in actions and the `run` command (docs/RUNFILES_TREES.md).
 //! The fixture constants are shared verbatim with the paired capture
 //! (artifacts/runfiles_trees-capture.py extracts them from this file).
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::collections::BTreeMap;
 use std::fs;

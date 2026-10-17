@@ -1,4 +1,5 @@
 //! Real CLI regression for executable generated outputs observed in Bazel 9.3.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;

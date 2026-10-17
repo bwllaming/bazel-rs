@@ -3,6 +3,7 @@
 //! loopback registry serves a module whose MODULE.bazel names @bazel_tools
 //! extensions and repository rules, like rules_jvm_external 6.7. Never uses a
 //! public registry or a reference Bazel executable.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;

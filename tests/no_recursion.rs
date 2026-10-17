@@ -6,6 +6,7 @@
 //! implementations, `map_each`) start a new recursion scope. Expected texts and
 //! locations are those of the paired capture
 //! (tests/fixtures/no_recursion/reference_receipt.json).
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::process::{Command, Output};
 

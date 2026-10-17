@@ -3,6 +3,7 @@
 //! `common` ignoring, `--announce_rc`, and explicit failures naming the rc
 //! file:line of options the native profile does not model. Expected texts
 //! follow the pinned Bazel 9.3 sources cited in src/bazelrc.rs.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
 use std::path::{Path, PathBuf};

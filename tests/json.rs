@@ -2,6 +2,7 @@
 //! Saved genuine fixtures are portable; no ignored research artifact is needed.
 //! Native depth/resource and MAIN File configuration are declared scope limits,
 //! not JVM stack/RSS/performance, external File, or nondefault UTF16 parity claims.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -1,6 +1,7 @@
 //! N41: credential helpers and the HTTP remote cache (docs/REMOTE_CACHE.md).
 //! Every test uses a loopback cache/registry server and local helper scripts;
 //! nothing contacts a real cache, registry or credential helper.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};

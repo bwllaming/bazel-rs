@@ -1,6 +1,7 @@
 //! N22: Bazel 9.3 repr/str of builtin values observed through a real analysis
 //! (docs/REPR.md). The expected lines are derived from the pinned sources cited
 //! there; one probe action writes every repr so the bytes are compared exactly.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};

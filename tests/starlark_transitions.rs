@@ -7,6 +7,7 @@
 //! every evaluation/validation error and the explicit gaps (split results,
 //! unmodelled native options), and a shape of rules_go's transitions with
 //! the genuine `transition.bzl`.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};

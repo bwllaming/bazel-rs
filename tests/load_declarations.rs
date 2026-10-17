@@ -3,6 +3,7 @@
 //! rules_java and rules_python top-level declaration patterns; an ordinary
 //! rule still analyzes and builds, and exercised-but-unanalyzed features fail
 //! explicitly before any action runs.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
 use std::path::Path;

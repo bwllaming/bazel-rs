@@ -2,6 +2,7 @@
 //! implementation return values, Latin-1 octal escapes in executed .bzl code
 //! and .bzl loads through symlinks (N26). The http_archive scenario runs the
 //! embedded @bazel_tools http.bzl against a private loopback HTTP listener.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Write};

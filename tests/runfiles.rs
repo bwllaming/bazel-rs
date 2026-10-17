@@ -1,5 +1,6 @@
 //! N23a CLI coverage: runfiles values, DefaultInfo/FilesToRunProvider views,
 //! executable and test rules (analysis only), docs/RUNFILES.md.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -2,6 +2,7 @@
 //! Reference evidence lives in the ignored repository-environ-{,name-}contract
 //! receipts; these tests deliberately do not depend on those artifact files.
 //! Fresh native CLIs execute callbacks even when a publication is reused.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use bazel_rs::label::Label;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;

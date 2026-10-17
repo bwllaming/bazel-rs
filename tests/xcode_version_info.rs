@@ -2,6 +2,7 @@
 //! provider (`apple_common.XcodeVersionConfig`) through native analysis, on the
 //! F3 fixture workspace (tests/fixtures/xcode_dotted/workspace). The expected
 //! outputs are the bytes genuine Bazel 9.3 writes for the same targets.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

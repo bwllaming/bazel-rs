@@ -2,6 +2,7 @@
 //! through the CLI with rc evaluation (docs/RC_OPTIONS.md). Every scenario
 //! runs with an exact environment (no inherited proxy variables), a private
 //! HOME and no BAZELRC; proxies are local test servers only.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;

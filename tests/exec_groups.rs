@@ -8,6 +8,7 @@
 //! tests/fixtures/exec_groups/reference_receipt.json). The workspace is
 //! tests/fixtures/exec_groups/workspace with N30's builtin-closure stubs
 //! (tests/fixtures/test_flags/stubs).
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

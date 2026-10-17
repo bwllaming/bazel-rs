@@ -1,6 +1,7 @@
 //! Real CLI: a rules_go-shaped `go_sdk` extension reads go.mod files from the
 //! root module and a local_path_override module through module_ctx.path/read,
 //! returns extension_metadata, and its generated repository feeds a genrule.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};

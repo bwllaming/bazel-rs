@@ -5,6 +5,7 @@
 //! executed Java-host observations (starlark-set-post-error-contract.json: zero
 //! executions). H2 production globals and provider/File traversal are not tested
 //! or enabled here. Generic Unicode repr parity is an existing separate gap.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::cell::RefCell;
 use std::collections::HashMap;

@@ -1,4 +1,5 @@
 //! Real CLI checks for active-extension-only native rule introspection.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::process::{Command, Output};
 

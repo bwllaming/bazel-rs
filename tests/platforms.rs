@@ -5,6 +5,7 @@
 //! `constraint_value` select() keys. Expected texts follow the pinned Bazel
 //! 9.3 sources cited in src/platforms.rs, src/config_setting.rs and
 //! src/engine.rs.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};

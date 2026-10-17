@@ -3,6 +3,7 @@
 //! dependencies live in `@bazel_tools`, which needs the genuine built-in
 //! profile and its registry (tests/fixtures/query_language/reference_receipt.json
 //! records the genuine Bazel 9.3 comparison with them).
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
 use std::path::{Path, PathBuf};

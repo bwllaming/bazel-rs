@@ -2,6 +2,7 @@
 //! provider elements (nested depsets, Target tuples) of depsets in a
 //! dependency's provider are known action inputs of its dependents
 //! (tests/fixtures/provider_payload_files/reference_receipt.json).
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

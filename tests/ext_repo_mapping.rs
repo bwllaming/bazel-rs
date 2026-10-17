@@ -3,6 +3,7 @@
 //! local_path modules only. Expected values are the genuine Bazel 9.3.0
 //! observations of tests/fixtures/ext_repo_mapping/reference_receipt.json.
 #![cfg(unix)]
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
 use std::path::Path;

@@ -4,6 +4,7 @@
 //! overrides, `--incompatible_strict_action_env`, `--test_env`), inherited
 //! values keyed, and option diagnostics. Expected environments follow the
 //! paired genuine Bazel 9.3 capture (tests/fixtures/action_env).
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
 use std::path::{Path, PathBuf};

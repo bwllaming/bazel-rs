@@ -11,6 +11,7 @@
 //! the host OS and architecture (src/action.rs), so the golden values are
 //! those of linux/x86_64.
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
 use std::path::{Path, PathBuf};

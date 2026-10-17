@@ -1,6 +1,7 @@
 //! Bounded resolved-Label accessor contracts, not full Bazel Label API parity.
 //! NATIVE_BOUNDARY negatives preserve eager rejection: no invalid Label is
 //! constructed and no getter is reached. All fixtures are offline/local.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};

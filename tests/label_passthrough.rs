@@ -3,6 +3,7 @@
 //! getters fail with Bazel's text.
 //! Callback prints are phase markers, never evidence of repository/action reuse.
 #![cfg(unix)]
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::collections::BTreeMap;
 use std::fs;

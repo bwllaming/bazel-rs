@@ -1,6 +1,7 @@
 //! MODULE.bazel.lock CLI behavior against loopback registries
 //! (tests/fixtures/registry_lockfile; docs/REGISTRY_LOCKFILE.md). Never uses
 //! a public registry or a reference Bazel executable.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};

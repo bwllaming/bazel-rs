@@ -1,6 +1,7 @@
 //! Native I0 subrules: real loading, analysis, scoped receivers and action outputs.
 //! Reference case01 reads fragments and is deliberately NOT a positive I0 fixture.
 //! The independent no-config-view scope fixture is the genuine positive control.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
