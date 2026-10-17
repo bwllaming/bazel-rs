@@ -246,11 +246,23 @@ fn stamped_build_info_fails_explicitly_and_genrule_toolchains_expand() {
     let output = ws.build(&["//bi:stamped"]);
     let text = stderr(&output);
     assert!(!output.status.success(), "{text}");
-    for needle in [
+    // Both translator actions fail explicitly; the build stops at the first
+    // failure (--nokeep_going), so whether the second one also ran and
+    // reported depends on scheduling: at least one is reported, and every
+    // reported one has its exact text.
+    let needles = [
         "actions.transform_version_file output bazel-out/k8-fastbuild/bin/external/bazel_tools/tools/build_defs/build_info/volatile_file.h: workspace status (build info) transformation is not supported by the native profile",
-        "actions.transform_info_file output bazel-out/k8-fastbuild/bin/external/bazel_tools/tools/build_defs/build_info/non_volatile_file.h",
-    ] {
-        assert!(text.contains(needle), "{needle:?} in:\n{text}");
+        "actions.transform_info_file output bazel-out/k8-fastbuild/bin/external/bazel_tools/tools/build_defs/build_info/non_volatile_file.h: workspace status (build info) transformation is not supported by the native profile",
+    ];
+    assert!(
+        needles.iter().any(|needle| text.contains(needle)),
+        "{needles:?} in:\n{text}"
+    );
+    for line in text
+        .lines()
+        .filter(|line| line.contains("actions.transform_"))
+    {
+        assert!(needles.iter().any(|needle| line.contains(needle)), "{line}");
     }
     // N53: the genrule `toolchains` attribute expands the cc_toolchain_alias
     // TemplateVariableInfo Make variables; the output equals the genuine
