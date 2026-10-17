@@ -297,12 +297,18 @@ pub(crate) fn prerequisite_errors(
                 || provider.display_name.contains("PackageSpecificationInfo")
         })
     {
-        errors.push(format!(
-            "in {} attribute of {} rule {}: package group '{shown}' is misplaced here (they are only allowed in the visibility attribute)",
-            crate::custom_rule::native_attribute_name(name, spec.declaration.late_bound),
-            consumer.rule_class,
-            consumer.label,
-        ));
+        errors.push(
+            crate::rule_errors::RuleEvents {
+                rule_class: consumer.rule_class,
+                label: consumer.label,
+            }
+            .attribute_message(
+                &crate::custom_rule::native_attribute_name(name, spec.declaration.late_bound),
+                &format!(
+                    "package group '{shown}' is misplaced here (they are only allowed in the visibility attribute)"
+                ),
+            ),
+        );
     }
     errors
 }
@@ -749,11 +755,11 @@ fn ctx_attribute_structs<'v>(
             Some(spec) => crate::custom_rule::attribute_message_name(name, spec),
             None => name.to_owned(),
         };
-        format!(
-            "in {shown} attribute of {} rule {}: ",
-            invocation.declaration.rule_class,
-            crate::rule_declarations::canonical_form(&rule.label)
-        )
+        crate::rule_errors::RuleEvents {
+            rule_class: &invocation.declaration.rule_class,
+            label: &crate::rule_declarations::canonical_form(&rule.label),
+        }
+        .attribute_message(&shown, "")
     };
     let shown_label = crate::rule_declarations::canonical_form(&rule.label);
     let consumer = Consumer {
@@ -1027,9 +1033,12 @@ fn ctx_attribute_structs<'v>(
             {
                 // Outputs.addOutput (StarlarkRuleContext.java:362-371).
                 bail!(
-                    "in {} rule {}: Multiple outputs with the same key: executable",
-                    invocation.declaration.rule_class,
-                    crate::rule_declarations::canonical_form(&rule.label)
+                    "{}",
+                    crate::rule_errors::RuleEvents {
+                        rule_class: &invocation.declaration.rule_class,
+                        label: &crate::rule_declarations::canonical_form(&rule.label),
+                    }
+                    .rule_message("Multiple outputs with the same key: executable")
                 );
             }
             // Output attributes are Files in ctx.outputs and their Labels in
@@ -1075,9 +1084,12 @@ fn ctx_attribute_structs<'v>(
             || (key == "executable" && context.runfiles.default_executable.is_some())
         {
             bail!(
-                "in {} rule {}: Multiple outputs with the same key: {key}",
-                invocation.declaration.rule_class,
-                crate::rule_declarations::canonical_form(&rule.label)
+                "{}",
+                crate::rule_errors::RuleEvents {
+                    rule_class: &invocation.declaration.rule_class,
+                    label: &crate::rule_declarations::canonical_form(&rule.label),
+                }
+                .rule_message(&format!("Multiple outputs with the same key: {key}"))
             );
         }
         let file = alloc_file(heap, context.declare(output)?);
@@ -1323,12 +1335,16 @@ pub(crate) fn empty_attribute_errors(
                 _ => false,
             }
         {
-            empty.push(format!(
-                "in {} attribute of {} rule {}: attribute must be non empty",
-                crate::custom_rule::attribute_message_name(name, spec),
-                invocation.declaration.rule_class,
-                crate::rule_declarations::canonical_form(&rule.label)
-            ));
+            empty.push(
+                crate::rule_errors::RuleEvents {
+                    rule_class: &invocation.declaration.rule_class,
+                    label: &crate::rule_declarations::canonical_form(&rule.label),
+                }
+                .attribute_message(
+                    &crate::custom_rule::attribute_message_name(name, spec),
+                    "attribute must be non empty",
+                ),
+            );
         }
     }
     empty

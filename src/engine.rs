@@ -3121,11 +3121,11 @@ impl Engine {
         }
         located(
             head.location.as_deref(),
-            format!(
-                "in {} rule {}: {message}",
-                head.rule_class_name(),
-                crate::rule_declarations::canonical_form(&head.label)
-            ),
+            crate::rule_errors::RuleEvents {
+                rule_class: head.rule_class_name(),
+                label: &crate::rule_declarations::canonical_form(&head.label),
+            }
+            .rule_message(&message),
         )
     }
 
@@ -3443,12 +3443,12 @@ impl Engine {
             rule_class: rule.rule_class_name(),
             label: &shown,
         };
+        let events = crate::rule_errors::RuleEvents {
+            rule_class: rule.rule_class_name(),
+            label: &shown,
+        };
         let prefix = |name: &str, spec: &crate::custom_rule::AttrSpec| {
-            format!(
-                "in {} attribute of {} rule {shown}: ",
-                crate::custom_rule::attribute_message_name(name, spec),
-                rule.rule_class_name()
-            )
+            events.attribute_message(&crate::custom_rule::attribute_message_name(name, spec), "")
         };
         // The built-in `package_metadata` attribute precedes the rule's own
         // attributes in the rule class (BaseRuleClasses.java:291-297); its
@@ -3785,7 +3785,11 @@ impl Engine {
         let requesting_package = rule_authority(rule);
         let mut errors = Vec::new();
         for (attribute, labels) in attributes.iter().zip(&resolved) {
-            let prefix = format!("in {} attribute of {class} rule {shown}: ", attribute.name);
+            let prefix = crate::rule_errors::RuleEvents {
+                rule_class: &class,
+                label: &shown,
+            }
+            .attribute_message(&attribute.name, "");
             for dependency in labels {
                 let (chain, actual) = self.alias_chain(configured, config, dependency);
                 let actual_target = self.target(&actual)?;
@@ -3852,7 +3856,11 @@ impl Engine {
         let attribute_error = |attribute: &str, message: &str| {
             located(
                 rule.location.as_deref(),
-                format!("in {attribute} attribute of {class} rule {shown}: {message}"),
+                crate::rule_errors::RuleEvents {
+                    rule_class: &class,
+                    label: &shown,
+                }
+                .attribute_message(attribute, message),
             )
         };
         let node = |label: &Label| configured.get(&ConfiguredTargetKey::new(label.clone(), config));
@@ -5274,11 +5282,11 @@ impl Engine {
                     {
                         errors.push(located(
                             rule.location.as_deref(),
-                            format!(
-                                "in {} attribute of {} rule {rule_shown}: {error}",
-                                attribute.name,
-                                rule.rule_class_name()
-                            ),
+                            crate::rule_errors::RuleEvents {
+                                rule_class: rule.rule_class_name(),
+                                label: &rule_shown,
+                            }
+                            .attribute_message(&attribute.name, &error),
                         ));
                     }
                 }

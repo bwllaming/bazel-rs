@@ -527,6 +527,11 @@
      "verdict": "EXACT"
     }
    ]
+  },
+  {
+   "what": "integration-15 (N53 merged): the declared gap gen/toolchains_attribute is closed. The native genrule with toolchains = ['@rules_cc//cc:current_cc_toolchain'] builds and its output equals the recorded genuine reference_output byte for byte ('/usr/bin/fixture-gcc|/usr/bin/fixture-ar|tc|fixture-value|\\n'); tests/cc_toolchain.rs asserts it. No genuine run.",
+   "row": "gen/toolchains_attribute",
+   "replay": "EXACT"
   }
  ]
 }

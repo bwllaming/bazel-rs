@@ -241,7 +241,7 @@ fn compilation_mode_dbg_selects_the_dbg_tool_and_features() {
 }
 
 #[test]
-fn stamped_build_info_and_toolchains_attribute_fail_explicitly() {
+fn stamped_build_info_fails_explicitly_and_genrule_toolchains_expand() {
     let ws = Workspace::new(true);
     let output = ws.build(&["//bi:stamped"]);
     let text = stderr(&output);
@@ -252,14 +252,13 @@ fn stamped_build_info_and_toolchains_attribute_fail_explicitly() {
     ] {
         assert!(text.contains(needle), "{needle:?} in:\n{text}");
     }
-    let output = ws.build(&["//gen:vars"]);
-    let text = stderr(&output);
-    assert!(!output.status.success(), "{text}");
-    assert!(
-        text.contains(
-            "//gen:vars: genrule accepted at load time but not analyzed by the native profile: attribute 'toolchains'"
-        ),
-        "{text}"
+    // N53: the genrule `toolchains` attribute expands the cc_toolchain_alias
+    // TemplateVariableInfo Make variables; the output equals the genuine
+    // Bazel 9.3 reference row gen/toolchains_attribute.
+    let built = outputs(&ws.build(&["//gen:vars"]));
+    assert_eq!(
+        output_of(&built, "//gen:vars"),
+        "/usr/bin/fixture-gcc|/usr/bin/fixture-ar|tc|fixture-value|\n"
     );
 }
 

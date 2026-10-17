@@ -91,11 +91,11 @@ demanding them through any consumer.
 
 ## Explicit gaps
 
-- The common `toolchains` attribute (`toolchains = ["@rules_cc//cc:current_cc_toolchain"]`
-  for `$(CC)`/`$(CC_FLAGS)` in a genrule or `ctx.var`) is still rejected
-  (`attribute 'toolchains' ... (TemplateVariableInfo Make variables)`);
-  `ctx.var` of a rule that resolves the C++ toolchain type does include the
-  toolchain's variables (docs/CTX_SURFACE.md).
+- (Closed by N53 on integration-15: the common `toolchains` attribute,
+  `toolchains = ["@rules_cc//cc:current_cc_toolchain"]`, expands `$(CC)`,
+  `$(AR)`, ... in a genrule or `ctx.var` from the toolchain's
+  TemplateVariableInfo; the fixture genrule's output equals the genuine row,
+  docs/MAKE_VARIABLES.md.)
 - `--noincompatible_dont_enable_host_nonhost_crosstool_features` is an
   unsupported option, so `host`/`nonhost` are never requested (Bazel's
   default, `J/rules/cpp/CppOptions.java:752-760`).
@@ -148,8 +148,9 @@ demanding them through any consumer.
   replay recorded in the receipt's `post_capture_changes`, no new genuine
   run); the trimmed test vendor gives the same native bytes as the
   complete modules (EXACT); the stamped build-info outputs and the genrule
-  `toolchains` attribute are the declared EXPECTED_NATIVE_GAPs (genuine:
-  `/usr/bin/fixture-gcc|/usr/bin/fixture-ar|tc|fixture-value|`).
+  `toolchains` attribute were the declared EXPECTED_NATIVE_GAPs (genuine:
+  `/usr/bin/fixture-gcc|/usr/bin/fixture-ar|tc|fixture-value|`); since N53
+  the genrule row is natively EXACT (receipt `post_capture_changes`).
 - Finding of the first capture run (not C++-specific): Bazel rejects
   recursive Starlark functions (`function 'enc' called recursively`); the
   native interpreter did too since N48; the fixture probe was made
