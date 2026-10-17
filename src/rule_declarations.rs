@@ -428,12 +428,18 @@ mod values {
         fn invoke(
             &self,
             _me: Value<'v>,
-            _args: &Arguments<'v, '_>,
-            _eval: &mut Evaluator<'v, '_, '_>,
+            args: &Arguments<'v, '_>,
+            eval: &mut Evaluator<'v, '_, '_>,
         ) -> starlark::Result<Value<'v>> {
-            Err(starlark::Error::new_other(anyhow!(
-                "OutputGroupInfo construction is not implemented in the native profile (analysis-time output groups)"
-            )))
+            crate::output_group_info::construct(args, eval)
+        }
+
+        fn write_hash(
+            &self,
+            hasher: &mut starlark::collections::StarlarkHasher,
+        ) -> starlark::Result<()> {
+            std::hash::Hash::hash(OUTPUT_GROUP_INFO_ID, hasher);
+            Ok(())
         }
     }
 
@@ -2084,15 +2090,45 @@ mod tests {
     }
 
     #[test]
-    fn output_group_info_is_a_requirement_key_that_fails_when_constructed() {
+    fn output_group_info_is_a_requirement_key_and_a_struct_like_provider() {
         passes(
             "(type(OutputGroupInfo) == 'Provider' and repr(OutputGroupInfo) == '<function OutputGroupInfo>') or fail('shape')\n\
-             a = attr.label_list(providers = [[OutputGroupInfo], [DefaultInfo]])\n",
+             a = attr.label_list(providers = [[OutputGroupInfo], [DefaultInfo]])\n\
+             o = OutputGroupInfo(z = depset(), a = [], m = ())\n\
+             (type(o) == 'OutputGroupInfo' and dir(o) == ['a', 'm', 'z'] and [g for g in o] == ['a', 'm', 'z']) or fail('groups sorted')\n\
+             (repr(o) == 'struct(a = depset([]), m = depset([]), z = depset([]))') or fail(repr(o))\n\
+             ('a' in o and 'b' not in o and 1 not in o and o['z'].to_list() == [] and o.m.to_list() == []) or fail('access')\n\
+             (o == o and o != OutputGroupInfo(z = depset(), a = [], m = ()) and {o: 1}[o] == 1) or fail('identity')\n\
+             (dir(OutputGroupInfo()) == [] and not hasattr(o, 'b')) or fail('empty')\n",
         );
-        fails(
-            "OutputGroupInfo(x = depset())",
-            "OutputGroupInfo construction is not implemented in the native profile",
-        );
+        for (source, expected) in [
+            (
+                "OutputGroupInfo(x = 1)",
+                "for output group 'x', got int, want a depset of File",
+            ),
+            (
+                "OutputGroupInfo(x = ['a'])",
+                "at index 0 of output group 'x', got element of type string, want File",
+            ),
+            (
+                "OutputGroupInfo(x = depset(['a']))",
+                "for 'output group 'x'', got a depset of 'string', expected a depset of 'File'",
+            ),
+            (
+                "OutputGroupInfo(depset())",
+                "OutputGroupInfo() got unexpected positional argument",
+            ),
+            (
+                "OutputGroupInfo(x = depset())['y']",
+                "Output group y not present",
+            ),
+            (
+                "OutputGroupInfo(x = depset())[1]",
+                "Output group names must be strings, got int instead",
+            ),
+        ] {
+            fails(source, expected);
+        }
     }
 
     #[test]

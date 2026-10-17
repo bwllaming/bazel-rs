@@ -25,7 +25,7 @@ Code comments cite file:line.
 | `config.exec(exec_group=None)`, `config.target()`, `config.none()` | `StarlarkConfigApi.java:174-205`, `StarlarkConfig.java:68-83` | Added to the existing `config` module. Type `ExecTransitionFactory`/`transition`; reprs use Bazel's default `<unknown object ...ExecutionTransitionFactory>` / `...NoTransition$Factory>` / `...NoConfigTransition$Factory>`. `config.exec()` values compare by identity (two calls are never equal); `config.target()`/`config.none()` are records and compare by value. All transition values expose `and_then` (`ConfigurationTransitionApi.java:37-56`); calling it fails explicitly (composition is not implemented). |
 | `rule` / `attr.*` values | `StarlarkRuleClassFunctions.java:1999-2005`, `StarlarkAttrModule.java:1218` | Exported rules print `<rule NAME>`, unexported `<rule>`; attribute descriptors have type `Attribute` and repr `<attr.KIND>` (for example `<attr.string_dict>`). |
 | `select(x, no_match_error='')` (in BUILD and `.bzl`) | `SelectorList.java:60-310`, `SelectorValue.java:90` | Dict check, empty-dict and key-type errors, `+` (and `|` for dicts) concatenation with `Cannot combine incompatible types (...)`, type `select`, Bazel repr. Keys stay strings (`--incompatible_resolve_select_keys_eagerly` is off by default, `BuildLanguageOptions.java:854`). |
-| `OutputGroupInfo` | `OutputGroupInfo.java`, `BuiltinProvider.java:94` | Type `Provider`, repr `<function OutputGroupInfo>`, usable in `providers=`/`provides=` (identity `builtin:OutputGroupInfo`). Calling it fails explicitly (analysis-time output groups are not implemented). |
+| `OutputGroupInfo` | `OutputGroupInfo.java`, `BuiltinProvider.java:94` | Type `Provider`, repr `<function OutputGroupInfo>`, usable in `providers=`/`provides=` (identity `builtin:OutputGroupInfo`). Calling it constructs an output-group provider (N25d5, docs/CC_TOOLCHAIN.md). |
 
 `select` was not available in native BUILD files before; it is now a BUILD
 global too. Custom rules type-check and keep `select()` values. Native rule
@@ -226,8 +226,8 @@ A target fails analysis with the message above if it uses any of these:
 * `aspect()` objects are never applied; `transition()` implementations are
   called at analysis (N18c, docs/CONFIGURATION.md);
   `attr_aspects`/`toolchains_aspects` functions and `propagation_predicate` are
-  never called; `OutputGroupInfo(...)` and `AnalysisTestResultInfo(...)` fail
-  when called; `analysis_test_transition()` objects are retained, restricted
+  never called; `AnalysisTestResultInfo(...)` fails when called
+  (`OutputGroupInfo(...)` is implemented, docs/CC_TOOLCHAIN.md); `analysis_test_transition()` objects are retained, restricted
   to `analysis_test=True` rules, and never applied.
 
 `toolchains` and `exec_compatible_with` drive toolchain resolution

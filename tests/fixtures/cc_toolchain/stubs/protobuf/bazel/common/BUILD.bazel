@@ -1,0 +1,2 @@
+# Test stub: rules_cc's cc_shared_library.bzl loads ProtoInfo from here.
+exports_files(["proto_info.bzl"])

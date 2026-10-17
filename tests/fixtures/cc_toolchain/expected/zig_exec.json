@@ -1,0 +1,331 @@
+{
+ "actions": {
+  "c++-compile": {
+   "command_line": [
+    "-frandom-seed=probe/a.o",
+    "-fPIC",
+    "-DPROBE=1",
+    "-iquote",
+    ".",
+    "-Iprobe/inc",
+    "-isystem",
+    "probe/sys",
+    "-no-canonical-prefixes",
+    "-Wno-builtin-macro-redefined",
+    "-D__DATE__=\"redacted\"",
+    "-D__TIMESTAMP__=\"redacted\"",
+    "-D__TIME__=\"redacted\"",
+    "-O2",
+    "-DNDEBUG",
+    "-user-copt",
+    "-c",
+    "probe/a.c",
+    "-o",
+    "probe/a.o"
+   ],
+   "enabled": true,
+   "env": {},
+   "execution_requirements": [],
+   "tool": "zig/tools/x86_64-linux-gnu.2.28/c++"
+  },
+  "c++-link-dynamic-library": {
+   "command_line": [
+    "-shared",
+    "-o",
+    "probe/libout.so",
+    "-user-linkopt",
+    "-O2",
+    "-DNDEBUG"
+   ],
+   "enabled": true,
+   "env": {},
+   "execution_requirements": [],
+   "tool": "zig/tools/x86_64-linux-gnu.2.28/c++"
+  },
+  "c++-link-executable": {
+   "command_line": [
+    "-o",
+    "probe/out",
+    "-Xlinker",
+    "-rpath",
+    "-Xlinker",
+    "$ORIGIN/rt",
+    "-Lls",
+    "-user-linkopt",
+    "-Wl,-S",
+    "-O2",
+    "-DNDEBUG",
+    "@probe/out-2.params"
+   ],
+   "enabled": true,
+   "env": {},
+   "execution_requirements": [],
+   "tool": "zig/tools/x86_64-linux-gnu.2.28/c++"
+  },
+  "c-compile": {
+   "command_line": [
+    "-frandom-seed=probe/a.o",
+    "-fPIC",
+    "-DPROBE=1",
+    "-iquote",
+    ".",
+    "-Iprobe/inc",
+    "-isystem",
+    "probe/sys",
+    "-no-canonical-prefixes",
+    "-Wno-builtin-macro-redefined",
+    "-D__DATE__=\"redacted\"",
+    "-D__TIMESTAMP__=\"redacted\"",
+    "-D__TIME__=\"redacted\"",
+    "-O2",
+    "-DNDEBUG",
+    "-user-copt",
+    "-c",
+    "probe/a.c",
+    "-o",
+    "probe/a.o"
+   ],
+   "enabled": true,
+   "env": {},
+   "execution_requirements": [],
+   "tool": "zig/tools/x86_64-linux-gnu.2.28/c++"
+  }
+ },
+ "configuration": {
+  "compilation_mode": "opt",
+  "ctx.disabled_features": [],
+  "ctx.features": [],
+  "is_tool_configuration": true
+ },
+ "deps": [],
+ "enabled": {
+  "c++-compile": false,
+  "c++-link-dynamic-library": false,
+  "c++-link-executable": false,
+  "c-compile": false,
+  "compiler_input_flags": true,
+  "compiler_output_flags": true,
+  "dbg": false,
+  "default_compile_flags": false,
+  "default_link_flags": false,
+  "dependency_file": true,
+  "fastbuild": false,
+  "fission_support": true,
+  "fixture_disabled": false,
+  "fixture_env": false,
+  "fixture_requested": false,
+  "host": false,
+  "include_paths": true,
+  "library_search_directories": true,
+  "linker_param_file": true,
+  "linkstamps": true,
+  "module_maps": false,
+  "no_generate_debug_symbols": false,
+  "nonhost": false,
+  "opt": true,
+  "output_execpath_flags": true,
+  "parse_headers": false,
+  "pic": true,
+  "preprocessor_defines": true,
+  "random_seed": true,
+  "runtime_library_search_directories": true,
+  "shared_flag": true,
+  "static_libgcc": false,
+  "strip": false,
+  "strip_debug_symbols": true,
+  "supports_dynamic_linker": true,
+  "supports_pic": false,
+  "supports_start_end_lib": false,
+  "sysroot": true,
+  "sysroot_flag": false,
+  "unfiltered_compile_flags": true,
+  "user_compile_flags": true,
+  "user_link_flags": true
+ },
+ "feature_configuration": "<FeatureConfiguration(ENABLED:legacy_compile_flags, dependency_file, random_seed, pic, preprocessor_defines, includes, include_paths, build_interface_libraries, dynamic_library_linker_tool, shared_flag, linkstamps, output_execpath_flags, runtime_library_search_directories, library_search_directories, archiver_flags, libraries_to_link, force_pic_flags, user_link_flags, legacy_link_flags, fission_support, compile_and_link_flags, default_linker_flags, supports_dynamic_linker, strip_debug_symbols, opt, user_compile_flags, sysroot, unfiltered_compile_flags, linker_param_file, compiler_input_flags, compiler_output_flags;REQUESTED:no_generate_debug_symbols, opt, c-compile, c++-compile, c++-header-parsing, c++-module-compile, c++-module-codegen, c++-module-deps-scanning, c++20-module-compile, c++20-module-codegen, assemble, preprocess-assemble, clif-match, linkstamp-compile, cc-flags-make-variable, lto-backend, c++-header-analysis, lto-index-for-executable, lto-index-for-dynamic-library, lto-index-for-nodeps-dynamic-library, c++-link-executable, c++-link-dynamic-library, c++-link-nodeps-dynamic-library, c++-link-static-library, strip, legacy_compile_flags, dependency_file, random_seed, pic, preprocessor_defines, includes, include_paths, compile_and_link_flags, default_linker_flags, supports_dynamic_linker, user_compile_flags, sysroot, compiler_input_flags, compiler_output_flags)>",
+ "fields": {
+  "_abi": "unknown",
+  "_abi_glibc_version": "unknown",
+  "_additional_make_variables": {
+   "STACK_FRAME_UNLIMITED": ""
+  },
+  "_aggregate_ddi": {
+   "owner": "@@bazel_tools//tools/cpp/modules_tools:aggregate-ddi",
+   "short_path": "../bazel_tools/tools/cpp/modules_tools/aggregate-ddi",
+   "source": true
+  },
+  "_all_files_including_libc": {
+   "depset": []
+  },
+  "_allowlist_for_layering_check": "<PackageSpecificationInfo>",
+  "_allowlist_for_layering_check.type": "PackageSpecificationInfo",
+  "_ar_files": {
+   "depset": []
+  },
+  "_as_files": {
+   "depset": []
+  },
+  "_build_info_files": "<OutputGroupInfo>",
+  "_build_info_files.groups": {
+   "_hidden_top_level_INTERNAL_": {
+    "depset": []
+   },
+   "non_redacted_build_info_files": {
+    "depset": [
+     {
+      "owner": "@@bazel_tools//tools/build_defs/build_info:cc_build_info",
+      "short_path": "../bazel_tools/tools/build_defs/build_info/non_volatile_file.h",
+      "source": false
+     },
+     {
+      "owner": "@@bazel_tools//tools/build_defs/build_info:cc_build_info",
+      "short_path": "../bazel_tools/tools/build_defs/build_info/volatile_file.h",
+      "source": false
+     }
+    ]
+   },
+   "redacted_build_info_files": {
+    "depset": [
+     {
+      "owner": "@@bazel_tools//tools/build_defs/build_info:cc_build_info",
+      "short_path": "../bazel_tools/tools/build_defs/build_info/redacted_file.h",
+      "source": false
+     }
+    ]
+   }
+  },
+  "_build_variables": "<Variables>",
+  "_build_variables_dict": {},
+  "_builtin_include_files": [],
+  "_cc_info": "<struct>",
+  "_cc_info.compilation_context.module_map": null,
+  "_compiler_files": {
+   "depset": []
+  },
+  "_compiler_files_without_includes": {
+   "depset": []
+  },
+  "_coverage_files": {
+   "depset": []
+  },
+  "_cpp_configuration": "<cpp>",
+  "_crosstool_top_path": "zig",
+  "_dwp_files": {
+   "depset": []
+  },
+  "_dynamic_runtime_lib_depset": null,
+  "_extra_allowlisted_feature_layering_check_macros": [],
+  "_fdo_context": {
+   "branch_fdo_profile": null,
+   "memprof_profile_artifact": null,
+   "prefetch_hints_artifact": null,
+   "propeller_optimize_info": null,
+   "proto_profile_artifact": null
+  },
+  "_force_layering_check_features": false,
+  "_grep_includes": null,
+  "_if_so_builder": {
+   "owner": "@@rules_cc+//cc/private/toolchain:build_interface_so",
+   "short_path": "../rules_cc+/cc/private/toolchain/build_interface_so",
+   "source": true
+  },
+  "_is_sibling_repository_layout": false,
+  "_is_tool_configuration": true,
+  "_legacy_cc_flags_make_variable": "",
+  "_link_dynamic_library_tool": {
+   "owner": "@@rules_cc+//cc/private/toolchain:link_dynamic_library.sh",
+   "short_path": "../rules_cc+/cc/private/toolchain/link_dynamic_library.sh",
+   "source": true
+  },
+  "_linker_files": {
+   "depset": [
+    {
+     "owner": "@@rules_cc+//cc/private/toolchain:build_interface_so",
+     "short_path": "../rules_cc+/cc/private/toolchain/build_interface_so",
+     "source": true
+    },
+    {
+     "owner": "@@rules_cc+//cc/private/toolchain:link_dynamic_library.sh",
+     "short_path": "../rules_cc+/cc/private/toolchain/link_dynamic_library.sh",
+     "source": true
+    }
+   ]
+  },
+  "_objcopy_files": {
+   "depset": []
+  },
+  "_solib_dir": "_solib_k8",
+  "_stamp_binaries": false,
+  "_static_runtime_lib_depset": null,
+  "_strip_files": {
+   "depset": []
+  },
+  "_supports_header_parsing": false,
+  "_supports_param_files": false,
+  "_tool_paths": {
+   "ar": "zig/tools/ar",
+   "cpp": "/usr/bin/false",
+   "gcc": "zig/tools/x86_64-linux-gnu.2.28/c++",
+   "gcov": "/usr/bin/false",
+   "ld": "zig/tools/ld.lld",
+   "nm": "/usr/bin/false",
+   "objdump": "/usr/bin/false",
+   "strip": "/usr/bin/false"
+  },
+  "_toolchain_features": "<CcToolchainFeatures>",
+  "_toolchain_label": "Label:@@//zig:x86_64-linux-gnu.2.28_cc",
+  "all_files": {
+   "depset": []
+  },
+  "ar_executable": "zig/tools/ar",
+  "built_in_include_directories": [],
+  "compiler": "clang",
+  "compiler_executable": "zig/tools/x86_64-linux-gnu.2.28/c++",
+  "cpu": "k8",
+  "dynamic_runtime_lib": {
+   "depset": []
+  },
+  "dynamic_runtime_solib_dir": "bazel-out/rust-opt-exec/bin/_solib__zig_Cx86_U64-linux-gnu.2.28_Ucc",
+  "gcov_executable": "/usr/bin/false",
+  "generate_modmap": {
+   "owner": "@@bazel_tools//tools/cpp/modules_tools:generate-modmap",
+   "short_path": "../bazel_tools/tools/cpp/modules_tools/generate-modmap",
+   "source": true
+  },
+  "ld_executable": "zig/tools/ld.lld",
+  "libc": "unknown",
+  "needs_pic_for_dynamic_libraries": false,
+  "nm_executable": "/usr/bin/false",
+  "objcopy_executable": "",
+  "objdump_executable": "/usr/bin/false",
+  "preprocessor_executable": "/usr/bin/false",
+  "static_runtime_lib": {
+   "depset": []
+  },
+  "strip_executable": "/usr/bin/false",
+  "sysroot": null,
+  "target_gnu_system_name": "unknown",
+  "toolchain_id": "x86_64-linux-gnu.2.28-toolchain"
+ },
+ "type": "struct",
+ "var": {
+  "ABI": "fixture-abi",
+  "ABI_GLIBC_VERSION": "fixture-abi-libc",
+  "AR": "/usr/bin/fixture-ar",
+  "BINDIR": "bazel-out/rust-opt-exec/bin",
+  "CC": "/usr/bin/fixture-gcc",
+  "CC_FLAGS": "-legacy-cc-flags --sysroot=/fixture/sysroot",
+  "COMPILATION_MODE": "opt",
+  "CROSSTOOLTOP": "tc",
+  "C_COMPILER": "fixture-compiler",
+  "FIXTURE_MAKE_VAR": "fixture-value",
+  "GENDIR": "bazel-out/rust-opt-exec/bin",
+  "GLIBC_VERSION": "fixture-libc",
+  "LD": "tc/bin/fixture-ld",
+  "NM": "/usr/bin/fixture-nm",
+  "OBJCOPY": "/usr/bin/fixture-objcopy",
+  "STACK_FRAME_UNLIMITED": "",
+  "STRIP": "/usr/bin/fixture-strip",
+  "TARGET_CPU": "x86_64"
+ }
+}

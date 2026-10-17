@@ -1,0 +1,10 @@
+# The `toolchains` attribute (TemplateVariableInfo Make variables of a
+# genrule): Bazel expands $(CC) etc. from the resolved cc_toolchain_alias
+# (whose TemplateVariableInfo has no CC_FLAGS); the native profile rejects
+# the attribute explicitly.
+genrule(
+    name = "vars",
+    outs = ["vars.txt"],
+    cmd = "echo '$(CC)|$(AR)|$(CROSSTOOLTOP)|$(FIXTURE_MAKE_VAR)|$(STACK_FRAME_UNLIMITED)' > $@",
+    toolchains = ["@rules_cc//cc:current_cc_toolchain"],
+)

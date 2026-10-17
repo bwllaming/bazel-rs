@@ -142,6 +142,10 @@ mod owned {
     }
 }
 pub(crate) use owned::HeaderInfo;
+
+pub(crate) fn is_header_info(value: Value<'_>) -> bool {
+    HeaderInfo::from_value(value).is_some()
+}
 starlark_simple_value!(HeaderInfo);
 
 impl fmt::Display for HeaderInfo {
@@ -509,6 +513,42 @@ pub(crate) fn create_header_info<'v>(
     }))
 }
 
+/// CcStarlarkInternal.createHeaderInfoWithDeps (CcStarlarkInternal.java:1224-1248):
+/// a new HeaderInfo identity with the header info's own fields plus `deps` and
+/// `merged_deps`. Every native HeaderInfo is artifact-free, so the result is
+/// too (the transitive header lists it would carry are all empty).
+pub(crate) fn create_header_info_with_deps<'v>(
+    args: &Arguments<'v, '_>,
+    eval: &mut Evaluator<'v, '_, '_>,
+) -> starlark::Result<Value<'v>> {
+    const F: &str = "create_header_info_with_deps";
+    let params = [
+        param("header_info", false, true, false),
+        param("deps", false, true, false),
+        param("merged_deps", false, true, false),
+    ];
+    let bound = bind(F, &params, args, eval.heap())?;
+    let header_info = bound[0].unwrap_or_else(Value::new_none);
+    if HeaderInfo::from_value(header_info).is_none() {
+        return Err(type_error(F, "header_info", header_info, "HeaderInfo"));
+    }
+    for (index, name) in [(1, "deps"), (2, "merged_deps")] {
+        let Some(value) = bound[index] else { continue };
+        // Sequence.cast(deps, HeaderInfo.class, "deps").
+        for (position, element) in sequence(F, name, value)?.into_iter().enumerate() {
+            if HeaderInfo::from_value(element).is_none() {
+                return Err(failure(format!(
+                    "at index {position} of {name}, got element of type {}, want HeaderInfo",
+                    element.get_type()
+                )));
+            }
+        }
+    }
+    Ok(eval.heap().alloc(HeaderInfo {
+        id: NEXT_HEADER_INFO.fetch_add(1, Ordering::Relaxed),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use crate::language_modules::tests::{fails, pass, run};
@@ -717,6 +757,45 @@ EMPTY = cc_internal.freeze([])
         ] {
             fails(
                 "@@rules_cc+//cc/private:cc_common.bzl",
+                &format!("{CC_INTERNAL_BZL}{call}\n"),
+                message,
+            );
+        }
+    }
+
+    #[test]
+    fn create_header_info_with_deps_is_a_new_artifact_free_identity() {
+        // CcStarlarkInternal.createHeaderInfoWithDeps (:1224-1248), as rules_cc's
+        // _merge_compilation_contexts calls it (cc_info.bzl:429-433).
+        pass(
+            "@@rules_cc+//cc/private:cc_info.bzl",
+            &format!(
+                "{CC_INTERNAL_BZL}{}",
+                r#"
+h = cc_internal.create_header_info()
+d = cc_internal.create_header_info_with_deps(header_info = h, deps = [h], merged_deps = (h,))
+e = cc_internal.create_header_info_with_deps(header_info = h)
+(type(d) == "HeaderInfo" and d != h and d != e and d == d) or fail("identity")
+(d.modular_public_headers == [] and d.header_module == None) or fail("fields")
+"#
+            ),
+        );
+        for (call, message) in [
+            (
+                "cc_internal.create_header_info_with_deps(header_info = 1)",
+                "in call to create_header_info_with_deps(), parameter 'header_info' got value of type 'int', want 'HeaderInfo'",
+            ),
+            (
+                "cc_internal.create_header_info_with_deps(header_info = cc_internal.create_header_info(), deps = [1])",
+                "at index 0 of deps, got element of type int, want HeaderInfo",
+            ),
+            (
+                "cc_internal.create_header_info_with_deps(header_info = cc_internal.create_header_info(), merged_deps = 1)",
+                "parameter 'merged_deps' got value of type 'int', want 'sequence'",
+            ),
+        ] {
+            fails(
+                "@@rules_cc+//cc/private:cc_info.bzl",
                 &format!("{CC_INTERNAL_BZL}{call}\n"),
                 message,
             );

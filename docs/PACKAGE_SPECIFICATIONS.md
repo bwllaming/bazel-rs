@@ -81,10 +81,13 @@ the normalized description's `PackageSpecificationInfo` or
 names, plus its special attribute-name exceptions. This is not an exact-key or
 provider-satisfaction check. Empty-clause normalization removes that exception.
 
-Direct or nested custom-rule returns of `PackageSpecificationInfo` are explicitly
+A direct custom-rule return of `PackageSpecificationInfo` is explicitly
 unsupported in this native profile. The reference crashes on the direct-return
 case; native code must reject it with a controlled error, not reproduce the crash
-or claim successful forwarding.
+or claim successful forwarding. Nested in another provider's fields (as
+rules_cc's `CcToolchainInfo._allowlist_for_layering_check` stores the
+`cc_toolchain` parse-headers allowlist) it is ordinary file-free payload since
+N25d5 (docs/CC_TOOLCHAIN.md); its bound `contains` method stays unsupported.
 
 ## Evidence and remaining work
 

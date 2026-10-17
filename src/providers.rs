@@ -507,6 +507,9 @@ where
 
 /// Stable identity of an exported constructor, never of an instance.
 pub fn provider_identity(value: Value<'_>) -> Option<String> {
+    if crate::rule_declarations::is_output_group_info(value) {
+        return Some(crate::output_group_info::PROVIDER_ID.to_owned());
+    }
     if crate::run_environment_info::is_constructor(value) {
         return Some(crate::run_environment_info::PROVIDER_ID.to_owned());
     }
@@ -536,6 +539,9 @@ pub fn provider_identity(value: Value<'_>) -> Option<String> {
 
 /// Stable identity of an instance, never of a constructor or ordinary struct.
 pub fn instance_identity(value: Value<'_>) -> Option<String> {
+    if crate::output_group_info::is_instance(value) {
+        return Some(crate::output_group_info::PROVIDER_ID.to_owned());
+    }
     if crate::run_environment_info::is_instance(value) {
         return Some(crate::run_environment_info::PROVIDER_ID.to_owned());
     }
@@ -638,6 +644,10 @@ pub fn returned_provider_key_names(result: Value<'_>) -> anyhow::Result<Vec<Stri
     Ok(values
         .into_iter()
         .filter_map(instance_identity)
+        // A returned OutputGroupInfo is decomposed into the target's output
+        // groups (RuleConfiguredTargetBuilder.addStarlarkDeclaredProvider);
+        // debugPrint lists the framework's OutputGroupInfo last.
+        .filter(|identity| identity != crate::output_group_info::PROVIDER_ID)
         .map(|identity| match identity.rsplit_once('%') {
             Some((_, name)) => name.to_owned(),
             None => identity
@@ -679,18 +689,34 @@ pub fn provider_files(value: Value<'_>) -> anyhow::Result<Vec<File>> {
                 return Ok(());
             }
             self.active.insert(identity);
-            if crate::package_specification::is_instance(value) {
-                bail!(
-                    "unsupported PackageSpecificationInfo payload in a returned provider; native package-group provider forwarding is unsupported"
-                );
-            }
             if let Some(file) = File::from_value(value) {
                 self.file(file.clone());
+            } else if let Some(files) = crate::output_group_info::files(value) {
+                for file in files {
+                    self.file(file);
+                }
             } else if crate::template_variable_info::is_instance(value)
+                || crate::package_specification::is_instance(value)
                 || crate::run_environment_info::is_instance(value)
                 || crate::feature_flags::is_instance(value)
             {
                 // Its fully owned string-to-string snapshot cannot contain files.
+            } else if let Some(values) = crate::cc_variables::payload(value) {
+                // C++ build Variables: File-valued variables are inputs.
+                for child in values {
+                    self.walk(child, depth + 1)?;
+                }
+            } else if crate::cc_features::is_file_free_payload(value)
+                || crate::cc_common::is_header_info(value)
+                || crate::subrule_fragments::is_cpp_fragment(value)
+                || (value.get_type() == "function" && value.parameters_spec().is_some())
+            {
+                // Owned C++ feature-engine values, the artifact-free
+                // HeaderInfo, the cpp fragment, and Starlark `def`/lambda
+                // functions (closures such as CcToolchainInfo's
+                // `static_runtime_lib`):
+                // opaque here; a File reachable only through a closure is not
+                // a known input of consumers and fails explicitly when used.
             } else if crate::apple_xcode::is_file_free_payload(value) {
                 // DottedVersion, or an XcodeVersionInfo closure from the
                 // verbatim @_builtins providers.bzl (it captures only
@@ -1591,7 +1617,7 @@ template = platform_common.TemplateVariableInfo({})
     }
 
     #[test]
-    fn package_specification_custom_return_and_nested_payload_are_controlled_errors() {
+    fn package_specification_custom_return_is_an_error_and_nested_payload_is_file_free() {
         let definitions = extension("//defs:providers.bzl", "P = provider()").unwrap();
         Module::with_temp_heap(|module| {
             module.import_public_symbols(&definitions);
@@ -1636,11 +1662,9 @@ template = platform_common.TemplateVariableInfo({})
                 let result = Evaluator::new(&module)
                     .eval_module(ast, &test_globals())
                     .unwrap();
-                let error = provider_files(result).unwrap_err().to_string();
-                assert!(
-                    error.contains("unsupported PackageSpecificationInfo payload"),
-                    "{error}"
-                );
+                // Forwarded inside another provider (rules_cc's CcToolchainInfo
+                // `_allowlist_for_layering_check`): owned and file-free.
+                assert!(provider_files(result).unwrap().is_empty(), "{source}");
             }
         });
     }
@@ -1779,7 +1803,8 @@ template = platform_common.TemplateVariableInfo({})
                 ("l = []; p = P(x=l); l.append(p); p", None),
                 ("P(x=len)", None),
                 // Builtins are unhashable (Bazel 9.3); a def is a hashable unknown kind.
-                ("def f():\n    pass\nP(x=set([f]))", None),
+                // A def is opaque provider payload (CcToolchainInfo closures).
+                ("def f():\n    pass\nP(x=set([f]))", Some(vec![])),
                 ("l = []; l.append(l); P(x=[set([file]), l])", None),
                 (
                     "def deep():\n    x = []\n    for i in range(140):\n        x = [x]\n    return P(x=x)\ndeep()",

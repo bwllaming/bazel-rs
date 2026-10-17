@@ -504,46 +504,31 @@ impl<'v> StarlarkValue<'v> for LabelValue {
 
 starlark::methods_static!(LABEL_METHODS = label_methods);
 
+/// Label's methods; the one implementation of each (N43 and N25d4/5).
 #[starlark_module]
 fn label_methods(builder: &mut MethodsBuilder) {
-    /// Label.getSamePackageLabel (cmdline/Label.java:576-582).
-    fn same_package_label<'v>(
-        this: Value<'v>,
-        #[starlark(require = pos)] target_name: &str,
-    ) -> anyhow::Result<LabelValue> {
-        let label = LabelValue::from_value(this).ok_or_else(|| anyhow!("expected Label"))?;
-        // Label.create (cmdline/Label.java:303-311): crate::label::Label::with_name.
-        let created = crate::label::Label {
-            repository: label.repository.clone(),
-            package: label.package.clone(),
-            name: label.name.clone(),
-        }
-        .with_name(target_name)
-        .map_err(anyhow::Error::msg)?;
-        Ok(LabelValue {
-            repository: created.repository,
-            package: created.package,
-            name: created.name,
-        })
-    }
-
-    /// Label.getRelative (cmdline/Label.java:593-634): parsed in this label's
-    /// package with the innermost .bzl file's repository mapping.
+    /// Label.getRelative (cmdline/Label.java:593-634, enabled by the default
+    /// `--incompatible_enable_deprecated_label_apis`): `relName` parsed in this
+    /// label's package with the innermost `.bzl`'s repository mapping
+    /// (parseWithPackageContext). Only an apparent repository name consults the
+    /// mapping (one it does not see is a deferred invalid label, N45, like
+    /// Label()); `@@`, `//` and package-relative forms keep this repository,
+    /// except the ABSOLUTE_PACKAGE_NAMES `conditions` and `visibility`
+    /// (Label.java:94-99, 177-192), which crate::label::Label::parse_in keeps
+    /// in the main repository.
     fn relative<'v>(
-        this: Value<'v>,
+        this: &LabelValue,
         #[starlark(require = pos)] rel_name: &str,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<LabelValue> {
-        let label = LabelValue::from_value(this).ok_or_else(|| anyhow!("expected Label"))?;
-        // Label.parseWithPackageContext: an apparent repository the mapping
-        // does not see is a deferred invalid label (N45), like Label().
-        let resolved = if rel_name.starts_with('@') {
+        let apparent = rel_name.starts_with('@') && !rel_name.starts_with("@@");
+        let resolved = if apparent && crate::loading::repositories(eval).is_some() {
             crate::loading::resolve_label_deferred(eval, rel_name)?
         } else {
             crate::label::Label::parse_in(
                 rel_name,
-                &label.repository,
-                &label.package,
+                &this.repository,
+                &this.package,
                 &BTreeMap::new(),
             )
             .map_err(anyhow::Error::msg)?
@@ -552,6 +537,27 @@ fn label_methods(builder: &mut MethodsBuilder) {
             repository: resolved.repository,
             package: resolved.package,
             name: resolved.name,
+        })
+    }
+
+    /// Label.getSamePackageLabel (cmdline/Label.java:574-582): Label.create
+    /// (:303-311) through crate::label::Label::with_name (Bazel's texts, a
+    /// trailing `/.` dropped).
+    fn same_package_label<'v>(
+        this: &LabelValue,
+        #[starlark(require = pos)] target_name: &str,
+    ) -> anyhow::Result<LabelValue> {
+        let created = crate::label::Label {
+            repository: this.repository.clone(),
+            package: this.package.clone(),
+            name: this.name.clone(),
+        }
+        .with_name(target_name)
+        .map_err(anyhow::Error::msg)?;
+        Ok(LabelValue {
+            repository: created.repository,
+            package: created.package,
+            name: created.name,
         })
     }
 }
@@ -1480,6 +1486,19 @@ impl fmt::Display for Target {
 }
 
 impl Target {
+    /// A rule configured target (directly or through an alias), which always
+    /// has an OutputGroupInfo.
+    fn is_rule(&self) -> bool {
+        fn rule(kind: &TargetKind) -> bool {
+            match kind {
+                TargetKind::Rule | TargetKind::SingleExecutableRule => true,
+                TargetKind::Alias(_, actual) => rule(actual),
+                _ => false,
+            }
+        }
+        rule(&self.kind)
+    }
+
     /// `target[DefaultInfo]`: DefaultInfo.DelegatingDefaultInfo
     /// (analysis/DefaultInfo.java:148-196) over the target's providers.
     fn default_info(&self) -> DefaultInfoValue {
@@ -1539,6 +1558,15 @@ impl<'v> StarlarkValue<'v> for Target {
                 "Target indexing requires an exported provider constructor"
             ))
         })?;
+        if identity == crate::output_group_info::PROVIDER_ID
+            && !self.providers.contains_key(&identity)
+            && self.is_rule()
+        {
+            return Ok(heap.alloc(crate::output_group_info::merged(
+                Vec::new(),
+                self.runfiles.default_runfiles().all_artifacts(),
+            )));
+        }
         let provider = self.providers.get(&identity).ok_or_else(|| {
             starlark::Error::new_other(anyhow!(
                 "Target {} does not provide {identity}",
@@ -1557,7 +1585,8 @@ impl<'v> StarlarkValue<'v> for Target {
                 "Target membership requires an exported provider constructor"
             ))
         })?;
-        Ok(self.providers.contains_key(&identity))
+        Ok(self.providers.contains_key(&identity)
+            || (identity == crate::output_group_info::PROVIDER_ID && self.is_rule()))
     }
 }
 
@@ -1883,6 +1912,36 @@ mod tests {
         fail("a.path = 'changed'", "cannot set .path field of File value");
         fail("Label(':relative')", "absolute");
         fail("Label('@external//p:x')", "absolute");
+    }
+
+    #[test]
+    fn label_relative_and_same_package_label() {
+        // Label.getRelative (cmdline/Label.java:593-634) and
+        // getSamePackageLabel (:574-582); rules_cc's %package(...)% include
+        // directories call `relative`.
+        pass(
+            r#"Label("//foo/bar:baz").relative(":quux") == Label("//foo/bar:quux") and Label("//foo/bar:baz").relative("quux") == Label("//foo/bar:quux")"#,
+        );
+        pass(r#"Label("//foo/bar:baz").relative("//wiz:quux") == Label("//wiz:quux")"#);
+        pass(
+            r#"Label("@@repo+//foo/bar:baz").relative("//wiz:quux") == Label("@@repo+//wiz:quux") and Label("@@repo+//foo/bar:baz").relative("@@other+//wiz:q") == Label("@@other+//wiz:q")"#,
+        );
+        pass(
+            r#"Label("@@repo+//tc:cc").relative("@@//tc/sub:dummy_target").workspace_root == "" and Label("@@repo+//tc:cc").relative("//tc/sub:dummy_target").workspace_root == "external/repo+""#,
+        );
+        pass(r#"Label("@@repo+//foo:bar").same_package_label("baz") == Label("@@repo+//foo:baz")"#);
+        // Reserved packages (Label.java:94-99, 177-186) stay in the main repository.
+        pass(
+            r#"Label("@@repo+//foo/bar:baz").relative("//visibility:public") == Label("//visibility:public") and Label("@@repo+//foo:bar").relative("//conditions:default") == Label("//conditions:default")"#,
+        );
+        pass(
+            r#"Label("@@repo+//foo:bar").relative("@@repo+//visibility:private") == Label("@@repo+//visibility:private") and Label("@@repo+//foo:bar").relative("//visibility/sub:x") == Label("@@repo+//visibility/sub:x")"#,
+        );
+        pass(
+            r#"dir(Label("//p:x")) == ["name", "package", "relative", "repo_name", "repo_root", "same_package_label", "workspace_name", "workspace_root"]"#,
+        );
+        fail(r#"Label("//p:x").relative("//a:b:c")"#, "");
+        fail(r#"Label("//p:x").same_package_label("a:b")"#, "");
     }
 
     #[test]

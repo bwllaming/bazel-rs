@@ -61,6 +61,7 @@ pub mod module_cli;
 pub mod module_extension;
 pub mod module_graph;
 pub mod native_rules;
+mod output_group_info;
 pub mod package;
 pub mod package_specification;
 pub mod patch_inputs;

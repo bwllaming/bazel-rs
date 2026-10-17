@@ -187,7 +187,7 @@ positional argument`, `... missing 1 required named argument: settings`,
 `AnalysisTestResultInfo` and `AnalysisFailureInfo` exist as `.bzl` globals
 (`starlarkbuildapi/test/TestingBootstrap.java:46-52`; repr `<function NAME>`,
 `packages/BuiltinProvider.java:93-96`). Calling `AnalysisTestResultInfo` fails
-explicitly (like `OutputGroupInfo`); `AnalysisFailureInfo` has no constructor.
+explicitly; `AnalysisFailureInfo` has no constructor.
 
 Analysis tests themselves stay an explicit analysis gap (`rule(analysis_test=True)`,
 attribute transitions), so genuine skylib `analysistest.make` rules load and

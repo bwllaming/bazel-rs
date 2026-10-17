@@ -1305,6 +1305,16 @@ mod owned {
 }
 pub(crate) use owned::{CcToolchainFeatures, FeatureConfiguration, FeatureMethod};
 starlark_simple_value!(CcToolchainFeatures);
+
+/// The owned, file-free feature-engine values: CcToolchainFeatures and
+/// FeatureConfiguration (an `Arc` of parsed data whose configuration cache is
+/// a `Mutex`, so a frozen instance is shared safely by concurrent analyses).
+/// Tool files are recorded by exec path only.
+pub(crate) fn is_file_free_payload(value: Value<'_>) -> bool {
+    CcToolchainFeatures::from_value(value).is_some()
+        || FeatureConfiguration::from_value(value).is_some()
+        || FeatureMethod::from_value(value).is_some()
+}
 starlark_simple_value!(FeatureConfiguration);
 starlark_simple_value!(FeatureMethod);
 

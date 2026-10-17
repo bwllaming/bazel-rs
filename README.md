@@ -238,6 +238,9 @@ and expose raw constructors that bypass them under the same provider key.
 `cc_common`/`apple_common`/`platform_common` shapes; C++ analysis is unsupported.
 [C++ toolchain features](docs/CC_FEATURES.md) port Bazel's feature selection,
 build-variable expansion and tool selection behind rules_cc's Starlark API.
+[C++ toolchains](docs/CC_TOOLCHAIN.md) analyze rules_cc's genuine `cc_toolchain`,
+`cc_toolchain_alias` and `cc_toolchain_config` rules (host `@local_config_cc`,
+zig configs) in target and exec configurations; compile/link remain unsupported.
 [Scoped subrules](docs/SUBRULES.md) execute declared zero-attribute helpers with
 real actions and guarded contexts; private dependency attributes remain unsupported.
 [String methods](docs/STRING_METHODS.md) follow Bazel's UTF-8 byte-string case,

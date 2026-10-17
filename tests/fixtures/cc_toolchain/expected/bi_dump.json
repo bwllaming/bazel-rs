@@ -1,0 +1,46 @@
+{
+ "dir": [
+  "_hidden_top_level_INTERNAL_",
+  "non_redacted_build_info_files",
+  "redacted_build_info_files"
+ ],
+ "files": {
+  "_hidden_top_level_INTERNAL_": [],
+  "non_redacted_build_info_files": [
+   [
+    "../bazel_tools/tools/build_defs/build_info/non_volatile_file.h",
+    "non_volatile_file.h",
+    false,
+    "@@bazel_tools//tools/build_defs/build_info:cc_build_info"
+   ],
+   [
+    "../bazel_tools/tools/build_defs/build_info/volatile_file.h",
+    "volatile_file.h",
+    false,
+    "@@bazel_tools//tools/build_defs/build_info:cc_build_info"
+   ]
+  ],
+  "redacted_build_info_files": [
+   [
+    "../bazel_tools/tools/build_defs/build_info/redacted_file.h",
+    "redacted_file.h",
+    false,
+    "@@bazel_tools//tools/build_defs/build_info:cc_build_info"
+   ]
+  ]
+ },
+ "groups": [
+  "_hidden_top_level_INTERNAL_",
+  "non_redacted_build_info_files",
+  "redacted_build_info_files"
+ ],
+ "has_provider": true,
+ "in": [
+  true,
+  false
+ ],
+ "index": [
+  "redacted_file.h"
+ ],
+ "type": "OutputGroupInfo"
+}

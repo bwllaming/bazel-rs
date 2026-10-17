@@ -107,6 +107,10 @@ struct ActionPlanning {
     /// under (Engine::rule_delegations), waiting for that key to be planned
     /// (flush_delegations).
     delegations: Vec<(ConfiguredTargetKey, ConfiguredTargetKey)>,
+    /// The framework OutputGroupInfo of native rule targets (custom rules
+    /// carry theirs in custom_providers), built once per configured target
+    /// (the end of an alias chain) so every dependent sees one instance.
+    native_output_groups: BTreeMap<ConfiguredTargetKey, starlark::values::OwnedFrozenValue>,
     done: usize,
     /// The client environment inherited action variables resolve against,
     /// read once per build on first need (crate::action_env).
@@ -5551,6 +5555,7 @@ impl Engine {
             nodes,
             source_inputs,
             client_environment,
+            native_output_groups,
             ..
         } = state;
         let key = key.clone();
@@ -5705,19 +5710,38 @@ impl Engine {
                     })?;
                     available.insert(file, artifact.clone());
                 }
+                let is_rule = matches!(&target, Target::Rule(rule) if !matches!(rule.kind, RuleKind::PackageGroup(_)));
+                let mut providers = custom_providers
+                    .get(&dependency)
+                    .cloned()
+                    .unwrap_or_default();
+                // Every rule target has an OutputGroupInfo
+                // (RuleConfiguredTargetBuilder.java:155-173): a native rule's
+                // is the HIDDEN_TOP_LEVEL group of its default runfiles,
+                // built once per configured target.
+                if is_rule && !providers.contains_key(crate::output_group_info::PROVIDER_ID) {
+                    let value = match native_output_groups.get(&actual_key) {
+                        Some(value) => value.clone(),
+                        None => {
+                            let value = crate::output_group_info::freeze(
+                                runfiles.default_runfiles().all_artifacts(),
+                            )?;
+                            native_output_groups.insert(actual_key.clone(), value.clone());
+                            value
+                        }
+                    };
+                    providers.insert(crate::output_group_info::PROVIDER_ID.to_owned(), value);
+                }
                 dependency_targets.insert(
                     map_key,
                     DependencyTarget {
                         label: actual.to_string(),
                         files,
                         is_source: matches!(target, Target::Source(_)),
-                        is_rule: matches!(&target, Target::Rule(rule) if !matches!(rule.kind, RuleKind::PackageGroup(_))),
+                        is_rule,
                         is_package_group: matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::PackageGroup(_))),
                         is_filegroup: matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::Filegroup)),
-                        providers: custom_providers
-                            .get(&dependency)
-                            .cloned()
-                            .unwrap_or_default(),
+                        providers,
                         provider_files: target_provider_files,
                         // The alias chain's end, in the same configuration
                         // (Self::alias_chain).

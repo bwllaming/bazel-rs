@@ -290,6 +290,15 @@ impl<'v, V: ValueLike<'v>> CcVariablesGen<V> {
 }
 
 /// Whether `value` is a `Variables` value.
+/// The values a Variables instance holds (its parent, then its entries), for
+/// provider payload traversal.
+pub(crate) fn payload<'v>(value: Value<'v>) -> Option<Vec<Value<'v>>> {
+    let variables = CcVariables::from_value(value)?;
+    let mut values = vec![variables.parent];
+    values.extend(variables.entries.iter().map(|(_, value)| *value));
+    Some(values)
+}
+
 pub(crate) fn is_variables(value: Value<'_>) -> bool {
     CcVariables::from_value(value).is_some()
 }

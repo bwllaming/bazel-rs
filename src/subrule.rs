@@ -1140,8 +1140,14 @@ declared.clear()
             b"seed-A!\n"
         );
         assert_eq!(result.files[0].owner, "//:target");
-        assert_eq!(result.providers.len(), 1);
-        let provider = result.providers.into_values().next().unwrap();
+        // The returned provider and the framework's OutputGroupInfo.
+        assert_eq!(result.providers.len(), 2);
+        let provider = result
+            .providers
+            .into_iter()
+            .find(|(identity, _)| identity != "builtin:OutputGroupInfo")
+            .unwrap()
+            .1;
         drop(rule);
         Module::with_temp_heap(|module| {
             let value = module.heap().access_owned_frozen_value(&provider);

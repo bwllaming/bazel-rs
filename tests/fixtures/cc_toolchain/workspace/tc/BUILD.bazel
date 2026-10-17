@@ -1,0 +1,72 @@
+load("@rules_cc//cc/toolchains:cc_toolchain.bzl", "cc_toolchain")
+load(":config.bzl", "fixture_cc_toolchain_config")
+
+package(default_visibility = ["//visibility:public"])
+
+fixture_cc_toolchain_config(
+    name = "config",
+    cpu = "k8",
+    sysroot = "/fixture/sysroot",
+)
+
+filegroup(
+    name = "compiler_files",
+    srcs = ["bin/fixture-clang", "bin/fixture-clang-dbg"],
+)
+
+filegroup(
+    name = "linker_files",
+    srcs = ["bin/fixture-ld"],
+)
+
+filegroup(
+    name = "all_files",
+    srcs = [":compiler_files", ":linker_files"],
+)
+
+filegroup(name = "empty")
+
+filegroup(
+    name = "libc",
+    srcs = ["libc/usr/include/stdc-predef.h"],
+)
+
+cc_toolchain(
+    name = "cc",
+    all_files = ":all_files",
+    ar_files = ":empty",
+    as_files = ":compiler_files",
+    compiler_files = ":compiler_files",
+    dwp_files = ":empty",
+    linker_files = ":linker_files",
+    objcopy_files = ":empty",
+    strip_files = ":empty",
+    supports_param_files = 1,
+    supports_header_parsing = 1,
+    toolchain_config = ":config",
+    toolchain_identifier = "fixture-k8",
+)
+
+# Not registered: analyzed through a direct dependency only (libc_top sets
+# the sysroot; coverage_files given; no header parsing).
+cc_toolchain(
+    name = "cc_libc",
+    all_files = ":all_files",
+    compiler_files = ":compiler_files",
+    coverage_files = ":linker_files",
+    dwp_files = ":empty",
+    libc_top = ":libc",
+    linker_files = ":linker_files",
+    objcopy_files = ":empty",
+    strip_files = ":empty",
+    supports_param_files = 0,
+    toolchain_config = ":config",
+)
+
+toolchain(
+    name = "cc_toolchain",
+    exec_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    toolchain = ":cc",
+    toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+)

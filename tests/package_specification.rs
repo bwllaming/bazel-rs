@@ -968,12 +968,20 @@ m=macro(implementation=_m)
 
 #[test]
 fn native_info_direct_and_nested_custom_returns_are_controlled_unsupported() {
-    for returned in [
-        "[p]",
-        "[Box(value=p)]",
-        "[Box(value=[{'nested':p}])]",
-        "[Box(value=p.contains)]",
-    ] {
+    // Nested in another provider the info is ordinary payload (rules_cc's
+    // CcToolchainInfo `_allowlist_for_layering_check`, docs/CC_TOOLCHAIN.md).
+    for returned in ["[Box(value=p)]", "[Box(value=[{'nested':p}])]"] {
+        let ws = Workspace::new(
+            &format!(
+                "Box=provider(fields=['value'])\ndef _check(ctx):\n    p=ctx.attr.g[PackageSpecificationInfo]\n    return {returned}\ncheck=rule(implementation=_check,attrs={{{GROUP_ATTR}}})\n"
+            ),
+            &format!(
+                "{LOAD}package_group(name='g',packages=['//foo'])\ncheck(name='check',g=':g')\n"
+            ),
+        );
+        assert!(outputs(&ws.run(&["build", ":check"])).is_empty());
+    }
+    for returned in ["[p]", "[Box(value=p.contains)]"] {
         let ws = Workspace::new(
             &format!(
                 "Box=provider(fields=['value'])\ndef _check(ctx):\n    p=ctx.attr.g[PackageSpecificationInfo]\n    return {returned}\ncheck=rule(implementation=_check,attrs={{{GROUP_ATTR}}})\n"

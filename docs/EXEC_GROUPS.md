@@ -204,7 +204,8 @@ The paired capture's chain E reproduces these declaration shapes with local
 types. Genuine rules_python/rules_go/rules_cc targets themselves still stop
 before analysis at other gaps (for example rules_java's registered
 toolchains, `java_common.google_legacy_api_enabled is not implemented in the
-native profile`, and `cc_toolchain` analysis).
+native profile`; rules_cc's `cc_toolchain` itself is analyzed since N25d5,
+docs/CC_TOOLCHAIN.md).
 
 ## Divergences and explicit failures
 

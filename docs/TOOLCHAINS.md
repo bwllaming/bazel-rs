@@ -197,8 +197,8 @@ the parent's configuration (`analysis/producers/DependencyProducer.java:160-175`
 `skyframe/DependencyResolver.java:835-866`); the execution platform part of
 the native configured-target key is always the host platform. Only selected
 implementations are analyzed (the `toolchain` attribute is NODEP). An
-implementation whose analysis is not supported (for example `cc_toolchain`
-through rules_cc) fails explicitly in its own analysis; an optional type that
+implementation whose analysis is not supported fails explicitly in its own
+analysis (rules_cc's `cc_toolchain` is analyzed, docs/CC_TOOLCHAIN.md); an optional type that
 resolves never silently becomes `None`.
 
 ## Starlark
@@ -276,8 +276,6 @@ resolves never silently becomes `None`.
 * Negative registration patterns (`--extra_toolchains=-//x:y`), `:*` and
   `:all-targets` registrations (a Bazel crash, above), and
   `--toolchain_resolution_debug` (an unsupported option).
-* `cc_toolchain` analysis (rules_cc's C++ toolchains), so a C++ toolchain
-  type that resolves fails in its implementation's analysis.
 * A registered toolchain target that itself needs toolchain resolution is
   `Misconfigured toolchains: L is declared as a toolchain but has
   inappropriate dependencies. ...` with the cycle drawn like

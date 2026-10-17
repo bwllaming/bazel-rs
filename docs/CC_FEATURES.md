@@ -203,9 +203,9 @@ tool whose `with_features` match, among all action configs (enabled or not)
 `cc_common.compile`, `link`, `create_linking_context_from_compilation_outputs`,
 `cc_internal.solib_symlink_action`, `get_artifact_name_for_category` /
 `get_artifact_name_extension_for_category` (artifact name patterns are parsed
-and validated only), `cc_toolchain`/`cc_toolchain_config` rule analysis end to
-end, rule `ctx.fragments` and `xcode_config` remain unsupported and fail
-explicitly.
+and validated only) remain unsupported and fail explicitly.
+`cc_toolchain_config`, `cc_toolchain` and `cc_toolchain_alias` analysis end to
+end (N25d4/N25d5) is docs/CC_TOOLCHAIN.md.
 
 ## Evidence
 

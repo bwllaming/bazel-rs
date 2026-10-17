@@ -923,3 +923,51 @@ fn worklist_selection_matches_bazels_recursive_selection() {
     }
     assert!(checked > 600_000, "{checked}");
 }
+
+/// N25d5: a CcToolchainFeatures crosses frozen provider boundaries
+/// (CcToolchainInfo `_toolchain_features`) and is shared by concurrently
+/// analyzed consumers; the per-instance configuration cache is a Mutex
+/// (CcToolchainFeatures.java:1222-1281's LoadingCache), so concurrent
+/// requests of one set agree and share the cached data.
+#[test]
+fn shared_features_configure_concurrently() {
+    use super::{CcToolchainFeatures, FeatureConfiguration, FeaturesInner};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    fn assert_shareable<T: Send + Sync + 'static>() {}
+    assert_shareable::<CcToolchainFeatures>();
+    assert_shareable::<FeatureConfiguration>();
+    let inner = Arc::new(FeaturesInner {
+        data: graph(
+            &[vec![1], vec![], vec![0], vec![]],
+            &[vec![], vec![], vec![], vec![vec![2]]],
+        ),
+        cache: Mutex::new(HashMap::new()),
+    });
+    let results = std::thread::scope(|scope| {
+        (0..8)
+            .map(|i| {
+                let inner = Arc::clone(&inner);
+                scope.spawn(move || {
+                    let requested = if i % 2 == 0 {
+                        vec!["f2".to_owned(), "f3".to_owned()]
+                    } else {
+                        vec!["f3".to_owned(), "f2".to_owned()]
+                    };
+                    inner.configuration(requested).unwrap()
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    // One cache entry per requested set; every thread sees the same enabled
+    // selection (f2 implies f0 implies f1; f3 requires f2).
+    assert_eq!(inner.cache.lock().unwrap().len(), 1);
+    let cached = Arc::clone(inner.cache.lock().unwrap().values().next().unwrap());
+    assert_eq!(cached.enabled_feature_names, ["f0", "f1", "f2", "f3"]);
+    for result in &results {
+        assert_eq!(result.enabled_feature_names, cached.enabled_feature_names);
+    }
+}

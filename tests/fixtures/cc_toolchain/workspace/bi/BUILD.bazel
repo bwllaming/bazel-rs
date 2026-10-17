@@ -1,0 +1,21 @@
+load(":defs.bzl", "build_info_dump", "build_info_group")
+
+build_info_dump(
+    name = "dump",
+    translator = "@bazel_tools//tools/build_defs/build_info:cc_build_info",
+)
+
+# Executes the translator's symlink action (redacted_file.h).
+build_info_group(
+    name = "redacted",
+    group = "redacted_build_info_files",
+    translator = "@bazel_tools//tools/build_defs/build_info:cc_build_info",
+)
+
+# Executing the stamped transform_version_file/transform_info_file outputs
+# needs the workspace status; the native profile fails explicitly.
+build_info_group(
+    name = "stamped",
+    group = "non_redacted_build_info_files",
+    translator = "@bazel_tools//tools/build_defs/build_info:cc_build_info",
+)

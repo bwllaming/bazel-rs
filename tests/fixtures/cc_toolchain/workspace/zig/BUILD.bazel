@@ -1,0 +1,60 @@
+# N25d4: hermetic_cc_toolchain 4.1.0's genuine zig_cc_toolchain_config with
+# the arguments its declare_cc_toolchains(os = "linux", ...) passes for
+# x86_64-linux-gnu.2.28 (toolchain/private/cc_toolchains.bzl, defs.bzl).
+load("@hermetic_cc_toolchain//toolchain:zig_cc_toolchain.bzl", "zig_cc_toolchain_config")
+load("@rules_cc//cc/toolchains:cc_toolchain.bzl", "cc_toolchain")
+load("//probe:probe.bzl", "cc_toolchain_probe", "exec_probe")
+
+zig_cc_toolchain_config(
+    name = "x86_64-linux-gnu.2.28_cc_config",
+    abi_libc_version = "unknown",
+    abi_version = "unknown",
+    artifact_name_patterns = [],
+    compiler = "clang",
+    copts = [],
+    cxx_builtin_include_directories = [],
+    dynamic_library_linkopts = [],
+    linkopts = [],
+    supports_dynamic_linker = True,
+    target = "x86_64-linux-gnu.2.28",
+    target_cpu = "k8",
+    target_libc = "unknown",
+    target_system_name = "unknown",
+    tool_paths = {
+        "cpp": "/usr/bin/false",
+        "gcov": "/usr/bin/false",
+        "nm": "/usr/bin/false",
+        "objdump": "/usr/bin/false",
+        "strip": "/usr/bin/false",
+        "gcc": "tools/x86_64-linux-gnu.2.28/c++",
+        "ar": "tools/ar",
+        "ld": "tools/ld.lld",
+    },
+)
+
+filegroup(name = "empty")
+
+cc_toolchain(
+    name = "x86_64-linux-gnu.2.28_cc",
+    all_files = ":empty",
+    ar_files = ":empty",
+    as_files = ":empty",
+    compiler_files = ":empty",
+    dwp_files = ":empty",
+    linker_files = ":empty",
+    objcopy_files = ":empty",
+    strip_files = ":empty",
+    supports_param_files = 0,
+    toolchain_config = ":x86_64-linux-gnu.2.28_cc_config",
+    toolchain_identifier = "x86_64-linux-gnu.2.28-toolchain",
+)
+
+cc_toolchain_probe(
+    name = "probe",
+    toolchain = ":x86_64-linux-gnu.2.28_cc",
+)
+
+exec_probe(
+    name = "exec",
+    probe = ":probe",
+)

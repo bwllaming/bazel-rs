@@ -1,0 +1,36 @@
+load(":probe.bzl", "cc_toolchain_probe", "exec_probe")
+
+# F1 (fixture toolchain registered) / F2 (no root registration: rules_cc's
+# @local_config_cc_toolchains//:all, i.e. the host @local_config_cc).
+cc_toolchain_probe(
+    name = "target",
+    features = ["fixture_requested", "-fixture_disabled"],
+    deps = [
+        "//tc:cc",
+        "//tc:cc_libc",
+        "@rules_cc//cc:current_cc_toolchain",
+        "@bazel_tools//tools/cpp:current_cc_toolchain",
+    ],
+)
+
+exec_probe(
+    name = "exec",
+    probe = ":target",
+)
+
+cc_toolchain_probe(name = "host")
+
+exec_probe(
+    name = "host_exec",
+    probe = ":host",
+)
+
+# Concurrent analyses sharing one frozen CcToolchainInfo (its native
+# CcToolchainFeatures configuration cache).
+[
+    cc_toolchain_probe(
+        name = "par%d" % i,
+        features = ["fixture_requested"] if i % 2 else ["-fixture_disabled"],
+    )
+    for i in range(8)
+]

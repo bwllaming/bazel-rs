@@ -539,9 +539,10 @@ fn ascii_elems_method_math_and_raw_unicode_elements_are_action_data() {
 }
 
 #[test]
-fn actual_package_group_provider_cannot_be_forwarded_inside_a_set() {
-    // NATIVE_BOUNDARY: an actual native package_group value, never a stub or
-    // constructor-name lookalike. Hashability and forwarding are distinct.
+fn actual_package_group_provider_is_forwarded_inside_a_set() {
+    // An actual native package_group value, never a stub or constructor-name
+    // lookalike: hashable, and file-free payload of another provider since
+    // N25d5 (docs/CC_TOOLCHAIN.md).
     let ws = Workspace::new(
         r#"
 Box=provider(fields=['payload'])
@@ -552,5 +553,10 @@ check=rule(implementation=_check,attrs={'dep':attr.label(providers=[PackageSpeci
 "#,
         "load(':defs.bzl','check')\npackage_group(name='group',packages=['//...'])\ncheck(name='check',dep=':group')\n",
     );
-    ws.reject_before_actions(":check", "unsupported PackageSpecificationInfo payload");
+    let output = ws.run(&["build", ":check"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

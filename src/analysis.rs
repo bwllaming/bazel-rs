@@ -185,7 +185,9 @@ pub(crate) fn prerequisite_errors(
     let shown = canonical_text(&target.label);
     if target.is_rule {
         let provided = |provider: &crate::providers::ProviderRequirement| {
+            // Every rule target has an OutputGroupInfo (HIDDEN_TOP_LEVEL).
             provider.id == crate::providers::DEFAULT_INFO_PROVIDER_ID
+                || provider.id == crate::output_group_info::PROVIDER_ID
                 || target.providers.contains_key(&provider.id)
         };
         // RuleContext.Builder.checkRuleDependencyMandatoryProviders
@@ -1301,6 +1303,26 @@ fn analyze_inner(
     // actions get (crate::action_env), not a constant.
     Arc::make_mut(&mut surface.config).action_env = target.action_env.clone();
     let surface = Arc::new(surface);
+    // RuleConfiguredTargetBuilder.propagateTransitiveValidationOutputGroups
+    // (:366-382): only rules defined under BuiltinRestriction's
+    // INTERNAL_STARLARK_API_ALLOWLIST may return `_validation_transitive`.
+    let transitive_validation_owner = {
+        let environment = &invocation.declaration.definition_environment_label;
+        let allowed = crate::label::Label::parse_canonical(environment).is_ok_and(|label| {
+            let main_mapping = repositories.mapping("").ok();
+            crate::subrule_fragments::INTERNAL_STARLARK_API_ALLOWLIST
+                .iter()
+                .any(|(apparent, prefix)| {
+                    crate::cc_common::allowlist_allows(
+                        &label,
+                        |name| main_mapping.as_ref().and_then(|m| m.get(name).cloned()),
+                        apparent,
+                        prefix,
+                    )
+                })
+        });
+        (environment.clone(), allowed)
+    };
     let context = Context {
         action_env: target.action_env.clone(),
         label: rule.label.clone(),
@@ -1420,6 +1442,52 @@ fn analyze_inner(
                     provider.display_name
                 );
             }
+            // RuleConfiguredTargetBuilder.build (:155-213, 543-552): every rule
+            // target has an OutputGroupInfo, the returned groups merged with
+            // HIDDEN_TOP_LEVEL (the default runfiles' artifacts).
+            let mut custom = custom;
+            let mut groups = custom
+                .remove(crate::output_group_info::PROVIDER_ID)
+                .and_then(crate::output_group_info::groups)
+                .map(<[_]>::to_vec)
+                .unwrap_or_default();
+            if let Some(index) = groups
+                .iter()
+                .position(|(name, _)| name == crate::output_group_info::VALIDATION_TRANSITIVE)
+            {
+                let (owner, allowed) = &transitive_validation_owner;
+                ensure!(
+                    *allowed,
+                    "{} cannot access the _transitive_validation private API",
+                    crate::label::Label::parse_canonical(owner)
+                        .map(|label| crate::rule_declarations::canonical_form(&label))
+                        .unwrap_or_else(|_| owner.clone())
+                );
+                let (_, transitive) = groups.remove(index);
+                crate::output_group_info::add_group(
+                    &mut groups,
+                    crate::output_group_info::VALIDATION,
+                    transitive,
+                );
+            }
+            if let Some((_, validation)) = groups
+                .iter()
+                .find(|(name, _)| name == crate::output_group_info::VALIDATION)
+                && !validation.node.empty
+            {
+                bail!(
+                    "output group '{}' (validation actions) is not supported by the native profile",
+                    crate::output_group_info::VALIDATION
+                );
+            }
+            let merged = crate::output_group_info::merged(
+                groups,
+                target_runfiles.default_runfiles().all_artifacts(),
+            );
+            custom.insert(
+                crate::output_group_info::PROVIDER_ID.to_owned(),
+                module.heap().alloc(merged),
+            );
             let mut slots = Vec::new();
             let mut provider_files = BTreeSet::new();
             for (identity, provider) in custom {
@@ -1658,7 +1726,8 @@ r = rule(implementation=impl, attrs={"mode": attr.string(), "out": attr.output()
                 "test_environment" => {
                     let result = result.unwrap();
                     assert_eq!(result.files.len(), 1);
-                    assert_eq!(result.providers.len(), 1);
+                    // RunEnvironmentInfo and the framework's OutputGroupInfo.
+                    assert_eq!(result.providers.len(), 2);
                     assert!(
                         result
                             .providers
@@ -1681,7 +1750,13 @@ r = rule(implementation=impl, attrs={"mode": attr.string(), "out": attr.output()
                     assert_eq!(result.declared.len(), 1);
                     assert_eq!(result.files.len(), usize::from(mode != "nested_empty"));
                     assert!(result.provider_files.is_empty());
-                    assert_eq!(result.providers.len(), 1);
+                    // The returned provider and the framework's OutputGroupInfo.
+                    assert_eq!(result.providers.len(), 2);
+                    assert!(
+                        result
+                            .providers
+                            .contains_key(crate::output_group_info::PROVIDER_ID)
+                    );
                     assert!(
                         !result
                             .providers

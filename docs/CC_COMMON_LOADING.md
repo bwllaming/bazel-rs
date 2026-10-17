@@ -125,7 +125,10 @@ nested action factory. The members have type `builtin_function_or_method`.
   `HeaderInfo` with Bazel's unannotated type name and identity equality, as
   with Bazel's identity token. Like other immutable values, it freezes into
   module globals and provider fields. A call with header artifacts fails
-  explicitly.
+  explicitly. `create_header_info_with_deps(header_info=, deps=, merged_deps=)`
+  (`CcStarlarkInternal.java:1224-1248`, used by rules_cc's
+  `create_compilation_context`) returns a new artifact-free identity
+  (docs/CC_TOOLCHAIN.md).
 - `HeaderInfo` exposes the 8 `structField` getters of
   `CcCompilationContext.HeaderInfo`. `dir()` lists them sorted:
   `header_module`, `modular_private_headers`, `modular_public_headers`,

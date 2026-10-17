@@ -129,11 +129,14 @@ error: Object of type `ctx` has no attribute `fragments`
   --> @@apple_support+//xcode:xcode_config.bzl:37:22
 ```
 
-This is the receipt's `e2e` EXPECTED_NATIVE_GAP. Genuine Bazel builds
-`//e2e:host`, and its dump of the real `host_xcodes` equals the fixture's
-`host_xcodes` lines. Once `ctx.fragments.apple`/`cpp` exist, the
-`XcodeVersionConfig(...)` call at `xcode_config.bzl:98-113` uses the provider
-described above.
+This is the receipt's `e2e` EXPECTED_NATIVE_GAP (recorded before N23c).
+Genuine Bazel builds `//e2e:host`, and its dump of the real `host_xcodes`
+equals the fixture's `host_xcodes` lines. N23c added `ctx.fragments`; with the
+genuine apple_support module the native profile now analyzes
+`@local_config_xcode//:host_xcodes` (the `XcodeVersionConfig(...)` call at
+`xcode_config.bzl:98-113` builds the provider above) as the `_xcode_config` of
+rules_cc's `unix_cc_toolchain_config` (tests/cc_toolchain.rs,
+docs/CC_TOOLCHAIN.md).
 
 Without the builtin profile (the default explicit-module profile),
 `bazel_tools` is not resolved, so analysis never reaches this point:

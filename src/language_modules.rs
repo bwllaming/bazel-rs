@@ -85,6 +85,7 @@ pub(crate) enum Behavior {
     JavaSemanticsFlag(JavaFlag),
     CheckPrivateApi,
     CreateHeaderInfo,
+    CreateHeaderInfoWithDeps,
     Freeze,
     AppleToolchain,
     AppleDeveloperDir,
@@ -247,6 +248,9 @@ impl Namespace {
             (Namespace::Testing, _) => method(Behavior::Unimplemented(Domain::Testing)),
             (Namespace::CcInternal, "check_private_api") => method(Behavior::CheckPrivateApi),
             (Namespace::CcInternal, "create_header_info") => method(Behavior::CreateHeaderInfo),
+            (Namespace::CcInternal, "create_header_info_with_deps") => {
+                method(Behavior::CreateHeaderInfoWithDeps)
+            }
             (Namespace::CcInternal, "freeze") => method(Behavior::Freeze),
             (Namespace::CcInternal, _)
                 if crate::cc_features::Op::for_cc_internal(name).is_some() =>
@@ -961,6 +965,9 @@ fn call<'v>(
         }
         Behavior::CheckPrivateApi => crate::cc_common::check_private_api_call(args, eval),
         Behavior::CreateHeaderInfo => crate::cc_common::create_header_info(args, eval),
+        Behavior::CreateHeaderInfoWithDeps => {
+            crate::cc_common::create_header_info_with_deps(args, eval)
+        }
         Behavior::Freeze => {
             // CcStarlarkInternal.freeze(value): @Param defaults are positional-only.
             let bound = bind_styled(
