@@ -27,7 +27,7 @@ impl Visibility {
     ) -> Result<Self, String> {
         let labels = values
             .iter()
-            .map(|value| repositories.parse(value, &package.repository, &package.package))
+            .map(|value| repositories.parse_deferred(value, &package.repository, &package.package))
             .collect::<Result<Vec<_>, _>>()?;
         Self::from_labels(labels)
     }

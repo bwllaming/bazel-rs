@@ -20,50 +20,29 @@ fn shown(label: &Label) -> String {
 
 /// The repository RepositoryName.createUnvalidated gives an apparent name the
 /// requesting repository does not see (cmdline/RepositoryName.java):
-/// `[unknown repo 'R' requested from @@C]`.
+/// `[unknown repo 'R' requested from @@C]` (crate::label::unknown_repository).
 pub fn unknown_repository(name: &str, requester: &str) -> String {
-    format!("[unknown repo '{name}' requested from @@{requester}]")
+    crate::label::unknown_repository(name, requester, "")
 }
 
 /// The apparent name and the requesting repository of an
-/// [`unknown_repository`] name.
+/// [`unknown_repository`] name (any did-you-mean suffix ignored).
 pub fn unknown_repository_parts(repository: &str) -> Option<(&str, &str)> {
-    repository
-        .strip_prefix("[unknown repo '")?
-        .strip_suffix(']')?
-        .split_once("' requested from @@")
+    crate::label::unresolvable_repository(repository).map(|parts| (parts.name, parts.requester))
 }
 
 /// Label.parseWithRepoContext of label text whose apparent repository the
 /// requesting repository does not see: the label is kept with an
 /// unresolvable repository, so `rule(toolchains = ["@nope//:t"])` fails only
 /// when it is resolved (paired capture B4/resolution_errors/unknown_repo).
+/// Callers with a RepositorySet use RepositorySet::parse_deferred, which
+/// also computes the did-you-mean suffix.
 pub fn deferred_label_text(text: &str, requester: &str) -> Option<String> {
-    let parts = crate::bazel_label::Parts::parse(text).ok()?;
-    let name = parts.repo.filter(|_| !parts.repo_is_canonical)?;
-    if name.is_empty() || !parts.pkg_is_absolute {
-        return None;
-    }
-    Some(format!(
-        "@@{}//{}:{}",
-        unknown_repository(name, requester),
-        parts.pkg,
-        parts.target
-    ))
+    crate::label::deferred_label(text, requester, "").map(|label| label.to_string())
 }
 
 /// A canonical label string, including [`deferred_label_text`]s.
 pub fn parse_label(text: &str) -> Result<Label, String> {
-    if let Some(rest) = text.strip_prefix("@@[unknown repo '")
-        && let Some(index) = rest.find("]//")
-    {
-        let repository = format!("[unknown repo '{}]", &rest[..index]);
-        let label = Label::parse_canonical(&rest[index + 1..])?;
-        return Ok(Label {
-            repository,
-            ..label
-        });
-    }
     Label::parse_canonical(text)
 }
 

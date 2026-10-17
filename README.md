@@ -175,6 +175,9 @@ executor; see [its exact limits](docs/REPOSITORY_RULES.md), including Latin-1
 Starlark strings and binary-preserving templates. [Ordinary module extensions](docs/MODULE_EXTENSIONS.md)
 support bounded non-isolated callbacks, typed tags and deferred repository
 declarations; full extension/repository APIs and toolchains remain incomplete.
+[Extension repository mapping](docs/EXTENSION_REPO_MAPPING.md) follows Bazel 9.3
+(host module mapping + siblings + self), and an apparent repository a context
+repository does not see is Bazel's deferred invalid label, failing only when used.
 [Bounded module-extension I/O](docs/MODULE_EXTENSION_IO.md) documents the candidate
 `module_ctx.download`/`read` implementation and `--repository_disable_download`
 policy (not an offline flag); final acceptance and release remain pending.

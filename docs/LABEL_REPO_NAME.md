@@ -21,9 +21,9 @@ analysis coverage.
 
 Genuine Bazel 9.3 can construct a non-visible Label from an unmapped apparent
 repository name. Reading its `repo_name` subsequently rejects that visibility
-marker. Native construction instead rejects the unknown apparent name eagerly;
-no invalid Label or later getter evaluation is fabricated. External `@//` has
-the same existing native boundary, unlike explicit canonical main `@@//`.
+marker. Since N45 native does the same (docs/EXTENSION_REPO_MAPPING.md),
+including external `@//` (the empty apparent name outside the root module's
+mapping), unlike explicit canonical main `@@//`.
 
 This increment supports canonical-name access on already-resolved Labels. It
 does **not** claim the deferred-invalid-Label behavior used by upstream callers

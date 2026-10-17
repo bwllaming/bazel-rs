@@ -311,11 +311,11 @@ Recorded by the paired capture (`tests/fixtures/native_rules/reference_receipt.j
   `Label("//pkg:x")` (display form). Values are equal after that normalization.
 * `query` prints external labels canonically (`@@platforms//os:linux`); Bazel
   prints the display form `@platforms//os:linux` unless `--consistent_labels`.
-* Unknown apparent repositories: native `unknown apparent repository @missing
-  from canonical repository ""; extension repository not materialized or
-  dependency not declared` versus Bazel's `no such package '@@[unknown repo
-  'missing' requested from @@]//': ... No repository visible as '@missing' from
-  main repository`.
+* Unknown apparent repositories (fixed by N45, docs/EXTENSION_REPO_MAPPING.md):
+  native now keeps Bazel's invalid label and fails the dependency edge with
+  `no such package '@@[unknown repo 'missing' requested from @@]//': ... No
+  repository visible as '@missing' from main repository` (any context
+  repository, with the did-you-mean suffix).
 * Visibility violations (fixed by the configuration increment): native now
   prints Bazel's multi-line `LOC: in genrule rule //pkg:g: Visibility error:
   target '//dep:f' is not visible from target '//pkg:g' ...`

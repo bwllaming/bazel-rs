@@ -1358,29 +1358,16 @@ impl CommandLineOptions {
     }
 }
 
-/// The repository name RepositoryName.createUnvalidated gives an apparent
-/// repository that is not visible from the main repository
-/// (`[unknown repo 'R' requested from @@]`).
-fn unknown_repository(name: &str) -> String {
-    format!("[unknown repo '{name}' requested from @@]")
-}
-
-/// `@R//pkg:name` with an apparent repository R as an unresolvable label.
+/// `@R//pkg:name` with an apparent repository R as an unresolvable label of
+/// the main repository (`[unknown repo 'R' requested from @@]`,
+/// crate::label::deferred_label). Option values are converted without a
+/// RepositorySet, so no did-you-mean suffix is computed here.
 pub(crate) fn deferred_unknown_repository(text: &str) -> Option<Label> {
-    let parts = crate::bazel_label::Parts::parse(text).ok()?;
-    let repository = parts.repo.filter(|_| !parts.repo_is_canonical)?;
-    if repository.is_empty() {
-        return None;
-    }
-    Some(Label {
-        repository: unknown_repository(repository),
-        package: parts.pkg.to_owned(),
-        name: parts.target.to_owned(),
-    })
+    crate::label::deferred_label(text, "", "")
 }
 
-/// The apparent repository name of a label made by
-/// [`deferred_unknown_repository`].
+/// The apparent repository name of an unresolvable label
+/// (crate::label::unresolvable_repository).
 pub fn unknown_repository_name(label: &Label) -> Option<&str> {
     crate::label::unknown_repository_name(&label.repository)
 }

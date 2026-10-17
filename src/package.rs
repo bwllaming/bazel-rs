@@ -822,9 +822,14 @@ fn visibility_labels(value: Value<'_>, context: &Declarations) -> anyhow::Result
                     .map_err(anyhow::Error::msg)?;
                 budget.bytes(bytes).map_err(anyhow::Error::msg)?;
                 budget.node().map_err(anyhow::Error::msg)?;
+                // BuildType.LABEL_LIST conversion (Label.parseWithPackageContext):
+                // an apparent repository the package's repository does not see
+                // is an invalid label; a __pkg__/__subpackages__ scope in it
+                // matches no package and a package_group in it fails only when
+                // the visibility check loads it.
                 context
                     .repositories
-                    .parse(text, &context.repository, &context.package)
+                    .parse_deferred(text, &context.repository, &context.package)
                     .map_err(anyhow::Error::msg)
             } else {
                 bail!("visibility entries must be strings or Labels")
@@ -1271,9 +1276,11 @@ fn rule_globals(builder: &mut GlobalsBuilder) {
                         name: name.to_owned(),
                     })
                 } else {
+                    // A label list (Label.parseWithPackageContext): an
+                    // unknown repository fails only when the include is loaded.
                     context
                         .repositories
-                        .parse(
+                        .parse_deferred(
                             value.unpack_str().unwrap(),
                             &context.repository,
                             &context.package,

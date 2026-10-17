@@ -348,7 +348,14 @@ fn unavailable_native_dependency_is_resolved_only_when_selected() {
     );
     let unavailable = fixture.run(&["build", "@first//p:unavailable"]);
     assert!(!unavailable.status.success());
-    assert!(stderr(&unavailable).contains("unknown apparent repository"));
+    // Bazel's analysis-time package lookup error for the invalid repository
+    // (crate::label::unresolvable_package_message).
+    assert!(
+        stderr(&unavailable)
+            .contains("No repository visible as '@not_declared' from repository '@@alpha+'"),
+        "{}",
+        stderr(&unavailable)
+    );
     fixture.file(
         "repos/alpha/p/BUILD.bazel",
         "filegroup(name='unsafe',srcs=['@not_declared//p:../escape'])\n",

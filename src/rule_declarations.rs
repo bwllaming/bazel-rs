@@ -1091,6 +1091,49 @@ pub(crate) fn select_pieces<'v>(value: Value<'v>) -> Option<Vec<SelectPiece<'v>>
     )
 }
 
+/// BuildType.copyAndLiftSelectorList (packages/BuildType.java:264-301) for a
+/// `select()` value: every select element's keys go through `key` and every
+/// non-None branch value through `branch`; plain elements through `branch`.
+/// The no-match errors and the element type are kept. `None` when `value`
+/// is not a select.
+pub(crate) fn lift_select<'v>(
+    value: Value<'v>,
+    heap: Heap<'v>,
+    key: &dyn Fn(Value<'v>) -> anyhow::Result<Value<'v>>,
+    branch: &dyn Fn(Value<'v>) -> anyhow::Result<Value<'v>>,
+) -> Option<anyhow::Result<Value<'v>>> {
+    let list = SelectorList::from_value(value)?;
+    let pieces = list.pieces();
+    let lifted = (|| -> anyhow::Result<Value<'v>> {
+        let mut values = Vec::with_capacity(pieces.values.len());
+        for (element, select) in pieces.values.iter().zip(&pieces.selects) {
+            values.push(if select.is_some() {
+                let dict = DictRef::from_value(*element).expect("select element owns a dict");
+                let mut entries = Vec::new();
+                for (condition, value) in dict.iter() {
+                    entries.push((
+                        key(condition)?,
+                        if value.is_none() {
+                            value
+                        } else {
+                            branch(value)?
+                        },
+                    ));
+                }
+                heap.alloc(starlark::values::dict::AllocDict(entries))
+            } else {
+                branch(*element)?
+            });
+        }
+        Ok(heap.alloc(SelectorListGen {
+            values,
+            selects: pieces.selects.clone(),
+            native_type: pieces.native_type.clone(),
+        }))
+    })();
+    Some(lifted)
+}
+
 pub(crate) struct Pieces<'v> {
     values: Vec<Value<'v>>,
     selects: Vec<Option<String>>,

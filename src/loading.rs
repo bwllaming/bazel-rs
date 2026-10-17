@@ -85,10 +85,26 @@ pub(crate) fn latin1_profile(eval: &Evaluator<'_, '_, '_>) -> bool {
             .is_some_and(|context| context.byte_strings)
 }
 
+/// [`resolve_label`] with Label.parseWithPackageContext's treatment of an
+/// apparent repository the context repository does not see: an invalid
+/// Label (RepositorySet::parse_deferred) instead of an error.
+pub fn resolve_label_deferred(eval: &Evaluator<'_, '_, '_>, text: &str) -> anyhow::Result<Label> {
+    resolve_label_with(eval, text, None, true)
+}
+
 fn resolve_label_inner(
     eval: &Evaluator<'_, '_, '_>,
     text: &str,
+    budget: Option<&mut crate::repository_budget::HostBudget>,
+) -> anyhow::Result<Label> {
+    resolve_label_with(eval, text, budget, false)
+}
+
+fn resolve_label_with(
+    eval: &Evaluator<'_, '_, '_>,
+    text: &str,
     mut budget: Option<&mut crate::repository_budget::HostBudget>,
+    deferred: bool,
 ) -> anyhow::Result<Label> {
     // In the Latin-1 char model a non-ASCII label string holds the Latin-1
     // decoding of its UTF-8 bytes; native labels and paths are UTF-8, so it
@@ -108,9 +124,12 @@ fn resolve_label_inner(
                     .map_err(anyhow::Error::msg)?;
                 budget.bytes(bound).map_err(anyhow::Error::msg)?;
             }
-            repositories
-                .parse(text, repository, package)
-                .map_err(anyhow::Error::msg)
+            if deferred {
+                repositories.parse_deferred(text, repository, package)
+            } else {
+                repositories.parse(text, repository, package)
+            }
+            .map_err(anyhow::Error::msg)
         };
         if let Some(label) = definition_label(eval) {
             return resolve(&label.repository, &label.package);

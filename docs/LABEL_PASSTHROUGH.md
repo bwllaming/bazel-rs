@@ -26,10 +26,10 @@ File/Target/output owners, with consumed output bytes and cold/warm cache checks
 
 ## Limits
 
-Native Label construction still rejects unknown apparent repository names eagerly.
-Genuine Bazel can instead construct a non-visible Label, pass that value through
-`Label(...)`, and reject a later visibility-sensitive getter. This increment
-does not add those invalid states or claim equivalent failure timing.
+Superseded by N45 (docs/EXTENSION_REPO_MAPPING.md): like genuine Bazel, native
+Label construction now yields a non-visible Label for an unknown apparent
+repository name; passthrough keeps it and only the repository getters reject it
+(`'workspace_name' is not allowed on invalid Label @@[unknown repo ...]//...`).
 
 Other Label members and deprecated-API flags are separate work. Passthrough tests
 use existing canonical strings and `workspace_name`, without depending on the

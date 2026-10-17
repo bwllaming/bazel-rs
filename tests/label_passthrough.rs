@@ -1,5 +1,6 @@
 //! Constructor-only coverage, independent of the repo_name getter work.
-//! Invalid apparent aliases remain an eager native error, NOT invalid-Label parity.
+//! Invalid apparent aliases yield Bazel's invalid Label (N45), whose repository
+//! getters fail with Bazel's text.
 //! Callback prints are phase markers, never evidence of repository/action reuse.
 #![cfg(unix)]
 
@@ -353,25 +354,39 @@ fn missing_extra_and_both_keyword_spellings_are_rejected() {
 }
 
 #[test]
-fn unknown_apparent_repository_still_fails_before_passthrough() {
+fn unknown_apparent_repository_yields_invalid_label_like_bazel() {
+    // Label.parseWithPackageContext keeps an invalid repository
+    // (`[unknown repo 'R' requested from @@]`); passthrough keeps it and only
+    // the repository getters fail (Label.checkRepoVisibilityForStarlark).
     let f = Fixture::new();
-    f.file("probe.bzl", "def probe():\n    print('BEFORE_UNKNOWN_CONSTRUCTOR')\n    original=Label('@not_visible//:missing')\n    print('BEFORE_PASSTHROUGH')\n    copied=Label(original)\n    print('AFTER_PASSTHROUGH')\n    native.filegroup(name='probe')\n");
+    f.file("probe.bzl", "def probe():\n    print('BEFORE_UNKNOWN_CONSTRUCTOR')\n    original=Label('@not_visible//:missing')\n    print('BEFORE_PASSTHROUGH')\n    copied=Label(original)\n    print('AFTER_PASSTHROUGH ' + str(copied) + ' ' + copied.name + ' ' + str(copied == original))\n    native.filegroup(name='probe')\n");
     f.file("BUILD.bazel", "load(':probe.bzl','probe')\nprobe()\n");
     let output = f.run(&["query", "//:probe"]);
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.status.code(), Some(0), "{}", errors(&output));
+    assert_eq!(output.stdout, b"//:probe\n");
     let text = errors(&output);
     let lines: Vec<_> = text.lines().collect();
     assert!(lines.contains(&"BEFORE_UNKNOWN_CONSTRUCTOR"));
-    assert!(!lines.contains(&"BEFORE_PASSTHROUGH"));
-    assert!(!lines.contains(&"AFTER_PASSTHROUGH"));
+    assert!(lines.contains(&"BEFORE_PASSTHROUGH"));
     assert!(
-        lines
-            .iter()
-            .any(|line| line.starts_with("error: unknown apparent repository @not_visible")),
+        lines.contains(
+            &"AFTER_PASSTHROUGH @@[unknown repo 'not_visible' requested from @@]//:missing missing True"
+        ),
         "{text}"
     );
-    assert!(!f.0.path().join("cache/actions").exists());
+
+    let g = Fixture::new();
+    g.file("probe.bzl", "def probe():\n    copied=Label(Label('@not_visible//:missing'))\n    print(copied.workspace_name)\n    native.filegroup(name='probe')\n");
+    g.file("BUILD.bazel", "load(':probe.bzl','probe')\nprobe()\n");
+    let output = g.run(&["query", "//:probe"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let text = errors(&output);
+    assert!(
+        text.contains("'workspace_name' is not allowed on invalid Label @@[unknown repo 'not_visible' requested from @@]//:missing"),
+        "{text}"
+    );
+    assert!(!g.0.path().join("cache/actions").exists());
 }
 
 #[test]

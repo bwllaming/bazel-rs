@@ -1,0 +1,669 @@
+{
+ "cases": [
+  {
+   "command": "query",
+   "id": "A01_probe_query",
+   "native_prints": [
+    "N45|probe|@x_linux_amd64//:impl|str=@@dep++ext+x_linux_amd64//:impl|name=impl|package=",
+    "N45|probe|@probe//:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=",
+    "N45|probe|@platforms//:x|str=@@platforms//:x|name=x|package=",
+    "N45|probe|@dep//:x|str=@@dep+//:x|name=x|package=",
+    "N45|probe|@fx//:x|str=@@[unknown repo 'fx' requested from @@dep++ext+probe]//:x|name=x|package=",
+    "N45|probe|@x_linux_armv6//:impl|str=@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//:impl|name=impl|package=",
+    "N45|probe|@//:x|str=@@[unknown repo '' requested from @@dep++ext+probe]//:x|name=x|package=",
+    "N45|probe|@@dep++ext+hub//:x|str=@@dep++ext+hub//:x|name=x|package=",
+    "N45|probe|@@nope+//:x|str=@@nope+//:x|name=x|package=",
+    "N45|probe|//:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|:x|str=@@dep++ext+probe//:x|name=x|package="
+   ],
+   "native_rc": 0,
+   "native_stderr_tail": "N45|probe|@x_linux_amd64//:impl|str=@@dep++ext+x_linux_amd64//:impl|name=impl|package=\nN45|probe|@probe//:x|str=@@dep++ext+probe//:x|name=x|package=\nN45|probe|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=\nN45|probe|@platforms//:x|str=@@platforms//:x|name=x|package=\nN45|probe|@dep//:x|str=@@dep+//:x|name=x|package=\nN45|probe|@fx//:x|str=@@[unknown repo 'fx' requested from @@dep++ext+probe]//:x|name=x|package=\nN45|probe|@x_linux_armv6//:impl|str=@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//:impl|name=impl|package=\nN45|probe|@//:x|str=@@[unknown repo '' requested from @@dep++ext+probe]//:x|name=x|package=\nN45|probe|@@dep++ext+hub//:x|str=@@dep++ext+hub//:x|name=x|package=\nN45|probe|@@nope+//:x|str=@@nope+//:x|name=x|package=\nN45|probe|//:x|str=@@dep++ext+probe//:x|name=x|package=\nN45|probe|:x|str=@@dep++ext+probe//:x|name=x|package=\n",
+   "native_stdout": "@@dep++ext+probe//:bad\n@@dep++ext+probe//:fg\n@@dep++ext+probe//:mixed\n@@dep++ext+probe//:ok\n",
+   "problems": [],
+   "reference_prints": [
+    "N45|probe|@x_linux_amd64//:impl|str=@@dep++ext+x_linux_amd64//:impl|name=impl|package=",
+    "N45|probe|@probe//:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=",
+    "N45|probe|@platforms//:x|str=@@platforms//:x|name=x|package=",
+    "N45|probe|@dep//:x|str=@@dep+//:x|name=x|package=",
+    "N45|probe|@fx//:x|str=@@[unknown repo 'fx' requested from @@dep++ext+probe]//:x|name=x|package=",
+    "N45|probe|@x_linux_armv6//:impl|str=@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//:impl|name=impl|package=",
+    "N45|probe|@//:x|str=@@[unknown repo '' requested from @@dep++ext+probe]//:x|name=x|package=",
+    "N45|probe|@@dep++ext+hub//:x|str=@@dep++ext+hub//:x|name=x|package=",
+    "N45|probe|@@nope+//:x|str=@@nope+//:x|name=x|package=",
+    "N45|probe|//:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|:x|str=@@dep++ext+probe//:x|name=x|package="
+   ],
+   "reference_rc": 0,
+   "reference_stderr_tail": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@x_linux_amd64//:impl|str=@@dep++ext+x_linux_amd64//:impl|name=impl|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@probe//:x|str=@@dep++ext+probe//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@platforms//:x|str=@@platforms//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@dep//:x|str=@@dep+//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@fx//:x|str=@@[unknown repo 'fx' requested from @@dep++ext+probe]//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@x_linux_armv6//:impl|str=@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//:impl|name=impl|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@//:x|str=@@[unknown repo '' requested from @@dep++ext+probe]//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@@dep++ext+hub//:x|str=@@dep++ext+hub//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@@nope+//:x|str=@@nope+//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|//:x|str=@@dep++ext+probe//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|:x|str=@@dep++ext+probe//:x|name=x|package=\n",
+   "reference_stdout": "@probe//:bad\n@probe//:fg\n@probe//:mixed\n@probe//:ok\n",
+   "target": "@probe//:all",
+   "verdict": "MATCH",
+   "workspace": "A"
+  },
+  {
+   "command": "query",
+   "id": "A02_collision_query",
+   "native_prints": [
+    "N45|probe2|@platforms//:x|str=@@dep++ext2+platforms//:x|name=x|package=",
+    "N45|probe2|@dep//:x|str=@@dep+//:x|name=x|package=",
+    "N45|probe2|@probe2//:x|str=@@dep++ext2+probe2//:x|name=x|package=",
+    "N45|probe2|@probe//:x|str=@@[unknown repo 'probe' requested from @@dep++ext2+probe2 (did you mean 'probe2'?)]//:x|name=x|package="
+   ],
+   "native_rc": 0,
+   "native_stderr_tail": "N45|probe2|@platforms//:x|str=@@dep++ext2+platforms//:x|name=x|package=\nN45|probe2|@dep//:x|str=@@dep+//:x|name=x|package=\nN45|probe2|@probe2//:x|str=@@dep++ext2+probe2//:x|name=x|package=\nN45|probe2|@probe//:x|str=@@[unknown repo 'probe' requested from @@dep++ext2+probe2 (did you mean 'probe2'?)]//:x|name=x|package=\n",
+   "native_stdout": "@@dep++ext2+probe2//:bad\n@@dep++ext2+probe2//:fg\n@@dep++ext2+probe2//:mixed\n@@dep++ext2+probe2//:ok\n",
+   "problems": [],
+   "reference_prints": [
+    "N45|probe2|@platforms//:x|str=@@dep++ext2+platforms//:x|name=x|package=",
+    "N45|probe2|@dep//:x|str=@@dep+//:x|name=x|package=",
+    "N45|probe2|@probe2//:x|str=@@dep++ext2+probe2//:x|name=x|package=",
+    "N45|probe2|@probe//:x|str=@@[unknown repo 'probe' requested from @@dep++ext2+probe2 (did you mean 'probe2'?)]//:x|name=x|package="
+   ],
+   "reference_rc": 0,
+   "reference_stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext2+probe2/defs.bzl:2:10: N45|probe2|@platforms//:x|str=@@dep++ext2+platforms//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext2+probe2/defs.bzl:2:10: N45|probe2|@dep//:x|str=@@dep+//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext2+probe2/defs.bzl:2:10: N45|probe2|@probe2//:x|str=@@dep++ext2+probe2//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext2+probe2/defs.bzl:2:10: N45|probe2|@probe//:x|str=@@[unknown repo 'probe' requested from @@dep++ext2+probe2 (did you mean 'probe2'?)]//:x|name=x|package=\n",
+   "reference_stdout": "@probe2//:bad\n@probe2//:fg\n@probe2//:mixed\n@probe2//:ok\n",
+   "target": "@probe2//:all",
+   "verdict": "MATCH",
+   "workspace": "A"
+  },
+  {
+   "command": "query",
+   "id": "A03_root_hosted_query",
+   "native_prints": [
+    "N45|rp|@//:x|str=@@//:x|name=x|package=",
+    "N45|rp|@fx//:x|str=@@//:x|name=x|package=",
+    "N45|rp|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=",
+    "N45|rp|@dep//:x|str=@@dep+//:x|name=x|package=",
+    "N45|rp|@rp//:x|str=@@+rootext+rp//:x|name=x|package=",
+    "N45|rp|@rr1//:x|str=@@+probe_rule+rr1//:x|name=x|package=",
+    "N45|rp|@platforms//:x|str=@@platforms//:x|name=x|package=",
+    "N45|rp|@x_linux_amd64//:x|str=@@[unknown repo 'x_linux_amd64' requested from @@+rootext+rp]//:x|name=x|package="
+   ],
+   "native_rc": 0,
+   "native_stderr_tail": "N45|rp|@//:x|str=@@//:x|name=x|package=\nN45|rp|@fx//:x|str=@@//:x|name=x|package=\nN45|rp|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=\nN45|rp|@dep//:x|str=@@dep+//:x|name=x|package=\nN45|rp|@rp//:x|str=@@+rootext+rp//:x|name=x|package=\nN45|rp|@rr1//:x|str=@@+probe_rule+rr1//:x|name=x|package=\nN45|rp|@platforms//:x|str=@@platforms//:x|name=x|package=\nN45|rp|@x_linux_amd64//:x|str=@@[unknown repo 'x_linux_amd64' requested from @@+rootext+rp]//:x|name=x|package=\n",
+   "native_stdout": "",
+   "problems": [],
+   "reference_prints": [
+    "N45|rp|@//:x|str=@@//:x|name=x|package=",
+    "N45|rp|@fx//:x|str=@@//:x|name=x|package=",
+    "N45|rp|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=",
+    "N45|rp|@dep//:x|str=@@dep+//:x|name=x|package=",
+    "N45|rp|@rp//:x|str=@@+rootext+rp//:x|name=x|package=",
+    "N45|rp|@rr1//:x|str=@@+probe_rule+rr1//:x|name=x|package=",
+    "N45|rp|@platforms//:x|str=@@platforms//:x|name=x|package=",
+    "N45|rp|@x_linux_amd64//:x|str=@@[unknown repo 'x_linux_amd64' requested from @@+rootext+rp]//:x|name=x|package="
+   ],
+   "reference_rc": 0,
+   "reference_stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/+rootext+rp/defs.bzl:2:10: N45|rp|@//:x|str=@@//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/+rootext+rp/defs.bzl:2:10: N45|rp|@fx//:x|str=@@//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/+rootext+rp/defs.bzl:2:10: N45|rp|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/+rootext+rp/defs.bzl:2:10: N45|rp|@dep//:x|str=@@dep+//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/+rootext+rp/defs.bzl:2:10: N45|rp|@rp//:x|str=@@+rootext+rp//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/+rootext+rp/defs.bzl:2:10: N45|rp|@rr1//:x|str=@@+probe_rule+rr1//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/+rootext+rp/defs.bzl:2:10: N45|rp|@platforms//:x|str=@@platforms//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/+rootext+rp/defs.bzl:2:10: N45|rp|@x_linux_amd64//:x|str=@@[unknown repo 'x_linux_amd64' requested from @@+rootext+rp]//:x|name=x|package=\nINFO: Empty results\n",
+   "reference_stdout": "",
+   "target": "@rp//:all",
+   "verdict": "MATCH",
+   "workspace": "A"
+  },
+  {
+   "command": "query",
+   "id": "A04_use_repo_rule_rr1",
+   "native_prints": [
+    "N45|rr1|@rr2//:x|str=@@+probe_rule+rr2//:x|name=x|package=",
+    "N45|rr1|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=",
+    "N45|rr1|@//:x|str=@@//:x|name=x|package=",
+    "N45|rr1|@fx//:x|str=@@//:x|name=x|package=",
+    "N45|rr1|@dep//:x|str=@@dep+//:x|name=x|package=",
+    "N45|rr1|@platforms//:x|str=@@platforms//:x|name=x|package=",
+    "N45|rr1|@ext//:x|str=@@[unknown repo 'ext' requested from @@+probe_rule+rr1]//:x|name=x|package="
+   ],
+   "native_rc": 0,
+   "native_stderr_tail": "N45|rr1|@rr2//:x|str=@@+probe_rule+rr2//:x|name=x|package=\nN45|rr1|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=\nN45|rr1|@//:x|str=@@//:x|name=x|package=\nN45|rr1|@fx//:x|str=@@//:x|name=x|package=\nN45|rr1|@dep//:x|str=@@dep+//:x|name=x|package=\nN45|rr1|@platforms//:x|str=@@platforms//:x|name=x|package=\nN45|rr1|@ext//:x|str=@@[unknown repo 'ext' requested from @@+probe_rule+rr1]//:x|name=x|package=\n",
+   "native_stdout": "",
+   "problems": [],
+   "reference_prints": [
+    "N45|rr1|@rr2//:x|str=@@+probe_rule+rr2//:x|name=x|package=",
+    "N45|rr1|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=",
+    "N45|rr1|@//:x|str=@@//:x|name=x|package=",
+    "N45|rr1|@fx//:x|str=@@//:x|name=x|package=",
+    "N45|rr1|@dep//:x|str=@@dep+//:x|name=x|package=",
+    "N45|rr1|@platforms//:x|str=@@platforms//:x|name=x|package=",
+    "N45|rr1|@ext//:x|str=@@[unknown repo 'ext' requested from @@+probe_rule+rr1]//:x|name=x|package="
+   ],
+   "reference_rc": 0,
+   "reference_stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/+probe_rule+rr1/defs.bzl:2:10: N45|rr1|@rr2//:x|str=@@+probe_rule+rr2//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/+probe_rule+rr1/defs.bzl:2:10: N45|rr1|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/+probe_rule+rr1/defs.bzl:2:10: N45|rr1|@//:x|str=@@//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/+probe_rule+rr1/defs.bzl:2:10: N45|rr1|@fx//:x|str=@@//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/+probe_rule+rr1/defs.bzl:2:10: N45|rr1|@dep//:x|str=@@dep+//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/+probe_rule+rr1/defs.bzl:2:10: N45|rr1|@platforms//:x|str=@@platforms//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/+probe_rule+rr1/defs.bzl:2:10: N45|rr1|@ext//:x|str=@@[unknown repo 'ext' requested from @@+probe_rule+rr1]//:x|name=x|package=\nINFO: Empty results\n",
+   "reference_stdout": "",
+   "target": "@rr1//:all",
+   "verdict": "MATCH",
+   "workspace": "A"
+  },
+  {
+   "command": "query",
+   "id": "A05_use_repo_rule_rr2",
+   "native_prints": [
+    "N45|rr2|@rr1//:x|str=@@+probe_rule+rr1//:x|name=x|package=",
+    "N45|rr2|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=",
+    "N45|rr2|@//:x|str=@@//:x|name=x|package=",
+    "N45|rr2|@fx//:x|str=@@//:x|name=x|package=",
+    "N45|rr2|@dep//:x|str=@@dep+//:x|name=x|package=",
+    "N45|rr2|@platforms//:x|str=@@platforms//:x|name=x|package=",
+    "N45|rr2|@ext//:x|str=@@[unknown repo 'ext' requested from @@+probe_rule+rr2]//:x|name=x|package="
+   ],
+   "native_rc": 0,
+   "native_stderr_tail": "N45|rr2|@rr1//:x|str=@@+probe_rule+rr1//:x|name=x|package=\nN45|rr2|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=\nN45|rr2|@//:x|str=@@//:x|name=x|package=\nN45|rr2|@fx//:x|str=@@//:x|name=x|package=\nN45|rr2|@dep//:x|str=@@dep+//:x|name=x|package=\nN45|rr2|@platforms//:x|str=@@platforms//:x|name=x|package=\nN45|rr2|@ext//:x|str=@@[unknown repo 'ext' requested from @@+probe_rule+rr2]//:x|name=x|package=\n",
+   "native_stdout": "",
+   "problems": [],
+   "reference_prints": [
+    "N45|rr2|@rr1//:x|str=@@+probe_rule+rr1//:x|name=x|package=",
+    "N45|rr2|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=",
+    "N45|rr2|@//:x|str=@@//:x|name=x|package=",
+    "N45|rr2|@fx//:x|str=@@//:x|name=x|package=",
+    "N45|rr2|@dep//:x|str=@@dep+//:x|name=x|package=",
+    "N45|rr2|@platforms//:x|str=@@platforms//:x|name=x|package=",
+    "N45|rr2|@ext//:x|str=@@[unknown repo 'ext' requested from @@+probe_rule+rr2]//:x|name=x|package="
+   ],
+   "reference_rc": 0,
+   "reference_stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/+probe_rule+rr2/defs.bzl:2:10: N45|rr2|@rr1//:x|str=@@+probe_rule+rr1//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/+probe_rule+rr2/defs.bzl:2:10: N45|rr2|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/+probe_rule+rr2/defs.bzl:2:10: N45|rr2|@//:x|str=@@//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/+probe_rule+rr2/defs.bzl:2:10: N45|rr2|@fx//:x|str=@@//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/+probe_rule+rr2/defs.bzl:2:10: N45|rr2|@dep//:x|str=@@dep+//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/+probe_rule+rr2/defs.bzl:2:10: N45|rr2|@platforms//:x|str=@@platforms//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/+probe_rule+rr2/defs.bzl:2:10: N45|rr2|@ext//:x|str=@@[unknown repo 'ext' requested from @@+probe_rule+rr2]//:x|name=x|package=\nINFO: Empty results\n",
+   "reference_stdout": "",
+   "target": "@rr2//:all",
+   "verdict": "MATCH",
+   "workspace": "A"
+  },
+  {
+   "command": "build",
+   "id": "A06_hub_toolchain_build",
+   "missing_in_native": [
+    "An error occurred during the fetch of repository 'platforms':",
+    "com.google.devtools.build.lib.packages.RepositoryFetchException: no such package '@@platforms//host': java.io.IOException: Failed to download repository @@platforms: download is disabled."
+   ],
+   "native_prints": [
+    "N45|fetch|x_linux_amd64",
+    "N45|toolchain|x_linux_amd64"
+   ],
+   "native_rc": 0,
+   "native_stderr_tail": "N45|fetch|x_linux_amd64\nN45|toolchain|x_linux_amd64\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+   "native_stdout": "",
+   "problems": [
+    "returncode class differs",
+    "N45 prints differ",
+    "genuine error bodies missing in native stderr"
+   ],
+   "reference_errors": [
+    "An error occurred during the fetch of repository 'platforms':",
+    "com.google.devtools.build.lib.packages.RepositoryFetchException: no such package '@@platforms//host': java.io.IOException: Failed to download repository @@platforms: download is disabled."
+   ],
+   "reference_prints": [],
+   "reference_rc": 1,
+   "reference_stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Repo platforms defined by rule http_archive in @@bazel_tools//tools/build_defs/repo:http.bzl\nERROR: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/bazel_tools/tools/build_defs/repo/http.bzl:203:45: An error occurred during the fetch of repository 'platforms':\n   Traceback (most recent call last):\n\tFile \"/tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/bazel_tools/tools/build_defs/repo/http.bzl\", line 203, column 45, in _http_archive_impl\n\t\tdownload_info = ctx.download_and_extract(\nError in download_and_extract: java.io.IOException: Failed to download repository @@platforms: download is disabled.\nERROR: com.google.devtools.build.lib.packages.RepositoryFetchException: no such package '@@platforms//host': java.io.IOException: Failed to download repository @@platforms: download is disabled.\nINFO: Elapsed time: 1.027s, Critical Path: 0.00s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\n",
+   "reference_stdout": "",
+   "target": "//:u",
+   "verdict": "MISMATCH",
+   "workspace": "A"
+  },
+  {
+   "command": "build",
+   "id": "A07_initializer_select",
+   "missing_in_native": [
+    "An error occurred during the fetch of repository 'platforms':",
+    "com.google.devtools.build.lib.packages.RepositoryFetchException: no such package '@@platforms//host': java.io.IOException: Failed to download repository @@platforms: download is disabled."
+   ],
+   "native_prints": [
+    "N45|initializer_select|[\"hub\"]"
+   ],
+   "native_rc": 0,
+   "native_stderr_tail": "N45|initializer_select|[\"hub\"]\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+   "native_stdout": "",
+   "problems": [
+    "returncode class differs",
+    "N45 prints differ",
+    "genuine error bodies missing in native stderr"
+   ],
+   "reference_errors": [
+    "An error occurred during the fetch of repository 'platforms':",
+    "com.google.devtools.build.lib.packages.RepositoryFetchException: no such package '@@platforms//host': java.io.IOException: Failed to download repository @@platforms: download is disabled."
+   ],
+   "reference_prints": [],
+   "reference_rc": 1,
+   "reference_stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Repo platforms defined by rule http_archive in @@bazel_tools//tools/build_defs/repo:http.bzl\nERROR: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/bazel_tools/tools/build_defs/repo/http.bzl:203:45: An error occurred during the fetch of repository 'platforms':\n   Traceback (most recent call last):\n\tFile \"/tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/bazel_tools/tools/build_defs/repo/http.bzl\", line 203, column 45, in _http_archive_impl\n\t\tdownload_info = ctx.download_and_extract(\nError in download_and_extract: java.io.IOException: Failed to download repository @@platforms: download is disabled.\nERROR: com.google.devtools.build.lib.packages.RepositoryFetchException: no such package '@@platforms//host': java.io.IOException: Failed to download repository @@platforms: download is disabled.\nINFO: Elapsed time: 1.208s, Critical Path: 0.00s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\n",
+   "reference_stdout": "",
+   "target": "//:sel",
+   "verdict": "MISMATCH",
+   "workspace": "A"
+  },
+  {
+   "command": "build",
+   "id": "A08_sibling_dep_build",
+   "missing_in_native": [
+    "An error occurred during the fetch of repository 'platforms':",
+    "com.google.devtools.build.lib.packages.RepositoryFetchException: no such package '@@platforms//host': java.io.IOException: Failed to download repository @@platforms: download is disabled."
+   ],
+   "native_prints": [
+    "N45|fetch|x_linux_amd64",
+    "N45|holder|ok|[\"@@dep++ext+x_linux_amd64//:impl\"]",
+    "N45|probe|//:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|@//:x|str=@@[unknown repo '' requested from @@dep++ext+probe]//:x|name=x|package=",
+    "N45|probe|@@dep++ext+hub//:x|str=@@dep++ext+hub//:x|name=x|package=",
+    "N45|probe|@@nope+//:x|str=@@nope+//:x|name=x|package=",
+    "N45|probe|@dep//:x|str=@@dep+//:x|name=x|package=",
+    "N45|probe|@fx//:x|str=@@[unknown repo 'fx' requested from @@dep++ext+probe]//:x|name=x|package=",
+    "N45|probe|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=",
+    "N45|probe|@platforms//:x|str=@@platforms//:x|name=x|package=",
+    "N45|probe|@probe//:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|@x_linux_amd64//:impl|str=@@dep++ext+x_linux_amd64//:impl|name=impl|package=",
+    "N45|probe|@x_linux_armv6//:impl|str=@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//:impl|name=impl|package="
+   ],
+   "native_rc": 0,
+   "native_stderr_tail": "N45|probe|@x_linux_amd64//:impl|str=@@dep++ext+x_linux_amd64//:impl|name=impl|package=\nN45|probe|@probe//:x|str=@@dep++ext+probe//:x|name=x|package=\nN45|probe|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=\nN45|probe|@platforms//:x|str=@@platforms//:x|name=x|package=\nN45|probe|@dep//:x|str=@@dep+//:x|name=x|package=\nN45|probe|@fx//:x|str=@@[unknown repo 'fx' requested from @@dep++ext+probe]//:x|name=x|package=\nN45|probe|@x_linux_armv6//:impl|str=@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//:impl|name=impl|package=\nN45|probe|@//:x|str=@@[unknown repo '' requested from @@dep++ext+probe]//:x|name=x|package=\nN45|probe|@@dep++ext+hub//:x|str=@@dep++ext+hub//:x|name=x|package=\nN45|probe|@@nope+//:x|str=@@nope+//:x|name=x|package=\nN45|probe|//:x|str=@@dep++ext+probe//:x|name=x|package=\nN45|probe|:x|str=@@dep++ext+probe//:x|name=x|package=\nN45|fetch|x_linux_amd64\nN45|holder|ok|[\"@@dep++ext+x_linux_amd64//:impl\"]\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+   "native_stdout": "",
+   "problems": [
+    "returncode class differs",
+    "N45 prints differ",
+    "genuine error bodies missing in native stderr"
+   ],
+   "reference_errors": [
+    "An error occurred during the fetch of repository 'platforms':",
+    "com.google.devtools.build.lib.packages.RepositoryFetchException: no such package '@@platforms//host': java.io.IOException: Failed to download repository @@platforms: download is disabled."
+   ],
+   "reference_prints": [
+    "N45|probe|//:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|@//:x|str=@@[unknown repo '' requested from @@dep++ext+probe]//:x|name=x|package=",
+    "N45|probe|@@dep++ext+hub//:x|str=@@dep++ext+hub//:x|name=x|package=",
+    "N45|probe|@@nope+//:x|str=@@nope+//:x|name=x|package=",
+    "N45|probe|@dep//:x|str=@@dep+//:x|name=x|package=",
+    "N45|probe|@fx//:x|str=@@[unknown repo 'fx' requested from @@dep++ext+probe]//:x|name=x|package=",
+    "N45|probe|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=",
+    "N45|probe|@platforms//:x|str=@@platforms//:x|name=x|package=",
+    "N45|probe|@probe//:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|@x_linux_amd64//:impl|str=@@dep++ext+x_linux_amd64//:impl|name=impl|package=",
+    "N45|probe|@x_linux_armv6//:impl|str=@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//:impl|name=impl|package="
+   ],
+   "reference_rc": 1,
+   "reference_stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@x_linux_amd64//:impl|str=@@dep++ext+x_linux_amd64//:impl|name=impl|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@probe//:x|str=@@dep++ext+probe//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@platforms//:x|str=@@platforms//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@dep//:x|str=@@dep+//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@fx//:x|str=@@[unknown repo 'fx' requested from @@dep++ext+probe]//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@x_linux_armv6//:impl|str=@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//:impl|name=impl|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@//:x|str=@@[unknown repo '' requested from @@dep++ext+probe]//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@@dep++ext+hub//:x|str=@@dep++ext+hub//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@@nope+//:x|str=@@nope+//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|//:x|str=@@dep++ext+probe//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|:x|str=@@dep++ext+probe//:x|name=x|package=\nINFO: Repo platforms defined by rule http_archive in @@bazel_tools//tools/build_defs/repo:http.bzl\nERROR: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/bazel_tools/tools/build_defs/repo/http.bzl:203:45: An error occurred during the fetch of repository 'platforms':\n   Traceback (most recent call last):\n\tFile \"/tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/bazel_tools/tools/build_defs/repo/http.bzl\", line 203, column 45, in _http_archive_impl\n\t\tdownload_info = ctx.download_and_extract(\nError in download_and_extract: java.io.IOException: Failed to download repository @@platforms: download is disabled.\nERROR: com.google.devtools.build.lib.packages.RepositoryFetchException: no such package '@@platforms//host': java.io.IOException: Failed to download repository @@platforms: download is disabled.\nINFO: Elapsed time: 1.148s, Critical Path: 0.00s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\n",
+   "reference_stdout": "",
+   "target": "@probe//:ok",
+   "verdict": "MISMATCH",
+   "workspace": "A"
+  },
+  {
+   "command": "build",
+   "id": "A09_mixed_invalid_edge",
+   "missing_in_native": [
+    "An error occurred during the fetch of repository 'platforms':",
+    "com.google.devtools.build.lib.packages.RepositoryFetchException: no such package '@@platforms//host': java.io.IOException: Failed to download repository @@platforms: download is disabled."
+   ],
+   "native_prints": [
+    "N45|fetch|x_linux_amd64",
+    "N45|probe|//:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|@//:x|str=@@[unknown repo '' requested from @@dep++ext+probe]//:x|name=x|package=",
+    "N45|probe|@@dep++ext+hub//:x|str=@@dep++ext+hub//:x|name=x|package=",
+    "N45|probe|@@nope+//:x|str=@@nope+//:x|name=x|package=",
+    "N45|probe|@dep//:x|str=@@dep+//:x|name=x|package=",
+    "N45|probe|@fx//:x|str=@@[unknown repo 'fx' requested from @@dep++ext+probe]//:x|name=x|package=",
+    "N45|probe|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=",
+    "N45|probe|@platforms//:x|str=@@platforms//:x|name=x|package=",
+    "N45|probe|@probe//:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|@x_linux_amd64//:impl|str=@@dep++ext+x_linux_amd64//:impl|name=impl|package=",
+    "N45|probe|@x_linux_armv6//:impl|str=@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//:impl|name=impl|package="
+   ],
+   "native_rc": 1,
+   "native_stderr_tail": "N45|probe|@x_linux_amd64//:impl|str=@@dep++ext+x_linux_amd64//:impl|name=impl|package=\nN45|probe|@probe//:x|str=@@dep++ext+probe//:x|name=x|package=\nN45|probe|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=\nN45|probe|@platforms//:x|str=@@platforms//:x|name=x|package=\nN45|probe|@dep//:x|str=@@dep+//:x|name=x|package=\nN45|probe|@fx//:x|str=@@[unknown repo 'fx' requested from @@dep++ext+probe]//:x|name=x|package=\nN45|probe|@x_linux_armv6//:impl|str=@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//:impl|name=impl|package=\nN45|probe|@//:x|str=@@[unknown repo '' requested from @@dep++ext+probe]//:x|name=x|package=\nN45|probe|@@dep++ext+hub//:x|str=@@dep++ext+hub//:x|name=x|package=\nN45|probe|@@nope+//:x|str=@@nope+//:x|name=x|package=\nN45|probe|//:x|str=@@dep++ext+probe//:x|name=x|package=\nN45|probe|:x|str=@@dep++ext+probe//:x|name=x|package=\nN45|fetch|x_linux_amd64\nbazel-rs: no such package '@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//': The repository '@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]' could not be resolved: No repository visible as '@x_linux_armv6' from repository '@@dep++ext+probe'\n/tmp/opencode/n45cap509273/native/cache/repositories/direct/trees/d1bc084823889c0718a322342f723df2b17c470d52ed67d7eb418cb3b3229b27/BUILD.bazel:4:7: no such package '@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//': The repository '@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]' could not be resolved: No repository visible as '@x_linux_armv6' from repository '@@dep++ext+probe' and referenced by '@@dep++ext+probe//:mixed'\n",
+   "native_stdout": "",
+   "problems": [
+    "N45 prints differ",
+    "genuine error bodies missing in native stderr"
+   ],
+   "reference_errors": [
+    "An error occurred during the fetch of repository 'platforms':",
+    "com.google.devtools.build.lib.packages.RepositoryFetchException: no such package '@@platforms//host': java.io.IOException: Failed to download repository @@platforms: download is disabled."
+   ],
+   "reference_prints": [
+    "N45|probe|//:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|@//:x|str=@@[unknown repo '' requested from @@dep++ext+probe]//:x|name=x|package=",
+    "N45|probe|@@dep++ext+hub//:x|str=@@dep++ext+hub//:x|name=x|package=",
+    "N45|probe|@@nope+//:x|str=@@nope+//:x|name=x|package=",
+    "N45|probe|@dep//:x|str=@@dep+//:x|name=x|package=",
+    "N45|probe|@fx//:x|str=@@[unknown repo 'fx' requested from @@dep++ext+probe]//:x|name=x|package=",
+    "N45|probe|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=",
+    "N45|probe|@platforms//:x|str=@@platforms//:x|name=x|package=",
+    "N45|probe|@probe//:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|@x_linux_amd64//:impl|str=@@dep++ext+x_linux_amd64//:impl|name=impl|package=",
+    "N45|probe|@x_linux_armv6//:impl|str=@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//:impl|name=impl|package="
+   ],
+   "reference_rc": 1,
+   "reference_stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@x_linux_amd64//:impl|str=@@dep++ext+x_linux_amd64//:impl|name=impl|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@probe//:x|str=@@dep++ext+probe//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@platforms//:x|str=@@platforms//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@dep//:x|str=@@dep+//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@fx//:x|str=@@[unknown repo 'fx' requested from @@dep++ext+probe]//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@x_linux_armv6//:impl|str=@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//:impl|name=impl|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@//:x|str=@@[unknown repo '' requested from @@dep++ext+probe]//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@@dep++ext+hub//:x|str=@@dep++ext+hub//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@@nope+//:x|str=@@nope+//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|//:x|str=@@dep++ext+probe//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|:x|str=@@dep++ext+probe//:x|name=x|package=\nINFO: Repo platforms defined by rule http_archive in @@bazel_tools//tools/build_defs/repo:http.bzl\nERROR: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/bazel_tools/tools/build_defs/repo/http.bzl:203:45: An error occurred during the fetch of repository 'platforms':\n   Traceback (most recent call last):\n\tFile \"/tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/bazel_tools/tools/build_defs/repo/http.bzl\", line 203, column 45, in _http_archive_impl\n\t\tdownload_info = ctx.download_and_extract(\nError in download_and_extract: java.io.IOException: Failed to download repository @@platforms: download is disabled.\nERROR: com.google.devtools.build.lib.packages.RepositoryFetchException: no such package '@@platforms//host': java.io.IOException: Failed to download repository @@platforms: download is disabled.\nINFO: Elapsed time: 1.204s, Critical Path: 0.00s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\n",
+   "reference_stdout": "",
+   "target": "@probe//:mixed",
+   "verdict": "MISMATCH",
+   "workspace": "A"
+  },
+  {
+   "command": "build",
+   "id": "A10_invalid_sibling_edge",
+   "missing_in_native": [
+    "An error occurred during the fetch of repository 'platforms':",
+    "com.google.devtools.build.lib.packages.RepositoryFetchException: no such package '@@platforms//host': java.io.IOException: Failed to download repository @@platforms: download is disabled."
+   ],
+   "native_prints": [
+    "N45|probe|//:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|@//:x|str=@@[unknown repo '' requested from @@dep++ext+probe]//:x|name=x|package=",
+    "N45|probe|@@dep++ext+hub//:x|str=@@dep++ext+hub//:x|name=x|package=",
+    "N45|probe|@@nope+//:x|str=@@nope+//:x|name=x|package=",
+    "N45|probe|@dep//:x|str=@@dep+//:x|name=x|package=",
+    "N45|probe|@fx//:x|str=@@[unknown repo 'fx' requested from @@dep++ext+probe]//:x|name=x|package=",
+    "N45|probe|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=",
+    "N45|probe|@platforms//:x|str=@@platforms//:x|name=x|package=",
+    "N45|probe|@probe//:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|@x_linux_amd64//:impl|str=@@dep++ext+x_linux_amd64//:impl|name=impl|package=",
+    "N45|probe|@x_linux_armv6//:impl|str=@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//:impl|name=impl|package="
+   ],
+   "native_rc": 1,
+   "native_stderr_tail": "N45|probe|@x_linux_amd64//:impl|str=@@dep++ext+x_linux_amd64//:impl|name=impl|package=\nN45|probe|@probe//:x|str=@@dep++ext+probe//:x|name=x|package=\nN45|probe|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=\nN45|probe|@platforms//:x|str=@@platforms//:x|name=x|package=\nN45|probe|@dep//:x|str=@@dep+//:x|name=x|package=\nN45|probe|@fx//:x|str=@@[unknown repo 'fx' requested from @@dep++ext+probe]//:x|name=x|package=\nN45|probe|@x_linux_armv6//:impl|str=@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//:impl|name=impl|package=\nN45|probe|@//:x|str=@@[unknown repo '' requested from @@dep++ext+probe]//:x|name=x|package=\nN45|probe|@@dep++ext+hub//:x|str=@@dep++ext+hub//:x|name=x|package=\nN45|probe|@@nope+//:x|str=@@nope+//:x|name=x|package=\nN45|probe|//:x|str=@@dep++ext+probe//:x|name=x|package=\nN45|probe|:x|str=@@dep++ext+probe//:x|name=x|package=\nbazel-rs: no such package '@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//': The repository '@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]' could not be resolved: No repository visible as '@x_linux_armv6' from repository '@@dep++ext+probe'\n/tmp/opencode/n45cap509273/native/cache/repositories/direct/trees/d1bc084823889c0718a322342f723df2b17c470d52ed67d7eb418cb3b3229b27/BUILD.bazel:5:7: no such package '@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//': The repository '@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]' could not be resolved: No repository visible as '@x_linux_armv6' from repository '@@dep++ext+probe' and referenced by '@@dep++ext+probe//:bad'\n",
+   "native_stdout": "",
+   "problems": [
+    "genuine error bodies missing in native stderr"
+   ],
+   "reference_errors": [
+    "An error occurred during the fetch of repository 'platforms':",
+    "com.google.devtools.build.lib.packages.RepositoryFetchException: no such package '@@platforms//host': java.io.IOException: Failed to download repository @@platforms: download is disabled."
+   ],
+   "reference_prints": [
+    "N45|probe|//:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|@//:x|str=@@[unknown repo '' requested from @@dep++ext+probe]//:x|name=x|package=",
+    "N45|probe|@@dep++ext+hub//:x|str=@@dep++ext+hub//:x|name=x|package=",
+    "N45|probe|@@nope+//:x|str=@@nope+//:x|name=x|package=",
+    "N45|probe|@dep//:x|str=@@dep+//:x|name=x|package=",
+    "N45|probe|@fx//:x|str=@@[unknown repo 'fx' requested from @@dep++ext+probe]//:x|name=x|package=",
+    "N45|probe|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=",
+    "N45|probe|@platforms//:x|str=@@platforms//:x|name=x|package=",
+    "N45|probe|@probe//:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|@x_linux_amd64//:impl|str=@@dep++ext+x_linux_amd64//:impl|name=impl|package=",
+    "N45|probe|@x_linux_armv6//:impl|str=@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//:impl|name=impl|package="
+   ],
+   "reference_rc": 1,
+   "reference_stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@x_linux_amd64//:impl|str=@@dep++ext+x_linux_amd64//:impl|name=impl|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@probe//:x|str=@@dep++ext+probe//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@platforms//:x|str=@@platforms//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@dep//:x|str=@@dep+//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@fx//:x|str=@@[unknown repo 'fx' requested from @@dep++ext+probe]//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@x_linux_armv6//:impl|str=@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//:impl|name=impl|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@//:x|str=@@[unknown repo '' requested from @@dep++ext+probe]//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@@dep++ext+hub//:x|str=@@dep++ext+hub//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@@nope+//:x|str=@@nope+//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|//:x|str=@@dep++ext+probe//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|:x|str=@@dep++ext+probe//:x|name=x|package=\nINFO: Repo platforms defined by rule http_archive in @@bazel_tools//tools/build_defs/repo:http.bzl\nERROR: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/bazel_tools/tools/build_defs/repo/http.bzl:203:45: An error occurred during the fetch of repository 'platforms':\n   Traceback (most recent call last):\n\tFile \"/tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/bazel_tools/tools/build_defs/repo/http.bzl\", line 203, column 45, in _http_archive_impl\n\t\tdownload_info = ctx.download_and_extract(\nError in download_and_extract: java.io.IOException: Failed to download repository @@platforms: download is disabled.\nERROR: com.google.devtools.build.lib.packages.RepositoryFetchException: no such package '@@platforms//host': java.io.IOException: Failed to download repository @@platforms: download is disabled.\nINFO: Elapsed time: 1.069s, Critical Path: 0.00s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\n",
+   "reference_stdout": "",
+   "target": "@probe//:bad",
+   "verdict": "MISMATCH",
+   "workspace": "A"
+  },
+  {
+   "command": "build",
+   "id": "A11_native_rule_invalid_edge",
+   "missing_in_native": [
+    "An error occurred during the fetch of repository 'platforms':",
+    "com.google.devtools.build.lib.packages.RepositoryFetchException: no such package '@@platforms//host': java.io.IOException: Failed to download repository @@platforms: download is disabled."
+   ],
+   "native_prints": [
+    "N45|probe|//:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|@//:x|str=@@[unknown repo '' requested from @@dep++ext+probe]//:x|name=x|package=",
+    "N45|probe|@@dep++ext+hub//:x|str=@@dep++ext+hub//:x|name=x|package=",
+    "N45|probe|@@nope+//:x|str=@@nope+//:x|name=x|package=",
+    "N45|probe|@dep//:x|str=@@dep+//:x|name=x|package=",
+    "N45|probe|@fx//:x|str=@@[unknown repo 'fx' requested from @@dep++ext+probe]//:x|name=x|package=",
+    "N45|probe|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=",
+    "N45|probe|@platforms//:x|str=@@platforms//:x|name=x|package=",
+    "N45|probe|@probe//:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|@x_linux_amd64//:impl|str=@@dep++ext+x_linux_amd64//:impl|name=impl|package=",
+    "N45|probe|@x_linux_armv6//:impl|str=@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//:impl|name=impl|package="
+   ],
+   "native_rc": 1,
+   "native_stderr_tail": "N45|probe|@x_linux_amd64//:impl|str=@@dep++ext+x_linux_amd64//:impl|name=impl|package=\nN45|probe|@probe//:x|str=@@dep++ext+probe//:x|name=x|package=\nN45|probe|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=\nN45|probe|@platforms//:x|str=@@platforms//:x|name=x|package=\nN45|probe|@dep//:x|str=@@dep+//:x|name=x|package=\nN45|probe|@fx//:x|str=@@[unknown repo 'fx' requested from @@dep++ext+probe]//:x|name=x|package=\nN45|probe|@x_linux_armv6//:impl|str=@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//:impl|name=impl|package=\nN45|probe|@//:x|str=@@[unknown repo '' requested from @@dep++ext+probe]//:x|name=x|package=\nN45|probe|@@dep++ext+hub//:x|str=@@dep++ext+hub//:x|name=x|package=\nN45|probe|@@nope+//:x|str=@@nope+//:x|name=x|package=\nN45|probe|//:x|str=@@dep++ext+probe//:x|name=x|package=\nN45|probe|:x|str=@@dep++ext+probe//:x|name=x|package=\nbazel-rs: no such package '@@[unknown repo 'nope' requested from @@dep++ext+probe]//': The repository '@@[unknown repo 'nope' requested from @@dep++ext+probe]' could not be resolved: No repository visible as '@nope' from repository '@@dep++ext+probe'\n/tmp/opencode/n45cap509273/native/cache/repositories/direct/trees/d1bc084823889c0718a322342f723df2b17c470d52ed67d7eb418cb3b3229b27/BUILD.bazel:6:10: no such package '@@[unknown repo 'nope' requested from @@dep++ext+probe]//': The repository '@@[unknown repo 'nope' requested from @@dep++ext+probe]' could not be resolved: No repository visible as '@nope' from repository '@@dep++ext+probe' and referenced by '@@dep++ext+probe//:fg'\n",
+   "native_stdout": "",
+   "problems": [
+    "genuine error bodies missing in native stderr"
+   ],
+   "reference_errors": [
+    "An error occurred during the fetch of repository 'platforms':",
+    "com.google.devtools.build.lib.packages.RepositoryFetchException: no such package '@@platforms//host': java.io.IOException: Failed to download repository @@platforms: download is disabled."
+   ],
+   "reference_prints": [
+    "N45|probe|//:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|@//:x|str=@@[unknown repo '' requested from @@dep++ext+probe]//:x|name=x|package=",
+    "N45|probe|@@dep++ext+hub//:x|str=@@dep++ext+hub//:x|name=x|package=",
+    "N45|probe|@@nope+//:x|str=@@nope+//:x|name=x|package=",
+    "N45|probe|@dep//:x|str=@@dep+//:x|name=x|package=",
+    "N45|probe|@fx//:x|str=@@[unknown repo 'fx' requested from @@dep++ext+probe]//:x|name=x|package=",
+    "N45|probe|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=",
+    "N45|probe|@platforms//:x|str=@@platforms//:x|name=x|package=",
+    "N45|probe|@probe//:x|str=@@dep++ext+probe//:x|name=x|package=",
+    "N45|probe|@x_linux_amd64//:impl|str=@@dep++ext+x_linux_amd64//:impl|name=impl|package=",
+    "N45|probe|@x_linux_armv6//:impl|str=@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//:impl|name=impl|package="
+   ],
+   "reference_rc": 1,
+   "reference_stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@x_linux_amd64//:impl|str=@@dep++ext+x_linux_amd64//:impl|name=impl|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@probe//:x|str=@@dep++ext+probe//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@hub//:x|str=@@dep++ext+hub//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@platforms//:x|str=@@platforms//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@dep//:x|str=@@dep+//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@fx//:x|str=@@[unknown repo 'fx' requested from @@dep++ext+probe]//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@x_linux_armv6//:impl|str=@@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//:impl|name=impl|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@//:x|str=@@[unknown repo '' requested from @@dep++ext+probe]//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@@dep++ext+hub//:x|str=@@dep++ext+hub//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|@@nope+//:x|str=@@nope+//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|//:x|str=@@dep++ext+probe//:x|name=x|package=\nDEBUG: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/defs.bzl:2:10: N45|probe|:x|str=@@dep++ext+probe//:x|name=x|package=\nINFO: Repo platforms defined by rule http_archive in @@bazel_tools//tools/build_defs/repo:http.bzl\nERROR: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/bazel_tools/tools/build_defs/repo/http.bzl:203:45: An error occurred during the fetch of repository 'platforms':\n   Traceback (most recent call last):\n\tFile \"/tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/bazel_tools/tools/build_defs/repo/http.bzl\", line 203, column 45, in _http_archive_impl\n\t\tdownload_info = ctx.download_and_extract(\nError in download_and_extract: java.io.IOException: Failed to download repository @@platforms: download is disabled.\nERROR: com.google.devtools.build.lib.packages.RepositoryFetchException: no such package '@@platforms//host': java.io.IOException: Failed to download repository @@platforms: download is disabled.\nINFO: Elapsed time: 1.185s, Critical Path: 0.00s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\n",
+   "reference_stdout": "",
+   "target": "@probe//:fg",
+   "verdict": "MISMATCH",
+   "workspace": "A"
+  },
+  {
+   "command": "query",
+   "id": "A12_generated_invalid_getter",
+   "missing_in_native": [],
+   "native_prints": [
+    "N45|getter|\" + Label(\"@x_linux_armv6//:impl\").repo_name)"
+   ],
+   "native_rc": 1,
+   "native_stderr_tail": "bazel-rs: cannot evaluate @@dep++ext+probe//getter:defs.bzl: error: 'repo_name' is not allowed on invalid Label @@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//:impl\n --> @@dep++ext+probe//getter:defs.bzl:1:23\n  |\n1 | print(\"N45|getter|\" + Label(\"@x_linux_armv6//:impl\").repo_name)\n  |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\n",
+   "native_stdout": "",
+   "problems": [],
+   "reference_errors": [
+    "'repo_name' is not allowed on invalid Label @@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//:impl"
+   ],
+   "reference_prints": [
+    "N45|getter|\" + Label(\"@x_linux_armv6//:impl\").repo_name)"
+   ],
+   "reference_rc": 7,
+   "reference_stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"/tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/dep++ext+probe/getter/defs.bzl\", line 1, column 53, in <toplevel>\n\t\tprint(\"N45|getter|\" + Label(\"@x_linux_armv6//:impl\").repo_name)\nError: 'repo_name' is not allowed on invalid Label @@[unknown repo 'x_linux_armv6' requested from @@dep++ext+probe (did you mean 'x_linux_amd64'?)]//:impl\nERROR: error loading package '@@dep++ext+probe//getter': initialization of module 'getter/defs.bzl' failed\n",
+   "reference_stdout": "",
+   "target": "@probe//getter:all",
+   "verdict": "EXACT_MESSAGE",
+   "workspace": "A"
+  },
+  {
+   "command": "query",
+   "id": "A13_main_invalid_getter",
+   "missing_in_native": [],
+   "native_prints": [
+    "N45|main_getter|\" + Label(\"@nope//:x\").workspace_name)"
+   ],
+   "native_rc": 1,
+   "native_stderr_tail": "bazel-rs: cannot evaluate //getter:defs.bzl: error: 'workspace_name' is not allowed on invalid Label @@[unknown repo 'nope' requested from @@]//:x\n --> //getter:defs.bzl:1:28\n  |\n1 | print(\"N45|main_getter|\" + Label(\"@nope//:x\").workspace_name)\n  |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\n",
+   "native_stdout": "",
+   "problems": [],
+   "reference_errors": [
+    "'workspace_name' is not allowed on invalid Label @@[unknown repo 'nope' requested from @@]//:x"
+   ],
+   "reference_prints": [
+    "N45|main_getter|\" + Label(\"@nope//:x\").workspace_name)"
+   ],
+   "reference_rc": 7,
+   "reference_stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"/tmp/opencode/n45cap509273/bazel/A/getter/defs.bzl\", line 1, column 46, in <toplevel>\n\t\tprint(\"N45|main_getter|\" + Label(\"@nope//:x\").workspace_name)\nError: 'workspace_name' is not allowed on invalid Label @@[unknown repo 'nope' requested from @@]//:x\nERROR: error loading package 'getter': initialization of module 'getter/defs.bzl' failed\n",
+   "reference_stdout": "",
+   "target": "//getter:all",
+   "verdict": "EXACT_MESSAGE",
+   "workspace": "A"
+  },
+  {
+   "command": "build",
+   "id": "A14_hub_toolchain_targets",
+   "missing_in_native": [
+    "An error occurred during the fetch of repository 'platforms':",
+    "com.google.devtools.build.lib.packages.RepositoryFetchException: no such package '@@platforms//host': java.io.IOException: Failed to download repository @@platforms: download is disabled."
+   ],
+   "native_prints": [],
+   "native_rc": 0,
+   "native_stderr_tail": "bazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+   "native_stdout": "",
+   "problems": [
+    "returncode class differs",
+    "genuine error bodies missing in native stderr"
+   ],
+   "reference_errors": [
+    "An error occurred during the fetch of repository 'platforms':",
+    "com.google.devtools.build.lib.packages.RepositoryFetchException: no such package '@@platforms//host': java.io.IOException: Failed to download repository @@platforms: download is disabled."
+   ],
+   "reference_prints": [],
+   "reference_rc": 1,
+   "reference_stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Repo platforms defined by rule http_archive in @@bazel_tools//tools/build_defs/repo:http.bzl\nERROR: /tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/bazel_tools/tools/build_defs/repo/http.bzl:203:45: An error occurred during the fetch of repository 'platforms':\n   Traceback (most recent call last):\n\tFile \"/tmp/opencode/n45cap509273/bazel/root/cafb7932298eac46bcd1c2562fd63318/external/bazel_tools/tools/build_defs/repo/http.bzl\", line 203, column 45, in _http_archive_impl\n\t\tdownload_info = ctx.download_and_extract(\nError in download_and_extract: java.io.IOException: Failed to download repository @@platforms: download is disabled.\nERROR: com.google.devtools.build.lib.packages.RepositoryFetchException: no such package '@@platforms//host': java.io.IOException: Failed to download repository @@platforms: download is disabled.\nINFO: Elapsed time: 1.164s, Critical Path: 0.00s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\n",
+   "reference_stdout": "",
+   "target": "@hub//:all",
+   "verdict": "MISMATCH",
+   "workspace": "A"
+  },
+  {
+   "command": "build",
+   "id": "B01_rules_oci_resolution",
+   "missing_in_native": [
+    "An error occurred during the fetch of repository 'platforms':",
+    "com.google.devtools.build.lib.packages.RepositoryFetchException: no such package '@@platforms//host': java.io.IOException: Failed to download repository @@platforms: download is disabled."
+   ],
+   "native_prints": [
+    "N45|oci_probe|resolved=False"
+   ],
+   "native_rc": 0,
+   "native_stderr_tail": "WARNING: /tmp/opencode/n45cap509273/native/B/MODULE.bazel:13:20: The module extension oci defined in @rules_oci//oci:extensions.bzl reported incorrect imports of repositories via use_repo():\n\nImported, but reported as indirect dependencies by the extension:\n    oci_crane_toolchains, oci_regctl_toolchains\n\nFix the use_repo calls by running 'bazel mod tidy'.\nN45|oci_probe|resolved=False\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+   "native_stdout": "",
+   "problems": [
+    "returncode class differs",
+    "N45 prints differ",
+    "genuine error bodies missing in native stderr"
+   ],
+   "reference_errors": [
+    "An error occurred during the fetch of repository 'platforms':",
+    "com.google.devtools.build.lib.packages.RepositoryFetchException: no such package '@@platforms//host': java.io.IOException: Failed to download repository @@platforms: download is disabled."
+   ],
+   "reference_prints": [],
+   "reference_rc": 1,
+   "reference_stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Repo platforms defined by rule http_archive in @@bazel_tools//tools/build_defs/repo:http.bzl\nERROR: /tmp/opencode/n45cap509273/bazel/root/e46fe1ff9dd49a53c50f0dd1b809e0bc/external/bazel_tools/tools/build_defs/repo/http.bzl:203:45: An error occurred during the fetch of repository 'platforms':\n   Traceback (most recent call last):\n\tFile \"/tmp/opencode/n45cap509273/bazel/root/e46fe1ff9dd49a53c50f0dd1b809e0bc/external/bazel_tools/tools/build_defs/repo/http.bzl\", line 203, column 45, in _http_archive_impl\n\t\tdownload_info = ctx.download_and_extract(\nError in download_and_extract: java.io.IOException: Failed to download repository @@platforms: download is disabled.\nERROR: com.google.devtools.build.lib.packages.RepositoryFetchException: no such package '@@platforms//host': java.io.IOException: Failed to download repository @@platforms: download is disabled.\nINFO: Elapsed time: 1.152s, Critical Path: 0.00s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\n",
+   "reference_stdout": "",
+   "target": "//:probe",
+   "verdict": "MISMATCH",
+   "workspace": "B"
+  },
+  {
+   "command": "build",
+   "id": "B02_rules_oci_armv6_toolchain",
+   "missing_in_native": [
+    "An error occurred during the fetch of repository 'bazel_skylib+':",
+    "no such package '@@bazel_skylib+//lib': java.io.IOException: Failed to download repository @@bazel_skylib+: download is disabled."
+   ],
+   "native_prints": [],
+   "native_rc": 0,
+   "native_stderr_tail": "WARNING: /tmp/opencode/n45cap509273/native/B/MODULE.bazel:13:20: The module extension oci defined in @rules_oci//oci:extensions.bzl reported incorrect imports of repositories via use_repo():\n\nImported, but reported as indirect dependencies by the extension:\n    oci_crane_toolchains, oci_regctl_toolchains\n\nFix the use_repo calls by running 'bazel mod tidy'.\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+   "native_stdout": "",
+   "problems": [
+    "returncode class differs",
+    "genuine error bodies missing in native stderr"
+   ],
+   "reference_errors": [
+    "An error occurred during the fetch of repository 'bazel_skylib+':",
+    "no such package '@@bazel_skylib+//lib': java.io.IOException: Failed to download repository @@bazel_skylib+: download is disabled."
+   ],
+   "reference_prints": [],
+   "reference_rc": 1,
+   "reference_stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Repo bazel_features+ defined by rule http_archive in @@bazel_tools//tools/build_defs/repo:http.bzl\nINFO: Repo bazel_skylib+ defined by rule http_archive in @@bazel_tools//tools/build_defs/repo:http.bzl\nERROR: /tmp/opencode/n45cap509273/bazel/root/e46fe1ff9dd49a53c50f0dd1b809e0bc/external/bazel_tools/tools/build_defs/repo/http.bzl:203:45: An error occurred during the fetch of repository 'bazel_skylib+':\n   Traceback (most recent call last):\n\tFile \"/tmp/opencode/n45cap509273/bazel/root/e46fe1ff9dd49a53c50f0dd1b809e0bc/external/bazel_tools/tools/build_defs/repo/http.bzl\", line 203, column 45, in _http_archive_impl\n\t\tdownload_info = ctx.download_and_extract(\nError in download_and_extract: java.io.IOException: Failed to download repository @@bazel_skylib+: download is disabled.\nERROR: no such package '@@bazel_skylib+//lib': java.io.IOException: Failed to download repository @@bazel_skylib+: download is disabled.\nINFO: Elapsed time: 1.031s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\n",
+   "reference_stdout": "",
+   "target": "@oci_regctl_toolchains//:linux_armv6_toolchain",
+   "verdict": "MISMATCH",
+   "workspace": "B"
+  },
+  {
+   "command": "query",
+   "id": "B03_rules_oci_hub_query",
+   "missing_in_native": [
+    "An error occurred during the fetch of repository 'bazel_features+':",
+    "no such package '@@rules_oci++oci+oci_regctl_toolchains//': no such package '@@bazel_features+//': java.io.IOException: Failed to download repository @@bazel_features+: download is disabled."
+   ],
+   "native_prints": [],
+   "native_rc": 0,
+   "native_stderr_tail": "WARNING: /tmp/opencode/n45cap509273/native/B/MODULE.bazel:13:20: The module extension oci defined in @rules_oci//oci:extensions.bzl reported incorrect imports of repositories via use_repo():\n\nImported, but reported as indirect dependencies by the extension:\n    oci_crane_toolchains, oci_regctl_toolchains\n\nFix the use_repo calls by running 'bazel mod tidy'.\n",
+   "native_stdout": "@@rules_oci++oci+oci_regctl_toolchains//:current_toolchain\n@@rules_oci++oci+oci_regctl_toolchains//:darwin_amd64_toolchain\n@@rules_oci++oci+oci_regctl_toolchains//:darwin_arm64_toolchain\n@@rules_oci++oci+oci_regctl_toolchains//:linux_amd64_toolchain\n@@rules_oci++oci+oci_regctl_toolchains//:linux_arm64_toolchain\n@@rules_oci++oci+oci_regctl_toolchains//:linux_armv6_toolchain\n@@rules_oci++oci+oci_regctl_toolchains//:linux_i386_toolchain\n@@rules_oci++oci+oci_regctl_toolchains//:linux_s390x_toolchain\n@@rules_oci++oci+oci_regctl_toolchains//:windows_amd64_toolchain\n@@rules_oci++oci+oci_regctl_toolchains//:windows_armv6_toolchain\n",
+   "problems": [
+    "returncode class differs",
+    "genuine error bodies missing in native stderr"
+   ],
+   "reference_errors": [
+    "An error occurred during the fetch of repository 'bazel_features+':",
+    "no such package '@@rules_oci++oci+oci_regctl_toolchains//': no such package '@@bazel_features+//': java.io.IOException: Failed to download repository @@bazel_features+: download is disabled."
+   ],
+   "reference_prints": [],
+   "reference_rc": 7,
+   "reference_stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Repo bazel_features+ defined by rule http_archive in @@bazel_tools//tools/build_defs/repo:http.bzl\nINFO: Repo bazel_skylib+ defined by rule http_archive in @@bazel_tools//tools/build_defs/repo:http.bzl\nERROR: /tmp/opencode/n45cap509273/bazel/root/e46fe1ff9dd49a53c50f0dd1b809e0bc/external/bazel_tools/tools/build_defs/repo/http.bzl:203:45: An error occurred during the fetch of repository 'bazel_features+':\n   Traceback (most recent call last):\n\tFile \"/tmp/opencode/n45cap509273/bazel/root/e46fe1ff9dd49a53c50f0dd1b809e0bc/external/bazel_tools/tools/build_defs/repo/http.bzl\", line 203, column 45, in _http_archive_impl\n\t\tdownload_info = ctx.download_and_extract(\nError in download_and_extract: java.io.IOException: Failed to download repository @@bazel_features+: download is disabled.\nERROR: no such package '@@rules_oci++oci+oci_regctl_toolchains//': no such package '@@bazel_features+//': java.io.IOException: Failed to download repository @@bazel_features+: download is disabled.\n",
+   "reference_stdout": "",
+   "target": "@oci_regctl_toolchains//:all",
+   "verdict": "MISMATCH",
+   "workspace": "B"
+  }
+ ],
+ "fixture_trees": {
+  "oci_workspace": [
+   "2ea502b2ca4395fb742725df687a8b884e2cddc4f447ad88b7fce56be52a3cc5",
+   12
+  ],
+  "workspace": [
+   "88b809e97ff0e4d67c4492f2415531e46e09a2eb8d17e074db6639ace7eb2a1d",
+   11
+  ]
+ },
+ "native_argv": "bazel-rs --ignore_all_rc_files --cache-dir=<private seeded> CMD --experimental-builtin-modules --lockfile_mode=off --registry=file://<builtin_modules/registry> --repository_disable_download TARGET",
+ "native_path": "/tmp/opencode/bazel-parity-extmapping/target/release/bazel-rs",
+ "native_sha256": "523f6c50e0e5c113a5d796b1b1c9946b426a81da1ca2255619e0b95627fb3474",
+ "offline": "file:// registry; seeded caches; --repository_disable_download",
+ "reference_argv": "bazel --batch --ignore_all_rc_files --output_user_root=<private> CMD --lockfile_mode=off --registry=file://<builtin_modules/registry> --repository_disable_download --incompatible_autoload_externally= --noshow_progress --color=no --curses=no --repository_cache=<private seeded> TARGET",
+ "reference_path": "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+ "reference_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+ "rules_oci_source": "/home/coder/.cache/bazel/_bazel_coder/c133fb6f7a443d300f42ed363b8adea5/external/rules_oci+",
+ "rules_oci_tree": [
+  "e3d044040deb6145df7e552bc324a445b991bab9dca65fee2a995d5222e10528",
+  198
+ ],
+ "scope": "N45_EXTENSION_REPO_MAPPING_PAIRED_CAPTURE",
+ "scratch_removed": true,
+ "seed_files": 230,
+ "source": {
+  "base_commit": "2356bf4f8460317f89363b1b4910028d6bfc3617",
+  "combined_sha256": "a990918a65ff023ddda69bc54d55bef6a9d5dfc7e374054c1715806a1c3bf0f7",
+  "head": "2356bf4f8460317f89363b1b4910028d6bfc3617",
+  "tracked_diff_bytes": 51127,
+  "tracked_diff_sha256": "b4b6df921fe99b8cd0560bd51cfe4155fec467730b161fddce6fdeddc8ebc2f3",
+  "untracked_sha256": {
+   "docs/EXTENSION_REPO_MAPPING.md": "82be5ce1bb647669d11c6eb8832a4683958e41e42bffc5b12fe8458482acd361",
+   "tests/ext_repo_mapping.rs": "8e7003ce4cf807700078a741c727070b3acb192a9cb463480ae6da3065ebdbdb",
+   "tests/fixtures/ext_repo_mapping/oci_workspace/.bazelversion": "14ebdd5f5d8dfccb0fc574ea9aabecc07d7cdd99d53e4fc01e58f9c3d23d18ef",
+   "tests/fixtures/ext_repo_mapping/oci_workspace/BUILD.bazel": "c91cae7ebca5a57f97d72f0debea6159ada7e38039149a7ba3ea17532c705b30",
+   "tests/fixtures/ext_repo_mapping/oci_workspace/MODULE.bazel": "d71db7a06797d59941ecd4a1f6b24619b99c513637af2ee84571a83d65db6141",
+   "tests/fixtures/ext_repo_mapping/oci_workspace/probe.bzl": "17855c3570e026f428820a2e5131ccb3962dbbdeaa31d7cf8689163c5de98598",
+   "tests/fixtures/ext_repo_mapping/oci_workspace/stubs/aspect_bazel_lib/BUILD.bazel": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "tests/fixtures/ext_repo_mapping/oci_workspace/stubs/aspect_bazel_lib/MODULE.bazel": "83c27b4415974ddae540a959fb5195498fced225b89c31c21b5d0144bd296fea",
+   "tests/fixtures/ext_repo_mapping/oci_workspace/stubs/aspect_bazel_lib/lib/BUILD.bazel": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "tests/fixtures/ext_repo_mapping/oci_workspace/stubs/aspect_bazel_lib/lib/base64.bzl": "a6ae0fe960dc98dc0630ac1fdee592660461e77df87a8d7660c77d0742e89da2",
+   "tests/fixtures/ext_repo_mapping/oci_workspace/stubs/aspect_bazel_lib/lib/extensions.bzl": "a084e170ba21913ec0a2212c0b8df8344862bc9c2bd29f00f2cd2d06e213f330",
+   "tests/fixtures/ext_repo_mapping/oci_workspace/stubs/aspect_bazel_lib/lib/repo_utils.bzl": "7cbea0adbc037b35ef3e9b120a3523c1206cc14635756778f253f4b5c27686e3",
+   "tests/fixtures/ext_repo_mapping/oci_workspace/stubs/aspect_bazel_lib/lib/repositories.bzl": "ecfe5953693ea205dd19ede57a7b6f7c3260bce177ad58827852dd9eddd35d7f",
+   "tests/fixtures/ext_repo_mapping/oci_workspace/stubs/aspect_bazel_lib/lib/utils.bzl": "3977e4808a7bc37796bded2a24af103defb6690d51f6c019216bc32d8bd07718",
+   "tests/fixtures/ext_repo_mapping/seed_manifest.json": "4d4431a2a4817b5ba2cb92d63cbb6d4069b85082e1dad24d52dbb501757b8cf5",
+   "tests/fixtures/ext_repo_mapping/workspace/.bazelversion": "14ebdd5f5d8dfccb0fc574ea9aabecc07d7cdd99d53e4fc01e58f9c3d23d18ef",
+   "tests/fixtures/ext_repo_mapping/workspace/BUILD.bazel": "fed9fbfdcfe9aaf5e82674a21a9ed774c040ae5e3fdc10c67449f267ad73b65c",
+   "tests/fixtures/ext_repo_mapping/workspace/MODULE.bazel": "eb48656e790a692a0e9aa08a1cdf936562a8876e0c03548e0f299d6723bfde04",
+   "tests/fixtures/ext_repo_mapping/workspace/dep/BUILD.bazel": "adeac0e7ef73fff33f948bf36aa9bfb5e893c7a5d5f3edcc70ed1a29c551113e",
+   "tests/fixtures/ext_repo_mapping/workspace/dep/MODULE.bazel": "1919ded6f7cbca49766317e31bf5172d82854a8117c2180e41730da07a92ad30",
+   "tests/fixtures/ext_repo_mapping/workspace/dep/ext.bzl": "03b76d1c65b05cc34d4f12dcfb7297fa69ae2423726c999ccde518dc206c9f13",
+   "tests/fixtures/ext_repo_mapping/workspace/dep/probe.bzl": "c57fb2659fa953e4e0827f8a6e24804d8759ada77daf2515593e549efd917bb4",
+   "tests/fixtures/ext_repo_mapping/workspace/dep/rules.bzl": "4ceadef4e1145bf2e95aaf384f177b51baf61961db19060cc6807c92fbcc5398",
+   "tests/fixtures/ext_repo_mapping/workspace/getter/BUILD.bazel": "83d6c67e36479ed2a73ae8003e652f3687e6a069b007f1db49aac6117b75c229",
+   "tests/fixtures/ext_repo_mapping/workspace/getter/defs.bzl": "8407b8162946676b7b936ea483b11d6b3d01f176e4eabb749dace5e4c067eb23",
+   "tests/fixtures/ext_repo_mapping/workspace/rootext.bzl": "2b5cf09991e33c22d2da063292970fac4b5e5164b3619b76452e234a869bc9ca"
+  }
+ },
+ "summary": {
+  "EXACT_MESSAGE": 2,
+  "MATCH": 5,
+  "MISMATCH": 10
+ }
+}

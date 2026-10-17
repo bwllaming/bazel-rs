@@ -1,0 +1,13 @@
+load("@dep//:rules.bzl", "lifted", "use")
+
+use(name = "u")
+
+# The select key is visible to the main repository, not to @dep (the rule
+# and initializer's repository).
+lifted(
+    name = "sel",
+    v = select({
+        "@hub//:cfg": ["hub"],
+        "//conditions:default": ["default"],
+    }),
+)

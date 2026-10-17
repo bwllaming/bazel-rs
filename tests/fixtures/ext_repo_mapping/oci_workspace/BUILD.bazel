@@ -1,0 +1,5 @@
+load(":probe.bzl", "probe")
+
+toolchain_type(name = "tt")
+
+probe(name = "probe")

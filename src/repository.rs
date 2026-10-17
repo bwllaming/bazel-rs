@@ -1426,6 +1426,46 @@ impl RepositorySet {
             Label::parse_in(text, repository, package, &mapping)
         }
     }
+
+    /// Label.parseWithPackageContext (cmdline/Label.java:177-238): an
+    /// apparent repository the context repository does not see is NOT an
+    /// error but an unresolvable repository name
+    /// (RepositoryMapping.get, cmdline/RepositoryMapping.java:133-140) with
+    /// SpellChecker.didYouMean over the context repository's mapping keys;
+    /// only a later fetch of that repository fails
+    /// (crate::label::unresolvable_package_message). Every other error is
+    /// returned unchanged.
+    pub fn parse_deferred(
+        &self,
+        text: &str,
+        repository: &str,
+        package: &str,
+    ) -> Result<Label, String> {
+        match self.parse(text, repository, package) {
+            Err(error) if error.starts_with("unknown apparent repository") => {
+                let name = crate::bazel_label::Parts::parse(text)
+                    .ok()
+                    .and_then(|parts| parts.repo.filter(|_| !parts.repo_is_canonical))
+                    .unwrap_or_default();
+                let suggestion = self.unknown_repository_suggestion(name, repository);
+                crate::label::deferred_label(text, repository, &suggestion).ok_or(error)
+            }
+            other => other,
+        }
+    }
+
+    /// SpellChecker.didYouMean(name, mapping.entries().keySet()) for the
+    /// context repository's complete mapping. Bazel iterates the mapping in
+    /// insertion order and keeps the first of equally close candidates;
+    /// native mappings are sorted maps, so a tie between equally distant
+    /// names picks the lexicographically first (docs/EXTENSION_REPO_MAPPING.md).
+    pub fn unknown_repository_suggestion(&self, name: &str, repository: &str) -> String {
+        let keys = match self.mapping(repository) {
+            Ok(mapping) => mapping.keys().map(String::as_str).collect::<Vec<_>>(),
+            Err(_) => return String::new(),
+        };
+        crate::native_rules::did_you_mean(name, &keys)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -374,39 +374,32 @@ fn constructed_label_assignment_and_missing_property_fail_at_access() {
 }
 
 #[test]
-fn native_boundary_unknown_apparent_alias_rejects_in_constructor() {
+fn unknown_apparent_alias_yields_invalid_label_whose_getters_reject() {
+    // Label.parseWithPackageContext: the constructor succeeds with an invalid
+    // repository; repo_name then fails (Label.checkRepoVisibilityForStarlark,
+    // cmdline/Label.java:762-766).
     for external in [false, true] {
         let f = Fixture::new();
-        // Deliberately no getter expression: unlike Bazel's deferred invalid
-        // Label, native never reaches the post-construction marker.
-        let source = "print('BEFORE_OPERATION')\nlabel = Label('@not_visible//:missing')\nprint('AFTER_OPERATION')\n";
+        let source = "print('BEFORE_OPERATION')\nlabel = Label('@not_visible//:missing')\nprint(label.repo_name)\nprint('AFTER_OPERATION')\n";
         if external {
             f.file("dep/invalid.bzl", format!("{source}\nVALUE = 1\n"));
             f.probe("load('@shared//:invalid.bzl', 'VALUE')\n");
         } else {
             f.probe(source);
         }
-        let diagnostic = f.reject("unknown apparent repository @not_visible");
         let owner = if external { "dep+" } else { "" };
-        assert!(
-            diagnostic.contains(&format!("from canonical repository {owner:?}")),
-            "{diagnostic}"
-        );
-        assert!(
-            !diagnostic.contains("not allowed on invalid Label"),
-            "{diagnostic}"
-        );
+        f.reject(&format!(
+            "'repo_name' is not allowed on invalid Label @@[unknown repo 'not_visible' requested from @@{owner}]//:missing"
+        ));
     }
 }
 
 #[test]
-fn native_boundary_external_empty_apparent_alias_rejects_in_constructor() {
+fn external_empty_apparent_alias_yields_invalid_label() {
+    // `@//` outside the main repository: the empty apparent name is not in a
+    // non-root module's mapping (Module.getRepoMappingWithBazelDepsOnly).
     let f = Fixture::new();
-    f.file("dep/invalid.bzl", "print('BEFORE_OPERATION')\nlabel = Label('@//:root.txt')\nprint('AFTER_OPERATION')\nVALUE = 1\n");
+    f.file("dep/invalid.bzl", "print('BEFORE_OPERATION')\nlabel = Label('@//:root.txt')\nprint(label.workspace_root)\nprint('AFTER_OPERATION')\nVALUE = 1\n");
     f.probe("load('@shared//:invalid.bzl', 'VALUE')\n");
-    let diagnostic = f.reject("unknown apparent repository @ from canonical repository \"dep+\"");
-    assert!(
-        !diagnostic.contains("not allowed on invalid Label"),
-        "{diagnostic}"
-    );
+    f.reject("'workspace_root' is not allowed on invalid Label @@[unknown repo '' requested from @@dep+]//:root.txt");
 }

@@ -829,12 +829,8 @@ impl Engine {
         // (crate::label::unknown_repository_name) names no loadable package:
         // RepositoryMapping's unresolved name (cmdline/RepositoryName.java),
         // reported like PackageLookupFunction's repository error.
-        if let Some(name) = crate::label::unknown_repository_name(&package.repository) {
-            return Err(format!(
-                "no such package '@@{repository}//{}': The repository '@@{repository}' could not be resolved: No repository visible as '@{name}' from main repository",
-                package.package,
-                repository = package.repository
-            ));
+        if let Some(message) = crate::label::unresolvable_package_message(package) {
+            return Err(message);
         }
         if !self.packages.contains_key(package) {
             let rules = package::evaluate_in(self.repositories.clone(), package)?;
@@ -1208,8 +1204,12 @@ impl Engine {
             // In particular, //p:t here denotes main, even in an external rule.
             Label::parse_canonical(text)
         } else {
+            // Native rules keep raw apparent-repository labels; Bazel's
+            // attribute conversion never fails on a non-visible repository
+            // (Label.parseWithPackageContext), only its package lookup does
+            // (crate::label::unresolvable_package_message).
             self.repositories
-                .parse(text, &rule.label.repository, &rule.label.package)
+                .parse_deferred(text, &rule.label.repository, &rule.label.package)
         }
     }
 
@@ -4238,19 +4238,7 @@ impl Engine {
         // An unresolvable apparent repository (crate::toolchains::deferred_label_text):
         // the BuildFileNotFoundException of its package, also reported as an
         // event without location (paired capture B4/resolution_errors/unknown_repo).
-        if let Some((name, requester)) =
-            crate::toolchains::unknown_repository_parts(&label.repository)
-        {
-            let message = format!(
-                "no such package '@@{repository}//{package}': The repository '@@{repository}' could not be resolved: No repository visible as '@{name}' from {context}",
-                repository = label.repository,
-                package = label.package,
-                context = if requester.is_empty() {
-                    "main repository".to_owned()
-                } else {
-                    format!("repository '@@{requester}'")
-                }
-            );
+        if let Some(message) = crate::label::unresolvable_package_message(&label.package_id()) {
             return Err(ResolutionError::Reported(
                 message.clone(),
                 format!(
@@ -4792,13 +4780,10 @@ impl Engine {
         // An apparent repository the main repository does not see stays an
         // unresolvable label (`@@[unknown repo 'R' requested from @@]`,
         // crate::configuration) until the package is looked up.
-        if let Some(name) = crate::configuration::unknown_repository_name(label) {
+        if let Some(message) = crate::label::unresolvable_package_message(&label.package_id()) {
             return Err(PlatformError::Missing {
                 class: "BuildFileNotFoundException",
-                message: format!(
-                    "no such package '@@{}//{}': The repository '@@{}' could not be resolved: No repository visible as '@{name}' from main repository",
-                    label.repository, label.package, label.repository
-                ),
+                message,
             });
         }
         // The default --host_platform is @bazel_tools//tools:host_platform

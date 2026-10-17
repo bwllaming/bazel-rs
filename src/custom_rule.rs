@@ -1240,17 +1240,17 @@ mod values {
                     .parse(text, repository, package)
                     .map_err(anyhow::Error::msg)
             };
-            // Bazel converts an apparent repository the main repository does
-            // not see into `@@[unknown repo 'R' requested from @@]`
-            // (RepositoryMapping.get, cmdline/RepositoryName.java); the target
-            // loads and only its dependency edge fails at analysis.
+            // Bazel converts an apparent repository the package's repository
+            // (main, module or extension-generated) does not see into
+            // `@@[unknown repo 'R' requested from @@C]` (RepositoryMapping.get,
+            // cmdline/RepositoryName.java); the target loads and only its
+            // dependency edge fails at analysis.
             let resolve = |text: &str| {
                 resolve_in(text, &package.repository, &package.package).or_else(|error| {
-                    if package.repository.is_empty()
-                        && error.to_string().starts_with("unknown apparent repository")
-                        && let Some(label) = crate::configuration::deferred_unknown_repository(text)
-                    {
-                        return Ok(label);
+                    if error.to_string().starts_with("unknown apparent repository") {
+                        return repositories
+                            .parse_deferred(text, &package.repository, &package.package)
+                            .map_err(anyhow::Error::msg);
                     }
                     Err(error)
                 })
@@ -1958,15 +1958,29 @@ fn private_initializer_allowed(definition: &crate::label::Label) -> bool {
 }
 
 /// Lift a BUILD value like BuildType.copyAndLiftStarlarkValue: label strings
-/// become Label objects resolved in the target's package; select() is kept.
+/// become Label objects resolved in the target's package. A select()'s
+/// string keys become Labels resolved in the target's package too
+/// (BuildType.copyAndLiftSelectorList, packages/BuildType.java:264-301), so
+/// an initializer's returned select is not re-resolved in the rule
+/// definition's repository (StarlarkRuleClassFunctions.java:1810-1880);
+/// `//conditions:default` stays the default-condition key.
 fn lift<'v>(
     kind: &AttrKind,
     value: Value<'v>,
     resolve: &LabelResolver<'_>,
     heap: starlark::values::Heap<'v>,
 ) -> anyhow::Result<Value<'v>> {
-    if crate::rule_declarations::select_pieces(value).is_some() {
-        return Ok(value);
+    let condition = |key: Value<'v>| -> anyhow::Result<Value<'v>> {
+        match key.unpack_str() {
+            Some(text) if text != "//conditions:default" => {
+                crate::starlark_types::alloc_label(heap, &resolve(text)?.to_string())
+            }
+            _ => Ok(key),
+        }
+    };
+    let branch = |branch: Value<'v>| lift(kind, branch, resolve, heap);
+    if let Some(lifted) = crate::rule_declarations::lift_select(value, heap, &condition, &branch) {
+        return lifted;
     }
     let label = |value: Value<'v>| -> anyhow::Result<Value<'v>> {
         if crate::starlark_types::label_parts(value).is_some() {

@@ -79,7 +79,7 @@ impl Label {
                 "expected canonical //package:target or @@repository//package:target label: {input:?}"
             ));
         }
-        Self::parse_in(input, "", "", &BTreeMap::new())
+        Self::parse_in_with(input, "", "", &BTreeMap::new(), true)
     }
 
     /// Allocation-free upper bound for a resolved label's formatted payload.
@@ -115,29 +115,45 @@ impl Label {
             .saturating_add(5)
     }
 
+    /// Parse user-written label text. Repository names follow
+    /// RepositoryName.validate (LabelParser.Parts.validateAndCreate,
+    /// cmdline/LabelParser.java:72, RepositoryName.java:178-196): the
+    /// bracketed [`unknown_repository`] encoding is NOT accepted here
+    /// (`invalid repository name '[unknown repo ...]': repo names may contain
+    /// only ...`); only [`Label::parse_canonical`] round-trips it.
     pub fn parse_in(
         input: &str,
         repository: &str,
         current_package: &str,
         mapping: &BTreeMap<String, String>,
     ) -> Result<Self, String> {
-        // An apparent repository the requesting main repository does not see
-        // (RepositoryName.createUnvalidated, cmdline/RepositoryName.java):
-        // kept so the failure belongs to the dependency edge at analysis.
-        if let Some(rest) = input.strip_prefix("@@[unknown repo '")
-            && let Some((name, absolute)) = rest.split_once("' requested from @@]")
-            && absolute.starts_with("//")
+        Self::parse_in_with(input, repository, current_package, mapping, false)
+    }
+
+    fn parse_in_with(
+        input: &str,
+        repository: &str,
+        current_package: &str,
+        mapping: &BTreeMap<String, String>,
+        internal: bool,
+    ) -> Result<Self, String> {
+        // A native-produced invalid-repository label (RepositoryName
+        // toNonVisible, cmdline/RepositoryName.java:230-276) round-trips
+        // through its canonical string; user text never reaches here
+        // (Parts::parse rejects the bracketed name with
+        // RepositoryName.validate's text).
+        if internal
+            && let Some(explicit) = input.strip_prefix("@@")
+            && let Some((canonical, rest)) = explicit.split_once("//")
+            && let Some(unresolvable) = unresolvable_repository(canonical)
         {
-            let canonical = &input[2..input.len() - absolute.len()];
-            if unknown_repository_name(canonical) == Some(name) {
-                validate_repository_name(name)?;
-                let parts = absolute_parts(absolute)?;
-                return Ok(Label {
-                    repository: canonical.to_owned(),
-                    package: parts.pkg.to_owned(),
-                    name: parts.target.to_owned(),
-                });
-            }
+            validate_repository_name(unresolvable.name)?;
+            let parts = absolute_parts(&input[input.len() - rest.len() - 2..])?;
+            return Ok(Label {
+                repository: canonical.to_owned(),
+                package: parts.pkg.to_owned(),
+                name: parts.target.to_owned(),
+            });
         }
         let parts = Parts::parse(input)?;
         // Label.parseWithPackageContextInternal (Label.java:234-245).
@@ -255,14 +271,128 @@ impl fmt::Display for Label {
     }
 }
 
-/// The apparent name in `[unknown repo 'NAME' requested from @@]`, the
-/// repository Bazel gives an apparent repository the main repository does not
-/// see (cmdline/RepositoryName.java, RepositoryMapping.get).
-pub fn unknown_repository_name(repository: &str) -> Option<&str> {
-    repository
+/// The repository name RepositoryMapping.get gives an apparent name the
+/// context repository does not see (cmdline/RepositoryMapping.java:133-140):
+/// RepositoryName.createUnvalidated(name).toNonVisible(context,
+/// SpellChecker.didYouMean(name, mapping keys)), whose canonical form is
+/// `@@[unknown repo 'NAME' requested from @@CONTEXT SUGGESTION]`
+/// (cmdline/RepositoryName.java:268-276; the main repository's form is
+/// `@@`). This is the value of [`Label::repository`], without the `@@`.
+pub fn unknown_repository(name: &str, requester: &str, suggestion: &str) -> String {
+    format!("[unknown repo '{name}' requested from @@{requester}{suggestion}]")
+}
+
+/// The parts of an [`unknown_repository`] name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnresolvableRepository<'a> {
+    /// The apparent name as written (may be empty for `@//` outside the main
+    /// repository).
+    pub name: &'a str,
+    /// The canonical context repository (empty: the main repository).
+    pub requester: &'a str,
+    /// `""` or ` (did you mean 'x'?)`.
+    pub suggestion: &'a str,
+}
+
+impl UnresolvableRepository<'_> {
+    /// RepositoryName.getContextRepoDisplayString (RepositoryName.java:250-258).
+    pub fn context_display(&self) -> String {
+        context_display(self.requester)
+    }
+
+    /// RepositoryFetchFunction.compute for a non-visible name
+    /// (bazel/repository/RepositoryFetchFunction.java:149-153).
+    pub fn not_visible(&self) -> String {
+        format!(
+            "No repository visible as '@{}' from {}",
+            self.name,
+            self.context_display()
+        )
+    }
+}
+
+/// RepositoryName.getContextRepoDisplayString (RepositoryName.java:250-258):
+/// `main repository` or `repository '@@C'`.
+pub fn context_display(requester: &str) -> String {
+    if requester.is_empty() {
+        "main repository".to_owned()
+    } else {
+        format!("repository '@@{requester}'")
+    }
+}
+
+/// Parse an [`unknown_repository`] name.
+pub fn unresolvable_repository(repository: &str) -> Option<UnresolvableRepository<'_>> {
+    let rest = repository
         .strip_prefix("[unknown repo '")?
-        .strip_suffix("' requested from @@]")
-        .filter(|name| !name.is_empty() && !name.contains('\''))
+        .strip_suffix(']')?;
+    let (name, rest) = rest.split_once("' requested from @@")?;
+    if name.contains(['\'', '/']) {
+        return None;
+    }
+    // Canonical repository names contain no space; the suggestion starts with one.
+    let (requester, suggestion) = match rest.find(' ') {
+        Some(index) => (&rest[..index], &rest[index..]),
+        None => (rest, ""),
+    };
+    if !(suggestion.is_empty()
+        || suggestion
+            .strip_prefix(" (did you mean '")
+            .and_then(|s| s.strip_suffix("'?)"))
+            .is_some_and(|word| !word.contains(['\'', '/'])))
+        || requester.contains(['/', '\'', '[', ']'])
+    {
+        return None;
+    }
+    Some(UnresolvableRepository {
+        name,
+        requester,
+        suggestion,
+    })
+}
+
+/// RepositoryName.getName(), the repository part Label.compareTo and
+/// PackageIdentifier.compareTo order by (cmdline/PackageIdentifier.java:295-307):
+/// for a non-visible repository only the apparent name, not the context
+/// repository or suggestion of its canonical form.
+pub fn repository_sort_name(repository: &str) -> &str {
+    unresolvable_repository(repository).map_or(repository, |parts| parts.name)
+}
+
+/// The apparent name of an [`unknown_repository`] name, for any context
+/// repository.
+pub fn unknown_repository_name(repository: &str) -> Option<&str> {
+    unresolvable_repository(repository).map(|parts| parts.name)
+}
+
+/// The BuildFileNotFoundException PackageLookupFunction reports for a
+/// package in a non-visible repository: `no such package '@@R//PKG': The
+/// repository '@@R' could not be resolved: No repository visible as '@N'
+/// from CONTEXT` (skyframe/PackageLookupFunction.java, RepositoryFetchFunction.java:149-153).
+pub fn unresolvable_package_message(package: &PackageId) -> Option<String> {
+    let parts = unresolvable_repository(&package.repository)?;
+    Some(format!(
+        "no such package '@@{repository}//{}': The repository '@@{repository}' could not be resolved: {}",
+        package.package,
+        parts.not_visible(),
+        repository = package.repository,
+    ))
+}
+
+/// Label.parseWithPackageContext of `@NAME//pkg:target` text whose apparent
+/// repository the context repository does not see (Label.java:177-207):
+/// the label keeps an [`unknown_repository`]. `None` for any other text.
+pub fn deferred_label(text: &str, requester: &str, suggestion: &str) -> Option<Label> {
+    let parts = crate::bazel_label::Parts::parse(text).ok()?;
+    let name = parts.repo.filter(|_| !parts.repo_is_canonical)?;
+    if !parts.pkg_is_absolute || parts.pkg_ends_with_triple_dots {
+        return None;
+    }
+    Some(Label {
+        repository: unknown_repository(name, requester, suggestion),
+        package: parts.pkg.to_owned(),
+        name: parts.target.to_owned(),
+    })
 }
 
 /// The parts of `//pkg[:name]`, which must be a complete absolute label.
@@ -518,6 +648,74 @@ mod tests {
             let label = Label::parse(input, "context").unwrap();
             assert_eq!(Label::parse(&label.to_string(), "ignored").unwrap(), label);
         }
+    }
+
+    #[test]
+    fn unresolvable_repositories_round_trip_with_context_and_suggestion() {
+        let name = unknown_repository("x_armv6", "dep++ext+hub", " (did you mean 'x_amd64'?)");
+        assert_eq!(
+            name,
+            "[unknown repo 'x_armv6' requested from @@dep++ext+hub (did you mean 'x_amd64'?)]"
+        );
+        let parts = unresolvable_repository(&name).unwrap();
+        assert_eq!(
+            (parts.name, parts.requester, parts.suggestion),
+            ("x_armv6", "dep++ext+hub", " (did you mean 'x_amd64'?)")
+        );
+        assert_eq!(
+            parts.not_visible(),
+            "No repository visible as '@x_armv6' from repository '@@dep++ext+hub'"
+        );
+        let main = unresolvable_repository("[unknown repo 'nope' requested from @@]").unwrap();
+        assert_eq!(
+            main.not_visible(),
+            "No repository visible as '@nope' from main repository"
+        );
+        let empty = unresolvable_repository("[unknown repo '' requested from @@dep+]").unwrap();
+        assert_eq!(empty.name, "");
+        for invalid in [
+            "dep+",
+            "[unknown repo 'a' requested from @@x y]",
+            "[unknown repo 'a/b' requested from @@]",
+            "[unknown repo 'a' requested from @@c/d]",
+        ] {
+            assert!(unresolvable_repository(invalid).is_none(), "{invalid}");
+        }
+        let label = deferred_label("@x//p:t", "m+", " (did you mean 'y'?)").unwrap();
+        let text = label.to_string();
+        assert_eq!(
+            text,
+            "@@[unknown repo 'x' requested from @@m+ (did you mean 'y'?)]//p:t"
+        );
+        assert_eq!(Label::parse_canonical(&text).unwrap(), label);
+        assert_eq!(
+            unresolvable_package_message(&label.package_id()).unwrap(),
+            "no such package '@@[unknown repo 'x' requested from @@m+ (did you mean 'y'?)]//p': The repository '@@[unknown repo 'x' requested from @@m+ (did you mean 'y'?)]' could not be resolved: No repository visible as '@x' from repository '@@m+'"
+        );
+        assert!(deferred_label("@@x//p:t", "", "").is_none());
+        assert!(deferred_label("@x//p:../t", "", "").is_none());
+    }
+
+    #[test]
+    fn bracketed_repository_names_round_trip_only_internally() {
+        let text = "@@[unknown repo 'nope' requested from @@m+ (did you mean 'mope'?)]//p:t";
+        let label = Label::parse_canonical(text).unwrap();
+        assert_eq!(label.to_string(), text);
+        let error = Label::parse_in(text, "", "", &BTreeMap::new()).unwrap_err();
+        assert_eq!(
+            error,
+            "invalid repository name '[unknown repo 'nope' requested from @@m+ (did you mean 'mope'?)]': repo names may contain only A-Z, a-z, 0-9, '-', '_', '.' and '+'"
+        );
+        assert!(
+            Label::parse_in("@[x]//p:t", "", "", &BTreeMap::new())
+                .unwrap_err()
+                .starts_with("invalid repository name '[x]': repo names may contain only")
+        );
+        assert_eq!(
+            repository_sort_name("[unknown repo 'nope' requested from @@m+]"),
+            "nope"
+        );
+        assert_eq!(repository_sort_name("dep+"), "dep+");
     }
 
     #[test]

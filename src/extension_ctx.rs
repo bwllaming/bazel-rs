@@ -2669,7 +2669,15 @@ r(name='actual', words=[ctx.read('data', watch='no')])
             result.repositories[0].attributes["src"],
             RecordedValue::Label("//helper:lexical".to_owned())
         );
-        fixture.error("r(name='later')\nLabel('@later//:x')", "{}", &[], "later");
+        // A generated sibling is not visible to the extension's own .bzl:
+        // Label() yields an invalid Label (Label.parseWithPackageContext),
+        // which fails only when its repository is used.
+        fixture.error(
+            "r(name='later')\nl = Label('@later//:x')\nstr(l).startswith(\"@@[unknown repo 'later' requested from @@\") or fail('visible')\nl.repo_name",
+            "{}",
+            &[],
+            "'repo_name' is not allowed on invalid Label @@[unknown repo 'later' requested from @@",
+        );
     }
 
     #[test]

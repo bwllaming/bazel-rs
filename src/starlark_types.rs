@@ -254,6 +254,15 @@ impl LabelValue {
 }
 
 impl LabelValue {
+    /// The getters Label.checkRepoVisibilityForStarlark guards
+    /// (cmdline/Label.java:393,421,554,567) on a non-visible repository.
+    fn invalid_repository_getter(&self, name: &str) -> bool {
+        matches!(
+            name,
+            "workspace_root" | "repo_root" | "workspace_name" | "repo_name"
+        ) && crate::label::unresolvable_repository(&self.repository).is_some()
+    }
+
     /// Label.getCanonicalForm (cmdline/Label.java:490-492,
     /// PackageIdentifier.java:214-216, RepositoryName.java:284-286): no
     /// repository prefix in the main repository, `@@repo` otherwise.
@@ -430,16 +439,26 @@ impl<'v> StarlarkValue<'v> for LabelValue {
     /// with it (`sorted`, `<`).
     fn compare(&self, other: Value<'v>) -> starlark::Result<std::cmp::Ordering> {
         match Self::from_value(other) {
-            Some(other) => Ok((&self.repository, &self.package, &self.name).cmp(&(
-                &other.repository,
-                &other.package,
-                &other.name,
-            ))),
+            // PackageIdentifier.compareTo orders by RepositoryName.getName():
+            // a non-visible repository by its apparent name only.
+            Some(other) => Ok((
+                crate::label::repository_sort_name(&self.repository),
+                &self.package,
+                &self.name,
+            )
+                .cmp(&(
+                    crate::label::repository_sort_name(&other.repository),
+                    &other.package,
+                    &other.name,
+                ))),
             None => starlark::values::ValueError::unsupported_with(self, "compare", other),
         }
     }
 
     fn get_attr(&self, name: &str, heap: Heap<'v>) -> Option<Value<'v>> {
+        if self.invalid_repository_getter(name) {
+            return None;
+        }
         Some(match name {
             "name" => heap.alloc(self.name.as_str()),
             "package" => heap.alloc(self.package.as_str()),
@@ -450,6 +469,18 @@ impl<'v> StarlarkValue<'v> for LabelValue {
                 format!("external/{}", self.repository)
             }),
             _ => return None,
+        })
+    }
+
+    /// Label.checkRepoVisibilityForStarlark (cmdline/Label.java:762-766):
+    /// `'M' is not allowed on invalid Label L` for a label whose repository
+    /// its context repository does not see (crate::label::unresolvable_repository).
+    fn unknown_attribute_message(&self, attribute: &str) -> Option<String> {
+        self.invalid_repository_getter(attribute).then(|| {
+            format!(
+                "'{attribute}' is not allowed on invalid Label {}",
+                self.canonical_form()
+            )
         })
     }
 
@@ -1645,9 +1676,22 @@ pub fn analysis_globals(builder: &mut GlobalsBuilder) {
             LabelInput::String(text) => text,
         };
         if crate::loading::repositories(eval).is_some() {
-            return Ok(eval.heap().alloc(LabelValue::parse(
-                &crate::loading::resolve_label(eval, label_string)?.to_string(),
-            )?));
+            // Label() is Label.parseWithPackageContext in the innermost .bzl's
+            // package context (StarlarkRuleClassFunctions.label, :2124-2143):
+            // an apparent repository that repository does not see yields an
+            // invalid Label, not an error.
+            // LabelSyntaxException -> `invalid label in Label(): MSG` (:2140-2142)
+            // for Bazel-worded syntax errors (RepositoryName.validate).
+            let label =
+                crate::loading::resolve_label_deferred(eval, label_string).map_err(|e| {
+                    let text = e.to_string();
+                    if text.starts_with("invalid repository name '") {
+                        anyhow::anyhow!("invalid label in Label(): {text}")
+                    } else {
+                        e
+                    }
+                })?;
+            return Ok(eval.heap().alloc(LabelValue::parse(&label.to_string())?));
         }
         Ok(eval.heap().alloc(LabelValue::parse(
             label_string

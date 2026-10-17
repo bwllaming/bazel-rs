@@ -1,0 +1,14 @@
+# Genuine rules_oci 2.2.7 (copied at capture time from the read-only Bazel
+# cache into ./rules_oci) with a minimal offline aspect_bazel_lib stub.
+module(name = "oci_check")
+
+bazel_dep(name = "rules_oci", version = "2.2.7")
+local_path_override(module_name = "rules_oci", path = "rules_oci")
+
+bazel_dep(name = "aspect_bazel_lib", version = "2.7.2")
+local_path_override(module_name = "aspect_bazel_lib", path = "stubs/aspect_bazel_lib")
+
+bazel_dep(name = "platforms", version = "1.0.0")
+
+oci = use_extension("@rules_oci//oci:extensions.bzl", "oci")
+use_repo(oci, "oci_crane_toolchains", "oci_regctl_toolchains")

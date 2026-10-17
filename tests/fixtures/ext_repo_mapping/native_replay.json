@@ -1,0 +1,180 @@
+{
+ "cases": [
+  {
+   "id": "A01_probe_query",
+   "missing_reference_errors": [],
+   "native_rc": 0,
+   "prints_match_reference": true,
+   "prints_match_run2_native": true,
+   "rc_class_matches": true
+  },
+  {
+   "id": "A02_collision_query",
+   "missing_reference_errors": [],
+   "native_rc": 0,
+   "prints_match_reference": true,
+   "prints_match_run2_native": true,
+   "rc_class_matches": true
+  },
+  {
+   "id": "A03_root_hosted_query",
+   "missing_reference_errors": [],
+   "native_rc": 0,
+   "prints_match_reference": true,
+   "prints_match_run2_native": true,
+   "rc_class_matches": true
+  },
+  {
+   "id": "A04_use_repo_rule_rr1",
+   "missing_reference_errors": [],
+   "native_rc": 0,
+   "prints_match_reference": true,
+   "prints_match_run2_native": true,
+   "rc_class_matches": true
+  },
+  {
+   "id": "A05_use_repo_rule_rr2",
+   "missing_reference_errors": [],
+   "native_rc": 0,
+   "prints_match_reference": true,
+   "prints_match_run2_native": true,
+   "rc_class_matches": true
+  },
+  {
+   "id": "A06_hub_toolchain_build",
+   "missing_reference_errors": [],
+   "native_rc": 0,
+   "prints_match_reference": true,
+   "prints_match_run2_native": true,
+   "rc_class_matches": true
+  },
+  {
+   "id": "A07_initializer_select",
+   "missing_reference_errors": [],
+   "native_rc": 0,
+   "prints_match_reference": true,
+   "prints_match_run2_native": true,
+   "rc_class_matches": true
+  },
+  {
+   "id": "A08_sibling_dep_build",
+   "missing_reference_errors": [],
+   "native_rc": 0,
+   "prints_match_reference": false,
+   "prints_match_run2_native": true,
+   "rc_class_matches": true
+  },
+  {
+   "id": "A09_mixed_invalid_edge",
+   "missing_reference_errors": [],
+   "native_rc": 1,
+   "prints_match_reference": false,
+   "prints_match_run2_native": true,
+   "rc_class_matches": true
+  },
+  {
+   "id": "A10_invalid_sibling_edge",
+   "missing_reference_errors": [],
+   "native_rc": 1,
+   "prints_match_reference": true,
+   "prints_match_run2_native": true,
+   "rc_class_matches": true
+  },
+  {
+   "id": "A11_native_rule_invalid_edge",
+   "missing_reference_errors": [],
+   "native_rc": 1,
+   "prints_match_reference": true,
+   "prints_match_run2_native": true,
+   "rc_class_matches": true
+  },
+  {
+   "id": "A12_generated_invalid_getter",
+   "missing_reference_errors": [],
+   "native_rc": 1,
+   "prints_match_reference": true,
+   "prints_match_run2_native": true,
+   "rc_class_matches": true
+  },
+  {
+   "id": "A13_main_invalid_getter",
+   "missing_reference_errors": [],
+   "native_rc": 1,
+   "prints_match_reference": true,
+   "prints_match_run2_native": true,
+   "rc_class_matches": true
+  },
+  {
+   "id": "A14_hub_toolchain_targets",
+   "missing_reference_errors": [],
+   "native_rc": 0,
+   "prints_match_reference": true,
+   "prints_match_run2_native": true,
+   "rc_class_matches": true
+  },
+  {
+   "id": "B01_rules_oci_resolution",
+   "missing_reference_errors": [],
+   "native_rc": 0,
+   "prints_match_reference": true,
+   "prints_match_run2_native": true,
+   "rc_class_matches": true
+  },
+  {
+   "id": "B02_rules_oci_armv6_toolchain",
+   "missing_reference_errors": [],
+   "native_rc": 0,
+   "prints_match_reference": true,
+   "prints_match_run2_native": true,
+   "rc_class_matches": true
+  },
+  {
+   "id": "B03_rules_oci_hub_query",
+   "missing_reference_errors": [],
+   "native_rc": 0,
+   "prints_match_reference": true,
+   "prints_match_run2_native": true,
+   "rc_class_matches": true
+  }
+ ],
+ "native_sha256": "3525a6783b12967502fa6d1844dd80fb9ace9b025e85ab8be49f7e768c2d99a4",
+ "receipt_sha256": "68f7698ed14500fcad168b3bc717bd0bc85aab29106e3c369e56a5933952ec26",
+ "scratch_removed": true,
+ "source": {
+  "base_commit": "2356bf4f8460317f89363b1b4910028d6bfc3617",
+  "combined_sha256": "f61f8c148a1680255f162425122e6f15b7b08620abb4d3736ab29e215ecab6fa",
+  "head": "2356bf4f8460317f89363b1b4910028d6bfc3617",
+  "tracked_diff_bytes": 51127,
+  "tracked_diff_sha256": "b4b6df921fe99b8cd0560bd51cfe4155fec467730b161fddce6fdeddc8ebc2f3",
+  "untracked_sha256": {
+   "docs/EXTENSION_REPO_MAPPING.md": "82be5ce1bb647669d11c6eb8832a4683958e41e42bffc5b12fe8458482acd361",
+   "tests/ext_repo_mapping.rs": "8e7003ce4cf807700078a741c727070b3acb192a9cb463480ae6da3065ebdbdb",
+   "tests/fixtures/ext_repo_mapping/history/run1_reference_receipt.json": "8fec08062194692a2994456f8a0013dd9396cfa69630855501f0166ef9652be2",
+   "tests/fixtures/ext_repo_mapping/oci_workspace/.bazelversion": "14ebdd5f5d8dfccb0fc574ea9aabecc07d7cdd99d53e4fc01e58f9c3d23d18ef",
+   "tests/fixtures/ext_repo_mapping/oci_workspace/BUILD.bazel": "c91cae7ebca5a57f97d72f0debea6159ada7e38039149a7ba3ea17532c705b30",
+   "tests/fixtures/ext_repo_mapping/oci_workspace/MODULE.bazel": "d71db7a06797d59941ecd4a1f6b24619b99c513637af2ee84571a83d65db6141",
+   "tests/fixtures/ext_repo_mapping/oci_workspace/probe.bzl": "17855c3570e026f428820a2e5131ccb3962dbbdeaa31d7cf8689163c5de98598",
+   "tests/fixtures/ext_repo_mapping/oci_workspace/stubs/aspect_bazel_lib/BUILD.bazel": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "tests/fixtures/ext_repo_mapping/oci_workspace/stubs/aspect_bazel_lib/MODULE.bazel": "83c27b4415974ddae540a959fb5195498fced225b89c31c21b5d0144bd296fea",
+   "tests/fixtures/ext_repo_mapping/oci_workspace/stubs/aspect_bazel_lib/lib/BUILD.bazel": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "tests/fixtures/ext_repo_mapping/oci_workspace/stubs/aspect_bazel_lib/lib/base64.bzl": "a6ae0fe960dc98dc0630ac1fdee592660461e77df87a8d7660c77d0742e89da2",
+   "tests/fixtures/ext_repo_mapping/oci_workspace/stubs/aspect_bazel_lib/lib/extensions.bzl": "a084e170ba21913ec0a2212c0b8df8344862bc9c2bd29f00f2cd2d06e213f330",
+   "tests/fixtures/ext_repo_mapping/oci_workspace/stubs/aspect_bazel_lib/lib/repo_utils.bzl": "7cbea0adbc037b35ef3e9b120a3523c1206cc14635756778f253f4b5c27686e3",
+   "tests/fixtures/ext_repo_mapping/oci_workspace/stubs/aspect_bazel_lib/lib/repositories.bzl": "ecfe5953693ea205dd19ede57a7b6f7c3260bce177ad58827852dd9eddd35d7f",
+   "tests/fixtures/ext_repo_mapping/oci_workspace/stubs/aspect_bazel_lib/lib/utils.bzl": "3977e4808a7bc37796bded2a24af103defb6690d51f6c019216bc32d8bd07718",
+   "tests/fixtures/ext_repo_mapping/reference_receipt.json": "68f7698ed14500fcad168b3bc717bd0bc85aab29106e3c369e56a5933952ec26",
+   "tests/fixtures/ext_repo_mapping/seed_manifest.json": "09d291112f0c855f412e4fdc35ad548eeeaee769ca2f99b45e1fd966b9af01d6",
+   "tests/fixtures/ext_repo_mapping/workspace/.bazelversion": "14ebdd5f5d8dfccb0fc574ea9aabecc07d7cdd99d53e4fc01e58f9c3d23d18ef",
+   "tests/fixtures/ext_repo_mapping/workspace/BUILD.bazel": "fed9fbfdcfe9aaf5e82674a21a9ed774c040ae5e3fdc10c67449f267ad73b65c",
+   "tests/fixtures/ext_repo_mapping/workspace/MODULE.bazel": "eb48656e790a692a0e9aa08a1cdf936562a8876e0c03548e0f299d6723bfde04",
+   "tests/fixtures/ext_repo_mapping/workspace/dep/BUILD.bazel": "adeac0e7ef73fff33f948bf36aa9bfb5e893c7a5d5f3edcc70ed1a29c551113e",
+   "tests/fixtures/ext_repo_mapping/workspace/dep/MODULE.bazel": "1919ded6f7cbca49766317e31bf5172d82854a8117c2180e41730da07a92ad30",
+   "tests/fixtures/ext_repo_mapping/workspace/dep/ext.bzl": "03b76d1c65b05cc34d4f12dcfb7297fa69ae2423726c999ccde518dc206c9f13",
+   "tests/fixtures/ext_repo_mapping/workspace/dep/probe.bzl": "c57fb2659fa953e4e0827f8a6e24804d8759ada77daf2515593e549efd917bb4",
+   "tests/fixtures/ext_repo_mapping/workspace/dep/rules.bzl": "4ceadef4e1145bf2e95aaf384f177b51baf61961db19060cc6807c92fbcc5398",
+   "tests/fixtures/ext_repo_mapping/workspace/getter/BUILD.bazel": "83d6c67e36479ed2a73ae8003e652f3687e6a069b007f1db49aac6117b75c229",
+   "tests/fixtures/ext_repo_mapping/workspace/getter/defs.bzl": "8407b8162946676b7b936ea483b11d6b3d01f176e4eabb749dace5e4c067eb23",
+   "tests/fixtures/ext_repo_mapping/workspace/rootext.bzl": "2b5cf09991e33c22d2da063292970fac4b5e5164b3619b76452e234a869bc9ca"
+  }
+ }
+}

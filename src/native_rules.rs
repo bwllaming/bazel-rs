@@ -1239,9 +1239,12 @@ pub(crate) fn java_string_cmp(a: &str, b: &str) -> std::cmp::Ordering {
 /// `Label.compareTo` (cmdline/Label.java:677-685, PackageIdentifier.java:295-307,
 /// PathFragment.java:514-516): repository name, package path, then name.
 pub(crate) fn label_cmp(a: &Label, b: &Label) -> std::cmp::Ordering {
-    java_string_cmp(&a.repository, &b.repository)
-        .then_with(|| java_string_cmp(&a.package, &b.package))
-        .then_with(|| java_string_cmp(&a.name, &b.name))
+    java_string_cmp(
+        crate::label::repository_sort_name(&a.repository),
+        crate::label::repository_sort_name(&b.repository),
+    )
+    .then_with(|| java_string_cmp(&a.package, &b.package))
+    .then_with(|| java_string_cmp(&a.name, &b.name))
 }
 
 /// `Ordering.natural().sortedCopy` of a converted list (stable, duplicates kept).
@@ -1249,9 +1252,19 @@ fn sort_order_independent(value: &mut AttrValue) {
     match value {
         AttrValue::Strings(values) => values.sort_by(|a, b| java_string_cmp(a, b)),
         AttrValue::Labels(values) => values.sort_by(|a, b| {
-            match (Label::parse_canonical(a), Label::parse_canonical(b)) {
-                (Ok(a), Ok(b)) => label_cmp(&a, &b),
-                // Unresolved apparent-repository labels (deferred) sort by text.
+            // Retained apparent-repository text (deferred, crate::label::deferred_label)
+            // converts to a non-visible repository that sorts by its apparent name.
+            let key = |text: &str| {
+                Label::parse_canonical(text).ok().or_else(|| {
+                    crate::label::deferred_label(text, "", "").map(|label| Label {
+                        repository: crate::label::repository_sort_name(&label.repository)
+                            .to_owned(),
+                        ..label
+                    })
+                })
+            };
+            match (key(a), key(b)) {
+                (Some(a), Some(b)) => label_cmp(&a, &b),
                 _ => java_string_cmp(a, b),
             }
         }),

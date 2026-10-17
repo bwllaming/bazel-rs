@@ -1,0 +1,21 @@
+module(name = "fx")
+
+bazel_dep(name = "dep", version = "1.0")
+local_path_override(module_name = "dep", path = "dep")
+
+bazel_dep(name = "platforms", version = "1.0.0")
+
+ext = use_extension("@dep//:ext.bzl", "ext")
+use_repo(ext, "hub", "probe")
+
+ext2 = use_extension("@dep//:ext.bzl", "ext2")
+use_repo(ext2, "probe2")
+
+rootext = use_extension("//:rootext.bzl", "rootext")
+use_repo(rootext, "rp")
+
+rr = use_repo_rule("@dep//:ext.bzl", "probe_rule")
+rr(name = "rr1", peer = "rr2")
+rr(name = "rr2", peer = "rr1")
+
+register_toolchains("@hub//:all")
