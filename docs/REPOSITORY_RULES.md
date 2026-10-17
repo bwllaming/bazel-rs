@@ -357,10 +357,11 @@ inputs) remain; the former 16 MiB input cap was removed in N32.
 Bazel 9.3 strings are byte-oriented: the lexer reads a file's UTF-8 bytes as
 Latin-1 `char`s (`--internal_starlark_utf_8_byte_strings`), and repository and
 extension evaluation here models each such `char` as one Rust character
-U+0000..U+00FF that `ctx.file` writes back as one byte. Rust Starlark decodes a
-raw non-ASCII source character as one Unicode scalar instead, so direct execution
-still requires the literal *spelling* to be ASCII. Every definition's transitive
-source is checked before evaluation, including unused expressions. Raw
+U+0000..U+00FF that `ctx.file` writes back as one byte. Since N38 the `.bzl`
+sources of that profile are decoded as Latin-1 before parsing, like Bazel's
+`ParserInput.fromLatin1` (`skyframe/StarlarkUtil.java:43-67`), so a raw
+non-ASCII literal is one char per UTF-8 byte (`len('é') == 2`) and is accepted;
+only a non-ASCII `load()` label fails explicitly (docs/LABEL_SYNTAX.md). Raw
 non-ASCII MODULE literals are captured before evaluation and enforced only when
 its direct repository usage is demanded; metadata-only operations keep their
 existing behavior. Even an unrelated Unicode MODULE constant can therefore block

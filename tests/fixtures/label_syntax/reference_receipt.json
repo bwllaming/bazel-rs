@@ -1,0 +1,2195 @@
+{
+ "schema": "n38-label-syntax-reference-receipt/v1",
+ "purpose": "N38 paired capture: genuine Bazel 9.3.0 vs native bazel-rs for Bazel's full label syntax\n(LabelParser / LabelValidator / RepositoryName texts), `@repo` shorthand, target patterns\n(TargetPattern.Parser: //..., :all, :*, :all-targets, relative and path-as-target forms, negative\nbuild patterns, the wildcard-conflict warning), `//...` discovery over directories whose names are\ninvalid package names, glob boundaries, shell-escaped $(location) paths and Latin-1 decoding of\nrepository-rule .bzl sources. Three byte-identical workspace pairs (main: valid names only; bad:\none invalid label per package; exec: a use_repo_rule repository). Compared: exit status class,\nstdout (query labels / built targets / output file bytes) and, for failures, a Bazel error\nsubstring that both sides must contain; the native core message is also checked for verbatim\npresence in Bazel's stderr. Harness after artifacts/wording-capture.py (N33): --batch,\n--ignore_all_rc_files, private output roots under /tmp/opencode, env -i, umask 022, private copy of\ntests/fixtures/builtin_modules/registry, distdir seeded from verified local CAS, scratch removed.\nWrites tests/fixtures/label_syntax/reference_receipt.json. Evidence only; no test reads it.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private> --output_base=<private> --host_jvm_args=-Xmx512m",
+  "command_flags": "--registry=file://<private copy of tests/fixtures/builtin_modules/registry> --repository_disable_download --incompatible_autoload_externally= --lockfile_mode=off --noshow_progress --color=no --curses=no --repository_cache=<private> --distdir=<seeded>",
+  "build_only_flags": "--spawn_strategy=local --shell_executable=/bin/bash --show_result=1000; patterns after --",
+  "distdir_seeded": {
+   "abseil-cpp-20250814.1.tar.gz": "1692f77d1739bacf3f94337188b78583cf09bab7e420d2dc6c5605a4f86785a1",
+   "bazel_features-v1.42.1.tar.gz": "8189bac9a6bf9cc155a854c4cbebfebf58b9ca7a2d0a67645f7d0c1f83c523ac",
+   "buildozer-v8.5.1.tar.gz": "bd0786e0f8b6aed8c35898b4c06f64ba853d61d7c8361edb5a8d43c6ea37f5c6",
+   "googletest-1.17.0.tar.gz": "65fab701d9829d38cb77c14acdc431d2108bfdbf8979e40eb8ae567edf10b27c",
+   "platforms-1.0.0.tar.gz": "3384eb1c30762704fbe38e440204e114154086c8fc8a8c2e3e28441028c019a8",
+   "protobuf-33.4.bazel.tar.gz": "687e98a471973b5c5fd711750c40b8b82c0ade33f649db65e00b290f29345a2b",
+   "pybind11_bazel-2.12.0.zip": "a58c25c5fe063a70057fa20cb8e15f3bda19b1030305bcb533af1e45f36a4a55",
+   "rules_apple.4.1.0.tar.gz": "20152b14d9a420afc15ace905c02fd6425ddceb084630f3f043b287adf0fcdbd",
+   "rules_cc-0.2.17.tar.gz": "283fa1cdaaf172337898749cf4b9b1ef5ea269da59540954e51fba0e7b8f277a",
+   "rules_java-9.1.0.tar.gz": "4e1a28a25c2efa53500c928d22ceffbc505dd95b335a2d025836a293b592212f",
+   "rules_jvm_external-6.7.tar.gz": "a1e351607f04fed296ba33c4977d3fe2a615ed50df7896676b67aac993c53c18",
+   "rules_kotlin-v1.9.6.tar.gz": "3b772976fec7bdcda1d84b9d39b176589424c047eb2175bed09aac630e50af43",
+   "rules_license-1.0.0.tar.gz": "26d4021f6898e23b82ef953078389dd49ac2b5618ac564ade4ef87cced147b38",
+   "rules_proto-7.1.0.tar.gz": "14a225870ab4e91869652cfd69ef2028277fc1dc4910d65d353b62d6e0ae21f4",
+   "rules_python-1.7.0.tar.gz": "f609f341d6e9090b981b3f45324d05a819fd7a5a56434f849c761971ce2c47da",
+   "rules_shell-v0.6.1.tar.gz": "e6b87c89bd0b27039e3af2c5da01147452f240f75d505f5b6880874f31036307",
+   "rules_swift.3.1.2.tar.gz": "5eff717c18bb513285b499add68f2331509cd4e411ff085e96a86b3342c1e5aa",
+   "stardoc-0.7.2.tar.gz": "0e1ed4a98f26e718776bd64d053d02bb34d98572ccd03d6ba355112a1205706b"
+  }
+ },
+ "native": {
+  "binary": "target/release/bazel-rs",
+  "sha256": "80851f1b259bcc39ac33b038547d781765b9b8bd478bbd108e3c37f96481b8bd",
+  "command": "--ignore_all_rc_files --cache-dir=<private> <query|build> [--] <patterns>",
+  "worktree": {
+   "head": "738c0920a0257132e5abc0898541b0a3035595cb",
+   "src_vendor_diff_plus_untracked_sha256": "b4fa43df0a938a5ceeba3d8302ba835c2d60da15baaa3769a2a5c30920cb6384",
+   "untracked_src": [
+    "src/query_expression.rs",
+    "src/target_pattern.rs"
+   ]
+  }
+ },
+ "script": {
+  "path": "artifacts/labels-capture.py (untracked)",
+  "sha256": "8ce2d6eb9ee6c3ce71540cfb8bf3eca87dc0c64ea2e3d86e5a5fa41c1f37309e"
+ },
+ "environment": "env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8, private HOME/TMPDIR, umask 022; fresh workspace per row",
+ "normalization": "workspace/base/scratch paths replaced by <WS>/<BASE>/<SCRATCH>; query stdout compared as sorted lines and in order (stdout_order_equal); build: built target set and output text with bazel-out/{k8,rust}-fastbuild/ as bazel-out/<cfg>/",
+ "scratch_removed": true,
+ "duration_seconds": 39.6,
+ "counts": {
+  "SAME_RESULT": 33,
+  "SHARED_TEXT": 47,
+  "BOTH_FAIL": 2
+ },
+ "row_count": 82,
+ "rows": [
+  {
+   "id": "Q/all_below_root",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "//..."
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "//:labels\n//(group):(page)\n//(group)/inner:i\n//conflict:all\n//conflict:other\n//glob:g\n//glob:loc\n//glob/(sub):sub\n//neg:man\n//neg:top\n//neg/a:x\n//neg/a:y\n//neg/b:z\n//outs:q\n//outs:sp\n//punct:!%-@^_`\n//punct:\"#$&'()*+,;<=>?[]{|}~\n//punct:.hidden\n//punct:a+b@c=d\n//punct:café\n//punct:with space\n//punct:x.y..z\n//shorthand:al\n//shorthand:loc\n//shorthand:sel\n//shorthand:vis\n//sp ace:a b\n//sp ace:x\n//tt@x:t\n//xlabel:f\n//xlabel:g\n"
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//:labels\n//(group):(page)\n//(group)/inner:i\n//conflict:all\n//conflict:other\n//glob:g\n//glob:loc\n//glob/(sub):sub\n//neg:man\n//neg:top\n//neg/a:x\n//neg/a:y\n//neg/b:z\n//outs:q\n//outs:sp\n//punct:!%-@^_`\n//punct:\"#$&'()*+,;<=>?[]{|}~\n//punct:.hidden\n//punct:a+b@c=d\n//punct:café\n//punct:with space\n//punct:x.y..z\n//shorthand:al\n//shorthand:loc\n//shorthand:sel\n//shorthand:vis\n//sp ace:a b\n//sp ace:x\n//tt@x:t\n//xlabel:f\n//xlabel:g\n"
+   },
+   "stdout_order_equal": true,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "Q/all_below_root_all",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "//...:all"
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "//:labels\n//(group):(page)\n//(group)/inner:i\n//conflict:all\n//conflict:other\n//glob:g\n//glob:loc\n//glob/(sub):sub\n//neg:man\n//neg:top\n//neg/a:x\n//neg/a:y\n//neg/b:z\n//outs:q\n//outs:sp\n//punct:!%-@^_`\n//punct:\"#$&'()*+,;<=>?[]{|}~\n//punct:.hidden\n//punct:a+b@c=d\n//punct:café\n//punct:with space\n//punct:x.y..z\n//shorthand:al\n//shorthand:loc\n//shorthand:sel\n//shorthand:vis\n//sp ace:a b\n//sp ace:x\n//tt@x:t\n//xlabel:f\n//xlabel:g\n"
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//:labels\n//(group):(page)\n//(group)/inner:i\n//conflict:all\n//conflict:other\n//glob:g\n//glob:loc\n//glob/(sub):sub\n//neg:man\n//neg:top\n//neg/a:x\n//neg/a:y\n//neg/b:z\n//outs:q\n//outs:sp\n//punct:!%-@^_`\n//punct:\"#$&'()*+,;<=>?[]{|}~\n//punct:.hidden\n//punct:a+b@c=d\n//punct:café\n//punct:with space\n//punct:x.y..z\n//shorthand:al\n//shorthand:loc\n//shorthand:sel\n//shorthand:vis\n//sp ace:a b\n//sp ace:x\n//tt@x:t\n//xlabel:f\n//xlabel:g\n"
+   },
+   "stdout_order_equal": true,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "Q/all_targets_below_root_star",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "//...:*"
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "//:BUILD.bazel\n//:labels\n//:root.txt\n//(group):(page)\n//(group):BUILD\n//(group)/inner:BUILD\n//(group)/inner:i\n//conflict:BUILD\n//conflict:all\n//conflict:other\n//glob:BUILD\n//glob:g\n//glob:it's.txt\n//glob:loc\n//glob:loc.txt\n//glob:testdata/651970 Delpharm_Pack_Folding Box (1).pdf\n//glob/(sub):BUILD\n//glob/(sub):sub\n//neg:BUILD\n//neg:man\n//neg:man.out\n//neg:top\n//neg:top.out\n//neg/a:BUILD\n//neg/a:x\n//neg/a:x.out\n//neg/a:y\n//neg/a:y.out\n//neg/b:BUILD\n//neg/b:z\n//neg/b:z.out\n//outs:BUILD\n//outs:o u t.txt\n//outs:q\n//outs:q.txt\n//outs:sp\n//punct:!%-@^_`\n//punct:\"#$&'()*+,;<=>?[]{|}~\n//punct:.hidden\n//punct:BUILD\n//punct:a+b@c=d\n//punct:café\n//punct:with space\n//punct:x.y..z\n//shorthand:BUILD\n//shorthand:al\n//shorthand:loc\n//shorthand:loc.txt\n//shorthand:pg\n//shorthand:sel\n//shorthand:vis\n//sp ace:BUILD\n//sp ace:a b\n//sp ace:x\n//tt@x:BUILD\n//tt@x:t\n//xlabel:BUILD\n//xlabel:café/in.txt\n//xlabel:f\n//xlabel:g\n//xlabel:g.txt\n"
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//:BUILD.bazel\n//:labels\n//:root.txt\n//(group):(page)\n//(group):BUILD\n//(group)/inner:BUILD\n//(group)/inner:i\n//conflict:BUILD\n//conflict:all\n//conflict:other\n//glob:BUILD\n//glob:g\n//glob:it's.txt\n//glob:loc\n//glob:loc.txt\n//glob:testdata/651970 Delpharm_Pack_Folding Box (1).pdf\n//glob/(sub):BUILD\n//glob/(sub):sub\n//neg:BUILD\n//neg:man\n//neg:man.out\n//neg:top\n//neg:top.out\n//neg/a:BUILD\n//neg/a:x\n//neg/a:x.out\n//neg/a:y\n//neg/a:y.out\n//neg/b:BUILD\n//neg/b:z\n//neg/b:z.out\n//outs:BUILD\n//outs:o u t.txt\n//outs:q\n//outs:q.txt\n//outs:sp\n//punct:!%-@^_`\n//punct:\"#$&'()*+,;<=>?[]{|}~\n//punct:.hidden\n//punct:BUILD\n//punct:a+b@c=d\n//punct:café\n//punct:with space\n//punct:x.y..z\n//shorthand:BUILD\n//shorthand:al\n//shorthand:loc\n//shorthand:loc.txt\n//shorthand:pg\n//shorthand:sel\n//shorthand:vis\n//sp ace:BUILD\n//sp ace:a b\n//sp ace:x\n//tt@x:BUILD\n//tt@x:t\n//xlabel:BUILD\n//xlabel:café/in.txt\n//xlabel:f\n//xlabel:g\n//xlabel:g.txt\n"
+   },
+   "stdout_order_equal": true,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "Q/all_targets_below_root_all_targets",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "//...:all-targets"
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "//:BUILD.bazel\n//:labels\n//:root.txt\n//(group):(page)\n//(group):BUILD\n//(group)/inner:BUILD\n//(group)/inner:i\n//conflict:BUILD\n//conflict:all\n//conflict:other\n//glob:BUILD\n//glob:g\n//glob:it's.txt\n//glob:loc\n//glob:loc.txt\n//glob:testdata/651970 Delpharm_Pack_Folding Box (1).pdf\n//glob/(sub):BUILD\n//glob/(sub):sub\n//neg:BUILD\n//neg:man\n//neg:man.out\n//neg:top\n//neg:top.out\n//neg/a:BUILD\n//neg/a:x\n//neg/a:x.out\n//neg/a:y\n//neg/a:y.out\n//neg/b:BUILD\n//neg/b:z\n//neg/b:z.out\n//outs:BUILD\n//outs:o u t.txt\n//outs:q\n//outs:q.txt\n//outs:sp\n//punct:!%-@^_`\n//punct:\"#$&'()*+,;<=>?[]{|}~\n//punct:.hidden\n//punct:BUILD\n//punct:a+b@c=d\n//punct:café\n//punct:with space\n//punct:x.y..z\n//shorthand:BUILD\n//shorthand:al\n//shorthand:loc\n//shorthand:loc.txt\n//shorthand:pg\n//shorthand:sel\n//shorthand:vis\n//sp ace:BUILD\n//sp ace:a b\n//sp ace:x\n//tt@x:BUILD\n//tt@x:t\n//xlabel:BUILD\n//xlabel:café/in.txt\n//xlabel:f\n//xlabel:g\n//xlabel:g.txt\n"
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//:BUILD.bazel\n//:labels\n//:root.txt\n//(group):(page)\n//(group):BUILD\n//(group)/inner:BUILD\n//(group)/inner:i\n//conflict:BUILD\n//conflict:all\n//conflict:other\n//glob:BUILD\n//glob:g\n//glob:it's.txt\n//glob:loc\n//glob:loc.txt\n//glob:testdata/651970 Delpharm_Pack_Folding Box (1).pdf\n//glob/(sub):BUILD\n//glob/(sub):sub\n//neg:BUILD\n//neg:man\n//neg:man.out\n//neg:top\n//neg:top.out\n//neg/a:BUILD\n//neg/a:x\n//neg/a:x.out\n//neg/a:y\n//neg/a:y.out\n//neg/b:BUILD\n//neg/b:z\n//neg/b:z.out\n//outs:BUILD\n//outs:o u t.txt\n//outs:q\n//outs:q.txt\n//outs:sp\n//punct:!%-@^_`\n//punct:\"#$&'()*+,;<=>?[]{|}~\n//punct:.hidden\n//punct:BUILD\n//punct:a+b@c=d\n//punct:café\n//punct:with space\n//punct:x.y..z\n//shorthand:BUILD\n//shorthand:al\n//shorthand:loc\n//shorthand:loc.txt\n//shorthand:pg\n//shorthand:sel\n//shorthand:vis\n//sp ace:BUILD\n//sp ace:a b\n//sp ace:x\n//tt@x:BUILD\n//tt@x:t\n//xlabel:BUILD\n//xlabel:café/in.txt\n//xlabel:f\n//xlabel:g\n//xlabel:g.txt\n"
+   },
+   "stdout_order_equal": true,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "E/query_syntax_space_package_all",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "//sp ace:all"
+   ],
+   "cwd": "",
+   "expect": "Error while parsing '//sp ace:all': unexpected token 'ace:all' after query expression '//sp'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 2,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "Error while parsing '//sp ace:all': unexpected token 'ace:all' after query expression '//sp'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Error while parsing '//sp ace:all': unexpected token 'ace:all' after query expression '//sp'\n",
+   "native_stderr": "bazel-rs: Error while parsing '//sp ace:all': unexpected token 'ace:all' after query expression '//sp'\n"
+  },
+  {
+   "id": "E/query_syntax_space_package_star",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "//sp ace:*"
+   ],
+   "cwd": "",
+   "expect": "Error while parsing '//sp ace:*': unexpected token 'ace:*' after query expression '//sp'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 2,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "Error while parsing '//sp ace:*': unexpected token 'ace:*' after query expression '//sp'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Error while parsing '//sp ace:*': unexpected token 'ace:*' after query expression '//sp'\n",
+   "native_stderr": "bazel-rs: Error while parsing '//sp ace:*': unexpected token 'ace:*' after query expression '//sp'\n"
+  },
+  {
+   "id": "E/query_syntax_space_package_below",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "//sp ace/..."
+   ],
+   "cwd": "",
+   "expect": "Error while parsing '//sp ace/...': unexpected token 'ace/...' after query expression '//sp'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 2,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "Error while parsing '//sp ace/...': unexpected token 'ace/...' after query expression '//sp'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Error while parsing '//sp ace/...': unexpected token 'ace/...' after query expression '//sp'\n",
+   "native_stderr": "bazel-rs: Error while parsing '//sp ace/...': unexpected token 'ace/...' after query expression '//sp'\n"
+  },
+  {
+   "id": "E/query_syntax_paren_package_below",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "//(group)/..."
+   ],
+   "cwd": "",
+   "expect": "Error while parsing '//(group)/...': unknown function '//' at '// ( group'; expected one of ['allpaths', 'attr', 'buildfiles', 'deps', 'executables', 'filter', 'kind', 'labels', 'loadfiles', 'rdeps', 'same_pkg_direct_rdeps', 'siblings', 'some', 'somepath', 'tests', 'visible']",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 2,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "Error while parsing '//(group)/...': unknown function '//' at '// ( group'; expected one of ['allpaths', 'attr', 'buildfiles', 'deps', 'executables', 'filter', 'kind', 'labels', 'loadfiles', 'rdeps', 'same_pkg_direct_rdeps', 'siblings', 'some', 'somepath', 'tests', 'visible']",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Error while parsing '//(group)/...': unknown function '//' at '// ( group'; expected one of ['allpaths', 'attr', 'buildfiles', 'deps', 'executables', 'filter', 'kind', 'labels', 'loadfiles', 'rdeps', 'same_pkg_direct_rdeps', 'siblings', 'some', 'somepath', 'tests', 'visible']\n",
+   "native_stderr": "bazel-rs: Error while parsing '//(group)/...': unknown function '//' at '// ( group'; expected one of ['allpaths', 'attr', 'buildfiles', 'deps', 'executables', 'filter', 'kind', 'labels', 'loadfiles', 'rdeps', 'same_pkg_direct_rdeps', 'siblings', 'some', 'somepath', 'tests', 'visible']\n"
+  },
+  {
+   "id": "Q/at_sign_package",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "//tt@x:t"
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "//tt@x:t\n"
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//tt@x:t\n"
+   },
+   "stdout_order_equal": true,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "Q/punctuation_target_names",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "//punct:all"
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "//punct:!%-@^_`\n//punct:\"#$&'()*+,;<=>?[]{|}~\n//punct:.hidden\n//punct:a+b@c=d\n//punct:café\n//punct:with space\n//punct:x.y..z\n"
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//punct:!%-@^_`\n//punct:\"#$&'()*+,;<=>?[]{|}~\n//punct:.hidden\n//punct:a+b@c=d\n//punct:café\n//punct:with space\n//punct:x.y..z\n"
+   },
+   "stdout_order_equal": true,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "Q/glob_file_targets",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "//glob:*"
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "//glob:BUILD\n//glob:g\n//glob:it's.txt\n//glob:loc\n//glob:loc.txt\n//glob:testdata/651970 Delpharm_Pack_Folding Box (1).pdf\n"
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//glob:BUILD\n//glob:g\n//glob:it's.txt\n//glob:loc\n//glob:loc.txt\n//glob:testdata/651970 Delpharm_Pack_Folding Box (1).pdf\n"
+   },
+   "stdout_order_equal": true,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "Q/glob_rules",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "//glob:all"
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "//glob:g\n//glob:loc\n"
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//glob:g\n//glob:loc\n"
+   },
+   "stdout_order_equal": true,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "Q/repo_shorthand_pattern",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "@labels"
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "//:labels\n"
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//:labels\n"
+   },
+   "stdout_order_equal": true,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "E/query_syntax_repo_shorthand_qualified",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "@labels//sp ace:x"
+   ],
+   "cwd": "",
+   "expect": "Error while parsing '@labels//sp ace:x': unexpected token 'ace:x' after query expression '@labels//sp'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 2,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "Error while parsing '@labels//sp ace:x': unexpected token 'ace:x' after query expression '@labels//sp'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Error while parsing '@labels//sp ace:x': unexpected token 'ace:x' after query expression '@labels//sp'\n",
+   "native_stderr": "bazel-rs: Error while parsing '@labels//sp ace:x': unexpected token 'ace:x' after query expression '@labels//sp'\n"
+  },
+  {
+   "id": "E/query_syntax_canonical_main_space",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "@@//sp ace:a b"
+   ],
+   "cwd": "",
+   "expect": "Error while parsing '@@//sp ace:a b': unexpected token 'ace:a' after query expression '@@//sp'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 2,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "Error while parsing '@@//sp ace:a b': unexpected token 'ace:a' after query expression '@@//sp'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Error while parsing '@@//sp ace:a b': unexpected token 'ace:a' after query expression '@@//sp'\n",
+   "native_stderr": "bazel-rs: Error while parsing '@@//sp ace:a b': unexpected token 'ace:a' after query expression '@@//sp'\n"
+  },
+  {
+   "id": "E/query_syntax_space_target",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "//sp ace:a b"
+   ],
+   "cwd": "",
+   "expect": "Error while parsing '//sp ace:a b': unexpected token 'ace:a' after query expression '//sp'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 2,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "Error while parsing '//sp ace:a b': unexpected token 'ace:a' after query expression '//sp'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Error while parsing '//sp ace:a b': unexpected token 'ace:a' after query expression '//sp'\n",
+   "native_stderr": "bazel-rs: Error while parsing '//sp ace:a b': unexpected token 'ace:a' after query expression '//sp'\n"
+  },
+  {
+   "id": "Q/wildcard_conflict_absolute",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "//conflict:all"
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "//conflict:all\n"
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//conflict:all\n"
+   },
+   "stdout_order_equal": true,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null,
+   "reference_warnings": [
+    "WARNING: The target pattern '//conflict:all' is ambiguous: ':all' is both a wildcard, and the name of an existing filegroup rule; using the latter interpretation"
+   ],
+   "native_warnings": [
+    "WARNING: The target pattern '//conflict:all' is ambiguous: ':all' is both a wildcard, and the name of an existing filegroup rule; using the latter interpretation"
+   ]
+  },
+  {
+   "id": "Q/wildcard_conflict_relative",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    ":all"
+   ],
+   "cwd": "conflict",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "//conflict:all\n//conflict:other\n"
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//conflict:all\n//conflict:other\n"
+   },
+   "stdout_order_equal": true,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "Q/relative_all_in_space_dir",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    ":all"
+   ],
+   "cwd": "sp ace",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "//sp ace:a b\n//sp ace:x\n"
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//sp ace:a b\n//sp ace:x\n"
+   },
+   "stdout_order_equal": true,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "Q/relative_path_in_space_dir",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "x"
+   ],
+   "cwd": "sp ace",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "//sp ace:x\n"
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//sp ace:x\n"
+   },
+   "stdout_order_equal": true,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "E/query_syntax_path_as_target",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "sp ace/x"
+   ],
+   "cwd": "",
+   "expect": "Error while parsing 'sp ace/x': unexpected token 'ace/x' after query expression 'sp'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 2,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "Error while parsing 'sp ace/x': unexpected token 'ace/x' after query expression 'sp'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Error while parsing 'sp ace/x': unexpected token 'ace/x' after query expression 'sp'\n",
+   "native_stderr": "bazel-rs: Error while parsing 'sp ace/x': unexpected token 'ace/x' after query expression 'sp'\n"
+  },
+  {
+   "id": "E/query_syntax_path_as_file_target",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "glob/testdata/651970 Delpharm_Pack_Folding Box (1).pdf"
+   ],
+   "cwd": "",
+   "expect": "Error while parsing 'glob/testdata/651970 Delpharm_Pack_Folding Box (1).pdf': unexpected token 'Delpharm_Pack_Folding' after query expression 'glob/testdata/651970'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 2,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "Error while parsing 'glob/testdata/651970 Delpharm_Pack_Folding Box (1).pdf': unexpected token 'Delpharm_Pack_Folding' after query expression 'glob/testdata/651970'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Error while parsing 'glob/testdata/651970 Delpharm_Pack_Folding Box (1).pdf': unexpected token 'Delpharm_Pack_Folding' after query expression 'glob/testdata/651970'\n",
+   "native_stderr": "bazel-rs: Error while parsing 'glob/testdata/651970 Delpharm_Pack_Folding Box (1).pdf': unexpected token 'Delpharm_Pack_Folding' after query expression 'glob/testdata/651970'\n"
+  },
+  {
+   "id": "Q/shorthand_package",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "//shorthand:all"
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "//shorthand:al\n//shorthand:loc\n//shorthand:sel\n//shorthand:vis\n"
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//shorthand:al\n//shorthand:loc\n//shorthand:sel\n//shorthand:vis\n"
+   },
+   "stdout_order_equal": true,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "Q/relative_below_in_subdir",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "..."
+   ],
+   "cwd": "neg",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "//neg:man\n//neg:top\n//neg/a:x\n//neg/a:y\n//neg/b:z\n"
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//neg:man\n//neg:top\n//neg/a:x\n//neg/a:y\n//neg/b:z\n"
+   },
+   "stdout_order_equal": true,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "Q/quoted_space_package_all",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "'//sp ace:all'"
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "//sp ace:a b\n//sp ace:x\n"
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//sp ace:a b\n//sp ace:x\n"
+   },
+   "stdout_order_equal": true,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "Q/quoted_paren_package_below",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "\"//(group)/...\""
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "//(group):(page)\n//(group)/inner:i\n"
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//(group):(page)\n//(group)/inner:i\n"
+   },
+   "stdout_order_equal": true,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "Q/quoted_space_target",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "\"//sp ace:a b\""
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "//sp ace:a b\n"
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//sp ace:a b\n"
+   },
+   "stdout_order_equal": true,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "Q/quoted_path_as_file_target",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "\"glob/testdata/651970 Delpharm_Pack_Folding Box (1).pdf\""
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "//glob:testdata/651970 Delpharm_Pack_Folding Box (1).pdf\n"
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//glob:testdata/651970 Delpharm_Pack_Folding Box (1).pdf\n"
+   },
+   "stdout_order_equal": true,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "Q/quoted_path_as_target",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "'sp ace/x'"
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "//sp ace:x\n"
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//sp ace:x\n"
+   },
+   "stdout_order_equal": true,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "Q/quoted_repo_shorthand_space",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "'@labels//sp ace:x'"
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "//sp ace:x\n"
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//sp ace:x\n"
+   },
+   "stdout_order_equal": true,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "E/query_residue_joined",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "//sp",
+    "ace:x"
+   ],
+   "cwd": "",
+   "expect": "Error while parsing '//sp ace:x': unexpected token 'ace:x' after query expression '//sp'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 2,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "Error while parsing '//sp ace:x': unexpected token 'ace:x' after query expression '//sp'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Error while parsing '//sp ace:x': unexpected token 'ace:x' after query expression '//sp'\n",
+   "native_stderr": "bazel-rs: Error while parsing '//sp ace:x': unexpected token 'ace:x' after query expression '//sp'\n"
+  },
+  {
+   "id": "E/query_quoted_dash",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "'-//sp ace:x'"
+   ],
+   "cwd": "",
+   "expect": "Error while parsing ''-//sp ace:x'': target literal must not begin with (-): -//sp ace:x",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 2,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "Error while parsing ''-//sp ace:x'': target literal must not begin with (-): -//sp ace:x",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Error while parsing ''-//sp ace:x'': target literal must not begin with (-): -//sp ace:x\n",
+   "native_stderr": "bazel-rs: Error while parsing ''-//sp ace:x'': target literal must not begin with (-): -//sp ace:x\n"
+  },
+  {
+   "id": "E/query_premature_end",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "--",
+    ""
+   ],
+   "cwd": "",
+   "expect": "Error while parsing '': premature end of input",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 2,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "Error while parsing '': premature end of input",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Error while parsing '': premature end of input\n",
+   "native_stderr": "bazel-rs: Error while parsing '': premature end of input\n"
+  },
+  {
+   "id": "E/quoted_colon_in_target_pattern",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "'//sp ace:a:b'"
+   ],
+   "cwd": "",
+   "expect": "invalid target name 'a:b': target names may not contain ':'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "invalid target name 'a:b': target names may not contain ':'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: invalid target name 'a:b': target names may not contain ':'\n",
+   "native_stderr": "bazel-rs: invalid target name 'a:b': target names may not contain ':'\n"
+  },
+  {
+   "id": "E/quoted_bad_repo_pattern",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "'@a b//:x'"
+   ],
+   "cwd": "",
+   "expect": "invalid repository name 'a b': repo names may contain only A-Z, a-z, 0-9, '-', '_', '.' and '+'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "invalid repository name 'a b': repo names may contain only A-Z, a-z, 0-9, '-', '_', '.' and '+'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: invalid repository name 'a b': repo names may contain only A-Z, a-z, 0-9, '-', '_', '.' and '+'\n",
+   "native_stderr": "bazel-rs: invalid repository name 'a b': repo names may contain only A-Z, a-z, 0-9, '-', '_', '.' and '+'\n"
+  },
+  {
+   "id": "E/quoted_path_as_target_package_default",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "'sp ace'"
+   ],
+   "cwd": "",
+   "expect": "no such target '//sp ace:sp ace'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "no such target '//sp ace:sp ace': target 'sp ace' not declared in package 'sp ace' defined by <WS>/sp ace/BUILD",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: no such target '//sp ace:sp ace': target 'sp ace' not declared in package 'sp ace' defined by <WS>/sp ace/BUILD\n",
+   "native_stderr": "bazel-rs: no such target '//sp ace:sp ace': target 'sp ace' not declared in package 'sp ace' defined by <WS>/sp ace/BUILD\n"
+  },
+  {
+   "id": "E/invalid_package_pattern",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "//café/..."
+   ],
+   "cwd": "",
+   "expect": "invalid package name 'café': package names may contain A-Z",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "invalid package name 'café': package names may contain A-Z, a-z, 0-9, or any of ' !\"#$%&'()*+,-./;<=>?[]^_`{|}~' (any ASCII character except 0-31, 127, ':', or '\\')",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: invalid package name 'café': package names may contain A-Z, a-z, 0-9, or any of ' !\"#$%&'()*+,-./;<=>?[]^_`{|}~' (any ASCII character except 0-31, 127, ':', or '\\')\n",
+   "native_stderr": "bazel-rs: invalid package name 'café': package names may contain A-Z, a-z, 0-9, or any of ' !\"#$%&'()*+,-./;<=>?[]^_`{|}~' (any ASCII character except 0-31, 127, ':', or '\\')\n"
+  },
+  {
+   "id": "E/invalid_package_label",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "//café:hidden"
+   ],
+   "cwd": "",
+   "expect": "invalid package name 'café': package names may contain A-Z",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "invalid package name 'café': package names may contain A-Z, a-z, 0-9, or any of ' !\"#$%&'()*+,-./;<=>?[]^_`{|}~' (any ASCII character except 0-31, 127, ':', or '\\')",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: invalid package name 'café': package names may contain A-Z, a-z, 0-9, or any of ' !\"#$%&'()*+,-./;<=>?[]^_`{|}~' (any ASCII character except 0-31, 127, ':', or '\\')\n",
+   "native_stderr": "bazel-rs: invalid package name 'café': package names may contain A-Z, a-z, 0-9, or any of ' !\"#$%&'()*+,-./;<=>?[]^_`{|}~' (any ASCII character except 0-31, 127, ':', or '\\')\n"
+  },
+  {
+   "id": "E/invalid_package_below_glob",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "//glob/café:inner.txt"
+   ],
+   "cwd": "",
+   "expect": "invalid package name 'glob/café'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "invalid package name 'glob/café': package names may contain A-Z, a-z, 0-9, or any of ' !\"#$%&'()*+,-./;<=>?[]^_`{|}~' (any ASCII character except 0-31, 127, ':', or '\\')",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: invalid package name 'glob/café': package names may contain A-Z, a-z, 0-9, or any of ' !\"#$%&'()*+,-./;<=>?[]^_`{|}~' (any ASCII character except 0-31, 127, ':', or '\\')\n",
+   "native_stderr": "bazel-rs: invalid package name 'glob/café': package names may contain A-Z, a-z, 0-9, or any of ' !\"#$%&'()*+,-./;<=>?[]^_`{|}~' (any ASCII character except 0-31, 127, ':', or '\\')\n"
+  },
+  {
+   "id": "E/no_targets_beneath",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "//nonexistent/..."
+   ],
+   "cwd": "",
+   "expect": "no targets found beneath 'nonexistent'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "no targets found beneath 'nonexistent'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: no targets found beneath 'nonexistent'\n",
+   "native_stderr": "bazel-rs: no targets found beneath 'nonexistent'\n"
+  },
+  {
+   "id": "E/triple_dots_with_target",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "//p/...:t"
+   ],
+   "cwd": "",
+   "expect": "Invalid target pattern //p/...:t: '...' can only be used with wildcard targets",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "Invalid target pattern //p/...:t: '...' can only be used with wildcard targets",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Invalid target pattern //p/...:t: '...' can only be used with wildcard targets\n",
+   "native_stderr": "bazel-rs: Invalid target pattern //p/...:t: '...' can only be used with wildcard targets\n"
+  },
+  {
+   "id": "E/colon_in_target_pattern",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "//sp ace:a:b"
+   ],
+   "cwd": "",
+   "expect": "Error while parsing '//sp ace:a:b': unexpected token 'ace:a:b' after query expression '//sp'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 2,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "Error while parsing '//sp ace:a:b': unexpected token 'ace:a:b' after query expression '//sp'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Error while parsing '//sp ace:a:b': unexpected token 'ace:a:b' after query expression '//sp'\n",
+   "native_stderr": "bazel-rs: Error while parsing '//sp ace:a:b': unexpected token 'ace:a:b' after query expression '//sp'\n"
+  },
+  {
+   "id": "E/double_slash_pattern",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "//a//b"
+   ],
+   "cwd": "",
+   "expect": "invalid package name 'a//b': package names may not contain '//' path separators",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "invalid package name 'a//b': package names may not contain '//' path separators (perhaps you meant \":b\"?)",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: invalid package name 'a//b': package names may not contain '//' path separators (perhaps you meant \":b\"?)\n",
+   "native_stderr": "bazel-rs: invalid package name 'a//b': package names may not contain '//' path separators (perhaps you meant \":b\"?)\n"
+  },
+  {
+   "id": "E/bad_repo_pattern",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "@a b//:x"
+   ],
+   "cwd": "",
+   "expect": "Error while parsing '@a b//:x': unexpected token 'b//:x' after query expression '@a'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 2,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "Error while parsing '@a b//:x': unexpected token 'b//:x' after query expression '@a'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Error while parsing '@a b//:x': unexpected token 'b//:x' after query expression '@a'\n",
+   "native_stderr": "bazel-rs: Error while parsing '@a b//:x': unexpected token 'b//:x' after query expression '@a'\n"
+  },
+  {
+   "id": "E/negative_query_pattern",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "-//sp ace:x"
+   ],
+   "cwd": "",
+   "expect": "__ANY__",
+   "verdict": "BOTH_FAIL",
+   "reference": {
+    "exit": 2,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "Invalid options syntax: -//sp ace:x",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Invalid options syntax: -//sp ace:x\nNote: Negative target patterns can only appear after the end of options marker ('--'). Flags corresponding to Starlark-defined build settings always start with '--', not '-'.\n",
+   "native_stderr": "bazel-rs: Invalid options syntax: -//sp ace:x\nNote: Negative target patterns can only appear after the end of options marker ('--'). Flags corresponding to Starlark-defined build settings always start with '--', not '-'.\n"
+  },
+  {
+   "id": "E/relative_in_non_package_dir",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    ":all"
+   ],
+   "cwd": "nopkg/sub",
+   "expect": "no such package 'nopkg/sub'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "no such package 'nopkg/sub': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: no such package 'nopkg/sub': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nopkg/sub\n",
+   "native_stderr": "bazel-rs: no such package 'nopkg/sub': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nopkg/sub\n"
+  },
+  {
+   "id": "E/path_as_target_package_default",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "sp ace"
+   ],
+   "cwd": "",
+   "expect": "Error while parsing 'sp ace': unexpected token 'ace' after query expression 'sp'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 2,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "Error while parsing 'sp ace': unexpected token 'ace' after query expression 'sp'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Error while parsing 'sp ace': unexpected token 'ace' after query expression 'sp'\n",
+   "native_stderr": "bazel-rs: Error while parsing 'sp ace': unexpected token 'ace' after query expression 'sp'\n"
+  },
+  {
+   "id": "E/path_as_target_undeclared_file",
+   "workspace": "main",
+   "command": "query",
+   "args": [
+    "nopkg/sub/file.txt"
+   ],
+   "cwd": "",
+   "expect": "no such target '//:nopkg/sub/file.txt'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "no such target '//:nopkg/sub/file.txt': target 'nopkg/sub/file.txt' not declared in package '' defined by <WS>/BUILD.bazel; however, a source file of this name exists.  (Perhaps add 'exports_files([\"nopkg/sub/file.txt\"])' to BUILD.bazel?)",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: no such target '//:nopkg/sub/file.txt': target 'nopkg/sub/file.txt' not declared in package '' defined by <WS>/BUILD.bazel; however, a source file of this name exists.  (Perhaps add 'exports_files([\"nopkg/sub/file.txt\"])' to BUILD.bazel?)\n",
+   "native_stderr": "bazel-rs: no such target '//:nopkg/sub/file.txt': target 'nopkg/sub/file.txt' not declared in package '' defined by <WS>/BUILD.bazel; however, a source file of this name exists.  (Perhaps add 'exports_files([\"nopkg/sub/file.txt\"])' to BUILD.bazel?)\n"
+  },
+  {
+   "id": "B/output_with_spaces",
+   "workspace": "main",
+   "command": "build",
+   "args": [
+    "//outs:q"
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "",
+    "built": [
+     "//outs:q"
+    ],
+    "contents": {
+     "//outs:q.txt": "hi\nbazel-out/<cfg>/bin/outs/o u t.txt\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//outs:q\t<BASE>/native-cache/actions/4fd4cb519b750115b62550f8c00e0d570585a894f2ffc49018e1d654790ba8dc/outputs/bazel-out/rust-fastbuild/bin/outs/q.txt\n",
+    "built": [
+     "//outs:q"
+    ],
+    "contents": {
+     "//outs:q.txt": "hi\nbazel-out/<cfg>/bin/outs/o u t.txt\n"
+    }
+   },
+   "stdout_order_equal": null,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "B/glob_locations_escaped",
+   "workspace": "main",
+   "command": "build",
+   "args": [
+    "//glob:loc"
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "",
+    "built": [
+     "//glob:loc"
+    ],
+    "contents": {
+     "//glob:loc.txt": "glob/it's.txt glob/testdata/651970 Delpharm_Pack_Folding Box (1).pdf\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//glob:loc\t<BASE>/native-cache/actions/ba8ddccb53fb0e1f52cd65301f8b6d305182fb9053e584e53c3d4a5bcb2a9997/outputs/bazel-out/rust-fastbuild/bin/glob/loc.txt\n",
+    "built": [
+     "//glob:loc"
+    ],
+    "contents": {
+     "//glob:loc.txt": "glob/it's.txt glob/testdata/651970 Delpharm_Pack_Folding Box (1).pdf\n"
+    }
+   },
+   "stdout_order_equal": null,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "B/shorthand_location",
+   "workspace": "main",
+   "command": "build",
+   "args": [
+    "//shorthand:loc"
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "",
+    "built": [
+     "//shorthand:loc"
+    ],
+    "contents": {
+     "//shorthand:loc.txt": "root\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//shorthand:loc\t<BASE>/native-cache/actions/b26a4abccf0a657bce519a40f044ece8bb098c789d370084e212191cbdcfeafb/outputs/bazel-out/rust-fastbuild/bin/shorthand/loc.txt\n",
+    "built": [
+     "//shorthand:loc"
+    ],
+    "contents": {
+     "//shorthand:loc.txt": "root\n"
+    }
+   },
+   "stdout_order_equal": null,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "B/build_below",
+   "workspace": "main",
+   "command": "build",
+   "args": [
+    "//neg/..."
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "",
+    "built": [
+     "//neg/a:x",
+     "//neg/a:y",
+     "//neg/b:z",
+     "//neg:top"
+    ],
+    "contents": {}
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//neg:top\t<BASE>/native-cache/actions/66ab2b00a31d9163aa91850f7244627b2ec71a3d90fa663d9f9776439640b4dd/outputs/bazel-out/rust-fastbuild/bin/neg/top.out\n//neg/a:x\t<BASE>/native-cache/actions/37b7d5fb568a454b35f0e1c0056468c1da18ba46925433ddd20fab7183753af9/outputs/bazel-out/rust-fastbuild/bin/neg/a/x.out\n//neg/a:y\t<BASE>/native-cache/actions/90a3a8bba69ffd0470ecf58c2f9ce126067e0cb30e9bf9ce794cb0ca35735183/outputs/bazel-out/rust-fastbuild/bin/neg/a/y.out\n//neg/b:z\t<BASE>/native-cache/actions/f66b549eb448b6be358ae2e915397ec3a276b70300d1dabf5be5dcad4814dfcf/outputs/bazel-out/rust-fastbuild/bin/neg/b/z.out\n",
+    "built": [
+     "//neg/a:x",
+     "//neg/a:y",
+     "//neg/b:z",
+     "//neg:top"
+    ],
+    "contents": {}
+   },
+   "stdout_order_equal": null,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "B/negative_below",
+   "workspace": "main",
+   "command": "build",
+   "args": [
+    "//neg/...",
+    "-//neg/b/..."
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "",
+    "built": [
+     "//neg/a:x",
+     "//neg/a:y",
+     "//neg:top"
+    ],
+    "contents": {}
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//neg:top\t<BASE>/native-cache/actions/66ab2b00a31d9163aa91850f7244627b2ec71a3d90fa663d9f9776439640b4dd/outputs/bazel-out/rust-fastbuild/bin/neg/top.out\n//neg/a:x\t<BASE>/native-cache/actions/37b7d5fb568a454b35f0e1c0056468c1da18ba46925433ddd20fab7183753af9/outputs/bazel-out/rust-fastbuild/bin/neg/a/x.out\n//neg/a:y\t<BASE>/native-cache/actions/90a3a8bba69ffd0470ecf58c2f9ce126067e0cb30e9bf9ce794cb0ca35735183/outputs/bazel-out/rust-fastbuild/bin/neg/a/y.out\n",
+    "built": [
+     "//neg/a:x",
+     "//neg/a:y",
+     "//neg:top"
+    ],
+    "contents": {}
+   },
+   "stdout_order_equal": null,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "B/negative_single",
+   "workspace": "main",
+   "command": "build",
+   "args": [
+    "//neg/...",
+    "-//neg/a:x"
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "",
+    "built": [
+     "//neg/a:y",
+     "//neg/b:z",
+     "//neg:top"
+    ],
+    "contents": {}
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//neg:top\t<BASE>/native-cache/actions/66ab2b00a31d9163aa91850f7244627b2ec71a3d90fa663d9f9776439640b4dd/outputs/bazel-out/rust-fastbuild/bin/neg/top.out\n//neg/a:y\t<BASE>/native-cache/actions/90a3a8bba69ffd0470ecf58c2f9ce126067e0cb30e9bf9ce794cb0ca35735183/outputs/bazel-out/rust-fastbuild/bin/neg/a/y.out\n//neg/b:z\t<BASE>/native-cache/actions/f66b549eb448b6be358ae2e915397ec3a276b70300d1dabf5be5dcad4814dfcf/outputs/bazel-out/rust-fastbuild/bin/neg/b/z.out\n",
+    "built": [
+     "//neg/a:y",
+     "//neg/b:z",
+     "//neg:top"
+    ],
+    "contents": {}
+   },
+   "stdout_order_equal": null,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "B/negative_first",
+   "workspace": "main",
+   "command": "build",
+   "args": [
+    "-//neg/a:x",
+    "//neg/a:all"
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "",
+    "built": [
+     "//neg/a:x",
+     "//neg/a:y"
+    ],
+    "contents": {}
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//neg/a:x\t<BASE>/native-cache/actions/37b7d5fb568a454b35f0e1c0056468c1da18ba46925433ddd20fab7183753af9/outputs/bazel-out/rust-fastbuild/bin/neg/a/x.out\n//neg/a:y\t<BASE>/native-cache/actions/90a3a8bba69ffd0470ecf58c2f9ce126067e0cb30e9bf9ce794cb0ca35735183/outputs/bazel-out/rust-fastbuild/bin/neg/a/y.out\n",
+    "built": [
+     "//neg/a:x",
+     "//neg/a:y"
+    ],
+    "contents": {}
+   },
+   "stdout_order_equal": null,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "B/negative_then_positive",
+   "workspace": "main",
+   "command": "build",
+   "args": [
+    "//neg/a:all",
+    "-//neg/a:x",
+    "//neg/a:x"
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "",
+    "built": [
+     "//neg/a:x",
+     "//neg/a:y"
+    ],
+    "contents": {}
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//neg/a:x\t<BASE>/native-cache/actions/37b7d5fb568a454b35f0e1c0056468c1da18ba46925433ddd20fab7183753af9/outputs/bazel-out/rust-fastbuild/bin/neg/a/x.out\n//neg/a:y\t<BASE>/native-cache/actions/90a3a8bba69ffd0470ecf58c2f9ce126067e0cb30e9bf9ce794cb0ca35735183/outputs/bazel-out/rust-fastbuild/bin/neg/a/y.out\n",
+    "built": [
+     "//neg/a:x",
+     "//neg/a:y"
+    ],
+    "contents": {}
+   },
+   "stdout_order_equal": null,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "B/manual_explicit",
+   "workspace": "main",
+   "command": "build",
+   "args": [
+    "//neg:man"
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "",
+    "built": [
+     "//neg:man"
+    ],
+    "contents": {}
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//neg:man\t<BASE>/native-cache/actions/46e6e89bf5e10f162b52217c414ba5a89ad54b59726fe0e9f1071feb751473b5/outputs/bazel-out/rust-fastbuild/bin/neg/man.out\n",
+    "built": [
+     "//neg:man"
+    ],
+    "contents": {}
+   },
+   "stdout_order_equal": null,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "B/manual_wildcard",
+   "workspace": "main",
+   "command": "build",
+   "args": [
+    "//neg:all"
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "",
+    "built": [
+     "//neg:top"
+    ],
+    "contents": {}
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//neg:top\t<BASE>/native-cache/actions/66ab2b00a31d9163aa91850f7244627b2ec71a3d90fa663d9f9776439640b4dd/outputs/bazel-out/rust-fastbuild/bin/neg/top.out\n",
+    "built": [
+     "//neg:top"
+    ],
+    "contents": {}
+   },
+   "stdout_order_equal": null,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "B/negative_excluded_broken",
+   "workspace": "bad",
+   "command": "build",
+   "args": [
+    "//nb/...",
+    "-//nb/broken/..."
+   ],
+   "cwd": "",
+   "expect": "__ANY__",
+   "verdict": "BOTH_FAIL",
+   "reference": {
+    "exit": 1,
+    "stdout": "",
+    "built": [],
+    "contents": {}
+   },
+   "native": {
+    "exit": 1,
+    "stdout": "",
+    "built": [],
+    "contents": {}
+   },
+   "stdout_order_equal": null,
+   "native_core_message": "//nb/broken:broken: invalid label '//:a:b' in element 0 of attribute 'srcs' of 'genrule': invalid target name 'a:b': target names may not contain ':'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/nb/broken/BUILD:1:8: //nb/broken:broken: invalid label '//:a:b' in element 0 of attribute 'srcs' of 'genrule': invalid target name 'a:b': target names may not contain ':'\nERROR: package contains errors: nb/broken\nERROR: package contains errors: nb/broken: //nb/broken:broken: invalid label '//:a:b' in element 0 of attribute 'srcs' of 'genrule': invalid target name 'a:b': target names may not contain ':'\nERROR: Skipping '//nb/...': Error evaluating '//nb/...': error loading package 'nb/broken': Package 'nb/broken' contains errors\nERROR: Error evaluating '//nb/...': error loading package 'nb/broken': Package 'nb/broken' contains errors\nINFO: Elapsed time: 0.807s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\n",
+   "native_stderr": "bazel-rs: Traceback (most recent call last):\n  * <WS>/nb/broken/BUILD:1, in <module>\n      genrule(name = 'broken', outs = ['b.out'], cmd = 'echo b > $@', srcs = ['//:a...\nerror: //nb/broken:broken: invalid label '//:a:b' in element 0 of attribute 'srcs' of 'genrule': invalid target name 'a:b': target names may not contain ':'\n --> <WS>/nb/broken/BUILD:1:1\n  |\n1 | genrule(name = 'broken', outs = ['b.out'], cmd = 'echo b > $@', srcs = ['//:a:b'])\n  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\nSupported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n"
+  },
+  {
+   "id": "B/build_relative_all_in_non_package_dir",
+   "workspace": "main",
+   "command": "build",
+   "args": [
+    ":all"
+   ],
+   "cwd": "nopkg/sub",
+   "expect": "while parsing ':all': no such package 'nopkg/sub'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 1,
+    "stdout": "",
+    "built": [],
+    "contents": {}
+   },
+   "native": {
+    "exit": 1,
+    "stdout": "",
+    "built": [],
+    "contents": {}
+   },
+   "stdout_order_equal": null,
+   "native_core_message": "while parsing ':all': no such package 'nopkg/sub': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: Target pattern parsing failed.\nERROR: Skipping ':all': while parsing ':all': no such package 'nopkg/sub': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nopkg/sub\nERROR: while parsing ':all': no such package 'nopkg/sub': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nopkg/sub\nINFO: Elapsed time: 0.717s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\n",
+   "native_stderr": "bazel-rs: while parsing ':all': no such package 'nopkg/sub': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nopkg/sub\n"
+  },
+  {
+   "id": "B/explicit_label_below_invalid_package_dir",
+   "workspace": "main",
+   "command": "build",
+   "args": [
+    "//xlabel:g"
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "",
+    "built": [
+     "//xlabel:g"
+    ],
+    "contents": {
+     "//xlabel:g.txt": "crossed\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//xlabel:g\t<BASE>/native-cache/actions/5501127d84fd997b207453f292b14382aa4180a9ca35c189d2c4c8613c848668/outputs/bazel-out/rust-fastbuild/bin/xlabel/g.txt\n",
+    "built": [
+     "//xlabel:g"
+    ],
+    "contents": {
+     "//xlabel:g.txt": "crossed\n"
+    }
+   },
+   "stdout_order_equal": null,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "X/repository_bzl_non_ascii_source",
+   "workspace": "exec",
+   "command": "build",
+   "args": [
+    "//:copy"
+   ],
+   "cwd": "",
+   "expect": null,
+   "verdict": "SAME_RESULT",
+   "reference": {
+    "exit": 0,
+    "stdout": "",
+    "built": [
+     "//:copy"
+    ],
+    "contents": {
+     "//:copy.txt": "é|2|3|�\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "stdout": "//:copy\t<BASE>/native-cache/actions/b04e83fb3bb4e8a85f88365352cfefe95ac7c116197ec0d53ab04380e35d8e4a/outputs/bazel-out/rust-fastbuild/bin/copy.txt\n",
+    "built": [
+     "//:copy"
+    ],
+    "contents": {
+     "//:copy.txt": "é|2|3|�\n"
+    }
+   },
+   "stdout_order_equal": null,
+   "native_core_message": null,
+   "native_core_message_in_reference_stderr": null
+  },
+  {
+   "id": "L/attribute_colon_target",
+   "workspace": "bad",
+   "command": "query",
+   "args": [
+    "//bad_colon_target:all"
+   ],
+   "cwd": "",
+   "expect": "invalid target name 'a:b': target names may not contain ':'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "//bad_colon_target:x: invalid label '//:a:b' in element 0 of attribute 'srcs' of 'filegroup': invalid target name 'a:b': target names may not contain ':'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/bad_colon_target/BUILD:1:10: //bad_colon_target:x: invalid label '//:a:b' in element 0 of attribute 'srcs' of 'filegroup': invalid target name 'a:b': target names may not contain ':'\nERROR: package contains errors: bad_colon_target: //bad_colon_target:x: invalid label '//:a:b' in element 0 of attribute 'srcs' of 'filegroup': invalid target name 'a:b': target names may not contain ':'\nERROR: Evaluation of query \"//bad_colon_target:all\" failed\n",
+   "native_stderr": "bazel-rs: Traceback (most recent call last):\n  * <WS>/bad_colon_target/BUILD:1, in <module>\n      filegroup(name = \"x\", srcs = [\"//:a:b\"])\nerror: //bad_colon_target:x: invalid label '//:a:b' in element 0 of attribute 'srcs' of 'filegroup': invalid target name 'a:b': target names may not contain ':'\n --> <WS>/bad_colon_target/BUILD:1:1\n  |\n1 | filegroup(name = \"x\", srcs = [\"//:a:b\"])\n  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\nSupported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n"
+  },
+  {
+   "id": "L/attribute_double_slash_package",
+   "workspace": "bad",
+   "command": "query",
+   "args": [
+    "//bad_double_slash_package:all"
+   ],
+   "cwd": "",
+   "expect": "invalid package name 'a//b': package names may not contain '//' path separators",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "//bad_double_slash_package:x: invalid label '//a//b:c' in element 0 of attribute 'srcs' of 'filegroup': invalid package name 'a//b': package names may not contain '//' path separators",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/bad_double_slash_package/BUILD:1:10: //bad_double_slash_package:x: invalid label '//a//b:c' in element 0 of attribute 'srcs' of 'filegroup': invalid package name 'a//b': package names may not contain '//' path separators\nERROR: package contains errors: bad_double_slash_package: //bad_double_slash_package:x: invalid label '//a//b:c' in element 0 of attribute 'srcs' of 'filegroup': invalid package name 'a//b': package names may not contain '//' path separators\nERROR: Evaluation of query \"//bad_double_slash_package:all\" failed\n",
+   "native_stderr": "bazel-rs: Traceback (most recent call last):\n  * <WS>/bad_double_slash_package/BUILD:1, in <module>\n      filegroup(name = \"x\", srcs = [\"//a//b:c\"])\nerror: //bad_double_slash_package:x: invalid label '//a//b:c' in element 0 of attribute 'srcs' of 'filegroup': invalid package name 'a//b': package names may not contain '//' path separators\n --> <WS>/bad_double_slash_package/BUILD:1:1\n  |\n1 | filegroup(name = \"x\", srcs = [\"//a//b:c\"])\n  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\nSupported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n"
+  },
+  {
+   "id": "L/attribute_non_ascii_package",
+   "workspace": "bad",
+   "command": "query",
+   "args": [
+    "//bad_non_ascii_package:all"
+   ],
+   "cwd": "",
+   "expect": "invalid package name 'café': package names may contain A-Z, a-z, 0-9, or any of ' !\"#$%&'()*+,-./;<=>?[]^_`{|}~' (any ASCII character except 0-31, 127, ':', or '\\')",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "//bad_non_ascii_package:x: invalid label '//café:x' in element 0 of attribute 'srcs' of 'filegroup': invalid package name 'café': package names may contain A-Z, a-z, 0-9, or any of ' !\"#$%&'()*+,-./;<=>?[]^_`{|}~' (any ASCII character except 0-31, 127, ':', or '\\')",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/bad_non_ascii_package/BUILD:1:10: //bad_non_ascii_package:x: invalid label '//café:x' in element 0 of attribute 'srcs' of 'filegroup': invalid package name 'café': package names may contain A-Z, a-z, 0-9, or any of ' !\"#$%&'()*+,-./;<=>?[]^_`{|}~' (any ASCII character except 0-31, 127, ':', or '\\')\nERROR: package contains errors: bad_non_ascii_package: //bad_non_ascii_package:x: invalid label '//café:x' in element 0 of attribute 'srcs' of 'filegroup': invalid package name 'café': package names may contain A-Z, a-z, 0-9, or any of ' !\"#$%&'()*+,-./;<=>?[]^_`{|}~' (any ASCII character except 0-31, 127, ':', or '\\')\nERROR: Evaluation of query \"//bad_non_ascii_package:all\" failed\n",
+   "native_stderr": "bazel-rs: Traceback (most recent call last):\n  * <WS>/bad_non_ascii_package/BUILD:1, in <module>\n      filegroup(name = \"x\", srcs = [\"//café:x\"])\nerror: //bad_non_ascii_package:x: invalid label '//café:x' in element 0 of attribute 'srcs' of 'filegroup': invalid package name 'café': package names may contain A-Z, a-z, 0-9, or any of ' !\"#$%&'()*+,-./;<=>?[]^_`{|}~' (any ASCII character except 0-31, 127, ':', or '\\')\n --> <WS>/bad_non_ascii_package/BUILD:1:1\n  |\n1 | filegroup(name = \"x\", srcs = [\"//café:x\"])\n  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\nSupported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n"
+  },
+  {
+   "id": "L/attribute_uplevel_target",
+   "workspace": "bad",
+   "command": "query",
+   "args": [
+    "//bad_uplevel_target:all"
+   ],
+   "cwd": "",
+   "expect": "invalid target name '../x': target names may not contain up-level references '..'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "//bad_uplevel_target:x: invalid label '//p:../x' in element 0 of attribute 'srcs' of 'filegroup': invalid target name '../x': target names may not contain up-level references '..'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/bad_uplevel_target/BUILD:1:10: //bad_uplevel_target:x: invalid label '//p:../x' in element 0 of attribute 'srcs' of 'filegroup': invalid target name '../x': target names may not contain up-level references '..'\nERROR: package contains errors: bad_uplevel_target: //bad_uplevel_target:x: invalid label '//p:../x' in element 0 of attribute 'srcs' of 'filegroup': invalid target name '../x': target names may not contain up-level references '..'\nERROR: Evaluation of query \"//bad_uplevel_target:all\" failed\n",
+   "native_stderr": "bazel-rs: Traceback (most recent call last):\n  * <WS>/bad_uplevel_target/BUILD:1, in <module>\n      filegroup(name = \"x\", srcs = [\"//p:../x\"])\nerror: //bad_uplevel_target:x: invalid label '//p:../x' in element 0 of attribute 'srcs' of 'filegroup': invalid target name '../x': target names may not contain up-level references '..'\n --> <WS>/bad_uplevel_target/BUILD:1:1\n  |\n1 | filegroup(name = \"x\", srcs = [\"//p:../x\"])\n  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\nSupported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n"
+  },
+  {
+   "id": "L/attribute_dot_segment_target",
+   "workspace": "bad",
+   "command": "query",
+   "args": [
+    "//bad_dot_segment_target:all"
+   ],
+   "cwd": "",
+   "expect": "invalid target name 'a/./b': target names may not contain '.' as a path segment",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "//bad_dot_segment_target:x: invalid label '//p:a/./b' in element 0 of attribute 'srcs' of 'filegroup': invalid target name 'a/./b': target names may not contain '.' as a path segment",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/bad_dot_segment_target/BUILD:1:10: //bad_dot_segment_target:x: invalid label '//p:a/./b' in element 0 of attribute 'srcs' of 'filegroup': invalid target name 'a/./b': target names may not contain '.' as a path segment\nERROR: package contains errors: bad_dot_segment_target: //bad_dot_segment_target:x: invalid label '//p:a/./b' in element 0 of attribute 'srcs' of 'filegroup': invalid target name 'a/./b': target names may not contain '.' as a path segment\nERROR: Evaluation of query \"//bad_dot_segment_target:all\" failed\n",
+   "native_stderr": "bazel-rs: Traceback (most recent call last):\n  * <WS>/bad_dot_segment_target/BUILD:1, in <module>\n      filegroup(name = \"x\", srcs = [\"//p:a/./b\"])\nerror: //bad_dot_segment_target:x: invalid label '//p:a/./b' in element 0 of attribute 'srcs' of 'filegroup': invalid target name 'a/./b': target names may not contain '.' as a path segment\n --> <WS>/bad_dot_segment_target/BUILD:1:1\n  |\n1 | filegroup(name = \"x\", srcs = [\"//p:a/./b\"])\n  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\nSupported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n"
+  },
+  {
+   "id": "L/attribute_trailing_slash_target",
+   "workspace": "bad",
+   "command": "query",
+   "args": [
+    "//bad_trailing_slash_target:all"
+   ],
+   "cwd": "",
+   "expect": "invalid target name 'x/': target names may not end with '/'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "//bad_trailing_slash_target:x: invalid label '//p:x/' in element 0 of attribute 'srcs' of 'filegroup': invalid target name 'x/': target names may not end with '/'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/bad_trailing_slash_target/BUILD:1:10: //bad_trailing_slash_target:x: invalid label '//p:x/' in element 0 of attribute 'srcs' of 'filegroup': invalid target name 'x/': target names may not end with '/'\nERROR: package contains errors: bad_trailing_slash_target: //bad_trailing_slash_target:x: invalid label '//p:x/' in element 0 of attribute 'srcs' of 'filegroup': invalid target name 'x/': target names may not end with '/'\nERROR: Evaluation of query \"//bad_trailing_slash_target:all\" failed\n",
+   "native_stderr": "bazel-rs: Traceback (most recent call last):\n  * <WS>/bad_trailing_slash_target/BUILD:1, in <module>\n      filegroup(name = \"x\", srcs = [\"//p:x/\"])\nerror: //bad_trailing_slash_target:x: invalid label '//p:x/' in element 0 of attribute 'srcs' of 'filegroup': invalid target name 'x/': target names may not end with '/'\n --> <WS>/bad_trailing_slash_target/BUILD:1:1\n  |\n1 | filegroup(name = \"x\", srcs = [\"//p:x/\"])\n  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\nSupported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n"
+  },
+  {
+   "id": "L/attribute_trailing_slash_package",
+   "workspace": "bad",
+   "command": "query",
+   "args": [
+    "//bad_trailing_slash_package:all"
+   ],
+   "cwd": "",
+   "expect": "invalid package name 'p/': package names may not end with '/'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "//bad_trailing_slash_package:x: invalid label '//p/:x' in element 0 of attribute 'srcs' of 'filegroup': invalid package name 'p/': package names may not end with '/'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/bad_trailing_slash_package/BUILD:1:10: //bad_trailing_slash_package:x: invalid label '//p/:x' in element 0 of attribute 'srcs' of 'filegroup': invalid package name 'p/': package names may not end with '/'\nERROR: package contains errors: bad_trailing_slash_package: //bad_trailing_slash_package:x: invalid label '//p/:x' in element 0 of attribute 'srcs' of 'filegroup': invalid package name 'p/': package names may not end with '/'\nERROR: Evaluation of query \"//bad_trailing_slash_package:all\" failed\n",
+   "native_stderr": "bazel-rs: Traceback (most recent call last):\n  * <WS>/bad_trailing_slash_package/BUILD:1, in <module>\n      filegroup(name = \"x\", srcs = [\"//p/:x\"])\nerror: //bad_trailing_slash_package:x: invalid label '//p/:x' in element 0 of attribute 'srcs' of 'filegroup': invalid package name 'p/': package names may not end with '/'\n --> <WS>/bad_trailing_slash_package/BUILD:1:1\n  |\n1 | filegroup(name = \"x\", srcs = [\"//p/:x\"])\n  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\nSupported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n"
+  },
+  {
+   "id": "L/attribute_dot_package",
+   "workspace": "bad",
+   "command": "query",
+   "args": [
+    "//bad_dot_package:all"
+   ],
+   "cwd": "",
+   "expect": "invalid package name 'p/./q': package name component contains only '.' characters (perhaps you meant \":q\"?)",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "//bad_dot_package:x: invalid label '//p/./q' in element 0 of attribute 'srcs' of 'filegroup': invalid package name 'p/./q': package name component contains only '.' characters (perhaps you meant \":q\"?)",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/bad_dot_package/BUILD:1:10: //bad_dot_package:x: invalid label '//p/./q' in element 0 of attribute 'srcs' of 'filegroup': invalid package name 'p/./q': package name component contains only '.' characters (perhaps you meant \":q\"?)\nERROR: package contains errors: bad_dot_package: //bad_dot_package:x: invalid label '//p/./q' in element 0 of attribute 'srcs' of 'filegroup': invalid package name 'p/./q': package name component contains only '.' characters (perhaps you meant \":q\"?)\nERROR: Evaluation of query \"//bad_dot_package:all\" failed\n",
+   "native_stderr": "bazel-rs: Traceback (most recent call last):\n  * <WS>/bad_dot_package/BUILD:1, in <module>\n      filegroup(name = \"x\", srcs = [\"//p/./q\"])\nerror: //bad_dot_package:x: invalid label '//p/./q' in element 0 of attribute 'srcs' of 'filegroup': invalid package name 'p/./q': package name component contains only '.' characters (perhaps you meant \":q\"?)\n --> <WS>/bad_dot_package/BUILD:1:1\n  |\n1 | filegroup(name = \"x\", srcs = [\"//p/./q\"])\n  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\nSupported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n"
+  },
+  {
+   "id": "L/attribute_repo_space",
+   "workspace": "bad",
+   "command": "query",
+   "args": [
+    "//bad_repo_space:all"
+   ],
+   "cwd": "",
+   "expect": "invalid repository name 'a b': repo names may contain only A-Z, a-z, 0-9, '-', '_', '.' and '+'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "//bad_repo_space:x: invalid label '@a b//:x' in element 0 of attribute 'srcs' of 'filegroup': invalid repository name 'a b': repo names may contain only A-Z, a-z, 0-9, '-', '_', '.' and '+'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/bad_repo_space/BUILD:1:10: //bad_repo_space:x: invalid label '@a b//:x' in element 0 of attribute 'srcs' of 'filegroup': invalid repository name 'a b': repo names may contain only A-Z, a-z, 0-9, '-', '_', '.' and '+'\nERROR: package contains errors: bad_repo_space: //bad_repo_space:x: invalid label '@a b//:x' in element 0 of attribute 'srcs' of 'filegroup': invalid repository name 'a b': repo names may contain only A-Z, a-z, 0-9, '-', '_', '.' and '+'\nERROR: Evaluation of query \"//bad_repo_space:all\" failed\n",
+   "native_stderr": "bazel-rs: Traceback (most recent call last):\n  * <WS>/bad_repo_space/BUILD:1, in <module>\n      filegroup(name = \"x\", srcs = [\"@a b//:x\"])\nerror: //bad_repo_space:x: invalid label '@a b//:x' in element 0 of attribute 'srcs' of 'filegroup': invalid repository name 'a b': repo names may contain only A-Z, a-z, 0-9, '-', '_', '.' and '+'\n --> <WS>/bad_repo_space/BUILD:1:1\n  |\n1 | filegroup(name = \"x\", srcs = [\"@a b//:x\"])\n  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\nSupported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n"
+  },
+  {
+   "id": "L/attribute_repo_dotdot",
+   "workspace": "bad",
+   "command": "query",
+   "args": [
+    "//bad_repo_dotdot:all"
+   ],
+   "cwd": "",
+   "expect": "invalid repository name '..': repo names are not allowed to be '..'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "//bad_repo_dotdot:x: invalid label '@@..//:x' in element 0 of attribute 'srcs' of 'filegroup': invalid repository name '..': repo names are not allowed to be '..'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/bad_repo_dotdot/BUILD:1:10: //bad_repo_dotdot:x: invalid label '@@..//:x' in element 0 of attribute 'srcs' of 'filegroup': invalid repository name '..': repo names are not allowed to be '..'\nERROR: package contains errors: bad_repo_dotdot: //bad_repo_dotdot:x: invalid label '@@..//:x' in element 0 of attribute 'srcs' of 'filegroup': invalid repository name '..': repo names are not allowed to be '..'\nERROR: Evaluation of query \"//bad_repo_dotdot:all\" failed\n",
+   "native_stderr": "bazel-rs: Traceback (most recent call last):\n  * <WS>/bad_repo_dotdot/BUILD:1, in <module>\n      filegroup(name = \"x\", srcs = [\"@@..//:x\"])\nerror: //bad_repo_dotdot:x: invalid label '@@..//:x' in element 0 of attribute 'srcs' of 'filegroup': invalid repository name '..': repo names are not allowed to be '..'\n --> <WS>/bad_repo_dotdot/BUILD:1:1\n  |\n1 | filegroup(name = \"x\", srcs = [\"@@..//:x\"])\n  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\nSupported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n"
+  },
+  {
+   "id": "L/attribute_triple_dots",
+   "workspace": "bad",
+   "command": "query",
+   "args": [
+    "//bad_triple_dots:all"
+   ],
+   "cwd": "",
+   "expect": "invalid label '//p/...': package name cannot contain '...'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "//bad_triple_dots:x: invalid label '//p/...' in element 0 of attribute 'srcs' of 'filegroup': invalid label '//p/...': package name cannot contain '...'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/bad_triple_dots/BUILD:1:10: //bad_triple_dots:x: invalid label '//p/...' in element 0 of attribute 'srcs' of 'filegroup': invalid label '//p/...': package name cannot contain '...'\nERROR: package contains errors: bad_triple_dots: //bad_triple_dots:x: invalid label '//p/...' in element 0 of attribute 'srcs' of 'filegroup': invalid label '//p/...': package name cannot contain '...'\nERROR: Evaluation of query \"//bad_triple_dots:all\" failed\n",
+   "native_stderr": "bazel-rs: Traceback (most recent call last):\n  * <WS>/bad_triple_dots/BUILD:1, in <module>\n      filegroup(name = \"x\", srcs = [\"//p/...\"])\nerror: //bad_triple_dots:x: invalid label '//p/...' in element 0 of attribute 'srcs' of 'filegroup': invalid label '//p/...': package name cannot contain '...'\n --> <WS>/bad_triple_dots/BUILD:1:1\n  |\n1 | filegroup(name = \"x\", srcs = [\"//p/...\"])\n  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\nSupported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n"
+  },
+  {
+   "id": "L/attribute_relative_package",
+   "workspace": "bad",
+   "command": "query",
+   "args": [
+    "//bad_relative_package:all"
+   ],
+   "cwd": "",
+   "expect": "invalid label 'p:x': absolute label must begin with '@' or '//'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "//bad_relative_package:x: invalid label 'p:x' in element 0 of attribute 'srcs' of 'filegroup': invalid label 'p:x': absolute label must begin with '@' or '//'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/bad_relative_package/BUILD:1:10: //bad_relative_package:x: invalid label 'p:x' in element 0 of attribute 'srcs' of 'filegroup': invalid label 'p:x': absolute label must begin with '@' or '//'\nERROR: package contains errors: bad_relative_package: //bad_relative_package:x: invalid label 'p:x' in element 0 of attribute 'srcs' of 'filegroup': invalid label 'p:x': absolute label must begin with '@' or '//'\nERROR: Evaluation of query \"//bad_relative_package:all\" failed\n",
+   "native_stderr": "bazel-rs: Traceback (most recent call last):\n  * <WS>/bad_relative_package/BUILD:1, in <module>\n      filegroup(name = \"x\", srcs = [\"p:x\"])\nerror: //bad_relative_package:x: invalid label 'p:x' in element 0 of attribute 'srcs' of 'filegroup': invalid label 'p:x': absolute label must begin with '@' or '//'\n --> <WS>/bad_relative_package/BUILD:1:1\n  |\n1 | filegroup(name = \"x\", srcs = [\"p:x\"])\n  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\nSupported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n"
+  },
+  {
+   "id": "L/attribute_backslash_target",
+   "workspace": "bad",
+   "command": "query",
+   "args": [
+    "//bad_backslash_target:all"
+   ],
+   "cwd": "",
+   "expect": "invalid target name 'x\\y': target names may not contain '\\'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "//bad_backslash_target:x: invalid label 'x\\y' in element 0 of attribute 'srcs' of 'filegroup': invalid target name 'x\\y': target names may not contain '\\'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/bad_backslash_target/BUILD:1:10: //bad_backslash_target:x: invalid label 'x\\y' in element 0 of attribute 'srcs' of 'filegroup': invalid target name 'x\\y': target names may not contain '\\'\nERROR: package contains errors: bad_backslash_target: //bad_backslash_target:x: invalid label 'x\\y' in element 0 of attribute 'srcs' of 'filegroup': invalid target name 'x\\y': target names may not contain '\\'\nERROR: Evaluation of query \"//bad_backslash_target:all\" failed\n",
+   "native_stderr": "bazel-rs: Traceback (most recent call last):\n  * <WS>/bad_backslash_target/BUILD:1, in <module>\n      filegroup(name = \"x\", srcs = [\"x\\\\y\"])\nerror: //bad_backslash_target:x: invalid label 'x\\y' in element 0 of attribute 'srcs' of 'filegroup': invalid target name 'x\\y': target names may not contain '\\'\n --> <WS>/bad_backslash_target/BUILD:1:1\n  |\n1 | filegroup(name = \"x\", srcs = [\"x\\\\y\"])\n  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\nSupported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n"
+  },
+  {
+   "id": "L/attribute_tab_target",
+   "workspace": "bad",
+   "command": "query",
+   "args": [
+    "//bad_tab_target:all"
+   ],
+   "cwd": "",
+   "expect": "invalid target name 'x<?>y': target names may not contain non-printable characters: '\\x09'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "//bad_tab_target:x: invalid label 'x\ty' in element 0 of attribute 'srcs' of 'filegroup': invalid target name 'x<?>y': target names may not contain non-printable characters: '\\x09'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/bad_tab_target/BUILD:1:10: //bad_tab_target:x: invalid label 'x\ty' in element 0 of attribute 'srcs' of 'filegroup': invalid target name 'x<?>y': target names may not contain non-printable characters: '\\x09'\nERROR: package contains errors: bad_tab_target: //bad_tab_target:x: invalid label 'x\ty' in element 0 of attribute 'srcs' of 'filegroup': invalid target name 'x<?>y': target names may not contain non-printable characters: '\\x09'\nERROR: Evaluation of query \"//bad_tab_target:all\" failed\n",
+   "native_stderr": "bazel-rs: Traceback (most recent call last):\n  * <WS>/bad_tab_target/BUILD:1, in <module>\n      filegroup(name = \"x\", srcs = [\"x\\ty\"])\nerror: //bad_tab_target:x: invalid label 'x\ty' in element 0 of attribute 'srcs' of 'filegroup': invalid target name 'x<?>y': target names may not contain non-printable characters: '\\x09'\n --> <WS>/bad_tab_target/BUILD:1:1\n  |\n1 | filegroup(name = \"x\", srcs = [\"x\\ty\"])\n  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\nSupported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n"
+  },
+  {
+   "id": "L/attribute_empty_target",
+   "workspace": "bad",
+   "command": "query",
+   "args": [
+    "//bad_empty_target:all"
+   ],
+   "cwd": "",
+   "expect": "invalid target name '': empty target name",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "//bad_empty_target:x: invalid label '//p:' in element 0 of attribute 'srcs' of 'filegroup': invalid target name '': empty target name",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/bad_empty_target/BUILD:1:10: //bad_empty_target:x: invalid label '//p:' in element 0 of attribute 'srcs' of 'filegroup': invalid target name '': empty target name\nERROR: package contains errors: bad_empty_target: //bad_empty_target:x: invalid label '//p:' in element 0 of attribute 'srcs' of 'filegroup': invalid target name '': empty target name\nERROR: Evaluation of query \"//bad_empty_target:all\" failed\n",
+   "native_stderr": "bazel-rs: Traceback (most recent call last):\n  * <WS>/bad_empty_target/BUILD:1, in <module>\n      filegroup(name = \"x\", srcs = [\"//p:\"])\nerror: //bad_empty_target:x: invalid label '//p:' in element 0 of attribute 'srcs' of 'filegroup': invalid target name '': empty target name\n --> <WS>/bad_empty_target/BUILD:1:1\n  |\n1 | filegroup(name = \"x\", srcs = [\"//p:\"])\n  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\nSupported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n"
+  },
+  {
+   "id": "L/attribute_shorthand_bad_repo",
+   "workspace": "bad",
+   "command": "query",
+   "args": [
+    "//bad_shorthand_bad_repo:all"
+   ],
+   "cwd": "",
+   "expect": "invalid repository name 'a:b': repo names may contain only A-Z, a-z, 0-9, '-', '_', '.' and '+'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "//bad_shorthand_bad_repo:x: invalid label '@a:b' in element 0 of attribute 'srcs' of 'filegroup': invalid repository name 'a:b': repo names may contain only A-Z, a-z, 0-9, '-', '_', '.' and '+'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/bad_shorthand_bad_repo/BUILD:1:10: //bad_shorthand_bad_repo:x: invalid label '@a:b' in element 0 of attribute 'srcs' of 'filegroup': invalid repository name 'a:b': repo names may contain only A-Z, a-z, 0-9, '-', '_', '.' and '+'\nERROR: package contains errors: bad_shorthand_bad_repo: //bad_shorthand_bad_repo:x: invalid label '@a:b' in element 0 of attribute 'srcs' of 'filegroup': invalid repository name 'a:b': repo names may contain only A-Z, a-z, 0-9, '-', '_', '.' and '+'\nERROR: Evaluation of query \"//bad_shorthand_bad_repo:all\" failed\n",
+   "native_stderr": "bazel-rs: Traceback (most recent call last):\n  * <WS>/bad_shorthand_bad_repo/BUILD:1, in <module>\n      filegroup(name = \"x\", srcs = [\"@a:b\"])\nerror: //bad_shorthand_bad_repo:x: invalid label '@a:b' in element 0 of attribute 'srcs' of 'filegroup': invalid repository name 'a:b': repo names may contain only A-Z, a-z, 0-9, '-', '_', '.' and '+'\n --> <WS>/bad_shorthand_bad_repo/BUILD:1:1\n  |\n1 | filegroup(name = \"x\", srcs = [\"@a:b\"])\n  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\nSupported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n"
+  },
+  {
+   "id": "L/rule_name_colon",
+   "workspace": "bad",
+   "command": "query",
+   "args": [
+    "//rule_name:all"
+   ],
+   "cwd": "",
+   "expect": "invalid target name 'a:b': target names may not contain ':'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "illegal rule name: a:b: invalid target name 'a:b': target names may not contain ':'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"<WS>/rule_name/BUILD\", line 1, column 10, in <toplevel>\n\t\tfilegroup(name = 'a:b')\nError in filegroup: illegal rule name: a:b: invalid target name 'a:b': target names may not contain ':'\nERROR: package contains errors: rule_name: Traceback (most recent call last):\n\tFile \"<WS>/rule_name/BUILD\", line 1, column 10, in <toplevel>\n\t\tfilegroup(name = 'a:b')\nError in filegroup: illegal rule name: a:b: invalid target name 'a:b': target names may not contain ':'\nERROR: Evaluation of query \"//rule_name:all\" failed\n",
+   "native_stderr": "bazel-rs: Traceback (most recent call last):\n  * <WS>/rule_name/BUILD:1, in <module>\n      filegroup(name = 'a:b')\nerror: illegal rule name: a:b: invalid target name 'a:b': target names may not contain ':'\n --> <WS>/rule_name/BUILD:1:1\n  |\n1 | filegroup(name = 'a:b')\n  | ^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\nSupported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n"
+  },
+  {
+   "id": "L/rule_name_uplevel",
+   "workspace": "bad",
+   "command": "query",
+   "args": [
+    "//rule_name_uplevel:all"
+   ],
+   "cwd": "",
+   "expect": "invalid target name '../x': target names may not contain up-level references '..'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "illegal rule name: ../x: invalid target name '../x': target names may not contain up-level references '..'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"<WS>/rule_name_uplevel/BUILD\", line 1, column 10, in <toplevel>\n\t\tfilegroup(name = '../x')\nError in filegroup: illegal rule name: ../x: invalid target name '../x': target names may not contain up-level references '..'\nERROR: package contains errors: rule_name_uplevel: Traceback (most recent call last):\n\tFile \"<WS>/rule_name_uplevel/BUILD\", line 1, column 10, in <toplevel>\n\t\tfilegroup(name = '../x')\nError in filegroup: illegal rule name: ../x: invalid target name '../x': target names may not contain up-level references '..'\nERROR: Evaluation of query \"//rule_name_uplevel:all\" failed\n",
+   "native_stderr": "bazel-rs: Traceback (most recent call last):\n  * <WS>/rule_name_uplevel/BUILD:1, in <module>\n      filegroup(name = '../x')\nerror: illegal rule name: ../x: invalid target name '../x': target names may not contain up-level references '..'\n --> <WS>/rule_name_uplevel/BUILD:1:1\n  |\n1 | filegroup(name = '../x')\n  | ^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\nSupported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n"
+  },
+  {
+   "id": "L/label_constructor_uplevel",
+   "workspace": "bad",
+   "command": "query",
+   "args": [
+    "//label_ctor:all"
+   ],
+   "cwd": "",
+   "expect": "invalid target name '../item': target names may not contain up-level references '..'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "invalid target name '../item': target names may not contain up-level references '..'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"<WS>/label_ctor/defs.bzl\", line 1, column 10, in <toplevel>\n\t\tx = Label('//pkg:../item')\nError in Label: invalid label in Label(): invalid target name '../item': target names may not contain up-level references '..'\nERROR: error loading package 'label_ctor': initialization of module 'label_ctor/defs.bzl' failed\n",
+   "native_stderr": "bazel-rs: cannot evaluate //label_ctor:defs.bzl: Traceback (most recent call last):\n  * //label_ctor:defs.bzl:1, in <module>\n      x = Label('//pkg:../item')\nerror: invalid target name '../item': target names may not contain up-level references '..'\n --> //label_ctor:defs.bzl:1:5\n  |\n1 | x = Label('//pkg:../item')\n  |     ^^^^^^^^^^^^^^^^^^^^^^\n  |\n\n"
+  },
+  {
+   "id": "L/label_constructor_colon",
+   "workspace": "bad",
+   "command": "query",
+   "args": [
+    "//label_ctor_colon:all"
+   ],
+   "cwd": "",
+   "expect": "invalid target name 'a:b': target names may not contain ':'",
+   "verdict": "SHARED_TEXT",
+   "reference": {
+    "exit": 7,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "stdout": ""
+   },
+   "stdout_order_equal": true,
+   "native_core_message": "invalid target name 'a:b': target names may not contain ':'",
+   "native_core_message_in_reference_stderr": true,
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"<WS>/label_ctor_colon/defs.bzl\", line 1, column 10, in <toplevel>\n\t\tx = Label('//pkg:a:b')\nError in Label: invalid label in Label(): invalid target name 'a:b': target names may not contain ':'\nERROR: error loading package 'label_ctor_colon': initialization of module 'label_ctor_colon/defs.bzl' failed\n",
+   "native_stderr": "bazel-rs: cannot evaluate //label_ctor_colon:defs.bzl: Traceback (most recent call last):\n  * //label_ctor_colon:defs.bzl:1, in <module>\n      x = Label('//pkg:a:b')\nerror: invalid target name 'a:b': target names may not contain ':'\n --> //label_ctor_colon:defs.bzl:1:5\n  |\n1 | x = Label('//pkg:a:b')\n  |     ^^^^^^^^^^^^^^^^^^\n  |\n\n"
+  }
+ ],
+ "history": [
+  {
+   "run": 1,
+   "counts": {
+    "SAME_RESULT": 22,
+    "DIFFERENT_RESULT": 4,
+    "UNEXPECTED_FAILURE": 9,
+    "SHARED_TEXT": 28,
+    "TEXT_MISMATCH": 3,
+    "BOTH_FAIL": 2
+   },
+   "receipt": "artifacts/labels-capture-run1.json (untracked)",
+   "findings_and_fixes": [
+    "Bazel lexes the query command residue with the query Lexer (spaces and ASCII punctuation outside */@.-_:$~[] end a word; quotes make one word): 12 unquoted rows with spaces or parentheses are query syntax errors in Bazel. Fix: src/query_expression.rs ports Lexer/QueryParser for the single-literal case (Bazel syntax-error texts; other expressions explicit gaps); the residue is joined by spaces; rows re-expected as Bazel errors and quoted variants added.",
+    "Glob boundaries come from GlobCache via PathPackageLocator (a BUILD file only, no name validation): a directory with an invalid package name and a BUILD file is a glob boundary (3 rows: //...:*, //...:all-targets, //glob:*, and //glob:loc contents). Fix: the run-1 change that globbed into such directories was reverted.",
+    "query reports a :all package error without the build resolver's while-parsing prefix. Fix: the prefix is build-only; a build row was added.",
+    "Rows added for run 2: quoted query literals, residue joining, premature end, quoted-dash literal, build :all from a non-package directory, an explicit label below an invalid-name directory with a BUILD file."
+   ]
+  }
+ ],
+ "changes_after_capture": [
+  "docs only: docs/LABEL_SYNTAX.md (new), docs/NATIVE_BUILD_RULES.md, docs/PACKAGE_SPECIFICATIONS.md, docs/REPOSITORY_RULES.md, README.md and docs/capabilities.json. capabilities.json is embedded by include_str! (src/main.rs:80), so the release binary rebuilt afterwards differs from the captured sha256 only in the `capabilities` command output; no src/ or vendor/ change after the run-2 capture.",
+  "artifacts/n38-measure-final.json (~/code native-only measurement) used the rebuilt binary sha256 f5a70bb0bd8b0fb31561a0ac69e97d24bc4278d514bc9e58b88a9035d068b62f."
+ ],
+ "post_capture_probe": {
+  "scope": "targeted genuine Bazel 9.3.0 run authorized by review (one run): BUILD with genrule outs [\"\\\\377.txt\"] (//:g), a consumer (//:c), source \"src\\\\377.in\" (//:s, file present as raw byte 0xFF) and outs [\"caf\\\\303\\\\251.txt\"] (//:h); same harness as artifacts/labels-capture.py; scratch removed",
+  "reference": {
+   "reference://:g": {
+    "exit": 1,
+    "errors": [
+     "ERROR: <WS>/BUILD.bazel:1:8: declared output '�.txt' was not created by genrule. This is probably because the genrule actually didn't create this output, or because the output was a directory and the genrule was run remotely (note that only the contents of declared file outputs are copied from genrules run remotely)",
+     "ERROR: <WS>/BUILD.bazel:1:8: Executing genrule //:g failed: not all outputs were created or valid",
+     "ERROR: Build did NOT complete successfully"
+    ],
+    "created_file_names_hex": [
+     "efbfbd2e747874"
+    ]
+   },
+   "reference://:c": {
+    "exit": 1,
+    "errors": [
+     "ERROR: <WS>/BUILD.bazel:1:8: declared output '�.txt' was not created by genrule. This is probably because the genrule actually didn't create this output, or because the output was a directory and the genrule was run remotely (note that only the contents of declared file outputs are copied from genrules run remotely)",
+     "ERROR: <WS>/BUILD.bazel:1:8: Executing genrule //:g failed: not all outputs were created or valid",
+     "ERROR: Build did NOT complete successfully"
+    ],
+    "created_file_names_hex": [
+     "efbfbd2e747874"
+    ]
+   },
+   "reference://:s": {
+    "exit": 1,
+    "errors": [
+     "ERROR: <WS>/BUILD.bazel:5:8: Executing genrule //:s failed: error reading file '//:src�.in': <WS>/src?.in (No such file or directory)",
+     "ERROR: <WS>/BUILD.bazel:5:8: Executing genrule //:s failed: 1 input file(s) are in error",
+     "ERROR: <WS>/BUILD.bazel:5:8 Executing genrule //:s failed: 1 input file(s) are in error",
+     "ERROR: Build did NOT complete successfully"
+    ],
+    "created_file_names_hex": [
+     "efbfbd2e747874"
+    ]
+   },
+   "reference://:h": {
+    "exit": 0,
+    "errors": [],
+    "created_file_names_hex": [
+     "636166c3a92e747874",
+     "efbfbd2e747874"
+    ]
+   }
+  },
+  "conclusion": "Bazel fails //:g and //:c (the shell writes the U+FFFD decoding EF BF BD .txt; the declared raw-byte output is missing) and //:s (java.io cannot name the byte); //:h builds caf\\xc3\\xa9.txt. Native after the guard: same outcomes (missing output, missing input file), //:h identical, and ctx.actions.write creates the raw byte 0xFF name (native-only check; FileWriteAction writes through the byte path)."
+ },
+ "post_capture_changes": [
+  "Guard 1 (lone-byte target names): src/bazel_bytes.rs internal_path/has_lone_bytes; platform_action maps action input/output paths to internal bytes (raw 0xFF instead of F4 8F BF BF); src/engine.rs Engine::target treats a source whose name has a lone byte as a missing input (Bazel: input in error); src/main.rs prints build result paths as raw bytes. Tests: bazel_bytes unit test, tests/bazel_lexer_strings.rs lone_byte_target_names_name_raw_bytes_like_bazel.",
+  "Guard 2 (Latin-1 profile labels): src/loading.rs latin1_profile + resolve_label_inner rejects non-ASCII label strings in repository/extension evaluation (Label(), attr.label defaults) explicitly instead of resolving their Latin-1 decoding. Test: tests/bazel_lexer_strings.rs repository_profile_non_ascii_labels_fail_explicitly.",
+  "Docs: docs/LABEL_SYNTAX.md (Paths, repository-execution source text). No other src change; the 82 paired rows do not involve lone bytes or non-ASCII labels in the Latin-1 profile (X/repository_bzl_non_ascii_source uses ASCII labels)."
+ ]
+}

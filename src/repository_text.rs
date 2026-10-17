@@ -1,16 +1,21 @@
 //! Source validation for direct repository/extension execution.
 //!
 //! Bazel 9.3 lexes a file as Latin-1 characters of its UTF-8 bytes
-//! (`--internal_starlark_utf_8_byte_strings`), and repository/extension
-//! evaluation here models those Java `char`s as Rust characters U+0000..U+00FF
-//! that are written back as single bytes (`repository_ctx.file`). Escapes keep
-//! that model exactly: an octal escape `\NNN` denotes the char `NNN & 0xff`
-//! (`net/starlark/java/syntax/Lexer.java:372-395`), which the native lexer
-//! decodes to the same scalar U+0000..U+00FF. A raw non-ASCII source character
-//! would be one char per UTF-8 byte in Bazel but one scalar natively, so those
-//! remain rejected. Decoded values cannot distinguish `"ÿ"` from `"\377"`, so
-//! original AST literal spans are inspected before evaluation. This validates
-//! code, not runtime file/template bytes, and never transcodes values.
+//! (`skyframe/StarlarkUtil.java:43-67`, `ParserInput.fromLatin1`), and
+//! repository/extension evaluation here models those Java `char`s as Rust
+//! characters U+0000..U+00FF that are written back as single bytes
+//! (`repository_ctx.file`). Escapes keep that model exactly: an octal escape
+//! `\NNN` denotes the char `NNN & 0xff` (`net/starlark/java/syntax/Lexer.java:
+//! 372-395`), which the native lexer decodes to the same scalar U+0000..U+00FF.
+//! Loaded `.bzl` files of that profile are decoded as Latin-1 before parsing
+//! (`crate::loading`), so a raw non-ASCII source character is one char per
+//! UTF-8 byte there too; only their `load()` labels must stay ASCII
+//! ([`validate_execution_load_labels`]). MODULE.bazel is parsed once as UTF-8
+//! for both models, so its raw non-ASCII literals remain rejected for execution
+//! ([`validate_execution_source`]). Decoded values cannot distinguish `"ÿ"`
+//! from `"\377"`, so original AST literal spans are inspected before
+//! evaluation. This validates code, not runtime file/template bytes, and never
+//! transcodes values.
 
 use starlark::codemap::{Pos, Span};
 use starlark::syntax::AstModule;
@@ -71,6 +76,21 @@ pub fn validate_execution_source(ast: &AstModule) -> Result<(), String> {
             ));
         }
         expr.visit_expr(|child| expressions.push(child));
+    }
+    Ok(())
+}
+
+/// A Latin-1-decoded `.bzl` of the execution profile: a `load()` label with a
+/// non-ASCII character would name the Latin-1 decoding of its bytes as a path
+/// natively, unlike Bazel, which converts it back to the original bytes.
+pub fn validate_execution_load_labels(ast: &AstModule) -> Result<(), String> {
+    for load in ast.loads() {
+        if !load.module_id.is_ascii() {
+            return Err(format!(
+                "{}: non-ASCII load() labels are unsupported in direct repository execution",
+                load.span
+            ));
+        }
     }
     Ok(())
 }

@@ -863,7 +863,9 @@ impl Engine {
             }
             // An ignored directory is a deleted package, never a subpackage
             // (ContainingPackageLookupFunction).
+            // So is an invalid package name (PackageLookupFunction.java:91-96).
             let subpackage = ignored.matching_entry(&relative).is_none()
+                && crate::label::is_valid_package_name(&relative)
                 && (directory.join("BUILD.bazel").is_file() || directory.join("BUILD").is_file());
             // No nested repositories in Bazel 9.3
             // (LocalRepositoryLookupFunction.java:27-35).
@@ -981,6 +983,15 @@ impl Engine {
     fn source_target(&mut self, label: &Label) -> Result<(PathBuf, bool), String> {
         let repository_root = self.repositories.root(&label.repository)?.to_path_buf();
         let package_dir = repository_root.join(&label.package);
+        // A source name with a lone (non-UTF-8) byte escape: Bazel 9.3 reads
+        // source files through java.io, which cannot name that byte, so the
+        // file is an input in error at execution even when it exists (paired
+        // probe, docs/LABEL_SYNTAX.md). Native: a missing input file.
+        if crate::bazel_bytes::has_lone_bytes(&label.name) {
+            let full = package_dir.join(&label.name);
+            self.missing_sources.insert(full.clone(), label.clone());
+            return Ok((full, true));
+        }
         let ignored = self.ignored(&label.repository)?;
         let mut path = package_dir.clone();
         let mut relative = label.package.clone();
@@ -1014,8 +1025,11 @@ impl Engine {
             // Bazel follows source symlinks (docs/ARCHIVE_SYMLINKS.md); package
             // boundaries below stay checked on the logical label path.
             linked |= metadata.file_type().is_symlink();
+            // An invalid package name is no package (PackageLookupFunction
+            // .java:91-96), so no boundary either.
             if i + 1 < parts.len()
                 && ignored.matching_entry(&relative).is_none()
+                && crate::label::is_valid_package_name(&relative)
                 && (path.join("BUILD.bazel").is_file() || path.join("BUILD").is_file())
             {
                 return Err(format!(
@@ -1171,14 +1185,16 @@ impl Engine {
         }
     }
 
-    /// Only literal labels, :all, //... and //package/...; not the query language.
-    /// `query` keeps every rule (FilteringPolicies.NO_FILTER).
+    /// Target patterns (crate::target_pattern), not the query language:
+    /// `query` evaluates one pattern with FilteringPolicies.NO_FILTER.
+    /// `relative_directory` is the working directory below the workspace root
+    /// (TargetPattern.Parser's relativeDirectory).
     pub fn select(
         &mut self,
         patterns: &[String],
-        current_package: &str,
+        relative_directory: &str,
     ) -> Result<Vec<Label>, String> {
-        self.select_filtered(patterns, current_package, false)
+        self.select_filtered(patterns, relative_directory, false)
     }
 
     /// Build target patterns: wildcards skip rules tagged `manual`
@@ -1187,98 +1203,243 @@ impl Engine {
     pub fn select_for_build(
         &mut self,
         patterns: &[String],
-        current_package: &str,
+        relative_directory: &str,
     ) -> Result<Vec<Label>, String> {
-        self.select_filtered(patterns, current_package, true)
+        self.select_filtered(patterns, relative_directory, true)
     }
 
+    /// TargetPatternPhaseFunction (skyframe/TargetPatternPhaseFunction.java:
+    /// 300-370): every pattern is parsed, then expanded in order; a positive
+    /// pattern's targets (with the command's filtering policy) are added, a
+    /// negative pattern's (unfiltered, TargetPatternValue.java:63-66) removed
+    /// from what was accumulated so far (`mergeAll`).
     fn select_filtered(
         &mut self,
         patterns: &[String],
-        current_package: &str,
+        relative_directory: &str,
         filter_manual: bool,
     ) -> Result<Vec<Label>, String> {
+        let parsed = patterns
+            .iter()
+            .map(|pattern| crate::target_pattern::parse(pattern, relative_directory))
+            .collect::<Result<Vec<_>, _>>()?;
         let mut selected = BTreeSet::new();
-        for pattern in patterns {
-            // A `-` prefix makes a negative pattern (TargetPattern.Parser,
-            // cmdline/TargetPattern.java); its syntax is checked like any
-            // pattern, but subtraction is not implemented natively.
-            if let Some(negative) = pattern.strip_prefix('-') {
-                crate::bazel_label::Parts::parse(negative)?;
-                return Err(format!(
-                    "negative target pattern {pattern:?} is not implemented in the native profile"
-                ));
+        for pattern in &parsed {
+            let filter = filter_manual && !pattern.negative;
+            let targets = self.expand_pattern(pattern, filter, filter_manual)?;
+            if pattern.negative {
+                selected.retain(|label| !targets.contains(label));
+            } else {
+                selected.extend(targets);
             }
-            if (pattern.starts_with("//") || pattern.starts_with('@')) && pattern.ends_with("/...")
-            {
-                let prefix = pattern.strip_suffix("...").unwrap();
-                let prefix = if prefix.ends_with("//") {
-                    prefix
-                } else {
-                    prefix.strip_suffix('/').unwrap()
-                };
-                let context = self.repositories.parse(
-                    &format!("{prefix}:__pattern__"),
-                    "",
-                    current_package,
-                )?;
+        }
+        Ok(selected.into_iter().collect())
+    }
+
+    /// One pattern's targets (TargetPattern.eval with
+    /// RecursivePackageProviderBackedTargetPatternResolver).
+    /// `build` resolves with RecursivePackageProviderBackedTargetPatternResolver,
+    /// whose package errors for `:all` carry the `while parsing` prefix; the
+    /// query environment reports them unwrapped (paired capture
+    /// tests/fixtures/label_syntax, E/relative_in_non_package_dir).
+    fn expand_pattern(
+        &mut self,
+        pattern: &crate::target_pattern::Pattern,
+        filter_manual: bool,
+        build: bool,
+    ) -> Result<BTreeSet<Label>, String> {
+        use crate::target_pattern::Kind;
+        let original = &pattern.original;
+        let mut found = BTreeSet::new();
+        match &pattern.kind {
+            Kind::TargetsBelowDirectory { rules_only } => {
+                let context =
+                    self.repositories
+                        .parse(&pattern.label_text("__pattern__"), "", "")?;
                 // TargetPattern.TargetsBelowDirectory.eval: a directory inside
                 // an ignored directory yields a warning and no targets; the
                 // rest is searched with filterForDirectory'd entries.
                 let ignored = self.ignored(&context.repository)?;
                 if let Some(entry) = ignored.matching_entry(&context.package) {
                     self.warnings.push(format!(
-                        "Pattern '{pattern}' was filtered out by ignored directory '{entry}'"
+                        "Pattern '{original}' was filtered out by ignored directory '{entry}'"
                     ));
-                    continue;
+                    return Ok(found);
                 }
                 let ignored = ignored.filter_for_directory(&context.package);
-                let root = self.repositories.root(&context.repository)?;
+                let root = self.repositories.root(&context.repository)?.to_path_buf();
                 let skip = self.repositories.link_policy(&context.repository).blocked;
-                for package in
-                    workspace::discover_packages_skipping(root, &context.package, &ignored, &skip)?
-                {
+                let packages = if root.join(&context.package).is_dir() {
+                    workspace::discover_packages_skipping(&root, &context.package, &ignored, &skip)?
+                } else {
+                    Vec::new()
+                };
+                // RecursivePackageProviderBackedTargetPatternResolver.java:326-329.
+                if packages.is_empty() {
+                    return Err(format!("no targets found beneath '{}'", context.package));
+                }
+                for package in packages {
                     let id = PackageId {
                         repository: context.repository.clone(),
                         package,
                     };
                     self.load_package(&id)?;
-                    selected.extend(
-                        self.packages[&id]
-                            .values()
-                            .filter(|rule| !matches!(rule.kind, RuleKind::PackageGroup(_)))
-                            .filter(|rule| !(filter_manual && rule.is_manual()))
-                            .map(|rule| rule.label.clone()),
-                    );
+                    found.extend(self.package_targets(&id, *rules_only, filter_manual)?);
                 }
-            } else if let Some(prefix) = pattern.strip_suffix(":all") {
-                if !prefix.is_empty() && !prefix.starts_with("//") && !prefix.starts_with('@') {
-                    return Err(format!("unsupported target pattern: {pattern}"));
-                }
+            }
+            Kind::TargetsInPackage {
+                suffix,
+                absolute,
+                rules_only,
+            } => {
                 let id = self
                     .repositories
-                    .parse(pattern, "", current_package)?
+                    .parse(&pattern.label_text("__pattern__"), "", "")?
                     .package_id();
-                self.load_package(&id)?;
-                selected.extend(
-                    self.packages[&id]
-                        .values()
-                        .filter(|rule| !matches!(rule.kind, RuleKind::PackageGroup(_)))
-                        .filter(|rule| !(filter_manual && rule.is_manual()))
-                        .map(|rule| rule.label.clone()),
-                );
-            } else {
-                if pattern.contains(['(', ')', '*', ' ']) {
-                    return Err(format!(
-                        "unsupported query expression or target pattern: {pattern}"
+                // TargetsInPackage.getWildcardConflict (TargetPattern.java:
+                // 524-560): an absolute `:all` naming an existing target.
+                if *absolute && let Some(kind) = self.existing_target_kind(&id, suffix)? {
+                    self.warnings.push(format!(
+                        "The target pattern '{original}' is ambiguous: ':{suffix}' is both a wildcard, and the name of an existing {kind}; using the latter interpretation"
                     ));
+                    found.insert(Label {
+                        repository: id.repository.clone(),
+                        package: id.package.clone(),
+                        name: suffix.clone(),
+                    });
+                    return Ok(found);
                 }
-                let label = self.repositories.parse(pattern, "", current_package)?;
+                // TargetPatternResolverUtil.getParsingErrorMessage
+                // (pkgcache/TargetPatternResolverUtil.java:33-39).
+                self.load_package(&id).map_err(|error| {
+                    if build {
+                        format!("while parsing '{original}': {error}")
+                    } else {
+                        error
+                    }
+                })?;
+                found.extend(self.package_targets(&id, *rules_only, filter_manual)?);
+            }
+            Kind::SingleTarget { target } => {
+                let label = self
+                    .repositories
+                    .parse(&pattern.label_text(target), "", "")?;
                 self.target(&label)?;
-                selected.insert(label);
+                found.insert(label);
+            }
+            Kind::PathAsTarget { path } => {
+                let label = self.path_as_target(path)?;
+                self.target(&label)?;
+                found.insert(label);
             }
         }
-        Ok(selected.into_iter().collect())
+        Ok(found)
+    }
+
+    /// InterpretPathAsTarget.eval (cmdline/TargetPattern.java:348-383): the
+    /// path itself as a package (its default target), else the longest
+    /// package prefix owning the rest as a file target.
+    fn path_as_target(&mut self, path: &str) -> Result<Label, String> {
+        let root = self.repositories.root("")?.to_path_buf();
+        let ignored = self.ignored("")?;
+        let is_package = |package: &str| -> Result<bool, String> {
+            Ok(ignored.matching_entry(package).is_none() && workspace::is_package(&root, package)?)
+        };
+        let pieces: Vec<&str> = path.split('/').collect();
+        if is_package(path)? {
+            return Label::parse_canonical(&format!("//{path}:{}", pieces[pieces.len() - 1]));
+        }
+        for split in (0..pieces.len()).rev() {
+            let package = pieces[..split].join("/");
+            if is_package(&package)? {
+                let target = pieces[split..].join("/");
+                return Label {
+                    repository: String::new(),
+                    package,
+                    name: String::new(),
+                }
+                .with_name(&target);
+            }
+        }
+        Err(format!("couldn't determine target from filename '{path}'"))
+    }
+
+    /// `Target.getTargetKind` of an existing target `name` of package `id`,
+    /// or None when the package or target does not exist
+    /// (RecursivePackageProviderBackedTargetPatternResolver.getTargetOrNull,
+    /// :117-128).
+    fn existing_target_kind(
+        &mut self,
+        id: &PackageId,
+        name: &str,
+    ) -> Result<Option<String>, String> {
+        if self.load_package(id).is_err() {
+            return Ok(None);
+        }
+        let label = Label {
+            repository: id.repository.clone(),
+            package: id.package.clone(),
+            name: name.to_owned(),
+        };
+        if !self.package_target_names(id).contains(name) {
+            return Ok(None);
+        }
+        Ok(match self.target(&label) {
+            Ok(Target::Rule(rule)) if matches!(rule.kind, RuleKind::PackageGroup(_)) => {
+                Some("package group".to_owned())
+            }
+            Ok(Target::Rule(rule)) => Some(format!("{} rule", rule.rule_class_name())),
+            Ok(Target::Output(..)) => Some("generated file".to_owned()),
+            Ok(Target::Source(_)) => Some("source file".to_owned()),
+            Err(_) => None,
+        })
+    }
+
+    /// TargetPatternResolverUtil.resolvePackageTargets
+    /// (pkgcache/TargetPatternResolverUtil.java:40-51) of a loaded package:
+    /// its rules (`rules_only`, FilteringPolicies.RULES_ONLY: package groups
+    /// are no rules) or every target, without `manual` rules under
+    /// FILTER_MANUAL.
+    fn package_targets(
+        &self,
+        id: &PackageId,
+        rules_only: bool,
+        filter_manual: bool,
+    ) -> Result<Vec<Label>, String> {
+        let package = &self.packages[id];
+        let rules = package
+            .values()
+            .filter(|rule| !(rules_only && matches!(rule.kind, RuleKind::PackageGroup(_))))
+            .filter(|rule| !(filter_manual && rule.is_manual()))
+            .map(|rule| rule.label.clone());
+        if rules_only {
+            return Ok(rules.collect());
+        }
+        let manual: BTreeSet<&str> = package
+            .values()
+            .filter(|rule| filter_manual && rule.is_manual())
+            .map(|rule| rule.label.name.as_str())
+            .collect();
+        let root = self.repositories.root(&id.repository)?;
+        // The BUILD file is the package's first input file target
+        // (Package.Builder, packages/Package.java).
+        let build = workspace::package_build_file(root, &id.package)?;
+        let build_name = build
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("BUILD")
+            .to_owned();
+        let mut names = self.package_target_names(id);
+        names.insert(build_name);
+        Ok(names
+            .into_iter()
+            .filter(|name| !manual.contains(name.as_str()))
+            .map(|name| Label {
+                repository: id.repository.clone(),
+                package: id.package.clone(),
+                name,
+            })
+            .collect())
     }
 
     fn resolve_group(
@@ -7010,13 +7171,20 @@ fn expand_command_in(
                             .ok_or_else(|| {
                                 format!("location is not a declared src or out: {target}")
                             })?;
+                        // LocationExpander.joinPaths (analysis/
+                        // LocationExpander.java:360-362) shell-escapes every
+                        // path, unlike $(SRCS)/$(OUTS) (Artifact.joinExecPaths).
                         if multiple {
                             let mut sorted = paths.clone();
                             sorted.sort();
                             sorted.dedup();
-                            paths_string(&sorted)
+                            sorted
+                                .iter()
+                                .map(|path| crate::args::shell_escape(&path.to_string_lossy()))
+                                .collect::<Vec<_>>()
+                                .join(" ")
                         } else {
-                            single(paths, &variable)?
+                            crate::args::shell_escape(&single(paths, &variable)?)
                         }
                     }
                 };
@@ -8225,6 +8393,37 @@ m = macro(implementation=emit)
         assert_eq!(
             expanded,
             "external/dep+/p/in external/dep+/p/in bazel-out/rust-fastbuild/bin/external/dep+/p bazel-out/rust-fastbuild/bin/external/dep+/p/nested"
+        );
+    }
+
+    #[test]
+    fn location_expansion_shell_escapes_each_path_but_srcs_do_not() {
+        let label = Label::parse_canonical("//p:target").unwrap();
+        let spaced = label.with_name("a b (1).pdf").unwrap().source_exec_path();
+        let quoted = label.with_name("it's").unwrap().source_exec_path();
+        let plain = label.with_name("plain.txt").unwrap().source_exec_path();
+        let locations = BTreeMap::from([
+            ("//p:a b.pdf".into(), vec![spaced.clone()]),
+            (
+                "//p:group".into(),
+                vec![spaced.clone(), quoted.clone(), plain.clone()],
+            ),
+        ]);
+        let expanded = expand_command_in(
+            // Like LocationExpander (analysis/LocationExpander.java:199), the
+            // first ')' after the function name ends the expression.
+            "$(location :a b.pdf)|$(locations :group)|$(SRCS)",
+            &[spaced, plain],
+            &[],
+            &locations,
+            &label,
+            &RepositorySet::new(PathBuf::new()),
+            crate::label::GENERATED_EXEC_ROOT,
+        )
+        .unwrap();
+        assert_eq!(
+            expanded,
+            "'p/a b (1).pdf'|'p/a b (1).pdf' 'p/it'\\''s' p/plain.txt|p/a b (1).pdf p/plain.txt"
         );
     }
 

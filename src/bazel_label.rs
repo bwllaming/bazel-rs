@@ -6,8 +6,7 @@
 //! strings: every non-ASCII byte is an ordinary (target-allowed,
 //! package-disallowed) character.
 //!
-//! Used where Bazel's full grammar and diagnostics are observable (bzl
-//! `visibility()` specifications); ordinary native labels keep `crate::label`.
+//! `crate::label` builds every native label on this grammar and its texts.
 
 /// The validated parts of a raw label (`LabelParser.Parts`).
 #[derive(Debug, PartialEq, Eq)]
@@ -22,7 +21,7 @@ pub(crate) struct Parts<'a> {
 }
 
 /// `LabelParser.syntaxErrorf`: control characters are escaped.
-fn sanitize(message: String) -> String {
+pub(crate) fn sanitize(message: String) -> String {
     if !message.bytes().any(|b| b < 0x20 || b == 0x7f) {
         return message;
     }

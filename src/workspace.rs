@@ -1,14 +1,17 @@
 //! Filesystem discovery for a single main repository.
 //!
-//! Package paths use the bounded label grammar from `label`. Symlink package
-//! directories are not supported; discovery never follows directory symlinks.
+//! Package paths use Bazel's package-name grammar (`label`). A directory whose
+//! path is not a valid package name is no package (PackageLookupFunction
+//! .java:91-96 `invalidPackageName`), silently, and neither is anything below
+//! it. Symlink package directories are not supported; discovery never follows
+//! directory symlinks.
 //! MODULE.bazel, REPO.bazel and WORKSPACE markers only locate the workspace
 //! root: Bazel 9.3 has no nested repositories inside a repository
 //! (`skyframe/LocalRepositoryLookupFunction.java:27-35` always answers the
 //! main repository), so they are neither package nor glob boundaries.
 
 use crate::ignored::IgnoredSubdirectories;
-use crate::label::validate_package_path;
+use crate::label::{is_valid_package_name, validate_package_path};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -104,12 +107,12 @@ pub fn discover_packages_skipping(
                 continue;
             }
             let name = entry.file_name();
-            let name = name.to_str().ok_or_else(|| {
-                format!(
-                    "unsupported non-UTF-8 package directory in {}",
-                    directory.display()
-                )
-            })?;
+            // A non-UTF-8 name has a byte >= 0x80, which no package name has
+            // (LabelValidator.java:50-61): neither it nor anything below it
+            // is a package.
+            let Some(name) = name.to_str() else {
+                continue;
+            };
             if matches!(name, ".git" | ".direnv" | "bazel-rs-out") {
                 continue;
             }
@@ -128,9 +131,13 @@ pub fn discover_packages_skipping(
             if skip.iter().any(|prefix| path.starts_with(prefix)) {
                 continue;
             }
-            // Do not silently omit directories that could contain unsupported
-            // packages: report the bounded grammar instead of false success.
-            validate_package_path(&child)?;
+            // ProcessPackageDirectory looks the directory up as a package
+            // (ProcessPackageDirectory.java:131-176): an invalid package name
+            // is `invalidPackageName`, not an error, and its subdirectories'
+            // paths are invalid package names too. Skip the subtree.
+            if !is_valid_package_name(&child) {
+                continue;
+            }
             pending.push((path, child));
         }
     }
@@ -242,7 +249,9 @@ pub fn repo_file(root: &Path) -> Result<Option<PathBuf>, String> {
 /// `findPackageByBuildFile`); a missing directory is no package. Once a BUILD
 /// file is found, the same policy checks as `package_build_file` apply.
 pub(crate) fn is_package(root: &Path, package: &str) -> Result<bool, String> {
-    validate_package_path(package)?;
+    if !is_valid_package_name(package) {
+        return Ok(false);
+    }
     let canonical = canonical_root(root)?;
     let mut directory = canonical.clone();
     directory.extend(package.split('/').filter(|part| !part.is_empty()));
@@ -467,14 +476,19 @@ mod tests {
             "src/python/BUILD",
             "node_modules/BUILD",
             "pkgs/BUILD",
-            // Names outside the supported grammar are fine when ignored.
-            "src/ts/node_modules/space name/BUILD",
+            // Invalid package names are no packages, ignored or not.
+            "src/ts/node_modules/café/BUILD",
             // Nested markers below an ignored directory are never inspected.
             "pkg/nested/MODULE.bazel",
         ] {
             temp.file(file);
         }
-        assert!(discover_packages(&temp.0, "", &IgnoredSubdirectories::default()).is_err());
+        assert!(
+            !discover_packages(&temp.0, "", &IgnoredSubdirectories::default())
+                .unwrap()
+                .iter()
+                .any(|package| package.contains("café"))
+        );
         let ignored = IgnoredSubdirectories::new(
             vec!["pkg".into(), "src/python/.venv/lib".into()],
             vec!["**/node_modules".into()],
@@ -575,14 +589,51 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_directory_names_are_reported() {
+    fn package_names_follow_bazel_and_invalid_directories_are_no_packages() {
         let temp = Temp::new();
-        temp.file("space name/BUILD");
-        assert!(
-            discover_packages(&temp.0, "", &none())
-                .unwrap_err()
-                .contains("stricter subset")
+        for valid in [
+            "space name",
+            "app/(beyond-work)",
+            "locales/tt@iqtelif",
+            "a+b,c;d=e[f]{g}~h!",
+            ".x/..y",
+        ] {
+            temp.file(&format!("{valid}/BUILD"));
+        }
+        // Invalid package names (non-ASCII, ':', '\\', a dot-only segment):
+        // silently no package, nor anything below.
+        for invalid in ["café", "a:b", "a\\b", "..."] {
+            temp.file(&format!("{invalid}/BUILD"));
+            temp.file(&format!("{invalid}/below/BUILD"));
+        }
+        assert_eq!(
+            discover_packages(&temp.0, "", &none()).unwrap(),
+            [
+                ".x/..y",
+                "a+b,c;d=e[f]{g}~h!",
+                "app/(beyond-work)",
+                "locales/tt@iqtelif",
+                "space name"
+            ]
         );
+        assert!(is_package(&temp.0, "space name").unwrap());
+        assert!(!is_package(&temp.0, "café").unwrap());
+        assert_eq!(
+            discover_packages(&temp.0, "café", &none()).unwrap_err(),
+            "invalid package name 'café': package names may contain A-Z, a-z, 0-9, or any of ' !\"#$%&'()*+,-./;<=>?[]^_`{|}~' (any ASCII character except 0-31, 127, ':', or '\\')"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_directories_are_no_packages() {
+        use std::os::unix::ffi::OsStrExt;
+        let temp = Temp::new();
+        let name = std::ffi::OsStr::from_bytes(b"latin\xe9");
+        fs::create_dir_all(temp.0.join(name).join("below")).unwrap();
+        fs::write(temp.0.join(name).join("BUILD"), "").unwrap();
+        temp.file("ok/BUILD");
+        assert_eq!(discover_packages(&temp.0, "", &none()).unwrap(), ["ok"]);
     }
 
     #[cfg(unix)]

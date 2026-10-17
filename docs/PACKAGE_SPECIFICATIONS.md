@@ -39,10 +39,11 @@ Each group's membership is its positive matches minus its negative matches,
 **unioned with included groups**. An exclusion does not subtract an included
 group's contribution. Includes must resolve to actual package-group targets.
 
-The native implementation retains the existing bounded ASCII label grammar.
-Other literal package characters accepted by Bazel are outside that profile, not
-intrinsically invalid Bazel syntax. Repository-only label shorthand is also
-outside this profile; use an explicit repository, package and target label.
+Package and label literals use Bazel's full label grammar (N38,
+docs/LABEL_SYNTAX.md): `//space here`, `//foo<bar` and `//(group)/...` are valid
+packages, non-ASCII package names are invalid with Bazel's text, and
+`PackageSpecificationInfo.contains("@repo")` parses `@@repo//:repo`
+(`Label.parseCanonical`).
 
 Includes are metadata dependencies, never source-file declarations or action
 inputs. An owned, canonical, shared graph preserves group boundaries without

@@ -1,13 +1,20 @@
-//! Repository-aware labels for the intentionally bounded native implementation.
+//! Repository-aware labels.
 //!
-//! This is a stricter subset of Bazel's label grammar: path components contain
-//! only ASCII letters, digits, `_`, `-`, `.`, and `+`. Empty, `.` and `..`
-//! components are rejected instead of normalized. Relative names (including
-//! `dir/file`) stay in the current package. `parse` remains main-repository-only.
+//! The grammar, validation and error texts are Bazel 9.3's
+//! (`crate::bazel_label`: `LabelParser.Parts`, `LabelValidator`,
+//! `RepositoryName.validate`); `parse_in` is `Label.parseWithPackageContext`
+//! (cmdline/Label.java:177-245) with the caller's repository mapping.
+//! Package names may contain any printable ASCII character except `:` and `\`
+//! (LabelValidator.java:50-61), target names additionally any non-ASCII
+//! character (:63-76); `@repo` means `@repo//:repo` (LabelParser.java:115-126).
+//! Like `Label.createUnvalidated`, a trailing `/.` of a target name is dropped
+//! (LabelParser.java:227-230). `parse` remains main-repository-only.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
+
+use crate::bazel_label::Parts;
 
 /// Generated-file root of the default configuration
 /// (crate::config_registry::Configurations::output_root).
@@ -87,10 +94,11 @@ impl Label {
         let repository_len = if input.starts_with("@@") {
             0 // Already included in input's byte count.
         } else if let Some(apparent) = input.strip_prefix('@') {
-            apparent
+            // `@alias` alone is `@alias//:alias`: the alias is the whole rest.
+            let alias = apparent
                 .split_once("//")
-                .and_then(|(alias, _)| mapping.get(alias))
-                .map_or(0, String::len)
+                .map_or(apparent, |(alias, _)| alias);
+            mapping.get(alias).map_or(0, String::len)
         } else {
             repository.len()
         };
@@ -113,61 +121,58 @@ impl Label {
         current_package: &str,
         mapping: &BTreeMap<String, String>,
     ) -> Result<Self, String> {
-        let unqualified_absolute = input.starts_with("//");
-        let (repository, input) = if let Some(explicit) = input.strip_prefix("@@") {
-            let (canonical, rest) = explicit.split_once("//").ok_or_else(|| {
-                format!("repository-only label shorthand is unsupported: {input:?}; use @@repository//:target")
-            })?;
-            // An apparent repository the requesting main repository does not see
-            // (RepositoryName.createUnvalidated, cmdline/RepositoryName.java):
-            // kept so the failure belongs to the dependency edge at analysis.
-            if let Some(name) = unknown_repository_name(canonical) {
+        // An apparent repository the requesting main repository does not see
+        // (RepositoryName.createUnvalidated, cmdline/RepositoryName.java):
+        // kept so the failure belongs to the dependency edge at analysis.
+        if let Some(rest) = input.strip_prefix("@@[unknown repo '")
+            && let Some((name, absolute)) = rest.split_once("' requested from @@]")
+            && absolute.starts_with("//")
+        {
+            let canonical = &input[2..input.len() - absolute.len()];
+            if unknown_repository_name(canonical) == Some(name) {
                 validate_repository_name(name)?;
-                let (package, target) = split_absolute(&input[input.len() - rest.len() - 2..]);
-                validate_package_path(package)?;
-                validate_path(target, "target name", false)?;
+                let parts = absolute_parts(absolute)?;
                 return Ok(Label {
                     repository: canonical.to_owned(),
-                    package: package.to_owned(),
-                    name: target.to_owned(),
+                    package: parts.pkg.to_owned(),
+                    name: parts.target.to_owned(),
                 });
             }
-            (canonical, &input[input.len() - rest.len() - 2..])
-        } else if let Some(apparent) = input.strip_prefix('@') {
-            let (alias, rest) = apparent.split_once("//").ok_or_else(|| {
-                format!("repository-only label shorthand is unsupported: {input:?}; use @repository//:target")
-            })?;
-            validate_repository_name(alias)?;
-            let canonical = mapping.get(alias).ok_or_else(|| {
+        }
+        let parts = Parts::parse(input)?;
+        // Label.parseWithPackageContextInternal (Label.java:234-245).
+        if parts.pkg_ends_with_triple_dots {
+            return Err(format!(
+                "invalid label '{input}': package name cannot contain '...'"
+            ));
+        }
+        if !parts.pkg.is_empty() && !parts.pkg_is_absolute {
+            return Err(format!(
+                "invalid label '{input}': absolute label must begin with '@' or '//'"
+            ));
+        }
+        // Label.computeRepoNameWithRepoContext (Label.java:177-192).
+        let repository = match parts.repo {
+            // ABSOLUTE_PACKAGE_NAMES (Label.java:94-99) are reserved only
+            // when no explicit repository prefix is present.
+            None if matches!(parts.pkg, "visibility" | "conditions") => "",
+            None => repository,
+            Some(canonical) if parts.repo_is_canonical => canonical,
+            Some(alias) => mapping.get(alias).map(String::as_str).ok_or_else(|| {
                 format!("unknown apparent repository @{alias} from canonical repository {repository:?}; extension repository not materialized or dependency not declared")
-            })?;
-            (canonical.as_str(), &input[input.len() - rest.len() - 2..])
-        } else {
-            (repository, input)
+            })?,
         };
         validate_repository_name(repository)?;
-        let (package, name) = if let Some(absolute) = input.strip_prefix("//") {
-            if let Some((package, name)) = absolute.split_once(':') {
-                (package, name)
-            } else {
-                let name = absolute.rsplit('/').next().unwrap_or("");
-                (absolute, name)
-            }
+        let package = if parts.pkg_is_absolute {
+            parts.pkg
         } else {
-            (current_package, input.strip_prefix(':').unwrap_or(input))
+            validate_package_path(current_package)?;
+            current_package
         };
-        validate_package_path(package)?;
-        validate_path(name, "target name", false)?;
         Ok(Label {
-            // Bazel 9.3 Label.computeRepoNameWithRepoContext reserves these
-            // package names only when no explicit repository prefix is present.
-            repository: if unqualified_absolute && matches!(package, "visibility" | "conditions") {
-                String::new()
-            } else {
-                repository.to_owned()
-            },
+            repository: repository.to_owned(),
             package: package.to_owned(),
-            name: name.to_owned(),
+            name: parts.target.to_owned(),
         })
     }
 
@@ -184,21 +189,22 @@ impl Label {
     pub fn validate_syntax(input: &str, package: &str) -> Result<(), String> {
         let mut mapping = BTreeMap::new();
         if let Some(apparent) = input.strip_prefix('@').filter(|_| !input.starts_with("@@")) {
-            let (name, _) = apparent
-                .split_once("//")
-                .ok_or_else(|| format!("unsupported repository label shorthand: {input:?}"))?;
-            validate_repository_name(name)?;
+            // `@name` alone is `@name//:name` (LabelParser.java:115-126).
+            let name = apparent.split_once("//").map_or(apparent, |(name, _)| name);
             mapping.insert(name.to_owned(), String::new());
         }
         Self::parse_in(input, "", package, &mapping).map(|_| ())
     }
 
+    /// `Label.create(PackageIdentifier, String)` (Label.java:303-311).
     pub fn with_name(&self, name: &str) -> Result<Self, String> {
-        validate_repository_name(&self.repository)?;
+        if unknown_repository_name(&self.repository).is_none() {
+            validate_repository_name(&self.repository)?;
+        }
         validate_package_path(&self.package)?;
-        validate_path(name, "target name", false)?;
+        crate::bazel_label::validate_and_process_target_name(&self.package, name)?;
         Ok(Self {
-            name: name.to_owned(),
+            name: name.strip_suffix("/.").unwrap_or(name).to_owned(),
             ..self.clone()
         })
     }
@@ -259,48 +265,38 @@ pub fn unknown_repository_name(repository: &str) -> Option<&str> {
         .filter(|name| !name.is_empty() && !name.contains('\''))
 }
 
-/// `//pkg:name` or `//pkg` (name = last component) into (package, name).
-fn split_absolute(input: &str) -> (&str, &str) {
-    let absolute = input.strip_prefix("//").unwrap_or(input);
-    match absolute.split_once(':') {
-        Some((package, name)) => (package, name),
-        None => (absolute, absolute.rsplit('/').next().unwrap_or("")),
-    }
-}
-
-pub(crate) fn validate_repository_name(repository: &str) -> Result<(), String> {
-    if repository.contains('/') {
+/// The parts of `//pkg[:name]`, which must be a complete absolute label.
+fn absolute_parts(absolute: &str) -> Result<Parts<'_>, String> {
+    let parts = Parts::parse(absolute)?;
+    if parts.pkg_ends_with_triple_dots {
         return Err(format!(
-            "invalid repository name {repository:?}: expected a single safe path component"
+            "invalid label '{absolute}': package name cannot contain '...'"
         ));
     }
-    validate_path(repository, "repository name", true)
+    Ok(parts)
 }
 
+/// `RepositoryName.validate` (cmdline/RepositoryName.java:178-196), which also
+/// rules out `/`: a canonical repository name is a single path component.
+pub(crate) fn validate_repository_name(repository: &str) -> Result<(), String> {
+    crate::bazel_label::validate_repo_name(repository)
+}
+
+/// `LabelValidator.validatePackageName` (cmdline/LabelValidator.java:95-139)
+/// with `LabelParser`'s `invalid package name '...'` prefix.
 pub(crate) fn validate_package_path(package: &str) -> Result<(), String> {
-    validate_path(package, "package path", true)
+    match crate::bazel_label::validate_package_name(package) {
+        None => Ok(()),
+        Some(error) => Err(crate::bazel_label::sanitize(format!(
+            "invalid package name '{package}': {error}"
+        ))),
+    }
 }
 
-fn validate_path(value: &str, kind: &str, allow_empty: bool) -> Result<(), String> {
-    if allow_empty && value.is_empty() {
-        return Ok(());
-    }
-    for component in value.split('/') {
-        if component.is_empty() || component == "." || component == ".." {
-            return Err(format!(
-                "invalid {kind} {value:?}: empty, '.' and '..' path components are not allowed"
-            ));
-        }
-        if !component
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'+'))
-        {
-            return Err(format!(
-                "unsupported {kind} {value:?}: this implementation accepts only ASCII letters, digits, '_', '-', '.', '+' and '/' (a stricter subset of Bazel label syntax)"
-            ));
-        }
-    }
-    Ok(())
+/// Whether `package` is a valid package name (PackageLookupFunction.java:91-96
+/// answers `invalidPackageName`, which is no package, otherwise).
+pub(crate) fn is_valid_package_name(package: &str) -> bool {
+    crate::bazel_label::validate_package_name(package).is_none()
 }
 
 #[cfg(test)]
@@ -389,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsafe_or_unsupported_labels() {
+    fn rejects_invalid_labels_with_bazel_texts() {
         for input in [
             "",
             ":",
@@ -413,13 +409,98 @@ mod tests {
             "//foo:x\\y",
             "//foo:x\0y",
             "//foo:x\ny",
-            "//foo:x y",
             "//café:x",
-            "//foo:x%2fy",
-            "//foo:x@y",
+            "//foo/...",
+            "//foo/...:all",
         ] {
             assert!(Label::parse(input, "").is_err(), "accepted {input:?}");
         }
+        for (input, error) in [
+            (
+                "//foo:x:y",
+                "invalid target name 'x:y': target names may not contain ':'",
+            ),
+            (
+                "//foo:x\ny",
+                "invalid target name 'x<?>y': target names may not contain non-printable characters: '\\x0A'",
+            ),
+            (
+                "//café:x",
+                "invalid package name 'café': package names may contain A-Z, a-z, 0-9, or any of ' !\"#$%&'()*+,-./;<=>?[]^_`{|}~' (any ASCII character except 0-31, 127, ':', or '\\')",
+            ),
+            (
+                "foo:bar",
+                "invalid label 'foo:bar': absolute label must begin with '@' or '//'",
+            ),
+            (
+                "//foo/...",
+                "invalid label '//foo/...': package name cannot contain '...'",
+            ),
+            (
+                "//a/b/",
+                "invalid package name 'a/b/': package names may not end with '/' (perhaps you meant \":\"?)",
+            ),
+        ] {
+            assert_eq!(Label::parse(input, "").unwrap_err(), error, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn accepts_the_full_bazel_label_alphabet() {
+        // LabelValidator.java:39-76: printable ASCII except ':' and '\\' in
+        // package names, plus any non-ASCII character in target names.
+        for (input, package, name) in [
+            ("//foo bar:a b", "foo bar", "a b"),
+            (
+                "//src/app/(beyond-work)",
+                "src/app/(beyond-work)",
+                "(beyond-work)",
+            ),
+            ("//locales/tt@iqtelif:x", "locales/tt@iqtelif", "x"),
+            ("//p:a+b@c=d", "p", "a+b@c=d"),
+            ("//p:café", "p", "café"),
+            ("//p:x%2fy", "p", "x%2fy"),
+            ("//p:x@y", "p", "x@y"),
+            (
+                "//p:!\"#$%&'()*+,;<=>?[]^_`{|}~",
+                "p",
+                "!\"#$%&'()*+,;<=>?[]^_`{|}~",
+            ),
+            ("//p:dir/.", "p", "dir"),
+            ("//p:.", "p", "."),
+            ("//p/.x/..y:z", "p/.x/..y", "z"),
+        ] {
+            let label = Label::parse(input, "").unwrap();
+            assert_eq!(
+                (label.package.as_str(), label.name.as_str()),
+                (package, name),
+                "{input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn repository_only_shorthand_names_the_repository_target() {
+        let mapping = BTreeMap::from([("go_shared".into(), "+oci+go_shared".into())]);
+        let label = Label::parse_in("@go_shared", "rules_oci+", "oci", &mapping).unwrap();
+        assert_eq!(label.to_string(), "@@+oci+go_shared//:go_shared");
+        assert_eq!(
+            Label::parse_canonical("@@gawk").unwrap().to_string(),
+            "@@gawk//:gawk"
+        );
+        assert!(
+            Label::parse_in("@missing", "", "", &mapping)
+                .unwrap_err()
+                .starts_with("unknown apparent repository @missing")
+        );
+        Label::validate_syntax("@anything", "p").unwrap();
+        assert_eq!(
+            Label::validate_syntax("@a b", "p").unwrap_err(),
+            "invalid repository name 'a b': repo names may contain only A-Z, a-z, 0-9, '-', '_', '.' and '+'"
+        );
+        assert!(
+            Label::resolution_size_bound("@go_shared", "", "", &mapping) >= label.to_string().len()
+        );
     }
 
     #[test]
@@ -465,7 +546,7 @@ mod tests {
             Label::parse("//p:x", "").unwrap().canonical_starlark(),
             "@@//p:x"
         );
-        for input in ["@repo//p:x", ":x", "x", "@@repo"] {
+        for input in ["@repo//p:x", ":x", "x", "@repo"] {
             assert!(Label::parse_canonical(input).is_err());
         }
     }
@@ -529,6 +610,11 @@ mod tests {
         for name in ["../x", "/x", "//other:x", "@@other//p:x", "a//b"] {
             assert!(label.with_name(name).is_err());
         }
+        assert_eq!(
+            label.with_name("a:b").unwrap_err(),
+            "invalid target name 'a:b': target names may not contain ':'"
+        );
+        assert_eq!(label.with_name("d/.").unwrap().name, "d");
     }
 
     #[test]
@@ -572,6 +658,10 @@ mod tests {
         for repository in [".", "..", "a/b", "a\\b", "a\0b", "a b", "a~b", "@x", "café"] {
             assert!(Label::parse_canonical(&format!("@@{repository}//p:x")).is_err());
         }
+        assert_eq!(
+            Label::parse_canonical("@@..//p:x").unwrap_err(),
+            "invalid repository name '..': repo names are not allowed to be '..'"
+        );
         assert!(Label::parse_canonical("@@a_B-1.2+//p:x").is_ok());
     }
 }

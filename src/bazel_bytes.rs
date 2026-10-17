@@ -8,9 +8,11 @@
 //! `StringEncoding.internalToPlatform` (lib/util/StringEncoding.java:105-110:
 //! a UTF-8 decoding with U+FFFD replacement when `sun.jnu.encoding` is not
 //! ISO-8859-1), and `FileWriteAction` writes the internal bytes unchanged
-//! (analysis/actions/FileWriteAction.java:272).
+//! (analysis/actions/FileWriteAction.java:272). Input and output paths keep
+//! the internal bytes (`internal_path`).
 
 use std::borrow::Cow;
+use std::path::{Path, PathBuf};
 
 fn byte_of(c: char) -> Option<u8> {
     let value = u32::from(c);
@@ -45,11 +47,35 @@ pub fn platform(text: &str) -> Cow<'_, str> {
     }
 }
 
+/// A file path holding the internal bytes of its string: Bazel's file system
+/// passes a path's Latin-1 chars to the kernel as the bytes themselves (unix
+/// JNI), so a target name with a lone `\377` names the byte 0xFF, not the
+/// UTF-8 of the native stand-in U+10FFFF.
+pub fn internal_path(path: &Path) -> Cow<'_, Path> {
+    use std::os::unix::ffi::OsStringExt;
+    match path.to_str().map(internal_bytes) {
+        Some(Cow::Owned(bytes)) => Cow::Owned(PathBuf::from(std::ffi::OsString::from_vec(bytes))),
+        _ => Cow::Borrowed(path),
+    }
+}
+
+/// Whether a native string holds a lone (non-UTF-8) Bazel byte.
+pub fn has_lone_bytes(text: &str) -> bool {
+    text.chars().any(|c| byte_of(c).is_some())
+}
+
 /// The action as Bazel spawns it: program, command, arguments and environment
-/// converted with [`platform`]. Borrowed when nothing changes.
+/// converted with [`platform`], input and output paths with [`internal_path`].
+/// Borrowed when nothing changes.
 pub fn platform_action(action: &crate::action::Action) -> Cow<'_, crate::action::Action> {
     let changes = |text: &str| matches!(platform(text), Cow::Owned(_));
+    let path_changes = |path: &Path| matches!(internal_path(path), Cow::Owned(_));
     if !changes(&action.command)
+        && !action
+            .inputs
+            .iter()
+            .any(|(source, destination)| path_changes(source) || path_changes(destination))
+        && !action.outputs.iter().any(|output| path_changes(output))
         && !action.program.as_deref().is_some_and(changes)
         && !action.arguments.iter().any(|argument| changes(argument))
         && !action
@@ -61,6 +87,21 @@ pub fn platform_action(action: &crate::action::Action) -> Cow<'_, crate::action:
     }
     let mut converted = action.clone();
     converted.command = platform(&action.command).into_owned();
+    converted.inputs = action
+        .inputs
+        .iter()
+        .map(|(source, destination)| {
+            (
+                internal_path(source).into_owned(),
+                internal_path(destination).into_owned(),
+            )
+        })
+        .collect();
+    converted.outputs = action
+        .outputs
+        .iter()
+        .map(|output| internal_path(output).into_owned())
+        .collect();
     converted.program = action
         .program
         .as_deref()
@@ -115,7 +156,16 @@ mod tests {
         bytes.command = format!("printf {ff}");
         bytes.arguments = vec![format!("a{ff}")];
         bytes.environment = [(format!("K{ff}"), format!("v{ff}"))].into();
+        bytes.outputs = vec![PathBuf::from(format!("bazel-out/bin/{ff}.txt"))];
+        bytes.inputs = vec![(PathBuf::from(format!("p/{ff}")), PathBuf::from("p/x"))];
         let converted = platform_action(&bytes);
+        use std::os::unix::ffi::OsStrExt;
+        assert_eq!(
+            converted.outputs[0].as_os_str().as_bytes(),
+            b"bazel-out/bin/\xff.txt"
+        );
+        assert_eq!(converted.inputs[0].0.as_os_str().as_bytes(), b"p/\xff");
+        assert_eq!(converted.inputs[0].1, PathBuf::from("p/x"));
         assert_eq!(converted.command, "printf \u{fffd}");
         assert_eq!(converted.arguments, ["a\u{fffd}"]);
         assert_eq!(converted.environment["K\u{fffd}"], "v\u{fffd}");

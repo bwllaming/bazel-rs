@@ -542,13 +542,15 @@ pub(crate) fn file_json_root(file: &File) -> anyhow::Result<&str> {
     if !owner.repository.is_empty() {
         bail!("unsupported File JSON profile: external repository");
     }
+    // Any label-derived path: no empty, '.' or '..' component and none of
+    // the characters no package or target name has (crate::bazel_label).
     if !file.short_path.split('/').all(|part| {
         !part.is_empty()
             && part != "."
             && part != ".."
-            && part
+            && !part
                 .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'+'))
+                .any(|b| b < 0x20 || b == 0x7f || b == b':' || b == b'\\')
     }) {
         bail!("unsupported File JSON profile: noncanonical short_path");
     }
@@ -2140,8 +2142,13 @@ names = [main.repo_name, external.repo_name]
         for source in ["Label(':relative')", "Label('@unknown//pkg:item')"] {
             fail(source, "Label requires an absolute canonical label");
         }
-        fail("Label('//pkg:café')", "ASCII");
-        fail("Label('//pkg:../item')", "path components are not allowed");
+        pass("str(Label('//pkg:café')) == '@@//pkg:café'");
+        pass("str(Label('//a b/(c):d e')) == '@@//a b/(c):d e'");
+        pass("str(Label('@@gawk')) == '@@gawk//:gawk'");
+        fail(
+            "Label('//pkg:../item')",
+            "invalid target name '../item': target names may not contain up-level references '..'",
+        );
     }
 
     #[test]

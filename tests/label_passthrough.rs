@@ -375,15 +375,17 @@ fn unknown_apparent_repository_still_fails_before_passthrough() {
 }
 
 #[test]
-fn string_ascii_and_canonical_validation_remain_strict() {
+fn label_syntax_errors_use_bazel_texts() {
+    // LabelValidator.validateTargetName (cmdline/LabelValidator.java:146-212);
+    // non-ASCII target names are valid (Label('//pkg:café') succeeds).
     for (expression, diagnostic) in [
         (
-            "Label('//pkg:café')",
-            "unsupported target name \"café\": this implementation accepts only ASCII letters, digits, '_', '-', '.', '+' and '/' (a stricter subset of Bazel label syntax)",
+            "Label('//pkg:../item')",
+            "invalid target name '../item': target names may not contain up-level references '..'",
         ),
         (
-            "Label('//pkg:../item')",
-            "invalid target name \"../item\": empty, '.' and '..' path components are not allowed",
+            "Label('//pkg:a:b')",
+            "invalid target name 'a:b': target names may not contain ':'",
         ),
     ] {
         Fixture::new().failure(expression, diagnostic, false);

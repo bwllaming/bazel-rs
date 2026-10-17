@@ -140,9 +140,18 @@ fn run() -> Result<(), String> {
     for warning in configuration_options.warnings() {
         eprintln!("WARNING: {warning}");
     }
-    if command == "query" && rest.len() != 1 {
-        return Err("query requires exactly one literal target pattern; query expressions are not implemented".into());
-    }
+    // QueryOptionHelper.readQuery (runtime/commands/QueryOptionHelper.java:
+    // 41-70): the residue joined by spaces is the query expression.
+    let rest = if command == "query" {
+        if rest.is_empty() {
+            return Err(
+                "missing query expression. Type 'bazel help query' for syntax and help".into(),
+            );
+        }
+        vec![rest.join(" ")]
+    } else {
+        rest
+    };
     if command == "build" && rest.is_empty() {
         return Err("build requires at least one target".into());
     }
@@ -216,10 +225,19 @@ fn run() -> Result<(), String> {
             starlark,
         ));
     }
+    // TargetPattern.Parser's relativeDirectory is the working directory below
+    // the workspace root, whether or not it is a package
+    // (cmdline/TargetPattern.java:783-789).
+    let relative_directory = relative_directory(&root, &cwd)?;
     let labels = if command == "query" {
-        engine.select(&rest, &current_package)
+        // QueryCommand.doQuery (runtime/commands/QueryCommand.java:84-99):
+        // only a single target literal is evaluated natively.
+        match bazel_rs::query_expression::target_literal(&rest[0]) {
+            Ok(literal) => engine.select(&[literal], &relative_directory),
+            Err(error) => Err(error),
+        }
     } else {
-        engine.select_for_build(&rest, &current_package)
+        engine.select_for_build(&rest, &relative_directory)
     };
     // Bazel reports pattern warnings as they happen, before a later error.
     for warning in engine.take_warnings() {
@@ -239,7 +257,16 @@ fn run() -> Result<(), String> {
         }
         let summary = result?;
         for (label, output) in summary.outputs {
-            println!("{label}\t{}", output.display());
+            // The path's raw bytes: a lone-byte target name names the byte
+            // itself (bazel_bytes::internal_path), not U+FFFD.
+            use std::io::Write as _;
+            use std::os::unix::ffi::OsStrExt as _;
+            let mut stdout = std::io::stdout().lock();
+            stdout
+                .write_all(format!("{label}\t").as_bytes())
+                .and_then(|()| stdout.write_all(output.as_os_str().as_bytes()))
+                .and_then(|()| stdout.write_all(b"\n"))
+                .map_err(|error| error.to_string())?;
         }
         eprintln!(
             "bazel-rs: {} actions executed, {} cache hits (experimental local execution; not sandboxed)",
@@ -272,6 +299,15 @@ fn current_package(root: &Path, cwd: &Path) -> Result<String, String> {
         }
     }
     Err("could not determine current package".into())
+}
+
+fn relative_directory(root: &Path, cwd: &Path) -> Result<String, String> {
+    let cwd = std::fs::canonicalize(cwd).map_err(|e| e.to_string())?;
+    cwd.strip_prefix(root)
+        .map_err(|e| e.to_string())?
+        .to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| "non-UTF-8 working directories are not supported".into())
 }
 
 /// The native command options, parsed by the existing option handlers.

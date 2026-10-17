@@ -325,10 +325,28 @@ fn root_module_nested_cwd_uses_workspace_root_and_current_package() {
         let ws = Workspace::new("module(name='root_fixture')\nprint('G_ROOT_ONCE')\n");
         let cwd = ws.path().join("app/nested");
         fs::create_dir_all(&cwd).unwrap();
+        // Relative patterns resolve against the working directory below the
+        // workspace root, a package or not (TargetPattern.Parser's
+        // relativeDirectory, buildtool/AnalysisPhaseRunner.java:554).
         let output = ws.run_in(&cwd, &[command, ":check"]);
+        assert!(
+            stderr(&output).contains("no such package 'app/nested'"),
+            "{}",
+            stderr(&output)
+        );
+        let output = ws.run_in(&ws.path().join("app"), &[command, ":check"]);
         success(&output);
         assert_eq!(stderr(&output).matches("G_ROOT_ONCE").count(), 1);
         if command == "query" {
+            assert_eq!(output.stdout, b"//app:check\n");
+            // The residue is joined by spaces into one query expression
+            // (QueryOptionHelper.java:48), lexed like Bazel's query Lexer.
+            let output = ws.run(&[command, "//app:check", "//first:first"]);
+            rejected(
+                &output,
+                "Error while parsing '//app:check //first:first': unexpected token '//first:first' after query expression '//app:check'",
+            );
+            let output = ws.run(&[command, "'//app:check'"]);
             assert_eq!(output.stdout, b"//app:check\n");
         } else {
             assert_eq!(content(&output), [b"g-ok\n".to_vec()]);
@@ -355,10 +373,10 @@ fn root_module_cli_argument_errors_and_metadata_commands_precede_recording() {
             vec!["build", "--unsupported-root-module-option", "//app:check"],
             "--unsupported-root-module-option :: Unrecognized option: --unsupported-root-module-option",
         ),
-        (vec!["query"], "query requires exactly one"),
+        // QueryOptionHelper.java:61-68, before any loading.
         (
-            vec!["query", "//app:check", "//first:first"],
-            "query requires exactly one",
+            vec!["query"],
+            "missing query expression. Type 'bazel help query' for syntax and help",
         ),
         (vec!["build", "--jobs=0", "//app:check"], "positive integer"),
     ] {

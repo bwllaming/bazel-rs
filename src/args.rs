@@ -218,6 +218,15 @@ pub(crate) fn serialize_write_content_of(snapshot: &ArgsSnapshot) -> Result<Vec<
     ))
 }
 
+/// `ShellEscaper.escapeString` (util/ShellEscaper.java:95-115).
+pub(crate) fn shell_escape(text: &str) -> String {
+    if crate::command_line::shell_quote_required(text) {
+        format!("'{}'", text.replace('\'', "'\\''"))
+    } else {
+        text.to_owned()
+    }
+}
+
 fn sequence(value: Value<'_>) -> anyhow::Result<Vec<Value<'_>>> {
     if let Some(list) = ListRef::from_value(value) {
         Ok(list.iter().collect())

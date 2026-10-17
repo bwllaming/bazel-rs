@@ -457,8 +457,8 @@ fn info_methods(builder: &mut MethodsBuilder) {
                 } else {
                     text
                 };
-                // Repository-only shorthand and non-ASCII label literals retain
-                // Label's explicit unsupported-profile diagnostic.
+                // Label.parseCanonical (PackageSpecificationProvider.java:103):
+                // `@repo` alone is `@@repo//:repo`.
                 let label = Label::parse_canonical(text).map_err(anyhow::Error::msg)?;
                 PackageId {
                     repository: label.repository,
@@ -618,13 +618,14 @@ mod tests {
                 "{raw}"
             );
         }
-        for raw in ["//foo bar", "//foo/<", "//foo/**"] {
-            let error = parse_specs(&[raw.into()], &package("", "p"), &repos).unwrap_err();
-            assert!(
-                error.contains("unsupported") && error.contains("stricter subset"),
-                "{error}"
-            );
+        // LabelValidator.java:50-61: any printable ASCII except ':' and '\\'.
+        for raw in ["//foo bar", "//foo/<", "//foo/**", "//(app)/tt@x/..."] {
+            parse_specs(&[raw.into()], &package("", "p"), &repos).unwrap();
         }
+        assert_eq!(
+            parse_specs(&["//café".into()], &package("", "p"), &repos).unwrap_err(),
+            "invalid package name 'café': package names may contain A-Z, a-z, 0-9, or any of ' !\"#$%&'()*+,-./;<=>?[]^_`{|}~' (any ASCII character except 0-31, 127, ':', or '\\')"
+        );
         // All inputs are borrowed/precharged; neither a huge copy nor a huge
         // diagnostic is constructed before this limit rejects the payload.
         let huge = "a".repeat(8 * 1024 * 1024 + 1);
@@ -741,6 +742,7 @@ values[y] = "second"
 (x.contains(typed) and x.contains("@ext+//allowed:x") and x.contains("@@ext+//allowed:x")) or fail("canonical repository")
 (not x.contains("@alias//allowed:x") and not x.contains("//allowed:x")) or fail("no apparent or provider repository context")
 (x.contains("@//foo:x") and x.contains("@@//foo:x") and x.contains(*["//foo:x"])) or fail("main and expanded positional")
+(not x.contains("@bare") and not x.contains("@@bare") and x.contains("//foo:x y")) or fail("repository shorthand and full label alphabet")
 "#).unwrap();
     }
 
@@ -758,8 +760,7 @@ values[y] = "second"
             "x.contains([])",
             "x.contains(':x')",
             "x.contains('foo:x')",
-            "x.contains('@bare')",
-            "x.contains('//foo:x y')",
+            "x.contains('//foo:x\\\\y')",
             "x.contains = 1",
             "x.extra = 1",
             "x.missing",

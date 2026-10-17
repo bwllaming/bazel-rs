@@ -518,6 +518,11 @@ impl Walker<'_> {
                     {
                         continue;
                     }
+                    // GlobCache.isSubPackage asks PathPackageLocator
+                    // .getPackageBuildFileNullable (pkgcache/PathPackageLocator
+                    // .java:83-96), which only looks for a BUILD file: a
+                    // directory whose name is no valid package name is a
+                    // boundary too (paired capture tests/fixtures/label_syntax).
                     if is_subpackage(&logical)? {
                         continue;
                     }
@@ -1046,6 +1051,28 @@ mod tests {
         assert_eq!(
             run(&root.join("cache/repositories/trees/x"), &policy).unwrap(),
             ["data.rs"]
+        );
+    }
+
+    #[test]
+    fn glob_boundaries_are_build_files_whatever_the_directory_name() {
+        let temp = Temp::new();
+        // Valid package names with punctuation and spaces are subpackages.
+        temp.file("(group)/BUILD");
+        temp.file("(group)/page.rs");
+        temp.file("with space/BUILD");
+        temp.file("with space/a b.rs");
+        // So is a directory whose name is no valid package name.
+        temp.file("café/BUILD");
+        temp.file("café/x.rs");
+        temp.file("a:b/BUILD");
+        temp.file("a:b/y.rs");
+        // Without a BUILD file, any of them is globbed into.
+        temp.file("dé/z (1).rs");
+        temp.file("plain dir/w.rs");
+        assert_eq!(
+            temp.run(&["**/*.rs"], &[], true, false).unwrap(),
+            ["dé/z (1).rs", "plain dir/w.rs"]
         );
     }
 

@@ -320,8 +320,8 @@ Recorded by the paired capture (`tests/fixtures/native_rules/reference_receipt.j
   prints Bazel's multi-line `LOC: in genrule rule //pkg:g: Visibility error:
   target '//dep:f' is not visible from target '//pkg:g' ...`
   (docs/CONFIGURATION.md).
-* The native label grammar is a stricter subset (`//a b:c` is rejected at
-  loading; Bazel accepts it).
+* The native label grammar is Bazel's (N38, docs/LABEL_SYNTAX.md): `//a b:c`
+  is accepted and invalid labels report Bazel's `LabelSyntaxException` texts.
 * Unregistered Bazel native rule classes (`java_library`, ...) are unknown
   globals (`name 'java_library' is not defined`; before N33 ``Variable
   `java_library` not found``).

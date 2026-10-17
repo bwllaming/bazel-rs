@@ -160,6 +160,19 @@ fn raw_strings_keep_backslashes_and_build_byte_escapes_decode_at_actions() {
 }
 
 #[test]
+fn repository_bzl_raw_non_ascii_source_is_latin1_chars_of_its_bytes() {
+    // StarlarkUtil.createParserInput (skyframe/StarlarkUtil.java:43-67):
+    // ParserInput.fromLatin1, so 'é' is two chars and '–' three (rules_python
+    // normalize_name.bzl's docstring has an en dash).
+    let f = Fixture::new();
+    probe(
+        &f,
+        "\"\"\"a–z, 0–9\"\"\"\nreturn '|'.join([str(len('é')), 'é', '–'[0:1], str(len('–'.elems()))]) + '\\n'",
+    );
+    assert_eq!(f.built("@made//:data"), b"2|\xc3\xa9|\xe2|3\n");
+}
+
+#[test]
 fn repository_strings_follow_bazel_string_module() {
     let f = Fixture::new();
     probe(
@@ -291,4 +304,67 @@ make = repository_rule(_impl, attrs = {"probe": attr.string(), "mode": attr.stri
         debug("dict")[0],
         format!("{prefix}dict{tail} modifying arguments probe = \"changed\"")
     );
+}
+
+#[test]
+fn repository_profile_non_ascii_labels_fail_explicitly() {
+    // A Latin-1 label string would name the Latin-1 decoding of its UTF-8
+    // bytes as a path natively; Bazel converts it back. Explicit instead of
+    // a silently missing file.
+    let f = Fixture::new();
+    f.file("é.txt", "data\n");
+    probe(&f, "return str(ctx.path(Label('//:é.txt')).exists)");
+    rejected(
+        &f.run(&["build", "@made//:data"]),
+        "non-ASCII label \"//:Ã©.txt\" is unsupported in direct repository execution",
+    );
+    f.file(
+        "defs.bzl",
+        "def _impl(ctx):\n    ctx.file('BUILD.bazel', \"exports_files(['data'])\\n\")\n    ctx.file('data', str(ctx.path(ctx.attr.src).exists), executable = False)\n\nmake = repository_rule(_impl, attrs = {'src': attr.label(default = '//:é.txt')})\n",
+    );
+    let output = f.run(&["build", "@made//:data"]);
+    rejected(&output, "non-ASCII");
+    // ASCII labels keep working in the same profile.
+    probe(&f, "return str(ctx.path(Label('//:MODULE.bazel')).exists)");
+    assert_eq!(f.built("@made//:data"), b"True");
+}
+
+#[test]
+fn lone_byte_target_names_name_raw_bytes_like_bazel() {
+    // Paired probe against genuine Bazel 9.3.0 (docs/LABEL_SYNTAX.md): a
+    // genrule output named '\377.txt' fails (the shell writes the platform
+    // decoding U+FFFD, the declared output is the raw byte 0xFF), a source
+    // named 'src\377.in' is an input in error even when the file exists, and
+    // a native write creates the raw byte 0xFF.
+    use std::os::unix::ffi::OsStrExt;
+    let f = Fixture::new();
+    f.file(
+        "BUILD.bazel",
+        "genrule(name = 'g', outs = ['\\377.txt'], cmd = 'echo hi > $@')\nexports_files(['src\\377.in'])\ngenrule(name = 's', srcs = ['src\\377.in'], outs = ['s.txt'], cmd = 'cat $< > $@')\n",
+    );
+    fs::write(
+        f.0.path().join(std::ffi::OsStr::from_bytes(b"src\xff.in")),
+        "source\n",
+    )
+    .unwrap();
+    f.file(
+        "w/defs.bzl",
+        "def _w(ctx):\n    out = ctx.actions.declare_file('w\\377.txt')\n    ctx.actions.write(out, 'written\\n')\n    return [DefaultInfo(files = depset([out]))]\nw = rule(_w)\n",
+    );
+    f.file("w/BUILD", "load(':defs.bzl', 'w')\nw(name = 'w')\n");
+    rejected(&f.run(&["build", "//:g"]), "missing or invalid output");
+    rejected(&f.run(&["build", "//:s"]), "1 input file(s) do not exist");
+    let output = f.run(&["build", "//w:w"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let path = PathBuf::from(std::ffi::OsStr::from_bytes(
+        output
+            .stdout
+            .split(|b| *b == b'\t')
+            .nth(1)
+            .unwrap()
+            .strip_suffix(b"\n")
+            .unwrap(),
+    ));
+    assert_eq!(path.file_name().unwrap().as_bytes(), b"w\xff.txt");
+    assert_eq!(fs::read(path).unwrap(), b"written\n");
 }

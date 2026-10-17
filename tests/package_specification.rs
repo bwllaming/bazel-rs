@@ -349,16 +349,27 @@ fn declaration_arguments_and_grammar_fail_during_loading() {
         rejected(&ws.run(&["query", ":g"]), "");
         ws.untouched();
     }
-    // These names ARE legal upstream literals. This is the explicitly bounded
-    // native ASCII label profile, NOT a claim that Bazel rejects their grammar.
-    for spec in ["//space here", "//foo/**", "//foo<bar"] {
+    // Bazel's package-name grammar (LabelValidator.java:50-61) accepts any
+    // printable ASCII except ':' and '\\'; non-ASCII names are invalid.
+    for spec in [
+        "//space here",
+        "//foo/**",
+        "//foo<bar",
+        "//(group)/tt@x/...",
+    ] {
         let ws = Workspace::new(
             "",
             &format!("package_group(name='g',packages=[{spec:?}])\n"),
         );
-        rejected(&ws.run(&["query", ":g"]), "unsupported");
+        success(&ws.run(&["query", ":g"]));
         ws.untouched();
     }
+    let ws = Workspace::new("", "package_group(name='g',packages=['//caf\u{e9}'])\n");
+    rejected(
+        &ws.run(&["query", ":g"]),
+        "invalid package name 'caf\u{e9}': package names may contain A-Z",
+    );
+    ws.untouched();
 }
 
 #[test]

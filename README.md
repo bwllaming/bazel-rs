@@ -157,7 +157,7 @@ the full package-specification grammar and license metadata remain unsupported.
 External loading supports the
 bounded verified registry/archive, text-patch and pinned Git profiles described
 in `docs/`. Direct `use_repo_rule` callbacks now have a bounded native file/template
-executor; see [its exact limits](docs/REPOSITORY_RULES.md), including ASCII
+executor; see [its exact limits](docs/REPOSITORY_RULES.md), including Latin-1
 Starlark strings and binary-preserving templates. [Ordinary module extensions](docs/MODULE_EXTENSIONS.md)
 support bounded non-isolated callbacks, typed tags and deferred repository
 declarations; full extension/repository APIs and toolchains remain incomplete.
@@ -190,6 +190,9 @@ provides the compatibility version only in MODULE-loaded native bindings.
 checks and preserves genuine `maybe()` duplicate-declaration behavior.
 [Symbolic macros](docs/SYMBOLIC_MACROS.md) have a bounded name/visibility-only
 profile with real expansion, definition ownership and source/visibility checks.
+[Labels and target patterns](docs/LABEL_SYNTAX.md) follow Bazel 9.3's full
+label grammar and error texts, `@repo` shorthand, `//...`/`:all`/`:*` patterns,
+negative build patterns and package discovery over invalid directory names.
 [Package specifications](docs/PACKAGE_SPECIFICATIONS.md) connect native groups,
 provider-constrained consumers, membership and visibility checks.
 [`.bzl` load visibility](docs/BZL_VISIBILITY.md) emulates `visibility()` and

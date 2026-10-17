@@ -74,11 +74,32 @@ pub(crate) fn resolve_label_bounded(
     resolve_label_inner(eval, text, Some(budget))
 }
 
+/// Whether `eval` runs in the repository/extension Latin-1 char model:
+/// a callback, or a definition loaded for one (`ExtensionContext.byte_strings`).
+pub(crate) fn latin1_profile(eval: &Evaluator<'_, '_, '_>) -> bool {
+    crate::extension_ctx::evaluating_callback(eval)
+        || crate::repository_ctx::evaluating_callback(eval)
+        || eval
+            .extra
+            .and_then(|extra| extra.downcast_ref::<ExtensionContext>())
+            .is_some_and(|context| context.byte_strings)
+}
+
 fn resolve_label_inner(
     eval: &Evaluator<'_, '_, '_>,
     text: &str,
     mut budget: Option<&mut crate::repository_budget::HostBudget>,
 ) -> anyhow::Result<Label> {
+    // In the Latin-1 char model a non-ASCII label string holds the Latin-1
+    // decoding of its UTF-8 bytes; native labels and paths are UTF-8, so it
+    // would name a different file. Bazel converts it back to the original
+    // bytes. Explicit, like non-ASCII load() labels and repository attribute
+    // labels in that profile (docs/LABEL_SYNTAX.md).
+    if !text.is_ascii() && latin1_profile(eval) {
+        anyhow::bail!(
+            "non-ASCII label {text:?} is unsupported in direct repository execution (repository and extension .bzl strings are Latin-1 chars of their UTF-8 bytes)"
+        );
+    }
     if let Some(repositories) = repositories(eval) {
         let mut resolve = |repository: &str, package: &str| -> anyhow::Result<Label> {
             if let Some(budget) = budget.as_deref_mut() {
@@ -524,8 +545,19 @@ impl<'a> Loader<'a> {
         let bytes = fs::read(&path)
             .map_err(|e| format!("cannot read {label} ({}): {e}", path.display()))?;
         let source = std::str::from_utf8(&bytes)
-            .map_err(|e| format!("cannot read {label} ({}): {e}", path.display()))?
-            .to_owned();
+            .map_err(|e| format!("cannot read {label} ({}): {e}", path.display()))?;
+        // Bazel lexes a file as the Latin-1 chars of its bytes
+        // (StarlarkUtil.createParserInput, skyframe/StarlarkUtil
+        // .java:43-67: ParserInput.fromLatin1). Repository and
+        // extension execution model those chars as U+0000..U+00FF
+        // (crate::repository_text), so the source is decoded the
+        // same way: a raw non-ASCII character is one char per
+        // UTF-8 byte, exactly as in Bazel. Analysis keeps UTF-8.
+        let source = if self.provenance_capture {
+            crate::host_os::latin1_text(&bytes)
+        } else {
+            source.to_owned()
+        };
         if self.provenance_capture {
             self.sources.insert(
                 label.to_string(),
@@ -548,7 +580,7 @@ impl<'a> Loader<'a> {
         // (Lexer.java:389-403), whether or not the code runs.
         crate::repository_text::validate_source(&ast)?;
         if self.provenance_capture {
-            crate::repository_text::validate_execution_source(&ast)?;
+            crate::repository_text::validate_execution_load_labels(&ast)?;
         }
         validate_bzl_load_order(&ast)?;
         crate::guarded_globals::check(label, &ast)?;
@@ -1221,14 +1253,31 @@ scalar = 42
             "load(':helper.bzl', 'compute')\nvalue = compute()\n",
         );
         temp.file("helper.bzl", "def compute():\n    return str(len('é'))\n");
+        // The definition profile decodes every transitive source as Latin-1
+        // (StarlarkUtil.java:43-67): 'é' is two chars, as in Bazel.
+        let definition = temp.definition("//:defs.bzl", "value").unwrap();
+        assert_eq!(definition.value.value().unpack_str(), Some("2"));
+        assert_eq!(
+            definition.sources["//:helper.bzl"].bytes,
+            "def compute():\n    return str(len('é'))\n".as_bytes()
+        );
+        // The ordinary loader keeps its UTF-8 model.
+        assert!(temp.load("load(':defs.bzl', 'value')\n").is_ok());
+        // A non-ASCII load() label would name its Latin-1 decoding natively.
+        temp.file(
+            "defs.bzl",
+            "load(':helper\u{e9}.bzl', 'compute')\nvalue = compute()\n",
+        );
         let error = temp.definition("//:defs.bzl", "value").unwrap_err();
         assert!(
-            error.contains("helper.bzl") && error.contains("direct repository execution"),
+            error
+                .contains("non-ASCII load() labels are unsupported in direct repository execution"),
             "{error}"
         );
-        // The ordinary loader keeps its established behavior; the
-        // conservative source profile is attached only to demanded definitions.
-        assert!(temp.load("load(':defs.bzl', 'value')\n").is_ok());
+        temp.file(
+            "defs.bzl",
+            "load(':helper.bzl', 'compute')\nvalue = compute()\n",
+        );
         // Bazel's universe has no `chr`: a free reference is a resolver error
         // in every .bzl (Module.java:250-256), demanded or not.
         temp.file(
