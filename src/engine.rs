@@ -6062,7 +6062,11 @@ impl Engine {
                         .get(plan.config)
                         .native
                         .action_environment(),
-                    test_env: self.configurations.get(plan.config).native.test_environment(),
+                    test_env: self
+                        .configurations
+                        .get(plan.config)
+                        .native
+                        .test_environment(),
                     settings: plan.settings,
                 },
             );
