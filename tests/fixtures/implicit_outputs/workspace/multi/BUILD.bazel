@@ -1,0 +1,2 @@
+load("//:defs.bzl", "multi")
+multi(name = "x", srcs = ["a.txt", "b.txt"])

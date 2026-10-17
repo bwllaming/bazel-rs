@@ -1,0 +1,3 @@
+load("//:defs.bzl", "sel")
+config_setting(name = "c", values = {"compilation_mode": "opt"})
+sel(name = "x", s = select({":c": "a", "//conditions:default": "b"}))

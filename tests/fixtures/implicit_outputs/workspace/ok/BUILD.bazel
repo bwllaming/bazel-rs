@@ -1,0 +1,2 @@
+load("//:defs.bzl", "ok")
+ok(name = "sub/x", src = "in.txt", s = "q", o = "explicit.o")

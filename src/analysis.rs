@@ -896,6 +896,23 @@ fn ctx_attribute_structs<'v>(
         };
         attrs.insert(name.clone(), attr);
     }
+    // rule(outputs=...) implicit outputs after the output attributes
+    // (StarlarkRuleContext.java:248-255); Outputs.addOutput rejects a key
+    // already used, by an unset output attribute too, or `executable` of an
+    // executable rule (:363-371). docs/IMPLICIT_OUTPUTS.md.
+    for (key, output) in &invocation.declaration.implicit_outputs {
+        if outputs.contains_key(key)
+            || (key == "executable" && context.runfiles.default_executable.is_some())
+        {
+            bail!(
+                "in {} rule {}: Multiple outputs with the same key: {key}",
+                invocation.declaration.rule_class,
+                crate::rule_declarations::canonical_form(&rule.label)
+            );
+        }
+        let file = alloc_file(heap, context.declare(output)?);
+        outputs.insert(key.clone(), file);
+    }
     builtin_ctx_attrs(rule, invocation, dependencies, &mut attrs, &mut files, heap)?;
     Ok([
         heap.alloc(AllocStruct(attrs)),

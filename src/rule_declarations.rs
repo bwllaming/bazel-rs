@@ -2648,7 +2648,7 @@ def m(name):\n    r(name = name, deps = [':x'] + select({':cond': [':y'], '//con
             ["//:x", "//:cond", "//:y"]
         );
         let plain = target(&package, "plain");
-        assert_eq!(plain.outs, ["plain.o", "plain.bin"]);
+        assert_eq!(plain.outs, ["plain.bin", "plain.o"]);
         for (call, expected) in [
             (
                 "r(name = 'bad', mode = 'c')",
@@ -2671,24 +2671,25 @@ def m(name):\n    r(name = name, deps = [':x'] + select({':cond': [':y'], '//con
                 evaluate_package(defs, &format!("load(':defs.bzl', 'r')\n{call}\n")).unwrap_err();
             assert!(error.contains(expected), "{call}: {error}");
         }
+        // N46 (docs/IMPLICIT_OUTPUTS.md): attribute placeholders and the
+        // function form are evaluated at loading with Bazel's messages.
         let error = evaluate_package(
             "def impl(ctx):\n    return []\nr = rule(impl, outputs = {'x': '%{name}.%{ext}'})\n",
             "load(':defs.bzl', 'r')\nr(name = 'x')\n",
         )
         .unwrap_err();
         assert!(
-            error.contains("uses placeholders other than %{name}"),
+            error.contains(
+                "In rule //:x: For attribute 'x' in outputs: Invalid placeholder(s) in template"
+            ),
             "{error}"
         );
-        let error = evaluate_package(
-            "def impl(ctx):\n    return []\ndef outs(name):\n    return {}\nr = rule(impl, outputs = outs)\n",
+        let package = evaluate_package(
+            "def impl(ctx):\n    return []\ndef outs(name, ext):\n    return {'k': name + '.' + ext, 't': '%{name}.t'}\nr = rule(impl, outputs = outs, attrs = {'ext': attr.string(default = 'e')})\n",
             "load(':defs.bzl', 'r')\nr(name = 'x')\n",
         )
-        .unwrap_err();
-        assert!(
-            error.contains("implicit outputs functions are not supported"),
-            "{error}"
-        );
+        .unwrap();
+        assert_eq!(target(&package, "x").outs, ["x.e", "x.t"]);
     }
 
     #[test]

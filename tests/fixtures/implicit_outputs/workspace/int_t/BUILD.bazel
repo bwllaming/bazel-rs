@@ -1,0 +1,2 @@
+load("//:defs.bzl", "int_t")
+int_t(name = "x", n = 3)

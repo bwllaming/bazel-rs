@@ -1,0 +1,2 @@
+load("//:defs.bzl", "vis_t")
+vis_t(name = "x", visibility = ["//visibility:public"])

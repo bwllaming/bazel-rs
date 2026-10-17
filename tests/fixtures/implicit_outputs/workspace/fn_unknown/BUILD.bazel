@@ -1,0 +1,2 @@
+load("//:defs.bzl", "fn_unknown")
+fn_unknown(name = "x")

@@ -1,0 +1,2 @@
+load("//:defs.bzl", "fn_badtpl")
+fn_badtpl(name = "x")

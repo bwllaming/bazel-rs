@@ -1,0 +1,2 @@
+load("//:defs.bzl", "fn_ok")
+fn_ok(name = "x", s = "q", src = "in.txt", tags = ["t"])

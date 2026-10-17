@@ -1,0 +1,2 @@
+load("//:defs.bzl", "fn_native")
+fn_native(name = "x")

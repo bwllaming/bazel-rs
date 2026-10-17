@@ -1,0 +1,2 @@
+load("//:defs.bzl", "lbl_t")
+lbl_t(name = "x")

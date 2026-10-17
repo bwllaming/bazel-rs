@@ -1,0 +1,2 @@
+load("//:defs.bzl", "dict_t")
+dict_t(name = "x")

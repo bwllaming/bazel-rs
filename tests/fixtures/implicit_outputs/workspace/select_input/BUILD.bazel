@@ -1,0 +1,3 @@
+load("//:defs.bzl", "exe_ok")
+config_setting(name = "c", values = {"compilation_mode": "opt"})
+exe_ok(name = "x", srcs = select({":c": ["x.a"], "//conditions:default": []}))

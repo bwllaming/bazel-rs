@@ -1,0 +1,2 @@
+load("//:defs.bzl", "fn_glob")
+fn_glob(name = "x")

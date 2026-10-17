@@ -1,0 +1,2 @@
+load("//:defs.bzl", "ok")
+ok(name = "x", src = "x.a", s = "q")

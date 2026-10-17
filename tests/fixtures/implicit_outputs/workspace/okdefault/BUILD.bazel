@@ -1,0 +1,2 @@
+load("//:defs.bzl", "ok")
+ok(name = "y", src = "dir/in.tar.gz", s = "")

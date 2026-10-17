@@ -880,20 +880,40 @@ fn macro_groups_are_intrinsically_public_and_rules_only_queries_exclude_them() {
 
 #[test]
 fn group_collisions_cover_empty_macro_reservations_outputs_and_physical_files() {
-    for (other, diagnostic) in [
-        ("m(name='g')", "conflicts"),
+    // TargetRecorder texts (packages/TargetRecorder.java:693-715): the
+    // later declaration conflicts with the existing one.
+    for (other, diagnostics) in [
+        ("m(name='g')", ["conflicts", "conflicts"]),
         (
             "genrule(name='r',outs=['g'],cmd='true')",
-            "output //:g collides with a rule name",
+            [
+                "generated file 'g' in rule 'r' conflicts with existing package group, defined at ",
+                "package group 'g' conflicts with existing generated file from rule 'r', defined at ",
+            ],
         ),
-        ("filegroup(name='g')", "duplicate rule name: //:g"),
-        ("package_group(name='g')", "duplicate rule name: //:g"),
+        (
+            "filegroup(name='g')",
+            [
+                "filegroup rule 'g' conflicts with existing package group, defined at ",
+                "package group 'g' conflicts with existing filegroup rule, defined at ",
+            ],
+        ),
+        (
+            "package_group(name='g')",
+            [
+                "package group 'g' conflicts with existing package group, defined at ",
+                "package group 'g' conflicts with existing package group, defined at ",
+            ],
+        ),
         (
             "exports_files(['g'])",
-            "exported file //:g collides with a rule or generated output",
+            [
+                "Error in exports_files: source file 'g' conflicts with existing package group, defined at ",
+                "Error in package_group: package group 'g' conflicts with existing source file, defined at ",
+            ],
         ),
     ] {
-        for before in [false, true] {
+        for (before, diagnostic) in [false, true].into_iter().zip(diagnostics) {
             let group = "package_group(name='g')";
             let declarations = if before {
                 format!("{other}\n{group}\n")

@@ -1,0 +1,2 @@
+load("//:defs.bzl", "list_t")
+list_t(name = "x", srcs = ["dir/a.cc", "dir/a.h"], ss = ["only"])

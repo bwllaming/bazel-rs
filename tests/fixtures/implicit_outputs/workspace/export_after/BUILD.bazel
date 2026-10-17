@@ -1,0 +1,3 @@
+load("//:defs.bzl", "ok")
+ok(name = "x", src = "in.txt", s = "q")
+exports_files(["x.a"])

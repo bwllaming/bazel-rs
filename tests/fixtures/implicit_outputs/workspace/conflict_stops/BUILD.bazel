@@ -1,0 +1,3 @@
+filegroup(name = "x")
+filegroup(name = "x")
+fail("later failure")

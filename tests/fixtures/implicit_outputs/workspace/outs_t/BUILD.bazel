@@ -1,0 +1,2 @@
+load("//:defs.bzl", "outs_t")
+outs_t(name = "x", o = "out.txt", os = ["one"])

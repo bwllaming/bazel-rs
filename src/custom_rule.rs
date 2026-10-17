@@ -1567,8 +1567,25 @@ mod values {
                     )
                 })
             });
-            let implicit_outputs = implicit_outputs(&self.declaration.implicit_outputs, name)
-                .map_err(starlark::Error::new_other)?;
+            let implicit_outputs = implicit_outputs(
+                ComputedInputs {
+                    attribute: "",
+                    parameters: &[],
+                    target: &target,
+                    attrs: &attrs,
+                    configurable: &configurable,
+                    schema: &self.schema,
+                    builtin: &builtin,
+                    builtins: &builtins,
+                    kind,
+                    visibility,
+                    resolve: &resolve,
+                },
+                &self.declaration.implicit_outputs,
+                self.outputs_function.first().map(|value| value.to_value()),
+                eval,
+            )
+            .map_err(starlark::Error::new_other)?;
             let (transition_gaps, toolchain_gaps, unanalyzed) =
                 static_gaps(&self.declaration, &self.schema);
             let configurable_labels = configurable_labels(&self.schema, &configurable);
@@ -1714,11 +1731,8 @@ impl RuleDeclaration {
                 self.cfg.describe()
             ));
         }
-        if let ImplicitOutputs::Templates(templates) = &self.implicit_outputs
-            && !templates.is_empty()
-        {
-            features.push("rule(outputs={...}) implicit outputs in ctx.outputs".to_owned());
-        }
+        // rule(outputs=...) implicit outputs are ctx.outputs entries since N46
+        // (docs/IMPLICIT_OUTPUTS.md).
         (transition, toolchain, features)
     }
 }
@@ -2587,29 +2601,248 @@ fn builtin_default<'v>(name: &str, heap: starlark::values::Heap<'v>) -> Option<V
     })
 }
 
-/// StarlarkImplicitOutputsFunctionWithMap with the `%{name}` placeholder only.
-fn implicit_outputs(
+/// `Rule.populateOutputFilesInternal`'s implicit part (packages/Rule.java:516-575)
+/// for `rule(outputs = ...)`: the dict form (StarlarkImplicitOutputsFunctionWithMap,
+/// ImplicitOutputsFunction.java:133-161) or the function form
+/// (StarlarkImplicitOutputsFunctionWithCallback, :77-130), each output label
+/// checked (Rule.java:536-551), then the implicit-key/output-attribute
+/// collision check (Rule.java:577-586). Keys and package-relative output
+/// names in declaration (dict) order. docs/IMPLICIT_OUTPUTS.md.
+fn implicit_outputs<'v>(
+    inputs: ComputedInputs<'_, 'v>,
     outputs: &ImplicitOutputs,
-    name: &str,
+    function: Option<Value<'v>>,
+    eval: &mut Evaluator<'v, '_, '_>,
 ) -> anyhow::Result<Vec<(String, String)>> {
-    match outputs {
-        ImplicitOutputs::None => Ok(Vec::new()),
-        ImplicitOutputs::Function => bail!(
-            "rule(outputs=<function>) implicit outputs functions are not supported by the native profile"
-        ),
-        ImplicitOutputs::Templates(templates) => templates
-            .iter()
-            .map(|(key, template)| {
-                let output = template.replace("%{name}", name);
-                if output.contains("%{") {
-                    bail!(
-                        "implicit output {key:?} template {template:?} uses placeholders other than %{{name}}, which are not supported by the native profile"
-                    );
-                }
-                Ok((key.clone(), output))
-            })
-            .collect(),
+    let shown = crate::rule_declarations::canonical_form(inputs.target);
+    let in_rule = |error: anyhow::Error| anyhow!("In rule {shown}: {error}");
+    let lookup = |placeholder: &str| implicit_output_values(&inputs, placeholder);
+    let expanded = match outputs {
+        ImplicitOutputs::None => return Ok(Vec::new()),
+        ImplicitOutputs::Templates(templates) => {
+            let configurable = |name: &str| {
+                inputs.configurable.contains_key(name)
+                    || inputs.builtin.configurable.contains_key(name)
+            };
+            let mut expanded = Vec::new();
+            for (key, template) in templates {
+                let output = crate::implicit_outputs::expand_one(
+                    key,
+                    template,
+                    Some(&configurable),
+                    &lookup,
+                )
+                .map_err(in_rule)?;
+                expanded.push((key.clone(), output));
+            }
+            expanded
+        }
+        ImplicitOutputs::Function => {
+            let function = function
+                .ok_or_else(|| anyhow!("internal error: rule(outputs=<function>) not retained"))?;
+            let templates = implicit_outputs_callback(&inputs, function, eval).map_err(in_rule)?;
+            let mut expanded = Vec::new();
+            for (key, template) in templates {
+                let output = crate::implicit_outputs::expand_one(&key, &template, None, &lookup)
+                    .map_err(in_rule)?;
+                expanded.push((key, output));
+            }
+            expanded
+        }
+    };
+    for (_, output) in &expanded {
+        crate::bazel_label::validate_and_process_target_name(&inputs.target.package, output)
+            .map_err(|error| {
+                anyhow!("illegal output file name '{output}' in rule {shown} due to: {error}")
+            })?;
     }
+    // Explicit outputs: an implicit key equal to the name of an output
+    // attribute with a value (Rule.java:577-586); an unset one collides only
+    // in ctx.outputs (crate::analysis).
+    for (name, value) in inputs.attrs {
+        let present = match value {
+            AttrValue::Output(value) => value.is_some(),
+            AttrValue::Outputs(values) => !values.is_empty(),
+            _ => false,
+        };
+        if present && expanded.iter().any(|(key, _)| key == name) {
+            bail!("Implicit output key '{name}' collides with output attribute name");
+        }
+    }
+    Ok(expanded)
+}
+
+/// `ImplicitOutputsFunction.attributeValues` (ImplicitOutputsFunction.java:356-399):
+/// `%{dirname}`/`%{basename}` of the rule name, then the attribute's type
+/// (RawAttributeMapper over the internal names, so Starlark `_x` private
+/// attributes are unknown): strings and string lists as is, label (list)
+/// names without their extension, output (list) names; an unknown attribute
+/// or an empty list is no value; other types fail. Values genuine Bazel 9.3
+/// crashes on (an unset label, an unset `deprecation`) fail explicitly.
+fn implicit_output_values(
+    inputs: &ComputedInputs<'_, '_>,
+    placeholder: &str,
+) -> anyhow::Result<Vec<String>> {
+    let rule_name = inputs.target.name.as_str();
+    if let Some(value) = crate::implicit_outputs::name_part(rule_name, placeholder) {
+        return Ok(vec![value]);
+    }
+    if placeholder == "name" {
+        return Ok(vec![rule_name.to_owned()]);
+    }
+    let type_error = |ty: &str| {
+        anyhow!(
+            "For attribute '{placeholder}' in outputs: Attributes of type {ty} cannot be used in an outputs substitution template"
+        )
+    };
+    let label_name = |text: &str| {
+        let name = crate::label::Label::parse_canonical(text)
+            .map(|label| label.name)
+            .unwrap_or_else(|_| text.rsplit(':').next().unwrap_or(text).to_owned());
+        crate::implicit_outputs::remove_extension(&name).to_owned()
+    };
+    let unset_label = || {
+        anyhow!(
+            "implicit outputs template placeholder %{{{placeholder}}} reads an unset label attribute: genuine Bazel 9.3 crashes on this (NullPointerException in ImplicitOutputsFunction.attributeValues, ImplicitOutputsFunction.java:380), which the native profile reports instead"
+        )
+    };
+    let unmodeled = || {
+        anyhow!(
+            "implicit outputs template placeholder %{{{placeholder}}} reads the unset built-in attribute '{placeholder}', whose value is not modeled by the native profile (genuine Bazel 9.3 crashes on a null value)"
+        )
+    };
+    if let Some(spec) = inputs
+        .schema
+        .get(placeholder)
+        .filter(|_| !placeholder.starts_with('_'))
+    {
+        let value = inputs.attrs.get(placeholder);
+        return Ok(match (&spec.kind, value) {
+            (AttrKind::String, Some(AttrValue::String(value))) => vec![value.clone()],
+            (AttrKind::StringList, Some(AttrValue::Strings(values))) => values.clone(),
+            (AttrKind::Label, Some(AttrValue::Label(Some(label)))) => vec![label_name(label)],
+            (AttrKind::Label, Some(AttrValue::Label(None))) => return Err(unset_label()),
+            (AttrKind::LabelList, Some(AttrValue::Labels(labels))) => {
+                labels.iter().map(|label| label_name(label)).collect()
+            }
+            (AttrKind::Output, Some(AttrValue::Output(Some(output)))) => vec![output.clone()],
+            (AttrKind::Output, Some(AttrValue::Output(None))) => return Err(unset_label()),
+            (AttrKind::OutputList, Some(AttrValue::Outputs(outputs))) => outputs.clone(),
+            (
+                AttrKind::String
+                | AttrKind::StringList
+                | AttrKind::Label
+                | AttrKind::LabelList
+                | AttrKind::Output
+                | AttrKind::OutputList,
+                _,
+            ) => bail!(
+                "implicit outputs template placeholder %{{{placeholder}}} reads a value of attribute '{placeholder}' the native profile does not have at loading (a select() or computed value)"
+            ),
+            (kind, _) => return Err(type_error(kind.type_name())),
+        });
+    }
+    let Some(attribute) = inputs.builtins.attribute(placeholder) else {
+        return Ok(Vec::new());
+    };
+    use crate::native_rules::NativeType;
+    let value = inputs.builtin.attrs.get(placeholder);
+    Ok(match (attribute.ty, value) {
+        (NativeType::StringList, _) if placeholder == "tags" => inputs.builtin.tags.clone(),
+        (NativeType::String, Some(AttrValue::String(value))) => vec![value.clone()],
+        (NativeType::String, _) => return Err(unmodeled()),
+        (NativeType::StringList, Some(AttrValue::Strings(values))) => values.clone(),
+        (NativeType::StringList, None) => Vec::new(),
+        (NativeType::Label, Some(AttrValue::Label(Some(label)))) => vec![label_name(label)],
+        (NativeType::Label, _) => return Err(unset_label()),
+        (NativeType::LabelList, Some(AttrValue::Labels(labels))) => {
+            labels.iter().map(|label| label_name(label)).collect()
+        }
+        (NativeType::LabelList, None) => Vec::new(),
+        (NativeType::OutputList, Some(AttrValue::Outputs(outputs))) => outputs.clone(),
+        (NativeType::OutputList, None) => Vec::new(),
+        (NativeType::StringList | NativeType::LabelList | NativeType::OutputList, Some(_)) => {
+            return Err(unmodeled());
+        }
+        (ty, _) => return Err(type_error(ty.name())),
+    })
+}
+
+/// StarlarkImplicitOutputsFunctionWithCallback.calculateOutputs
+/// (ImplicitOutputsFunction.java:86-112): the function is called with one
+/// argument per parameter name (StarlarkCallbackHelper.buildArgumentList,
+/// StarlarkCallbackHelper.java:83-97) from a struct of every nonconfigurable
+/// attribute by Starlark name (private `_x` included, values by
+/// Attribute.valueToStarlark, unset labels None); the result is cast to
+/// dict<string, string>.
+fn implicit_outputs_callback<'v>(
+    inputs: &ComputedInputs<'_, 'v>,
+    function: Value<'v>,
+    eval: &mut Evaluator<'v, '_, '_>,
+) -> anyhow::Result<Vec<(String, String)>> {
+    let heap = eval.heap();
+    let mut arguments = Vec::new();
+    for parameter in parameter_names(function)? {
+        let missing = || {
+            anyhow!(
+                "Attribute '{parameter}' either doesn't exist or uses a select() (i.e. could have multiple values)"
+            )
+        };
+        let value = if parameter == "name" {
+            heap.alloc(inputs.target.name.as_str())
+        } else if inputs.configurable.contains_key(&parameter)
+            || inputs.builtin.configurable.contains_key(&parameter)
+        {
+            return Err(missing());
+        } else if inputs.schema.contains_key(&parameter) {
+            match inputs.attrs.get(&parameter) {
+                Some(value) => attr_value_to_starlark(heap, value, inputs.target)?
+                    .unwrap_or_else(Value::new_none),
+                None => bail!(
+                    "the implicit outputs function reads attribute '{parameter}', whose value the native profile does not have at loading (a computed value)"
+                ),
+            }
+        } else if inputs.builtins.attribute(&parameter).is_some() {
+            if parameter == "tags" {
+                heap.alloc(inputs.builtin.tags.clone())
+            } else if let Some(value) = inputs.builtin.attrs.get(parameter.as_str()) {
+                attr_value_to_starlark(heap, value, inputs.target)?.unwrap_or_else(Value::new_none)
+            } else {
+                bail!(
+                    "the implicit outputs function reads the unset built-in attribute '{parameter}', whose value is not modeled by the native profile"
+                );
+            }
+        } else {
+            return Err(missing());
+        };
+        arguments.push(value);
+    }
+    // Positional arguments only (buildArgumentList, StarlarkCallbackHelper.java:72-73),
+    // without the package context.
+    let result = crate::package::without_package_context(eval, |eval| {
+        eval.eval_function(function, &arguments, &[])
+    })
+    .map_err(|error| match error.kind() {
+        starlark::ErrorKind::Fail(_) => {
+            anyhow!("Error in fail: {}", evaluation_message(&error))
+        }
+        _ => anyhow!("{}", evaluation_message(&error)),
+    })?;
+    const WHAT: &str = "implicit outputs function return value";
+    let dict = DictRef::from_value(result)
+        .ok_or_else(|| anyhow!("got {} for '{WHAT}', want dict", result.get_type()))?;
+    let mut templates = Vec::new();
+    for (key, value) in dict.iter() {
+        let (Some(key), Some(value)) = (key.unpack_str(), value.unpack_str()) else {
+            bail!(
+                "got dict<{}, {}> for '{WHAT}', want dict<string, string>",
+                key.get_type(),
+                value.get_type()
+            );
+        };
+        templates.push((key.to_owned(), value.to_owned()));
+    }
+    Ok(templates)
 }
 
 /// Declared-but-unanalyzed features any analysis of this target exercises,

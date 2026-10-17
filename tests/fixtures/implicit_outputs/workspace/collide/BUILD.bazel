@@ -1,0 +1,2 @@
+load("//:defs.bzl", "collide")
+collide(name = "x", o = "explicit.o")

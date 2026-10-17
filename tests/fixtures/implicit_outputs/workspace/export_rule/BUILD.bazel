@@ -1,0 +1,2 @@
+filegroup(name = "f")
+exports_files(["f"])

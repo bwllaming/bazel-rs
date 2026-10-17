@@ -1,0 +1,2 @@
+load("//:defs.bzl", "cc_like")
+cc_like(name = "bw.so", srcs = ["in.txt"])

@@ -1,0 +1,1257 @@
+{
+ "schema": "n46-implicit-outputs-reference-receipt/v1",
+ "purpose": "Paired genuine Bazel 9.3.0 vs native bazel-rs capture of N46 (docs/IMPLICIT_OUTPUTS.md): rule(outputs = ...) dict templates (%{attr} substitution for string/list/label/output/built-in attributes, dirname/basename, type and placeholder errors, configurable placeholders), the function form (parameters, return casts, fail, multi-valued templates), output file targets (build/query by label, default files order: implicit before explicit), ctx.outputs repr/dir and duplicate-key/executable errors, a rules_cc cc_binary-shaped executable rule, package conflict texts, and genuine-Bazel crashes. Workspace tests/fixtures/implicit_outputs/workspace. Evidence only; no test reads it.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private> --output_base=<private> --host_jvm_args=-Xmx512m",
+  "flags": "--registry=file://<private copy of tests/fixtures/builtin_modules/registry> --incompatible_autoload_externally= --lockfile_mode=off --noshow_progress --color=no --curses=no; build: --repository_disable_download --repository_cache=<private> --distdir=<private: platforms-1.0.0.tar.gz> --show_result=1000"
+ },
+ "native": {
+  "binary": "target/debug/bazel-rs",
+  "sha256": "4db7c1101024c50c23e306ee148b159d1cb4f4fb44ac14467b94324d148d5556",
+  "flags": "--ignore_all_rc_files --cache-dir=<private> (no registry needed: the workspace has no dependencies)"
+ },
+ "worktree": {
+  "head": "2356bf4f8460317f89363b1b4910028d6bfc3617",
+  "src_diff_plus_untracked_sha256": "833edf6ebf406de4bd869176ba8507d05476bf2ce473ab2a096fe00cd0da0991",
+  "untracked_src": [
+   "src/implicit_outputs.rs"
+  ],
+  "tracked_src_changed": [
+   "src/analysis.rs",
+   "src/custom_rule.rs",
+   "src/lib.rs",
+   "src/package.rs",
+   "src/rule_declarations.rs"
+  ]
+ },
+ "script": {
+  "path": "artifacts/implicit_outputs-capture.py",
+  "sha256": "7cf7024edcc6744355d42a9430149000106d1506c85fa2f031fbc4af4c05b945"
+ },
+ "workspace_tree_sha256": "c73ba4be6a62e8a0608bd2941e79d4e045843f50923f2a818c4fe70270a0e9ed",
+ "environment": "env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 HOME=<scratch>/home TMPDIR=<scratch>/tmp, umask 022; scratch /tmp/opencode/io-capture",
+ "normalization": "successful builds: sorted `OUTPUTS ` print payloads (Bazel DEBUG prefix dropped) and built files below bazel-bin (native: below the configuration bin/), ordered for single-target builds; failures: Bazel's first ERROR (location prefix removed; generic follow-up lines skipped; a Starlark traceback compared by its final `Error in ...` line, plus the `In rule L:` prefix when present) contained in native stderr",
+ "started_at": "2026-10-17T10:09:00.690686+00:00",
+ "finished_at": "2026-10-17T10:11:04.436292+00:00",
+ "counts": {
+  "EXACT_MESSAGE": 31,
+  "EXACT": 17,
+  "REFERENCE_CRASH_NATIVE_EXPLICIT": 4,
+  "EXPECTED_MESSAGE_DIFFERENCE": 3,
+  "EXPECTED_NATIVE_UNSUPPORTED": 2,
+  "REFERENCE_ONLY": 3
+ },
+ "runs": {
+  "run1": {
+   "counts": {
+    "EXACT_MESSAGE": 27,
+    "EXACT": 17,
+    "REFERENCE_CRASH_NATIVE_EXPLICIT": 4,
+    "EXPECTED_NATIVE_UNSUPPORTED": 2,
+    "REFERENCE_ONLY": 3
+   },
+   "mismatches": 0,
+   "kept": "artifacts/implicit_outputs-receipt-run1.json",
+   "fixed_after": [
+    "review: TargetRecorder checks moved to the declaring call with Bazel's Error in <function>: frame (evaluation stops there)",
+    "review: exports_files of an existing rule/output: source file 'x' conflicts with existing ... (old native message dropped)",
+    "review: input-and-output check includes select() keys/branches and built-in labels (Rule.getLabels)",
+    "review: the implicit outputs function runs without the package context; positional arguments only",
+    "workspace: export_after, export_rule, select_input, conflict_stops, fn_native, fn_glob, fn_kwonly packages"
+   ]
+  },
+  "run2": "this receipt (final; the one rerun)"
+ },
+ "post_capture_changes": [
+  "frame_check added from the run-2 log (analysis only); no src/ or workspace change after run 2"
+ ],
+ "rows": [
+  {
+   "case": "after:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "filegroup rule 'x.a' conflicts with existing generated file from rule 'x', defined at /tmp/opencode/io-capture/ws/after/BUILD.bazel:2:3"
+   ],
+   "native_message": [
+    "error: Error in filegroup: filegroup rule 'x.a' conflicts with existing generated file from rule 'x', defined at /tmp/opencode/io-capture/ws/after/BUILD.bazel:2:3",
+    "3 | filegroup(name = \"x.a\")",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//after:all"
+   ]
+  },
+  {
+   "case": "bool_t:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "In rule //bool_t:x: For attribute 'b' in outputs: Attributes of type boolean cannot be used in an outputs substitution template"
+   ],
+   "native_message": [
+    "error: In rule //bool_t:x: For attribute 'b' in outputs: Attributes of type boolean cannot be used in an outputs substitution template",
+    "2 | bool_t(name = \"x\")",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//bool_t:all"
+   ]
+  },
+  {
+   "case": "cc:build",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_outputs": [],
+   "native_outputs": [],
+   "reference_files": [
+    "cc/bw.so"
+   ],
+   "native_files": [
+    "cc/bw.so"
+   ],
+   "verdict": "EXACT",
+   "argv": [
+    "build",
+    "//cc:all"
+   ]
+  },
+  {
+   "case": "collide:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "Implicit output key 'o' collides with output attribute name"
+   ],
+   "native_message": [
+    "error: Implicit output key 'o' collides with output attribute name",
+    "2 | collide(name = \"x\", o = \"explicit.o\")",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//collide:all"
+   ]
+  },
+  {
+   "case": "collide_unset:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "in collide rule //collide_unset:x: Multiple outputs with the same key: o"
+   ],
+   "native_message": [
+    "bazel-rs: analysis of //collide_unset:x: in collide rule //collide_unset:x: Multiple outputs with the same key: o"
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//collide_unset:all"
+   ]
+  },
+  {
+   "case": "conflict_stops:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "filegroup rule 'x' conflicts with existing filegroup rule, defined at /tmp/opencode/io-capture/ws/conflict_stops/BUILD.bazel:1:10"
+   ],
+   "native_message": [
+    "error: Error in filegroup: filegroup rule 'x' conflicts with existing filegroup rule, defined at /tmp/opencode/io-capture/ws/conflict_stops/BUILD.bazel:1:10",
+    "2 | filegroup(name = \"x\")",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//conflict_stops:all"
+   ],
+   "later_failure_reported": {
+    "reference": false,
+    "native": false
+   }
+  },
+  {
+   "case": "dep_set:build",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_outputs": [
+    "ctx.outputs(o = None, os = [], t = <generated file dep_set/old.t>) [\"o\", \"os\", \"t\"]"
+   ],
+   "native_outputs": [
+    "ctx.outputs(o = None, os = [], t = <generated file dep_set/old.t>) [\"o\", \"os\", \"t\"]"
+   ],
+   "reference_files": [
+    "dep_set/old.t"
+   ],
+   "native_files": [
+    "dep_set/old.t"
+   ],
+   "reference_warnings": [
+    "target '//dep_set:x' is deprecated: old"
+   ],
+   "verdict": "EXACT",
+   "argv": [
+    "build",
+    "//dep_set:all"
+   ]
+  },
+  {
+   "case": "dep_t:build",
+   "reference_exit": 37,
+   "native_exit": 1,
+   "reference_crash": [
+    "Caused by: java.lang.NullPointerException"
+   ],
+   "native_message": [
+    "error: In rule //dep_t:x: implicit outputs template placeholder %{deprecation} reads the unset built-in attribute 'deprecation', whose value is not modeled by the native profile (genuine Bazel 9.3 crashes on a null value)"
+   ],
+   "verdict": "REFERENCE_CRASH_NATIVE_EXPLICIT",
+   "argv": [
+    "build",
+    "//dep_t:all"
+   ]
+  },
+  {
+   "case": "dict_t:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "In rule //dict_t:x: For attribute 'd' in outputs: Attributes of type dict(string, string) cannot be used in an outputs substitution template"
+   ],
+   "native_message": [
+    "error: In rule //dict_t:x: For attribute 'd' in outputs: Attributes of type dict(string, string) cannot be used in an outputs substitution template",
+    "2 | dict_t(name = \"x\")",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//dict_t:all"
+   ]
+  },
+  {
+   "case": "dup:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "rule 'x' has more than one generated file named 'x.same'"
+   ],
+   "native_message": [
+    "error: Error in dup: rule 'x' has more than one generated file named 'x.same'",
+    "2 | dup(name = \"x\")",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//dup:all"
+   ]
+  },
+  {
+   "case": "empty:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "illegal output file name '' in rule //empty:x due to: invalid target name '': empty target name"
+   ],
+   "native_message": [
+    "error: illegal output file name '' in rule //empty:x due to: invalid target name '': empty target name",
+    "2 | empty(name = \"x\")",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//empty:all"
+   ]
+  },
+  {
+   "case": "emptylist:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "In rule //emptylist:x: For attribute 'e' in outputs: Invalid placeholder(s) in template"
+   ],
+   "native_message": [
+    "error: In rule //emptylist:x: For attribute 'e' in outputs: Invalid placeholder(s) in template",
+    "2 | emptylist(name = \"x\")",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//emptylist:all"
+   ]
+  },
+  {
+   "case": "exe:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "in exe rule //exe:x: Multiple outputs with the same key: executable"
+   ],
+   "native_message": [
+    "bazel-rs: analysis of //exe:x: in exe rule //exe:x: Multiple outputs with the same key: executable"
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//exe:all"
+   ]
+  },
+  {
+   "case": "exe_ok:build",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_outputs": [
+    "ctx.outputs(a = <generated file exe_ok/x.a>, o = None, os = []) [\"a\", \"o\", \"os\"]"
+   ],
+   "native_outputs": [
+    "ctx.outputs(a = <generated file exe_ok/x.a>, o = None, os = []) [\"a\", \"o\", \"os\"]"
+   ],
+   "reference_files": [
+    "exe_ok/x.a",
+    "exe_ok/x"
+   ],
+   "native_files": [
+    "exe_ok/x.a",
+    "exe_ok/x"
+   ],
+   "verdict": "EXACT",
+   "argv": [
+    "build",
+    "//exe_ok:all"
+   ]
+  },
+  {
+   "case": "export_after:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "source file 'x.a' conflicts with existing generated file from rule 'x', defined at /tmp/opencode/io-capture/ws/export_after/BUILD.bazel:2:3"
+   ],
+   "native_message": [
+    "error: Error in exports_files: source file 'x.a' conflicts with existing generated file from rule 'x', defined at /tmp/opencode/io-capture/ws/export_after/BUILD.bazel:2:3",
+    "3 | exports_files([\"x.a\"])",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//export_after:all"
+   ]
+  },
+  {
+   "case": "export_rule:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "source file 'f' conflicts with existing filegroup rule, defined at /tmp/opencode/io-capture/ws/export_rule/BUILD.bazel:1:10"
+   ],
+   "native_message": [
+    "error: Error in exports_files: source file 'f' conflicts with existing filegroup rule, defined at /tmp/opencode/io-capture/ws/export_rule/BUILD.bazel:1:10",
+    "2 | exports_files([\"f\"])",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//export_rule:all"
+   ]
+  },
+  {
+   "case": "exported:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "generated file 'x.a' in rule 'x' conflicts with existing source file, defined at /tmp/opencode/io-capture/ws/exported/BUILD.bazel:2:14"
+   ],
+   "native_message": [
+    "error: Error in ok: generated file 'x.a' in rule 'x' conflicts with existing source file, defined at /tmp/opencode/io-capture/ws/exported/BUILD.bazel:2:14",
+    "3 | ok(name = \"x\", src = \"in.txt\", s = \"q\")",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//exported:all"
+   ]
+  },
+  {
+   "case": "filegroup:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "generated file 'x.a' in rule 'x' conflicts with existing filegroup rule, defined at /tmp/opencode/io-capture/ws/filegroup/BUILD.bazel:2:10"
+   ],
+   "native_message": [
+    "error: Error in ok: generated file 'x.a' in rule 'x' conflicts with existing filegroup rule, defined at /tmp/opencode/io-capture/ws/filegroup/BUILD.bazel:2:10",
+    "3 | ok(name = \"x\", src = \"in.txt\", s = \"q\")",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//filegroup:all"
+   ]
+  },
+  {
+   "case": "fn_badtpl:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "In rule //fn_badtpl:x: For attribute 'bad' in outputs: Invalid placeholder(s) in template"
+   ],
+   "native_message": [
+    "error: In rule //fn_badtpl:x: For attribute 'bad' in outputs: Invalid placeholder(s) in template",
+    "2 | fn_badtpl(name = \"x\")",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//fn_badtpl:all"
+   ]
+  },
+  {
+   "case": "fn_fail:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "In rule //fn_fail:x:",
+    "Error in fail: boom x"
+   ],
+   "native_message": [
+    "error: In rule //fn_fail:x: Error in fail: boom x",
+    "2 | fn_fail(name = \"x\")",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//fn_fail:all"
+   ]
+  },
+  {
+   "case": "fn_glob:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "In rule //fn_glob:x:",
+    "Error in glob: glob() can only be used while evaluating a BUILD file or a legacy macro"
+   ],
+   "native_message": [
+    "error: In rule //fn_glob:x: package functions (rules, native.*, glob, existing_rules, ...) can only be used while evaluating a BUILD file or a legacy or symbolic macro, not in an implicit outputs function (StarlarkCallbackHelper runs it on a transient thread without a package context)"
+   ],
+   "verdict": "EXPECTED_MESSAGE_DIFFERENCE",
+   "argv": [
+    "build",
+    "//fn_glob:all"
+   ]
+  },
+  {
+   "case": "fn_int:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "In rule //fn_int:x: got dict<string, int> for 'implicit outputs function return value', want dict<string, string>"
+   ],
+   "native_message": [
+    "error: In rule //fn_int:x: got dict<string, int> for 'implicit outputs function return value', want dict<string, string>",
+    "2 | fn_int(name = \"x\")",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//fn_int:all"
+   ]
+  },
+  {
+   "case": "fn_kwonly:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "In rule //fn_kwonly:x:",
+    "Error: _f_kwonly() does not accept positional arguments, but got 1"
+   ],
+   "native_message": [
+    "error: In rule //fn_kwonly:x: Missing named-only parameter `name` for call to `//:defs.bzl._f_kwonly`"
+   ],
+   "verdict": "EXPECTED_MESSAGE_DIFFERENCE",
+   "argv": [
+    "build",
+    "//fn_kwonly:all"
+   ]
+  },
+  {
+   "case": "fn_list:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "In rule //fn_list:x: got list for 'implicit outputs function return value', want dict"
+   ],
+   "native_message": [
+    "error: In rule //fn_list:x: got list for 'implicit outputs function return value', want dict",
+    "2 | fn_list(name = \"x\")",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//fn_list:all"
+   ]
+  },
+  {
+   "case": "fn_multi:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "In rule //fn_multi:x: expected one element but was: <a.m, b.m>"
+   ],
+   "native_message": [
+    "error: In rule //fn_multi:x: expected one element but was: <a.m, b.m>",
+    "2 | fn_multi(name = \"x\", srcs = [\"a.txt\", \"b.txt\"])",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//fn_multi:all"
+   ]
+  },
+  {
+   "case": "fn_native:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "In rule //fn_native:x:",
+    "Error in package_name: package_name() can only be used while evaluating a BUILD file or a legacy or symbolic macro"
+   ],
+   "native_message": [
+    "error: In rule //fn_native:x: package functions (rules, native.*, glob, existing_rules, ...) can only be used while evaluating a BUILD file or a legacy or symbolic macro, not in an implicit outputs function (StarlarkCallbackHelper runs it on a transient thread without a package context)"
+   ],
+   "verdict": "EXPECTED_MESSAGE_DIFFERENCE",
+   "argv": [
+    "build",
+    "//fn_native:all"
+   ]
+  },
+  {
+   "case": "fn_ok:build",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_outputs": [
+    "ctx.outputs(k = <generated file fn_ok/x.q>, l = <generated file fn_ok/l-in.txt-None-tP>, o = None, os = [], t = <generated file fn_ok/x.tpl>) [\"k\", \"l\", \"o\", \"os\", \"t\"]"
+   ],
+   "native_outputs": [
+    "ctx.outputs(k = <generated file fn_ok/x.q>, l = <generated file fn_ok/l-in.txt-None-tP>, o = None, os = [], t = <generated file fn_ok/x.tpl>) [\"k\", \"l\", \"o\", \"os\", \"t\"]"
+   ],
+   "reference_files": [
+    "fn_ok/x.q",
+    "fn_ok/x.tpl",
+    "fn_ok/l-in.txt-None-tP"
+   ],
+   "native_files": [
+    "fn_ok/x.q",
+    "fn_ok/x.tpl",
+    "fn_ok/l-in.txt-None-tP"
+   ],
+   "verdict": "EXACT",
+   "argv": [
+    "build",
+    "//fn_ok:all"
+   ]
+  },
+  {
+   "case": "fn_select:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "In rule //fn_select:x: Attribute 's' either doesn't exist or uses a select() (i.e. could have multiple values)"
+   ],
+   "native_message": [
+    "error: In rule //fn_select:x: Attribute 's' either doesn't exist or uses a select() (i.e. could have multiple values)",
+    "3 | fn_select(name = \"x\", s = select({\":c\": \"a\", \"//conditions:default\": \"b\"}))",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//fn_select:all"
+   ]
+  },
+  {
+   "case": "fn_unknown:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "In rule //fn_unknown:x: Attribute 'nope' either doesn't exist or uses a select() (i.e. could have multiple values)"
+   ],
+   "native_message": [
+    "error: In rule //fn_unknown:x: Attribute 'nope' either doesn't exist or uses a select() (i.e. could have multiple values)",
+    "2 | fn_unknown(name = \"x\")",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//fn_unknown:all"
+   ]
+  },
+  {
+   "case": "input:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "rule 'x' has file 'x.a' as both an input and an output"
+   ],
+   "native_message": [
+    "error: Error in ok: rule 'x' has file 'x.a' as both an input and an output",
+    "2 | ok(name = \"x\", src = \"x.a\", s = \"q\")",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//input:all"
+   ]
+  },
+  {
+   "case": "int_t:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "In rule //int_t:x: For attribute 'n' in outputs: Attributes of type int cannot be used in an outputs substitution template"
+   ],
+   "native_message": [
+    "error: In rule //int_t:x: For attribute 'n' in outputs: Attributes of type int cannot be used in an outputs substitution template",
+    "2 | int_t(name = \"x\", n = 3)",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//int_t:all"
+   ]
+  },
+  {
+   "case": "lbl_t:build",
+   "reference_exit": 37,
+   "native_exit": 1,
+   "reference_crash": [
+    "Caused by: java.lang.NullPointerException: Cannot invoke \"com.google.devtools.build.lib.cmdline.Label.getName()\" because \"label\" is null"
+   ],
+   "native_message": [
+    "error: In rule //lbl_t:x: implicit outputs template placeholder %{lbl} reads an unset label attribute: genuine Bazel 9.3 crashes on this (NullPointerException in ImplicitOutputsFunction.attributeValues, ImplicitOutputsFunction.java:380), which the native profile reports instead"
+   ],
+   "verdict": "REFERENCE_CRASH_NATIVE_EXPLICIT",
+   "argv": [
+    "build",
+    "//lbl_t:all"
+   ]
+  },
+  {
+   "case": "list_t:build",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_outputs": [
+    "ctx.outputs(o = None, one = <generated file list_t/dir/a.one>, os = [], strs = <generated file list_t/only.strs>) [\"o\", \"one\", \"os\", \"strs\"]"
+   ],
+   "native_outputs": [
+    "ctx.outputs(o = None, one = <generated file list_t/dir/a.one>, os = [], strs = <generated file list_t/only.strs>) [\"o\", \"one\", \"os\", \"strs\"]"
+   ],
+   "reference_files": [
+    "list_t/dir/a.one",
+    "list_t/only.strs"
+   ],
+   "native_files": [
+    "list_t/dir/a.one",
+    "list_t/only.strs"
+   ],
+   "verdict": "EXACT",
+   "argv": [
+    "build",
+    "//list_t:all"
+   ]
+  },
+  {
+   "case": "lit:build",
+   "reference_exit": 0,
+   "native_exit": 1,
+   "reference_files": [
+    "lit/lit%{name"
+   ],
+   "reference_warnings": [],
+   "native_message": [
+    "error: invalid output path \"lit%{name\": unsupported target name \"lit%{name\": this implementation accepts only ASCII letters, digits, '_', '-', '.', '+' and '/' (a stricter subset of Bazel label syntax)"
+   ],
+   "verdict": "EXPECTED_NATIVE_UNSUPPORTED",
+   "argv": [
+    "build",
+    "//lit:all"
+   ]
+  },
+  {
+   "case": "multi:build",
+   "reference_exit": 37,
+   "native_exit": 1,
+   "reference_crash": [
+    "Caused by: java.lang.IllegalArgumentException: expected one element but was: <a.m, b.m>"
+   ],
+   "native_message": [
+    "error: In rule //multi:x: implicit output 'm' (template '%{srcs}.m') expands to more than one file (a.m, b.m): genuine Bazel 9.3 crashes on this (IllegalArgumentException: expected one element but was: <a.m, b.m>, ImplicitOutputsFunction.java:157), which the native profile reports instead"
+   ],
+   "verdict": "REFERENCE_CRASH_NATIVE_EXPLICIT",
+   "argv": [
+    "build",
+    "//multi:all"
+   ]
+  },
+  {
+   "case": "ok:build",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_outputs": [
+    "ctx.outputs(a = <generated file ok/sub/x.a>, b = <generated file ok/in-q.b>, c = <generated file ok/sub/x.c>, o = <generated file ok/explicit.o>, os = []) [\"a\", \"b\", \"c\", \"o\", \"os\"]"
+   ],
+   "native_outputs": [
+    "ctx.outputs(a = <generated file ok/sub/x.a>, b = <generated file ok/in-q.b>, c = <generated file ok/sub/x.c>, o = <generated file ok/explicit.o>, os = []) [\"a\", \"b\", \"c\", \"o\", \"os\"]"
+   ],
+   "reference_files": [
+    "ok/sub/x.a",
+    "ok/in-q.b",
+    "ok/sub/x.c",
+    "ok/explicit.o"
+   ],
+   "native_files": [
+    "ok/sub/x.a",
+    "ok/in-q.b",
+    "ok/sub/x.c",
+    "ok/explicit.o"
+   ],
+   "verdict": "EXACT",
+   "argv": [
+    "build",
+    "//ok:all"
+   ]
+  },
+  {
+   "case": "okdefault:build",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_outputs": [
+    "ctx.outputs(a = <generated file okdefault/y.a>, b = <generated file okdefault/dir/in.tar-.b>, c = <generated file okdefault/y.c>, o = None, os = []) [\"a\", \"b\", \"c\", \"o\", \"os\"]"
+   ],
+   "native_outputs": [
+    "ctx.outputs(a = <generated file okdefault/y.a>, b = <generated file okdefault/dir/in.tar-.b>, c = <generated file okdefault/y.c>, o = None, os = []) [\"a\", \"b\", \"c\", \"o\", \"os\"]"
+   ],
+   "reference_files": [
+    "okdefault/y.a",
+    "okdefault/dir/in.tar-.b",
+    "okdefault/y.c"
+   ],
+   "native_files": [
+    "okdefault/y.a",
+    "okdefault/dir/in.tar-.b",
+    "okdefault/y.c"
+   ],
+   "verdict": "EXACT",
+   "argv": [
+    "build",
+    "//okdefault:all"
+   ]
+  },
+  {
+   "case": "other_rule:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "generated file 'x.a' in rule 'x' conflicts with existing generated file from rule 'g', defined at /tmp/opencode/io-capture/ws/other_rule/BUILD.bazel:2:8"
+   ],
+   "native_message": [
+    "error: Error in ok: generated file 'x.a' in rule 'x' conflicts with existing generated file from rule 'g', defined at /tmp/opencode/io-capture/ws/other_rule/BUILD.bazel:2:8",
+    "3 | ok(name = \"x\", src = \"in.txt\", s = \"q\")",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//other_rule:all"
+   ]
+  },
+  {
+   "case": "outs_t:build",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_outputs": [
+    "ctx.outputs(o = <generated file outs_t/out.txt>, o2 = <generated file outs_t/out.txt.x>, os = [<generated file outs_t/one>], os2 = <generated file outs_t/one.y>) [\"o\", \"o2\", \"os\", \"os2\"]"
+   ],
+   "native_outputs": [
+    "ctx.outputs(o = <generated file outs_t/out.txt>, o2 = <generated file outs_t/out.txt.x>, os = [<generated file outs_t/one>], os2 = <generated file outs_t/one.y>) [\"o\", \"o2\", \"os\", \"os2\"]"
+   ],
+   "reference_files": [
+    "outs_t/out.txt.x",
+    "outs_t/one.y",
+    "outs_t/out.txt",
+    "outs_t/one"
+   ],
+   "native_files": [
+    "outs_t/out.txt.x",
+    "outs_t/one.y",
+    "outs_t/out.txt",
+    "outs_t/one"
+   ],
+   "verdict": "EXACT",
+   "argv": [
+    "build",
+    "//outs_t:all"
+   ]
+  },
+  {
+   "case": "prefix:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "rule 'x' has conflicting output files 'x/sub' and 'x'"
+   ],
+   "native_message": [
+    "error: Error in prefix: rule 'x' has conflicting output files 'x/sub' and 'x'",
+    "2 | prefix(name = \"x\")",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//prefix:all"
+   ]
+  },
+  {
+   "case": "private:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "In rule //private:x: For attribute 'p' in outputs: Invalid placeholder(s) in template"
+   ],
+   "native_message": [
+    "error: In rule //private:x: For attribute 'p' in outputs: Invalid placeholder(s) in template",
+    "2 | private(name = \"x\")",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//private:all"
+   ]
+  },
+  {
+   "case": "sel:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "In rule //sel:x: Attribute s is configurable and cannot be used in outputs"
+   ],
+   "native_message": [
+    "error: In rule //sel:x: Attribute s is configurable and cannot be used in outputs",
+    "3 | sel(name = \"x\", s = select({\":c\": \"a\", \"//conditions:default\": \"b\"}))",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//sel:all"
+   ]
+  },
+  {
+   "case": "sel_plain:build",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_outputs": [
+    "ctx.outputs(o = None, os = [], s = <generated file sel_plain/v.sel>) [\"o\", \"os\", \"s\"]"
+   ],
+   "native_outputs": [
+    "ctx.outputs(o = None, os = [], s = <generated file sel_plain/v.sel>) [\"o\", \"os\", \"s\"]"
+   ],
+   "reference_files": [
+    "sel_plain/v.sel"
+   ],
+   "native_files": [
+    "sel_plain/v.sel"
+   ],
+   "verdict": "EXACT",
+   "argv": [
+    "build",
+    "//sel_plain:all"
+   ]
+  },
+  {
+   "case": "select_input:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "rule 'x' has file 'x.a' as both an input and an output"
+   ],
+   "native_message": [
+    "error: Error in exe_ok: rule 'x' has file 'x.a' as both an input and an output",
+    "3 | exe_ok(name = \"x\", srcs = select({\":c\": [\"x.a\"], \"//conditions:default\": []}))",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//select_input:all"
+   ]
+  },
+  {
+   "case": "selfname:build",
+   "reference_exit": 0,
+   "native_exit": 1,
+   "reference_files": [
+    "selfname/x"
+   ],
+   "reference_warnings": [
+    "target 'x' is both a rule and a file; please choose another name for the rule"
+   ],
+   "native_message": [
+    "error: Error in selfname: rule 'x' declares an output file named like the rule itself: genuine Bazel 9.3 warns (target 'x' is both a rule and a file; please choose another name for the rule) and lets the generated file replace the rule target, which the native profile does not model"
+   ],
+   "verdict": "EXPECTED_NATIVE_UNSUPPORTED",
+   "argv": [
+    "build",
+    "//selfname:all"
+   ]
+  },
+  {
+   "case": "tags1:build",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_outputs": [
+    "ctx.outputs(o = None, os = [], t = <generated file tags1/t1.t>) [\"o\", \"os\", \"t\"]"
+   ],
+   "native_outputs": [
+    "ctx.outputs(o = None, os = [], t = <generated file tags1/t1.t>) [\"o\", \"os\", \"t\"]"
+   ],
+   "reference_files": [
+    "tags1/t1.t"
+   ],
+   "native_files": [
+    "tags1/t1.t"
+   ],
+   "verdict": "EXACT",
+   "argv": [
+    "build",
+    "//tags1:all"
+   ]
+  },
+  {
+   "case": "tags_t:build",
+   "reference_exit": 37,
+   "native_exit": 1,
+   "reference_crash": [
+    "Caused by: java.lang.IllegalArgumentException: expected one element but was: <t1.t, t2.t>"
+   ],
+   "native_message": [
+    "error: In rule //tags_t:x: implicit output 't' (template '%{tags}.t') expands to more than one file (t1.t, t2.t): genuine Bazel 9.3 crashes on this (IllegalArgumentException: expected one element but was: <t1.t, t2.t>, ImplicitOutputsFunction.java:157), which the native profile reports instead"
+   ],
+   "verdict": "REFERENCE_CRASH_NATIVE_EXPLICIT",
+   "argv": [
+    "build",
+    "//tags_t:all"
+   ]
+  },
+  {
+   "case": "unknown:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "In rule //unknown:x: For attribute 'u' in outputs: Invalid placeholder(s) in template"
+   ],
+   "native_message": [
+    "error: In rule //unknown:x: For attribute 'u' in outputs: Invalid placeholder(s) in template",
+    "2 | unknown(name = \"x\")",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//unknown:all"
+   ]
+  },
+  {
+   "case": "up:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "illegal output file name '../x' in rule //up:x due to: invalid target name '../x': target names may not contain up-level references '..'"
+   ],
+   "native_message": [
+    "error: illegal output file name '../x' in rule //up:x due to: invalid target name '../x': target names may not contain up-level references '..'",
+    "2 | up(name = \"x\")",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//up:all"
+   ]
+  },
+  {
+   "case": "vis_t:build",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": [
+    "In rule //vis_t:x: For attribute 'visibility' in outputs: Attributes of type list(label) cannot be used in an outputs substitution template"
+   ],
+   "native_message": [
+    "error: In rule //vis_t:x: For attribute 'visibility' in outputs: Attributes of type list(label) cannot be used in an outputs substitution template",
+    "2 | vis_t(name = \"x\", visibility = [\"//visibility:public\"])",
+    "Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md)."
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "argv": [
+    "build",
+    "//vis_t:all"
+   ]
+  },
+  {
+   "case": "cc:binary",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_outputs": [],
+   "native_outputs": [],
+   "reference_files": [
+    "cc/bw.so"
+   ],
+   "native_files": [
+    "cc/bw.so"
+   ],
+   "verdict": "EXACT",
+   "argv": [
+    "build",
+    "//cc:bw.so"
+   ]
+  },
+  {
+   "case": "cc:implicit",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_outputs": [],
+   "native_outputs": [],
+   "reference_files": [
+    "cc/bw.so.dwp",
+    "cc/bw.so.stripped"
+   ],
+   "native_files": [
+    "cc/bw.so.dwp",
+    "cc/bw.so.stripped"
+   ],
+   "verdict": "EXACT",
+   "argv": [
+    "build",
+    "//cc:bw.so.stripped",
+    "//cc:bw.so.dwp"
+   ]
+  },
+  {
+   "case": "ok:output_file",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_outputs": [
+    "ctx.outputs(a = <generated file ok/sub/x.a>, b = <generated file ok/in-q.b>, c = <generated file ok/sub/x.c>, o = <generated file ok/explicit.o>, os = []) [\"a\", \"b\", \"c\", \"o\", \"os\"]"
+   ],
+   "native_outputs": [
+    "ctx.outputs(a = <generated file ok/sub/x.a>, b = <generated file ok/in-q.b>, c = <generated file ok/sub/x.c>, o = <generated file ok/explicit.o>, os = []) [\"a\", \"b\", \"c\", \"o\", \"os\"]"
+   ],
+   "reference_files": [
+    "ok/sub/x.c"
+   ],
+   "native_files": [
+    "ok/sub/x.c"
+   ],
+   "verdict": "EXACT",
+   "argv": [
+    "build",
+    "//ok:sub/x.c"
+   ]
+  },
+  {
+   "case": "fn_ok:output_file",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_outputs": [
+    "ctx.outputs(k = <generated file fn_ok/x.q>, l = <generated file fn_ok/l-in.txt-None-tP>, o = None, os = [], t = <generated file fn_ok/x.tpl>) [\"k\", \"l\", \"o\", \"os\", \"t\"]"
+   ],
+   "native_outputs": [
+    "ctx.outputs(k = <generated file fn_ok/x.q>, l = <generated file fn_ok/l-in.txt-None-tP>, o = None, os = [], t = <generated file fn_ok/x.tpl>) [\"k\", \"l\", \"o\", \"os\", \"t\"]"
+   ],
+   "reference_files": [
+    "fn_ok/x.tpl"
+   ],
+   "native_files": [
+    "fn_ok/x.tpl"
+   ],
+   "verdict": "EXACT",
+   "argv": [
+    "build",
+    "//fn_ok:x.tpl"
+   ]
+  },
+  {
+   "case": "query:cc_dwp",
+   "argv": [
+    "query",
+    "//cc:bw.so.dwp"
+   ],
+   "reference": [
+    "//cc:bw.so.dwp"
+   ],
+   "native": [
+    "//cc:bw.so.dwp"
+   ],
+   "verdict": "EXACT"
+  },
+  {
+   "case": "query:fn_ok_tpl",
+   "argv": [
+    "query",
+    "//fn_ok:x.tpl"
+   ],
+   "reference": [
+    "//fn_ok:x.tpl"
+   ],
+   "native": [
+    "//fn_ok:x.tpl"
+   ],
+   "verdict": "EXACT"
+  },
+  {
+   "case": "query:cc_all",
+   "argv": [
+    "query",
+    "//cc:all"
+   ],
+   "reference": [
+    "//cc:bw.so"
+   ],
+   "native": [
+    "//cc:bw.so"
+   ],
+   "verdict": "EXACT"
+  },
+  {
+   "case": "query:label_kind_ok",
+   "argv": [
+    "query",
+    "--output=label_kind",
+    "//ok:*"
+   ],
+   "reference_exit": 0,
+   "reference": [
+    "source file //ok:BUILD.bazel",
+    "generated file //ok:explicit.o",
+    "generated file //ok:in-q.b",
+    "source file //ok:in.txt",
+    "ok rule //ok:sub/x",
+    "generated file //ok:sub/x.a",
+    "generated file //ok:sub/x.c"
+   ],
+   "verdict": "REFERENCE_ONLY",
+   "note": "native query has no --output=label_kind or //pkg:* (docs/IMPLICIT_OUTPUTS.md)"
+  },
+  {
+   "case": "query:label_kind_cc",
+   "argv": [
+    "query",
+    "--output=label_kind",
+    "//cc:*"
+   ],
+   "reference_exit": 0,
+   "reference": [
+    "source file //cc:BUILD.bazel",
+    "cc_like rule //cc:bw.so",
+    "generated file //cc:bw.so.dwp",
+    "generated file //cc:bw.so.stripped",
+    "source file //cc:in.txt"
+   ],
+   "verdict": "REFERENCE_ONLY",
+   "note": "native query has no --output=label_kind or //pkg:* (docs/IMPLICIT_OUTPUTS.md)"
+  },
+  {
+   "case": "query:label_kind_fn_ok",
+   "argv": [
+    "query",
+    "--output=label_kind",
+    "//fn_ok:*"
+   ],
+   "reference_exit": 0,
+   "reference": [
+    "source file //fn_ok:BUILD.bazel",
+    "source file //fn_ok:in.txt",
+    "generated file //fn_ok:l-in.txt-None-tP",
+    "fn_ok rule //fn_ok:x",
+    "generated file //fn_ok:x.q",
+    "generated file //fn_ok:x.tpl"
+   ],
+   "verdict": "REFERENCE_ONLY",
+   "note": "native query has no --output=label_kind or //pkg:* (docs/IMPLICIT_OUTPUTS.md)"
+  }
+ ],
+ "scratch_removed": true,
+ "frame_check": {
+  "note": "post-capture analysis of artifacts/implicit_outputs-capture.log.json (no rerun): for every reference failure reported as a top-level Starlark traceback (NameConflictException at the declaring call), whether Bazel's full `Error in <function>: <message>` line occurs in native stderr",
+  "rows": {
+   "build:after": {
+    "frame_line": "Error in filegroup: filegroup rule 'x.a' conflicts with existing generated file from rule 'x', defined at /tmp/opencode/io-capture/ws/after/BUILD.bazel:2:3",
+    "native_contains": true
+   },
+   "build:conflict_stops": {
+    "frame_line": "Error in filegroup: filegroup rule 'x' conflicts with existing filegroup rule, defined at /tmp/opencode/io-capture/ws/conflict_stops/BUILD.bazel:1:10",
+    "native_contains": true
+   },
+   "build:dup": {
+    "frame_line": "Error in dup: rule 'x' has more than one generated file named 'x.same'",
+    "native_contains": true
+   },
+   "build:export_after": {
+    "frame_line": "Error in exports_files: source file 'x.a' conflicts with existing generated file from rule 'x', defined at /tmp/opencode/io-capture/ws/export_after/BUILD.bazel:2:3",
+    "native_contains": true
+   },
+   "build:export_rule": {
+    "frame_line": "Error in exports_files: source file 'f' conflicts with existing filegroup rule, defined at /tmp/opencode/io-capture/ws/export_rule/BUILD.bazel:1:10",
+    "native_contains": true
+   },
+   "build:exported": {
+    "frame_line": "Error in ok: generated file 'x.a' in rule 'x' conflicts with existing source file, defined at /tmp/opencode/io-capture/ws/exported/BUILD.bazel:2:14",
+    "native_contains": true
+   },
+   "build:filegroup": {
+    "frame_line": "Error in ok: generated file 'x.a' in rule 'x' conflicts with existing filegroup rule, defined at /tmp/opencode/io-capture/ws/filegroup/BUILD.bazel:2:10",
+    "native_contains": true
+   },
+   "build:input": {
+    "frame_line": "Error in ok: rule 'x' has file 'x.a' as both an input and an output",
+    "native_contains": true
+   },
+   "build:other_rule": {
+    "frame_line": "Error in ok: generated file 'x.a' in rule 'x' conflicts with existing generated file from rule 'g', defined at /tmp/opencode/io-capture/ws/other_rule/BUILD.bazel:2:8",
+    "native_contains": true
+   },
+   "build:prefix": {
+    "frame_line": "Error in prefix: rule 'x' has conflicting output files 'x/sub' and 'x'",
+    "native_contains": true
+   },
+   "build:select_input": {
+    "frame_line": "Error in exe_ok: rule 'x' has file 'x.a' as both an input and an output",
+    "native_contains": true
+   }
+  }
+ }
+}

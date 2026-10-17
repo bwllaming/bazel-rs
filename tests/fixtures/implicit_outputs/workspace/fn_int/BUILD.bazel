@@ -1,0 +1,2 @@
+load("//:defs.bzl", "fn_int")
+fn_int(name = "x")

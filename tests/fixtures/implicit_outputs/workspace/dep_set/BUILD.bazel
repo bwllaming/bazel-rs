@@ -1,0 +1,2 @@
+load("//:defs.bzl", "dep_t")
+dep_t(name = "x", deprecation = "old")

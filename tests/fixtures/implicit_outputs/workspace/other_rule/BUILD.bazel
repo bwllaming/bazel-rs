@@ -1,0 +1,3 @@
+load("//:defs.bzl", "ok")
+genrule(name = "g", outs = ["x.a"], cmd = "true")
+ok(name = "x", src = "in.txt", s = "q")

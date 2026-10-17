@@ -48,6 +48,7 @@ pub mod glob;
 mod guarded_globals;
 mod host_os;
 pub mod ignored;
+mod implicit_outputs;
 mod json;
 pub mod label;
 pub mod language_modules;

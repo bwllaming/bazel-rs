@@ -260,6 +260,11 @@ mod collector {
         pub ignored: crate::ignored::IgnoredSubdirectories,
         pub rules: RefCell<Vec<Rule>>,
         pub exports: RefCell<BTreeMap<Label, Visibility>>,
+        /// TargetRecorder's name-conflict state (crate::package::Recorder).
+        pub recorder: RefCell<Recorder>,
+        /// Set while a callback Bazel runs on a transient thread without a
+        /// package context (the rule(outputs=<function>) callback) executes.
+        pub transient: Cell<bool>,
         pub default_visibility: RefCell<Visibility>,
         pub defaulted_rules: RefCell<BTreeSet<Label>>,
         pub package_called: Cell<bool>,
@@ -381,7 +386,14 @@ pub(crate) fn register_custom<'v>(
             .collect()
     });
     let srcs = custom_dependency_labels(&attrs);
-    let mut outs = Vec::new();
+    // rule(outputs=...) implicit outputs are package output files too, before
+    // the explicit attr.output/attr.output_list ones (Rule.java:526-528, 573-610):
+    // the order of the rule's outputs and its default files to build.
+    let mut outs = declaration
+        .implicit_outputs
+        .iter()
+        .map(|(_, output)| output.clone())
+        .collect::<Vec<_>>();
     for value in attrs.values() {
         match value {
             AttrValue::Output(Some(value)) => outs.push(value.clone()),
@@ -389,18 +401,24 @@ pub(crate) fn register_custom<'v>(
             _ => {}
         }
     }
-    // rule(outputs={...}) implicit outputs are package output files too.
-    outs.extend(
-        declaration
-            .implicit_outputs
-            .iter()
-            .map(|(_, output)| output.clone()),
-    );
     let index = context.rules.borrow().len();
-    context.declare(name, RuleKind::Custom, srcs, outs, None, visibility)?;
+    // Rule.getLabels (packages/Rule.java:438-442): every non-output, non-nodep
+    // label, select() keys and branches included.
+    let inputs = declaration
+        .configurable_labels
+        .iter()
+        .chain(&declaration.builtin.target.input_labels)
+        .cloned()
+        .collect();
+    let site = TargetSite {
+        callee: declaration.rule_class.clone(),
+        kind: format!("{} rule", declaration.rule_class),
+        location,
+        inputs,
+    };
     let call_stack = java_call_stack(eval);
+    context.declare(name, RuleKind::Custom, srcs, outs, None, visibility, site)?;
     if let Some(rule) = context.rules.borrow_mut().last_mut() {
-        rule.location = location;
         rule.call_stack = call_stack;
         rule.generator = generator;
     }
@@ -466,6 +484,7 @@ impl Declarations {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn declare(
         &self,
         name: &str,
@@ -474,6 +493,7 @@ impl Declarations {
         outs: Vec<String>,
         cmd: Option<String>,
         visibility: Option<Visibility>,
+        site: TargetSite,
     ) -> anyhow::Result<NoneType> {
         let label = local_label(name, &self.package_id(), "rule name")?;
         self.check_macro_collision(name)?;
@@ -506,6 +526,20 @@ impl Declarations {
             }
             visibility.unwrap_or_else(|| self.default_visibility.borrow().clone())
         };
+        // TargetRecorder.addRule (packages/TargetRecorder.java:425-436): the
+        // conflict is thrown at the declaring call (RuleFactory.java:325-326,
+        // StarlarkRuleClassFunctions.java:1896-1897), so evaluation stops here.
+        let inputs = srcs
+            .iter()
+            .filter_map(|text| Label::parse_canonical(text).ok())
+            .chain(site.inputs.iter().cloned())
+            .filter(|input| input.package_id() == label.package_id())
+            .map(|input| input.name)
+            .collect::<Vec<_>>();
+        self.recorder
+            .borrow_mut()
+            .record_rule(name, &site.kind, site.location.as_deref(), &outs, &inputs)
+            .map_err(|error| anyhow!("Error in {}: {error}", site.callee))?;
         {
             let mut names = self.declared_names.borrow_mut();
             names.insert(name.to_owned());
@@ -523,7 +557,7 @@ impl Declarations {
             native: None,
             unanalyzed: Vec::new(),
             package_metadata: Vec::new(),
-            location: None,
+            location: site.location,
             explicit_visibility,
             call_stack: Vec::new(),
             generator: None,
@@ -891,6 +925,9 @@ pub(crate) fn invoke_symbolic_macro<'v>(
     let context = extra
         .and_then(|extra| extra.downcast_ref::<Declarations>())
         .ok_or_else(|| anyhow!("symbolic macros may only be invoked during BUILD evaluation"))?;
+    if context.transient.get() {
+        bail!("{TRANSIENT}");
+    }
     if exported.is_none() {
         bail!("symbolic macro must be exported before invocation");
     }
@@ -977,9 +1014,36 @@ pub(crate) fn invoke_symbolic_macro<'v>(
 }
 
 fn declarations<'a>(eval: &'a Evaluator<'_, '_, '_>) -> anyhow::Result<&'a Declarations> {
-    eval.extra
+    let context = eval
+        .extra
         .and_then(|extra| extra.downcast_ref::<Declarations>())
-        .ok_or_else(|| anyhow!("rule declaration outside package evaluation"))
+        .ok_or_else(|| anyhow!("rule declaration outside package evaluation"))?;
+    if context.transient.get() {
+        bail!("{TRANSIENT}");
+    }
+    Ok(context)
+}
+
+/// TargetDefinitionContext.fromOrFail (packages/TargetDefinitionContext.java:187-248)
+/// on a thread without a package context.
+const TRANSIENT: &str = "package functions (rules, native.*, glob, existing_rules, ...) can only be used while evaluating a BUILD file or a legacy or symbolic macro, not in an implicit outputs function (StarlarkCallbackHelper runs it on a transient thread without a package context)";
+
+/// Run `callback` without the package context, like Bazel's
+/// StarlarkCallbackHelper transient thread (StarlarkCallbackHelper.java:64-77):
+/// package functions fail inside it.
+pub(crate) fn without_package_context<'v, 'a, 'e, R>(
+    eval: &mut Evaluator<'v, 'a, 'e>,
+    callback: impl FnOnce(&mut Evaluator<'v, 'a, 'e>) -> R,
+) -> R {
+    // Copy the independent extra reference; never borrow eval over the callback.
+    let extra = eval.extra;
+    let context = extra.and_then(|extra| extra.downcast_ref::<Declarations>());
+    let previous = context.map(|context| context.transient.replace(true));
+    let result = callback(eval);
+    if let (Some(context), Some(previous)) = (context, previous) {
+        context.transient.set(previous);
+    }
+    result
 }
 
 // The upstream derives generate unsafe marker-trait implementations for these
@@ -1174,11 +1238,16 @@ fn declare_native<'v>(
     };
     let (location, generator) = rule_origin(eval, context, &instance.name);
     let call_stack = java_call_stack(eval);
-    context.declare(&instance.name, kind, srcs, outs, cmd, visibility)?;
+    let site = TargetSite {
+        callee: class.name.to_owned(),
+        kind: format!("{} rule", class.name),
+        location,
+        inputs: target.input_labels.clone(),
+    };
+    context.declare(&instance.name, kind, srcs, outs, cmd, visibility, site)?;
     let mut rules = context.rules.borrow_mut();
     let rule = rules.last_mut().expect("declared rule");
     rule.native = Some(Arc::new(target));
-    rule.location = location;
     rule.call_stack = call_stack;
     rule.generator = generator;
     Ok(())
@@ -1300,12 +1369,14 @@ fn rule_globals(builder: &mut GlobalsBuilder) {
             Vec::new(),
             None,
             Some(Visibility::Public),
-        )?;
-        // PackageGroup.getLocation: the call's left parenthesis.
-        if let Some(rule) = context.rules.borrow_mut().last_mut() {
-            rule.location = location;
-        }
-        Ok(NoneType)
+            // PackageGroup.getLocation: the call's left parenthesis.
+            TargetSite {
+                callee: "package_group".to_owned(),
+                kind: "package group".to_owned(),
+                location,
+                inputs: Vec::new(),
+            },
+        )
     }
 }
 
@@ -1430,6 +1501,15 @@ fn package_globals(builder: &mut GlobalsBuilder) {
         for name in strings(srcs, "exports_files srcs")? {
             let label = local_label(&name, &context.package_id(), "exported file")?;
             context.check_macro_collision(&name)?;
+            // createInputFile -> TargetRecorder.addTarget
+            // (StarlarkNativeModule.java:586-610): an existing source file is
+            // idempotent, any other target conflicts.
+            let (location, _) = rule_origin(eval, context, &name);
+            context
+                .recorder
+                .borrow_mut()
+                .record_source(&name, location.as_deref())
+                .map_err(|error| anyhow!("Error in exports_files: {error}"))?;
             context.declared_names.borrow_mut().insert(name);
             if let Some(previous) = context
                 .exports
@@ -2082,6 +2162,8 @@ fn evaluate_at(
         repositories,
         rules: RefCell::new(Vec::new()),
         exports: RefCell::new(BTreeMap::new()),
+        recorder: RefCell::new(Recorder::default()),
+        transient: Cell::new(false),
         default_visibility: RefCell::new(
             repo_defaults.default_visibility.clone().unwrap_or_default(),
         ),
@@ -2214,13 +2296,6 @@ fn evaluate_at(
         }
     }
     let exports = declarations.exports.into_inner();
-    for label in exports.keys() {
-        if rules.contains_key(label) || rules.values().any(|rule| rule.outs.contains(&label.name)) {
-            return Err(format!(
-                "exported file {label} collides with a rule or generated output"
-            ));
-        }
-    }
     Ok(Package {
         rules: rules
             .into_iter()
@@ -2478,6 +2553,177 @@ fn evaluate_source(
     })
 }
 
+/// Where and as what a target is declared (TargetRecorder conflict checks).
+struct TargetSite {
+    /// The called function, for Bazel's `Error in F:` frame.
+    callee: String,
+    /// `Target.getTargetKind()`: `CLASS rule` or `package group`.
+    kind: String,
+    /// The call's location (`/abs/BUILD:L:C`).
+    location: Option<String>,
+    /// Rule.getLabels beyond `srcs` (select() keys/branches, built-ins).
+    inputs: Vec<Label>,
+}
+
+/// A package target already recorded (TargetRecorder's targetMap).
+#[derive(Debug)]
+enum Recorded {
+    Rule { kind: String, location: String },
+    Output { rule: String, location: String },
+    Source { location: String },
+}
+
+impl Recorded {
+    /// `existing.getTargetKind()` or `generated file from rule 'R'`, then
+    /// `, defined at LOCATION` (TargetRecorder.checkForExistingTargetName,
+    /// TargetRecorder.java:693-715).
+    fn describe(&self) -> String {
+        match self {
+            Self::Rule { kind, location } => format!("{kind}, defined at {location}"),
+            Self::Output { rule, location } => {
+                format!("generated file from rule '{rule}', defined at {location}")
+            }
+            Self::Source { location } => format!("source file, defined at {location}"),
+        }
+    }
+}
+
+/// TargetRecorder's name-conflict state (packages/TargetRecorder.java): the
+/// targets declared so far, and output-file path prefixes.
+#[derive(Debug, Default)]
+pub struct Recorder {
+    targets: BTreeMap<String, Recorded>,
+    /// Output-file directory prefixes with the (output, rule) recording them.
+    prefixes: BTreeMap<String, (String, String)>,
+}
+
+const UNKNOWN_LOCATION: &str = "<unknown location>";
+
+impl Recorder {
+    /// TargetRecorder.checkRuleAndOutputs then addRuleInternal
+    /// (TargetRecorder.java:540-600): the rule name, each output (duplicates
+    /// in the rule, earlier targets, path-prefix overlaps), then same-package
+    /// input names that are also outputs.
+    fn record_rule(
+        &mut self,
+        name: &str,
+        kind: &str,
+        location: Option<&str>,
+        outs: &[String],
+        inputs: &[String],
+    ) -> Result<(), String> {
+        let location = location.unwrap_or(UNKNOWN_LOCATION);
+        if let Some(existing) = self.targets.get(name) {
+            return Err(format!(
+                "{kind} '{name}' conflicts with existing {}",
+                existing.describe()
+            ));
+        }
+        let mut own: Vec<&str> = Vec::new();
+        let mut prefixes = Vec::new();
+        for out in outs {
+            let out = out.as_str();
+            if own.contains(&out) {
+                return Err(format!(
+                    "rule '{name}' has more than one generated file named '{out}'"
+                ));
+            }
+            own.push(out);
+            if let Some(existing) = self.targets.get(out) {
+                return Err(format!(
+                    "generated file '{out}' in rule '{name}' conflicts with existing {}",
+                    existing.describe()
+                ));
+            }
+            let overlap = |existing: &str, owner: &str| {
+                if owner == name {
+                    format!("rule '{name}' has conflicting output files '{out}' and '{existing}'")
+                } else {
+                    format!(
+                        "output file '{out}' of rule '{name}' conflicts with output file '{existing}' of rule '{owner}'"
+                    )
+                }
+            };
+            if let Some((existing, owner)) = self.prefixes.get(out).or_else(|| {
+                prefixes
+                    .iter()
+                    .find(|(prefix, _)| prefix == out)
+                    .map(|(_, entry)| entry)
+            }) {
+                return Err(overlap(existing, owner));
+            }
+            for (slash, _) in out.match_indices('/') {
+                let prefix = &out[..slash];
+                if own.contains(&prefix) {
+                    return Err(overlap(prefix, name));
+                }
+                if let Some(Recorded::Output { rule, .. }) = self.targets.get(prefix) {
+                    return Err(overlap(prefix, rule));
+                }
+                if !self.prefixes.contains_key(prefix)
+                    && !prefixes.iter().any(|(existing, _)| existing == prefix)
+                {
+                    prefixes.push((prefix.to_owned(), (out.to_owned(), name.to_owned())));
+                }
+            }
+        }
+        for input in inputs {
+            if own.contains(&input.as_str()) {
+                return Err(format!(
+                    "rule '{name}' has file '{input}' as both an input and an output"
+                ));
+            }
+        }
+        if own.contains(&name) {
+            // Rule.validateOutputLabel only warns (packages/Rule.java:638-644)
+            // and the generated file then shadows the rule target.
+            return Err(format!(
+                "rule '{name}' declares an output file named like the rule itself: genuine Bazel 9.3 warns (target '{name}' is both a rule and a file; please choose another name for the rule) and lets the generated file replace the rule target, which the native profile does not model"
+            ));
+        }
+        self.prefixes.extend(prefixes);
+        self.targets.insert(
+            name.to_owned(),
+            Recorded::Rule {
+                kind: kind.to_owned(),
+                location: location.to_owned(),
+            },
+        );
+        for out in own {
+            self.targets.insert(
+                out.to_owned(),
+                Recorded::Output {
+                    rule: name.to_owned(),
+                    location: location.to_owned(),
+                },
+            );
+        }
+        Ok(())
+    }
+
+    /// TargetDefinitionContext.createInputFile (packages/TargetDefinitionContext.java:672-689).
+    fn record_source(&mut self, name: &str, location: Option<&str>) -> Result<(), String> {
+        match self.targets.get(name) {
+            Some(Recorded::Source { .. }) => Ok(()),
+            Some(existing) => Err(format!(
+                "source file '{name}' conflicts with existing {}",
+                existing.describe()
+            )),
+            None => {
+                self.targets.insert(
+                    name.to_owned(),
+                    Recorded::Source {
+                        location: location.unwrap_or(UNKNOWN_LOCATION).to_owned(),
+                    },
+                );
+                Ok(())
+            }
+        }
+    }
+}
+
+/// The package's rules by label; conflicts were rejected at each declaring
+/// call ([`Recorder`]).
 fn validate_rules(declarations: Vec<Rule>) -> Result<BTreeMap<Label, Rule>, String> {
     let mut rules = BTreeMap::new();
     for rule in declarations {
@@ -2485,32 +2731,6 @@ fn validate_rules(declarations: Vec<Rule>) -> Result<BTreeMap<Label, Rule>, Stri
             return Err(format!("duplicate rule name: {}", rule.label));
         }
         rules.insert(rule.label.clone(), rule);
-    }
-    let mut outputs = BTreeMap::new();
-    for rule in rules.values() {
-        for out in &rule.outs {
-            let output = local_label(out, &rule.label.package_id(), "output path")
-                .map_err(|e| e.to_string())?;
-            if rules.contains_key(&output) {
-                return Err(format!("output {output} collides with a rule name"));
-            }
-            if let Some(previous) = outputs.insert(out.clone(), &rule.label) {
-                return Err(format!(
-                    "duplicate output {output}, declared by {previous} and {}",
-                    rule.label
-                ));
-            }
-        }
-    }
-    for (out, owner) in &outputs {
-        for (index, _) in out.match_indices('/') {
-            if let Some(other) = outputs.get(&out[..index]) {
-                return Err(format!(
-                    "output path conflict: {out:?} from {owner} is nested under output {:?} from {other}",
-                    &out[..index]
-                ));
-            }
-        }
     }
     Ok(rules)
 }
@@ -2902,31 +3122,66 @@ unused = [genrule(name = "make_" + n, outs = [n + ".out"], cmd = "echo " + n + "
 
     #[test]
     fn duplicate_and_conflicting_declarations_fail() {
+        // TargetRecorder texts (packages/TargetRecorder.java:540-600,
+        // 693-715, 785-805); genuine Bazel 9.3 capture in
+        // tests/fixtures/implicit_outputs/reference_receipt.json.
         rejected(
             "filegroup(name='x')\nfilegroup(name='x')",
-            "duplicate rule name",
+            "filegroup rule 'x' conflicts with existing filegroup rule, defined at ",
         );
         rejected(
             "genrule(name='x', outs=['y', 'y'], cmd='true')",
-            "duplicate output",
+            "rule 'x' has more than one generated file named 'y'",
         );
         rejected(
             "genrule(name='x', outs=['z'], cmd='true')\ngenrule(name='y', outs=['z'], cmd='true')",
-            "duplicate output",
+            "generated file 'z' in rule 'y' conflicts with existing generated file from rule 'x', defined at ",
         );
         rejected(
             "genrule(name='x', outs=['x'], cmd='true')",
-            "collides with a rule name",
+            "rule 'x' declares an output file named like the rule itself",
         );
-        for source in [
+        rejected(
             "filegroup(name='out')\ngenrule(name='x', outs=['out'], cmd='true')",
+            "generated file 'out' in rule 'x' conflicts with existing filegroup rule, defined at ",
+        );
+        rejected(
             "genrule(name='x', outs=['out'], cmd='true')\nfilegroup(name='out')",
-        ] {
-            rejected(source, "collides with a rule name");
-        }
+            "filegroup rule 'out' conflicts with existing generated file from rule 'x', defined at ",
+        );
         rejected(
             "genrule(name='x', outs=['a', 'a/b'], cmd='true')",
-            "output path conflict",
+            "rule 'x' has conflicting output files 'a/b' and 'a'",
+        );
+        rejected(
+            "genrule(name='x', outs=['a/b'], cmd='true')\ngenrule(name='y', outs=['a'], cmd='true')",
+            "output file 'a' of rule 'y' conflicts with output file 'a/b' of rule 'x'",
+        );
+        rejected(
+            "genrule(name='x', srcs=['in'], outs=['in'], cmd='true')",
+            "rule 'x' has file 'in' as both an input and an output",
+        );
+        rejected(
+            "exports_files(['e'])\ngenrule(name='x', outs=['e'], cmd='true')",
+            "Error in genrule: generated file 'e' in rule 'x' conflicts with existing source file, defined at ",
+        );
+        // createInputFile -> addTarget (TargetDefinitionContext.java:672-689).
+        rejected(
+            "genrule(name='x', outs=['e'], cmd='true')\nexports_files(['e'])",
+            "Error in exports_files: source file 'e' conflicts with existing generated file from rule 'x', defined at ",
+        );
+        rejected(
+            "filegroup(name='f')\nexports_files(['f'])",
+            "Error in exports_files: source file 'f' conflicts with existing filegroup rule, defined at ",
+        );
+        eval("exports_files(['e'])\nexports_files(['e'])").unwrap();
+        // The conflict is thrown at the declaring call: evaluation stops there.
+        let error = eval("filegroup(name='x')\nfilegroup(name='x')\nfail('later')").unwrap_err();
+        assert!(
+            error.contains(
+                "Error in filegroup: filegroup rule 'x' conflicts with existing filegroup rule"
+            ) && !error.contains("later"),
+            "{error}"
         );
     }
 
@@ -3095,7 +3350,7 @@ unused = [genrule(name = "make_" + n, outs = [n + ".out"], cmd = "echo " + n + "
             ] {
                 let error = eval(&source).unwrap_err();
                 assert!(
-                    error.contains("collides") || error.contains("duplicate"),
+                    error.contains("collides") || error.contains("conflicts with existing"),
                     "{source}: {error}"
                 );
             }
@@ -3591,6 +3846,8 @@ def legacy():
                 ignored: Default::default(),
                 rules: RefCell::new(Vec::new()),
                 exports: RefCell::new(BTreeMap::new()),
+                recorder: RefCell::new(Recorder::default()),
+                transient: Cell::new(false),
                 default_visibility: RefCell::new(Visibility::Private),
                 defaulted_rules: RefCell::new(BTreeSet::new()),
                 package_called: Cell::new(false),
@@ -4061,11 +4318,14 @@ r = rule(implementation=impl, attrs={
             Visibility::Private
         );
         for (calls, expected) in [
-            ("r(name='x')\nr(name='x')", "duplicate rule"),
-            ("r(name='x', out='x')", "collides"),
+            (
+                "r(name='x')\nr(name='x')",
+                "r rule 'x' conflicts with existing r rule",
+            ),
+            ("r(name='x', out='x')", "named like the rule itself"),
             (
                 "r(name='x', out='z')\nr(name='y', out='z')",
-                "duplicate output",
+                "generated file 'z' in rule 'y' conflicts with existing generated file from rule 'x'",
             ),
             ("r(name='x', visibility=42)", "visibility"),
         ] {

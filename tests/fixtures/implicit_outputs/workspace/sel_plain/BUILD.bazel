@@ -1,0 +1,2 @@
+load("//:defs.bzl", "sel")
+sel(name = "x", s = select({"//conditions:default": "v"}))

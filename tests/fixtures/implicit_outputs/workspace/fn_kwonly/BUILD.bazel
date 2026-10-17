@@ -1,0 +1,2 @@
+load("//:defs.bzl", "fn_kwonly")
+fn_kwonly(name = "x")

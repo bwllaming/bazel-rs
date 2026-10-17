@@ -67,9 +67,11 @@ Load-time semantics that are implemented:
   for private attributes outside the rules_cc allowlist, `Initializer can only
   set Starlark defined attributes, not '%s'`). Label strings it returns are
   resolved from the rule's `.bzl` package.
-* **`outputs={...}`**: `%{name}` templates become output files of the package
-  (`query //pkg:name.dwp` works). Other placeholders and function-form
-  `outputs` fail explicitly at instantiation.
+* **`outputs=...`** (N46, docs/IMPLICIT_OUTPUTS.md): dict templates with
+  `%{attr}`/`%{dirname}`/`%{basename}` placeholders and the function form are
+  evaluated at instantiation with Bazel's messages; the results are output
+  files of the package (`query //pkg:name.dwp` works) and `ctx.outputs`
+  entries at analysis.
 * **`attr.string/int(values=...)`**: checked at instantiation only for values
   that are supplied (by the call or by the initializer) and for every
   `select()` branch, never for defaults (`AttributeProvider.java:288-290,
@@ -211,8 +213,8 @@ A target fails analysis with the message above if it uses any of these:
 * rule level: `analysis_test=True`, `_skylark_testable=True`, `output_to_genfiles=True`,
   `dependency_resolution_rule=True`, `cfg =
   config.none()` (a Starlark `transition()` is applied since N18c,
-  docs/CONFIGURATION.md), dict `outputs`
-  (the implicit outputs exist for loading, but not as `ctx.outputs`);
+  docs/CONFIGURATION.md) (`outputs` implicit outputs are analyzed since
+  N46, docs/IMPLICIT_OUTPUTS.md);
 * attribute level, when the attribute's resolved value (explicit, default or
   chosen `select()` branch, docs/CONFIGURATION.md) is non-empty:
   `cfg` other than target, exec and a Starlark `transition()` (N18c:
