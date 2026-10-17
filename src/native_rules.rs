@@ -1581,10 +1581,12 @@ pub(crate) fn analysis_gaps(target: &NativeTarget) -> Vec<String> {
             "generator_function",
             "generator_location",
         ],
-        // `tools` are built in the exec configuration (crate::engine).
+        // `tools` are built in the exec configuration, `toolchains` give
+        // Make variables, tools and toolchain types (crate::engine).
         "genrule" => &[
             "srcs",
             "tools",
+            "toolchains",
             "outs",
             "cmd",
             "cmd_bat",

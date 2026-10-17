@@ -251,10 +251,12 @@ fail analysis: the testonly check below uses the effective value.
   (`declared rule features not analyzed by the native profile: ...`), never
   silently: non-empty `target_compatible_with` (constraint analysis and
   incompatible target skipping), `compatible_with`/`restricted_to`
-  (constraint environments), `toolchains` (TemplateVariableInfo Make
-  variables), `aspect_hints`, `transitive_configs`, a non-empty `expect_failure` (expected-failure
+  (constraint environments), `aspect_hints`, `transitive_configs`, a non-empty `expect_failure` (expected-failure
   analysis; `""` has no effect, `StarlarkRuleConfiguredTargetUtil.java:80-131`).
-  `exec_compatible_with` takes part in toolchain resolution (it filters the
+  `toolchains` is analyzed (N53, docs/MAKE_VARIABLES.md): TemplateVariableInfo
+  prerequisites in the target configuration feed `ctx.var` and
+  `ctx.expand_make_variables`, with Bazel's mandatory-provider and no-files
+  errors. `exec_compatible_with` takes part in toolchain resolution (it filters the
   execution platforms; `ctx.attr.exec_compatible_with` holds the constraint
   value targets; docs/TOOLCHAINS.md).
   Retained `select()`s on built-in attributes are resolved first and these
@@ -274,8 +276,7 @@ fail analysis: the testonly check below uses the effective value.
   Bazel reports its own analysis error first (for example `in
   target_compatible_with attribute of show rule //:x: '//:c' does not have
   mandatory providers: ConfigMatchingProvider or 'ConstraintValueInfo'`, `in
-  toolchains attribute ...: '//:c' does not have mandatory providers:
-  'TemplateVariableInfo'`, `in compatible_with attribute ...: show rule
+  compatible_with attribute ...: show rule
   '//:c' is misplaced here (expected environment)`, `While resolving
   toolchains for target //:x ...: Target //:c was referenced as a
   constraint_value, but does not provide ConstraintValueInfo`, `in show rule

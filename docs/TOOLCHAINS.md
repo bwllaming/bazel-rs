@@ -267,9 +267,10 @@ resolves never silently becomes `None`.
 * Declared and automatic exec groups, `exec_group_compatible_with`,
   `ctx.exec_groups` and `config.exec(exec_group = NAME)` are N35
   (docs/EXEC_GROUPS.md); only exec groups of aspects remain unsupported.
-* `genrule(toolchains = ...)` and the Starlark `toolchains` attribute (Make
-  variables), `genrule(exec_compatible_with = ...)` and toolchains of
-  aspects. A subrule's `ctx.toolchains` needs automatic exec groups (without
+* `genrule(exec_compatible_with = ...)` and toolchains of aspects. (The
+  `toolchains` attribute of genrules and Starlark rules is N53,
+  docs/MAKE_VARIABLES.md: a genrule's `toolchain_type` entries are optional
+  toolchain types with `ignore_if_invalid`.) A subrule's `ctx.toolchains` needs automatic exec groups (without
   them Bazel's `subrules using toolchains must enable automatic exec-groups`
   error; with them docs/EXEC_GROUPS.md). A subrule's toolchain types are
   requested by the consuming rule (docs/SUBRULES.md).

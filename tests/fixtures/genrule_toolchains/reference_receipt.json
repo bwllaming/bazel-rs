@@ -1,0 +1,962 @@
+{
+ "schema": "n53-genrule-toolchains-reference-receipt/v1",
+ "purpose": "Paired genuine Bazel 9.3.0 vs native bazel-rs capture of N53 (docs/MAKE_VARIABLES.md): the `toolchains` attribute of genrule and Starlark rules (TemplateVariableInfo prerequisites, genrule toolchain_type entries), ctx.var / ctx.expand_make_variables / ctx.expand_location, genrule command expansion (CommandResolverContext, location functions, $$ escaping), toolchain files as genrule tool inputs, error texts and query edges. Evidence only; not an input of any test.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private> --output_base=<private> --host_jvm_args=-Xmx512m",
+  "flags": "--registry=file://<private copy of tests/fixtures/builtin_modules/registry> --incompatible_autoload_externally= --lockfile_mode=off --repository_cache=<private> --distdir=<seeded from verified local CAS> --repository_disable_download; build: --spawn_strategy=local --shell_executable=/bin/bash --show_result=100",
+  "env": "env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8, private HOME/TMPDIR, umask 022"
+ },
+ "native": {
+  "binary": "target/release/bazel-rs",
+  "sha256": "2730fe9154e4d0fcf3d36dda478a6d857ebe783b2fde104c81528b729a42c1dc",
+  "flags": "--experimental-builtin-modules --registry=file://<same registry copy>"
+ },
+ "worktree": {
+  "base_commit": "cfa224b0619e78619394aae076c16cf49d1e2e19",
+  "src_diff_plus_untracked_sha256": "d8c25aa1d720641dd97f80112d7812b6fb6aac2d6924d486233d25a4baffb724",
+  "untracked_src": [
+   "src/location_expander.rs"
+  ]
+ },
+ "script_sha256": "befada04f1670d627cdca90e982b337667b12686b66d9b94054d8d7b6e5835d5",
+ "fixture_tree_sha256": "83abd4dcd2a3164162ee13d60e39e4b62d48ce91be44c0734e0b878de81cbdf5",
+ "stubs_tree_sha256": "30907e8d162d5ebe72823902dca51fc69d6b711c8d1bbcb2a642b387846f85c1",
+ "distdir_seeded_count": 18,
+ "scratch_removed": true,
+ "counts": {
+  "EXACT": 44,
+  "EXACT_MESSAGE": 1,
+  "EXPECTED_NATIVE_UNSUPPORTED": 1
+ },
+ "rows": [
+  {
+   "row": "A1/aws_script_verbatim",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:aws_script"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_errors": [],
+   "reference_outputs": {
+    "aws_wrapper.sh": "#!/bin/bash\nexec /opt/aws/dist/aws \"$@\"\n"
+   }
+  },
+  {
+   "row": "A2/sh_binary_toolchains",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:aws-bin"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_errors": [],
+   "reference_outputs": {
+    "aws-bin": "#!/bin/sh\nexit 0\n"
+   }
+  },
+  {
+   "row": "A3/toolchain_files_are_tool_inputs",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:file_tool"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_errors": [],
+   "reference_outputs": {
+    "file_tool.txt": "GENERATED TOOL\nexternal/aspect_rules_aws+/aws/gen_tool.sh\n"
+   }
+  },
+  {
+   "row": "A4/toolchain_type_entry",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:type_entry"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_errors": [],
+   "reference_outputs": {
+    "type_entry.txt": "/opt/aws/dist/aws\n"
+   }
+  },
+  {
+   "row": "A5/toolchain_prerequisite_location",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:type_entry_location"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "<<WS>>/gt/BUILD.bazel:35:8: in cmd attribute of genrule rule //gt:type_entry_location: label '@@aspect_rules_aws+//aws:aws_toolchain' in $(location) expression expands to no files"
+   ],
+   "reference_outputs": {}
+  },
+  {
+   "row": "A6/make_variables",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:make_vars"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_errors": [],
+   "reference_outputs": {
+    "make_vars.txt": "from_vars1 first bar2 tv_mode from_vars1-bazel-out/k8-fastbuild/bin bazel-out/k8-fastbuild/bin bazel-out/k8-fastbuild/bin x86_64 bazel-out/k8-fastbuild/bin/gt bazel-out/k8-fastbuild/bin/gt gt/in.txt gt/in2.txt bazel-out/k8-fastbuild/bin/gt/make_vars.txt unset\n"
+   }
+  },
+  {
+   "row": "A7/make_variables_define_dbg",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--define=FOO=cli",
+    "--define=SRCS=no",
+    "-c",
+    "dbg",
+    "//gt:make_vars"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_errors": [],
+   "reference_outputs": {
+    "make_vars.txt": "cli first bar2 tv_mode cli-bazel-out/k8-dbg/bin bazel-out/k8-dbg/bin bazel-out/k8-dbg/bin x86_64 bazel-out/k8-dbg/bin/gt bazel-out/k8-dbg/bin/gt gt/in.txt gt/in2.txt bazel-out/k8-dbg/bin/gt/make_vars.txt unset\n"
+   }
+  },
+  {
+   "row": "A8/vars_and_type",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:vars_and_type"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_errors": [],
+   "reference_outputs": {
+    "vars_and_type.txt": "from_vars1 /opt/aws/dist/aws gt/in.txt gt/in2.txt\n"
+   }
+  },
+  {
+   "row": "A9/alias_entry",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:alias_entry"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_errors": [],
+   "reference_outputs": {
+    "alias_entry.txt": "/opt/aws/dist/aws\n"
+   }
+  },
+  {
+   "row": "A10/location_functions",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:locations"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_errors": [],
+   "reference_outputs": {
+    "locations.txt": "gt/in.txt gt/in.txt gt/in.txt _main/gt/in.txt gt/in.txt gt/in2.txt gt/tool.sh aspect_rules_aws+/aws/gen_tool.sh bazel-out/k8-fastbuild/bin/gt/locations.txt\n"
+   }
+  },
+  {
+   "row": "A11/root_package_callable_paths",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//:root_locations"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_errors": [],
+   "reference_outputs": {
+    "root_locations.txt": "./root.txt ./root.txt ./root.txt _main/root.txt root.txt\n"
+   }
+  },
+  {
+   "row": "B1/undefined",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:err_undefined"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "<<WS>>/gt/BUILD.bazel:118:8: in cmd attribute of genrule rule //gt:err_undefined: $(UNDEFINED_X) not defined"
+   ],
+   "reference_outputs": {}
+  },
+  {
+   "row": "B2/brace",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:err_brace"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "<<WS>>/gt/BUILD.bazel:120:8: in cmd attribute of genrule rule //gt:err_brace: '${FOO}' syntax is not supported; use '$(FOO)' instead for \"Make\" variables, or escape the '$' as '$$' if you intended this for the shell"
+   ],
+   "reference_outputs": {}
+  },
+  {
+   "row": "B3/dollar",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:err_dollar"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "<<WS>>/gt/BUILD.bazel:122:8: in cmd attribute of genrule rule //gt:err_dollar: '$FOO' syntax is not supported; use '$(FOO)' instead for \"Make\" variables, or escape the '$' as '$$' if you intended this for the shell"
+   ],
+   "reference_outputs": {}
+  },
+  {
+   "row": "B4/unterminated",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:err_unterminated"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "<<WS>>/gt/BUILD.bazel:124:8: in cmd attribute of genrule rule //gt:err_unterminated: unterminated variable reference"
+   ],
+   "reference_outputs": {}
+  },
+  {
+   "row": "B5/unknown_function",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:err_function"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "<<WS>>/gt/BUILD.bazel:126:8: in cmd attribute of genrule rule //gt:err_function: $(nope) not defined"
+   ],
+   "reference_outputs": {}
+  },
+  {
+   "row": "B6/location_undeclared",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:err_location_undeclared"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "<<WS>>/gt/BUILD.bazel:128:8: in cmd attribute of genrule rule //gt:err_location_undeclared: label '//gt:in.txt' in $(location) expression is not a declared prerequisite of this rule"
+   ],
+   "reference_outputs": {}
+  },
+  {
+   "row": "B7/location_multi",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:err_location_multi"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "<<WS>>/gt/BUILD.bazel:130:8: in cmd attribute of genrule rule //gt:err_location_multi: label '//gt:two_files' in $(location) expression expands to more than one file, please use $(locations //gt:two_files) instead.  Files (at most 5 shown) are: [gt/in.txt, gt/in2.txt]"
+   ],
+   "reference_outputs": {}
+  },
+  {
+   "row": "B8/location_none",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:err_location_none"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "<<WS>>/gt/BUILD.bazel:132:8: in cmd attribute of genrule rule //gt:err_location_none: label '//gt:vars2' in $(location) expression expands to no files"
+   ],
+   "reference_outputs": {}
+  },
+  {
+   "row": "B9/location_bad_label",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:err_location_label"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "<<WS>>/gt/BUILD.bazel:134:8: in cmd attribute of genrule rule //gt:err_location_label: invalid label in $(location) expression: invalid target name 'a:b': target names may not contain ':'"
+   ],
+   "reference_outputs": {}
+  },
+  {
+   "row": "B10/src_singleton",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:err_src_singleton"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "<<WS>>/gt/BUILD.bazel:136:8: in cmd attribute of genrule rule //gt:err_src_singleton: variable '$<' : more than one input file"
+   ],
+   "reference_outputs": {}
+  },
+  {
+   "row": "B11/out_singleton",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:err_out_singleton"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "<<WS>>/gt/BUILD.bazel:138:8: in cmd attribute of genrule rule //gt:err_out_singleton: variable '$@' : more than one output file"
+   ],
+   "reference_outputs": {}
+  },
+  {
+   "row": "B12/recursion",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:err_recursion"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "<<WS>>/gt/BUILD.bazel:140:8: in cmd attribute of genrule rule //gt:err_recursion: potentially unbounded recursion during expansion of '$(B)'"
+   ],
+   "reference_outputs": {}
+  },
+  {
+   "row": "B13/provider_filegroup",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:err_provider"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "<<WS>>/gt/BUILD.bazel:142:8: in toolchains attribute of genrule rule //gt:err_provider: '//gt:two_files' does not have mandatory providers: 'TemplateVariableInfo' or 'ToolchainTypeInfo'"
+   ],
+   "reference_outputs": {}
+  },
+  {
+   "row": "B14/provider_starlark",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:err_provider_starlark"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "<<WS>>/gt/BUILD.bazel:144:8: in toolchains attribute of genrule rule //gt:err_provider_starlark: '//gt:plain_rule' does not have mandatory providers: 'TemplateVariableInfo' or 'ToolchainTypeInfo'"
+   ],
+   "reference_outputs": {}
+  },
+  {
+   "row": "B15/source_file",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:err_source"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "<<WS>>/gt/BUILD.bazel:146:8: in toolchains attribute of genrule rule //gt:err_source: source file '//gt:in.txt' is misplaced here (expected no files)"
+   ],
+   "reference_outputs": {}
+  },
+  {
+   "row": "B16/generated_file",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:err_generated"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "<<WS>>/gt/BUILD.bazel:148:8: in toolchains attribute of genrule rule //gt:err_generated: generated file '//gt:make_vars.txt' is misplaced here (expected no files)"
+   ],
+   "reference_outputs": {}
+  },
+  {
+   "row": "C1/ctx_var_dump",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:dump"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_errors": [],
+   "reference_outputs": {
+    "dump.txt": "var={\"TARGET_CPU\": \"x86_64\", \"COMPILATION_MODE\": \"tv_mode\", \"BINDIR\": \"bazel-out/k8-fastbuild/bin\", \"GENDIR\": \"bazel-out/k8-fastbuild/bin\", \"AWS_CLI_BIN\": \"/opt/aws/dist/aws\", \"BAR\": \"bar2\", \"FOO\": \"from_vars1\", \"NESTED\": \"$(FOO)-$(BINDIR)\", \"SHARED\": \"second\"}\nvar_type=dict\nattr.toolchains=[<target //gt:vars1>, <target //gt:vars2>, <target @@aspect_rules_aws+//aws:resolved_toolchain>]\nfiles.toolchains=[]\nexpand_empty=from_vars1 first bar2 /opt/aws/dist/aws from_vars1-bazel-out/k8-fastbuild/bin tv_mode $HOME\nexpand_var=from_vars1 second bar2 /opt/aws/dist/aws from_vars1-bazel-out/k8-fastbuild/bin tv_mode $HOME\nexpand_extra=extra first bar2 /opt/aws/dist/aws extra-bazel-out/k8-fastbuild/bin tv_mode $HOME\n"
+   }
+  },
+  {
+   "row": "C2/ctx_var_dump_define_dbg",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--define=FOO=cli",
+    "-c",
+    "dbg",
+    "//gt:dump"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_errors": [],
+   "reference_outputs": {
+    "dump.txt": "var={\"TARGET_CPU\": \"x86_64\", \"COMPILATION_MODE\": \"tv_mode\", \"BINDIR\": \"bazel-out/k8-dbg/bin\", \"GENDIR\": \"bazel-out/k8-dbg/bin\", \"AWS_CLI_BIN\": \"/opt/aws/dist/aws\", \"BAR\": \"bar2\", \"FOO\": \"cli\", \"NESTED\": \"$(FOO)-$(BINDIR)\", \"SHARED\": \"second\"}\nvar_type=dict\nattr.toolchains=[<target //gt:vars1>, <target //gt:vars2>, <target @@aspect_rules_aws+//aws:resolved_toolchain>]\nfiles.toolchains=[]\nexpand_empty=cli first bar2 /opt/aws/dist/aws cli-bazel-out/k8-dbg/bin tv_mode $HOME\nexpand_var=cli second bar2 /opt/aws/dist/aws cli-bazel-out/k8-dbg/bin tv_mode $HOME\nexpand_extra=extra first bar2 /opt/aws/dist/aws extra-bazel-out/k8-dbg/bin tv_mode $HOME\n"
+   }
+  },
+  {
+   "row": "C3/ctx_files_toolchains",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:dump_files"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_errors": [],
+   "reference_outputs": {
+    "dump_files.txt": "var={\"TARGET_CPU\": \"x86_64\", \"COMPILATION_MODE\": \"fastbuild\", \"BINDIR\": \"bazel-out/k8-fastbuild/bin\", \"GENDIR\": \"bazel-out/k8-fastbuild/bin\", \"AWS_CLI_BIN\": \"external/aspect_rules_aws+/aws/gen_tool.sh\", \"FILES\": \"yes\"}\nvar_type=dict\nattr.toolchains=[<target //gt:vars_files>, <target @@aspect_rules_aws+//aws:file_toolchain>]\nfiles.toolchains=[\"gt/in.txt\", \"gt/in2.txt\", \"bazel-out/k8-fastbuild/bin/external/aspect_rules_aws+/aws/gen_tool.sh\"]\nexpand_empty=yes external/aspect_rules_aws+/aws/gen_tool.sh\nexpand_var=yes external/aspect_rules_aws+/aws/gen_tool.sh\nexpand_extra=yes external/aspect_rules_aws+/aws/gen_tool.sh\n"
+   }
+  },
+  {
+   "row": "C4/alias_entry",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:dump_alias"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_errors": [],
+   "reference_outputs": {
+    "dump_alias.txt": "var={\"TARGET_CPU\": \"x86_64\", \"COMPILATION_MODE\": \"fastbuild\", \"BINDIR\": \"bazel-out/k8-fastbuild/bin\", \"GENDIR\": \"bazel-out/k8-fastbuild/bin\", \"AWS_CLI_BIN\": \"/opt/aws/dist/aws\"}\nvar_type=dict\nattr.toolchains=[<alias target //gt:resolved_alias of @@aspect_rules_aws+//aws:resolved_toolchain>]\nfiles.toolchains=[]\nexpand_empty=/opt/aws/dist/aws\nexpand_var=/opt/aws/dist/aws\nexpand_extra=/opt/aws/dist/aws\n"
+   }
+  },
+  {
+   "row": "C5/expand_make_variables_undefined",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:dump_undefined"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "<<WS>>/gt/BUILD.bazel:169:5: in cmd attribute of dump rule //gt:dump_undefined: $(BAR) not defined"
+   ],
+   "reference_outputs": {}
+  },
+  {
+   "row": "C6/provider_missing",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:star_err_provider"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "<<WS>>/gt/BUILD.bazel:175:5: in toolchains attribute of dump rule //gt:star_err_provider: '//gt:plain_rule' does not have mandatory providers: 'TemplateVariableInfo'",
+    "<<WS>>/gt/BUILD.bazel:175:5: in toolchains attribute of dump rule //gt:star_err_provider: '//gt:two_files' does not have mandatory providers: 'TemplateVariableInfo'"
+   ],
+   "reference_outputs": {}
+  },
+  {
+   "row": "C7/toolchain_type_entry",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:star_err_type"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "<<WS>>/gt/BUILD.bazel:177:5: in toolchains attribute of dump rule //gt:star_err_type: '@@aspect_rules_aws+//aws:toolchain_type' does not have mandatory providers: 'TemplateVariableInfo'"
+   ],
+   "reference_outputs": {}
+  },
+  {
+   "row": "C8/source_file",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:star_err_source"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "<<WS>>/gt/BUILD.bazel:179:5: in toolchains attribute of dump rule //gt:star_err_source: source file '//gt:in.txt' is misplaced here (expected no files)"
+   ],
+   "reference_outputs": {}
+  },
+  {
+   "row": "C9/gogenrule_shape",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:gogen"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_errors": [],
+   "reference_outputs": {
+    "args_gen.go": "gt/tool.sh -o bazel-out/k8-fastbuild/bin/gt/args_gen.go gt/args.peg /opt/aws/dist/aws from_vars1 unset\n"
+   }
+  },
+  {
+   "row": "C10/expand_location_map",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:locs_ok"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_errors": [],
+   "reference_outputs": {
+    "locs_ok.out": "expand_location=gt/in.txt gt/in.txt gt/in2.txt gt/in.txt gt/in2.txt _main/gt/in.txt bazel-out/k8-fastbuild/bin/gt/locs_ok.out $(FOO) $$X\n"
+   }
+  },
+  {
+   "row": "C11/expand_location_undeclared",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:locs_undeclared"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "<<WS>>/gt/BUILD.bazel:200:5: in locs rule //gt:locs_undeclared: label '//gt:in2.txt' in $(location) expression is not a declared prerequisite of this rule"
+   ],
+   "reference_outputs": {}
+  },
+  {
+   "row": "C12/expand_location_unterminated",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:locs_unterminated"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "<<WS>>/gt/BUILD.bazel:202:5: in locs rule //gt:locs_unterminated: unterminated $(location) expression"
+   ],
+   "reference_outputs": {}
+  },
+  {
+   "row": "C13/expand_location_multi",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:locs_multi"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "<<WS>>/gt/BUILD.bazel:204:5: in locs rule //gt:locs_multi: label '//gt:two_files' in $(location) expression expands to more than one file, please use $(locations //gt:two_files) instead.  Files (at most 5 shown) are: [gt/in.txt, gt/in2.txt]"
+   ],
+   "reference_outputs": {}
+  },
+  {
+   "row": "C14/expand_location_duplicate_targets",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//gt:locs_duplicate"
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "Label \"//gt:in.txt\" is found more than once in 'targets' list."
+   ],
+   "reference_outputs": {},
+   "reference_warnings": [],
+   "native_stderr": "bazel-rs: analysis of //gt:locs_duplicate: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //gt:defs.bzl:69, in _locs_impl\n      text = ctx.expand_location(ctx.attr.text, [ctx.attr.dep, ctx.attr.dep])\nerror: Label \"//gt:in.txt\" is found more than once in 'targets' list.\n  --> //gt:defs.bzl:69:16\n   |\n69 |         text = ctx.expand_location(ctx.attr.text, [ctx.attr.dep, ctx.attr.dep])\n   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+   "native_outputs": {},
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "D1/query_genrule_direct",
+   "argv": [
+    "query",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "deps(//gt:aws_script, 1)"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_errors": [],
+   "reference_outputs": {},
+   "reference_stdout": "//gt:aws_script\n@aspect_rules_aws//aws:resolved_toolchain\n@bazel_tools//tools/genrule:genrule-setup.sh\n"
+  },
+  {
+   "row": "D2/query_starlark_direct",
+   "argv": [
+    "query",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "deps(//gt:dump, 1)"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_errors": [],
+   "reference_outputs": {},
+   "reference_stdout": "//gt:dump\n//gt:vars1\n//gt:vars2\n@aspect_rules_aws//aws:resolved_toolchain\n"
+  },
+  {
+   "row": "D3/query_genrule_transitive",
+   "argv": [
+    "query",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "deps(//gt:aws_script)"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_errors": [],
+   "reference_outputs": {},
+   "reference_stdout": "//gt:aws_script\n@aspect_rules_aws//aws:resolved_toolchain\n@aspect_rules_aws//aws:toolchain_type\n@bazel_tools//tools/genrule:genrule-setup.sh\n"
+  },
+  {
+   "row": "D4/query_type_entry",
+   "argv": [
+    "query",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "deps(//gt:vars_and_type, 1)"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_errors": [],
+   "reference_outputs": {},
+   "reference_stdout": "//gt:vars1\n//gt:vars_and_type\n//gt:vars_files\n@aspect_rules_aws//aws:toolchain_type\n@bazel_tools//tools/genrule:genrule-setup.sh\n"
+  },
+  {
+   "row": "D5/cquery_deps",
+   "argv": [
+    "cquery",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "deps(//gt:aws_script, 1)"
+   ],
+   "verdict": "EXPECTED_NATIVE_UNSUPPORTED",
+   "reference_exit": 0,
+   "native_exit": 1,
+   "reference_errors": [],
+   "reference_outputs": {},
+   "reference_stdout": "//gt:aws_script (CFG)\n@bazel_tools//tools:host_platform (CFG)\n@bazel_tools//tools/genrule:genrule-setup.sh (null)\n@aspect_rules_aws//aws:resolved_toolchain (CFG)\n@@platforms//host:host (CFG)\n",
+   "reference_warnings": [],
+   "native_stderr": "bazel-rs: unsupported command or startup option \"cquery\"; run --help for the native subset\n",
+   "native_outputs": {},
+   "native_stdout": ""
+  }
+ ],
+ "run": 2,
+ "history": [
+  {
+   "run": 1,
+   "counts": {
+    "EXACT": 40,
+    "EXACT_MESSAGE": 1,
+    "EXPECTED_NATIVE_UNSUPPORTED": 1,
+    "MISMATCH": 4
+   },
+   "mismatches": [
+    "C5/expand_make_variables_undefined",
+    "C11/expand_location_undeclared",
+    "C12/expand_location_unterminated",
+    "C13/expand_location_multi"
+   ],
+   "root_cause": "attribute/rule errors reported during a Starlark implementation (RuleContext EventHandlingErrorReporter) were printed under the native \"analysis of L:\" prefix without the rule location, and identical events (three expand_make_variables calls) were repeated; Bazel prints each distinct event once at the rule location",
+   "fix": "src/analysis.rs ReportedErrors: each reported error located at the rule, de-duplicated, without the analysis prefix"
+  },
+  {
+   "run": 2,
+   "counts": {
+    "EXACT": 44,
+    "EXACT_MESSAGE": 1,
+    "EXPECTED_NATIVE_UNSUPPORTED": 1
+   },
+   "note": "same script (sha256 above, artifacts/genrule_toolchains-capture.run1.py is the identical run-1 copy) and fixture; final receipt"
+  }
+ ],
+ "post_capture_changes": {
+  "source": "after run 2: src/rule_errors.rs (review: one EventHandlingErrorReporter formatter, RuleEvents.rule_message/attribute_message, located_events, ReportedErrors) routed through by src/ctx_surface.rs, src/analysis.rs and the genrule cmd/toolchains errors in src/engine.rs; message texts unchanged (tests/genrule_toolchains.rs re-asserts every run-2 error row). verified_sha256 is the run-2 source hash; alias_chain_followup.worktree is the hash after the refactor",
+  "non_source": [
+   "docs (MAKE_VARIABLES.md evidence counts, capabilities.json)",
+   "tests/genrule_toolchains.rs expectations copied from this receipt",
+   "artifacts/PROGRESS.md",
+   "fixture: six alias-chain targets appended to gt/BUILD.bazel (earlier line numbers unchanged) for alias_chain_followup"
+  ],
+  "verified_sha256": "d8c25aa1d720641dd97f80112d7812b6fb6aac2d6924d486233d25a4baffb724",
+  "alias_chain_followup": {
+   "script": "artifacts/genrule_toolchains-alias-chain-capture.py",
+   "script_sha256": "2fd918d16cb6c8ee347d9127e438f08782804c4defacd9c0c7eec9792f6bebfb",
+   "native_sha256": "7be99afa917e33502a2d128c3b0f394e5f6c52eeb8f2429de927c37eb2665378",
+   "worktree": {
+    "base_commit": "cfa224b0619e78619394aae076c16cf49d1e2e19",
+    "src_diff_plus_untracked_sha256": "fa891c5383f84960eb2f9d8eddf19c4bb6380be1c49e538298926ca0020c40b6",
+    "untracked_src": [
+     "src/location_expander.rs",
+     "src/rule_errors.rs"
+    ]
+   },
+   "fixture_tree_sha256": "259d6209149c0712b5a480422d0f9e1d870a0e651d0aae466e6e1270f8ca4687",
+   "scratch_removed": true,
+   "counts": {
+    "EXACT": 6
+   },
+   "rows": [
+    {
+     "row": "E1/expand_location_chain_ends",
+     "argv": [
+      "build",
+      "--experimental-builtin-modules",
+      "--registry=file://<SCRATCH>/registry",
+      "//gt:chain_ends"
+     ],
+     "verdict": "EXACT",
+     "reference_exit": 0,
+     "native_exit": 0,
+     "reference_errors": [],
+     "reference_outputs": {
+      "chain_ends.txt": "expand_location=gt/in.txt gt/in.txt\n"
+     },
+     "native_outputs": {
+      "chain_ends.txt": "expand_location=gt/in.txt gt/in.txt\n"
+     }
+    },
+    {
+     "row": "E2/expand_location_chain_middle",
+     "argv": [
+      "build",
+      "--experimental-builtin-modules",
+      "--registry=file://<SCRATCH>/registry",
+      "//gt:chain_middle"
+     ],
+     "verdict": "EXACT",
+     "reference_exit": 1,
+     "native_exit": 1,
+     "reference_errors": [
+      "<<WS>>/gt/BUILD.bazel:217:5: in locs rule //gt:chain_middle: label '//gt:chain_mid' in $(location) expression is not a declared prerequisite of this rule"
+     ],
+     "reference_outputs": {},
+     "native_outputs": {}
+    },
+    {
+     "row": "E3/expand_location_targets_chain_middle",
+     "argv": [
+      "build",
+      "--experimental-builtin-modules",
+      "--registry=file://<SCRATCH>/registry",
+      "//gt:chain_targets"
+     ],
+     "verdict": "EXACT",
+     "reference_exit": 1,
+     "native_exit": 1,
+     "reference_errors": [
+      "<<WS>>/gt/BUILD.bazel:219:5: in locs rule //gt:chain_targets: label '//gt:chain_mid' in $(location) expression is not a declared prerequisite of this rule"
+     ],
+     "reference_outputs": {},
+     "native_outputs": {}
+    },
+    {
+     "row": "E4/genrule_tools_chain_ends",
+     "argv": [
+      "build",
+      "--experimental-builtin-modules",
+      "--registry=file://<SCRATCH>/registry",
+      "//gt:chain_tools"
+     ],
+     "verdict": "EXACT",
+     "reference_exit": 0,
+     "native_exit": 0,
+     "reference_errors": [],
+     "reference_outputs": {
+      "chain_tools.txt": "gt/in.txt gt/in.txt\n"
+     },
+     "native_outputs": {
+      "chain_tools.txt": "gt/in.txt gt/in.txt\n"
+     }
+    },
+    {
+     "row": "E5/genrule_tools_chain_middle",
+     "argv": [
+      "build",
+      "--experimental-builtin-modules",
+      "--registry=file://<SCRATCH>/registry",
+      "//gt:chain_tools_middle"
+     ],
+     "verdict": "EXACT",
+     "reference_exit": 1,
+     "native_exit": 1,
+     "reference_errors": [
+      "<<WS>>/gt/BUILD.bazel:223:8: in cmd attribute of genrule rule //gt:chain_tools_middle: label '//gt:chain_mid' in $(location) expression is not a declared prerequisite of this rule"
+     ],
+     "reference_outputs": {},
+     "native_outputs": {}
+    },
+    {
+     "row": "E6/genrule_srcs_actual_label",
+     "argv": [
+      "build",
+      "--experimental-builtin-modules",
+      "--registry=file://<SCRATCH>/registry",
+      "//gt:chain_srcs_actual"
+     ],
+     "verdict": "EXACT",
+     "reference_exit": 1,
+     "native_exit": 1,
+     "reference_errors": [
+      "<<WS>>/gt/BUILD.bazel:225:8: in cmd attribute of genrule rule //gt:chain_srcs_actual: label '//gt:in.txt' in $(location) expression is not a declared prerequisite of this rule"
+     ],
+     "reference_outputs": {},
+     "native_outputs": {}
+    }
+   ],
+   "review_question": "the review asked to walk the full alias chain in location maps; the pinned AliasProvider.getDependencyLabels (analysis/AliasProvider.java:84-97) returns only the label as written and the actual label (\"This returns at most two labels, so it omits the entire middle of the alias chain\"), and genuine Bazel 9.3.0 rejects $(location) of the middle alias in E2/E3/E5 (genrule srcs map only the written label, E6): native keeps Bazel's two-label behavior"
+  }
+ },
+ "findings": [
+  "A3: genuine Bazel adds a toolchains target's files to genrule inputs (GenRuleBase.java:96-110 addToolDependencies(\"toolchains\") + :169-175): the genrule reading a generated tool succeeds",
+  "A4/A8/D4: a toolchain_type in genrule toolchains is resolved as an optional toolchain type (ToolchainContextUtil.java:61-64, 94-117) and listed by query deps",
+  "C7: a toolchain_type in a Starlark rule's toolchains is a missing-TemplateVariableInfo error",
+  "A11: $(location) of a root-package file is ./root.txt (PathFragment.getCallablePathString)",
+  "C1/C2: ctx.var keeps Dict.Builder first positions (a toolchain COMPILATION_MODE stays second)"
+ ]
+}

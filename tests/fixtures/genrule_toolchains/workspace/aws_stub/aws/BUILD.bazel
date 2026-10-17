@@ -1,0 +1,40 @@
+load("//aws/private:resolved_toolchain.bzl", "resolved_toolchain")
+load(":toolchain.bzl", "aws_toolchain")
+
+# As aspect_rules_aws//aws:BUILD.bazel.
+toolchain_type(
+    name = "toolchain_type",
+    visibility = ["//visibility:public"],
+)
+
+resolved_toolchain(
+    name = "resolved_toolchain",
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
+)
+
+# As the generated @aws_linux-x86_64//:aws_toolchain (target_tool_path form).
+aws_toolchain(
+    name = "aws_toolchain",
+    target_tool_path = "/opt/aws/dist/aws",
+)
+
+toolchain(
+    name = "linux_toolchain",
+    toolchain = ":aws_toolchain",
+    toolchain_type = ":toolchain_type",
+)
+
+# The target_tool form: a generated tool file, so its use as an action input
+# is observable (the consuming action fails unless the tool was built first).
+genrule(
+    name = "gen_tool",
+    outs = ["gen_tool.sh"],
+    cmd = "printf 'GENERATED TOOL\\n' > $@",
+)
+
+aws_toolchain(
+    name = "file_toolchain",
+    target_tool = ":gen_tool",
+    visibility = ["//visibility:public"],
+)

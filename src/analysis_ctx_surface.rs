@@ -133,6 +133,7 @@ pub(crate) fn surface_properties(builder: &mut MethodsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<String> {
         let rule = current_surface(this).map_err(starlark::Error::new_other)?;
+        let mut entries: Vec<(String, Vec<crate::starlark_types::File>)> = Vec::new();
         if !targets.is_none() {
             let items = sequence(targets).ok_or_else(|| {
                 starlark::Error::new_other(anyhow!(
@@ -141,18 +142,28 @@ pub(crate) fn surface_properties(builder: &mut MethodsBuilder) {
                 ))
             })?;
             for (index, item) in items.iter().enumerate() {
-                if item.get_type() != "Target" {
+                let Some((label, files)) = crate::starlark_types::target_location_entry(*item)
+                else {
                     return Err(starlark::Error::new_other(anyhow!(
                         "at index {index} of targets, got element of type {}, want Target",
                         item.get_type()
                     )));
+                };
+                // makeLabelMap (StarlarkRuleContext.java:1288-1293).
+                if entries.iter().any(|(seen, _)| *seen == label) {
+                    return Err(starlark::Error::new_other(anyhow!(
+                        "Label {} is found more than once in 'targets' list.",
+                        eval.heap().alloc(label.as_str()).to_repr()
+                    )));
                 }
+                entries.push((label, files));
             }
         }
         if short_paths {
             crate::subrule_fragments::private_api(eval)?;
         }
-        surface::expand_location(rule, input).map_err(starlark::Error::new_other)
+        surface::expand_location(rule, input, &entries, short_paths)
+            .map_err(starlark::Error::new_other)
     }
     /// StarlarkRuleContext.getStableWorkspaceStatus (:994-998).
     #[starlark(attribute)]

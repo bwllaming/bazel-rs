@@ -196,6 +196,9 @@ pub struct RuleSurface {
     /// The repository mapping of the rule's repository
     /// (`ctx.package_relative_label`).
     pub mapping: std::collections::BTreeMap<String, String>,
+    /// The location map of `ctx.expand_location` without `targets`
+    /// (LocationExpander.buildLocationMap with collectSrcs, analysis/LocationExpander.java:393-485).
+    pub(crate) locations: crate::location_expander::LocationMap,
     /// Attribute and rule errors reported during the implementation
     /// (RuleContext.attributeError/ruleError): the target fails after the
     /// implementation returns.
@@ -207,28 +210,28 @@ impl RuleSurface {
         crate::rule_declarations::canonical_form(&self.label)
     }
 
-    /// EventHandlingErrorReporter.completeAttributeMessage
-    /// (analysis/EventHandlingErrorReporter.java:84-101).
+    /// EventHandlingErrorReporter.completeAttributeMessage (crate::rule_errors).
     fn attribute_error(&self, attribute: &str, message: &str) {
-        let shown = if attribute.starts_with('$') {
-            "(an implicit dependency)"
-        } else {
-            attribute
-        };
-        self.push(format!(
-            "in {shown} attribute of {} rule {}: {message}",
-            self.rule_class,
-            self.label_text()
-        ));
+        let label = self.label_text();
+        self.push(
+            crate::rule_errors::RuleEvents {
+                rule_class: &self.rule_class,
+                label: &label,
+            }
+            .attribute_message(attribute, message),
+        );
     }
 
-    /// EventHandlingErrorReporter.prefixRuleMessage (:80-82).
+    /// EventHandlingErrorReporter.prefixRuleMessage (crate::rule_errors).
     fn rule_error(&self, message: &str) {
-        self.push(format!(
-            "in {} rule {}: {message}",
-            self.rule_class,
-            self.label_text()
-        ));
+        let label = self.label_text();
+        self.push(
+            crate::rule_errors::RuleEvents {
+                rule_class: &self.rule_class,
+                label: &label,
+            }
+            .rule_message(message),
+        );
     }
 
     fn push(&self, error: String) {
@@ -1657,7 +1660,7 @@ pub(crate) fn make_variables(surface: &CtxSurface) -> anyhow::Result<Vec<(String
 
 /// ConfigurationMakeVariableContext.lookupVariable (:64-73) in priority order,
 /// after `additional_substitutions` (StarlarkRuleContext.java:958-975).
-fn lookup_variable(
+pub(crate) fn lookup_variable(
     surface: &CtxSurface,
     additional: &[(String, String)],
     name: &str,
@@ -1688,6 +1691,29 @@ fn lookup_variable(
 pub(crate) fn expand_template(
     expression: &str,
     lookup: &dyn Fn(&str) -> anyhow::Result<Result<String, String>>,
+    depth: usize,
+) -> anyhow::Result<Result<String, String>> {
+    expand_template_with(expression, lookup, &undefined_function, depth)
+}
+
+/// ConfigurationMakeVariableContext.lookupFunction (:85-88): no functions.
+fn undefined_function(name: &str, _param: &str) -> anyhow::Result<Result<String, String>> {
+    Ok(Err(format!("$({name}) not defined")))
+}
+
+/// A variable or function lookup: the outer error is a native failure,
+/// the inner one an ExpansionException message.
+pub(crate) type TemplateLookup<'a> = &'a dyn Fn(&str) -> anyhow::Result<Result<String, String>>;
+pub(crate) type TemplateFunction<'a> =
+    &'a dyn Fn(&str, &str) -> anyhow::Result<Result<String, String>>;
+
+/// TemplateExpander.expand with a TemplateContext's lookupVariable
+/// (`lookup`) and lookupFunction (`function`, called with the name and the
+/// trimmed parameter, :88-97).
+pub(crate) fn expand_template_with(
+    expression: &str,
+    lookup: TemplateLookup<'_>,
+    function: TemplateFunction<'_>,
     depth: usize,
 ) -> anyhow::Result<Result<String, String>> {
     // Only the public entry short-cuts a `$`-free expression (:55-61).
@@ -1758,7 +1784,7 @@ pub(crate) fn expand_template(
                 };
                 if value != variable {
                     // Make's `:=` semantics: expand the value recursively.
-                    match expand_template(&value, lookup, depth + 1)? {
+                    match expand_template_with(&value, lookup, function, depth + 1)? {
                         Ok(expanded) => result.push_str(&expanded),
                         Err(error) => return Ok(Err(error)),
                     }
@@ -1766,8 +1792,10 @@ pub(crate) fn expand_template(
                     result.push_str(&value);
                 }
             }
-            // ConfigurationMakeVariableContext.lookupFunction (:85-88).
-            Some((name, _)) => return Ok(Err(format!("$({name}) not defined"))),
+            Some((name, param)) => match function(name, param.trim())? {
+                Ok(value) => result.push_str(&value),
+                Err(error) => return Ok(Err(error)),
+            },
         }
         offset += 1;
     }
@@ -1799,50 +1827,41 @@ pub(crate) fn expand_make_variables(
     }
 }
 
-/// LocationExpander.allLocationFunctions (analysis/LocationExpander.java:368-391).
-const LOCATION_FUNCTIONS: [&str; 8] = [
-    "location",
-    "locations",
-    "rootpath",
-    "rootpaths",
-    "execpath",
-    "execpaths",
-    "rlocationpath",
-    "rlocationpaths",
-];
-
-/// LocationExpander.expand (analysis/LocationExpander.java:172-224): text
-/// without a location function is returned as is; an unterminated function
-/// is a rule error (the input is returned). Resolving a location function is
-/// not implemented natively.
-pub(crate) fn expand_location(rule: &RuleSurface, value: &str) -> anyhow::Result<String> {
-    let mut restart = 0;
-    let mut result = String::new();
-    loop {
-        let Some(start) = value[restart..].find("$(").map(|index| index + restart) else {
-            result.push_str(&value[restart..]);
-            break;
-        };
-        let Some(space) = value[start..].find(' ').map(|index| index + start) else {
-            result.push_str(&value[restart..start + 2]);
-            restart = start + 2;
-            continue;
-        };
-        let name = &value[start + 2..space];
-        if !LOCATION_FUNCTIONS.contains(&name) {
-            result.push_str(&value[restart..start + 2]);
-            restart = start + 2;
-            continue;
-        }
-        if !value[space..].contains(')') {
-            rule.rule_error(&format!("unterminated $({name}) expression"));
-            return Ok(value.to_owned());
-        }
-        bail!(
-            "ctx.expand_location of $({name} ...) is not implemented by the native profile (location map of the rule's prerequisites)"
-        );
+/// StarlarkRuleContext.expandLocation (StarlarkRuleContext.java:1029-1053)
+/// with LocationExpander.withExecPaths (analysis/LocationExpander.java:130-160):
+/// the location map is `targets` (makeLabelMap, :1284-1313) plus the rule's
+/// prerequisites and outputs (RuleSurface::locations); `short_paths` uses
+/// runfiles paths for `$(location)`. A failure is a rule error
+/// (RuleErrorReporter) and the input is returned unchanged.
+pub(crate) fn expand_location(
+    rule: &RuleSurface,
+    value: &str,
+    targets: &[(String, Vec<crate::starlark_types::File>)],
+    short_paths: bool,
+) -> anyhow::Result<String> {
+    let mut map = rule.locations.clone();
+    for (label, files) in targets {
+        map.add(label, files.iter().cloned());
     }
-    Ok(result)
+    let parse = |arg: &str| {
+        Label::parse_in(
+            arg,
+            &rule.label.repository,
+            &rule.label.package,
+            &rule.mapping,
+        )
+    };
+    let resolve = |name: &str, arg: &str| {
+        crate::location_expander::apply(name, arg, !short_paths, &parse, &map)
+            .unwrap_or_else(|| Err(format!("$({name}) not defined")))
+    };
+    match crate::location_expander::expand(value, &resolve) {
+        Ok(expanded) => Ok(expanded),
+        Err(message) => {
+            rule.rule_error(&message);
+            Ok(value.to_owned())
+        }
+    }
 }
 
 /// ShellUtils.tokenize (util/ShellUtils.java:90-143).
@@ -2037,29 +2056,55 @@ mod tests {
     }
 
     #[test]
-    fn expand_location_passes_non_location_text_and_fails_explicitly() {
+    fn expand_location_uses_the_location_map_and_reports_rule_errors() {
+        let file = |path: &str| crate::starlark_types::File {
+            path: path.to_owned(),
+            short_path: path
+                .trim_start_matches("bazel-out/k8-fastbuild/bin/")
+                .to_owned(),
+            owner: String::new(),
+            is_source: false,
+            is_directory: false,
+        };
+        let mut locations = crate::location_expander::LocationMap::default();
+        locations.add("//p:src", [file("p/src")]);
         let rule = RuleSurface {
             rule_class: "r".into(),
             label: Label::parse_canonical("//p:t").unwrap(),
+            locations,
             ..Default::default()
         };
         assert_eq!(
-            expand_location(&rule, "plain $$ $(FOO) $(location)").unwrap(),
+            expand_location(&rule, "plain $$ $(FOO) $(location)", &[], false).unwrap(),
             "plain $$ $(FOO) $(location)"
         );
+        let targets = [(
+            "//p:tool".to_owned(),
+            vec![file("bazel-out/k8-fastbuild/bin/p/tool")],
+        )];
         assert_eq!(
-            expand_location(&rule, "$(location :x").unwrap(),
+            expand_location(&rule, "$(location :src) $(execpath :tool)", &targets, false).unwrap(),
+            "p/src bazel-out/k8-fastbuild/bin/p/tool"
+        );
+        assert_eq!(
+            expand_location(&rule, "$(location :tool)", &targets, true).unwrap(),
+            "p/tool"
+        );
+        assert!(rule.take_errors().is_empty());
+        assert_eq!(
+            expand_location(&rule, "$(location :x", &[], false).unwrap(),
             "$(location :x"
         );
         assert_eq!(
-            rule.take_errors(),
-            ["in r rule //p:t: unterminated $(location) expression"]
+            expand_location(&rule, "$(rootpath :x)", &[], false).unwrap(),
+            "$(rootpath :x)"
         );
-        assert!(
-            expand_location(&rule, "$(execpath :x)")
-                .unwrap_err()
-                .to_string()
-                .contains("not implemented by the native profile")
+        assert_eq!(
+            rule.take_errors(),
+            [
+                "in r rule //p:t: unterminated $(location) expression",
+                "in r rule //p:t: label '//p:x' in $(location) expression is not a declared prerequisite of this rule"
+            ]
         );
     }
 }

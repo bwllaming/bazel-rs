@@ -2001,6 +2001,31 @@ pub(crate) fn alloc_target_of_kind<'v>(
     })
 }
 
+/// StarlarkRuleContext.makeLabelMap (analysis/starlark/StarlarkRuleContext.java:1284-1313)
+/// for one Target: AliasProvider.getDependencyLabel (the alias as written,
+/// else the label) and, with `--incompatible_locations_prefers_executable`
+/// (default true), the executable when the files to build are not exactly
+/// one file, else the files to build. `None` for a non-Target.
+pub(crate) fn target_location_entry(value: Value<'_>) -> Option<(String, Vec<File>)> {
+    let target = Target::from_value(value)?;
+    let label = match &target.kind {
+        TargetKind::Alias(alias, _) => alias.clone(),
+        _ => target.label.canonical_form(),
+    };
+    let executable = target
+        .runfiles
+        .files_to_run(&target.files)
+        .executable
+        .filter(|_| target.files.len() != 1);
+    Some((
+        label,
+        match executable {
+            Some(executable) => vec![executable],
+            None => target.files.clone(),
+        },
+    ))
+}
+
 // Typed unpacking keeps the builtin's argument errors in the macro binder.
 // ValueTyped retains the original (possibly frozen) Label without allocating.
 enum LabelInput<'v> {

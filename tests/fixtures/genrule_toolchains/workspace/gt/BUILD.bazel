@@ -1,0 +1,225 @@
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load(":defs.bzl", "dump", "gogenrule_like", "locs", "make_vars", "plain")
+
+# ~/code BUILD.bazel:449-462, verbatim.
+genrule(
+    name = "aws_script",
+    srcs = [],
+    outs = ["aws_wrapper.sh"],
+    cmd = "echo '#!/bin/bash' > $@ && echo 'exec $(AWS_CLI_BIN) \"$$@\"' >> $@",
+    toolchains = ["@aspect_rules_aws//aws:resolved_toolchain"],
+)
+
+sh_binary(
+    name = "aws-bin",
+    srcs = ["aws_wrapper.sh"],
+    toolchains = ["@aspect_rules_aws//aws:resolved_toolchain"],
+)
+
+# Toolchain files are tool inputs: the generated tool must be built first.
+genrule(
+    name = "file_tool",
+    outs = ["file_tool.txt"],
+    cmd = "cat $(execpath @aspect_rules_aws//aws:file_toolchain) > $@ && echo $(AWS_CLI_BIN) >> $@",
+    toolchains = ["@aspect_rules_aws//aws:file_toolchain"],
+)
+
+# A toolchain_type entry: resolved as an optional toolchain type.
+genrule(
+    name = "type_entry",
+    outs = ["type_entry.txt"],
+    cmd = "echo $(AWS_CLI_BIN) > $@",
+    toolchains = ["@aspect_rules_aws//aws:toolchain_type"],
+)
+
+genrule(
+    name = "type_entry_location",
+    outs = ["type_entry_location.txt"],
+    cmd = "echo $(location @aspect_rules_aws//aws:aws_toolchain) > $@",
+    toolchains = ["@aspect_rules_aws//aws:toolchain_type"],
+)
+
+make_vars(
+    name = "vars1",
+    variables = {
+        "COMPILATION_MODE": "tv_mode",
+        "FOO": "from_vars1",
+        "NESTED": "$(FOO)-$(BINDIR)",
+        "SHARED": "first",
+    },
+)
+
+make_vars(
+    name = "vars2",
+    variables = {
+        "BAR": "bar2",
+        "SHARED": "second",
+    },
+)
+
+make_vars(
+    name = "vars_files",
+    srcs = ["in.txt", "in2.txt"],
+    variables = {"FILES": "yes"},
+)
+
+make_vars(
+    name = "loop",
+    variables = {
+        "A": "$(B)",
+        "B": "$(A)",
+    },
+)
+
+plain(name = "plain_rule")
+
+filegroup(
+    name = "two_files",
+    srcs = ["in.txt", "in2.txt"],
+)
+
+alias(
+    name = "resolved_alias",
+    actual = "@aspect_rules_aws//aws:resolved_toolchain",
+)
+
+genrule(
+    name = "make_vars",
+    srcs = ["in.txt", "in2.txt"],
+    outs = ["make_vars.txt"],
+    cmd = "echo $(FOO) $(SHARED) $(BAR) $(COMPILATION_MODE) $(NESTED) $(BINDIR) $(GENDIR) $(TARGET_CPU) $(RULEDIR) $(@D) $(SRCS) $(OUTS) $${HOME_X:-unset} > $@",
+    toolchains = [":vars1", ":vars2"],
+)
+
+genrule(
+    name = "vars_and_type",
+    outs = ["vars_and_type.txt"],
+    cmd = "echo $(FOO) $(AWS_CLI_BIN) $(locations :vars_files) > $@",
+    toolchains = [":vars1", "@aspect_rules_aws//aws:toolchain_type", ":vars_files"],
+)
+
+genrule(
+    name = "alias_entry",
+    outs = ["alias_entry.txt"],
+    cmd = "echo $(AWS_CLI_BIN) > $@",
+    toolchains = [":resolved_alias"],
+)
+
+genrule(
+    name = "locations",
+    srcs = ["in.txt", ":two_files"],
+    outs = ["locations.txt"],
+    cmd = "echo $(location in.txt) $(execpath :in.txt) $(rootpath in.txt) $(rlocationpath //gt:in.txt) $(locations :two_files) $(execpath tool.sh) $(rlocationpaths @aspect_rules_aws//aws:file_toolchain) $(location locations.txt) > $@",
+    tools = ["tool.sh"],
+    toolchains = ["@aspect_rules_aws//aws:file_toolchain"],
+)
+
+# Expansion and prerequisite errors.
+genrule(name = "err_undefined", outs = ["err_undefined.txt"], cmd = "echo $(UNDEFINED_X) > $@")
+
+genrule(name = "err_brace", outs = ["err_brace.txt"], cmd = "echo ${FOO} > $@", toolchains = [":vars1"])
+
+genrule(name = "err_dollar", outs = ["err_dollar.txt"], cmd = "echo $FOO > $@", toolchains = [":vars1"])
+
+genrule(name = "err_unterminated", outs = ["err_unterminated.txt"], cmd = "echo $(FOO > $@", toolchains = [":vars1"])
+
+genrule(name = "err_function", srcs = ["in.txt"], outs = ["err_function.txt"], cmd = "echo $(nope :in.txt) > $@")
+
+genrule(name = "err_location_undeclared", outs = ["err_location_undeclared.txt"], cmd = "cat $(location :in.txt) > $@")
+
+genrule(name = "err_location_multi", srcs = [":two_files"], outs = ["err_location_multi.txt"], cmd = "cat $(location :two_files) > $@")
+
+genrule(name = "err_location_none", outs = ["err_location_none.txt"], cmd = "echo $(location :vars2) > $@", toolchains = [":vars2"])
+
+genrule(name = "err_location_label", outs = ["err_location_label.txt"], cmd = "echo $(location //gt:a:b) > $@")
+
+genrule(name = "err_src_singleton", srcs = ["in.txt", "in2.txt"], outs = ["err_src_singleton.txt"], cmd = "cat $< > $@")
+
+genrule(name = "err_out_singleton", outs = ["o1.txt", "o2.txt"], cmd = "touch $@")
+
+genrule(name = "err_recursion", outs = ["err_recursion.txt"], cmd = "echo $(A) > $@", toolchains = [":loop"])
+
+genrule(name = "err_provider", outs = ["err_provider.txt"], cmd = "touch $@", toolchains = [":two_files"])
+
+genrule(name = "err_provider_starlark", outs = ["err_provider_starlark.txt"], cmd = "touch $@", toolchains = [":plain_rule"])
+
+genrule(name = "err_source", outs = ["err_source.txt"], cmd = "touch $@", toolchains = ["in.txt"])
+
+genrule(name = "err_generated", outs = ["err_generated.txt"], cmd = "touch $@", toolchains = [":make_vars.txt"])
+
+# Starlark rules: ctx.var, ctx.attr.toolchains and Make-variable expansion.
+dump(
+    name = "dump",
+    cmd = "$(FOO) $(SHARED) $(BAR) $(AWS_CLI_BIN) $(NESTED) $(COMPILATION_MODE) $$HOME",
+    toolchains = [":vars1", ":vars2", "@aspect_rules_aws//aws:resolved_toolchain"],
+)
+
+dump(
+    name = "dump_files",
+    cmd = "$(FILES) $(AWS_CLI_BIN)",
+    toolchains = [":vars_files", "@aspect_rules_aws//aws:file_toolchain"],
+)
+
+dump(
+    name = "dump_alias",
+    cmd = "$(AWS_CLI_BIN)",
+    toolchains = [":resolved_alias"],
+)
+
+dump(
+    name = "dump_undefined",
+    cmd = "$(BAR) $(NOT_DEFINED)",
+    toolchains = [":vars1"],
+)
+
+dump(name = "star_err_provider", cmd = "", toolchains = [":plain_rule", ":two_files"])
+
+dump(name = "star_err_type", cmd = "", toolchains = ["@aspect_rules_aws//aws:toolchain_type"])
+
+dump(name = "star_err_source", cmd = "", toolchains = ["in.txt"])
+
+gogenrule_like(
+    name = "gogen",
+    srcs = ["args.peg"],
+    outs = ["args_gen.go"],
+    cmd = "echo $(execpath :tool.sh) -o $(location args_gen.go) $(location args.peg) $(AWS_CLI_BIN) $(FOO) $${HOME_X:-unset} > $(location args_gen.go)",
+    toolchains = [":vars1", "@aspect_rules_aws//aws:resolved_toolchain"],
+    tools = [":tool.sh"],
+)
+
+locs(
+    name = "locs_ok",
+    case = "ok",
+    dep = ":two_files",
+    deps = [":vars_files"],
+    out = "locs_ok.out",
+    srcs = ["in.txt"],
+    text = "$(location in.txt) $(execpaths :two_files) $(rootpaths :vars_files) $(rlocationpath :in.txt) $(location locs_ok.out) $(FOO) $$X",
+)
+
+locs(name = "locs_undeclared", case = "plain", text = "$(location :in2.txt)")
+
+locs(name = "locs_unterminated", case = "plain", text = "$(location :in.txt")
+
+locs(name = "locs_multi", case = "plain", srcs = [":two_files"], text = "$(location :two_files)")
+
+locs(name = "locs_duplicate", case = "duplicate", dep = ":in.txt", text = "x")
+
+# Multi-hop alias chains: AliasProvider.getDependencyLabels is the label as
+# written and the actual label only (AliasProvider.java:84-97), never the
+# middle of the chain.
+alias(name = "chain_mid", actual = ":in.txt")
+
+alias(name = "chain_outer", actual = ":chain_mid")
+
+locs(name = "chain_ends", case = "plain", srcs = [":chain_outer"], text = "$(location :chain_outer) $(location :in.txt)")
+
+locs(name = "chain_middle", case = "plain", srcs = [":chain_outer"], text = "$(location :chain_mid)")
+
+locs(name = "chain_targets", case = "ok", dep = ":chain_outer", text = "$(location :chain_mid)")
+
+genrule(name = "chain_tools", outs = ["chain_tools.txt"], cmd = "echo $(location :chain_outer) $(location :in.txt) > $@", tools = [":chain_outer"])
+
+genrule(name = "chain_tools_middle", outs = ["chain_tools_middle.txt"], cmd = "echo $(location :chain_mid) > $@", tools = [":chain_outer"])
+
+genrule(name = "chain_srcs_actual", srcs = [":chain_outer"], outs = ["chain_srcs_actual.txt"], cmd = "echo $(location :in.txt) > $@")

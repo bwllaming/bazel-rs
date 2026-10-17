@@ -53,8 +53,8 @@ pub struct ToolchainTypeRequirement {
     pub label: Label,
     pub mandatory: bool,
     /// Set by Bazel only for genrule's `toolchains` attribute
-    /// (skyframe/toolchains/ToolchainContextUtil.java:93-117), which the
-    /// native profile does not resolve (Make variables).
+    /// (skyframe/toolchains/ToolchainContextUtil.java:93-117): entries that
+    /// are not toolchain types are ignored (crate::engine).
     pub ignore_if_invalid: bool,
 }
 

@@ -1,0 +1,5 @@
+"Offline stand-in for aspect_rules_aws 0.8.3: the resolved_toolchain pattern only (aws/toolchain.bzl and aws/private/resolved_toolchain.bzl are verbatim copies)."
+
+module(name = "aspect_rules_aws", version = "0.8.3")
+
+register_toolchains("//aws:linux_toolchain")

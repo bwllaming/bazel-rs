@@ -266,7 +266,9 @@ fn action_keys_and_output_roots_match_the_pre_n18a_binary() {
 
 /// Re-pinned for the N41 x N42 merge (native-action-v8; genrules run Bazel's
 /// argv with genrule-setup.sh in their configuration's environment, k8
-/// roots; before: N42's v6); the keys stay stable across builds.
+/// roots; before: N42's v6); the keys stay stable across builds. N53
+/// re-pinned `//:copy`: `$(location :inputs)` of a root-package file is
+/// PathFragment.getCallablePathString's `./input.txt` (LocationExpander.java:327-336).
 #[test]
 fn existing_genrule_fixture_keys_are_pinned() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/basic");
@@ -282,7 +284,7 @@ fn existing_genrule_fixture_keys_are_pinned() {
         ws.keys("cache"),
         [
             "0966e42b771a732a54937cf7e805869a4a77f70ada64f475a97c7a633c43a6e6",
-            "de6236b4c1e5eb9d6bc2cecf28a7804fda456379a0ad01c20091d15935ea229a",
+            "1a94ed1182cac118df6e7c6c3c0bf201eb1fef61dc8cff613d512760a5070e30",
         ]
     );
     assert!(summary(&output).contains("2 actions executed, 0 cache hits"));

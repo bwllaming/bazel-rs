@@ -142,7 +142,9 @@ registry/lockfile defaults and SDK APIs remain unfinished. See
 Default-only build settings now execute genuine skylib implementations and
 propagate their providers into consumer actions. Native TemplateVariableInfo
 preserves snapshot ownership and mutable copy-on-read dictionaries. This does
-not implement CLI overrides, transitions, implicit Make variables or toolchains.
+not implement CLI overrides, transitions, implicit Make variables or toolchains
+(later increments: N53's `toolchains` attribute and Make variables,
+docs/MAKE_VARIABLES.md).
 The preserved application loading probe next encounters the archive-source
 `docs_url` field; see `docs/BUILD_SETTINGS.md` for scope and evidence.
 

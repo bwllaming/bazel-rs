@@ -2001,6 +2001,26 @@ pub(crate) fn default_test_timeout(size: &str) -> &'static str {
     }
 }
 
+/// The built-in `toolchains` attribute of Starlark rules
+/// (StarlarkRuleClassFunctions.java:165-168, as BaseRuleClasses.MakeVariableExpandingRule,
+/// analysis/BaseRuleClasses.java:352-364): a label list in the target
+/// configuration, no files, mandatory TemplateVariableInfo.
+pub(crate) fn toolchains_attribute_spec() -> AttrSpec {
+    AttrSpec {
+        kind: AttrKind::LabelList,
+        default: AttrValue::Labels(Vec::new()),
+        mandatory: false,
+        allow_files: false,
+        allow_single_file: false,
+        non_empty: false,
+        required_providers: vec![vec![crate::providers::ProviderRequirement {
+            id: crate::template_variable_info::PROVIDER_ID.to_owned(),
+            display_name: "TemplateVariableInfo".to_owned(),
+        }]],
+        declaration: AttrDeclaration::default(),
+    }
+}
+
 /// Non-empty built-in attribute values whose Bazel analysis semantics the
 /// native profile does not implement (docs/COMMON_RULE_ATTRIBUTES.md); a
 /// target exercising one fails analysis explicitly.
@@ -2020,7 +2040,6 @@ fn builtin_gaps(builtin: &crate::native_rules::NativeTarget) -> Vec<String> {
             // `exec_compatible_with` and `exec_group_compatible_with` filter
             // the execution platforms of the native toolchain resolution
             // (crate::engine, docs/TOOLCHAINS.md, docs/EXEC_GROUPS.md).
-            "toolchains" => "TemplateVariableInfo Make variables",
             "aspect_hints" => "aspect hints",
             "transitive_configs" => "configuration trimming",
             "expect_failure" => "expected analysis failure",

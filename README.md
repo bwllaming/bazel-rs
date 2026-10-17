@@ -124,7 +124,8 @@ Implemented:
 - Dependency analysis, cycle detection, generated-file dependencies, and
   validation of the selected graph before executing actions.
 - Genrule Make variables `$@`, `$<`, `$(SRCS)`, `$(OUTS)`, `$(RULEDIR)`, `$(@D)`,
-  `$(location ...)`, `$(locations ...)`, and escaped `$$`.
+  the eight location functions, the configuration's variables and
+  `TemplateVariableInfo` from `toolchains` (docs/MAKE_VARIABLES.md), and escaped `$$`.
 - Bounded parallel action DAG execution (`build --jobs=N`) with full preflight,
   generated-input dependency tracking and failure propagation. Default parallelism
   is the available CPU count capped at 32; the library's `build()` remains serial.

@@ -368,9 +368,10 @@ fn rule_context_errors_use_bazel_texts_or_fail_explicitly() {
             "info_file",
             "ctx.info_file is not implemented by the native profile",
         ),
+        // N53: the location map of the rule (docs/MAKE_VARIABLES.md).
         (
             "location",
-            "ctx.expand_location of $(location ...) is not implemented by the native profile",
+            "in err rule //test:e_location: label '//test:x' in $(location) expression is not a declared prerequisite of this rule",
         ),
         (
             "unknown_member",

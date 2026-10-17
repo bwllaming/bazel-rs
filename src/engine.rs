@@ -709,6 +709,17 @@ fn attribute_edges(rule: &Rule) -> Vec<Edge> {
                 _ => {}
             }
         }
+        // The built-in `toolchains` attribute (StarlarkRuleClassFunctions.java:165-168):
+        // TemplateVariableInfo prerequisites in the target configuration.
+        edges.extend(
+            custom
+                .declaration
+                .builtin
+                .target
+                .labels("toolchains")
+                .iter()
+                .map(|label| edge(label, "toolchains", EdgeCfg::Target)),
+        );
         return edges;
     }
     let mut edges = rule
@@ -722,6 +733,14 @@ fn attribute_edges(rule: &Rule) -> Vec<Edge> {
                 .labels("tools")
                 .iter()
                 .map(|label| edge(label, "tools", EdgeCfg::Exec(None))),
+        );
+        // GenRuleBaseRule.java:322-333: TemplateVariableInfo and/or
+        // toolchain_type prerequisites, in the target configuration.
+        edges.extend(
+            native
+                .labels("toolchains")
+                .iter()
+                .map(|label| edge(label, "toolchains", EdgeCfg::Target)),
         );
     }
     edges
@@ -3248,6 +3267,68 @@ impl Engine {
         })
     }
 
+    /// The genrule `toolchains` prerequisites (GenRuleBaseRule.java:322-333):
+    /// no files (validateDirectPrerequisiteType), and rules must provide
+    /// TemplateVariableInfo or ToolchainTypeInfo
+    /// (RuleContext.checkRuleDependencyMandatoryProviders, analysis/RuleContext.java:2070-2095),
+    /// attribute errors at the rule's location.
+    fn genrule_toolchains_errors(
+        &mut self,
+        rule: &Rule,
+        config: ConfigId,
+        configured: &ConfiguredNodes,
+        custom_providers: &BTreeMap<
+            ConfiguredTargetKey,
+            BTreeMap<String, starlark::values::OwnedFrozenValue>,
+        >,
+    ) -> Result<(), String> {
+        let Some(native) = &rule.native else {
+            return Ok(());
+        };
+        let shown = crate::rule_declarations::canonical_form(&rule.label);
+        let mut errors = Vec::new();
+        for text in native.labels("toolchains") {
+            let dependency = self.resolve_rule_src(rule, &text)?;
+            let (chain, actual) = self.alias_chain(configured, config, &dependency);
+            let error = match self.target(&actual)? {
+                Target::Rule(_) => {
+                    let template = custom_providers
+                        .get(&ConfiguredTargetKey::new(dependency.clone(), config))
+                        .is_some_and(|providers| {
+                            providers.contains_key(crate::template_variable_info::PROVIDER_ID)
+                        });
+                    let toolchain_type = configured
+                        .get(&ConfiguredTargetKey::new(actual.clone(), config))
+                        .is_some_and(|node| node.toolchain_type.is_some());
+                    (!template && !toolchain_type).then(|| {
+                        format!(
+                            "'{}' does not have mandatory providers: 'TemplateVariableInfo' or 'ToolchainTypeInfo'",
+                            crate::rule_declarations::canonical_form(&actual)
+                        )
+                    })
+                }
+                _ => self.no_files_error(&chain, &actual)?,
+            };
+            if let Some(error) = error {
+                errors.push(
+                    crate::rule_errors::RuleEvents {
+                        rule_class: "genrule",
+                        label: &shown,
+                    }
+                    .attribute_message("toolchains", &error),
+                );
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(crate::rule_errors::located_events(
+                rule.location.as_deref(),
+                errors,
+            ))
+        }
+    }
+
     /// `package_metadata` allows no files (`allowedFileTypes(FileTypeSet.NO_FILE)`,
     /// analysis/BaseRuleClasses.java:291-297): every file prerequisite is an
     /// attribute error `in package_metadata attribute of KIND rule L: ...`
@@ -3373,6 +3454,39 @@ impl Engine {
         // attributes in the rule class (BaseRuleClasses.java:291-297); its
         // no-config prerequisites are file-checked first (N28c).
         let mut errors = self.package_metadata_errors(rule, configured)?;
+        // The built-in `toolchains` attribute follows (StarlarkRuleClassFunctions.baseRule,
+        // :159-194): TemplateVariableInfo rules, no files.
+        let toolchains_spec = crate::custom_rule::toolchains_attribute_spec();
+        for text in custom.declaration.builtin.target.labels("toolchains") {
+            let dependency = self.resolve_rule_src(rule, &text)?;
+            let (chain, actual) = self.alias_chain(configured, config, &dependency);
+            let found = match self.target(&actual)? {
+                Target::Rule(_) => {
+                    let map_key = analysis::dependency_key(&dependency.to_string(), false);
+                    let target = targets.get(&map_key).ok_or_else(|| {
+                        format!(
+                            "internal error: prerequisite {map_key} of {shown} (attribute toolchains) has no analyzed dependency entry"
+                        )
+                    })?;
+                    // N50's allow_rules texts describe the target with its
+                    // alias chain (AliasProvider.describeTargetWithAliases).
+                    let described = target.rule_class.as_ref().map(|class| {
+                        describe_with_aliases(&chain, &actual, &format!("{class} rule"))
+                    });
+                    analysis::prerequisite_errors(
+                        "toolchains",
+                        &toolchains_spec,
+                        target,
+                        consumer,
+                        described.as_deref(),
+                    )
+                }
+                _ => self.no_files_error(&chain, &actual)?.into_iter().collect(),
+            };
+            for error in found {
+                errors.push(format!("{}{error}", prefix("toolchains", &toolchains_spec)));
+            }
+        }
         for name in &custom.declaration.attr_order {
             let (Some(spec), Some(value)) = (custom.schema.get(name), custom.attrs.get(name))
             else {
@@ -4006,6 +4120,22 @@ impl Engine {
         if let Some(custom) = &rule.custom {
             key.types = requirements(&custom.declaration.toolchain_types)?;
             key.exec_constraints = self.default_exec_constraints(rule)?;
+        }
+        // updateToolchainTypesFromAttribute (ToolchainContextUtil.java:61-64,
+        // 94-117): a genrule's (nonconfigurable) `toolchains` are optional
+        // toolchain types, silently ignored when not a toolchain_type
+        // (Make-variable targets).
+        if let (RuleKind::Genrule, Some(native)) = (&rule.kind, &rule.native) {
+            for text in native.labels("toolchains") {
+                let requirement = ToolchainTypeRequirement {
+                    label: self.resolve_rule_src(rule, &text)?,
+                    mandatory: false,
+                    ignore_if_invalid: true,
+                };
+                if !key.types.contains(&requirement) {
+                    key.types.push(requirement);
+                }
+            }
         }
         Ok(key)
     }
@@ -6769,29 +6899,81 @@ impl Engine {
             dry.insert(key, defaults);
             return Ok(());
         }
-        let (inputs, mut locations) = self.inputs(rule, config, dry, declared)?;
+        let (inputs, _) = self.inputs(rule, config, dry, declared)?;
         for artifact in &inputs {
             artifact_index.insert(artifact.file(), artifact.clone());
         }
-        // genrule `tools`, built in the exec configuration: action inputs
-        // and $(location) entries merged with the srcs' (CommandHelper,
-        // analysis/CommandHelper.java:128-180), never $(SRCS)
-        // (GenRuleBase.java:95-110, 170-175).
+        // The genrule's location map (LocationTemplateContext over
+        // CommandHelper.getLabelMap, LocationExpander.buildLocationMap with
+        // neither data nor collectSrcs; analysis/LocationExpander.java:393-485):
+        // the `srcs` files under the label as written
+        // (BazelGenRule.collectSources), the tool dependencies' executable
+        // (else their files) and the outputs.
+        let mut location_map = crate::location_expander::LocationMap::default();
         let mut tools = Vec::new();
+        let mut template_variables: Vec<Vec<(String, String)>> = Vec::new();
         if let (RuleKind::Genrule, Some(native)) = (&rule.kind, &rule.native) {
-            for text in native.labels("tools") {
-                let label = self.resolve_rule_src(rule, &text)?;
-                let artifacts = self.artifacts(&label, exec_config, dry, declared)?;
-                let paths = artifacts
-                    .iter()
-                    .map(|artifact| artifact.exec.clone())
-                    .collect::<Vec<_>>();
-                locations
-                    .entry(label.to_string())
-                    .or_default()
-                    .extend(paths.iter().cloned());
-                if text != label.to_string() {
-                    locations.entry(text).or_default().extend(paths);
+            self.genrule_toolchains_errors(rule, config, configured, custom_providers)?;
+            for src in &rule.srcs {
+                let label = self.resolve_rule_src(rule, src)?;
+                let artifacts = self.artifacts(&label, config, dry, declared)?;
+                location_map.add(&label.to_string(), artifacts.iter().map(Artifact::file));
+            }
+            // GenRuleBase.java:96-110 with CommandHelper (analysis/CommandHelper.java:128-181):
+            // `tools` (exec configuration), `toolchains` and the resolved
+            // toolchains (target configuration) are tool dependencies: their
+            // files to build are action inputs, never $(SRCS); each maps the
+            // label as written to its executable, else its files to build.
+            // buildLocationMap adds `tools` again under the actual label too.
+            let mut tool_dependencies: Vec<(Label, ConfigId, bool)> = native
+                .labels("tools")
+                .iter()
+                .map(|text| Ok((self.resolve_rule_src(rule, text)?, exec_config, true)))
+                .collect::<Result<_, String>>()?;
+            for text in native.labels("toolchains") {
+                tool_dependencies.push((self.resolve_rule_src(rule, &text)?, config, false));
+            }
+            if let Some(context) = self.toolchain_contexts.get(&key) {
+                for implementation in context.resolved_labels() {
+                    tool_dependencies.push((implementation, config, false));
+                }
+            }
+            for (label, edge_config, both_labels) in tool_dependencies {
+                let artifacts = self.artifacts(&label, edge_config, dry, declared)?;
+                let files = artifacts.iter().map(Artifact::file).collect::<Vec<_>>();
+                let dependency = ConfiguredTargetKey::new(label.clone(), edge_config);
+                let actual = self
+                    .forwarded_actual(configured, &dependency)
+                    .unwrap_or_else(|| label.clone());
+                let target = self.target(&actual)?;
+                let runfiles = dependency_runfiles(
+                    &target,
+                    &files,
+                    runfiles_info.get(&ConfiguredTargetKey::new(actual.clone(), edge_config)),
+                );
+                let located = match runfiles.files_to_run(&files).executable {
+                    Some(executable) => vec![executable],
+                    None => files,
+                };
+                location_map.add(&label.to_string(), located.iter().cloned());
+                if both_labels {
+                    location_map.add(&actual.to_string(), located);
+                }
+                // RuleContext.getDefaultTemplateVariableProviders
+                // (analysis/RuleContext.java:900-940): the `toolchains`
+                // prerequisites' TemplateVariableInfo, then the resolved
+                // toolchains' (ResolvedToolchainContext.java:56-85).
+                if !both_labels
+                    && let Some(variables) = custom_providers
+                        .get(&dependency)
+                        .and_then(|providers| {
+                            providers.get(crate::template_variable_info::PROVIDER_ID)
+                        })
+                        .and_then(|provider| {
+                            crate::template_variable_info::variables(provider.value())
+                        })
+                {
+                    template_variables.push(variables);
                 }
                 for artifact in &artifacts {
                     artifact_index.insert(artifact.file(), artifact.clone());
@@ -6820,27 +7002,107 @@ impl Engine {
                     ),
                 ));
             }
-            add_output_locations(rule, &outputs, &mut locations)?;
-            let command = expand_command_in(
-                // GenRuleBase.determineCommandTypeAndAttribute
-                // (rules/genrule/GenRuleBase.java:262-284); cmd_bash makes
-                // the rule unanalyzed earlier, cmd_bat/cmd_ps are Windows-only.
-                rule.cmd.as_deref().ok_or_else(|| {
-                    located(
-                        rule.location.as_deref(),
-                        format!(
-                            "in cmd attribute of genrule rule {}: missing value for `cmd` attribute, you can also set `cmd_ps` or `cmd_bat` on Windows and `cmd_bash` on other platforms.",
-                            crate::rule_declarations::canonical_form(&rule.label)
-                        ),
-                    )
-                })?,
-                &inputs.iter().map(|a| a.exec.clone()).collect::<Vec<_>>(),
-                &outputs,
-                &locations,
-                &rule.label,
-                &self.repositories,
+            for (name, path) in rule.outs.iter().zip(&outputs) {
+                let output = rule.label.with_name(name)?;
+                location_map.add(
+                    &output.to_string(),
+                    [File {
+                        is_directory: false,
+                        path: path.to_string_lossy().into_owned(),
+                        short_path: output.short_path().to_string_lossy().into_owned(),
+                        owner: rule.label.to_string(),
+                        is_source: false,
+                    }],
+                );
+            }
+            // GenRuleBase.determineCommandTypeAndAttribute
+            // (rules/genrule/GenRuleBase.java:262-284); cmd_bash makes
+            // the rule unanalyzed earlier, cmd_bat/cmd_ps are Windows-only.
+            let base_command = rule.cmd.as_deref().ok_or_else(|| {
+                located(
+                    rule.location.as_deref(),
+                    format!(
+                        "in cmd attribute of genrule rule {}: missing value for `cmd` attribute, you can also set `cmd_ps` or `cmd_bat` on Windows and `cmd_bash` on other platforms.",
+                        crate::rule_declarations::canonical_form(&rule.label)
+                    ),
+                )
+            })?;
+            // The configuration's Make variables (ConfigurationMakeVariableContext);
+            // a deferred default target platform is resolved only when
+            // `$(TARGET_CPU)` is looked up.
+            let platform_key = dependency_key(
+                self.configurations
+                    .get(config)
+                    .native
+                    .target_platform()
+                    .clone(),
+            );
+            let mut surface = self.ctx_surface(
+                rule,
+                config,
                 &output_root,
-            )?;
+                match self.platforms.get(&platform_key) {
+                    Some(Ok(platform)) => {
+                        crate::platforms::TargetPlatform::Resolved(platform.clone())
+                    }
+                    _ => crate::platforms::TargetPlatform::Deferred,
+                },
+                template_variables,
+            );
+            let srcs = inputs.iter().map(|a| a.exec.clone()).collect::<Vec<_>>();
+            // RuleContext.getPackageDirectory below the output root
+            // (GenRuleBase.java:353-355), without a trailing separator.
+            let package_directory = rule.label.package_exec_path();
+            let rule_dir = if package_directory.as_os_str().is_empty() {
+                PathBuf::from(&output_root)
+            } else {
+                PathBuf::from(&output_root).join(package_directory)
+            };
+            let repositories = self.repositories.clone();
+            let parse =
+                |text: &str| repositories.parse(text, &rule.label.repository, &rule.label.package);
+            let mut expanded = expand_genrule_command(
+                base_command,
+                &srcs,
+                &outputs,
+                &rule_dir,
+                &surface,
+                &location_map,
+                &parse,
+            );
+            if expanded.as_ref().is_err_and(|error| {
+                error
+                    .to_string()
+                    .contains(crate::platforms::NEEDS_TARGET_PLATFORM)
+            }) {
+                let platform = self.target_platform(config, configured, &mut Vec::new())?;
+                surface.target_platform = crate::platforms::TargetPlatform::Resolved(platform);
+                expanded = expand_genrule_command(
+                    base_command,
+                    &srcs,
+                    &outputs,
+                    &rule_dir,
+                    &surface,
+                    &location_map,
+                    &parse,
+                );
+            }
+            // Expander.expand reports an ExpansionException as an attribute
+            // error of the command attribute (analysis/Expander.java:159-172);
+            // GenRuleBase then stops (RuleContext.hasErrors).
+            let command = expanded
+                .map_err(|error| format!("{}: {error:#}", rule.label))?
+                .map_err(|message| {
+                    let label = crate::rule_declarations::canonical_form(&rule.label);
+                    crate::rule_errors::located_events(
+                        rule.location.as_deref(),
+                        [crate::rule_errors::RuleEvents {
+                            rule_class: "genrule",
+                            label: &label,
+                        }
+                        .attribute_message("cmd", &message)],
+                    )
+                })?;
             restricted_to_error(rule)?;
             for output in &outputs {
                 register_output(producers, output, &key)?;
@@ -8311,19 +8573,8 @@ fn resolved_value_gate(rule: &Rule) -> Result<(), String> {
     Ok(())
 }
 
-fn add_output_locations(
-    rule: &Rule,
-    outputs: &[PathBuf],
-    locations: &mut BTreeMap<String, Vec<PathBuf>>,
-) -> Result<(), String> {
-    for (name, path) in rule.outs.iter().zip(outputs) {
-        locations.insert(name.clone(), vec![path.clone()]);
-        locations.insert(format!(":{name}"), vec![path.clone()]);
-        locations.insert(rule.label.with_name(name)?.to_string(), vec![path.clone()]);
-    }
-    Ok(())
-}
-
+/// Artifact.joinExecPaths (actions/Artifact.java): exec paths joined with
+/// a space, unescaped.
 fn paths_string(paths: &[PathBuf]) -> String {
     paths
         .iter()
@@ -8332,128 +8583,59 @@ fn paths_string(paths: &[PathBuf]) -> String {
         .join(" ")
 }
 
-fn single(paths: &[PathBuf], variable: &str) -> Result<String, String> {
-    if paths.len() != 1 {
-        return Err(format!(
-            "{variable} requires exactly one file, found {}",
-            paths.len()
-        ));
+/// CommandResolverContext.expandSingletonArtifact (GenRuleBase.java:391-400).
+fn singleton(paths: &[PathBuf], variable: &str, kind: &str) -> Result<String, String> {
+    match paths {
+        [] => Err(format!("variable '{variable}' : no {kind}")),
+        [path] => Ok(path.to_string_lossy().into_owned()),
+        _ => Err(format!("variable '{variable}' : more than one {kind}")),
     }
-    Ok(paths[0].to_string_lossy().into_owned())
 }
 
-#[cfg(test)]
-fn expand_command(
+/// The genrule command expansion (GenRuleBase.java:122-134): one
+/// TemplateExpander pass (analysis/stringtemplate/TemplateExpander.java:55-177)
+/// whose variables are CommandResolverContext.lookupVariable
+/// (GenRuleBase.java:327-385: `SRCS`, `<`, `OUTS`, `@`, `RULEDIR`, `@D`)
+/// before the configuration's Make variables (ConfigurationMakeVariableContext:
+/// `--define`, the `toolchains`' and resolved toolchains' TemplateVariableInfo,
+/// TARGET_CPU/COMPILATION_MODE/BINDIR/GENDIR), and whose functions are the
+/// location functions with exec paths (LocationTemplateContext,
+/// Expander.withExecLocationsNoSrcs). The outer error is a native failure
+/// (the deferred target platform), the inner one an ExpansionException.
+#[allow(clippy::too_many_arguments)]
+fn expand_genrule_command(
     command: &str,
-    inputs: &[PathBuf],
-    outputs: &[PathBuf],
-    locations: &BTreeMap<String, Vec<PathBuf>>,
-    package: &str,
-) -> Result<String, String> {
-    expand_command_in(
-        command,
-        inputs,
-        outputs,
-        locations,
-        &Label::parse(":__command__", package)?,
-        &RepositorySet::new(PathBuf::new()),
-        crate::label::GENERATED_EXEC_ROOT,
-    )
-}
-
-fn expand_command_in(
-    command: &str,
-    inputs: &[PathBuf],
-    outputs: &[PathBuf],
-    locations: &BTreeMap<String, Vec<PathBuf>>,
-    label: &Label,
-    repositories: &RepositorySet,
-    output_root: &str,
-) -> Result<String, String> {
-    let rule_dir = PathBuf::from(output_root).join(label.package_exec_path());
-    let mut expanded = String::new();
-    let mut chars = command.chars();
-    while let Some(c) = chars.next() {
-        if c != '$' {
-            expanded.push(c);
-            continue;
-        }
-        match chars.next() {
-            Some('$') => expanded.push('$'),
-            Some('@') => expanded.push_str(&single(outputs, "$@")?),
-            Some('<') => expanded.push_str(&single(inputs, "$<")?),
-            Some('(') => {
-                let mut variable = String::new();
-                loop {
-                    match chars.next() {
-                        Some(')') => break,
-                        Some(c) => variable.push(c),
-                        None => return Err("unterminated genrule Make variable".into()),
-                    }
-                }
-                let value = match variable.as_str() {
-                    "SRCS" => paths_string(inputs),
-                    "OUTS" => paths_string(outputs),
-                    "RULEDIR" => rule_dir.to_string_lossy().into_owned(),
-                    "@D" => {
-                        if outputs.len() == 1 {
-                            outputs[0]
-                                .parent()
-                                .ok_or("output has no parent")?
-                                .to_string_lossy()
-                                .into_owned()
-                        } else {
-                            rule_dir.to_string_lossy().into_owned()
-                        }
-                    }
-                    _ => {
-                        let (multiple, target) =
-                            if let Some(t) = variable.strip_prefix("locations ") {
-                                (true, t.trim())
-                            } else if let Some(t) = variable.strip_prefix("location ") {
-                                (false, t.trim())
-                            } else {
-                                return Err(format!(
-                                    "unsupported genrule Make variable: $({variable})"
-                                ));
-                            };
-                        let canonical = repositories
-                            .parse(target, &label.repository, &label.package)?
-                            .to_string();
-                        let paths = locations
-                            .get(target)
-                            .or_else(|| locations.get(&canonical))
-                            .ok_or_else(|| {
-                                format!("location is not a declared src or out: {target}")
-                            })?;
-                        // LocationExpander.joinPaths (analysis/
-                        // LocationExpander.java:360-362) shell-escapes every
-                        // path, unlike $(SRCS)/$(OUTS) (Artifact.joinExecPaths).
-                        if multiple {
-                            let mut sorted = paths.clone();
-                            sorted.sort();
-                            sorted.dedup();
-                            sorted
-                                .iter()
-                                .map(|path| crate::args::shell_escape(&path.to_string_lossy()))
-                                .collect::<Vec<_>>()
-                                .join(" ")
-                        } else {
-                            crate::args::shell_escape(&single(paths, &variable)?)
-                        }
-                    }
-                };
-                expanded.push_str(&value);
-            }
-            Some(c) => {
-                return Err(format!(
-                    "unsupported Make variable ${c}; escape shell dollars with $$"
-                ));
-            }
-            None => return Err("unescaped trailing $ in genrule command".into()),
-        }
-    }
-    Ok(expanded)
+    srcs: &[PathBuf],
+    outs: &[PathBuf],
+    rule_dir: &Path,
+    surface: &crate::ctx_surface::CtxSurface,
+    locations: &crate::location_expander::LocationMap,
+    parse: &dyn Fn(&str) -> Result<Label, String>,
+) -> anyhow::Result<Result<String, String>> {
+    let variable = |name: &str| -> anyhow::Result<Result<String, String>> {
+        Ok(Ok(match name {
+            "SRCS" => paths_string(srcs),
+            "<" => return Ok(singleton(srcs, "$<", "input file")),
+            "OUTS" => paths_string(outs),
+            "@" => return Ok(singleton(outs, "$@", "output file")),
+            "RULEDIR" => rule_dir.to_string_lossy().into_owned(),
+            "@D" => match outs {
+                [output] => output
+                    .parent()
+                    .map(|parent| parent.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                _ => rule_dir.to_string_lossy().into_owned(),
+            },
+            _ => return crate::ctx_surface::lookup_variable(surface, &[], name),
+        }))
+    };
+    let function = |name: &str, param: &str| -> anyhow::Result<Result<String, String>> {
+        Ok(
+            crate::location_expander::apply(name, param, true, parse, locations)
+                .unwrap_or_else(|| Err(format!("$({name}) not defined"))),
+        )
+    };
+    crate::ctx_surface::expand_template_with(command, &variable, &function, 0)
 }
 
 #[cfg(test)]
@@ -9632,6 +9814,16 @@ m = macro(implementation=emit)
         );
     }
 
+    fn source_file(path: &Path) -> File {
+        File {
+            path: path.to_string_lossy().into_owned(),
+            short_path: path.to_string_lossy().into_owned(),
+            owner: String::new(),
+            is_source: true,
+            is_directory: false,
+        }
+    }
+
     #[test]
     fn external_make_locations_and_rule_directory_use_execution_paths() {
         let label = Label::parse_canonical("@@dep+//p:target").unwrap();
@@ -9640,16 +9832,20 @@ m = macro(implementation=emit)
             .with_name("nested/out")
             .unwrap()
             .generated_exec_path(crate::label::GENERATED_EXEC_ROOT);
-        let locations = BTreeMap::from([("@@dep+//p:in".into(), vec![input])]);
-        let expanded = expand_command_in(
+        let mut locations = crate::location_expander::LocationMap::default();
+        locations.add("@@dep+//p:in", [source_file(&input)]);
+        let repositories = RepositorySet::new(PathBuf::new());
+        let parse = |text: &str| repositories.parse(text, &label.repository, &label.package);
+        let expanded = expand_genrule_command(
             "$(location //p:in) $(location :in) $(RULEDIR) $(@D)",
             &[],
             &[output],
+            &PathBuf::from(crate::label::GENERATED_EXEC_ROOT).join(label.package_exec_path()),
+            &crate::ctx_surface::CtxSurface::default(),
             &locations,
-            &label,
-            &RepositorySet::new(PathBuf::new()),
-            crate::label::GENERATED_EXEC_ROOT,
+            &parse,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             expanded,
@@ -9663,24 +9859,28 @@ m = macro(implementation=emit)
         let spaced = label.with_name("a b (1).pdf").unwrap().source_exec_path();
         let quoted = label.with_name("it's").unwrap().source_exec_path();
         let plain = label.with_name("plain.txt").unwrap().source_exec_path();
-        let locations = BTreeMap::from([
-            ("//p:a b.pdf".into(), vec![spaced.clone()]),
-            (
-                "//p:group".into(),
-                vec![spaced.clone(), quoted.clone(), plain.clone()],
-            ),
-        ]);
-        let expanded = expand_command_in(
-            // Like LocationExpander (analysis/LocationExpander.java:199), the
-            // first ')' after the function name ends the expression.
+        let mut locations = crate::location_expander::LocationMap::default();
+        locations.add("//p:a b.pdf", [source_file(&spaced)]);
+        locations.add(
+            "//p:group",
+            [
+                source_file(&spaced),
+                source_file(&quoted),
+                source_file(&plain),
+            ],
+        );
+        let parse = |text: &str| Label::parse(text, "p");
+        let expanded = expand_genrule_command(
+            // The first ')' ends the reference (TemplateExpander.scanVariable).
             "$(location :a b.pdf)|$(locations :group)|$(SRCS)",
             &[spaced, plain],
             &[],
+            Path::new("bazel-out/k8-fastbuild/bin/p"),
+            &crate::ctx_surface::CtxSurface::default(),
             &locations,
-            &label,
-            &RepositorySet::new(PathBuf::new()),
-            crate::label::GENERATED_EXEC_ROOT,
+            &parse,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             expanded,
@@ -10035,32 +10235,64 @@ m = macro(implementation=emit)
     }
 
     #[test]
-    fn make_expansion_is_strict() {
+    fn genrule_expansion_follows_command_resolver_context() {
         let srcs = vec![PathBuf::from("pkg/in")];
         let outs = vec![PathBuf::from("out/file")];
-        assert_eq!(
-            expand_command(
-                "cat $< > $@; echo $$HOME $(SRCS) $(@D)",
-                &srcs,
-                &outs,
-                &BTreeMap::new(),
-                "pkg"
-            )
-            .unwrap(),
-            "cat pkg/in > out/file; echo $HOME pkg/in out"
+        let surface = crate::ctx_surface::CtxSurface {
+            defines: vec![("SRCS".into(), "define".into()), ("D".into(), "d".into())],
+            template_variables: vec![vec![("TOOL".into(), "$(D)/bin".into())]],
+            ..Default::default()
+        };
+        let mut locations = crate::location_expander::LocationMap::default();
+        locations.add(
+            "//pkg:in",
+            [File {
+                path: "pkg/in".into(),
+                short_path: "pkg/in".into(),
+                owner: "//pkg:in".into(),
+                is_source: true,
+                is_directory: false,
+            }],
         );
-        for cmd in [
-            "$HOME",
-            "$(UNKNOWN)",
-            "$(location :not_declared)",
-            "$(SRCS",
-            "$",
+        let parse = |text: &str| Label::parse(text, "pkg");
+        let expand = |command: &str, srcs: &[PathBuf]| {
+            expand_genrule_command(
+                command,
+                srcs,
+                &outs,
+                Path::new("bazel-out/k8-fastbuild/bin/pkg"),
+                &surface,
+                &locations,
+                &parse,
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            expand(
+                "cat $< > $@; echo $$HOME $(SRCS) $(@D) $(TOOL) $(location :in) $(COMPILATION_MODE) $(RULEDIR)",
+                &srcs
+            ),
+            Ok("cat pkg/in > out/file; echo $HOME pkg/in out d/bin pkg/in fastbuild bazel-out/k8-fastbuild/bin/pkg".to_owned())
+        );
+        for (command, message) in [
+            (
+                "$HOME",
+                "'$HOME' syntax is not supported; use '$(HOME)' instead for \"Make\" variables, or escape the '$' as '$$' if you intended this for the shell",
+            ),
+            ("$(UNKNOWN)", "$(UNKNOWN) not defined"),
+            ("$(nope :in)", "$(nope) not defined"),
+            (
+                "$(location :not_declared)",
+                "label '//pkg:not_declared' in $(location) expression is not a declared prerequisite of this rule",
+            ),
+            ("$(SRCS", "unterminated variable reference"),
+            ("$", "unterminated $"),
         ] {
-            assert!(
-                expand_command(cmd, &srcs, &outs, &BTreeMap::new(), "pkg").is_err(),
-                "{cmd}"
-            );
+            assert_eq!(expand(command, &srcs), Err(message.to_owned()), "{command}");
         }
-        assert!(expand_command("$<", &[], &outs, &BTreeMap::new(), "pkg").is_err());
+        assert_eq!(
+            expand("$<", &[]),
+            Err("variable '$<' : no input file".to_owned())
+        );
     }
 }

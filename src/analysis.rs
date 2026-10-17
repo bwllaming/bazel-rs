@@ -515,14 +515,30 @@ fn make_ctx<'v>(
 /// `toolchains`, `:cc_toolchain`, `$toolchains`, `$cc_toolchain`, in that
 /// order (DEFAULT_MAKE_VARIABLE_ATTRIBUTES), before the resolved toolchains'.
 /// Starlark `_x` attributes are `$x`, or `:x` when late-bound
-/// (AttributeValueSource.convertToNativeName). A non-empty built-in
-/// `toolchains` attribute is a value gap (crate::custom_rule::builtin_gaps).
+/// (AttributeValueSource.convertToNativeName). The built-in `toolchains`
+/// attribute's prerequisites are in the target configuration.
 fn with_attribute_template_variables(
     invocation: &crate::custom_rule::CustomInvocation,
     dependencies: &BTreeMap<String, DependencyTarget>,
 ) -> crate::ctx_surface::CtxSurface {
     let mut surface = (*invocation.surface).clone();
     let mut from_attributes = Vec::new();
+    for label in invocation.declaration.builtin.target.labels("toolchains") {
+        let key = crate::label::Label::parse_canonical(&label)
+            .map(|label| label.to_string())
+            .unwrap_or(label);
+        if let Some(variables) = dependencies
+            .get(&dependency_key(&key, false))
+            .and_then(|target| {
+                target
+                    .providers
+                    .get(crate::template_variable_info::PROVIDER_ID)
+            })
+            .and_then(|provider| crate::template_variable_info::variables(provider.value()))
+        {
+            from_attributes.push(variables);
+        }
+    }
     for (name, late_bound) in [
         ("_cc_toolchain", true),
         ("_toolchains", false),
@@ -584,8 +600,67 @@ fn rule_surface(
             .mapping(&rule.label.repository)
             .cloned()
             .unwrap_or_default(),
+        locations: Default::default(),
         errors: Default::default(),
     }
+}
+
+/// LocationExpander.buildLocationMap with collectSrcs and without data
+/// (analysis/LocationExpander.java:393-485), the `ctx.expand_location` map
+/// besides `targets`: every output file of the rule, the `srcs` files to
+/// build, and the executable (else the files to build) of `deps`,
+/// `implementation_deps` and `tools` - each attribute only when the rule
+/// defines it as a label list - under AliasProvider.getDependencyLabels
+/// (the label as written and the actual label).
+fn location_map(
+    rule: &Rule,
+    invocation: &crate::custom_rule::CustomInvocation,
+    dependencies: &BTreeMap<String, DependencyTarget>,
+    output_root: &str,
+) -> anyhow::Result<crate::location_expander::LocationMap> {
+    let mut map = crate::location_expander::LocationMap::default();
+    for name in &rule.outs {
+        let output = rule.label.with_name(name).map_err(anyhow::Error::msg)?;
+        map.add(
+            &output.to_string(),
+            [File {
+                is_directory: false,
+                path: output
+                    .generated_exec_path(output_root)
+                    .to_string_lossy()
+                    .into_owned(),
+                short_path: output.short_path().to_string_lossy().into_owned(),
+                owner: rule.label.to_string(),
+                is_source: false,
+            }],
+        );
+    }
+    for name in ["srcs", "deps", "implementation_deps", "tools"] {
+        let (Some(spec), Some(AttrValue::Labels(labels))) =
+            (invocation.schema.get(name), invocation.attrs.get(name))
+        else {
+            continue;
+        };
+        if spec.kind != crate::custom_rule::AttrKind::LabelList {
+            continue;
+        }
+        for label in labels {
+            let Some(target) = dependencies.get(&attribute_dependency_key(label, name, spec))
+            else {
+                continue;
+            };
+            let files = match target.runfiles.files_to_run(&target.files).executable {
+                Some(executable) if name != "srcs" => vec![executable],
+                _ => target.files.clone(),
+            };
+            let written = crate::label::Label::parse_canonical(label)
+                .map(|label| label.to_string())
+                .unwrap_or_else(|_| label.clone());
+            map.add(&written, files.iter().cloned());
+            map.add(&target.label, files);
+        }
+    }
+    Ok(map)
 }
 
 /// The implementation's return value shape
@@ -1138,8 +1213,9 @@ fn builtin_ctx_attrs<'v>(
                 heap.alloc(targets)
             }
             // The constraint values of the target's toolchain resolution
-            // (crate::engine): Targets with their ConstraintValueInfo.
-            ("exec_compatible_with", NativeType::LabelList) => {
+            // (crate::engine): Targets with their ConstraintValueInfo; the
+            // `toolchains` prerequisites (target configuration).
+            ("exec_compatible_with" | "toolchains", NativeType::LabelList) => {
                 let mut targets = Vec::new();
                 let mut constraint_files = Vec::new();
                 for label in target.labels(name) {
@@ -1326,8 +1402,12 @@ pub(crate) fn analyze_buffered(
     target: &ConfiguredOutputs<'_>,
 ) -> (Result<AnalysisResult, String>, Vec<String>) {
     let prints = BufferedPrints::default();
-    let result = analyze_inner(rule, dependencies, repositories, target, &prints)
-        .map_err(|error| format!("analysis of {}: {error:#}", rule.label));
+    let result = analyze_inner(rule, dependencies, repositories, target, &prints).map_err(
+        |error| match error.downcast_ref::<crate::rule_errors::ReportedErrors>() {
+            Some(reported) => reported.0.clone(),
+            None => format!("analysis of {}: {error:#}", rule.label),
+        },
+    );
     (result, prints.0.into_inner())
 }
 
@@ -1399,6 +1479,7 @@ fn analyze_inner(
         })
         .transpose()?;
     let mut surface = rule_surface(rule, invocation, &repositories, dependencies);
+    surface.locations = location_map(rule, invocation, dependencies, target.output_root)?;
     // ctx.configuration.default_shell_env reads the environment the target's
     // actions get (crate::action_env), not a constant.
     Arc::make_mut(&mut surface.config).action_env = target.action_env.clone();
@@ -1493,12 +1574,17 @@ fn analyze_inner(
             // checks RuleContext.hasErrors), reported before an evaluation error.
             let reported = surface.take_errors();
             if !reported.is_empty() {
-                let mut message = reported.join("\n");
+                // StarlarkRuleConfiguredTargetUtil.buildRule (:97-115):
+                // the events at the rule's location (crate::rule_errors).
+                let mut message =
+                    crate::rule_errors::located_events(rule.location.as_deref(), reported);
                 if let Err(error) = &returned {
                     message.push('\n');
                     message.push_str(&error.to_string());
                 }
-                bail!("{message}");
+                return Err(anyhow::Error::new(crate::rule_errors::ReportedErrors(
+                    message,
+                )));
             }
             let returned = returned.map_err(|error| anyhow!(error.to_string()))?;
             check_return_shape(returned)?;

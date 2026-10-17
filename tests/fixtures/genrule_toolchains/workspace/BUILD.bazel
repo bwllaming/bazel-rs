@@ -1,0 +1,6 @@
+genrule(
+    name = "root_locations",
+    srcs = ["root.txt"],
+    outs = ["root_locations.txt"],
+    cmd = "echo $(location root.txt) $(execpath root.txt) $(rootpath root.txt) $(rlocationpath root.txt) $(SRCS) > $@",
+)

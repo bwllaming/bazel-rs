@@ -58,9 +58,9 @@ ownership, target membership/indexing, duplicate-provider validation and nested
 provider payload traversal use the normal native analysis paths.
 
 Consumers may explicitly read this provider from a declared dependency and use
-its values in actions. Producing it from a resolved toolchain feeds `ctx.var` and
-`ctx.expand_make_variables` (docs/CTX_SURFACE.md); it does not implement
-other implicit Make-variable expansion, platform selection, or genrule toolchain dependencies
+its values in actions. Producing it from a resolved toolchain or a `toolchains`
+prerequisite feeds `ctx.var`, `ctx.expand_make_variables` and genrule commands
+(docs/CTX_SURFACE.md, docs/MAKE_VARIABLES.md)
 (`ctx.toolchains` is toolchain resolution, docs/TOOLCHAINS.md). Other `platform_common` fields are not placeholder implementations.
 
 ## Configuration and cache boundaries

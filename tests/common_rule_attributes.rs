@@ -469,9 +469,11 @@ fn unmodeled_builtin_values_fail_analysis_explicitly() {
             "exec_compatible_with = ['//:c']",
             "While resolving toolchains for target //:x (",
         ),
+        // N53: `toolchains` is analyzed; a target without TemplateVariableInfo
+        // fails with Bazel's text (paired capture, docs/MAKE_VARIABLES.md).
         (
             "toolchains = ['//:c']",
-            "attribute 'toolchains' = [\"//:c\"] (TemplateVariableInfo Make variables)",
+            "in toolchains attribute of show rule //:x: '//:c' does not have mandatory providers: 'TemplateVariableInfo'",
         ),
         (
             "aspect_hints = ['//:c']",
