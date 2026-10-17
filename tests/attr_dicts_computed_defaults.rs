@@ -448,12 +448,16 @@ opt_test(name = "check", target_under_test = ":subject")
     // toolchain modules (tests/fixtures/builtin_modules/provenance.json), and
     // rules_java's `@local_jdk` package globs through the JDK's `bin` link
     // since N28d, so resolution reaches `@bazel_tools//tools/test`'s
-    // `use_default_test_toolchain` config_setting, whose
-    // `use_target_platform_for_tests` option is not modelled: an explicit
-    // failure before the analysis_test_transition gap.
+    // `use_default_test_toolchain` config_setting; N30 models its
+    // `use_target_platform_for_tests` option, so analysis reaches the
+    // analysis_test gap this test guards.
     let stderr = f.rejected(
         &f.run_builtin("build", &["//:check"]),
-        "in values attribute of config_setting rule @@bazel_tools//tools/test:use_default_test_toolchain: select() on build option 'use_target_platform_for_tests' is not implemented in the native profile",
+        "analysis of //:check: declared rule features accepted at load time but not analyzed by the native profile: rule(analysis_test=True)",
+    );
+    assert!(
+        !stderr.contains("use_target_platform_for_tests"),
+        "{stderr}"
     );
     assert!(!stderr.contains("unittest.bzl"), "{stderr}");
     // analysis_test_transition is restricted to analysis_test rules.
