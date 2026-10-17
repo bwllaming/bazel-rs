@@ -72,8 +72,8 @@ environment, private HOME/config/temp directories, closed stdin, disabled global
 and system configuration, empty hook/template directories, no credential helper,
 no interactive prompting, verified TLS and disabled HTTP redirects. Ambient
 Git configuration, proxies, askpass, SSH agents and loader overrides are not
-forwarded. System Git, its HTTPS helpers, system CA store and `/usr/bin/kill`
-remain trusted components.
+forwarded. System Git, its HTTPS helpers and system CA store remain trusted
+components; the process group is killed with kill(2), not a helper process.
 
 Each Git command has a 600-second timeout, the default `repository_ctx.execute`
 timeout Bazel's git_repository commands run with (git_worker.bzl passes none);

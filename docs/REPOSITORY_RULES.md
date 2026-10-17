@@ -277,7 +277,7 @@ never allow skipping execution.
 Security posture: repository rules are trusted code, as in Bazel. `execute` and
 `which` run host programs with the user's credentials, environment, network and
 filesystem access; this is not a sandbox. Supervision only: the child leads its
-own process group, which is SIGKILLed through `/usr/bin/kill` after the leader
+own process group, which is SIGKILLed with kill(2) on the group after the leader
 exits or on timeout (Bazel would keep orphans that hold its pipes and then
 block on them); output is captured whole like Bazel's
 (StarlarkExecutionResult.java:201-203); there are no call-count, timeout or

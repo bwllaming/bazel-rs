@@ -5,8 +5,7 @@
 //! In particular, repository-local config and caller arguments are trusted:
 //! callers must validate remote URLs/full commit IDs and must not override these
 //! options or use arbitrary Git aliases, helpers, hooks, or external commands.
-//! System Git, its HTTPS helpers, `/usr/bin/kill`, and the system CA store are
-//! trusted. Children must not escape their process group. No signal handlers or
+//! System Git, its HTTPS helpers, and the system CA store are trusted. Children must not escape their process group. No signal handlers or
 //! global state are installed: external termination of this Rust process (or an
 //! abort, including OOM) does NOT guarantee cleanup. Unwinding does run cleanup.
 //!
@@ -19,7 +18,7 @@
 #![deny(unsafe_code)]
 
 #[cfg(not(target_os = "linux"))]
-compile_error!("git_process supports Linux only (process groups and kill(1) required)");
+compile_error!("git_process supports Linux only (process groups and kill(2) required)");
 
 use std::ffi::OsString;
 use std::fs;
@@ -47,7 +46,6 @@ pub struct Output {
 pub struct GitRunner {
     isolation: PrivateDirectory,
     git: PathBuf,
-    kill: PathBuf,
     allow_file: bool,
     #[cfg(test)]
     test_script: Option<PathBuf>,
@@ -72,9 +70,7 @@ impl GitRunner {
     pub fn new(private_root: &Path, allow_file: bool) -> Result<Self, String> {
         let root = private_root;
         let git = "/usr/bin/git";
-        let kill = "/usr/bin/kill";
         executable(Path::new(git))?;
-        executable(Path::new(kill))?;
         private_directory(root)?;
         let path = root.join("git-process");
         fs::DirBuilder::new()
@@ -91,7 +87,6 @@ impl GitRunner {
         Ok(Self {
             isolation,
             git: git.into(),
-            kill: kill.into(),
             allow_file,
             #[cfg(test)]
             test_script: None,
@@ -172,7 +167,6 @@ impl GitRunner {
             .checked_add(timeout)
             .ok_or("Git timeout is too large")?;
         executable(&self.git)?;
-        executable(&self.kill)?;
         private_directory(cwd)?;
         if Instant::now() >= deadline {
             return Err("Git deadline expired before spawn".into());
@@ -182,7 +176,6 @@ impl GitRunner {
         let mut guard = GroupGuard {
             group: child.id(),
             child,
-            kill: self.kill.clone(),
             armed: true,
         };
         let stdout = Capture::start(guard.child.stdout.take().ok_or("Git stdout pipe missing")?)?;
@@ -265,175 +258,40 @@ fn private_directory(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn helper_command(kill: &Path, group: u32) -> Command {
-    let mut command = Command::new(kill);
-    command
-        .args(["-KILL", "--", &format!("-{group}")])
-        .env_clear()
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    command
-}
-
-pub(crate) fn kill_group(kill: &Path, group: u32) -> Result<(), String> {
-    // Child::id is a positive PID; never signal the caller's group or all PIDs.
-    if group <= 1 {
-        return Err(format!("invalid Git process group {group}"));
-    }
-    let mut helper = crate::spawn_lock::spawn(&mut helper_command(kill, group))
-        .map_err(|e| format!("cannot spawn group-kill helper '{}': {e}", kill.display()))?;
-    let deadline = Instant::now() + CLEANUP_TIMEOUT;
-    let status = loop {
-        match helper.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => thread::sleep(POLL),
-            result => {
-                let reason = match result {
-                    Err(e) => format!("cannot wait for group-kill helper: {e}"),
-                    _ => "group-kill helper deadline exceeded".into(),
-                };
-                let killed = helper.kill();
-                let waited = helper.wait();
-                return Err(format!("{reason}; helper kill={killed:?}, wait={waited:?}"));
-            }
-        }
-    };
-    if status.success() {
-        return Ok(());
-    }
-    // kill(1)'s status does not distinguish ESRCH from EPERM. Positively verify
-    // group absence with a kernel probe; never blindly accept exit code 1. Any
-    // probe failure other than ESRCH is a cleanup error (fail closed).
-    match group_exists(kill, group) {
-        Ok(false) => Ok(()),
-        Ok(true) => Err(format!(
-            "group-kill helper failed ({status}) for Git group {group}; group still exists"
-        )),
-        Err(e) => Err(format!(
-            "group-kill helper failed ({status}) for Git group {group}; {e}"
-        )),
-    }
-}
-
-/// Ask the kernel whether `group` has any member (including unreaped zombies)
-/// via kill(2) with signal 0 on `-group`, run through trusted kill(1) with no
-/// shell, an empty environment (C locale) and null stdin/stdout. Unlike a scan
-/// of every host `/proc/*/stat`, foreign processes cannot make this fail.
-fn group_exists(kill: &Path, group: u32) -> Result<bool, String> {
-    if group <= 1 {
-        return Err(format!(
-            "refusing to probe non-private process group {group}"
-        ));
-    }
-    let mut probe = Command::new(kill);
-    probe
-        .args(["-0", "--", &format!("-{group}")])
-        .env_clear()
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
-    let mut probe = crate::spawn_lock::spawn(&mut probe)
-        .map_err(|e| format!("cannot spawn group probe '{}': {e}", kill.display()))?;
-    let stderr = match probe.stderr.take() {
-        Some(pipe) => Capture::start(pipe),
-        None => Err("group probe stderr pipe missing".into()),
-    };
-    let stderr = match stderr {
-        Ok(stderr) => stderr,
-        Err(e) => {
-            let killed = probe.kill();
-            let waited = probe.wait();
-            return Err(format!("{e}; probe kill={killed:?}, wait={waited:?}"));
-        }
-    };
-    let deadline = Instant::now() + CLEANUP_TIMEOUT;
-    let status = loop {
-        match probe.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => thread::sleep(POLL),
-            result => {
-                let reason = match result {
-                    Err(e) => format!("cannot wait for group probe: {e}"),
-                    _ => "group probe deadline exceeded".into(),
-                };
-                let killed = probe.kill();
-                let waited = probe.wait();
-                let mut errors = Vec::new();
-                stderr.finish(
-                    Instant::now() + CLEANUP_TIMEOUT,
-                    "group-probe stderr",
-                    &mut errors,
-                );
-                return Err(format!(
-                    "{reason}; probe kill={killed:?}, wait={waited:?}; {}",
-                    errors.join("; ")
-                ));
-            }
-        }
-    };
-    let mut errors = Vec::new();
-    let text = stderr.finish(
-        Instant::now() + CLEANUP_TIMEOUT,
-        "group-probe stderr",
-        &mut errors,
-    );
-    if !errors.is_empty() {
-        return Err(format!(
-            "group probe for {group} failed: {}",
-            errors.join("; ")
-        ));
-    }
-    classify_probe(group, status, &text)
-}
-
-/// Exit 0 => the group exists. Neither procps-ng kill (exit 1 on any failure)
-/// nor util-linux kill (exit 1, or 64 for partial success) encodes errno in
-/// its status, so absence is recognised only from the C-locale (empty
-/// environment) strerror(ESRCH) report for exactly this one argument:
-/// procps-ng `<argv0>: (-<group>): No such process`, util-linux
-/// `<argv0>: sending signal to -<group> failed: No such process`. Anything
-/// else (EPERM, other statuses, signals, extra or unexpected output) is an
-/// error, never "absent".
-fn classify_probe(group: u32, status: ExitStatus, stderr: &[u8]) -> Result<bool, String> {
-    if status.success() {
-        return Ok(true);
-    }
-    if status.code() == Some(1) && reports_esrch(group, stderr) {
-        return Ok(false);
-    }
-    let start = stderr.len().saturating_sub(512);
-    Err(format!(
-        "group probe for {group} failed ({status}): {:?}",
-        String::from_utf8_lossy(&stderr[start..])
-    ))
-}
-
-fn reports_esrch(group: u32, stderr: &[u8]) -> bool {
-    let Some(line) = std::str::from_utf8(stderr)
+/// The process group `group` as a kill(2) target; never the caller's group
+/// (0) or every process (-1): Child::id is a positive PID.
+fn group_pid(group: u32) -> Result<rustix::process::Pid, String> {
+    i32::try_from(group)
         .ok()
-        .and_then(|text| text.strip_suffix('\n'))
-    else {
-        return false;
-    };
-    !line.contains('\n')
-        && (line.ends_with(&format!(": (-{group}): No such process"))
-            || line.ends_with(&format!(
-                ": sending signal to -{group} failed: No such process"
-            )))
+        .filter(|group| *group > 1)
+        .and_then(rustix::process::Pid::from_raw)
+        .ok_or_else(|| format!("refusing to signal non-private process group {group}"))
+}
+
+/// SIGKILL every member of process group `group`: kill(2) on `-group`, as
+/// Bazel's process-wrapper does after its child (process-wrapper-legacy.cc:
+/// 150-154, `kill(-child_pid, SIGKILL)`). A direct system call: no helper
+/// process, so no spawn and no deadline that a loaded host can exceed (the
+/// former /usr/bin/kill helper had 1 s and sometimes missed it). ESRCH means
+/// no member is left, which is the goal; any other errno (EPERM, ...) is a
+/// cleanup error, never success.
+pub(crate) fn kill_group(group: u32) -> Result<(), String> {
+    match rustix::process::kill_process_group(group_pid(group)?, rustix::process::Signal::KILL) {
+        Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
+        Err(error) => Err(format!("cannot kill process group {group}: {error}")),
+    }
 }
 
 struct GroupGuard {
     child: Child,
     group: u32,
-    kill: PathBuf,
     armed: bool,
 }
 
 impl GroupGuard {
     fn cleanup(&mut self) -> Result<ExitStatus, String> {
-        let killed = kill_group(&self.kill, self.group);
-        // Even a broken helper must not prevent best-effort leader cleanup.
+        let killed = kill_group(self.group);
+        // A failed group kill must not prevent best-effort leader cleanup.
         let fallback = if killed.is_err() {
             self.child.kill().err()
         } else {
@@ -549,76 +407,36 @@ mod tests {
             .unwrap()
     }
 
-    #[test]
-    fn kernel_probe_sees_live_and_zombie_group_then_absence_after_reap() {
-        let kill = Path::new("/usr/bin/kill");
-        let mut child = sleeper();
-        let group = child.id();
-        assert_eq!(group_exists(kill, group), Ok(true));
-        child.kill().unwrap();
-        // An unreaped (zombie) leader is still a group member.
-        assert_eq!(group_exists(kill, group), Ok(true));
-        child.wait().unwrap();
-        assert_eq!(group_exists(kill, group), Ok(false));
+    /// kill(2) signal 0 on `-group`: does the group have any member
+    /// (including an unreaped zombie)?
+    fn group_exists(group: u32) -> Result<bool, String> {
+        match rustix::process::test_kill_process_group(group_pid(group)?) {
+            Ok(()) => Ok(true),
+            Err(rustix::io::Errno::SRCH) => Ok(false),
+            Err(error) => Err(error.to_string()),
+        }
     }
 
     #[test]
-    fn kernel_probe_refuses_shared_groups_and_fails_closed() {
-        for group in [0, 1] {
-            // Refused before any spawn: even a missing helper is not reached.
-            let error = group_exists(Path::new("/nonexistent/kill"), group).unwrap_err();
+    fn group_kill_reaches_every_member_and_an_absent_group_is_success() {
+        let mut child = sleeper();
+        let group = child.id();
+        assert_eq!(group_exists(group), Ok(true));
+        kill_group(group).unwrap();
+        // The killed, unreaped (zombie) leader is still a group member.
+        assert_eq!(group_exists(group), Ok(true));
+        assert_eq!(child.wait().unwrap().signal(), Some(9));
+        assert_eq!(group_exists(group), Ok(false));
+        // No member left (ESRCH) is what a cleanup wants.
+        kill_group(group).unwrap();
+    }
+
+    #[test]
+    fn group_kill_refuses_shared_groups() {
+        // Never the caller's group (0), init's (1) or "every process" (-1).
+        for group in [0, 1, u32::MAX] {
+            let error = kill_group(group).unwrap_err();
             assert!(error.contains("refusing"), "{error}");
-        }
-        let mut child = sleeper();
-        let group = child.id();
-        let error = group_exists(Path::new("/nonexistent/kill"), group).unwrap_err();
-        assert!(error.contains("cannot spawn group probe"), "{error}");
-        // Exit 1 without the ESRCH report (e.g. a broken helper) is not absence.
-        let error = group_exists(Path::new("/usr/bin/false"), group).unwrap_err();
-        assert!(error.contains("exit status: 1"), "{error}");
-        child.kill().unwrap();
-        child.wait().unwrap();
-    }
-
-    #[test]
-    fn probe_classification_accepts_only_exact_esrch_as_absent() {
-        let exited = |code: i32| ExitStatus::from_raw(code << 8);
-        assert_eq!(classify_probe(42, exited(0), b""), Ok(true));
-        for stderr in [
-            &b"/usr/bin/kill: (-42): No such process\n"[..],
-            b"kill: sending signal to -42 failed: No such process\n",
-        ] {
-            assert_eq!(classify_probe(42, exited(1), stderr), Ok(false));
-        }
-        for (status, stderr) in [
-            (
-                exited(1),
-                &b"/usr/bin/kill: (-42): Operation not permitted\n"[..],
-            ),
-            (
-                exited(1),
-                b"kill: sending signal to -42 failed: Operation not permitted\n",
-            ),
-            (exited(1), b""),
-            (exited(1), b"/usr/bin/kill: (-42): No such process"),
-            (exited(1), b"/usr/bin/kill: (-142): No such process\n"),
-            (exited(1), b"/usr/bin/kill: (-421): No such process\n"),
-            (exited(1), b"x\n/usr/bin/kill: (-42): No such process\n"),
-            (
-                exited(64),
-                b"kill: sending signal to -42 failed: No such process\n",
-            ),
-            (exited(2), b"/usr/bin/kill: (-42): No such process\n"),
-            (
-                ExitStatus::from_raw(9),
-                b"/usr/bin/kill: (-42): No such process\n",
-            ),
-            (exited(1), b"/usr/bin/kill: (-42): No such process\xff\n"),
-        ] {
-            assert!(
-                classify_probe(42, status, stderr).is_err(),
-                "{status} {stderr:?}"
-            );
         }
     }
 
@@ -890,7 +708,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_helpers_and_zero_deadline_never_spawn_target() {
+    fn missing_git_and_zero_deadline_never_spawn_target() {
         let temp = Temp::new();
         let mut runner = temp.fake("touch spawned");
         assert!(
@@ -899,14 +717,6 @@ mod tests {
                 .unwrap_err()
                 .contains("zero")
         );
-        runner.kill = temp.0.join("missing-kill");
-        assert!(
-            runner
-                .run(&temp.0, &[], TEST_TIMEOUT)
-                .unwrap_err()
-                .contains("missing-kill")
-        );
-        runner.kill = "/usr/bin/kill".into();
         runner.git = temp.0.join("missing-git");
         assert!(
             runner
@@ -974,43 +784,11 @@ mod tests {
             let _guard = GroupGuard {
                 group: child.id(),
                 child,
-                kill: "/usr/bin/kill".into(),
                 armed: true,
             };
             panic!("exercise cleanup on unwind");
         });
         assert!(result.is_err());
         assert_descendants_dead(&temp.0);
-    }
-
-    #[test]
-    fn kill_failure_is_not_success() {
-        let temp = Temp::new();
-        let child = Command::new("/bin/sleep")
-            .arg("30")
-            .env_clear()
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .process_group(0)
-            .spawn()
-            .unwrap();
-        let mut guard = GroupGuard {
-            group: child.id(),
-            child,
-            kill: "/usr/bin/false".into(),
-            armed: true,
-        };
-        // The same broken helper also serves as the probe: its bare exit 1
-        // must be a cleanup error, never "absent" (fail closed).
-        let error = guard.cleanup().unwrap_err();
-        assert!(
-            error.contains("group-kill helper failed") && error.contains("group probe"),
-            "{error}"
-        );
-        assert!(not_live(&guard.group.to_string()));
-        guard.kill = "/usr/bin/kill".into();
-        drop(guard);
-        drop(temp);
     }
 }

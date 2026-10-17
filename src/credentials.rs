@@ -573,7 +573,7 @@ pub fn invoke(
     let limited = !timeout.is_zero();
     let deadline = Instant::now() + timeout;
     let kill_group = || {
-        if crate::git_process::kill_group(Path::new("/usr/bin/kill"), group).is_err() {
+        if crate::git_process::kill_group(group).is_err() {
             // The leader at least.
             return false;
         }

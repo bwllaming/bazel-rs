@@ -22,6 +22,9 @@ lzma-rust2 = { version = "=0.22.0", default-features = false, features = ["std",
 num-bigint = "=0.4.8"
 reqwest = { version = "=0.12.28", default-features = false, features = ["blocking", "rustls-tls-native-roots"] }
 ruzstd = "=0.9.1"
+# kill(2)/killpg on a child's process group without spawning kill(1) and
+# without unsafe code (git_process); same version tempfile already uses.
+rustix = { version = "=1.1.5", default-features = false, features = ["std", "process"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha1 = "=0.10.6"

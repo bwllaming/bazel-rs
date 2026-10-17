@@ -11,7 +11,7 @@
 //! access, exactly like Bazel's local execution. The discipline here is only
 //! about supervision: argv is passed without a shell (Bazel never inserts one;
 //! a shell runs only when argv[0] names one), stdin is empty, the child leads
-//! its own process group, which is SIGKILLed through trusted `/usr/bin/kill`
+//! its own process group, which is SIGKILLed with kill(2) on `-group`
 //! after the leader exits or on deadline (process-wrapper likewise kills
 //! `-child_pid` after the child, process-wrapper-legacy.cc:150-154), and
 //! captured output is buffered without a size cap like Bazel's
@@ -35,7 +35,6 @@ use std::time::{Duration, Instant};
 
 const POLL: Duration = Duration::from_millis(5);
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
-const KILL: &str = "/usr/bin/kill";
 const ENOENT: i32 = 2;
 const EACCES: i32 = 13;
 const ENOEXEC: i32 = 8;
@@ -316,7 +315,7 @@ pub(crate) fn run(request: &Request<'_>) -> Result<Outcome, String> {
         }
     }
     // Kill the whole group even after a normal leader exit, then reap.
-    let killed = crate::git_process::kill_group(Path::new(KILL), group);
+    let killed = crate::git_process::kill_group(group);
     if killed.is_err() {
         let _ = child.kill();
     }

@@ -150,6 +150,7 @@ dependencies = [
  "lzma-rust2",
  "num-bigint",
  "reqwest",
+ "rustix",
  "ruzstd",
  "serde",
  "serde_json",
