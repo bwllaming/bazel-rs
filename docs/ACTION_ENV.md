@@ -100,7 +100,8 @@ and the exec configuration's `--host_action_env` are reflected
 
 ## Cache keys
 
-The key (format `native-action-v6`) frames the fixed map and the inherited
+The key (format `native-action-v8` since the N41 merge; N42 introduced the
+environment framing as `native-action-v6`) frames the fixed map and the inherited
 names (`ActionEnvironment.addTo`, `:124-127`, used by `SpawnAction.computeKey`
 `:396-409`) and the resolved client values of the inherited names (Bazel's
 action cache digest covers them, `actions/ActionCacheChecker.java:291-301,
@@ -114,6 +115,22 @@ environment block changed; genrule actions additionally changed environment.
 `tests/configured_target_keys.rs` (`action_keys_and_output_roots_match_the_pre_n18a_binary`
 fastbuild and dbg sets, `existing_genrule_fixture_keys_are_pinned`) carries
 the new values with this explanation.
+
+Integration with N41 (one more deliberate rekey, pinned once for both): the
+key and manifest format is `native-action-v8`. Reasons: N41's spawn argv
+(genrules `bash -c 'source external/bazel_tools/tools/genrule/genrule-setup.sh; CMD'`
+with the script as a keyed input instead of `bash -e -o pipefail -c CMD`;
+run_shell's `$0` only with arguments; a File executable's execution path as
+argv[0]) and the `k8-*` output roots (D1 closed) change the key of every
+spawn and every consumer of a generated file, on top of N42's environment
+framing. The executed environment and the remote cache key's
+`Command.environment_variables` are one map, `crate::action::resolved_environment`
+(fixed values, then the resolved inherited values; a declared TMPDIR stays
+in the map), with TMPDIR replaced last by the executor
+(`tests/remote_cache.rs`
+`executed_environment_equals_the_resolved_environment_with_inherited_values`).
+The keyed tests (`tests/configured_target_keys.rs`) were re-pinned once for
+the merged tree; v7 manifests rebuild once.
 
 ## Paired capture
 

@@ -584,10 +584,11 @@ def run_phase(args, runner, scratch, workspace, ref, item, probe, engine):
 def migration_counts(engine, index, seen):
     """Expected (executed, hits) for one build of a phase.
 
-    The K-to-L migration's first L build (index 2) rebuilds once: N23d/N36
-    moved native action-cache manifests from native-action-v5 to v7, and a
-    manifest of another format is a cache miss (docs/HARDLINK_STAGING.md,
-    "pre-v7 entries rebuild once"). Every other build keeps the old rule.
+    The K-to-L migration's first L build (index 2) rebuilds once: the native
+    action cache moved to native-action-v8 keys and manifests (N41 x N42; v5
+    on main before N23d/N36, v7 in integration-13), and a manifest of another
+    format, or another key, is a cache miss (docs/HARDLINK_STAGING.md,
+    "pre-v8 entries rebuild once"). Every other build keeps the old rule.
     """
     if engine == 'migration' and index == 2:
         return (1, 0)

@@ -332,7 +332,7 @@ fn java_versions_select_in_target_and_exec_configurations() {
     // Defaults (JavaOptions.java:373-403); the exec configuration's java_*
     // are the tool_java_* values (builtin_exec_platforms.bzl:358-359).
     let (lines, contents) = ws.built(&[LINUX, "//:u"]);
-    assert_eq!(lines, ["//:u\tbazel-out/rust-fastbuild/bin/u.txt"]);
+    assert_eq!(lines, ["//:u\tbazel-out/k8-fastbuild/bin/u.txt"]);
     assert_eq!(
         contents,
         format!(
@@ -343,7 +343,7 @@ fn java_versions_select_in_target_and_exec_configurations() {
                 "none",
                 "remotejdk_11",
                 "none",
-                "rust-fastbuild"
+                "k8-fastbuild"
             )
         )
     );
@@ -351,7 +351,7 @@ fn java_versions_select_in_target_and_exec_configurations() {
     // root is unchanged (the top-level configuration is its own baseline)
     // and the exec configuration is the default one.
     let (lines, contents) = ws.built(&[LINUX, "--java_runtime_version=remotejdk_11", "//:u"]);
-    assert_eq!(lines, ["//:u\tbazel-out/rust-fastbuild/bin/u.txt"]);
+    assert_eq!(lines, ["//:u\tbazel-out/k8-fastbuild/bin/u.txt"]);
     assert_eq!(
         contents,
         format!(
@@ -362,7 +362,7 @@ fn java_versions_select_in_target_and_exec_configurations() {
                 "none",
                 "remotejdk_11",
                 "none",
-                "rust-fastbuild"
+                "k8-fastbuild"
             )
         )
     );
@@ -388,14 +388,7 @@ fn java_versions_select_in_target_and_exec_configurations() {
                 "17",
                 "linux-opt-exec"
             ),
-            java_line(
-                "m",
-                "local_jdk",
-                "17",
-                "remotejdk_17",
-                "17",
-                "rust-fastbuild"
-            )
+            java_line("m", "local_jdk", "17", "remotejdk_17", "17", "k8-fastbuild")
         )
     );
     // Not CoreOptions: `query` does not register them (QueryCommand.java:59-67;
@@ -965,10 +958,7 @@ report = rule(implementation = _report_impl, attrs = {"deps": attr.label_list()}
         ),
     ]);
     let (lines, contents) = ws.built(&[LINUX, "//:report"]);
-    assert_eq!(
-        lines,
-        ["//:report\tbazel-out/rust-fastbuild/bin/report.txt"]
-    );
+    assert_eq!(lines, ["//:report\tbazel-out/k8-fastbuild/bin/report.txt"]);
     assert_eq!(
         contents,
         "@@//:license license main kinds=Apache-2.0 text=LICENSE\n@@rules_license+//:license license  kinds=Apache-2.0 text=external/rules_license+/LICENSE\n"
@@ -1040,7 +1030,7 @@ fn no_config_exec_edges_follow_execution_transition_factory() {
     // for its exec edges, so they stay in the no-config configuration
     // (paired capture N28 B11/v6_attr_named_license_kinds).
     let (lines, contents) = ws.built(&["-c", "opt", "//:x"]);
-    assert_eq!(lines, ["//:x\tbazel-out/rust-opt/bin/x.txt"]);
+    assert_eq!(lines, ["//:x\tbazel-out/k8-opt/bin/x.txt"]);
     assert_eq!(
         contents,
         "@@//:lk: lk license_kinds=kind@bazel-out/fastbuild-noconfig/bin/kind.meta tool=bazel-out/fastbuild-noconfig/bin/tool.meta bazel-out/fastbuild-noconfig/bin/lk.meta\nfiles=bazel-out/fastbuild-noconfig/bin/lk.meta\n"

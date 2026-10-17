@@ -1259,7 +1259,7 @@ def native_artifact_fixture(root, case=None, phase="cold", data_encoding="latin-
     blob.write_bytes(data)
     blob.chmod(0o555)
     os.link(blob, output)
-    qa.save_json(action_root / "manifest.json", {"format": "native-action-v7", "key": action_id,
+    qa.save_json(action_root / "manifest.json", {"format": "native-action-v8", "key": action_id,
         "outputs": [{"name": collector.OUTPUT.encode().hex(), "digest": qa.digest(data), "mode": 0o555,
                      "tree": None, "symlink": None}]})
     planned = collector.plan(root, "/unit-native-not-executed")
@@ -1561,7 +1561,7 @@ class NativeHardlinkStoreTests(unittest.TestCase):
             self.assertEqual(artifacts["unaccounted_publications"], [])
             self.assertEqual(collector.validate_stage({**row, "artifacts": artifacts}, spec, case, frozen)["issues"], [])
 
-    def test_action_manifest_must_be_v7_regular_file_outputs(self):
+    def test_action_manifest_must_be_v8_regular_file_outputs(self):
         with tempfile.TemporaryDirectory(prefix="module-extension-io-native-unit-") as directory:
             collector, case, row, spec, frozen, cache, output, blob = self.fixture(directory)
             path = cache / "actions" / row["artifacts"]["actions"][0]["key"] / "manifest.json"
@@ -1570,6 +1570,7 @@ class NativeHardlinkStoreTests(unittest.TestCase):
             variants = [{**good, "format": "native-action-v5",
                          "outputs": [{"name": name, "digest": entry["digest"], "executable": 0o111}]},
                         {**good, "format": "native-action-v6"},
+                        {**good, "format": "native-action-v7"},
                         {**good, "outputs": [{**entry, "mode": 0o755}]},
                         {**good, "outputs": [{**entry, "symlink": "2f6574632f706173737764"}]},
                         {**good, "outputs": [{**entry, "tree": {"files": [], "directories": []}}]},

@@ -115,7 +115,7 @@ impl Configurations {
         };
         // The top-level configuration is never an exec configuration
         // (`is exec configuration` is internal), so its CPU descriptor is
-        // the fixed `rust` and cannot be invalid.
+        // the host CPU (`k8`, NATIVE_CPU) and cannot be invalid.
         let top_mnemonic =
             mnemonic(&top, &top).expect("internal error: top-level output path mnemonic");
         configurations.mnemonics.insert(id, top_mnemonic);
@@ -315,7 +315,7 @@ fn cpu_descriptor(configuration: &Configuration) -> (&str, bool) {
     let native = &configuration.native;
     if !native.is_exec {
         // A `--cpu` a Starlark transition set (N18c) is the descriptor
-        // itself, as in Bazel (`arm-fastbuild`); the host CPU is `rust`.
+        // itself, as in Bazel (`arm-fastbuild`); the host CPU is `k8`.
         return (native.cpu.as_deref().unwrap_or(NATIVE_CPU), false);
     }
     match native.platforms.as_slice() {
@@ -482,7 +482,7 @@ pub fn no_config() -> Configuration {
 
 /// Options whose value is explicit in the mnemonic
 /// (markAsExplicitInOutputPathFor, OutputPathMnemonicComputer.java:187-198;
-/// `cpu` is the native profile's fixed `rust`).
+/// `cpu` is the native profile's host `k8` unless a transition set it).
 const EXPLICIT_IN_OUTPUT_PATH: &[&str] = &["compilation_mode", "platform_suffix", "cpu"];
 
 /// The native options in their `//command_line_option:NAME=VALUE` hash form
@@ -792,9 +792,9 @@ mod tests {
             configurations.mnemonic(id),
             mnemonic(&transitioned, &top).unwrap()
         );
-        assert!(configurations.mnemonic(id).starts_with("rust-dbg-ST-"));
+        assert!(configurations.mnemonic(id).starts_with("k8-dbg-ST-"));
         // A `--cpu` a transition set is explicit in the name (Bazel's
-        // `arm-fastbuild`); the host CPU is the native `rust`.
+        // `arm-fastbuild`); the host CPU is `k8`.
         let mut native = top.native.clone();
         native.cpu = Some("arm".to_owned());
         let arm = Configuration::new(native, BTreeMap::new());
@@ -942,13 +942,13 @@ mod tests {
         // Against its own baseline the top-level configuration keeps its root.
         assert_eq!(
             mnemonic(&target_only, &target_only),
-            Ok("rust-fastbuild".to_owned())
+            Ok("k8-fastbuild".to_owned())
         );
         // Against the default baseline the version is hashed into ST-.
         assert!(
             mnemonic(&target_only, &Configuration::default())
                 .unwrap()
-                .starts_with("rust-fastbuild-ST-")
+                .starts_with("k8-fastbuild-ST-")
         );
     }
 

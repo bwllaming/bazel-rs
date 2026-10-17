@@ -822,7 +822,12 @@ pub fn validate_structure(action: &Action) -> Result<(), String> {
         .inputs
         .iter()
         .map(|(_, destination)| destination)
-        .chain(action.embedded_inputs.iter().map(|(destination, _)| destination))
+        .chain(
+            action
+                .embedded_inputs
+                .iter()
+                .map(|(destination, _)| destination),
+        )
         .chain(&action.outputs)
         .chain(action.extra.param_files.iter().map(|(path, _)| path))
     {
@@ -837,7 +842,12 @@ pub fn validate_structure(action: &Action) -> Result<(), String> {
         .inputs
         .iter()
         .map(|(_, destination)| destination)
-        .chain(action.embedded_inputs.iter().map(|(destination, _)| destination))
+        .chain(
+            action
+                .embedded_inputs
+                .iter()
+                .map(|(destination, _)| destination),
+        )
     {
         validate_relative(destination)?;
         if input_names
@@ -1991,20 +2001,22 @@ pub fn execute_with_remote(
     FileExt::lock_exclusive(&lock).map_err(|e| io_error("cannot lock", &lock_path, e))?;
     // File drop releases the advisory lock on every success/error path.
     let cached = actions.join(key);
-    let result = |listings: BTreeMap<PathBuf, Vec<PathBuf>>, cache_hit: bool, remote_hit: bool| ActionResult {
-        outputs: action
-            .outputs
-            .iter()
-            .map(|p| cached.join("outputs").join(p))
-            .collect(),
-        cache_hit,
-        remote_hit,
-        trees: action
-            .outputs
-            .iter()
-            .enumerate()
-            .filter_map(|(index, name)| Some((index, listings.get(name)?.clone())))
-            .collect(),
+    let result = |listings: BTreeMap<PathBuf, Vec<PathBuf>>, cache_hit: bool, remote_hit: bool| {
+        ActionResult {
+            outputs: action
+                .outputs
+                .iter()
+                .map(|p| cached.join("outputs").join(p))
+                .collect(),
+            cache_hit,
+            remote_hit,
+            trees: action
+                .outputs
+                .iter()
+                .enumerate()
+                .filter_map(|(index, name)| Some((index, listings.get(name)?.clone())))
+                .collect(),
+        }
     };
     if let Some(listings) = cache_valid(&cached, key, outputs, &action.extra.tree_outputs, &root) {
         return Ok(result(listings, true, false));
@@ -2024,7 +2036,10 @@ pub fn execute_with_remote(
     // Tree artifact outputs need ActionResult.output_directories, which the
     // native remote cache does not model: such spawns stay local.
     let tree_reason;
-    let unsupported = match (&action.remote_unsupported, action.extra.tree_outputs.first()) {
+    let unsupported = match (
+        &action.remote_unsupported,
+        action.extra.tree_outputs.first(),
+    ) {
         (Some(reason), _) => Some(reason.as_str()),
         (None, Some(tree)) => {
             tree_reason = format!(
@@ -2335,6 +2350,7 @@ mod tests {
                 environment: BTreeMap::new(),
                 shell_strict: true,
                 extra: ActionExtra::default(),
+                ..Default::default()
             }
         }
 
@@ -2362,6 +2378,7 @@ mod tests {
                 environment: BTreeMap::new(),
                 shell_strict: true,
                 extra: ActionExtra::default(),
+                ..Default::default()
             }
         }
 
@@ -2380,6 +2397,7 @@ mod tests {
                 environment: BTreeMap::new(),
                 shell_strict: true,
                 extra: ActionExtra::default(),
+                ..Default::default()
             }
         }
     }
@@ -2671,10 +2689,15 @@ mod tests {
     }
 
     #[test]
-    fn lax_shell_always_has_empty_zero_and_literal_first_argument() {
+    fn padded_shell_has_empty_zero_and_literal_first_argument() {
         let fixture = Fixture::new();
         let mut action = fixture.action();
         action.shell_strict = false;
+        // Without padding `$0` is the shell, as in Bazel's `bash -c CMD` (N41).
+        action.command =
+            "test \"$0\" = /bin/bash && test \"$#\" = 0 && printf ok > out/result".into();
+        execute(&fixture.cache(), &action).unwrap();
+        action.shell_pad = true;
         action.command = "test \"$0\" = '' && test \"$#\" = 0 && printf ok > out/result".into();
         execute(&fixture.cache(), &action).unwrap();
         action.arguments = vec!["雪 $HOME 'literal'".into()];
@@ -2708,6 +2731,7 @@ mod tests {
     fn shell_arguments_are_literal_ordered_and_keyed() {
         let fixture = Fixture::new();
         let mut action = fixture.action();
+        action.shell_pad = true;
         let marker = fixture.0.join("argument-ran");
         action.arguments = vec![
             String::new(),

@@ -48,7 +48,7 @@ Every configuration-derived member (`configuration`, `bin_dir`,
 target key (`Engine::ctx_surface` in `Engine::plan_target`), never from a
 build-global configuration: a dependency behind a Starlark attribute
 transition and a rule-transitioned target (N18c) see their transitioned
-configuration (e.g. `rust-dbg-ST-<hash>` roots and `COMPILATION_MODE`),
+configuration (e.g. `k8-dbg-ST-<hash>` roots and `COMPILATION_MODE`),
 exec and no-config targets theirs, and a `flag_values` key planned early for
 a `config_setting` (N30, docs/TEST_FLAGS.md) its own. `ctx.split_attr` of a
 rule with a Starlark-transition attribute fails explicitly.
@@ -94,9 +94,10 @@ calling `failIfCalledOutsideDefaultAllowlist` check the calling `.bzl`.
 
 ## Divergences
 
-* **D1**: roots use the CPU token `rust` where Bazel writes `k8`
-  (`bazel-out/rust-fastbuild/bin`, docs/CONFIGURATION.md); `ctx.var["BINDIR"]`
-  and `GENDIR` follow. `TARGET_CPU` is the platform's CPU (`x86_64`) on both.
+* **D1 (closed by N41)**: roots use Bazel's CPU token `k8`
+  (`bazel-out/k8-fastbuild/bin`; the receipt's native rows show the former
+  `rust`); `ctx.var["BINDIR"]` and `GENDIR` follow. `TARGET_CPU` is the
+  platform's CPU (`x86_64`) on both.
 * `configuration.short_id` is the first 7 hex digits of the native
   configuration identity, not Bazel's BuildOptions checksum.
 

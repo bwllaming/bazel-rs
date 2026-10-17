@@ -102,7 +102,8 @@ fn staging_benchmark() {
                 environment: BTreeMap::new(),
                 shell_strict: true,
                 extra: ActionExtra::default(),
-            },
+..Default::default()
+},
             dependencies: Vec::new(),
             deferred: None,
         })

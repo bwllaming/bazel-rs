@@ -5,8 +5,8 @@
 //! `ctx.build_file_path`, `ctx.features`, `ctx.exec_groups`,
 //! `ctx.expand_make_variables`, `ctx.tokenize` and friends — with the values
 //! and messages of the paired capture against Bazel 9.3
-//! (tests/fixtures/ctx_surface/reference_receipt.json; native `rust-` roots
-//! where Bazel writes `k8-`, divergence D1).
+//! (tests/fixtures/ctx_surface/reference_receipt.json; the receipt's native
+//! `rust-` roots are historical: N41 closed divergence D1, roots are `k8-`).
 use base64::Engine as _;
 use std::fs;
 use std::io::Read;
@@ -264,14 +264,14 @@ fn rule_context_members_report_the_configuration() {
         r#"fragments=fragments <unknown object com.google.devtools.build.lib.analysis.FragmentCollection> ["android", "apple", "bazel_android", "coverage", "cpp", "j2objc", "java", "objc", "platform", "proto"]"#,
         "hasattr=[True, True, True, False, False]",
         r#"configuration=configuration <unknown object com.google.devtools.build.lib.analysis.config.BuildConfigurationValue> ["bin_dir", "coverage_enabled", "default_shell_env", "disabled_features", "genfiles_dir", "has_separate_genfiles_directory", "host_path_separator", "is_sibling_repository_layout", "is_tool_configuration", "runfiles_enabled", "short_id", "stamp_binaries", "test_env"]"#,
-        r#"cfg=["bazel-out/rust-fastbuild/bin", "bazel-out/rust-fastbuild/bin", ":", {"PATH": "/bin:/usr/bin:/usr/local/bin"}, {}, False, 7, False, False, False, False, True, set()]"#,
-        r#"roots=root <derived root> bazel-out/rust-fastbuild/bin bazel-out/rust-fastbuild/bin [True, ["path"]]"#,
-        r#"var={"TARGET_CPU": "x86_64", "COMPILATION_MODE": "fastbuild", "BINDIR": "bazel-out/rust-fastbuild/bin", "GENDIR": "bazel-out/rust-fastbuild/bin"}"#,
+        r#"cfg=["bazel-out/k8-fastbuild/bin", "bazel-out/k8-fastbuild/bin", ":", {"PATH": "/bin:/usr/bin:/usr/local/bin"}, {}, False, 7, False, False, False, False, True, set()]"#,
+        r#"roots=root <derived root> bazel-out/k8-fastbuild/bin bazel-out/k8-fastbuild/bin [True, ["path"]]"#,
+        r#"var={"TARGET_CPU": "x86_64", "COMPILATION_MODE": "fastbuild", "BINDIR": "bazel-out/k8-fastbuild/bin", "GENDIR": "bazel-out/k8-fastbuild/bin"}"#,
         "workspace_name=_main build_file_path=test/BUILD.bazel",
         r#"features=[["pkg_on", "rule_on"], ["both", "pkg_off"]]"#,
         "coverage=[False, False]",
         "exec_groups=ExecGroupCollection <ctx.exec_groups: > False",
-        "expand_make=fastbuild $HOME bar x86_64 bazel-out/rust-fastbuild/bin",
+        "expand_make=fastbuild $HOME bar x86_64 bazel-out/k8-fastbuild/bin",
         "expand_location=plain $$ $(FOO) $(location)",
         r#"tokenize=["a", "b c", "d e"]"#,
         "check_placeholders=[True, False]",
@@ -300,7 +300,7 @@ fn rule_context_members_report_the_configuration() {
         "//test:sx",
     ]);
     assert!(
-        opt.contains(r#"var={"TARGET_CPU": "x86_64", "COMPILATION_MODE": "opt", "BINDIR": "bazel-out/rust-opt/bin", "GENDIR": "bazel-out/rust-opt/bin", "A": "1", "FOO": "bar"}"#),
+        opt.contains(r#"var={"TARGET_CPU": "x86_64", "COMPILATION_MODE": "opt", "BINDIR": "bazel-out/k8-opt/bin", "GENDIR": "bazel-out/k8-opt/bin", "A": "1", "FOO": "bar"}"#),
         "{opt}"
     );
     // The package's features (FeatureSet.merge with no rule features).
@@ -316,9 +316,9 @@ fn rule_context_members_report_the_configuration() {
         ws.built(&["//test:t"]),
         [
             r#"configuration=configuration <unknown object com.google.devtools.build.lib.analysis.config.BuildConfigurationValue> ["bin_dir", "coverage_enabled", "default_shell_env", "disabled_features", "genfiles_dir", "has_separate_genfiles_directory", "host_path_separator", "is_sibling_repository_layout", "is_tool_configuration", "runfiles_enabled", "short_id", "stamp_binaries", "test_env"]"#,
-            r#"cfg=["bazel-out/rust-opt-exec/bin", "bazel-out/rust-opt-exec/bin", ":", {"PATH": "/bin:/usr/bin:/usr/local/bin"}, {}, False, 7, True, False, False, False, True, set()]"#,
-            r#"roots=root <derived root> bazel-out/rust-opt-exec/bin bazel-out/rust-opt-exec/bin [True, ["path"]]"#,
-            r#"var={"TARGET_CPU": "x86_64", "COMPILATION_MODE": "opt", "BINDIR": "bazel-out/rust-opt-exec/bin", "GENDIR": "bazel-out/rust-opt-exec/bin"}"#,
+            r#"cfg=["bazel-out/k8-opt-exec/bin", "bazel-out/k8-opt-exec/bin", ":", {"PATH": "/bin:/usr/bin:/usr/local/bin"}, {}, False, 7, True, False, False, False, True, set()]"#,
+            r#"roots=root <derived root> bazel-out/k8-opt-exec/bin bazel-out/k8-opt-exec/bin [True, ["path"]]"#,
+            r#"var={"TARGET_CPU": "x86_64", "COMPILATION_MODE": "opt", "BINDIR": "bazel-out/k8-opt-exec/bin", "GENDIR": "bazel-out/k8-opt-exec/bin"}"#,
             // The exec transition appends -g0 to --copt/--cxxopt
             // (builtin_exec_platforms.bzl:341-342).
             r#"cpp=["opt", False, True, ["-g0"]]"#,
@@ -527,7 +527,7 @@ top(name = "top", tool = ":fx")
             r#"features=[["x"], ["r"]]"#,
             "java=[]",
             "objc=True",
-            r#"var={"TARGET_CPU": "x86_64", "COMPILATION_MODE": "fastbuild", "BINDIR": "bazel-out/rust-fastbuild/bin", "GENDIR": "bazel-out/rust-fastbuild/bin", "C": "cc", "CC": "gcc", "T": "t2", "Z": "z"}"#,
+            r#"var={"TARGET_CPU": "x86_64", "COMPILATION_MODE": "fastbuild", "BINDIR": "bazel-out/k8-fastbuild/bin", "GENDIR": "bazel-out/k8-fastbuild/bin", "C": "cc", "CC": "gcc", "T": "t2", "Z": "z"}"#,
             "make=gcc t1 t1c",
             "",
         ]
@@ -604,7 +604,7 @@ fn ctx_surface_is_per_configured_target_key() {
     let built = ws.built(&["-c", "opt", "//test:t"]);
     let lines: Vec<&str> = built.lines().collect();
     assert_eq!(
-        lines[0], "t var=opt bin=bazel-out/rust-opt/bin cfg_bin=bazel-out/rust-opt/bin cpp=opt",
+        lines[0], "t var=opt bin=bazel-out/k8-opt/bin cfg_bin=bazel-out/k8-opt/bin cpp=opt",
         "{built}"
     );
     for (line, name) in [(lines[1], "edge_leaf"), (lines[2], "rule_leaf")] {
@@ -614,7 +614,7 @@ fn ctx_surface_is_per_configured_target_key() {
         assert_eq!(fields[4], "cpp=dbg", "{built}");
         let bin = fields[2].strip_prefix("bin=").unwrap();
         assert!(
-            bin.starts_with("bazel-out/rust-dbg") && bin.ends_with("/bin"),
+            bin.starts_with("bazel-out/k8-dbg") && bin.ends_with("/bin"),
             "{built}"
         );
         assert_eq!(fields[3], format!("cfg_bin={bin}"), "{built}");
@@ -624,7 +624,7 @@ fn ctx_surface_is_per_configured_target_key() {
     assert_eq!(lines[3], "key saw opt", "{built}");
     let output = ws.run(&["build", "-c", "opt", "//test:t"]);
     assert!(
-        errors(&output).contains("KEY k var=opt bin=bazel-out/rust-opt/bin"),
+        errors(&output).contains("KEY k var=opt bin=bazel-out/k8-opt/bin"),
         "{}",
         errors(&output)
     );

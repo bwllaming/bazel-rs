@@ -129,8 +129,9 @@ Implemented:
   is the available CPU count capped at 32; the library's `build()` remains serial.
 - Spawns use Bazel 9.3's argv and environment: genrules run
   `bash -c 'source …/genrule-setup.sh; CMD'` (`set -euo pipefail`) with
-  `PATH=/bin:/usr/bin:/usr/local/bin`; custom shell actions are plain `bash -c`.
-  SHA256 action keys use `native-action-v7`; output-content and executable
+  their configuration's action environment (strict `PATH=/bin:/usr/bin:/usr/local/bin`
+  by default, N42); custom shell actions are plain `bash -c`.
+  SHA256 action keys and manifests use `native-action-v8`; output-content and executable
   mode validation on cache hits; per-key cross-process locks; atomic publication.
 - An http(s) `--remote_cache` with Bazel's action keys (entries are shared with
   genuine Bazel both ways) and Bazel's credential helpers for the cache and the

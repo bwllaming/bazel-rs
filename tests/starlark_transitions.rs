@@ -242,7 +242,7 @@ red_dbg_deps = show_rule(deps_cfg = red_dbg)
 
 /// A rule transition writing a Starlark flag and `--compilation_mode`: the
 /// target and its dependencies are analyzed in the transitioned
-/// configuration, under `rust-dbg-ST-<hash>` (the ST hash covers the
+/// configuration, under `k8-dbg-ST-<hash>` (the ST hash covers the
 /// Starlark flag, compilation_mode is explicit in the path).
 #[test]
 fn rule_transition_on_a_starlark_flag_and_compilation_mode() {
@@ -255,15 +255,15 @@ show(name = "dep")
     )]);
     let (lines, contents, _) = ws.built(&["//:a"]);
     let mnemonic = root(&lines[0]);
-    assert!(mnemonic.starts_with("rust-dbg-ST-"), "{lines:?}");
-    assert_eq!(mnemonic.len(), "rust-dbg-ST-".len() + 12);
+    assert!(mnemonic.starts_with("k8-dbg-ST-"), "{lines:?}");
+    assert_eq!(mnemonic.len(), "k8-dbg-ST-".len() + 12);
     assert_eq!(
         contents,
         format!("a color=red-a n=0 lf=@@//f:dfl deps=[\"bazel-out/{mnemonic}/bin/dep.txt\"]\n")
     );
     // Requested on its own, the dependency stays in the top-level root.
     let (lines, contents, _) = ws.built(&["//:dep", "-c", "opt"]);
-    assert_eq!(root(&lines[0]), "rust-opt");
+    assert_eq!(root(&lines[0]), "k8-opt");
     assert_eq!(contents, "dep color=blue n=0 lf=@@//f:dfl deps=[]\n");
     // The ST hash depends on the values (another top-level -c gives the
     // same transitioned configuration: compilation_mode is written).
@@ -283,10 +283,10 @@ defaults_rule(name = "x")
 "#,
     )]);
     let (lines, contents, _) = ws.built(&["//:x"]);
-    assert_eq!(root(&lines[0]), "rust-fastbuild");
+    assert_eq!(root(&lines[0]), "k8-fastbuild");
     assert_eq!(contents, "x color=blue n=0 lf=@@//f:dfl deps=[]\n");
     let (lines, _, _) = ws.built(&["//:x", "-c", "dbg"]);
-    assert_eq!(root(&lines[0]), "rust-dbg");
+    assert_eq!(root(&lines[0]), "k8-dbg");
     // The same rule without the transition reuses the action: identical keys.
     ws.file(
         "BUILD.bazel",
@@ -335,7 +335,7 @@ edge = rule(_impl, attrs = dict(ALLOW, dep = attr.label(cfg = red_dbg)))
         ),
     ]);
     let (lines, contents, _) = ws.built(&["//:b"]);
-    assert_eq!(root(&lines[0]), "rust-fastbuild");
+    assert_eq!(root(&lines[0]), "k8-fastbuild");
     let mnemonic = contents
         .split("deps=[\"bazel-out/")
         .nth(1)
@@ -344,7 +344,7 @@ edge = rule(_impl, attrs = dict(ALLOW, dep = attr.label(cfg = red_dbg)))
         .next()
         .unwrap()
         .to_owned();
-    assert!(mnemonic.starts_with("rust-dbg-ST-"), "{contents}");
+    assert!(mnemonic.starts_with("k8-dbg-ST-"), "{contents}");
     assert_eq!(
         contents,
         format!(
@@ -355,11 +355,11 @@ edge = rule(_impl, attrs = dict(ALLOW, dep = attr.label(cfg = red_dbg)))
     assert_eq!(contents, "list [] []\n");
     let (_, contents, _) = ws.built(&["//:single"]);
     let single = contents
-        .strip_prefix("list [Label(\"//:dep\")] [\"bazel-out/rust-dbg-ST-")
+        .strip_prefix("list [Label(\"//:dep\")] [\"bazel-out/k8-dbg-ST-")
         .unwrap_or_else(|| panic!("{contents}"));
     assert!(single.ends_with("/bin/dep.txt\"]\n"), "{contents}");
     // Another rule name is another transitioned configuration.
-    assert_ne!(&single[..12], &mnemonic["rust-dbg-ST-".len()..]);
+    assert_ne!(&single[..12], &mnemonic["k8-dbg-ST-".len()..]);
 }
 
 /// Label-typed settings: a Label value, or a string parsed in the
@@ -406,7 +406,7 @@ relative = show_rule(cfg = transition(implementation = _relative, inputs = [], o
     );
     // Equal values give the same configuration.
     assert_eq!(root(&lines[0]), root(&lines[1]));
-    assert!(root(&lines[0]).starts_with("rust-fastbuild-ST-"));
+    assert!(root(&lines[0]).starts_with("k8-fastbuild-ST-"));
     let (_, contents, _) = ws.built(&["//:rel"]);
     assert_eq!(contents, "rel color=blue n=0 lf=@@//e:x deps=[]\n");
 }
@@ -427,7 +427,7 @@ show(name = "parent", deps = [":count"])
     )]);
     let (lines, contents, _) = ws.built(&["//:count"]);
     let mnemonic = root(&lines[0]).to_owned();
-    assert!(mnemonic.starts_with("rust-fastbuild-ST-"));
+    assert!(mnemonic.starts_with("k8-fastbuild-ST-"));
     assert_eq!(
         contents,
         format!("count color=blue n=1 lf=@@//f:dfl deps=[\"bazel-out/{mnemonic}/bin/dep.txt\"]\n")
@@ -1030,7 +1030,7 @@ implicit = rule(_impl, cfg = red_dbg)
         env!("CARGO_MANIFEST_DIR")
     );
     let (lines, contents, _) = ws.built(&["--experimental-builtin-modules", &registry, "//e:x"]);
-    assert!(root(&lines[0]).starts_with("rust-dbg-ST-"), "{lines:?}");
+    assert!(root(&lines[0]).starts_with("k8-dbg-ST-"), "{lines:?}");
     assert_eq!(
         contents,
         "allowlist=@@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist\n"
@@ -1073,10 +1073,7 @@ plat(name = "x", os = select({"//os:osx": "osx", "//os:linux": "linux"}))
         ),
     ]);
     let (lines, contents, _) = ws.built(&["--host_platform=//p:linux", "//e:x"]);
-    assert!(
-        root(&lines[0]).starts_with("rust-fastbuild-ST-"),
-        "{lines:?}"
-    );
+    assert!(root(&lines[0]).starts_with("k8-fastbuild-ST-"), "{lines:?}");
     assert_eq!(
         contents,
         "os=osx tool=[\"bazel-out/linux-opt-exec/bin/e/tool.sh\"]\n"
@@ -1134,10 +1131,7 @@ fn rules_go_shaped_transitions() {
     // bootstrap_nogo; static/pure keep the command-line value.
     let (lines, contents, _) =
         ws.built(&[&profile[..], &["//go:nogo_actual", "--//go/config:pure"]].concat());
-    assert!(
-        root(&lines[0]).starts_with("rust-fastbuild-ST-"),
-        "{lines:?}"
-    );
+    assert!(root(&lines[0]).starts_with("k8-fastbuild-ST-"), "{lines:?}");
     assert!(
         contents.contains("\nnogo_actual race=False pure=True linkmode=normal tags=[] request_nogo=False bootstrap_nogo=True original_race=\"\"\n"),
         "{contents}"
@@ -1320,7 +1314,7 @@ missing(name = "missing", deps = [":printing"])
     // None for an enum option is its default; for a boolean field Bazel's
     // reflective IllegalArgumentException.
     let (lines, _, _) = ws.built(&["//e:none_mode"]);
-    assert_eq!(root(&lines[0]), "rust-fastbuild");
+    assert_eq!(root(&lines[0]), "k8-fastbuild");
     assert_eq!(
         ws.rejected(&["//e:none_stamp"]),
         "bazel-rs: WS/e/fix.bzl:36:22: IllegalArgumentError for option 'stamp': Can not set boolean field com.google.devtools.build.lib.analysis.config.CoreOptions.stampBinaries to null value\nWS/e/BUILD.bazel:7:11: Errors encountered while applying Starlark transition\n"
@@ -1401,14 +1395,14 @@ bad_rule(name = "bad", v = V)
     );
     assert_eq!(contents, "jdk17\n");
     let mnemonic = root(&lines[0]);
-    assert!(mnemonic.starts_with("rust-fastbuild-ST-"), "{lines:?}");
+    assert!(mnemonic.starts_with("k8-fastbuild-ST-"), "{lines:?}");
     // Writing the values the configuration already has is a no-op.
     let (lines, contents, _) = ws.built(&[
         "//j:j",
         "--java_runtime_version=remotejdk_17",
         "--java_language_version=17",
     ]);
-    assert_eq!(root(&lines[0]), "rust-fastbuild");
+    assert_eq!(root(&lines[0]), "k8-fastbuild");
     assert_eq!(contents, "jdk17\n");
     assert!(
         ws.rejected(&["//j:bad"])

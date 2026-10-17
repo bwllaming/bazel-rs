@@ -98,7 +98,11 @@ action's framing of the target's mode); `tests/configured_target_keys.rs`
 pins pass unchanged. Manifests record symlink outputs and are
 `native-action-v7`; pre-v7 entries (v5 from main, v6) rebuild once. (N42 later
 moved the key identity to `native-action-v6` for exact action environments,
-docs/ACTION_ENV.md.)
+docs/ACTION_ENV.md; the N41 x N42 merge moved key and manifests together to
+`native-action-v8`, docs/REMOTE_CACHE.md: pre-v8 entries rebuild once. The
+manifest schema is unchanged. N41's compiled-in genrule-setup.sh is stored as
+an executable `cas/` blob and staged like every input; remote cache hits are
+written into the execution root and published through this store.)
 
 ## Trade-offs and limits
 
@@ -175,7 +179,8 @@ symlinks and special files are still rejected) and records each group as
 with identical bytes and mode. `cas/` is a publication root: every blob must be
 named by its own digest and read-only mode (`0444` plus executable bits), and a
 negative case may leave none. Action manifests are checked as
-`native-action-v7` regular-file outputs (`mode` `0555`, no `tree`/`symlink`).
+`native-action-v8` (v7 before the N41 x N42 merge) regular-file outputs
+(`mode` `0555`, no `tree`/`symlink`).
 Retained copies under `native-cache/` are independent single-link files.
 
 ## Paired capture

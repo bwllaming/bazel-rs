@@ -178,18 +178,20 @@ consume(name = "c", deps = [":gen", ":u"])
     ),
 ];
 
-// The pinned native action keys. N41 rekeyed them once (docs/REMOTE_CACHE.md):
-// D1 is closed (`k8-*` output roots), genrules run Bazel's argv
-// (`source .../genrule-setup.sh; CMD`, PATH env, the setup script input)
-// and the native cache format is native-action-v7 (spawns run with exactly
-// their keyed environment).
+// The pinned native action keys, re-pinned once for the N41 x N42 merge
+// (integration-14; docs/ACTION_ENV.md and docs/REMOTE_CACHE.md): the key and
+// manifest format is native-action-v8; D1 is closed (`k8-*` output roots),
+// genrules run Bazel's argv (`source .../genrule-setup.sh; CMD`, the setup
+// script a keyed input), run_shell pads `$0` only with arguments, and every
+// spawn's environment is N42's (fixed map, inherited names, resolved
+// client values), executed exactly as keyed (plus TMPDIR).
 #[test]
 fn action_keys_and_output_roots_match_the_pre_n18a_binary() {
     let ws = Workspace::new(FIXTURE);
     let targets = ["--host_platform=//p:linux", "//g:final", "//g:c", "//g:u"];
     let cold = ws.build("default-cache", &targets);
-    // Deliberately re-pinned for N42 (docs/ACTION_ENV.md, key format
-    // native-action-v6): every key changed. Genrules now run with Bazel's
+    // Deliberately re-pinned (see above; before: N42's native-action-v6,
+    // which itself re-pinned every key): every key changed. Genrules now run with Bazel's
     // configuration action environment (PATH=/bin:/usr/bin:/usr/local/bin,
     // no LANG/LC_ALL), and the native PATH/LANG/LC_ALL constant is no longer
     // framed into every key (writes included); the environment is framed as
@@ -198,20 +200,20 @@ fn action_keys_and_output_roots_match_the_pre_n18a_binary() {
     assert_eq!(
         ws.keys("default-cache"),
         [
-            "11030ee4e782b318d5640ac1fcc9f7b5d8578895582ce216152c59b342dc51c6",
-            "3960c70b19b130b0693f17736f303d5ec583a387a19c8ecbd3f64144a0612543",
-            "3b01a9dccd47ae94f0a3b4a51470379aea2a3346ac59d7fd4ada7d8b4d6c30ff",
-            "6058b04e540df1675767c990713b5507bf005b4b999e8cce492c8127195704f2",
-            "8aada8c6738e4ace6d47e999cf824f528ac9a196a638b04e8da48b9759c8cbe8",
-            "c60fb2f4e69892a8f78fcb7eaf25d3a6d7e8323d1c8707b64ce36aee86c1b603",
+            "081333d3a04df20bd5e97d2ad171bcbfdedda07b2ca6cf58c0e941e3f3b674b6",
+            "80276d639eafdc42187255bf2817ac38ed6be835a96e5677d515efbcda79945a",
+            "a59b787dd6adf44d47f4256e85703f469a30382f36768f044ec3f318b3610add",
+            "ac86cfdc1c87e32b3be3a0e6ca0fe125e294fc58a13988ac2125f831a91f0d0c",
+            "c0487c445714832edaa008badf63f01313458beb0bfc32a2e3c8f63ed0b03cc1",
+            "cde8b6368c40107ba1efba8c2fe924f9e54c1248d6fc26cdb523a787b55246cc",
         ]
     );
     assert_eq!(
         ws.outputs("default-cache", &cold),
         [
-            "//g:c\tACTIONS/c60fb2f4e69892a8f78fcb7eaf25d3a6d7e8323d1c8707b64ce36aee86c1b603/outputs/bazel-out/k8-fastbuild/bin/g/c.txt",
-            "//g:final\tACTIONS/3b01a9dccd47ae94f0a3b4a51470379aea2a3346ac59d7fd4ada7d8b4d6c30ff/outputs/bazel-out/k8-fastbuild/bin/g/final.txt",
-            "//g:u\tACTIONS/6058b04e540df1675767c990713b5507bf005b4b999e8cce492c8127195704f2/outputs/bazel-out/k8-fastbuild/bin/g/u.txt",
+            "//g:c\tACTIONS/cde8b6368c40107ba1efba8c2fe924f9e54c1248d6fc26cdb523a787b55246cc/outputs/bazel-out/k8-fastbuild/bin/g/c.txt",
+            "//g:final\tACTIONS/80276d639eafdc42187255bf2817ac38ed6be835a96e5677d515efbcda79945a/outputs/bazel-out/k8-fastbuild/bin/g/final.txt",
+            "//g:u\tACTIONS/c0487c445714832edaa008badf63f01313458beb0bfc32a2e3c8f63ed0b03cc1/outputs/bazel-out/k8-fastbuild/bin/g/u.txt",
         ]
     );
     assert!(summary(&cold).contains("6 actions executed, 0 cache hits"));
@@ -220,7 +222,7 @@ fn action_keys_and_output_roots_match_the_pre_n18a_binary() {
             .unwrap()
             .map(|entry| entry.unwrap().path())
             .find(|path| {
-                path.ends_with("3b01a9dccd47ae94f0a3b4a51470379aea2a3346ac59d7fd4ada7d8b4d6c30ff")
+                path.ends_with("80276d639eafdc42187255bf2817ac38ed6be835a96e5677d515efbcda79945a")
             })
             .unwrap()
             .join("outputs/bazel-out/k8-fastbuild/bin/g/final.txt"),
@@ -245,26 +247,26 @@ fn action_keys_and_output_roots_match_the_pre_n18a_binary() {
     assert_eq!(
         ws.keys("dbg-cache"),
         [
-            "4aaeadae82d4dab8603e1e7d8422c295e009f88559bae16dedb1a1b462a87acb",
-            "5d52495a3673511bf545abbe0c0324253207345d47ac28732f7e6365cf0b68f6",
-            "830ca6ab7d268a5bb38c676db5fdc90cbc899d6aee9ee97c15769c4261455b8a",
-            "c6d36ff3afbd6b3feb7b8276c8a0d275505a027384d3192b1636b10ede3a509a",
-            "ccebf87fccbd15f4612ed44d0df3f11c5f4959acc0640b70fee04bb3ac8ded5e",
-            "f9996de0e7750bba7965c4d89d029cb40c487f5133dc78c85b2b85825ec0cd1c",
+            "2261a84d8c11a08dffce7e217eb73c99ef89d93866e09d6385abce3460379ddc",
+            "34e68fe10d1e6cd03bcb66428a936fe54a614605433b91336d8c75dbcdef0bb8",
+            "6995ea95bd12d702570e9ec056067d52cccde454d1c35e4a0414afedb7cff48a",
+            "9689167d0d64a7c138e94c00b099c9fed9d4088ed2ae183f93b7f6edc2524776",
+            "c3348a31c0d656311deee3a3e9ae8c7d73ebf350ac2024189f37fb45c9dc5bb3",
+            "e54b1319ee442d963c8c6c307f44552e0f4cc308e4bc00a3c120e97cef439357",
         ]
     );
     assert_eq!(
         ws.outputs("dbg-cache", &dbg),
         [
-            "//g:c\tACTIONS/4aaeadae82d4dab8603e1e7d8422c295e009f88559bae16dedb1a1b462a87acb/outputs/bazel-out/k8-dbg/bin/g/c.txt",
-            "//g:final\tACTIONS/ccebf87fccbd15f4612ed44d0df3f11c5f4959acc0640b70fee04bb3ac8ded5e/outputs/bazel-out/k8-dbg/bin/g/final.txt",
+            "//g:c\tACTIONS/c3348a31c0d656311deee3a3e9ae8c7d73ebf350ac2024189f37fb45c9dc5bb3/outputs/bazel-out/k8-dbg/bin/g/c.txt",
+            "//g:final\tACTIONS/6995ea95bd12d702570e9ec056067d52cccde454d1c35e4a0414afedb7cff48a/outputs/bazel-out/k8-dbg/bin/g/final.txt",
         ]
     );
 }
 
-/// Re-pinned for N42 (docs/ACTION_ENV.md): genrules run with the strict
-/// configuration environment and the key format is native-action-v6; the
-/// keys stay stable across builds.
+/// Re-pinned for the N41 x N42 merge (native-action-v8; genrules run Bazel's
+/// argv with genrule-setup.sh in their configuration's environment, k8
+/// roots; before: N42's v6); the keys stay stable across builds.
 #[test]
 fn existing_genrule_fixture_keys_are_pinned() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/basic");
@@ -279,8 +281,8 @@ fn existing_genrule_fixture_keys_are_pinned() {
     assert_eq!(
         ws.keys("cache"),
         [
-            "070b0f6973d83f4dd2c4d4f446008d1730c9b9def52f64a895612d7784c85812",
-            "6eac64d5b44bf36fe44662922d5e270dfa8d8abfb97f8faf09d7671495a6d67e",
+            "0966e42b771a732a54937cf7e805869a4a77f70ada64f475a97c7a633c43a6e6",
+            "de6236b4c1e5eb9d6bc2cecf28a7804fda456379a0ad01c20091d15935ea229a",
         ]
     );
     assert!(summary(&output).contains("2 actions executed, 0 cache hits"));

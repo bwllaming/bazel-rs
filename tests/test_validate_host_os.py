@@ -627,7 +627,7 @@ if __name__ == '__main__':
 
 
 class MigrationCountsTest(unittest.TestCase):
-    def test_first_new_build_rebuilds_once_after_manifest_v7(self):
+    def test_first_new_build_rebuilds_once_after_manifest_v8(self):
         import validate_host_os as h
         self.assertEqual(h.migration_counts('migration', 2, True), (1, 0))
         self.assertEqual(h.migration_counts('migration', 3, True), (0, 1))

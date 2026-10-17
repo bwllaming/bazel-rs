@@ -34,8 +34,8 @@ use crate::platforms::TargetPlatform;
 pub struct CtxSurface {
     /// BuildConfigurationValue.getBinDirectory(RepositoryName.MAIN)
     /// (analysis/config/BuildConfigurationValue.java:398-415): the
-    /// configuration's output root, `bazel-out/<mnemonic>/bin` (divergence D1:
-    /// the CPU token `rust` where Bazel writes `k8`).
+    /// configuration's output root, `bazel-out/<mnemonic>/bin` (Bazel's `k8`
+    /// CPU token since N41 closed divergence D1).
     pub bin_dir: String,
     pub compilation_mode: &'static str,
     /// CoreOptions.commandLineBuildVariables (`--define`), normalized: last
@@ -1943,8 +1943,8 @@ mod tests {
             [
                 ("TARGET_CPU", ""),
                 ("COMPILATION_MODE", "x"),
-                ("BINDIR", "bazel-out/rust-fastbuild/bin"),
-                ("GENDIR", "bazel-out/rust-fastbuild/bin"),
+                ("BINDIR", "bazel-out/k8-fastbuild/bin"),
+                ("GENDIR", "bazel-out/k8-fastbuild/bin"),
                 ("CC", "gcc"),
                 ("A", "1"),
                 ("R", "$(A)$(A)"),

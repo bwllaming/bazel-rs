@@ -5532,7 +5532,8 @@ impl Engine {
             .get(&ConfiguredTargetKey::new(host.clone(), config))
         {
             Some(Ok(info))
-                if info.exec_properties.is_empty() && info.remote_execution_properties.is_empty() =>
+                if info.exec_properties.is_empty()
+                    && info.remote_execution_properties.is_empty() =>
             {
                 None
             }
@@ -6055,8 +6056,7 @@ impl Engine {
                 let mut action = registered.action;
                 if action.write.is_none() && action.extra.transform.is_none() {
                     action.execution_info = rule_execution_info(rule);
-                    action.remote_unsupported =
-                        self.remote_platform_gate(rule, config, execution);
+                    action.remote_unsupported = self.remote_platform_gate(rule, config, execution);
                 }
                 let mut planned = plan_action(action, inputs, &main_ignored, client_environment)?;
                 planned.deferred = registered.deferred;

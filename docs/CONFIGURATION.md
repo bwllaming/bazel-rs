@@ -375,8 +375,8 @@ default true, `CoreOptions.java:182-194`; no
 `--experimental_override_platform_cpu_name`): the platform's **name**, unless
 it is one of `host`, `host_platform`, `target_platform`, `default_host`,
 `default_target` (`PlatformOptions.platformIsDefault`,
-`analysis/PlatformOptions.java:43-50`), then the CPU (Bazel `k8`, natively
-`rust`) (`OutputPathMnemonicComputer.handlePlatformCpuDescriptor` /
+`analysis/PlatformOptions.java:43-50`), then the CPU (`k8` on both since
+N41; natively `rust` before) (`OutputPathMnemonicComputer.handlePlatformCpuDescriptor` /
 `computePlatformName`, `analysis/config/OutputPathMnemonicComputer.java:247-282`).
 `platforms` is then marked explicit in the output path, so it never enters
 the `ST-` hash; the baseline (`BuildConfigurationFunction.getBaselineOptions`,
@@ -662,7 +662,7 @@ and `ctx.files` are unchanged.
 
 **Output paths.** A transitioned target configuration is named against the
 top-level configuration (`diff_against_dynamic_baseline`):
-`rust-{compilation_mode}[-ST-{12 hex}]`, the hash over every other differing
+`k8-{compilation_mode}[-ST-{12 hex}]` (`rust-` before N41), the hash over every other differing
 option, native or Starlark (computeNameFragmentWithDiff). A transition below
 an exec edge keeps `is exec configuration` and is named against the exec
 baseline with its own platform. The exec baseline is computed once with

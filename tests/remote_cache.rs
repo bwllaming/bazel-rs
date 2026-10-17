@@ -679,15 +679,12 @@ fn strict_action_env_is_the_modelled_default() {
         &["build", "--incompatible_strict_action_env", "//pkg:gen"],
     );
     assert!(built.status.success(), "{}", stderr(&built));
-    let failed = ws.run(
+    // N42 models the non-strict environment too (docs/ACTION_ENV.md).
+    let loose = ws.run(
         "c",
         &["build", "--noincompatible_strict_action_env", "//pkg:gen"],
     );
-    assert!(
-        stderr(&failed).contains("--noincompatible_strict_action_env (inheriting the client PATH"),
-        "{}",
-        stderr(&failed)
-    );
+    assert!(loose.status.success(), "{}", stderr(&loose));
     // A genrule sees Bazel's strict PATH and genrule-setup.sh's `set -u`.
     ws.file(
         "env/BUILD.bazel",
@@ -850,4 +847,167 @@ fn inline_contents_and_exec_properties_are_checked() {
         stderr(&built)
     );
     assert!(server.summary().is_empty());
+}
+
+/// The N41 x N42 invariant (crate::action::resolved_environment): the
+/// executed environment equals the keyed `Command.environment_variables`
+/// apart from TMPDIR, also with inherited `--action_env` names (resolved
+/// from the client environment) and a declared TMPDIR, which Bazel keys but
+/// the executor replaces last (PosixLocalEnvProvider).
+#[test]
+fn executed_environment_equals_the_resolved_environment_with_inherited_values() {
+    let ws = Workspace::new();
+    let server = Server::new();
+    ws.file(
+        "envs/defs.bzl",
+        r#"def _shell(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.run_shell(command = "export -p > " + out.path, outputs = [out], use_default_shell_env = True, env = {"X": "1"})
+    return [DefaultInfo(files = depset([out]))]
+envshell = rule(_shell)
+"#,
+    );
+    ws.file(
+        "envs/BUILD.bazel",
+        "load(\":defs.bzl\", \"envshell\")\ngenrule(name = \"gen\", outs = [\"gen.txt\"], cmd = \"export -p > $@\")\nenvshell(name = \"shell\")\n",
+    );
+    let built = ws.run(
+        "c",
+        &[
+            "build",
+            &format!("--remote_cache={}", server.url()),
+            "--action_env=N41_MARK",
+            "--action_env=HOME",
+            "--action_env=NOT_IN_CLIENT",
+            "--action_env=FIXED=1",
+            "--action_env=TMPDIR=/explicit",
+            "//envs:all",
+        ],
+    );
+    assert!(built.status.success(), "{}", stderr(&built));
+    let state = server.state.lock().unwrap();
+    let mut checked = 0;
+    for (label, path) in String::from_utf8_lossy(&built.stdout)
+        .lines()
+        .map(|line| line.split_once('\t').unwrap())
+    {
+        let text = fs::read_to_string(path).unwrap();
+        let tmpdir = text
+            .lines()
+            .find_map(|line| line.strip_prefix("declare -x TMPDIR="))
+            .map(|value| value.trim_matches('"').to_owned())
+            .unwrap();
+        assert!(tmpdir.starts_with('/') && tmpdir != "/explicit", "{tmpdir}");
+        let executed = exported(&text);
+        let exec_path = path.split("/outputs/").nth(1).unwrap();
+        let mut keyed = None;
+        for blob in state.blobs.keys() {
+            let Some(key) = blob.strip_prefix("/ac/") else {
+                continue;
+            };
+            let digest = bazel_rs::reapi::Action::decode_command_digest(
+                &state.blobs[&format!("/cas/{key}")],
+            )
+            .unwrap();
+            let command =
+                bazel_rs::reapi::Command::decode(&state.blobs[&format!("/cas/{}", digest.hash)])
+                    .unwrap();
+            if command.output_paths == [exec_path] {
+                keyed = Some(command.environment);
+            }
+        }
+        let mut keyed = keyed.unwrap_or_else(|| panic!("no Command for {label}"));
+        assert_eq!(
+            keyed.remove("TMPDIR").as_deref(),
+            Some("/explicit"),
+            "{label}"
+        );
+        assert_eq!(
+            keyed.get("N41_MARK").map(String::as_str),
+            Some("client-env")
+        );
+        assert_eq!(keyed.get("FIXED").map(String::as_str), Some("1"));
+        assert!(!keyed.contains_key("NOT_IN_CLIENT"), "{label}");
+        assert_eq!(executed, keyed, "{label}");
+        checked += 1;
+    }
+    assert_eq!(checked, 2);
+}
+
+/// Merge recipe (N41 x N23d/N36): parameter files are input-root files, so
+/// a parameter-file spawn shares its entry across caches; tree artifact
+/// outputs stay local (no output_directories); a remote hit is published
+/// through the content-addressed store like an executed output (one inode
+/// with its `cas/<sha256>-<mode>` blob).
+#[test]
+fn param_files_trees_and_hits_through_the_store() {
+    let ws = Workspace::new();
+    let server = Server::new();
+    ws.file(
+        "rc/defs.bzl",
+        r#"def _params(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    args = ctx.actions.args()
+    args.use_param_file("@%s", use_always = True)
+    args.add("--flag").add(out.path)
+    ctx.actions.run_shell(command = "cat ${1#@} > $(tail -n1 ${1#@})", arguments = [args], outputs = [out])
+    return [DefaultInfo(files = depset([out]))]
+params = rule(_params)
+def _tree(ctx):
+    out = ctx.actions.declare_directory(ctx.label.name)
+    ctx.actions.run_shell(command = "echo x > " + out.path + "/f", outputs = [out])
+    return [DefaultInfo(files = depset([out]))]
+tree = rule(_tree)
+"#,
+    );
+    ws.file(
+        "rc/BUILD.bazel",
+        "load(\":defs.bzl\", \"params\", \"tree\")\nparams(name = \"p\")\ntree(name = \"t\")\n",
+    );
+    let cache = format!("--remote_cache={}", server.url());
+    let tree = ws.run("w", &["build", &cache, "//rc:t"]);
+    assert!(tree.status.success(), "{}", stderr(&tree));
+    assert!(
+        stderr(&tree).contains("WARNING: Remote Cache: not used for //rc:t")
+            && stderr(&tree).contains("output_directories are not modelled"),
+        "{}",
+        stderr(&tree)
+    );
+    assert!(server.summary().is_empty(), "{:?}", server.summary());
+    let written = ws.run("w", &["build", &cache, "//rc:p"]);
+    assert!(written.status.success(), "{}", stderr(&written));
+    let params = &outputs(&written)["//rc:p"];
+    assert!(params.starts_with("--flag\n"), "{params}");
+    // One ActionResult: the parameter-file spawn (its input root holds the
+    // parameter file at <output>-0.params, crate::action::remote_action).
+    let entries = server
+        .state
+        .lock()
+        .unwrap()
+        .blobs
+        .keys()
+        .filter(|key| key.starts_with("/ac/"))
+        .count();
+    assert_eq!(entries, 1);
+    // A fresh native cache reads the entry: published through the store.
+    let read = ws.run_with("r", &["build", &cache, "//rc:p"], false);
+    assert!(read.status.success(), "{}", stderr(&read));
+    assert!(
+        stderr(&read).contains("0 actions executed, 0 cache hits, 1 remote cache hits"),
+        "{}",
+        stderr(&read)
+    );
+    let line = String::from_utf8_lossy(&read.stdout).into_owned();
+    let path = PathBuf::from(line.trim_end().split_once('\t').unwrap().1);
+    assert_eq!(fs::read_to_string(&path).unwrap(), *params);
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::metadata(&path).unwrap();
+    assert_eq!(metadata.mode() & 0o7777, 0o555);
+    assert!(metadata.nlink() >= 2, "{}", metadata.nlink());
+    let cas = ws.0.join("r/cas");
+    let blob = fs::read_dir(&cas)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|blob| fs::metadata(blob).unwrap().ino() == metadata.ino());
+    assert!(blob.is_some(), "no cas blob shares the output inode");
 }

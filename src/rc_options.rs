@@ -19,11 +19,6 @@ pub struct RcOptions {
     /// `--experimental_isolated_extension_usages`
     /// (packages/semantics/BuildLanguageOptions.java:278-286).
     pub isolated_extension_usages: bool,
-    /// `--remote_upload_local_results` (remote/options/RemoteOptions.java:333-340,
-    /// default true). Only consulted with a disk, HTTP or gRPC cache or remote
-    /// execution (remote/RemoteModule.java:526-531); none of them is a native
-    /// option, so the value has no effect yet (the remote cache work reads it).
-    pub remote_upload_local_results: bool,
     /// `--test_output` (exec/ExecutionOptions.java:271-293); only test
     /// execution reads it (runtime/commands/TestCommand.java:84-100,
     /// runtime/TestSummaryPrinter.java:51-90), so it has no effect on `build`.
@@ -39,7 +34,6 @@ impl Default for RcOptions {
             repo_env: Vec::new(),
             attempt_to_print_relative_paths: false,
             isolated_extension_usages: false,
-            remote_upload_local_results: true,
             test_output: "summary",
             test_summary: "short",
         }
@@ -59,12 +53,9 @@ const TEST_SUMMARY: &[&str] = &[
     "testcase",
 ];
 
-/// Remote execution options (remote/options/RemoteOptions.java:91, :367, :601).
-const REMOTE_EXECUTION: &[&str] = &[
-    "remote_executor",
-    "remote_instance_name",
-    "remote_default_exec_properties",
-];
+/// Remote execution options (remote/options/RemoteOptions.java:91, :601).
+/// `--remote_instance_name` (:367) is N41's: HTTP caches accept and ignore it.
+const REMOTE_EXECUTION: &[&str] = &["remote_executor", "remote_default_exec_properties"];
 
 /// `ARG :: MESSAGE` (BlazeOptionHandler.java:104, 628-637).
 fn invalid_argument(arg: &str, message: String) -> String {
@@ -172,10 +163,10 @@ impl RcOptions {
             self.isolated_extension_usages = value?;
             return Ok(Some(false));
         }
-        if let Some(value) = boolean(arg, &["remote_upload_local_results"]) {
-            self.remote_upload_local_results = value?;
-            return Ok(Some(false));
-        }
+        // `--[no]remote_upload_local_results`, `--remote_instance_name` and
+        // the other modelled RemoteOptions are N41's
+        // (crate::remote_cache::RemoteOptions); remote execution stays an
+        // explicit failure here (REMOTE_EXECUTION).
         if let Some(value) = boolean(arg, &["incompatible_enable_proto_toolchain_resolution"]) {
             // Default true (packages/semantics/FlagConstants.java:48); the
             // native proto_common_do_not_use exports True (crate::language_modules).
@@ -256,7 +247,6 @@ mod tests {
                 "TERSE",
                 "--attempt_to_print_relative_paths=true",
                 "--repo_env=JAVA_HOME=../bazel_tools/jdk",
-                "--noremote_upload_local_results",
                 "--experimental_isolated_extension_usages",
                 "--incompatible_enable_proto_toolchain_resolution",
                 "--repo_env",
@@ -266,7 +256,17 @@ mod tests {
         .unwrap();
         assert!(options.attempt_to_print_relative_paths);
         assert!(options.isolated_extension_usages);
-        assert!(!options.remote_upload_local_results);
+        // N41's RemoteOptions own these (crate::remote_cache).
+        for arg in [
+            "--noremote_upload_local_results",
+            "--remote_instance_name=dev",
+        ] {
+            assert_eq!(
+                RcOptions::default().parse("build", arg, None, "").unwrap(),
+                None,
+                "{arg}"
+            );
+        }
         assert_eq!(
             (options.test_output, options.test_summary),
             ("errors", "terse")
@@ -343,7 +343,7 @@ mod tests {
                 "remote execution is not implemented",
             ),
             (
-                &["--remote_instance_name", "dev"][..],
+                &["--remote_default_exec_properties", "OSFamily=linux"][..],
                 "remote execution is not implemented",
             ),
         ] {

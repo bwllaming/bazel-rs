@@ -103,7 +103,7 @@ and `mod`:
 | `--remote_timeout` (default 60s; unitless means seconds) | connect and read timeout |
 | `--remote_header`, `--remote_cache_header` (`NAME=VALUE`) | sent with every request |
 | `--remote_instance_name` | accepted; HTTP caches ignore it, like Bazel |
-| `--[no]incompatible_strict_action_env` (build) | true (the default) is the modelled environment; false fails explicitly |
+| `--[no]incompatible_strict_action_env` (build) | both values, N42's action environment (docs/ACTION_ENV.md) |
 | anything else (`--disk_cache`, `--remote_retries`, `--remote_download_outputs`, TLS options…) | unmodelled option error |
 
 **Setup** (`RemoteModule.java:429-640, 1458-1490`). An absent port becomes the
@@ -147,11 +147,14 @@ the spawns (the paired capture confirms every point):
 
 * genrule: `["/bin/bash", "-c", "source external/bazel_tools/tools/genrule/genrule-setup.sh; CMD"]`
   (`rules/genrule/GenRuleBase.java:141-147`, `analysis/BashCommandConstructor.java`),
-  environment `PATH=/bin:/usr/bin:/usr/local/bin` (strict action environment,
-  `bazel/rules/BazelRuleClassProvider.java:139-202, 347-361`), and
-  `@bazel_tools//tools/genrule:genrule-setup.sh` as an input (its bytes are
-  compiled in, `resources/genrule-setup.sh`, checked against the embedded
-  tools manifest). Genrules therefore now run with Bazel's `set -euo
+  environment the configuration's action environment (N42,
+  `ActionEnvironment::shell`: `PATH=/bin:/usr/bin:/usr/local/bin` under the
+  default strict action environment, `bazel/rules/BazelRuleClassProvider.java:139-202,
+  347-361`, plus `--action_env`; `--host_action_env` for exec configurations),
+  and `@bazel_tools//tools/genrule:genrule-setup.sh` as an input (its bytes
+  are compiled in, `resources/genrule-setup.sh`, checked against the embedded
+  tools manifest; stored as an executable `cas/` blob and staged through
+  N36's store like every input). Genrules therefore now run with Bazel's `set -euo
   pipefail` from that script instead of native `-e -o pipefail` flags.
   Commands longer than 64000 characters (Bazel runs them from a generated
   script file) fail explicitly.
@@ -162,18 +165,35 @@ the spawns (the paired capture confirms every point):
 * `ctx.actions.run` with a File executable: argv[0] is its execution path
   (formerly `./PATH`); the process is started from the execution root with
   that argv[0].
-* The environment of `run`/`run_shell` is exactly `env` (empty by default).
-  Every native spawn runs with exactly its keyed environment
-  (`Command.environment_variables`) plus `TMPDIR`, like Bazel's local spawns:
-  no `PATH`, `LANG` or `LC_ALL` is added (before the N41 review the executor
-  added `PATH=/usr/bin:/bin`, `LANG=C`, `LC_ALL=C`, which a remote entry's
-  key did not cover). A bare executable name without `PATH` resolves with
-  glibc's default search path. `tests/remote_cache.rs`
-  (`executed_environment_equals_the_keyed_environment`) compares the
-  exported environment of a genrule, `run` and `run_shell` with the uploaded
-  Command. This changed the native cache format to `native-action-v7`.
-* Execution properties (a target's `exec_properties`, or an execution
-  platform with `exec_properties`/`remote_execution_properties`) enter
+* The environment of `run`/`run_shell` is N42's
+  SpawnAction.createActionEnvironment (exactly `env` by default, the
+  configuration's shell environment with `use_default_shell_env`).
+  `Command.environment_variables` and the executed environment are one map,
+  `crate::action::resolved_environment`: the fixed values, then the client
+  values of the inherited names (`--action_env=NAME`, resolved once per
+  build), a declared `TMPDIR` included; the executor applies it and then
+  replaces `TMPDIR` last with its fresh directory, like Bazel's local spawns
+  (PosixLocalEnvProvider). No `PATH`, `LANG` or `LC_ALL` is added. A bare
+  executable name without `PATH` resolves with glibc's default search path.
+  `tests/remote_cache.rs` (`executed_environment_equals_the_keyed_environment`,
+  `executed_environment_equals_the_resolved_environment_with_inherited_values`)
+  compares the exported environment of genrules, `run` and `run_shell` with
+  the uploaded Command (equal apart from TMPDIR). With N42's environment
+  framing and the k8 roots this is the native cache format
+  `native-action-v8` (keys and manifests; docs/ACTION_ENV.md records the
+  rekey; the keyed tests were re-pinned once).
+* Parameter files (`args.use_param_file`) are files of the input root at
+  their `<output>-N.params` execution paths (Bazel's ParamFileActionInput);
+  tree artifact inputs contribute their files (no empty subdirectories).
+* Tree artifact outputs need `ActionResult.output_directories`, which is not
+  modelled: such spawns stay local (`WARNING: Remote Cache: not used for …
+  output_directories are not modelled`). Cached entries with
+  `output_directories` or `output_symlinks` for a declared output are
+  rejected. Symlink outputs (`ctx.actions.symlink`) are native transforms,
+  never spawns, so they never use the remote cache.
+* Execution properties (a target's `exec_properties`, an action's combined
+  exec-group properties (N35), or an execution platform with
+  `exec_properties`/`remote_execution_properties`) enter
   Bazel's key as a `Platform` message, which is not modelled: such spawns
   never use the remote cache (`WARNING: Remote Cache: not used for …`). A
   non-default `--host_platform` that analysis did not resolve counts as
@@ -194,7 +214,9 @@ missing declared output or a missing CAS blob is a miss. Every declared output
 is downloaded and verified (`--remote_verify_downloads`; inlined
 `contents`/`stdout_raw`/`stderr_raw` are verified against their digests too),
 stdout/stderr are
-replayed, and the outputs enter the native action cache. Bazel's default
+replayed, and the outputs are written into the execution root and published
+into the native action cache through the content-addressed store
+(docs/HARDLINK_STAGING.md), exactly like executed outputs. Bazel's default
 `--remote_download_outputs=toplevel` skips downloading intermediate outputs;
 the native profile always materializes them (like `=all`), so its request log
 has more CAS `GET`s on hits. On a miss the action runs locally and, with

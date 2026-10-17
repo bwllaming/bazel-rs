@@ -234,20 +234,20 @@ fn param_files_follow_bazel_naming_formats_and_threshold() {
     let (outputs, _) = ws.build(&["//pkg:params"]);
     assert_eq!(
         read(&outputs, "pkg/always.txt"),
-        "[@bazel-out/rust-fastbuild/bin/pkg/always.txt-0.params]\n<<always.txt-0.params>>\n--flag\n'v w'\n'it'\\''s'\none\n<<end>>\n"
+        "[@bazel-out/k8-fastbuild/bin/pkg/always.txt-0.params]\n<<always.txt-0.params>>\n--flag\n'v w'\n'it'\\''s'\none\n<<end>>\n"
     );
     assert_eq!(
         read(&outputs, "pkg/flag_per_line.txt"),
-        "[--params=bazel-out/rust-fastbuild/bin/pkg/flag_per_line.txt-0.params]\n<<flag_per_line.txt-0.params>>\n--k=v w\n--many=1 2\n<<end>>\n[pos]\n"
+        "[--params=bazel-out/k8-fastbuild/bin/pkg/flag_per_line.txt-0.params]\n<<flag_per_line.txt-0.params>>\n--k=v w\n--many=1 2\n<<end>>\n[pos]\n"
     );
     // Two parameter-file parts are numbered by their position among spilled
     // parts; a part under the threshold stays inline.
     assert_eq!(
         read(&outputs, "pkg/parts.txt"),
-        "[lit]\n[@bazel-out/rust-fastbuild/bin/pkg/parts.txt-0.params]\n<<parts.txt-0.params>>\n--flag\n'v w'\n'it'\\''s'\none\n<<end>>\n[small]\n[end]\n"
+        "[lit]\n[@bazel-out/k8-fastbuild/bin/pkg/parts.txt-0.params]\n<<parts.txt-0.params>>\n--flag\n'v w'\n'it'\\''s'\none\n<<end>>\n[small]\n[end]\n"
     );
     let big = read(&outputs, "pkg/big.txt");
-    assert!(big.starts_with("[@bazel-out/rust-fastbuild/bin/pkg/big.txt-0.params]\n"));
+    assert!(big.starts_with("[@bazel-out/k8-fastbuild/bin/pkg/big.txt-0.params]\n"));
     assert_eq!(big.matches(&"x".repeat(100)).count(), 400);
     assert_eq!(mode(&outputs, "pkg/always.txt"), 0o555);
 
@@ -269,11 +269,11 @@ fn tree_artifacts_expand_in_args_written_args_and_symlinks() {
     let (outputs, _) = ws.build(&["//pkg:tree"]);
     assert_eq!(
         read(&outputs, "pkg/consumer.txt"),
-        "[base:a.txt]\n[base:b.md]\n[a.txt,txt,b.md,md]\n[bazel-out/rust-fastbuild/bin/pkg/tree]\n"
+        "[base:a.txt]\n[base:b.md]\n[a.txt,txt,b.md,md]\n[bazel-out/k8-fastbuild/bin/pkg/tree]\n"
     );
     assert_eq!(
         read(&outputs, "pkg/written.txt"),
-        "base:a.txt\nbase:b.md\na.txt,txt,b.md,md\nbazel-out/rust-fastbuild/bin/pkg/tree\n"
+        "base:a.txt\nbase:b.md\na.txt,txt,b.md,md\nbazel-out/k8-fastbuild/bin/pkg/tree\n"
     );
     for name in ["pkg/tree", "pkg/tree_link"] {
         let root = &outputs.iter().find(|(r, _)| r == name).unwrap().1;
@@ -335,7 +335,7 @@ fn rejections_are_bazel_messages_or_explicit_native_gaps() {
         ),
         (
             "//pkg:symlink_exec",
-            "Creating symlink pkg/o failed: failed to create symbolic link 'bazel-out/rust-fastbuild/bin/pkg/o': file 'pkg/src.txt' is not executable",
+            "Creating symlink pkg/o failed: failed to create symbolic link 'bazel-out/k8-fastbuild/bin/pkg/o': file 'pkg/src.txt' is not executable",
         ),
         (
             "//pkg:add_dir",
