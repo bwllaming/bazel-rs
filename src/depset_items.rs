@@ -427,16 +427,19 @@ pub(crate) fn check_element(value: Value<'_>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The frozen copy of a list-like or dict (`entries` are the elements, or the
-/// key/value pairs) whose contents are all immutable and have owned
-/// snapshots without a configured target (whose re-allocation would not keep
-/// its `==` identity): `cc_internal.freeze`'s StarlarkList/Dict.immutableCopyOf
-/// (N49b, crate::cc_common::freeze). `None` otherwise.
+/// The frozen copy of a list-like or dict (`elements` are the elements, or
+/// the key/value pairs in turn): `cc_internal.freeze`'s
+/// StarlarkList/Dict.immutableCopyOf (N49b, crate::cc_common::freeze),
+/// re-allocated from owned snapshots. Bazel's copy is shallow; natively every
+/// element must be immutable (then shallow and deep agree) and have an owned
+/// snapshot without a configured target (whose re-allocation would not keep
+/// its `==` identity). Otherwise the error names the offending element.
 pub(crate) fn frozen_copy<'v>(
     heap: Heap<'v>,
     elements: &[Value<'v>],
     pairs: bool,
-) -> Option<Value<'v>> {
+    functions: &dyn Fn(Value<'_>) -> Option<OwnedFrozenValue>,
+) -> Result<Value<'v>, String> {
     fn has_target(item: &Item) -> bool {
         match item {
             Item::Target(_) => true,
@@ -448,12 +451,37 @@ pub(crate) fn frozen_copy<'v>(
     }
     let mut items = Vec::with_capacity(elements.len());
     for &value in elements {
-        if !matches!(mutability(value, 0), Mutability::Immutable) {
-            return None;
+        let kind = value.get_type();
+        match mutability(value, 0) {
+            Mutability::Immutable => {}
+            Mutability::Mutable => {
+                return Err(format!(
+                    "a mutable value of type '{kind}' (Bazel's shallow immutable copy keeps it mutable)"
+                ));
+            }
+            Mutability::Unknown(inner) => {
+                return Err(format!(
+                    "a value of type '{kind}' holding a value of type '{inner}' (its immutability is not modelled)"
+                ));
+            }
         }
-        let item = snapshot(value, &|_| None, 0).ok()?;
+        let item = snapshot(value, functions, 0).map_err(|error| {
+            let error = error.to_string();
+            match error
+                .strip_prefix("a depset element containing ")
+                .and_then(|what| what.strip_suffix(" is not implemented in the native profile"))
+            {
+                Some(what) if kind == "struct" || kind == "tuple" => {
+                    format!("a value of type '{kind}' holding {what}")
+                }
+                Some(what) => what.to_owned(),
+                None => format!("a value of type '{kind}' ({error})"),
+            }
+        })?;
         if has_target(&item) {
-            return None;
+            return Err(format!(
+                "a value of type '{kind}' holding a configured target (its re-allocation would not keep the Target's identity)"
+            ));
         }
         items.push(item);
     }
@@ -467,7 +495,7 @@ pub(crate) fn frozen_copy<'v>(
     } else {
         Item::List(items)
     };
-    Some(alloc_frozen_container(heap, &container))
+    Ok(alloc_frozen_container(heap, &container))
 }
 
 /// The owned snapshot of a checked (immutable) element.

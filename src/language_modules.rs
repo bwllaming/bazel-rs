@@ -1010,7 +1010,7 @@ fn call<'v>(
                 args,
                 heap,
             )?;
-            crate::cc_common::freeze(bound[0].expect("required parameter"), heap)
+            crate::cc_common::freeze(bound[0].expect("required parameter"), eval)
         }
         Behavior::AppleToolchain => {
             bind_styled(style, name, &[], args, heap)?;

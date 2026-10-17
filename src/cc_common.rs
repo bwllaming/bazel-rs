@@ -439,46 +439,46 @@ pub(crate) fn check_private_api_call<'v>(
 
 /// CcStarlarkInternal.createHeaderInfo. Only the artifact-free form (all
 /// defaults, as in rules_cc's `_EMPTY_COMPILATION_CONTEXT`) is supported.
-/// `cc_internal.freeze(value)` (CcStarlarkInternal.java:949-960): a dict becomes
-/// an immutable dict copy, any other Java `Iterable` (list, tuple, range, set)
-/// an immutable list copy, and everything else (e.g. depset, struct) is returned
-/// unchanged. starlark-rust has no immutable-but-unfrozen containers: when
-/// every element (key and value) is immutable and has an owned snapshot
-/// without a configured target, the copy is a genuinely frozen list/dict
-/// re-allocated from those snapshots (N49b, crate::depset_items::frozen_copy),
-/// so it is immutable (`trying to mutate a frozen list value`) and may sit in
-/// a depset element — rules_cc's LinkerInputInfo
-/// (cc/private/link/create_linker_input.bzl:63-68). Otherwise it is a fresh
-/// mutable copy that becomes immutable only when its module freezes
-/// (mutating it, or putting it in a depset element, during analysis is a known
-/// divergence).
+/// `cc_internal.freeze(value)` (CcStarlarkInternal.java:950-960): a dict
+/// becomes Dict.immutableCopyOf, any other Java `Iterable` (list, tuple,
+/// range, set) StarlarkList.immutableCopyOf, and everything else (e.g. a
+/// depset, struct or string) is returned unchanged. starlark-rust has no
+/// immutable-but-unfrozen containers, so the copy is a genuinely frozen
+/// list/dict re-allocated from owned snapshots of the elements (N49b,
+/// crate::depset_items::frozen_copy): immutable (`trying to mutate a frozen
+/// list value`) and usable in a depset element — rules_cc's LinkerInputInfo
+/// (cc/private/link/create_linker_input.bzl:63-68). Bazel's copy is shallow;
+/// an element natively without such a copy (a mutable value, a configured
+/// target, a value whose immutability is not modelled) fails explicitly:
+/// `cc_internal.freeze of a list containing ... is not implemented in the
+/// native profile`.
 pub(crate) fn freeze<'v>(
     value: Value<'v>,
-    heap: starlark::values::Heap<'v>,
+    eval: &mut Evaluator<'v, '_, '_>,
 ) -> starlark::Result<Value<'v>> {
-    use starlark::values::dict::{AllocDict, DictRef};
-    use starlark::values::list::AllocList;
+    use starlark::values::dict::DictRef;
+    let heap = eval.heap();
+    let functions =
+        |value: Value<'_>| crate::analysis_runtime::owned_top_level_function(eval, value);
+    let kind = value.get_type();
+    let unsupported = |what: String| {
+        starlark::Error::new_other(anyhow::anyhow!(
+            "cc_internal.freeze of a {kind} containing {what} is not implemented in the native profile"
+        ))
+    };
     if let Some(dict) = DictRef::from_value(value) {
-        let entries: Vec<(Value<'v>, Value<'v>)> = dict.iter().collect();
-        let flat = entries
-            .iter()
-            .flat_map(|(k, v)| [*k, *v])
-            .collect::<Vec<_>>();
-        if let Some(frozen) = crate::depset_items::frozen_copy(heap, &flat, true) {
-            return Ok(frozen);
-        }
-        return Ok(heap.alloc(AllocDict(entries)));
+        let flat = dict.iter().flat_map(|(k, v)| [k, v]).collect::<Vec<_>>();
+        return crate::depset_items::frozen_copy(heap, &flat, true, &functions)
+            .map_err(unsupported);
     }
-    if matches!(value.get_type(), "list" | "tuple" | "range" | "set") {
+    if matches!(kind, "list" | "tuple" | "range" | "set") {
         let items: Vec<Value<'v>> = value.iterate(heap)?.collect();
         if items.is_empty() {
             // StarlarkList.immutableCopyOf of nothing: the shared empty list.
             return Ok(crate::subrule_fragments::empty_list());
         }
-        if let Some(frozen) = crate::depset_items::frozen_copy(heap, &items, false) {
-            return Ok(frozen);
-        }
-        return Ok(heap.alloc(AllocList(items)));
+        return crate::depset_items::frozen_copy(heap, &items, false, &functions)
+            .map_err(unsupported);
     }
     Ok(value)
 }
@@ -724,16 +724,18 @@ def _cc_toolchain_variables(*, vars):
     return vars
 _cc_toolchain_variables(vars = 1)
 # CcStarlarkInternal.freeze: dict -> dict copy, iterable -> list, else unchanged.
-_src = [1, [2]]
+_src = [1, (2,)]
 _frozen = cc_internal.freeze(_src)
 (type(_frozen) == "list" and _frozen == _src) or fail("freeze list")
 (type(cc_internal.freeze((1, 2))) == "list" and cc_internal.freeze((1, 2)) == [1, 2]) or fail("freeze tuple")
 (cc_internal.freeze(range(3)) == [0, 1, 2]) or fail("freeze range")
+(cc_internal.freeze(set([3, 1])) == [3, 1] and type(cc_internal.freeze(set([1]))) == "list") or fail("freeze set")
+(cc_internal.freeze(()) == [] and cc_internal.freeze({}) == {}) or fail("freeze empty")
 (cc_internal.freeze({"a": 1}) == {"a": 1} and type(cc_internal.freeze({"a": 1})) == "dict") or fail("freeze dict")
 _d = depset([1])
 (cc_internal.freeze(_d) == _d and cc_internal.freeze("s") == "s" and cc_internal.freeze(None) == None) or fail("freeze passthrough")
 _src.append(3)
-(_frozen == [1, [2]]) or fail("freeze copies")
+(_frozen == [1, (2,)]) or fail("freeze copies")
 EMPTY = cc_internal.freeze([])
 # N49b: an immutable copy of immutable contents is frozen, so it may sit in a
 # depset element (rules_cc create_linker_input.bzl:63-68).
@@ -761,6 +763,36 @@ _li = depset([struct(user_link_flags = _flags, opts = _opts, libraries = cc_inte
             (
                 "cc_internal.freeze({'a': 1}).pop('a')",
                 "trying to mutate a frozen dict value",
+            ),
+            (
+                "cc_internal.freeze(range(2)).append(2)",
+                "trying to mutate a frozen list value",
+            ),
+            (
+                "cc_internal.freeze((1,)).append(2)",
+                "trying to mutate a frozen list value",
+            ),
+            // Bazel's copy is shallow and keeps a mutable element mutable:
+            // explicit natively.
+            (
+                "cc_internal.freeze([1, [2]])",
+                "cc_internal.freeze of a list containing a mutable value of type 'list' (Bazel's shallow immutable copy keeps it mutable) is not implemented in the native profile",
+            ),
+            (
+                "cc_internal.freeze((1, {}))",
+                "cc_internal.freeze of a tuple containing a mutable value of type 'dict'",
+            ),
+            (
+                "cc_internal.freeze({'a': [1]})",
+                "cc_internal.freeze of a dict containing a mutable value of type 'list'",
+            ),
+            (
+                "cc_internal.freeze([struct(f = len)])",
+                "cc_internal.freeze of a list containing a mutable value of type 'struct'",
+            ),
+            (
+                "cc_internal.freeze([lambda: 1])",
+                "cc_internal.freeze of a list containing a function that is not a global def of a loaded .bzl file is not implemented in the native profile",
             ),
             (
                 "cc_internal.create_cc_compile_action()",

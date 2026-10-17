@@ -93,11 +93,19 @@ so `append`, `pop`, `setdefault`, ... fail with Bazel's `trying to mutate a
 frozen list value` (`dict`) (Mutability.checkMutable,
 `net/starlark/java/eval/Starlark.java:264`), also for nested containers.
 
-`cc_internal.freeze(x)` (CcStarlarkInternal.java:949-960, an immutable copy)
-returns such a frozen re-allocated copy when every element (key and value) is
-immutable and snapshottable without a configured target (`depset_items::frozen_copy`);
-otherwise it is still a fresh mutable copy (documented divergence in
-`src/cc_common.rs`).
+`cc_internal.freeze(x)` (`com/google/devtools/build/lib/rules/cpp/CcStarlarkInternal.java:950-960`)
+is Dict.immutableCopyOf for a dict, StarlarkList.immutableCopyOf for any
+other iterable (list, tuple, range, set; the empty result is the shared
+empty list) and `x` itself otherwise (depset, struct, string, None, ...).
+Natively the copy is such a frozen list/dict re-allocated from owned
+snapshots of the elements (`depset_items::frozen_copy`). Bazel's copy is
+shallow, so an element without a native frozen copy fails explicitly
+instead of yielding a mutable copy: a mutable value (`cc_internal.freeze of
+a list containing a mutable value of type 'list' (Bazel's shallow immutable
+copy keeps it mutable) is not implemented in the native profile`), a value
+holding a configured target, a closure, or a value whose immutability is not
+modelled. On this base every `freeze` reached by the rules_cc/cc_toolchain
+tests and the rules_go go_library fixture is of an empty list.
 
 ## Identity of a depset built from one transitive set (N49b)
 
