@@ -1026,6 +1026,6 @@ check = rule(implementation = _check, attrs = {
     assert_eq!(built.len(), 1);
     assert_eq!(
         fs::read_to_string(&built[0].1).unwrap(),
-        "bazel-out/rust-opt-exec/bin/tool\n"
+        "bazel-out/k8-opt-exec/bin/tool\n"
     );
 }

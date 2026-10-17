@@ -172,6 +172,20 @@ The application probe preserves the required `rules_distroless` link but still
 fails on the unmaterialized `@io_bazel_rules_nogo` extension repository. The
 checkout is unchanged; no application query/build/test success is claimed.
 
+## Credential helpers and the HTTP remote cache (N41)
+
+- [x] Bazel 9.3 credential helpers (scopes, wildcards, `%workspace%`/PATH
+      resolution, JSON protocol, timeout, per-URI cache, error texts) for the
+      remote cache and the downloader.
+- [x] HTTP remote cache (`/ac/`, `/cas/`, ActionResult, upload/accept flags,
+      headers, timeout) with Bazel's exact REAPI action keys; spawns aligned
+      with Bazel (genrule-setup.sh, strict PATH, run_shell padding, argv[0]).
+- [x] Divergence D1 closed (`k8-<mode>` output roots), needed for shared keys.
+- [x] Paired capture: entries shared both ways (8/8), identical AC/CAS
+      contents and cold-build requests, exact helper error texts; receipt
+      `tests/fixtures/remote_cache/reference_receipt.json`. gRPC caches and
+      remote execution remain explicit failures (docs/REMOTE_CACHE.md).
+
 ## Remaining compatibility gates
 
 ### Scalar string dictionaries (isolated branch verified)

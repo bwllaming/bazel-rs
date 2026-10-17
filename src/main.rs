@@ -102,10 +102,12 @@ fn run() -> Result<(), String> {
     let mut lockfile_target = bazel_rs::registry_session::LockfileTarget::Workspace;
     let mut allowed_yanked_flags = Vec::new();
     let mut raw_registries = Vec::new();
+    let mut credential_options = bazel_rs::credentials::CredentialOptions::default();
+    let mut remote_options = bazel_rs::remote_cache::RemoteOptions::default();
     let mut deferred = None;
     let rc_options;
     let rest = if command == "mod" {
-        let (rest, rc) = mod_arguments(&options)?;
+        let (rest, rc) = mod_arguments(&options, &mut credential_options, &mut remote_options)?;
         rc_options = rc;
         rest
     } else {
@@ -170,6 +172,8 @@ fn run() -> Result<(), String> {
         configuration_options = native.configuration;
         query_options = native.query;
         rc_options = native.rc;
+        credential_options = native.credentials;
+        remote_options = native.remote;
         options.residue.iter().map(|arg| arg.text.clone()).collect()
     };
     // The repository environment (client environment with --repo_env,
@@ -206,6 +210,8 @@ fn run() -> Result<(), String> {
         }
         return Err(error);
     }
+    // Credential helpers and the remote cache (N41) for every command.
+    let remote_enabled = setup_credentials_and_remote(&root, &credential_options, &remote_options)?;
     // Option parser warnings (deprecated options) once the native options
     // parsed (runtime/BlazeOptionHandler.java:536-539), after the rc notes.
     for warning in configuration_options.warnings() {
@@ -385,10 +391,17 @@ fn run() -> Result<(), String> {
             .and_then(|()| stdout.write_all(b"\n"))
             .map_err(|error| error.to_string())?;
     }
-    eprintln!(
-        "bazel-rs: {} actions executed, {} cache hits (experimental local execution; not sandboxed)",
-        summary.executed, summary.cache_hits
-    );
+    if remote_enabled {
+        eprintln!(
+            "bazel-rs: {} actions executed, {} cache hits, {} remote cache hits (experimental local execution; not sandboxed)",
+            summary.executed, summary.cache_hits, summary.remote_hits
+        );
+    } else {
+        eprintln!(
+            "bazel-rs: {} actions executed, {} cache hits (experimental local execution; not sandboxed)",
+            summary.executed, summary.cache_hits
+        );
+    }
     Ok(())
 }
 
@@ -455,6 +468,10 @@ struct NativeOptions {
     allowed_yanked_flags: Vec<String>,
     /// --registry values as given (lockfile keys use Bazel's spelling).
     raw_registries: Vec<String>,
+    /// AuthAndTLSOptions credential helpers (N41, crate::credentials).
+    credentials: bazel_rs::credentials::CredentialOptions,
+    /// The modelled RemoteOptions (N41, crate::remote_cache).
+    remote: bazel_rs::remote_cache::RemoteOptions,
 }
 
 impl NativeOptions {
@@ -468,6 +485,8 @@ impl NativeOptions {
                 ..Default::default()
             },
             downloads: true,
+            credentials: Default::default(),
+            remote: Default::default(),
             configuration: if command == "query" {
                 // query is configuration-independent; it accepts (and validates)
                 // the modelled CoreOptions (runtime/commands/QueryCommand.java:59-67).
@@ -608,6 +627,10 @@ impl NativeOptions {
         } else if let Some(value) = arg.strip_prefix("--jobs=").filter(|_| command == "build") {
             self.jobs = Some(parse_jobs(value)?);
             false
+        } else if let Some(used) = self.credentials.parse(arg, next) {
+            used?
+        } else if let Some(used) = self.remote.parse(arg, next) {
+            used?
         } else if let bazel_rs::configuration::Parsed::Consumed(used) =
             self.configuration.parse(arg, next)?
         {
@@ -642,7 +665,22 @@ fn unmodelled_option(arg: &bazelrc::Arg) -> String {
 /// their rc file:line.
 fn mod_arguments(
     options: &bazelrc::Expanded,
+    credentials: &mut bazel_rs::credentials::CredentialOptions,
+    remote: &mut bazel_rs::remote_cache::RemoteOptions,
 ) -> Result<(Vec<String>, bazel_rs::rc_options::RcOptions), String> {
+    // The credential helper and remote options of every command (AuthAndTLSOptions,
+    // RemoteOptions; N41) are consumed here: errors in parse order, values in
+    // priority order.
+    let ours = |unit: &bazelrc::Unit,
+                credentials: &mut bazel_rs::credentials::CredentialOptions,
+                remote: &mut bazel_rs::remote_cache::RemoteOptions|
+     -> Option<Result<bool, String>> {
+        let arg = unit.option.text.as_str();
+        let next = unit.value.as_ref().map(|value| value.text.as_str());
+        credentials
+            .parse(arg, next)
+            .or_else(|| remote.parse(arg, next))
+    };
     let rc_option = |rc: &mut bazel_rs::rc_options::RcOptions, unit: &bazelrc::Unit| {
         rc.parse(
             "mod",
@@ -660,18 +698,22 @@ fn mod_arguments(
             {
                 bazelrc::native_only_error(name, &unit.option.origin_suffix())
             }
-            // The N40 options (crate::rc_options), from rc files and the
-            // command line alike.
+            // The N40 options (crate::rc_options), then the N41 credential
+            // helper and remote options, from rc files and the command line
+            // alike.
             bazelrc::Step::Unit(unit) => match rc_option(&mut Default::default(), unit) {
                 Err(error) => error,
                 Ok(Some(_)) => continue,
-                Ok(None)
-                    if unit.option.from_rc()
+                Ok(None) => match ours(unit, &mut Default::default(), &mut Default::default()) {
+                    Some(Ok(_)) => continue,
+                    Some(Err(error)) => error,
+                    None if unit.option.from_rc()
                         && !bazel_rs::module_cli::models_graph_option(&unit.option.text) =>
-                {
-                    unmodelled_option(&unit.option)
-                }
-                Ok(None) => continue,
+                    {
+                        unmodelled_option(&unit.option)
+                    }
+                    None => continue,
+                },
             },
         };
         return Err(early_exit(options, &error, *position));
@@ -681,6 +723,10 @@ fn mod_arguments(
     let mut args = residue.next().into_iter().collect::<Vec<_>>();
     for unit in &options.priority {
         if rc_option(&mut rc, unit)?.is_some() {
+            continue;
+        }
+        if let Some(result) = ours(unit, credentials, remote) {
+            result?;
             continue;
         }
         args.push(unit.option.text.clone());
@@ -693,6 +739,54 @@ fn mod_arguments(
     ));
     args.extend(residue);
     Ok((args, rc))
+}
+
+/// Credential helpers and the remote cache (CredentialModule,
+/// BazelRepositoryModule.beforeCommand and RemoteModule.setup; N41,
+/// docs/REMOTE_CACHE.md): helper paths resolve eagerly for every command; an
+/// http(s) cache is set up for every command too (RemoteOptions is a common
+/// option class), so an http:// cache invokes the helper at startup.
+/// Returns whether a remote cache is active.
+fn setup_credentials_and_remote(
+    root: &Path,
+    credential_options: &bazel_rs::credentials::CredentialOptions,
+    remote_options: &bazel_rs::remote_cache::RemoteOptions,
+) -> Result<bool, String> {
+    let path = std::env::var("PATH").unwrap_or_default();
+    let http_cache = {
+        let lower = remote_options.cache.to_ascii_lowercase();
+        remote_options.executor.is_empty()
+            && (lower.starts_with("http://") || lower.starts_with("https://"))
+    };
+    let credentials =
+        match bazel_rs::credentials::Credentials::new(credential_options, Some(root), &path) {
+            Ok(credentials) => credentials,
+            Err(error) => {
+                // Both modules report the path error; the last exit wins
+                // (BazelRepositoryModule.java:446-477, RemoteModule.java:604-621).
+                eprintln!("ERROR: {error}");
+                if http_cache {
+                    eprintln!("ERROR: {error}");
+                    return Err("Error initializing RemoteModule".into());
+                }
+                return Err("Error initializing credential helper".into());
+            }
+        };
+    let remote = match bazel_rs::remote_cache::setup(remote_options, Some(&credentials)) {
+        Ok(remote) => remote,
+        Err(error) => {
+            for line in &error.errors {
+                eprintln!("ERROR: {line}");
+            }
+            return Err(error.exit);
+        }
+    };
+    bazel_rs::credentials::install(credentials);
+    let enabled = remote.is_some();
+    if let Some(remote) = remote {
+        bazel_rs::remote_cache::install(remote);
+    }
+    Ok(enabled)
 }
 
 /// The client's rc evaluation (OptionProcessor::ParseOptions,

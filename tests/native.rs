@@ -156,7 +156,8 @@ fn flags_test_command_and_rc_are_not_silently_ignored() {
     let ws = Workspace::new("filegroup(name='ok')\n");
     for args in [
         &["test", ":ok"][..],
-        &["build", "--remote_cache=http://example.invalid", ":ok"],
+        // N41 models an http(s) --remote_cache; the disk cache is not.
+        &["build", "--disk_cache=/tmp/n41-unmodelled-cache", ":ok"],
         // SkyQuery and the xml output formatter are not implemented.
         &["query", "--universe_scope=//...", "deps(:ok)"],
         &["query", "--output=xml", ":ok"],
@@ -216,9 +217,9 @@ fn artifact_paths_cannot_cross_package_boundaries() {
 #[test]
 fn distinct_artifacts_with_the_same_execution_path_are_rejected() {
     let ws = Workspace::new(
-        "genrule(name='make',outs=['x'],cmd='echo generated > $@')\nfilegroup(name='ambiguous',srcs=[':make','bazel-out/rust-fastbuild/bin/x'])\n",
+        "genrule(name='make',outs=['x'],cmd='echo generated > $@')\nfilegroup(name='ambiguous',srcs=[':make','bazel-out/k8-fastbuild/bin/x'])\n",
     );
-    ws.file("bazel-out/rust-fastbuild/bin/x", "different source");
+    ws.file("bazel-out/k8-fastbuild/bin/x", "different source");
     let result = ws.run(&["build", ":ambiguous"]);
     assert!(!result.status.success());
     assert!(

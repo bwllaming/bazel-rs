@@ -284,8 +284,8 @@ fn genrule_tools_and_exec_dependencies_use_the_exec_configuration() {
     // configuration (linux-opt-exec: --host_compilation_mode defaults to opt),
     // never in $(SRCS); -c dbg changes only the target configuration.
     for (args, root) in [
-        (&[LINUX][..], "rust-fastbuild"),
-        (&[LINUX, "-c", "dbg"][..], "rust-dbg"),
+        (&[LINUX][..], "k8-fastbuild"),
+        (&[LINUX, "-c", "dbg"][..], "k8-dbg"),
     ] {
         let mut all = args.to_vec();
         all.push("//:g");
@@ -298,7 +298,7 @@ fn genrule_tools_and_exec_dependencies_use_the_exec_configuration() {
     }
     // The same target in the target and the exec configuration, side by side.
     let (lines, contents) = ws.built(&[LINUX, "//:u"]);
-    assert_eq!(lines, ["//:u\tbazel-out/rust-fastbuild/bin/u.txt"]);
+    assert_eq!(lines, ["//:u\tbazel-out/k8-fastbuild/bin/u.txt"]);
     assert_eq!(
         contents,
         format!(
@@ -310,7 +310,7 @@ fn genrule_tools_and_exec_dependencies_use_the_exec_configuration() {
                 "none",
                 "linux",
                 DEFAULT_FLAGS,
-                "rust-fastbuild"
+                "k8-fastbuild"
             )
         )
     );
@@ -367,7 +367,7 @@ fn exec_options_follow_bazels_exec_transition() {
                 "x1",
                 "osx",
                 DEFAULT_FLAGS,
-                "rust-fastbuild"
+                "k8-fastbuild"
             ),
         )
     );
@@ -381,7 +381,7 @@ fn exec_options_follow_bazels_exec_transition() {
     let (_, contents) = ws.built(&["--host_compilation_mode=dbg", "//:hm"]);
     assert_eq!(
         contents,
-        "hm: mode=host-dbg stamp= define= os= flags= at=bazel-out/rust-fastbuild/bin/hm.txt\n"
+        "hm: mode=host-dbg stamp= define= os= flags= at=bazel-out/k8-fastbuild/bin/hm.txt\n"
     );
     let (_, contents) = ws.built(&["//:hm"]);
     assert!(contents.starts_with("hm: mode=host-opt "), "{contents}");
@@ -416,7 +416,7 @@ fn exec_options_follow_bazels_exec_transition() {
                 "none",
                 "linux",
                 "u,e,t",
-                "rust-fastbuild"
+                "k8-fastbuild"
             ),
         )
     );
@@ -440,7 +440,7 @@ fn exec_configurations_resolve_toolchains_for_the_execution_platform() {
     let (_, contents) = ws.built(&[LINUX, "--platforms=//p:mac", "//:tu"]);
     assert_eq!(
         contents,
-        "t: toolchain=linux at=bazel-out/linux-opt-exec/bin/t.txt\nt: toolchain=mac at=bazel-out/rust-fastbuild/bin/t.txt\ntu: tool=bazel-out/linux-opt-exec/bin/t.txt\n"
+        "t: toolchain=linux at=bazel-out/linux-opt-exec/bin/t.txt\nt: toolchain=mac at=bazel-out/k8-fastbuild/bin/t.txt\ntu: tool=bazel-out/linux-opt-exec/bin/t.txt\n"
     );
     // --extra_toolchains propagates into the exec configuration
     // (PlatformOptions, builtin_exec_platforms.bzl:411-419), which
@@ -453,7 +453,7 @@ fn exec_configurations_resolve_toolchains_for_the_execution_platform() {
     ]);
     assert_eq!(
         contents,
-        "t: toolchain=linux_extra at=bazel-out/linux-opt-exec/bin/t.txt\nt: toolchain=mac at=bazel-out/rust-fastbuild/bin/t.txt\ntu: tool=bazel-out/linux-opt-exec/bin/t.txt\n"
+        "t: toolchain=linux_extra at=bazel-out/linux-opt-exec/bin/t.txt\nt: toolchain=mac at=bazel-out/k8-fastbuild/bin/t.txt\ntu: tool=bazel-out/linux-opt-exec/bin/t.txt\n"
     );
 }
 
@@ -464,7 +464,7 @@ fn transitions_without_an_execution_platform_and_exec_group_errors() {
     // platform, so the exec transition is a no-op
     // (DependencyResolutionHelpers.java:223-229, ExecutionTransitionFactory.java:194-197).
     let (lines, _) = ws.built(&[LINUX, "//:setting"]);
-    assert_eq!(lines, ["//:setting\tbazel-out/rust-fastbuild/bin/m.txt"]);
+    assert_eq!(lines, ["//:setting\tbazel-out/k8-fastbuild/bin/m.txt"]);
     // config.exec("g") of a rule without that exec group
     // (DependencyResolutionHelpers.java:243-253).
     assert_eq!(
@@ -592,7 +592,7 @@ cc_like(name = "lib")
     let (_, contents) = ws.built(&["--experimental-builtin-modules", &registry, "//cc:lib"]);
     assert_eq!(
         contents,
-        "def_parser=bazel-out/rust-opt-exec/bin/cc/def_parser.sh\n"
+        "def_parser=bazel-out/k8-opt-exec/bin/cc/def_parser.sh\n"
     );
     // The same for the default spelled explicitly and for --host_compilation_mode.
     let (_, contents) = ws.built(&[
@@ -604,7 +604,7 @@ cc_like(name = "lib")
     ]);
     assert_eq!(
         contents,
-        "def_parser=bazel-out/rust-dbg-exec/bin/cc/def_parser.sh\n"
+        "def_parser=bazel-out/k8-dbg-exec/bin/cc/def_parser.sh\n"
     );
 }
 

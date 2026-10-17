@@ -305,7 +305,7 @@ fn output_root_follows_compilation_mode_and_default_identity_is_unchanged() {
         "genrule(name = 'g', outs = ['g.txt'], cmd = 'echo $@ > $@')\n",
     )]);
     let default = ws.built(&["build", "//:g"]);
-    assert_eq!(default, "bazel-out/rust-fastbuild/bin/g.txt\n");
+    assert_eq!(default, "bazel-out/k8-fastbuild/bin/g.txt\n");
     // Options without an output-path effect keep the action identity.
     let output = ws.run(&["build", "--stamp", "--define=a=1", "//:g"]);
     assert!(
@@ -315,11 +315,11 @@ fn output_root_follows_compilation_mode_and_default_identity_is_unchanged() {
     );
     assert_eq!(
         ws.built(&["build", "-c", "dbg", "//:g"]),
-        "bazel-out/rust-dbg/bin/g.txt\n"
+        "bazel-out/k8-dbg/bin/g.txt\n"
     );
     assert_eq!(
         ws.built(&["build", "-c", "opt", "//:g"]),
-        "bazel-out/rust-opt/bin/g.txt\n"
+        "bazel-out/k8-opt/bin/g.txt\n"
     );
     let output = ws.run(&["build", "//:g"]);
     assert!(

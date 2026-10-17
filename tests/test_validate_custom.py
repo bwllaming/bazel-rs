@@ -277,7 +277,7 @@ class EvidenceTests(unittest.TestCase):
         case = next(case for case in custom.ADVANCED_OUTPUT_CASES if case[0] == "//advanced/direct:file_exec")
         suffix = custom.ADVANCED_PATH_SUFFIXES[case[0]]
         evidence = {
-            "native": [{"path": "/cache/bazel-out/rust-fastbuild/bin/" + suffix}],
+            "native": [{"path": "/cache/bazel-out/k8-fastbuild/bin/" + suffix}],
             "reference": [{"path": "/ref/bazel-out/k8-fastbuild/bin/" + suffix}],
         }
         with mock.patch.object(custom, "build_pair", return_value=evidence) as pair:
@@ -288,7 +288,7 @@ class EvidenceTests(unittest.TestCase):
     def test_sibling_path_validation_rejects_wrong_directory_even_with_right_basename(self):
         case = next(case for case in custom.ADVANCED_OUTPUT_CASES if case[0] == "//advanced/direct:file_exec")
         evidence = {
-            "native": [{"path": "/cache/bazel-out/rust-fastbuild/bin/advanced/direct/file_exec.txt"}],
+            "native": [{"path": "/cache/bazel-out/k8-fastbuild/bin/advanced/direct/file_exec.txt"}],
             "reference": [{"path": "/ref/bazel-out/k8-fastbuild/bin/advanced/direct/file_exec/file_exec.txt"}],
         }
         with mock.patch.object(custom, "build_pair", return_value=evidence), self.assertRaisesRegex(ValueError, "sibling path"):

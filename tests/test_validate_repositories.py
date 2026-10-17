@@ -97,7 +97,7 @@ class LabelTests(unittest.TestCase):
                                           "@first//p:copy", ["@@fixture_alpha+//p:copy"])
 
     def test_native_output_parser_checks_target_paths_and_duplicates(self):
-        text = "@@fixture_alpha+//p:copy\t/cache/bazel-out/rust-fastbuild/bin/external/fixture_alpha+/p/copy.txt\n"
+        text = "@@fixture_alpha+//p:copy\t/cache/bazel-out/k8-fastbuild/bin/external/fixture_alpha+/p/copy.txt\n"
         self.assertEqual(len(repositories.native_paths(record(text), "@first//p:copy")), 1)
         for bad in (text + text, text.replace("fixture_alpha+//", "fixture_beta+//"),
                     "@@fixture_alpha+//p:copy\trelative.txt", "@@fixture_alpha+//p:copy\t/cache/../file", "bad"):
@@ -122,7 +122,7 @@ class PathEvidenceTests(unittest.TestCase):
             root = Path(directory)
             paths = []
             for key, data in expected.items():
-                path = root / "bazel-out/rust-fastbuild/bin" / key.split(":", 1)[1]
+                path = root / "bazel-out/k8-fastbuild/bin" / key.split(":", 1)[1]
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(data)
                 path.chmod(0o640)

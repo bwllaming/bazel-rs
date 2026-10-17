@@ -486,7 +486,8 @@ class LabelRepoNameTests(unittest.TestCase):
         # Deliberately re-pinned for N23d (docs/ACTIONS_PARAMS.md): the retained
         # output was produced with the pre-N23d action.rs (native-action-v5).
         # src/action.rs changed since (tree artifacts, parameter files,
-        # transforms; native-action-v6) but keeps OUTPUT_MODE 0555 for
+        # transforms; later N41's Bazel spawn argv and remote cache, native-action-v8)
+        # but keeps OUTPUT_MODE 0555 for
         # completed regular outputs, the property this retained output pins.
         self.assertEqual(item['source_pins']['src/action.rs']['sha256'],
                          '18084fd1f3b2ff8405e6697899c24388ded2f2e501078350242868caf570008d')

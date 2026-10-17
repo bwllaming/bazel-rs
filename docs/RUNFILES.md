@@ -174,7 +174,7 @@ every access, so the same comparison is `False` (FileConfiguredTarget.java:85-10
 * `attr.label(executable=True, cfg=...)` is analyzed with `cfg="target"` and
   `cfg="exec"` (the exec transition, docs/CONFIGURATION.md: the executable is
   the exec-configured dependency's, below its exec output root such as
-  `bazel-out/rust-opt-exec/bin`); a missing `cfg` still fails with `cfg parameter is mandatory when executable=True is
+  `bazel-out/k8-opt-exec/bin`); a missing `cfg` still fails with `cfg parameter is mandatory when executable=True is
   provided`). `ctx.executable.<attr>` is the dependency's executable or `None`
   for an unset attribute; a dependency without one fails with `in tool attribute
   of r rule //p:r: //p:x does not refer to a valid executable target`

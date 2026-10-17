@@ -82,7 +82,7 @@ After expansion every option goes through the existing native parsers
 (`src/main.rs` `NativeOptions`, `crate::configuration`, `crate::module_cli`).
 Options those parsers do not model fail explicitly, for example:
 
-    unsupported option "--remote_cache=…" from rc file /ws/.bazelrc:3 ('build' options); options are never silently ignored
+    unsupported option "--disk_cache=…" from rc file /ws/.bazelrc:3 ('build' options); options are never silently ignored
     unsupported option --sandbox_add_mount_pair from rc file /ws/.bazelrc:1 (config definition 'build:cross'): sandboxed execution is not implemented …
 
 The options of real rc files (`--repo_env`, `--attempt_to_print_relative_paths`,
@@ -145,7 +145,9 @@ paired capture without root.
   `.bazelrc.coder` when `CODER=true`; this work never sources that `.envrc`.
   Under direnv, Bazel and native therefore also read `.bazelrc.coder` (its
   `common --repo_env=…` lines) after the workspace rc. The first failure is
-  unchanged, because the workspace rc's `common` options come first. It stops at the first unmodelled option:
+  unchanged, because the workspace rc's `common` options come first. It stopped at the first unmodelled option:
   `--credential_helper=…` from `/home/coder/code/.bazelrc:2` (`'common'`
-  options), for both `build` and `query`. For the stops after N40 (with the
-  remote-cache lines removed in a scratch copy), see [RC_OPTIONS.md](RC_OPTIONS.md).
+  options), for both `build` and `query`. With N40 ([RC_OPTIONS.md](RC_OPTIONS.md)),
+  N41 ([REMOTE_CACHE.md](REMOTE_CACHE.md): `--remote_cache`, `--credential_helper`)
+  and N42 ([ACTION_ENV.md](ACTION_ENV.md): `--incompatible_strict_action_env`)
+  those lines are modelled; for the remaining stops see [RC_OPTIONS.md](RC_OPTIONS.md).

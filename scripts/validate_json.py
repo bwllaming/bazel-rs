@@ -35,7 +35,9 @@ FIRST_ATTEMPT_SHA256 = '9a76d8166e5ab39129ee3ffa63a44da1238e2c9fc1510c827d021a1f
 FIXTURES = ROOT / 'tests/fixtures/json'
 FIXTURE_PINS = {
     'float': '52eac2a98f5578d55fe2c6fd5c0e7a2eaf3a0be31d38710a7693220a77bf99dc',
-    'file': 'e48d82e12bb802a1873742a2cd8835ac8158282a2baf52623ed1cc464269c15e',
+    # N41 changed only native_profile (generated_root k8-fastbuild after D1;
+    # the mechanical extraction's pin was e48d82e1...269c15e).
+    'file': '3ad5ed1b9006ecf9af6d2201c178db642570bab957eae5c4b7a38ebc0d83e394',
     'functional': '0f943c2a6dc3d3286ad35dedbcf54e0da9f1c769dbe91bac8189a7d2c0cab5e0',
 }
 ORIGINS = {
@@ -55,7 +57,7 @@ LIMITATIONS = [
     'Historical vendor JSON misbehavior and heuristic failure 2/1024 remain failures. Closest-even prototype 23440 properties are NATIVE_ONLY/math evidence, NOT reference passes.',
     'Only BUILD and shared ordinary/MODULE-loaded bzl have json. Direct MODULE.json is a real negative preflight.',
     'Corrected run38 nineteen action outputs are bound exactly. Named derivative replaces unsupported BUILD print with a tuple assignment evaluating the same JSON expressions; original tracked fixture remains unchanged. Source edit changes only producer string attr; only dependency.json output/action changes (native 1 execution, 18 hits).',
-    'File main source/generated profile only. Exact native rust-fastbuild and reference k8-fastbuild triples are checked independently, NOT byte parity via path normalization.',
+    'File main source/generated profile only. Exact native and reference k8-fastbuild triples (native wrote rust-fastbuild before N41 closed D1) are checked independently, NOT byte parity via path normalization.',
     'Builtin NativeInfo and external File are EXPLICIT_OUT_OF_PROFILE native boundaries, not reference error claims and not empty-object encoding.',
     'Native depth 64 remains shared. Decode alone uses 256 MiB weighted/250000 nodes and an 8 MiB effective UTF-8 input ceiling. Encode/Indent/EncodeIndent retain 64 MiB weighted/100000 nodes, one cumulative budget per invocation including all helper stages. HostBudget Default and non-JSON profiles are unchanged; decoded values need not fit encoding. These are safety bounds, not JVM thresholds or RSS guarantees. Rust tests independently cover capacity/adversarial/producer-consumer behavior, preexisting BigInt, preclone checks, fake NativeSlot types, DAG/quota/internal errors; this CLI matrix does not replace them.',
     'Byte-string default UTF8 key order only; nondefault UTF16 semantics excluded. Indentation preserves harmless observed quirks, not strict JSON validation.',
@@ -382,7 +384,8 @@ def steps_for(family, probe, which):
 
 def expected_outputs(v, stage, which):
     if v['origin']=='MAIN_FILES_ENGINE_SPECIFIC_TRIPLES':
-        root = 'bazel-out/rust-fastbuild/bin' if which=='native' else 'bazel-out/k8-fastbuild/bin'
+        # Both engines write k8-fastbuild since N41 closed D1 (docs/REMOTE_CACHE.md).
+        root = 'bazel-out/k8-fastbuild/bin'
         value = [{'path':'input.txt','root':'','short_path':'input.txt'},
             {'path':root+'/file_encoding.json','root':root,'short_path':'file_encoding.json'}, [3,1,2], [0,1,2]]
         return {'file_encoding.json':json.dumps(value,separators=(',',':')).encode()}

@@ -425,7 +425,7 @@ class MainTests(unittest.TestCase):
                             path.parent.mkdir(parents=True, exist_ok=True)
                             path.write_bytes(contents)
                         paths = [tree / name for name in source_bytes] if source_target else [
-                            cache / "bazel-out/rust-fastbuild/bin/external/opencode_patchcheck_dep+/copy.txt"]
+                            cache / "bazel-out/k8-fastbuild/bin/external/opencode_patchcheck_dep+/copy.txt"]
                     else:
                         output_base = Path(next(a.split("=", 1)[1] for a in argv if a.startswith("--output_base=")))
                         execroot = output_base / "execroot/_main"

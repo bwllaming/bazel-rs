@@ -527,7 +527,7 @@ fn actual_main_files_match_own_paths_and_explicit_native_configuration() {
     // The reference source is unchanged; compare engine-specific expectations,
     // never rewrite the genuine k8 root and call that byte parity.
     let output = ws.run(&["build", ":check"]);
-    let expected = "[{\"path\":\"input.txt\",\"root\":\"\",\"short_path\":\"input.txt\"},{\"path\":\"bazel-out/rust-fastbuild/bin/file_encoding.json\",\"root\":\"bazel-out/rust-fastbuild/bin\",\"short_path\":\"file_encoding.json\"},[3,1,2],[0,1,2]]";
+    let expected = "[{\"path\":\"input.txt\",\"root\":\"\",\"short_path\":\"input.txt\"},{\"path\":\"bazel-out/k8-fastbuild/bin/file_encoding.json\",\"root\":\"bazel-out/k8-fastbuild/bin\",\"short_path\":\"file_encoding.json\"},[3,1,2],[0,1,2]]";
     assert_eq!(content(&output), [expected.as_bytes().to_vec()]);
     let defs = fixture["files"]["defs.bzl"].as_str().unwrap().replace(
         "    ctx.actions.write(out,json.encode([ctx.file.src,out,set([3,1,2]),range(3)]))",

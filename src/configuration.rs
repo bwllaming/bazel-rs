@@ -1558,7 +1558,7 @@ mod tests {
         assert_eq!(native.platforms, [default_host_platform()]);
         assert_eq!(
             crate::config_registry::mnemonic(&configuration, &configuration),
-            Ok("rust-dbg".to_owned())
+            Ok("k8-dbg".to_owned())
         );
         let mut options = CommandLineOptions::default();
         for (args, error) in [
@@ -1735,7 +1735,7 @@ mod tests {
         );
         assert_eq!(
             crate::config_registry::mnemonic(&opt, &opt),
-            Ok("rust-opt".to_owned())
+            Ok("k8-opt".to_owned())
         );
         // Starlark build settings take part in the identity; only values
         // different from the default are stored (crate::starlark_options).

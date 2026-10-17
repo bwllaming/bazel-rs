@@ -206,7 +206,7 @@ fn unmodelled_rc_options_name_their_file_and_line() {
     let ws = Workspace::new();
     ws.file(
         ".bazelrc",
-        "# comment\nbuild \\\n  --remote_cache=https://example.invalid\nbuild:cross --sandbox_add_mount_pair=/tmp\ncommon --repo_env=SECRET=value\n",
+        "# comment\nbuild \\\n  --disk_cache=/tmp/n41-unmodelled-cache\nbuild:cross --sandbox_add_mount_pair=/tmp\ncommon --repo_env=SECRET=value\n",
     );
     // --repo_env is modelled (N40, tests/rc_options.rs); its value is never
     // printed.
@@ -215,12 +215,12 @@ fn unmodelled_rc_options_name_their_file_and_line() {
     assert!(!stderr(&output).contains("value"), "{}", stderr(&output));
     ws.file(
         ".bazelrc",
-        "# comment\nbuild \\\n  --remote_cache=https://example.invalid\nbuild:cross --sandbox_add_mount_pair=/tmp\n",
+        "# comment\nbuild \\\n  --disk_cache=/tmp/n41-unmodelled-cache\nbuild:cross --sandbox_add_mount_pair=/tmp\n",
     );
     let error = ws.failed(&[], &["build", ":ok"]);
     assert!(
         error.contains(&format!(
-            "unsupported option \"--remote_cache=https://example.invalid\" from rc file {}:3 ('build' options)",
+            "unsupported option \"--disk_cache=/tmp/n41-unmodelled-cache\" from rc file {}:3 ('build' options)",
             rc_path(&ws, ".bazelrc")
         )),
         "{error}"
@@ -229,7 +229,7 @@ fn unmodelled_rc_options_name_their_file_and_line() {
         &["--noworkspace_rc", "--bazelrc=.bazelrc"],
         &["build", "--config=cross", ":ok"],
     );
-    assert!(error.contains("--remote_cache"), "{error}");
+    assert!(error.contains("--disk_cache"), "{error}");
     ws.file(".bazelrc", "build:cross --sandbox_add_mount_pair=/tmp\n");
     let error = ws.failed(&[], &["build", "--config=cross", ":ok"]);
     assert!(

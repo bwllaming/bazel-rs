@@ -630,6 +630,8 @@ pub struct BuildSummary {
     pub outputs: Vec<(Label, PathBuf)>,
     pub executed: usize,
     pub cache_hits: usize,
+    /// Actions whose outputs came from the remote cache (crate::remote_cache).
+    pub remote_hits: usize,
 }
 
 /// A target pattern evaluation failure (`Engine::expand_pattern`).
@@ -5477,6 +5479,8 @@ impl Engine {
         for result in results.values() {
             if result.cache_hit {
                 summary.cache_hits += 1;
+            } else if result.remote_hit {
+                summary.remote_hits += 1;
             } else {
                 summary.executed += 1;
             }
@@ -5488,6 +5492,54 @@ impl Engine {
             summary.outputs.push((key.label, artifact.real));
         }
         Ok(summary)
+    }
+
+    /// Why the remote cache key of `rule`'s spawns in `config` cannot equal
+    /// Bazel's, if it cannot. Execution properties enter Bazel's key as a
+    /// Platform message (PlatformUtils.getPlatformProto,
+    /// analysis/platform/PlatformUtils.java), which the native key does not
+    /// model: the target's `exec_properties`, an action's combined exec-group
+    /// properties (N35, crate::exec_groups::ActionExecution) and an execution
+    /// platform with exec_properties/remote_execution_properties. The
+    /// execution platform is the host platform; a non-default one that was
+    /// not resolved during analysis counts as unknown, hence gated (N41).
+    fn remote_platform_gate(
+        &self,
+        rule: &Rule,
+        config: ConfigId,
+        execution: Option<&crate::exec_groups::ActionExecution>,
+    ) -> Option<String> {
+        let attrs = match (&rule.native, &rule.custom) {
+            (Some(native), _) => Some(&native.attrs),
+            (None, Some(custom)) => Some(&custom.declaration.builtin.target.attrs),
+            _ => None,
+        };
+        if attrs.is_some_and(|attrs| {
+            matches!(attrs.get("exec_properties"), Some(crate::custom_rule::AttrValue::StringDict(d)) if !d.is_empty())
+        }) || execution.is_some_and(|execution| !execution.properties.is_empty())
+        {
+            return Some(format!(
+                "actions of {} (exec_properties are not modelled in native remote cache keys)",
+                rule.label
+            ));
+        }
+        let host = &self.configurations.get(config).native.host_platform;
+        if *host == crate::configuration::default_host_platform() {
+            return None;
+        }
+        match self
+            .platforms
+            .get(&ConfiguredTargetKey::new(host.clone(), config))
+        {
+            Some(Ok(info))
+                if info.exec_properties.is_empty() && info.remote_execution_properties.is_empty() =>
+            {
+                None
+            }
+            _ => Some(format!(
+                "actions whose execution platform {host} has or may have exec_properties/remote_execution_properties (not modelled in native remote cache keys)"
+            )),
+        }
     }
 
     /// Phase 2 of one planned target (in plan order): runs Starlark
@@ -5993,15 +6045,20 @@ impl Engine {
                 source_inputs.insert(registered.action.id.clone(), source_paths(&inputs));
                 // The action's exec group decides its execution platform and
                 // exec properties (RuleContext.getActionOwner(execGroup)).
-                if let Some(execution) = action_execution
+                let execution = action_execution
                     .iter()
-                    .find(|execution| execution.exec_group == registered.exec_group)
-                {
+                    .find(|execution| execution.exec_group == registered.exec_group);
+                if let Some(execution) = execution {
                     self.action_executions
                         .insert(registered.action.id.clone(), execution.clone());
                 }
-                let mut planned =
-                    plan_action(registered.action, inputs, &main_ignored, client_environment)?;
+                let mut action = registered.action;
+                if action.write.is_none() && action.extra.transform.is_none() {
+                    action.execution_info = rule_execution_info(rule);
+                    action.remote_unsupported =
+                        self.remote_platform_gate(rule, config, execution);
+                }
+                let mut planned = plan_action(action, inputs, &main_ignored, client_environment)?;
                 planned.deferred = registered.deferred;
                 nodes.push(planned);
             }
@@ -6096,21 +6153,47 @@ impl Engine {
             for output in &outputs {
                 register_output(producers, output, &key)?;
             }
-            // GenRuleBase.java:210-219: the configuration's action environment.
+            // GenRuleBase.java:141-147, 170-175, 212-216: bash sources the
+            // `$genrule_setup` script (set -euo pipefail), which is an input;
+            // the argv is BashCommandConstructor.asExecArgv (`/bin/bash -c
+            // CMD`, no `$0` padding), the environment the configuration's
+            // action environment (GenRuleBase.java:210-219, crate::action_env,
+            // N42). Commands longer than CommandHelper.maxCommandLength
+            // (64000) run from a generated script file in Bazel, which the
+            // native profile does not model (N41).
+            if command.len() > 64_000 {
+                return Err(located(
+                    rule.location.as_deref(),
+                    format!(
+                        "in cmd attribute of genrule rule {}: the expanded command is {} characters; Bazel runs commands longer than 64000 characters from a generated .genrule_script.sh file, which the native profile does not model",
+                        crate::rule_declarations::canonical_form(&rule.label),
+                        command.len()
+                    ),
+                ));
+            }
+            let mut execution_info = rule_execution_info(rule);
+            if native_bool(rule, "local") {
+                execution_info.insert("local".to_owned());
+            }
             let action = Action {
                 id: action_owner.clone(),
-                command,
-                inputs: Vec::new(),
+                command: format!(
+                    "source {}; {command}",
+                    crate::builtin_tools::GENRULE_SETUP_EXEC_PATH
+                ),
                 outputs: outputs.clone(),
-                write: None,
-                program: None,
-                shell_strict: true,
                 extra: action::ActionExtra {
                     inherited_environment: action_env.inherited.clone(),
                     ..Default::default()
                 },
-                arguments: Vec::new(),
                 environment: action_env.fixed.clone(),
+                execution_info,
+                remote_unsupported: self.remote_platform_gate(rule, config, None),
+                embedded_inputs: vec![(
+                    crate::builtin_tools::GENRULE_SETUP_EXEC_PATH.into(),
+                    crate::builtin_tools::GENRULE_SETUP,
+                )],
+                ..Action::default()
             };
             let action_inputs = inputs.iter().cloned().chain(tools).collect::<Vec<_>>();
             source_inputs.insert(action.id.clone(), source_paths(&action_inputs));
@@ -6956,6 +7039,45 @@ fn register_output(
 /// skyframe/SkyframeExecutor.java:3776-3793), so a declared source input
 /// below such an entry is absent when the action runs. External repositories
 /// are planted separately under `external/` and are unaffected.
+/// TargetUtils.getExecutionInfo (packages/TargetUtils.java:53-63, 241-252):
+/// the rule's tags that are execution requirements. Starlark actions get
+/// them too (TargetUtils.getFilteredExecutionInfo, :271-301, with
+/// --incompatible_allow_tags_propagation, default true).
+fn rule_execution_info(rule: &Rule) -> BTreeSet<String> {
+    let tags = match (&rule.native, &rule.custom) {
+        (Some(native), _) => native.tags.clone(),
+        (None, Some(custom)) => custom.declaration.builtin.target.tags.clone(),
+        (None, None) => Vec::new(),
+    };
+    tags.into_iter()
+        .filter(|tag| {
+            [
+                "block-",
+                "requires-",
+                "no-",
+                "supports-",
+                "disable-",
+                "cpu:",
+                "resources:",
+            ]
+            .iter()
+            .any(|prefix| tag.starts_with(prefix))
+                || tag == "local"
+                || tag == "worker-key-mnemonic"
+        })
+        .collect()
+}
+
+/// A native rule's explicit boolean attribute (False when unset).
+fn native_bool(rule: &Rule, name: &str) -> bool {
+    rule.native.as_ref().is_some_and(|native| {
+        matches!(
+            native.attrs.get(name),
+            Some(crate::custom_rule::AttrValue::Bool(true))
+        )
+    })
+}
+
 fn planted(artifact: &Artifact, main_ignored: &IgnoredSubdirectories) -> bool {
     if artifact.producer.is_some()
         || Label::parse_canonical(&artifact.owner).is_ok_and(|l| !l.repository.is_empty())
@@ -8403,7 +8525,7 @@ m = macro(implementation=emit)
         for (exec, producer, expected) in [
             ("external/dep+/p/in", None, "../dep+/p/in"),
             (
-                "bazel-out/rust-fastbuild/bin/external/dep+/p/out",
+                "bazel-out/k8-fastbuild/bin/external/dep+/p/out",
                 Some(("action".into(), 0)),
                 "../dep+/p/out",
             ),
@@ -8480,7 +8602,7 @@ m = macro(implementation=emit)
         .unwrap();
         assert_eq!(
             expanded,
-            "external/dep+/p/in external/dep+/p/in bazel-out/rust-fastbuild/bin/external/dep+/p bazel-out/rust-fastbuild/bin/external/dep+/p/nested"
+            "external/dep+/p/in external/dep+/p/in bazel-out/k8-fastbuild/bin/external/dep+/p bazel-out/k8-fastbuild/bin/external/dep+/p/nested"
         );
     }
 
@@ -8617,7 +8739,7 @@ m = macro(implementation=emit)
             BTreeMap::from([
                 (
                     "//:leaf#0".to_owned(),
-                    "bazel-out/rust-fastbuild/bin/leaf.txt".to_owned()
+                    "bazel-out/k8-fastbuild/bin/leaf.txt".to_owned()
                 ),
                 (
                     exec_leaf.clone(),
@@ -8625,7 +8747,7 @@ m = macro(implementation=emit)
                 ),
                 (
                     "//:top#0".to_owned(),
-                    "bazel-out/rust-fastbuild/bin/top.txt".to_owned()
+                    "bazel-out/k8-fastbuild/bin/top.txt".to_owned()
                 ),
             ])
         );
@@ -8636,7 +8758,7 @@ m = macro(implementation=emit)
             .unwrap();
         assert_eq!(
             top_action.action.write.as_ref().unwrap().content,
-            b"bazel-out/linux-opt-exec/bin/leaf.txt bazel-out/rust-fastbuild/bin/leaf.txttc"
+            b"bazel-out/linux-opt-exec/bin/leaf.txt bazel-out/k8-fastbuild/bin/leaf.txttc"
         );
         // The requested target's files: its output and both leaves'.
         assert_eq!(
@@ -8648,9 +8770,9 @@ m = macro(implementation=emit)
                 })
                 .collect::<Vec<_>>(),
             [
-                "bazel-out/rust-fastbuild/bin/top.txt",
+                "bazel-out/k8-fastbuild/bin/top.txt",
                 "bazel-out/linux-opt-exec/bin/leaf.txt",
-                "bazel-out/rust-fastbuild/bin/leaf.txt"
+                "bazel-out/k8-fastbuild/bin/leaf.txt"
             ]
         );
         // Toolchain contexts and registered toolchains per configuration.

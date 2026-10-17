@@ -596,7 +596,7 @@ class MainTests(unittest.TestCase):
                             tree.unlink()
                         os.symlink(publication, tree)
                     paths = [tree / filename for filename in ('data', 'MODULE.bazel')] if source else [
-                        base / 'bazel-out/rust-fastbuild/bin/external' / (links.shared.DEP + '+') / 'copy.txt']
+                        base / 'bazel-out/k8-fastbuild/bin/external' / (links.shared.DEP + '+') / 'copy.txt']
                     if not source:
                         paths[0].parent.mkdir(parents=True, exist_ok=True)
                         paths[0].write_bytes(links.shared.data())

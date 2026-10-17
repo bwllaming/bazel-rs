@@ -205,7 +205,7 @@ built-in @bazel_tools repository, which this module profile does not provide
 the default) is the default configuration and is resolved lazily too.
 
 The configuration identity includes the target and host platform labels
-(docs/CONFIGURATION.md); output paths keep the `rust-<mode>` root, as Bazel's
+(docs/CONFIGURATION.md); output paths keep the `k8-<mode>` root, as Bazel's
 `<cpu>-<mode>` does not depend on `--platforms`.
 
 **Platforms module versions.** The tests and the paired capture use the

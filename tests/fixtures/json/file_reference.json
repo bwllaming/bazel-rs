@@ -12,8 +12,8 @@
   },
   "reference_output": "[{\"path\":\"input.txt\",\"root\":\"\",\"short_path\":\"input.txt\"},{\"path\":\"bazel-out/k8-fastbuild/bin/file_encoding.json\",\"root\":\"bazel-out/k8-fastbuild/bin\",\"short_path\":\"file_encoding.json\"},[3,1,2],[0,1,2]]",
   "native_profile": {
-    "generated_root": "bazel-out/rust-fastbuild/bin",
+    "generated_root": "bazel-out/k8-fastbuild/bin",
     "source_root": "",
-    "classification": "engine-specific native configuration; NOT normalized byte parity with genuine k8-fastbuild File output"
+    "classification": "native configuration root equal to genuine k8-fastbuild since N41 closed D1 (rust-fastbuild before); compared as written, NOT normalized"
   }
 }

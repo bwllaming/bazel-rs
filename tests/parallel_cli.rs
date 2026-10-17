@@ -176,12 +176,12 @@ fn parallel_preflight_rejects_every_invalid_graph_before_cache_creation() {
         "filegroup(name='bad',srcs=['missing'])",
         "filegroup(name='bad',srcs=[':bad'])",
         "genrule(name='bad',outs=['dir','dir/child'],cmd='true')",
-        "genrule(name='make',outs=['x'],cmd='printf x > $@')\nfilegroup(name='bad',srcs=[':make','bazel-out/rust-fastbuild/bin/x'])",
+        "genrule(name='make',outs=['x'],cmd='printf x > $@')\nfilegroup(name='bad',srcs=[':make','bazel-out/k8-fastbuild/bin/x'])",
     ] {
         let ws = Workspace::new(&format!(
             "genrule(name='aaa',outs=['first'],cmd='printf ran > $@')\n{invalid}\n"
         ));
-        ws.file("bazel-out/rust-fastbuild/bin/x", "source collision");
+        ws.file("bazel-out/k8-fastbuild/bin/x", "source collision");
         let result = ws.run(&["build", "--jobs=8", ":aaa", ":bad"]);
         assert!(!result.status.success(), "accepted {invalid}");
         assert!(result.stdout.is_empty());

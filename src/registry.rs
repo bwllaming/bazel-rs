@@ -369,19 +369,25 @@ fn open_http_with(
     url: Url,
 ) -> Result<Option<reqwest::blocking::Response>, String> {
     crate::download_proxy::check(&url)?;
+    // Credential helper headers for the requested URL (DownloadManager
+    // credentialFactory, bazel/BazelRepositoryModule.java:446-477; N41).
+    // Redirect hops reuse them under reqwest's same-host rule instead of
+    // asking the helper again (docs/REMOTE_CACHE.md).
+    let mut request = client
+        .get(url.as_str())
+        .header(reqwest::header::ACCEPT_ENCODING, "identity");
+    for (name, value) in crate::credentials::download_headers(url.as_str()) {
+        request = request.header(name, value);
+    }
     // Do not expose reqwest errors: they may contain a redirect URL with secrets.
     // No request-level timeout: it would bound the whole body transfer.
-    let response = client
-        .get(url)
-        .header(reqwest::header::ACCEPT_ENCODING, "identity")
-        .send()
-        .map_err(|error| {
-            if error.is_timeout() {
-                "HTTP request timed out".to_owned()
-            } else {
-                "HTTP request failed (connection, TLS, or redirect error)".to_owned()
-            }
-        })?;
+    let response = request.send().map_err(|error| {
+        if error.is_timeout() {
+            "HTTP request timed out".to_owned()
+        } else {
+            "HTTP request failed (connection, TLS, or redirect error)".to_owned()
+        }
+    })?;
     if matches!(
         response.status(),
         reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::GONE

@@ -1,0 +1,3268 @@
+{
+ "analysis": {
+  "ac-entries-and-cas-equal": "EXACT in the review rerun (identical AC keys, protos, outputs, digests and CAS sets); run 2 differed only in timing-dependent execution metadata of one sub-millisecond native action.",
+  "cache-http-500": "documented: same warning and successful local build; Bazel retries (--remote_retries=5: 24 requests), native makes one attempt and stops uploading at the first failure.",
+  "download-registry-helper": "EXACT on the common URLs (genuine_common == native_common: each registry URL asked once, the helper header attached). Both runs then failed for reasons outside N41: genuine mod graph evaluated extensions and fetched an http_archive patch the offline registry lacks (404); native rejected the yanked zlib@1.2.11 fixture choice (yanked-version allowlists unsupported).",
+  "download-registry-helper-fails": "EXACT on the common URLs except a harness artifact: the genuine warning for rules_license carries Bazel UI progress text (\" no actions running\") that the event parser appended; the warning texts are otherwise identical (Error retrieving auth headers, continuing without: ...). Same unrelated failures as download-registry-helper.",
+  "error-helper-fails-mid-build": "documented: same CredentialHelperException message; native reports action failures as \"action 'ID': ...\" and does not retry (Bazel invoked the helper 4 times through its retrier).",
+  "helper-cache-duration-0": "EXPECTED_DIVERGENCE (concurrency): with a zero cache duration every request asks the helper; native makes its 5 requests sequentially (5 + the startup check = 6 invocations), genuine Bazel uploads the CAS blobs in parallel and concurrent Caffeine loads of the same URI share one helper invocation (5). Requests, headers and URIs are equal.",
+  "helper-unscoped-default": "EXPECTED_DIVERGENCE (laziness): an unscoped helper applies to every URI; genuine Bazel also fetched the platforms-1.0.0 archive (github.com, from the offline registry source.json) and asked the helper for those URLs, while the native build of //pkg:gen did not need that repository. Cache requests and their helper URI are equal.",
+  "request-header-names": "documented: native sends User-Agent bazel-rs/0.1.0 and Accept-Encoding gzip,deflate; reqwest omits Connection/Content-Length on GETs.",
+  "warm-build-request-multiset": "documented: native downloads every output of a hit (one extra CAS GET, the intermediate exec tool mk.sh); Bazel defaults to --remote_download_outputs=toplevel."
+ },
+ "cases": [
+  {
+   "classification": "EXACT",
+   "genuine": {
+    "auth_headers": [
+     "[[\"authorization\", \"Bearer test-token\"], [\"x-multi\", \"a\"], [\"x-multi\", \"b\"]]"
+    ],
+    "errors": [],
+    "helper": [
+     {
+      "argv": "get",
+      "client_env_mark": "client-env",
+      "cwd": "<WS>",
+      "stdin": "{\"uri\":\"<SERVER>\"}"
+     }
+    ],
+    "outputs": {
+     "chain.txt": "HELLO\nDONE\n",
+     "env.txt": "/bin:/usr/bin:/usr/local/bin\nehuBc\n",
+     "gen.txt": "hello\ndone\n",
+     "nc.txt": "nc\n",
+     "ne.txt": "ne\n",
+     "run.out": "hello\n",
+     "sh.out": "HELLO\n",
+     "use.txt": "made\n"
+    },
+    "plaintext_warnings": [
+     "Credentials are transmitted in plaintext to <SERVER>. Please consider using an HTTPS endpoint."
+    ],
+    "remote_hits": 0,
+    "requests": [
+     "GET /ac/04c04613ed9a49881b3ce18b9d9f8208b74e744ef39f64ea6dac0730270e93d8 404",
+     "GET /ac/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 404",
+     "GET /ac/250f50e9bae0d6845e5325da0a54932e82d7d0c2ce26438e96569ec66be17111 404",
+     "GET /ac/536f513c26a82e7a15a60d6938252c7258b5adb4e41d1139e770f1484dae2071 404",
+     "GET /ac/55a9a20019c12f38767dc9dc43875a8a327cd33249897231f72ffede7936e030 404",
+     "GET /ac/5b3f16a71549320cd13da1715ee393511e28173dfc4769bb3b32bf8e8b334d14 404",
+     "GET /ac/9444e436bb3bd590c0321627233631773a476337ebe6ef6b271cca12e6f0e786 404",
+     "GET /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 404",
+     "PUT /ac/04c04613ed9a49881b3ce18b9d9f8208b74e744ef39f64ea6dac0730270e93d8 200",
+     "PUT /ac/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 200",
+     "PUT /ac/250f50e9bae0d6845e5325da0a54932e82d7d0c2ce26438e96569ec66be17111 200",
+     "PUT /ac/536f513c26a82e7a15a60d6938252c7258b5adb4e41d1139e770f1484dae2071 200",
+     "PUT /ac/55a9a20019c12f38767dc9dc43875a8a327cd33249897231f72ffede7936e030 200",
+     "PUT /ac/5b3f16a71549320cd13da1715ee393511e28173dfc4769bb3b32bf8e8b334d14 200",
+     "PUT /ac/9444e436bb3bd590c0321627233631773a476337ebe6ef6b271cca12e6f0e786 200",
+     "PUT /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200",
+     "PUT /cas/01afddb73d9708998c57531fd8d53ca68825b5e24a1db0af8951107206d8ab50 200",
+     "PUT /cas/04301b3707559bc53dbbf5c20dd33a85f4323a30f45a252126123d2e87851acc 200",
+     "PUT /cas/04c04613ed9a49881b3ce18b9d9f8208b74e744ef39f64ea6dac0730270e93d8 200",
+     "PUT /cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 200",
+     "PUT /cas/1401c613761a81a57e91f157a6a57721f0976a4f59ca44df05a4a9615e9583fa 200",
+     "PUT /cas/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 200",
+     "PUT /cas/250f50e9bae0d6845e5325da0a54932e82d7d0c2ce26438e96569ec66be17111 200",
+     "PUT /cas/3142e2d0bf9241989357343d44231a307b9e172f925f193423e329a471da3fab 200",
+     "PUT /cas/3b09aeb6f5f5336beb205d7f720371bc927cd46c21922e334d47ba264acb5ba4 200",
+     "PUT /cas/3b45d6b7e1461a4190d4b45166c0c3d29eb2e01ff0e50e9b3dc6173816e240a1 200",
+     "PUT /cas/536f513c26a82e7a15a60d6938252c7258b5adb4e41d1139e770f1484dae2071 200",
+     "PUT /cas/55a9a20019c12f38767dc9dc43875a8a327cd33249897231f72ffede7936e030 200",
+     "PUT /cas/5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 200",
+     "PUT /cas/5934c1f36f5122b8554ec7958744e7013b486f142def4d93911cca6ecab479c2 200",
+     "PUT /cas/5b3f16a71549320cd13da1715ee393511e28173dfc4769bb3b32bf8e8b334d14 200",
+     "PUT /cas/6eab715a257823de69087eda9377d87317a28ab27412edc77bfd0a5494905a05 200",
+     "PUT /cas/9444e436bb3bd590c0321627233631773a476337ebe6ef6b271cca12e6f0e786 200",
+     "PUT /cas/9956b6720babcc631eb7bc3a0b693ed431658a9c6e40bdae1445350180d58860 200",
+     "PUT /cas/9ccbd3f1b19a1cdfd8d7c6ae48e9e822e2345f5be1a6187b19e41486c6941004 200",
+     "PUT /cas/a01e81fb05f23fc6128c71b2c090e51bfd5ee84e4c82c8ceeac31f3b0cc5df22 200",
+     "PUT /cas/a7ab2daaee1b89dc1f432fd0a74dc23d39f69712e89e3fb891271c65e65922aa 200",
+     "PUT /cas/b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a 200",
+     "PUT /cas/d8eedf7cee7f8fd1d89202f4bbbc52bfcb1a7f44fc713010933c76b27586f701 200",
+     "PUT /cas/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200"
+    ],
+    "returncode": 0
+   },
+   "genuine_ac_keys": {
+    "04c04613ed9a49881b3ce18b9d9f8208b74e744ef39f64ea6dac0730270e93d8": [
+     "bazel-out/k8-fastbuild/bin/pkg/chain.txt"
+    ],
+    "215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e": [
+     "bazel-out/k8-fastbuild/bin/pkg/sh.out"
+    ],
+    "250f50e9bae0d6845e5325da0a54932e82d7d0c2ce26438e96569ec66be17111": [
+     "bazel-out/k8-fastbuild/bin/pkg/use.txt"
+    ],
+    "536f513c26a82e7a15a60d6938252c7258b5adb4e41d1139e770f1484dae2071": [
+     "bazel-out/k8-opt-exec/bin/pkg/mk.sh"
+    ],
+    "55a9a20019c12f38767dc9dc43875a8a327cd33249897231f72ffede7936e030": [
+     "bazel-out/k8-fastbuild/bin/pkg/run.out"
+    ],
+    "5b3f16a71549320cd13da1715ee393511e28173dfc4769bb3b32bf8e8b334d14": [
+     "bazel-out/k8-fastbuild/bin/pkg/ne.txt"
+    ],
+    "9444e436bb3bd590c0321627233631773a476337ebe6ef6b271cca12e6f0e786": [
+     "bazel-out/k8-fastbuild/bin/pkg/env.txt"
+    ],
+    "e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9": [
+     "bazel-out/k8-fastbuild/bin/pkg/gen.txt"
+    ]
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--ignore_all_rc_files",
+    "--output_user_root=<BASE>/our-1",
+    "build",
+    "--registry=file:///tmp/opencode/bazel-parity-remote/tests/fixtures/builtin_modules/registry",
+    "--lockfile_mode=off",
+    "--remote_cache=http://127.0.0.1:35487",
+    "--credential_helper=127.0.0.1=<BASE>/helper",
+    "//pkg:gen",
+    "//pkg:run",
+    "//pkg:sh",
+    "//pkg:chain",
+    "//pkg:env",
+    "//pkg:use",
+    "//pkg:ne",
+    "//pkg:nc"
+   ],
+   "id": "genuine-writes-native-reads",
+   "native": {
+    "auth_headers": [
+     "[[\"authorization\", \"Bearer test-token\"], [\"x-multi\", \"a\"], [\"x-multi\", \"b\"]]"
+    ],
+    "counts": {
+     "cache_hits": 0,
+     "executed": 1,
+     "remote_hits": 8
+    },
+    "errors": [],
+    "helper": [
+     {
+      "argv": "get",
+      "client_env_mark": "client-env",
+      "cwd": "<WS>",
+      "stdin": "{\"uri\":\"<SERVER>\"}"
+     }
+    ],
+    "outputs": {
+     "chain.txt": "HELLO\nDONE\n",
+     "env.txt": "/bin:/usr/bin:/usr/local/bin\nehuBc\n",
+     "gen.txt": "hello\ndone\n",
+     "nc.txt": "nc\n",
+     "ne.txt": "ne\n",
+     "run.out": "hello\n",
+     "sh.out": "HELLO\n",
+     "use.txt": "made\n"
+    },
+    "plaintext_warnings": [
+     "Credentials are transmitted in plaintext to <SERVER>. Please consider using an HTTPS endpoint."
+    ],
+    "requests": [
+     "GET /ac/04c04613ed9a49881b3ce18b9d9f8208b74e744ef39f64ea6dac0730270e93d8 200",
+     "GET /ac/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 200",
+     "GET /ac/250f50e9bae0d6845e5325da0a54932e82d7d0c2ce26438e96569ec66be17111 200",
+     "GET /ac/536f513c26a82e7a15a60d6938252c7258b5adb4e41d1139e770f1484dae2071 200",
+     "GET /ac/55a9a20019c12f38767dc9dc43875a8a327cd33249897231f72ffede7936e030 200",
+     "GET /ac/5b3f16a71549320cd13da1715ee393511e28173dfc4769bb3b32bf8e8b334d14 200",
+     "GET /ac/9444e436bb3bd590c0321627233631773a476337ebe6ef6b271cca12e6f0e786 200",
+     "GET /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200",
+     "GET /cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 200",
+     "GET /cas/3b09aeb6f5f5336beb205d7f720371bc927cd46c21922e334d47ba264acb5ba4 200",
+     "GET /cas/5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 200",
+     "GET /cas/5934c1f36f5122b8554ec7958744e7013b486f142def4d93911cca6ecab479c2 200",
+     "GET /cas/6eab715a257823de69087eda9377d87317a28ab27412edc77bfd0a5494905a05 200",
+     "GET /cas/9956b6720babcc631eb7bc3a0b693ed431658a9c6e40bdae1445350180d58860 200",
+     "GET /cas/9ccbd3f1b19a1cdfd8d7c6ae48e9e822e2345f5be1a6187b19e41486c6941004 200",
+     "GET /cas/a7ab2daaee1b89dc1f432fd0a74dc23d39f69712e89e3fb891271c65e65922aa 200"
+    ],
+    "returncode": 0
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-remote/target/release/bazel-rs",
+    "--ignore_all_rc_files",
+    "--cache-dir=<BASE>/ncache-2",
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file:///tmp/opencode/bazel-parity-remote/tests/fixtures/builtin_modules/registry",
+    "--lockfile_mode=off",
+    "--remote_cache=http://127.0.0.1:35487",
+    "--credential_helper=127.0.0.1=<BASE>/helper",
+    "//pkg:gen",
+    "//pkg:run",
+    "//pkg:sh",
+    "//pkg:chain",
+    "//pkg:env",
+    "//pkg:use",
+    "//pkg:ne",
+    "//pkg:nc"
+   ],
+   "native_hit_keys": [
+    "04c04613ed9a49881b3ce18b9d9f8208b74e744ef39f64ea6dac0730270e93d8",
+    "215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e",
+    "250f50e9bae0d6845e5325da0a54932e82d7d0c2ce26438e96569ec66be17111",
+    "536f513c26a82e7a15a60d6938252c7258b5adb4e41d1139e770f1484dae2071",
+    "55a9a20019c12f38767dc9dc43875a8a327cd33249897231f72ffede7936e030",
+    "5b3f16a71549320cd13da1715ee393511e28173dfc4769bb3b32bf8e8b334d14",
+    "9444e436bb3bd590c0321627233631773a476337ebe6ef6b271cca12e6f0e786",
+    "e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9"
+   ],
+   "native_miss_keys": [],
+   "native_miss_outputs": [],
+   "rerun": "review-b1-targeted"
+  },
+  {
+   "classification": "EXACT",
+   "genuine": {
+    "errors": [],
+    "outputs": {
+     "chain.txt": "HELLO\nDONE\n",
+     "env.txt": "/bin:/usr/bin:/usr/local/bin\nehuBc\n",
+     "gen.txt": "hello\ndone\n",
+     "nc.txt": "nc\n",
+     "ne.txt": "ne\n",
+     "run.out": "hello\n",
+     "sh.out": "HELLO\n",
+     "use.txt": "made\n"
+    },
+    "remote_hits": 8,
+    "requests": [
+     "GET /ac/04c04613ed9a49881b3ce18b9d9f8208b74e744ef39f64ea6dac0730270e93d8 200",
+     "GET /ac/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 200",
+     "GET /ac/250f50e9bae0d6845e5325da0a54932e82d7d0c2ce26438e96569ec66be17111 200",
+     "GET /ac/536f513c26a82e7a15a60d6938252c7258b5adb4e41d1139e770f1484dae2071 200",
+     "GET /ac/55a9a20019c12f38767dc9dc43875a8a327cd33249897231f72ffede7936e030 200",
+     "GET /ac/5b3f16a71549320cd13da1715ee393511e28173dfc4769bb3b32bf8e8b334d14 200",
+     "GET /ac/9444e436bb3bd590c0321627233631773a476337ebe6ef6b271cca12e6f0e786 200",
+     "GET /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200",
+     "GET /cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 200",
+     "GET /cas/3b09aeb6f5f5336beb205d7f720371bc927cd46c21922e334d47ba264acb5ba4 200",
+     "GET /cas/5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 200",
+     "GET /cas/5934c1f36f5122b8554ec7958744e7013b486f142def4d93911cca6ecab479c2 200",
+     "GET /cas/6eab715a257823de69087eda9377d87317a28ab27412edc77bfd0a5494905a05 200",
+     "GET /cas/9956b6720babcc631eb7bc3a0b693ed431658a9c6e40bdae1445350180d58860 200",
+     "GET /cas/9ccbd3f1b19a1cdfd8d7c6ae48e9e822e2345f5be1a6187b19e41486c6941004 200"
+    ],
+    "returncode": 0
+   },
+   "id": "native-writes-genuine-reads",
+   "native": {
+    "counts": {
+     "cache_hits": 0,
+     "executed": 9,
+     "remote_hits": 0
+    },
+    "requests": [
+     "GET /ac/04c04613ed9a49881b3ce18b9d9f8208b74e744ef39f64ea6dac0730270e93d8 404",
+     "GET /ac/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 404",
+     "GET /ac/250f50e9bae0d6845e5325da0a54932e82d7d0c2ce26438e96569ec66be17111 404",
+     "GET /ac/536f513c26a82e7a15a60d6938252c7258b5adb4e41d1139e770f1484dae2071 404",
+     "GET /ac/55a9a20019c12f38767dc9dc43875a8a327cd33249897231f72ffede7936e030 404",
+     "GET /ac/5b3f16a71549320cd13da1715ee393511e28173dfc4769bb3b32bf8e8b334d14 404",
+     "GET /ac/9444e436bb3bd590c0321627233631773a476337ebe6ef6b271cca12e6f0e786 404",
+     "GET /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 404",
+     "PUT /ac/04c04613ed9a49881b3ce18b9d9f8208b74e744ef39f64ea6dac0730270e93d8 200",
+     "PUT /ac/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 200",
+     "PUT /ac/250f50e9bae0d6845e5325da0a54932e82d7d0c2ce26438e96569ec66be17111 200",
+     "PUT /ac/536f513c26a82e7a15a60d6938252c7258b5adb4e41d1139e770f1484dae2071 200",
+     "PUT /ac/55a9a20019c12f38767dc9dc43875a8a327cd33249897231f72ffede7936e030 200",
+     "PUT /ac/5b3f16a71549320cd13da1715ee393511e28173dfc4769bb3b32bf8e8b334d14 200",
+     "PUT /ac/9444e436bb3bd590c0321627233631773a476337ebe6ef6b271cca12e6f0e786 200",
+     "PUT /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200",
+     "PUT /cas/01afddb73d9708998c57531fd8d53ca68825b5e24a1db0af8951107206d8ab50 200",
+     "PUT /cas/04301b3707559bc53dbbf5c20dd33a85f4323a30f45a252126123d2e87851acc 200",
+     "PUT /cas/04c04613ed9a49881b3ce18b9d9f8208b74e744ef39f64ea6dac0730270e93d8 200",
+     "PUT /cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 200",
+     "PUT /cas/1401c613761a81a57e91f157a6a57721f0976a4f59ca44df05a4a9615e9583fa 200",
+     "PUT /cas/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 200",
+     "PUT /cas/250f50e9bae0d6845e5325da0a54932e82d7d0c2ce26438e96569ec66be17111 200",
+     "PUT /cas/3142e2d0bf9241989357343d44231a307b9e172f925f193423e329a471da3fab 200",
+     "PUT /cas/3b09aeb6f5f5336beb205d7f720371bc927cd46c21922e334d47ba264acb5ba4 200",
+     "PUT /cas/3b45d6b7e1461a4190d4b45166c0c3d29eb2e01ff0e50e9b3dc6173816e240a1 200",
+     "PUT /cas/536f513c26a82e7a15a60d6938252c7258b5adb4e41d1139e770f1484dae2071 200",
+     "PUT /cas/55a9a20019c12f38767dc9dc43875a8a327cd33249897231f72ffede7936e030 200",
+     "PUT /cas/5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 200",
+     "PUT /cas/5934c1f36f5122b8554ec7958744e7013b486f142def4d93911cca6ecab479c2 200",
+     "PUT /cas/5b3f16a71549320cd13da1715ee393511e28173dfc4769bb3b32bf8e8b334d14 200",
+     "PUT /cas/6eab715a257823de69087eda9377d87317a28ab27412edc77bfd0a5494905a05 200",
+     "PUT /cas/9444e436bb3bd590c0321627233631773a476337ebe6ef6b271cca12e6f0e786 200",
+     "PUT /cas/9956b6720babcc631eb7bc3a0b693ed431658a9c6e40bdae1445350180d58860 200",
+     "PUT /cas/9ccbd3f1b19a1cdfd8d7c6ae48e9e822e2345f5be1a6187b19e41486c6941004 200",
+     "PUT /cas/a01e81fb05f23fc6128c71b2c090e51bfd5ee84e4c82c8ceeac31f3b0cc5df22 200",
+     "PUT /cas/a7ab2daaee1b89dc1f432fd0a74dc23d39f69712e89e3fb891271c65e65922aa 200",
+     "PUT /cas/b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a 200",
+     "PUT /cas/d8eedf7cee7f8fd1d89202f4bbbc52bfcb1a7f44fc713010933c76b27586f701 200",
+     "PUT /cas/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200"
+    ],
+    "returncode": 0
+   },
+   "native_ac_keys": [
+    "04c04613ed9a49881b3ce18b9d9f8208b74e744ef39f64ea6dac0730270e93d8",
+    "215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e",
+    "250f50e9bae0d6845e5325da0a54932e82d7d0c2ce26438e96569ec66be17111",
+    "536f513c26a82e7a15a60d6938252c7258b5adb4e41d1139e770f1484dae2071",
+    "55a9a20019c12f38767dc9dc43875a8a327cd33249897231f72ffede7936e030",
+    "5b3f16a71549320cd13da1715ee393511e28173dfc4769bb3b32bf8e8b334d14",
+    "9444e436bb3bd590c0321627233631773a476337ebe6ef6b271cca12e6f0e786",
+    "e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9"
+   ],
+   "rerun": "review-b1-targeted"
+  },
+  {
+   "classification": "EXACT",
+   "genuine_cas": [
+    "01afddb73d9708998c57531fd8d53ca68825b5e24a1db0af8951107206d8ab50",
+    "04301b3707559bc53dbbf5c20dd33a85f4323a30f45a252126123d2e87851acc",
+    "04c04613ed9a49881b3ce18b9d9f8208b74e744ef39f64ea6dac0730270e93d8",
+    "0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc",
+    "1401c613761a81a57e91f157a6a57721f0976a4f59ca44df05a4a9615e9583fa",
+    "215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e",
+    "250f50e9bae0d6845e5325da0a54932e82d7d0c2ce26438e96569ec66be17111",
+    "3142e2d0bf9241989357343d44231a307b9e172f925f193423e329a471da3fab",
+    "3b09aeb6f5f5336beb205d7f720371bc927cd46c21922e334d47ba264acb5ba4",
+    "3b45d6b7e1461a4190d4b45166c0c3d29eb2e01ff0e50e9b3dc6173816e240a1",
+    "536f513c26a82e7a15a60d6938252c7258b5adb4e41d1139e770f1484dae2071",
+    "55a9a20019c12f38767dc9dc43875a8a327cd33249897231f72ffede7936e030",
+    "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+    "5934c1f36f5122b8554ec7958744e7013b486f142def4d93911cca6ecab479c2",
+    "5b3f16a71549320cd13da1715ee393511e28173dfc4769bb3b32bf8e8b334d14",
+    "6eab715a257823de69087eda9377d87317a28ab27412edc77bfd0a5494905a05",
+    "9444e436bb3bd590c0321627233631773a476337ebe6ef6b271cca12e6f0e786",
+    "9956b6720babcc631eb7bc3a0b693ed431658a9c6e40bdae1445350180d58860",
+    "9ccbd3f1b19a1cdfd8d7c6ae48e9e822e2345f5be1a6187b19e41486c6941004",
+    "a01e81fb05f23fc6128c71b2c090e51bfd5ee84e4c82c8ceeac31f3b0cc5df22",
+    "a7ab2daaee1b89dc1f432fd0a74dc23d39f69712e89e3fb891271c65e65922aa",
+    "b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a",
+    "d8eedf7cee7f8fd1d89202f4bbbc52bfcb1a7f44fc713010933c76b27586f701",
+    "e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9"
+   ],
+   "genuine_entries": {
+    "04c04613ed9a49881b3ce18b9d9f8208b74e744ef39f64ea6dac0730270e93d8": {
+     "action": {
+      "command_digest": "3b45d6b7e1461a4190d4b45166c0c3d29eb2e01ff0e50e9b3dc6173816e240a1/252",
+      "input_root_digest": "abe2a60dd322686610aa49793389304b42feb301488c1c00c77ac34558bed2ee/165",
+      "salt": "0801"
+     },
+     "command": {
+      "arguments": [
+       "/bin/bash",
+       "-c",
+       "source external/bazel_tools/tools/genrule/genrule-setup.sh; tr a-z A-Z < bazel-out/k8-fastbuild/bin/pkg/gen.txt > bazel-out/k8-fastbuild/bin/pkg/chain.txt"
+      ],
+      "environment": [
+       [
+        "PATH",
+        "/bin:/usr/bin:/usr/local/bin"
+       ]
+      ],
+      "other_fields": [],
+      "output_paths": [
+       "bazel-out/k8-fastbuild/bin/pkg/chain.txt"
+      ]
+     },
+     "execution_metadata_fields": [
+      3,
+      4,
+      7,
+      8
+     ],
+     "exit_code": 0,
+     "fields": [
+      2,
+      6,
+      8,
+      9
+     ],
+     "output_files": [
+      {
+       "digest": "6eab715a257823de69087eda9377d87317a28ab27412edc77bfd0a5494905a05/11",
+       "is_executable": true,
+       "path": "bazel-out/k8-fastbuild/bin/pkg/chain.txt"
+      }
+     ],
+     "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0",
+     "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0"
+    },
+    "215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e": {
+     "action": {
+      "command_digest": "a01e81fb05f23fc6128c71b2c090e51bfd5ee84e4c82c8ceeac31f3b0cc5df22/129",
+      "input_root_digest": "7b28be45fb7bee9ecee43927ae9231f95d71a7a7ecb2c4a2aea7948f3af5f890/77",
+      "salt": "0801"
+     },
+     "command": {
+      "arguments": [
+       "/bin/bash",
+       "-c",
+       "tr a-z A-Z < $1 > $2",
+       "",
+       "pkg/in.txt",
+       "bazel-out/k8-fastbuild/bin/pkg/sh.out"
+      ],
+      "environment": [],
+      "other_fields": [],
+      "output_paths": [
+       "bazel-out/k8-fastbuild/bin/pkg/sh.out"
+      ]
+     },
+     "execution_metadata_fields": [
+      3,
+      4,
+      7,
+      8
+     ],
+     "exit_code": 0,
+     "fields": [
+      2,
+      6,
+      8,
+      9
+     ],
+     "output_files": [
+      {
+       "digest": "3b09aeb6f5f5336beb205d7f720371bc927cd46c21922e334d47ba264acb5ba4/6",
+       "is_executable": true,
+       "path": "bazel-out/k8-fastbuild/bin/pkg/sh.out"
+      }
+     ],
+     "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0",
+     "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0"
+    },
+    "250f50e9bae0d6845e5325da0a54932e82d7d0c2ce26438e96569ec66be17111": {
+     "action": {
+      "command_digest": "01afddb73d9708998c57531fd8d53ca68825b5e24a1db0af8951107206d8ab50/235",
+      "input_root_digest": "d0302c55ecf4bf9f7b5b7eabc26b2db30dcd2864878481b68e99e9b00fc73b27/165",
+      "salt": "0801"
+     },
+     "command": {
+      "arguments": [
+       "/bin/bash",
+       "-c",
+       "source external/bazel_tools/tools/genrule/genrule-setup.sh; bash bazel-out/k8-opt-exec/bin/pkg/mk.sh bazel-out/k8-fastbuild/bin/pkg/use.txt"
+      ],
+      "environment": [
+       [
+        "PATH",
+        "/bin:/usr/bin:/usr/local/bin"
+       ]
+      ],
+      "other_fields": [],
+      "output_paths": [
+       "bazel-out/k8-fastbuild/bin/pkg/use.txt"
+      ]
+     },
+     "execution_metadata_fields": [
+      3,
+      4,
+      7,
+      8
+     ],
+     "exit_code": 0,
+     "fields": [
+      2,
+      6,
+      8,
+      9
+     ],
+     "output_files": [
+      {
+       "digest": "9ccbd3f1b19a1cdfd8d7c6ae48e9e822e2345f5be1a6187b19e41486c6941004/5",
+       "is_executable": true,
+       "path": "bazel-out/k8-fastbuild/bin/pkg/use.txt"
+      }
+     ],
+     "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0",
+     "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0"
+    },
+    "536f513c26a82e7a15a60d6938252c7258b5adb4e41d1139e770f1484dae2071": {
+     "action": {
+      "command_digest": "d8eedf7cee7f8fd1d89202f4bbbc52bfcb1a7f44fc713010933c76b27586f701/213",
+      "input_root_digest": "d8ebc245a04cf68efde6f630bf26dd8d5d61de8f4ec17d1c5456ce19c90a7234/82",
+      "salt": "0801"
+     },
+     "command": {
+      "arguments": [
+       "/bin/bash",
+       "-c",
+       "source external/bazel_tools/tools/genrule/genrule-setup.sh; printf 'echo made > $1' > bazel-out/k8-opt-exec/bin/pkg/mk.sh"
+      ],
+      "environment": [
+       [
+        "PATH",
+        "/bin:/usr/bin:/usr/local/bin"
+       ]
+      ],
+      "other_fields": [],
+      "output_paths": [
+       "bazel-out/k8-opt-exec/bin/pkg/mk.sh"
+      ]
+     },
+     "execution_metadata_fields": [
+      3,
+      4,
+      7,
+      8
+     ],
+     "exit_code": 0,
+     "fields": [
+      2,
+      6,
+      8,
+      9
+     ],
+     "output_files": [
+      {
+       "digest": "a7ab2daaee1b89dc1f432fd0a74dc23d39f69712e89e3fb891271c65e65922aa/14",
+       "is_executable": true,
+       "path": "bazel-out/k8-opt-exec/bin/pkg/mk.sh"
+      }
+     ],
+     "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0",
+     "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0"
+    },
+    "55a9a20019c12f38767dc9dc43875a8a327cd33249897231f72ffede7936e030": {
+     "action": {
+      "command_digest": "1401c613761a81a57e91f157a6a57721f0976a4f59ca44df05a4a9615e9583fa/105",
+      "input_root_digest": "fb7760bf3c8699965f2f37d0f753fbbe49e475d7d9075c556ad8e9f44ed81018/78",
+      "salt": "0801"
+     },
+     "command": {
+      "arguments": [
+       "pkg/tool.sh",
+       "pkg/in.txt",
+       "bazel-out/k8-fastbuild/bin/pkg/run.out"
+      ],
+      "environment": [],
+      "other_fields": [],
+      "output_paths": [
+       "bazel-out/k8-fastbuild/bin/pkg/run.out"
+      ]
+     },
+     "execution_metadata_fields": [
+      3,
+      4,
+      7,
+      8
+     ],
+     "exit_code": 0,
+     "fields": [
+      2,
+      6,
+      8,
+      9
+     ],
+     "output_files": [
+      {
+       "digest": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03/6",
+       "is_executable": true,
+       "path": "bazel-out/k8-fastbuild/bin/pkg/run.out"
+      }
+     ],
+     "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0",
+     "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0"
+    },
+    "5b3f16a71549320cd13da1715ee393511e28173dfc4769bb3b32bf8e8b334d14": {
+     "action": {
+      "command_digest": "3142e2d0bf9241989357343d44231a307b9e172f925f193423e329a471da3fab/201",
+      "input_root_digest": "d8ebc245a04cf68efde6f630bf26dd8d5d61de8f4ec17d1c5456ce19c90a7234/82"
+     },
+     "command": {
+      "arguments": [
+       "/bin/bash",
+       "-c",
+       "source external/bazel_tools/tools/genrule/genrule-setup.sh; echo ne > bazel-out/k8-fastbuild/bin/pkg/ne.txt"
+      ],
+      "environment": [
+       [
+        "PATH",
+        "/bin:/usr/bin:/usr/local/bin"
+       ]
+      ],
+      "other_fields": [],
+      "output_paths": [
+       "bazel-out/k8-fastbuild/bin/pkg/ne.txt"
+      ]
+     },
+     "execution_metadata_fields": [
+      3,
+      4,
+      7,
+      8
+     ],
+     "exit_code": 0,
+     "fields": [
+      2,
+      6,
+      8,
+      9
+     ],
+     "output_files": [
+      {
+       "digest": "5934c1f36f5122b8554ec7958744e7013b486f142def4d93911cca6ecab479c2/3",
+       "is_executable": true,
+       "path": "bazel-out/k8-fastbuild/bin/pkg/ne.txt"
+      }
+     ],
+     "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0",
+     "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0"
+    },
+    "9444e436bb3bd590c0321627233631773a476337ebe6ef6b271cca12e6f0e786": {
+     "action": {
+      "command_digest": "04301b3707559bc53dbbf5c20dd33a85f4323a30f45a252126123d2e87851acc/258",
+      "input_root_digest": "d8ebc245a04cf68efde6f630bf26dd8d5d61de8f4ec17d1c5456ce19c90a7234/82",
+      "salt": "0801"
+     },
+     "command": {
+      "arguments": [
+       "/bin/bash",
+       "-c",
+       "source external/bazel_tools/tools/genrule/genrule-setup.sh; echo $PATH > bazel-out/k8-fastbuild/bin/pkg/env.txt; echo $- >> bazel-out/k8-fastbuild/bin/pkg/env.txt"
+      ],
+      "environment": [
+       [
+        "PATH",
+        "/bin:/usr/bin:/usr/local/bin"
+       ]
+      ],
+      "other_fields": [],
+      "output_paths": [
+       "bazel-out/k8-fastbuild/bin/pkg/env.txt"
+      ]
+     },
+     "execution_metadata_fields": [
+      3,
+      4,
+      7,
+      8
+     ],
+     "exit_code": 0,
+     "fields": [
+      2,
+      6,
+      8,
+      9
+     ],
+     "output_files": [
+      {
+       "digest": "9956b6720babcc631eb7bc3a0b693ed431658a9c6e40bdae1445350180d58860/35",
+       "is_executable": true,
+       "path": "bazel-out/k8-fastbuild/bin/pkg/env.txt"
+      }
+     ],
+     "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0",
+     "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0"
+    },
+    "e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9": {
+     "action": {
+      "command_digest": "b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a/264",
+      "input_root_digest": "1ef4dc247a3f097da05a62ddca2ae425b0aff5534f9cbdef2f1e1f6b7862e0ba/159",
+      "salt": "0801"
+     },
+     "command": {
+      "arguments": [
+       "/bin/bash",
+       "-c",
+       "source external/bazel_tools/tools/genrule/genrule-setup.sh; cat pkg/in.txt > bazel-out/k8-fastbuild/bin/pkg/gen.txt; echo done >> bazel-out/k8-fastbuild/bin/pkg/gen.txt"
+      ],
+      "environment": [
+       [
+        "PATH",
+        "/bin:/usr/bin:/usr/local/bin"
+       ]
+      ],
+      "other_fields": [],
+      "output_paths": [
+       "bazel-out/k8-fastbuild/bin/pkg/gen.txt"
+      ]
+     },
+     "execution_metadata_fields": [
+      3,
+      4,
+      7,
+      8
+     ],
+     "exit_code": 0,
+     "fields": [
+      2,
+      6,
+      8,
+      9
+     ],
+     "output_files": [
+      {
+       "digest": "0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc/11",
+       "is_executable": true,
+       "path": "bazel-out/k8-fastbuild/bin/pkg/gen.txt"
+      }
+     ],
+     "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0",
+     "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0"
+    }
+   },
+   "id": "ac-entries-and-cas-equal",
+   "native_cas": [
+    "01afddb73d9708998c57531fd8d53ca68825b5e24a1db0af8951107206d8ab50",
+    "04301b3707559bc53dbbf5c20dd33a85f4323a30f45a252126123d2e87851acc",
+    "04c04613ed9a49881b3ce18b9d9f8208b74e744ef39f64ea6dac0730270e93d8",
+    "0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc",
+    "1401c613761a81a57e91f157a6a57721f0976a4f59ca44df05a4a9615e9583fa",
+    "215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e",
+    "250f50e9bae0d6845e5325da0a54932e82d7d0c2ce26438e96569ec66be17111",
+    "3142e2d0bf9241989357343d44231a307b9e172f925f193423e329a471da3fab",
+    "3b09aeb6f5f5336beb205d7f720371bc927cd46c21922e334d47ba264acb5ba4",
+    "3b45d6b7e1461a4190d4b45166c0c3d29eb2e01ff0e50e9b3dc6173816e240a1",
+    "536f513c26a82e7a15a60d6938252c7258b5adb4e41d1139e770f1484dae2071",
+    "55a9a20019c12f38767dc9dc43875a8a327cd33249897231f72ffede7936e030",
+    "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+    "5934c1f36f5122b8554ec7958744e7013b486f142def4d93911cca6ecab479c2",
+    "5b3f16a71549320cd13da1715ee393511e28173dfc4769bb3b32bf8e8b334d14",
+    "6eab715a257823de69087eda9377d87317a28ab27412edc77bfd0a5494905a05",
+    "9444e436bb3bd590c0321627233631773a476337ebe6ef6b271cca12e6f0e786",
+    "9956b6720babcc631eb7bc3a0b693ed431658a9c6e40bdae1445350180d58860",
+    "9ccbd3f1b19a1cdfd8d7c6ae48e9e822e2345f5be1a6187b19e41486c6941004",
+    "a01e81fb05f23fc6128c71b2c090e51bfd5ee84e4c82c8ceeac31f3b0cc5df22",
+    "a7ab2daaee1b89dc1f432fd0a74dc23d39f69712e89e3fb891271c65e65922aa",
+    "b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a",
+    "d8eedf7cee7f8fd1d89202f4bbbc52bfcb1a7f44fc713010933c76b27586f701",
+    "e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9"
+   ],
+   "native_entries": {
+    "04c04613ed9a49881b3ce18b9d9f8208b74e744ef39f64ea6dac0730270e93d8": {
+     "action": {
+      "command_digest": "3b45d6b7e1461a4190d4b45166c0c3d29eb2e01ff0e50e9b3dc6173816e240a1/252",
+      "input_root_digest": "abe2a60dd322686610aa49793389304b42feb301488c1c00c77ac34558bed2ee/165",
+      "salt": "0801"
+     },
+     "command": {
+      "arguments": [
+       "/bin/bash",
+       "-c",
+       "source external/bazel_tools/tools/genrule/genrule-setup.sh; tr a-z A-Z < bazel-out/k8-fastbuild/bin/pkg/gen.txt > bazel-out/k8-fastbuild/bin/pkg/chain.txt"
+      ],
+      "environment": [
+       [
+        "PATH",
+        "/bin:/usr/bin:/usr/local/bin"
+       ]
+      ],
+      "other_fields": [],
+      "output_paths": [
+       "bazel-out/k8-fastbuild/bin/pkg/chain.txt"
+      ]
+     },
+     "execution_metadata_fields": [
+      3,
+      4,
+      7,
+      8
+     ],
+     "exit_code": 0,
+     "fields": [
+      2,
+      6,
+      8,
+      9
+     ],
+     "output_files": [
+      {
+       "digest": "6eab715a257823de69087eda9377d87317a28ab27412edc77bfd0a5494905a05/11",
+       "is_executable": true,
+       "path": "bazel-out/k8-fastbuild/bin/pkg/chain.txt"
+      }
+     ],
+     "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0",
+     "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0"
+    },
+    "215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e": {
+     "action": {
+      "command_digest": "a01e81fb05f23fc6128c71b2c090e51bfd5ee84e4c82c8ceeac31f3b0cc5df22/129",
+      "input_root_digest": "7b28be45fb7bee9ecee43927ae9231f95d71a7a7ecb2c4a2aea7948f3af5f890/77",
+      "salt": "0801"
+     },
+     "command": {
+      "arguments": [
+       "/bin/bash",
+       "-c",
+       "tr a-z A-Z < $1 > $2",
+       "",
+       "pkg/in.txt",
+       "bazel-out/k8-fastbuild/bin/pkg/sh.out"
+      ],
+      "environment": [],
+      "other_fields": [],
+      "output_paths": [
+       "bazel-out/k8-fastbuild/bin/pkg/sh.out"
+      ]
+     },
+     "execution_metadata_fields": [
+      3,
+      4,
+      7,
+      8
+     ],
+     "exit_code": 0,
+     "fields": [
+      2,
+      6,
+      8,
+      9
+     ],
+     "output_files": [
+      {
+       "digest": "3b09aeb6f5f5336beb205d7f720371bc927cd46c21922e334d47ba264acb5ba4/6",
+       "is_executable": true,
+       "path": "bazel-out/k8-fastbuild/bin/pkg/sh.out"
+      }
+     ],
+     "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0",
+     "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0"
+    },
+    "250f50e9bae0d6845e5325da0a54932e82d7d0c2ce26438e96569ec66be17111": {
+     "action": {
+      "command_digest": "01afddb73d9708998c57531fd8d53ca68825b5e24a1db0af8951107206d8ab50/235",
+      "input_root_digest": "d0302c55ecf4bf9f7b5b7eabc26b2db30dcd2864878481b68e99e9b00fc73b27/165",
+      "salt": "0801"
+     },
+     "command": {
+      "arguments": [
+       "/bin/bash",
+       "-c",
+       "source external/bazel_tools/tools/genrule/genrule-setup.sh; bash bazel-out/k8-opt-exec/bin/pkg/mk.sh bazel-out/k8-fastbuild/bin/pkg/use.txt"
+      ],
+      "environment": [
+       [
+        "PATH",
+        "/bin:/usr/bin:/usr/local/bin"
+       ]
+      ],
+      "other_fields": [],
+      "output_paths": [
+       "bazel-out/k8-fastbuild/bin/pkg/use.txt"
+      ]
+     },
+     "execution_metadata_fields": [
+      3,
+      4,
+      7,
+      8
+     ],
+     "exit_code": 0,
+     "fields": [
+      2,
+      6,
+      8,
+      9
+     ],
+     "output_files": [
+      {
+       "digest": "9ccbd3f1b19a1cdfd8d7c6ae48e9e822e2345f5be1a6187b19e41486c6941004/5",
+       "is_executable": true,
+       "path": "bazel-out/k8-fastbuild/bin/pkg/use.txt"
+      }
+     ],
+     "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0",
+     "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0"
+    },
+    "536f513c26a82e7a15a60d6938252c7258b5adb4e41d1139e770f1484dae2071": {
+     "action": {
+      "command_digest": "d8eedf7cee7f8fd1d89202f4bbbc52bfcb1a7f44fc713010933c76b27586f701/213",
+      "input_root_digest": "d8ebc245a04cf68efde6f630bf26dd8d5d61de8f4ec17d1c5456ce19c90a7234/82",
+      "salt": "0801"
+     },
+     "command": {
+      "arguments": [
+       "/bin/bash",
+       "-c",
+       "source external/bazel_tools/tools/genrule/genrule-setup.sh; printf 'echo made > $1' > bazel-out/k8-opt-exec/bin/pkg/mk.sh"
+      ],
+      "environment": [
+       [
+        "PATH",
+        "/bin:/usr/bin:/usr/local/bin"
+       ]
+      ],
+      "other_fields": [],
+      "output_paths": [
+       "bazel-out/k8-opt-exec/bin/pkg/mk.sh"
+      ]
+     },
+     "execution_metadata_fields": [
+      3,
+      4,
+      7,
+      8
+     ],
+     "exit_code": 0,
+     "fields": [
+      2,
+      6,
+      8,
+      9
+     ],
+     "output_files": [
+      {
+       "digest": "a7ab2daaee1b89dc1f432fd0a74dc23d39f69712e89e3fb891271c65e65922aa/14",
+       "is_executable": true,
+       "path": "bazel-out/k8-opt-exec/bin/pkg/mk.sh"
+      }
+     ],
+     "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0",
+     "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0"
+    },
+    "55a9a20019c12f38767dc9dc43875a8a327cd33249897231f72ffede7936e030": {
+     "action": {
+      "command_digest": "1401c613761a81a57e91f157a6a57721f0976a4f59ca44df05a4a9615e9583fa/105",
+      "input_root_digest": "fb7760bf3c8699965f2f37d0f753fbbe49e475d7d9075c556ad8e9f44ed81018/78",
+      "salt": "0801"
+     },
+     "command": {
+      "arguments": [
+       "pkg/tool.sh",
+       "pkg/in.txt",
+       "bazel-out/k8-fastbuild/bin/pkg/run.out"
+      ],
+      "environment": [],
+      "other_fields": [],
+      "output_paths": [
+       "bazel-out/k8-fastbuild/bin/pkg/run.out"
+      ]
+     },
+     "execution_metadata_fields": [
+      3,
+      4,
+      7,
+      8
+     ],
+     "exit_code": 0,
+     "fields": [
+      2,
+      6,
+      8,
+      9
+     ],
+     "output_files": [
+      {
+       "digest": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03/6",
+       "is_executable": true,
+       "path": "bazel-out/k8-fastbuild/bin/pkg/run.out"
+      }
+     ],
+     "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0",
+     "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0"
+    },
+    "5b3f16a71549320cd13da1715ee393511e28173dfc4769bb3b32bf8e8b334d14": {
+     "action": {
+      "command_digest": "3142e2d0bf9241989357343d44231a307b9e172f925f193423e329a471da3fab/201",
+      "input_root_digest": "d8ebc245a04cf68efde6f630bf26dd8d5d61de8f4ec17d1c5456ce19c90a7234/82"
+     },
+     "command": {
+      "arguments": [
+       "/bin/bash",
+       "-c",
+       "source external/bazel_tools/tools/genrule/genrule-setup.sh; echo ne > bazel-out/k8-fastbuild/bin/pkg/ne.txt"
+      ],
+      "environment": [
+       [
+        "PATH",
+        "/bin:/usr/bin:/usr/local/bin"
+       ]
+      ],
+      "other_fields": [],
+      "output_paths": [
+       "bazel-out/k8-fastbuild/bin/pkg/ne.txt"
+      ]
+     },
+     "execution_metadata_fields": [
+      3,
+      4,
+      7,
+      8
+     ],
+     "exit_code": 0,
+     "fields": [
+      2,
+      6,
+      8,
+      9
+     ],
+     "output_files": [
+      {
+       "digest": "5934c1f36f5122b8554ec7958744e7013b486f142def4d93911cca6ecab479c2/3",
+       "is_executable": true,
+       "path": "bazel-out/k8-fastbuild/bin/pkg/ne.txt"
+      }
+     ],
+     "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0",
+     "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0"
+    },
+    "9444e436bb3bd590c0321627233631773a476337ebe6ef6b271cca12e6f0e786": {
+     "action": {
+      "command_digest": "04301b3707559bc53dbbf5c20dd33a85f4323a30f45a252126123d2e87851acc/258",
+      "input_root_digest": "d8ebc245a04cf68efde6f630bf26dd8d5d61de8f4ec17d1c5456ce19c90a7234/82",
+      "salt": "0801"
+     },
+     "command": {
+      "arguments": [
+       "/bin/bash",
+       "-c",
+       "source external/bazel_tools/tools/genrule/genrule-setup.sh; echo $PATH > bazel-out/k8-fastbuild/bin/pkg/env.txt; echo $- >> bazel-out/k8-fastbuild/bin/pkg/env.txt"
+      ],
+      "environment": [
+       [
+        "PATH",
+        "/bin:/usr/bin:/usr/local/bin"
+       ]
+      ],
+      "other_fields": [],
+      "output_paths": [
+       "bazel-out/k8-fastbuild/bin/pkg/env.txt"
+      ]
+     },
+     "execution_metadata_fields": [
+      3,
+      4,
+      7,
+      8
+     ],
+     "exit_code": 0,
+     "fields": [
+      2,
+      6,
+      8,
+      9
+     ],
+     "output_files": [
+      {
+       "digest": "9956b6720babcc631eb7bc3a0b693ed431658a9c6e40bdae1445350180d58860/35",
+       "is_executable": true,
+       "path": "bazel-out/k8-fastbuild/bin/pkg/env.txt"
+      }
+     ],
+     "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0",
+     "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0"
+    },
+    "e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9": {
+     "action": {
+      "command_digest": "b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a/264",
+      "input_root_digest": "1ef4dc247a3f097da05a62ddca2ae425b0aff5534f9cbdef2f1e1f6b7862e0ba/159",
+      "salt": "0801"
+     },
+     "command": {
+      "arguments": [
+       "/bin/bash",
+       "-c",
+       "source external/bazel_tools/tools/genrule/genrule-setup.sh; cat pkg/in.txt > bazel-out/k8-fastbuild/bin/pkg/gen.txt; echo done >> bazel-out/k8-fastbuild/bin/pkg/gen.txt"
+      ],
+      "environment": [
+       [
+        "PATH",
+        "/bin:/usr/bin:/usr/local/bin"
+       ]
+      ],
+      "other_fields": [],
+      "output_paths": [
+       "bazel-out/k8-fastbuild/bin/pkg/gen.txt"
+      ]
+     },
+     "execution_metadata_fields": [
+      3,
+      4,
+      7,
+      8
+     ],
+     "exit_code": 0,
+     "fields": [
+      2,
+      6,
+      8,
+      9
+     ],
+     "output_files": [
+      {
+       "digest": "0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc/11",
+       "is_executable": true,
+       "path": "bazel-out/k8-fastbuild/bin/pkg/gen.txt"
+      }
+     ],
+     "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0",
+     "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0"
+    }
+   },
+   "note": "AC entries compared without ExecutedActionMetadata timestamps; CAS = every uploaded blob digest",
+   "rerun": "review-b1-targeted"
+  },
+  {
+   "classification": "EXACT",
+   "genuine": [
+    "GET /ac/04c04613ed9a49881b3ce18b9d9f8208b74e744ef39f64ea6dac0730270e93d8 404",
+    "GET /ac/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 404",
+    "GET /ac/250f50e9bae0d6845e5325da0a54932e82d7d0c2ce26438e96569ec66be17111 404",
+    "GET /ac/536f513c26a82e7a15a60d6938252c7258b5adb4e41d1139e770f1484dae2071 404",
+    "GET /ac/55a9a20019c12f38767dc9dc43875a8a327cd33249897231f72ffede7936e030 404",
+    "GET /ac/5b3f16a71549320cd13da1715ee393511e28173dfc4769bb3b32bf8e8b334d14 404",
+    "GET /ac/9444e436bb3bd590c0321627233631773a476337ebe6ef6b271cca12e6f0e786 404",
+    "GET /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 404",
+    "PUT /ac/04c04613ed9a49881b3ce18b9d9f8208b74e744ef39f64ea6dac0730270e93d8 200",
+    "PUT /ac/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 200",
+    "PUT /ac/250f50e9bae0d6845e5325da0a54932e82d7d0c2ce26438e96569ec66be17111 200",
+    "PUT /ac/536f513c26a82e7a15a60d6938252c7258b5adb4e41d1139e770f1484dae2071 200",
+    "PUT /ac/55a9a20019c12f38767dc9dc43875a8a327cd33249897231f72ffede7936e030 200",
+    "PUT /ac/5b3f16a71549320cd13da1715ee393511e28173dfc4769bb3b32bf8e8b334d14 200",
+    "PUT /ac/9444e436bb3bd590c0321627233631773a476337ebe6ef6b271cca12e6f0e786 200",
+    "PUT /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200",
+    "PUT /cas/01afddb73d9708998c57531fd8d53ca68825b5e24a1db0af8951107206d8ab50 200",
+    "PUT /cas/04301b3707559bc53dbbf5c20dd33a85f4323a30f45a252126123d2e87851acc 200",
+    "PUT /cas/04c04613ed9a49881b3ce18b9d9f8208b74e744ef39f64ea6dac0730270e93d8 200",
+    "PUT /cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 200",
+    "PUT /cas/1401c613761a81a57e91f157a6a57721f0976a4f59ca44df05a4a9615e9583fa 200",
+    "PUT /cas/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 200",
+    "PUT /cas/250f50e9bae0d6845e5325da0a54932e82d7d0c2ce26438e96569ec66be17111 200",
+    "PUT /cas/3142e2d0bf9241989357343d44231a307b9e172f925f193423e329a471da3fab 200",
+    "PUT /cas/3b09aeb6f5f5336beb205d7f720371bc927cd46c21922e334d47ba264acb5ba4 200",
+    "PUT /cas/3b45d6b7e1461a4190d4b45166c0c3d29eb2e01ff0e50e9b3dc6173816e240a1 200",
+    "PUT /cas/536f513c26a82e7a15a60d6938252c7258b5adb4e41d1139e770f1484dae2071 200",
+    "PUT /cas/55a9a20019c12f38767dc9dc43875a8a327cd33249897231f72ffede7936e030 200",
+    "PUT /cas/5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 200",
+    "PUT /cas/5934c1f36f5122b8554ec7958744e7013b486f142def4d93911cca6ecab479c2 200",
+    "PUT /cas/5b3f16a71549320cd13da1715ee393511e28173dfc4769bb3b32bf8e8b334d14 200",
+    "PUT /cas/6eab715a257823de69087eda9377d87317a28ab27412edc77bfd0a5494905a05 200",
+    "PUT /cas/9444e436bb3bd590c0321627233631773a476337ebe6ef6b271cca12e6f0e786 200",
+    "PUT /cas/9956b6720babcc631eb7bc3a0b693ed431658a9c6e40bdae1445350180d58860 200",
+    "PUT /cas/9ccbd3f1b19a1cdfd8d7c6ae48e9e822e2345f5be1a6187b19e41486c6941004 200",
+    "PUT /cas/a01e81fb05f23fc6128c71b2c090e51bfd5ee84e4c82c8ceeac31f3b0cc5df22 200",
+    "PUT /cas/a7ab2daaee1b89dc1f432fd0a74dc23d39f69712e89e3fb891271c65e65922aa 200",
+    "PUT /cas/b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a 200",
+    "PUT /cas/d8eedf7cee7f8fd1d89202f4bbbc52bfcb1a7f44fc713010933c76b27586f701 200",
+    "PUT /cas/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200"
+   ],
+   "id": "cold-build-request-multiset",
+   "native": [
+    "GET /ac/04c04613ed9a49881b3ce18b9d9f8208b74e744ef39f64ea6dac0730270e93d8 404",
+    "GET /ac/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 404",
+    "GET /ac/250f50e9bae0d6845e5325da0a54932e82d7d0c2ce26438e96569ec66be17111 404",
+    "GET /ac/536f513c26a82e7a15a60d6938252c7258b5adb4e41d1139e770f1484dae2071 404",
+    "GET /ac/55a9a20019c12f38767dc9dc43875a8a327cd33249897231f72ffede7936e030 404",
+    "GET /ac/5b3f16a71549320cd13da1715ee393511e28173dfc4769bb3b32bf8e8b334d14 404",
+    "GET /ac/9444e436bb3bd590c0321627233631773a476337ebe6ef6b271cca12e6f0e786 404",
+    "GET /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 404",
+    "PUT /ac/04c04613ed9a49881b3ce18b9d9f8208b74e744ef39f64ea6dac0730270e93d8 200",
+    "PUT /ac/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 200",
+    "PUT /ac/250f50e9bae0d6845e5325da0a54932e82d7d0c2ce26438e96569ec66be17111 200",
+    "PUT /ac/536f513c26a82e7a15a60d6938252c7258b5adb4e41d1139e770f1484dae2071 200",
+    "PUT /ac/55a9a20019c12f38767dc9dc43875a8a327cd33249897231f72ffede7936e030 200",
+    "PUT /ac/5b3f16a71549320cd13da1715ee393511e28173dfc4769bb3b32bf8e8b334d14 200",
+    "PUT /ac/9444e436bb3bd590c0321627233631773a476337ebe6ef6b271cca12e6f0e786 200",
+    "PUT /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200",
+    "PUT /cas/01afddb73d9708998c57531fd8d53ca68825b5e24a1db0af8951107206d8ab50 200",
+    "PUT /cas/04301b3707559bc53dbbf5c20dd33a85f4323a30f45a252126123d2e87851acc 200",
+    "PUT /cas/04c04613ed9a49881b3ce18b9d9f8208b74e744ef39f64ea6dac0730270e93d8 200",
+    "PUT /cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 200",
+    "PUT /cas/1401c613761a81a57e91f157a6a57721f0976a4f59ca44df05a4a9615e9583fa 200",
+    "PUT /cas/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 200",
+    "PUT /cas/250f50e9bae0d6845e5325da0a54932e82d7d0c2ce26438e96569ec66be17111 200",
+    "PUT /cas/3142e2d0bf9241989357343d44231a307b9e172f925f193423e329a471da3fab 200",
+    "PUT /cas/3b09aeb6f5f5336beb205d7f720371bc927cd46c21922e334d47ba264acb5ba4 200",
+    "PUT /cas/3b45d6b7e1461a4190d4b45166c0c3d29eb2e01ff0e50e9b3dc6173816e240a1 200",
+    "PUT /cas/536f513c26a82e7a15a60d6938252c7258b5adb4e41d1139e770f1484dae2071 200",
+    "PUT /cas/55a9a20019c12f38767dc9dc43875a8a327cd33249897231f72ffede7936e030 200",
+    "PUT /cas/5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 200",
+    "PUT /cas/5934c1f36f5122b8554ec7958744e7013b486f142def4d93911cca6ecab479c2 200",
+    "PUT /cas/5b3f16a71549320cd13da1715ee393511e28173dfc4769bb3b32bf8e8b334d14 200",
+    "PUT /cas/6eab715a257823de69087eda9377d87317a28ab27412edc77bfd0a5494905a05 200",
+    "PUT /cas/9444e436bb3bd590c0321627233631773a476337ebe6ef6b271cca12e6f0e786 200",
+    "PUT /cas/9956b6720babcc631eb7bc3a0b693ed431658a9c6e40bdae1445350180d58860 200",
+    "PUT /cas/9ccbd3f1b19a1cdfd8d7c6ae48e9e822e2345f5be1a6187b19e41486c6941004 200",
+    "PUT /cas/a01e81fb05f23fc6128c71b2c090e51bfd5ee84e4c82c8ceeac31f3b0cc5df22 200",
+    "PUT /cas/a7ab2daaee1b89dc1f432fd0a74dc23d39f69712e89e3fb891271c65e65922aa 200",
+    "PUT /cas/b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a 200",
+    "PUT /cas/d8eedf7cee7f8fd1d89202f4bbbc52bfcb1a7f44fc713010933c76b27586f701 200",
+    "PUT /cas/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200"
+   ],
+   "rerun": "review-b1-targeted"
+  },
+  {
+   "classification": "EXPECTED_DIVERGENCE",
+   "genuine": [
+    "GET /ac/04c04613ed9a49881b3ce18b9d9f8208b74e744ef39f64ea6dac0730270e93d8 200",
+    "GET /ac/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 200",
+    "GET /ac/250f50e9bae0d6845e5325da0a54932e82d7d0c2ce26438e96569ec66be17111 200",
+    "GET /ac/536f513c26a82e7a15a60d6938252c7258b5adb4e41d1139e770f1484dae2071 200",
+    "GET /ac/55a9a20019c12f38767dc9dc43875a8a327cd33249897231f72ffede7936e030 200",
+    "GET /ac/5b3f16a71549320cd13da1715ee393511e28173dfc4769bb3b32bf8e8b334d14 200",
+    "GET /ac/9444e436bb3bd590c0321627233631773a476337ebe6ef6b271cca12e6f0e786 200",
+    "GET /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200",
+    "GET /cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 200",
+    "GET /cas/3b09aeb6f5f5336beb205d7f720371bc927cd46c21922e334d47ba264acb5ba4 200",
+    "GET /cas/5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 200",
+    "GET /cas/5934c1f36f5122b8554ec7958744e7013b486f142def4d93911cca6ecab479c2 200",
+    "GET /cas/6eab715a257823de69087eda9377d87317a28ab27412edc77bfd0a5494905a05 200",
+    "GET /cas/9956b6720babcc631eb7bc3a0b693ed431658a9c6e40bdae1445350180d58860 200",
+    "GET /cas/9ccbd3f1b19a1cdfd8d7c6ae48e9e822e2345f5be1a6187b19e41486c6941004 200"
+   ],
+   "id": "warm-build-request-multiset",
+   "native": [
+    "GET /ac/04c04613ed9a49881b3ce18b9d9f8208b74e744ef39f64ea6dac0730270e93d8 200",
+    "GET /ac/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 200",
+    "GET /ac/250f50e9bae0d6845e5325da0a54932e82d7d0c2ce26438e96569ec66be17111 200",
+    "GET /ac/536f513c26a82e7a15a60d6938252c7258b5adb4e41d1139e770f1484dae2071 200",
+    "GET /ac/55a9a20019c12f38767dc9dc43875a8a327cd33249897231f72ffede7936e030 200",
+    "GET /ac/5b3f16a71549320cd13da1715ee393511e28173dfc4769bb3b32bf8e8b334d14 200",
+    "GET /ac/9444e436bb3bd590c0321627233631773a476337ebe6ef6b271cca12e6f0e786 200",
+    "GET /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200",
+    "GET /cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 200",
+    "GET /cas/3b09aeb6f5f5336beb205d7f720371bc927cd46c21922e334d47ba264acb5ba4 200",
+    "GET /cas/5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 200",
+    "GET /cas/5934c1f36f5122b8554ec7958744e7013b486f142def4d93911cca6ecab479c2 200",
+    "GET /cas/6eab715a257823de69087eda9377d87317a28ab27412edc77bfd0a5494905a05 200",
+    "GET /cas/9956b6720babcc631eb7bc3a0b693ed431658a9c6e40bdae1445350180d58860 200",
+    "GET /cas/9ccbd3f1b19a1cdfd8d7c6ae48e9e822e2345f5be1a6187b19e41486c6941004 200",
+    "GET /cas/a7ab2daaee1b89dc1f432fd0a74dc23d39f69712e89e3fb891271c65e65922aa 200"
+   ],
+   "note": "native materializes every output of a hit (like --remote_download_outputs=all); Bazel default toplevel",
+   "rerun": "review-b1-targeted"
+  },
+  {
+   "classification": "EXACT",
+   "genuine": [
+    "[[\"authorization\", \"Bearer test-token\"], [\"x-multi\", \"a\"], [\"x-multi\", \"b\"]]"
+   ],
+   "id": "request-auth-headers",
+   "native": [
+    "[[\"authorization\", \"Bearer test-token\"], [\"x-multi\", \"a\"], [\"x-multi\", \"b\"]]"
+   ],
+   "rerun": "review-b1-targeted"
+  },
+  {
+   "classification": "EXPECTED_DIVERGENCE",
+   "genuine": {
+    "names": [
+     "accept",
+     "accept-encoding",
+     "authorization",
+     "connection",
+     "content-length",
+     "host",
+     "user-agent",
+     "x-multi"
+    ],
+    "values": [
+     "*/*",
+     "bazel/9.3.0",
+     "gzip,deflate,snappy,zstd"
+    ]
+   },
+   "id": "request-header-names",
+   "native": {
+    "names": [
+     "accept",
+     "accept-encoding",
+     "authorization",
+     "host",
+     "user-agent",
+     "x-multi"
+    ],
+    "values": [
+     "*/*",
+     "bazel-rs/0.1.0",
+     "gzip,deflate"
+    ]
+   },
+   "note": "User-Agent bazel-rs/<version>; Accept-Encoding gzip,deflate",
+   "rerun": "review-b1-targeted"
+  },
+  {
+   "classification": "EXACT",
+   "genuine": [
+    {
+     "argv": "get",
+     "client_env_mark": "client-env",
+     "cwd": "<WS>",
+     "stdin": "{\"uri\":\"<SERVER>\"}"
+    }
+   ],
+   "id": "helper-startup-invocation",
+   "native": [
+    {
+     "argv": "get",
+     "client_env_mark": "client-env",
+     "cwd": "<WS>",
+     "stdin": "{\"uri\":\"<SERVER>\"}"
+    }
+   ],
+   "rerun": "review-b1-targeted"
+  },
+  {
+   "classification": "EXACT",
+   "genuine": {
+    "auth_headers": [
+     "[]"
+    ],
+    "errors": [],
+    "ok": true,
+    "requests": [
+     "GET /ac/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 404",
+     "GET /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 404"
+    ]
+   },
+   "id": "flags-noremote-upload",
+   "native": {
+    "auth_headers": [
+     "[]"
+    ],
+    "errors": [],
+    "ok": true,
+    "requests": [
+     "GET /ac/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 404",
+     "GET /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 404"
+    ]
+   }
+  },
+  {
+   "classification": "EXACT",
+   "genuine": {
+    "auth_headers": [
+     "[]"
+    ],
+    "errors": [],
+    "ok": true,
+    "requests": [
+     "PUT /ac/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 200",
+     "PUT /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200",
+     "PUT /cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 200",
+     "PUT /cas/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 200",
+     "PUT /cas/3b09aeb6f5f5336beb205d7f720371bc927cd46c21922e334d47ba264acb5ba4 200",
+     "PUT /cas/a01e81fb05f23fc6128c71b2c090e51bfd5ee84e4c82c8ceeac31f3b0cc5df22 200",
+     "PUT /cas/b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a 200",
+     "PUT /cas/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200"
+    ]
+   },
+   "id": "flags-noremote-accept",
+   "native": {
+    "auth_headers": [
+     "[]"
+    ],
+    "errors": [],
+    "ok": true,
+    "requests": [
+     "PUT /ac/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 200",
+     "PUT /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200",
+     "PUT /cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 200",
+     "PUT /cas/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 200",
+     "PUT /cas/3b09aeb6f5f5336beb205d7f720371bc927cd46c21922e334d47ba264acb5ba4 200",
+     "PUT /cas/a01e81fb05f23fc6128c71b2c090e51bfd5ee84e4c82c8ceeac31f3b0cc5df22 200",
+     "PUT /cas/b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a 200",
+     "PUT /cas/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200"
+    ]
+   }
+  },
+  {
+   "classification": "EXACT",
+   "genuine": {
+    "auth_headers": [],
+    "errors": [],
+    "ok": true,
+    "requests": []
+   },
+   "id": "flags-both-off",
+   "native": {
+    "auth_headers": [],
+    "errors": [],
+    "ok": true,
+    "requests": []
+   }
+  },
+  {
+   "classification": "EXACT",
+   "genuine": {
+    "auth_headers": [
+     "[[\"x-a\", \"1\"], [\"x-b\", \"2\"]]"
+    ],
+    "errors": [],
+    "ok": true,
+    "requests": [
+     "GET /ac/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 404",
+     "GET /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 404",
+     "PUT /ac/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 200",
+     "PUT /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200",
+     "PUT /cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 200",
+     "PUT /cas/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 200",
+     "PUT /cas/3b09aeb6f5f5336beb205d7f720371bc927cd46c21922e334d47ba264acb5ba4 200",
+     "PUT /cas/a01e81fb05f23fc6128c71b2c090e51bfd5ee84e4c82c8ceeac31f3b0cc5df22 200",
+     "PUT /cas/b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a 200",
+     "PUT /cas/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200"
+    ]
+   },
+   "id": "flags-remote-headers",
+   "native": {
+    "auth_headers": [
+     "[[\"x-a\", \"1\"], [\"x-b\", \"2\"]]"
+    ],
+    "errors": [],
+    "ok": true,
+    "requests": [
+     "GET /ac/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 404",
+     "GET /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 404",
+     "PUT /ac/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 200",
+     "PUT /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200",
+     "PUT /cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 200",
+     "PUT /cas/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 200",
+     "PUT /cas/3b09aeb6f5f5336beb205d7f720371bc927cd46c21922e334d47ba264acb5ba4 200",
+     "PUT /cas/a01e81fb05f23fc6128c71b2c090e51bfd5ee84e4c82c8ceeac31f3b0cc5df22 200",
+     "PUT /cas/b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a 200",
+     "PUT /cas/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200"
+    ]
+   }
+  },
+  {
+   "classification": "EXACT",
+   "genuine": {
+    "auth_headers": [
+     "[]"
+    ],
+    "errors": [],
+    "ok": true,
+    "requests": [
+     "GET /prefix/ac/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 404",
+     "GET /prefix/ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 404",
+     "PUT /prefix/ac/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 200",
+     "PUT /prefix/ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200",
+     "PUT /prefix/cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 200",
+     "PUT /prefix/cas/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 200",
+     "PUT /prefix/cas/3b09aeb6f5f5336beb205d7f720371bc927cd46c21922e334d47ba264acb5ba4 200",
+     "PUT /prefix/cas/a01e81fb05f23fc6128c71b2c090e51bfd5ee84e4c82c8ceeac31f3b0cc5df22 200",
+     "PUT /prefix/cas/b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a 200",
+     "PUT /prefix/cas/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200"
+    ]
+   },
+   "id": "flags-cache-path-prefix",
+   "native": {
+    "auth_headers": [
+     "[]"
+    ],
+    "errors": [],
+    "ok": true,
+    "requests": [
+     "GET /prefix/ac/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 404",
+     "GET /prefix/ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 404",
+     "PUT /prefix/ac/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 200",
+     "PUT /prefix/ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200",
+     "PUT /prefix/cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 200",
+     "PUT /prefix/cas/215a0cea76512319330fd7d9ff08cee13aaca1f345089f37d42323c2d69be62e 200",
+     "PUT /prefix/cas/3b09aeb6f5f5336beb205d7f720371bc927cd46c21922e334d47ba264acb5ba4 200",
+     "PUT /prefix/cas/a01e81fb05f23fc6128c71b2c090e51bfd5ee84e4c82c8ceeac31f3b0cc5df22 200",
+     "PUT /prefix/cas/b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a 200",
+     "PUT /prefix/cas/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200"
+    ]
+   }
+  },
+  {
+   "classification": "MISMATCH",
+   "genuine": {
+    "auth_headers": [
+     "[[\"authorization\", \"Bearer test-token\"], [\"x-multi\", \"a\"], [\"x-multi\", \"b\"]]"
+    ],
+    "errors": [],
+    "helper_invocations": 5,
+    "helper_uris": [
+     "{\"uri\":\"<SERVER>\"}"
+    ],
+    "ok": true,
+    "plaintext_warnings": [
+     "Credentials are transmitted in plaintext to <SERVER>. Please consider using an HTTPS endpoint."
+    ],
+    "requests": [
+     "GET /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 404",
+     "PUT /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200",
+     "PUT /cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 200",
+     "PUT /cas/b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a 200",
+     "PUT /cas/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200"
+    ]
+   },
+   "id": "helper-cache-duration-0",
+   "native": {
+    "auth_headers": [
+     "[[\"authorization\", \"Bearer test-token\"], [\"x-multi\", \"a\"], [\"x-multi\", \"b\"]]"
+    ],
+    "errors": [],
+    "helper_invocations": 6,
+    "helper_uris": [
+     "{\"uri\":\"<SERVER>\"}"
+    ],
+    "ok": true,
+    "plaintext_warnings": [
+     "Credentials are transmitted in plaintext to <SERVER>. Please consider using an HTTPS endpoint."
+    ],
+    "requests": [
+     "GET /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 404",
+     "PUT /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200",
+     "PUT /cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 200",
+     "PUT /cas/b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a 200",
+     "PUT /cas/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200"
+    ]
+   }
+  },
+  {
+   "classification": "EXACT",
+   "genuine": {
+    "auth_headers": [
+     "[[\"a\", \"1\"]]"
+    ],
+    "errors": [],
+    "helper_invocations": 6,
+    "helper_uris": [
+     "{\"uri\":\"<SERVER>\"}"
+    ],
+    "ok": true,
+    "plaintext_warnings": [
+     "Credentials are transmitted in plaintext to <SERVER>. Please consider using an HTTPS endpoint."
+    ],
+    "requests": [
+     "GET /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 404",
+     "PUT /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200",
+     "PUT /cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 200",
+     "PUT /cas/b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a 200",
+     "PUT /cas/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200"
+    ]
+   },
+   "id": "helper-expires-past",
+   "native": {
+    "auth_headers": [
+     "[[\"a\", \"1\"]]"
+    ],
+    "errors": [],
+    "helper_invocations": 6,
+    "helper_uris": [
+     "{\"uri\":\"<SERVER>\"}"
+    ],
+    "ok": true,
+    "plaintext_warnings": [
+     "Credentials are transmitted in plaintext to <SERVER>. Please consider using an HTTPS endpoint."
+    ],
+    "requests": [
+     "GET /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 404",
+     "PUT /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200",
+     "PUT /cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 200",
+     "PUT /cas/b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a 200",
+     "PUT /cas/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200"
+    ]
+   }
+  },
+  {
+   "classification": "EXACT",
+   "genuine": {
+    "auth_headers": [
+     "[[\"a\", \"1\"]]"
+    ],
+    "errors": [],
+    "helper_invocations": 1,
+    "helper_uris": [
+     "{\"uri\":\"<SERVER>\"}"
+    ],
+    "ok": true,
+    "plaintext_warnings": [
+     "Credentials are transmitted in plaintext to <SERVER>. Please consider using an HTTPS endpoint."
+    ],
+    "requests": [
+     "GET /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 404",
+     "PUT /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200",
+     "PUT /cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 200",
+     "PUT /cas/b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a 200",
+     "PUT /cas/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200"
+    ]
+   },
+   "id": "helper-expires-future",
+   "native": {
+    "auth_headers": [
+     "[[\"a\", \"1\"]]"
+    ],
+    "errors": [],
+    "helper_invocations": 1,
+    "helper_uris": [
+     "{\"uri\":\"<SERVER>\"}"
+    ],
+    "ok": true,
+    "plaintext_warnings": [
+     "Credentials are transmitted in plaintext to <SERVER>. Please consider using an HTTPS endpoint."
+    ],
+    "requests": [
+     "GET /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 404",
+     "PUT /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200",
+     "PUT /cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 200",
+     "PUT /cas/b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a 200",
+     "PUT /cas/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200"
+    ]
+   }
+  },
+  {
+   "classification": "EXACT",
+   "genuine": {
+    "auth_headers": [
+     "[[\"authorization\", \"Bearer test-token\"], [\"x-multi\", \"a\"], [\"x-multi\", \"b\"]]"
+    ],
+    "errors": [],
+    "helper_invocations": 1,
+    "helper_uris": [
+     "{\"uri\":\"<SERVER>\"}"
+    ],
+    "ok": true,
+    "plaintext_warnings": [
+     "Credentials are transmitted in plaintext to <SERVER>. Please consider using an HTTPS endpoint."
+    ],
+    "requests": [
+     "GET /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 404",
+     "PUT /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200",
+     "PUT /cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 200",
+     "PUT /cas/b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a 200",
+     "PUT /cas/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200"
+    ]
+   },
+   "id": "helper-wildcard-scope-ip-suffix",
+   "native": {
+    "auth_headers": [
+     "[[\"authorization\", \"Bearer test-token\"], [\"x-multi\", \"a\"], [\"x-multi\", \"b\"]]"
+    ],
+    "errors": [],
+    "helper_invocations": 1,
+    "helper_uris": [
+     "{\"uri\":\"<SERVER>\"}"
+    ],
+    "ok": true,
+    "plaintext_warnings": [
+     "Credentials are transmitted in plaintext to <SERVER>. Please consider using an HTTPS endpoint."
+    ],
+    "requests": [
+     "GET /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 404",
+     "PUT /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200",
+     "PUT /cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 200",
+     "PUT /cas/b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a 200",
+     "PUT /cas/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200"
+    ]
+   }
+  },
+  {
+   "classification": "EXACT",
+   "genuine": {
+    "auth_headers": [
+     "[]"
+    ],
+    "errors": [],
+    "helper_invocations": 0,
+    "helper_uris": [],
+    "ok": true,
+    "plaintext_warnings": [],
+    "requests": [
+     "GET /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 404",
+     "PUT /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200",
+     "PUT /cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 200",
+     "PUT /cas/b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a 200",
+     "PUT /cas/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200"
+    ]
+   },
+   "id": "helper-unmatched-scope",
+   "native": {
+    "auth_headers": [
+     "[]"
+    ],
+    "errors": [],
+    "helper_invocations": 0,
+    "helper_uris": [],
+    "ok": true,
+    "plaintext_warnings": [],
+    "requests": [
+     "GET /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 404",
+     "PUT /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200",
+     "PUT /cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 200",
+     "PUT /cas/b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a 200",
+     "PUT /cas/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200"
+    ]
+   }
+  },
+  {
+   "classification": "MISMATCH",
+   "genuine": {
+    "auth_headers": [
+     "[[\"authorization\", \"Bearer test-token\"], [\"x-multi\", \"a\"], [\"x-multi\", \"b\"]]"
+    ],
+    "errors": [],
+    "helper_invocations": 3,
+    "helper_uris": [
+     "{\"uri\":\"<SERVER>\"}",
+     "{\"uri\":\"https://github.com/bazelbuild/platforms/releases/download/1.0.0/platforms-1.0.0.tar.gz\"}",
+     "{\"uri\":\"https://release-assets.githubusercontent.com/github-production-release-asset/184684984/07ae8b1c-57a7-4b43-806b-eb9e8c1a4205?<signed query redacted>\"}"
+    ],
+    "ok": true,
+    "plaintext_warnings": [
+     "Credentials are transmitted in plaintext to <SERVER>. Please consider using an HTTPS endpoint."
+    ],
+    "requests": [
+     "GET /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 404",
+     "PUT /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200",
+     "PUT /cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 200",
+     "PUT /cas/b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a 200",
+     "PUT /cas/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200"
+    ]
+   },
+   "id": "helper-unscoped-default",
+   "native": {
+    "auth_headers": [
+     "[[\"authorization\", \"Bearer test-token\"], [\"x-multi\", \"a\"], [\"x-multi\", \"b\"]]"
+    ],
+    "errors": [],
+    "helper_invocations": 1,
+    "helper_uris": [
+     "{\"uri\":\"<SERVER>\"}"
+    ],
+    "ok": true,
+    "plaintext_warnings": [
+     "Credentials are transmitted in plaintext to <SERVER>. Please consider using an HTTPS endpoint."
+    ],
+    "requests": [
+     "GET /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 404",
+     "PUT /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200",
+     "PUT /cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 200",
+     "PUT /cas/b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a 200",
+     "PUT /cas/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 200"
+    ]
+   }
+  },
+  {
+   "classification": "EXACT_MESSAGE",
+   "genuine": {
+    "errors": [
+     "Failed to get credentials for '<SERVER>' from helper '<BASE>/helper': process exited with code 3. stderr: oops",
+     "Error initializing RemoteModule"
+    ],
+    "ok": false,
+    "requests": []
+   },
+   "id": "error-helper-exit-3",
+   "native": {
+    "errors": [
+     "Failed to get credentials for '<SERVER>' from helper '<BASE>/helper': process exited with code 3. stderr: oops",
+     "Error initializing RemoteModule"
+    ],
+    "ok": false,
+    "requests": []
+   }
+  },
+  {
+   "classification": "EXACT_MESSAGE",
+   "genuine": {
+    "errors": [
+     "Failed to get credentials for '<SERVER>' from helper '<BASE>/helper': error parsing output. stderr: ",
+     "Error initializing RemoteModule"
+    ],
+    "ok": false,
+    "requests": []
+   },
+   "id": "error-helper-bad-json",
+   "native": {
+    "errors": [
+     "Failed to get credentials for '<SERVER>' from helper '<BASE>/helper': error parsing output. stderr: ",
+     "Error initializing RemoteModule"
+    ],
+    "ok": false,
+    "requests": []
+   }
+  },
+  {
+   "classification": "EXACT_MESSAGE",
+   "genuine": {
+    "errors": [
+     "Failed to get credentials for '<SERVER>' from helper '<BASE>/helper': process exited without output. stderr: ",
+     "Error initializing RemoteModule"
+    ],
+    "ok": false,
+    "requests": []
+   },
+   "id": "error-helper-empty",
+   "native": {
+    "errors": [
+     "Failed to get credentials for '<SERVER>' from helper '<BASE>/helper': process exited without output. stderr: ",
+     "Error initializing RemoteModule"
+    ],
+    "ok": false,
+    "requests": []
+   }
+  },
+  {
+   "classification": "EXACT_MESSAGE",
+   "genuine": {
+    "errors": [
+     "Failed to get credentials for '<SERVER>' from helper '<BASE>/helper': error parsing output. stderr: ",
+     "Error initializing RemoteModule"
+    ],
+    "ok": false,
+    "requests": []
+   },
+   "id": "error-helper-wrong-type",
+   "native": {
+    "errors": [
+     "Failed to get credentials for '<SERVER>' from helper '<BASE>/helper': error parsing output. stderr: ",
+     "Error initializing RemoteModule"
+    ],
+    "ok": false,
+    "requests": []
+   }
+  },
+  {
+   "classification": "EXACT_MESSAGE",
+   "genuine": {
+    "errors": [
+     "Failed to get credentials for '<SERVER>' from helper '<BASE>/helper': error parsing output. stderr: ",
+     "Error initializing RemoteModule"
+    ],
+    "ok": false,
+    "requests": []
+   },
+   "id": "error-helper-bad-expires",
+   "native": {
+    "errors": [
+     "Failed to get credentials for '<SERVER>' from helper '<BASE>/helper': error parsing output. stderr: ",
+     "Error initializing RemoteModule"
+    ],
+    "ok": false,
+    "requests": []
+   }
+  },
+  {
+   "classification": "EXACT_MESSAGE",
+   "genuine": {
+    "errors": [
+     "Failed to get credentials for '<SERVER>' from helper '<BASE>/helper': process timed out",
+     "Error initializing RemoteModule"
+    ],
+    "ok": false,
+    "requests": []
+   },
+   "id": "error-helper-timeout",
+   "native": {
+    "errors": [
+     "Failed to get credentials for '<SERVER>' from helper '<BASE>/helper': process timed out",
+     "Error initializing RemoteModule"
+    ],
+    "ok": false,
+    "requests": []
+   }
+  },
+  {
+   "classification": "EXACT_MESSAGE",
+   "genuine": {
+    "errors": [
+     "Path 'bin/helper' must either be absolute or not contain any path separators",
+     "Path 'bin/helper' must either be absolute or not contain any path separators",
+     "Error initializing RemoteModule"
+    ],
+    "ok": false,
+    "requests": []
+   },
+   "id": "error-path-relative",
+   "native": {
+    "errors": [
+     "Path 'bin/helper' must either be absolute or not contain any path separators",
+     "Path 'bin/helper' must either be absolute or not contain any path separators",
+     "Error initializing RemoteModule"
+    ],
+    "ok": false,
+    "requests": []
+   }
+  },
+  {
+   "classification": "EXACT_MESSAGE",
+   "genuine": {
+    "errors": [
+     "Could not find file with name 'nohelper' on PATH '/usr/bin:/bin'",
+     "Could not find file with name 'nohelper' on PATH '/usr/bin:/bin'",
+     "Error initializing RemoteModule"
+    ],
+    "ok": false,
+    "requests": []
+   },
+   "id": "error-path-missing-on-path",
+   "native": {
+    "errors": [
+     "Could not find file with name 'nohelper' on PATH '/usr/bin:/bin'",
+     "Could not find file with name 'nohelper' on PATH '/usr/bin:/bin'",
+     "Error initializing RemoteModule"
+    ],
+    "ok": false,
+    "requests": []
+   }
+  },
+  {
+   "classification": "EXACT_MESSAGE",
+   "genuine": {
+    "errors": [
+     "Path '%workspace%/../x' must not contain any uplevel references ('..')",
+     "Path '%workspace%/../x' must not contain any uplevel references ('..')",
+     "Error initializing RemoteModule"
+    ],
+    "ok": false,
+    "requests": []
+   },
+   "id": "error-path-uplevel",
+   "native": {
+    "errors": [
+     "Path '%workspace%/../x' must not contain any uplevel references ('..')",
+     "Path '%workspace%/../x' must not contain any uplevel references ('..')",
+     "Error initializing RemoteModule"
+    ],
+    "ok": false,
+    "requests": []
+   }
+  },
+  {
+   "classification": "EXACT_MESSAGE",
+   "genuine": {
+    "errors": [
+     "Unknown root foo",
+     "Unknown root foo",
+     "Error initializing RemoteModule"
+    ],
+    "ok": false,
+    "requests": []
+   },
+   "id": "error-path-unknown-root",
+   "native": {
+    "errors": [
+     "Unknown root foo",
+     "Unknown root foo",
+     "Error initializing RemoteModule"
+    ],
+    "ok": false,
+    "requests": []
+   }
+  },
+  {
+   "classification": "EXACT_MESSAGE",
+   "genuine": {
+    "errors": [
+     "While parsing option --credential_helper=*=x: Credential helper scope '*' must be a valid domain name with an optional leading '*.' wildcard"
+    ],
+    "ok": false,
+    "requests": []
+   },
+   "id": "error-scope-star",
+   "native": {
+    "errors": [
+     "While parsing option --credential_helper=*=x: Credential helper scope '*' must be a valid domain name with an optional leading '*.' wildcard"
+    ],
+    "ok": false,
+    "requests": []
+   }
+  },
+  {
+   "classification": "EXACT_MESSAGE",
+   "genuine": {
+    "errors": [
+     "While parsing option --credential_helper==x: Credential helper scope must not be empty"
+    ],
+    "ok": false,
+    "requests": []
+   },
+   "id": "error-scope-empty",
+   "native": {
+    "errors": [
+     "While parsing option --credential_helper==x: Credential helper scope must not be empty"
+    ],
+    "ok": false,
+    "requests": []
+   }
+  },
+  {
+   "classification": "EXACT_MESSAGE",
+   "genuine": {
+    "errors": [
+     "While parsing option --credential_helper=a..b=x: Credential helper scope 'a..b' must be a valid domain name with an optional leading '*.' wildcard"
+    ],
+    "ok": false,
+    "requests": []
+   },
+   "id": "error-scope-double-dot",
+   "native": {
+    "errors": [
+     "While parsing option --credential_helper=a..b=x: Credential helper scope 'a..b' must be a valid domain name with an optional leading '*.' wildcard"
+    ],
+    "ok": false,
+    "requests": []
+   }
+  },
+  {
+   "classification": "EXACT_MESSAGE",
+   "genuine": {
+    "errors": [
+     "While parsing option --credential_helper=127.0.0.1=: Credential helper path must not be empty"
+    ],
+    "ok": false,
+    "requests": []
+   },
+   "id": "error-path-empty",
+   "native": {
+    "errors": [
+     "While parsing option --credential_helper=127.0.0.1=: Credential helper path must not be empty"
+    ],
+    "ok": false,
+    "requests": []
+   }
+  },
+  {
+   "classification": "EXACT_MESSAGE",
+   "genuine": {
+    "errors": [
+     "While parsing option --credential_helper_timeout=5: Illegal duration '5'."
+    ],
+    "ok": false,
+    "requests": []
+   },
+   "id": "error-timeout-illegal",
+   "native": {
+    "errors": [
+     "While parsing option --credential_helper_timeout=5: Illegal duration '5'."
+    ],
+    "ok": false,
+    "requests": []
+   }
+  },
+  {
+   "classification": "EXACT_MESSAGE",
+   "genuine": {
+    "errors": [
+     "While parsing option --remote_header==x: Variable definitions must be in the form of a 'name=value' assignment"
+    ],
+    "ok": false,
+    "requests": []
+   },
+   "id": "error-remote-header-invalid",
+   "native": {
+    "errors": [
+     "While parsing option --remote_header==x: Variable definitions must be in the form of a 'name=value' assignment"
+    ],
+    "ok": false,
+    "requests": []
+   }
+  },
+  {
+   "classification": "EXACT_MESSAGE",
+   "genuine": {
+    "errors": [
+     "Path 'bin/helper' must either be absolute or not contain any path separators",
+     "Error initializing credential helper"
+    ],
+    "ok": false
+   },
+   "id": "error-query-path-relative",
+   "native": {
+    "errors": [
+     "Path 'bin/helper' must either be absolute or not contain any path separators",
+     "Error initializing credential helper"
+    ],
+    "ok": false
+   }
+  },
+  {
+   "classification": "EXPECTED_DIVERGENCE",
+   "genuine": {
+    "errors": [
+     "<WS>/pkg/BUILD.bazel:2:8: Executing genrule //pkg:gen failed: Exec failed due to CredentialHelperException: Failed to get credentials for '<SERVER>' from helper '<BASE>/helper': process exited with code 4. stderr: late"
+    ],
+    "helper_invocations": 4,
+    "ok": false,
+    "requests": []
+   },
+   "id": "error-helper-fails-mid-build",
+   "native": {
+    "errors": [
+     "action '//pkg:gen': Exec failed due to CredentialHelperException: Failed to get credentials for '<SERVER>' from helper '<BASE>/helper': process exited with code 4. stderr: late"
+    ],
+    "helper_invocations": 2,
+    "ok": false,
+    "requests": []
+   }
+  },
+  {
+   "classification": "EXPECTED_NATIVE_UNSUPPORTED",
+   "genuine": {
+    "errors": [
+     "<WS>/pkg/BUILD.bazel:2:8: Executing genrule //pkg:gen failed: Failed to query remote execution capabilities: finishConnect(..) failed: Connection refused: /127.0.0.1:1"
+    ],
+    "ok": false
+   },
+   "id": "unsupported-grpc-cache",
+   "native": {
+    "errors": [
+     "unsupported option --remote_cache=grpc://127.0.0.1:1: gRPC remote caches (grpc://, grpcs://, unix:, or no scheme) are not implemented by the native profile; use an http:// or https:// cache"
+    ],
+    "ok": false
+   }
+  },
+  {
+   "classification": "EXPECTED_NATIVE_UNSUPPORTED",
+   "genuine": {
+    "errors": [
+     "<WS>/pkg/BUILD.bazel:2:8: Executing genrule //pkg:gen failed: Failed to query remote execution capabilities: finishConnect(..) failed: Connection refused: /127.0.0.1:1"
+    ],
+    "ok": false
+   },
+   "id": "unsupported-remote-executor",
+   "native": {
+    "errors": [
+     "unsupported option --remote_executor=grpc://127.0.0.1:1: remote execution is not implemented by the native profile (only an http(s):// --remote_cache is)"
+    ],
+    "ok": false
+   }
+  },
+  {
+   "classification": "EXPECTED_DIVERGENCE",
+   "genuine": {
+    "distinct_requests": [
+     "GET /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 500",
+     "PUT /cas/0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc 500",
+     "PUT /cas/b0163f748153226032b0932f75fbbf56739b70d54624c4bee53b1427f3fe222a 500",
+     "PUT /cas/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 500"
+    ],
+    "ok": true,
+    "outputs": {
+     "gen.txt": "hello\ndone\n"
+    },
+    "request_count": 24,
+    "warnings": [
+     "Remote Cache: 500 Internal Server Error\nbroken"
+    ]
+   },
+   "id": "cache-http-500",
+   "native": {
+    "distinct_requests": [
+     "GET /ac/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 500",
+     "PUT /cas/e99888bbd1421b4dc6fd361854c07ef76d5bb586d761766704e0063d578b4dd9 500"
+    ],
+    "ok": true,
+    "outputs": {
+     "gen.txt": "hello\ndone\n"
+    },
+    "request_count": 2,
+    "warnings": [
+     "Remote Cache: 500 Internal Server Error\nbroken"
+    ]
+   },
+   "note": "Bazel retries (--remote_retries=5); native makes one attempt"
+  },
+  {
+   "classification": "MISMATCH",
+   "common_paths": [
+    "/modules/jsoncpp/1.9.6/MODULE.bazel",
+    "/modules/jsoncpp/metadata.json",
+    "/modules/platforms/0.0.6/MODULE.bazel",
+    "/modules/platforms/metadata.json",
+    "/modules/rules_license/0.0.3/MODULE.bazel",
+    "/modules/rules_license/metadata.json",
+    "/modules/zlib/1.2.11/MODULE.bazel",
+    "/modules/zlib/metadata.json"
+   ],
+   "genuine": {
+    "distinct_helper_uris": 220,
+    "errors": [
+     "<BASE>/our-69/275e86bf644f3a2dc880eee74d3fea13/external/bazel_tools/tools/build_defs/repo/utils.bzl:76:33: An error occurred during the fetch of repository 'rules_apple+':\n   Traceback (most recent call last):\n\tFile \"<BASE>/our-69/275e86bf644f3a2dc880eee74d3fea13/external/bazel_tools/tools/build_defs/repo/http.bzl\", line 217, column 32, in _http_archive_impl\n\t\tremote_patches_info = patch(ctx)\n\tFile \"<BASE>/our-69/275e86bf644f3a2dc880eee74d3fea13/external/bazel_tools/tools/build_defs/repo/utils.bzl\", line 225, column 51, in patch\n\t\tpatchfile, download_info = _download_patch(ctx, patch_url, integrity, auth)\n\tFile \"<BASE>/our-69/275e86bf644f3a2dc880eee74d3fea13/external/bazel_tools/tools/build_defs/repo/utils.bzl\", line 76, column 33, in _download_patch\n\t\tdownload_info = ctx.download(\nError in download: java.io.IOException: Error downloading [<SERVER>/modules/rules_apple/4.1.0/patches/module_dot_bazel_version.patch] to <BASE>/our-69/275e86bf644f3a2dc880eee74d3fea13/external/rules_apple+/.tmp_remote_patches/module_dot_bazel_version.patch: GET returned 404 Not Found",
+     "<BASE>/our-69/275e86bf644f3a2dc880eee74d3fea13/external/bazel_tools/tools/build_defs/repo/utils.bzl:76:33: An error occurred during the fetch of repository 'buildozer+':\n   Traceback (most recent call last):\n\tFile \"<BASE>/our-69/275e86bf644f3a2dc880eee74d3fea13/external/bazel_tools/tools/build_defs/repo/http.bzl\", line 217, column 32, in _http_archive_impl\n\t\tremote_patches_info = patch(ctx)\n\tFile \"<BASE>/our-69/275e86bf644f3a2dc880eee74d3fea13/external/bazel_tools/tools/build_defs/repo/utils.bzl\", line 225, column 51, in patch\n\t\tpatchfile, download_info = _download_patch(ctx, patch_url, integrity, auth)\n\tFile \"<BASE>/our-69/275e86bf644f3a2dc880eee74d3fea13/external/bazel_tools/tools/build_defs/repo/utils.bzl\", line 76, column 33, in _download_patch\n\t\tdownload_info = ctx.download(\nError in download: java.io.IOException: Error downloading [<SERVER>/modules/buildozer/8.5.1/patches/module_dot_bazel_version.patch] to <BASE>/our-69/275e86bf644f3a2dc880eee74d3fea13/external/buildozer+/.tmp_remote_patches/module_dot_bazel_version.patch: GET returned 404 Not Found\n no actions running",
+     "no such package '@@buildozer+//': java.io.IOException: Error downloading [<SERVER>/modules/buildozer/8.5.1/patches/module_dot_bazel_version.patch] to <BASE>/our-69/275e86bf644f3a2dc880eee74d3fea13/external/buildozer+/.tmp_remote_patches/module_dot_bazel_version.patch: GET returned 404 Not Found"
+    ],
+    "helper_invocations": 220,
+    "ok": false,
+    "requests": [
+     "GET /bazel_registry.json 200",
+     "GET /modules/abseil-cpp/20210324.2/MODULE.bazel 200",
+     "GET /modules/abseil-cpp/20211102.0/MODULE.bazel 200",
+     "GET /modules/abseil-cpp/20230125.1/MODULE.bazel 200",
+     "GET /modules/abseil-cpp/20230802.0.bcr.1/MODULE.bazel 200",
+     "GET /modules/abseil-cpp/20230802.0/MODULE.bazel 200",
+     "GET /modules/abseil-cpp/20230802.1/MODULE.bazel 200",
+     "GET /modules/abseil-cpp/20240116.1/MODULE.bazel 200",
+     "GET /modules/abseil-cpp/20240116.2/MODULE.bazel 200",
+     "GET /modules/abseil-cpp/20250127.1/MODULE.bazel 200",
+     "GET /modules/abseil-cpp/20250512.1/MODULE.bazel 200",
+     "GET /modules/abseil-cpp/20250814.1/MODULE.bazel 200",
+     "GET /modules/abseil-cpp/20250814.1/source.json 200",
+     "GET /modules/abseil-cpp/metadata.json 200",
+     "GET /modules/apple_support/1.11.1/MODULE.bazel 200",
+     "GET /modules/apple_support/1.15.1/MODULE.bazel 200",
+     "GET /modules/apple_support/1.21.0/MODULE.bazel 200",
+     "GET /modules/apple_support/1.21.1/MODULE.bazel 200",
+     "GET /modules/apple_support/2.5.2/MODULE.bazel 200",
+     "GET /modules/apple_support/2.5.2/patches/module_dot_bazel_version.patch 200",
+     "GET /modules/apple_support/2.5.2/source.json 200",
+     "GET /modules/apple_support/metadata.json 200",
+     "GET /modules/bazel_features/1.1.1/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.10.0/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.11.0/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.15.0/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.17.0/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.18.0/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.19.0/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.21.0/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.23.0/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.27.0/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.28.0/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.3.0/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.30.0/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.33.0/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.4.1/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.42.1/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.42.1/patches/module_dot_bazel_version.patch 200",
+     "GET /modules/bazel_features/1.42.1/source.json 200",
+     "GET /modules/bazel_features/1.9.1/MODULE.bazel 200",
+     "GET /modules/bazel_features/metadata.json 200",
+     "GET /modules/bazel_skylib/1.0.3/MODULE.bazel 200",
+     "GET /modules/bazel_skylib/1.1.1/MODULE.bazel 200",
+     "GET /modules/bazel_skylib/1.2.0/MODULE.bazel 200",
+     "GET /modules/bazel_skylib/1.2.1/MODULE.bazel 200",
+     "GET /modules/bazel_skylib/1.3.0/MODULE.bazel 200",
+     "GET /modules/bazel_skylib/1.4.1/MODULE.bazel 200",
+     "GET /modules/bazel_skylib/1.4.2/MODULE.bazel 200",
+     "GET /modules/bazel_skylib/1.5.0/MODULE.bazel 200",
+     "GET /modules/bazel_skylib/1.6.1/MODULE.bazel 200",
+     "GET /modules/bazel_skylib/1.7.0/MODULE.bazel 200",
+     "GET /modules/bazel_skylib/1.7.1/MODULE.bazel 200",
+     "GET /modules/bazel_skylib/1.8.1/MODULE.bazel 200",
+     "GET /modules/bazel_skylib/1.8.2/MODULE.bazel 200",
+     "GET /modules/bazel_skylib/1.8.2/source.json 200",
+     "GET /modules/bazel_skylib/metadata.json 200",
+     "GET /modules/buildozer/8.5.1/MODULE.bazel 200",
+     "GET /modules/buildozer/8.5.1/patches/module_dot_bazel_version.patch 404",
+     "GET /modules/buildozer/8.5.1/source.json 200",
+     "GET /modules/buildozer/metadata.json 200",
+     "GET /modules/google_benchmark/1.8.2/MODULE.bazel 200",
+     "GET /modules/googletest/1.11.0/MODULE.bazel 200",
+     "GET /modules/googletest/1.14.0.bcr.1/MODULE.bazel 200",
+     "GET /modules/googletest/1.14.0/MODULE.bazel 200",
+     "GET /modules/googletest/1.15.2/MODULE.bazel 200",
+     "GET /modules/googletest/1.17.0/MODULE.bazel 200",
+     "GET /modules/googletest/1.17.0/source.json 200",
+     "GET /modules/googletest/metadata.json 200",
+     "GET /modules/jsoncpp/1.9.5/MODULE.bazel 200",
+     "GET /modules/jsoncpp/1.9.6/MODULE.bazel 200",
+     "GET /modules/jsoncpp/1.9.6/source.json 200",
+     "GET /modules/jsoncpp/metadata.json 200",
+     "GET /modules/libpfm/4.11.0/MODULE.bazel 200",
+     "GET /modules/nlohmann_json/3.6.1/MODULE.bazel 200",
+     "GET /modules/nlohmann_json/3.6.1/source.json 200",
+     "GET /modules/nlohmann_json/metadata.json 200",
+     "GET /modules/platforms/0.0.10/MODULE.bazel 200",
+     "GET /modules/platforms/0.0.11/MODULE.bazel 200",
+     "GET /modules/platforms/0.0.4/MODULE.bazel 200",
+     "GET /modules/platforms/0.0.5/MODULE.bazel 200",
+     "GET /modules/platforms/0.0.6/MODULE.bazel 200",
+     "GET /modules/platforms/0.0.7/MODULE.bazel 200",
+     "GET /modules/platforms/0.0.8/MODULE.bazel 200",
+     "GET /modules/platforms/0.0.9/MODULE.bazel 200",
+     "GET /modules/platforms/1.0.0/MODULE.bazel 200",
+     "GET /modules/platforms/1.0.0/source.json 200",
+     "GET /modules/platforms/metadata.json 200",
+     "GET /modules/protobuf/21.7/MODULE.bazel 200",
+     "GET /modules/protobuf/27.0/MODULE.bazel 200",
+     "GET /modules/protobuf/29.0-rc2/MODULE.bazel 200",
+     "GET /modules/protobuf/29.0-rc3/MODULE.bazel 200",
+     "GET /modules/protobuf/29.1/MODULE.bazel 200",
+     "GET /modules/protobuf/3.19.0/MODULE.bazel 200",
+     "GET /modules/protobuf/32.1/MODULE.bazel 200",
+     "GET /modules/protobuf/33.4/MODULE.bazel 200",
+     "GET /modules/protobuf/33.4/source.json 200",
+     "GET /modules/protobuf/metadata.json 200",
+     "GET /modules/pybind11_bazel/2.11.1/MODULE.bazel 200",
+     "GET /modules/pybind11_bazel/2.12.0/MODULE.bazel 200",
+     "GET /modules/pybind11_bazel/2.12.0/source.json 200",
+     "GET /modules/pybind11_bazel/metadata.json 200",
+     "GET /modules/re2/2023-09-01/MODULE.bazel 200",
+     "GET /modules/re2/2024-07-02.bcr.1/MODULE.bazel 200",
+     "GET /modules/re2/2024-07-02.bcr.1/source.json 200",
+     "GET /modules/re2/2024-07-02/MODULE.bazel 200",
+     "GET /modules/re2/metadata.json 200",
+     "GET /modules/rules_android/0.1.1/MODULE.bazel 200",
+     "GET /modules/rules_android/0.1.1/source.json 200",
+     "GET /modules/rules_android/metadata.json 200",
+     "GET /modules/rules_apple/3.16.0/MODULE.bazel 200",
+     "GET /modules/rules_apple/4.1.0/MODULE.bazel 200",
+     "GET /modules/rules_apple/4.1.0/patches/module_dot_bazel_version.patch 404",
+     "GET /modules/rules_apple/4.1.0/source.json 200",
+     "GET /modules/rules_apple/metadata.json 200",
+     "GET /modules/rules_cc/0.0.1/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.0.10/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.0.13/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.0.15/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.0.16/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.0.17/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.0.2/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.0.6/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.0.8/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.0.9/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.1.1/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.1.2/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.1.5/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.2.0/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.2.13/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.2.15/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.2.17/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.2.17/patches/module_dot_bazel_version.patch 200",
+     "GET /modules/rules_cc/0.2.17/source.json 200",
+     "GET /modules/rules_cc/metadata.json 200",
+     "GET /modules/rules_foreign_cc/0.9.0/MODULE.bazel 200",
+     "GET /modules/rules_fuzzing/0.5.2/MODULE.bazel 200",
+     "GET /modules/rules_java/4.0.0/MODULE.bazel 200",
+     "GET /modules/rules_java/5.3.5/MODULE.bazel 200",
+     "GET /modules/rules_java/6.5.2/MODULE.bazel 200",
+     "GET /modules/rules_java/7.10.0/MODULE.bazel 200",
+     "GET /modules/rules_java/7.12.2/MODULE.bazel 200",
+     "GET /modules/rules_java/7.2.0/MODULE.bazel 200",
+     "GET /modules/rules_java/7.6.1/MODULE.bazel 200",
+     "GET /modules/rules_java/8.3.2/MODULE.bazel 200",
+     "GET /modules/rules_java/8.5.1/MODULE.bazel 200",
+     "GET /modules/rules_java/8.6.1/MODULE.bazel 200",
+     "GET /modules/rules_java/9.1.0/MODULE.bazel 200",
+     "GET /modules/rules_java/9.1.0/source.json 200",
+     "GET /modules/rules_java/metadata.json 200",
+     "GET /modules/rules_jvm_external/4.4.2/MODULE.bazel 200",
+     "GET /modules/rules_jvm_external/5.1/MODULE.bazel 200",
+     "GET /modules/rules_jvm_external/5.2/MODULE.bazel 200",
+     "GET /modules/rules_jvm_external/6.3/MODULE.bazel 200",
+     "GET /modules/rules_jvm_external/6.7/MODULE.bazel 200",
+     "GET /modules/rules_jvm_external/6.7/source.json 200",
+     "GET /modules/rules_jvm_external/metadata.json 200",
+     "GET /modules/rules_kotlin/1.9.6/MODULE.bazel 200",
+     "GET /modules/rules_kotlin/1.9.6/patches/module_dot_bazel_version.patch 200",
+     "GET /modules/rules_kotlin/1.9.6/source.json 200",
+     "GET /modules/rules_kotlin/metadata.json 200",
+     "GET /modules/rules_license/0.0.3/MODULE.bazel 200",
+     "GET /modules/rules_license/0.0.7/MODULE.bazel 200",
+     "GET /modules/rules_license/1.0.0/MODULE.bazel 200",
+     "GET /modules/rules_license/1.0.0/source.json 200",
+     "GET /modules/rules_license/metadata.json 200",
+     "GET /modules/rules_pkg/0.7.0/MODULE.bazel 200",
+     "GET /modules/rules_pkg/1.0.1/MODULE.bazel 200",
+     "GET /modules/rules_pkg/1.0.1/source.json 200",
+     "GET /modules/rules_pkg/metadata.json 200",
+     "GET /modules/rules_proto/4.0.0/MODULE.bazel 200",
+     "GET /modules/rules_proto/5.3.0-21.7/MODULE.bazel 200",
+     "GET /modules/rules_proto/6.0.0-rc1/MODULE.bazel 200",
+     "GET /modules/rules_proto/6.0.2/MODULE.bazel 200",
+     "GET /modules/rules_proto/7.1.0/MODULE.bazel 200",
+     "GET /modules/rules_proto/7.1.0/source.json 200",
+     "GET /modules/rules_proto/metadata.json 200",
+     "GET /modules/rules_python/0.10.2/MODULE.bazel 200",
+     "GET /modules/rules_python/0.23.1/MODULE.bazel 200",
+     "GET /modules/rules_python/0.25.0/MODULE.bazel 200",
+     "GET /modules/rules_python/0.28.0/MODULE.bazel 200",
+     "GET /modules/rules_python/0.31.0/MODULE.bazel 200",
+     "GET /modules/rules_python/0.33.2/MODULE.bazel 200",
+     "GET /modules/rules_python/0.4.0/MODULE.bazel 200",
+     "GET /modules/rules_python/1.3.0/MODULE.bazel 200",
+     "GET /modules/rules_python/1.4.1/MODULE.bazel 200",
+     "GET /modules/rules_python/1.6.0/MODULE.bazel 200",
+     "GET /modules/rules_python/1.7.0/MODULE.bazel 200",
+     "GET /modules/rules_python/1.7.0/patches/module_dot_bazel_version.patch 200",
+     "GET /modules/rules_python/1.7.0/source.json 200",
+     "GET /modules/rules_python/metadata.json 200",
+     "GET /modules/rules_shell/0.2.0/MODULE.bazel 200",
+     "GET /modules/rules_shell/0.3.0/MODULE.bazel 200",
+     "GET /modules/rules_shell/0.6.1/MODULE.bazel 200",
+     "GET /modules/rules_shell/0.6.1/patches/module_dot_bazel_version.patch 200",
+     "GET /modules/rules_shell/0.6.1/source.json 200",
+     "GET /modules/rules_shell/metadata.json 200",
+     "GET /modules/rules_swift/1.16.0/MODULE.bazel 200",
+     "GET /modules/rules_swift/2.1.1/MODULE.bazel 200",
+     "GET /modules/rules_swift/2.4.0/MODULE.bazel 200",
+     "GET /modules/rules_swift/3.1.2/MODULE.bazel 200",
+     "GET /modules/rules_swift/3.1.2/patches/module_dot_bazel_version.patch 200",
+     "GET /modules/rules_swift/3.1.2/source.json 200",
+     "GET /modules/rules_swift/metadata.json 200",
+     "GET /modules/stardoc/0.5.1/MODULE.bazel 200",
+     "GET /modules/stardoc/0.5.3/MODULE.bazel 200",
+     "GET /modules/stardoc/0.7.0/MODULE.bazel 200",
+     "GET /modules/stardoc/0.7.2/MODULE.bazel 200",
+     "GET /modules/stardoc/0.7.2/source.json 200",
+     "GET /modules/stardoc/metadata.json 200",
+     "GET /modules/swift_argument_parser/1.3.1.1/MODULE.bazel 200",
+     "GET /modules/swift_argument_parser/1.3.1.2/MODULE.bazel 200",
+     "GET /modules/swift_argument_parser/1.3.1.2/source.json 200",
+     "GET /modules/swift_argument_parser/metadata.json 200",
+     "GET /modules/upb/0.0.0-20220923-a547704/MODULE.bazel 200",
+     "GET /modules/zlib/1.2.11/MODULE.bazel 200",
+     "GET /modules/zlib/1.3.1.bcr.5/MODULE.bazel 200",
+     "GET /modules/zlib/1.3.1.bcr.5/source.json 200",
+     "GET /modules/zlib/1.3.1/MODULE.bazel 200",
+     "GET /modules/zlib/metadata.json 200"
+    ],
+    "warnings": []
+   },
+   "genuine_common": {
+    "/modules/jsoncpp/1.9.6/MODULE.bazel": {
+     "auth": [
+      "Bearer test-token"
+     ],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": []
+    },
+    "/modules/jsoncpp/metadata.json": {
+     "auth": [
+      "Bearer test-token"
+     ],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": []
+    },
+    "/modules/platforms/0.0.6/MODULE.bazel": {
+     "auth": [
+      "Bearer test-token"
+     ],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": []
+    },
+    "/modules/platforms/metadata.json": {
+     "auth": [
+      "Bearer test-token"
+     ],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": []
+    },
+    "/modules/rules_license/0.0.3/MODULE.bazel": {
+     "auth": [
+      "Bearer test-token"
+     ],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": []
+    },
+    "/modules/rules_license/metadata.json": {
+     "auth": [
+      "Bearer test-token"
+     ],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": []
+    },
+    "/modules/zlib/1.2.11/MODULE.bazel": {
+     "auth": [
+      "Bearer test-token"
+     ],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": []
+    },
+    "/modules/zlib/metadata.json": {
+     "auth": [
+      "Bearer test-token"
+     ],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": []
+    }
+   },
+   "id": "download-registry-helper",
+   "native": {
+    "distinct_helper_uris": 8,
+    "errors": [
+     "selected module zlib@1.2.11 is yanked: CVE-2018-25032 (https://github.com/advisories/GHSA-jc36-42cf-vqwj); yanked-version allowlists are unsupported"
+    ],
+    "helper_invocations": 8,
+    "ok": false,
+    "requests": [
+     "GET /modules/jsoncpp/1.9.6/MODULE.bazel 200",
+     "GET /modules/jsoncpp/metadata.json 200",
+     "GET /modules/platforms/0.0.6/MODULE.bazel 200",
+     "GET /modules/platforms/metadata.json 200",
+     "GET /modules/rules_license/0.0.3/MODULE.bazel 200",
+     "GET /modules/rules_license/metadata.json 200",
+     "GET /modules/zlib/1.2.11/MODULE.bazel 200",
+     "GET /modules/zlib/metadata.json 200"
+    ],
+    "warnings": []
+   },
+   "native_common": {
+    "/modules/jsoncpp/1.9.6/MODULE.bazel": {
+     "auth": [
+      "Bearer test-token"
+     ],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": []
+    },
+    "/modules/jsoncpp/metadata.json": {
+     "auth": [
+      "Bearer test-token"
+     ],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": []
+    },
+    "/modules/platforms/0.0.6/MODULE.bazel": {
+     "auth": [
+      "Bearer test-token"
+     ],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": []
+    },
+    "/modules/platforms/metadata.json": {
+     "auth": [
+      "Bearer test-token"
+     ],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": []
+    },
+    "/modules/rules_license/0.0.3/MODULE.bazel": {
+     "auth": [
+      "Bearer test-token"
+     ],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": []
+    },
+    "/modules/rules_license/metadata.json": {
+     "auth": [
+      "Bearer test-token"
+     ],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": []
+    },
+    "/modules/zlib/1.2.11/MODULE.bazel": {
+     "auth": [
+      "Bearer test-token"
+     ],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": []
+    },
+    "/modules/zlib/metadata.json": {
+     "auth": [
+      "Bearer test-token"
+     ],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": []
+    }
+   },
+   "note": "native mod graph resolves only the root leaf modules; Bazel also the bazel_tools closure, metadata.json and source.json; compared on the common URLs"
+  },
+  {
+   "classification": "MISMATCH",
+   "common_paths": [
+    "/modules/jsoncpp/1.9.6/MODULE.bazel",
+    "/modules/jsoncpp/metadata.json",
+    "/modules/platforms/0.0.6/MODULE.bazel",
+    "/modules/platforms/metadata.json",
+    "/modules/rules_license/0.0.3/MODULE.bazel",
+    "/modules/rules_license/metadata.json",
+    "/modules/zlib/1.2.11/MODULE.bazel",
+    "/modules/zlib/metadata.json"
+   ],
+   "genuine": {
+    "distinct_helper_uris": 220,
+    "errors": [
+     "<BASE>/our-71/9dc63ac608863ea8fc0f4e65cbf224e9/external/bazel_tools/tools/build_defs/repo/utils.bzl:76:33: An error occurred during the fetch of repository 'buildozer+':\n   Traceback (most recent call last):\n\tFile \"<BASE>/our-71/9dc63ac608863ea8fc0f4e65cbf224e9/external/bazel_tools/tools/build_defs/repo/http.bzl\", line 217, column 32, in _http_archive_impl\n\t\tremote_patches_info = patch(ctx)\n\tFile \"<BASE>/our-71/9dc63ac608863ea8fc0f4e65cbf224e9/external/bazel_tools/tools/build_defs/repo/utils.bzl\", line 225, column 51, in patch\n\t\tpatchfile, download_info = _download_patch(ctx, patch_url, integrity, auth)\n\tFile \"<BASE>/our-71/9dc63ac608863ea8fc0f4e65cbf224e9/external/bazel_tools/tools/build_defs/repo/utils.bzl\", line 76, column 33, in _download_patch\n\t\tdownload_info = ctx.download(\nError in download: java.io.IOException: Error downloading [<SERVER>/modules/buildozer/8.5.1/patches/module_dot_bazel_version.patch] to <BASE>/our-71/9dc63ac608863ea8fc0f4e65cbf224e9/external/buildozer+/.tmp_remote_patches/module_dot_bazel_version.patch: GET returned 404 Not Found",
+     "<BASE>/our-71/9dc63ac608863ea8fc0f4e65cbf224e9/external/bazel_tools/tools/build_defs/repo/utils.bzl:76:33: An error occurred during the fetch of repository 'rules_apple+':\n   Traceback (most recent call last):\n\tFile \"<BASE>/our-71/9dc63ac608863ea8fc0f4e65cbf224e9/external/bazel_tools/tools/build_defs/repo/http.bzl\", line 217, column 32, in _http_archive_impl\n\t\tremote_patches_info = patch(ctx)\n\tFile \"<BASE>/our-71/9dc63ac608863ea8fc0f4e65cbf224e9/external/bazel_tools/tools/build_defs/repo/utils.bzl\", line 225, column 51, in patch\n\t\tpatchfile, download_info = _download_patch(ctx, patch_url, integrity, auth)\n\tFile \"<BASE>/our-71/9dc63ac608863ea8fc0f4e65cbf224e9/external/bazel_tools/tools/build_defs/repo/utils.bzl\", line 76, column 33, in _download_patch\n\t\tdownload_info = ctx.download(\nError in download: java.io.IOException: Error downloading [<SERVER>/modules/rules_apple/4.1.0/patches/module_dot_bazel_version.patch] to <BASE>/our-71/9dc63ac608863ea8fc0f4e65cbf224e9/external/rules_apple+/.tmp_remote_patches/module_dot_bazel_version.patch: GET returned 404 Not Found",
+     "no such package '@@buildozer+//': java.io.IOException: Error downloading [<SERVER>/modules/buildozer/8.5.1/patches/module_dot_bazel_version.patch] to <BASE>/our-71/9dc63ac608863ea8fc0f4e65cbf224e9/external/buildozer+/.tmp_remote_patches/module_dot_bazel_version.patch: GET returned 404 Not Found"
+    ],
+    "helper_invocations": 220,
+    "ok": false,
+    "requests": [
+     "GET /bazel_registry.json 200",
+     "GET /modules/abseil-cpp/20210324.2/MODULE.bazel 200",
+     "GET /modules/abseil-cpp/20211102.0/MODULE.bazel 200",
+     "GET /modules/abseil-cpp/20230125.1/MODULE.bazel 200",
+     "GET /modules/abseil-cpp/20230802.0.bcr.1/MODULE.bazel 200",
+     "GET /modules/abseil-cpp/20230802.0/MODULE.bazel 200",
+     "GET /modules/abseil-cpp/20230802.1/MODULE.bazel 200",
+     "GET /modules/abseil-cpp/20240116.1/MODULE.bazel 200",
+     "GET /modules/abseil-cpp/20240116.2/MODULE.bazel 200",
+     "GET /modules/abseil-cpp/20250127.1/MODULE.bazel 200",
+     "GET /modules/abseil-cpp/20250512.1/MODULE.bazel 200",
+     "GET /modules/abseil-cpp/20250814.1/MODULE.bazel 200",
+     "GET /modules/abseil-cpp/20250814.1/source.json 200",
+     "GET /modules/abseil-cpp/metadata.json 200",
+     "GET /modules/apple_support/1.11.1/MODULE.bazel 200",
+     "GET /modules/apple_support/1.15.1/MODULE.bazel 200",
+     "GET /modules/apple_support/1.21.0/MODULE.bazel 200",
+     "GET /modules/apple_support/1.21.1/MODULE.bazel 200",
+     "GET /modules/apple_support/2.5.2/MODULE.bazel 200",
+     "GET /modules/apple_support/2.5.2/patches/module_dot_bazel_version.patch 200",
+     "GET /modules/apple_support/2.5.2/source.json 200",
+     "GET /modules/apple_support/metadata.json 200",
+     "GET /modules/bazel_features/1.1.1/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.10.0/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.11.0/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.15.0/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.17.0/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.18.0/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.19.0/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.21.0/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.23.0/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.27.0/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.28.0/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.3.0/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.30.0/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.33.0/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.4.1/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.42.1/MODULE.bazel 200",
+     "GET /modules/bazel_features/1.42.1/patches/module_dot_bazel_version.patch 200",
+     "GET /modules/bazel_features/1.42.1/source.json 200",
+     "GET /modules/bazel_features/1.9.1/MODULE.bazel 200",
+     "GET /modules/bazel_features/metadata.json 200",
+     "GET /modules/bazel_skylib/1.0.3/MODULE.bazel 200",
+     "GET /modules/bazel_skylib/1.1.1/MODULE.bazel 200",
+     "GET /modules/bazel_skylib/1.2.0/MODULE.bazel 200",
+     "GET /modules/bazel_skylib/1.2.1/MODULE.bazel 200",
+     "GET /modules/bazel_skylib/1.3.0/MODULE.bazel 200",
+     "GET /modules/bazel_skylib/1.4.1/MODULE.bazel 200",
+     "GET /modules/bazel_skylib/1.4.2/MODULE.bazel 200",
+     "GET /modules/bazel_skylib/1.5.0/MODULE.bazel 200",
+     "GET /modules/bazel_skylib/1.6.1/MODULE.bazel 200",
+     "GET /modules/bazel_skylib/1.7.0/MODULE.bazel 200",
+     "GET /modules/bazel_skylib/1.7.1/MODULE.bazel 200",
+     "GET /modules/bazel_skylib/1.8.1/MODULE.bazel 200",
+     "GET /modules/bazel_skylib/1.8.2/MODULE.bazel 200",
+     "GET /modules/bazel_skylib/1.8.2/source.json 200",
+     "GET /modules/bazel_skylib/metadata.json 200",
+     "GET /modules/buildozer/8.5.1/MODULE.bazel 200",
+     "GET /modules/buildozer/8.5.1/patches/module_dot_bazel_version.patch 404",
+     "GET /modules/buildozer/8.5.1/source.json 200",
+     "GET /modules/buildozer/metadata.json 200",
+     "GET /modules/google_benchmark/1.8.2/MODULE.bazel 200",
+     "GET /modules/googletest/1.11.0/MODULE.bazel 200",
+     "GET /modules/googletest/1.14.0.bcr.1/MODULE.bazel 200",
+     "GET /modules/googletest/1.14.0/MODULE.bazel 200",
+     "GET /modules/googletest/1.15.2/MODULE.bazel 200",
+     "GET /modules/googletest/1.17.0/MODULE.bazel 200",
+     "GET /modules/googletest/1.17.0/source.json 200",
+     "GET /modules/googletest/metadata.json 200",
+     "GET /modules/jsoncpp/1.9.5/MODULE.bazel 200",
+     "GET /modules/jsoncpp/1.9.6/MODULE.bazel 200",
+     "GET /modules/jsoncpp/1.9.6/source.json 200",
+     "GET /modules/jsoncpp/metadata.json 200",
+     "GET /modules/libpfm/4.11.0/MODULE.bazel 200",
+     "GET /modules/nlohmann_json/3.6.1/MODULE.bazel 200",
+     "GET /modules/nlohmann_json/3.6.1/source.json 200",
+     "GET /modules/nlohmann_json/metadata.json 200",
+     "GET /modules/platforms/0.0.10/MODULE.bazel 200",
+     "GET /modules/platforms/0.0.11/MODULE.bazel 200",
+     "GET /modules/platforms/0.0.4/MODULE.bazel 200",
+     "GET /modules/platforms/0.0.5/MODULE.bazel 200",
+     "GET /modules/platforms/0.0.6/MODULE.bazel 200",
+     "GET /modules/platforms/0.0.7/MODULE.bazel 200",
+     "GET /modules/platforms/0.0.8/MODULE.bazel 200",
+     "GET /modules/platforms/0.0.9/MODULE.bazel 200",
+     "GET /modules/platforms/1.0.0/MODULE.bazel 200",
+     "GET /modules/platforms/1.0.0/source.json 200",
+     "GET /modules/platforms/metadata.json 200",
+     "GET /modules/protobuf/21.7/MODULE.bazel 200",
+     "GET /modules/protobuf/27.0/MODULE.bazel 200",
+     "GET /modules/protobuf/29.0-rc2/MODULE.bazel 200",
+     "GET /modules/protobuf/29.0-rc3/MODULE.bazel 200",
+     "GET /modules/protobuf/29.1/MODULE.bazel 200",
+     "GET /modules/protobuf/3.19.0/MODULE.bazel 200",
+     "GET /modules/protobuf/32.1/MODULE.bazel 200",
+     "GET /modules/protobuf/33.4/MODULE.bazel 200",
+     "GET /modules/protobuf/33.4/source.json 200",
+     "GET /modules/protobuf/metadata.json 200",
+     "GET /modules/pybind11_bazel/2.11.1/MODULE.bazel 200",
+     "GET /modules/pybind11_bazel/2.12.0/MODULE.bazel 200",
+     "GET /modules/pybind11_bazel/2.12.0/source.json 200",
+     "GET /modules/pybind11_bazel/metadata.json 200",
+     "GET /modules/re2/2023-09-01/MODULE.bazel 200",
+     "GET /modules/re2/2024-07-02.bcr.1/MODULE.bazel 200",
+     "GET /modules/re2/2024-07-02.bcr.1/source.json 200",
+     "GET /modules/re2/2024-07-02/MODULE.bazel 200",
+     "GET /modules/re2/metadata.json 200",
+     "GET /modules/rules_android/0.1.1/MODULE.bazel 200",
+     "GET /modules/rules_android/0.1.1/source.json 200",
+     "GET /modules/rules_android/metadata.json 200",
+     "GET /modules/rules_apple/3.16.0/MODULE.bazel 200",
+     "GET /modules/rules_apple/4.1.0/MODULE.bazel 200",
+     "GET /modules/rules_apple/4.1.0/patches/module_dot_bazel_version.patch 404",
+     "GET /modules/rules_apple/4.1.0/source.json 200",
+     "GET /modules/rules_apple/metadata.json 200",
+     "GET /modules/rules_cc/0.0.1/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.0.10/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.0.13/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.0.15/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.0.16/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.0.17/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.0.2/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.0.6/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.0.8/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.0.9/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.1.1/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.1.2/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.1.5/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.2.0/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.2.13/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.2.15/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.2.17/MODULE.bazel 200",
+     "GET /modules/rules_cc/0.2.17/patches/module_dot_bazel_version.patch 200",
+     "GET /modules/rules_cc/0.2.17/source.json 200",
+     "GET /modules/rules_cc/metadata.json 200",
+     "GET /modules/rules_foreign_cc/0.9.0/MODULE.bazel 200",
+     "GET /modules/rules_fuzzing/0.5.2/MODULE.bazel 200",
+     "GET /modules/rules_java/4.0.0/MODULE.bazel 200",
+     "GET /modules/rules_java/5.3.5/MODULE.bazel 200",
+     "GET /modules/rules_java/6.5.2/MODULE.bazel 200",
+     "GET /modules/rules_java/7.10.0/MODULE.bazel 200",
+     "GET /modules/rules_java/7.12.2/MODULE.bazel 200",
+     "GET /modules/rules_java/7.2.0/MODULE.bazel 200",
+     "GET /modules/rules_java/7.6.1/MODULE.bazel 200",
+     "GET /modules/rules_java/8.3.2/MODULE.bazel 200",
+     "GET /modules/rules_java/8.5.1/MODULE.bazel 200",
+     "GET /modules/rules_java/8.6.1/MODULE.bazel 200",
+     "GET /modules/rules_java/9.1.0/MODULE.bazel 200",
+     "GET /modules/rules_java/9.1.0/source.json 200",
+     "GET /modules/rules_java/metadata.json 200",
+     "GET /modules/rules_jvm_external/4.4.2/MODULE.bazel 200",
+     "GET /modules/rules_jvm_external/5.1/MODULE.bazel 200",
+     "GET /modules/rules_jvm_external/5.2/MODULE.bazel 200",
+     "GET /modules/rules_jvm_external/6.3/MODULE.bazel 200",
+     "GET /modules/rules_jvm_external/6.7/MODULE.bazel 200",
+     "GET /modules/rules_jvm_external/6.7/source.json 200",
+     "GET /modules/rules_jvm_external/metadata.json 200",
+     "GET /modules/rules_kotlin/1.9.6/MODULE.bazel 200",
+     "GET /modules/rules_kotlin/1.9.6/patches/module_dot_bazel_version.patch 200",
+     "GET /modules/rules_kotlin/1.9.6/source.json 200",
+     "GET /modules/rules_kotlin/metadata.json 200",
+     "GET /modules/rules_license/0.0.3/MODULE.bazel 200",
+     "GET /modules/rules_license/0.0.7/MODULE.bazel 200",
+     "GET /modules/rules_license/1.0.0/MODULE.bazel 200",
+     "GET /modules/rules_license/1.0.0/source.json 200",
+     "GET /modules/rules_license/metadata.json 200",
+     "GET /modules/rules_pkg/0.7.0/MODULE.bazel 200",
+     "GET /modules/rules_pkg/1.0.1/MODULE.bazel 200",
+     "GET /modules/rules_pkg/1.0.1/source.json 200",
+     "GET /modules/rules_pkg/metadata.json 200",
+     "GET /modules/rules_proto/4.0.0/MODULE.bazel 200",
+     "GET /modules/rules_proto/5.3.0-21.7/MODULE.bazel 200",
+     "GET /modules/rules_proto/6.0.0-rc1/MODULE.bazel 200",
+     "GET /modules/rules_proto/6.0.2/MODULE.bazel 200",
+     "GET /modules/rules_proto/7.1.0/MODULE.bazel 200",
+     "GET /modules/rules_proto/7.1.0/source.json 200",
+     "GET /modules/rules_proto/metadata.json 200",
+     "GET /modules/rules_python/0.10.2/MODULE.bazel 200",
+     "GET /modules/rules_python/0.23.1/MODULE.bazel 200",
+     "GET /modules/rules_python/0.25.0/MODULE.bazel 200",
+     "GET /modules/rules_python/0.28.0/MODULE.bazel 200",
+     "GET /modules/rules_python/0.31.0/MODULE.bazel 200",
+     "GET /modules/rules_python/0.33.2/MODULE.bazel 200",
+     "GET /modules/rules_python/0.4.0/MODULE.bazel 200",
+     "GET /modules/rules_python/1.3.0/MODULE.bazel 200",
+     "GET /modules/rules_python/1.4.1/MODULE.bazel 200",
+     "GET /modules/rules_python/1.6.0/MODULE.bazel 200",
+     "GET /modules/rules_python/1.7.0/MODULE.bazel 200",
+     "GET /modules/rules_python/1.7.0/patches/module_dot_bazel_version.patch 200",
+     "GET /modules/rules_python/1.7.0/source.json 200",
+     "GET /modules/rules_python/metadata.json 200",
+     "GET /modules/rules_shell/0.2.0/MODULE.bazel 200",
+     "GET /modules/rules_shell/0.3.0/MODULE.bazel 200",
+     "GET /modules/rules_shell/0.6.1/MODULE.bazel 200",
+     "GET /modules/rules_shell/0.6.1/patches/module_dot_bazel_version.patch 200",
+     "GET /modules/rules_shell/0.6.1/source.json 200",
+     "GET /modules/rules_shell/metadata.json 200",
+     "GET /modules/rules_swift/1.16.0/MODULE.bazel 200",
+     "GET /modules/rules_swift/2.1.1/MODULE.bazel 200",
+     "GET /modules/rules_swift/2.4.0/MODULE.bazel 200",
+     "GET /modules/rules_swift/3.1.2/MODULE.bazel 200",
+     "GET /modules/rules_swift/3.1.2/patches/module_dot_bazel_version.patch 200",
+     "GET /modules/rules_swift/3.1.2/source.json 200",
+     "GET /modules/rules_swift/metadata.json 200",
+     "GET /modules/stardoc/0.5.1/MODULE.bazel 200",
+     "GET /modules/stardoc/0.5.3/MODULE.bazel 200",
+     "GET /modules/stardoc/0.7.0/MODULE.bazel 200",
+     "GET /modules/stardoc/0.7.2/MODULE.bazel 200",
+     "GET /modules/stardoc/0.7.2/source.json 200",
+     "GET /modules/stardoc/metadata.json 200",
+     "GET /modules/swift_argument_parser/1.3.1.1/MODULE.bazel 200",
+     "GET /modules/swift_argument_parser/1.3.1.2/MODULE.bazel 200",
+     "GET /modules/swift_argument_parser/1.3.1.2/source.json 200",
+     "GET /modules/swift_argument_parser/metadata.json 200",
+     "GET /modules/upb/0.0.0-20220923-a547704/MODULE.bazel 200",
+     "GET /modules/zlib/1.2.11/MODULE.bazel 200",
+     "GET /modules/zlib/1.3.1.bcr.5/MODULE.bazel 200",
+     "GET /modules/zlib/1.3.1.bcr.5/source.json 200",
+     "GET /modules/zlib/1.3.1/MODULE.bazel 200",
+     "GET /modules/zlib/metadata.json 200"
+    ],
+    "warnings": [
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/jsoncpp/1.9.6/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/platforms/0.0.6/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/zlib/1.2.11/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_license/0.0.3/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope\n no actions running",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_license/1.0.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/buildozer/8.5.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/apple_support/2.5.2/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/platforms/1.0.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/zlib/1.3.1.bcr.5/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/protobuf/33.4/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_java/9.1.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_cc/0.2.17/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_python/1.7.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_shell/0.6.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_features/1.11.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_cc/0.0.8/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_apple/3.16.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/platforms/0.0.7/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/apple_support/1.15.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_license/0.0.7/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_shell/0.3.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_cc/0.2.15/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/abseil-cpp/20250512.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_cc/0.0.17/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_features/1.33.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_skylib/1.7.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_java/8.6.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_kotlin/1.9.6/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_pkg/1.0.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_jvm_external/6.7/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_python/1.6.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_proto/7.1.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_shell/0.2.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/platforms/0.0.11/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/re2/2024-07-02.bcr.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_cc/0.2.13/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_features/1.30.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_skylib/1.6.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/protobuf/32.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/abseil-cpp/20250814.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_features/1.28.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/platforms/0.0.10/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/protobuf/27.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_features/1.21.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_skylib/1.8.2/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_cc/0.1.5/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/protobuf/29.0-rc2/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_features/1.18.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/stardoc/0.7.2/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_features/1.27.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_skylib/1.3.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/platforms/0.0.9/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_cc/0.0.2/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_java/8.5.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/googletest/1.17.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_cc/0.1.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_cc/0.0.15/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_swift/2.1.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_features/1.19.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/abseil-cpp/20230802.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_android/0.1.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/platforms/0.0.4/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_features/1.17.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_java/7.12.2/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_java/7.2.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_proto/5.3.0-21.7/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_python/0.23.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_python/0.31.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_cc/0.0.16/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_skylib/1.4.2/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_skylib/1.8.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/protobuf/29.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_cc/0.0.9/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/abseil-cpp/20240116.2/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_python/0.33.2/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_python/1.4.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_features/1.23.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_cc/0.2.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/pybind11_bazel/2.12.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_skylib/1.4.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/abseil-cpp/20230802.0.bcr.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_java/5.3.5/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_jvm_external/5.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/platforms/0.0.8/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_proto/4.0.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/jsoncpp/1.9.5/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_skylib/1.7.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_pkg/0.7.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_cc/0.0.13/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_python/0.10.2/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_jvm_external/6.3/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_fuzzing/0.5.2/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/zlib/1.3.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_python/0.28.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/protobuf/29.0-rc3/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_skylib/1.0.3/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_java/8.3.2/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/nlohmann_json/3.6.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/protobuf/21.7/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/swift_argument_parser/1.3.1.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/abseil-cpp/20250127.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/googletest/1.14.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_features/1.3.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_cc/0.0.10/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_proto/6.0.2/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_cc/0.0.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_features/1.1.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_skylib/1.2.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_skylib/1.5.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_proto/6.0.0-rc1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/googletest/1.14.0.bcr.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_features/1.9.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_python/0.4.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/stardoc/0.5.3/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_features/1.15.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/abseil-cpp/20240116.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_java/6.5.2/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_java/7.10.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_skylib/1.2.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/apple_support/1.11.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/upb/0.0.0-20220923-a547704/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_jvm_external/4.4.2/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_swift/1.16.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/abseil-cpp/20211102.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/googletest/1.11.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_java/4.0.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/googletest/1.15.2/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/re2/2023-09-01/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/abseil-cpp/20230125.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/stardoc/0.7.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_features/1.4.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/pybind11_bazel/2.11.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/abseil-cpp/20210324.2/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/re2/2024-07-02/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/platforms/0.0.5/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/stardoc/0.5.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/protobuf/3.19.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_java/7.6.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_cc/0.0.6/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_jvm_external/5.2/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/abseil-cpp/20230802.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_python/0.25.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/google_benchmark/1.8.2/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/libpfm/4.11.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_foreign_cc/0.9.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_skylib/1.1.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_swift/3.1.2/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_features/1.42.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_apple/4.1.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope\n no actions running",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/swift_argument_parser/1.3.1.2/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/apple_support/1.21.1/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_swift/2.4.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/apple_support/1.21.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_features/1.10.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_python/1.3.0/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_cc/0.1.2/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/stardoc/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_python/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/buildozer/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/platforms/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/pybind11_bazel/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_license/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/jsoncpp/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_shell/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_jvm_external/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_proto/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/swift_argument_parser/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/googletest/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_android/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_skylib/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_features/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/protobuf/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_apple/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_pkg/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_java/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/zlib/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/apple_support/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/re2/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_cc/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_kotlin/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_swift/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/nlohmann_json/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/abseil-cpp/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_features/1.42.1/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_skylib/1.8.2/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/protobuf/33.4/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_license/1.0.0/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/platforms/1.0.0/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/buildozer/8.5.1/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_cc/0.2.17/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/jsoncpp/1.9.6/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/zlib/1.3.1.bcr.5/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/swift_argument_parser/1.3.1.2/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_apple/4.1.0/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_java/9.1.0/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_shell/0.6.1/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/abseil-cpp/20250814.1/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/apple_support/2.5.2/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_kotlin/1.9.6/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_python/1.7.0/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_jvm_external/6.7/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_pkg/1.0.1/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_proto/7.1.0/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/stardoc/0.7.2/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_swift/3.1.2/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/re2/2024-07-02.bcr.1/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/googletest/1.17.0/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_android/0.1.1/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/nlohmann_json/3.6.1/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/pybind11_bazel/2.12.0/source.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/bazel_registry.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope\n no actions running",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_shell/0.6.1/patches/module_dot_bazel_version.patch' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/bazel_features/1.42.1/patches/module_dot_bazel_version.patch' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/apple_support/2.5.2/patches/module_dot_bazel_version.patch' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/buildozer/8.5.1/patches/module_dot_bazel_version.patch' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_cc/0.2.17/patches/module_dot_bazel_version.patch' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_swift/3.1.2/patches/module_dot_bazel_version.patch' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_apple/4.1.0/patches/module_dot_bazel_version.patch' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_python/1.7.0/patches/module_dot_bazel_version.patch' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_kotlin/1.9.6/patches/module_dot_bazel_version.patch' from helper '<BASE>/helper': process exited with code 2. stderr: nope\n no actions running"
+    ]
+   },
+   "genuine_common": {
+    "/modules/jsoncpp/1.9.6/MODULE.bazel": {
+     "auth": [],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": [
+      "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/jsoncpp/1.9.6/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope"
+     ]
+    },
+    "/modules/jsoncpp/metadata.json": {
+     "auth": [],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": [
+      "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/jsoncpp/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope"
+     ]
+    },
+    "/modules/platforms/0.0.6/MODULE.bazel": {
+     "auth": [],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": [
+      "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/platforms/0.0.6/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope"
+     ]
+    },
+    "/modules/platforms/metadata.json": {
+     "auth": [],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": [
+      "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/platforms/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope"
+     ]
+    },
+    "/modules/rules_license/0.0.3/MODULE.bazel": {
+     "auth": [],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": [
+      "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_license/0.0.3/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope\n no actions running"
+     ]
+    },
+    "/modules/rules_license/metadata.json": {
+     "auth": [],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": [
+      "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_license/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope"
+     ]
+    },
+    "/modules/zlib/1.2.11/MODULE.bazel": {
+     "auth": [],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": [
+      "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/zlib/1.2.11/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope"
+     ]
+    },
+    "/modules/zlib/metadata.json": {
+     "auth": [],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": [
+      "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/zlib/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope"
+     ]
+    }
+   },
+   "id": "download-registry-helper-fails",
+   "native": {
+    "distinct_helper_uris": 8,
+    "errors": [
+     "selected module zlib@1.2.11 is yanked: CVE-2018-25032 (https://github.com/advisories/GHSA-jc36-42cf-vqwj); yanked-version allowlists are unsupported"
+    ],
+    "helper_invocations": 8,
+    "ok": false,
+    "requests": [
+     "GET /modules/jsoncpp/1.9.6/MODULE.bazel 200",
+     "GET /modules/jsoncpp/metadata.json 200",
+     "GET /modules/platforms/0.0.6/MODULE.bazel 200",
+     "GET /modules/platforms/metadata.json 200",
+     "GET /modules/rules_license/0.0.3/MODULE.bazel 200",
+     "GET /modules/rules_license/metadata.json 200",
+     "GET /modules/zlib/1.2.11/MODULE.bazel 200",
+     "GET /modules/zlib/metadata.json 200"
+    ],
+    "warnings": [
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_license/0.0.3/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/platforms/0.0.6/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/zlib/1.2.11/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/jsoncpp/1.9.6/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/jsoncpp/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/platforms/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_license/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope",
+     "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/zlib/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope"
+    ]
+   },
+   "native_common": {
+    "/modules/jsoncpp/1.9.6/MODULE.bazel": {
+     "auth": [],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": [
+      "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/jsoncpp/1.9.6/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope"
+     ]
+    },
+    "/modules/jsoncpp/metadata.json": {
+     "auth": [],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": [
+      "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/jsoncpp/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope"
+     ]
+    },
+    "/modules/platforms/0.0.6/MODULE.bazel": {
+     "auth": [],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": [
+      "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/platforms/0.0.6/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope"
+     ]
+    },
+    "/modules/platforms/metadata.json": {
+     "auth": [],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": [
+      "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/platforms/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope"
+     ]
+    },
+    "/modules/rules_license/0.0.3/MODULE.bazel": {
+     "auth": [],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": [
+      "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_license/0.0.3/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope"
+     ]
+    },
+    "/modules/rules_license/metadata.json": {
+     "auth": [],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": [
+      "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/rules_license/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope"
+     ]
+    },
+    "/modules/zlib/1.2.11/MODULE.bazel": {
+     "auth": [],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": [
+      "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/zlib/1.2.11/MODULE.bazel' from helper '<BASE>/helper': process exited with code 2. stderr: nope"
+     ]
+    },
+    "/modules/zlib/metadata.json": {
+     "auth": [],
+     "count": 1,
+     "helper_asked": 1,
+     "warning": [
+      "Error retrieving auth headers, continuing without: Failed to get credentials for '<SERVER>/modules/zlib/metadata.json' from helper '<BASE>/helper': process exited with code 2. stderr: nope"
+     ]
+    }
+   },
+   "note": "native mod graph resolves only the root leaf modules; Bazel also the bazel_tools closure, metadata.json and source.json; compared on the common URLs"
+  }
+ ],
+ "code_probe": [
+  {
+   "args": [
+    "//pkg:gen"
+   ],
+   "command": "query",
+   "returncode": 1,
+   "stderr": "bazel-rs: unsupported option \"--attempt_to_print_relative_paths=true\" from rc file <WS>/.bazelrc:6 ('common' options); options are never silently ignored\n"
+  },
+  {
+   "args": [
+    "--remote_cache=",
+    "//pkg:nothing_here"
+   ],
+   "command": "build",
+   "returncode": 1,
+   "stderr": "bazel-rs: unsupported option \"--attempt_to_print_relative_paths=true\" from rc file <WS>/.bazelrc:6 ('common' options); options are never silently ignored\n"
+  }
+ ],
+ "counts": {
+  "EXACT": 15,
+  "EXACT_MESSAGE": 17,
+  "EXPECTED_DIVERGENCE": 4,
+  "EXPECTED_NATIVE_UNSUPPORTED": 2,
+  "MISMATCH": 4
+ },
+ "genuine": {
+  "path": "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "source_commit": "e89755babf3e941bc1e9d8120b1cd48854ab9dfa",
+  "version": "9.3.0"
+ },
+ "method": "loopback HTTP cache/registry servers started by the capture (127.0.0.1 cache, 127.0.0.2 registry); local helper scripts; genuine Bazel --batch --ignore_all_rc_files with a private output user root and HOME and the offline file registry tests/fixtures/builtin_modules/registry; native --ignore_all_rc_files --cache-dir",
+ "milestone": "N41",
+ "native": {
+  "sha256": "6a94349bfe82dcb95d1cceb125fc01b5a4a50b07d1583bd180b57aa45fceefa8",
+  "sha256_review_rerun": "6a929a3e7debdb92aa00db59a4816fb16b057eb93557dad5e625c0d35a969170"
+ },
+ "network_note": "No storagebox, BuildBarn, proxy or real credential helper was contacted. Builds that needed @platforms fetched the genuine platforms-1.0.0 archive (sha256 3384eb1c...) from github.com via the offline registry fixture source.json, in genuine Bazel and in native --experimental-builtin-modules runs; in helper-unscoped-default genuine Bazel sent the test helper header to those GitHub URLs (a dummy token).",
+ "normalization": "workspace/base paths replaced by <WS>/<BASE>; requests as \"METHOD PATH STATUS\" multisets; auth headers as lowercase name/value sets; AC entries without timestamps",
+ "post_capture_changes": [
+  "native: Remote Cache warnings once per distinct message (RemoteExecutionService.report, :2158-2166)",
+  "native: lookup credential failures read \"Exec failed due to CredentialHelperException: ...\" (Utils.java:637-648)",
+  "harness: errors() skips the native build summary; server URLs normalized to <SERVER>; success compared, not exit codes",
+  "harness: native runs add --experimental-builtin-modules with the offline registry; native outputs read from raw stdout",
+  "harness: downloader cases use mod graph over leaf registry modules, compared on the URLs both engines request",
+  "receipt: run-2 classifications unchanged; analysis and network_note added after the run (artifacts/remote_cache-receipt.run2.raw.json is the unannotated output)",
+  "receipt: the signed query string of one github release-asset redirect URL is redacted",
+  "source after run 2: cargo fmt reflow of two statements (src/action.rs, src/remote_cache.rs); no behavior change",
+  "review B1: every spawn executes with exactly its keyed environment plus TMPDIR (no PATH/LANG/LC_ALL defaults); native-action-v7. Cross-engine rows rerun (rerun=review-b1-targeted)",
+  "review B2: native remote uploads denied unless BAZEL_RS_ALLOW_REMOTE_UPLOAD=1 (harness sets it for native runs); credential helper process group killed at timeout, pipe readers bounded/detached",
+  "review should-fix: inlined ActionResult contents verified; exec_properties gate the remote cache",
+  "rows other than the rerun ones were captured before the review changes (genuine rows unaffected; native error/flag rows do not depend on the executed environment)"
+ ],
+ "run_history": [
+  {
+   "causes": "harness: native summary line parsed as an error, per-server ports not normalized, exit codes compared (1 vs 2/36), native outputs read from path-normalized stdout, native runs without --experimental-builtin-modules (//pkg:use needs the default host platform), native query is lazy (no registry requests); native: duplicate Remote Cache warnings, CredentialHelperException wording",
+   "counts": {
+    "EXACT": 2,
+    "EXACT_MESSAGE": 11,
+    "EXPECTED_DIVERGENCE": 4,
+    "EXPECTED_NATIVE_UNSUPPORTED": 2,
+    "MISMATCH": 23
+   },
+   "receipt": "artifacts/remote_cache-receipt.run1.json",
+   "run": 1
+  },
+  {
+   "counts": {
+    "EXACT": 6,
+    "EXPECTED_DIVERGENCE": 2
+   },
+   "reason": "N41 review B1/B2: spawns now run with exactly their keyed environment (native-action-v7); native uploads need BAZEL_RS_ALLOW_REMOTE_UPLOAD=1 (set for native runs by the harness)",
+   "receipt": "artifacts/remote_cache-receipt.review-cross.json",
+   "rows": [
+    "ac-entries-and-cas-equal",
+    "cold-build-request-multiset",
+    "genuine-writes-native-reads",
+    "helper-startup-invocation",
+    "native-writes-genuine-reads",
+    "request-auth-headers",
+    "request-header-names",
+    "warm-build-request-multiset"
+   ],
+   "run": "review-targeted"
+  }
+ ],
+ "schema": "remote-cache-reference-receipt-v1"
+}

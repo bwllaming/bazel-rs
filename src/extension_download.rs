@@ -484,10 +484,15 @@ pub(crate) fn open_detailed(client: &Client, original: &Url) -> Result<Box<dyn R
             // HttpConnector asks ProxyHelper for every connection
             // (HttpConnector.java:125-136).
             crate::download_proxy::check(&current).map_err(TypedIoError::Completion)?;
-            let response = client
+            // Credential helper headers per URL, redirect hops included
+            // (HttpConnectorMultiplexer.getHeaderFunction, :133-151; N41).
+            let mut request = client
                 .get(current.clone())
-                .header("Accept-Encoding", "gzip")
-                .send();
+                .header("Accept-Encoding", "gzip");
+            for (name, value) in crate::credentials::download_headers(current.as_str()) {
+                request = request.header(name, value);
+            }
+            let response = request.send();
             let response = match response {
                 Ok(response) => response,
                 Err(error) => {

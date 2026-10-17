@@ -1867,11 +1867,11 @@ x['nested'].append(4)
                     "{\"path\":\"pkg/input.txt\",\"root\":\"\",\"short_path\":\"pkg/input.txt\"}",
                 ),
                 (
-                    "bazel-out/rust-fastbuild/bin/pkg/out",
+                    "bazel-out/k8-fastbuild/bin/pkg/out",
                     "pkg/out",
                     "//pkg:rule",
                     false,
-                    "{\"path\":\"bazel-out/rust-fastbuild/bin/pkg/out\",\"root\":\"bazel-out/rust-fastbuild/bin\",\"short_path\":\"pkg/out\"}",
+                    "{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/out\",\"root\":\"bazel-out/k8-fastbuild/bin\",\"short_path\":\"pkg/out\"}",
                 ),
             ] {
                 let file = heap.alloc(crate::starlark_types::File {

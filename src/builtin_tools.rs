@@ -26,6 +26,18 @@ const MODULE_SHA256: &str = "a0fab7d7a9314cfba6d73f33c50643ba26dac9be28700ff35e8
 const FILE_COUNT: usize = 421;
 const TOTAL_SIZE: u64 = 73_326_972;
 
+/// `@bazel_tools//tools/genrule:genrule-setup.sh`, the `$genrule_setup`
+/// input every bash genrule sources (BazelGenRuleRule.java:31,
+/// GenRuleBase.java:141-147, 170-175). Byte-identical to the embedded
+/// tools entry (SHA-256 [`GENRULE_SETUP_SHA256`], checked against the
+/// manifest by the tests) and to the pinned source's
+/// `tools/genrule/genrule-setup.sh`.
+pub const GENRULE_SETUP: &[u8] = include_bytes!("../resources/genrule-setup.sh");
+pub const GENRULE_SETUP_SHA256: &str =
+    "2138ccc4608e0a41291680587baced12bb80379b6924c3c4c2d9ef272f99139f";
+/// Its execution path: `bazel_tools` is the canonical repository name.
+pub const GENRULE_SETUP_EXEC_PATH: &str = "external/bazel_tools/tools/genrule/genrule-setup.sh";
+
 /// The original MODULE.bazel, available without extracting the tools tree.
 pub fn module_bytes() -> &'static [u8] {
     include_bytes!("../resources/bazel_tools/MODULE.bazel")
@@ -391,6 +403,23 @@ fn remove_cache_entry(path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn genrule_setup_is_the_embedded_tools_entry() {
+        let manifest: Manifest = serde_json::from_slice(MANIFEST).unwrap();
+        let entry = manifest
+            .files
+            .iter()
+            .find(|entry| entry.path == "tools/genrule/genrule-setup.sh")
+            .unwrap();
+        assert_eq!(entry.sha256, GENRULE_SETUP_SHA256);
+        assert_eq!(entry.size, GENRULE_SETUP.len() as u64);
+        assert_eq!(hex(&Sha256::digest(GENRULE_SETUP)), GENRULE_SETUP_SHA256);
+        assert_eq!(
+            GENRULE_SETUP_EXEC_PATH,
+            format!("external/bazel_tools/{}", entry.path)
+        );
+    }
 
     #[test]
     fn manifest_rejects_paths_duplicates_conflicts_hashes_modes_and_totals() {

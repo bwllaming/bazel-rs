@@ -247,8 +247,9 @@ class PlanTests(unittest.TestCase):
 
     def test_file_triples_are_explicit_not_config_normalization(self):
         v=s.fixture('profile','main-files')
-        self.assertNotEqual(s.expected_outputs(v,'cold','native'),s.expected_outputs(v,'cold','reference'))
-        for which,config in [('native','rust-fastbuild'),('reference','k8-fastbuild')]:
+        # N41 closed D1: the native triple now equals the reference one.
+        self.assertEqual(s.expected_outputs(v,'cold','native'),s.expected_outputs(v,'cold','reference'))
+        for which,config in [('native','k8-fastbuild'),('reference','k8-fastbuild')]:
             value=json.loads(s.expected_outputs(v,'cold',which)['file_encoding.json'])
             self.assertEqual(value[0],dict(path='input.txt',root='',short_path='input.txt'))
             self.assertEqual(value[1]['path'],value[1]['root']+'/'+value[1]['short_path'])
@@ -400,7 +401,7 @@ class ReplayTests(unittest.TestCase):
             r=copy.deepcopy(self.full);self.mutate_output(r,'indent','lexemes',lambda b:b.replace(old,new));self.assertFalse(self.passes(r))
 
     def test_no_filepath_rewrite_or_fabricated_root(self):
-        for old,new in [(b'rust-fastbuild',b'k8-fastbuild'),(b'"root":""',b'"root":"."'),(b'"short_path":"input.txt"',b'"short_path":"wrong"')]:
+        for old,new in [(b'k8-fastbuild',b'rust-fastbuild'),(b'"root":""',b'"root":"."'),(b'"short_path":"input.txt"',b'"short_path":"wrong"')]:
             r=copy.deepcopy(self.full);self.mutate_output(r,'profile','main-files',lambda b:b.replace(old,new));self.assertFalse(self.passes(r))
 
     def test_source_binary_registry_and_cleanup_mutations(self):

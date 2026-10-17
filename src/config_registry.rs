@@ -283,9 +283,12 @@ pub fn output_root(mnemonic: &str) -> String {
     format!("bazel-out/{mnemonic}/bin")
 }
 
-/// The native profile's CPU descriptor (Bazel's `--cpu`, `k8` on this host;
-/// docs/CONFIGURATION.md D1): the historical `rust`.
-pub const NATIVE_CPU: &str = "rust";
+/// The native profile's CPU descriptor: Bazel's `--cpu` on this Linux x86-64
+/// host, `k8` (CoreOptions.java:279-282 `cpu` default "" converted by
+/// AutoCpuConverter.java:52). Divergence D1 (the historical `rust`) is closed
+/// (N41, docs/REMOTE_CACHE.md): output paths are part of every remote cache
+/// key, so they must equal Bazel's for a shared cache.
+pub const NATIVE_CPU: &str = "k8";
 
 /// PlatformOptions.DEFAULT_PLATFORM_NAMES (analysis/PlatformOptions.java:43-50).
 const DEFAULT_PLATFORM_NAMES: [&str; 5] = [
@@ -328,16 +331,15 @@ fn cpu_descriptor(configuration: &Configuration) -> (&str, bool) {
 /// OutputPathMnemonicComputer.computeMnemonic
 /// (analysis/config/OutputPathMnemonicComputer.java:174-245) for the native
 /// profile: `{cpu}-{compilation_mode}[-{platform_suffix}][-ST-{12 hex}]`.
-/// The CPU descriptor ([`cpu_descriptor`]) is the profile's fixed `rust`
-/// where Bazel writes its `--cpu` (`k8`, a documented divergence that keeps
-/// the default `rust-fastbuild` root), and the execution platform's name for
+/// The CPU descriptor ([`cpu_descriptor`]) is Bazel's `--cpu` (`k8`, giving
+/// the default `k8-fastbuild` root), and the execution platform's name for
 /// an exec configuration with a non-default platform name, as in Bazel
 /// (`linux-opt-exec`). `compilation_mode`, `platform_suffix` and, for exec
 /// configurations, `platforms` are explicit in the path. The `ST-` fragment
 /// hashes every other option that differs from `baseline`
 /// (computeNameFragmentWithDiff, :286-318), so the top-level configuration,
-/// its own baseline, keeps the historical `rust-fastbuild`, `rust-dbg` and
-/// `rust-opt` roots. The fragment follows Bazel's algorithm over the native
+/// its own baseline, keeps Bazel's `k8-fastbuild`, `k8-dbg` and `k8-opt`
+/// roots. The fragment follows Bazel's algorithm over the native
 /// option set and values only: it can never equal Bazel's hash, which covers
 /// every Bazel option (docs/CONFIGURATION.md). A descriptor with a path
 /// separator is Bazel's InvalidMnemonicException
@@ -616,20 +618,20 @@ mod tests {
     }
 
     #[test]
-    fn top_level_mnemonics_keep_the_historical_roots() {
+    fn top_level_mnemonics_are_bazels_roots() {
         for (args, root) in [
-            (&[][..], "bazel-out/rust-fastbuild/bin"),
-            (&["-c", "dbg"][..], "bazel-out/rust-dbg/bin"),
-            (&["-c", "opt"][..], "bazel-out/rust-opt/bin"),
+            (&[][..], "bazel-out/k8-fastbuild/bin"),
+            (&["-c", "dbg"][..], "bazel-out/k8-dbg/bin"),
+            (&["-c", "opt"][..], "bazel-out/k8-opt/bin"),
             // Options without an output-path effect keep the mode's root:
             // the top-level configuration is its own baseline.
             (
                 &["--stamp", "--define=a=1"][..],
-                "bazel-out/rust-fastbuild/bin",
+                "bazel-out/k8-fastbuild/bin",
             ),
             (
                 &["--platforms=//p:x", "-c", "opt"][..],
-                "bazel-out/rust-opt/bin",
+                "bazel-out/k8-opt/bin",
             ),
         ] {
             let configurations = Configurations::new(parsed(args));
@@ -656,7 +658,7 @@ mod tests {
         );
         assert_eq!(
             configurations.mnemonic(configurations.top()),
-            "rust-fastbuild"
+            "k8-fastbuild"
         );
         // An exec configuration uses its platform's name as the CPU
         // descriptor and `platforms` is explicit (paired capture: Bazel's
@@ -698,7 +700,7 @@ mod tests {
                     &none,
                 )
                 .unwrap();
-            assert_eq!(configurations.mnemonic(id), "rust-opt-exec", "{name}");
+            assert_eq!(configurations.mnemonic(id), "k8-opt-exec", "{name}");
         }
         // A platform name with a separator is not a path component.
         assert_eq!(
@@ -730,13 +732,13 @@ mod tests {
         native.platform_suffix = Some("x");
         assert_eq!(
             mnemonic(&Configuration::new(native, BTreeMap::new()), &top),
-            Ok("rust-dbg-x".to_owned())
+            Ok("k8-dbg-x".to_owned())
         );
         // Other options (also Starlark settings) are hashed; equal diffs give
         // equal hashes, different values different hashes.
         let stamped = parsed(&["--stamp"]);
         let stamped_mnemonic = mnemonic(&stamped, &top).unwrap();
-        assert!(stamped_mnemonic.starts_with("rust-fastbuild-ST-"));
+        assert!(stamped_mnemonic.starts_with("k8-fastbuild-ST-"));
         assert_eq!(
             stamped_mnemonic,
             mnemonic(&parsed(&["--stamp=yes"]), &top).unwrap()
@@ -752,13 +754,13 @@ mod tests {
             )
         };
         let set = mnemonic(&flag(true), &top).unwrap();
-        assert!(set.starts_with("rust-fastbuild-ST-"));
+        assert!(set.starts_with("k8-fastbuild-ST-"));
         assert_ne!(set, mnemonic(&flag(false), &top).unwrap());
         // A setting removed relative to the baseline is hashed as `@null`.
         assert!(
             mnemonic(&top, &flag(true))
                 .unwrap()
-                .starts_with("rust-fastbuild-ST-")
+                .starts_with("k8-fastbuild-ST-")
         );
     }
 

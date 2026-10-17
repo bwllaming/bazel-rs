@@ -1675,7 +1675,7 @@ r = rule(implementation=impl, attrs={"mode": attr.string(), "out": attr.output()
             assert!(
                 !root
                     .path()
-                    .join("bazel-out/rust-fastbuild/bin/output")
+                    .join("bazel-out/k8-fastbuild/bin/output")
                     .exists()
             );
         }
@@ -2170,7 +2170,7 @@ r = rule(implementation=impl, attrs={
         let context = empty_context();
         let first = context.declare("dir/result").unwrap();
         assert_eq!(first, context.declare("dir/result").unwrap());
-        assert_eq!(first.path, "bazel-out/rust-fastbuild/bin/pkg/dir/result");
+        assert_eq!(first.path, "bazel-out/k8-fastbuild/bin/pkg/dir/result");
         assert_eq!(first.short_path, "pkg/dir/result");
         assert_eq!(first.owner, "//pkg:rule");
         assert!(!first.is_source);
@@ -2275,7 +2275,9 @@ ctx.actions.write(first, 'hello')
                     None,
                     None,
                     Vec::new(),
-                    BTreeMap::new()
+                    BTreeMap::new(),
+                    false,
+                    false
                 )
                 .is_err()
         );
@@ -2288,7 +2290,9 @@ ctx.actions.write(first, 'hello')
                     None,
                     None,
                     Vec::new(),
-                    BTreeMap::new()
+                    BTreeMap::new(),
+                    false,
+                    false
                 )
                 .is_err()
         );

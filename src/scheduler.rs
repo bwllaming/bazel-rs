@@ -340,7 +340,7 @@ mod tests {
                 arguments: Vec::new(),
                 environment: BTreeMap::new(),
                 shell_strict: true,
-                extra: Default::default(),
+                ..Default::default()
             },
             dependencies: vec![],
             deferred: None,
@@ -360,6 +360,7 @@ mod tests {
             outputs: action.outputs.clone(),
             cache_hit: false,
             trees: BTreeMap::new(),
+            remote_hit: false,
         })
     }
 
@@ -420,6 +421,7 @@ mod tests {
         consumer.action.command =
             "cat generated > out; printf '%s:%s' \"$1\" \"$VALUE\" >> out".into();
         consumer.action.arguments = vec!["literal $1".into()];
+        consumer.action.shell_pad = true;
         consumer
             .action
             .environment

@@ -172,6 +172,8 @@ impl Context {
         program: Option<String>,
         arguments: Vec<String>,
         environment: BTreeMap<String, String>,
+        shell_pad: bool,
+        executable_file: bool,
     ) -> anyhow::Result<()> {
         self.register_action(Registration {
             outputs,
@@ -182,6 +184,8 @@ impl Context {
             arguments,
             environment,
             extra: ActionExtra::default(),
+            shell_pad,
+            executable_file,
             deferred: None,
             exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
         })
@@ -197,6 +201,8 @@ impl Context {
             arguments,
             environment,
             mut extra,
+            shell_pad,
+            executable_file,
             deferred,
             exec_group,
         } = registration;
@@ -254,9 +260,12 @@ impl Context {
             write,
             program,
             shell_strict: false,
+            shell_pad,
+            executable_file,
             arguments,
             environment,
             extra,
+            ..Action::default()
         };
         // Validate with the inputs at their execution paths; the engine maps
         // them to artifacts (plan_action) and validates again.
@@ -293,6 +302,11 @@ pub(crate) struct Registration {
     pub arguments: Vec<String>,
     pub environment: BTreeMap<String, String>,
     pub extra: ActionExtra,
+    /// An empty `$0` before the shell's positional parameters
+    /// (crate::action::Action::shell_pad, N41).
+    pub shell_pad: bool,
+    /// `program` is a File's execution path (crate::action::Action::executable_file).
+    pub executable_file: bool,
     pub deferred: Option<Deferred>,
     /// The exec group (N35): `default-exec-group` unless run/run_shell chose
     /// one (crate::exec_groups::ActionExecGroups::determine).
@@ -548,6 +562,7 @@ struct SpawnOptions<'v> {
 
 /// Register a Starlark spawn: `executable` is Bazel's executable command-line
 /// part (for the parameter-file threshold), `program`/`command` the native spawn.
+#[allow(clippy::too_many_arguments)]
 fn register_spawn(
     context: &Context,
     options: SpawnOptions<'_>,
@@ -556,6 +571,7 @@ fn register_spawn(
     command: String,
     program: Option<String>,
     function: &str,
+    (shell_pad, executable_file): (bool, bool),
 ) -> anyhow::Result<()> {
     if let Some(manifests) = options.input_manifests
         && !manifests.is_none()
@@ -643,6 +659,8 @@ fn register_spawn(
             param_files,
             ..extra
         },
+        shell_pad,
+        executable_file,
         deferred,
         exec_group,
     })
@@ -767,6 +785,8 @@ fn action_methods(builder: &mut MethodsBuilder) {
                 None,
                 Vec::new(),
                 BTreeMap::new(),
+                false,
+                false,
             )?;
             return Ok(NoneType);
         }
@@ -812,6 +832,8 @@ fn action_methods(builder: &mut MethodsBuilder) {
             arguments: Vec::new(),
             environment: BTreeMap::new(),
             extra: ActionExtra::default(),
+            shell_pad: false,
+            executable_file: false,
             deferred,
             exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
         })?;
@@ -874,6 +896,7 @@ fn action_methods(builder: &mut MethodsBuilder) {
             command.to_owned(),
             None,
             "run_shell",
+            (pad, false),
         )?;
         Ok(NoneType)
     }
@@ -979,6 +1002,10 @@ fn direct_action_methods(builder: &mut MethodsBuilder) {
             groups.check_tool()?;
         }
         let mut extra_inputs = Vec::new();
+        // A File (or FilesToRunProvider) executable runs by its execution
+        // path from the execution root, argv[0] spelled like Bazel's
+        // (crate::action::Action::executable_file, N41).
+        let executable_file = executable.unpack_str().is_none();
         let (program, bazel_executable) = if let Some(program) = executable.unpack_str() {
             (program.to_owned(), program.to_owned())
         } else {
@@ -996,10 +1023,9 @@ fn direct_action_methods(builder: &mut MethodsBuilder) {
                     context.runfiles.check_action_file(&file, "executable")?;
                     file
                 };
-            let program = format!("./{}", file.path);
             let path = file.path.clone();
             extra_inputs.push(file);
-            (program, path)
+            (path.clone(), path)
         };
         register_spawn(
             context,
@@ -1020,6 +1046,7 @@ fn direct_action_methods(builder: &mut MethodsBuilder) {
             String::new(),
             Some(program),
             "run",
+            (false, executable_file),
         )?;
         Ok(NoneType)
     }
@@ -1096,6 +1123,8 @@ fn file_action_methods(builder: &mut MethodsBuilder) {
             },
             deferred: None,
             exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
+            shell_pad: false,
+            executable_file: false,
         })?;
         Ok(NoneType)
     }
@@ -1178,6 +1207,8 @@ fn file_action_methods(builder: &mut MethodsBuilder) {
             },
             deferred: None,
             exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
+            shell_pad: false,
+            executable_file: false,
         })?;
         Ok(NoneType)
     }
@@ -1265,6 +1296,8 @@ fn transform_build_info<'v>(
         },
         deferred: None,
         exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
+            shell_pad: false,
+            executable_file: false,
     })?;
     Ok(alloc_file(eval.heap(), output))
 }

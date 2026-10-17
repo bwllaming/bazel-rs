@@ -17,7 +17,7 @@ import sys
 import time
 
 Q = None
-OUTPUT = "bazel-out/rust-fastbuild/bin/consumed.json"
+OUTPUT = "bazel-out/k8-fastbuild/bin/consumed.json"  # rust-fastbuild before N41 closed D1
 CANONICAL_REPOSITORY = "+io+made"
 # N36 manifest format (src/action.rs MANIFEST_FORMAT); the action KEY framing
 # is still native-action-v5 and is not observable in the cache layout.

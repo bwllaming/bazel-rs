@@ -2201,11 +2201,11 @@ copies = [Label(main), Label(external)]
             let before = generated.clone();
             assert_eq!(
                 file_json_root(&generated).unwrap(),
-                "bazel-out/rust-fastbuild/bin"
+                "bazel-out/k8-fastbuild/bin"
             );
             assert_eq!(generated, before);
             // Every configuration's root (crate::config_registry).
-            let root = "bazel-out/rust-opt-exec-ST-0123456789ab/bin";
+            let root = "bazel-out/k8-opt-exec-ST-0123456789ab/bin";
             let exec = File {
                 is_directory: false,
                 path: output
@@ -2228,7 +2228,7 @@ copies = [Label(main), Label(external)]
                 true,
             ),
             (
-                "bazel-out/rust-fastbuild/bin/external/dep+/pkg/out",
+                "bazel-out/k8-fastbuild/bin/external/dep+/pkg/out",
                 "../dep+/pkg/out",
                 "@@dep+//pkg:rule",
                 false,
@@ -2249,25 +2249,20 @@ copies = [Label(main), Label(external)]
             ("pkg/café", "pkg/café", "//pkg:input", true),
             ("", "", "//:input", true),
             (
-                "bazel-out/rust-fastbuild/bin/pkg/out",
+                "bazel-out/k8-fastbuild/bin/pkg/out",
                 "pkg/out",
                 "//elsewhere:rule",
                 false,
             ),
             (
-                "bazel-out/rust-fastbuild/bin/pkg2/out",
+                "bazel-out/k8-fastbuild/bin/pkg2/out",
                 "pkg2/out",
                 "//pkg:rule",
                 false,
             ),
+            ("bazel-out/k8-fastbuild/bin/pkg", "pkg", "//pkg:rule", false),
             (
-                "bazel-out/rust-fastbuild/bin/pkg",
-                "pkg",
-                "//pkg:rule",
-                false,
-            ),
-            (
-                "bazel-out/rust-fastbuild/bin/pkg/out",
+                "bazel-out/k8-fastbuild/bin/pkg/out",
                 "pkg/other",
                 "//pkg:rule",
                 false,
@@ -2281,19 +2276,19 @@ copies = [Label(main), Label(external)]
             ("bazel-out/../bin/pkg/out", "pkg/out", "//pkg:rule", false),
             ("bazel-out//bin/pkg/out", "pkg/out", "//pkg:rule", false),
             (
-                "bazel-out/rust-fastbuild/bin2/pkg/out",
+                "bazel-out/k8-fastbuild/bin2/pkg/out",
                 "pkg/out",
                 "//pkg:rule",
                 false,
             ),
             (
-                "bazel-out/rust-fastbuild/bin//pkg/out",
+                "bazel-out/k8-fastbuild/bin//pkg/out",
                 "pkg/out",
                 "//pkg:rule",
                 false,
             ),
             (
-                "bazel-out/rust-fastbuild/bin/pkg/out",
+                "bazel-out/k8-fastbuild/bin/pkg/out",
                 "pkg/out",
                 "//pkg:out",
                 true,

@@ -12,6 +12,10 @@
 //! then TMPDIR. Nothing else from the caller's environment is inherited:
 //! otherwise secrets could leak and an unkeyed environment variable could
 //! silently change a cached result; the resolved inherited values are keyed.
+//! The executed environment is [`resolved_environment`] (with TMPDIR replaced
+//! last), the same map the remote cache key's `Command.environment_variables`
+//! is built from (N41, docs/REMOTE_CACHE.md), so a remote entry describes
+//! exactly the environment the action ran with.
 //! TMPDIR is always a fresh absolute directory, replacing any TMPDIR of the
 //! action environment (PosixLocalEnvProvider.rewriteLocalEnv,
 //! exec/local/PosixLocalEnvProvider.java:41-59, always replaces it too); its
@@ -52,15 +56,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
-// `native-action-v6` (N42): the native PATH/LANG/LC_ALL defaults are gone;
-// every process runs with exactly its Bazel action environment, framed as
-// the fixed map, the inherited names and their resolved client values
-// (ActionEnvironment.addTo plus ActionCacheChecker.computeEffectiveEnvironment).
-// N23d features (tree artifacts, parameter files, execution requirements,
-// transforms) are framed in an extra block. Hardlink staging (N36) changes
-// no key. Manifests record symlink outputs since N36, so their format is v7.
-const FORMAT: &str = "native-action-v6";
-const MANIFEST_FORMAT: &str = "native-action-v7";
+// `native-action-v8` (integration of N41 with N42, docs/ACTION_ENV.md and
+// docs/REMOTE_CACHE.md): Bazel's spawn argv (genrules source
+// genrule-setup.sh, which is a keyed input; run_shell's `$0` padding and a
+// File executable's argv[0] are framed) and the N42 action environment
+// (the fixed map, the inherited names and their resolved client values,
+// ActionEnvironment.addTo plus ActionCacheChecker.computeEffectiveEnvironment);
+// output roots are k8-* (D1 closed). N23d features (tree artifacts, parameter
+// files, execution requirements, transforms) are framed in an extra block.
+// Hardlink staging (N36) changes no key. Manifests (symlink outputs since
+// N36) move to v8 with the key, so v7 entries rebuild once.
+const FORMAT: &str = "native-action-v8";
+const MANIFEST_FORMAT: &str = "native-action-v8";
 /// The content-addressed store below the cache root.
 const CAS: &str = "cas";
 /// Read and copy buffer for streamed digests.
@@ -88,7 +95,7 @@ const LOG_TAIL_BYTES: usize = 64 * 1024;
 const SPAWN_RETRY_DELAYS_MS: [u64; 7] = [1, 2, 4, 8, 16, 32, 64];
 static NEXT_WORK: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Action {
     pub id: String,
     pub command: String,
@@ -103,10 +110,85 @@ pub struct Action {
     /// The fixed part of the action environment (a TMPDIR entry is keyed
     /// but replaced by the fresh temporary directory).
     pub environment: BTreeMap<String, String>,
-    /// Enable genrule-style errexit and pipefail; ignored for writes/direct runs.
+    /// Enable errexit and pipefail flags; ignored for writes/direct runs.
+    /// Genrules get these from Bazel's genrule-setup.sh instead (N41).
     pub shell_strict: bool,
     /// Starlark-action features (docs/ACTIONS_PARAMS.md).
     pub extra: ActionExtra,
+    /// Pass an empty `$0` before the shell's positional arguments
+    /// (StarlarkActionFactory.java:627-631: run_shell with `arguments`).
+    pub shell_pad: bool,
+    /// `program` is a File's execution path: it runs from the execution
+    /// root with that path as argv[0], as Bazel's spawn does.
+    pub executable_file: bool,
+    /// The rule tags that are execution requirements
+    /// (TargetUtils.getExecutionInfo); with the keys of
+    /// `extra.execution_info` they decide remote cacheability
+    /// (actions/Spawns.java:29-56). Not part of the native key.
+    pub execution_info: BTreeSet<String>,
+    /// Compiled-in inputs (execution path, bytes), stored as executable
+    /// content-addressed blobs and staged like every input
+    /// (crate::builtin_tools::GENRULE_SETUP).
+    pub embedded_inputs: Vec<(PathBuf, &'static [u8])>,
+    /// Why this spawn's remote cache key cannot equal Bazel's (e.g. execution
+    /// properties, which Bazel puts into a Platform message); such spawns
+    /// never use the remote cache.
+    pub remote_unsupported: Option<String>,
+}
+
+/// The process argv, exactly as Bazel's spawn has it
+/// (BashCommandConstructor.asExecArgv, SpawnAction.Builder.setShellCommand):
+/// the remote cache key's `Command.arguments` and the executed argv.
+pub fn arguments(action: &Action) -> Vec<String> {
+    let mut argv = Vec::new();
+    match &action.program {
+        Some(program) => argv.push(program.clone()),
+        None => {
+            argv.push(SHELL.to_owned());
+            if action.shell_strict {
+                argv.extend(SHELL_FLAGS.iter().map(|flag| (*flag).to_owned()));
+            } else {
+                argv.push("-c".to_owned());
+            }
+            argv.push(action.command.clone());
+            if action.shell_pad {
+                argv.push(String::new());
+            }
+        }
+    }
+    argv.extend(action.arguments.iter().cloned());
+    argv
+}
+
+/// Spawns.mayBeCachedRemotely and mayBeExecutedRemotely
+/// (actions/Spawns.java:34-56) over the rule tags and the action's
+/// execution requirements.
+pub fn remote_policy(action: &Action) -> (bool, bool) {
+    let has = |key: &str| {
+        action.execution_info.contains(key) || action.extra.execution_info.contains_key(key)
+    };
+    let cached = !has("no-cache") && !has("local") && !has("no-remote") && !has("no-remote-cache");
+    let executed = !has("local") && !has("no-remote") && !has("no-remote-exec");
+    (cached, executed)
+}
+
+/// The environment a process action runs with, before TMPDIR: the fixed
+/// values, then the resolved client values of the inherited names, which
+/// override fixed ones (ActionEnvironment.resolve, ActionEnvironment.java:
+/// 113-122). A declared TMPDIR stays in this map (Bazel keys it in
+/// `Command.environment_variables`); the executor replaces it last with the
+/// fresh temporary directory (PosixLocalEnvProvider.rewriteLocalEnv). The
+/// remote cache Command is built from this same map.
+pub fn resolved_environment(action: &Action) -> BTreeMap<String, std::ffi::OsString> {
+    let mut environment: BTreeMap<String, std::ffi::OsString> = action
+        .environment
+        .iter()
+        .map(|(name, value)| (name.clone(), value.into()))
+        .collect();
+    for (name, value) in &action.extra.client_environment {
+        environment.insert(name.clone(), value.clone());
+    }
+    environment
 }
 
 #[derive(Clone, Debug, Default)]
@@ -167,6 +249,8 @@ pub struct WriteAction {
 pub struct ActionResult {
     pub outputs: Vec<PathBuf>,
     pub cache_hit: bool,
+    /// Outputs came from the remote cache (crate::remote_cache).
+    pub remote_hit: bool,
     /// Declaration-order output index of each tree output: its regular files,
     /// relative to the tree root, in byte order (TreeArtifactValue children).
     pub trees: BTreeMap<usize, Vec<PathBuf>>,
@@ -608,6 +692,12 @@ fn namespace_may_overlap(action: &Action) -> bool {
         .inputs
         .iter()
         .map(|(_, destination)| destination.as_path())
+        .chain(
+            action
+                .embedded_inputs
+                .iter()
+                .map(|(destination, _)| destination.as_path()),
+        )
         .collect();
     let mut paths: Vec<&Path> = inputs.into_iter().collect();
     paths.extend(action.outputs.iter().map(PathBuf::as_path));
@@ -634,10 +724,17 @@ pub fn validate_structure(action: &Action) -> Result<(), String> {
                 .iter()
                 .any(|(_, name)| !action.extra.tree_inputs.contains(name))
             || !action.extra.param_files.is_empty()
+            || !action.embedded_inputs.is_empty()
             || action.extra.transform.is_some()
             || action.outputs.len() != 1)
     {
         return Err("write action requires exactly one output, no program, and empty command, arguments, environment, and inputs".into());
+    }
+    if action.extra.transform.is_some() && !action.embedded_inputs.is_empty() {
+        return Err("only process actions have embedded inputs".into());
+    }
+    if action.executable_file && action.program.is_none() {
+        return Err("an executable File requires a direct program".into());
     }
     if let Some(name) = action
         .extra
@@ -725,6 +822,7 @@ pub fn validate_structure(action: &Action) -> Result<(), String> {
         .inputs
         .iter()
         .map(|(_, destination)| destination)
+        .chain(action.embedded_inputs.iter().map(|(destination, _)| destination))
         .chain(&action.outputs)
         .chain(action.extra.param_files.iter().map(|(path, _)| path))
     {
@@ -735,7 +833,12 @@ pub fn validate_structure(action: &Action) -> Result<(), String> {
     }
     // Some paths overlap: find the first one in declaration order, quadratically.
     let mut input_names: Vec<PathBuf> = Vec::new();
-    for (_, destination) in &action.inputs {
+    for destination in action
+        .inputs
+        .iter()
+        .map(|(_, destination)| destination)
+        .chain(action.embedded_inputs.iter().map(|(destination, _)| destination))
+    {
         validate_relative(destination)?;
         if input_names
             .iter()
@@ -891,6 +994,7 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
         (None, Some(program), None) => {
             frame(&mut hash, b"direct");
             frame(&mut hash, program.as_bytes());
+            frame(&mut hash, &[u8::from(action.executable_file)]);
         }
         (None, None, None) => {
             frame(&mut hash, b"shell");
@@ -905,6 +1009,7 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
             for flag in flags {
                 frame(&mut hash, flag.as_bytes());
             }
+            frame(&mut hash, &[u8::from(action.shell_pad)]);
         }
     }
     frame(&mut hash, action.command.as_bytes());
@@ -1715,6 +1820,143 @@ fn run_transform(
 /// Input files are staged as read-only hardlinks to store blobs (0444 plus
 /// their executable bits); a process that changes one in place fails.
 pub fn execute(cache_root: &Path, action: &Action) -> Result<ActionResult, String> {
+    execute_with_remote(cache_root, action, crate::remote_cache::active())
+}
+
+/// The store blob of compiled-in `bytes` (mode 0444 plus `executable`),
+/// created on first use like [`ensure_blob`]'s verified copy.
+fn store_bytes(cas: &Path, bytes: &[u8], executable: u32) -> Result<PathBuf, String> {
+    let input = Input {
+        path: PathBuf::new(),
+        digest: digest(bytes),
+        size: bytes.len() as u64,
+        executable,
+        mode: 0o444 | executable,
+    };
+    let blob = blob_path(cas, &input);
+    if blob_valid(&blob, &input)? {
+        return Ok(blob);
+    }
+    let candidate = temporary(cas, &input.digest);
+    write_file(&candidate, bytes, 0)?;
+    set_mode(&candidate, blob_mode(&input))?;
+    let published = match fs::hard_link(&candidate, &blob) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            if blob_valid(&blob, &input)? {
+                Ok(())
+            } else {
+                fs::rename(&candidate, &blob).map_err(|e| io_error("cannot store", &blob, e))
+            }
+        }
+        Err(_) => fs::rename(&candidate, &blob).map_err(|e| io_error("cannot store", &blob, e)),
+    };
+    let _ = fs::remove_file(&candidate);
+    published.map(|()| blob)
+}
+
+/// `action` with its embedded inputs stored in the content-addressed store
+/// `cas` and turned into ordinary inputs of their blobs (N41's
+/// genrule-setup.sh, staged through N36's store like every input).
+fn with_embedded_inputs(action: &Action, cas: &Path) -> Result<Action, String> {
+    let mut action = action.clone();
+    for (destination, bytes) in std::mem::take(&mut action.embedded_inputs) {
+        let blob = store_bytes(cas, bytes, 0o111)?;
+        action.inputs.push((blob, destination));
+    }
+    Ok(action)
+}
+
+/// The REAPI action of a prepared process action
+/// (RemoteExecutionService.buildRemoteAction, crate::remote_cache): the argv,
+/// [`resolved_environment`], the input root (every regular input file at its
+/// execution path; tree inputs as their files, without empty
+/// subdirectories; parameter files at their paths, ParamFileActionInput)
+/// and the declared outputs.
+fn remote_action(
+    action: &Action,
+    prepared: &PreparedAction,
+) -> Result<crate::remote_cache::RemoteAction, String> {
+    use crate::remote_cache::path_string;
+    let file_digest = |input: &Input| crate::reapi::Digest {
+        hash: input.digest.clone(),
+        size: input.size,
+    };
+    let mut files = BTreeMap::new();
+    for (path, staged) in &prepared.inputs {
+        match staged {
+            Staged::File(input) => {
+                files.insert(path_string(path)?, file_digest(input));
+            }
+            Staged::Tree(tree) => {
+                for (name, input) in &tree.files {
+                    files.insert(path_string(&path.join(name))?, file_digest(input));
+                }
+            }
+        }
+    }
+    for (path, content) in &action.extra.param_files {
+        files.insert(path_string(path)?, crate::reapi::Digest::of(content));
+    }
+    let outputs = action
+        .outputs
+        .iter()
+        .map(|path| path_string(path))
+        .collect::<Result<Vec<_>, _>>()?;
+    let environment = resolved_environment(action)
+        .into_iter()
+        .map(|(name, value)| match value.into_string() {
+            Ok(value) => Ok((name, value)),
+            Err(_) => Err(format!(
+                "non-UTF-8 value of {name} cannot enter a remote cache key"
+            )),
+        })
+        .collect::<Result<BTreeMap<_, _>, String>>()?;
+    crate::remote_cache::remote_action(
+        arguments(action),
+        &environment,
+        &files,
+        &outputs,
+        remote_policy(action).1,
+    )
+}
+
+fn replay_logs(id: &str, stdout: &str, stderr: &str) {
+    if !stdout.is_empty() || !stderr.is_empty() {
+        eprintln!("action '{id}' logs:\nstdout:\n{stdout}\nstderr:\n{stderr}");
+    }
+}
+
+/// [`execute`] with an explicit remote cache (RemoteSpawnCache.lookup/store,
+/// remote/RemoteSpawnCache.java:85-305): after the native cache, process
+/// actions consult the remote cache (`--remote_accept_cached`) and upload a
+/// successful local execution (`--remote_upload_local_results`). Writes and
+/// native transforms never use it (FileWriteAction is not a spawn). A hit's
+/// outputs are written into the execution root and published through the
+/// content-addressed store like executed outputs. Credential helper failures
+/// fail the action; other cache failures are warnings and the action runs
+/// locally.
+pub fn execute_with_remote(
+    cache_root: &Path,
+    action: &Action,
+    remote: Option<&crate::remote_cache::RemoteCache>,
+) -> Result<ActionResult, String> {
+    let embedded;
+    let action = if action.embedded_inputs.is_empty() {
+        action
+    } else {
+        // Compiled-in inputs live in the store: validate first, then create
+        // the cache to store them.
+        validate_structure(action)?;
+        fs::create_dir_all(cache_root)
+            .map_err(|e| io_error("cannot create cache", cache_root, e))?;
+        let root = fs::canonicalize(cache_root)
+            .map_err(|e| io_error("cannot resolve cache", cache_root, e))?;
+        let cas = root.join(CAS);
+        ensure_directory(&cas)?;
+        embedded = with_embedded_inputs(action, &cas)?;
+        &embedded
+    };
     let existing = fs::canonicalize(cache_root).ok();
     let prepared = prepare(action, existing.as_deref())?;
     let (inputs, outputs, key) = (&prepared.inputs, &prepared.outputs, &prepared.key);
@@ -1749,13 +1991,14 @@ pub fn execute(cache_root: &Path, action: &Action) -> Result<ActionResult, Strin
     FileExt::lock_exclusive(&lock).map_err(|e| io_error("cannot lock", &lock_path, e))?;
     // File drop releases the advisory lock on every success/error path.
     let cached = actions.join(key);
-    let result = |listings: BTreeMap<PathBuf, Vec<PathBuf>>, cache_hit: bool| ActionResult {
+    let result = |listings: BTreeMap<PathBuf, Vec<PathBuf>>, cache_hit: bool, remote_hit: bool| ActionResult {
         outputs: action
             .outputs
             .iter()
             .map(|p| cached.join("outputs").join(p))
             .collect(),
         cache_hit,
+        remote_hit,
         trees: action
             .outputs
             .iter()
@@ -1764,7 +2007,7 @@ pub fn execute(cache_root: &Path, action: &Action) -> Result<ActionResult, Strin
             .collect(),
     };
     if let Some(listings) = cache_valid(&cached, key, outputs, &action.extra.tree_outputs, &root) {
-        return Ok(result(listings, true));
+        return Ok(result(listings, true, false));
     }
     remove_stale(&cached)?;
     let work = fresh_work(&work_parent, key)?;
@@ -1773,9 +2016,74 @@ pub fn execute(cache_root: &Path, action: &Action) -> Result<ActionResult, Strin
     ensure_directory(&execroot)?;
     ensure_directory(&tmp)?;
     let process = action.write.is_none() && action.extra.transform.is_none();
+    // The remote cache applies to cacheable process actions only
+    // (RemoteSpawnCache.java:85-92).
+    let remote = remote
+        .filter(|_| process && remote_policy(action).0)
+        .filter(|remote| remote.accept_cached || remote.upload_local_results);
+    // Tree artifact outputs need ActionResult.output_directories, which the
+    // native remote cache does not model: such spawns stay local.
+    let tree_reason;
+    let unsupported = match (&action.remote_unsupported, action.extra.tree_outputs.first()) {
+        (Some(reason), _) => Some(reason.as_str()),
+        (None, Some(tree)) => {
+            tree_reason = format!(
+                "{} (tree artifact output {}; output_directories are not modelled)",
+                action.id,
+                tree.display()
+            );
+            Some(tree_reason.as_str())
+        }
+        (None, None) => None,
+    };
+    let remote = match (remote, unsupported) {
+        (Some(_), Some(reason)) => {
+            crate::remote_cache::warn(&crate::remote_cache::CacheError::Other(format!(
+                "not used for {reason}"
+            )));
+            None
+        }
+        (remote, _) => remote,
+    };
+    let remote_spec = match remote {
+        Some(_) => match remote_action(action, &prepared) {
+            Ok(spec) => Some(spec),
+            Err(reason) => {
+                crate::remote_cache::warn(&crate::remote_cache::CacheError::Other(format!(
+                    "not used for {}: {reason}",
+                    action.id
+                )));
+                None
+            }
+        },
+        None => None,
+    };
+    let remote = remote.filter(|_| remote_spec.is_some());
+    let mut remote_hit = None;
+    if let (Some(remote), Some(spec)) = (remote, &remote_spec)
+        && remote.accept_cached
+    {
+        let declared = action
+            .outputs
+            .iter()
+            .map(|path| crate::remote_cache::path_string(path))
+            .collect::<Result<Vec<_>, _>>()?;
+        match remote.lookup(spec, &declared) {
+            Ok(hit) => remote_hit = hit,
+            Err(crate::remote_cache::CacheError::Credentials(error)) => {
+                // Utils.createExecExceptionForCredentialHelperException
+                // (remote/util/Utils.java:637-648) and its cause.
+                return Err(format!(
+                    "Exec failed due to CredentialHelperException: {error}"
+                ));
+            }
+            Err(error) => crate::remote_cache::warn(&error),
+        }
+    }
     // Only a process reads its inputs through the execution root; native
-    // writes and transforms read the verified input files directly.
-    let staged = if process {
+    // writes and transforms read the verified input files directly, and a
+    // remote hit runs nothing.
+    let staged = if process && remote_hit.is_none() {
         stage_inputs(&cas, &root, inputs, &execroot)?
     } else {
         Vec::new()
@@ -1792,6 +2100,9 @@ pub fn execute(cache_root: &Path, action: &Action) -> Result<ActionResult, Strin
             ensure_directory(&execroot.join(name))?;
         }
     }
+    let started = SystemTime::now();
+    let clock = std::time::Instant::now();
+    let mut logs = (Vec::new(), Vec::new());
     if let Some(write) = &action.write {
         write_file(
             &execroot.join(&outputs[0]),
@@ -1800,32 +2111,36 @@ pub fn execute(cache_root: &Path, action: &Action) -> Result<ActionResult, Strin
         )?;
     } else if let Some(transform) = &action.extra.transform {
         run_transform(action, transform, &prepared, &execroot)?;
+    } else if let Some(hit) = &remote_hit {
+        // The downloaded (verified) outputs take the place of the process's;
+        // they are published below like executed outputs.
+        for (name, bytes) in action.outputs.iter().zip(&hit.outputs) {
+            write_file(&execroot.join(name), bytes, 0o111)?;
+        }
+        replay_logs(
+            &action.id,
+            &String::from_utf8_lossy(&hit.stdout),
+            &String::from_utf8_lossy(&hit.stderr),
+        );
     } else {
         let mut stdout = create_log(&work.0.join("stdout.log"))?;
         let mut stderr = create_log(&work.0.join("stderr.log"))?;
-        let mut command = if let Some(program) = &action.program {
-            let mut command = Command::new(program);
-            command.args(&action.arguments);
+        let argv = arguments(action);
+        let mut command = if action.executable_file && !argv[0].starts_with('/') {
+            // Bazel runs a File executable by its execution path, relative
+            // to the execution root; argv[0] keeps that spelling.
+            use std::os::unix::process::CommandExt;
+            let mut command = Command::new(execroot.join(&argv[0]));
+            command.arg0(&argv[0]);
             command
         } else {
-            let mut command = Command::new(SHELL);
-            if action.shell_strict {
-                command.args(SHELL_FLAGS);
-            } else {
-                command.arg("-c");
-            }
-            command.arg(&action.command).arg("").args(&action.arguments);
-            command
+            Command::new(&argv[0])
         };
-        command.current_dir(&execroot).env_clear();
-        // ActionEnvironment.resolve (ActionEnvironment.java:113-122): fixed,
-        // then inherited values; then PosixLocalEnvProvider's TMPDIR.
-        for (name, value) in &action.environment {
-            command.env(name, value);
-        }
-        for (name, value) in &action.extra.client_environment {
-            command.env(name, value);
-        }
+        command.args(&argv[1..]).current_dir(&execroot).env_clear();
+        // Exactly resolved_environment (ActionEnvironment.resolve,
+        // ActionEnvironment.java:113-122), the remote key's environment;
+        // then PosixLocalEnvProvider's TMPDIR, last.
+        command.envs(resolved_environment(action));
         command
             .env("TMPDIR", &tmp)
             .stdin(Stdio::null())
@@ -1836,6 +2151,14 @@ pub fn execute(cache_root: &Path, action: &Action) -> Result<ActionResult, Strin
         let status = child
             .wait()
             .map_err(|e| format!("cannot wait for action '{}': {e}", action.id))?;
+        if remote_spec.is_some() {
+            logs = (
+                fs::read(work.0.join("stdout.log"))
+                    .map_err(|e| format!("cannot read action stdout: {e}"))?,
+                fs::read(work.0.join("stderr.log"))
+                    .map_err(|e| format!("cannot read action stderr: {e}"))?,
+            );
+        }
         let stdout =
             log_tail(&mut stdout).map_err(|e| format!("cannot read action stdout: {e}"))?;
         let stderr =
@@ -1847,13 +2170,9 @@ pub fn execute(cache_root: &Path, action: &Action) -> Result<ActionResult, Strin
                 action.id, status, stdout, stderr
             ));
         }
-        if !stdout.is_empty() || !stderr.is_empty() {
-            eprintln!(
-                "action '{}' logs:\nstdout:\n{}\nstderr:\n{}",
-                action.id, stdout, stderr
-            );
-        }
+        replay_logs(&action.id, &stdout, &stderr);
     }
+    let wall = clock.elapsed();
     // Publish every output into the completed directory by link or rename,
     // never by copying contents; the manifest describes exactly what is
     // published.
@@ -1946,7 +2265,30 @@ pub fn execute(cache_root: &Path, action: &Action) -> Result<ActionResult, Strin
     // Same-filesystem rename publishes all declared files and the manifest at
     // once. Crash durability is not promised; damaged entries rebuild on use.
     fs::rename(&completed, &cached).map_err(|e| io_error("cannot publish action", &cached, e))?;
-    Ok(result(listings, false))
+    if remote_hit.is_some() {
+        return Ok(result(listings, false, true));
+    }
+    if let (Some(remote), Some(spec)) = (remote, &remote_spec)
+        && remote.upload_local_results
+    {
+        let uploads = action
+            .outputs
+            .iter()
+            .map(|name| {
+                let path = cached.join("outputs").join(name);
+                Ok((
+                    crate::remote_cache::path_string(name)?,
+                    fs::read(&path).map_err(|e| io_error("cannot read output", &path, e))?,
+                ))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        // RemoteExecutionService.reportUploadError: every upload failure,
+        // credential helper failures included, is a warning.
+        if let Err(error) = remote.upload(spec, &uploads, &logs.0, &logs.1, started, wall) {
+            crate::remote_cache::warn(&error);
+        }
+    }
+    Ok(result(listings, false, false))
 }
 
 #[cfg(test)]

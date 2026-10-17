@@ -180,11 +180,12 @@ visible to Starlark; skylib's `BuildSettingInfo` remains its own Starlark
 provider. `ctx.build_setting_value` is the configured value: the command-line
 value, else `build_setting_default` (`analysis/starlark/StarlarkRuleContext.java:738-757`).
 
-**Output paths.** Generated files live under `bazel-out/rust-<compilation_mode>/bin`
-(Bazel's `<cpu>-<mode>` mnemonic, e.g. `k8-fastbuild`, with the native
-profile's fixed `rust` part — a documented divergence). The default
-configuration keeps `bazel-out/rust-fastbuild/bin`, so existing artifact paths,
-action keys and caches are unchanged; options without an output-path effect
+**Output paths.** Generated files live under `bazel-out/k8-<compilation_mode>/bin`,
+Bazel's `<cpu>-<mode>` mnemonic on this Linux x86-64 host (`k8-fastbuild` by
+default). Until N41 the native profile wrote a fixed `rust` CPU part
+(divergence D1, `rust-fastbuild`); N41 closed it because output paths are
+part of every remote cache key (docs/REMOTE_CACHE.md), which rekeyed the
+native action cache once. Options without an output-path effect
 (`--stamp`, `--define`, Starlark settings, ...) reuse the same action keys
 unless a resolved attribute changes an action. Bazel adds no `-ST-` suffix
 for them either: the default `diff_against_dynamic_baseline` naming
@@ -209,8 +210,8 @@ Code: `src/config_registry.rs`, `src/engine.rs`, `src/analysis.rs`,
 * **Mnemonics** (`OutputPathMnemonicComputer.computeMnemonic`,
   `analysis/config/OutputPathMnemonicComputer.java:174-245`):
   `{cpu}-{compilation_mode}[-{platform_suffix}][-ST-{12 hex}]`. The CPU
-  descriptor of target configurations is `rust`, standing for Bazel's
-  `--cpu` (`k8`; divergence D1, which keeps `rust-fastbuild`); exec
+  descriptor of target configurations is Bazel's `--cpu`, `k8`
+  (`CoreOptions.java:279-282`, `AutoCpuConverter.java:52`; D1 closed in N41); exec
   configurations use their platform (below). `compilation_mode` and
   `platform_suffix` are explicit in the path, every other option (native or
   Starlark) that differs from the baseline — the top-level configuration — enters the
@@ -218,8 +219,8 @@ Code: `src/config_registry.rs`, `src/engine.rs`, `src/analysis.rs`,
   `//command_line_option:NAME=VALUE` / `LABEL=VALUE` / `LABEL@null`
   strings, each framed like `Fingerprint.addString`, SHA-256, 12 hex digits).
   The top-level configuration is its own baseline, so its root stays
-  `bazel-out/rust-fastbuild/bin` (default), `bazel-out/rust-dbg/bin` or
-  `bazel-out/rust-opt/bin`. Exec configurations use the exec baseline (the
+  `bazel-out/k8-fastbuild/bin` (default), `bazel-out/k8-dbg/bin` or
+  `bazel-out/k8-opt/bin`. Exec configurations use the exec baseline (the
   exec transition section below). **Divergence:** the native `ST-` hash
   follows Bazel's algorithm over the native option set, names and value
   strings only; Bazel's hashes every differing Bazel option (and Java
@@ -388,8 +389,8 @@ platform. Paired capture: `--host_platform=//p:linux` (also through the
 alias `//p:linux_alias`) gives `linux-opt-exec` on both sides, `//p:mac`
 `mac-opt-exec`, `--host_compilation_mode=dbg` `linux-dbg-exec`; the default
 host platform (`@@platforms//host:host`, a default name) and
-`--host_platform=@platforms//host` give Bazel's `k8-opt-exec` and the
-native `rust-opt-exec` — no `ST-` hash. A platform name with `/` is Bazel's
+`--host_platform=@platforms//host` give `k8-opt-exec` on both sides (the
+native `rust-opt-exec` before N41) — no `ST-` hash. A platform name with `/` is Bazel's
 InvalidMnemonicException `CPU/Platform descriptor 'D' is invalid as part of a
 path: must not contain /` (`OutputPathMnemonicComputer.java:55-61`,
 `vfs/PathFragment.java:948-957`), reported at the parent rule. Like Bazel,
@@ -399,10 +400,9 @@ platform), so its outputs cannot collide, and action cache keys differ by
 the configuration (`LABEL[CONFIG8]`).
 
 **Remaining exec divergences (paired capture, tests/fixtures/exec_transition/reference_receipt.json):**
-the CPU token `rust` where Bazel writes `k8` (D1, also in `ctx.bin_dir`,
-`ctx.genfiles_dir` and `ctx.var`, docs/CTX_SURFACE.md); `File.root` is
-absent (an interpreter unknown-field error, with Bazel's
-`'T' value has no field or method 'x'` text since N33); the CLI lists source
+`File.root` is absent (an interpreter unknown-field error, with Bazel's
+`'T' value has no field or method 'x'` text since N33; the CPU token is
+Bazel's `k8` since N41, D1 closed, docs/REMOTE_CACHE.md); the CLI lists source
 files among a target's outputs
 where Bazel's `--show_result` omits them; action reuse after another
 configuration's build: Bazel's output tree is path-keyed, so an action whose
@@ -437,10 +437,11 @@ without exec edges.
 ### Remaining observable differences (genuine capture run 4)
 
 - `$(locations)` sorts paths as strings, as Bazel does (`LocationExpander.java:333-342`).
-  Because native target roots are named `rust-<mode>` where Bazel uses `k8-<mode>`, a
+  Native target roots were named `rust-<mode>` where Bazel uses `k8-<mode>`, so a
   label present in both the target and an exec configuration with a platform-named exec
-  root (for example `linux-opt-exec`) lists the two paths in the opposite order from
-  Bazel (receipt row `B1/exec_probes/gboth`). The set of paths is the same.
+  root (for example `linux-opt-exec`) listed the two paths in the opposite order from
+  Bazel (receipt row `B1/exec_probes/gboth`). N41 closed D1: the roots, and thus the
+  order, are now Bazel's.
 - Errors raised while evaluating a `.bzl` file (for example the
   `--incompatible_disable_starlark_host_transitions` rejection of `cfg = "host"`) carry
   the same final message but use the native interpreter's traceback layout rather than
@@ -1153,7 +1154,7 @@ receipt), and the rest are listed below or are explicit N16b/N16c failures
 (toolchain resolution, non-default platforms, `flag_values`). Remaining
 documented divergences:
 
-* Generated paths `bazel-out/rust-<mode>/bin` versus `k8-<mode>`.
+* Generated paths `bazel-out/rust-<mode>/bin` versus `k8-<mode>` (closed by N41).
 * The configuration identifier in no-match errors is the native SHA-256, not
   Bazel's BuildOptions checksum.
 * `dict | select(...)` (dict on the left) and Starlark binary-operator error

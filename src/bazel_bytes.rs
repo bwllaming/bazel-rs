@@ -149,7 +149,7 @@ mod tests {
             arguments: vec!["x".into()],
             environment: [("K".to_owned(), "v".to_owned())].into(),
             shell_strict: true,
-            extra: Default::default(),
+            ..Default::default()
         };
         assert!(matches!(platform_action(&action), Cow::Borrowed(_)));
         let mut bytes = action.clone();

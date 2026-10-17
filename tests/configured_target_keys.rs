@@ -178,6 +178,11 @@ consume(name = "c", deps = [":gen", ":u"])
     ),
 ];
 
+// The pinned native action keys. N41 rekeyed them once (docs/REMOTE_CACHE.md):
+// D1 is closed (`k8-*` output roots), genrules run Bazel's argv
+// (`source .../genrule-setup.sh; CMD`, PATH env, the setup script input)
+// and the native cache format is native-action-v7 (spawns run with exactly
+// their keyed environment).
 #[test]
 fn action_keys_and_output_roots_match_the_pre_n18a_binary() {
     let ws = Workspace::new(FIXTURE);
@@ -204,9 +209,9 @@ fn action_keys_and_output_roots_match_the_pre_n18a_binary() {
     assert_eq!(
         ws.outputs("default-cache", &cold),
         [
-            "//g:c\tACTIONS/c60fb2f4e69892a8f78fcb7eaf25d3a6d7e8323d1c8707b64ce36aee86c1b603/outputs/bazel-out/rust-fastbuild/bin/g/c.txt",
-            "//g:final\tACTIONS/3b01a9dccd47ae94f0a3b4a51470379aea2a3346ac59d7fd4ada7d8b4d6c30ff/outputs/bazel-out/rust-fastbuild/bin/g/final.txt",
-            "//g:u\tACTIONS/6058b04e540df1675767c990713b5507bf005b4b999e8cce492c8127195704f2/outputs/bazel-out/rust-fastbuild/bin/g/u.txt",
+            "//g:c\tACTIONS/c60fb2f4e69892a8f78fcb7eaf25d3a6d7e8323d1c8707b64ce36aee86c1b603/outputs/bazel-out/k8-fastbuild/bin/g/c.txt",
+            "//g:final\tACTIONS/3b01a9dccd47ae94f0a3b4a51470379aea2a3346ac59d7fd4ada7d8b4d6c30ff/outputs/bazel-out/k8-fastbuild/bin/g/final.txt",
+            "//g:u\tACTIONS/6058b04e540df1675767c990713b5507bf005b4b999e8cce492c8127195704f2/outputs/bazel-out/k8-fastbuild/bin/g/u.txt",
         ]
     );
     assert!(summary(&cold).contains("6 actions executed, 0 cache hits"));
@@ -218,11 +223,11 @@ fn action_keys_and_output_roots_match_the_pre_n18a_binary() {
                 path.ends_with("3b01a9dccd47ae94f0a3b4a51470379aea2a3346ac59d7fd4ada7d8b4d6c30ff")
             })
             .unwrap()
-            .join("outputs/bazel-out/rust-fastbuild/bin/g/final.txt"),
+            .join("outputs/bazel-out/k8-fastbuild/bin/g/final.txt"),
     )
     .unwrap();
-    assert!(final_txt.starts_with(r#"{"a":{"path":"bazel-out/rust-fastbuild/bin/g/gen.a.txt","root":"bazel-out/rust-fastbuild/bin","short_path":"g/gen.a.txt"}"#), "{final_txt}");
-    assert!(final_txt.ends_with("bazel-out/rust-fastbuild/bin/g/b.txt bazel-out/rust-fastbuild/bin/g/gen.a.txt bazel-out/rust-fastbuild/bin/g\n"), "{final_txt}");
+    assert!(final_txt.starts_with(r#"{"a":{"path":"bazel-out/k8-fastbuild/bin/g/gen.a.txt","root":"bazel-out/k8-fastbuild/bin","short_path":"g/gen.a.txt"}"#), "{final_txt}");
+    assert!(final_txt.ends_with("bazel-out/k8-fastbuild/bin/g/b.txt bazel-out/k8-fastbuild/bin/g/gen.a.txt bazel-out/k8-fastbuild/bin/g\n"), "{final_txt}");
     // A warm build hits every key.
     let warm = ws.build("default-cache", &targets);
     assert!(summary(&warm).contains("0 actions executed, 6 cache hits"));
@@ -251,8 +256,8 @@ fn action_keys_and_output_roots_match_the_pre_n18a_binary() {
     assert_eq!(
         ws.outputs("dbg-cache", &dbg),
         [
-            "//g:c\tACTIONS/4aaeadae82d4dab8603e1e7d8422c295e009f88559bae16dedb1a1b462a87acb/outputs/bazel-out/rust-dbg/bin/g/c.txt",
-            "//g:final\tACTIONS/ccebf87fccbd15f4612ed44d0df3f11c5f4959acc0640b70fee04bb3ac8ded5e/outputs/bazel-out/rust-dbg/bin/g/final.txt",
+            "//g:c\tACTIONS/4aaeadae82d4dab8603e1e7d8422c295e009f88559bae16dedb1a1b462a87acb/outputs/bazel-out/k8-dbg/bin/g/c.txt",
+            "//g:final\tACTIONS/ccebf87fccbd15f4612ed44d0df3f11c5f4959acc0640b70fee04bb3ac8ded5e/outputs/bazel-out/k8-dbg/bin/g/final.txt",
         ]
     );
 }

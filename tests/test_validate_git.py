@@ -493,7 +493,7 @@ class MainTests(unittest.TestCase):
                             tree.unlink()
                         tree.symlink_to(publication, target_is_directory=True)
                     paths = ([tree / filename for filename in expected] if source else
-                             [base / 'bazel-out/rust-fastbuild/bin/external' / (gitcheck.DEP + '+') / 'copy.txt'])
+                             [base / 'bazel-out/k8-fastbuild/bin/external' / (gitcheck.DEP + '+') / 'copy.txt'])
                     for path in paths:
                         path.parent.mkdir(parents=True, exist_ok=True)
                         path.write_bytes(expected[path.name] if source else expected['data'])
@@ -680,7 +680,7 @@ class MainTests(unittest.TestCase):
                     (tree / filename).write_bytes(contents)
                 if name.endswith('.sources'):
                     return record(''.join('@@opencode_gitcheck_dep+//:sources\t' + str(tree / filename) + '\n' for filename in expected))
-                out = root / 'bazel-out/rust-fastbuild/bin/external/opencode_gitcheck_dep+/copy.txt'
+                out = root / 'bazel-out/k8-fastbuild/bin/external/opencode_gitcheck_dep+/copy.txt'
                 out.parent.mkdir(parents=True)
                 out.write_bytes(expected['data'])
                 return record('@@opencode_gitcheck_dep+//:copy\t' + str(out) + '\n')
