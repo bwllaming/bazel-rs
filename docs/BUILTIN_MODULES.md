@@ -19,8 +19,8 @@ Selecting this profile does not implement `--include_builtin` presentation.
 Only `bazel_tools` is implicitly injected. Its empty-version dependency is
 appended after user declarations in every evaluated MODULE except the actual
 `bazel_tools` discovery key. A root merely declaring that name is not exempt.
-The name is reserved while the MODULE recorder still retains collisions,
-including aliases of ignored dev dependencies. The implicit dependency survives
+The name is reserved in both profiles, including aliases of ignored dev
+dependencies (see below). The implicit dependency survives
 `--ignore_dev_dependency`.
 
 Declared dependencies and original source bytes remain separate from implicit
@@ -30,6 +30,51 @@ not `bazel_tools+`. Other dependencies of its genuine MODULE participate in norm
 discovery, nodep processing and version selection; they are not made universally
 visible to other modules. In particular, `platforms`, `rules_java` and `rules_cc`
 are not independently injected.
+
+## `@bazel_tools` in the default explicit-module profile (N51)
+
+Bazel adds the built-in dependency to every module but `bazel_tools` itself
+(`bzlmod/ModuleThreadContext.java:383-401`), so every module's mapping
+(`Module.getRepoMappingWithBazelDepsOnly`, `Module.java:49-67`) has
+`bazel_tools -> @@bazel_tools` (`ModuleKey.java:45-55`).
+`BazelDepGraphFunction` (`:97-137`) resolves every module's extension labels
+with that mapping. The default profile now adds the same mapping entry to the
+root and to every selected module. It does not discover the built-in MODULE or
+its closure (`buildozer`, `rules_license`, ...), and it does not materialize any
+contents:
+
+- A non-root `use_extension("@bazel_tools//...")` or
+  `use_repo_rule("@bazel_tools//...")` resolves in the extension usage table in
+  both lockfile paths. Examples are rules_jvm_external 6.7's
+  `remote_android_tools_extensions` and `http_file`. The extension is evaluated
+  only on demand, and its repository rule is loaded only on demand.
+- `Label("@bazel_tools//x")` in root and non-root `.bzl` files is
+  `@@bazel_tools//x:x` with `repo_name` `bazel_tools`.
+- Demanding the repository fails explicitly:
+  `cannot load '@@bazel_tools//...': the built-in repository @@bazel_tools is
+  visible to every module but has no contents in this module profile; use
+  --experimental-builtin-modules`.
+- With `--lockfile_mode=update`, `registryFileHashes` is a subset of Bazel's.
+  The undiscovered built-in closure is missing.
+- In every profile, a module may not use the name itself. This covers a
+  `bazel_dep` repo name (dev or not), `use_repo` (positional or keyword),
+  `module(name=...)`, `module(repo_name=...)` and a repository rule. Native
+  fails with Bazel's text (`ModuleThreadContext.java:115-125,383-401`):
+  `The repo name 'bazel_tools' cannot be defined as a built-in dependency at
+  <builtin> as it is already defined by a bazel_dep at <file>:<line>:<col>,
+  'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep'
+  or 'use_repo' directive`.
+  - The location is the call's left parenthesis.
+  - The file is the absolute root `MODULE.bazel`, the registry URL, or
+    `@@<name>+//:MODULE.bazel` for non-registry overrides
+    (`ModuleFileFunction.java:752-777`).
+  - Profile-free recording (`bzlmod::evaluate*`) still permits the name.
+
+Evidence comes from a paired capture against genuine Bazel 9.3.0, plus a
+follow-up check: `tests/fixtures/eager_resolution_mapping/reference_receipt.json`. With the
+built-in profile, all 6 steps match exactly. In the default profile, the
+outputs of 4 steps match exactly. The lockfile is a subset, and the `.bzl` load
+from `@bazel_tools` fails explicitly.
 
 ## Complete static resources, native extraction
 

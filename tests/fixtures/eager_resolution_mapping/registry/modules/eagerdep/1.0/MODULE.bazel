@@ -1,0 +1,14 @@
+module(name = "eagerdep", version = "1.0")
+
+# The non-root usages of rules_jvm_external 6.7: an extension and a repository
+# rule named through the implicit @bazel_tools dependency, never demanded here.
+remote_android_extensions = use_extension("@bazel_tools//tools/android:android_extensions.bzl", "remote_android_tools_extensions")
+use_repo(remote_android_extensions, "android_gmaven_r8", "android_tools")
+
+http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+
+http_file(
+    name = "eagerdep_never_fetched",
+    sha256 = "0000000000000000000000000000000000000000000000000000000000000000",
+    urls = ["https://example.invalid/eagerdep/never"],
+)

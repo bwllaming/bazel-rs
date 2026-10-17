@@ -1,0 +1,8 @@
+module(name = "eager_root", version = "0.1")
+
+bazel_dep(name = "eagerdep", version = "1.0")
+bazel_dep(name = "localdep", version = "1.0")
+local_path_override(
+    module_name = "localdep",
+    path = "../localdep",
+)

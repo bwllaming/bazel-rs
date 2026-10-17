@@ -35,7 +35,13 @@ pub enum BuiltinProfile {
 impl BuiltinProfile {
     fn injection(self, key: &Key) -> BuiltinInjection {
         match (self, key) {
-            (Self::ExplicitModules, _) => BuiltinInjection::Disabled,
+            // The built-in name is reserved in every module but bazel_tools
+            // itself (ModuleThreadContext.buildModule, :383-401); this profile
+            // just never records the implicit dependency edge.
+            (Self::ExplicitModules, Key::Module { name, .. }) if name == "bazel_tools" => {
+                BuiltinInjection::Disabled
+            }
+            (Self::ExplicitModules, _) => BuiltinInjection::ReserveBazelTools,
             (Self::Bazel93Builtins, Key::Module { name, .. }) if name == "bazel_tools" => {
                 BuiltinInjection::ActualBazelTools
             }
@@ -441,11 +447,23 @@ pub(crate) fn resolve_from_root_snapshot(
                 canonical_name,
                 module: node.module.clone(),
                 source,
-                mapping: mapping(key, &nodes, &selected, &canonical_names)?,
+                mapping: mapping(
+                    key,
+                    &nodes,
+                    &selected,
+                    &canonical_names,
+                    options.builtin_profile,
+                )?,
             },
         );
     }
-    let root_mapping = mapping(&Key::Root, &nodes, &selected, &canonical_names)?;
+    let root_mapping = mapping(
+        &Key::Root,
+        &nodes,
+        &selected,
+        &canonical_names,
+        options.builtin_profile,
+    )?;
     let graph = ResolvedGraph {
         root: root.clone(),
         modules,
@@ -583,14 +601,15 @@ fn check_selected_registry_modules(
     }
     if let Some(session) = access.session() {
         // The extension usage table (BazelDepGraphFunction.java:97-137)
-        // prunes preserved extension sections before writing.
+        // prunes preserved extension sections before writing. Like Bazel's
+        // getExtensionUsagesById, a failure fails the command (with the same
+        // error the lazy catalog reports); it never silently skips the write.
         let usages = if session.mode().writes() {
-            crate::repository_catalog::build(graph, options.ignore_dev_dependencies)
-                .ok()
-                .map(|catalog| crate::registry_session::ExtensionUsages {
-                    ids: catalog.usage_extension_ids,
-                    isolated_prefixes: catalog.isolated_usage_id_prefixes,
-                })
+            let catalog = crate::repository_catalog::build(graph, options.ignore_dev_dependencies)?;
+            Some(crate::registry_session::ExtensionUsages {
+                ids: catalog.usage_extension_ids,
+                isolated_prefixes: catalog.isolated_usage_id_prefixes,
+            })
         } else {
             None
         };
@@ -600,6 +619,19 @@ fn check_selected_registry_modules(
         });
     }
     Ok(())
+}
+
+/// The MODULE file name of a module with a non-registry override, as its
+/// locations render: `@@<canonical name without version>//:MODULE.bazel`
+/// (ModuleFileFunction.getModuleFile, Bazel 9.3 :752-777; well-known names
+/// keep their fixed canonical name, ModuleKey.java:45-55).
+fn non_registry_module_file(name: &str) -> String {
+    let canonical = if matches!(name, "platforms" | "bazel_tools") {
+        name.to_owned()
+    } else {
+        format!("{name}+")
+    };
+    format!("@@{canonical}//:MODULE.bazel")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -910,7 +942,7 @@ impl Discovery<'_> {
                             format!("Git MODULE file {path} is not UTF-8: {error}")
                         })?;
                         let module = bzlmod::evaluate_source_with_builtins(
-                            &path,
+                            &non_registry_module_file(name),
                             source,
                             EvaluationContext {
                                 role: ModuleRole::Dependency,
@@ -944,8 +976,12 @@ impl Discovery<'_> {
             let path = std::fs::canonicalize(self.root_path.join(path)).map_err(|e| {
                 format!("cannot resolve local override for {name:?} at {path:?}: {e}")
             })?;
-            let module = bzlmod::evaluate_with_builtins(
-                &path.join("MODULE.bazel"),
+            let file = path.join("MODULE.bazel");
+            let source = std::fs::read_to_string(&file)
+                .map_err(|e| format!("cannot read MODULE file {}: {e}", file.display()))?;
+            let module = bzlmod::evaluate_source_with_builtins(
+                &non_registry_module_file(name),
+                source,
                 EvaluationContext {
                     role: ModuleRole::Dependency,
                     ignore_dev_dependencies: self.options.ignore_dev_dependencies,
@@ -1241,6 +1277,7 @@ fn mapping(
     nodes: &BTreeMap<Key, Node>,
     selected: &Selection,
     canonical_names: &BTreeMap<Key, String>,
+    profile: BuiltinProfile,
 ) -> Result<BTreeMap<String, String>, String> {
     let canonical = canonical_names[key].clone();
     let node = &nodes[key];
@@ -1262,6 +1299,22 @@ fn mapping(
                 "repository alias {alias:?} conflicts with the module's own repository name"
             ));
         }
+    }
+    // Every module sees `@bazel_tools` (ModuleThreadContext.buildModule,
+    // Bazel 9.3 bzlmod/ModuleThreadContext.java:383-401, adds the built-in
+    // dependency to every module but bazel_tools itself; Module
+    // .getRepoMappingWithBazelDepsOnly, Module.java:49-67, maps it to the
+    // well-known canonical name, ModuleKey.java:45-55). The explicit-module
+    // profile does not discover the built-in MODULE or materialize its
+    // contents: the entry only names the repository, and demanding it fails
+    // explicitly (docs/BUILTIN_MODULES.md). A module that itself declares the
+    // name keeps its declaration (legacy recording, not Bazel's rejection).
+    if profile == BuiltinProfile::ExplicitModules
+        && !matches!(key, Key::Module { name, .. } if name == "bazel_tools")
+    {
+        mapping
+            .entry("bazel_tools".to_owned())
+            .or_insert_with(|| "bazel_tools".to_owned());
     }
     Ok(mapping)
 }
@@ -1594,7 +1647,7 @@ mod tests {
     }
 
     #[test]
-    fn root_module_reader_retains_builtin_alias_collisions_in_each_dev_context() {
+    fn root_module_reader_rejects_builtin_alias_collisions_in_both_profiles_and_dev_contexts() {
         let f = Fixture::new("");
         for source in [
             "module(name='bazel_tools')",
@@ -1614,18 +1667,17 @@ mod tests {
                 };
                 let error = read_root_module(&f.root, &options).unwrap_err();
                 assert!(
-                    error.contains("repository name \"bazel_tools\" is already used"),
+                    error.starts_with("The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined ")
+                        && error.ends_with(", 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive"),
                     "{source}: {error}"
                 );
+                // ModuleThreadContext.buildModule (:383-401) reserves the
+                // name in every profile: the explicit one fails identically.
                 let explicit = ResolverOptions {
                     builtin_profile: BuiltinProfile::ExplicitModules,
                     ..options
                 };
-                let snapshot = read_root_module(&f.root, &explicit).unwrap();
-                let RootModulePresence::Present(module) = snapshot.module else {
-                    panic!("expected recorded root");
-                };
-                assert!(module.implicit_dependencies.is_empty());
+                assert_eq!(read_root_module(&f.root, &explicit).unwrap_err(), error);
             }
         }
     }
@@ -1669,15 +1721,45 @@ mod tests {
                 ("".to_owned(), "".to_owned()),
                 ("main".to_owned(), "".to_owned()),
                 ("first".to_owned(), "a+".to_owned()),
-                ("b".to_owned(), "b+".to_owned())
+                ("b".to_owned(), "b+".to_owned()),
+                ("bazel_tools".to_owned(), "bazel_tools".to_owned())
             ])
         );
+        // ModuleThreadContext.buildModule (:383-401): every module sees the
+        // built-in, also in the explicit-module profile (no module entry).
+        for module in graph.modules.values() {
+            assert_eq!(module.mapping["bazel_tools"], "bazel_tools");
+        }
+        assert!(!graph.modules.contains_key("bazel_tools"));
         assert_eq!(graph.modules["a+"].mapping["see"], "c+");
         assert!(!graph.modules["a+"].mapping.contains_key("b"));
         assert!(!graph.root_mapping.contains_key("c"));
         assert_eq!(graph.modules["c+"].mapping["legacy_c"], "c+");
         assert_eq!(graph.modules["c+"].mapping.get(""), None);
         assert!(!graph.modules["c+"].mapping.contains_key("c"));
+    }
+
+    #[test]
+    fn non_root_bazel_tools_extension_usages_resolve_without_discovering_the_builtin() {
+        // The rules_jvm_external 6.7 shape (N51): BazelDepGraphFunction
+        // (:97-137) resolves every module's extension labels with its
+        // bazel_dep mapping, which always includes @bazel_tools.
+        let f = Fixture::new("module(name='root')\nbazel_dep(name='a',version='1')");
+        f.module(
+            "a",
+            "1",
+            "e=use_extension('@bazel_tools//tools/android:android_extensions.bzl','remote_android_tools_extensions')\nuse_repo(e,'android_tools')\nh=use_repo_rule('@bazel_tools//tools/build_defs/repo:http.bzl','http_file')\nh(name='never',urls=['https://example.invalid/x'])",
+        );
+        let graph = f.resolve();
+        assert_eq!(graph.modules["a+"].mapping["bazel_tools"], "bazel_tools");
+        assert!(!graph.modules.contains_key("bazel_tools"));
+        let catalog = crate::repository_catalog::build(&graph, false).unwrap();
+        assert_eq!(
+            catalog.usage_extension_ids.iter().collect::<Vec<_>>(),
+            ["@@bazel_tools//tools/android:android_extensions.bzl%remote_android_tools_extensions"]
+        );
+        // The direct declaration keeps its raw label until demanded.
+        assert_eq!(catalog.repositories.len(), 1);
     }
 
     #[test]
@@ -2331,8 +2413,9 @@ mod tests {
 
     #[test]
     fn explicit_builtin_dependency_reports_missing_capability() {
+        // Bazel rejects the declaration while recording the MODULE file.
         let f = Fixture::new("bazel_dep(name='bazel_tools')");
-        f.fails("built-in bazel_tools is unavailable");
+        f.fails("already defined by a bazel_dep at ");
     }
 
     fn builtin_options(f: &Fixture) -> ResolverOptions {
@@ -2554,7 +2637,10 @@ mod tests {
     #[test]
     fn builtin_root_declared_name_does_not_exempt_injection_or_default_override() {
         for (source, expected) in [
-            ("module(name='bazel_tools')", "already used"),
+            (
+                "module(name='bazel_tools')",
+                "already defined as the current module name",
+            ),
             (
                 "module(name='bazel_tools',repo_name='other')",
                 "overriding the root module",
@@ -2636,7 +2722,10 @@ mod tests {
         assert!(graph.modules.is_empty());
         assert_eq!(
             graph.root_mapping,
-            BTreeMap::from([(String::new(), String::new())])
+            BTreeMap::from([
+                (String::new(), String::new()),
+                ("bazel_tools".to_owned(), "bazel_tools".to_owned())
+            ])
         );
         assert_eq!(graph.root.dependencies.len(), 2);
         // Even an available MODULE is not read merely because a nodep names it.
@@ -2688,7 +2777,8 @@ mod tests {
         assert_eq!(graph.modules["c+"].version, "2");
         assert_eq!(graph.modules["c+"].mapping["d"], "d+");
         assert_eq!(graph.modules.len(), 4);
-        assert_eq!(graph.root_mapping.len(), 2); // self + ordinary a only
+        // self + ordinary a + the built-in bazel_tools only
+        assert_eq!(graph.root_mapping.len(), 3);
     }
 
     #[test]

@@ -264,7 +264,9 @@ fn explicit_default_and_invalid_flag_do_not_silently_switch_profiles() {
             "query",
             &["@bazel_tools//tools/build_defs/repo:utils.bzl"],
         ),
-        "unknown apparent repository @bazel_tools",
+        // The mapping entry exists in every module, like Bazel; the explicit
+        // profile only lacks the contents.
+        "built-in repository @@bazel_tools is visible to every module but has no contents",
     );
     rejected(
         &run(

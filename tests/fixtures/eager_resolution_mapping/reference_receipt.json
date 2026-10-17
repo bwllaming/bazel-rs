@@ -1,0 +1,849 @@
+{
+ "schema": "n51-eager-resolution-mapping-reference-receipt/v1",
+ "purpose": "Paired genuine Bazel 9.3.0 vs native bazel-rs capture of N51: every module's repository mapping includes @bazel_tools (ModuleThreadContext.buildModule, bzlmod/ModuleThreadContext.java:383-401; Module.getRepoMappingWithBazelDepsOnly, Module.java:49-67; ModuleKey.java:45-55), so non-root MODULE.bazel use_extension/use_repo_rule labels naming @bazel_tools resolve in the extension usage table (BazelDepGraphFunction.java:97-137) and .bzl Label()/load resolution sees @@bazel_tools, in both lockfile modes update and off. Evidence only; no test reads this file.",
+ "base_commit": "cfa224b0619e78619394aae076c16cf49d1e2e19",
+ "source": {
+  "diff_vs_base_sha256": "9b7a9433ae02f53500b4baf3510cd02a98c4f420c78cd15f289629538af9c27e",
+  "diff_scope": "git diff cfa224b -- src (at capture time)",
+  "changed_files": {
+   "src/loading.rs": "592b412c45a25fddfc35211945dc1af1764fcbaafe2aa2cff6859ee0f0423838",
+   "src/module_graph.rs": "08fcb9adbb2275cd1948514a149bda6d08f062f62f2cb2b1db67f21df7036267",
+   "src/repository.rs": "32216d721f7d54c8fd6c95a7f34b8ecb8a2769c15a8d52b92d29c2c169704a09"
+  }
+ },
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private, removed> --host_jvm_args=-Xmx512m",
+  "command_flags": "query QUERY --registry=http://127.0.0.1:<port> --lockfile_mode=MODE --repository_cache=<private> --noshow_progress --color=no --curses=no --incompatible_autoload_externally= --repository_disable_download"
+ },
+ "native": {
+  "binary": "target/release/bazel-rs (candidate)",
+  "sha256": "030dc4d9011cce1415077ee000bb85fcfae60a79db7f870ac68bb577cfef566b",
+  "command_flags": "--ignore_all_rc_files --cache-dir=<private> query [--experimental-builtin-modules] --registry=http://127.0.0.1:<port> --lockfile_mode=MODE --repository_disable_download QUERY"
+ },
+ "native_base": {
+  "binary": "cfa224b release build (git archive, separate target dir)",
+  "sha256": "8b9daa3d3518d89d8def7a798c248339d6f3d954366f89259045b0e77c1d4528"
+ },
+ "engines": {
+  "native": "candidate, default explicit-module profile",
+  "native_builtin": "candidate, --experimental-builtin-modules",
+  "native_base": "pre-fix cfa224b, default profile"
+ },
+ "capture_fixture": {
+  "registry": "tests/fixtures/builtin_modules/registry + tests/fixtures/eager_resolution_mapping/registry (eagerdep@1.0, git_repository source never fetched)",
+  "workspace": "tests/fixtures/eager_resolution_mapping/workspace",
+  "local_module": "tests/fixtures/eager_resolution_mapping/localdep (local_path_override ../localdep)",
+  "server": "python ThreadingHTTPServer on 127.0.0.1 (ephemeral port, shared)"
+ },
+ "script": {
+  "path": "artifacts/eager_mapping-capture.py",
+  "sha256": "124f62ab4d1a9653f4a8e8553d6bc5af5d1e30acac2b526aa67118c7c2f643f3"
+ },
+ "capture_output": {
+  "path": "artifacts/eager_mapping-capture.json",
+  "sha256": "913c25493609e0f608d093c765ed59c2fb263e3895d64dcd08d9f58bd7df7419",
+  "started": "2026-10-17T14:25:51Z",
+  "finished": "2026-10-17T14:26:17Z"
+ },
+ "runs": 1,
+ "environment": "env -i PATH=/usr/bin:/bin HOME=<private> TMPDIR=<private> LC_ALL=C.UTF-8; umask 022; one fresh workspace copy per (query, mode, engine); scratch removed",
+ "normalization": "scratch root -> <root>, port -> <port>; errors: Bazel ERROR: lines, native last bazel-rs: line",
+ "counts": {
+  "native": {
+   "EXACT_OUTPUT_LOCKFILE_SUBSET_D_BUILTIN_CLOSURE": 2,
+   "EXACT": 2,
+   "DOCUMENTED_NATIVE_BOUNDARY_NO_BAZEL_TOOLS_CONTENTS": 2
+  },
+  "native_builtin": {
+   "EXACT": 6
+  },
+  "native_base": {
+   "PRE_FIX_DIVERGENCE": 5,
+   "EXACT": 1
+  }
+ },
+ "findings": [
+  "Genuine Bazel succeeds on all 6 steps; update writes a lockfile with 186 registryFileHashes (bazel_tools closure + eagerdep), selectedYankedVersions {} and moduleExtensions {} (the @bazel_tools extensions named by non-root modules are recorded in the usage table but not evaluated).",
+  "Candidate with --experimental-builtin-modules: EXACT on all 6 steps (exit, stdout, lockfile bytes).",
+  "Candidate default profile: exit/stdout EXACT for plain and labels (Label(\"@bazel_tools//tools:host_platform\") is @@bazel_tools//tools:host_platform with repo_name bazel_tools in root and non-root .bzl); its lockfile is a strict subset (2 of 186 entries: eagerdep MODULE.bazel/source.json; missing = the undiscovered bazel_tools closure and bazel_registry.json, documented in docs/BUILTIN_MODULES.md). loads fails explicitly: cannot load '@@bazel_tools//tools/build_defs/repo:utils.bzl': the built-in repository @@bazel_tools is visible to every module but has no contents in this module profile; use --experimental-builtin-modules.",
+  "Pre-fix base: plain/update exits 0 but silently writes NO lockfile (the extension usage catalog failed on the missing @bazel_tools mapping entry and RegistrySession.updated_lockfile requires usages); labels fails at Label(\"@bazel_tools//...\") in @@localdep+//:labels.bzl and loads fails at the load statement (unknown apparent repository @bazel_tools from canonical repository \"localdep+\")."
+ ],
+ "steps": [
+  {
+   "step": "plain/update",
+   "query": [
+    "//:plain"
+   ],
+   "bazel": {
+    "rc": 0,
+    "stdout": "//:plain\n",
+    "error": null,
+    "lockfile_sha256": "57a5396f71239a76b93de69dbdff4d5acfeeecedd776b865b5cbbe842b05a2b4",
+    "registryFileHashes": 186,
+    "selectedYankedVersions": {},
+    "moduleExtensions": []
+   },
+   "engines": {
+    "native": {
+     "verdict": "EXACT_OUTPUT_LOCKFILE_SUBSET_D_BUILTIN_CLOSURE",
+     "rc": 0,
+     "stdout_equal": true,
+     "error": null,
+     "lockfile_written": true,
+     "lockfile_bytes_equal": false,
+     "registryFileHashes": 2,
+     "registry_subset": true,
+     "registry_missing_count": 184,
+     "registry_extra": []
+    },
+    "native_builtin": {
+     "verdict": "EXACT",
+     "rc": 0,
+     "stdout_equal": true,
+     "error": null,
+     "lockfile_written": true,
+     "lockfile_bytes_equal": true,
+     "registryFileHashes": 186,
+     "registry_subset": true,
+     "registry_missing_count": 0,
+     "registry_extra": []
+    },
+    "native_base": {
+     "verdict": "PRE_FIX_DIVERGENCE",
+     "rc": 0,
+     "stdout_equal": true,
+     "error": null,
+     "lockfile_written": false,
+     "lockfile_bytes_equal": false,
+     "registryFileHashes": null,
+     "registry_subset": null,
+     "registry_missing_count": null,
+     "registry_extra": null
+    }
+   }
+  },
+  {
+   "step": "plain/off",
+   "query": [
+    "//:plain"
+   ],
+   "bazel": {
+    "rc": 0,
+    "stdout": "//:plain\n",
+    "error": null,
+    "lockfile_sha256": null,
+    "registryFileHashes": null,
+    "selectedYankedVersions": null,
+    "moduleExtensions": null
+   },
+   "engines": {
+    "native": {
+     "verdict": "EXACT",
+     "rc": 0,
+     "stdout_equal": true,
+     "error": null,
+     "lockfile_written": false,
+     "lockfile_bytes_equal": true,
+     "registryFileHashes": null,
+     "registry_subset": null,
+     "registry_missing_count": null,
+     "registry_extra": null
+    },
+    "native_builtin": {
+     "verdict": "EXACT",
+     "rc": 0,
+     "stdout_equal": true,
+     "error": null,
+     "lockfile_written": false,
+     "lockfile_bytes_equal": true,
+     "registryFileHashes": null,
+     "registry_subset": null,
+     "registry_missing_count": null,
+     "registry_extra": null
+    },
+    "native_base": {
+     "verdict": "EXACT",
+     "rc": 0,
+     "stdout_equal": true,
+     "error": null,
+     "lockfile_written": false,
+     "lockfile_bytes_equal": true,
+     "registryFileHashes": null,
+     "registry_subset": null,
+     "registry_missing_count": null,
+     "registry_extra": null
+    }
+   }
+  },
+  {
+   "step": "labels/update",
+   "query": [
+    "--output=build",
+    "//labels:labels"
+   ],
+   "bazel": {
+    "rc": 0,
+    "stdout": "# <root>/ws/labels/BUILD.bazel:4:10\nfilegroup(\n  name = \"labels\",\n  tags = [\"@@bazel_tools//tools:host_platform\", \"@@bazel_tools//tools:host_platform\", \"@@localdep+//:labels.bzl\", \"bazel_tools\", \"bazel_tools\"],\n)\n# Rule labels instantiated at (most recent call last):\n#   <root>/ws/labels/BUILD.bazel:4:10 in <toplevel>\n\n",
+    "error": null,
+    "lockfile_sha256": "57a5396f71239a76b93de69dbdff4d5acfeeecedd776b865b5cbbe842b05a2b4",
+    "registryFileHashes": 186,
+    "selectedYankedVersions": {},
+    "moduleExtensions": []
+   },
+   "engines": {
+    "native": {
+     "verdict": "EXACT_OUTPUT_LOCKFILE_SUBSET_D_BUILTIN_CLOSURE",
+     "rc": 0,
+     "stdout_equal": true,
+     "error": null,
+     "lockfile_written": true,
+     "lockfile_bytes_equal": false,
+     "registryFileHashes": 2,
+     "registry_subset": true,
+     "registry_missing_count": 184,
+     "registry_extra": []
+    },
+    "native_builtin": {
+     "verdict": "EXACT",
+     "rc": 0,
+     "stdout_equal": true,
+     "error": null,
+     "lockfile_written": true,
+     "lockfile_bytes_equal": true,
+     "registryFileHashes": 186,
+     "registry_subset": true,
+     "registry_missing_count": 0,
+     "registry_extra": []
+    },
+    "native_base": {
+     "verdict": "PRE_FIX_DIVERGENCE",
+     "rc": 1,
+     "stdout_equal": false,
+     "error": "cannot evaluate @@localdep+//:labels.bzl: Traceback (most recent call last):",
+     "lockfile_written": false,
+     "lockfile_bytes_equal": false,
+     "registryFileHashes": null,
+     "registry_subset": null,
+     "registry_missing_count": null,
+     "registry_extra": null
+    }
+   }
+  },
+  {
+   "step": "labels/off",
+   "query": [
+    "--output=build",
+    "//labels:labels"
+   ],
+   "bazel": {
+    "rc": 0,
+    "stdout": "# <root>/ws/labels/BUILD.bazel:4:10\nfilegroup(\n  name = \"labels\",\n  tags = [\"@@bazel_tools//tools:host_platform\", \"@@bazel_tools//tools:host_platform\", \"@@localdep+//:labels.bzl\", \"bazel_tools\", \"bazel_tools\"],\n)\n# Rule labels instantiated at (most recent call last):\n#   <root>/ws/labels/BUILD.bazel:4:10 in <toplevel>\n\n",
+    "error": null,
+    "lockfile_sha256": null,
+    "registryFileHashes": null,
+    "selectedYankedVersions": null,
+    "moduleExtensions": null
+   },
+   "engines": {
+    "native": {
+     "verdict": "EXACT",
+     "rc": 0,
+     "stdout_equal": true,
+     "error": null,
+     "lockfile_written": false,
+     "lockfile_bytes_equal": true,
+     "registryFileHashes": null,
+     "registry_subset": null,
+     "registry_missing_count": null,
+     "registry_extra": null
+    },
+    "native_builtin": {
+     "verdict": "EXACT",
+     "rc": 0,
+     "stdout_equal": true,
+     "error": null,
+     "lockfile_written": false,
+     "lockfile_bytes_equal": true,
+     "registryFileHashes": null,
+     "registry_subset": null,
+     "registry_missing_count": null,
+     "registry_extra": null
+    },
+    "native_base": {
+     "verdict": "PRE_FIX_DIVERGENCE",
+     "rc": 1,
+     "stdout_equal": false,
+     "error": "cannot evaluate @@localdep+//:labels.bzl: Traceback (most recent call last):",
+     "lockfile_written": false,
+     "lockfile_bytes_equal": true,
+     "registryFileHashes": null,
+     "registry_subset": null,
+     "registry_missing_count": null,
+     "registry_extra": null
+    }
+   }
+  },
+  {
+   "step": "loads/update",
+   "query": [
+    "//loads:loads"
+   ],
+   "bazel": {
+    "rc": 0,
+    "stdout": "//loads:loads\n",
+    "error": null,
+    "lockfile_sha256": "57a5396f71239a76b93de69dbdff4d5acfeeecedd776b865b5cbbe842b05a2b4",
+    "registryFileHashes": 186,
+    "selectedYankedVersions": {},
+    "moduleExtensions": []
+   },
+   "engines": {
+    "native": {
+     "verdict": "DOCUMENTED_NATIVE_BOUNDARY_NO_BAZEL_TOOLS_CONTENTS",
+     "rc": 1,
+     "stdout_equal": false,
+     "error": "cannot load '@@bazel_tools//tools/build_defs/repo:utils.bzl': the built-in repository @@bazel_tools is visible to every module but has no contents in this module profile; use --experimental-builtin-modules",
+     "lockfile_written": true,
+     "lockfile_bytes_equal": false,
+     "registryFileHashes": 2,
+     "registry_subset": true,
+     "registry_missing_count": 184,
+     "registry_extra": []
+    },
+    "native_builtin": {
+     "verdict": "EXACT",
+     "rc": 0,
+     "stdout_equal": true,
+     "error": null,
+     "lockfile_written": true,
+     "lockfile_bytes_equal": true,
+     "registryFileHashes": 186,
+     "registry_subset": true,
+     "registry_missing_count": 0,
+     "registry_extra": []
+    },
+    "native_base": {
+     "verdict": "PRE_FIX_DIVERGENCE",
+     "rc": 1,
+     "stdout_equal": false,
+     "error": "@@localdep+//:loads.bzl:2:6-53: external repository load: unknown apparent repository @bazel_tools from canonical repository \"localdep+\"; extension repository not materialized or dependency not declared",
+     "lockfile_written": false,
+     "lockfile_bytes_equal": false,
+     "registryFileHashes": null,
+     "registry_subset": null,
+     "registry_missing_count": null,
+     "registry_extra": null
+    }
+   }
+  },
+  {
+   "step": "loads/off",
+   "query": [
+    "//loads:loads"
+   ],
+   "bazel": {
+    "rc": 0,
+    "stdout": "//loads:loads\n",
+    "error": null,
+    "lockfile_sha256": null,
+    "registryFileHashes": null,
+    "selectedYankedVersions": null,
+    "moduleExtensions": null
+   },
+   "engines": {
+    "native": {
+     "verdict": "DOCUMENTED_NATIVE_BOUNDARY_NO_BAZEL_TOOLS_CONTENTS",
+     "rc": 1,
+     "stdout_equal": false,
+     "error": "cannot load '@@bazel_tools//tools/build_defs/repo:utils.bzl': the built-in repository @@bazel_tools is visible to every module but has no contents in this module profile; use --experimental-builtin-modules",
+     "lockfile_written": false,
+     "lockfile_bytes_equal": true,
+     "registryFileHashes": null,
+     "registry_subset": null,
+     "registry_missing_count": null,
+     "registry_extra": null
+    },
+    "native_builtin": {
+     "verdict": "EXACT",
+     "rc": 0,
+     "stdout_equal": true,
+     "error": null,
+     "lockfile_written": false,
+     "lockfile_bytes_equal": true,
+     "registryFileHashes": null,
+     "registry_subset": null,
+     "registry_missing_count": null,
+     "registry_extra": null
+    },
+    "native_base": {
+     "verdict": "PRE_FIX_DIVERGENCE",
+     "rc": 1,
+     "stdout_equal": false,
+     "error": "@@localdep+//:loads.bzl:2:6-53: external repository load: unknown apparent repository @bazel_tools from canonical repository \"localdep+\"; extension repository not materialized or dependency not declared",
+     "lockfile_written": false,
+     "lockfile_bytes_equal": true,
+     "registryFileHashes": null,
+     "registry_subset": null,
+     "registry_missing_count": null,
+     "registry_extra": null
+    }
+   }
+  }
+ ],
+ "post_capture_changes": {
+  "cfg_test_only": {
+   "change": "test-only: one #[test] added inside `#[cfg(test)] mod tests` of src/module_graph.rs (non_root_bazel_tools_extension_usages_resolve_without_discovering_the_builtin), plus tests/eager_resolution_mapping.rs, fixture README and docs. The capture-time src/module_graph.rs hash above equals the current file with that test removed (verified).",
+   "final_release_sha256_after_test_only_change": "3c75a56c360a746d9ee05281015ed324626a06faa3d31f073a9b14aa6e9195e5",
+   "note": "The final release binary differs byte-wise from the captured one although its non-test source is identical; the capture was not re-run (single paired run)."
+  },
+  "follow_up_fixes": [
+   "Issue 1: src/module_graph.rs check_selected_registry_modules no longer swallows repository_catalog::build failures with .ok(). In a writing lockfile mode a usage-table failure fails the command with the lazy-path error, and nothing is written (Bazel: BazelDepGraphFunction.getExtensionUsagesById :115-130 fails the command; no BazelDepGraphValue means no lockfile, :95-100).",
+   "Issue 2: src/bzlmod.rs records each repo-name usage as (how, location) (ModuleThreadContext.RepoNameUsage :105-113). Both profiles reserve bazel_tools (new BuiltinInjection::ReserveBazelTools for the explicit profile; AppendBazelTools also records the edge) and fail with Bazel's exact text (:115-125 + :383-401). The how values: by a bazel_dep / by a use_repo() call / by a repo rule / as the current module name / as the module's own repo name (ModuleFileGlobals :175-181, :317, :666-676, :867).",
+   "Found by follow-up row F2/local_use_repo: MODULE files of non-registry overrides (local_path, git) are now evaluated as @@<name>+//:MODULE.bazel (ModuleFileFunction.getModuleFile :752-777), so locations and diagnostics match Bazel. This was fixed after the follow-up run and verified native-only against the recorded Bazel text (both profiles equal). Also covered by tests/eager_resolution_mapping.rs non_registry_module_locations_use_the_canonical_module_file_label."
+  ],
+  "follow_up_check": {
+   "script": {
+    "path": "artifacts/eager_mapping-followup-check.py",
+    "sha256": "39c12fd6687f31d7e30a92e7bdf7dd7bed47df71597c44ed422ea3cd356f4720"
+   },
+   "output": {
+    "path": "artifacts/eager_mapping-followup-check.json",
+    "sha256": "76b43880afbbff41d931bd639721b502d3d9237a3f8d48edfa1b3a5e5c620fde",
+    "started": "2026-10-17T14:59:05Z",
+    "finished": "2026-10-17T14:59:42Z"
+   },
+   "runs": 1,
+   "bazel_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+   "native_sha256_at_run": "d9c8f3d477d92d77d6c63f31b6c6253f30a7e3204ff893f8b2686fa77dddc161",
+   "summary": [
+    "F2 (11 rows x 2 native profiles): genuine Bazel fails with exit 48 and the exact ModuleThreadContext text in every row. Native fails (exit 1) with that event text exactly in 10/11 rows at the run. F2/local_use_repo differed only in the file (native filesystem path vs @@collide_local+//:MODULE.bazel); that is fixed post-run and verified native-only. No engine writes a lockfile.",
+    "F1 update (non-root and root bad extension label @nope): Bazel fails (exit 48, 'Error computing the main repository mapping: invalid label for module extension found at <loc>: no repo visible as \\'@nope\\' here') and writes no lockfile. Native now fails (exit 1) with the lazy-path text 'invalid ordinary extension label in MODULE owner ...: unknown apparent repository @nope ...' and writes no lockfile. The fail/no-write behavior matches; the message text is the native one, as instructed.",
+    "F1 off: Bazel fails; native succeeds (no eager resolution without a lockfile session; documented in docs/REGISTRY_LOCKFILE.md, Eager resolution boundary). This is a remaining divergence."
+   ],
+   "rows": [
+    {
+     "row": "F1/non_root_bad_label",
+     "mode": "update",
+     "bazel_rc": 48,
+     "bazel_errors": [
+      "Error computing the main repository mapping: invalid label for module extension found at @@badext+//:MODULE.bazel:3:21: no repo visible as '@nope' here"
+     ],
+     "bazel_lockfile_written": false,
+     "native": {
+      "native": {
+       "rc": 1,
+       "error": "invalid ordinary extension label in MODULE owner \"badext+\": unknown apparent repository @nope from canonical repository \"badext+\"; extension repository not materialized or dependency not declared",
+       "lockfile_written": false,
+       "fails_like_bazel": true,
+       "error_is_bazel_event": false,
+       "lockfile_written_equal": true
+      },
+      "native_builtin": {
+       "rc": 1,
+       "error": "invalid ordinary extension label in MODULE owner \"badext+\": unknown apparent repository @nope from canonical repository \"badext+\"; extension repository not materialized or dependency not declared",
+       "lockfile_written": false,
+       "fails_like_bazel": true,
+       "error_is_bazel_event": false,
+       "lockfile_written_equal": true
+      }
+     }
+    },
+    {
+     "row": "F1/non_root_bad_label",
+     "mode": "off",
+     "bazel_rc": 48,
+     "bazel_errors": [
+      "Error computing the main repository mapping: invalid label for module extension found at @@badext+//:MODULE.bazel:3:21: no repo visible as '@nope' here"
+     ],
+     "bazel_lockfile_written": false,
+     "native": {
+      "native": {
+       "rc": 0,
+       "error": null,
+       "lockfile_written": false,
+       "fails_like_bazel": false,
+       "error_is_bazel_event": false,
+       "lockfile_written_equal": true
+      },
+      "native_builtin": {
+       "rc": 0,
+       "error": null,
+       "lockfile_written": false,
+       "fails_like_bazel": false,
+       "error_is_bazel_event": false,
+       "lockfile_written_equal": true
+      }
+     }
+    },
+    {
+     "row": "F1/root_bad_label",
+     "mode": "update",
+     "bazel_rc": 48,
+     "bazel_errors": [
+      "Error computing the main repository mapping: invalid label for module extension found at <root>/ws/MODULE.bazel:3:21: no repo visible as '@nope' here"
+     ],
+     "bazel_lockfile_written": false,
+     "native": {
+      "native": {
+       "rc": 1,
+       "error": "invalid ordinary extension label in MODULE owner \"\": unknown apparent repository @nope from canonical repository \"\"; extension repository not materialized or dependency not declared",
+       "lockfile_written": false,
+       "fails_like_bazel": true,
+       "error_is_bazel_event": false,
+       "lockfile_written_equal": true
+      },
+      "native_builtin": {
+       "rc": 1,
+       "error": "invalid ordinary extension label in MODULE owner \"\": unknown apparent repository @nope from canonical repository \"\"; extension repository not materialized or dependency not declared",
+       "lockfile_written": false,
+       "fails_like_bazel": true,
+       "error_is_bazel_event": false,
+       "lockfile_written_equal": true
+      }
+     }
+    },
+    {
+     "row": "F1/root_bad_label",
+     "mode": "off",
+     "bazel_rc": 48,
+     "bazel_errors": [
+      "Error computing the main repository mapping: invalid label for module extension found at <root>/ws/MODULE.bazel:3:21: no repo visible as '@nope' here"
+     ],
+     "bazel_lockfile_written": false,
+     "native": {
+      "native": {
+       "rc": 0,
+       "error": null,
+       "lockfile_written": false,
+       "fails_like_bazel": false,
+       "error_is_bazel_event": false,
+       "lockfile_written_equal": true
+      },
+      "native_builtin": {
+       "rc": 0,
+       "error": null,
+       "lockfile_written": false,
+       "fails_like_bazel": false,
+       "error_is_bazel_event": false,
+       "lockfile_written_equal": true
+      }
+     }
+    },
+    {
+     "row": "F2/root_bazel_dep_repo_name",
+     "mode": "update",
+     "bazel_rc": 48,
+     "bazel_errors": [
+      "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a bazel_dep at <root>/ws/MODULE.bazel:3:10, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+      "Error computing the main repository mapping: error executing MODULE.bazel file for the root module"
+     ],
+     "bazel_lockfile_written": false,
+     "native": {
+      "native": {
+       "rc": 1,
+       "error": "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a bazel_dep at <root>/ws/MODULE.bazel:3:10, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+       "lockfile_written": false,
+       "fails_like_bazel": true,
+       "error_is_bazel_event": true,
+       "lockfile_written_equal": true
+      },
+      "native_builtin": {
+       "rc": 1,
+       "error": "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a bazel_dep at <root>/ws/MODULE.bazel:3:10, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+       "lockfile_written": false,
+       "fails_like_bazel": true,
+       "error_is_bazel_event": true,
+       "lockfile_written_equal": true
+      }
+     }
+    },
+    {
+     "row": "F2/root_bazel_dep_repo_name",
+     "mode": "off",
+     "bazel_rc": 48,
+     "bazel_errors": [
+      "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a bazel_dep at <root>/ws/MODULE.bazel:3:10, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+      "Error computing the main repository mapping: error executing MODULE.bazel file for the root module"
+     ],
+     "bazel_lockfile_written": false,
+     "native": {
+      "native": {
+       "rc": 1,
+       "error": "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a bazel_dep at <root>/ws/MODULE.bazel:3:10, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+       "lockfile_written": false,
+       "fails_like_bazel": true,
+       "error_is_bazel_event": true,
+       "lockfile_written_equal": true
+      },
+      "native_builtin": {
+       "rc": 1,
+       "error": "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a bazel_dep at <root>/ws/MODULE.bazel:3:10, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+       "lockfile_written": false,
+       "fails_like_bazel": true,
+       "error_is_bazel_event": true,
+       "lockfile_written_equal": true
+      }
+     }
+    },
+    {
+     "row": "F2/root_dev_bazel_dep_repo_name",
+     "mode": "update",
+     "bazel_rc": 48,
+     "bazel_errors": [
+      "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a bazel_dep at <root>/ws/MODULE.bazel:3:10, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+      "Error computing the main repository mapping: error executing MODULE.bazel file for the root module"
+     ],
+     "bazel_lockfile_written": false,
+     "native": {
+      "native": {
+       "rc": 1,
+       "error": "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a bazel_dep at <root>/ws/MODULE.bazel:3:10, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+       "lockfile_written": false,
+       "fails_like_bazel": true,
+       "error_is_bazel_event": true,
+       "lockfile_written_equal": true
+      },
+      "native_builtin": {
+       "rc": 1,
+       "error": "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a bazel_dep at <root>/ws/MODULE.bazel:3:10, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+       "lockfile_written": false,
+       "fails_like_bazel": true,
+       "error_is_bazel_event": true,
+       "lockfile_written_equal": true
+      }
+     }
+    },
+    {
+     "row": "F2/root_bazel_dep_name",
+     "mode": "update",
+     "bazel_rc": 48,
+     "bazel_errors": [
+      "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a bazel_dep at <root>/ws/MODULE.bazel:3:10, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+      "Error computing the main repository mapping: error executing MODULE.bazel file for the root module"
+     ],
+     "bazel_lockfile_written": false,
+     "native": {
+      "native": {
+       "rc": 1,
+       "error": "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a bazel_dep at <root>/ws/MODULE.bazel:3:10, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+       "lockfile_written": false,
+       "fails_like_bazel": true,
+       "error_is_bazel_event": true,
+       "lockfile_written_equal": true
+      },
+      "native_builtin": {
+       "rc": 1,
+       "error": "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a bazel_dep at <root>/ws/MODULE.bazel:3:10, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+       "lockfile_written": false,
+       "fails_like_bazel": true,
+       "error_is_bazel_event": true,
+       "lockfile_written_equal": true
+      }
+     }
+    },
+    {
+     "row": "F2/root_use_repo",
+     "mode": "update",
+     "bazel_rc": 48,
+     "bazel_errors": [
+      "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a use_repo() call at <root>/ws/MODULE.bazel:4:9, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+      "Error computing the main repository mapping: error executing MODULE.bazel file for the root module"
+     ],
+     "bazel_lockfile_written": false,
+     "native": {
+      "native": {
+       "rc": 1,
+       "error": "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a use_repo() call at <root>/ws/MODULE.bazel:4:9, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+       "lockfile_written": false,
+       "fails_like_bazel": true,
+       "error_is_bazel_event": true,
+       "lockfile_written_equal": true
+      },
+      "native_builtin": {
+       "rc": 1,
+       "error": "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a use_repo() call at <root>/ws/MODULE.bazel:4:9, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+       "lockfile_written": false,
+       "fails_like_bazel": true,
+       "error_is_bazel_event": true,
+       "lockfile_written_equal": true
+      }
+     }
+    },
+    {
+     "row": "F2/root_use_repo_keyword",
+     "mode": "update",
+     "bazel_rc": 48,
+     "bazel_errors": [
+      "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a use_repo() call at <root>/ws/MODULE.bazel:4:9, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+      "Error computing the main repository mapping: error executing MODULE.bazel file for the root module"
+     ],
+     "bazel_lockfile_written": false,
+     "native": {
+      "native": {
+       "rc": 1,
+       "error": "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a use_repo() call at <root>/ws/MODULE.bazel:4:9, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+       "lockfile_written": false,
+       "fails_like_bazel": true,
+       "error_is_bazel_event": true,
+       "lockfile_written_equal": true
+      },
+      "native_builtin": {
+       "rc": 1,
+       "error": "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a use_repo() call at <root>/ws/MODULE.bazel:4:9, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+       "lockfile_written": false,
+       "fails_like_bazel": true,
+       "error_is_bazel_event": true,
+       "lockfile_written_equal": true
+      }
+     }
+    },
+    {
+     "row": "F2/root_repo_rule",
+     "mode": "update",
+     "bazel_rc": 48,
+     "bazel_errors": [
+      "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a repo rule at <root>/ws/MODULE.bazel:4:2, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+      "Error computing the main repository mapping: error executing MODULE.bazel file for the root module"
+     ],
+     "bazel_lockfile_written": false,
+     "native": {
+      "native": {
+       "rc": 1,
+       "error": "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a repo rule at <root>/ws/MODULE.bazel:4:2, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+       "lockfile_written": false,
+       "fails_like_bazel": true,
+       "error_is_bazel_event": true,
+       "lockfile_written_equal": true
+      },
+      "native_builtin": {
+       "rc": 1,
+       "error": "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a repo rule at <root>/ws/MODULE.bazel:4:2, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+       "lockfile_written": false,
+       "fails_like_bazel": true,
+       "error_is_bazel_event": true,
+       "lockfile_written_equal": true
+      }
+     }
+    },
+    {
+     "row": "F2/root_module_repo_name",
+     "mode": "update",
+     "bazel_rc": 48,
+     "bazel_errors": [
+      "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined as the module's own repo name at <root>/ws/MODULE.bazel:1:7, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+      "Error computing the main repository mapping: error executing MODULE.bazel file for the root module"
+     ],
+     "bazel_lockfile_written": false,
+     "native": {
+      "native": {
+       "rc": 1,
+       "error": "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined as the module's own repo name at <root>/ws/MODULE.bazel:1:7, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+       "lockfile_written": false,
+       "fails_like_bazel": true,
+       "error_is_bazel_event": true,
+       "lockfile_written_equal": true
+      },
+      "native_builtin": {
+       "rc": 1,
+       "error": "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined as the module's own repo name at <root>/ws/MODULE.bazel:1:7, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+       "lockfile_written": false,
+       "fails_like_bazel": true,
+       "error_is_bazel_event": true,
+       "lockfile_written_equal": true
+      }
+     }
+    },
+    {
+     "row": "F2/root_module_name",
+     "mode": "update",
+     "bazel_rc": 48,
+     "bazel_errors": [
+      "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined as the current module name at <root>/ws/MODULE.bazel:1:7, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+      "Error computing the main repository mapping: error executing MODULE.bazel file for the root module"
+     ],
+     "bazel_lockfile_written": false,
+     "native": {
+      "native": {
+       "rc": 1,
+       "error": "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined as the current module name at <root>/ws/MODULE.bazel:1:7, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+       "lockfile_written": false,
+       "fails_like_bazel": true,
+       "error_is_bazel_event": true,
+       "lockfile_written_equal": true
+      },
+      "native_builtin": {
+       "rc": 1,
+       "error": "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined as the current module name at <root>/ws/MODULE.bazel:1:7, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+       "lockfile_written": false,
+       "fails_like_bazel": true,
+       "error_is_bazel_event": true,
+       "lockfile_written_equal": true
+      }
+     }
+    },
+    {
+     "row": "F2/local_use_repo",
+     "mode": "update",
+     "bazel_rc": 48,
+     "bazel_errors": [
+      "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a use_repo() call at @@collide_local+//:MODULE.bazel:4:9, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+      "Error computing the main repository mapping: in module dependency chain <root> -> collide_local@_: error executing MODULE.bazel file for collide_local@_"
+     ],
+     "bazel_lockfile_written": false,
+     "native": {
+      "native": {
+       "rc": 1,
+       "error": "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a use_repo() call at <root>/collide_local/MODULE.bazel:4:9, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+       "lockfile_written": false,
+       "fails_like_bazel": true,
+       "error_is_bazel_event": false,
+       "lockfile_written_equal": true
+      },
+      "native_builtin": {
+       "rc": 1,
+       "error": "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a use_repo() call at <root>/collide_local/MODULE.bazel:4:9, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+       "lockfile_written": false,
+       "fails_like_bazel": true,
+       "error_is_bazel_event": false,
+       "lockfile_written_equal": true
+      }
+     }
+    },
+    {
+     "row": "F2/registry_bazel_dep_repo_name",
+     "mode": "update",
+     "bazel_rc": 48,
+     "bazel_errors": [
+      "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a bazel_dep at http://127.0.0.1:<port>/modules/collide/1.0/MODULE.bazel:3:10, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+      "Error computing the main repository mapping: in module dependency chain <root> -> collide@1.0: error executing MODULE.bazel file for collide@1.0"
+     ],
+     "bazel_lockfile_written": false,
+     "native": {
+      "native": {
+       "rc": 1,
+       "error": "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a bazel_dep at http://127.0.0.1:<port>/modules/collide/1.0/MODULE.bazel:3:10, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+       "lockfile_written": false,
+       "fails_like_bazel": true,
+       "error_is_bazel_event": true,
+       "lockfile_written_equal": true
+      },
+      "native_builtin": {
+       "rc": 1,
+       "error": "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a bazel_dep at http://127.0.0.1:<port>/modules/collide/1.0/MODULE.bazel:3:10, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
+       "lockfile_written": false,
+       "fails_like_bazel": true,
+       "error_is_bazel_event": true,
+       "lockfile_written_equal": true
+      }
+     }
+    }
+   ]
+  },
+  "final_release_sha256": "f5b43ad6181ef45fee424a5c052c88de63f955bde14c807299d771f867c57a3e",
+  "code_rerun": {
+   "note": "The exact ~/code query was re-run with the final binary: default profile update exits 1 at the same @@bazel_tools utils.bzl stop; builtin profile update exits 0. Both private lockfiles are byte-identical to artifacts/code-*-update.MODULE.bazel.lock. ~/code/MODULE.bazel.lock sha256 and git status are unchanged."
+  }
+ }
+}

@@ -18,6 +18,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
+/// Demanding `@@bazel_tools` without the built-in profile. Its mapping entry
+/// exists in every module, like Bazel; only its contents are absent.
+pub(crate) const BAZEL_TOOLS_UNAVAILABLE: &str = "the built-in repository @@bazel_tools is visible to every module but has no contents in this module profile; use --experimental-builtin-modules";
+
 static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug)]
@@ -770,6 +774,14 @@ impl RepositorySet {
             return Ok(&self.state.root);
         }
         let graph = self.resolve_graph()?;
+        if repository == "bazel_tools"
+            && self.state.options.builtin_profile == module_graph::BuiltinProfile::ExplicitModules
+            && !graph.modules.contains_key(repository)
+        {
+            // Every module's mapping names @@bazel_tools (module_graph::mapping),
+            // but this profile has no built-in contents to materialize.
+            return Err(BAZEL_TOOLS_UNAVAILABLE.to_owned());
+        }
         let Some(module) = graph.modules.get(repository) else {
             return if self
                 .direct_runtime()?
@@ -1881,10 +1893,17 @@ mod tests {
 
     #[test]
     fn root_module_builtin_profile_is_isolated_and_retained_by_source_cache_configuration() {
+        // Both profiles reserve the built-in name (ModuleThreadContext.java:
+        // 383-401); only the built-in profile records the implicit edge.
+        let implicit = |repos: &RepositorySet| match repos.state.root_module.get() {
+            Some(Ok(snapshot)) => snapshot.module_file().unwrap().implicit_dependencies.len(),
+            other => panic!("{other:?}"),
+        };
         let f = Fixture::new();
-        f.write("MODULE.bazel", "module(name='bazel_tools')\n");
+        f.write("MODULE.bazel", "module(name='root')\n");
         let explicit = RepositorySet::new(f.0.clone());
         explicit.validate_root_module().unwrap();
+        assert_eq!(implicit(&explicit), 0);
         let builtin = RepositorySet::with_options(
             f.0.clone(),
             ResolverOptions {
@@ -1892,32 +1911,29 @@ mod tests {
                 ..Default::default()
             },
         );
-        let error = builtin.validate_root_module().unwrap_err();
-        assert!(
-            error.contains("repository name \"bazel_tools\" is already used"),
-            "{error}"
-        );
-        f.write("MODULE.bazel", "module(name='changed')\n");
-        assert_eq!(builtin.clone().validate_root_module().unwrap_err(), error);
+        builtin.validate_root_module().unwrap();
+        assert_eq!(implicit(&builtin), 1);
+        f.write("MODULE.bazel", "module(name='bazel_tools')\n");
+        builtin.clone().validate_root_module().unwrap();
         let fresh = builtin.with_source_cache("new-cache".into());
         assert_eq!(
             fresh.state.options.builtin_profile,
             module_graph::BuiltinProfile::Bazel93Builtins
         );
         assert!(fresh.state.root_module.get().is_none());
-        fresh.validate_root_module().unwrap();
+        let error = fresh.validate_root_module().unwrap_err();
+        assert!(
+            error.contains("already defined as the current module name"),
+            "{error}"
+        );
         assert_root_module_demand_is_lazy(&fresh);
         assert_eq!(
-            explicit
-                .resolve_graph()
-                .unwrap()
-                .root
-                .module
-                .as_ref()
-                .unwrap()
-                .name,
-            "bazel_tools"
+            RepositorySet::new(f.0.clone())
+                .validate_root_module()
+                .unwrap_err(),
+            error
         );
+        assert_eq!(implicit(&explicit), 0);
     }
 
     #[test]

@@ -1,0 +1,7 @@
+load("@localdep//:labels.bzl", "NON_ROOT")
+load(":root.bzl", "ROOT")
+
+filegroup(
+    name = "labels",
+    tags = NON_ROOT + ROOT,
+)

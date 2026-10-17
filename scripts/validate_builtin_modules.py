@@ -59,10 +59,13 @@ CASES = [
 ]
 PLAN = [(c['name'], c['kind']) for c in CASES]
 DIAGNOSTICS = {
-    'explicit': r'unknown apparent repository @bazel_tools\b',
+    # N51: every module maps @bazel_tools (ModuleThreadContext.java:383-401);
+    # the explicit profile fails only when its contents are demanded.
+    'explicit': r'the built-in repository @@bazel_tools is visible to every module but has no contents in this module profile',
     'malformed': r'--experimental-builtin-modules expects true or false',
     'filesystem-override': r'unsupported option --override_repository; MODULE overrides do not replace the built-in repository filesystem',
-    'collision': r'repository name [\'"]bazel_tools[\'"] is already used',
+    # ModuleThreadContext.buildModule (:383-401), in every profile since N51.
+    'collision': r"The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined .+, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
     'empty-registry': r'module rules_license@1\.0\.0 was not found in registries \[/[^\]\n]+\]',
     'metadata-consumed': r'module metadata_only_probe@8\.7 was not found in registries \[/[^\]\n]+\]',
 }

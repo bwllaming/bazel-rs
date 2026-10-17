@@ -139,14 +139,15 @@ rules_cc's `unix_cc_toolchain_config` (tests/cc_toolchain.rs,
 docs/CC_TOOLCHAIN.md).
 
 Without the builtin profile (the default explicit-module profile),
-`bazel_tools` is not resolved, so analysis never reaches this point:
+`bazel_tools` has no contents (its mapping entry exists in every module, like
+Bazel, since N51), so analysis never reaches this point:
 
 - `build @local_config_xcode//:host_xcodes` fails with
   `unknown apparent repository @local_config_xcode from canonical repository ""`.
-- `@@bazel_tools//tools/cpp:host_xcodes` fails with
-  `unknown canonical repository @@bazel_tools; extension repository not materialized or module not selected`.
-- A main-repository attribute default `"@bazel_tools//tools/cpp:host_xcodes"`
-  fails with `unknown apparent repository @bazel_tools from canonical repository ""`.
+- `@@bazel_tools//tools/cpp:host_xcodes` and a main-repository attribute
+  default `"@bazel_tools//tools/cpp:host_xcodes"` fail with `the built-in
+  repository @@bazel_tools is visible to every module but has no contents in
+  this module profile; use --experimental-builtin-modules`.
 
 The F3 fixture (`//:dump`) covers the provider surface without `ctx.fragments`.
 It copies apple_support's no-versions computation.

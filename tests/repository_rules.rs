@@ -110,8 +110,10 @@ fn selected_module_aliases_do_not_force_unrelated_extension_namespace_resolution
         bytes(&f.build("@dep//:data")[0].1),
         b"existing selected source"
     );
+    // Every module sees @bazel_tools (Bazel 9.3 ModuleThreadContext.java:383-401);
+    // this profile has no built-in contents, so demanding it fails explicitly.
     let unknown = f.run(&["query", "@ordinary//:data"]);
-    rejected(&unknown, "unknown apparent repository @bazel_tools");
+    rejected(&unknown, "built-in repository @@bazel_tools");
 }
 
 #[test]
@@ -171,6 +173,8 @@ fn label_template_repositories_keep_their_pre_n21_publication_identity() {
     // Goldens were produced by the main binary (040d055, before N21) with a
     // private --cache-dir on linux/amd64; N21 must not rekey repositories that
     // only use ctx.file and Label templates (direct and extension-generated).
+    // N51 intentionally rekeyed both: every repository mapping now includes
+    // the built-in @bazel_tools entry (Bazel 9.3 ModuleThreadContext.java:383-401).
     let f = Fixture::new();
     f.file("MODULE.bazel", "module(name='main')\nmake = use_repo_rule('//:defs.bzl','make')\nmake(name='made', source='//:data.tpl')\n");
     f.file("BUILD.bazel", "genrule(name='copy',srcs=['@made//:data.txt','@made//:tool.sh'],outs=['copy.txt'],cmd='cat $(SRCS) > $@')\n");
@@ -190,7 +194,7 @@ fn label_template_repositories_keep_their_pre_n21_publication_identity() {
     if golden {
         assert_eq!(
             identity(&f),
-            "f9736a7487473637e97783d2bdf641a417e64493204e33a4c16cac0f9e71bec9"
+            "8cc88f0fed662a69614784526c4b0d4f94024b376009932143424822113bae3d"
         );
     }
     // Template content changes still rekey through the templates entry.
@@ -213,7 +217,7 @@ fn label_template_repositories_keep_their_pre_n21_publication_identity() {
     if golden {
         assert_eq!(
             identity(&f),
-            "d3421e2c2e5dd7d64464467f49e9128319181a35645ec17f091a05c55e02e14d"
+            "ea2fc9f3e2be3e153395a3e34cc657d52053f0277d1824d89ac548d935469653"
         );
     }
 }

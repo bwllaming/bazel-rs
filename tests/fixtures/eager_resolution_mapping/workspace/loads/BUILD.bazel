@@ -1,0 +1,6 @@
+load("@localdep//:loads.bzl", "LOADED")
+
+filegroup(
+    name = "loads",
+    tags = LOADED,
+)

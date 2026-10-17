@@ -724,7 +724,15 @@ impl<'a> Loader<'a> {
     fn source_path(&self, label: &Label) -> Result<PathBuf, String> {
         // This checks every package-directory component (including symlinks and
         // nested workspaces), without reading/evaluating the BUILD contents.
-        let root = self.repositories.root(&label.repository)?;
+        let root = self.repositories.root(&label.repository).map_err(|error| {
+            // Name the demanded file: the mapping entry resolved, only the
+            // built-in contents are absent (docs/BUILTIN_MODULES.md).
+            if error == crate::repository::BAZEL_TOOLS_UNAVAILABLE {
+                format!("cannot load '{label}': {error}")
+            } else {
+                error
+            }
+        })?;
         // BzlLoadFunction's ContainingPackageLookup: ignored directories are
         // deleted packages, so the lookup continues with the parent.
         let ignored = self

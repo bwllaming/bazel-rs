@@ -26,10 +26,10 @@ def record(stdout='', stderr='', returncode=0, **changes):
 
 
 MESSAGES = {
-    'explicit': 'unknown apparent repository @bazel_tools from canonical repository ""; extension repository not materialized or dependency not declared',
+    'explicit': 'the built-in repository @@bazel_tools is visible to every module but has no contents in this module profile; use --experimental-builtin-modules',
     'malformed': '--experimental-builtin-modules expects true or false',
     'filesystem-override': 'unsupported option --override_repository; MODULE overrides do not replace the built-in repository filesystem',
-    'collision': 'repository name "bazel_tools" is already used',
+    'collision': "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a bazel_dep at /private/MODULE.bazel:1:10, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
     'empty-registry': 'module rules_license@1.0.0 was not found in registries [/private/empty-registry]',
     'metadata-consumed': 'module metadata_only_probe@8.7 was not found in registries [/private/registry]',
 }

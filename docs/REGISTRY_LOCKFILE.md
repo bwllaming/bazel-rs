@@ -119,8 +119,12 @@ write.
   labels resolved with each module's bazel_dep mapping, and IDs spelled as in
   `GsonTypeAdapterUtil.java:176-187`. An isolated usage matches by its
   `label%name%<module key>+` prefix, because native does not record the exported
-  proxy name. If the usage table cannot be built, nothing is written, as Bazel
-  writes nothing without a `BazelDepGraphValue` (`:95-100`). Order is the file
+  proxy name. If the usage table cannot be built, the command fails with the
+  error the lazy path reports, and nothing is written. Bazel fails the command
+  as well (`getExtensionUsagesById`, `:115-130`) and writes nothing without a
+  `BazelDepGraphValue` (`:95-100`). Before N51 native silently skipped the
+  write. The message text differs: Bazel reports `invalid label for module
+  extension found at <loc>: no repo visible as '@x' here`. Order is the file
   order; Bazel sorts by `ModuleExtensionId.LEXICOGRAPHIC_COMPARATOR`, which is
   already the order of a Bazel-written file.
   - Genuine Bazel reads such a file the same way: missing entries are evaluated
@@ -171,7 +175,10 @@ when a lockfile mode other than `off` is combined with a remote (`http`/`https`)
 registry, including the default `https://bcr.bazel.build/`, and the workspace
 has a `MODULE.bazel`. Otherwise native keeps its
 lazy profile (`NATIVE_BOUNDARY` tests): a main-repository-only query does not
-resolve, and nothing is written.
+resolve, and nothing is written. As a result, with `--lockfile_mode=off` a bad
+extension label, or a dependency's `bazel_tools` name collision, fails only when
+demanded. Bazel fails every command (`artifacts/eager_mapping-followup-check.py`
+rows F1/off).
 
 ## Native-only `--native-lockfile=workspace|readonly|/absolute/path`
 

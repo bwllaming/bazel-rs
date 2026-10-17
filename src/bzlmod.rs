@@ -16,7 +16,7 @@ use starlark::values::list::ListRef;
 use starlark::values::tuple::TupleRef;
 use starlark::values::{Heap, Value, ValueLike};
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
@@ -50,6 +50,9 @@ impl ModuleFile {
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum BuiltinInjection {
     Disabled,
+    /// The explicit-module profile: no implicit dependency is recorded, but
+    /// the name stays reserved for the built-in exactly as in Bazel.
+    ReserveBazelTools,
     AppendBazelTools,
     ActualBazelTools,
 }
@@ -241,7 +244,9 @@ pub struct Registration {
 struct State {
     file: ModuleFile,
     non_module_called: bool,
-    repo_names: BTreeSet<String>,
+    /// Repository name -> (how, location) of its first usage
+    /// (ModuleThreadContext.RepoNameUsage, :105-113).
+    repo_names: BTreeMap<String, (&'static str, String)>,
     next_isolation: usize,
     next_declaration: usize,
     pending_attributes: Vec<PendingAttributes>,
@@ -540,9 +545,10 @@ pub(crate) fn evaluate_source_with_builtins(
         Ok::<_, String>(())
     })?;
     let mut state = collector.state.into_inner();
+    if let BuiltinInjection::AppendBazelTools | BuiltinInjection::ReserveBazelTools = injection {
+        reserve_builtin(&state, "bazel_tools")?;
+    }
     if let BuiltinInjection::AppendBazelTools = injection {
-        reserve_repo(&mut state, "bazel_tools")
-            .map_err(|e| format!("cannot finalize MODULE file {filename}: {e}"))?;
         state.file.implicit_dependencies.push(Dependency {
             name: "bazel_tools".to_owned(),
             repo_name: DependencyRepoName::Explicit("bazel_tools".to_owned()),
@@ -847,7 +853,12 @@ fn invoke<'v>(
         for (local, exported) in imports {
             validate_repo_name(&local)?;
             validate_repo_name(&exported)?;
-            reserve_repo(&mut state, &local)?;
+            reserve_repo(
+                &mut state,
+                &local,
+                "by a use_repo() call",
+                caller_location(eval),
+            )?;
             let usage = &mut state.file.extension_usages[proxy.usage];
             usage.imports.push(RepositoryImport {
                 local_name: local,
@@ -915,7 +926,18 @@ fn invoke<'v>(
             };
             if !info.effective_repo_name().is_empty() {
                 validate_repo_name(info.effective_repo_name())?;
-                reserve_repo(&mut state, info.effective_repo_name())?;
+                // ModuleFileGlobals.module (:175-181).
+                let how = if info.repo_name.as_deref().is_none_or(str::is_empty) {
+                    "as the current module name"
+                } else {
+                    "as the module's own repo name"
+                };
+                reserve_repo(
+                    &mut state,
+                    info.effective_repo_name(),
+                    how,
+                    caller_location(eval),
+                )?;
             }
             state.file.module = Some(info);
         }
@@ -941,7 +963,7 @@ fn invoke<'v>(
             };
             if let Some(repo) = dep.effective_repo_name() {
                 validate_repo_name(repo)?;
-                reserve_repo(&mut state, repo)?;
+                reserve_repo(&mut state, repo, "by a bazel_dep", caller_location(eval))?;
             }
             state.file.dependencies.push(dep);
         }
@@ -1118,7 +1140,7 @@ fn record_repo_rule<'v>(
     }
     kwargs.0.insert("name".to_owned(), name_value);
     let mut state = collector.state.borrow_mut();
-    reserve_repo(&mut state, &name)?;
+    reserve_repo(&mut state, &name, "by a repo rule", caller_location(eval))?;
     let identity = ExtensionIdentity {
         label: "//:MODULE.bazel".to_owned(),
         extension_name: raw_identity.to_owned(),
@@ -1192,11 +1214,29 @@ fn caller_location(eval: &Evaluator<'_, '_, '_>) -> String {
     )
 }
 
-fn reserve_repo(state: &mut State, name: &str) -> anyhow::Result<()> {
-    if !state.repo_names.insert(name.to_owned()) {
+fn reserve_repo(
+    state: &mut State,
+    name: &str,
+    how: &'static str,
+    location: String,
+) -> anyhow::Result<()> {
+    if state.repo_names.contains_key(name) {
         bail!("repository name {name:?} is already used");
     }
+    state.repo_names.insert(name.to_owned(), (how, location));
     Ok(())
+}
+
+/// ModuleThreadContext.buildModule (Bazel 9.3 :383-401): the built-in
+/// dependency's name usage (Location.BUILTIN, `<builtin>`) collides with any
+/// usage the MODULE file recorded, including ignored dev declarations.
+fn reserve_builtin(state: &State, name: &str) -> Result<(), String> {
+    match state.repo_names.get(name) {
+        None => Ok(()),
+        Some((how, location)) => Err(format!(
+            "The repo name '{name}' cannot be defined as a built-in dependency at <builtin> as it is already defined {how} at {location}, '{name}' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive"
+        )),
+    }
 }
 fn string(value: Value<'_>, name: &str) -> anyhow::Result<String> {
     value
@@ -1519,30 +1559,68 @@ e.tag(names=list(names))
         }
     }
 
+    /// Bazel 9.3 ModuleThreadContext.buildModule (:383-401) with the colliding
+    /// usage's `how` (ModuleFileGlobals :175-181, :317, :666-676, :867).
+    fn builtin_collision(how: &str, location: &str) -> String {
+        format!(
+            "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined {how} at {location}, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive"
+        )
+    }
+
     #[test]
     fn builtin_finalization_reserves_names_including_ignored_declarations() {
-        for source in [
-            "module(name='bazel_tools')",
-            "module(name='root',repo_name='bazel_tools')",
-            "bazel_dep(name='bazel_tools',version='1')",
-            "bazel_dep(name='other',repo_name='bazel_tools',dev_dependency=True)",
-            "e=use_extension('//:e.bzl','e')\nuse_repo(e,'bazel_tools')",
-            "e=use_extension('//:e.bzl','e',dev_dependency=True)\nuse_repo(e,bazel_tools='exported')",
-            "r=use_repo_rule('//:r.bzl','r')\nr(name='bazel_tools')",
+        for (source, how, location) in [
+            (
+                "module(name='bazel_tools')",
+                "as the current module name",
+                "MODULE.bazel:1:7",
+            ),
+            (
+                "module(name='root',repo_name='bazel_tools')",
+                "as the module's own repo name",
+                "MODULE.bazel:1:7",
+            ),
+            (
+                "bazel_dep(name='bazel_tools',version='1')",
+                "by a bazel_dep",
+                "MODULE.bazel:1:10",
+            ),
+            (
+                "bazel_dep(name='other',repo_name='bazel_tools',dev_dependency=True)",
+                "by a bazel_dep",
+                "MODULE.bazel:1:10",
+            ),
+            (
+                "e=use_extension('//:e.bzl','e')\nuse_repo(e,'bazel_tools')",
+                "by a use_repo() call",
+                "MODULE.bazel:2:9",
+            ),
+            (
+                "e=use_extension('//:e.bzl','e',dev_dependency=True)\nuse_repo(e,bazel_tools='exported')",
+                "by a use_repo() call",
+                "MODULE.bazel:2:9",
+            ),
+            (
+                "r=use_repo_rule('//:r.bzl','r')\nr(name='bazel_tools')",
+                "by a repo rule",
+                "MODULE.bazel:2:2",
+            ),
         ] {
             for context in contexts() {
-                let error = evaluate_source_with_builtins(
-                    "MODULE.bazel",
-                    source.to_owned(),
-                    context,
+                for injection in [
                     BuiltinInjection::AppendBazelTools,
-                )
-                .unwrap_err();
-                assert!(
-                    error.contains("repository name \"bazel_tools\" is already used"),
-                    "{source}: {error}"
-                );
-                // Legacy recording still permits these names without injecting anything.
+                    BuiltinInjection::ReserveBazelTools,
+                ] {
+                    let error = evaluate_source_with_builtins(
+                        "MODULE.bazel",
+                        source.to_owned(),
+                        context,
+                        injection,
+                    )
+                    .unwrap_err();
+                    assert_eq!(error, builtin_collision(how, location), "{source}");
+                }
+                // Profile-free recording still permits these names without injecting anything.
                 assert!(
                     in_context(source, context)
                         .unwrap()
@@ -1550,6 +1628,28 @@ e.tag(names=list(names))
                         .is_empty()
                 );
             }
+        }
+    }
+
+    #[test]
+    fn reserve_only_profile_records_no_implicit_dependency() {
+        for context in contexts() {
+            let file = evaluate_source_with_builtins(
+                "MODULE.bazel",
+                "module(name='root')\nbazel_dep(name='a',version='1')".to_owned(),
+                context,
+                BuiltinInjection::ReserveBazelTools,
+            )
+            .unwrap();
+            assert!(file.implicit_dependencies.is_empty());
+            assert_eq!(
+                file,
+                in_context(
+                    "module(name='root')\nbazel_dep(name='a',version='1')",
+                    context
+                )
+                .unwrap()
+            );
         }
     }
 
@@ -1579,7 +1679,7 @@ e.tag(names=list(names))
                 BuiltinInjection::AppendBazelTools,
             )
             .unwrap_err()
-            .contains("already used")
+            .contains("already defined as the current module name at MODULE.bazel:1:7")
         );
     }
 
