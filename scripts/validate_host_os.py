@@ -434,7 +434,11 @@ def require_rejection(row, value, engine):
     else:
         pattern = patterns[diagnostic]
         required_source = None
-    if not re.search(pattern, text) or (required_source and required_source not in text.replace(' ', '')):
+    # The generic patterns describe the diagnostic message: match them with
+    # absolute paths masked, so a workspace or worktree path (e.g. one
+    # containing "tag" and "os") never stands in for the message text.
+    message = re.sub(r'/[^\s:\'"`]+', '<path>', text) if pattern == patterns.get(diagnostic) else text
+    if not re.search(pattern, message) or (required_source and required_source not in text.replace(' ', '')):
         raise ValueError('wrong diagnostic body/site: '+diagnostic)
     route = value['probe'].split('.')[0]
     expected = ([] if value['name'] == 'binding' or route in ('ctor', 'proxy', 'build') else

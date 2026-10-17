@@ -466,9 +466,14 @@ class DiagnosticsTests(unittest.TestCase):
     def test_native_proxy_os_does_not_relax_reference_or_metadata_getter_boundaries(self):
         value = suite.fixture('native-boundary', 'proxy.os')
         row = native_proxy_record()
+        # Also from a workspace path containing "tag" and "os" (a worktree
+        # such as .../bazel-parity-staging/artifacts/host-os-*/workspace): the
+        # generic pattern matches message text, never paths.
+        tagged = native_proxy_record('/tmp/opencode/bazel-parity-staging/artifacts/host-os-x/workspace')
         for engine in ('reference', 'baseline', 'unknown'):
-            with self.subTest(engine=engine), self.assertRaises(ValueError):
-                suite.require_rejection(row, value, engine)
+            for record in (row, tagged):
+                with self.subTest(engine=engine, cwd=record['cwd']), self.assertRaises(ValueError):
+                    suite.require_rejection(record, value, engine)
         for probe in ('extension.whole-json', 'ordinary.whole-json', 'direct.whole-json'):
             with self.subTest(probe=probe), self.assertRaises(ValueError):
                 suite.require_rejection(row, suite.fixture('native-boundary', probe), 'native')
