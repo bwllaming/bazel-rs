@@ -2056,7 +2056,7 @@ r(name='sdk', words=[version])
         std::os::unix::fs::symlink("go.mod", fixture.root.path().join("link")).unwrap();
         fs::write(
             fixture.root.path().join("large"),
-            vec![b'x'; crate::extension_download::FILE_LIMIT + 1],
+            vec![b'x'; 9 * 1024 * 1024],
         )
         .unwrap();
         let root = fs::canonicalize(fixture.root.path()).unwrap();
@@ -2106,23 +2106,21 @@ r(name='sdk', words=[version])
                 "Not a directory".to_owned(),
             ),
             (
-                "ctx.read(Label('//:large'))".to_owned(),
-                "module I/O resource limit: 8MiB file".to_owned(),
-            ),
-            (
                 "ctx.read(Label('//:go.mod'), 'no')".to_owned(),
                 "extra positional argument".to_owned(),
             ),
         ] {
             fixture.error(&body, "{}", &[], &expected);
         }
-        // Each source read counts against the shared 32-call I/O budget.
-        fixture.error(
-            "for i in range(33):\n    ctx.read(Label('//:go.mod'))",
-            "{}",
-            &[],
-            "32 download/read calls",
-        );
+        // No shared call budget or 8 MiB source-read cap (both former native
+        // limits): 33 reads and a 9 MiB source file succeed.
+        fixture
+            .run(
+                "for i in range(33):\n    ctx.read(Label('//:go.mod'))\nlen(ctx.read(Label('//:large'))) == 9 * 1024 * 1024 or fail('large')",
+                "{}",
+                &[],
+            )
+            .unwrap();
         assert!(!fixture.root.path().join("cache").exists());
     }
 

@@ -11,10 +11,16 @@ allocative = "=0.3.6"
 anyhow = "1"
 base64 = "=0.22.1"
 blake3 = "=1.8.2"
+bzip2 = "=0.6.1"
 flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
 fs2 = "0.4"
+# Only for the client-side HTTP/1 reason phrase (hyper::ext::ReasonPhrase) that
+# Bazel shows in "GET returned CODE REASON"; same version reqwest already uses.
+hyper = { version = "=1.12.0", default-features = false }
+lzma-rust2 = { version = "=0.22.0", default-features = false, features = ["std", "optimization", "xz"] }
 num-bigint = "=0.4.8"
 reqwest = { version = "=0.12.28", default-features = false, features = ["blocking", "rustls-tls-native-roots"] }
+ruzstd = "=0.9.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha1 = "=0.10.6"
@@ -23,6 +29,9 @@ starlark = "=0.14.2"
 tar = { version = "=0.4.46", default-features = false }
 tempfile = "=3.27.0"
 zip = { version = "=9.0.2", default-features = false, features = ["deflate-flate2"] }
+
+[dev-dependencies]
+lzma-rust2 = { version = "=0.22.0", default-features = false, features = ["std", "optimization", "xz", "encoder"] }
 
 [patch.crates-io]
 starlark = { path = "vendor/starlark-0.14.2" }

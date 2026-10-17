@@ -81,9 +81,9 @@ Native safety profile, stricter than Bazel: the tree root's existing ancestors
 must be real directories; symlinked directories inside the tree are never
 traversed; a leaf symlink is read through only when it resolves inside the tree
 and is then replaced by a regular file (the referent is unchanged); modes are
-normalized to 0644/0755 for the store. Limits are 16 MiB per patch or file,
-100000 lines, a 256 MiB working set per patch and 100 million context comparisons
-per hunk. Tree patches run only in caller-owned staging; a failing patch may leave
+normalized to 0644/0755 for the store. Like PatchUtil, patch and target texts
+are read whole into line lists; N32 removed the former 16 MiB, 100000-line,
+256 MiB working-set and 100-million-comparison native caps. Tree patches run only in caller-owned staging; a failing patch may leave
 earlier sections applied (as in Bazel), and callers discard the stage.
 
 Contract sources are Bazel 9.3 commit `e89755babf3e941bc1e9d8120b1cd48854ab9dfa`

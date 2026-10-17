@@ -57,10 +57,9 @@ Incomplete publication is detected and repaired. Cache ancestors and staging
 must be trusted against concurrent hostile mutation; this is not a filesystem
 sandbox.
 
-Exported trees are limited to 100000 entries, 1 GiB of file contents and depth 64.
-MODULE is limited to 16 MiB, and Git's tracked-file listing must be smaller than
-1 MiB. These are export/validation bounds, not a network-pack or checkout-disk
-quota. Directory/external/dangling/cyclic symlinks, gitlinks, special files,
+Exported paths are limited to depth 64 and 4096 bytes (the store path
+profile). N32 removed the former 100000-entry, 1 GiB, 16 MiB MODULE and 1 MiB
+listing caps; files are copied and hashed in streaming fashion. Directory/external/dangling/cyclic symlinks, gitlinks, special files,
 hardlinks and unsafe/non-UTF-8 paths are rejected, including tracked unsupported
 entries outside the selected prefix. Internal relative file links have the
 separate validation and cache-identity contract in `docs/GIT_SYMLINKS.md`.
@@ -76,8 +75,10 @@ Git configuration, proxies, askpass, SSH agents and loader overrides are not
 forwarded. System Git, its HTTPS helpers, system CA store and `/usr/bin/kill`
 remain trusted components.
 
-Git commands share a 120-second deadline. Captured stdout/stderr are limited to
-1 MiB each. Each command owns a process group that is killed and reaped on
+Each Git command has a 600-second timeout, the default `repository_ctx.execute`
+timeout Bazel's git_repository commands run with (git_worker.bzl passes none);
+the former shared 120-second deadline is gone. Captured stdout/stderr are kept
+whole (error diagnostics show bounded tails). Each command owns a process group that is killed and reaped on
 completion/error; descendants holding pipes are also handled. Cleanup failures
 cannot produce success. A child that escapes its group, external termination of
 the Rust process, or uninterruptible kernel activity is outside these guarantees.

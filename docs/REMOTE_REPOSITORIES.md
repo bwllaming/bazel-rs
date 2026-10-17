@@ -16,14 +16,16 @@ overlays always come from the selected registry, never a fallback registry.
 Graph-only operations do not download source archives. Main-only source queries
 continue to avoid evaluating the module graph.
 
-HTTP transport uses verified TLS, bounded redirects without HTTPS downgrade,
-connection/request deadlines and size limits. Credentials, credential helpers,
+HTTP transport uses verified TLS, bounded redirects without HTTPS downgrade and
+Bazel's HttpConnector timeouts (10 s connect, 20 s per read; no whole-transfer
+deadline); there are no size limits (N32). Credentials, credential helpers,
 environment proxies and automatic content decoding are not enabled. Metadata is
 fresh per resolution rather than cached under an untrusted name/version key.
 This deliberately does not implement authentication, proxy configuration,
 conditional HTTP caching, lockfile pins or all Bazel downloader policies.
 
-Archive sources support tar, gzip-compressed tar and stored/deflated ZIP, with
+Archive sources support tar, tar.gz/tgz, tar.xz/txz, tar.zst/tzst, tar.bz2/tbz
+and stored/deflated ZIP (type inferred with Bazel's suffix search order), with
 SHA-1, SHA-256, SHA-384, SHA-512 or BLAKE3 SRI verification. Registry mirrors precede
 the primary URL; descriptor mirrors follow it. Checksum failures never publish a
 blob or repository. The registry itself supplies the digest: HTTP registry access
@@ -47,13 +49,18 @@ documentation metadata. See `artifacts/archive-docs-url-validation.json` and
 Extraction uses a private staging directory. Regular UTF-8 files/directories,
 tar/zip symbolic links and tar hard links are accepted (links follow Bazel 9.3,
 see `docs/ARCHIVE_SYMLINKS.md`); traversal, absolute entry paths, special entries,
-semantic PAX metadata, local PAX/GNU extension records and conflicting files fail
-explicitly.
+semantic PAX metadata (sparse files, PAX `size`, unknown keys), extension
+records over 1 MiB and conflicting files fail explicitly. GNU long names/links
+(`L`/`K`) and local PAX `path`/`linkpath` name the next entry like
+commons-compress; type `7` (contiguous) entries are regular files.
 Global PAX headers containing only inert `comment` records are supported as
 described below. This is stricter than Bazel's
-extraction semantics. Executable files become 0755, others 0644. Downloads are
-limited to 256 MiB, expanded data to 1 GiB and entries to 100000; metadata/overlay
-files are limited to 16 MiB. These are explicit native-profile limits, not parity.
+extraction semantics. Executable files become 0755, others 0644. Source
+archives stream into a temporary file of the content-addressed download cache
+while being hashed and are published by atomic rename only after verification
+(`downloads/<algorithm>/<hex>`); extraction streams from that blob, and overlays
+are copied from their blobs. There are no download, expanded-size, entry-count
+or metadata/overlay size caps (N32; Bazel has none).
 
 ### Bounded global PAX comments
 
@@ -63,8 +70,8 @@ checked lengths; it never splits values by lines or allocates a payload-sized
 string. Values are ignored opaque bytes, including embedded newlines, equals
 signs, NULs and non-UTF-8 bytes. This is not a claim of strict POSIX text validation.
 Empty headers, repeated comments, empty values and leading-zero lengths are
-accepted. Across an archive, at most 100000 PAX records are accepted, separately
-from the existing header, expanded-data and decompressed-stream limits.
+accepted. There is no PAX record-count cap (N32); records are still consumed
+in small, fixed-size reads.
 
 Metadata names must still be safe, nonempty relative paths; mode syntax and link
 fields are validated. These are explicit native restrictions on pseudo-header

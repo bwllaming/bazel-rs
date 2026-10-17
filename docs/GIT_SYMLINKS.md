@@ -33,8 +33,8 @@ is not sufficient evidence of the committed target. Export requires equality
 between the validated committed target and the native checkout target.
 The Git tree cache policy is version 3, so trees produced before committed-blob
 validation are not reused. Each link's size and content are read by separate
-bounded Git commands sharing the existing 120-second fetch deadline; large link
-sets can therefore hit the deadline rather than being silently skipped.
+Git commands, each with the 600-second per-command timeout (N32 replaced the
+former shared 120-second fetch deadline); a link is never silently skipped.
 
 ## Publication and cache integrity
 

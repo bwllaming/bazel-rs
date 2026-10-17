@@ -17,19 +17,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 // v2 trusted checkout link strings, which Git can truncate at an embedded NUL.
 // Do not reuse those trees/manifests even if their filesystem snapshots match.
 const POLICY: &str = "native-git-source-v3";
-const MAX_ENTRIES: usize = 100_000;
-const MAX_BYTES: u64 = 1024 * 1024 * 1024;
+// Path profile of the content-addressed store (repository_links), not I/O caps.
 const MAX_DEPTH: usize = 64;
 const MAX_PATH_BYTES: usize = 4096;
-const MODULE_LIMIT: u64 = 16 * 1024 * 1024;
-const LISTING_LIMIT: usize = 1024 * 1024;
-const MANIFEST_LIMIT: u64 = 64 * 1024 * 1024;
-const DEADLINE: Duration = Duration::from_secs(120);
+/// Per Git command, like Bazel's git_repository, whose `ctx.execute` calls
+/// use the default 600-second timeout (git_worker.bzl; repository_ctx.execute
+/// `timeout` default). There are no tree size, entry-count or listing caps.
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GitSpec {
@@ -175,14 +174,14 @@ pub fn materialize<T>(
     check_optional_directory(&destination)?;
     check_optional_regular(&manifest_path)?;
     if destination.is_dir()
-        && let Ok(bytes) = read_bounded(&manifest_path, MANIFEST_LIMIT)
+        && let Ok(bytes) = read_whole(&manifest_path)
         && let Ok(manifest) = serde_json::from_slice::<Manifest>(&bytes)
         && manifest.policy == POLICY
         && manifest.key == key
         && manifest.commit == commit
         && snapshot(&destination, false).is_ok_and(|actual| actual == manifest.files)
     {
-        let module_file = read_bounded(&destination.join("MODULE.bazel"), MODULE_LIMIT)?;
+        let module_file = read_whole(&destination.join("MODULE.bazel"))?;
         let value = validate(&destination, &module_file)?;
         return Ok((
             GitTree {
@@ -201,7 +200,7 @@ pub fn materialize<T>(
     fetch_export(spec, &commit, &cache, stage.path())?;
     patches.apply_tree(stage.path())?;
     let files = snapshot(stage.path(), true)?;
-    let module_file = read_bounded(&stage.path().join("MODULE.bazel"), MODULE_LIMIT)?;
+    let module_file = read_whole(&stage.path().join("MODULE.bazel"))?;
     let value = validate(stage.path(), &module_file)?;
     let manifest = Manifest {
         policy: POLICY.into(),
@@ -210,9 +209,6 @@ pub fn materialize<T>(
         files,
     };
     let encoded = serde_json::to_vec(&manifest).map_err(|e| e.to_string())?;
-    if encoded.len() as u64 > MANIFEST_LIMIT {
-        return Err("Git manifest exceeds size limit".into());
-    }
     // Only remove our known-key corrupt tree after its replacement is complete
     // and validated. Never remove arbitrary paths or non-directory destinations.
     check_optional_directory(&destination)?;
@@ -239,15 +235,7 @@ pub fn materialize<T>(
     ))
 }
 
-fn remaining(start: Instant) -> Result<Duration, String> {
-    DEADLINE
-        .checked_sub(start.elapsed())
-        .filter(|d| !d.is_zero())
-        .ok_or_else(|| "Git materialization exceeded its 120-second command deadline".into())
-}
-
 fn fetch_export(spec: &GitSpec, commit: &str, cache: &Path, stage: &Path) -> Result<(), String> {
-    let start = Instant::now();
     let private = tempfile::Builder::new()
         .prefix(".fetch-")
         .tempdir_in(cache)
@@ -263,7 +251,7 @@ fn fetch_export(spec: &GitSpec, commit: &str, cache: &Path, stage: &Path) -> Res
             .prefix("checkout-")
             .tempdir_in(private.path())
             .map_err(|e| e.to_string())?;
-        let run = |args: &[&str]| runner.run(checkout.path(), args, remaining(start)?);
+        let run = |args: &[&str]| runner.run(checkout.path(), args, COMMAND_TIMEOUT);
         run(&["init", "--quiet"])?;
         run(&["remote", "add", "origin", &spec.remote])?;
         let fetch = if shallow {
@@ -342,11 +330,6 @@ enum TrackedKind {
 }
 
 fn parse_listing(bytes: &[u8]) -> Result<Vec<Tracked>, String> {
-    // Reject saturation too, so a bounded runner cannot turn a truncated
-    // response ending exactly on a NUL boundary into an apparently full tree.
-    if bytes.len() >= LISTING_LIMIT {
-        return Err("Git ls-tree listing reaches the 1 MiB limit".into());
-    }
     if !bytes.is_empty() && bytes.last() != Some(&0) {
         return Err("truncated Git ls-tree listing".into());
     }
@@ -383,9 +366,6 @@ fn parse_listing(bytes: &[u8]) -> Result<Vec<Tracked>, String> {
             kind,
             oid: fields[2].into(),
         });
-        if entries.len() > MAX_ENTRIES {
-            return Err("Git tree exceeds 100000 entries".into());
-        }
     }
     Ok(entries)
 }
@@ -402,10 +382,9 @@ fn committed_links(
             continue;
         }
         // OIDs were validated as full hex SHA-1s by parse_listing. Two commands
-        // per link trade throughput for simple bounded reads with closed stdin;
-        // all commands share fetch_export's 120-second deadline. Size-check
-        // before reading so the runner's 1 MiB cap cannot silently truncate a
-        // blob into a valid target. Git's fetched object integrity is trusted.
+        // per link with closed stdin, each under COMMAND_TIMEOUT. The size is
+        // checked first so a target beyond the store path profile is rejected
+        // before its blob is read. Git's fetched object integrity is trusted.
         let size_bytes = run(&["cat-file", "-s", &entry.oid])?;
         let size_text =
             std::str::from_utf8(&size_bytes).map_err(|_| "invalid Git symlink blob size")?;
@@ -524,33 +503,23 @@ fn export(
     }
     repository_links::validate(&selected_files, &selected_links)
         .map_err(|e| format!("invalid selected Git symlink namespace after strip_prefix: {e}"))?;
-    let mut total = selected_links.values().map(|s| s.len() as u64).sum::<u64>();
-    if total > MAX_BYTES {
-        return Err("Git export exceeds 1 GiB total file and link bytes".into());
-    }
+
     // Copy regular files first. No link is ever opened, copied or chmodded.
     for (entry, relative) in selected {
         let TrackedKind::Regular { executable } = entry.kind else {
             continue;
         };
         let source = checkout.join(&entry.path);
-        if regular_metadata(&source)?.len() > MAX_BYTES - total {
-            return Err("Git export exceeds 1 GiB total file and link bytes".into());
-        }
+        regular_metadata(&source)?;
         let target = stage.join(relative);
         ensure_directory(target.parent().ok_or("Git export path has no parent")?)?;
-        let mut input = File::open(&source)
-            .map_err(|e| e.to_string())?
-            .take(MAX_BYTES - total + 1);
+        let mut input = File::open(&source).map_err(|e| e.to_string())?;
         let mut output = OpenOptions::new()
             .create_new(true)
             .write(true)
             .open(&target)
             .map_err(|e| e.to_string())?;
-        total += std::io::copy(&mut input, &mut output).map_err(|e| e.to_string())?;
-        if total > MAX_BYTES {
-            return Err("Git export exceeds 1 GiB total file bytes".into());
-        }
+        std::io::copy(&mut input, &mut output).map_err(|e| e.to_string())?;
         set_mode(&target, if executable { 0o755 } else { 0o644 })?;
     }
     for (relative, raw_target) in selected_links {
@@ -692,25 +661,15 @@ fn regular_metadata(path: &Path) -> Result<fs::Metadata, String> {
     Ok(metadata)
 }
 
-fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
-    if regular_metadata(path)?.len() > limit {
-        return Err(format!(
-            "Git file exceeds {limit}-byte limit: {}",
-            path.display()
-        ));
-    }
+/// Read a whole regular file whose content is needed in memory (the module
+/// file, the manifest); no artificial size cap.
+fn read_whole(path: &Path) -> Result<Vec<u8>, String> {
+    regular_metadata(path)?;
     let mut bytes = Vec::new();
     File::open(path)
         .map_err(|e| e.to_string())?
-        .take(limit + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
-    if bytes.len() as u64 > limit {
-        return Err(format!(
-            "Git file exceeds {limit}-byte limit: {}",
-            path.display()
-        ));
-    }
     Ok(bytes)
 }
 
@@ -766,7 +725,6 @@ fn snapshot(root: &Path, normalize: bool) -> Result<BTreeMap<String, Entry>, Str
         path: &Path,
         normalize: bool,
         files: &mut BTreeMap<String, Entry>,
-        total: &mut u64,
     ) -> Result<(), String> {
         let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
         let name = path
@@ -777,10 +735,6 @@ fn snapshot(root: &Path, normalize: bool) -> Result<BTreeMap<String, Entry>, Str
             .to_owned();
         if !name.is_empty() {
             safe_relative(&name)?;
-        }
-        // The empty root entry is recorded but not counted as a descendant.
-        if !name.is_empty() && files.len() > MAX_ENTRIES {
-            return Err("Git snapshot exceeds 100000 entries".into());
         }
         let kind = if metadata.file_type().is_symlink() {
             EntryKind::Symlink {
@@ -808,23 +762,10 @@ fn snapshot(root: &Path, normalize: bool) -> Result<BTreeMap<String, Entry>, Str
         }
         if let EntryKind::Symlink { target } = &entry.kind {
             entry.size = target.len() as u64;
-            *total += entry.size;
-            if *total > MAX_BYTES {
-                return Err("Git snapshot exceeds 1 GiB total file and link bytes".into());
-            }
         } else if entry.kind == EntryKind::File {
-            if metadata.len() > MAX_BYTES - *total {
-                return Err("Git snapshot exceeds 1 GiB total file bytes".into());
-            }
             let mut digest = Sha256::new();
-            let mut input = File::open(path)
-                .map_err(|e| e.to_string())?
-                .take(MAX_BYTES - *total + 1);
+            let mut input = File::open(path).map_err(|e| e.to_string())?;
             entry.size = std::io::copy(&mut input, &mut digest).map_err(|e| e.to_string())?;
-            *total += entry.size;
-            if *total > MAX_BYTES {
-                return Err("Git snapshot exceeds 1 GiB total file bytes".into());
-            }
             entry.sha256 = format!("{:x}", digest.finalize());
         }
         let directory = entry.kind == EntryKind::Directory;
@@ -836,7 +777,6 @@ fn snapshot(root: &Path, normalize: bool) -> Result<BTreeMap<String, Entry>, Str
                     &child.map_err(|e| e.to_string())?.path(),
                     normalize,
                     files,
-                    total,
                 )?;
             }
         }
@@ -844,7 +784,7 @@ fn snapshot(root: &Path, normalize: bool) -> Result<BTreeMap<String, Entry>, Str
     }
     required_directory(root)?;
     let mut files = BTreeMap::new();
-    visit(root, root, normalize, &mut files, &mut 0)?;
+    visit(root, root, normalize, &mut files)?;
     let mut regular_files = BTreeSet::new();
     let mut links = BTreeMap::new();
     for (name, entry) in &files {
@@ -2108,10 +2048,15 @@ mod tests {
         let mut invalid = format!("100644 blob {sha}\t").into_bytes();
         invalid.extend([255, 0]);
         assert!(parse_listing(&invalid).is_err());
-        assert!(parse_listing(&vec![0; LISTING_LIMIT + 1]).is_err());
+        // No listing-size or entry-count cap (former 1 MiB / 100000 limits).
+        let many: String = (0..100_001)
+            .map(|i| format!("100644 blob {sha}\tf{i}\0"))
+            .collect();
+        assert!(many.len() > 1024 * 1024);
+        assert_eq!(parse_listing(many.as_bytes()).unwrap().len(), 100_001);
         assert!(safe_relative(&vec!["x"; 65].join("/")).is_err());
         assert!(verify_commit(format!("{}\n", "b".repeat(40)).as_bytes(), &sha).is_err());
-        assert!(remaining(Instant::now() - DEADLINE).is_err());
+        assert_eq!(COMMAND_TIMEOUT, Duration::from_secs(600));
     }
 
     #[test]
@@ -2263,17 +2208,24 @@ mod tests {
         fs::create_dir(root.join(".git")).unwrap();
         assert!(snapshot(root, false).is_err());
         fs::remove_dir(root.join(".git")).unwrap();
+        // No size caps (the former 1 GiB tree / 16 MiB module limits).
         File::create(root.join("huge"))
             .unwrap()
-            .set_len(MAX_BYTES + 1)
+            .set_len(17 * 1024 * 1024)
             .unwrap();
-        assert!(snapshot(root, false).unwrap_err().contains("1 GiB"));
+        assert_eq!(
+            snapshot(root, false).unwrap()["huge"].size,
+            17 * 1024 * 1024
+        );
         fs::remove_file(root.join("huge")).unwrap();
         File::create(root.join("MODULE.bazel"))
             .unwrap()
-            .set_len(MODULE_LIMIT + 1)
+            .set_len(17 * 1024 * 1024)
             .unwrap();
-        assert!(read_bounded(&root.join("MODULE.bazel"), MODULE_LIMIT).is_err());
+        assert_eq!(
+            read_whole(&root.join("MODULE.bazel")).unwrap().len(),
+            17 * 1024 * 1024
+        );
     }
 
     #[test]

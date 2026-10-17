@@ -289,8 +289,13 @@ fn callback_failure_unsupported_operations_and_paths_never_publish() {
         ("fail('rollback-sentinel')", "rollback-sentinel"),
         ("ctx.file('../outside', 'bad')", "path"),
         (
-            "ctx.download('https://example.invalid/x','x')",
-            "repository_ctx.download() is not implemented by the native profile",
+            "ctx.watch_tree('x')",
+            "repository_ctx.watch_tree() is not implemented by the native profile",
+        ),
+        // download() is implemented (N32); a block=False request is not.
+        (
+            "ctx.download('https://example.invalid/x','x',sha256='0'*64,block=False)",
+            "download(block = False) is not supported by the native profile",
         ),
         (
             "ctx.symlink('a','../outside')",

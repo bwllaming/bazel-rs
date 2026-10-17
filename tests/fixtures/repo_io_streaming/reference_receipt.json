@@ -1,0 +1,1223 @@
+{
+ "archives": {
+  "big.bin": {
+   "bytes": 20971520,
+   "sha256": "52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab"
+  },
+  "pkg.tar.gz": {
+   "bytes": 112747881,
+   "sha256": "4987b560d046e4b39db419420be735a1889f0319ec78ba9e69dbfe21f76d8b5b"
+  },
+  "pkg.tar.xz": {
+   "bytes": 112718524,
+   "sha256": "c05679ed9a8d05c62d27f10dc11f191609253db23fd4b19d80641f55d8088479"
+  },
+  "pkg.tar.zst": {
+   "bytes": 112732150,
+   "sha256": "1c00542208cccb318d443a187e6d4d417f0a1778675d840b54ebf9d4d031fedb"
+  },
+  "pkg.zip": {
+   "bytes": 112966925,
+   "sha256": "4d7a88be06946696ffd71701a031f2fcc779ce14d2949a6ffb240c28eb6ef7ae"
+  },
+  "small.tar.bz2": {
+   "bytes": 19376,
+   "sha256": "9a568ed86e3e413e2fd0db9b0545aa7c205fa77192fbc14ff17058de5aab740b"
+  }
+ },
+ "comparisons": [
+  {
+   "case": "large-pkg-tar-gz",
+   "compared": "download result",
+   "native": [
+    "N32RESULT success=True sha256=4987b560d046e4b39db419420be735a1889f0319ec78ba9e69dbfe21f76d8b5b size=112747881"
+   ],
+   "reference": [
+    "N32RESULT success=True sha256=4987b560d046e4b39db419420be735a1889f0319ec78ba9e69dbfe21f76d8b5b size=112747881"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "large-pkg-tar-gz",
+   "compared": "extracted tree digest",
+   "native": [
+    "N32TREE 61e675f6753e9dea8fc18f5ca5d60a787b212a027d586e8528095f3ff07a5828 2102"
+   ],
+   "reference": [
+    "N32TREE 61e675f6753e9dea8fc18f5ca5d60a787b212a027d586e8528095f3ff07a5828 2102"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "large-pkg-tar-gz",
+   "compared": "exit code",
+   "native": 0,
+   "reference": 0,
+   "verdict": "MATCH"
+  },
+  {
+   "case": "large-pkg-tar-xz",
+   "compared": "download result",
+   "native": [
+    "N32RESULT success=True sha256=c05679ed9a8d05c62d27f10dc11f191609253db23fd4b19d80641f55d8088479 size=112718524"
+   ],
+   "reference": [
+    "N32RESULT success=True sha256=c05679ed9a8d05c62d27f10dc11f191609253db23fd4b19d80641f55d8088479 size=112718524"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "large-pkg-tar-xz",
+   "compared": "extracted tree digest",
+   "native": [
+    "N32TREE 61e675f6753e9dea8fc18f5ca5d60a787b212a027d586e8528095f3ff07a5828 2102"
+   ],
+   "reference": [
+    "N32TREE 61e675f6753e9dea8fc18f5ca5d60a787b212a027d586e8528095f3ff07a5828 2102"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "large-pkg-tar-xz",
+   "compared": "exit code",
+   "native": 0,
+   "reference": 0,
+   "verdict": "MATCH"
+  },
+  {
+   "case": "large-pkg-tar-zst",
+   "compared": "download result",
+   "native": [
+    "N32RESULT success=True sha256=1c00542208cccb318d443a187e6d4d417f0a1778675d840b54ebf9d4d031fedb size=112732150"
+   ],
+   "reference": [
+    "N32RESULT success=True sha256=1c00542208cccb318d443a187e6d4d417f0a1778675d840b54ebf9d4d031fedb size=112732150"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "large-pkg-tar-zst",
+   "compared": "extracted tree digest",
+   "native": [
+    "N32TREE 61e675f6753e9dea8fc18f5ca5d60a787b212a027d586e8528095f3ff07a5828 2102"
+   ],
+   "reference": [
+    "N32TREE 61e675f6753e9dea8fc18f5ca5d60a787b212a027d586e8528095f3ff07a5828 2102"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "large-pkg-tar-zst",
+   "compared": "exit code",
+   "native": 0,
+   "reference": 0,
+   "verdict": "MATCH"
+  },
+  {
+   "case": "large-pkg-zip",
+   "compared": "download result",
+   "native": [
+    "N32RESULT success=True sha256=4d7a88be06946696ffd71701a031f2fcc779ce14d2949a6ffb240c28eb6ef7ae size=112966925"
+   ],
+   "reference": [
+    "N32RESULT success=True sha256=4d7a88be06946696ffd71701a031f2fcc779ce14d2949a6ffb240c28eb6ef7ae size=112966925"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "large-pkg-zip",
+   "compared": "extracted tree digest",
+   "native": [
+    "N32TREE 61e675f6753e9dea8fc18f5ca5d60a787b212a027d586e8528095f3ff07a5828 2102"
+   ],
+   "reference": [
+    "N32TREE 61e675f6753e9dea8fc18f5ca5d60a787b212a027d586e8528095f3ff07a5828 2102"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "large-pkg-zip",
+   "compared": "exit code",
+   "native": 0,
+   "reference": 0,
+   "verdict": "MATCH"
+  },
+  {
+   "case": "local-extract-tar-bz2",
+   "compared": "extracted tree digest",
+   "native": [
+    "N32TREE 26c88e1105bff231930d00346b567c46c21b766afd82dfbe2627a5fc2ae8ec73 2002"
+   ],
+   "reference": [
+    "N32TREE 26c88e1105bff231930d00346b567c46c21b766afd82dfbe2627a5fc2ae8ec73 2002"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "download-20mib",
+   "compared": "download results",
+   "native": [
+    "N32RESULT success=True sha256=52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab size=20971520 integrity=sha256-UsqNBOidkAJQX2uhTgANrY97QtwnyoyHXXEkbDTyqqs= mode=755"
+   ],
+   "reference": [
+    "N32RESULT success=True sha256=52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab size=20971520 integrity=sha256-UsqNBOidkAJQX2uhTgANrY97QtwnyoyHXXEkbDTyqqs= mode=755"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "download-20mib",
+   "compared": "per-mirror WARNING lines",
+   "native": [
+    "WARNING: Download from http://127.0.0.1:39433/big.bin failed: class com.google.devtools.build.lib.bazel.repository.downloader.UnrecoverableHttpException Checksum was 52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab but wanted 0000000000000000000000000000000000000000000000000000000000000000"
+   ],
+   "reference": [
+    "WARNING: Download from http://127.0.0.1:39433/big.bin failed: class com.google.devtools.build.lib.bazel.repository.downloader.UnrecoverableHttpException Checksum was 52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab but wanted 0000000000000000000000000000000000000000000000000000000000000000"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "module-download-20mib",
+   "compared": "module download result",
+   "native": [
+    "N32RESULT ext_success=True size=20971520 sha256=52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab"
+   ],
+   "reference": [
+    "N32RESULT ext_success=True size=20971520 sha256=52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "checksum-mismatch",
+   "compared": "final error line",
+   "native": "error: java.io.IOException: Error downloading [http://127.0.0.1:39433/pkg.tar.gz] to /tmp/opencode/n32cap2414020/checksum-mismatch/native-cache/repositories/direct/trees/.stage-Pgq8W1/temp6010311787757768211/pkg.tar.gz: Checksum was 4987b560d046e4b39db419420be735a1889f0319ec78ba9e69dbfe21f76d8b5b but wanted 1111111111111111111111111111111111111111111111111111111111111111",
+   "native_normalized": "java.io.IOException: Error downloading [http://127.0.0.1:39433/pkg.tar.gz] to <REPO>/temp<N>/pkg.tar.gz: Checksum was 4987b560d046e4b39db419420be735a1889f0319ec78ba9e69dbfe21f76d8b5b but wanted 1111111111111111111111111111111111111111111111111111111111111111",
+   "rederived": true,
+   "reference": "ERROR: java.io.IOException: Error downloading [http://127.0.0.1:39433/pkg.tar.gz] to /tmp/opencode/n32cap2414020/checksum-mismatch/bazel-root/dc7f2d36fc9944ab1c77ceb2f421bce5/external/+archive+bad/temp13299879935588757818/pkg.tar.gz: Checksum was 4987b560d046e4b39db419420be735a1889f0319ec78ba9e69dbfe21f76d8b5b but wanted 1111111111111111111111111111111111111111111111111111111111111111",
+   "reference_normalized": "java.io.IOException: Error downloading [http://127.0.0.1:39433/pkg.tar.gz] to <REPO>/temp<N>/pkg.tar.gz: Checksum was 4987b560d046e4b39db419420be735a1889f0319ec78ba9e69dbfe21f76d8b5b but wanted 1111111111111111111111111111111111111111111111111111111111111111",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "checksum-mismatch",
+   "compared": "per-mirror WARNING lines",
+   "native": [
+    "WARNING: Download from http://127.0.0.1:39433/pkg.tar.gz failed: class com.google.devtools.build.lib.bazel.repository.downloader.UnrecoverableHttpException Checksum was 4987b560d046e4b39db419420be735a1889f0319ec78ba9e69dbfe21f76d8b5b but wanted 1111111111111111111111111111111111111111111111111111111111111111"
+   ],
+   "reference": [
+    "WARNING: Download from http://127.0.0.1:39433/pkg.tar.gz failed: class com.google.devtools.build.lib.bazel.repository.downloader.UnrecoverableHttpException Checksum was 4987b560d046e4b39db419420be735a1889f0319ec78ba9e69dbfe21f76d8b5b but wanted 1111111111111111111111111111111111111111111111111111111111111111"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "checksum-mismatch",
+   "compared": "failed",
+   "native": true,
+   "reference": true,
+   "verdict": "MATCH"
+  },
+  {
+   "case": "prefix-not-found",
+   "compared": "final error line",
+   "native": "error: java.io.IOException: Error extracting /tmp/opencode/n32cap2414020/prefix-not-found/native-cache/repositories/direct/trees/.stage-IR8Bvp/temp8855801936953467503/small.tar.bz2 to /tmp/opencode/n32cap2414020/prefix-not-found/native-cache/repositories/direct/trees/.stage-IR8Bvp/temp8855801936953467503: Prefix \"nope\" was given, but not found in the archive. Here are possible prefixes for this archive: \"pkg-1.0\".",
+   "native_normalized": "java.io.IOException: Error extracting <REPO>/temp<N>/small.tar.bz2 to <REPO>/temp<N>: Prefix \"nope\" was given, but not found in the archive. Here are possible prefixes for this archive: \"pkg-1.0\".",
+   "rederived": true,
+   "reference": "ERROR: java.io.IOException: Error extracting /tmp/opencode/n32cap2414020/prefix-not-found/bazel-root/b572748b3f8c5240e45f1ebb0cc74811/external/+archive+nope/temp1380508583738032422/small.tar.bz2 to /tmp/opencode/n32cap2414020/prefix-not-found/bazel-root/b572748b3f8c5240e45f1ebb0cc74811/external/+archive+nope/temp1380508583738032422: Prefix \"nope\" was given, but not found in the archive. Here are possible prefixes for this archive: \"pkg-1.0\".",
+   "reference_normalized": "java.io.IOException: Error extracting <REPO>/temp<N>/small.tar.bz2 to <REPO>/temp<N>: Prefix \"nope\" was given, but not found in the archive. Here are possible prefixes for this archive: \"pkg-1.0\".",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "prefix-not-found",
+   "compared": "per-mirror WARNING lines",
+   "native": [],
+   "reference": [],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "prefix-not-found",
+   "compared": "failed",
+   "native": true,
+   "reference": true,
+   "verdict": "MATCH"
+  },
+  {
+   "case": "redirect-loop",
+   "compared": "final error line",
+   "native": "error: java.io.IOException: Error downloading [http://127.0.0.1:39433/loop/x.tar.gz] to /tmp/opencode/n32cap2414020/redirect-loop/native-cache/repositories/direct/trees/.stage-66x3a7/temp235794635396095230/x.tar.gz: Redirect loop detected",
+   "native_normalized": "java.io.IOException: Error downloading [http://127.0.0.1:39433/loop/x.tar.gz] to <REPO>/temp<N>/x.tar.gz: Redirect loop detected",
+   "rederived": true,
+   "reference": "ERROR: java.io.IOException: Error downloading [http://127.0.0.1:39433/loop/x.tar.gz] to /tmp/opencode/n32cap2414020/redirect-loop/bazel-root/06f16ab98a548d59afa5a0de0490d24e/external/+archive+loop/temp4739206141703724606/x.tar.gz: Redirect loop detected",
+   "reference_normalized": "java.io.IOException: Error downloading [http://127.0.0.1:39433/loop/x.tar.gz] to <REPO>/temp<N>/x.tar.gz: Redirect loop detected",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "redirect-loop",
+   "compared": "per-mirror WARNING lines",
+   "native": [
+    "WARNING: Download from http://127.0.0.1:39433/loop/x.tar.gz failed: class com.google.devtools.build.lib.bazel.repository.downloader.UnrecoverableHttpException Redirect loop detected"
+   ],
+   "reference": [
+    "WARNING: Download from http://127.0.0.1:39433/loop/x.tar.gz failed: class com.google.devtools.build.lib.bazel.repository.downloader.UnrecoverableHttpException Redirect loop detected"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "redirect-loop",
+   "compared": "failed",
+   "native": true,
+   "reference": true,
+   "verdict": "MATCH"
+  },
+  {
+   "case": "http-404-two-mirrors",
+   "compared": "final error line",
+   "native": "error: java.io.IOException: Error downloading [http://127.0.0.1:39433/missing-a.tar.gz, http://127.0.0.1:39433/missing-b.tar.gz] to /tmp/opencode/n32cap2414020/http-404-two-mirrors/native-cache/repositories/direct/trees/.stage-l6I3b0/temp3216935859126952377/missing-a.tar.gz: GET returned 404 File not found",
+   "native_normalized": "java.io.IOException: Error downloading [http://127.0.0.1:39433/missing-a.tar.gz, http://127.0.0.1:39433/missing-b.tar.gz] to <REPO>/temp<N>/missing-a.tar.gz: GET returned 404 File not found",
+   "rederived": true,
+   "reference": "ERROR: java.io.IOException: Error downloading [http://127.0.0.1:39433/missing-a.tar.gz, http://127.0.0.1:39433/missing-b.tar.gz] to /tmp/opencode/n32cap2414020/http-404-two-mirrors/bazel-root/c029063290c908e5858441b8ee8806cf/external/+archive+gone/temp5256162110951670142/missing-a.tar.gz: GET returned 404 File not found",
+   "reference_normalized": "java.io.IOException: Error downloading [http://127.0.0.1:39433/missing-a.tar.gz, http://127.0.0.1:39433/missing-b.tar.gz] to <REPO>/temp<N>/missing-a.tar.gz: GET returned 404 File not found",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "http-404-two-mirrors",
+   "compared": "per-mirror WARNING lines",
+   "native": [
+    "WARNING: Download from http://127.0.0.1:39433/missing-a.tar.gz failed: class java.io.FileNotFoundException GET returned 404 File not found",
+    "WARNING: Download from http://127.0.0.1:39433/missing-b.tar.gz failed: class java.io.FileNotFoundException GET returned 404 File not found"
+   ],
+   "reference": [
+    "WARNING: Download from http://127.0.0.1:39433/missing-a.tar.gz failed: class java.io.FileNotFoundException GET returned 404 File not found",
+    "WARNING: Download from http://127.0.0.1:39433/missing-b.tar.gz failed: class java.io.FileNotFoundException GET returned 404 File not found"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "http-404-two-mirrors",
+   "compared": "failed",
+   "native": true,
+   "reference": true,
+   "verdict": "MATCH"
+  }
+ ],
+ "comparisons_as_captured": [
+  {
+   "case": "large-pkg-tar-gz",
+   "compared": "download result",
+   "native": [
+    "N32RESULT success=True sha256=4987b560d046e4b39db419420be735a1889f0319ec78ba9e69dbfe21f76d8b5b size=112747881"
+   ],
+   "reference": [
+    "N32RESULT success=True sha256=4987b560d046e4b39db419420be735a1889f0319ec78ba9e69dbfe21f76d8b5b size=112747881"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "large-pkg-tar-gz",
+   "compared": "extracted tree digest",
+   "native": [
+    "N32TREE 61e675f6753e9dea8fc18f5ca5d60a787b212a027d586e8528095f3ff07a5828 2102"
+   ],
+   "reference": [
+    "N32TREE 61e675f6753e9dea8fc18f5ca5d60a787b212a027d586e8528095f3ff07a5828 2102"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "large-pkg-tar-gz",
+   "compared": "exit code",
+   "native": 0,
+   "reference": 0,
+   "verdict": "MATCH"
+  },
+  {
+   "case": "large-pkg-tar-xz",
+   "compared": "download result",
+   "native": [
+    "N32RESULT success=True sha256=c05679ed9a8d05c62d27f10dc11f191609253db23fd4b19d80641f55d8088479 size=112718524"
+   ],
+   "reference": [
+    "N32RESULT success=True sha256=c05679ed9a8d05c62d27f10dc11f191609253db23fd4b19d80641f55d8088479 size=112718524"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "large-pkg-tar-xz",
+   "compared": "extracted tree digest",
+   "native": [
+    "N32TREE 61e675f6753e9dea8fc18f5ca5d60a787b212a027d586e8528095f3ff07a5828 2102"
+   ],
+   "reference": [
+    "N32TREE 61e675f6753e9dea8fc18f5ca5d60a787b212a027d586e8528095f3ff07a5828 2102"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "large-pkg-tar-xz",
+   "compared": "exit code",
+   "native": 0,
+   "reference": 0,
+   "verdict": "MATCH"
+  },
+  {
+   "case": "large-pkg-tar-zst",
+   "compared": "download result",
+   "native": [
+    "N32RESULT success=True sha256=1c00542208cccb318d443a187e6d4d417f0a1778675d840b54ebf9d4d031fedb size=112732150"
+   ],
+   "reference": [
+    "N32RESULT success=True sha256=1c00542208cccb318d443a187e6d4d417f0a1778675d840b54ebf9d4d031fedb size=112732150"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "large-pkg-tar-zst",
+   "compared": "extracted tree digest",
+   "native": [
+    "N32TREE 61e675f6753e9dea8fc18f5ca5d60a787b212a027d586e8528095f3ff07a5828 2102"
+   ],
+   "reference": [
+    "N32TREE 61e675f6753e9dea8fc18f5ca5d60a787b212a027d586e8528095f3ff07a5828 2102"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "large-pkg-tar-zst",
+   "compared": "exit code",
+   "native": 0,
+   "reference": 0,
+   "verdict": "MATCH"
+  },
+  {
+   "case": "large-pkg-zip",
+   "compared": "download result",
+   "native": [
+    "N32RESULT success=True sha256=4d7a88be06946696ffd71701a031f2fcc779ce14d2949a6ffb240c28eb6ef7ae size=112966925"
+   ],
+   "reference": [
+    "N32RESULT success=True sha256=4d7a88be06946696ffd71701a031f2fcc779ce14d2949a6ffb240c28eb6ef7ae size=112966925"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "large-pkg-zip",
+   "compared": "extracted tree digest",
+   "native": [
+    "N32TREE 61e675f6753e9dea8fc18f5ca5d60a787b212a027d586e8528095f3ff07a5828 2102"
+   ],
+   "reference": [
+    "N32TREE 61e675f6753e9dea8fc18f5ca5d60a787b212a027d586e8528095f3ff07a5828 2102"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "large-pkg-zip",
+   "compared": "exit code",
+   "native": 0,
+   "reference": 0,
+   "verdict": "MATCH"
+  },
+  {
+   "case": "local-extract-tar-bz2",
+   "compared": "extracted tree digest",
+   "native": [
+    "N32TREE 26c88e1105bff231930d00346b567c46c21b766afd82dfbe2627a5fc2ae8ec73 2002"
+   ],
+   "reference": [
+    "N32TREE 26c88e1105bff231930d00346b567c46c21b766afd82dfbe2627a5fc2ae8ec73 2002"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "download-20mib",
+   "compared": "download results",
+   "native": [
+    "N32RESULT success=True sha256=52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab size=20971520 integrity=sha256-UsqNBOidkAJQX2uhTgANrY97QtwnyoyHXXEkbDTyqqs= mode=755"
+   ],
+   "reference": [
+    "N32RESULT success=True sha256=52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab size=20971520 integrity=sha256-UsqNBOidkAJQX2uhTgANrY97QtwnyoyHXXEkbDTyqqs= mode=755"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "download-20mib",
+   "compared": "per-mirror WARNING lines",
+   "native": [
+    "WARNING: Download from http://127.0.0.1:39433/big.bin failed: class com.google.devtools.build.lib.bazel.repository.downloader.UnrecoverableHttpException Checksum was 52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab but wanted 0000000000000000000000000000000000000000000000000000000000000000"
+   ],
+   "reference": [
+    "WARNING: Download from http://127.0.0.1:39433/big.bin failed: class com.google.devtools.build.lib.bazel.repository.downloader.UnrecoverableHttpException Checksum was 52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab but wanted 0000000000000000000000000000000000000000000000000000000000000000"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "module-download-20mib",
+   "compared": "module download result",
+   "native": [
+    "N32RESULT ext_success=True size=20971520 sha256=52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab"
+   ],
+   "reference": [
+    "N32RESULT ext_success=True size=20971520 sha256=52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "checksum-mismatch",
+   "compared": "final error line",
+   "native": "error: java.io.IOException: Error downloading [http://127.0.0.1:39433/pkg.tar.gz] to /tmp/opencode/n32cap2414020/checksum-mismatch/native-cache/repositories/direct/trees/.stage-Pgq8W1/temp6010311787757768211/pkg.tar.gz: Checksum was 4987b560d046e4b39db419420be735a1889f0319ec78ba9e69dbfe21f76d8b5b but wanted 1111111111111111111111111111111111111111111111111111111111111111",
+   "native_normalized": "java.io.IOException: Error downloading [http://127.0.0.1:39433/pkg.tar.gz] to <REPO>/temp<N>/pkg.tar.gz: Checksum was 4987b560d046e4b39db419420be735a1889f0319ec78ba9e69dbfe21f76d8b5b but wanted 1111111111111111111111111111111111111111111111111111111111111111",
+   "reference": "ERROR: Build did NOT complete successfully",
+   "reference_normalized": "Build did NOT complete successfully",
+   "verdict": "MISMATCH"
+  },
+  {
+   "case": "checksum-mismatch",
+   "compared": "per-mirror WARNING lines",
+   "native": [
+    "WARNING: Download from http://127.0.0.1:39433/pkg.tar.gz failed: class com.google.devtools.build.lib.bazel.repository.downloader.UnrecoverableHttpException Checksum was 4987b560d046e4b39db419420be735a1889f0319ec78ba9e69dbfe21f76d8b5b but wanted 1111111111111111111111111111111111111111111111111111111111111111"
+   ],
+   "reference": [
+    "WARNING: Download from http://127.0.0.1:39433/pkg.tar.gz failed: class com.google.devtools.build.lib.bazel.repository.downloader.UnrecoverableHttpException Checksum was 4987b560d046e4b39db419420be735a1889f0319ec78ba9e69dbfe21f76d8b5b but wanted 1111111111111111111111111111111111111111111111111111111111111111"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "checksum-mismatch",
+   "compared": "failed",
+   "native": true,
+   "reference": true,
+   "verdict": "MATCH"
+  },
+  {
+   "case": "prefix-not-found",
+   "compared": "final error line",
+   "native": "error: java.io.IOException: Error extracting /tmp/opencode/n32cap2414020/prefix-not-found/native-cache/repositories/direct/trees/.stage-IR8Bvp/temp8855801936953467503/small.tar.bz2 to /tmp/opencode/n32cap2414020/prefix-not-found/native-cache/repositories/direct/trees/.stage-IR8Bvp/temp8855801936953467503: Prefix \"nope\" was given, but not found in the archive. Here are possible prefixes for this archive: \"pkg-1.0\".",
+   "native_normalized": "java.io.IOException: Error extracting <REPO>/temp<N>/small.tar.bz2 to <REPO>/temp<N>: Prefix \"nope\" was given, but not found in the archive. Here are possible prefixes for this archive: \"pkg-1.0\".",
+   "reference": "ERROR: Build did NOT complete successfully",
+   "reference_normalized": "Build did NOT complete successfully",
+   "verdict": "MISMATCH"
+  },
+  {
+   "case": "prefix-not-found",
+   "compared": "per-mirror WARNING lines",
+   "native": [],
+   "reference": [],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "prefix-not-found",
+   "compared": "failed",
+   "native": true,
+   "reference": true,
+   "verdict": "MATCH"
+  },
+  {
+   "case": "redirect-loop",
+   "compared": "final error line",
+   "native": "error: java.io.IOException: Error downloading [http://127.0.0.1:39433/loop/x.tar.gz] to /tmp/opencode/n32cap2414020/redirect-loop/native-cache/repositories/direct/trees/.stage-66x3a7/temp235794635396095230/x.tar.gz: Redirect loop detected",
+   "native_normalized": "java.io.IOException: Error downloading [http://127.0.0.1:39433/loop/x.tar.gz] to <REPO>/temp<N>/x.tar.gz: Redirect loop detected",
+   "reference": "ERROR: Build did NOT complete successfully",
+   "reference_normalized": "Build did NOT complete successfully",
+   "verdict": "MISMATCH"
+  },
+  {
+   "case": "redirect-loop",
+   "compared": "per-mirror WARNING lines",
+   "native": [
+    "WARNING: Download from http://127.0.0.1:39433/loop/x.tar.gz failed: class com.google.devtools.build.lib.bazel.repository.downloader.UnrecoverableHttpException Redirect loop detected"
+   ],
+   "reference": [
+    "WARNING: Download from http://127.0.0.1:39433/loop/x.tar.gz failed: class com.google.devtools.build.lib.bazel.repository.downloader.UnrecoverableHttpException Redirect loop detected"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "redirect-loop",
+   "compared": "failed",
+   "native": true,
+   "reference": true,
+   "verdict": "MATCH"
+  },
+  {
+   "case": "http-404-two-mirrors",
+   "compared": "final error line",
+   "native": "error: java.io.IOException: Error downloading [http://127.0.0.1:39433/missing-a.tar.gz, http://127.0.0.1:39433/missing-b.tar.gz] to /tmp/opencode/n32cap2414020/http-404-two-mirrors/native-cache/repositories/direct/trees/.stage-l6I3b0/temp3216935859126952377/missing-a.tar.gz: GET returned 404 File not found",
+   "native_normalized": "java.io.IOException: Error downloading [http://127.0.0.1:39433/missing-a.tar.gz, http://127.0.0.1:39433/missing-b.tar.gz] to <REPO>/temp<N>/missing-a.tar.gz: GET returned 404 File not found",
+   "reference": "ERROR: Build did NOT complete successfully",
+   "reference_normalized": "Build did NOT complete successfully",
+   "verdict": "MISMATCH"
+  },
+  {
+   "case": "http-404-two-mirrors",
+   "compared": "per-mirror WARNING lines",
+   "native": [
+    "WARNING: Download from http://127.0.0.1:39433/missing-a.tar.gz failed: class java.io.FileNotFoundException GET returned 404 File not found",
+    "WARNING: Download from http://127.0.0.1:39433/missing-b.tar.gz failed: class java.io.FileNotFoundException GET returned 404 File not found"
+   ],
+   "reference": [
+    "WARNING: Download from http://127.0.0.1:39433/missing-a.tar.gz failed: class java.io.FileNotFoundException GET returned 404 File not found",
+    "WARNING: Download from http://127.0.0.1:39433/missing-b.tar.gz failed: class java.io.FileNotFoundException GET returned 404 File not found"
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "http-404-two-mirrors",
+   "compared": "failed",
+   "native": true,
+   "reference": true,
+   "verdict": "MATCH"
+  }
+ ],
+ "counts": {
+  "EXACT_MESSAGE": 4,
+  "MATCH": 24
+ },
+ "counts_as_captured": {
+  "MATCH": 24,
+  "MISMATCH": 4
+ },
+ "format": "n32-repo-io-streaming-capture-v2",
+ "history": {
+  "run1": {
+   "note": "run 1 (first capture): 11 MATCH / 4 MISMATCH; its max_rss_kib values (~709 MB everywhere) are invalid: the parent held the archives and forked, and Linux keeps the pre-exec RSS peak",
+   "path": "tests/fixtures/repo_io_streaming/history/run1_reference_receipt.json",
+   "sha256": "bd2151ce5e354b5f05f889e7f3bfdfedb88f479200decdbcbfbba64242aa4bff"
+  }
+ },
+ "host": {
+  "nproc": 64
+ },
+ "known_capture_defects": [
+  "download-20mib: the capture rule called str.split() without a separator; Starlark requires sep, so BOTH engines failed identically (rc 1, same \"split() missing 1 required positional argument: sep\") after the first N32RESULT and the per-mirror WARNING line; the allow_fail kept-bytes result was therefore not observed in run 2 (run 1 recorded Bazel exists=True; native now keeps the bytes, covered by unit tests). Fixed in the script (splitlines) for a future run; not rerun."
+ ],
+ "measurements": [
+  {
+   "archive_bytes": 112747881,
+   "case": "large-pkg-tar-gz",
+   "engine": "native",
+   "parent_rss_floor_kib": 23552,
+   "peak_vmhwm_kib": 20448,
+   "returncode": 0,
+   "ru_maxrss_kib": 23552,
+   "wall_seconds": 0.56
+  },
+  {
+   "archive_bytes": 112747881,
+   "case": "large-pkg-tar-gz",
+   "engine": "reference",
+   "parent_rss_floor_kib": 23552,
+   "peak_vmhwm_kib": 312892,
+   "returncode": 0,
+   "ru_maxrss_kib": 299720,
+   "wall_seconds": 10.367
+  },
+  {
+   "archive_bytes": 112718524,
+   "case": "large-pkg-tar-xz",
+   "engine": "native",
+   "parent_rss_floor_kib": 23552,
+   "peak_vmhwm_kib": 20572,
+   "returncode": 0,
+   "ru_maxrss_kib": 23552,
+   "wall_seconds": 0.832
+  },
+  {
+   "archive_bytes": 112718524,
+   "case": "large-pkg-tar-xz",
+   "engine": "reference",
+   "parent_rss_floor_kib": 23552,
+   "peak_vmhwm_kib": 320668,
+   "returncode": 0,
+   "ru_maxrss_kib": 304140,
+   "wall_seconds": 10.876
+  },
+  {
+   "archive_bytes": 112732150,
+   "case": "large-pkg-tar-zst",
+   "engine": "native",
+   "parent_rss_floor_kib": 23800,
+   "peak_vmhwm_kib": 20648,
+   "returncode": 0,
+   "ru_maxrss_kib": 23552,
+   "wall_seconds": 0.58
+  },
+  {
+   "archive_bytes": 112732150,
+   "case": "large-pkg-tar-zst",
+   "engine": "reference",
+   "parent_rss_floor_kib": 23820,
+   "peak_vmhwm_kib": 366680,
+   "returncode": 0,
+   "ru_maxrss_kib": 349308,
+   "wall_seconds": 11.071
+  },
+  {
+   "archive_bytes": 112966925,
+   "case": "large-pkg-zip",
+   "engine": "native",
+   "parent_rss_floor_kib": 23820,
+   "peak_vmhwm_kib": 20600,
+   "returncode": 0,
+   "ru_maxrss_kib": 23552,
+   "wall_seconds": 0.556
+  },
+  {
+   "archive_bytes": 112966925,
+   "case": "large-pkg-zip",
+   "engine": "reference",
+   "parent_rss_floor_kib": 23824,
+   "peak_vmhwm_kib": 443848,
+   "returncode": 0,
+   "ru_maxrss_kib": 427476,
+   "wall_seconds": 10.539
+  },
+  {
+   "archive_bytes": 0,
+   "case": "baseline",
+   "engine": "native",
+   "parent_rss_floor_kib": 23824,
+   "peak_vmhwm_kib": 9516,
+   "returncode": 0,
+   "ru_maxrss_kib": 23552,
+   "wall_seconds": 0.013
+  },
+  {
+   "archive_bytes": 0,
+   "case": "baseline",
+   "engine": "reference",
+   "parent_rss_floor_kib": 23824,
+   "peak_vmhwm_kib": 286512,
+   "returncode": 0,
+   "ru_maxrss_kib": 270408,
+   "wall_seconds": 9.722
+  }
+ ],
+ "memory_method": "peak_vmhwm_kib = max per-process VmHWM over the engine process tree, polled every 10 ms; ru_maxrss_kib = os.wait4 (floored at parent_rss_floor_kib by exec semantics)",
+ "native": {
+  "git_head": "53b9f3ef6930f871928c8db6fffbe24ac5efe4a5",
+  "path": "target/release/bazel-rs",
+  "sha256": "fbe96bad8e225d876c7cc639c83806ecef1f85a31c264d51da4a6e62b45995bd",
+  "worktree_diff_sha256": "7dddc55a835b53d1442ccee35dad5fb6ab6dcc511b54a7e8808cf585f1689e36"
+ },
+ "payload": {
+  "files": 2103,
+  "generation_seconds": 22.435
+ },
+ "pinned_source": "/tmp/opencode/bazel-9.3-reference",
+ "post_capture_changes": [
+  {
+   "change": "registry metadata/source-archive HTTP (registry.rs) no longer sets a request-level reqwest .timeout(30s) (a whole-transfer deadline in reqwest 0.12.28, TotalTimeoutBody); the client uses Bazel HttpConnector timeouts shared with the repository transport: 10 s connect, 20 s per send/read (blocking ClientBuilder.timeout), no total deadline. Audit: the only reqwest clients are registry.rs and extension_download.rs; neither sets a request-level timeout now.",
+   "id": "B1",
+   "test": "registry::tests::source_downloads_have_a_per_read_timeout_but_no_total_deadline (1 s per-read client: ~3 s dribbled body succeeds, a 1.6 s gap fails)"
+  },
+  {
+   "change": "GNU long-name/link (L/K) and local PAX (x) records larger than 1 MiB fail explicitly (\"tar extension record (...) of N bytes exceeds the native 1 MiB limit\"); they are buffered in memory",
+   "id": "R1",
+   "test": "archive::tests::contiguous_files_extract_as_regular_files_and_huge_extension_records_fail"
+  },
+  {
+   "change": "repository_ctx.download unlinks an existing non-directory output (symlink or hard-linked file) when a mirror has responded, before writing; never writes through links (like ctx.file)",
+   "id": "R2",
+   "test": "repository_ctx::tests::download_reuses_a_matching_output_offline_and_never_writes_through_links"
+  },
+  {
+   "change": "repository_ctx.download with a checksum reuses an existing output whose digest matches without downloading, also with downloads disabled (DownloadManager.java:247-261; disable check at java:331)",
+   "id": "R3",
+   "test": "same test (disabled-download fixture)"
+  },
+  {
+   "change": "tar type '7' (contiguous) entries extract as regular files",
+   "id": "R4",
+   "test": "archive::tests::contiguous_files_extract_as_regular_files_and_huge_extension_records_fail"
+  }
+ ],
+ "post_capture_changes_note": "Changes after capture run 2 and the targeted rerun; not re-captured. The native binary recorded in this receipt predates them. Worktree diff sha256 after these changes: 5a3df21f5ea02260e35eb42e5cf5ed67fb0deaf57113d5983d1fceef162ddb77",
+ "rederivation": "final error lines reselected from the recorded output tails: the executed selector took Bazel's trailing \"ERROR: Build did NOT complete successfully\" summary instead of the IOException line; engines were not rerun",
+ "reference_bazel": {
+  "path": "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "version": "bazel 9.3.0"
+ },
+ "run": 2,
+ "runs": {
+  "baseline": {
+   "native": {
+    "argv": [
+     "/tmp/opencode/bazel-parity-streaming/target/release/bazel-rs",
+     "--ignore_all_rc_files",
+     "--cache-dir=/tmp/opencode/n32cap2414020/baseline/native-cache",
+     "build",
+     "--lockfile_mode=off",
+     "//:noop"
+    ],
+    "output_tail": "bazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "returncode": 0
+   },
+   "reference": {
+    "argv": [
+     "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+     "--batch",
+     "--ignore_all_rc_files",
+     "--output_user_root=/tmp/opencode/n32cap2414020/baseline/bazel-root",
+     "build",
+     "--lockfile_mode=off",
+     "--incompatible_autoload_externally=",
+     "--noshow_progress",
+     "--color=no",
+     "--curses=no",
+     "--repository_cache=/tmp/opencode/n32cap2414020/baseline/bazel-repo-cache",
+     "--experimental_convenience_symlinks=ignore",
+     "//:noop"
+    ],
+    "output_tail": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //:noop (5 packages loaded, 7 targets configured).\nINFO: Found 1 target...\nTarget //:noop up-to-date (nothing to build)\nINFO: Elapsed time: 8.650s, Critical Path: 0.02s\nINFO: 1 process: 1 internal.\nINFO: Build completed successfully, 1 total action\n",
+    "returncode": 0
+   }
+  },
+  "checksum-mismatch": {
+   "native": {
+    "argv": [
+     "/tmp/opencode/bazel-parity-streaming/target/release/bazel-rs",
+     "--ignore_all_rc_files",
+     "--cache-dir=/tmp/opencode/n32cap2414020/checksum-mismatch/native-cache",
+     "build",
+     "--lockfile_mode=off",
+     "@bad//:MARK"
+    ],
+    "output_tail": "WARNING: Download from http://127.0.0.1:39433/pkg.tar.gz failed: class com.google.devtools.build.lib.bazel.repository.downloader.UnrecoverableHttpException Checksum was 4987b560d046e4b39db419420be735a1889f0319ec78ba9e69dbfe21f76d8b5b but wanted 1111111111111111111111111111111111111111111111111111111111111111\nbazel-rs: repository +archive+bad (//:defs.bzl%archive): Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:14, in _archive\n      r = ctx.download_and_extract(ctx.attr.urls, **kw)\nerror: java.io.IOException: Error downloading [http://127.0.0.1:39433/pkg.tar.gz] to /tmp/opencode/n32cap2414020/checksum-mismatch/native-cache/repositories/direct/trees/.stage-Pgq8W1/temp6010311787757768211/pkg.tar.gz: Checksum was 4987b560d046e4b39db419420be735a1889f0319ec78ba9e69dbfe21f76d8b5b but wanted 1111111111111111111111111111111111111111111111111111111111111111\n  --> //:defs.bzl:14:9\n   |\n14 |     r = ctx.download_and_extract(ctx.attr.urls, **kw)\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+    "returncode": 1
+   },
+   "reference": {
+    "argv": [
+     "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+     "--batch",
+     "--ignore_all_rc_files",
+     "--output_user_root=/tmp/opencode/n32cap2414020/checksum-mismatch/bazel-root",
+     "build",
+     "--lockfile_mode=off",
+     "--incompatible_autoload_externally=",
+     "--noshow_progress",
+     "--color=no",
+     "--curses=no",
+     "--repository_cache=/tmp/opencode/n32cap2414020/checksum-mismatch/bazel-repo-cache",
+     "--experimental_convenience_symlinks=ignore",
+     "@bad//:MARK"
+    ],
+    "output_tail": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: Download from http://127.0.0.1:39433/pkg.tar.gz failed: class com.google.devtools.build.lib.bazel.repository.downloader.UnrecoverableHttpException Checksum was 4987b560d046e4b39db419420be735a1889f0319ec78ba9e69dbfe21f76d8b5b but wanted 1111111111111111111111111111111111111111111111111111111111111111\nINFO: Repo +archive+bad defined by rule archive in @@//:defs.bzl\nERROR: /tmp/opencode/n32cap2414020/checksum-mismatch/bazel-ws/defs.bzl:14:33: An error occurred during the fetch of repository '+archive+bad':\n   Traceback (most recent call last):\n\tFile \"/tmp/opencode/n32cap2414020/checksum-mismatch/bazel-ws/defs.bzl\", line 14, column 33, in _archive\n\t\tr = ctx.download_and_extract(ctx.attr.urls, **kw)\nError in download_and_extract: java.io.IOException: Error downloading [http://127.0.0.1:39433/pkg.tar.gz] to /tmp/opencode/n32cap2414020/checksum-mismatch/bazel-root/dc7f2d36fc9944ab1c77ceb2f421bce5/external/+archive+bad/temp13299879935588757818/pkg.tar.gz: Checksum was 4987b560d046e4b39db419420be735a1889f0319ec78ba9e69dbfe21f76d8b5b but wanted 1111111111111111111111111111111111111111111111111111111111111111\nERROR: java.io.IOException: Error downloading [http://127.0.0.1:39433/pkg.tar.gz] to /tmp/opencode/n32cap2414020/checksum-mismatch/bazel-root/dc7f2d36fc9944ab1c77ceb2f421bce5/external/+archive+bad/temp13299879935588757818/pkg.tar.gz: Checksum was 4987b560d046e4b39db419420be735a1889f0319ec78ba9e69dbfe21f76d8b5b but wanted 1111111111111111111111111111111111111111111111111111111111111111\nINFO: Elapsed time: 7.957s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\n",
+    "returncode": 1
+   }
+  },
+  "download-20mib": {
+   "native": {
+    "argv": [
+     "/tmp/opencode/bazel-parity-streaming/target/release/bazel-rs",
+     "--ignore_all_rc_files",
+     "--cache-dir=/tmp/opencode/n32cap2414020/download-20mib/native-cache",
+     "build",
+     "--lockfile_mode=off",
+     "@d//:MARK"
+    ],
+    "output_tail": "N32RESULT success=True sha256=52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab size=20971520 integrity=sha256-UsqNBOidkAJQX2uhTgANrY97QtwnyoyHXXEkbDTyqqs= mode=755\nWARNING: Download from http://127.0.0.1:39433/big.bin failed: class com.google.devtools.build.lib.bazel.repository.downloader.UnrecoverableHttpException Checksum was 52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab but wanted 0000000000000000000000000000000000000000000000000000000000000000\nbazel-rs: repository +dl+d (//:defs.bzl%dl): Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:40, in _dl\n      kept = ctx.execute([\"/bin/sh\", \"-c\", \"sha256sum < out/fail.bin | cut -c1-64; ...\nerror: split() missing 1 required positional argument: sep\n  --> //:defs.bzl:40:12\n   |\n40 |     kept = ctx.execute([\"/bin/sh\", \"-c\", \"sha256sum < out/fail.bin | cut -c1-64; stat -c %a out/fail.bin\"]).stdout.split()\n   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+    "returncode": 1
+   },
+   "reference": {
+    "argv": [
+     "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+     "--batch",
+     "--ignore_all_rc_files",
+     "--output_user_root=/tmp/opencode/n32cap2414020/download-20mib/bazel-root",
+     "build",
+     "--lockfile_mode=off",
+     "--incompatible_autoload_externally=",
+     "--noshow_progress",
+     "--color=no",
+     "--curses=no",
+     "--repository_cache=/tmp/opencode/n32cap2414020/download-20mib/bazel-repo-cache",
+     "--experimental_convenience_symlinks=ignore",
+     "@d//:MARK"
+    ],
+    "output_tail": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: /tmp/opencode/n32cap2414020/download-20mib/bazel-ws/defs.bzl:37:10: N32RESULT success=True sha256=52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab size=20971520 integrity=sha256-UsqNBOidkAJQX2uhTgANrY97QtwnyoyHXXEkbDTyqqs= mode=755\nWARNING: Download from http://127.0.0.1:39433/big.bin failed: class com.google.devtools.build.lib.bazel.repository.downloader.UnrecoverableHttpException Checksum was 52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab but wanted 0000000000000000000000000000000000000000000000000000000000000000\nINFO: Repo +dl+d defined by rule dl in @@//:defs.bzl\nERROR: /tmp/opencode/n32cap2414020/download-20mib/bazel-ws/defs.bzl:40:121: An error occurred during the fetch of repository '+dl+d':\n   Traceback (most recent call last):\n\tFile \"/tmp/opencode/n32cap2414020/download-20mib/bazel-ws/defs.bzl\", line 40, column 121, in _dl\n\t\tkept = ctx.execute([\"/bin/sh\", \"-c\", \"sha256sum < out/fail.bin | cut -c1-64; stat -c %a out/fail.bin\"]).stdout.split()\nError in split: split() missing 1 required positional argument: sep\nERROR: split() missing 1 required positional argument: sep\nINFO: Elapsed time: 7.971s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\n",
+    "returncode": 1
+   }
+  },
+  "http-404-two-mirrors": {
+   "native": {
+    "argv": [
+     "/tmp/opencode/bazel-parity-streaming/target/release/bazel-rs",
+     "--ignore_all_rc_files",
+     "--cache-dir=/tmp/opencode/n32cap2414020/http-404-two-mirrors/native-cache",
+     "build",
+     "--lockfile_mode=off",
+     "@gone//:MARK"
+    ],
+    "output_tail": "WARNING: Download from http://127.0.0.1:39433/missing-a.tar.gz failed: class java.io.FileNotFoundException GET returned 404 File not found\nWARNING: Download from http://127.0.0.1:39433/missing-b.tar.gz failed: class java.io.FileNotFoundException GET returned 404 File not found\nbazel-rs: repository +archive+gone (//:defs.bzl%archive): Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:14, in _archive\n      r = ctx.download_and_extract(ctx.attr.urls, **kw)\nerror: java.io.IOException: Error downloading [http://127.0.0.1:39433/missing-a.tar.gz, http://127.0.0.1:39433/missing-b.tar.gz] to /tmp/opencode/n32cap2414020/http-404-two-mirrors/native-cache/repositories/direct/trees/.stage-l6I3b0/temp3216935859126952377/missing-a.tar.gz: GET returned 404 File not found\n  --> //:defs.bzl:14:9\n   |\n14 |     r = ctx.download_and_extract(ctx.attr.urls, **kw)\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+    "returncode": 1
+   },
+   "reference": {
+    "argv": [
+     "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+     "--batch",
+     "--ignore_all_rc_files",
+     "--output_user_root=/tmp/opencode/n32cap2414020/http-404-two-mirrors/bazel-root",
+     "build",
+     "--lockfile_mode=off",
+     "--incompatible_autoload_externally=",
+     "--noshow_progress",
+     "--color=no",
+     "--curses=no",
+     "--repository_cache=/tmp/opencode/n32cap2414020/http-404-two-mirrors/bazel-repo-cache",
+     "--experimental_convenience_symlinks=ignore",
+     "@gone//:MARK"
+    ],
+    "output_tail": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: Download from http://127.0.0.1:39433/missing-a.tar.gz failed: class java.io.FileNotFoundException GET returned 404 File not found\nWARNING: Download from http://127.0.0.1:39433/missing-b.tar.gz failed: class java.io.FileNotFoundException GET returned 404 File not found\nINFO: Repo +archive+gone defined by rule archive in @@//:defs.bzl\nERROR: /tmp/opencode/n32cap2414020/http-404-two-mirrors/bazel-ws/defs.bzl:14:33: An error occurred during the fetch of repository '+archive+gone':\n   Traceback (most recent call last):\n\tFile \"/tmp/opencode/n32cap2414020/http-404-two-mirrors/bazel-ws/defs.bzl\", line 14, column 33, in _archive\n\t\tr = ctx.download_and_extract(ctx.attr.urls, **kw)\nError in download_and_extract: java.io.IOException: Error downloading [http://127.0.0.1:39433/missing-a.tar.gz, http://127.0.0.1:39433/missing-b.tar.gz] to /tmp/opencode/n32cap2414020/http-404-two-mirrors/bazel-root/c029063290c908e5858441b8ee8806cf/external/+archive+gone/temp5256162110951670142/missing-a.tar.gz: GET returned 404 File not found\nERROR: java.io.IOException: Error downloading [http://127.0.0.1:39433/missing-a.tar.gz, http://127.0.0.1:39433/missing-b.tar.gz] to /tmp/opencode/n32cap2414020/http-404-two-mirrors/bazel-root/c029063290c908e5858441b8ee8806cf/external/+archive+gone/temp5256162110951670142/missing-a.tar.gz: GET returned 404 File not found\nINFO: Elapsed time: 7.833s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\n",
+    "returncode": 1
+   }
+  },
+  "large-pkg-tar-gz": {
+   "native": {
+    "argv": [
+     "/tmp/opencode/bazel-parity-streaming/target/release/bazel-rs",
+     "--ignore_all_rc_files",
+     "--cache-dir=/tmp/opencode/n32cap2414020/large-pkg-tar-gz/native-cache",
+     "build",
+     "--lockfile_mode=off",
+     "@big//:MARK"
+    ],
+    "output_tail": "N32RESULT success=True sha256=4987b560d046e4b39db419420be735a1889f0319ec78ba9e69dbfe21f76d8b5b size=112747881\nN32TREE 61e675f6753e9dea8fc18f5ca5d60a787b212a027d586e8528095f3ff07a5828 2102\n@@+archive+big//:MARK\t/tmp/opencode/n32cap2414020/large-pkg-tar-gz/native-cache/repositories/direct/trees/bc1a30296f57a4cb7ae8db81c3b5c5d1e9090d3b2d8c8347a2dd4a6f3b96a4df/MARK\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "returncode": 0
+   },
+   "reference": {
+    "argv": [
+     "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+     "--batch",
+     "--ignore_all_rc_files",
+     "--output_user_root=/tmp/opencode/n32cap2414020/large-pkg-tar-gz/bazel-root",
+     "build",
+     "--lockfile_mode=off",
+     "--incompatible_autoload_externally=",
+     "--noshow_progress",
+     "--color=no",
+     "--curses=no",
+     "--repository_cache=/tmp/opencode/n32cap2414020/large-pkg-tar-gz/bazel-repo-cache",
+     "--experimental_convenience_symlinks=ignore",
+     "@big//:MARK"
+    ],
+    "output_tail": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: /tmp/opencode/n32cap2414020/large-pkg-tar-gz/bazel-ws/defs.bzl:15:10: N32RESULT success=True sha256=4987b560d046e4b39db419420be735a1889f0319ec78ba9e69dbfe21f76d8b5b size=112747881\nDEBUG: /tmp/opencode/n32cap2414020/large-pkg-tar-gz/bazel-ws/defs.bzl:16:10: N32TREE 61e675f6753e9dea8fc18f5ca5d60a787b212a027d586e8528095f3ff07a5828 2102\nINFO: Analyzed target @@+archive+big//:MARK (5 packages loaded, 7 targets configured).\nWARNING: /tmp/opencode/n32cap2414020/large-pkg-tar-gz/bazel-root/ee415aea1a4b05807e97a9a9d8f504e1/external/+archive+big/BUILD.bazel:1:14: @@+archive+big//:MARK is a source file, nothing will be built for it. If you want to build a target that consumes this file, try --compile_one_dependency\nINFO: Found 1 target...\nINFO: Elapsed time: 9.311s, Critical Path: 0.04s\nINFO: 1 process: 1 internal.\nINFO: Build completed successfully, 1 total action\n",
+    "returncode": 0
+   }
+  },
+  "large-pkg-tar-xz": {
+   "native": {
+    "argv": [
+     "/tmp/opencode/bazel-parity-streaming/target/release/bazel-rs",
+     "--ignore_all_rc_files",
+     "--cache-dir=/tmp/opencode/n32cap2414020/large-pkg-tar-xz/native-cache",
+     "build",
+     "--lockfile_mode=off",
+     "@big//:MARK"
+    ],
+    "output_tail": "N32RESULT success=True sha256=c05679ed9a8d05c62d27f10dc11f191609253db23fd4b19d80641f55d8088479 size=112718524\nN32TREE 61e675f6753e9dea8fc18f5ca5d60a787b212a027d586e8528095f3ff07a5828 2102\n@@+archive+big//:MARK\t/tmp/opencode/n32cap2414020/large-pkg-tar-xz/native-cache/repositories/direct/trees/e63e20bb410b6ec5101e7d8c7feb7cd65523d2da5c2daefb561224ce1db75e23/MARK\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "returncode": 0
+   },
+   "reference": {
+    "argv": [
+     "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+     "--batch",
+     "--ignore_all_rc_files",
+     "--output_user_root=/tmp/opencode/n32cap2414020/large-pkg-tar-xz/bazel-root",
+     "build",
+     "--lockfile_mode=off",
+     "--incompatible_autoload_externally=",
+     "--noshow_progress",
+     "--color=no",
+     "--curses=no",
+     "--repository_cache=/tmp/opencode/n32cap2414020/large-pkg-tar-xz/bazel-repo-cache",
+     "--experimental_convenience_symlinks=ignore",
+     "@big//:MARK"
+    ],
+    "output_tail": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: /tmp/opencode/n32cap2414020/large-pkg-tar-xz/bazel-ws/defs.bzl:15:10: N32RESULT success=True sha256=c05679ed9a8d05c62d27f10dc11f191609253db23fd4b19d80641f55d8088479 size=112718524\nDEBUG: /tmp/opencode/n32cap2414020/large-pkg-tar-xz/bazel-ws/defs.bzl:16:10: N32TREE 61e675f6753e9dea8fc18f5ca5d60a787b212a027d586e8528095f3ff07a5828 2102\nINFO: Analyzed target @@+archive+big//:MARK (5 packages loaded, 7 targets configured).\nWARNING: /tmp/opencode/n32cap2414020/large-pkg-tar-xz/bazel-root/ffb73b8c83605bba6b9f6b6e5c2dbcf3/external/+archive+big/BUILD.bazel:1:14: @@+archive+big//:MARK is a source file, nothing will be built for it. If you want to build a target that consumes this file, try --compile_one_dependency\nINFO: Found 1 target...\nINFO: Elapsed time: 9.596s, Critical Path: 0.03s\nINFO: 1 process: 1 internal.\nINFO: Build completed successfully, 1 total action\n",
+    "returncode": 0
+   }
+  },
+  "large-pkg-tar-zst": {
+   "native": {
+    "argv": [
+     "/tmp/opencode/bazel-parity-streaming/target/release/bazel-rs",
+     "--ignore_all_rc_files",
+     "--cache-dir=/tmp/opencode/n32cap2414020/large-pkg-tar-zst/native-cache",
+     "build",
+     "--lockfile_mode=off",
+     "@big//:MARK"
+    ],
+    "output_tail": "N32RESULT success=True sha256=1c00542208cccb318d443a187e6d4d417f0a1778675d840b54ebf9d4d031fedb size=112732150\nN32TREE 61e675f6753e9dea8fc18f5ca5d60a787b212a027d586e8528095f3ff07a5828 2102\n@@+archive+big//:MARK\t/tmp/opencode/n32cap2414020/large-pkg-tar-zst/native-cache/repositories/direct/trees/0a969c7efb4f7b3bcc5a46777e2bd5006daf3dfb9a7c2ca09982772b215d59cc/MARK\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "returncode": 0
+   },
+   "reference": {
+    "argv": [
+     "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+     "--batch",
+     "--ignore_all_rc_files",
+     "--output_user_root=/tmp/opencode/n32cap2414020/large-pkg-tar-zst/bazel-root",
+     "build",
+     "--lockfile_mode=off",
+     "--incompatible_autoload_externally=",
+     "--noshow_progress",
+     "--color=no",
+     "--curses=no",
+     "--repository_cache=/tmp/opencode/n32cap2414020/large-pkg-tar-zst/bazel-repo-cache",
+     "--experimental_convenience_symlinks=ignore",
+     "@big//:MARK"
+    ],
+    "output_tail": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: /tmp/opencode/n32cap2414020/large-pkg-tar-zst/bazel-ws/defs.bzl:15:10: N32RESULT success=True sha256=1c00542208cccb318d443a187e6d4d417f0a1778675d840b54ebf9d4d031fedb size=112732150\nDEBUG: /tmp/opencode/n32cap2414020/large-pkg-tar-zst/bazel-ws/defs.bzl:16:10: N32TREE 61e675f6753e9dea8fc18f5ca5d60a787b212a027d586e8528095f3ff07a5828 2102\nINFO: Analyzed target @@+archive+big//:MARK (5 packages loaded, 7 targets configured).\nWARNING: /tmp/opencode/n32cap2414020/large-pkg-tar-zst/bazel-root/c3c0026295eda3ecab4cf05b95284ebb/external/+archive+big/BUILD.bazel:1:14: @@+archive+big//:MARK is a source file, nothing will be built for it. If you want to build a target that consumes this file, try --compile_one_dependency\nINFO: Found 1 target...\nINFO: Elapsed time: 9.833s, Critical Path: 0.03s\nINFO: 1 process: 1 internal.\nINFO: Build completed successfully, 1 total action\n",
+    "returncode": 0
+   }
+  },
+  "large-pkg-zip": {
+   "native": {
+    "argv": [
+     "/tmp/opencode/bazel-parity-streaming/target/release/bazel-rs",
+     "--ignore_all_rc_files",
+     "--cache-dir=/tmp/opencode/n32cap2414020/large-pkg-zip/native-cache",
+     "build",
+     "--lockfile_mode=off",
+     "@big//:MARK"
+    ],
+    "output_tail": "N32RESULT success=True sha256=4d7a88be06946696ffd71701a031f2fcc779ce14d2949a6ffb240c28eb6ef7ae size=112966925\nN32TREE 61e675f6753e9dea8fc18f5ca5d60a787b212a027d586e8528095f3ff07a5828 2102\n@@+archive+big//:MARK\t/tmp/opencode/n32cap2414020/large-pkg-zip/native-cache/repositories/direct/trees/3c3f0188a0d2a517a9dd73d71aabd37eb0e5ba7a88d066a46eda538e94b8400e/MARK\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "returncode": 0
+   },
+   "reference": {
+    "argv": [
+     "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+     "--batch",
+     "--ignore_all_rc_files",
+     "--output_user_root=/tmp/opencode/n32cap2414020/large-pkg-zip/bazel-root",
+     "build",
+     "--lockfile_mode=off",
+     "--incompatible_autoload_externally=",
+     "--noshow_progress",
+     "--color=no",
+     "--curses=no",
+     "--repository_cache=/tmp/opencode/n32cap2414020/large-pkg-zip/bazel-repo-cache",
+     "--experimental_convenience_symlinks=ignore",
+     "@big//:MARK"
+    ],
+    "output_tail": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: /tmp/opencode/n32cap2414020/large-pkg-zip/bazel-ws/defs.bzl:15:10: N32RESULT success=True sha256=4d7a88be06946696ffd71701a031f2fcc779ce14d2949a6ffb240c28eb6ef7ae size=112966925\nDEBUG: /tmp/opencode/n32cap2414020/large-pkg-zip/bazel-ws/defs.bzl:16:10: N32TREE 61e675f6753e9dea8fc18f5ca5d60a787b212a027d586e8528095f3ff07a5828 2102\nINFO: Analyzed target @@+archive+big//:MARK (5 packages loaded, 7 targets configured).\nWARNING: /tmp/opencode/n32cap2414020/large-pkg-zip/bazel-root/19d9ff5923e305e8dece6547f7376cc6/external/+archive+big/BUILD.bazel:1:14: @@+archive+big//:MARK is a source file, nothing will be built for it. If you want to build a target that consumes this file, try --compile_one_dependency\nINFO: Found 1 target...\nINFO: Elapsed time: 9.353s, Critical Path: 0.03s\nINFO: 1 process: 1 internal.\nINFO: Build completed successfully, 1 total action\n",
+    "returncode": 0
+   }
+  },
+  "local-extract-tar-bz2": {
+   "native": {
+    "argv": [
+     "/tmp/opencode/bazel-parity-streaming/target/release/bazel-rs",
+     "--ignore_all_rc_files",
+     "--cache-dir=/tmp/opencode/n32cap2414020/local-extract-tar-bz2/native-cache",
+     "build",
+     "--lockfile_mode=off",
+     "@loc//:MARK"
+    ],
+    "output_tail": "N32TREE 26c88e1105bff231930d00346b567c46c21b766afd82dfbe2627a5fc2ae8ec73 2002\n@@+local+loc//:MARK\t/tmp/opencode/n32cap2414020/local-extract-tar-bz2/native-cache/repositories/direct/trees/406c1ee6dcc5c83f80b44f2a00a38faf16d4fb1b9805594627367f91d65abf32/MARK\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "returncode": 0
+   },
+   "reference": {
+    "argv": [
+     "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+     "--batch",
+     "--ignore_all_rc_files",
+     "--output_user_root=/tmp/opencode/n32cap2414020/local-extract-tar-bz2/bazel-root",
+     "build",
+     "--lockfile_mode=off",
+     "--incompatible_autoload_externally=",
+     "--noshow_progress",
+     "--color=no",
+     "--curses=no",
+     "--repository_cache=/tmp/opencode/n32cap2414020/local-extract-tar-bz2/bazel-repo-cache",
+     "--experimental_convenience_symlinks=ignore",
+     "@loc//:MARK"
+    ],
+    "output_tail": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: /tmp/opencode/n32cap2414020/local-extract-tar-bz2/bazel-ws/defs.bzl:27:10: N32TREE 26c88e1105bff231930d00346b567c46c21b766afd82dfbe2627a5fc2ae8ec73 2002\nINFO: Analyzed target @@+local+loc//:MARK (5 packages loaded, 7 targets configured).\nWARNING: /tmp/opencode/n32cap2414020/local-extract-tar-bz2/bazel-root/357270606c43dbf0ab8fdd551c26507d/external/+local+loc/BUILD.bazel:1:14: @@+local+loc//:MARK is a source file, nothing will be built for it. If you want to build a target that consumes this file, try --compile_one_dependency\nINFO: Found 1 target...\nINFO: Elapsed time: 8.706s, Critical Path: 0.03s\nINFO: 1 process: 1 internal.\nINFO: Build completed successfully, 1 total action\n",
+    "returncode": 0
+   }
+  },
+  "module-download-20mib": {
+   "native": {
+    "argv": [
+     "/tmp/opencode/bazel-parity-streaming/target/release/bazel-rs",
+     "--ignore_all_rc_files",
+     "--cache-dir=/tmp/opencode/n32cap2414020/module-download-20mib/native-cache",
+     "build",
+     "--lockfile_mode=off",
+     "@ext_repo//:MARK"
+    ],
+    "output_tail": "N32RESULT ext_success=True size=20971520 sha256=52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab\n@@+ext+ext_repo//:MARK\t/tmp/opencode/n32cap2414020/module-download-20mib/native-cache/repositories/direct/trees/c61f86c869d6914cf1100f8757cb658c7969205d18ce66b730139e599652bd0e/MARK\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "returncode": 0
+   },
+   "reference": {
+    "argv": [
+     "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+     "--batch",
+     "--ignore_all_rc_files",
+     "--output_user_root=/tmp/opencode/n32cap2414020/module-download-20mib/bazel-root",
+     "build",
+     "--lockfile_mode=off",
+     "--incompatible_autoload_externally=",
+     "--noshow_progress",
+     "--color=no",
+     "--curses=no",
+     "--repository_cache=/tmp/opencode/n32cap2414020/module-download-20mib/bazel-repo-cache",
+     "--experimental_convenience_symlinks=ignore",
+     "@ext_repo//:MARK"
+    ],
+    "output_tail": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: /tmp/opencode/n32cap2414020/module-download-20mib/bazel-ws/defs.bzl:50:10: N32RESULT ext_success=True size=20971520 sha256=52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab\nINFO: Analyzed target @@+ext+ext_repo//:MARK (5 packages loaded, 7 targets configured).\nWARNING: /tmp/opencode/n32cap2414020/module-download-20mib/bazel-root/2e48dc72b2c4a712fa8e5e68b1b28f52/external/+ext+ext_repo/BUILD.bazel:1:14: @@+ext+ext_repo//:MARK is a source file, nothing will be built for it. If you want to build a target that consumes this file, try --compile_one_dependency\nINFO: Found 1 target...\nINFO: Elapsed time: 8.304s, Critical Path: 0.03s\nINFO: 1 process: 1 internal.\nINFO: Build completed successfully, 1 total action\n",
+    "returncode": 0
+   }
+  },
+  "prefix-not-found": {
+   "native": {
+    "argv": [
+     "/tmp/opencode/bazel-parity-streaming/target/release/bazel-rs",
+     "--ignore_all_rc_files",
+     "--cache-dir=/tmp/opencode/n32cap2414020/prefix-not-found/native-cache",
+     "build",
+     "--lockfile_mode=off",
+     "@nope//:MARK"
+    ],
+    "output_tail": "bazel-rs: repository +archive+nope (//:defs.bzl%archive): Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:14, in _archive\n      r = ctx.download_and_extract(ctx.attr.urls, **kw)\nerror: java.io.IOException: Error extracting /tmp/opencode/n32cap2414020/prefix-not-found/native-cache/repositories/direct/trees/.stage-IR8Bvp/temp8855801936953467503/small.tar.bz2 to /tmp/opencode/n32cap2414020/prefix-not-found/native-cache/repositories/direct/trees/.stage-IR8Bvp/temp8855801936953467503: Prefix \"nope\" was given, but not found in the archive. Here are possible prefixes for this archive: \"pkg-1.0\".\n  --> //:defs.bzl:14:9\n   |\n14 |     r = ctx.download_and_extract(ctx.attr.urls, **kw)\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+    "returncode": 1
+   },
+   "reference": {
+    "argv": [
+     "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+     "--batch",
+     "--ignore_all_rc_files",
+     "--output_user_root=/tmp/opencode/n32cap2414020/prefix-not-found/bazel-root",
+     "build",
+     "--lockfile_mode=off",
+     "--incompatible_autoload_externally=",
+     "--noshow_progress",
+     "--color=no",
+     "--curses=no",
+     "--repository_cache=/tmp/opencode/n32cap2414020/prefix-not-found/bazel-repo-cache",
+     "--experimental_convenience_symlinks=ignore",
+     "@nope//:MARK"
+    ],
+    "output_tail": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Repo +archive+nope defined by rule archive in @@//:defs.bzl\nERROR: /tmp/opencode/n32cap2414020/prefix-not-found/bazel-ws/defs.bzl:14:33: An error occurred during the fetch of repository '+archive+nope':\n   Traceback (most recent call last):\n\tFile \"/tmp/opencode/n32cap2414020/prefix-not-found/bazel-ws/defs.bzl\", line 14, column 33, in _archive\n\t\tr = ctx.download_and_extract(ctx.attr.urls, **kw)\nError in download_and_extract: java.io.IOException: Error extracting /tmp/opencode/n32cap2414020/prefix-not-found/bazel-root/b572748b3f8c5240e45f1ebb0cc74811/external/+archive+nope/temp1380508583738032422/small.tar.bz2 to /tmp/opencode/n32cap2414020/prefix-not-found/bazel-root/b572748b3f8c5240e45f1ebb0cc74811/external/+archive+nope/temp1380508583738032422: Prefix \"nope\" was given, but not found in the archive. Here are possible prefixes for this archive: \"pkg-1.0\".\nERROR: java.io.IOException: Error extracting /tmp/opencode/n32cap2414020/prefix-not-found/bazel-root/b572748b3f8c5240e45f1ebb0cc74811/external/+archive+nope/temp1380508583738032422/small.tar.bz2 to /tmp/opencode/n32cap2414020/prefix-not-found/bazel-root/b572748b3f8c5240e45f1ebb0cc74811/external/+archive+nope/temp1380508583738032422: Prefix \"nope\" was given, but not found in the archive. Here are possible prefixes for this archive: \"pkg-1.0\".\nINFO: Elapsed time: 8.015s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\n",
+    "returncode": 1
+   }
+  },
+  "redirect-loop": {
+   "native": {
+    "argv": [
+     "/tmp/opencode/bazel-parity-streaming/target/release/bazel-rs",
+     "--ignore_all_rc_files",
+     "--cache-dir=/tmp/opencode/n32cap2414020/redirect-loop/native-cache",
+     "build",
+     "--lockfile_mode=off",
+     "@loop//:MARK"
+    ],
+    "output_tail": "WARNING: Download from http://127.0.0.1:39433/loop/x.tar.gz failed: class com.google.devtools.build.lib.bazel.repository.downloader.UnrecoverableHttpException Redirect loop detected\nbazel-rs: repository +archive+loop (//:defs.bzl%archive): Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:14, in _archive\n      r = ctx.download_and_extract(ctx.attr.urls, **kw)\nerror: java.io.IOException: Error downloading [http://127.0.0.1:39433/loop/x.tar.gz] to /tmp/opencode/n32cap2414020/redirect-loop/native-cache/repositories/direct/trees/.stage-66x3a7/temp235794635396095230/x.tar.gz: Redirect loop detected\n  --> //:defs.bzl:14:9\n   |\n14 |     r = ctx.download_and_extract(ctx.attr.urls, **kw)\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+    "returncode": 1
+   },
+   "reference": {
+    "argv": [
+     "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+     "--batch",
+     "--ignore_all_rc_files",
+     "--output_user_root=/tmp/opencode/n32cap2414020/redirect-loop/bazel-root",
+     "build",
+     "--lockfile_mode=off",
+     "--incompatible_autoload_externally=",
+     "--noshow_progress",
+     "--color=no",
+     "--curses=no",
+     "--repository_cache=/tmp/opencode/n32cap2414020/redirect-loop/bazel-repo-cache",
+     "--experimental_convenience_symlinks=ignore",
+     "@loop//:MARK"
+    ],
+    "output_tail": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: Download from http://127.0.0.1:39433/loop/x.tar.gz failed: class com.google.devtools.build.lib.bazel.repository.downloader.UnrecoverableHttpException Redirect loop detected\nINFO: Repo +archive+loop defined by rule archive in @@//:defs.bzl\nERROR: /tmp/opencode/n32cap2414020/redirect-loop/bazel-ws/defs.bzl:14:33: An error occurred during the fetch of repository '+archive+loop':\n   Traceback (most recent call last):\n\tFile \"/tmp/opencode/n32cap2414020/redirect-loop/bazel-ws/defs.bzl\", line 14, column 33, in _archive\n\t\tr = ctx.download_and_extract(ctx.attr.urls, **kw)\nError in download_and_extract: java.io.IOException: Error downloading [http://127.0.0.1:39433/loop/x.tar.gz] to /tmp/opencode/n32cap2414020/redirect-loop/bazel-root/06f16ab98a548d59afa5a0de0490d24e/external/+archive+loop/temp4739206141703724606/x.tar.gz: Redirect loop detected\nERROR: java.io.IOException: Error downloading [http://127.0.0.1:39433/loop/x.tar.gz] to /tmp/opencode/n32cap2414020/redirect-loop/bazel-root/06f16ab98a548d59afa5a0de0490d24e/external/+archive+loop/temp4739206141703724606/x.tar.gz: Redirect loop detected\nINFO: Elapsed time: 7.804s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\n",
+    "returncode": 1
+   }
+  }
+ },
+ "scratch_removed": true,
+ "server": "127.0.0.1 ThreadingHTTPServer (http.server reason phrases)",
+ "started": "2026-10-17T00:51:17Z",
+ "targeted_rerun": {
+  "case": "download-20mib",
+  "comparisons": [
+   {
+    "case": "download-20mib",
+    "compared": "download results (incl. allow_fail kept bytes)",
+    "native": [
+     "N32RESULT success=True sha256=52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab size=20971520 integrity=sha256-UsqNBOidkAJQX2uhTgANrY97QtwnyoyHXXEkbDTyqqs= mode=755",
+     "N32RESULT allow_fail_success=False exists=True kept=[\"52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab\", \"644\"]"
+    ],
+    "reference": [
+     "N32RESULT success=True sha256=52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab size=20971520 integrity=sha256-UsqNBOidkAJQX2uhTgANrY97QtwnyoyHXXEkbDTyqqs= mode=755",
+     "N32RESULT allow_fail_success=False exists=True kept=[\"52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab\", \"644\"]"
+    ],
+    "verdict": "MATCH"
+   },
+   {
+    "case": "download-20mib",
+    "compared": "per-mirror WARNING lines",
+    "native": [
+     "WARNING: Download from http://127.0.0.1:36513/big.bin failed: class com.google.devtools.build.lib.bazel.repository.downloader.UnrecoverableHttpException Checksum was 52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab but wanted 0000000000000000000000000000000000000000000000000000000000000000"
+    ],
+    "reference": [
+     "WARNING: Download from http://127.0.0.1:36513/big.bin failed: class com.google.devtools.build.lib.bazel.repository.downloader.UnrecoverableHttpException Checksum was 52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab but wanted 0000000000000000000000000000000000000000000000000000000000000000"
+    ],
+    "verdict": "MATCH"
+   },
+   {
+    "case": "download-20mib",
+    "compared": "exit code",
+    "native": 0,
+    "reference": 0,
+    "verdict": "MATCH"
+   }
+  ],
+  "native_sha256": "fbe96bad8e225d876c7cc639c83806ecef1f85a31c264d51da4a6e62b45995bd",
+  "reason": "run 2 rule used str.split() without sep; both engines failed before the allow_fail result",
+  "reference_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "runs": {
+   "native": {
+    "argv": [
+     "/tmp/opencode/bazel-parity-streaming/target/release/bazel-rs",
+     "--ignore_all_rc_files",
+     "--cache-dir=/tmp/opencode/n32cap2478830/download-20mib/native-cache",
+     "build",
+     "--lockfile_mode=off",
+     "@d//:MARK"
+    ],
+    "output_tail": "N32RESULT success=True sha256=52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab size=20971520 integrity=sha256-UsqNBOidkAJQX2uhTgANrY97QtwnyoyHXXEkbDTyqqs= mode=755\nWARNING: Download from http://127.0.0.1:36513/big.bin failed: class com.google.devtools.build.lib.bazel.repository.downloader.UnrecoverableHttpException Checksum was 52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab but wanted 0000000000000000000000000000000000000000000000000000000000000000\nN32RESULT allow_fail_success=False exists=True kept=[\"52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab\", \"644\"]\n@@+dl+d//:MARK\t/tmp/opencode/n32cap2478830/download-20mib/native-cache/repositories/direct/trees/adbbe4b81454ef3c96a523ffa60210225882a80cb0a33ae1685a7ce7721ff264/MARK\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "peak_vmhwm_kib": 19056,
+    "returncode": 0,
+    "wall_seconds": 0.197
+   },
+   "reference": {
+    "argv": [
+     "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+     "--batch",
+     "--ignore_all_rc_files",
+     "--output_user_root=/tmp/opencode/n32cap2478830/download-20mib/bazel-root",
+     "build",
+     "--lockfile_mode=off",
+     "--incompatible_autoload_externally=",
+     "--noshow_progress",
+     "--color=no",
+     "--curses=no",
+     "--repository_cache=/tmp/opencode/n32cap2478830/download-20mib/bazel-repo-cache",
+     "--experimental_convenience_symlinks=ignore",
+     "@d//:MARK"
+    ],
+    "output_tail": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: /tmp/opencode/n32cap2478830/download-20mib/bazel-ws/defs.bzl:37:10: N32RESULT success=True sha256=52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab size=20971520 integrity=sha256-UsqNBOidkAJQX2uhTgANrY97QtwnyoyHXXEkbDTyqqs= mode=755\nWARNING: Download from http://127.0.0.1:36513/big.bin failed: class com.google.devtools.build.lib.bazel.repository.downloader.UnrecoverableHttpException Checksum was 52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab but wanted 0000000000000000000000000000000000000000000000000000000000000000\nDEBUG: /tmp/opencode/n32cap2478830/download-20mib/bazel-ws/defs.bzl:41:10: N32RESULT allow_fail_success=False exists=True kept=[\"52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab\", \"644\"]\nINFO: Analyzed target @@+dl+d//:MARK (5 packages loaded, 7 targets configured).\nWARNING: /tmp/opencode/n32cap2478830/download-20mib/bazel-root/c7f5d9beb463ca7004d56abea3154633/external/+dl+d/BUILD.bazel:1:14: @@+dl+d//:MARK is a source file, nothing will be built for it. If you want to build a target that consumes this file, try --compile_one_dependency\nINFO: Found 1 target...\nINFO: Elapsed time: 8.636s, Critical Path: 0.03s\nINFO: 1 process: 1 internal.\nINFO: Build completed successfully, 1 total action\n",
+    "peak_vmhwm_kib": 288640,
+    "returncode": 0,
+    "wall_seconds": 9.706
+   }
+  },
+  "scratch_removed": true,
+  "served_sha256": "52ca8d04e89d9002505f6ba14e000dad8f7b42dc27ca8c875d71246c34f2aaab",
+  "started": "2026-10-17T00:55:27Z"
+ },
+ "zstd_encoder": {
+  "note": "scratch ruzstd 0.9.1 compress_to_vec (Fastest) tool",
+  "path": "/tmp/opencode/n32-zstd/target/release/n32-zstd"
+ }
+}

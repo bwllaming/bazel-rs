@@ -91,7 +91,7 @@ completion failure without a request.
   bits are accepted; whitespace, extra padding, URL-safe Base64 and multiple SRI
   tokens are not. Returned SRI uses canonical padded Base64.
 - Unknown/case-mismatched algorithm prefixes fail as unsupported before I/O.
-  Mutual exclusion and checksum-text limits are also immediate errors. Malformed
+  Mutual exclusion is also an immediate error. Malformed
   hex or Base64/length under a supported algorithm instead records a **delayed
   validation error**: transfer proceeds without a valid expected digest. A
   completed transfer then raises that error, even with `allow_fail=True`; a
@@ -150,8 +150,9 @@ guarantee that a failed download leaves its destination unchanged.
 `allow_fail=True` catches only typed completion failures, such as exhausted mirror
 I/O/status errors, checksum mismatch, ordinary filesystem failure, or a disabled
 download without a matching destination. Validation, unsupported features,
-safety-policy violations, resource limits, lifetime violations, interruption and
-internal failures remain hard errors. Final result/stat/hash and observation
+safety-policy violations, lifetime violations, interruption and internal
+failures remain hard errors (N32 removed the former resource-limit category;
+local resource failures such as `ENOSPC` are completion failures, as in Bazel). Final result/stat/hash and observation
 failures are outside this catch. `read` has no `allow_fail` option.
 
 ## Download-disable policy
@@ -185,37 +186,27 @@ Observed I/O outcomes can still change provenance.
 
 ## Execution limits and lifetime
 
-These are native bounds, not claims about Bazel's default limits. Cumulative
-limits below are per callback execution and shared across its I/O operations.
+N32 removed the former native "bounded profile" caps (8 mirrors, 8 redirects,
+64 requests, 32 download/read calls, 8 MiB per file, 32 MiB cumulative encoded
+and decoded bytes, 16 MiB live scratch, a 128 MiB work charge, path/URL/checksum
+text lengths and the 120-second cooperative deadline). Genuine Bazel has none of
+them; see [REPOSITORY_IO_STREAMING.md](REPOSITORY_IO_STREAMING.md).
 
-| Resource | Bound |
-|---|---|
-| Mirrors | 8 per download |
-| Connector attempts | 2 per mirror |
-| Followed redirects | 8 per attempt |
-| HTTP requests | 64 total, including retries/redirects |
-| Operations | 32 combined download/read calls |
-| Resulting file bytes | 8 MiB per file |
-| Encoded / decoded body bytes | Separate 32 MiB cumulative counters |
-| Live scratch file bytes | 16 MiB |
-| Conservative cumulative I/O work/buffer charge | 128 MiB |
-| Path | 1024 bytes, 32 components, 128 bytes per component |
-| URL / checksum text | 8192 / 256 bytes per string |
-| Execution-I/O deadline | 120 seconds, cooperative; connection timeout at most 20 seconds |
+| Behavior | Value | Source |
+|---|---|---|
+| Connector attempts | 2 per mirror (native retry table, unchanged) | HttpConnector.java:246-300 (subset) |
+| Followed redirects | the 40th redirect fails with completion `Redirect loop detected` | HttpConnector.java:57, 205-208 |
+| Connect timeout | 10 s | HttpConnector.java:60 |
+| Read timeout | 20 s per request/read (inactivity), no whole-transfer deadline | HttpConnector.java:61, 155-157 |
+| Body size, call count, scratch size | unbounded; bodies stream to disk, hashed incrementally | DownloadManager / HashOutputStream |
 
-Reads are bounded before requesting decoded output, including the checksum
-precheck. At an exact byte cap, an EOF probe may consume **one excess byte**; it is
-counted and rejected, never hashed, written or delivered as successful content.
-Exceeding the cumulative decoded cap prevents further probes. Counters measure
-actual requested/returned stream bytes, not every private inflater dictionary
-operation or look-ahead. Encoded body accounting excludes headers/wire framing
-and transport-internal buffers. The work charge includes repeated reads/hashes,
-writes, precheck buffers, Latin-1 expansion and URL copies; it is **not a hard
-process-memory cap**.
-
-The deadline is checked around transport/read operations and supplies remaining
-request timeouts. Blocking DNS cannot be forcibly canceled: there is **no hard DNS
-wall-clock guarantee** or general process-cancellation feature.
+Downloads stream into the owned file in 64 KiB chunks while hashing; owned-file
+digests (reuse matching, results, provenance) are computed incrementally. Only
+`read()` materializes a file, because Bazel returns its content as a string.
+Local filesystem failures (for example `ENOSPC`) are typed completion failures
+carrying the OS reason (`No space left on device`), like Bazel's IOException.
+Blocking DNS cannot be forcibly canceled: there is **no hard DNS wall-clock
+guarantee** or general process-cancellation feature.
 
 Scratch storage is a lazily allocated host-owned RAII container with an initially
 absent working child. On Unix, the outer container requests0700 **at creation**,

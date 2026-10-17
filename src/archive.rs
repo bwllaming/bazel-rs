@@ -6,27 +6,83 @@
 //! `StripPrefixedPath.maybeDeprefixSymlink`, hard links are real hard links
 //! created while streaming, and symbolic links are created only after every
 //! other entry has been written. Special files, non-UTF-8 names, and semantic
-//! tar extensions are deliberately unsupported. Only strictly framed global PAX
-//! comments are consumed as inert metadata; local PAX and GNU extensions remain
-//! rejected. File permissions are normalized to 0755 when any executable bit is
+//! tar extensions are deliberately unsupported. Strictly framed global PAX
+//! comments are consumed as inert metadata. Like commons-compress
+//! TarArchiveInputStream (used by CompressedTarFunction), GNU long names and
+//! long link names (`L`/`K`) and local PAX headers (`x`) supply the next
+//! entry's path/link name; other local PAX keys are accepted only when they are
+//! inert for extraction (times, ownership, charset, comments, vendor
+//! `SCHILY.`/`LIBARCHIVE.` attributes) or a `size` equal to the header size,
+//! and anything else (sparse files, ...) is rejected. File permissions are normalized to 0755 when any executable bit is
 //! set, or 0644 otherwise; directories use 0755. Ownership and privileged bits
 //! are not preserved. Extraction never writes, links or creates a directory
 //! through a symlink and never creates a hard link to a path outside the
 //! extraction root. The caller must remove staging on failure and exclude
 //! concurrent writers: metadata checks are not a defense against a hostile
 //! concurrent rename.
+//!
+//! Extraction streams: archives are read from a file (or caller-owned bytes)
+//! through incremental decoders (gzip, xz, zstd, bzip2) like Bazel's
+//! CompressedTarFunction subclasses, and every entry is copied to disk in
+//! constant memory. There are no artificial entry-count, expanded-size or
+//! metadata-record caps (Bazel has none); the safety properties (no path
+//! escape, no writes through symlinks, no hard links outside the root) are
+//! enforced per entry, independent of size. The only size rule kept is
+//! Bazel's own zip symlink precondition (`entry.getSize() < 256`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufReader, Cursor, Read};
+use std::io::{self, BufReader, Cursor, Read, Seek};
 use std::path::{Path, PathBuf};
 
-const MAX_EXPANDED: u64 = 1024 * 1024 * 1024;
-const MAX_ENTRIES: usize = 100_000;
-const MAX_PAX_RECORDS: usize = 100_000;
-const MAX_LINK_TARGET: usize = 4096;
 // ZipDecompressor.MAX_PATH_LENGTH: Bazel requires `entry.getSize() < 256`.
 const MAX_ZIP_LINK_TARGET: u64 = 256;
+// CompressedTarFunction/CompressedFunction BUFFER_SIZE (32 KiB).
+const BUFFER_SIZE: usize = 32 * 1024;
+// GNU long-name/link and local PAX records are read whole into memory to
+// name the next entry; real names are far below this. Larger records fail
+// explicitly instead of allocating an attacker-chosen size.
+const MAX_EXTENSION_RECORD: u64 = 1024 * 1024;
+// TarZstFunction.java:33 `setLongMax(Zstd.windowLogMax())`: 2^31 on 64-bit.
+const ZSTD_MAX_WINDOW: u64 = 1 << 31;
+
+/// Archive types accepted by the native extractor (Bazel type names,
+/// DecompressorValue.java:40-76). `gz`, `xz`, `zst`, `bz2`, `ar`, `deb` and
+/// `7z` are not supported natively and fail explicitly in the callers.
+pub const NATIVE_TYPES: &[&str] = &[
+    "zip", "tar", "tar.gz", "tgz", "tar.xz", "txz", "tar.zst", "tzst", "tar.bz2", "tbz",
+];
+
+/// Extraction failure. `PrefixNotFound` carries Bazel's prefix suggestions
+/// (`CouldNotFindPrefixException.maybeMakePrefixSuggestion`: the first segment
+/// of every multi-segment entry seen before the prefix was found).
+#[derive(Debug)]
+pub enum Failure {
+    PrefixNotFound(BTreeSet<String>),
+    Other(String),
+}
+
+impl fmt::Display for Failure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PrefixNotFound(_) => f.write_str("archive strip_prefix did not match"),
+            Self::Other(message) => f.write_str(message),
+        }
+    }
+}
+
+impl From<String> for Failure {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
+}
+
+impl From<&str> for Failure {
+    fn from(message: &str) -> Self {
+        Self::Other(message.to_owned())
+    }
+}
 
 /// Extract a verified archive without invoking external programs.
 ///
@@ -63,6 +119,41 @@ pub fn extract_named(
     destination: &Path,
     archive_name: &str,
 ) -> Result<(), String> {
+    run(
+        Cursor::new(bytes),
+        archive_type,
+        strip_prefix,
+        destination,
+        archive_name,
+    )
+    .map_err(|failure| match failure {
+        Failure::PrefixNotFound(_) => {
+            format!("archive strip_prefix {strip_prefix:?} did not match")
+        }
+        Failure::Other(message) => message,
+    })
+}
+
+/// Stream-extract the archive file at `archive`, never reading it into
+/// memory. Zip archives are read with random access (central directory).
+pub fn extract_file(
+    archive: &Path,
+    archive_type: &str,
+    strip_prefix: &str,
+    destination: &Path,
+    archive_name: &str,
+) -> Result<(), Failure> {
+    let file = File::open(archive).map_err(|e| format!("open archive: {e}"))?;
+    run(file, archive_type, strip_prefix, destination, archive_name)
+}
+
+fn run<R: Read + Seek>(
+    source: R,
+    archive_type: &str,
+    strip_prefix: &str,
+    destination: &Path,
+    archive_name: &str,
+) -> Result<(), Failure> {
     let prefix = prefix_components(strip_prefix)?;
     check_directory(destination)?;
     if fs::read_dir(destination)
@@ -76,25 +167,117 @@ pub fn extract_named(
         destination,
         prefix,
         matched: strip_prefix.is_empty(),
-        entries: 0,
-        expanded: 0,
+        available: BTreeSet::new(),
         archive: archive_name,
         symlinks: BTreeMap::new(),
     };
     match archive_type {
-        "tar" => extract_tar(Cursor::new(bytes), &mut state)?,
-        "tar.gz" | "tgz" => {
-            extract_tar(flate2::read::MultiGzDecoder::new(bytes), &mut state)?;
+        "tar" => extract_tar(BufReader::with_capacity(BUFFER_SIZE, source), &mut state)?,
+        // GzipCompressorInputStream(in, decompressConcatenated = true).
+        "tar.gz" | "tgz" => extract_tar(
+            flate2::read::MultiGzDecoder::new(BufReader::with_capacity(BUFFER_SIZE, source)),
+            &mut state,
+        )?,
+        // XZInputStream decodes concatenated streams (TarXzFunction.java).
+        "tar.xz" | "txz" => extract_tar(
+            lzma_rust2::XzReader::new(BufReader::with_capacity(BUFFER_SIZE, source), true),
+            &mut state,
+        )?,
+        // ZstdInputStreamNoFinalizer: every frame, skippable frames skipped.
+        "tar.zst" | "tzst" => extract_tar(
+            ZstdFrames::new(BufReader::with_capacity(BUFFER_SIZE, source))?,
+            &mut state,
+        )?,
+        // BZip2CompressorInputStream(in, decompressConcatenated = true).
+        "tar.bz2" | "tbz" => {
+            extract_tar(
+                bzip2::read::MultiBzDecoder::new(BufReader::with_capacity(BUFFER_SIZE, source)),
+                &mut state,
+            )?;
         }
-        "zip" => extract_zip(bytes, &mut state)?,
-        other => return Err(format!("unsupported archive type: {other}")),
+        "zip" => extract_zip(source, &mut state)?,
+        other => return Err(format!("unsupported archive type: {other}").into()),
     }
     if !state.matched {
-        return Err(format!(
-            "archive strip_prefix {strip_prefix:?} did not match"
-        ));
+        return Err(Failure::PrefixNotFound(state.available));
     }
-    state.create_symlinks(archive_type != "zip")
+    Ok(state.create_symlinks(archive_type != "zip")?)
+}
+
+/// A zstd stream of one or more frames (RFC 8878 section 3.1), decoded
+/// incrementally. Skippable frames are skipped like libzstd's streaming
+/// decoder; the window is bounded like Bazel's `windowLogMax`.
+struct ZstdFrames<R: io::BufRead> {
+    decoder: Option<ruzstd::decoding::StreamingDecoder<R, ruzstd::decoding::FrameDecoder>>,
+}
+
+impl<R: io::BufRead> ZstdFrames<R> {
+    fn new(source: R) -> Result<Self, String> {
+        Ok(Self {
+            decoder: Self::frame(source, ruzstd::decoding::FrameDecoder::new())?,
+        })
+    }
+
+    fn frame(
+        mut source: R,
+        mut decoder: ruzstd::decoding::FrameDecoder,
+    ) -> Result<Option<ruzstd::decoding::StreamingDecoder<R, ruzstd::decoding::FrameDecoder>>, String>
+    {
+        decoder.set_max_window_size(ZSTD_MAX_WINDOW);
+        // Skippable frames (magic 0x184D2A5?, RFC 8878 section 3.1.2) carry no
+        // content: skip them before the next data frame's header.
+        loop {
+            let mut header = [0u8; 8];
+            let available = source
+                .fill_buf()
+                .map_err(|e| format!("read zstd stream: {e}"))?;
+            if available.len() < 4
+                || u32::from_le_bytes(available[..4].try_into().expect("4 bytes")) & !0xF
+                    != 0x184D_2A50
+            {
+                break;
+            }
+            source
+                .read_exact(&mut header)
+                .map_err(|e| format!("truncated zstd skippable frame: {e}"))?;
+            let length = u64::from(u32::from_le_bytes(header[4..].try_into().expect("4 bytes")));
+            let skipped = io::copy(&mut (&mut source).take(length), &mut io::sink())
+                .map_err(|e| format!("read zstd skippable frame: {e}"))?;
+            if skipped != length {
+                return Err("truncated zstd skippable frame".into());
+            }
+            if source
+                .fill_buf()
+                .map_err(|e| format!("read zstd stream: {e}"))?
+                .is_empty()
+            {
+                return Ok(None);
+            }
+        }
+        ruzstd::decoding::StreamingDecoder::new_with_decoder(source, decoder)
+            .map(Some)
+            .map_err(|e| format!("read zstd frame: {e}"))
+    }
+}
+
+impl<R: io::BufRead> Read for ZstdFrames<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        loop {
+            let Some(decoder) = self.decoder.as_mut() else {
+                return Ok(0);
+            };
+            let count = decoder.read(buffer)?;
+            if count != 0 || buffer.is_empty() {
+                return Ok(count);
+            }
+            // Frame complete: continue with the next frame, if any.
+            let (mut source, frame) = self.decoder.take().expect("decoder").into_parts();
+            if source.fill_buf()?.is_empty() {
+                return Ok(0);
+            }
+            self.decoder = Self::frame(source, frame).map_err(io::Error::other)?;
+        }
+    }
 }
 
 /// `PathFragment.create` normalization (UnixOsPathPolicy.normalize and
@@ -121,11 +304,6 @@ fn link_text(raw: &[u8]) -> Result<&str, String> {
     let text = std::str::from_utf8(raw).map_err(|_| "archive link target is not UTF-8")?;
     if text.is_empty() {
         return Err("archive link has an empty target".into());
-    }
-    if text.len() > MAX_LINK_TARGET {
-        return Err(format!(
-            "archive link target exceeds {MAX_LINK_TARGET} bytes"
-        ));
     }
     if text.contains('\0') {
         return Err("archive link target contains NUL".into());
@@ -163,8 +341,8 @@ struct Extraction<'a> {
     destination: &'a Path,
     prefix: Vec<&'a str>,
     matched: bool,
-    entries: usize,
-    expanded: u64,
+    /// Prefix suggestions collected while the prefix was not yet found.
+    available: BTreeSet<String>,
     archive: &'a str,
     // Like Bazel's deferred `Map<Path, PathFragment> symlinks`, a later entry
     // for the same path replaces an earlier one. Keys are stripped components.
@@ -176,25 +354,17 @@ struct Extraction<'a> {
 type Output = (PathBuf, Vec<String>);
 
 impl Extraction<'_> {
-    fn account(&mut self, size: u64) -> Result<(), String> {
-        self.entries += 1;
-        if self.entries > MAX_ENTRIES {
-            return Err("archive exceeds entry limit (100000)".into());
-        }
-        self.expanded = self
-            .expanded
-            .checked_add(size)
-            .filter(|total| *total <= MAX_EXPANDED)
-            .ok_or("archive exceeds expanded size limit (1 GiB)")?;
-        Ok(())
-    }
-
     fn output(&mut self, raw: &[u8], directory: bool) -> Result<Option<Output>, String> {
         let parts = safe_components(raw)?;
         if parts.is_empty() && !directory {
             return Err("archive file has an empty normalized path".into());
         }
         if !parts.starts_with(&self.prefix) {
+            // CompressedTarFunction.java:96-99 / ZipDecompressor: suggestions
+            // only until the prefix is first found.
+            if !self.matched && parts.len() > 1 {
+                self.available.insert(parts[0].to_owned());
+            }
             return Ok(None);
         }
         let stripped = &parts[self.prefix.len()..];
@@ -484,27 +654,6 @@ fn set_file_mode(file: &File, mode: u32) -> Result<(), String> {
     Ok(())
 }
 
-// Bound decompression of tar framing, skipped entries, and trailing gzip
-// members too, rather than merely counting extracted file payloads.
-struct BoundedReader<R> {
-    inner: R,
-    remaining: u64,
-}
-
-impl<R: Read> Read for BoundedReader<R> {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        let limit = buffer.len().min((self.remaining + 1) as usize);
-        let count = self.inner.read(&mut buffer[..limit])?;
-        if count as u64 > self.remaining {
-            return Err(io::Error::other(
-                "archive exceeds expanded size limit (1 GiB)",
-            ));
-        }
-        self.remaining -= count as u64;
-        Ok(count)
-    }
-}
-
 fn validate_tar_string(field: &[u8]) -> Result<(), String> {
     if let Some(end) = field.iter().position(|byte| *byte == 0)
         && field[end..].iter().any(|byte| *byte != 0)
@@ -525,9 +674,6 @@ fn consume_global_comments(
     let mut reader = BufReader::with_capacity(8192, reader.take(size));
     let mut remaining = size;
     while remaining != 0 {
-        if *records >= MAX_PAX_RECORDS {
-            return Err("archive exceeds PAX record count limit".into());
-        }
         *records += 1;
         let mut length = 0u64;
         let mut prefix = 0u64;
@@ -581,10 +727,7 @@ fn consume_global_comments(
 }
 
 fn extract_tar(reader: impl Read, state: &mut Extraction<'_>) -> Result<(), String> {
-    let mut archive = tar::Archive::new(BoundedReader {
-        inner: reader,
-        remaining: MAX_EXPANDED,
-    });
+    let mut archive = tar::Archive::new(reader);
     // Raw iteration prevents the library from buffering arbitrarily large GNU
     // and PAX metadata records, or silently ignoring their unsafe paths.
     let entries = archive
@@ -593,6 +736,8 @@ fn extract_tar(reader: impl Read, state: &mut Extraction<'_>) -> Result<(), Stri
         .raw(true);
     let mut pax_records = 0;
     let mut pending_global = false;
+    let mut long_name: Option<Vec<u8>> = None;
+    let mut long_link: Option<Vec<u8>> = None;
     for entry in entries {
         let mut entry = entry.map_err(|e| format!("read tar entry: {e}"))?;
         let header = entry.header();
@@ -608,12 +753,68 @@ fn extract_tar(reader: impl Read, state: &mut Extraction<'_>) -> Result<(), Stri
         // TarArchiveEntry.isSymbolicLink() / isLink(): ustar types '2' and '1'.
         let symlink = kind == tar::EntryType::Symlink;
         let hard_link = kind == tar::EntryType::Link;
-        if !directory && !kind.is_file() && !global && !symlink && !hard_link {
+        let gnu_name = kind == tar::EntryType::GNULongName;
+        let gnu_link = kind == tar::EntryType::GNULongLink;
+        if gnu_name || gnu_link || kind == tar::EntryType::XHeader {
+            // Extension records describe the next entry (commons-compress
+            // getNextTarEntry: GNU long names/links and local PAX headers).
+            let size = entry.size();
+            if size > MAX_EXTENSION_RECORD {
+                return Err(format!(
+                    "tar extension record ({kind:?}) of {size} bytes exceeds the native 1 MiB limit"
+                ));
+            }
+            let mut data = Vec::new();
+            (&mut entry)
+                .take(size)
+                .read_to_end(&mut data)
+                .map_err(|e| format!("read tar extension record: {e}"))?;
+            if data.len() as u64 != size {
+                return Err("truncated tar extension record".into());
+            }
+            if gnu_name || gnu_link {
+                // TarArchiveInputStream.getLongNameData: trailing NULs dropped.
+                while data.last() == Some(&0) {
+                    data.pop();
+                }
+                if data.is_empty() || data.contains(&0) {
+                    return Err("malformed GNU long name record".into());
+                }
+                if gnu_name {
+                    long_name = Some(data);
+                } else {
+                    long_link = Some(data);
+                }
+            } else {
+                let (path, link) = local_pax(&data, &mut pax_records)?;
+                if let Some(path) = path {
+                    long_name = Some(path);
+                }
+                if let Some(link) = link {
+                    long_link = Some(link);
+                }
+            }
+            continue;
+        }
+        // POSIX type '7' (contiguous file) is an ordinary regular file for an
+        // extractor, as in commons-compress (TarArchiveEntry.isFile) and GNU tar.
+        let regular = kind.is_file() || kind.is_contiguous();
+        if !directory && !regular && !global && !symlink && !hard_link {
             return Err(format!(
                 "unsupported tar entry type (special files and extension records are rejected): {kind:?}"
             ));
         }
-        let link_target = entry.link_name_bytes().map(|name| name.into_owned());
+        if global && (long_name.is_some() || long_link.is_some()) {
+            return Err("tar extension record precedes a global PAX header".into());
+        }
+        let path_bytes = match long_name.take() {
+            Some(name) => name,
+            None => entry.path_bytes().into_owned(),
+        };
+        let link_target = match long_link.take() {
+            Some(link) => Some(link),
+            None => entry.link_name_bytes().map(|name| name.into_owned()),
+        };
         if (symlink || hard_link) != link_target.is_some() {
             return Err(if link_target.is_some() {
                 "tar link names are unsupported on regular, directory and metadata entries".into()
@@ -629,18 +830,17 @@ fn extract_tar(reader: impl Read, state: &mut Extraction<'_>) -> Result<(), Stri
         let mode = header
             .mode()
             .map_err(|e| format!("invalid tar mode: {e}"))?;
-        state.account(size)?;
         if global {
             // A metadata name is never an output or a strip-prefix match. Keep
             // the native safe-relative-path restriction even for these names.
-            if safe_components(&entry.path_bytes())?.is_empty() {
+            if safe_components(&path_bytes)?.is_empty() {
                 return Err("global PAX header requires a nonempty safe path".into());
             }
             consume_global_comments(&mut entry, size, &mut pax_records)?;
             pending_global = true;
             continue;
         }
-        let output = state.output(&entry.path_bytes(), directory)?;
+        let output = state.output(&path_bytes, directory)?;
         if let Some((output, parts)) = output {
             if directory {
                 state.directory(&output)?;
@@ -677,7 +877,67 @@ fn extract_tar(reader: impl Read, state: &mut Extraction<'_>) -> Result<(), Stri
     if pending_global {
         return Err("global PAX header has no following regular file or directory".into());
     }
+    if long_name.is_some() || long_link.is_some() {
+        return Err("tar extension record has no following entry".into());
+    }
     Ok(())
+}
+
+/// Path and link-name overrides from a local PAX header.
+type PaxNames = (Option<Vec<u8>>, Option<Vec<u8>>);
+
+/// Parse a local PAX extended header (`length key=value\n` records) into the
+/// overriding path and link name. Keys without extraction semantics are
+/// ignored like commons-compress; semantic keys native extraction does not
+/// implement (sparse files, ...) fail explicitly.
+fn local_pax(data: &[u8], records: &mut usize) -> Result<PaxNames, String> {
+    let mut path = None;
+    let mut link = None;
+    let mut rest = data;
+    while !rest.is_empty() {
+        *records += 1;
+        let space = rest
+            .iter()
+            .position(|byte| *byte == b' ')
+            .ok_or("invalid PAX record length framing")?;
+        let digits = &rest[..space];
+        if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+            return Err("invalid PAX record length framing".into());
+        }
+        let length: usize = std::str::from_utf8(digits)
+            .expect("ASCII digits")
+            .parse()
+            .map_err(|_| "PAX record length overflow")?;
+        if length <= space + 1 || length > rest.len() || rest[length - 1] != b'\n' {
+            return Err("invalid PAX record length".into());
+        }
+        let record = &rest[space + 1..length - 1];
+        let equals = record
+            .iter()
+            .position(|byte| *byte == b'=')
+            .ok_or("PAX record has no '='")?;
+        let key = std::str::from_utf8(&record[..equals]).map_err(|_| "non-UTF-8 PAX key")?;
+        let value = &record[equals + 1..];
+        match key {
+            "path" => path = Some(value.to_vec()),
+            "linkpath" => link = Some(value.to_vec()),
+            "size" => {
+                // The header size governs framing natively; PAX sizes (files
+                // of 8 GiB and more) are unsupported, never silently ignored.
+                return Err("PAX size records are unsupported by native extraction".into());
+            }
+            "mtime" | "atime" | "ctime" | "uid" | "gid" | "uname" | "gname" | "comment"
+            | "charset" | "hdrcharset" => {}
+            key if key.starts_with("SCHILY.") || key.starts_with("LIBARCHIVE.") => {
+                if key.starts_with("SCHILY.devm") || key == "SCHILY.filetype" {
+                    return Err(format!("unsupported PAX key {key:?}"));
+                }
+            }
+            key => return Err(format!("unsupported PAX key {key:?}")),
+        }
+        rest = &rest[length..];
+    }
+    Ok((path, link))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -732,12 +992,8 @@ fn zip_link_escapes(link: &[String], target: &str) -> bool {
     points.first() == Some(&"..")
 }
 
-fn extract_zip(bytes: &[u8], state: &mut Extraction<'_>) -> Result<(), String> {
-    let mut archive =
-        zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| format!("read zip archive: {e}"))?;
-    if archive.len() > MAX_ENTRIES {
-        return Err("archive exceeds entry limit (100000)".into());
-    }
+fn extract_zip<R: Read + Seek>(source: R, state: &mut Extraction<'_>) -> Result<(), String> {
+    let mut archive = zip::ZipArchive::new(source).map_err(|e| format!("read zip archive: {e}"))?;
     // Like Bazel's ZipReader (ZipFileData.java:39, 54, 203-204: a LinkedHashMap
     // keyed by name), ZipArchive keeps one record per name: the later record's
     // data at the first record's position.
@@ -747,7 +1003,6 @@ fn extract_zip(bytes: &[u8], state: &mut Extraction<'_>) -> Result<(), String> {
             .by_index(index)
             .map_err(|e| format!("read zip entry: {e}"))?;
         zip_entry_info(&entry)?;
-        state.account(entry.size())?;
     }
     for index in 0..archive.len() {
         let mut entry = archive
@@ -983,7 +1238,7 @@ mod tests {
 
     #[test]
     fn tar_special_files_and_extensions_are_explicit_errors() {
-        for kind in *b"3467xLKS" {
+        for kind in *b"346S" {
             let bytes = tar_fixture(&[("unrelated", kind, 0o644, b"")]);
             assert!(
                 run(&bytes, "tar", "wanted")
@@ -1181,33 +1436,27 @@ mod tests {
             }
         }
         let record = pax_record("comment", &vec![b'x'; 1024 * 1024]);
-        let mut records = MAX_PAX_RECORDS - 1;
+        let mut records = 0;
         consume_global_comments(
             SmallReads(Cursor::new(&record)),
             record.len() as u64,
             &mut records,
         )
         .unwrap();
-        assert_eq!(records, MAX_PAX_RECORDS);
-        assert!(
-            consume_global_comments(Cursor::new(b"12 comment=\n"), 12, &mut records)
-                .unwrap_err()
-                .contains("record count")
-        );
-        // Empty payloads contain no records; headers have their separate budget.
+        assert_eq!(records, 1);
         consume_global_comments(Cursor::new(b""), 0, &mut records).unwrap();
-        let first = b"12 comment=\n".repeat(MAX_PAX_RECORDS / 2);
-        let second = b"12 comment=\n".repeat(MAX_PAX_RECORDS / 2 + 1);
+        assert_eq!(records, 1);
+        // No record-count cap (Bazel has none): the former 100000-record
+        // profile limit is gone, records still stream in small reads.
+        let first = b"12 comment=\n".repeat(50_000);
+        let second = b"12 comment=\n".repeat(50_001);
         let bytes = tar_fixture(&[
             ("first", b'g', 0o644, &first),
             ("second", b'g', 0o644, &second),
             ("f", b'0', 0o644, b"data"),
         ]);
-        assert!(
-            run(&bytes, "tar", "")
-                .unwrap_err()
-                .contains("PAX record count")
-        );
+        let destination = run(&bytes, "tar", "").unwrap();
+        assert_eq!(fs::read(destination.path().join("f")).unwrap(), b"data");
     }
 
     #[test]
@@ -1363,32 +1612,18 @@ mod tests {
                 .unwrap_err()
                 .contains("unsupported archive type")
         );
+        // A declared size beyond the actual data is a truncated archive, not
+        // a size-cap failure (there is no expanded-size cap).
         let mut header = tar::Header::new_ustar();
         header.set_path("outside-prefix").unwrap();
         header.set_mode(0o644);
-        header.set_size(MAX_EXPANDED + 1);
+        header.set_size(2 * 1024 * 1024 * 1024);
         header.set_cksum();
-        assert!(
-            run(header.as_bytes(), "tar", "wanted")
-                .unwrap_err()
-                .contains("expanded size limit")
-        );
-        let destination = tempfile::tempdir().unwrap();
-        let mut state = Extraction {
-            destination: destination.path(),
-            prefix: vec![],
-            matched: true,
-            entries: MAX_ENTRIES,
-            expanded: 0,
-            archive: "archive",
-            symlinks: BTreeMap::new(),
-        };
-        assert!(state.account(0).unwrap_err().contains("entry limit"));
-        let mut limited = BoundedReader {
-            inner: Cursor::new(b"1234"),
-            remaining: 3,
-        };
-        assert!(io::copy(&mut limited, &mut io::sink()).is_err());
+        let error = run(header.as_bytes(), "tar", "wanted").unwrap_err();
+        assert!(!error.contains("limit"), "{error}");
+        for kind in ["tar.xz", "txz", "tar.zst", "tzst", "tar.bz2", "tbz"] {
+            assert!(run(b"bad", kind, "").is_err(), "{kind}");
+        }
     }
 
     #[cfg(unix)]
@@ -1402,8 +1637,7 @@ mod tests {
             destination: destination.path(),
             prefix: vec![],
             matched: true,
-            entries: 0,
-            expanded: 0,
+            available: BTreeSet::new(),
             archive: "archive",
             symlinks: BTreeMap::new(),
         };
@@ -1922,5 +2156,185 @@ mod tests {
                 .unwrap_err()
                 .contains("conflicts with an existing directory")
         );
+    }
+
+    fn xz(bytes: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut writer =
+            lzma_rust2::XzWriter::new(Vec::new(), lzma_rust2::XzOptions::default()).unwrap();
+        writer.write_all(bytes).unwrap();
+        writer.finish().unwrap()
+    }
+
+    fn bz2(bytes: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut writer = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::default());
+        writer.write_all(bytes).unwrap();
+        writer.finish().unwrap()
+    }
+
+    fn zstd(bytes: &[u8]) -> Vec<u8> {
+        ruzstd::encoding::compress_to_vec(bytes, ruzstd::encoding::CompressionLevel::Fastest)
+    }
+
+    #[test]
+    fn xz_zstd_and_bzip2_tar_formats_stream_including_concatenated_streams() {
+        let tar = tar_fixture(&[
+            ("top/", b'5', 0o755, b""),
+            ("top/bin/tool", b'0', 0o755, b"#!/bin/sh\n"),
+            ("top/data", b'0', 0o644, &[7u8; 100_000]),
+        ]);
+        // Split the tar so concatenated streams/frames/members must be joined.
+        let (left, right) = tar.split_at(1000);
+        let mut skippable = vec![0x50, 0x2a, 0x4d, 0x18, 3, 0, 0, 0, 1, 2, 3];
+        skippable.extend(zstd(right));
+        for (kind, bytes) in [
+            ("tar.xz", xz(&tar)),
+            ("txz", [xz(left), xz(right)].concat()),
+            ("tar.zst", zstd(&tar)),
+            ("tzst", [zstd(left), skippable.clone()].concat()),
+            ("tar.bz2", bz2(&tar)),
+            ("tbz", [bz2(left), bz2(right)].concat()),
+        ] {
+            let destination = run(&bytes, kind, "top").unwrap_or_else(|e| panic!("{kind}: {e}"));
+            assert_eq!(
+                fs::read(destination.path().join("data")).unwrap(),
+                vec![7u8; 100_000],
+                "{kind}"
+            );
+            assert_eq!(
+                fs::read(destination.path().join("bin/tool")).unwrap(),
+                b"#!/bin/sh\n"
+            );
+        }
+    }
+
+    #[test]
+    fn extract_file_streams_from_disk_and_reports_prefix_suggestions() {
+        let tar = tar_fixture(&[
+            ("a/one", b'0', 0o644, b"1"),
+            ("b/", b'5', 0o755, b""),
+            ("b/c/two", b'0', 0o644, b"2"),
+            ("single", b'0', 0o644, b"3"),
+        ]);
+        let zip = zip_fixture(&[("a/one", 0o644, b"1"), ("b/c/two", 0o644, b"2")]);
+        let source = tempfile::tempdir().unwrap();
+        for (kind, bytes) in [("tar.gz", gzip(&tar)), ("zip", zip)] {
+            let path = source.path().join(format!("archive.{kind}"));
+            fs::write(&path, bytes).unwrap();
+            let destination = tempfile::tempdir().unwrap();
+            extract_file(&path, kind, "b/c", destination.path(), "archive").unwrap();
+            assert_eq!(fs::read(destination.path().join("two")).unwrap(), b"2");
+            let destination = tempfile::tempdir().unwrap();
+            match extract_file(&path, kind, "missing", destination.path(), "archive") {
+                Err(Failure::PrefixNotFound(available)) => assert_eq!(
+                    available.into_iter().collect::<Vec<_>>(),
+                    ["a", "b"],
+                    "{kind}"
+                ),
+                other => panic!("{kind}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn gnu_long_names_links_and_local_pax_paths_name_the_next_entry() {
+        let long = format!("top/{}/file.txt", "d".repeat(120));
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(4);
+        header.set_mode(0o644);
+        header.set_entry_type(tar::EntryType::Regular);
+        builder
+            .append_data(&mut header, &long, &b"long"[..])
+            .unwrap();
+        let mut link = tar::Header::new_gnu();
+        link.set_size(0);
+        link.set_mode(0o777);
+        link.set_entry_type(tar::EntryType::Symlink);
+        builder
+            .append_link(
+                &mut link,
+                "top/link",
+                format!("{}/file.txt", "d".repeat(120)),
+            )
+            .unwrap();
+        let gnu = builder.into_inner().unwrap();
+        assert!(gnu.windows(13).any(|w| w == b"././@LongLink"));
+        let destination = run(&gnu, "tar", "top").unwrap();
+        assert_eq!(
+            fs::read(destination.path().join(&long["top/".len()..])).unwrap(),
+            b"long"
+        );
+        assert_eq!(fs::read(destination.path().join("link")).unwrap(), b"long");
+        let pax = [
+            pax_record("path", format!("top/{}", "p".repeat(150)).as_bytes()),
+            pax_record("mtime", b"1700000000.5"),
+            pax_record("SCHILY.xattr.user.x", b"v"),
+        ]
+        .concat();
+        let bytes = tar_fixture(&[
+            ("PaxHeaders/x", b'x', 0o644, &pax),
+            ("truncated-name", b'0', 0o644, b"pax"),
+        ]);
+        let destination = run(&bytes, "tar", "top").unwrap();
+        assert_eq!(
+            fs::read(destination.path().join("p".repeat(150))).unwrap(),
+            b"pax"
+        );
+        for (record, message) in [
+            (pax_record("GNU.sparse.map", b"0,1"), "unsupported PAX key"),
+            (pax_record("size", b"3"), "PAX size records"),
+        ] {
+            let bytes = tar_fixture(&[
+                ("PaxHeaders/x", b'x', 0o644, &record),
+                ("f", b'0', 0o644, b"pax"),
+            ]);
+            assert!(run(&bytes, "tar", "").unwrap_err().contains(message));
+        }
+        let dangling = tar_fixture(&[("PaxHeaders/x", b'x', 0o644, &pax_record("path", b"a"))]);
+        assert!(
+            run(&dangling, "tar", "")
+                .unwrap_err()
+                .contains("no following entry")
+        );
+        // A long name must still be a safe path.
+        let unsafe_name = tar_fixture(&[
+            (
+                "PaxHeaders/x",
+                b'x',
+                0o644,
+                &pax_record("path", b"../escape"),
+            ),
+            ("f", b'0', 0o644, b"x"),
+        ]);
+        assert!(
+            run(&unsafe_name, "tar", "")
+                .unwrap_err()
+                .contains("unsafe archive path")
+        );
+    }
+
+    #[test]
+    fn contiguous_files_extract_as_regular_files_and_huge_extension_records_fail() {
+        let bytes = tar_fixture(&[("top/c.bin", b'7', 0o755, b"contiguous")]);
+        let destination = run(&bytes, "tar", "top").unwrap();
+        assert_eq!(
+            fs::read(destination.path().join("c.bin")).unwrap(),
+            b"contiguous"
+        );
+        let huge = vec![b'a'; 1024 * 1024 + 1];
+        for kind in *b"LKx" {
+            let bytes = tar_fixture(&[
+                ("././@LongLink", kind, 0o644, &huge),
+                ("f", b'0', 0o644, b"x"),
+            ]);
+            assert!(
+                run(&bytes, "tar", "")
+                    .unwrap_err()
+                    .contains("exceeds the native 1 MiB limit"),
+                "type {kind}"
+            );
+        }
     }
 }

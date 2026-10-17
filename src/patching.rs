@@ -29,19 +29,15 @@
 //! the tree are rejected (Bazel would write through them); a leaf symlink is
 //! read through only when it resolves inside the tree (source_links) and is
 //! replaced, never written through; created files are 0644 and modes are
-//! normalized to 0644/0755 like the rest of the store. Inputs are limited to
-//! 16 MiB per patch or file, 100000 lines and a 256 MiB working set.
+//! normalized to 0644/0755 like the rest of the store. Like PatchUtil, patch and
+//! target texts are read whole into memory (line lists); there are no
+//! artificial size, line, working-set or comparison caps.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-
-const MAX_BYTES: usize = 16 * 1024 * 1024;
-const MAX_LINES: usize = 100_000;
-const MAX_TREE_BYTES: usize = 256 * 1024 * 1024;
-const MAX_COMPARISONS: usize = 100_000_000;
 
 /// Cache-identity marker of the patch engine. Identities of patched trees
 /// include it so caches written by the earlier exact-context engine are never
@@ -92,9 +88,6 @@ fn failed<T>(message: impl Into<String>) -> PResult<T> {
 
 /// Guava `CharSource.readLines` over UTF-8 decoded bytes.
 fn text_lines(bytes: &[u8]) -> PResult<Vec<String>> {
-    if bytes.len() > MAX_BYTES {
-        return Err(PatchError::Io("patch/text exceeds 16 MiB limit".into()));
-    }
     let text = String::from_utf8_lossy(bytes);
     let mut lines = Vec::new();
     let mut current = String::new();
@@ -108,11 +101,6 @@ fn text_lines(bytes: &[u8]) -> PResult<Vec<String>> {
                 }
                 lines.push(std::mem::take(&mut current));
                 pending = false;
-                if lines.len() > MAX_LINES {
-                    return Err(PatchError::Io(
-                        "patch/text exceeds 100000 line limit".into(),
-                    ));
-                }
             }
             _ => {
                 current.push(c);
@@ -122,11 +110,6 @@ fn text_lines(bytes: &[u8]) -> PResult<Vec<String>> {
     }
     if pending {
         lines.push(current);
-    }
-    if lines.len() > MAX_LINES {
-        return Err(PatchError::Io(
-            "patch/text exceeds 100000 line limit".into(),
-        ));
     }
     Ok(lines)
 }
@@ -332,11 +315,6 @@ fn verify_chunk(
     let mut i = fuzz;
     while i < last_index {
         *comparisons += 1;
-        if *comparisons > MAX_COMPARISONS {
-            return Err(Java::Failed(
-                "patch context search exceeds the native comparison limit".into(),
-            ));
-        }
         let actual = &target[check_index(position + i, target.len())?];
         if *actual != source[i as usize] {
             return Ok(Verify::ContentDoesNotMatchTarget);
@@ -426,11 +404,6 @@ fn apply_fuzzy_to_at(
         i += 1;
     }
     let lines = sub_list(&delta.target, fuzz, delta.target.len() as i64 - fuzz)?.to_vec();
-    if target.len() + lines.len() > MAX_LINES {
-        return Err(Java::Failed(
-            "patched text exceeds the native 100000 line limit".into(),
-        ));
-    }
     for (i, line) in (fuzz..).zip(lines) {
         let index = position + i;
         if index < 0 || index as u64 > target.len() as u64 {
@@ -1076,7 +1049,6 @@ impl PatchFs for ModuleFs {
 pub struct TreeFs {
     root: PathBuf,
     display: String,
-    working_set: usize,
 }
 
 impl TreeFs {
@@ -1086,7 +1058,6 @@ impl TreeFs {
         Ok(Self {
             display: root.to_string_lossy().into_owned(),
             root,
-            working_set: 0,
         })
     }
 
@@ -1181,24 +1152,11 @@ impl PatchFs for TreeFs {
                 "patch target is not a regular file: {shown}"
             )));
         }
-        if meta.len() > MAX_BYTES as u64 {
-            return Err(PatchError::Io("patch input exceeds 16 MiB".into()));
-        }
         let mut bytes = Vec::new();
         File::open(&current)
             .map_err(|e| PatchError::Io(format!("read patch input {shown}: {e}")))?
-            .take(MAX_BYTES as u64 + 1)
             .read_to_end(&mut bytes)
             .map_err(|e| PatchError::Io(e.to_string()))?;
-        if bytes.len() > MAX_BYTES {
-            return Err(PatchError::Io("patch input exceeds 16 MiB".into()));
-        }
-        self.working_set += bytes.len();
-        if self.working_set > MAX_TREE_BYTES {
-            return Err(PatchError::Io(
-                "patch tree exceeds 256 MiB working-set limit".into(),
-            ));
-        }
         text_lines(&bytes)
     }
 
@@ -1241,15 +1199,6 @@ impl PatchFs for TreeFs {
 
     fn write(&mut self, path: &str, lines: &[String], permission: i32) -> PResult<()> {
         let bytes = encode_lines(lines);
-        if bytes.len() > MAX_BYTES {
-            return Err(PatchError::Io("patched text exceeds 16 MiB limit".into()));
-        }
-        self.working_set += bytes.len();
-        if self.working_set > MAX_TREE_BYTES {
-            return Err(PatchError::Io(
-                "patch tree exceeds 256 MiB working-set limit".into(),
-            ));
-        }
         let destination = self.checked(path)?;
         if path.is_empty() {
             return Err(PatchError::Io(format!("{} (Is a directory)", self.display)));
@@ -1899,12 +1848,22 @@ mod tests {
     }
 
     #[test]
-    fn huge_hunk_numbers_crash_bazel_and_limits_hold() {
+    fn huge_hunk_numbers_crash_bazel_and_large_inputs_have_no_native_cap() {
         let error = patch("--- a/p\n+++ b/p\n@@ -1,99999999999 +1 @@\n-a\n+b\n", 1)
             .apply_module(b"a\n")
             .unwrap_err();
         assert!(error.contains("NumberFormatException"), "{error}");
-        assert!(parse(&vec![b'x'; MAX_BYTES + 1], 0).is_err());
-        assert!(parse("\n".repeat(MAX_LINES + 1).as_bytes(), 0).is_err());
+        // Above the former 16 MiB / 100000-line native caps: PatchUtil has none.
+        let body = "x\n".repeat(150_000);
+        let lines: String = "+x\n".repeat(150_000);
+        let text =
+            format!("--- a/MODULE.bazel\n+++ b/MODULE.bazel\n@@ -1 +1,150000 @@\n-x\n{lines}");
+        let patched = patch(&text, 1).apply_module(b"x\n").unwrap();
+        assert!(
+            patched == body.as_bytes(),
+            "patched length {}",
+            patched.len()
+        );
+        parse(&vec![b'x'; 17 * 1024 * 1024], 0).unwrap();
     }
 }

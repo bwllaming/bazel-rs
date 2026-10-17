@@ -53,8 +53,9 @@ the resolved source file in Bazel's order: resolve (package check), validate
 - Any symlink on the repository-relative path, special files: explicit
   unsupported errors (Bazel follows symlinks).
 - Each byte maps to U+0000..U+00FF (Latin-1), exactly like owned reads.
-- At most 8 MiB per file; every source read counts against the shared 32-call,
-  work and deadline budgets of the [I/O profile](MODULE_EXTENSION_IO.md#execution-limits-and-lifetime).
+- No size or call-count cap (N32 removed the former 8 MiB / 32-call budgets);
+  the content is read whole because Bazel returns it as a string (see the
+  [I/O profile](MODULE_EXTENSION_IO.md#execution-limits-and-lifetime)).
   The opened file's identity and size are re-checked after reading.
 
 Every source read appends an ordered provenance observation

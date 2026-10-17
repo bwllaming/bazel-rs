@@ -1,24 +1,29 @@
-//! Verified, bounded archive repositories. This is not repository-rule execution.
+//! Verified archive repositories. This is not repository-rule execution.
+//!
+//! Source archives stream from the network (or `file://`) into a temporary
+//! file inside the content-addressed download cache while being hashed, are
+//! verified, and are published by atomic rename (`downloads/<algo>/<hex>`).
+//! Extraction then streams from that blob. There are no artificial download
+//! or overlay size caps.
 //!
 //! Registry metadata is freshly fetched under the explicit lockfile-off profile.
 //! Download blobs are reused only after checking their descriptor-provided SRI.
 //! Extracted trees are private staged publications with a checked file manifest.
 //! The cache and its ancestors must be trusted against concurrent hostile mutation,
 //! as must local execution generally; this is not a filesystem security sandbox.
+use crate::extension_download::{Algorithm, Hash};
 use crate::patch_inputs::LocalPatchPlan;
 use crate::registry::{self, Registry};
 use base64::Engine;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use sha2::{Digest, Sha256, Sha384, Sha512};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
-const DOWNLOAD_LIMIT: u64 = 256 * 1024 * 1024;
-const OVERLAY_LIMIT: u64 = 16 * 1024 * 1024;
 const FORMAT: &str = "native-repository-v2";
 
 #[derive(Debug)]
@@ -58,15 +63,32 @@ impl Integrity {
         })
     }
 
-    fn verify(&self, bytes: &[u8]) -> Result<(), String> {
-        let actual = match self.algorithm.as_str() {
-            "sha1" => sha1::Sha1::digest(bytes).to_vec(),
-            "sha256" => Sha256::digest(bytes).to_vec(),
-            "sha384" => Sha384::digest(bytes).to_vec(),
-            "sha512" => Sha512::digest(bytes).to_vec(),
-            "blake3" => blake3::hash(bytes).as_bytes().to_vec(),
+    fn kind(&self) -> Algorithm {
+        match self.algorithm.as_str() {
+            "sha1" => Algorithm::Sha1,
+            "sha256" => Algorithm::Sha256,
+            "sha384" => Algorithm::Sha384,
+            "sha512" => Algorithm::Sha512,
+            "blake3" => Algorithm::Blake3,
             _ => unreachable!("validated integrity algorithm"),
-        };
+        }
+    }
+
+    #[cfg(test)]
+    fn verify(&self, bytes: &[u8]) -> Result<(), String> {
+        self.check(self.kind().hash(bytes))
+    }
+
+    /// Verify a file, hashing it incrementally (constant memory).
+    fn verify_file(&self, path: &Path) -> Result<(), String> {
+        let (digest, _) = self
+            .kind()
+            .hash_file(path)
+            .map_err(|e| format!("cannot hash {}: {e}", path.display()))?;
+        self.check(digest)
+    }
+
+    fn check(&self, actual: Vec<u8>) -> Result<(), String> {
         if actual != self.digest {
             return Err(format!(
                 "{} integrity mismatch: expected {}, got {}",
@@ -284,7 +306,7 @@ pub fn materialize_with_download_policy(
     {
         return Ok(destination);
     }
-    let bytes = cached_download(&cache, &urls, &integrity, DOWNLOAD_LIMIT, downloads_enabled)?;
+    let blob = cached_download(&cache, &urls, &integrity, downloads_enabled)?;
     let staging = tempfile::Builder::new()
         .prefix(".stage-")
         .tempdir_in(&trees)
@@ -300,33 +322,29 @@ pub fn materialize_with_download_policy(
         })
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| url.to_owned());
-    crate::archive::extract_named(&bytes, &archive_type, prefix, staging.path(), &archive_name)?;
+    crate::archive::extract_file(&blob, &archive_type, prefix, staging.path(), &archive_name)
+        .map_err(|failure| match failure {
+            crate::archive::Failure::PrefixNotFound(_) => {
+                format!("archive strip_prefix {prefix:?} did not match")
+            }
+            crate::archive::Failure::Other(message) => message,
+        })?;
     for (path, value) in &overlays {
         let relative = relative_path(path)?;
         let integrity = Integrity::parse(value.as_str().expect("validated overlay integrity"))?;
         let location =
             registry.download_location(&format!("modules/{name}/{version}/overlay/{path}"))?;
-        let bytes = cached_download(
-            &cache,
-            &[location],
-            &integrity,
-            OVERLAY_LIMIT,
-            downloads_enabled,
-        )?;
-        write_source_file(staging.path(), &relative, &bytes, true)?;
+        let blob = cached_download(&cache, &[location], &integrity, downloads_enabled)?;
+        copy_source_file(staging.path(), &relative, &blob, true)?;
     }
     // Preserve descriptor insertion order, not lexical patch-name order.
     for (path, value) in &patches {
         let integrity = Integrity::parse(value.as_str().expect("validated patch integrity"))?;
         let location =
             registry.download_location(&format!("modules/{name}/{version}/patches/{path}"))?;
-        let bytes = cached_download(
-            &cache,
-            &[location],
-            &integrity,
-            OVERLAY_LIMIT,
-            downloads_enabled,
-        )?;
+        let blob = cached_download(&cache, &[location], &integrity, downloads_enabled)?;
+        // PatchUtil reads the patch text into memory; that is inherent.
+        let bytes = fs::read(&blob).map_err(|e| format!("cannot read registry patch: {e}"))?;
         crate::patching::parse(&bytes, patch_strip)
             .and_then(|patch| patch.apply_tree(staging.path()))
             .map_err(|e| format!("cannot apply registry patch {path:?}: {e}"))?;
@@ -362,26 +380,28 @@ pub fn materialize_with_download_policy(
 }
 
 fn archive_type(source: &Map<String, Value>, url: &str) -> Result<String, String> {
+    // ArchiveRepoSpecBuilder passes `type`; http_archive infers it from the
+    // URL with DecompressorValue's suffix search (DecompressorValue.java:76-93).
     let kind = match source.get("archive_type") {
         Some(Value::String(s)) if !s.is_empty() => s.clone(),
         None | Some(Value::Null) => {
             let url = reqwest::Url::parse(url).map_err(|_| "invalid archive source URL")?;
             let path = url.path();
-            if path.ends_with(".tar.gz") || path.ends_with(".tgz") {
-                "tar.gz".into()
-            } else if path.ends_with(".tar") {
-                "tar".into()
-            } else if path.ends_with(".zip")
-                || path.ends_with(".jar")
-                || path.ends_with(".war")
-                || path.ends_with(".aar")
+            const SEARCH: &[&str] = &[
+                "zip", "jar", "war", "aar", "nupkg", "whl", "tar", "tar.gz", "tgz", "gz", "tar.xz",
+                "txz", "xz", "tar.zst", "tzst", "zst", "tar.bz2", "tbz", "bz2", "ar", "deb", "7z",
+            ];
+            match SEARCH
+                .iter()
+                .find(|kind| path.ends_with(&format!(".{kind}")))
             {
-                "zip".into()
-            } else {
-                return Err(
-                    "cannot infer supported archive type; set archive_type to tar, tar.gz or zip"
-                        .into(),
-                );
+                Some(kind) => (*kind).to_owned(),
+                None => {
+                    return Err(format!(
+                        "cannot infer supported archive type; set archive_type to one of {}",
+                        crate::archive::NATIVE_TYPES.join(", ")
+                    ));
+                }
             }
         }
         Some(Value::String(_)) => {
@@ -392,44 +412,60 @@ fn archive_type(source: &Map<String, Value>, url: &str) -> Result<String, String
         _ => return Err("archive_type must be a string".into()),
     };
     match kind.as_str() {
-        "tar" | "tar.gz" | "tgz" => Ok(kind),
-        "zip" | "jar" | "war" | "aar" => Ok("zip".into()),
+        "zip" | "jar" | "war" | "aar" | "nupkg" | "whl" => Ok("zip".into()),
+        kind if crate::archive::NATIVE_TYPES.contains(&kind) => Ok(kind.to_owned()),
         _ => Err(format!("unsupported archive type {kind:?}")),
     }
 }
 
+/// The verified content-addressed blob for `integrity`, downloading it when
+/// absent or corrupt. The body streams into a temporary file in the cache
+/// directory while being hashed; only a verified file is published, by an
+/// atomic rename, so readers never observe a partial blob.
 fn cached_download(
     cache: &Path,
     urls: &[String],
     integrity: &Integrity,
-    limit: u64,
     downloads_enabled: bool,
-) -> Result<Vec<u8>, String> {
+) -> Result<PathBuf, String> {
     let directory = cache.join("downloads").join(&integrity.algorithm);
     ensure_directory(&directory)?;
     let path = directory.join(hex(&integrity.digest));
     reject_symlink(&path)?;
     if let Ok(metadata) = fs::metadata(&path)
         && metadata.is_file()
-        && metadata.len() <= limit
-        && let Ok(bytes) = fs::read(&path)
-        && integrity.verify(&bytes).is_ok()
+        && integrity.verify_file(&path).is_ok()
     {
-        return Ok(bytes);
+        return Ok(path);
     }
     if !downloads_enabled {
         return Err("repository downloads are disabled by --repository_disable_download; no verified cached blob is available".into());
     }
     let mut failures = Vec::new();
     for url in urls {
-        let fetched = registry::download(url, limit).and_then(|bytes| {
-            integrity.verify(&bytes)?;
-            Ok(bytes)
-        });
+        let mut temp = tempfile::NamedTempFile::new_in(&directory)
+            .map_err(|e| format!("cannot create download file: {e}"))?;
+        let mut hash = Hash::new(integrity.kind());
+        let fetched = registry::download_to(
+            url,
+            &mut HashingWriter {
+                inner: temp.as_file_mut(),
+                hash: &mut hash,
+            },
+        )
+        .and_then(|_| integrity.check(hash.finish()));
         match fetched {
-            Ok(bytes) => {
-                atomic_write(&path, &bytes)?;
-                return Ok(bytes);
+            Ok(()) => {
+                temp.as_file()
+                    .sync_all()
+                    .map_err(|e| format!("cannot sync downloaded blob: {e}"))?;
+                reject_symlink(&path)?;
+                temp.persist(&path)
+                    .map_err(|e| format!("cannot publish cache file: {e}"))?;
+                File::open(&directory)
+                    .and_then(|f| f.sync_all())
+                    .map_err(|e| e.to_string())?;
+                return Ok(path);
             }
             Err(error) => failures.push(error),
         }
@@ -438,6 +474,24 @@ fn cached_download(
         "all source downloads failed: {}",
         failures.join("; ")
     ))
+}
+
+/// A writer that hashes every byte it forwards.
+struct HashingWriter<'a> {
+    inner: &'a mut File,
+    hash: &'a mut Hash,
+}
+
+impl std::io::Write for HashingWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let n = self.inner.write(bytes)?;
+        self.hash.update(&bytes[..n]);
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 fn relative_path(path: &str) -> Result<PathBuf, String> {
@@ -514,6 +568,29 @@ fn write_source_file(
     bytes: &[u8],
     executable: bool,
 ) -> Result<(), String> {
+    let path = replaceable_source_path(root, relative)?;
+    fs::write(&path, bytes)
+        .map_err(|e| format!("cannot write source file {}: {e}", relative.display()))?;
+    source_file_mode(&path, executable)
+}
+
+/// [`write_source_file`] streaming from a verified cache blob.
+fn copy_source_file(
+    root: &Path,
+    relative: &Path,
+    blob: &Path,
+    executable: bool,
+) -> Result<(), String> {
+    let path = replaceable_source_path(root, relative)?;
+    let mut input = File::open(blob).map_err(|e| format!("cannot read cached blob: {e}"))?;
+    let mut output = File::create(&path)
+        .map_err(|e| format!("cannot write source file {}: {e}", relative.display()))?;
+    std::io::copy(&mut input, &mut output)
+        .map_err(|e| format!("cannot write source file {}: {e}", relative.display()))?;
+    source_file_mode(&path, executable)
+}
+
+fn replaceable_source_path(root: &Path, relative: &Path) -> Result<PathBuf, String> {
     let path = root.join(relative);
     ensure_directory(path.parent().ok_or("source file has no parent")?)?;
     // Archive symlinks and hard links may occupy an overlay or MODULE.bazel
@@ -530,13 +607,15 @@ fn write_source_file(
             )
         })?;
     }
-    fs::write(&path, bytes)
-        .map_err(|e| format!("cannot write source file {}: {e}", relative.display()))?;
+    Ok(path)
+}
+
+fn source_file_mode(path: &Path, executable: bool) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(
-            &path,
+            path,
             fs::Permissions::from_mode(if executable { 0o755 } else { 0o644 }),
         )
         .map_err(|e| e.to_string())?;
@@ -676,6 +755,7 @@ fn registry_identity(
 mod tests {
     use super::*;
     use serde_json::json;
+    use sha2::{Sha384, Sha512};
 
     fn sri(bytes: &[u8]) -> String {
         format!(

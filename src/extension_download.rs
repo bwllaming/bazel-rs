@@ -1,21 +1,36 @@
-//! Private synchronous module download transport. Deliberately not registry HTTP.
-//! Limits are a native profile, not Bazel defaults. Deadline checks are cooperative:
-//! the blocking resolver cannot promise cancellation of an in-flight DNS lookup.
+//! Repository download transport shared by `repository_ctx`, `module_ctx` and
+//! the registry archive materializer. Deliberately not registry metadata HTTP.
+//!
+//! Bodies are streamed: every caller writes through [`copy_hashed`] into a file
+//! while hashing incrementally, so memory use is independent of the body size.
+//! There are no artificial size, count or cumulative caps (genuine Bazel has
+//! none). Timeouts follow Bazel's HttpConnector (HttpConnector.java:57-61,
+//! 155-157): a 10 s connect timeout and a 20 s read timeout that stays in
+//! effect for every subsequent body read, so a slow but progressing transfer
+//! never times out. Redirects are bounded like Bazel's (`MAX_REDIRECTS = 40`,
+//! "Redirect loop detected", HttpConnector.java:205-208).
 
 use base64::Engine;
 use reqwest::Url;
 use reqwest::blocking::{Client, Response};
 use sha2::{Digest, Sha256};
-use std::cell::RefCell;
 use std::fmt;
-use std::io::{self, Read};
-use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Write};
+use std::path::Path;
+use std::time::Duration;
 
-pub(crate) const FILE_LIMIT: usize = 8 * 1024 * 1024;
-pub(crate) const TOTAL_LIMIT: usize = 32 * 1024 * 1024;
-pub(crate) const LIVE_LIMIT: usize = 16 * 1024 * 1024;
+/// Module-download checksum precheck window (docs/MODULE_EXTENSION_IO.md).
+/// A behavior boundary, not a size limit: larger bodies stream after it.
 pub(crate) const PRECHECK: usize = 32768;
+/// Streaming copy buffer.
+pub(crate) const BUFFER: usize = 64 * 1024;
+/// HttpConnector.MAX_REDIRECTS (HttpConnector.java:57).
+const MAX_REDIRECTS: usize = 40;
+/// HttpConnector.MAX_CONNECT_TIMEOUT_MS (HttpConnector.java:60).
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// HttpConnector.READ_TIMEOUT_MS (HttpConnector.java:61): per read, not total.
+pub(crate) const READ_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TypedIoError {
@@ -54,83 +69,21 @@ pub(crate) fn io_error(error: io::Error) -> TypedIoError {
         return typed.clone();
     }
     if error.kind() == io::ErrorKind::Interrupted {
-        TypedIoError::Interruption
-    } else {
-        // Deliberately no URL/body/error-chain strings (which may contain secrets).
-        TypedIoError::Completion(format!("filesystem or response stream {:?}", error.kind()))
+        return TypedIoError::Interruption;
     }
-}
-
-#[derive(Debug)]
-pub(crate) struct Budget {
-    start: Instant,
-    calls: usize,
-    requests: usize,
-    encoded: usize,
-    decoded: usize,
-    work: usize,
-}
-pub(crate) type SharedBudget = Rc<RefCell<Budget>>;
-impl Default for Budget {
-    fn default() -> Self {
-        Self {
-            start: Instant::now(),
-            calls: 0,
-            requests: 0,
-            encoded: 0,
-            decoded: 0,
-            work: 0,
-        }
+    if let Some(code) = error.raw_os_error() {
+        // A real local resource failure (ENOSPC, EDQUOT, EFBIG, EMFILE, ...):
+        // the OS reason, as Java's IOException reports it. Filesystem errors
+        // carry no URL/body text, so the reason is safe to show.
+        let text = io::Error::from_raw_os_error(code).to_string();
+        let reason = text
+            .rsplit_once(" (os error ")
+            .map_or(text.as_str(), |(reason, _)| reason)
+            .to_owned();
+        return TypedIoError::Completion(reason);
     }
-}
-impl Budget {
-    pub(crate) fn remaining(&self) -> IoResult<Duration> {
-        Duration::from_secs(120)
-            .checked_sub(self.start.elapsed())
-            .filter(|d| !d.is_zero())
-            .ok_or(TypedIoError::Resource("120s I/O deadline"))
-    }
-    pub(crate) fn call(&mut self) -> IoResult<()> {
-        self.remaining()?;
-        Self::charge(&mut self.calls, 1, 32, "32 download/read calls")
-    }
-    fn charge(counter: &mut usize, amount: usize, cap: usize, label: &'static str) -> IoResult<()> {
-        let next = counter
-            .checked_add(amount)
-            .filter(|n| *n <= cap)
-            .ok_or(TypedIoError::Resource(label))?;
-        *counter = next;
-        Ok(())
-    }
-    fn request(&mut self) -> IoResult<()> {
-        self.remaining()?;
-        Self::charge(&mut self.requests, 1, 64, "64 HTTP requests")
-    }
-    pub(crate) fn decoded(&mut self, amount: usize) -> IoResult<()> {
-        self.remaining()?;
-        // Include the rejected one-byte EOF probe in accounting. Once over the
-        // limit, read_decoded refuses further reads rather than probing again.
-        self.decoded = self
-            .decoded
-            .checked_add(amount)
-            .ok_or(TypedIoError::Resource("32MiB cumulative decoded bytes"))?;
-        self.work(amount)?;
-        if self.decoded > TOTAL_LIMIT {
-            return Err(TypedIoError::Resource("32MiB cumulative decoded bytes"));
-        }
-        Ok(())
-    }
-    // Separate work accounting includes repeated hashing/reads, precheck copying,
-    // buffer reservations and Latin-1 expansion, even if no network occurs.
-    pub(crate) fn work(&mut self, amount: usize) -> IoResult<()> {
-        self.remaining()?;
-        Self::charge(
-            &mut self.work,
-            amount,
-            128 * 1024 * 1024,
-            "128MiB cumulative I/O work/buffers",
-        )
-    }
+    // Deliberately no URL/body/error-chain strings (which may contain secrets).
+    TypedIoError::Completion(format!("filesystem or response stream {:?}", error.kind()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,6 +120,13 @@ impl Algorithm {
             Self::Sha512 => sha2::Sha512::digest(bytes).to_vec(),
             Self::Blake3 => blake3::hash(bytes).as_bytes().to_vec(),
         }
+    }
+    /// Hash a file incrementally (constant memory).
+    pub(crate) fn hash_file(self, path: &Path) -> io::Result<(Vec<u8>, u64)> {
+        let mut file = File::open(path)?;
+        let mut hash = Hash::new(self);
+        let size = copy_hashed(&mut file, &mut io::sink(), &mut hash)?;
+        Ok((hash.finish(), size))
     }
 }
 pub(crate) fn hex(bytes: &[u8]) -> String {
@@ -248,9 +208,6 @@ pub(crate) fn checksums(sha: &str, integrity: &str) -> IoResult<Checksums> {
             "sha256 and integrity are mutually exclusive",
         ));
     }
-    if sha.len() > 256 || integrity.len() > 256 {
-        return Err(TypedIoError::Resource("checksum text length"));
-    }
     let parsed = if !sha.is_empty() {
         if sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit()) {
             let bytes = sha
@@ -328,9 +285,6 @@ pub(crate) fn checksums(sha: &str, integrity: &str) -> IoResult<Checksums> {
 }
 
 pub(crate) fn validate_url(text: &str) -> IoResult<Url> {
-    if text.len() > 8192 {
-        return Err(TypedIoError::Resource("URL length"));
-    }
     if !text.is_ascii()
         || text.bytes().any(|b| {
             b <= 32
@@ -387,6 +341,9 @@ pub(crate) fn client() -> IoResult<Client> {
         .map_err(|_| TypedIoError::Internal("HTTP client initialization"))
 }
 fn client_builder() -> reqwest::blocking::ClientBuilder {
+    // The blocking client applies `timeout` to sending the request and to
+    // every individual body read: Bazel's per-read socket timeout, not a
+    // whole-transfer deadline.
     Client::builder()
         .no_proxy()
         .referer(false)
@@ -395,82 +352,26 @@ fn client_builder() -> reqwest::blocking::ClientBuilder {
         .no_brotli()
         .no_deflate()
         .no_zstd()
-        .connect_timeout(Duration::from_secs(20))
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(READ_TIMEOUT)
         .pool_max_idle_per_host(0)
 }
 
 struct Encoded {
     response: Response,
-    budget: SharedBudget,
 }
 impl Read for Encoded {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let remaining = {
-            let budget = self.budget.borrow();
-            budget.remaining().map_err(io::Error::other)?;
-            TOTAL_LIMIT.saturating_sub(budget.encoded)
-        };
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        // A one-byte EOF probe permits an exactly-at-limit body. The byte, if
-        // present, is counted and rejected, never handed to the decoder/writer.
-        let limit = buf.len().min(remaining.max(1));
-        let read = self.response.read(&mut buf[..limit]);
-        self.budget.borrow().remaining().map_err(io::Error::other)?;
         // flate2's header parser retries raw Interrupted errors. Preserve a
         // native interruption as a typed cause instead of silently retrying it.
-        let n = read.map_err(|error| {
+        self.response.read(buf).map_err(|error| {
             if error.kind() == io::ErrorKind::Interrupted {
                 io::Error::other(TypedIoError::Interruption)
             } else {
                 error
             }
-        })?;
-        self.budget.borrow_mut().encoded += n;
-        if n > remaining {
-            return Err(io::Error::other(TypedIoError::Resource(
-                "32MiB cumulative encoded bytes",
-            )));
-        }
-        Ok(n)
+        })
     }
-}
-
-// Bound the slice given to the decoder, not just the bytes subsequently written.
-// file_bytes is this transfer's decoded prefix during precheck, then its written
-// size. Existing destination bytes are not part of the incoming transfer size.
-pub(crate) fn read_decoded(
-    reader: &mut dyn Read,
-    buffer: &mut [u8],
-    file_bytes: usize,
-    budget: &SharedBudget,
-) -> IoResult<usize> {
-    let cumulative = {
-        let budget = budget.borrow();
-        budget.remaining()?;
-        TOTAL_LIMIT
-            .checked_sub(budget.decoded)
-            .ok_or(TypedIoError::Resource("32MiB cumulative decoded bytes"))?
-    };
-    let per_file = FILE_LIMIT
-        .checked_sub(file_bytes)
-        .ok_or(TypedIoError::Resource("8MiB decoded/file"))?;
-    if buffer.is_empty() {
-        return Ok(0);
-    }
-    let remaining = cumulative.min(per_file);
-    // Exactly at either cap, one byte distinguishes EOF from excess content.
-    // Any excess byte is charged/rejected before hashing, staging or writing.
-    let bound = buffer.len().min(PRECHECK).min(remaining.max(1));
-    let read = reader.read(&mut buffer[..bound]);
-    budget.borrow().remaining()?;
-    let n = read.map_err(io_error)?;
-    budget.borrow_mut().decoded(n)?;
-    if n > per_file {
-        return Err(TypedIoError::Resource("8MiB decoded/file"));
-    }
-    Ok(n)
 }
 
 // flate2 1.1.10 stores constructor header errors until Read. An empty read
@@ -482,68 +383,145 @@ fn checked_gzip<R: Read>(reader: R) -> IoResult<flate2::read::MultiGzDecoder<R>>
     Ok(decoder)
 }
 
-pub(crate) fn open(
-    client: &Client,
-    original: &Url,
-    budget: SharedBudget,
-) -> IoResult<Box<dyn Read>> {
+/// Bazel's view of one failed mirror: the Java exception class and message
+/// HttpDownloader reports (`Download from URL failed: class C MSG`,
+/// HttpDownloader.java:217-240) and puts last in `Error downloading [...]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BazelFailure {
+    pub(crate) class: &'static str,
+    pub(crate) message: String,
+}
+
+pub(crate) const UNRECOVERABLE: &str =
+    "com.google.devtools.build.lib.bazel.repository.downloader.UnrecoverableHttpException";
+pub(crate) const IO_EXCEPTION: &str = "java.io.IOException";
+
+impl BazelFailure {
+    fn new(class: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            class,
+            message: message.into(),
+        }
+    }
+}
+
+/// A typed failure with Bazel's description of it.
+pub(crate) struct OpenFailure {
+    pub(crate) error: TypedIoError,
+    pub(crate) bazel: BazelFailure,
+}
+
+impl From<TypedIoError> for OpenFailure {
+    fn from(error: TypedIoError) -> Self {
+        let message = match &error {
+            TypedIoError::Completion(message) => message.clone(),
+            other => other.to_string(),
+        };
+        Self {
+            error,
+            bazel: BazelFailure::new(IO_EXCEPTION, message),
+        }
+    }
+}
+
+/// HttpConnector's exception for a connection that never produced a
+/// response (java:160-190, 254-290): refused connections are
+/// `java.net.ConnectException`, unresolvable hosts `Unknown host: HOST`
+/// (unrecoverable) and connect timeouts an IOException `Connect timed out`.
+/// The native completion text keeps its stable prefix.
+fn connection_failure(error: &reqwest::Error, url: &Url) -> OpenFailure {
+    let mut refused = false;
+    let mut dns = false;
+    let mut source: Option<&dyn std::error::Error> = Some(error);
+    while let Some(current) = source {
+        if let Some(io) = current.downcast_ref::<io::Error>()
+            && io.kind() == io::ErrorKind::ConnectionRefused
+        {
+            refused = true;
+        }
+        if current.to_string().starts_with("dns error") {
+            dns = true;
+        }
+        source = current.source();
+    }
+    let bazel = if dns {
+        BazelFailure::new(
+            UNRECOVERABLE,
+            format!("Unknown host: {}", url.host_str().unwrap_or("")),
+        )
+    } else if refused {
+        BazelFailure::new("java.net.ConnectException", "Connection refused")
+    } else if error.is_timeout() {
+        BazelFailure::new(IO_EXCEPTION, "Connect timed out")
+    } else {
+        BazelFailure::new(IO_EXCEPTION, "HTTP connection failed")
+    };
+    let detail = if bazel.message == "HTTP connection failed" {
+        String::new()
+    } else {
+        format!(": {}", bazel.message)
+    };
+    OpenFailure {
+        error: TypedIoError::Completion(format!("HTTP connection failed{detail}")),
+        bazel,
+    }
+}
+
+pub(crate) fn open(client: &Client, original: &Url) -> IoResult<Box<dyn Read>> {
+    open_detailed(client, original).map_err(|failure| failure.error)
+}
+
+/// [`open`] with Bazel's description of a failure.
+pub(crate) fn open_detailed(client: &Client, original: &Url) -> Result<Box<dyn Read>, OpenFailure> {
     // Only a validated 301 updates the next attempt's origin. The immutable
     // original URL still controls original-path gzip suffix suppression.
     let mut retry_origin: Option<Url> = None;
     for attempt in 0..2 {
         let start = retry_origin.as_ref().unwrap_or(original);
-        budget.borrow_mut().work(start.as_str().len())?;
         let mut current = start.clone();
         let mut redirects = 0;
         loop {
-            budget.borrow_mut().request()?;
-            budget.borrow_mut().work(current.as_str().len())?;
             let response = client
                 .get(current.clone())
                 .header("Accept-Encoding", "gzip")
-                .timeout(budget.borrow().remaining()?)
                 .send();
             let response = match response {
                 Ok(response) => response,
                 Err(error) => {
-                    budget.borrow().remaining()?;
                     if attempt == 0 && (error.is_connect() || error.is_timeout()) {
                         break;
                     }
-                    return Err(TypedIoError::Completion("HTTP connection failed".into()));
+                    return Err(connection_failure(&error, &current));
                 }
             };
             let status = response.status().as_u16();
             if matches!(status, 301 | 302 | 303 | 307) {
-                if redirects == 8 {
-                    return Err(TypedIoError::Resource("8 redirects per attempt"));
-                }
                 redirects += 1;
+                if redirects == MAX_REDIRECTS {
+                    // UnrecoverableHttpException (HttpConnector.java:205-208).
+                    return Err(OpenFailure {
+                        error: TypedIoError::Completion("Redirect loop detected".into()),
+                        bazel: BazelFailure::new(UNRECOVERABLE, "Redirect loop detected"),
+                    });
+                }
                 let location = response
                     .headers()
                     .get(reqwest::header::LOCATION)
                     .and_then(|s| s.to_str().ok())
                     .ok_or_else(|| TypedIoError::Completion("redirect without Location".into()))?;
-                if location.len() > 8192 {
-                    return Err(TypedIoError::Resource("redirect URL length"));
-                }
                 if !location.is_ascii()
                     || location.bytes().any(|b| b <= 32 || b == 127 || b == b'\\')
                 {
-                    return Err(TypedIoError::Validation("invalid redirect Location"));
+                    return Err(TypedIoError::Validation("invalid redirect Location").into());
                 }
-                budget
-                    .borrow_mut()
-                    .work(current.as_str().len() + location.len())?;
                 let next = current
                     .join(location)
                     .map_err(|_| TypedIoError::Validation("invalid redirect Location"))?;
                 let next = validate_url(next.as_str())?;
                 if current.scheme() == "https" && next.scheme() == "http" {
-                    return Err(TypedIoError::Policy("HTTPS downgrade redirect"));
+                    return Err(TypedIoError::Policy("HTTPS downgrade redirect").into());
                 }
                 if status == 301 {
-                    budget.borrow_mut().work(next.as_str().len())?;
                     retry_origin = Some(next.clone());
                 }
                 current = next;
@@ -556,7 +534,26 @@ pub(crate) fn open(
                 if retry && attempt == 0 {
                     break;
                 }
-                return Err(TypedIoError::Completion(format!("HTTP status {status}")));
+                // describeHttpResponse (HttpConnector.java:309-315): the
+                // server's reason phrase; 404/410 are FileNotFoundException,
+                // retryable codes plain IOException, others unrecoverable.
+                let reason = response
+                    .extensions()
+                    .get::<hyper::ext::ReasonPhrase>()
+                    .map(|reason| String::from_utf8_lossy(reason.as_bytes()).into_owned())
+                    .or_else(|| response.status().canonical_reason().map(str::to_owned))
+                    .unwrap_or_default();
+                let class = if matches!(status, 404 | 410) {
+                    "java.io.FileNotFoundException"
+                } else if retry {
+                    IO_EXCEPTION
+                } else {
+                    UNRECOVERABLE
+                };
+                return Err(OpenFailure {
+                    error: TypedIoError::Completion(format!("HTTP status {status}")),
+                    bazel: BazelFailure::new(class, format!("GET returned {status} {reason}")),
+                });
             }
             let encoding = response
                 .headers()
@@ -568,7 +565,7 @@ pub(crate) fn open(
                 .transpose()?
                 .unwrap_or("identity");
             if !matches!(encoding, "identity" | "gzip" | "x-gzip") {
-                return Err(TypedIoError::Unsupported("content encoding"));
+                return Err(TypedIoError::Unsupported("content encoding").into());
             }
             let suffix = |url: &Url| {
                 url.path().rsplit_once('.').is_some_and(|(_, extension)| {
@@ -577,7 +574,7 @@ pub(crate) fn open(
             };
             let decompress =
                 matches!(encoding, "gzip" | "x-gzip") && !suffix(original) && !suffix(&current);
-            let stream = Encoded { response, budget };
+            let stream = Encoded { response };
             return Ok(if decompress {
                 Box::new(checked_gzip(stream)?)
             } else {
@@ -585,7 +582,147 @@ pub(crate) fn open(
             });
         }
     }
-    Err(TypedIoError::Internal("attempt loop exhausted"))
+    Err(TypedIoError::Internal("attempt loop exhausted").into())
+}
+
+/// Stream `reader` into `writer`, hashing every byte, in constant memory.
+/// Read and write failures surface as `io::Error`s (see [`io_error`]).
+pub(crate) fn copy_hashed(
+    reader: &mut dyn Read,
+    writer: &mut dyn Write,
+    hash: &mut Hash,
+) -> io::Result<u64> {
+    let mut buffer = vec![0u8; BUFFER];
+    let mut total = 0u64;
+    loop {
+        let n = match reader.read(&mut buffer) {
+            Ok(0) => return Ok(total),
+            Ok(n) => n,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                return Err(io::Error::other(TypedIoError::Interruption));
+            }
+            Err(error) => return Err(error),
+        };
+        hash.update(&buffer[..n]);
+        writer.write_all(&buffer[..n])?;
+        total += n as u64;
+    }
+}
+
+/// HashOutputStream's mismatch text (HashOutputStream.java:84-90): "Checksum
+/// was %s but wanted %s", hex unless the checksum came from `integrity`.
+pub(crate) fn checksum_mismatch(actual: &Checksum, expected: &Checksum, sri: bool) -> String {
+    let shown = |checksum: &Checksum| {
+        if sri {
+            checksum.integrity()
+        } else {
+            hex(&checksum.bytes)
+        }
+    };
+    format!(
+        "Checksum was {} but wanted {}",
+        shown(actual),
+        shown(expected)
+    )
+}
+
+/// A completed streaming download.
+#[derive(Debug)]
+pub(crate) struct Fetched {
+    /// The mirror that produced the bytes.
+    pub(crate) url: Url,
+    /// Bytes written.
+    pub(crate) size: u64,
+    /// Digest of the written bytes, in the expected checksum's algorithm, or
+    /// SHA-256 when no checksum was given.
+    pub(crate) checksum: Checksum,
+}
+
+/// Download the first mirror that completes into the file chosen by
+/// `destination(url)` (created or truncated), hashing while writing, and
+/// verify the expected checksum. A failed mirror's file is removed before the
+/// next is tried; only completion failures (connection, status, stream,
+/// filesystem, checksum mismatch) move on to the next mirror.
+///
+/// `keep_failed` leaves a failed mirror's bytes in place, as Bazel's
+/// HttpDownloader does for `repository_ctx.download` (it streams into the
+/// destination with `getOutputStream`, and HashInputStream reports a
+/// mismatch only at end of stream, HttpDownloader.java:90-109,
+/// HashInputStream.java:61-91). `on_failure` sees each failed mirror with
+/// Bazel's exception class and message.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn fetch_to_file(
+    client: &Client,
+    urls: &[Url],
+    expected: Option<&Checksum>,
+    sri: bool,
+    destination: &mut dyn FnMut(&Url) -> std::path::PathBuf,
+    keep_failed: bool,
+    on_failure: &mut dyn FnMut(&Url, &BazelFailure),
+) -> IoResult<Fetched> {
+    if urls.is_empty() {
+        return Err(TypedIoError::Completion("no download URLs".into()));
+    }
+    let algorithm = expected.map_or(Algorithm::Sha256, |checksum| checksum.algorithm);
+    let mut last = TypedIoError::Completion("no mirror succeeded".into());
+    for url in urls {
+        let path = destination(url);
+        let mut opened = false;
+        let attempt = (|| -> Result<Fetched, OpenFailure> {
+            let mut reader = open_detailed(client, url)?;
+            opened = true;
+            // Like ctx.file, replace (never write through) an existing
+            // non-directory destination - a symlink or a hard-linked file -
+            // only once a mirror has responded, as Bazel opens its output
+            // stream only then (HttpDownloader.java:102-106).
+            if std::fs::symlink_metadata(&path).is_ok_and(|metadata| !metadata.is_dir()) {
+                std::fs::remove_file(&path).map_err(io_error)?;
+            }
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&path)
+                .map_err(io_error)?;
+            let mut hash = Hash::new(algorithm);
+            let size = copy_hashed(&mut *reader, &mut file, &mut hash).map_err(io_error)?;
+            file.flush().map_err(io_error)?;
+            let actual = Checksum {
+                algorithm,
+                bytes: hash.finish(),
+            };
+            if let Some(expected) = expected
+                && actual.bytes != expected.bytes
+            {
+                let message = checksum_mismatch(&actual, expected, sri);
+                return Err(OpenFailure {
+                    error: TypedIoError::Completion(message.clone()),
+                    bazel: BazelFailure::new(UNRECOVERABLE, message),
+                });
+            }
+            Ok(Fetched {
+                url: url.clone(),
+                size,
+                checksum: actual,
+            })
+        })();
+        match attempt {
+            Ok(fetched) => return Ok(fetched),
+            Err(failure) => {
+                if opened && !keep_failed {
+                    let _ = std::fs::remove_file(&path);
+                }
+                match failure.error {
+                    TypedIoError::Completion(_) => {
+                        on_failure(url, &failure.bazel);
+                        last = failure.error;
+                    }
+                    other => return Err(other),
+                }
+            }
+        }
+    }
+    Err(last)
 }
 
 #[cfg(test)]
@@ -600,16 +737,9 @@ pub(crate) fn trusted_client(pem: &[u8]) -> Client {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    // Proposal: test-only setup at existing private counter/Instant boundaries.
-    // No clock trait, runtime API, charge, retry or default changes.
-    pub(crate) fn n3_exhaust_budget_for_callback(budget: &SharedBudget, deadline: bool) {
-        if deadline {
-            budget.borrow_mut().start = Instant::now() - Duration::from_secs(121);
-        } else {
-            budget.borrow_mut().requests = 64;
-        }
-    }
     use crate::extension_io::tests::{Server, response};
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     #[derive(Default, Debug)]
     pub(crate) struct ReadTrace {
@@ -659,13 +789,6 @@ pub(crate) mod tests {
             self.trace.borrow_mut().returned += n;
             Ok(n)
         }
-    }
-    pub(crate) fn decoded_count(budget: &SharedBudget) -> usize {
-        budget.borrow().decoded
-    }
-    pub(crate) fn remaining_encoded_for_test(budget: &SharedBudget, remaining: usize) {
-        assert!(remaining <= TOTAL_LIMIT);
-        budget.borrow_mut().encoded = TOTAL_LIMIT - remaining;
     }
     pub(crate) fn gzip_bytes(body: &[u8]) -> Vec<u8> {
         use std::io::Write;
@@ -750,12 +873,7 @@ pub(crate) mod tests {
             responses.push(response(200, &gzip, "Content-Encoding: gzip\r\n"));
             let server = Server::new(responses);
             let initial = Url::parse(&format!("{}/start.GZ?x=1", server.url)).unwrap();
-            let mut reader = open(
-                &client().unwrap(),
-                &initial,
-                Rc::new(RefCell::new(Budget::default())),
-            )
-            .unwrap();
+            let mut reader = open(&client().unwrap(), &initial).unwrap();
             let mut result = Vec::new();
             reader.read_to_end(&mut result).unwrap();
             assert_eq!(
@@ -786,7 +904,6 @@ pub(crate) mod tests {
         let mut reader = open(
             &client().unwrap(),
             &Url::parse(&format!("{}/start", server.url)).unwrap(),
-            Rc::new(RefCell::new(Budget::default())),
         )
         .unwrap();
         let mut result = Vec::new();
@@ -800,153 +917,6 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>(),
             ["/start", "/stable", "/temporary", "/stable", "/temporary"]
         );
-    }
-
-    #[test]
-    fn decoded_reads_bound_actual_returned_bytes_at_cumulative_and_file_edges() {
-        for allowance in [0, 1, 7, PRECHECK - 1, PRECHECK, PRECHECK + 1] {
-            for excess in [false, true] {
-                let budget = Rc::new(RefCell::new(Budget::default()));
-                budget
-                    .borrow_mut()
-                    .decoded(TOTAL_LIMIT - allowance)
-                    .unwrap();
-                let (mut reader, trace) =
-                    Metered::new(std::io::Cursor::new(vec![
-                        b'x';
-                        allowance + usize::from(excess)
-                    ]));
-                let mut buffer = [0; PRECHECK];
-                let mut accepted = 0;
-                let terminal = loop {
-                    match read_decoded(&mut reader, &mut buffer, accepted, &budget) {
-                        Ok(0) => break Ok(()),
-                        Ok(n) => accepted += n,
-                        Err(e) => break Err(e),
-                    }
-                };
-                assert_eq!(accepted, allowance);
-                assert_eq!(trace.borrow().returned, allowance + usize::from(excess));
-                assert_eq!(budget.borrow().decoded, TOTAL_LIMIT + usize::from(excess));
-                assert_eq!(terminal.is_err(), excess);
-                if let Err(error) = terminal {
-                    assert!(matches!(error, TypedIoError::Resource(_)));
-                }
-                let mut remaining = allowance;
-                for requested in &trace.borrow().requests {
-                    assert_eq!(*requested, remaining.clamp(1, PRECHECK));
-                    remaining = remaining.saturating_sub(*requested);
-                }
-                if excess {
-                    let calls = trace.borrow().requests.len();
-                    assert!(matches!(
-                        read_decoded(&mut reader, &mut buffer, accepted, &budget),
-                        Err(TypedIoError::Resource(_))
-                    ));
-                    assert_eq!(
-                        trace.borrow().requests.len(),
-                        calls,
-                        "repeated excess probe"
-                    );
-                }
-            }
-        }
-        for (file_remaining, cumulative_remaining) in [(1, 7), (7, 1), (0, 0)] {
-            let budget = Rc::new(RefCell::new(Budget::default()));
-            budget
-                .borrow_mut()
-                .decoded(TOTAL_LIMIT - cumulative_remaining)
-                .unwrap();
-            let (mut reader, trace) = Metered::new(std::io::repeat(b'x'));
-            let mut size = FILE_LIMIT - file_remaining;
-            let mut buffer = [0; PRECHECK];
-            if file_remaining.min(cumulative_remaining) != 0 {
-                size += read_decoded(&mut reader, &mut buffer, size, &budget).unwrap();
-            }
-            assert!(matches!(
-                read_decoded(&mut reader, &mut buffer, size, &budget),
-                Err(TypedIoError::Resource(_))
-            ));
-            assert_eq!(
-                trace.borrow().returned,
-                file_remaining.min(cumulative_remaining) + 1
-            );
-        }
-    }
-
-    #[test]
-    fn gzip_buffered_decoder_obeys_output_slice_and_propagates_faults() {
-        for allowance in [0, 1, 7, PRECHECK - 1, PRECHECK, PRECHECK + 1] {
-            for excess in [false, true] {
-                let body = vec![b'a'; allowance + usize::from(excess)];
-                let (encoded, encoded_trace) =
-                    Metered::new(std::io::Cursor::new(gzip_bytes(&body)));
-                let decoder = checked_gzip(encoded).unwrap();
-                let (mut reader, decoded_trace) = Metered::new(decoder);
-                let budget = Rc::new(RefCell::new(Budget::default()));
-                budget
-                    .borrow_mut()
-                    .decoded(TOTAL_LIMIT - allowance)
-                    .unwrap();
-                let mut accepted = 0;
-                loop {
-                    let mut buffer = [0; PRECHECK];
-                    match read_decoded(&mut reader, &mut buffer, accepted, &budget) {
-                        Ok(0) => {
-                            assert!(!excess);
-                            break;
-                        }
-                        Ok(n) => {
-                            assert!(n <= allowance - accepted);
-                            accepted += n;
-                        }
-                        Err(error) => {
-                            assert!(excess);
-                            assert!(matches!(error, TypedIoError::Resource(_)));
-                            break;
-                        }
-                    }
-                }
-                assert_eq!(accepted, allowance);
-                assert_eq!(
-                    decoded_trace.borrow().returned,
-                    allowance + usize::from(excess)
-                );
-                assert_eq!(budget.borrow().decoded, TOTAL_LIMIT + usize::from(excess));
-                assert!(encoded_trace.borrow().returned <= gzip_bytes(&body).len());
-                assert!(
-                    decoded_trace
-                        .borrow()
-                        .requests
-                        .iter()
-                        .all(|n| *n <= allowance.clamp(1, PRECHECK))
-                );
-            }
-        }
-        for error in [
-            TypedIoError::Completion("fault".into()),
-            TypedIoError::Interruption,
-            TypedIoError::Resource("fault"),
-        ] {
-            let decoder =
-                checked_gzip(std::io::Cursor::new(gzip_bytes(&vec![b'a'; PRECHECK]))).unwrap();
-            let (reader, trace) = Metered::new(decoder);
-            let mut reader = reader.with_chunks(3).with_fault(3, error.clone());
-            let budget = Rc::new(RefCell::new(Budget::default()));
-            budget.borrow_mut().decoded(TOTAL_LIMIT - 7).unwrap();
-            let mut buffer = [0; PRECHECK];
-            assert_eq!(
-                read_decoded(&mut reader, &mut buffer, 0, &budget).unwrap(),
-                3
-            );
-            assert_eq!(
-                read_decoded(&mut reader, &mut buffer, 3, &budget).unwrap_err(),
-                error
-            );
-            assert_eq!(trace.borrow().requests, [7, 4]);
-            assert_eq!(trace.borrow().returned, 3);
-            assert_eq!(budget.borrow().decoded, TOTAL_LIMIT - 4);
-        }
     }
 
     #[test]
@@ -1001,7 +971,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn typed_error_boundary_and_independent_budget_counters() {
+    fn typed_error_boundary_maps_os_resource_failures_to_completion() {
         assert_eq!(
             io_error(io::Error::new(io::ErrorKind::Interrupted, "fixture")),
             TypedIoError::Interruption
@@ -1014,59 +984,177 @@ pub(crate) mod tests {
             io_error(io::Error::other("Resource is not a classification")),
             TypedIoError::Completion(_)
         ));
-        let mut budget = Budget::default();
-        budget.decoded(TOTAL_LIMIT).unwrap();
-        assert!(matches!(budget.decoded(1), Err(TypedIoError::Resource(_))));
-        assert_eq!(budget.encoded, 0);
-        let mut budget = Budget::default();
-        budget.work(128 * 1024 * 1024).unwrap();
-        assert!(budget.work(1).is_err());
-        for _ in 0..64 {
-            budget.request().unwrap();
-        }
-        assert!(budget.request().is_err());
-        budget.start = Instant::now() - Duration::from_secs(121);
-        assert!(matches!(budget.remaining(), Err(TypedIoError::Resource(_))));
+        // ENOSPC is a real resource failure: Bazel's IOException reason text,
+        // a completion failure like any other download I/O error.
+        assert_eq!(
+            io_error(io::Error::from_raw_os_error(28)),
+            TypedIoError::Completion("No space left on device".into())
+        );
     }
 
     #[test]
-    fn redirect_and_encoded_limits_are_typed_and_no_implicit_decode() {
+    fn redirect_loop_is_bazels_forty_redirect_completion_and_no_implicit_decode() {
         for status in [301, 302] {
             let server = Server::new(
-                (0..10)
+                (0..41)
                     .map(|_| response(status, b"", "Location: /loop\r\n"))
                     .collect(),
             );
-            let budget = Rc::new(RefCell::new(Budget::default()));
-            let result = open(
-                &client().unwrap(),
-                &Url::parse(&server.url).unwrap(),
-                budget,
+            let result = open(&client().unwrap(), &Url::parse(&server.url).unwrap());
+            assert_eq!(
+                result.err(),
+                Some(TypedIoError::Completion("Redirect loop detected".into()))
             );
-            assert!(matches!(result, Err(TypedIoError::Resource(_))));
-            assert_eq!(server.count(), 9);
+            // `++redirects == MAX_REDIRECTS` throws on the 40th redirect.
+            assert_eq!(server.count(), 40);
         }
-        let server = Server::new(vec![
-            response(200, b"data", ""),
-            response(200, b"raw", "Content-Encoding: br\r\n"),
-        ]);
-        let budget = Rc::new(RefCell::new(Budget::default()));
-        budget.borrow_mut().encoded = TOTAL_LIMIT;
-        let mut stream = open(
+        let server = Server::new(vec![response(200, b"raw", "Content-Encoding: br\r\n")]);
+        let result = open(&client().unwrap(), &Url::parse(&server.url).unwrap());
+        assert!(matches!(result, Err(TypedIoError::Unsupported(_))));
+    }
+
+    #[test]
+    fn streaming_fetch_hashes_while_writing_and_has_no_size_cap() {
+        // 40 MiB: above every former module/repository I/O cap (8, 16, 32 MiB).
+        let body: Vec<u8> = (0..40 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+        let digest = Algorithm::Sha256.hash(&body);
+        let server = Server::new(vec![response(200, b"wrong", ""), response(200, &body, "")]);
+        let directory = tempfile::tempdir().unwrap();
+        let expected = Checksum {
+            algorithm: Algorithm::Sha256,
+            bytes: digest.clone(),
+        };
+        let urls = [
+            Url::parse(&format!("{}/first", server.url)).unwrap(),
+            Url::parse(&format!("{}/second", server.url)).unwrap(),
+        ];
+        let mut targets = Vec::new();
+        let mut failures = Vec::new();
+        let fetched = fetch_to_file(
             &client().unwrap(),
-            &Url::parse(&server.url).unwrap(),
-            budget,
+            &urls,
+            Some(&expected),
+            false,
+            &mut |url| {
+                let path = directory.path().join(url.path().trim_start_matches('/'));
+                targets.push(path.clone());
+                path
+            },
+            false,
+            &mut |url, failure| failures.push((url.clone(), failure.clone())),
         )
         .unwrap();
-        assert!(matches!(
-            io_error(stream.read(&mut [0; 1]).unwrap_err()),
-            TypedIoError::Resource(_)
-        ));
-        let result = open(
-            &client().unwrap(),
-            &Url::parse(&server.url).unwrap(),
-            Rc::new(RefCell::new(Budget::default())),
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].0, urls[0]);
+        assert_eq!(failures[0].1.class, UNRECOVERABLE);
+        assert!(failures[0].1.message.starts_with("Checksum was "));
+        assert_eq!(fetched.url, urls[1]);
+        assert_eq!(fetched.size, body.len() as u64);
+        assert_eq!(fetched.checksum.bytes, digest);
+        assert!(!targets[0].exists(), "failed mirror file must be removed");
+        assert_eq!(
+            Algorithm::Sha256.hash_file(&targets[1]).unwrap(),
+            (digest, body.len() as u64)
         );
-        assert!(matches!(result, Err(TypedIoError::Unsupported(_))));
+        let server = Server::new(vec![response(200, b"other", "")]);
+        let error = fetch_to_file(
+            &client().unwrap(),
+            &[Url::parse(&server.url).unwrap()],
+            Some(&expected),
+            true,
+            &mut |_| directory.path().join("mismatch"),
+            false,
+            &mut |_, _| {},
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            TypedIoError::Completion(format!(
+                "Checksum was {} but wanted {}",
+                Checksum {
+                    algorithm: Algorithm::Sha256,
+                    bytes: Algorithm::Sha256.hash(b"other")
+                }
+                .integrity(),
+                expected.integrity()
+            ))
+        );
+        assert!(!directory.path().join("mismatch").exists());
+        // keep_failed (repository_ctx.download): the mismatching bytes stay,
+        // like Bazel's HttpDownloader writing straight to the destination.
+        let server = Server::new(vec![response(200, b"other", "")]);
+        fetch_to_file(
+            &client().unwrap(),
+            &[Url::parse(&server.url).unwrap()],
+            Some(&expected),
+            false,
+            &mut |_| directory.path().join("kept"),
+            true,
+            &mut |_, _| {},
+        )
+        .unwrap_err();
+        assert_eq!(
+            std::fs::read(directory.path().join("kept")).unwrap(),
+            b"other"
+        );
+    }
+
+    #[test]
+    fn bazel_failure_classes_and_messages_for_status_and_connection_errors() {
+        let server = Server::new(vec![
+            b"HTTP/1.1 404 File not found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_vec(),
+            response(500, b"", ""),
+            response(500, b"", ""),
+            response(418, b"", ""),
+        ]);
+        let failure = |path: &str| {
+            open_detailed(
+                &client().unwrap(),
+                &Url::parse(&format!("{}{path}", server.url)).unwrap(),
+            )
+            .err()
+            .unwrap()
+        };
+        let missing = failure("/missing");
+        assert_eq!(
+            missing.error,
+            TypedIoError::Completion("HTTP status 404".into())
+        );
+        assert_eq!(
+            missing.bazel,
+            BazelFailure::new(
+                "java.io.FileNotFoundException",
+                "GET returned 404 File not found"
+            )
+        );
+        assert_eq!(
+            failure("/flaky").bazel,
+            BazelFailure::new(IO_EXCEPTION, "GET returned 500 Fixture")
+        );
+        assert_eq!(
+            failure("/teapot").bazel,
+            BazelFailure::new(UNRECOVERABLE, "GET returned 418 Fixture")
+        );
+        // A closed port: java.net.ConnectException "Connection refused".
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let refused = open_detailed(
+            &client().unwrap(),
+            &Url::parse(&format!("http://127.0.0.1:{port}/x")).unwrap(),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(
+            refused.error,
+            TypedIoError::Completion("HTTP connection failed: Connection refused".into())
+        );
+        assert_eq!(
+            refused.bazel,
+            BazelFailure::new("java.net.ConnectException", "Connection refused")
+        );
     }
 }

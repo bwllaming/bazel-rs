@@ -1,17 +1,18 @@
 //! Callback-owned scratch authority, never stored in a Starlark value. This is
 //! containment of our own outputs, not a sandbox against a hostile same-UID peer.
+//!
+//! Downloads stream to disk and are hashed incrementally; there are no
+//! artificial per-file, live-scratch, cumulative or call-count caps. Only
+//! `read()` materializes a file, because Bazel returns its content as a string.
 
 use crate::extension_download::{
-    self as transport, Algorithm, Budget, Checksum, FILE_LIMIT, Hash, IoResult, LIVE_LIMIT,
-    PRECHECK, SharedBudget, TypedIoError, io_error,
+    self as transport, Algorithm, Checksum, Hash, IoResult, PRECHECK, TypedIoError, io_error,
 };
 use serde::Serialize;
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_EXECUTION: AtomicU64 = AtomicU64::new(1);
@@ -136,7 +137,6 @@ pub(crate) struct ScratchExecutionIo {
     directories: BTreeSet<PathBuf>,
     files: BTreeMap<String, OwnedFile>,
     generation: u64,
-    budget: SharedBudget,
     client: Option<reqwest::blocking::Client>,
     observations: Vec<Observation>,
 }
@@ -161,7 +161,6 @@ impl ScratchExecutionIo {
             directories: BTreeSet::new(),
             files: BTreeMap::new(),
             generation: 0,
-            budget: Rc::new(RefCell::new(Budget::default())),
             client: None,
             observations: Vec::new(),
         })
@@ -210,20 +209,13 @@ impl ScratchExecutionIo {
             .join("work"))
     }
     fn path(text: &str) -> IoResult<()> {
-        if text.len() > 1024 {
-            return Err(TypedIoError::Resource("relative path length"));
-        }
         if text.is_empty() {
             return Ok(());
-        }
-        if text.split('/').count() > 32 {
-            return Err(TypedIoError::Resource("relative path depth"));
         }
         if text.split('/').any(|part| {
             part.is_empty()
                 || part == "."
                 || part == ".."
-                || part.len() > 128
                 || !part
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
@@ -319,20 +311,14 @@ impl ScratchExecutionIo {
             .ok_or_else(|| TypedIoError::Completion("missing owned file".into()))?;
         owned.check(&metadata)?;
         let size = owned.size;
-        if size > FILE_LIMIT {
-            return Err(TypedIoError::Resource("8MiB file"));
-        }
-        // Charge allocation, read and hashes before allocating. Fixed-sized read
-        // prevents a concurrently grown file from driving unbounded allocation.
-        self.budget.borrow_mut().work(size.saturating_mul(4))?;
+        // Fixed-sized read: a concurrently grown file cannot drive allocation.
         let mut file = File::open(path).map_err(io_error)?;
         owned.check(&file.metadata().map_err(io_error)?)?;
         let mut bytes = vec![0; size];
         let mut offset = 0;
         while offset < size {
-            self.budget.borrow().remaining()?;
             let n = file
-                .read(&mut bytes[offset..size.min(offset + PRECHECK)])
+                .read(&mut bytes[offset..size.min(offset + transport::BUFFER)])
                 .map_err(io_error)?;
             if n == 0 {
                 return Err(TypedIoError::Internal("owned file shortened while reading"));
@@ -342,14 +328,41 @@ impl ScratchExecutionIo {
         owned.check(&file.metadata().map_err(io_error)?)?;
         Ok(bytes)
     }
+    /// Digest and size of an owned file, hashed incrementally (constant memory).
+    fn digest(&mut self, relative: &str, algorithm: Algorithm) -> IoResult<(Vec<u8>, usize)> {
+        let path = self.destination(relative)?;
+        let owned = self
+            .files
+            .get(relative)
+            .ok_or_else(|| TypedIoError::Completion("missing owned file".into()))?;
+        let metadata = self
+            .check_path(&path)?
+            .ok_or_else(|| TypedIoError::Completion("missing owned file".into()))?;
+        owned.check(&metadata)?;
+        let size = owned.size;
+        let mut file = File::open(path).map_err(io_error)?;
+        owned.check(&file.metadata().map_err(io_error)?)?;
+        let mut hash = Hash::new(algorithm);
+        let copied = transport::copy_hashed(
+            &mut Read::by_ref(&mut file).take(size as u64),
+            &mut std::io::sink(),
+            &mut hash,
+        )
+        .map_err(io_error)?;
+        if copied != size as u64 {
+            return Err(TypedIoError::Internal("owned file shortened while reading"));
+        }
+        owned.check(&file.metadata().map_err(io_error)?)?;
+        Ok((hash.finish(), size))
+    }
     fn state(&mut self, relative: &str) -> IoResult<FileState> {
         if let Some(file) = self.files.get(relative) {
             let generation = file.generation;
-            let bytes = self.bytes(relative)?;
+            let (digest, size_bytes) = self.digest(relative, Algorithm::Sha256)?;
             return Ok(FileState::File {
                 generation,
-                sha256: transport::sha256(&bytes),
-                size_bytes: bytes.len(),
+                sha256: transport::hex(&digest),
+                size_bytes,
             });
         }
         let path = self.destination(relative)?;
@@ -371,12 +384,7 @@ impl ScratchExecutionIo {
             }
             _ => return Err(TypedIoError::Validation("watch must be auto, yes, or no")),
         }
-        self.budget.borrow_mut().call()?;
         let bytes = self.bytes(path)?;
-        // Latin-1 can expand each byte to two UTF-8 bytes in the evaluator.
-        self.budget
-            .borrow_mut()
-            .work(bytes.len().saturating_mul(2))?;
         let mut text = String::with_capacity(bytes.len() * 2);
         for byte in &bytes {
             text.push(char::from(*byte));
@@ -401,9 +409,6 @@ impl ScratchExecutionIo {
     ) -> IoResult<&DownloadResult> {
         self.check_receiver(identity)?;
         Self::path(request.output)?;
-        if request.urls.len() > 8 {
-            return Err(TypedIoError::Resource("8 mirrors per call"));
-        }
         if request.urls.is_empty() && !request.allow_fail {
             return Err(TypedIoError::Validation("urls not set"));
         }
@@ -420,13 +425,12 @@ impl ScratchExecutionIo {
             ));
         }
         let checksums = transport::checksums(request.sha256, request.integrity)?;
-        self.budget.borrow_mut().call()?;
         let mut reused = false;
         let completion = (|| {
             self.parents(request.output)?;
             if let Some(expected) = &checksums.expected
                 && self.files.contains_key(request.output)
-                && expected.matches(&self.bytes(request.output)?)
+                && self.digest(request.output, expected.algorithm)?.0 == expected.bytes
             {
                 reused = true;
                 return Ok(());
@@ -445,14 +449,10 @@ impl ScratchExecutionIo {
             }
             let mut last = TypedIoError::Completion("no mirror succeeded".into());
             for url in &urls {
-                let transfer = transport::open(
-                    self.client.as_ref().expect("initialized"),
-                    url,
-                    self.budget.clone(),
-                )
-                .and_then(|reader| {
-                    self.transfer(reader, request.output, checksums.expected.as_ref())
-                });
+                let transfer = transport::open(self.client.as_ref().expect("initialized"), url)
+                    .and_then(|reader| {
+                        self.transfer(reader, request.output, checksums.expected.as_ref())
+                    });
                 match transfer {
                     Ok(()) => return Ok(()),
                     Err(error @ TypedIoError::Completion(_)) => last = error,
@@ -470,21 +470,21 @@ impl ScratchExecutionIo {
                 }
                 // Final hashing/stat/result construction is outside the allow_fail
                 // catch, as are observation-state hashing failures below.
-                let bytes = self.bytes(request.output)?;
                 let algorithm = checksums
                     .expected
                     .as_ref()
                     .map_or(Algorithm::Sha256, |c| c.algorithm);
+                let (digest, size) = self.digest(request.output, algorithm)?;
                 let checksum = Checksum {
                     algorithm,
-                    bytes: algorithm.hash(&bytes),
+                    bytes: digest,
                 };
                 DownloadResult {
                     success: true,
                     integrity: Some(checksum.integrity()),
                     sha256: (algorithm == Algorithm::Sha256)
                         .then(|| transport::hex(&checksum.bytes)),
-                    size_bytes: Some(bytes.len()),
+                    size_bytes: Some(size),
                 }
             }
         };
@@ -506,18 +506,12 @@ impl ScratchExecutionIo {
         relative: &str,
         expected: Option<&Checksum>,
     ) -> IoResult<()> {
-        self.budget.borrow_mut().work(PRECHECK * 2)?;
         let mut precheck = [0u8; PRECHECK];
         let mut hash = Hash::new(expected.map_or(Algorithm::Sha256, |c| c.algorithm));
         let mut prefix = 0;
         if let Some(expected) = expected {
             while prefix < PRECHECK {
-                let n = transport::read_decoded(
-                    &mut *reader,
-                    &mut precheck[prefix..],
-                    prefix,
-                    &self.budget,
-                )?;
+                let n = read_body(&mut *reader, &mut precheck[prefix..])?;
                 if n == 0 {
                     break;
                 }
@@ -553,10 +547,9 @@ impl ScratchExecutionIo {
         if prefix != 0 {
             self.write(&mut file, relative, &precheck[..prefix])?;
         }
-        let mut buffer = [0u8; PRECHECK];
+        let mut buffer = vec![0u8; transport::BUFFER];
         loop {
-            let size = self.files[relative].size;
-            let n = transport::read_decoded(&mut *reader, &mut buffer, size, &self.budget)?;
+            let n = read_body(&mut *reader, &mut buffer)?;
             if n == 0 {
                 break;
             }
@@ -574,7 +567,7 @@ impl ScratchExecutionIo {
     /// Read a resolved source-repository file (never an owned scratch path).
     /// The caller resolved the label and rejected symlinks, directories and
     /// special files; this re-checks the opened file's identity and size and
-    /// charges the shared call/work budgets exactly like owned reads.
+    /// reads it whole, because Bazel returns the content as a string.
     pub(crate) fn read_source(
         &mut self,
         identity: u64,
@@ -583,18 +576,14 @@ impl ScratchExecutionIo {
         path: &Path,
     ) -> IoResult<String> {
         self.check_receiver(identity)?;
-        self.budget.borrow_mut().call()?;
         let before = fs::symlink_metadata(path).map_err(io_error)?;
         if !before.file_type().is_file() {
             return Err(TypedIoError::Policy(
                 "source read requires a regular non-symlink file",
             ));
         }
-        let size = usize::try_from(before.len()).unwrap_or(usize::MAX);
-        if size > FILE_LIMIT {
-            return Err(TypedIoError::Resource("8MiB file"));
-        }
-        self.budget.borrow_mut().work(size.saturating_mul(4))?;
+        let size = usize::try_from(before.len())
+            .map_err(|_| TypedIoError::Unsupported("file larger than the address space"))?;
         let mut options = OpenOptions::new();
         options.read(true);
         // A final component swapped for a symlink or FIFO after the check
@@ -624,9 +613,8 @@ impl ScratchExecutionIo {
         let mut bytes = vec![0; size];
         let mut offset = 0;
         while offset < size {
-            self.budget.borrow().remaining()?;
             let n = file
-                .read(&mut bytes[offset..size.min(offset + PRECHECK)])
+                .read(&mut bytes[offset..size.min(offset + transport::BUFFER)])
                 .map_err(io_error)?;
             if n == 0 {
                 return Err(TypedIoError::Policy("source file changed while reading"));
@@ -637,10 +625,6 @@ impl ScratchExecutionIo {
             return Err(TypedIoError::Policy("source file changed while reading"));
         }
         same(&file.metadata().map_err(io_error)?)?;
-        // Latin-1 can expand each byte to two UTF-8 bytes in the evaluator.
-        self.budget
-            .borrow_mut()
-            .work(bytes.len().saturating_mul(2))?;
         let text = bytes.iter().map(|byte| char::from(*byte)).collect();
         self.observations.push(Observation::ReadSource {
             label: label.into(),
@@ -651,19 +635,10 @@ impl ScratchExecutionIo {
         Ok(text)
     }
     fn write(&mut self, file: &mut File, relative: &str, bytes: &[u8]) -> IoResult<()> {
-        let live: usize = self.files.values().map(|f| f.size).sum();
-        if bytes.len() > FILE_LIMIT - self.files[relative].size {
-            return Err(TypedIoError::Resource("8MiB decoded/file"));
-        }
-        if bytes.len() > LIVE_LIMIT - live {
-            return Err(TypedIoError::Resource("16MiB live scratch"));
-        }
-        self.budget.borrow_mut().work(bytes.len())?;
         // Count each successful short write so a subsequent write error leaves
         // precisely the partial file owned/readable, without rollback/chmod.
         let mut offset = 0;
         while offset < bytes.len() {
-            self.budget.borrow().remaining()?;
             let n = file.write(&bytes[offset..]).map_err(io_error)?;
             if n == 0 {
                 return Err(TypedIoError::Completion("zero-length file write".into()));
@@ -675,12 +650,14 @@ impl ScratchExecutionIo {
     }
 }
 
+/// One body read; an `Interrupted` read is a typed interruption, never retried.
+fn read_body(reader: &mut dyn Read, buffer: &mut [u8]) -> IoResult<usize> {
+    reader.read(buffer).map_err(io_error)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    pub(crate) fn n3_exhaust_budget_for_callback(io: &ScratchExecutionIo, deadline: bool) {
-        transport::tests::n3_exhaust_budget_for_callback(&io.budget, deadline);
-    }
     include!("../tests/support/extension_io_boundary_unit.rs");
     include!("../tests/support/extension_io_bounded_tls.rs");
     use std::net::TcpListener;
@@ -1048,35 +1025,6 @@ server.serve_forever()
     }
 
     #[test]
-    fn encoded_budget_error_during_gzip_header_is_not_tolerated_or_truncating() {
-        let server = TlsServer::new();
-        let mut io = ScratchExecutionIo::new()
-            .unwrap()
-            .with_client(transport::trusted_client(&server.pem));
-        seed(&mut io, "same", b"old bytes");
-        transport::tests::remaining_encoded_for_test(&io.budget, 5);
-        let error = download(
-            &mut io,
-            &format!("{}/bad-body", server.url),
-            "same",
-            "",
-            true,
-        )
-        .unwrap_err();
-        assert_eq!(
-            error,
-            TypedIoError::Resource("32MiB cumulative encoded bytes")
-        );
-        assert_eq!(io.bytes("same").unwrap(), b"old bytes");
-        assert_eq!(io.files["same"].generation, 1);
-        assert!(io.observations.is_empty());
-        assert_eq!(
-            fs::read_to_string(server._private.path().join("requests.log")).unwrap(),
-            "/bad-body\n"
-        );
-    }
-
-    #[test]
     fn uppercase_gzip_original_and_final_suffixes_preserve_raw_bytes_not_queries() {
         let body = b"gzip suffix case";
         let gzip = transport::tests::gzip_bytes(body);
@@ -1127,172 +1075,6 @@ server.serve_forever()
                 [original, final_path]
             );
         }
-    }
-
-    fn leave_decoded_allowance(io: &mut ScratchExecutionIo, allowance: usize) {
-        let used = transport::tests::decoded_count(&io.budget);
-        io.budget
-            .borrow_mut()
-            .decoded(transport::TOTAL_LIMIT - allowance - used)
-            .unwrap();
-    }
-
-    #[test]
-    fn cumulative_precheck_bound_preserves_old_file_or_exact_written_prefix() {
-        use std::os::unix::fs::PermissionsExt;
-        for (allowance, length) in [(7, 8), (7, 7), (PRECHECK + 7, PRECHECK + 8)] {
-            let mut io = ScratchExecutionIo::new().unwrap();
-            seed(&mut io, "same", b"old bytes");
-            let path = io.destination("same").unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
-            leave_decoded_allowance(&mut io, allowance);
-            let body = vec![b'x'; length];
-            let expected = Checksum {
-                algorithm: Algorithm::Sha256,
-                bytes: Algorithm::Sha256.hash(&body),
-            };
-            let (reader, trace) = transport::tests::Metered::new(std::io::Cursor::new(body));
-            let result = io.transfer(Box::new(reader), "same", Some(&expected));
-            let excess = length > allowance;
-            if excess {
-                assert!(matches!(result, Err(TypedIoError::Resource(_))));
-            } else {
-                result.unwrap();
-            }
-            assert_eq!(trace.borrow().returned, allowance + usize::from(excess));
-            assert_eq!(
-                transport::tests::decoded_count(&io.budget),
-                transport::TOTAL_LIMIT + usize::from(excess)
-            );
-            let expected_bytes = if excess && allowance < PRECHECK {
-                b"old bytes".to_vec()
-            } else {
-                vec![b'x'; allowance]
-            };
-            assert_eq!(io.bytes("same").unwrap(), expected_bytes);
-            assert_eq!(
-                io.files["same"].generation,
-                if excess && allowance < PRECHECK { 1 } else { 2 }
-            );
-            assert_eq!(
-                fs::metadata(path).unwrap().permissions().mode() & 0o777,
-                0o640
-            );
-            assert_eq!(
-                trace.borrow().requests,
-                match (allowance, excess) {
-                    (7, true) => vec![7, 1],
-                    (7, false) => vec![7, 1, 1],
-                    _ => vec![PRECHECK, 7, 1],
-                }
-            );
-            if !excess {
-                // A new checksummed operation at the shared cumulative cap may
-                // probe once, but cannot open/truncate the preceding output.
-                let next = Checksum {
-                    algorithm: Algorithm::Sha256,
-                    bytes: Algorithm::Sha256.hash(b"y"),
-                };
-                let (reader, next_trace) =
-                    transport::tests::Metered::new(std::io::Cursor::new(vec![b'y']));
-                assert!(matches!(
-                    io.transfer(Box::new(reader), "same", Some(&next)),
-                    Err(TypedIoError::Resource(_))
-                ));
-                assert_eq!(next_trace.borrow().requests, [1]);
-                assert_eq!(next_trace.borrow().returned, 1);
-                assert_eq!(
-                    transport::tests::decoded_count(&io.budget),
-                    transport::TOTAL_LIMIT + 1
-                );
-                assert_eq!(io.bytes("same").unwrap(), expected_bytes);
-                assert_eq!(io.files["same"].generation, 2);
-            }
-        }
-    }
-
-    #[test]
-    fn cumulative_no_checksum_body_bound_counts_multiple_calls_and_one_rejected_probe() {
-        for compressed in [false, true] {
-            let mut io = ScratchExecutionIo::new().unwrap();
-            seed(&mut io, "same", b"old bytes");
-            leave_decoded_allowance(&mut io, 7);
-            for (index, body, success, expected_bytes) in [
-                (0, b"abc".as_slice(), true, b"abc".as_slice()),
-                (1, b"defg".as_slice(), true, b"defg".as_slice()),
-                (2, b"".as_slice(), true, b"".as_slice()),
-                (3, b"excess".as_slice(), false, b"".as_slice()),
-            ] {
-                let reader: Box<dyn Read> = if compressed {
-                    Box::new(flate2::read::MultiGzDecoder::new(std::io::Cursor::new(
-                        transport::tests::gzip_bytes(body),
-                    )))
-                } else {
-                    Box::new(std::io::Cursor::new(body.to_vec()))
-                };
-                let (reader, trace) = transport::tests::Metered::new(reader);
-                let result = io.transfer(Box::new(reader), "same", None);
-                if success {
-                    result.unwrap();
-                } else {
-                    assert!(matches!(result, Err(TypedIoError::Resource(_))));
-                }
-                assert_eq!(io.bytes("same").unwrap(), expected_bytes);
-                assert_eq!(
-                    trace.borrow().returned,
-                    if success { body.len() } else { 1 }
-                );
-                assert_eq!(io.files["same"].generation, index + 2);
-                let expected_count = if index == 0 {
-                    transport::TOTAL_LIMIT - 4
-                } else {
-                    transport::TOTAL_LIMIT + usize::from(!success)
-                };
-                assert_eq!(transport::tests::decoded_count(&io.budget), expected_count);
-                assert!(trace.borrow().requests.iter().all(|n| *n
-                    <= if index == 0 {
-                        7
-                    } else if index == 1 {
-                        4
-                    } else {
-                        1
-                    }));
-            }
-            let (reader, trace) =
-                transport::tests::Metered::new(std::io::Cursor::new(vec![b'x'; PRECHECK]));
-            assert!(matches!(
-                io.transfer(Box::new(reader), "same", None),
-                Err(TypedIoError::Resource(_))
-            ));
-            assert!(
-                trace.borrow().requests.is_empty(),
-                "a second rejected excess probe was made"
-            );
-            assert_eq!(
-                transport::tests::decoded_count(&io.budget),
-                transport::TOTAL_LIMIT + 1
-            );
-        }
-    }
-
-    #[test]
-    fn checksumless_https_cumulative_budget_error_is_hard_and_leaves_only_allowed_bytes() {
-        let server = TlsServer::new();
-        let mut io = ScratchExecutionIo::new()
-            .unwrap()
-            .with_client(transport::trusted_client(&server.pem));
-        seed(&mut io, "same", b"old bytes");
-        leave_decoded_allowance(&mut io, 7);
-        assert!(matches!(
-            download(&mut io, &server.url, "same", "", true),
-            Err(TypedIoError::Resource(_))
-        ));
-        assert_eq!(io.bytes("same").unwrap(), b"{\"real\"");
-        assert_eq!(
-            transport::tests::decoded_count(&io.budget),
-            transport::TOTAL_LIMIT + 1
-        );
-        assert!(io.observations.is_empty());
     }
 
     #[test]
@@ -1770,9 +1552,11 @@ server.serve_forever()
     }
 
     #[test]
-    fn calls_mirrors_file_live_and_work_limits_are_not_allow_fail() {
+    fn former_call_mirror_file_and_live_caps_do_not_exist() {
+        // Bazel has no download call, mirror, per-file or live-scratch caps;
+        // the former native 32-call / 8-mirror / 8 MiB / 16 MiB limits are gone.
         let mut io = ScratchExecutionIo::new().unwrap();
-        for _ in 0..32 {
+        for _ in 0..40 {
             assert!(
                 !io.download(
                     io.identity(),
@@ -1789,23 +1573,8 @@ server.serve_forever()
                 .success
             );
         }
-        assert!(matches!(
-            io.download(
-                io.identity(),
-                false,
-                Download {
-                    urls: &[],
-                    output: "",
-                    sha256: "",
-                    integrity: "",
-                    allow_fail: true
-                }
-            ),
-            Err(TypedIoError::Resource(_))
-        ));
-        let mut io = ScratchExecutionIo::new().unwrap();
-        assert!(matches!(
-            io.download(
+        assert!(
+            !io.download(
                 io.identity(),
                 false,
                 Download {
@@ -1815,24 +1584,29 @@ server.serve_forever()
                     integrity: "",
                     allow_fail: true
                 }
-            ),
-            Err(TypedIoError::Resource(_))
-        ));
-        let body = vec![b'x'; FILE_LIMIT + 1];
-        let server = Server::new(vec![response(200, &body, "")]);
-        assert!(matches!(
-            download(&mut io, &server.url, "large", &"00".repeat(32), true),
-            Err(TypedIoError::Resource(_))
-        ));
-        assert_eq!(io.files["large"].size, FILE_LIMIT);
-        let mut io = ScratchExecutionIo::new().unwrap();
-        seed(&mut io, "one", &body[..FILE_LIMIT]);
-        seed(&mut io, "two", &body[..FILE_LIMIT]);
-        assert!(matches!(
-            io.transfer(Box::new(std::io::Cursor::new(vec![b'a'])), "three", None),
-            Err(TypedIoError::Resource(_))
-        ));
-        assert_eq!(io.files["three"].size, 0);
+            )
+            .unwrap()
+            .success
+        );
+        let body: Vec<u8> = (0..20 * 1024 * 1024).map(|i| (i % 253) as u8).collect();
+        let server = Server::new(vec![response(200, &body, ""), response(200, &body, "")]);
+        let sha = transport::sha256(&body);
+        assert!(download(&mut io, &server.url, "large", &sha, false).unwrap());
+        assert!(download(&mut io, &server.url, "again", &sha, false).unwrap());
+        assert_eq!(io.files["large"].size, body.len());
+        assert_eq!(io.files["again"].size, body.len());
+        match io.observations.last().unwrap() {
+            Observation::Download { result, state, .. } => {
+                assert_eq!(result.size_bytes, Some(body.len()));
+                assert!(
+                    matches!(state, FileState::File { size_bytes, .. } if *size_bytes == body.len())
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        // Matching owned destination reuse hashes the file without a request.
+        assert!(download(&mut io, "https://localhost/unused", "large", &sha, false).unwrap());
+        assert_eq!(server.count(), 2);
     }
 
     #[test]
@@ -1886,22 +1660,30 @@ server.serve_forever()
     }
 
     #[test]
-    fn gzip_bomb_is_resource_failure_and_new_file_uses_normal_creation_mode() {
+    fn large_gzip_content_encoding_streams_and_new_file_uses_normal_creation_mode() {
         use std::os::unix::fs::PermissionsExt;
+        // 24 MiB decoded from a tiny body: no decoded-size cap, streamed.
+        let decoded = vec![b'x'; 24 * 1024 * 1024];
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        encoder.write_all(&vec![b'x'; FILE_LIMIT + 1]).unwrap();
+        encoder.write_all(&decoded).unwrap();
         let gzip = encoder.finish().unwrap();
         let server = Server::new(vec![response(200, &gzip, "Content-Encoding: gzip\r\n")]);
         let mut io = ScratchExecutionIo::new().unwrap();
-        assert!(matches!(
-            download(&mut io, &server.url, "bomb", &"00".repeat(32), true),
-            Err(TypedIoError::Resource(_))
-        ));
-        assert_eq!(io.files["bomb"].size, FILE_LIMIT);
+        assert!(
+            download(
+                &mut io,
+                &server.url,
+                "big",
+                &transport::sha256(&decoded),
+                false
+            )
+            .unwrap()
+        );
+        assert_eq!(io.files["big"].size, decoded.len());
         let comparison = io.container.as_ref().unwrap().path().join("normal-file");
         fs::write(&comparison, b"normal").unwrap();
         assert_eq!(
-            fs::metadata(io.destination("bomb").unwrap())
+            fs::metadata(io.destination("big").unwrap())
                 .unwrap()
                 .permissions()
                 .mode()

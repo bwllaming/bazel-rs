@@ -15,9 +15,6 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Component, Path};
 
-const MAX_PATCH_BYTES: usize = 16 * 1024 * 1024;
-const MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Input {
     Main {
@@ -69,7 +66,6 @@ pub fn snapshot(
         commands: options.patch_cmds.clone(),
         strip,
     };
-    let mut total = 0;
     let mut checked_root = false;
     for label in labels {
         if !label.repository.is_empty() {
@@ -93,9 +89,7 @@ pub fn snapshot(
             )?;
         }
         let path = package.join(relative);
-        let bytes = read_patch(&path, MAX_TOTAL_BYTES - total)
-            .map_err(|e| format!("patch {label}: {e}"))?;
-        total += bytes.len();
+        let bytes = read_patch(&path).map_err(|e| format!("patch {label}: {e}"))?;
         let patch = patching::parse(&bytes, strip)
             .map_err(|e| format!("cannot parse patch {label}: {e}"))?;
         plan.inputs.push(Input::Main {
@@ -266,7 +260,9 @@ fn check_package_marker(package: &Path) -> Result<(), String> {
     ))
 }
 
-fn read_patch(path: &Path, remaining: usize) -> Result<Vec<u8>, String> {
+/// Read a whole patch file (PatchUtil reads patches into memory); there is no
+/// artificial per-file or total size cap.
+fn read_patch(path: &Path) -> Result<Vec<u8>, String> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|e| format!("cannot access patch file {}: {e}", path.display()))?;
     if metadata.file_type().is_symlink() {
@@ -281,25 +277,11 @@ fn read_patch(path: &Path, remaining: usize) -> Result<Vec<u8>, String> {
             path.display()
         ));
     }
-    let limit = MAX_PATCH_BYTES.min(remaining);
-    let bound_error = || {
-        format!(
-            "patch input size limit exceeded at {} (16 MiB per file, 64 MiB total)",
-            path.display()
-        )
-    };
-    if metadata.len() > limit as u64 {
-        return Err(bound_error());
-    }
-    let file =
+    let mut file =
         File::open(path).map_err(|e| format!("cannot open patch file {}: {e}", path.display()))?;
     let mut bytes = Vec::new();
-    file.take(limit as u64 + 1)
-        .read_to_end(&mut bytes)
+    file.read_to_end(&mut bytes)
         .map_err(|e| format!("cannot read patch file {}: {e}", path.display()))?;
-    if bytes.len() > limit {
-        return Err(bound_error());
-    }
     Ok(bytes)
 }
 
@@ -719,22 +701,18 @@ mod tests {
     }
 
     #[test]
-    fn bounded_reads_enforce_file_and_remaining_total_limits() {
+    fn patch_reads_have_no_native_size_cap() {
+        // Above the former 16 MiB per-file / 64 MiB total native caps.
         let root = workspace();
         let path = root.path().join("huge.patch");
         File::create(&path)
             .unwrap()
-            .set_len(MAX_PATCH_BYTES as u64 + 1)
+            .set_len(17 * 1024 * 1024)
             .unwrap();
-        assert!(
-            plan(root.path(), &[":huge.patch"])
-                .unwrap_err()
-                .contains("size limit exceeded")
-        );
+        assert_eq!(read_patch(&path).unwrap().len(), 17 * 1024 * 1024);
         let path = root.path().join("small.patch");
         fs::write(&path, b"12345").unwrap();
-        assert_eq!(read_patch(&path, 5).unwrap(), b"12345");
-        assert!(read_patch(&path, 4).unwrap_err().contains("64 MiB total"));
+        assert_eq!(read_patch(&path).unwrap(), b"12345");
     }
 
     #[test]

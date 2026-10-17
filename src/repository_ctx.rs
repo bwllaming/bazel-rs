@@ -42,14 +42,10 @@ use crate::repository_environment::{Captured, EnvError, Watch, WatchedEnvironmen
 use crate::repository_rule::RuleDefinition;
 use crate::starlark_types::{alloc_label, unpack_label};
 
-const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
-const MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
-const MAX_OPERATIONS: usize = 10_000;
-const MAX_EXECUTIONS: usize = 1_000;
-const MAX_TIMEOUT_SECONDS: i64 = 24 * 60 * 60;
-const MAX_ARGV_BYTES: usize = 2 * 1024 * 1024;
-const MAX_DIRENTS: usize = 100_000;
-const CHECKSUM_MISMATCH: &str = "Checksum was ";
+// Repository I/O has no artificial size or count caps (Bazel has none):
+// downloads and archives stream to disk in constant memory; only APIs whose
+// result is a Starlark string (read, template input, execute output) hold
+// content in memory, as Bazel does.
 static NEXT_EXEC_RESULT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 #[derive(Debug, Default, Serialize)]
@@ -91,15 +87,10 @@ pub struct FileInput {
 #[derive(Default)]
 struct State {
     inputs: ExecutionInputs,
-    written: usize,
-    read: usize,
-    writes: usize,
-    executions: usize,
     /// Whether Bazel would have created the repository directory yet: it does
     /// so lazily on the first write/makeDirectories/execute, not before the
     /// callback (captured read('.') and template('.') failures).
     created: bool,
-    budget: Option<transport::SharedBudget>,
     client: Option<reqwest::blocking::Client>,
 }
 
@@ -581,8 +572,9 @@ fn file_not_found(path: &Path, error: &std::io::Error) -> anyhow::Error {
     )
 }
 
-/// Read at most `limit` bytes, failing explicitly beyond it.
-fn read_limited(path: &Path, limit: usize, what: &str) -> anyhow::Result<Vec<u8>> {
+/// Read a whole file whose content Bazel returns as a string (read(),
+/// template input, patch text). No size cap: the memory is inherent.
+fn read_file(path: &Path) -> anyhow::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     let mut file = fs::File::open(path).map_err(|error| file_not_found(path, &error))?;
     if file.metadata().is_ok_and(|metadata| metadata.is_dir()) {
@@ -591,12 +583,17 @@ fn read_limited(path: &Path, limit: usize, what: &str) -> anyhow::Result<Vec<u8>
             &std::io::Error::from_raw_os_error(21), // EISDIR, as FileInputStream reports it
         ));
     }
-    Read::by_ref(&mut file)
-        .take((limit + 1) as u64)
-        .read_to_end(&mut bytes)
+    file.read_to_end(&mut bytes)
         .map_err(|error| file_not_found(path, &error))?;
-    ensure!(bytes.len() <= limit, "{what} exceeds 16 MiB limit");
     Ok(bytes)
+}
+
+/// SHA-256 of a file, hashed incrementally (constant memory).
+fn file_sha256(path: &Path) -> anyhow::Result<String> {
+    let (digest, _) = Algorithm::Sha256
+        .hash_file(path)
+        .map_err(|error| file_not_found(path, &error))?;
+    Ok(transport::hex(&digest))
 }
 
 /// Path.resolveSymbolicLinks (StarlarkPath.java:186-196): resolve component
@@ -788,13 +785,19 @@ fn decompressor(kind: &str) -> anyhow::Result<&'static str> {
         ("tar", "tar"),
         ("tar.gz", "tar.gz"),
         ("tgz", "tar.gz"),
+        ("tar.xz", "tar.xz"),
+        ("txz", "tar.xz"),
+        ("tar.zst", "tar.zst"),
+        ("tzst", "tar.zst"),
+        ("tar.bz2", "tar.bz2"),
+        ("tbz", "tar.bz2"),
     ];
     if let Some((_, native)) = NATIVE.iter().find(|(name, _)| *name == kind) {
         return Ok(native);
     }
     if BAZEL_FORMATS.contains(&kind) {
         bail!(
-            "archive type {kind} is not supported by the native extractor (supported: zip, jar, war, aar, nupkg, whl, tar, tar.gz, tgz)"
+            "archive type {kind} is not supported by the native extractor (supported: zip, jar, war, aar, nupkg, whl, tar, tar.gz, tgz, tar.xz, txz, tar.zst, tzst, tar.bz2, tbz)"
         );
     }
     bail!(
@@ -958,7 +961,7 @@ impl Context {
             Ok(_) => {}
         }
         regular_file(&path)?;
-        read_limited(&path, MAX_FILE_BYTES, "template input")
+        read_file(&path)
     }
 
     /// Bazel checkInOutputDirectory (java:331-339) plus the native output
@@ -1005,20 +1008,8 @@ impl Context {
     }
 
     fn write(&self, path: &[u8], bytes: &[u8], executable: bool) -> anyhow::Result<()> {
-        ensure!(
-            bytes.len() <= MAX_FILE_BYTES,
-            "repository file exceeds 16 MiB limit"
-        );
         let relative = self.output(path)?;
         let mut state = self.state.borrow_mut();
-        ensure!(
-            state.written + bytes.len() <= MAX_TOTAL_BYTES,
-            "repository cumulative writes exceed 64 MiB limit"
-        );
-        ensure!(
-            state.writes < MAX_OPERATIONS,
-            "repository exceeds 10000 writes"
-        );
         ensure!(
             !relative.is_empty(),
             "Could not create {}: is the repository directory",
@@ -1054,23 +1045,11 @@ impl Context {
                 0o644
             }))?;
         }
-        state.written += bytes.len();
-        state.writes += 1;
         Ok(())
     }
 
     fn mark_created(&self) {
         self.state.borrow_mut().created = true;
-    }
-
-    fn charge_read(&self, bytes: usize) -> anyhow::Result<()> {
-        let mut state = self.state.borrow_mut();
-        ensure!(
-            state.read + bytes <= MAX_TOTAL_BYTES,
-            "template cumulative reads exceed 64 MiB limit"
-        );
-        state.read += bytes;
-        Ok(())
     }
 
     /// toRepoCacheFriendlyPath + RepoRecordedInput.File (java:1656-1733).
@@ -1088,11 +1067,7 @@ impl Context {
         let state = match fs::metadata(&host) {
             Err(_) => "missing".to_owned(),
             Ok(metadata) if metadata.is_dir() => "directory".to_owned(),
-            Ok(metadata) if metadata.is_file() => {
-                let bytes = read_limited(&host, MAX_FILE_BYTES, "watched file")?;
-                self.charge_read(bytes.len())?;
-                format!("file:{}", sha256(&bytes))
-            }
+            Ok(metadata) if metadata.is_file() => format!("file:{}", file_sha256(&host)?),
             Ok(_) => "other".to_owned(),
         };
         self.record(self.friendly(path), "file", state)
@@ -1112,10 +1087,6 @@ impl Context {
     fn record(&self, path: String, kind: &'static str, state: String) -> anyhow::Result<()> {
         let mut current = self.state.borrow_mut();
         let files = &mut current.inputs.files;
-        ensure!(
-            files.len() < MAX_OPERATIONS,
-            "repository exceeds 10000 recorded file inputs"
-        );
         let input = FileInput { path, kind, state };
         if !files.contains(&input) {
             files.push(input);
@@ -1139,7 +1110,6 @@ impl Context {
     ) -> anyhow::Result<(String, Vec<u8>)> {
         if let Some(canonical) = unpack_label(value) {
             let bytes = self.read_label(&canonical)?;
-            self.charge_read(bytes.len())?;
             // Label templates are already keyed by their `templates` entry
             // (canonical label and full bytes, recorded regardless of watch
             // mode), so content changes rekey without a `files` entry; adding
@@ -1170,8 +1140,7 @@ impl Context {
             bail!("{directory_error}: {}", display(&path));
         }
         self.watch(&path, watch)?;
-        let bytes = read_limited(&host, MAX_FILE_BYTES, "template input")?;
-        self.charge_read(bytes.len())?;
+        let bytes = read_file(&host)?;
         let source = match self.under_stage(&path) {
             Some(relative) => format!("stage:{}", display(relative)),
             None => self.friendly(&path),
@@ -1216,90 +1185,76 @@ impl Context {
         Ok(None)
     }
 
-    fn budget(&self) -> transport::SharedBudget {
-        self.state
-            .borrow_mut()
-            .budget
-            .get_or_insert_with(Default::default)
-            .clone()
+    fn client(&self) -> Result<reqwest::blocking::Client, TypedIoError> {
+        let mut state = self.state.borrow_mut();
+        if state.client.is_none() {
+            state.client = Some(transport::client()?);
+        }
+        Ok(state.client.clone().expect("initialized"))
     }
 
-    /// Fetch one archive into memory with the module download transport
-    /// (extension_download.rs: limits, redirects, retry table, TLS policy).
-    fn fetch(
+    /// Stream the first completing mirror into `target` (a file, or a file
+    /// named by the URL basename in a directory: Bazel's DownloadManager names
+    /// the downloaded file after the URL), hashing while writing
+    /// (extension_download.rs: redirects, retry table, TLS policy, timeouts).
+    /// Each failed mirror is reported like HttpDownloader.recordFailure
+    /// (HttpDownloader.java:217-240): `WARNING: Download from URL failed:
+    /// class CLASS MESSAGE`, also when `allow_fail` later tolerates it.
+    fn fetch_to(
         &self,
         urls: &[reqwest::Url],
         expected: Option<&Checksum>,
         sri: bool,
-    ) -> Result<(reqwest::Url, Vec<u8>), TypedIoError> {
+        target: DownloadTarget<'_>,
+    ) -> Result<(transport::Fetched, PathBuf), DownloadFailure> {
         if !self.repositories.repository_downloads_enabled() {
-            return Err(TypedIoError::Completion(
-                "repository downloads are disabled".into(),
-            ));
-        }
-        if urls.is_empty() {
-            return Err(TypedIoError::Completion("no download URLs".into()));
-        }
-        let budget = self.budget();
-        budget.borrow_mut().call()?;
-        let client = {
-            let mut state = self.state.borrow_mut();
-            if state.client.is_none() {
-                state.client = Some(transport::client()?);
-            }
-            state.client.clone().expect("initialized")
-        };
-        let mut last = TypedIoError::Completion("no mirror succeeded".into());
-        for url in urls {
-            let attempt = transport::open(&client, url, budget.clone()).and_then(|mut reader| {
-                let mut bytes = Vec::new();
-                let mut buffer = [0u8; transport::PRECHECK];
-                loop {
-                    let n =
-                        transport::read_decoded(&mut *reader, &mut buffer, bytes.len(), &budget)?;
-                    if n == 0 {
-                        break;
-                    }
-                    bytes.extend_from_slice(&buffer[..n]);
-                }
-                if let Some(expected) = expected
-                    && !expected.matches(&bytes)
-                {
-                    // HashOutputStream.java:84-90 ("Checksum was %s but
-                    // wanted %s"; hex unless the checksum came from integrity).
-                    let actual = Checksum {
-                        algorithm: expected.algorithm,
-                        bytes: expected.algorithm.hash(&bytes),
-                    };
-                    let shown = |checksum: &Checksum| {
-                        if sri {
-                            checksum.integrity()
-                        } else {
-                            transport::hex(&checksum.bytes)
-                        }
-                    };
-                    return Err(TypedIoError::Completion(format!(
-                        "{CHECKSUM_MISMATCH}{} but wanted {}",
-                        shown(&actual),
-                        shown(expected)
-                    )));
-                }
-                Ok(bytes)
+            return Err(DownloadFailure {
+                error: TypedIoError::Completion("repository downloads are disabled".into()),
+                last: None,
             });
-            match attempt {
-                Ok(bytes) => return Ok((url.clone(), bytes)),
-                Err(error @ TypedIoError::Completion(_)) => last = error,
-                Err(error) => return Err(error),
-            }
         }
-        Err(last)
+        let client = self
+            .client()
+            .map_err(|error| DownloadFailure { error, last: None })?;
+        let mut path = PathBuf::new();
+        let mut last = None;
+        let (keep_failed, directory, file) = match target {
+            DownloadTarget::Directory(directory) => (false, Some(directory), None),
+            DownloadTarget::File(file) => (true, None, Some(file)),
+        };
+        let fetched = transport::fetch_to_file(
+            &client,
+            urls,
+            expected,
+            sri,
+            &mut |url| {
+                path = match (directory, file) {
+                    (Some(directory), _) => directory.join(storage_name(url)),
+                    (None, Some(file)) => file.to_path_buf(),
+                    (None, None) => unreachable!("one download target"),
+                };
+                path.clone()
+            },
+            keep_failed,
+            &mut |url, failure| {
+                eprintln!(
+                    "WARNING: Download from {url} failed: class {} {}",
+                    failure.class, failure.message
+                );
+                last = Some(failure.clone());
+            },
+        );
+        match fetched {
+            Ok(fetched) => Ok((fetched, path)),
+            Err(error) => Err(DownloadFailure { error, last }),
+        }
     }
 
-    /// Extract archive bytes into `output` (stage-relative), merging like
-    /// Bazel's decompressors writing into an existing directory.
-    fn extract_bytes(
+    /// Stream-extract the archive file into `output` (stage-relative),
+    /// merging like Bazel's decompressors writing into an existing directory.
+    fn extract_archive(
         &self,
-        bytes: &[u8],
+        archive_file: &Path,
         kind: &str,
         strip_prefix: &str,
         output: &str,
@@ -1330,35 +1285,71 @@ impl Context {
         // ZipReader.getFilename (java.io.File.getName): the archive's basename
         // names it in the zip link-escape error (ZipDecompressor.java:154-163).
         let archive_name = display(archive.rsplit(|byte| *byte == b'/').next().unwrap_or(b""));
-        if let Err(error) =
-            crate::archive::extract_named(bytes, kind, &normalized, temporary.path(), &archive_name)
-        {
-            if !normalized.is_empty() && error.ends_with("did not match") {
-                // Bazel lists the first segment of every multi-segment entry.
-                let listing = tempfile::Builder::new()
-                    .prefix(".extract-")
-                    .tempdir_in(&self.stage)?;
-                let mut available = BTreeSet::new();
-                if crate::archive::extract(bytes, kind, "", listing.path()).is_ok() {
-                    for entry in fs::read_dir(listing.path())? {
-                        let entry = entry?;
-                        if entry.file_type()?.is_dir()
-                            && fs::read_dir(entry.path())?.next().is_some()
-                        {
-                            available.insert(entry.file_name().to_string_lossy().into_owned());
-                        }
-                    }
-                }
+        match crate::archive::extract_file(
+            archive_file,
+            kind,
+            &normalized,
+            temporary.path(),
+            &archive_name,
+        ) {
+            Ok(()) => {}
+            Err(crate::archive::Failure::PrefixNotFound(available)) => {
+                // Bazel lists the first segment of every multi-segment entry
+                // seen before the prefix was found, collected in the same pass.
                 return Err(prefix_not_found(archive, strip_prefix, &available));
             }
-            if crate::archive::is_bazel_extraction_io_error(&error) {
-                return Err(extraction_io_error(archive, &error));
+            Err(crate::archive::Failure::Other(error)) => {
+                if crate::archive::is_bazel_extraction_io_error(&error) {
+                    return Err(extraction_io_error(archive, &error));
+                }
+                return Err(anyhow::Error::msg(error));
             }
-            return Err(anyhow::Error::msg(error));
         }
         merge(temporary.path(), &destination)?;
         temporary.close()?;
         Ok(())
+    }
+}
+
+/// Where a download streams to.
+#[derive(Clone, Copy)]
+enum DownloadTarget<'a> {
+    /// A file named by the URL basename inside this directory.
+    Directory(&'a Path),
+    /// Exactly this file (repository_ctx.download's output path).
+    File(&'a Path),
+}
+
+/// A failed download: the typed error and, when mirrors were tried, Bazel's
+/// description of the last mirror's failure.
+struct DownloadFailure {
+    error: TypedIoError,
+    last: Option<transport::BazelFailure>,
+}
+
+impl DownloadFailure {
+    /// The repository-level error: HttpDownloader's aggregated
+    /// `Error downloading [URLS] to PATH: LAST_MESSAGE` (java:243-262) once
+    /// mirrors were tried; native transport text otherwise.
+    fn into_error(self, urls: &[reqwest::Url], path: &[u8]) -> anyhow::Error {
+        match (&self.error, self.last) {
+            (TypedIoError::Completion(_), Some(last)) => download_error(urls, path, &last.message),
+            _ => anyhow!("{}", self.error),
+        }
+    }
+}
+
+/// On-disk name of a downloaded file: the URL's last path segment, or a
+/// fixed name when that segment cannot name a file.
+fn storage_name(url: &reqwest::Url) -> String {
+    let name = url
+        .path_segments()
+        .and_then(|mut segments| segments.next_back())
+        .unwrap_or("");
+    if name.is_empty() || name == "." || name == ".." {
+        "download".to_owned()
+    } else {
+        name.to_owned()
     }
 }
 
@@ -1401,10 +1392,6 @@ fn replace_bytes(input: &[u8], key: &[u8], replacement: &[u8]) -> anyhow::Result
             offset += 1;
             &input[offset - 1..offset]
         };
-        ensure!(
-            output.len() + bytes.len() <= MAX_FILE_BYTES,
-            "template output exceeds 16 MiB limit"
-        );
         output.extend_from_slice(bytes);
     }
     Ok(output)
@@ -1600,7 +1587,102 @@ fn not_implemented(method: &str) -> anyhow::Error {
     anyhow!("repository_ctx.{method}() is not implemented by the native profile")
 }
 
-fn url_strings(url: Value<'_>) -> anyhow::Result<Vec<&str>> {
+/// Validated `url`/checksum/auth/headers arguments of download() and
+/// download_and_extract() (getUrls/checkAllUrls java:443-469,
+/// validateChecksum java:512-541).
+struct DownloadRequest {
+    urls: Vec<reqwest::Url>,
+    expected: Option<Checksum>,
+    /// A malformed checksum, raised only after the download attempt
+    /// (java:1094-1101, 1168-1170).
+    deferred: Option<String>,
+    sri: bool,
+}
+
+impl DownloadRequest {
+    #[allow(clippy::too_many_arguments)]
+    fn new<'v>(
+        method: &str,
+        url: Value<'v>,
+        sha256: &str,
+        integrity: &str,
+        allow_fail: bool,
+        auth: Option<Value<'v>>,
+        headers: Option<Value<'v>>,
+    ) -> anyhow::Result<Self> {
+        for (option, name) in [(auth, "auth"), (headers, "headers")] {
+            if let Some(option) = option {
+                let dict =
+                    DictRef::from_value(option).ok_or_else(|| anyhow!("{name} must be a dict"))?;
+                ensure!(
+                    dict.is_empty(),
+                    "{method}() {name} is not supported by the native download transport"
+                );
+            }
+        }
+        let strings = url_strings(method, url)?;
+        ensure!(
+            allow_fail || !strings.is_empty(),
+            "java.io.IOException: urls not set"
+        );
+        let checksum_given = !sha256.is_empty() || !integrity.is_empty();
+        let mut urls = Vec::new();
+        for text in &strings {
+            let parsed = transport::validate_url(text).map_err(|error| anyhow!("{error}"))?;
+            if checksum_given || parsed.scheme() != "http" {
+                urls.push(parsed);
+            }
+        }
+        ensure!(
+            allow_fail || !urls.is_empty(),
+            "java.io.IOException: No URLs left after removing plain http URLs due to missing checksum. Please provide either a checksum or an https download location."
+        );
+        if !sha256.is_empty() && !integrity.is_empty() {
+            bail!("Expected either 'sha256' or 'integrity', but not both");
+        }
+        let deferred = checksum_text_error(sha256, integrity);
+        let expected = if deferred.is_some() {
+            None
+        } else {
+            transport::checksums(sha256, integrity)
+                .map_err(|error| anyhow!("{error}"))?
+                .expected
+        };
+        Ok(Self {
+            urls,
+            expected,
+            deferred,
+            sri: !integrity.is_empty(),
+        })
+    }
+}
+
+/// `Error downloading [URLS] to PATH: MESSAGE` (HttpDownloader).
+fn download_error(urls: &[reqwest::Url], path: &[u8], message: &str) -> anyhow::Error {
+    anyhow!(
+        "java.io.IOException: Error downloading [{}] to {}: {message}",
+        urls.iter()
+            .map(reqwest::Url::as_str)
+            .collect::<Vec<_>>()
+            .join(", "),
+        display(path)
+    )
+}
+
+/// calculateDownloadResult (java:559-583).
+fn download_result<'v>(heap: Heap<'v>, checksum: &Checksum, size: u64) -> Value<'v> {
+    let mut fields = vec![
+        ("success", heap.alloc(true)),
+        ("integrity", heap.alloc(checksum.integrity())),
+    ];
+    if checksum.algorithm == Algorithm::Sha256 {
+        fields.push(("sha256", heap.alloc(transport::hex(&checksum.bytes))));
+    }
+    fields.push(("size_bytes", heap.alloc(size as i64)));
+    heap.alloc(AllocStruct(fields))
+}
+
+fn url_strings<'v>(method: &str, url: Value<'v>) -> anyhow::Result<Vec<&'v str>> {
     // getUrls/checkAllUrls (java:443-469).
     if let Some(text) = url.unpack_str() {
         return Ok(vec![text]);
@@ -1611,14 +1693,10 @@ fn url_strings(url: Value<'_>) -> anyhow::Result<Vec<&str>> {
         tuple.content().to_vec()
     } else {
         bail!(
-            "in call to download_and_extract(), parameter 'url' got value of type '{}', want 'string or Iterable'",
+            "in call to {method}(), parameter 'url' got value of type '{}', want 'string or Iterable'",
             url.get_type()
         );
     };
-    ensure!(
-        items.len() <= 8,
-        "download_and_extract() supports at most 8 mirrors"
-    );
     items
         .into_iter()
         .map(|item| {
@@ -1690,10 +1768,6 @@ fn repository_methods(builder: &mut MethodsBuilder) {
         context.output(&output)?;
         {
             let mut state = context.state.borrow_mut();
-            ensure!(
-                state.inputs.templates.len() < MAX_OPERATIONS,
-                "repository exceeds 10000 template reads"
-            );
             state.inputs.templates.push(TemplateInput {
                 source,
                 bytes: bytes.clone(),
@@ -1889,12 +1963,6 @@ fn repository_methods(builder: &mut MethodsBuilder) {
         // Bazel creates the link to the absolute target path (java:232); so do
         // we, so readlink/realpath inside the callback observe Bazel's values.
         std::os::unix::fs::symlink(path_buf(&target), &host_link).map_err(|e| failure(&e))?;
-        let mut state = context.state.borrow_mut();
-        ensure!(
-            state.writes < MAX_OPERATIONS,
-            "repository exceeds 10000 writes"
-        );
-        state.writes += 1;
         Ok(NoneType)
     }
 
@@ -1980,22 +2048,15 @@ fn repository_methods(builder: &mut MethodsBuilder) {
             timeout > 0,
             "execute() timeout must be positive (Bazel rejects a non-positive timeout internally)"
         );
-        ensure!(
-            i64::from(timeout) <= MAX_TIMEOUT_SECONDS,
-            "execute() timeout exceeds the native limit of {MAX_TIMEOUT_SECONDS} seconds"
-        );
         // An empty list reaches process-wrapper, which prints its usage and
         // exits 1 (process-wrapper-options.cc:135-138); see repository_process.
         let mut argv = Vec::with_capacity(items.len());
-        let mut size = 0usize;
         for item in &items {
             let bytes = if let Some(text) = item.unpack_str() {
                 latin1(text, "execute() argument")?
             } else {
                 context.path_of(*item, "execute", "arguments")?
             };
-            size += bytes.len() + 1;
-            ensure!(size <= MAX_ARGV_BYTES, "execute() arguments exceed 2 MiB");
             ensure!(
                 !bytes.contains(&0),
                 "execute() arguments must not contain NUL"
@@ -2067,11 +2128,6 @@ fn repository_methods(builder: &mut MethodsBuilder) {
             let mut state = context.state.borrow_mut();
             // createDirectory(workingDirectory) (java:2076).
             state.created = true;
-            ensure!(
-                state.executions < MAX_EXECUTIONS,
-                "repository exceeds {MAX_EXECUTIONS} execute() calls"
-            );
-            state.executions += 1;
             state.inputs.host_facilities.insert("execute");
         }
         let request = crate::repository_process::Request {
@@ -2147,13 +2203,15 @@ fn repository_methods(builder: &mut MethodsBuilder) {
         } else {
             decompressor(r#type)?
         };
-        let bytes = read_limited(&host, MAX_FILE_BYTES, "archive")?;
-        context.charge_read(bytes.len())?;
-        context.extract_bytes(&bytes, kind, strip_prefix, &relative, &archive_path)?;
+        context.extract_archive(&host, kind, strip_prefix, &relative, &archive_path)?;
         Ok(NoneType)
     }
 
-    /// StarlarkBaseExternalContext.downloadAndExtract (java:907-1197).
+    /// StarlarkBaseExternalContext.downloadAndExtract (java:907-1197): the
+    /// archive streams into a private temporary directory of the repository
+    /// (Bazel: `<output>/temp<N>/<basename>`, java:1126) while it is hashed,
+    /// then streams through the decompressor into the output; the temporary
+    /// directory is deleted afterwards like Bazel's.
     #[allow(non_snake_case)] // Bazel's legacy `stripPrefix` keyword.
     fn download_and_extract<'v>(
         this: Value<'v>,
@@ -2184,46 +2242,15 @@ fn repository_methods(builder: &mut MethodsBuilder) {
             strip_components,
             rename_files,
         )?;
-        for (option, name) in [(auth, "auth"), (headers, "headers")] {
-            if let Some(option) = option {
-                let dict =
-                    DictRef::from_value(option).ok_or_else(|| anyhow!("{name} must be a dict"))?;
-                ensure!(
-                    dict.is_empty(),
-                    "download_and_extract() {name} is not supported by the native download transport"
-                );
-            }
-        }
-        let strings = url_strings(url)?;
-        ensure!(
-            allow_fail || !strings.is_empty(),
-            "java.io.IOException: urls not set"
-        );
-        let checksum_given = !sha256.is_empty() || !integrity.is_empty();
-        let mut urls = Vec::new();
-        for text in &strings {
-            let parsed = transport::validate_url(text).map_err(|error| anyhow!("{error}"))?;
-            if checksum_given || parsed.scheme() != "http" {
-                urls.push(parsed);
-            }
-        }
-        ensure!(
-            allow_fail || !urls.is_empty(),
-            "java.io.IOException: No URLs left after removing plain http URLs due to missing checksum. Please provide either a checksum or an https download location."
-        );
-        if !sha256.is_empty() && !integrity.is_empty() {
-            bail!("Expected either 'sha256' or 'integrity', but not both");
-        }
-        // validateChecksum (java:512-541): a malformed checksum is deferred
-        // until after the download attempt (java:1094-1101, 1168-1170).
-        let deferred = checksum_text_error(sha256, integrity);
-        let expected = if deferred.is_some() {
-            None
-        } else {
-            transport::checksums(sha256, integrity)
-                .map_err(|error| anyhow!("{error}"))?
-                .expected
-        };
+        let request = DownloadRequest::new(
+            "download_and_extract",
+            url,
+            sha256,
+            integrity,
+            allow_fail,
+            auth,
+            headers,
+        )?;
         let output = match output {
             Some(output) => context.path_of(output, "download_and_extract", "output")?,
             None => context.stage_bytes().to_vec(),
@@ -2232,72 +2259,154 @@ fn repository_methods(builder: &mut MethodsBuilder) {
         context.facility("download");
         // The download lands in `<output>/temp<N>/<url basename>`
         // (java:1126, DownloadManager); errors and suffix checks name it.
+        let temp = temp_name();
         let downloaded = |url: &reqwest::Url| {
             let name = url
                 .path_segments()
                 .and_then(|mut segments| segments.next_back())
                 .unwrap_or("");
             let mut path = output.clone();
-            path.extend_from_slice(format!("/{}/{name}", temp_name()).as_bytes());
+            path.extend_from_slice(format!("/{temp}/{name}").as_bytes());
             (name.to_owned(), path)
         };
-        let (fetched, bytes) = match context.fetch(&urls, expected.as_ref(), !integrity.is_empty())
-        {
+        context.mark_created();
+        let scratch = tempfile::Builder::new()
+            .prefix(".download-")
+            .tempdir_in(&context.stage)?;
+        let urls = &request.urls;
+        let (fetched, file) = match context.fetch_to(
+            urls,
+            request.expected.as_ref(),
+            request.sri,
+            DownloadTarget::Directory(scratch.path()),
+        ) {
             Ok(fetched) => fetched,
-            Err(TypedIoError::Completion(_)) if allow_fail => {
+            Err(failure) if allow_fail && matches!(failure.error, TypedIoError::Completion(_)) => {
                 return Ok(eval.heap().alloc(AllocStruct([("success", false)])));
             }
-            Err(TypedIoError::Completion(message)) if message.starts_with(CHECKSUM_MISMATCH) => {
-                bail!(
-                    "java.io.IOException: Error downloading [{}] to {}: {message}",
-                    urls.iter()
-                        .map(reqwest::Url::as_str)
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    display(&downloaded(&urls[0]).1)
-                )
-            }
-            Err(error) => return Err(anyhow!("{error}")),
+            Err(failure) => return Err(failure.into_error(urls, &downloaded(&urls[0]).1)),
         };
-        if let Some(error) = &deferred {
+        if let Some(error) = &request.deferred {
             bail!(
                 "Checksum error in repository @@{}: {error}",
                 context.canonical
             );
         }
-        let (name, archive) = downloaded(&fetched);
+        let (name, archive) = downloaded(&fetched.url);
         let kind = if r#type.is_empty() {
             decompressor_for_name(name.as_bytes(), &display(&archive))?
         } else {
             decompressor(r#type)?
         };
-        context.extract_bytes(&bytes, kind, strip_prefix, &relative, &archive)?;
-        let algorithm = expected
-            .as_ref()
-            .map_or(Algorithm::Sha256, |checksum| checksum.algorithm);
-        let checksum = Checksum {
-            algorithm,
-            bytes: algorithm.hash(&bytes),
-        };
-        let heap = eval.heap();
-        let mut fields = vec![
-            ("success", heap.alloc(true)),
-            ("integrity", heap.alloc(checksum.integrity())),
-        ];
-        if algorithm == Algorithm::Sha256 {
-            fields.push(("sha256", heap.alloc(transport::hex(&checksum.bytes))));
-        }
-        fields.push(("size_bytes", heap.alloc(bytes.len() as i64)));
-        Ok(heap.alloc(AllocStruct(fields)))
+        context.extract_archive(&file, kind, strip_prefix, &relative, &archive)?;
+        scratch.close()?;
+        Ok(download_result(
+            eval.heap(),
+            &fetched.checksum,
+            fetched.size,
+        ))
     }
 
+    /// StarlarkBaseExternalContext.download (java:799-895): like Bazel's
+    /// HttpDownloader (java:90-109) the body streams straight into the output
+    /// path (hashing while writing), so a checksum mismatch, which
+    /// HashInputStream reports only at end of stream (java:61-91), leaves the
+    /// downloaded bytes there, also under `allow_fail`. An existing output is
+    /// replaced (unlinked, never written through, like ctx.file) only once a
+    /// mirror responds. With a checksum, an output that already matches is
+    /// reused without downloading (DownloadManager.java:247-261). `executable` adds
+    /// the execute bits after success (setExecutable, java:676).
+    /// `block = False` (an asynchronous pending download) is unsupported.
     fn download<'v>(
         this: Value<'v>,
-        #[starlark(args)] args: UnpackTuple<Value<'v>>,
-        #[starlark(kwargs)] kwargs: starlark::collections::SmallMap<String, Value<'v>>,
-    ) -> anyhow::Result<NoneType> {
-        let _ = (this, args, kwargs);
-        Err(not_implemented("download"))
+        url: Value<'v>,
+        output: Option<Value<'v>>,
+        #[starlark(default = "")] sha256: &str,
+        #[starlark(default = false)] executable: bool,
+        #[starlark(default = false)] allow_fail: bool,
+        #[starlark(default = "")] canonical_id: &str,
+        auth: Option<Value<'v>>,
+        headers: Option<Value<'v>>,
+        #[starlark(require = named, default = "")] integrity: &str,
+        #[starlark(require = named, default = true)] block: bool,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let _ = (this, canonical_id);
+        let context = context(eval)?;
+        let request = DownloadRequest::new(
+            "download", url, sha256, integrity, allow_fail, auth, headers,
+        )?;
+        ensure!(
+            block,
+            "download(block = False) is not supported by the native profile (asynchronous downloads)"
+        );
+        let output = match output {
+            Some(output) => context.path_of(output, "download", "output")?,
+            None => context.stage_bytes().to_vec(),
+        };
+        // checkInOutputDirectory("write", outputPath) (java:861).
+        let relative = context.output(&output)?;
+        context.facility("download");
+        context.mark_created();
+        let urls = &request.urls;
+        let failed = |message: &str| -> anyhow::Result<Value<'v>> {
+            Err(download_error(urls, &output, message))
+        };
+        // makeDirectories(outputPath) (java:862): parents are real directories.
+        let target = if relative.is_empty() {
+            context.stage.clone()
+        } else {
+            context.output_parents(&relative)?
+        };
+        if fs::symlink_metadata(&target).is_ok_and(|metadata| metadata.is_dir()) {
+            if allow_fail {
+                return Ok(eval.heap().alloc(AllocStruct([("success", false)])));
+            }
+            return failed(&format!(
+                "{} (Is a directory)",
+                display(target.as_os_str().as_bytes())
+            ));
+        }
+        // DownloadManager.java:247-261: with a checksum, an existing output
+        // whose digest already matches is used without any download (also
+        // with downloads disabled: the disable check comes later, java:331).
+        let reused = request.expected.as_ref().and_then(|expected| {
+            fs::metadata(&target)
+                .is_ok_and(|metadata| metadata.is_file())
+                .then(|| expected.algorithm.hash_file(&target).ok())
+                .flatten()
+                .filter(|(digest, _)| *digest == expected.bytes)
+                .map(|(_, size)| (expected.clone(), size))
+        });
+        let (checksum, size) = match reused {
+            Some(reused) => reused,
+            None => match context.fetch_to(
+                urls,
+                request.expected.as_ref(),
+                request.sri,
+                DownloadTarget::File(&target),
+            ) {
+                Ok((fetched, _)) => (fetched.checksum, fetched.size),
+                Err(failure)
+                    if allow_fail && matches!(failure.error, TypedIoError::Completion(_)) =>
+                {
+                    return Ok(eval.heap().alloc(AllocStruct([("success", false)])));
+                }
+                Err(failure) => return Err(failure.into_error(urls, &output)),
+            },
+        };
+        if executable {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&target)?.permissions().mode();
+            fs::set_permissions(&target, fs::Permissions::from_mode(mode | 0o111))?;
+        }
+        if let Some(error) = &request.deferred {
+            bail!(
+                "Checksum error in repository @@{}: {error}",
+                context.canonical
+            );
+        }
+        Ok(download_result(eval.heap(), &checksum, size))
     }
 
     /// StarlarkRepositoryContext.patch (java:475-567): resolve the patch file
@@ -2343,7 +2452,6 @@ fn repository_methods(builder: &mut MethodsBuilder) {
                 return Err(missing());
             }
             let bytes = context.read_label(&canonical)?;
-            context.charge_read(bytes.len())?;
             if watch != ShouldWatch::No {
                 context.record(canonical, "file", format!("file:{}", sha256(&bytes)))?;
             }
@@ -2353,9 +2461,7 @@ fn repository_methods(builder: &mut MethodsBuilder) {
             if fs::metadata(&host).is_err() {
                 return Err(missing());
             }
-            let bytes = read_limited(&host, MAX_FILE_BYTES, "patch file")?;
-            context.charge_read(bytes.len())?;
-            bytes
+            read_file(&host)?
         };
         // A negative strip strips nothing (stripPath, PatchUtil.java:270-279)
         // but is shown in messages.
@@ -2511,10 +2617,6 @@ fn path_methods(builder: &mut MethodsBuilder) {
         let mut entries = Vec::new();
         let mut names = Vec::new();
         for entry in fs::read_dir(&host)? {
-            ensure!(
-                entries.len() < MAX_DIRENTS,
-                "readdir() exceeds {MAX_DIRENTS} entries"
-            );
             let name = entry?.file_name();
             let mut bytes = path.bytes.clone();
             if bytes != b"/" {
@@ -3624,43 +3726,34 @@ R = repository_rule(implementation = _impl)
     }
 
     #[test]
-    fn file_and_template_output_limits_checked_before_replacement() {
-        let fixture = Fixture::new();
-        fixture.error(
-            "ctx.file('existing', 'keep')\nctx.file('existing', 'x' * (16 * 1024 * 1024 + 1))",
-            "16 MiB",
-        );
-        assert_eq!(fixture.bytes("existing"), b"keep");
-        fixture.error("ctx.file('in', 'aa')\nctx.template('existing', 'in', {'a': 'b' * (8 * 1024 * 1024 + 1)})", "16 MiB");
-        assert_eq!(fixture.bytes("existing"), b"keep");
-    }
-
-    #[test]
-    fn input_and_cumulative_write_limits() {
+    fn file_template_and_write_sizes_have_no_native_caps() {
+        // Above the former 16 MiB per-file / 64 MiB cumulative / 10000-write
+        // native caps; Bazel has none.
         let fixture = Fixture::new();
         let input = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(fixture.stage.path().join("huge"))
             .unwrap();
-        input.set_len((MAX_FILE_BYTES + 1) as u64).unwrap();
-        fixture.error("ctx.template('out', 'huge')", "input exceeds 16 MiB");
-        fixture.error(
-            "for i in range(5):\n    ctx.file('repeat', 'x' * (16 * 1024 * 1024))",
-            "cumulative writes exceed 64 MiB",
-        );
-        assert_eq!(fixture.bytes("repeat").len(), MAX_FILE_BYTES);
+        input.set_len(17 * 1024 * 1024).unwrap();
+        fixture.run("ctx.template('out', 'huge')").unwrap();
+        assert_eq!(fixture.bytes("out").len(), 17 * 1024 * 1024);
+        fixture
+            .run("for i in range(5):\n    ctx.file('repeat%d' % i, 'x' * (16 * 1024 * 1024 + 1))")
+            .unwrap();
+        assert_eq!(fixture.bytes("repeat4").len(), 16 * 1024 * 1024 + 1);
+        fixture.run("ctx.file('in', 'aa')\nctx.template('expanded', 'in', {'a': 'b' * (8 * 1024 * 1024 + 1)})").unwrap();
+        assert_eq!(fixture.bytes("expanded").len(), 2 * (8 * 1024 * 1024 + 1));
     }
 
     #[test]
-    fn rejects_overdeep_long_paths_and_excessive_operations() {
+    fn rejects_overdeep_long_paths_but_not_many_operations() {
         let fixture = Fixture::new();
         fixture.error("ctx.file('/'.join(['a'] * 65))", "depth 64");
         fixture.error("ctx.file('a' * 4097)", "4096");
-        fixture.error(
-            "for i in range(10001):\n    ctx.file('empty')",
-            "10000 writes",
-        );
+        fixture
+            .run("for i in range(10001):\n    ctx.file('empty')")
+            .unwrap();
     }
 
     #[test]
@@ -4488,6 +4581,133 @@ m = ctx.download_and_extract("{url}/pkg.tar.gz", output = "mismatch", sha256 = "
     }
 
     #[test]
+    fn download_streams_large_files_to_the_output_and_extract_streams_xz() {
+        use crate::extension_io::tests::{Server, response};
+        use std::os::unix::fs::PermissionsExt;
+        // 20 MiB: above the former 8 MiB module I/O / 16 MiB repository caps.
+        let big: Vec<u8> = (0..20 * 1024 * 1024).map(|i| (i % 239) as u8).collect();
+        let digest = sha256(&big);
+        let fixture = Fixture::new();
+        let server = Server::new(vec![
+            response(200, &big, ""),
+            response(200, b"tool", ""),
+            response(200, b"other", ""),
+        ]);
+        let url = server.url.clone();
+        let size = big.len();
+        fixture.ok(&format!(
+            r#"r = ctx.download("{url}/big.bin", "out/big.bin", "{digest}")
+(r.success and r.sha256 == "{digest}" and r.size_bytes == {size}) or fail("result " + repr(r))
+t = ctx.download(["{url}/tool"], output = "bin/tool", executable = True, sha256 = "{tool}")
+t.success or fail("tool")
+m = ctx.download("{url}/other", "mismatch", sha256 = "{tool}", allow_fail = True)
+(not m.success) or fail("mismatch")"#,
+            tool = sha256(b"tool"),
+        ));
+        assert!(fixture.bytes("out/big.bin") == big);
+        assert_eq!(fixture.bytes("bin/tool"), b"tool");
+        let mode = |name: &str| {
+            fs::metadata(fixture.stage.path().join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!((mode("out/big.bin"), mode("bin/tool")), (0o644, 0o755));
+        // Like Bazel, the mismatching bytes stay at the output (allow_fail).
+        assert_eq!(fixture.bytes("mismatch"), b"other");
+        // No leftover scratch directories in the repository.
+        for entry in fs::read_dir(fixture.stage.path()).unwrap() {
+            let name = entry.unwrap().file_name();
+            assert!(
+                !name.to_string_lossy().starts_with(".download-"),
+                "{name:?}"
+            );
+        }
+        fixture.error(
+            &format!("ctx.download('{url}/x', 'x', sha256 = '{digest}', block = False)"),
+            "download(block = False) is not supported",
+        );
+        // HTTP failures use HttpDownloader's aggregated message (java:243-262).
+        let missing = Server::new(vec![response(404, b"", ""), response(404, b"", "")]);
+        let base = missing.url.clone();
+        fixture.error(
+            &format!("ctx.download(['{base}/a', '{base}/b'], 'gone', sha256 = '{digest}')"),
+            &format!(
+                "java.io.IOException: Error downloading [{base}/a, {base}/b] to {}/gone: GET returned 404 Fixture",
+                fixture.stage_text()
+            ),
+        );
+        // extract() streams a .tar.xz from the repository directory.
+        let mut tar = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_ustar();
+        header.set_size(1);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append_data(&mut header, "zig-1/lib/a.zig", &b"z"[..])
+            .unwrap();
+        let tar = tar.into_inner().unwrap();
+        let mut xz =
+            lzma_rust2::XzWriter::new(Vec::new(), lzma_rust2::XzOptions::default()).unwrap();
+        xz.write_all(&tar).unwrap();
+        fs::write(
+            fixture.stage.path().join("zig.tar.xz"),
+            xz.finish().unwrap(),
+        )
+        .unwrap();
+        fixture.ok("ctx.extract('zig.tar.xz', output = 'zig', stripPrefix = 'zig-1/')");
+        assert_eq!(fixture.bytes("zig/lib/a.zig"), b"z");
+    }
+
+    #[test]
+    fn download_reuses_a_matching_output_offline_and_never_writes_through_links() {
+        use crate::extension_io::tests::{Server, response};
+        let tool = sha256(b"tool");
+        // DownloadManager.java:247-261: a matching output skips the download,
+        // also with downloads disabled; a mismatching one is downloaded.
+        let mut disabled = Fixture::new();
+        disabled.repositories = Arc::new(
+            (*disabled.repositories)
+                .clone()
+                .with_repository_downloads_enabled(false),
+        );
+        disabled.ok(&format!(
+            r#"ctx.file("bin/tool", "tool", executable = False)
+r = ctx.download("https://example.invalid/tool", "bin/tool", "{tool}", executable = True)
+(r.success and r.sha256 == "{tool}" and r.size_bytes == 4) or fail("reuse " + repr(r))"#
+        ));
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(disabled.stage.path().join("bin/tool"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o111, 0o111);
+        }
+        disabled.error(
+            &format!(
+                "ctx.file('stale', 'old')\nctx.download('https://example.invalid/tool', 'stale', '{tool}')"
+            ),
+            "repository downloads are disabled",
+        );
+        // An existing hard-linked output is replaced, not written through.
+        let fixture = Fixture::new();
+        let server = Server::new(vec![response(200, b"tool", "")]);
+        fs::write(fixture.stage.path().join("orig"), b"keep").unwrap();
+        fs::hard_link(
+            fixture.stage.path().join("orig"),
+            fixture.stage.path().join("linked"),
+        )
+        .unwrap();
+        fixture.ok(&format!(
+            "ctx.download('{}/tool', 'linked', '{tool}')",
+            server.url
+        ));
+        assert_eq!(fixture.bytes("linked"), b"tool");
+        assert_eq!(fixture.bytes("orig"), b"keep");
+    }
+
+    #[test]
     fn captured_bazel_messages_and_value_shapes_are_reproduced() {
         let fixture = Fixture::new();
         let stage = fixture.stage_text();
@@ -4661,13 +4881,11 @@ d = {r: 1, s: 2}
     fn unimplemented_bazel_methods_fail_explicitly_and_attr_is_exact() {
         let fixture = Fixture::new();
         fixture.ok("(hasattr(ctx, 'download') and hasattr(ctx, 'execute') and not hasattr(ctx.attr, 'undeclared')) or fail('surface')\n(ctx.report_progress('status') == None and ctx.report_progress() == None) or fail('progress')");
-        for method in ["download", "watch_tree"] {
-            fixture.error(
-                &format!("ctx.file('partial', 'private')\nctx.{method}('x')"),
-                &format!("repository_ctx.{method}() is not implemented by the native profile"),
-            );
-            assert_eq!(fixture.bytes("partial"), b"private");
-        }
+        fixture.error(
+            "ctx.file('partial', 'private')\nctx.watch_tree('x')",
+            "repository_ctx.watch_tree() is not implemented by the native profile",
+        );
+        assert_eq!(fixture.bytes("partial"), b"private");
         fixture.error("ctx.report_progress(1)", "report_progress");
         fixture.error("ctx.template('out', 'partial', None)", "dict");
         fixture.error(

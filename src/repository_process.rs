@@ -12,10 +12,11 @@
 //! about supervision: argv is passed without a shell (Bazel never inserts one;
 //! a shell runs only when argv[0] names one), stdin is empty, the child leads
 //! its own process group, which is SIGKILLed through trusted `/usr/bin/kill`
-//! after the leader exits or on deadline/overflow (process-wrapper likewise
-//! kills `-child_pid` after the child, process-wrapper-legacy.cc:150-154), and
-//! captured output is bounded: exceeding the native per-stream limit fails the
-//! call explicitly instead of truncating. A child that escapes its process
+//! after the leader exits or on deadline (process-wrapper likewise kills
+//! `-child_pid` after the child, process-wrapper-legacy.cc:150-154), and
+//! captured output is buffered without a size cap like Bazel's
+//! (StarlarkExecutionResult.java:201-203): the result is a Starlark string,
+//! so the memory is inherent. A child that escapes its process
 //! group is not contained. Unlike process-wrapper the child does not call
 //! `setsid()` or force `umask(022)` (no unsafe pre-exec hooks here). If the
 //! native process itself is killed (e.g. Ctrl-C), a running child may orphan.
@@ -28,14 +29,10 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-/// Native capture bound per stream. Bazel buffers without limit
-/// (StarlarkExecutionResult.java:201-203); overflow here is an explicit error.
-pub(crate) const STREAM_LIMIT: usize = 16 * 1024 * 1024;
 const POLL: Duration = Duration::from_millis(5);
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 const KILL: &str = "/usr/bin/kill";
@@ -157,10 +154,7 @@ struct Capture {
 }
 
 impl Capture {
-    fn start(
-        mut pipe: impl Read + Send + 'static,
-        overflow: Arc<AtomicBool>,
-    ) -> Result<Self, String> {
+    fn start(mut pipe: impl Read + Send + 'static) -> Result<Self, String> {
         let data = Arc::new(Mutex::new((Vec::new(), None)));
         let shared = data.clone();
         let thread = thread::Builder::new()
@@ -172,10 +166,6 @@ impl Capture {
                         Ok(0) => break,
                         Ok(n) => {
                             let mut data = shared.lock().unwrap_or_else(|e| e.into_inner());
-                            if data.0.len() + n > STREAM_LIMIT {
-                                overflow.store(true, Ordering::Release);
-                                break;
-                            }
                             data.0.extend_from_slice(&buffer[..n]);
                         }
                         Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
@@ -210,8 +200,8 @@ impl Capture {
     }
 }
 
-/// Run one command. `Err` is a native-profile failure (capture overflow,
-/// supervision failure); spawn failures and timeouts are results, like Bazel.
+/// Run one command. `Err` is a native-profile failure (supervision
+/// failure); spawn failures and timeouts are results, like Bazel.
 pub(crate) fn run(request: &Request<'_>) -> Result<Outcome, String> {
     if request.timeout.is_zero() {
         return Err("execute() timeout must be positive".into());
@@ -291,12 +281,12 @@ pub(crate) fn run(request: &Request<'_>) -> Result<Outcome, String> {
         ));
     };
     let group = child.id();
-    let overflow = Arc::new(AtomicBool::new(false));
     let stdout = child.stdout.take().ok_or("execute() stdout pipe missing");
     let stderr = child.stderr.take().ok_or("execute() stderr pipe missing");
     let captures = match (stdout, stderr) {
-        (Ok(stdout), Ok(stderr)) => Capture::start(stdout, overflow.clone())
-            .and_then(|out| Capture::start(stderr, overflow.clone()).map(|err| (out, err))),
+        (Ok(stdout), Ok(stderr)) => {
+            Capture::start(stdout).and_then(|out| Capture::start(stderr).map(|err| (out, err)))
+        }
         _ => Err("execute() pipes missing".to_owned()),
     };
     let mut errors = Vec::new();
@@ -306,12 +296,6 @@ pub(crate) fn run(request: &Request<'_>) -> Result<Outcome, String> {
         errors.push(error.clone());
     } else {
         loop {
-            if overflow.load(Ordering::Acquire) {
-                errors.push(format!(
-                    "execute() output exceeded {STREAM_LIMIT} bytes per stream (native capture limit)"
-                ));
-                break;
-            }
             if Instant::now() >= deadline {
                 timed_out = true;
                 break;
@@ -355,11 +339,6 @@ pub(crate) fn run(request: &Request<'_>) -> Result<Outcome, String> {
         }
         Err(_) => (Vec::new(), Vec::new()),
     };
-    if overflow.load(Ordering::Acquire) && !errors.iter().any(|e| e.contains("exceeded")) {
-        errors.push(format!(
-            "execute() output exceeded {STREAM_LIMIT} bytes per stream (native capture limit)"
-        ));
-    }
     if !errors.is_empty() {
         return Err(errors.join("; "));
     }
@@ -629,14 +608,20 @@ mod tests {
     }
 
     #[test]
-    fn output_overflow_is_an_explicit_error_not_truncation() {
+    fn large_output_is_captured_whole_without_a_native_cap() {
+        // Above the former 16 MiB native capture limit; Bazel buffers it all.
         let cwd = tempfile::tempdir_in("/tmp/opencode").unwrap();
         let value = request(
             &["/bin/sh", "-c", "head -c 17000000 /dev/zero"],
             cwd.path(),
             None,
         );
-        let error = run(&value).unwrap_err();
-        assert!(error.contains("native capture limit"), "{error}");
+        match run(&value).unwrap() {
+            Outcome::Completed(0, stdout, stderr) => {
+                assert_eq!(stdout.len(), 17_000_000);
+                assert!(stderr.is_empty());
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }

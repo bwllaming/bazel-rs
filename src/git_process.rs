@@ -12,15 +12,15 @@
 //!
 //! Deadlines bound ordinary child execution, not kernel uninterruptible sleep,
 //! scheduling, filesystem operations, or a stuck kernel wait after SIGKILL.
-//! A failed cleanup is never reported as success. Capture is limited to 1 MiB
-//! per stream (2 MiB total), with bounded diagnostic tails, not disk spooling.
+//! A failed cleanup is never reported as success. Output is captured whole
+//! (like `repository_ctx.execute`, whose result Bazel buffers without a cap);
+//! error diagnostics show bounded tails.
 
 #![deny(unsafe_code)]
 
 #[cfg(not(target_os = "linux"))]
 compile_error!("git_process supports Linux only (process groups and kill(1) required)");
 
-use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read};
@@ -28,12 +28,10 @@ use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-const STREAM_LIMIT: usize = 1024 * 1024;
 const DIAGNOSTIC_TAIL: usize = 64 * 1024;
 const POLL: Duration = Duration::from_millis(5);
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(1);
@@ -186,21 +184,10 @@ impl GitRunner {
             kill: self.kill.clone(),
             armed: true,
         };
-        let overflow = Arc::new(AtomicBool::new(false));
-        let stdout = Capture::start(
-            guard.child.stdout.take().ok_or("Git stdout pipe missing")?,
-            overflow.clone(),
-        )?;
-        let stderr = Capture::start(
-            guard.child.stderr.take().ok_or("Git stderr pipe missing")?,
-            overflow.clone(),
-        )?;
+        let stdout = Capture::start(guard.child.stdout.take().ok_or("Git stdout pipe missing")?)?;
+        let stderr = Capture::start(guard.child.stderr.take().ok_or("Git stderr pipe missing")?)?;
         let mut errors = Vec::new();
         loop {
-            if overflow.load(Ordering::Acquire) {
-                errors.push("Git output exceeded 1048576 bytes per stream".to_string());
-                break;
-            }
             if Instant::now() >= deadline {
                 errors.push(format!("Git deadline exceeded ({timeout:?})"));
                 break;
@@ -225,16 +212,11 @@ impl GitRunner {
             errors.push(e);
         }
         // Never block indefinitely joining a pipe whose holder escaped the group
-        // or survived a cleanup error. Such a reader is detached with bounded
-        // storage; this exceptional case is an error, not a sandbox guarantee.
+        // or survived a cleanup error. Such a reader is detached; this
+        // exceptional case is an error, not a sandbox guarantee.
         let drain_deadline = Instant::now() + CLEANUP_TIMEOUT;
         let stdout = stdout.finish(drain_deadline, "stdout", &mut errors);
         let stderr = stderr.finish(drain_deadline, "stderr", &mut errors);
-        // A short-lived child may overflow and exit between supervisor polls.
-        if overflow.load(Ordering::Acquire) && !errors.iter().any(|e| e.contains("output exceeded"))
-        {
-            errors.push("Git output exceeded 1048576 bytes per stream".into());
-        }
         if errors.is_empty() {
             Ok(Output { stdout, stderr })
         } else {
@@ -354,9 +336,8 @@ fn group_exists(kill: &Path, group: u32) -> Result<bool, String> {
     let mut probe = probe
         .spawn()
         .map_err(|e| format!("cannot spawn group probe '{}': {e}", kill.display()))?;
-    let overflow = Arc::new(AtomicBool::new(false));
     let stderr = match probe.stderr.take() {
-        Some(pipe) => Capture::start(pipe, overflow.clone()),
+        Some(pipe) => Capture::start(pipe),
         None => Err("group probe stderr pipe missing".into()),
     };
     let stderr = match stderr {
@@ -398,9 +379,6 @@ fn group_exists(kill: &Path, group: u32) -> Result<bool, String> {
         "group-probe stderr",
         &mut errors,
     );
-    if overflow.load(Ordering::Acquire) {
-        errors.push("group probe stderr exceeded 1048576 bytes".into());
-    }
     if !errors.is_empty() {
         return Err(format!(
             "group probe for {group} failed: {}",
@@ -487,7 +465,7 @@ impl Drop for GroupGuard {
 
 #[derive(Default)]
 struct Captured {
-    tail: VecDeque<u8>,
+    bytes: Vec<u8>,
     error: Option<String>,
 }
 
@@ -497,29 +475,19 @@ struct Capture {
 }
 
 impl Capture {
-    fn start(
-        mut pipe: impl Read + Send + 'static,
-        overflow: Arc<AtomicBool>,
-    ) -> Result<Self, String> {
+    fn start(mut pipe: impl Read + Send + 'static) -> Result<Self, String> {
         let data = Arc::new(Mutex::new(Captured::default()));
         let shared = data.clone();
         let thread = thread::Builder::new()
             .name("git-pipe-drain".into())
             .spawn(move || {
                 let mut buffer = [0u8; 8192];
-                let mut total = 0usize;
                 loop {
                     match pipe.read(&mut buffer) {
                         Ok(0) => break,
                         Ok(n) => {
-                            total = total.saturating_add(n);
-                            if total > STREAM_LIMIT {
-                                overflow.store(true, Ordering::Release);
-                            }
                             let mut data = shared.lock().unwrap_or_else(|e| e.into_inner());
-                            let discard = (data.tail.len() + n).saturating_sub(STREAM_LIMIT);
-                            data.tail.drain(..discard);
-                            data.tail.extend(&buffer[..n]);
+                            data.bytes.extend_from_slice(&buffer[..n]);
                         }
                         Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                         Err(e) => {
@@ -551,7 +519,7 @@ impl Capture {
         if let Some(error) = data.error.take() {
             errors.push(format!("cannot read Git {stream}: {error}"));
         }
-        data.tail.drain(..).collect()
+        std::mem::take(&mut data.bytes)
     }
 }
 
@@ -656,7 +624,7 @@ mod tests {
     }
 
     use std::os::unix::fs::symlink;
-    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
     const TEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -867,32 +835,33 @@ mod tests {
     }
 
     #[test]
-    fn output_overflow_on_either_or_both_streams_is_bounded() {
-        for redirect in ["", ">&2", "| /usr/bin/tee /dev/stderr"] {
+    fn large_output_on_either_or_both_streams_is_captured_whole() {
+        // Above the former 1 MiB per-stream native capture limit.
+        for (redirect, out, err) in [
+            ("", 4194304, 0),
+            (">&2", 0, 4194304),
+            ("| /usr/bin/tee /dev/stderr", 4194304, 4194304),
+        ] {
             let temp = Temp::new();
             let runner = temp.fake(&format!("/usr/bin/head -c 4194304 /dev/zero {redirect}"));
             let start = Instant::now();
-            let error = runner.run(&temp.0, &[], TEST_TIMEOUT).unwrap_err();
-            assert!(error.contains("output exceeded"), "{error}");
-            assert!(error.len() < 2 * DIAGNOSTIC_TAIL + 2048);
+            let output = runner.run(&temp.0, &[], TEST_TIMEOUT).unwrap();
+            assert_eq!((output.stdout.len(), output.stderr.len()), (out, err));
             assert!(start.elapsed() < TEST_TIMEOUT);
         }
     }
 
     #[test]
-    fn capture_preserves_exact_limit_and_overflow_tail() {
-        for length in [STREAM_LIMIT, STREAM_LIMIT * 3] {
-            let mut bytes = vec![b'x'; length];
-            bytes[length - 4..].copy_from_slice(b"tail");
-            let overflow = Arc::new(AtomicBool::new(false));
-            let capture = Capture::start(io::Cursor::new(bytes), overflow.clone()).unwrap();
-            let mut errors = Vec::new();
-            let output = capture.finish(Instant::now() + TEST_TIMEOUT, "test", &mut errors);
-            assert!(errors.is_empty(), "{errors:?}");
-            assert_eq!(output.len(), STREAM_LIMIT);
-            assert!(output.ends_with(b"tail"));
-            assert_eq!(overflow.load(Ordering::Acquire), length > STREAM_LIMIT);
-        }
+    fn capture_keeps_every_byte() {
+        let length = 3 * 1024 * 1024;
+        let mut bytes = vec![b'x'; length];
+        bytes[length - 4..].copy_from_slice(b"tail");
+        let capture = Capture::start(io::Cursor::new(bytes)).unwrap();
+        let mut errors = Vec::new();
+        let output = capture.finish(Instant::now() + TEST_TIMEOUT, "test", &mut errors);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(output.len(), length);
+        assert!(output.ends_with(b"tail"));
     }
 
     #[test]

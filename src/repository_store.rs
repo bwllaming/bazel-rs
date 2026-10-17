@@ -4,6 +4,10 @@
 //! publication lock, including on warm calls. The cache is user-owned, not a
 //! sandbox or a remote-cache protocol. Callbacks must finish all their writes
 //! before returning; callers must treat returned trees as immutable.
+//!
+//! Files are hashed incrementally while snapshotting (constant memory). There
+//! are no file-size, total-size, entry-count or manifest-size caps; only the
+//! store's path profile (UTF-8, 4096-byte names, depth 64) is enforced.
 
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -14,10 +18,6 @@ use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 const PROFILE: &str = "direct-file-template-v1";
-const FILE_LIMIT: u64 = 16 * 1024 * 1024;
-const TOTAL_LIMIT: u64 = 64 * 1024 * 1024;
-const MANIFEST_LIMIT: u64 = 48 * 1024 * 1024;
-const ENTRY_LIMIT: usize = 10_000;
 const DEPTH_LIMIT: usize = 64;
 const PATH_LIMIT: usize = 4096;
 
@@ -85,9 +85,6 @@ where
         files,
     };
     let encoded = serde_json::to_vec(&manifest).map_err(|e| e.to_string())?;
-    if encoded.len() as u64 > MANIFEST_LIMIT {
-        return Err("direct repository manifest exceeds size limit".into());
-    }
 
     // Recheck parents after the callback, before touching persistent entries.
     for path in [&trees, &manifests, &locks] {
@@ -106,7 +103,7 @@ where
     // The File releases the lock on every exit. Dependencies have already run.
     let destination = trees.join(&identity);
     let manifest_path = manifests.join(format!("{identity}.json"));
-    if read_bounded(&manifest_path, MANIFEST_LIMIT)
+    if read_stable(&manifest_path)
         .and_then(|bytes| serde_json::from_slice::<Manifest>(&bytes).map_err(|e| e.to_string()))
         .is_ok_and(|existing| existing == manifest)
         && snapshot(&destination).is_ok_and(|actual| actual == manifest.files)
@@ -273,12 +270,25 @@ fn stable(before: &fs::Metadata, after: &fs::Metadata) -> bool {
     true
 }
 
-fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+/// Read a whole regular file that must not change while it is read.
+fn read_stable(path: &Path) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    stream_stable(path, &mut bytes)?;
+    Ok(bytes)
+}
+
+/// SHA-256 and size of a regular file, hashed incrementally (constant memory).
+fn hash_stable(path: &Path) -> Result<(u64, String), String> {
+    let mut digest = Sha256::new();
+    let size = stream_stable(path, &mut digest)?;
+    Ok((size, format!("{:x}", digest.finalize())))
+}
+
+/// Stream a regular file into `sink`, rejecting symlinks and any change of
+/// identity or size while it is read.
+fn stream_stable(path: &Path, sink: &mut dyn Write) -> Result<u64, String> {
     let before = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     regular_metadata(&before)?;
-    if before.len() > limit {
-        return Err("direct repository file exceeds size limit".into());
-    }
     let mut options = OpenOptions::new();
     options.read(true);
     no_follow(&mut options);
@@ -288,22 +298,17 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     if !stable(&before, &opened) {
         return Err("direct repository file changed while opening".into());
     }
-    let mut bytes = Vec::new();
-    Read::by_ref(&mut file)
-        .take(limit + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
-    if bytes.len() as u64 > limit
-        || bytes.len() as u64 != before.len()
+    let copied = std::io::copy(&mut Read::by_ref(&mut file), sink).map_err(|e| e.to_string())?;
+    if copied != before.len()
         || !stable(&before, &file.metadata().map_err(|e| e.to_string())?)
         || !stable(
             &before,
             &fs::symlink_metadata(path).map_err(|e| e.to_string())?,
         )
     {
-        return Err("direct repository file changed or exceeded size limit".into());
+        return Err("direct repository file changed while reading".into());
     }
-    Ok(bytes)
+    Ok(copied)
 }
 
 fn mode(metadata: &fs::Metadata) -> Result<u32, String> {
@@ -340,12 +345,7 @@ fn safe_relative(name: &str) -> Result<(), String> {
 }
 
 fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
-    fn visit(
-        root: &Path,
-        path: &Path,
-        files: &mut BTreeMap<String, Entry>,
-        total: &mut u64,
-    ) -> Result<(), String> {
+    fn visit(root: &Path, path: &Path, files: &mut BTreeMap<String, Entry>) -> Result<(), String> {
         let before = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
         let name = path
             .strip_prefix(root)
@@ -355,9 +355,6 @@ fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
             .to_owned();
         if !name.is_empty() {
             safe_relative(&name)?;
-            if files.len() > ENTRY_LIMIT {
-                return Err("direct repository exceeds 10000 entries".into());
-            }
         }
         if before.file_type().is_symlink() {
             if name.is_empty() {
@@ -400,21 +397,15 @@ fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
         };
         if !entry.directory {
             regular_metadata(&before)?;
-            let bytes = read_bounded(path, FILE_LIMIT.min(TOTAL_LIMIT - *total))?;
-            entry.size = bytes.len() as u64;
-            *total += entry.size;
-            entry.sha256 = format!("{:x}", Sha256::digest(&bytes));
+            let (size, sha256) = hash_stable(path)?;
+            entry.size = size;
+            entry.sha256 = sha256;
         }
         let directory = entry.directory;
         files.insert(name, entry);
         if directory {
             for child in fs::read_dir(path).map_err(|e| e.to_string())? {
-                visit(
-                    root,
-                    &child.map_err(|e| e.to_string())?.path(),
-                    files,
-                    total,
-                )?;
+                visit(root, &child.map_err(|e| e.to_string())?.path(), files)?;
             }
         }
         if !stable(
@@ -427,7 +418,7 @@ fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
     }
     required_directory(root)?;
     let mut files = BTreeMap::new();
-    visit(root, root, &mut files, &mut 0)?;
+    visit(root, root, &mut files)?;
     Ok(files)
 }
 
@@ -815,30 +806,28 @@ mod tests {
     }
 
     #[test]
-    fn file_total_depth_and_entry_limits() {
+    fn large_files_and_many_entries_publish_but_path_profile_holds() {
+        // Above the former 16 MiB file / 64 MiB total / 10000-entry caps.
         let cache = temp();
-        assert!(
-            materialize(cache.path(), b"", |stage| {
-                File::create(stage.join("large"))
+        let tree = materialize(cache.path(), b"", |stage| {
+            for i in 0..5 {
+                File::create(stage.join(i.to_string()))
                     .unwrap()
-                    .set_len(FILE_LIMIT + 1)
+                    .set_len(17 * 1024 * 1024)
                     .unwrap();
-                Ok(vec![])
-            })
-            .is_err()
+            }
+            fs::create_dir(stage.join("many")).unwrap();
+            for i in 0..10_001 {
+                fs::write(stage.join("many").join(i.to_string()), b"").unwrap();
+            }
+            Ok(vec![])
+        })
+        .unwrap();
+        assert_eq!(
+            fs::metadata(tree.join("4")).unwrap().len(),
+            17 * 1024 * 1024
         );
-        assert!(
-            materialize(cache.path(), b"", |stage| {
-                for i in 0..5 {
-                    File::create(stage.join(i.to_string()))
-                        .unwrap()
-                        .set_len(FILE_LIMIT)
-                        .unwrap();
-                }
-                Ok(vec![])
-            })
-            .is_err()
-        );
+        assert_eq!(fs::read_dir(tree.join("many")).unwrap().count(), 10_001);
         assert!(
             materialize(cache.path(), b"", |stage| {
                 let mut path = stage.to_owned();
@@ -847,15 +836,6 @@ mod tests {
                     fs::create_dir(&path).unwrap();
                 }
                 Ok(vec![])
-            })
-            .is_err()
-        );
-        assert!(
-            materialize(cache.path(), b"", |stage| {
-                for i in 0..ENTRY_LIMIT {
-                    fs::create_dir(stage.join(i.to_string())).unwrap();
-                }
-                Ok(vec![]) // synthesized REPO is entry 10001
             })
             .is_err()
         );

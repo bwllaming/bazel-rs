@@ -1,4 +1,6 @@
-//! Registry identity and bounded, uncached metadata transport.
+//! Registry identity and uncached metadata/source transport. Metadata is
+//! returned as bytes (inherently in memory); source downloads stream into a
+//! caller-owned writer ([`download_to`]). Neither has an artificial size cap.
 //!
 //! Local registry trees are trusted not to change concurrently with reads;
 //! symlink checks have the same boundary as the resolver's original reader.
@@ -6,12 +8,10 @@
 use reqwest::{Url, blocking::Client, redirect::Policy};
 use serde_json::{Map, Value};
 use std::fmt;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Duration;
-
-const METADATA_LIMIT: u64 = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Registry {
@@ -74,9 +74,9 @@ impl Registry {
                         root.display()
                     ));
                 }
-                read_local(&root.join(relative), METADATA_LIMIT)
+                read_local(&root.join(relative))
             }
-            Self::Url(base) => read_http(resource_url(base, relative)?, METADATA_LIMIT),
+            Self::Url(base) => read_http(resource_url(base, relative)?),
         }
     }
 
@@ -258,7 +258,11 @@ fn no_symlinks(path: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
-fn read_local(path: &Path, limit: u64) -> Result<Option<Vec<u8>>, String> {
+fn read_local(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    open_local(path)?.map(read_all).transpose()
+}
+
+fn open_local(path: &Path) -> Result<Option<std::fs::File>, String> {
     if !no_symlinks(path)? {
         return Ok(None);
     }
@@ -270,15 +274,9 @@ fn read_local(path: &Path, limit: u64) -> Result<Option<Vec<u8>>, String> {
             path.display()
         ));
     }
-    if metadata.len() > limit {
-        return Err(format!(
-            "registry entry exceeds size limit ({limit} bytes): {}",
-            path.display()
-        ));
-    }
-    let file = std::fs::File::open(path)
-        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-    read_limited(file, limit).map(Some)
+    std::fs::File::open(path)
+        .map(Some)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))
 }
 
 fn redirect_allowed(target: &Url, previous: &[Url]) -> bool {
@@ -289,13 +287,22 @@ fn redirect_allowed(target: &Url, previous: &[Url]) -> bool {
         && !(target.scheme() == "http" && previous.iter().any(|url| url.scheme() == "https"))
 }
 
-static CLIENT: LazyLock<Result<Client, String>> = LazyLock::new(|| {
+static CLIENT: LazyLock<Result<Client, String>> =
+    LazyLock::new(|| client_with(crate::extension_download::READ_TIMEOUT));
+
+/// The registry client. Timeouts are Bazel's HttpConnector values shared with
+/// the repository transport (10 s connect, `read_timeout` per operation,
+/// HttpConnector.java:60-61, 155-157). The blocking client's builder-level
+/// `timeout` applies to sending the request and to each body read, never to
+/// the whole transfer; no request-level `.timeout()` is set anywhere (in
+/// reqwest 0.12 that would be a whole-transfer deadline, TotalTimeoutBody).
+fn client_with(read_timeout: Duration) -> Result<Client, String> {
     Client::builder()
         .user_agent("bazel-rs/0.1")
         .no_proxy()
         .referer(false)
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30))
+        .connect_timeout(crate::extension_download::CONNECT_TIMEOUT)
+        .timeout(read_timeout)
         // Explicit even if another dependency enables these reqwest features.
         .no_gzip()
         .no_brotli()
@@ -312,15 +319,25 @@ static CLIENT: LazyLock<Result<Client, String>> = LazyLock::new(|| {
         }))
         .build()
         .map_err(|_| "cannot initialize HTTP transport".into())
-});
+}
 
-fn read_http(url: Url, limit: u64) -> Result<Option<Vec<u8>>, String> {
-    let client = CLIENT.as_ref().map_err(Clone::clone)?;
+fn read_http(url: Url) -> Result<Option<Vec<u8>>, String> {
+    open_http(url)?.map(read_all).transpose()
+}
+
+fn open_http(url: Url) -> Result<Option<reqwest::blocking::Response>, String> {
+    open_http_with(CLIENT.as_ref().map_err(Clone::clone)?, url)
+}
+
+fn open_http_with(
+    client: &Client,
+    url: Url,
+) -> Result<Option<reqwest::blocking::Response>, String> {
     // Do not expose reqwest errors: they may contain a redirect URL with secrets.
+    // No request-level timeout: it would bound the whole body transfer.
     let response = client
         .get(url)
         .header(reqwest::header::ACCEPT_ENCODING, "identity")
-        .timeout(Duration::from_secs(30))
         .send()
         .map_err(|error| {
             if error.is_timeout() {
@@ -353,41 +370,53 @@ fn read_http(url: Url, limit: u64) -> Result<Option<Vec<u8>>, String> {
             return Err("unsupported HTTP content encoding: expected identity".into());
         }
     }
-    if response
-        .content_length()
-        .is_some_and(|length| length > limit)
-    {
-        return Err(format!("HTTP response exceeds size limit ({limit} bytes)"));
-    }
-    read_limited(response, limit).map(Some)
+    Ok(Some(response))
 }
 
-fn read_limited(reader: impl Read, limit: u64) -> Result<Vec<u8>, String> {
+fn read_all(mut reader: impl Read) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     reader
-        .take(limit.saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|_| "cannot read complete resource body".to_owned())?;
-    if bytes.len() as u64 > limit {
-        return Err(format!("resource exceeds size limit ({limit} bytes)"));
-    }
     Ok(bytes)
 }
 
-/// Download raw bytes; no decompression, persistent cache, or missing-file fallback.
-/// HTTP query strings are permitted for source URLs, but credentials are not.
-pub fn download(url: &str, limit: u64) -> Result<Vec<u8>, String> {
+/// Stream raw bytes into `writer` in constant memory; no decompression,
+/// persistent cache, or missing-file fallback. HTTP query strings are
+/// permitted for source URLs, but credentials are not. Returns the size.
+pub fn download_to(url: &str, writer: &mut dyn Write) -> Result<u64, String> {
     validate_download_url(url)?;
-    let bytes = if url.starts_with("file://") {
-        read_local(&file_path(url)?, limit)?
+    let reader: Option<Box<dyn Read>> = if url.starts_with("file://") {
+        open_local(&file_path(url)?)?.map(|file| Box::new(file) as Box<dyn Read>)
     } else {
         let url = http_url(url)?;
         if url.fragment().is_some() {
             return Err("download URL must not contain a fragment".into());
         }
-        read_http(url, limit)?
+        open_http(url)?.map(|response| Box::new(response) as Box<dyn Read>)
     };
-    bytes.ok_or_else(|| "download resource not found".into())
+    let mut reader = reader.ok_or("download resource not found")?;
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut total = 0u64;
+    loop {
+        let n = match reader.read(&mut buffer) {
+            Ok(0) => return Ok(total),
+            Ok(n) => n,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return Err("cannot read complete resource body".into()),
+        };
+        writer
+            .write_all(&buffer[..n])
+            .map_err(|error| format!("cannot write downloaded resource: {error}"))?;
+        total += n as u64;
+    }
+}
+
+/// [`download_to`] into memory (small resources and tests).
+pub fn download(url: &str) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    download_to(url, &mut bytes)?;
+    Ok(bytes)
 }
 
 /// Validate before looking in a cache as well as before issuing a request.
@@ -629,11 +658,14 @@ mod tests {
                 .contains("not a regular file")
         );
         let url = format!("file://{}", fixture.0.join("object.json").display());
-        assert!(download(&url, 1).unwrap_err().contains("size limit"));
-        assert_eq!(download(&url, 7).unwrap(), br#"{"a":1}"#);
+        assert_eq!(download(&url).unwrap(), br#"{"a":1}"#);
+        // No metadata size cap (the former 16 MiB native limit).
         let large = std::fs::File::create(fixture.0.join("large")).unwrap();
-        large.set_len(METADATA_LIMIT + 1).unwrap();
-        assert!(registry.read("large").unwrap_err().contains("size limit"));
+        large.set_len(17 * 1024 * 1024).unwrap();
+        assert_eq!(
+            registry.read("large").unwrap().unwrap().len(),
+            17 * 1024 * 1024
+        );
     }
 
     #[cfg(unix)]
@@ -750,42 +782,95 @@ mod tests {
             b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nshort".to_vec(),
             format!(
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                METADATA_LIMIT + 1
+                16 * 1024 * 1024 + 1
             )
             .into_bytes(),
         ]);
-        assert_eq!(download(&server.url("/raw"), 3).unwrap(), [0, 255, 42]);
+        assert_eq!(download(&server.url("/raw")).unwrap(), [0, 255, 42]);
         assert!(
-            download(&server.url("/encoded"), 3)
+            download(&server.url("/encoded"))
                 .unwrap_err()
                 .contains("content encoding")
         );
         assert!(
-            download(&server.url("/missing"), 3)
+            download(&server.url("/missing"))
                 .unwrap_err()
                 .contains("not found")
         );
+        // No size caps: declared-length and close-delimited bodies are read whole.
+        assert_eq!(download(&server.url("/length")).unwrap(), b"1234");
+        assert_eq!(download(&server.url("/stream")).unwrap(), b"1234");
         assert!(
-            download(&server.url("/length"), 3)
-                .unwrap_err()
-                .contains("size limit")
-        );
-        assert!(
-            download(&server.url("/stream"), 3)
-                .unwrap_err()
-                .contains("size limit")
-        );
-        assert!(
-            download(&server.url("/truncated"), 20)
+            download(&server.url("/truncated"))
                 .unwrap_err()
                 .contains("complete resource body")
         );
+        // A huge declared length with a missing body is truncation, not a cap.
         assert!(
             server
                 .registry()
                 .read("large")
                 .unwrap_err()
-                .contains("size limit")
+                .contains("complete resource body")
         );
+    }
+
+    /// A server that sends `body` one byte at a time with `gap` between bytes.
+    fn dribble(body: &'static [u8], gap: std::time::Duration) -> (String, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/slow", listener.local_addr().unwrap());
+        let worker = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0];
+            while !request.ends_with(b"\r\n\r\n") {
+                if std::io::Read::read(&mut stream, &mut byte).unwrap_or(0) == 0 {
+                    return;
+                }
+                request.push(byte[0]);
+            }
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            if stream.write_all(head.as_bytes()).is_err() {
+                return;
+            }
+            for byte in body {
+                thread::sleep(gap);
+                if stream
+                    .write_all(&[*byte])
+                    .and_then(|()| stream.flush())
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+        (url, worker)
+    }
+
+    #[test]
+    fn source_downloads_have_a_per_read_timeout_but_no_total_deadline() {
+        // Production uses the 20 s per-read timeout with no total deadline;
+        // a 1 s per-read client shows the same semantics quickly: a body
+        // whose transfer takes ~3 s (3x the timeout) with 250 ms gaps
+        // completes, while one 1.6 s gap fails.
+        let client = client_with(Duration::from_secs(1)).unwrap();
+        let (url, worker) = dribble(b"0123456789AB", Duration::from_millis(250));
+        let started = std::time::Instant::now();
+        let mut response = open_http_with(&client, Url::parse(&url).unwrap())
+            .unwrap()
+            .unwrap();
+        let mut body = Vec::new();
+        std::io::Read::read_to_end(&mut response, &mut body).unwrap();
+        assert_eq!(body, b"0123456789AB");
+        assert!(started.elapsed() > Duration::from_millis(2500));
+        worker.join().unwrap();
+        let (url, worker) = dribble(b"01", Duration::from_millis(1600));
+        let result = open_http_with(&client, Url::parse(&url).unwrap())
+            .and_then(|response| read_all(response.unwrap()));
+        assert_eq!(result.unwrap_err(), "cannot read complete resource body");
+        worker.join().unwrap();
     }
 }

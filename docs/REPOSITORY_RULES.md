@@ -144,17 +144,36 @@ the published location (relative symlinks into it are replanted, below).
   the download attempt; a checksum mismatch reports `java.io.IOException: Error
   downloading [URL] to OUTPUT/temp<N>/FILE: Checksum was ACTUAL but wanted
   EXPECTED` (HashOutputStream.java:84-90; hex for `sha256`, SRI for
-  `integrity`; `<N>` is random as in Bazel). HTTP failures keep the native
-  transport text (Bazel prints the server's reason phrase, e.g. `GET returned 404
-  File not found`, which the transport does not expose), and Bazel's empty
-  `temp<N>` directory left after an `allow_fail` failure is not reproduced. Other Bazel formats, `strip_components > 0`,
-  `rename_files`, `auth` and `headers` fail explicitly. Downloads reuse the
-  module-extension transport (verified TLS, redirect/retry policy, 8 MiB per
-  archive, 32 MiB per callback, `--repository_disable_download` policy), defer a
-  malformed checksum until after the attempt like Bazel, and return
-  `struct(success, integrity, sha256, size_bytes)`; `canonical_id` only keys
-  Bazel's repository cache, which the native profile does not have. Local
-  archives are limited to 16 MiB. Archive symlinks and tar hard links are
+  `integrity`; `<N>` is random as in Bazel). Every mirror failure is reported
+  like HttpDownloader (java:217-262): a `WARNING: Download from URL failed:
+  class CLASS MESSAGE` line per failed mirror (also under `allow_fail`), and,
+  without `allow_fail`, `java.io.IOException: Error downloading [URLS] to PATH:
+  LAST_MESSAGE` with Bazel's messages: `GET returned CODE REASON` (the
+  server's reason phrase; `java.io.FileNotFoundException` for 404/410),
+  `Redirect loop detected`, `Checksum was ...`, `Connection refused`,
+  `Unknown host: HOST`, `Connect timed out`. Bazel's empty `temp<N>` directory
+  left after an `allow_fail` failure is not reproduced. Native
+  formats are zip/jar/war/aar/nupkg/whl, tar, tar.gz/tgz, tar.xz/txz,
+  tar.zst/tzst and tar.bz2/tbz; the single-file gz/xz/zst/bz2 decompressors,
+  ar/deb and 7z, `strip_components > 0`, `rename_files`, and non-empty `auth` and
+  `headers` fail explicitly. Downloads reuse the module-extension transport
+  (verified TLS, redirect/retry policy, Bazel's 10 s connect / 20 s read
+  timeouts, `--repository_disable_download` policy) and **stream** into a
+  private temporary directory of the repository while hashing; extraction then
+  streams through the decompressor (constant memory, no size caps; see
+  docs/REPOSITORY_IO_STREAMING.md). They defer a malformed checksum until after
+  the attempt like Bazel, and return `struct(success, integrity, sha256,
+  size_bytes)`; `canonical_id` only keys Bazel's repository cache, which the
+  native profile does not have. `extract()` streams local archives of any size.
+  `download()` (StarlarkBaseExternalContext.java:799-895) streams straight into
+  the output path like Bazel's HttpDownloader (java:90-109), so a checksum
+  mismatch (detected at end of stream, HashInputStream.java:61-91) leaves the
+  downloaded bytes there, also under `allow_fail`; an existing non-directory
+  output is replaced (unlinked) rather than written through. With a checksum,
+  an output that already matches is reused without downloading, also offline
+  (DownloadManager.java:247-261). It honours `executable` (execute bits
+  added after success), `allow_fail`, `sha256`/`integrity` and returns the same
+  struct; `block = False` fails explicitly. Archive symlinks and tar hard links are
   extracted like Bazel (docs/ARCHIVE_SYMLINKS.md); the zip link-escape and
   missing hard-link target errors keep Bazel's text, naming the archive by its
   basename, wrapped in `java.io.IOException: Error extracting ARCHIVE to
@@ -253,10 +272,10 @@ Security posture: repository rules are trusted code, as in Bazel. `execute` and
 `which` run host programs with the user's credentials, environment, network and
 filesystem access; this is not a sandbox. Supervision only: the child leads its
 own process group, which is SIGKILLed through `/usr/bin/kill` after the leader
-exits or on timeout/overflow (Bazel would keep orphans that hold its pipes and
-then block on them); output is captured up to 16 MiB per stream and overflow is
-an explicit error instead of truncation; at most 1,000 calls, 24-hour timeouts and
-2 MiB of arguments per callback.
+exits or on timeout (Bazel would keep orphans that hold its pipes and then
+block on them); output is captured whole like Bazel's
+(StarlarkExecutionResult.java:201-203); there are no call-count, timeout or
+argument-size caps (N32).
 
 Repositories that call `execute`, `which` or downloads record those facilities
 (never their outputs, which Bazel does not record either) in the execution inputs.
@@ -290,11 +309,11 @@ invocations unless a recorded input changed, while native re-runs every demanded
 repository in every invocation (unrecorded `os.environ` changes are therefore
 seen natively but not by Bazel); Starlark interpreter wording differs (`in call
 to F(), parameter 'P' got value of type ...`, `has no field or method`, ...);
-download, watch_tree, `rename_files`, `strip_components`,
-xz/bz2/gz/zst/ar/7z formats, `auth`/`headers` and `delete()` outside the
-repository directory are native-explicit errors; the four write restrictions
-above (symlinked parents, store-representable names, strict Label inputs,
-16 MiB inputs) remain.
+watch_tree, `download(block = False)`, `rename_files`, `strip_components`,
+single-file gz/xz/zst/bz2 and ar/7z formats, `auth`/`headers` and `delete()`
+outside the repository directory are native-explicit errors; the write
+restrictions above (symlinked parents, store-representable names, strict Label
+inputs) remain; the former 16 MiB input cap was removed in N32.
 
 ### Release notes (N21)
 
@@ -386,9 +405,10 @@ Starlark language parity.
 
 Callbacks and each demanded definition-file evaluation are bounded to 128 call
 frames, one million evaluator ticks and a 128 MiB evaluator heap. Ordinary BUILD
-loading is unchanged. Files and template inputs are at most 16 MiB each;
-cumulative I/O and operation counts are bounded. Publication allows at most
-10,000 entries, depth 64, 4096-byte paths and 64 MiB file contents. These are
+loading is unchanged. Repository I/O has no size or operation-count caps (N32):
+files, templates, downloads and archives of any size are written and hashed in
+streaming fashion. Publication enforces only the store path profile (depth 64,
+4096-byte UTF-8 paths) and hashes each published file incrementally. These are
 implementation limits, not a security sandbox.
 
 Direct preparation also preflights one aggregate host budget across a usage's
