@@ -17,6 +17,7 @@
 
 // Modified for native Bazel 9.3 set assignment compatibility; see vendor provenance.
 // Modified for native Bazel 9.3 `dict |= select`; see vendor provenance.
+// Modified for Bazel 9.3 function locations (recursive-call errors); see vendor provenance.
 
 //! Evaluation environment, provide converters from Ast* element to value.
 //!
@@ -790,6 +791,8 @@ impl Compiler<'_, '_, '_, '_> {
             StmtP::Def(def) => {
                 let signature_span = def.signature_span();
                 let signature_span = FrozenFileSpan::new(self.codemap, signature_span);
+                // Modified: Bazel locates a function at its identifier.
+                let identifier_span = FrozenFileSpan::new(self.codemap, def.name.span);
                 let DefP {
                     name,
                     params,
@@ -801,6 +804,7 @@ impl Compiler<'_, '_, '_, '_> {
                     node: self.function(
                         &name.ident,
                         signature_span,
+                        identifier_span,
                         *scope_id,
                         params,
                         return_type.as_deref(),

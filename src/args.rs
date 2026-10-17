@@ -363,8 +363,11 @@ fn map_one<'v>(
     if map_each.is_none() {
         return Ok(vec![string_value(item, eval)?]);
     }
+    // Bazel calls map_each while expanding the command line, in its own
+    // Starlark thread (StarlarkCustomCommandLine.java:1138), not within the
+    // rule implementation.
     let mapped = eval
-        .eval_function(map_each, &[item], &[])
+        .with_new_recursion_scope(|eval| eval.eval_function(map_each, &[item], &[]))
         .map_err(|e| anyhow!("map_each failed: {e}"))?;
     crate::command_line::mapped_strings(mapped).map_err(anyhow::Error::msg)
 }

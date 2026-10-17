@@ -16,6 +16,8 @@
  */
 
 // Modified for native Bazel 9.3 repr/type/hashability compatibility; see vendor provenance.
+// Modified: bodies with calls are not inlined (Bazel 9.3 recursion check); see
+// vendor provenance.
 
 //! Test function bodies inlined.
 
@@ -159,7 +161,7 @@ def foo(x, y):
     return noop(y, x)
 
 def test():
-    # This call should be inlined.
+    # Modified: not inlined, `foo` calls a function.
     return foo(10, True)
 "#,
     );
@@ -174,8 +176,50 @@ def foo(x, y):
     return noop(y, x)
 
 def test(x, y):
-    # This call should be inlined.
+    # Modified: not inlined, `foo` calls a function.
     return foo(y, x)
 "#,
     );
+}
+
+/// Modified (added): only bodies whose calls cannot run Starlark code are
+/// inlined (Bazel 9.3 recursion check): calls of builtins that never call an
+/// argument and string constant methods are, callbacks are not.
+#[test]
+fn test_inline_only_non_calling_builtin_bodies() {
+    let mut a = Assert::new();
+    a.module(
+        "f.bzl",
+        "def size(x): return len(x)\n\
+         def joined(x): return ','.join(x)\n\
+         def keyed(x): return sorted(x, key = len)\n\
+         def apply(g): return g()\n\
+         def method(x): return x.upper()",
+    );
+    let m = a.module(
+        "g.bzl",
+        "load('f.bzl', 'apply', 'joined', 'keyed', 'method', 'size')\n\
+         def s(): return size('ab')\n\
+         def j(): return joined('ab')\n\
+         def k(): return keyed('ab')\n\
+         def p(): return apply(len)\n\
+         def u(): return method('ab')",
+    );
+    for (name, inlined) in [
+        ("s", true),
+        ("j", true),
+        ("k", false),
+        ("p", false),
+        ("u", false),
+    ] {
+        let f = m.get(name).unwrap();
+        let f = f.value().downcast_ref::<FrozenDef>().unwrap();
+        let calls_def = f
+            .bc()
+            .instrs
+            .opcodes()
+            .iter()
+            .any(|op| matches!(op, BcOpcode::CallFrozenDef | BcOpcode::CallFrozenDefPos));
+        assert_eq!(!calls_def, inlined, "`{name}`");
+    }
 }

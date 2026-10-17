@@ -16,6 +16,8 @@
  */
 
 // Modified for scoped iterator cleanup for native Bazel 9.3 sets; see vendor provenance.
+// Modified for Bazel 9.3's rejection of recursive calls (`function 'NAME' called
+// recursively`, net/starlark/java/eval/StarlarkThread.java:408-420); see vendor provenance.
 
 use std::collections::HashSet;
 use std::mem;
@@ -206,6 +208,22 @@ pub struct Evaluator<'v, 'a, 'e> {
     pub(crate) infrequent_instr_check_counter: u32,
     /// Total number of ticks executed so far
     pub(crate) total_tick_count_at_last_infrequent_check: u64,
+    /// Modified: Bazel's recursion check state (boxed so the hot evaluator
+    /// fields keep their layout).
+    recursion: Box<RecursionState>,
+}
+
+/// Modified: state of Bazel's recursion check (`Evaluator::enter_def`).
+struct RecursionState {
+    /// Code (`DefInfo`) of the `def`/`lambda` calls currently executing,
+    /// innermost last: the check compares pointers rather than downcasting
+    /// every call stack frame.
+    active_defs: Vec<*const DefInfo>,
+    /// Length of `active_defs` below which calls belong to an enclosing Bazel
+    /// thread (see `Evaluator::with_new_recursion_scope`).
+    floor: usize,
+    /// Bazel's `-allow_recursion` semantics (default `false`).
+    allow: bool,
 }
 
 // We use this to validate that the Evaluator lifetimes have the expected variance.
@@ -306,7 +324,54 @@ impl<'v, 'a, 'e: 'a> Evaluator<'v, 'a, 'e> {
             is_cancelled: Box::new(|| false),
             infrequent_instr_check_counter: 0,
             total_tick_count_at_last_infrequent_check: 0,
+            recursion: Box::new(RecursionState {
+                active_defs: Vec::with_capacity(DEFAULT_STACK_SIZE),
+                floor: 0,
+                allow: false,
+            }),
         }
+    }
+
+    /// Modified: allow (or, the default, reject) calls of a `def` or `lambda`
+    /// whose code is already on the call stack, like Bazel's
+    /// `StarlarkSemantics.ALLOW_RECURSION` (`-allow_recursion`, not exposed by
+    /// Bazel, StarlarkSemantics.java:258-261).
+    pub fn set_allow_recursion(&mut self, allow: bool) {
+        self.recursion.allow = allow;
+    }
+
+    /// Modified: run `f` as Bazel runs a callback in a new `StarlarkThread`
+    /// (symbolic macro implementations, computed defaults, `map_each`): calls
+    /// already on this evaluator's call stack do not make calls within `f`
+    /// recursive.
+    pub fn with_new_recursion_scope<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let len = self.recursion.active_defs.len();
+        let floor = mem::replace(&mut self.recursion.floor, len);
+        let result = f(self);
+        self.recursion.floor = floor;
+        result
+    }
+
+    /// Modified: whether a `def`/`lambda` with code `def_info` is already
+    /// executing in this evaluator (StarlarkThread.isRecursiveCall: code, not
+    /// closure, identity, so a nested `def` or `lambda` re-created by each call
+    /// still counts; builtins, such as a `sorted(key = ...)` callback's, are
+    /// not tracked). On success the call is recorded until `exit_def`.
+    #[inline]
+    pub(crate) fn enter_def(&mut self, def_info: FrozenAnyValue<DefInfo>) -> bool {
+        let code: *const DefInfo = def_info.as_ref();
+        let state = &mut *self.recursion;
+        if !state.allow && state.active_defs[state.floor..].contains(&code) {
+            return false;
+        }
+        state.active_defs.push(code);
+        true
+    }
+
+    /// Modified: the `def`/`lambda` call recorded by `enter_def` returned.
+    #[inline]
+    pub(crate) fn exit_def(&mut self) {
+        self.recursion.active_defs.pop();
     }
 
     /// Register the actual value returned by a successful raw `iterate` call,

@@ -18,6 +18,7 @@
 // Modified for native Bazel 9.3 unknown-attribute messages of rule-context
 // structures, Bazel's unknown field text and the duplicate dict key text; see
 // vendor provenance.
+// Modified for Bazel 9.3 lambda locations (recursive-call errors); see vendor provenance.
 
 //! Evaluation of an expression.
 
@@ -39,6 +40,7 @@ use starlark_syntax::syntax::ast::StmtP;
 use thiserror::Error;
 
 use crate as starlark;
+use crate::codemap::Span;
 use crate::codemap::Spanned;
 use crate::collections::symbol::symbol::Symbol;
 use crate::environment::slots::ModuleSlotId;
@@ -1235,6 +1237,13 @@ impl<'v, 'a, 'e> Compiler<'v, 'a, 'e, '_> {
             ExprP::Lambda(l) => {
                 let signature_span = l.signature_span();
                 let signature_span = FrozenFileSpan::new(self.codemap, signature_span);
+                // Modified: Bazel locates a lambda at the start of its
+                // expression (the `lambda` keyword).
+                let start = expr.span.begin();
+                let identifier_span = FrozenFileSpan::new(
+                    self.codemap,
+                    Span::new(start, start + "lambda".len() as u32),
+                );
                 let LambdaP {
                     params,
                     body,
@@ -1245,7 +1254,15 @@ impl<'v, 'a, 'e> Compiler<'v, 'a, 'e, '_> {
                     // TODO(nga): unnecessary clone.
                     node: StmtP::Return(Some(*body.clone())),
                 };
-                self.function("lambda", signature_span, *scope_id, params, None, &suite)?
+                self.function(
+                    "lambda",
+                    signature_span,
+                    identifier_span,
+                    *scope_id,
+                    params,
+                    None,
+                    &suite,
+                )?
             }
             ExprP::Tuple(exprs) => {
                 let xs = self.exprs(exprs)?;

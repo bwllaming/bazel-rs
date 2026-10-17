@@ -67,6 +67,18 @@ or method 'foo'`):
 - `src/values/types/record/record_type/missing_field_error.golden`
   (`error: RecFail() missing 1 required named argument: b`)
 
+For Bazel 9.3's rejection of recursive calls (N48, `function 'NAME' called
+recursively`, see `docs/STARLARK_VENDOR.md` of bazel-rs), function bodies
+whose calls may run Starlark code (here `noop(y, x)`) are no longer inlined,
+and the following golden files (listed
+above) were regenerated with `STARLARK_RUST_REGENERATE_GOLDEN_TESTS=1`: their
+test comment (formerly "This call should be inlined.") now says the call is
+not inlined, and their bytecode calls `foo` (`CallFrozenDefPos`) instead of
+its inlined body:
+
+- `src/tests/bc/golden/def_inline_const_args_inlined.golden`
+- `src/tests/bc/golden/def_inline_locals_inlined.golden`
+
 Modified Rust sources carry inline modification notices. Their original and
 current hashes, and this added notice, are recorded in the adjacent
 `../starlark-0.14.2.provenance.json`. Original upstream license and copyright

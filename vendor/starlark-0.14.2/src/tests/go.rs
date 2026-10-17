@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified for Bazel 9.3's rejection of recursive calls: the `option:recursion`
+// chunk of function.star runs with recursion allowed; see vendor provenance.
+
 //! Run Go implementation tests.
 
 use itertools::Itertools;
@@ -127,7 +130,9 @@ fn test_go() {
             "int overflow in starlark-rust",
         ],
     ));
-    assert.conformance(&ignore_bad_lines(
+    // Modified: like Go's Starlark (and Bazel), recursion is rejected unless
+    // a chunk sets `option:recursion`, which then runs with recursion allowed.
+    let function_star = ignore_bad_lines(
         test_case!("function.star"),
         &[
             "eq(str",             // We render function names differently
@@ -135,7 +140,19 @@ fn test_go() {
             "called recursively", // We allow recursion
             "hf",                 // We don't support hasfield
         ],
-    ));
+    );
+    let lines = function_star.lines().collect::<Vec<_>>();
+    let (recursive_chunks, chunks): (Vec<&[&str]>, Vec<&[&str]>) = lines
+        .split(|x| *x == "---")
+        .partition(|chunk| chunk.iter().any(|x| x.contains("option:recursion")));
+    let join = |chunks: &[&[&str]]| chunks.iter().map(|c| c.join("\n")).join("\n---\n");
+    assert_eq!(recursive_chunks.len(), 1);
+    assert.conformance(&join(&chunks));
+    let mut recursive = Assert::new();
+    recursive.disable_static_typechecking();
+    recursive.setup_eval(|eval| eval.set_allow_recursion(true));
+    recursive.conformance(&join(&recursive_chunks));
+    assert.fail(&join(&recursive_chunks), "function 'b' called recursively");
     // Skip int.star, a lot of bit mask stuff, floats and int's outside our range
     // Skip list.star, our strings disagree about whether they are lists of codepoints or lists of 1-char strings
     assert.conformance_except(

@@ -952,15 +952,18 @@ pub(crate) fn invoke_symbolic_macro<'v>(
     });
     let _site = MacroSiteFrame::enter(&context.macro_site, site);
     let _frame = MacroFrame::enter(&context.active_macro, owner);
+    // Bazel runs the implementation in a new Starlark thread
+    // (packages/MacroClass.java:390-420), so the calls that instantiated
+    // the macro do not make calls within it recursive.
+    let name = eval.heap().alloc(name);
     let result = eval
-        .eval_function(
-            implementation,
-            &[],
-            &[
-                ("name", eval.heap().alloc(name)),
-                ("visibility", visibility),
-            ],
-        )
+        .with_new_recursion_scope(|eval| {
+            eval.eval_function(
+                implementation,
+                &[],
+                &[("name", name), ("visibility", visibility)],
+            )
+        })
         .map_err(|e| anyhow!(e.to_string()))?;
     if !result.is_none() {
         bail!("symbolic macro {name:?} must return None");

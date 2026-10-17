@@ -20,6 +20,9 @@
 
 // Modified for native Bazel 9.3 frozen-mutation messages; see vendor provenance.
 
+// Modified for Bazel 9.3's rejection of recursive calls (`function 'NAME' called
+// recursively`); see vendor provenance.
+
 //! Test call expression and parameter binding.
 
 use crate::assert;
@@ -65,9 +68,14 @@ def rec6(): rec2()
     assert::is_true(&f("(f5(a=2) == {})"));
     assert::is_true(&f("(f5(1, b=2) == {'b': 2})"));
     assert::is_true(&f("(f6(1, 2, 3) == (1, 2, 3))"));
-    // Recursion limit
-    assert::fail(&f("rec1()"), "Starlark call stack overflow");
-    assert::fail(&f("rec2()"), "Starlark call stack overflow");
+    // Modified: Bazel rejects recursion (StarlarkFunction.java:571-574).
+    assert::fail(&f("rec1()"), "function 'rec1' called recursively");
+    assert::fail(&f("rec2()"), "function 'rec2' called recursively");
+    // Recursion limit, with recursion allowed (Bazel's `-allow_recursion`).
+    let mut recursive = Assert::new();
+    recursive.setup_eval(|eval| eval.set_allow_recursion(true));
+    recursive.fail(&f("rec1()"), "Starlark call stack overflow");
+    recursive.fail(&f("rec2()"), "Starlark call stack overflow");
     // multiple argument with the same name should not be allowed
     assert::fail("def f(a, a=2): pass", "duplicated parameter");
     // Invalid order of parameter
@@ -340,6 +348,189 @@ g(x=1, y=2)
         // Modified: Bazel's StarlarkFunction text (Bazel defs have no
         // positional-only parameters, so `x` is an unexpected keyword).
         "f() got unexpected keyword argument: x",
+    );
+}
+
+/// Modified (added): line and column of an error's location.
+fn error_location(error: &crate::Error) -> Option<(usize, usize)> {
+    let span = error.span()?.resolve_span();
+    Some((span.begin.line + 1, span.begin.column + 1))
+}
+
+/// Modified (added): Bazel rejects a call of a function whose code is already
+/// on the call stack (StarlarkThread.isRecursiveCall, StarlarkFunction.java:571-574),
+/// with the error located at the function (`def` identifier or `lambda` start).
+#[test]
+fn test_recursion_rejected() {
+    let cases = [
+        // Direct recursion.
+        (
+            "def f(n):\n    return f(n - 1) if n else 0\nf(3)",
+            "function 'f' called recursively",
+            (1, 5),
+        ),
+        // Mutual recursion: the function entered twice is named.
+        (
+            "def a(n):\n    return b(n)\ndef b(n):\n    return c(n)\ndef c(n):\n    return a(n - 1) if n else 0\nb(2)",
+            "function 'b' called recursively",
+            (3, 5),
+        ),
+        // A lambda calling itself through a global.
+        (
+            "f = lambda n: f(n - 1) if n else 0\nf(2)",
+            "function 'lambda' called recursively",
+            (1, 5),
+        ),
+        // A nested def calling the enclosing function.
+        (
+            "def outer(n):\n    def inner():\n        return outer(n - 1)\n    return inner() if n else 0\nouter(2)",
+            "function 'outer' called recursively",
+            (1, 5),
+        ),
+        // Code, not closure, identity: two closures of the same nested def.
+        (
+            "def mk():\n    def inner(k, n):\n        return k(k, n - 1) if n else 0\n    return inner\nmk()(mk(), 2)",
+            "function 'inner' called recursively",
+            (2, 9),
+        ),
+        // Through a builtin's callback (`sorted(key = ...)`).
+        (
+            "def key(x):\n    return sorted([1, 2], key = key)[0]\nkey(1)",
+            "function 'key' called recursively",
+            (1, 5),
+        ),
+        // Through a callback parameter.
+        (
+            "def apply(g, n):\n    return g(n)\ndef h(n):\n    return apply(h, n - 1) if n else 0\nh(2)",
+            "function 'h' called recursively",
+            (3, 5),
+        ),
+    ];
+    for (program, message, location) in cases {
+        let error = assert::fail(program, message);
+        assert_eq!(error_location(&error), Some(location), "{program}");
+    }
+    // Argument binding fails before the recursion check.
+    assert::fail(
+        "def f(a):\n    f()\nf(1)",
+        "f() missing 1 required positional argument: a",
+    );
+    // A function may be called again once it has returned, and functions
+    // may refer to each other as long as they do not dynamically recur.
+    assert::pass(
+        r#"
+calls = []
+def yin(x):
+    calls.append("yin")
+    if x:
+        yang(False)
+def yang(x):
+    calls.append("yang")
+    if x:
+        yin(False)
+yin(True)
+yang(True)
+def one():
+    return 1
+assert_eq([one() for _ in range(3)], [1, 1, 1])
+assert_eq(sorted([3, 1, 2], key = lambda v: -v), [3, 2, 1])
+assert_eq(calls, ["yin", "yang", "yang", "yin"])
+"#,
+    );
+}
+
+/// Modified (added): the traceback of a recursive call ends at the call, and
+/// the error is located at the re-entered function (Bazel's innermost frame).
+#[test]
+fn test_recursion_rejected_traceback() {
+    let error = Assert::new().fail(
+        "def g(n):\n    return h(n)\ndef h(n):\n    return g(n + 1)\ng(0)",
+        "called recursively",
+    );
+    assert_eq!(
+        r"
+Traceback (most recent call last):
+  * assert.bzl:5, in <module>
+      g(0)
+  * assert.bzl:2, in g
+      return h(n)
+  * assert.bzl:4, in h
+      return g(n + 1)
+error: function 'g' called recursively
+ --> assert.bzl:1:5
+  |
+1 | def g(n):
+  |     ^
+  |
+",
+        &format!("\n{error:#}")
+    );
+}
+
+/// Modified (added): `Evaluator::set_allow_recursion` (Bazel's
+/// `-allow_recursion`) and `Evaluator::with_new_recursion_scope` (a callback
+/// run as in a new Bazel thread).
+#[test]
+fn test_recursion_allowed_and_new_scope() {
+    use starlark_derive::starlark_module;
+
+    use crate as starlark;
+    use crate::environment::GlobalsBuilder;
+    use crate::eval::Evaluator;
+    use crate::values::Value;
+
+    let mut recursive = Assert::new();
+    recursive.setup_eval(|eval| eval.set_allow_recursion(true));
+    recursive.pass(
+        "def fib(n):\n    return n if n < 2 else fib(n - 1) + fib(n - 2)\nassert_eq(fib(10), 55)",
+    );
+
+    #[starlark_module]
+    fn natives(builder: &mut GlobalsBuilder) {
+        fn in_new_thread<'v>(
+            f: Value<'v>,
+            eval: &mut Evaluator<'v, '_, '_>,
+        ) -> starlark::Result<Value<'v>> {
+            eval.with_new_recursion_scope(|eval| eval.eval_function(f, &[], &[]))
+        }
+        fn in_same_thread<'v>(
+            f: Value<'v>,
+            eval: &mut Evaluator<'v, '_, '_>,
+        ) -> starlark::Result<Value<'v>> {
+            eval.eval_function(f, &[], &[])
+        }
+    }
+    let mut a = Assert::new();
+    a.globals_add(natives);
+    a.pass(
+        r#"
+depth = []
+def macro_impl():
+    depth.append(1)
+    if len(depth) < 3:
+        in_new_thread(macro_impl)
+macro_impl()
+assert_eq(len(depth), 3)
+"#,
+    );
+    // Within the new scope, recursion is rejected again.
+    a.fail(
+        r#"
+def outer():
+    in_new_thread(inner)
+def inner():
+    inner()
+outer()
+"#,
+        "function 'inner' called recursively",
+    );
+    a.fail(
+        r#"
+def again():
+    in_same_thread(again)
+again()
+"#,
+        "function 'again' called recursively",
     );
 }
 

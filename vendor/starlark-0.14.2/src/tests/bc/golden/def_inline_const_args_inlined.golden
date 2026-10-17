@@ -8,17 +8,17 @@ def foo(x, y):
     return noop(y, x)
 
 def test():
-    # This call should be inlined.
+    # Modified: not inlined, `foo` calls a function.
     return foo(10, True)
 
 # Bytecode:
 
 Max stack size: 3
 Instructions:
-        # instrs.star.bzl:6:5-25
-    0: Const True ->&1
-   24: Const 10 ->&2
-   48: CallFrozenNativePos <built-in function noop> &1..&3 instrs.star.bzl:2:12-22 ->&0
-        # instrs.star.bzl:6:5-25
-   96: Return &0
-  104: End
+       # instrs.star.bzl:6:5-25
+   0: Const 10 ->&1
+  24: Const True ->&2
+  48: CallFrozenDefPos <function foo from instrs.star.bzl> &1..&3 instrs.star.bzl:6:12-25 ->&0
+       # instrs.star.bzl:6:5-25
+  88: Return &0
+  96: End

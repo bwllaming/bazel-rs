@@ -16,6 +16,8 @@
  */
 
 // Modified for native Bazel 9.3 function repr compatibility; see vendor provenance.
+// Modified for Bazel 9.3's rejection of recursive calls (`function 'NAME' called
+// recursively`, net/starlark/java/eval/StarlarkFunction.java:571-574); see vendor provenance.
 
 //! Implementation of `def`.
 
@@ -116,6 +118,9 @@ static_starlark_value!(VALUE_EMPTY_PARAMETER_CAPTURES: AnyArray<LocalSlotId> = A
 enum DefError {
     #[error("Function has no type, while function was compiled with return type (internal error)")]
     CheckReturnTypeNoType,
+    /// Modified: Bazel's text (StarlarkFunction.java:571-574).
+    #[error("function '{0}' called recursively")]
+    CalledRecursively(String),
 }
 
 /// Store frozen `StmtCompiled`.
@@ -346,6 +351,9 @@ pub(crate) struct DefInfo {
     pub(crate) name: FrozenStringValue,
     /// Span of function signature.
     pub(crate) signature_span: FrozenFileSpan,
+    /// Modified: Bazel's function location (`Resolver.Function.getLocation`):
+    /// the `def` identifier, or the start of a `lambda` expression.
+    pub(crate) identifier_span: FrozenFileSpan,
     /// Indices of parameters, which are captured in nested defs.
     parameter_captures: FrozenAnyArray<LocalSlotId>,
     /// Type of this function, for the typechecker.
@@ -387,6 +395,7 @@ impl DefInfo {
         DefInfo {
             name: const_frozen_string!("<module>"),
             signature_span: FrozenFileSpan::default(),
+            identifier_span: FrozenFileSpan::default(),
             parameter_captures: VALUE_EMPTY_PARAMETER_CAPTURES.unpack(),
             ty: Ty::any(),
             codemap,
@@ -450,6 +459,7 @@ impl Compiler<'_, '_, '_, '_> {
         &mut self,
         name: &str,
         signature_span: FrozenFileSpan,
+        identifier_span: FrozenFileSpan,
         scope_id: ScopeId,
         params: &[CstParameter],
         return_type: Option<&CstTypeExpr>,
@@ -503,6 +513,7 @@ impl Compiler<'_, '_, '_, '_> {
         let info = self.eval.module_env.frozen_heap().alloc_any_value(DefInfo {
             name,
             signature_span,
+            identifier_span,
             parameter_captures: self
                 .eval
                 .frozen_heap()
@@ -838,6 +849,31 @@ where
     ) -> crate::Result<Value<'v>> {
         // println!("invoking {}", self.def.stmt.name.node);
 
+        // Modified: Bazel rejects a call of a function whose code is already
+        // on the call stack, after binding its arguments
+        // (StarlarkFunction.java:571-574). The error is located at the
+        // function itself, Bazel's innermost traceback frame. A function
+        // whose body can be inlined calls nothing that can run Starlark code
+        // (see `def_inline`), so it is never part of a recursive cycle and
+        // need not be tracked.
+        if self.def_info.inline_def_body.is_some() {
+            return self.invoke_entered(me, eval);
+        }
+        if !eval.enter_def(self.def_info) {
+            return Err(self.recursive_call_error());
+        }
+        let result = self.invoke_entered(me, eval);
+        eval.exit_def();
+        result
+    }
+
+    /// Modified: `invoke_raw` after the recursion check (`enter_def`).
+    #[inline(always)]
+    fn invoke_entered(
+        &self,
+        me: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> crate::Result<Value<'v>> {
         if !self.parameter_types.is_empty() {
             self.check_parameter_types(eval)?;
         }
@@ -864,6 +900,19 @@ where
 
         eval.eval_bc(me, self.bc())
             .map_err(EvalException::into_error)
+    }
+
+    /// Modified: `function 'NAME' called recursively`, at the function's
+    /// location (`def` identifier or `lambda` start).
+    #[cold]
+    #[inline(never)]
+    fn recursive_call_error(&self) -> crate::Error {
+        let mut error = crate::Error::new_kind(crate::ErrorKind::Function(
+            DefError::CalledRecursively(self.def_info.name.as_str().to_owned()).into(),
+        ));
+        let span = self.def_info.identifier_span;
+        error.set_span(span.span(), span.file().as_ref());
+        error
     }
 
     pub(crate) fn resolve_arg_name(&self, name: Hashed<&str>) -> ResolvedArgName {

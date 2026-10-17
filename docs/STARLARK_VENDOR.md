@@ -116,6 +116,9 @@ current hash is updated in the provenance; no vendored test changes.
 The [N33 interpreter-wording increment](#n33-interpreter-error-texts) gives
 the most common interpreter errors Bazel 9.3's `net.starlark.java` texts.
 
+The [N48 recursion increment](#n48-recursive-calls) rejects recursive calls
+like Bazel.
+
 ### N33 interpreter error texts
 
 Sources are the pinned Bazel tree (`src/main/java/net/starlark/java/eval/`):
@@ -223,6 +226,118 @@ binding-time type checks, parameter names, a fixed probe) run 2 matches all
 in `run_history`, no changes after run 2). `File` ordering is covered by unit
 tests only (the capture evaluates at load time). Static syntax errors from `starlark_syntax` (`repeated named
 argument`) and the traceback layout are unchanged.
+
+### N48 recursive calls
+
+Bazel's Starlark has no recursion (`StarlarkSemantics.ALLOW_RECURSION`,
+`-allow_recursion`, is `false` and not exposed by Bazel). After binding a
+`def` or `lambda` call's arguments (so binding errors win), Bazel fails with
+`function 'NAME' called recursively` when the function's *code* is already on
+the thread's call stack (`StarlarkFunction.java:571-574`,
+`StarlarkThread.isRecursiveCall`, `:408-420`, which compares the resolved
+function, not the closure, "otherwise one can defeat the check by writing the
+Y combinator"). The error is raised inside the callee's frame, so the innermost
+traceback frame is the function's location: the `def` identifier or the start
+of the `lambda` (`syntax/Resolver.java:825-850`).
+
+The vendored interpreter now does the same (`src/eval/compiler/def.rs`
+`invoke_raw`, `src/eval/runtime/evaluator.rs` `enter_def`/`exit_def`): the
+evaluator keeps a (boxed) stack of the `DefInfo` pointers of executing
+`def`/`lambda` calls (one `DefInfo` per `def` statement or `lambda`
+expression, shared by all closures) and rejects a call whose `DefInfo` is
+already on it, so
+direct and mutual recursion, a lambda calling itself, a nested `def` calling
+its enclosing function, two closures of one nested `def`, and recursion
+through builtin callbacks (`sorted(key = ...)`, `max(key = ...)`, a
+provider `init` calling its provider) are all rejected; builtins are not
+tracked. Functions whose bodies are inlinable (below) call nothing that can
+run Starlark code, so they can never be part of a cycle and are not tracked
+either.
+The error carries `DefInfo.identifier_span`, so native's `-->` location is
+Bazel's innermost frame (`def f(` -> column of `f`, `lambda` -> its keyword) and
+the traceback above it ends at the recursive call. `NAME` is the def's name or
+`lambda`. Calling a function again after it returned, or functions that refer
+to each other without dynamically recurring, still work.
+
+An inlined function has no call stack frame, so the check could not see it:
+only function bodies whose calls cannot run Starlark code are still inlined
+(`src/eval/compiler/def_inline.rs`): calls of global builtins that never call
+an argument (`len`, `str`, `type`, `getattr`, `list`, `dict`, ... but not
+`sorted`/`min`/`max`, which take `key`) and methods of string constants
+(`",".join(x)`), without function-valued constant arguments. Bodies such as
+`return len(x)`, `return [str(a), str(b)]` or `return type(x) == "list"` are
+inlined as before; `return g(x)`, `return x.upper()` (the receiver may be a
+struct with a function field) or `return sorted(x, key = k)` are not.
+
+Two embedder APIs: `Evaluator::set_allow_recursion(bool)` (Bazel's
+`-allow_recursion`, default `false`; used only by the crate's own tests) and
+`Evaluator::with_new_recursion_scope(f)`, under which frames already on the
+stack do not count. bazel-rs uses the latter where Bazel runs a callback in a
+new `StarlarkThread` but native evaluates it nested in the caller's evaluator:
+symbolic macro implementations (`src/package.rs`, `MacroClass.java:390-420`),
+computed defaults (`src/custom_rule.rs`, `StarlarkCallbackHelper.java:66-70`)
+and `map_each` of `Args` and `TemplateDict` (`src/args.rs`,
+`src/template_dict.rs`; `StarlarkCustomCommandLine.java:1138`,
+`TemplateDict.java:125`). Rule implementations, aspects, transitions,
+repository rules and module extensions already run in their own evaluator.
+A static scan of native-owned Starlark (the embedded `@bazel_tools` archive,
+`resources/builtins_bzl`, Starlark in Rust sources and test fixtures) found no
+dynamic recursion; the full Rust and Python suites pass.
+
+The crate's own tests follow: `funcall_test` (`src/tests/call.rs`) expects the
+Bazel text for `rec1()`/`rec2()` and keeps its call-stack-overflow checks with
+recursion allowed; the Go `function.star` chunk marked `option:recursion`
+(Go's Starlark also rejects recursion by default) runs with recursion allowed,
+and is also checked to fail without it (`src/tests/go.rs`); two `def_inline`
+goldens were regenerated (listed in `BAZEL_RS_MODIFICATIONS.md`);
+`src/tests/call.rs` adds three tests (locations, traceback rendering,
+`set_allow_recursion` and `with_new_recursion_scope`) and
+`src/tests/opt/def_inline.rs` one (which bodies are inlined). The provenance
+now declares 105 patches (2 new: `src/eval/compiler/def_inline.rs`,
+`src/tests/go.rs`). Under the frozen isolated test graph
+(`/tmp/opencode/n48-vendor-tests/run.py`, the N22 procedure) the vendored
+crate passes 972 lib tests and 157 doc tests (17 ignored). CLI tests are in
+`tests/no_recursion.rs`. `tests/test_native_starlark_recursion.py` makes the
+static scan reproducible: it builds a per-file static call graph of
+native-owned Starlark (the embedded `@bazel_tools` archive, `resources/`,
+`tests/fixtures` files and archives, Starlark in Rust string literals of `src/`
+and `tests/`) and fails on any function that can reach itself, except an
+allowlist (the N48 CLI probes, upstream `cc_import.bzl`, skylib's static-only
+`selects.bzl` cycle, one Rust format template), which must not go stale.
+
+Performance (release builds of 3d09a66 and this change, interleaved runs,
+median user+sys CPU of the child, private caches; `/tmp/opencode/n48-perf`):
+warm native `query` of `~/code` `//src/beyondwork.ai/utils/...` and
+`//src/beyondwork.ai/langchaingo/...` (`--lockfile_mode=off`, BCR registry,
+private `--native-lockfile`) and the N44-style 160-package fixture are within
+measurement noise (-2.2%..+3.2% over 11- and 21-run sets); a synthetic
+workspace of about 36,000,000 small helper calls (100 packages x 10 macros x
+4,000 iterations of nine helpers) is +1.4% (21 runs) and 40,000,000 calls of
+a trivial `def` (`a + b`) +2.8% (11 runs). A first version that walked the call
+stack and inlined no body with calls cost +11.5% on the helper workload;
+tracking `DefInfo` pointers, not tracking inlinable bodies and inlining
+non-calling builtin bodies brought it to the numbers above (an unboxed
+evaluator field alone cost about 7% through layout).
+
+A paired capture against genuine Bazel 9.3.0
+(`tests/fixtures/no_recursion/reference_receipt.json`, 23 probes: `.bzl` top
+level, legacy and symbolic macros, rule initializer, rule implementations)
+matches the message and the innermost location (the re-entered function) of
+all 16 recursion errors Bazel reports; 12 also match every traceback frame and
+2 rule-implementation probes every Starlark frame (native's traceback layout
+adds host-callback builtin frames and shows provider/macro callables as
+builtin frames). The 3 probes Bazel accepts (no dynamic recursion, a helper
+re-entered by a symbolic macro implementation instantiated from a legacy
+macro, `map_each` re-entering the function that registered it) succeed
+natively with the same output; `T/binding_error_first` matches its binding
+message. Pre-existing gaps the capture records and N48 does not change: rule
+instantiation inside a rule initializer is not rejected natively (Bazel: `a
+rule can only be instantiated while evaluating a BUILD file or a legacy or
+symbolic macro`; natively the initializer then re-enters itself and is
+reported as recursive), nested symbolic macros are unsupported natively, and
+Bazel's symbolic macro instantiation recursion check (`macro 'x_x' is a direct
+recursive call of 'x'`) is not implemented. Binding errors keep their call-site
+location (N33).
 
 ## Original published contents
 

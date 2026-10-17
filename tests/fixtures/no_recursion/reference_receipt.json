@@ -1,0 +1,1744 @@
+{
+ "schema": "n48-no-recursion-reference-receipt/v1",
+ "purpose": "N48 paired capture: genuine Bazel 9.3.0 vs native bazel-rs for Bazel's rejection of recursive\ncalls (`function 'NAME' called recursively`, net/starlark/java/eval/StarlarkFunction.java:571-574,\nStarlarkThread.isRecursiveCall). Each probe is one package; `.bzl` top-level probes, legacy and\nsymbolic macro probes and rule initializer probes run `query //pNN:all`, rule implementation probes\nrun `build //pNN:x`. Compared: exit status, the error message (Bazel's `Error[ in NAME]: MSG`, native\n`error: MSG`) and the traceback location: Bazel's frames `File F, line L, column C, in NAME` except the\ninnermost are compared (strictly, and with builtin frames dropped on both sides) by (file, line, name) with native's `* F:L, in NAME` / `File <builtin>, in NAME`\nframes, and Bazel's innermost frame (the re-entered function's location) by (file, line, column)\nwith native's `--> F:L:C` error location. Successful probes compare `query` output lines. Harness after\nartifacts/wording-capture.py of bazel-parity-wording (N33): --batch, --ignore_all_rc_files, private\noutput roots under /tmp/opencode, env -i, umask 022, private registry copy of\ntests/fixtures/builtin_modules/registry, platforms distdir, scratch removed. Writes\ntests/fixtures/no_recursion/reference_receipt.json. Evidence only; no test reads it.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private> --output_base=<private> --host_jvm_args=-Xmx512m",
+  "command": "query|build --registry=file://<private copy of tests/fixtures/builtin_modules/registry> --repository_disable_download --incompatible_autoload_externally= --lockfile_mode=off --noshow_progress --color=no --curses=no --repository_cache=<private> --distdir=<private: platforms-1.0.0.tar.gz> [build: --spawn_strategy=local --shell_executable=/bin/bash //pNN:x] [query: //pNN:all]"
+ },
+ "native": {
+  "binary": "target/debug/bazel-rs",
+  "sha256": "c6815230e1aef86446bc4ecac1947c457bbd6c61f5638be8ec345720bf395912",
+  "command": "--ignore_all_rc_files --cache-dir=<private> query //pNN:all | build --registry=file://<private copy> --experimental-builtin-modules //pNN:x",
+  "worktree": {
+   "base_commit": "3d09a66fad0a02f364d1a69329ef9ded0fb0911b",
+   "src_vendor_diff_sha256": "cf9e0cb639f370d013684e9a677b51061bc45d54f787866fb1a3cc516d35bb03",
+   "diff_scope": "git diff HEAD -- src vendor Cargo.toml Cargo.lock (tracked files; no untracked vendor files are added)"
+  }
+ },
+ "script": {
+  "path": "artifacts/no_recursion-capture.py (untracked)",
+  "sha256": "acc0a57406bdac1ee864ef83696494aa5b3ff201ed010743a0a2de0e81712c66"
+ },
+ "environment": "env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8, private HOME/TMPDIR, umask 022",
+ "normalization": "workspace/base/scratch paths replaced by <WS>/<BASE>/<SCRATCH>; file locations normalized to package-relative paths (`<WS>/p00/t.bzl` and `//p00:t.bzl` -> `p00/t.bzl`), `<toplevel>` compared as native `<module>`; messages compared byte-exactly",
+ "scratch_removed": true,
+ "duration_seconds": 12.9,
+ "counts": {
+  "EXACT_MESSAGE_AND_TRACEBACK": 12,
+  "EXACT_MESSAGE": 3,
+  "BOTH_SUCCEED": 3,
+  "MISMATCH": 2,
+  "REFERENCE_ACCEPTS": 1,
+  "EXACT_MESSAGE_AND_STARLARK_TRACEBACK": 2
+ },
+ "counts_by_group": {
+  "T": {
+   "EXACT_MESSAGE_AND_TRACEBACK": 11,
+   "EXACT_MESSAGE": 2,
+   "BOTH_SUCCEED": 1
+  },
+  "M": {
+   "EXACT_MESSAGE_AND_TRACEBACK": 1,
+   "MISMATCH": 2,
+   "EXACT_MESSAGE": 1,
+   "REFERENCE_ACCEPTS": 1,
+   "BOTH_SUCCEED": 1
+  },
+  "R": {
+   "EXACT_MESSAGE_AND_STARLARK_TRACEBACK": 2,
+   "BOTH_SUCCEED": 1
+  }
+ },
+ "probe_count": 23,
+ "innermost_location_matches": 16,
+ "failing_probes": 20,
+ "rows": [
+  {
+   "id": "T/direct",
+   "package": "p00",
+   "command": "query",
+   "files": {
+    "BUILD": "load(\":t.bzl\", \"x\")\n",
+    "t.bzl": "def f(n):\n    return f(n - 1) if n else 0\n\nf(3)\nx = 1\n"
+   },
+   "reference": {
+    "exit": 7,
+    "message": "function 'f' called recursively",
+    "frame": "Error",
+    "traceback": [
+     [
+      "p00/t.bzl",
+      4,
+      2,
+      "<toplevel>"
+     ],
+     [
+      "p00/t.bzl",
+      2,
+      13,
+      "f"
+     ],
+     [
+      "p00/t.bzl",
+      1,
+      5,
+      "f"
+     ]
+    ]
+   },
+   "native": {
+    "exit": 1,
+    "message": "function 'f' called recursively",
+    "traceback": [
+     [
+      "p00/t.bzl",
+      4,
+      "<module>"
+     ],
+     [
+      "p00/t.bzl",
+      2,
+      "f"
+     ]
+    ],
+    "location": [
+     "p00/t.bzl",
+     1,
+     5
+    ]
+   },
+   "innermost_location_match": true,
+   "verdict": "EXACT_MESSAGE_AND_TRACEBACK"
+  },
+  {
+   "id": "T/mutual",
+   "package": "p01",
+   "command": "query",
+   "files": {
+    "BUILD": "load(\":t.bzl\", \"x\")\n",
+    "t.bzl": "def a(n):\n    return b(n)\n\ndef b(n):\n    return c(n)\n\ndef c(n):\n    return a(n - 1) if n else 0\n\nb(2)\nx = 1\n"
+   },
+   "reference": {
+    "exit": 7,
+    "message": "function 'b' called recursively",
+    "frame": "Error",
+    "traceback": [
+     [
+      "p01/t.bzl",
+      10,
+      2,
+      "<toplevel>"
+     ],
+     [
+      "p01/t.bzl",
+      5,
+      13,
+      "b"
+     ],
+     [
+      "p01/t.bzl",
+      8,
+      13,
+      "c"
+     ],
+     [
+      "p01/t.bzl",
+      2,
+      13,
+      "a"
+     ],
+     [
+      "p01/t.bzl",
+      4,
+      5,
+      "b"
+     ]
+    ]
+   },
+   "native": {
+    "exit": 1,
+    "message": "function 'b' called recursively",
+    "traceback": [
+     [
+      "p01/t.bzl",
+      10,
+      "<module>"
+     ],
+     [
+      "p01/t.bzl",
+      5,
+      "b"
+     ],
+     [
+      "p01/t.bzl",
+      8,
+      "c"
+     ],
+     [
+      "p01/t.bzl",
+      2,
+      "a"
+     ]
+    ],
+    "location": [
+     "p01/t.bzl",
+     4,
+     5
+    ]
+   },
+   "innermost_location_match": true,
+   "verdict": "EXACT_MESSAGE_AND_TRACEBACK"
+  },
+  {
+   "id": "T/lambda_global",
+   "package": "p02",
+   "command": "query",
+   "files": {
+    "BUILD": "load(\":t.bzl\", \"x\")\n",
+    "t.bzl": "f = lambda n: f(n - 1) if n else 0\nf(2)\nx = 1\n"
+   },
+   "reference": {
+    "exit": 7,
+    "message": "function 'lambda' called recursively",
+    "frame": "Error",
+    "traceback": [
+     [
+      "p02/t.bzl",
+      2,
+      2,
+      "<toplevel>"
+     ],
+     [
+      "p02/t.bzl",
+      1,
+      16,
+      "lambda"
+     ],
+     [
+      "p02/t.bzl",
+      1,
+      5,
+      "lambda"
+     ]
+    ]
+   },
+   "native": {
+    "exit": 1,
+    "message": "function 'lambda' called recursively",
+    "traceback": [
+     [
+      "p02/t.bzl",
+      2,
+      "<module>"
+     ],
+     [
+      "p02/t.bzl",
+      1,
+      "lambda"
+     ]
+    ],
+    "location": [
+     "p02/t.bzl",
+     1,
+     5
+    ]
+   },
+   "innermost_location_match": true,
+   "verdict": "EXACT_MESSAGE_AND_TRACEBACK"
+  },
+  {
+   "id": "T/lambda_self_argument",
+   "package": "p03",
+   "command": "query",
+   "files": {
+    "BUILD": "load(\":t.bzl\", \"x\")\n",
+    "t.bzl": "f = lambda g, n: g(g, n - 1) if n else 0\nf(f, 2)\nx = 1\n"
+   },
+   "reference": {
+    "exit": 7,
+    "message": "function 'lambda' called recursively",
+    "frame": "Error",
+    "traceback": [
+     [
+      "p03/t.bzl",
+      2,
+      2,
+      "<toplevel>"
+     ],
+     [
+      "p03/t.bzl",
+      1,
+      19,
+      "lambda"
+     ],
+     [
+      "p03/t.bzl",
+      1,
+      5,
+      "lambda"
+     ]
+    ]
+   },
+   "native": {
+    "exit": 1,
+    "message": "function 'lambda' called recursively",
+    "traceback": [
+     [
+      "p03/t.bzl",
+      2,
+      "<module>"
+     ],
+     [
+      "p03/t.bzl",
+      1,
+      "lambda"
+     ]
+    ],
+    "location": [
+     "p03/t.bzl",
+     1,
+     5
+    ]
+   },
+   "innermost_location_match": true,
+   "verdict": "EXACT_MESSAGE_AND_TRACEBACK"
+  },
+  {
+   "id": "T/lambdas_mutual",
+   "package": "p04",
+   "command": "query",
+   "files": {
+    "BUILD": "load(\":t.bzl\", \"x\")\n",
+    "t.bzl": "a = lambda n: b(n - 1) if n else 0\nb = lambda n: a(n - 1) if n else 0\na(3)\nx = 1\n"
+   },
+   "reference": {
+    "exit": 7,
+    "message": "function 'lambda' called recursively",
+    "frame": "Error",
+    "traceback": [
+     [
+      "p04/t.bzl",
+      3,
+      2,
+      "<toplevel>"
+     ],
+     [
+      "p04/t.bzl",
+      1,
+      16,
+      "lambda"
+     ],
+     [
+      "p04/t.bzl",
+      2,
+      16,
+      "lambda"
+     ],
+     [
+      "p04/t.bzl",
+      1,
+      5,
+      "lambda"
+     ]
+    ]
+   },
+   "native": {
+    "exit": 1,
+    "message": "function 'lambda' called recursively",
+    "traceback": [
+     [
+      "p04/t.bzl",
+      3,
+      "<module>"
+     ],
+     [
+      "p04/t.bzl",
+      1,
+      "lambda"
+     ],
+     [
+      "p04/t.bzl",
+      2,
+      "lambda"
+     ]
+    ],
+    "location": [
+     "p04/t.bzl",
+     1,
+     5
+    ]
+   },
+   "innermost_location_match": true,
+   "verdict": "EXACT_MESSAGE_AND_TRACEBACK"
+  },
+  {
+   "id": "T/sorted_key_callback",
+   "package": "p05",
+   "command": "query",
+   "files": {
+    "BUILD": "load(\":t.bzl\", \"x\")\n",
+    "t.bzl": "def key(x):\n    return sorted([1, 2], key = key)[0]\n\ndef run():\n    return key(1)\n\nrun()\nx = 1\n"
+   },
+   "reference": {
+    "exit": 7,
+    "message": "function 'key' called recursively",
+    "frame": "Error",
+    "traceback": [
+     [
+      "p05/t.bzl",
+      7,
+      4,
+      "<toplevel>"
+     ],
+     [
+      "p05/t.bzl",
+      5,
+      15,
+      "run"
+     ],
+     [
+      "p05/t.bzl",
+      2,
+      18,
+      "key"
+     ],
+     [
+      "<builtin>",
+      null,
+      null,
+      "sorted"
+     ],
+     [
+      "p05/t.bzl",
+      1,
+      5,
+      "key"
+     ]
+    ]
+   },
+   "native": {
+    "exit": 1,
+    "message": "function 'key' called recursively",
+    "traceback": [
+     [
+      "p05/t.bzl",
+      7,
+      "<module>"
+     ],
+     [
+      "p05/t.bzl",
+      5,
+      "run"
+     ],
+     [
+      "p05/t.bzl",
+      2,
+      "key"
+     ],
+     [
+      "<builtin>",
+      null,
+      "sorted"
+     ]
+    ],
+    "location": [
+     "p05/t.bzl",
+     1,
+     5
+    ]
+   },
+   "innermost_location_match": true,
+   "verdict": "EXACT_MESSAGE_AND_TRACEBACK"
+  },
+  {
+   "id": "T/nested_def_calls_outer",
+   "package": "p06",
+   "command": "query",
+   "files": {
+    "BUILD": "load(\":t.bzl\", \"x\")\n",
+    "t.bzl": "def outer(n):\n    def inner():\n        return outer(n - 1)\n    return inner() if n else 0\n\nouter(2)\nx = 1\n"
+   },
+   "reference": {
+    "exit": 7,
+    "message": "function 'outer' called recursively",
+    "frame": "Error",
+    "traceback": [
+     [
+      "p06/t.bzl",
+      6,
+      6,
+      "<toplevel>"
+     ],
+     [
+      "p06/t.bzl",
+      4,
+      17,
+      "outer"
+     ],
+     [
+      "p06/t.bzl",
+      3,
+      21,
+      "inner"
+     ],
+     [
+      "p06/t.bzl",
+      1,
+      5,
+      "outer"
+     ]
+    ]
+   },
+   "native": {
+    "exit": 1,
+    "message": "function 'outer' called recursively",
+    "traceback": [
+     [
+      "p06/t.bzl",
+      6,
+      "<module>"
+     ],
+     [
+      "p06/t.bzl",
+      4,
+      "outer"
+     ],
+     [
+      "p06/t.bzl",
+      3,
+      "inner"
+     ]
+    ],
+    "location": [
+     "p06/t.bzl",
+     1,
+     5
+    ]
+   },
+   "innermost_location_match": true,
+   "verdict": "EXACT_MESSAGE_AND_TRACEBACK"
+  },
+  {
+   "id": "T/closures_same_code",
+   "package": "p07",
+   "command": "query",
+   "files": {
+    "BUILD": "load(\":t.bzl\", \"x\")\n",
+    "t.bzl": "def mk():\n    def inner(k, n):\n        return k(k, n - 1) if n else 0\n    return inner\n\nmk()(mk(), 2)\nx = 1\n"
+   },
+   "reference": {
+    "exit": 7,
+    "message": "function 'inner' called recursively",
+    "frame": "Error",
+    "traceback": [
+     [
+      "p07/t.bzl",
+      6,
+      5,
+      "<toplevel>"
+     ],
+     [
+      "p07/t.bzl",
+      3,
+      17,
+      "inner"
+     ],
+     [
+      "p07/t.bzl",
+      2,
+      9,
+      "inner"
+     ]
+    ]
+   },
+   "native": {
+    "exit": 1,
+    "message": "function 'inner' called recursively",
+    "traceback": [
+     [
+      "p07/t.bzl",
+      6,
+      "<module>"
+     ],
+     [
+      "p07/t.bzl",
+      3,
+      "inner"
+     ]
+    ],
+    "location": [
+     "p07/t.bzl",
+     2,
+     9
+    ]
+   },
+   "innermost_location_match": true,
+   "verdict": "EXACT_MESSAGE_AND_TRACEBACK"
+  },
+  {
+   "id": "T/callback_parameter",
+   "package": "p08",
+   "command": "query",
+   "files": {
+    "BUILD": "load(\":t.bzl\", \"x\")\n",
+    "t.bzl": "def apply(g, n):\n    return g(n)\n\ndef h(n):\n    return apply(h, n - 1) if n else 0\n\nh(2)\nx = 1\n"
+   },
+   "reference": {
+    "exit": 7,
+    "message": "function 'h' called recursively",
+    "frame": "Error",
+    "traceback": [
+     [
+      "p08/t.bzl",
+      7,
+      2,
+      "<toplevel>"
+     ],
+     [
+      "p08/t.bzl",
+      5,
+      17,
+      "h"
+     ],
+     [
+      "p08/t.bzl",
+      2,
+      13,
+      "apply"
+     ],
+     [
+      "p08/t.bzl",
+      4,
+      5,
+      "h"
+     ]
+    ]
+   },
+   "native": {
+    "exit": 1,
+    "message": "function 'h' called recursively",
+    "traceback": [
+     [
+      "p08/t.bzl",
+      7,
+      "<module>"
+     ],
+     [
+      "p08/t.bzl",
+      5,
+      "h"
+     ],
+     [
+      "p08/t.bzl",
+      2,
+      "apply"
+     ]
+    ],
+    "location": [
+     "p08/t.bzl",
+     4,
+     5
+    ]
+   },
+   "innermost_location_match": true,
+   "verdict": "EXACT_MESSAGE_AND_TRACEBACK"
+  },
+  {
+   "id": "T/via_loaded_function",
+   "package": "p09",
+   "command": "query",
+   "files": {
+    "BUILD": "load(\":t.bzl\", \"x\")\n",
+    "u.bzl": "def apply(g, n):\n    return g(n)\n",
+    "t.bzl": "load(\":u.bzl\", \"apply\")\n\ndef h(n):\n    return apply(h, n - 1) if n else 0\n\nh(2)\nx = 1\n"
+   },
+   "reference": {
+    "exit": 7,
+    "message": "function 'h' called recursively",
+    "frame": "Error",
+    "traceback": [
+     [
+      "p09/t.bzl",
+      6,
+      2,
+      "<toplevel>"
+     ],
+     [
+      "p09/t.bzl",
+      4,
+      17,
+      "h"
+     ],
+     [
+      "p09/u.bzl",
+      2,
+      13,
+      "apply"
+     ],
+     [
+      "p09/t.bzl",
+      3,
+      5,
+      "h"
+     ]
+    ]
+   },
+   "native": {
+    "exit": 1,
+    "message": "function 'h' called recursively",
+    "traceback": [
+     [
+      "p09/t.bzl",
+      6,
+      "<module>"
+     ],
+     [
+      "p09/t.bzl",
+      4,
+      "h"
+     ],
+     [
+      "p09/u.bzl",
+      2,
+      "apply"
+     ]
+    ],
+    "location": [
+     "p09/t.bzl",
+     3,
+     5
+    ]
+   },
+   "innermost_location_match": true,
+   "verdict": "EXACT_MESSAGE_AND_TRACEBACK"
+  },
+  {
+   "id": "T/in_comprehension",
+   "package": "p10",
+   "command": "query",
+   "files": {
+    "BUILD": "load(\":t.bzl\", \"x\")\n",
+    "t.bzl": "def f(n):\n    return [f(i) for i in range(n)]\n\nf(2)\nx = 1\n"
+   },
+   "reference": {
+    "exit": 7,
+    "message": "function 'f' called recursively",
+    "frame": "Error",
+    "traceback": [
+     [
+      "p10/t.bzl",
+      4,
+      2,
+      "<toplevel>"
+     ],
+     [
+      "p10/t.bzl",
+      2,
+      14,
+      "f"
+     ],
+     [
+      "p10/t.bzl",
+      1,
+      5,
+      "f"
+     ]
+    ]
+   },
+   "native": {
+    "exit": 1,
+    "message": "function 'f' called recursively",
+    "traceback": [
+     [
+      "p10/t.bzl",
+      4,
+      "<module>"
+     ],
+     [
+      "p10/t.bzl",
+      2,
+      "f"
+     ]
+    ],
+    "location": [
+     "p10/t.bzl",
+     1,
+     5
+    ]
+   },
+   "innermost_location_match": true,
+   "verdict": "EXACT_MESSAGE_AND_TRACEBACK"
+  },
+  {
+   "id": "T/binding_error_first",
+   "package": "p11",
+   "command": "query",
+   "files": {
+    "BUILD": "load(\":t.bzl\", \"x\")\n",
+    "t.bzl": "def f(a):\n    f()\n\nf(1)\nx = 1\n"
+   },
+   "reference": {
+    "exit": 7,
+    "message": "f() missing 1 required positional argument: a",
+    "frame": "Error",
+    "traceback": [
+     [
+      "p11/t.bzl",
+      4,
+      2,
+      "<toplevel>"
+     ],
+     [
+      "p11/t.bzl",
+      2,
+      6,
+      "f"
+     ],
+     [
+      "p11/t.bzl",
+      1,
+      5,
+      "f"
+     ]
+    ]
+   },
+   "native": {
+    "exit": 1,
+    "message": "f() missing 1 required positional argument: a",
+    "traceback": [
+     [
+      "p11/t.bzl",
+      4,
+      "<module>"
+     ],
+     [
+      "p11/t.bzl",
+      2,
+      "f"
+     ]
+    ],
+    "location": [
+     "p11/t.bzl",
+     2,
+     5
+    ]
+   },
+   "innermost_location_match": false,
+   "verdict": "EXACT_MESSAGE",
+   "note": "Message identical. Bazel binds arguments inside the callee frame, so its traceback ends at the def (1:5); the native binding error stays at the call site (N33 traceback layout, unchanged by N48).",
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"<WS>/p11/t.bzl\", line 4, column 2, in <toplevel>\n\t\tf(1)\n\tFile \"<WS>/p11/t.bzl\", line 2, column 6, in f\n\t\tf()\n\tFile \"<WS>/p11/t.bzl\", line 1, column 5, in f\n\t\tdef f(a):\nError: f() missing 1 required positional argument: a\nERROR: error loading package 'p11': initialization of module 'p11/t.bzl' failed\n",
+   "native_stderr": "bazel-rs: cannot evaluate //p11:t.bzl: Traceback (most recent call last):\n  * //p11:t.bzl:4, in <module>\n      f(1)\n  * //p11:t.bzl:2, in f\n      f()\nerror: f() missing 1 required positional argument: a\n --> //p11:t.bzl:2:5\n  |\n2 |     f()\n  |     ^^^\n  |\n\n"
+  },
+  {
+   "id": "T/provider_init_calls_provider",
+   "package": "p12",
+   "command": "query",
+   "files": {
+    "BUILD": "load(\":t.bzl\", \"x\")\n",
+    "t.bzl": "def _init(**kwargs):\n    return {\"v\": P(**kwargs)}\n\nP, _new = provider(init = _init)\nP(a = 1)\nx = 1\n"
+   },
+   "reference": {
+    "exit": 7,
+    "message": "function '_init' called recursively",
+    "frame": "Error",
+    "traceback": [
+     [
+      "p12/t.bzl",
+      5,
+      2,
+      "<toplevel>"
+     ],
+     [
+      "p12/t.bzl",
+      4,
+      19,
+      "P"
+     ],
+     [
+      "p12/t.bzl",
+      2,
+      19,
+      "_init"
+     ],
+     [
+      "p12/t.bzl",
+      4,
+      19,
+      "P"
+     ],
+     [
+      "p12/t.bzl",
+      1,
+      5,
+      "_init"
+     ]
+    ]
+   },
+   "native": {
+    "exit": 1,
+    "message": "function '_init' called recursively",
+    "traceback": [
+     [
+      "p12/t.bzl",
+      5,
+      "<module>"
+     ],
+     [
+      "<builtin>",
+      null,
+      "<provider>"
+     ],
+     [
+      "<builtin>",
+      null,
+      "None"
+     ],
+     [
+      "p12/t.bzl",
+      2,
+      "_init"
+     ],
+     [
+      "<builtin>",
+      null,
+      "<provider>"
+     ],
+     [
+      "<builtin>",
+      null,
+      "None"
+     ]
+    ],
+    "location": [
+     "p12/t.bzl",
+     1,
+     5
+    ]
+   },
+   "innermost_location_match": true,
+   "verdict": "EXACT_MESSAGE",
+   "note": "Message and innermost location identical. Bazel shows the provider callable as a frame at its definition (`in P`, 4:19); native shows `File <builtin>, in <provider>` plus its host-callback `None` frame (native traceback layout).",
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"<WS>/p12/t.bzl\", line 5, column 2, in <toplevel>\n\t\tP(a = 1)\n\tFile \"<WS>/p12/t.bzl\", line 4, column 19, in P\n\t\tP, _new = provider(init = _init)\n\tFile \"<WS>/p12/t.bzl\", line 2, column 19, in _init\n\t\treturn {\"v\": P(**kwargs)}\n\tFile \"<WS>/p12/t.bzl\", line 4, column 19, in P\n\t\tP, _new = provider(init = _init)\n\tFile \"<WS>/p12/t.bzl\", line 1, column 5, in _init\n\t\tdef _init(**kwargs):\nError: function '_init' called recursively\nERROR: error loading package 'p12': initialization of module 'p12/t.bzl' failed\n",
+   "native_stderr": "bazel-rs: cannot evaluate //p12:t.bzl: Traceback (most recent call last):\n  * //p12:t.bzl:5, in <module>\n      P(a = 1)\n  File <builtin>, in <provider>\n  File <builtin>, in None\n  * //p12:t.bzl:2, in _init\n      return {\"v\": P(**kwargs)}\n  File <builtin>, in <provider>\n  File <builtin>, in None\nerror: function '_init' called recursively\n --> //p12:t.bzl:1:5\n  |\n1 | def _init(**kwargs):\n  |     ^^^^^\n  |\n\n"
+  },
+  {
+   "id": "T/no_dynamic_recursion_ok",
+   "package": "p13",
+   "command": "query",
+   "files": {
+    "BUILD": "load(\":t.bzl\", \"x\")\n",
+    "t.bzl": "calls = []\n\ndef yin(x):\n    calls.append(\"yin\")\n    if x:\n        yang(False)\n\ndef yang(x):\n    calls.append(\"yang\")\n    if x:\n        yin(False)\n\nyin(True)\nyang(True)\n\ndef one():\n    return 1\n\nprint(\"N48PRINT\", calls, [one() for _ in range(3)], sorted([3, 1, 2], key = lambda v: -v))\nx = 1\n"
+   },
+   "reference": {
+    "exit": 0,
+    "query": [],
+    "prints": [
+     "N48PRINT [\"yin\", \"yang\", \"yang\", \"yin\"] [1, 1, 1] [3, 2, 1]"
+    ]
+   },
+   "native": {
+    "exit": 0,
+    "query": [],
+    "prints": [
+     "N48PRINT [\"yin\", \"yang\", \"yang\", \"yin\"] [1, 1, 1] [3, 2, 1]"
+    ]
+   },
+   "verdict": "BOTH_SUCCEED"
+  },
+  {
+   "id": "M/legacy_macro",
+   "package": "p14",
+   "command": "query",
+   "files": {
+    "BUILD": "load(\":t.bzl\", \"m\")\n\nm(name = \"x\")\n",
+    "t.bzl": "def m(name, depth = 0):\n    if depth < 2:\n        m(name = name, depth = depth + 1)\n    native.filegroup(name = name)\n"
+   },
+   "reference": {
+    "exit": 7,
+    "message": "function 'm' called recursively",
+    "frame": "Error",
+    "traceback": [
+     [
+      "p14/BUILD",
+      3,
+      2,
+      "<toplevel>"
+     ],
+     [
+      "p14/t.bzl",
+      3,
+      10,
+      "m"
+     ],
+     [
+      "p14/t.bzl",
+      1,
+      5,
+      "m"
+     ]
+    ]
+   },
+   "native": {
+    "exit": 1,
+    "message": "function 'm' called recursively",
+    "traceback": [
+     [
+      "p14/BUILD",
+      3,
+      "<module>"
+     ],
+     [
+      "p14/t.bzl",
+      3,
+      "m"
+     ]
+    ],
+    "location": [
+     "p14/t.bzl",
+     1,
+     5
+    ]
+   },
+   "innermost_location_match": true,
+   "verdict": "EXACT_MESSAGE_AND_TRACEBACK"
+  },
+  {
+   "id": "M/rule_initializer_calls_rule",
+   "package": "p15",
+   "command": "query",
+   "files": {
+    "BUILD": "load(\":t.bzl\", \"r\")\n\nr(name = \"x\")\n",
+    "t.bzl": "def _init(name, **kwargs):\n    r(name = name + \"_again\")\n    return {}\n\ndef _impl(ctx):\n    return []\n\nr = rule(implementation = _impl, initializer = _init)\n"
+   },
+   "reference": {
+    "exit": 7,
+    "message": "a rule can only be instantiated while evaluating a BUILD file or a legacy or symbolic macro",
+    "frame": "Error in r",
+    "traceback": [
+     [
+      "p15/BUILD",
+      3,
+      2,
+      "<toplevel>"
+     ],
+     [
+      "<builtin>",
+      null,
+      null,
+      "r"
+     ],
+     [
+      "p15/t.bzl",
+      2,
+      6,
+      "_init"
+     ]
+    ]
+   },
+   "native": {
+    "exit": 1,
+    "message": "function '_init' called recursively",
+    "traceback": [
+     [
+      "p15/BUILD",
+      3,
+      "<module>"
+     ],
+     [
+      "<builtin>",
+      null,
+      "<rule r>"
+     ],
+     [
+      "<builtin>",
+      null,
+      "None"
+     ],
+     [
+      "p15/t.bzl",
+      2,
+      "_init"
+     ],
+     [
+      "<builtin>",
+      null,
+      "<rule r>"
+     ],
+     [
+      "<builtin>",
+      null,
+      "None"
+     ]
+    ],
+    "location": [
+     "p15/t.bzl",
+     1,
+     5
+    ]
+   },
+   "innermost_location_match": false,
+   "verdict": "MISMATCH",
+   "note": "Pre-existing: Bazel forbids instantiating a rule from a rule initializer (`a rule can only be instantiated while evaluating a BUILD file or a legacy or symbolic macro`); native lacks that check, so the initializer re-enters itself and N48 reports the recursion (previously native overflowed the call stack).",
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"<WS>/p15/BUILD\", line 3, column 2, in <toplevel>\n\t\tr(name = \"x\")\n\tFile \"<builtin>\", in r\n\tFile \"<WS>/p15/t.bzl\", line 2, column 6, in _init\n\t\tr(name = name + \"_again\")\nError in r: a rule can only be instantiated while evaluating a BUILD file or a legacy or symbolic macro\nERROR: package contains errors: p15: Traceback (most recent call last):\n\tFile \"<WS>/p15/BUILD\", line 3, column 2, in <toplevel>\n\t\tr(name = \"x\")\n\tFile \"<builtin>\", in r\n\tFile \"<WS>/p15/t.bzl\", line 2, column 6, in _init\n\t\tr(name = name + \"_again\")\nError in r: a rule can only be instantiated while evaluating a BUILD file or a legacy or symbolic macro\nERROR: Evaluation of query \"//p15:all\" failed\n",
+   "native_stderr": "bazel-rs: Traceback (most recent call last):\n  * <WS>/p15/BUILD:3, in <module>\n      r(name = \"x\")\nerror: Traceback (most recent call last):\n  * <WS>/p15/BUILD:3, in <module>\n      r(name = \"x\")\n  File <builtin>, in <rule r>\n  File <builtin>, in None\n  * //p15:t.bzl:2, in _init\n      r(name = name + \"_again\")\nerror: Traceback (most recent call last):\n  * <WS>/p15/BUILD:3, in <module>\n      r(name = \"x\")\n  File <builtin>, in <rule r>\n  File <builtin>, in None\n  * //p15:t.bzl:2, in _init\n      r(name = name + \"_again\")\n  File <builtin>, in <rule r>\n  File <builtin>, in None\nerror: function '_init' called recursively\n --> //p15:t.bzl:1:5\n  |\n1 | def _init(name, **kwargs):\n  |     ^^^^^\n  |\n\n --> //p15:t.bzl:2:5\n  |\n2 |     r(name = name + \"_again\")\n  |     ^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\n --> <WS>/p15/BUILD:3:1\n  |\n3 | r(name = \"x\")\n  | ^^^^^^^^^^^^^\n  |\n\nSupported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n"
+  },
+  {
+   "id": "M/symbolic_macro_impl",
+   "package": "p16",
+   "command": "query",
+   "files": {
+    "BUILD": "load(\":t.bzl\", \"m\")\n\nm(name = \"x\")\n",
+    "t.bzl": "def _helper(n):\n    return _helper(n - 1) if n else None\n\ndef _impl(name, visibility):\n    _helper(2)\n    native.filegroup(name = name)\n\nm = macro(implementation = _impl)\n"
+   },
+   "reference": {
+    "exit": 7,
+    "message": "function '_helper' called recursively",
+    "frame": "Error",
+    "traceback": [
+     [
+      "p16/BUILD",
+      3,
+      2,
+      "<toplevel>"
+     ],
+     [
+      "p16/t.bzl",
+      8,
+      1,
+      "m"
+     ],
+     [
+      "p16/t.bzl",
+      5,
+      12,
+      "_impl"
+     ],
+     [
+      "p16/t.bzl",
+      2,
+      19,
+      "_helper"
+     ],
+     [
+      "p16/t.bzl",
+      1,
+      5,
+      "_helper"
+     ]
+    ]
+   },
+   "native": {
+    "exit": 1,
+    "message": "function '_helper' called recursively",
+    "traceback": [
+     [
+      "p16/BUILD",
+      3,
+      "<module>"
+     ],
+     [
+      "<builtin>",
+      null,
+      "<macro m>"
+     ],
+     [
+      "<builtin>",
+      null,
+      "None"
+     ],
+     [
+      "p16/t.bzl",
+      5,
+      "_impl"
+     ],
+     [
+      "p16/t.bzl",
+      2,
+      "_helper"
+     ]
+    ],
+    "location": [
+     "p16/t.bzl",
+     1,
+     5
+    ]
+   },
+   "innermost_location_match": true,
+   "verdict": "EXACT_MESSAGE",
+   "note": "Message and innermost location identical. Bazel shows the macro thread under its instantiation (`in m` at 8:1); native shows `<macro m>`/`None` builtin frames (native traceback layout).",
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"<WS>/p16/BUILD\", line 3, column 2, in <toplevel>\n\t\tm(name = \"x\")\n\tFile \"<WS>/p16/t.bzl\", line 8, column 1, in m\n\t\tm = macro(implementation = _impl)\n\tFile \"<WS>/p16/t.bzl\", line 5, column 12, in _impl\n\t\t_helper(2)\n\tFile \"<WS>/p16/t.bzl\", line 2, column 19, in _helper\n\t\treturn _helper(n - 1) if n else None\n\tFile \"<WS>/p16/t.bzl\", line 1, column 5, in _helper\n\t\tdef _helper(n):\nError: function '_helper' called recursively\nERROR: package contains errors: p16: Traceback (most recent call last):\n\tFile \"<WS>/p16/BUILD\", line 3, column 2, in <toplevel>\n\t\tm(name = \"x\")\n\tFile \"<WS>/p16/t.bzl\", line 8, column 1, in m\n\t\tm = macro(implementation = _impl)\n\tFile \"<WS>/p16/t.bzl\", line 5, column 12, in _impl\n\t\t_helper(2)\n\tFile \"<WS>/p16/t.bzl\", line 2, column 19, in _helper\n\t\treturn _helper(n - 1) if n else None\n\tFile \"<WS>/p16/t.bzl\", line 1, column 5, in _helper\n\t\tdef _helper(n):\nError: function '_helper' called recursively\nERROR: Evaluation of query \"//p16:all\" failed\n",
+   "native_stderr": "bazel-rs: Traceback (most recent call last):\n  * <WS>/p16/BUILD:3, in <module>\n      m(name = \"x\")\nerror: Traceback (most recent call last):\n  * <WS>/p16/BUILD:3, in <module>\n      m(name = \"x\")\n  File <builtin>, in <macro m>\n  File <builtin>, in None\n  * //p16:t.bzl:5, in _impl\n      _helper(2)\n  * //p16:t.bzl:2, in _helper\n      return _helper(n - 1) if n else None\nerror: function '_helper' called recursively\n --> //p16:t.bzl:1:5\n  |\n1 | def _helper(n):\n  |     ^^^^^^^\n  |\n\n --> <WS>/p16/BUILD:3:1\n  |\n3 | m(name = \"x\")\n  | ^^^^^^^^^^^^^\n  |\n\nSupported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n"
+  },
+  {
+   "id": "M/symbolic_macro_shared_helper_ok",
+   "package": "p17",
+   "command": "query",
+   "files": {
+    "BUILD": "load(\":t.bzl\", \"outer_m\")\n\nouter_m(name = \"x\")\n",
+    "t.bzl": "def _make(name, inner):\n    if inner:\n        inner_m(name = name + \"_inner\")\n    else:\n        native.filegroup(name = name)\n\ndef _outer_impl(name, visibility):\n    _make(name, True)\n\ndef _inner_impl(name, visibility):\n    _make(name, False)\n\ninner_m = macro(implementation = _inner_impl)\nouter_m = macro(implementation = _outer_impl)\n"
+   },
+   "reference": {
+    "exit": 0,
+    "message": null,
+    "frame": null,
+    "traceback": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "nested symbolic macro invocations are unsupported",
+    "traceback": [
+     [
+      "p17/BUILD",
+      3,
+      "<module>"
+     ],
+     [
+      "<builtin>",
+      null,
+      "<macro outer_m>"
+     ],
+     [
+      "<builtin>",
+      null,
+      "None"
+     ],
+     [
+      "p17/t.bzl",
+      8,
+      "_outer_impl"
+     ],
+     [
+      "p17/t.bzl",
+      3,
+      "_make"
+     ]
+    ],
+    "location": [
+     "p17/t.bzl",
+     3,
+     9
+    ]
+   },
+   "innermost_location_match": false,
+   "verdict": "REFERENCE_ACCEPTS",
+   "note": "Pre-existing: native rejects a symbolic macro instantiated by another symbolic macro (`nested symbolic macro invocations are unsupported`) before any recursion check; see M/symbolic_macro_from_legacy_helper_ok for the new-thread scope that native does exercise.",
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+   "native_stderr": "bazel-rs: Traceback (most recent call last):\n  * <WS>/p17/BUILD:3, in <module>\n      outer_m(name = \"x\")\nerror: Traceback (most recent call last):\n  * <WS>/p17/BUILD:3, in <module>\n      outer_m(name = \"x\")\n  File <builtin>, in <macro outer_m>\n  File <builtin>, in None\n  * //p17:t.bzl:8, in _outer_impl\n      _make(name, True)\n  * //p17:t.bzl:3, in _make\n      inner_m(name = name + \"_inner\")\nerror: nested symbolic macro invocations are unsupported\n --> //p17:t.bzl:3:9\n  |\n3 |         inner_m(name = name + \"_inner\")\n  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\n --> <WS>/p17/BUILD:3:1\n  |\n3 | outer_m(name = \"x\")\n  | ^^^^^^^^^^^^^^^^^^^\n  |\n\nSupported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n"
+  },
+  {
+   "id": "M/symbolic_macro_from_legacy_helper_ok",
+   "package": "p18",
+   "command": "query",
+   "files": {
+    "BUILD": "load(\":t.bzl\", \"lm\")\n\nlm(name = \"x\")\n",
+    "t.bzl": "def _make(name, symbolic):\n    if symbolic:\n        m(name = name)\n    else:\n        native.filegroup(name = name + \"_fg\")\n\ndef _impl(name, visibility):\n    _make(name, False)\n\nm = macro(implementation = _impl)\n\ndef lm(name):\n    _make(name, True)\n"
+   },
+   "reference": {
+    "exit": 0,
+    "query": [
+     "//p18:x_fg"
+    ],
+    "prints": []
+   },
+   "native": {
+    "exit": 0,
+    "query": [
+     "//p18:x_fg"
+    ],
+    "prints": []
+   },
+   "verdict": "BOTH_SUCCEED"
+  },
+  {
+   "id": "M/symbolic_macro_instantiates_itself",
+   "package": "p19",
+   "command": "query",
+   "files": {
+    "BUILD": "load(\":t.bzl\", \"m\")\n\nm(name = \"x\")\n",
+    "t.bzl": "def _impl(name, visibility):\n    m(name = name + \"_x\")\n\nm = macro(implementation = _impl)\n"
+   },
+   "reference": {
+    "exit": 7,
+    "message": null,
+    "frame": null,
+    "traceback": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "nested symbolic macro invocations are unsupported",
+    "traceback": [
+     [
+      "p19/BUILD",
+      3,
+      "<module>"
+     ],
+     [
+      "<builtin>",
+      null,
+      "<macro m>"
+     ],
+     [
+      "<builtin>",
+      null,
+      "None"
+     ],
+     [
+      "p19/t.bzl",
+      2,
+      "_impl"
+     ]
+    ],
+    "location": [
+     "p19/t.bzl",
+     2,
+     5
+    ]
+   },
+   "innermost_location_match": false,
+   "verdict": "MISMATCH",
+   "note": "Pre-existing: Bazel's macro-instantiation recursion check (`macro 'x_x' is a direct recursive call of 'x'`, MacroClass.getRecursionErrorMessage) is not implemented natively; native stops earlier with `nested symbolic macro invocations are unsupported`.",
+   "reference_stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: macro 'x_x' is a direct recursive call of 'x'. Macro instantiation traceback (most recent call last):\n\tPackage //p19, macro 'x' of type //p19:t.bzl%m\n\tPackage //p19, macro 'x_x' of type //p19:t.bzl%m\nERROR: package contains errors: p19: macro 'x_x' is a direct recursive call of 'x'. Macro instantiation traceback (most recent call last):\n\tPackage //p19, macro 'x' of type //p19:t.bzl%m\n\tPackage //p19, macro 'x_x' of type //p19:t.bzl%m\nERROR: Evaluation of query \"//p19:all\" failed\n",
+   "native_stderr": "bazel-rs: Traceback (most recent call last):\n  * <WS>/p19/BUILD:3, in <module>\n      m(name = \"x\")\nerror: Traceback (most recent call last):\n  * <WS>/p19/BUILD:3, in <module>\n      m(name = \"x\")\n  File <builtin>, in <macro m>\n  File <builtin>, in None\n  * //p19:t.bzl:2, in _impl\n      m(name = name + \"_x\")\nerror: nested symbolic macro invocations are unsupported\n --> //p19:t.bzl:2:5\n  |\n2 |     m(name = name + \"_x\")\n  |     ^^^^^^^^^^^^^^^^^^^^^\n  |\n\n --> <WS>/p19/BUILD:3:1\n  |\n3 | m(name = \"x\")\n  | ^^^^^^^^^^^^^\n  |\n\nSupported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n"
+  },
+  {
+   "id": "R/impl_helper",
+   "package": "p20",
+   "command": "build",
+   "files": {
+    "BUILD": "load(\":t.bzl\", \"r\")\nr(name = \"x\")\n",
+    "t.bzl": "def _helper(ctx, n):\n    return _helper(ctx, n - 1) if n else []\n\ndef _impl(ctx):\n    return _helper(ctx, 2)\n\nr = rule(implementation = _impl)\n"
+   },
+   "reference": {
+    "exit": 1,
+    "message": "function '_helper' called recursively",
+    "frame": "Error",
+    "traceback": [
+     [
+      "p20/t.bzl",
+      5,
+      19,
+      "_impl"
+     ],
+     [
+      "p20/t.bzl",
+      2,
+      19,
+      "_helper"
+     ],
+     [
+      "p20/t.bzl",
+      1,
+      5,
+      "_helper"
+     ]
+    ]
+   },
+   "native": {
+    "exit": 1,
+    "message": "function '_helper' called recursively",
+    "traceback": [
+     [
+      "<builtin>",
+      null,
+      "<module>"
+     ],
+     [
+      "p20/t.bzl",
+      5,
+      "_impl"
+     ],
+     [
+      "p20/t.bzl",
+      2,
+      "_helper"
+     ]
+    ],
+    "location": [
+     "p20/t.bzl",
+     1,
+     5
+    ]
+   },
+   "innermost_location_match": true,
+   "verdict": "EXACT_MESSAGE_AND_STARLARK_TRACEBACK",
+   "note": "Message and Starlark frames identical; native's rule-implementation traceback starts with its host-callback frame `File <builtin>, in <module>` (native traceback layout)."
+  },
+  {
+   "id": "R/impl_itself",
+   "package": "p21",
+   "command": "build",
+   "files": {
+    "BUILD": "load(\":t.bzl\", \"r\")\nr(name = \"x\")\n",
+    "t.bzl": "def _impl(ctx, n = 1):\n    if n:\n        _impl(ctx, n - 1)\n    return []\n\nr = rule(implementation = _impl)\n"
+   },
+   "reference": {
+    "exit": 1,
+    "message": "function '_impl' called recursively",
+    "frame": "Error",
+    "traceback": [
+     [
+      "p21/t.bzl",
+      3,
+      14,
+      "_impl"
+     ],
+     [
+      "p21/t.bzl",
+      1,
+      5,
+      "_impl"
+     ]
+    ]
+   },
+   "native": {
+    "exit": 1,
+    "message": "function '_impl' called recursively",
+    "traceback": [
+     [
+      "<builtin>",
+      null,
+      "<module>"
+     ],
+     [
+      "p21/t.bzl",
+      3,
+      "_impl"
+     ]
+    ],
+    "location": [
+     "p21/t.bzl",
+     1,
+     5
+    ]
+   },
+   "innermost_location_match": true,
+   "verdict": "EXACT_MESSAGE_AND_STARLARK_TRACEBACK",
+   "note": "Message and Starlark frames identical; native's rule-implementation traceback starts with its host-callback frame `File <builtin>, in <module>` (native traceback layout)."
+  },
+  {
+   "id": "R/map_each_reentry_ok",
+   "package": "p22",
+   "command": "build",
+   "files": {
+    "BUILD": "load(\":t.bzl\", \"r\")\nr(name = \"x\")\n",
+    "t.bzl": "def _fmt(x):\n    if type(x) != \"ctx\":\n        return str(x)\n    ctx = x\n    args = ctx.actions.args()\n    args.add_all([1, 2], map_each = _fmt)\n    out = ctx.actions.declare_file(ctx.label.name + \".txt\")\n    ctx.actions.write(out, args)\n    return [DefaultInfo(files = depset([out]))]\n\ndef _impl(ctx):\n    return _fmt(ctx)\n\nr = rule(implementation = _impl)\n"
+   },
+   "reference": {
+    "exit": 0,
+    "query": null,
+    "prints": []
+   },
+   "native": {
+    "exit": 0,
+    "query": null,
+    "prints": []
+   },
+   "verdict": "BOTH_SUCCEED"
+  }
+ ],
+ "run_history": [
+  {
+   "run": 1,
+   "script_sha256": "30be0ba1d8cb6075f28ed1d9512c3177e432f8d49ba080a75ed8953133e83cc1",
+   "native_sha256": "8e5e4b66824bee0271d65b231ec746c9b1971ca7223cf7f32b6ca34656599e07",
+   "worktree": {
+    "base_commit": "3d09a66fad0a02f364d1a69329ef9ded0fb0911b",
+    "src_vendor_diff_sha256": "f9a2cd979fd883ef491f4be4148c7a85340b4b4ccd7f502cb74a3ad8bbd97446",
+    "diff_scope": "git diff HEAD -- src vendor Cargo.toml Cargo.lock (tracked files; no untracked vendor files are added)"
+   },
+   "probe_count": 23,
+   "counts": {
+    "EXACT_MESSAGE_AND_TRACEBACK": 12,
+    "EXACT_MESSAGE": 3,
+    "BOTH_SUCCEED": 3,
+    "MISMATCH": 2,
+    "REFERENCE_ACCEPTS": 1,
+    "EXACT_MESSAGE_AND_STARLARK_TRACEBACK": 2
+   },
+   "counts_by_group": {
+    "T": {
+     "EXACT_MESSAGE_AND_TRACEBACK": 11,
+     "EXACT_MESSAGE": 2,
+     "BOTH_SUCCEED": 1
+    },
+    "M": {
+     "EXACT_MESSAGE_AND_TRACEBACK": 1,
+     "MISMATCH": 2,
+     "EXACT_MESSAGE": 1,
+     "REFERENCE_ACCEPTS": 1,
+     "BOTH_SUCCEED": 1
+    },
+    "R": {
+     "EXACT_MESSAGE_AND_STARLARK_TRACEBACK": 2,
+     "BOTH_SUCCEED": 1
+    }
+   },
+   "non_exact": [
+    {
+     "id": "T/binding_error_first",
+     "verdict": "EXACT_MESSAGE",
+     "reference": "f() missing 1 required positional argument: a",
+     "native": "f() missing 1 required positional argument: a"
+    },
+    {
+     "id": "T/provider_init_calls_provider",
+     "verdict": "EXACT_MESSAGE",
+     "reference": "function '_init' called recursively",
+     "native": "function '_init' called recursively"
+    },
+    {
+     "id": "M/rule_initializer_calls_rule",
+     "verdict": "MISMATCH",
+     "reference": "a rule can only be instantiated while evaluating a BUILD file or a legacy or symbolic macro",
+     "native": "function '_init' called recursively"
+    },
+    {
+     "id": "M/symbolic_macro_impl",
+     "verdict": "EXACT_MESSAGE",
+     "reference": "function '_helper' called recursively",
+     "native": "function '_helper' called recursively"
+    },
+    {
+     "id": "M/symbolic_macro_shared_helper_ok",
+     "verdict": "REFERENCE_ACCEPTS",
+     "reference": null,
+     "native": "nested symbolic macro invocations are unsupported"
+    },
+    {
+     "id": "M/symbolic_macro_instantiates_itself",
+     "verdict": "MISMATCH",
+     "reference": null,
+     "native": "nested symbolic macro invocations are unsupported"
+    }
+   ]
+  },
+  {
+   "run": 2,
+   "script_sha256": "509c94f20bbca1707dde986527d29e4d28db74b2f2c7f4a42ac8228ae74635cd",
+   "native_sha256": "8e5e4b66824bee0271d65b231ec746c9b1971ca7223cf7f32b6ca34656599e07",
+   "worktree": {
+    "base_commit": "3d09a66fad0a02f364d1a69329ef9ded0fb0911b",
+    "src_vendor_diff_sha256": "10a3754685ba27446437e2210d31ee126cfd453857f57267141f57aa92543a4a",
+    "diff_scope": "git diff HEAD -- src vendor Cargo.toml Cargo.lock (tracked files; no untracked vendor files are added)"
+   },
+   "probe_count": 23,
+   "counts": {
+    "EXACT_MESSAGE_AND_TRACEBACK": 12,
+    "EXACT_MESSAGE": 3,
+    "BOTH_SUCCEED": 3,
+    "MISMATCH": 2,
+    "REFERENCE_ACCEPTS": 1,
+    "EXACT_MESSAGE_AND_STARLARK_TRACEBACK": 2
+   },
+   "counts_by_group": {
+    "T": {
+     "EXACT_MESSAGE_AND_TRACEBACK": 11,
+     "EXACT_MESSAGE": 2,
+     "BOTH_SUCCEED": 1
+    },
+    "M": {
+     "EXACT_MESSAGE_AND_TRACEBACK": 1,
+     "MISMATCH": 2,
+     "EXACT_MESSAGE": 1,
+     "REFERENCE_ACCEPTS": 1,
+     "BOTH_SUCCEED": 1
+    },
+    "R": {
+     "EXACT_MESSAGE_AND_STARLARK_TRACEBACK": 2,
+     "BOTH_SUCCEED": 1
+    }
+   },
+   "non_exact": [
+    {
+     "id": "T/binding_error_first",
+     "verdict": "EXACT_MESSAGE",
+     "reference": "f() missing 1 required positional argument: a",
+     "native": "f() missing 1 required positional argument: a"
+    },
+    {
+     "id": "T/provider_init_calls_provider",
+     "verdict": "EXACT_MESSAGE",
+     "reference": "function '_init' called recursively",
+     "native": "function '_init' called recursively"
+    },
+    {
+     "id": "M/rule_initializer_calls_rule",
+     "verdict": "MISMATCH",
+     "reference": "a rule can only be instantiated while evaluating a BUILD file or a legacy or symbolic macro",
+     "native": "function '_init' called recursively"
+    },
+    {
+     "id": "M/symbolic_macro_impl",
+     "verdict": "EXACT_MESSAGE",
+     "reference": "function '_helper' called recursively",
+     "native": "function '_helper' called recursively"
+    },
+    {
+     "id": "M/symbolic_macro_shared_helper_ok",
+     "verdict": "REFERENCE_ACCEPTS",
+     "reference": null,
+     "native": "nested symbolic macro invocations are unsupported"
+    },
+    {
+     "id": "M/symbolic_macro_instantiates_itself",
+     "verdict": "MISMATCH",
+     "reference": null,
+     "native": "nested symbolic macro invocations are unsupported"
+    }
+   ]
+  },
+  {
+   "run": 3,
+   "script_sha256": "acc0a57406bdac1ee864ef83696494aa5b3ff201ed010743a0a2de0e81712c66",
+   "native_sha256": "8e5e4b66824bee0271d65b231ec746c9b1971ca7223cf7f32b6ca34656599e07",
+   "worktree": {
+    "base_commit": "3d09a66fad0a02f364d1a69329ef9ded0fb0911b",
+    "src_vendor_diff_sha256": "10a3754685ba27446437e2210d31ee126cfd453857f57267141f57aa92543a4a",
+    "diff_scope": "git diff HEAD -- src vendor Cargo.toml Cargo.lock (tracked files; no untracked vendor files are added)"
+   },
+   "probe_count": 23,
+   "counts": {
+    "EXACT_MESSAGE_AND_TRACEBACK": 12,
+    "EXACT_MESSAGE": 3,
+    "BOTH_SUCCEED": 3,
+    "MISMATCH": 2,
+    "REFERENCE_ACCEPTS": 1,
+    "EXACT_MESSAGE_AND_STARLARK_TRACEBACK": 2
+   },
+   "counts_by_group": {
+    "T": {
+     "EXACT_MESSAGE_AND_TRACEBACK": 11,
+     "EXACT_MESSAGE": 2,
+     "BOTH_SUCCEED": 1
+    },
+    "M": {
+     "EXACT_MESSAGE_AND_TRACEBACK": 1,
+     "MISMATCH": 2,
+     "EXACT_MESSAGE": 1,
+     "REFERENCE_ACCEPTS": 1,
+     "BOTH_SUCCEED": 1
+    },
+    "R": {
+     "EXACT_MESSAGE_AND_STARLARK_TRACEBACK": 2,
+     "BOTH_SUCCEED": 1
+    }
+   },
+   "non_exact": [
+    {
+     "id": "T/binding_error_first",
+     "verdict": "EXACT_MESSAGE",
+     "reference": "f() missing 1 required positional argument: a",
+     "native": "f() missing 1 required positional argument: a"
+    },
+    {
+     "id": "T/provider_init_calls_provider",
+     "verdict": "EXACT_MESSAGE",
+     "reference": "function '_init' called recursively",
+     "native": "function '_init' called recursively"
+    },
+    {
+     "id": "M/rule_initializer_calls_rule",
+     "verdict": "MISMATCH",
+     "reference": "a rule can only be instantiated while evaluating a BUILD file or a legacy or symbolic macro",
+     "native": "function '_init' called recursively"
+    },
+    {
+     "id": "M/symbolic_macro_impl",
+     "verdict": "EXACT_MESSAGE",
+     "reference": "function '_helper' called recursively",
+     "native": "function '_helper' called recursively"
+    },
+    {
+     "id": "M/symbolic_macro_shared_helper_ok",
+     "verdict": "REFERENCE_ACCEPTS",
+     "reference": null,
+     "native": "nested symbolic macro invocations are unsupported"
+    },
+    {
+     "id": "M/symbolic_macro_instantiates_itself",
+     "verdict": "MISMATCH",
+     "reference": null,
+     "native": "nested symbolic macro invocations are unsupported"
+    }
+   ]
+  },
+  {
+   "run": 4,
+   "script_sha256": "acc0a57406bdac1ee864ef83696494aa5b3ff201ed010743a0a2de0e81712c66",
+   "native_sha256": "c6815230e1aef86446bc4ecac1947c457bbd6c61f5638be8ec345720bf395912",
+   "worktree": {
+    "base_commit": "3d09a66fad0a02f364d1a69329ef9ded0fb0911b",
+    "src_vendor_diff_sha256": "cf9e0cb639f370d013684e9a677b51061bc45d54f787866fb1a3cc516d35bb03",
+    "diff_scope": "git diff HEAD -- src vendor Cargo.toml Cargo.lock (tracked files; no untracked vendor files are added)"
+   },
+   "probe_count": 23,
+   "counts": {
+    "EXACT_MESSAGE_AND_TRACEBACK": 12,
+    "EXACT_MESSAGE": 3,
+    "BOTH_SUCCEED": 3,
+    "MISMATCH": 2,
+    "REFERENCE_ACCEPTS": 1,
+    "EXACT_MESSAGE_AND_STARLARK_TRACEBACK": 2
+   },
+   "counts_by_group": {
+    "T": {
+     "EXACT_MESSAGE_AND_TRACEBACK": 11,
+     "EXACT_MESSAGE": 2,
+     "BOTH_SUCCEED": 1
+    },
+    "M": {
+     "EXACT_MESSAGE_AND_TRACEBACK": 1,
+     "MISMATCH": 2,
+     "EXACT_MESSAGE": 1,
+     "REFERENCE_ACCEPTS": 1,
+     "BOTH_SUCCEED": 1
+    },
+    "R": {
+     "EXACT_MESSAGE_AND_STARLARK_TRACEBACK": 2,
+     "BOTH_SUCCEED": 1
+    }
+   },
+   "non_exact": [
+    {
+     "id": "T/binding_error_first",
+     "verdict": "EXACT_MESSAGE",
+     "reference": "f() missing 1 required positional argument: a",
+     "native": "f() missing 1 required positional argument: a"
+    },
+    {
+     "id": "T/provider_init_calls_provider",
+     "verdict": "EXACT_MESSAGE",
+     "reference": "function '_init' called recursively",
+     "native": "function '_init' called recursively"
+    },
+    {
+     "id": "M/rule_initializer_calls_rule",
+     "verdict": "MISMATCH",
+     "reference": "a rule can only be instantiated while evaluating a BUILD file or a legacy or symbolic macro",
+     "native": "function '_init' called recursively"
+    },
+    {
+     "id": "M/symbolic_macro_impl",
+     "verdict": "EXACT_MESSAGE",
+     "reference": "function '_helper' called recursively",
+     "native": "function '_helper' called recursively"
+    },
+    {
+     "id": "M/symbolic_macro_shared_helper_ok",
+     "verdict": "REFERENCE_ACCEPTS",
+     "reference": null,
+     "native": "nested symbolic macro invocations are unsupported"
+    },
+    {
+     "id": "M/symbolic_macro_instantiates_itself",
+     "verdict": "MISMATCH",
+     "reference": null,
+     "native": "nested symbolic macro invocations are unsupported"
+    }
+   ]
+  }
+ ],
+ "post_capture_changes": "none"
+}

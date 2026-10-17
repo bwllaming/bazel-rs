@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified for Bazel 9.3's rejection of recursive calls: only bodies whose calls
+// cannot run Starlark code are inlined; see vendor provenance.
+
 //! Inline functions.
 
 pub(crate) mod local_as_value;
@@ -39,6 +42,8 @@ use crate::eval::runtime::slots::LocalSlotId;
 use crate::values::FrozenStringValue;
 use crate::values::FrozenValue;
 use crate::values::FrozenValueTyped;
+use crate::values::ValueLike;
+use crate::values::function::NativeFunction;
 
 /// Function body suitable for inlining.
 #[derive(Debug, StarlarkPagable)]
@@ -102,7 +107,15 @@ impl IsSafeToInlineExpr {
                 l.0 < self.param_count
             }
             ExprCompiled::Call(call) => {
-                self.is_safe_to_inline_expr(&call.fun)
+                // Modified: an inlined function has no call stack frame, so
+                // Bazel's recursion check (`function 'NAME' called
+                // recursively`, StarlarkFunction.java:571-574) could not see
+                // it. Only bodies whose calls cannot run Starlark code (and so
+                // can never be part of a recursive cycle) are inlined: calls
+                // of builtins that never call their arguments, or of a string
+                // constant's methods, without function-valued constant
+                // arguments.
+                Self::call_cannot_reenter(call)
                     && call
                         .args
                         .arg_exprs()
@@ -156,6 +169,68 @@ impl IsSafeToInlineExpr {
                 self.is_safe_to_inline_expr(x) && self.is_safe_to_inline_expr(y)
             }
         }
+    }
+}
+
+impl IsSafeToInlineExpr {
+    /// Modified: global builtins that never call an argument (unlike
+    /// `sorted`, `min` and `max` with `key`), so a call of one cannot run
+    /// Starlark code.
+    const NON_CALLING_BUILTINS: &'static [&'static str] = &[
+        "abs",
+        "all",
+        "any",
+        "bool",
+        "chr",
+        "dict",
+        "dir",
+        "enumerate",
+        "fail",
+        "float",
+        "getattr",
+        "hasattr",
+        "hash",
+        "int",
+        "len",
+        "list",
+        "ord",
+        "range",
+        "repr",
+        "reversed",
+        "str",
+        "tuple",
+        "type",
+        "zip",
+    ];
+
+    /// Modified: whether `call` cannot run Starlark code: its callee is a
+    /// non-calling global builtin or a method of a string constant, and no
+    /// constant argument is a function (or other non-data value).
+    fn call_cannot_reenter(call: &CallCompiled) -> bool {
+        let callee_ok = match call.fun.as_value() {
+            Some(fun) => {
+                fun.to_value()
+                    .downcast_ref::<NativeFunction>()
+                    .is_some_and(|f| Self::NON_CALLING_BUILTINS.contains(&f.name.as_str()))
+                    // A string constant's method, folded to a bound method.
+                    || call
+                        .fun
+                        .as_frozen_bound_method()
+                        .is_some_and(|m| m.this.unpack_str().is_some())
+            }
+            None => matches!(
+                call.method(),
+                Some((receiver, _, _)) if receiver.as_string().is_some()
+            ),
+        };
+        callee_ok
+            && call.args.arg_exprs().all(|e| match e.as_value() {
+                Some(v) => matches!(
+                    v.to_value().get_type(),
+                    "string" | "int" | "float" | "bool" | "NoneType" | "list" | "tuple" | "dict"
+                ),
+                None => true,
+            })
     }
 }
 

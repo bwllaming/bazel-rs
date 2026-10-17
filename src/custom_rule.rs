@@ -2473,8 +2473,10 @@ fn computed_default<'v>(
         )));
     }
     let arguments = values.into_iter().flatten().collect::<Vec<_>>();
+    // Bazel evaluates computed defaults in their own Starlark thread
+    // (packages/StarlarkCallbackHelper.java:66-70), not within the rule call.
     let result = eval
-        .eval_function(function, &arguments, &[])
+        .with_new_recursion_scope(|eval| eval.eval_function(function, &arguments, &[]))
         .map_err(|e| error(evaluation_message(&e)))?;
     // invokeCallback: None is the type default; otherwise Type.cast (and the
     // element casts of list types).
