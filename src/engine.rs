@@ -5282,6 +5282,7 @@ impl Engine {
             template_variables,
             features,
             build_file_path,
+            apple_sdk_versions: native.apple_sdk_versions.clone(),
         }
     }
 

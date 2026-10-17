@@ -71,6 +71,9 @@ pub struct CtxSurface {
     /// Package.Metadata buildFilename relative to its source root
     /// (StarlarkRuleContext.getBuildFileRelativePath, StarlarkRuleContext.java:1007-1016).
     pub build_file_path: String,
+    /// AppleCommandLineOptions `--{ios,watchos,tvos,macos}_sdk_version`
+    /// (N40; DottedVersion.Option strings, `None` for null).
+    pub apple_sdk_versions: crate::configuration::AppleSdkVersions,
 }
 
 impl Default for CtxSurface {
@@ -91,6 +94,7 @@ impl Default for CtxSurface {
             template_variables: Vec::new(),
             features: FeatureSet::default(),
             build_file_path: String::new(),
+            apple_sdk_versions: Default::default(),
         }
     }
 }
@@ -972,6 +976,38 @@ fn objc_copts<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Value<
     })
 }
 
+/// AppleConfiguration.get{Ios,Macos,Tvos,Watchos}SdkVersionFlag
+/// (rules/apple/AppleConfiguration.java:104-107): the option's
+/// DottedVersion, None while unset.
+fn sdk_version_flag<'v>(
+    surface: &CtxSurface,
+    option: &str,
+    heap: Heap<'v>,
+) -> anyhow::Result<Value<'v>> {
+    match surface.apple_sdk_versions.get(option).cloned().flatten() {
+        None => Ok(Value::new_none()),
+        Some(text) => crate::apple_xcode::DottedVersion::parse(&text)
+            .map(|version| heap.alloc(version))
+            .map_err(anyhow::Error::msg),
+    }
+}
+
+fn ios_sdk_version_flag<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+    sdk_version_flag(surface, "ios_sdk_version", heap)
+}
+
+fn macos_sdk_version_flag<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+    sdk_version_flag(surface, "macos_sdk_version", heap)
+}
+
+fn tvos_sdk_version_flag<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+    sdk_version_flag(surface, "tvos_sdk_version", heap)
+}
+
+fn watchos_sdk_version_flag<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+    sdk_version_flag(surface, "watchos_sdk_version", heap)
+}
+
 /// The host CPU's AppleCommandLineOptions defaults
 /// (rules/apple/AppleCommandLineOptions.java:174-192; AppleConfiguration.java:73).
 fn host_is_aarch64() -> bool {
@@ -1108,27 +1144,38 @@ fn members(kind: Kind) -> &'static [(&'static str, Member)] {
         // defaults (rules/apple/AppleCommandLineOptions.java:49-196, 305-306):
         // the version flags are null, `--experimental_prefer_mutual_xcode`
         // true, `--experimental_include_xcode_execution_requirements` false.
-        // The version flags stay null only while `--xcode_version` and
-        // `--{ios,macos,tvos,watchos}_{sdk_version,minimum_os}` are rejected
-        // by the native option parser; once modelled they must read the
-        // configuration's values as DottedVersion (DottedVersionConverter;
-        // crate::apple_xcode, N25d2a). Test hook:
-        // tests/ctx_surface.rs apple_version_flags_stay_none_while_the_options_are_rejected.
+        // The `*_sdk_version_flag`s read the configuration's
+        // `--{ios,macos,tvos,watchos}_sdk_version` (N40) as DottedVersion
+        // (crate::apple_xcode, N25d2a). The other version flags stay null
+        // only while `--xcode_version` and `--{ios,macos,tvos,watchos}_minimum_os`
+        // are rejected by the native option parser; once modelled they must
+        // read the configuration's values the same way. Test hooks:
+        // tests/ctx_surface.rs apple_version_flags_stay_none_while_the_options_are_rejected
+        // and apple_sdk_version_flags_read_the_configuration.
         Kind::Apple => &[
             ("apple_cpus", Field(V::Dyn(apple_cpus))),
             ("apple_platform_type", Field(V::Str("macos"))),
             ("include_xcode_exec_requirements", Field(V::Bool(false))),
             ("ios_minimum_os_flag", Field(V::None)),
-            ("ios_sdk_version_flag", Field(V::None)),
+            ("ios_sdk_version_flag", Field(V::Dyn(ios_sdk_version_flag))),
             ("macos_minimum_os_flag", Field(V::None)),
-            ("macos_sdk_version_flag", Field(V::None)),
+            (
+                "macos_sdk_version_flag",
+                Field(V::Dyn(macos_sdk_version_flag)),
+            ),
             ("prefer_mutual_xcode", Field(V::Bool(true))),
             ("single_arch_cpu", Field(V::Dyn(single_arch_cpu))),
             ("single_arch_platform", Field(V::Dyn(single_arch_platform))),
             ("tvos_minimum_os_flag", Field(V::None)),
-            ("tvos_sdk_version_flag", Field(V::None)),
+            (
+                "tvos_sdk_version_flag",
+                Field(V::Dyn(tvos_sdk_version_flag)),
+            ),
             ("watchos_minimum_os_flag", Field(V::None)),
-            ("watchos_sdk_version_flag", Field(V::None)),
+            (
+                "watchos_sdk_version_flag",
+                Field(V::Dyn(watchos_sdk_version_flag)),
+            ),
             ("xcode_version_flag", Field(V::None)),
         ],
         // starlarkbuildapi/java/JavaConfigurationApi.java over JavaConfiguration

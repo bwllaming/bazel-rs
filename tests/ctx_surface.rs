@@ -638,12 +638,56 @@ fn ctx_surface_is_per_configured_target_key() {
 #[test]
 fn apple_version_flags_stay_none_while_the_options_are_rejected() {
     let ws = workspace();
-    for option in [
-        "--xcode_version=15.0",
-        "--ios_sdk_version=17.0",
-        "--macos_minimum_os=13.0",
-    ] {
+    for option in ["--xcode_version=15.0", "--macos_minimum_os=13.0"] {
         let error = ws.rejected(&[option, "//test:sx"]);
         assert!(error.contains(option.split('=').next().unwrap()), "{error}");
     }
+}
+
+/// N40 models `--{ios,macos,tvos,watchos}_sdk_version`: the apple fragment's
+/// `*_sdk_version_flag` is the option's DottedVersion
+/// (AppleConfiguration.java:104-107), None while unset, also in the exec
+/// configuration (AppleCommandLineOptions propagates them,
+/// builtin_exec_platforms.bzl:170-176).
+#[test]
+fn apple_sdk_version_flags_read_the_configuration() {
+    let ws = workspace();
+    ws.file(
+        "sdk/defs.bzl",
+        r#"
+Flags = provider(fields = ["text"])
+
+def _flags(ctx):
+    a = ctx.fragments.apple
+    values = [a.ios_sdk_version_flag, a.macos_sdk_version_flag, a.tvos_sdk_version_flag, a.watchos_sdk_version_flag]
+    text = repr([(type(v), str(v)) for v in values])
+    if ctx.attr.tool:
+        text = text + " exec=" + ctx.attr.tool[Flags].text
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.write(out, text + "\n")
+    return [DefaultInfo(files = depset([out])), Flags(text = text)]
+
+flags = rule(
+    implementation = _flags,
+    attrs = {"tool": attr.label(cfg = "exec")},
+    fragments = ["apple"],
+)
+"#,
+    );
+    ws.file(
+        "sdk/BUILD.bazel",
+        "load(':defs.bzl', 'flags')\nflags(name = 'tool')\nflags(name = 'f', tool = ':tool')\n",
+    );
+    let none = r#"[("NoneType", "None"), ("NoneType", "None"), ("NoneType", "None"), ("NoneType", "None")]"#;
+    assert_eq!(ws.built(&["//sdk:f"]), format!("{none} exec={none}\n"));
+    let set = r#"[("DottedVersion", "17.0"), ("DottedVersion", "13.1.0"), ("NoneType", "None"), ("DottedVersion", "10")]"#;
+    assert_eq!(
+        ws.built(&[
+            "--ios_sdk_version=17.0",
+            "--macos_sdk_version=13.1.0",
+            "--watchos_sdk_version=10",
+            "//sdk:f",
+        ]),
+        format!("{set} exec={set}\n")
+    );
 }

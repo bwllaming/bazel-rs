@@ -433,56 +433,11 @@ impl fmt::Display for OptionValue {
     }
 }
 
-/// DottedVersion.fromString (build/lib/rules/apple/DottedVersion.java:190-258)
-/// as a validity check: dot-separated components `\d+([a-z0-9]*?)?(\d+)?`
-/// (case-insensitive) until a descriptive component `[a-z]\w*`, at least
-/// one component, numbers within `int`.
+/// DottedVersionConverter (rules/apple/DottedVersionConverter.java:21-36):
+/// DottedVersion.fromString (DottedVersion.java:190-219) as a validity
+/// check, through N25d2a's port (crate::apple_xcode::DottedVersion).
 pub fn validate_dotted_version(version: &str) -> Result<(), String> {
-    let error = || {
-        format!(
-            "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '{version}'"
-        )
-    };
-    if version.is_empty() {
-        return Err(error());
-    }
-    let mut components = 0;
-    for component in version.split('.') {
-        let mut chars = component.chars();
-        // DESCRIPTIVE_COMPONENT_PATTERN `([a-z]\w*)`, CASE_INSENSITIVE.
-        if chars.next().is_some_and(|c| c.is_ascii_alphabetic())
-            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-        {
-            break;
-        }
-        // COMPONENT_PATTERN: a leading digit, then only ASCII letters/digits.
-        if !component.starts_with(|c: char| c.is_ascii_digit())
-            || !component.chars().all(|c| c.is_ascii_alphanumeric())
-        {
-            return Err(error());
-        }
-        // Group 1 is the leading digit run; group 3 the trailing digit run
-        // after the lazy alpha sequence, when there is one.
-        let leading = component.bytes().take_while(u8::is_ascii_digit).count();
-        let rest = &component[leading..];
-        let trailing = rest.bytes().rev().take_while(u8::is_ascii_digit).count();
-        let numbers = [
-            &component[..leading],
-            if rest.is_empty() {
-                ""
-            } else {
-                &rest[rest.len() - trailing..]
-            },
-        ];
-        for number in numbers.into_iter().filter(|number| !number.is_empty()) {
-            number.parse::<i32>().map_err(|_| error())?;
-        }
-        components += 1;
-    }
-    if components == 0 {
-        return Err(error());
-    }
-    Ok(())
+    crate::apple_xcode::DottedVersion::parse(version).map(|_| ())
 }
 
 /// Resolve a label-typed option value (already `//`-prefixed per

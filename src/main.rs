@@ -209,7 +209,7 @@ fn run() -> Result<(), String> {
     // Option parser warnings (deprecated options) once the native options
     // parsed (runtime/BlazeOptionHandler.java:536-539), after the rc notes.
     for warning in configuration_options.warnings() {
-        eprintln!("WARNING: {warning}");
+        warn(warning);
     }
     // QueryOptionHelper.readQuery (runtime/commands/QueryOptionHelper.java:
     // 41-70), before any loading: the residue joined by spaces is the query
@@ -341,7 +341,7 @@ fn run() -> Result<(), String> {
         let outcome = engine.query(&rest[0], &query_options, &relative_directory);
         // Pattern warnings precede the query's own events.
         for warning in engine.take_warnings() {
-            eprintln!("WARNING: {warning}");
+            warn(&warning);
         }
         let outcome = outcome?;
         for event in &outcome.events {
@@ -370,7 +370,7 @@ fn run() -> Result<(), String> {
     let result = engine.build_with_jobs(&labels, &cache, jobs);
     // Analysis warnings precede the result, also when the build fails.
     for warning in engine.take_warnings() {
-        eprintln!("WARNING: {warning}");
+        warn(&warning);
     }
     let summary = result?;
     for (label, output) in summary.outputs {
@@ -398,7 +398,7 @@ struct LockfileWriter(bazel_rs::registry_session::SessionHandle);
 impl Drop for LockfileWriter {
     fn drop(&mut self) {
         if let Some(warning) = self.0.session().and_then(|session| session.finish()) {
-            eprintln!("WARNING: {warning}");
+            warn(&warning);
         }
     }
 }
