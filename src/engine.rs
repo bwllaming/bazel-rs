@@ -2502,6 +2502,14 @@ impl Engine {
         };
         let label = self.resolve_rule_src(rule, text)?;
         let edge_config = match custom.schema.get(name).map(|spec| &spec.declaration.cfg) {
+            Some(crate::rule_declarations::Cfg::Exec(Some(group)))
+                if group != crate::exec_groups::DEFAULT_EXEC_GROUP_NAME =>
+            {
+                self.group_exec_configurations
+                    .get(&(key.clone(), group.clone()))
+                    .copied()
+                    .unwrap_or(key.config)
+            }
             Some(crate::rule_declarations::Cfg::Exec(_)) => self
                 .exec_configurations
                 .get(key)

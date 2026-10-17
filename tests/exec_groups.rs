@@ -469,3 +469,54 @@ fn genuine_rule_set_declaration_shapes() {
         ],
     );
 }
+
+/// Merge adaptation (N35 x N23c): `ctx.var` takes the TemplateVariableInfo of
+/// the resolved toolchains of every ToolchainCollection context, default
+/// first (RuleContext.fromToolchains, analysis/RuleContext.java:914-924), so
+/// a declared exec group's toolchain and, under automatic exec groups, the
+/// rule's own toolchain (resolved in its automatic group) contribute.
+#[test]
+fn ctx_var_reads_template_variables_of_every_exec_group_toolchain() {
+    let f = Fixture::new();
+    fs::create_dir_all(f.0.path().join("tv")).unwrap();
+    fs::write(
+        f.0.path().join("tv/defs.bzl"),
+        r#"def _tc(ctx):
+    return [platform_common.ToolchainInfo(), platform_common.TemplateVariableInfo({"TVAR": ctx.attr.value})]
+tc = rule(implementation = _tc, attrs = {"value": attr.string()})
+def _use(ctx):
+    print("TV", ctx.label.name, ctx.var.get("TVAR"), ctx.expand_make_variables("cmd", "[$(TVAR)]", {}))
+    return []
+in_group = rule(implementation = _use, exec_groups = {"g": exec_group(toolchains = ["//tv:tv_type"])})
+auto = rule(implementation = _use, toolchains = ["//tv:tv_type"], attrs = {"_use_auto_exec_groups": attr.bool(default = True)})
+default = rule(implementation = _use, toolchains = ["//tv:tv_type"])
+"#,
+    )
+    .unwrap();
+    fs::write(
+        f.0.path().join("tv/BUILD.bazel"),
+        r#"load(":defs.bzl", "auto", "default", "in_group", "tc")
+toolchain_type(name = "tv_type")
+tc(name = "tv_impl", value = "from_toolchain")
+toolchain(name = "tv_tc", toolchain = ":tv_impl", toolchain_type = ":tv_type")
+in_group(name = "in_group")
+auto(name = "auto")
+default(name = "default")
+"#,
+    )
+    .unwrap();
+    let module = fs::read_to_string(f.0.path().join("MODULE.bazel")).unwrap();
+    fs::write(
+        f.0.path().join("MODULE.bazel"),
+        module + "register_toolchains('//tv:tv_tc')\n",
+    )
+    .unwrap();
+    has_lines(
+        &ok(&f.build(&["//tv:in_group", "//tv:auto", "//tv:default"])),
+        &[
+            "TV in_group from_toolchain [from_toolchain]",
+            "TV auto from_toolchain [from_toolchain]",
+            "TV default from_toolchain [from_toolchain]",
+        ],
+    );
+}

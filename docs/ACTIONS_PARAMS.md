@@ -121,8 +121,9 @@ runs eagerly at `add_joined` (Bazel: when the template action executes).
   `--action_env` is not modelled. (Genrules keep the native controlled
   `PATH`/`LANG`/`LC_ALL` environment.)
 * `execution_requirements` (string dict) is accepted and keyed; it has no
-  local effect. `mnemonic`, `progress_message`, `resource_set` and `toolchain`
-  are accepted; `exec_group` other than None and nonempty `input_manifests`
+  local effect. `mnemonic`, `progress_message` and `resource_set` are
+  accepted; `exec_group` and `toolchain` choose the action's exec group with
+  Bazel's checks (N35, docs/EXEC_GROUPS.md); nonempty `input_manifests`
   fail explicitly. `param 'outputs' may not be empty` is Bazel's text.
 * Tools or executables whose FilesToRunProvider carries runfiles still fail
   explicitly: runfiles trees are not built (N23f, docs/RUNFILES.md).

@@ -225,18 +225,23 @@ native profile`, and `cc_toolchain` analysis).
   `testing.ExecutionInfo`, genrule/native-rule exec groups, and the
   action-execution side of N23d (below).
 
-## Merge with N23d
+## Merge with N23d (done in integration-13)
 
-N23d (branch parity-actions-params) rewrites `run`/`run_shell` around a
-shared `SpawnOptions`/`register_spawn` and rejects `exec_group != None`
-explicitly. Merging keeps N23d's spawn structure and replaces that
-rejection with this increment's analysis layer: `group_arguments` (types,
-subrule overrides), `GroupArguments::check_tool` at the executable and at
-each tool (N23d's `action_tools`), `run_shell`'s early
-`verify_exec_group`, and `determine()` passed to `Context::register_in`
-(RegisteredAction.exec_group). N23d's own `toolchain` parameter (currently
-ignored) becomes this one. The engine's `action_executions` record stays the
-only action-execution change.
+`run`/`run_shell` keep N23d's shared `SpawnOptions`/`register_spawn`; N23d's
+explicit `exec_group != None` rejection is replaced by this increment's
+analysis layer: `group_arguments` (types, subrule overrides) runs first,
+`run_shell`'s early `verify_exec_group`, `GroupArguments::check_tool` at the
+executable (`run`) and at each tool (`action_tools`), and
+`GroupArguments::determine()` after the tools, recorded in
+`Registration.exec_group` and so `RegisteredAction.exec_group`. N23d's
+formerly ignored `toolchain` parameter is this one. Writes, symlinks and
+templates are not spawns and stay in the default group. The engine's
+`action_executions` record (per planned action, in N30's
+`Engine::plan_target`) stays the only action-execution change; N36's
+staging is unaffected. N23c's always-empty `ctx.exec_groups` stub is
+replaced by this collection (docs/CTX_SURFACE.md), and `ctx.var` takes the
+TemplateVariableInfo of every ToolchainCollection context's toolchains
+(RuleContext.fromToolchains, analysis/RuleContext.java:914-924).
 
 ## Tests
 
