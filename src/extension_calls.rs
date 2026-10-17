@@ -15,11 +15,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::repository_budget::HostBudget;
 use crate::repository_rule::{self, RuleDefinition};
 
+/// Nesting bound of a recorded attribute value: a cycle guard (repository
+/// attribute types nest at most a few levels). There is no size or count
+/// limit on recorded calls, as in Bazel.
 const MAX_DEPTH: usize = 64;
-const MAX_NODES: usize = 100_000;
-const MAX_CALL_BYTES: usize = 16 * 1024 * 1024;
-const MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
-const MAX_CALLS: usize = 10_000;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum RecordedValue {
@@ -50,12 +49,22 @@ struct PendingCall {
     name: String,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct State {
     calls: Vec<PendingCall>,
     names: BTreeSet<String>,
-    bytes: usize,
     host: HostBudget,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            calls: Vec::new(),
+            names: BTreeSet::new(),
+            // Bazel bounds neither the size nor the number of recorded calls.
+            host: HostBudget::unbounded(),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -102,15 +111,12 @@ impl CallRecorder {
         if state.names.contains(name) {
             bail!("duplicate generated repository name {name:?}");
         }
-        if state.calls.len() >= MAX_CALLS {
-            bail!("ordinary extension exceeds {MAX_CALLS} repository calls");
-        }
         // Schema defaults are expanded after the callback. Reserve their host
         // copies now, before recording/rooting this callee, even for name-only
         // calls. No eager schema validation or label coercion takes place.
         repository_rule::charge_schema(me, &mut state.host).map_err(anyhow::Error::msg)?;
         state.host.node().map_err(anyhow::Error::msg)?;
-        let mut budget = SnapshotBudget::default();
+        let mut budget = SnapshotBudget;
         let mut attributes = BTreeMap::new();
         for (key, value) in raw {
             budget.key(key, 1)?;
@@ -118,14 +124,10 @@ impl CallRecorder {
             let value = snapshot(value, 1, &mut budget, &mut state.host)?;
             attributes.insert(key.to_owned(), value);
         }
-        if budget.bytes > MAX_TOTAL_BYTES - state.bytes {
-            bail!("ordinary extension repository snapshots exceed {MAX_TOTAL_BYTES} total bytes");
-        }
         // '$' is not a Starlark identifier: user assignments cannot overwrite
         // these roots, even when the rule itself came from a private load.
         let slot = format!("__extension_repo_call${}", state.calls.len());
         eval.module().set(&slot, me);
-        state.bytes += budget.bytes;
         state.names.insert(name.to_owned());
         state.calls.push(PendingCall {
             slot,
@@ -157,29 +159,17 @@ impl CallRecorder {
 }
 
 #[derive(Default)]
-struct SnapshotBudget {
-    nodes: usize,
-    bytes: usize,
-}
+struct SnapshotBudget;
 
 impl SnapshotBudget {
     fn node(&mut self, depth: usize) -> anyhow::Result<()> {
         if depth > MAX_DEPTH {
             bail!("repository snapshot exceeds maximum depth {MAX_DEPTH} (possibly cyclic)");
         }
-        if self.nodes >= MAX_NODES {
-            bail!("repository snapshot exceeds {MAX_NODES} nodes");
-        }
-        self.nodes += 1;
-        // Charge one discriminant byte even for empty containers and None.
-        self.add_bytes(1)
+        Ok(())
     }
 
-    fn add_bytes(&mut self, bytes: usize) -> anyhow::Result<()> {
-        if bytes > MAX_CALL_BYTES - self.bytes {
-            bail!("repository snapshot exceeds {MAX_CALL_BYTES} bytes per call");
-        }
-        self.bytes += bytes;
+    fn add_bytes(&mut self, _bytes: usize) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -594,71 +584,25 @@ mod tests {
             let error = capture(&source).unwrap_err();
             assert!(error.contains("maximum depth"), "{error}");
         }
-        let error =
-            capture(&format!("capture(name='made', value=[None] * {MAX_NODES})")).unwrap_err();
-        assert!(error.contains("nodes"), "{error}");
+        // No node limit (former native cap: 100000 nodes).
+        capture("capture(name='made', value=[None] * 200000)").unwrap();
     }
 
     #[test]
-    fn call_and_total_byte_limits_reject_before_publication() {
-        let error = capture(&format!(
-            "capture(name='made', value='x' * {MAX_CALL_BYTES})"
+    fn calls_sizes_and_counts_have_no_native_limits() {
+        // Bazel bounds neither the size of a recorded call nor the number of
+        // generated repositories (former native caps: 16 MiB per call, 64 MiB
+        // total, 100000 nodes, 10000 calls, the 64 MiB weighted host budget).
+        capture(&format!(
+            "capture(name='made', value='x' * {})",
+            17 * 1024 * 1024
         ))
-        .unwrap_err();
-        assert!(error.contains("bytes per call"), "{error}");
-        let calls = CallRecorder::default();
-        calls.state.borrow_mut().bytes = MAX_TOTAL_BYTES - 1;
-        let error = capture_with(calls, "capture(name='made')").unwrap_err();
-        assert!(error.contains("total bytes"), "{error}");
-        let error = capture(&format!(
-            "[capture(name='r' + str(i)) for i in range({})]",
-            MAX_CALLS + 1
-        ))
-        .unwrap_err();
-        assert!(error.contains("10000 repository calls"), "{error}");
-    }
-
-    #[test]
-    fn tuple_and_dict_payloads_are_charged_before_copying() {
-        for value in [
-            format!("('x' * {MAX_CALL_BYTES},)"),
-            format!("{{'x' * {MAX_CALL_BYTES}: ()}}"),
-        ] {
-            let error = capture(&format!("capture(name='made', value={value})")).unwrap_err();
-            assert!(error.contains("bytes per call"), "{error}");
-        }
-        let error = capture(&format!(
-            "capture(name='made', value=(None,) * {MAX_NODES})"
-        ))
-        .unwrap_err();
-        assert!(error.contains("nodes"), "{error}");
-        // The weighted host budget is tighter than the raw snapshot byte cap.
-        let error =
-            capture("text='x' * (1024 * 1024)\ncapture(name='made', value={'z': (text,) * 8})")
-                .unwrap_err();
-        assert!(
-            error.contains("host preparation weighted byte limit"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn budget_accepts_exact_bounds_then_rejects_next_unit() {
-        let mut budget = SnapshotBudget {
-            nodes: MAX_NODES - 1,
-            bytes: MAX_CALL_BYTES - 1,
-        };
-        budget.node(MAX_DEPTH).unwrap();
-        assert_eq!(budget.nodes, MAX_NODES);
-        assert_eq!(budget.bytes, MAX_CALL_BYTES);
-        assert!(budget.node(1).unwrap_err().to_string().contains("nodes"));
-        assert!(
-            budget
-                .add_bytes(1)
-                .unwrap_err()
-                .to_string()
-                .contains("bytes")
-        );
-        assert!(SnapshotBudget::default().node(MAX_DEPTH + 1).is_err());
+        .unwrap();
+        capture("[capture(name='r' + str(i)) for i in range(10001)]").unwrap();
+        capture("text='x' * (1024 * 1024)\ncapture(name='made', value={'z': (text,) * 80})")
+            .unwrap();
+        capture("capture(name='made', value=(None,) * 200000)").unwrap();
+        assert!(SnapshotBudget.node(MAX_DEPTH).is_ok());
+        assert!(SnapshotBudget.node(MAX_DEPTH + 1).is_err());
     }
 }

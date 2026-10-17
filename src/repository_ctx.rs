@@ -85,13 +85,27 @@ pub struct FileInput {
 }
 
 #[derive(Default)]
-struct State {
+pub(crate) struct State {
     inputs: ExecutionInputs,
     /// Whether Bazel would have created the repository directory yet: it does
     /// so lazily on the first write/makeDirectories/execute, not before the
     /// callback (captured read('.') and template('.') failures).
     created: bool,
     client: Option<reqwest::blocking::Client>,
+    /// A module extension's lock on its working directory, held from its
+    /// creation until it is deleted (Bazel: the output base lock).
+    lock: Option<fs::File>,
+}
+
+/// Which StarlarkBaseExternalContext this is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Kind {
+    /// StarlarkRepositoryContext: `allowWatchingPathsOutsideWorkspace = true`.
+    Repository,
+    /// ModuleExtensionContext (ModuleExtensionContext.java:72-86):
+    /// `allowWatchingPathsOutsideWorkspace = false`, a temporary working
+    /// directory that is deleted afterwards, no repository output store.
+    ModuleExtension,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -127,12 +141,17 @@ mod values {
     use std::hash::Hash;
 
     #[derive(ProvidesStaticType)]
-    pub(super) struct Context {
+    pub(crate) struct Context {
         pub repositories: Arc<RepositorySet>,
+        /// repository_ctx or module_ctx (StarlarkBaseExternalContext subclass).
+        pub kind: Kind,
+        /// The working directory: the repository directory (a private stage)
+        /// or the module extension's `<cache>/modextwd/<unique name>`.
         pub stage: PathBuf,
         pub workspace: PathBuf,
         pub label: Label,
-        /// Canonical repository name (identifyingStringForLogging).
+        /// Canonical repository name, or the module extension id
+        /// (identifyingStringForLogging, see `identifying`).
         pub canonical: String,
         pub state: RefCell<State>,
         pub environment: RefCell<Watch>,
@@ -250,6 +269,31 @@ mod values {
         fn write_hash(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
             self.bytes.hash(hasher);
             Ok(())
+        }
+    }
+
+    /// StarlarkBaseExternalContext.PendingDownload (java:585-656): the token
+    /// of `download(block = False)`. Its only member is `wait()`; repr is
+    /// `<pending download to 'PATH'>`; it has no @StarlarkBuiltin, so its
+    /// type() is the Java simple class name. Mutable (not hashable).
+    #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
+    pub(crate) struct PendingDownload {
+        pub output: Vec<u8>,
+        #[allocative(skip)]
+        pub outcome: Result<super::DownloadOutcome, String>,
+    }
+    starlark::starlark_simple_value!(PendingDownload);
+
+    impl fmt::Display for PendingDownload {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "<pending download to '{}'>", latin1_text(&self.output))
+        }
+    }
+
+    #[starlark_value(type = "PendingDownload")]
+    impl<'v> StarlarkValue<'v> for PendingDownload {
+        fn get_methods() -> Option<&'static Methods> {
+            Some(PENDING_DOWNLOAD_METHODS.methods())
         }
     }
 
@@ -392,30 +436,35 @@ mod values {
         }
     }
 }
+pub(crate) use values::{Context, PendingDownload};
 use values::{
-    Context, ExecResult, RepoDefinitionGen, RepoMetadata, RepoMetadataGen, RepositoryCtxGen,
-    RepositoryPath,
+    ExecResult, RepoDefinitionGen, RepoMetadata, RepoMetadataGen, RepositoryCtxGen, RepositoryPath,
 };
 
+/// The repository-rule callback's own context (not a module extension's).
+fn own_context<'a>(eval: &'a Evaluator<'_, '_, '_>) -> Option<&'a Context> {
+    eval.extra.and_then(|extra| extra.downcast_ref::<Context>())
+}
+
+/// The StarlarkBaseExternalContext of the running callback: a repository
+/// rule's, or the one embedded in a module extension's context.
 fn context<'a>(eval: &'a Evaluator<'_, '_, '_>) -> anyhow::Result<&'a Context> {
-    eval.extra
-        .and_then(|extra| extra.downcast_ref::<Context>())
+    own_context(eval)
+        .or_else(|| crate::extension_ctx::base_context(eval))
         .ok_or_else(|| anyhow!("repository_ctx is only available during repository execution"))
 }
 
 /// True while evaluating a repository-rule callback (byte-string profile).
 pub(crate) fn evaluating_callback(eval: &Evaluator<'_, '_, '_>) -> bool {
-    context(eval).is_ok()
+    own_context(eval).is_some()
 }
 
 pub(crate) fn repository_context(eval: &Evaluator<'_, '_, '_>) -> Option<Arc<RepositorySet>> {
-    context(eval)
-        .ok()
-        .map(|context| context.repositories.clone())
+    own_context(eval).map(|context| context.repositories.clone())
 }
 
 pub(crate) fn definition_package(eval: &Evaluator<'_, '_, '_>) -> Option<PackageId> {
-    let context = context(eval).ok()?;
+    let context = own_context(eval)?;
     Some(
         eval.call_stack_top_location()
             .and_then(|location| Label::parse_canonical(location.filename()).ok())
@@ -544,15 +593,6 @@ fn parents(root: &Path, relative: &str, create: bool) -> anyhow::Result<PathBuf>
     Ok(path)
 }
 
-fn regular_file(path: &Path) -> anyhow::Result<()> {
-    ensure!(
-        fs::symlink_metadata(path)?.file_type().is_file(),
-        "{} must be a regular file, not a symlink",
-        path.display()
-    );
-    Ok(())
-}
-
 /// `strerror` text of an I/O error, as Java/JNI report it.
 fn io_reason(error: &std::io::Error) -> String {
     let text = error.to_string();
@@ -589,6 +629,56 @@ fn read_file(path: &Path) -> anyhow::Result<Vec<u8>> {
 }
 
 /// SHA-256 of a file, hashed incrementally (constant memory).
+/// Digest of a directory tree (RepoRecordedInput.DirTree): every entry's
+/// relative name and type, file contents and link targets, in name order.
+fn tree_digest(root: &Path) -> anyhow::Result<String> {
+    fn visit(directory: &Path, prefix: &[u8], out: &mut Vec<u8>) -> anyhow::Result<()> {
+        let mut entries = fs::read_dir(directory)?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<Result<Vec<_>, _>>()?;
+        entries.sort();
+        for name in entries {
+            let path = directory.join(&name);
+            let mut relative = prefix.to_vec();
+            if !relative.is_empty() {
+                relative.push(b'/');
+            }
+            relative.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(&relative);
+            out.push(0);
+            let metadata = fs::symlink_metadata(&path)?;
+            if metadata.file_type().is_symlink() {
+                out.extend_from_slice(b"link\0");
+                out.extend_from_slice(fs::read_link(&path)?.as_os_str().as_bytes());
+            } else if metadata.is_dir() {
+                out.extend_from_slice(b"dir");
+                out.push(0);
+                visit(&path, &relative, out)?;
+            } else if metadata.is_file() {
+                out.extend_from_slice(format!("file\0{}", file_sha256(&path)?).as_bytes());
+            } else {
+                out.extend_from_slice(b"other");
+            }
+            out.push(0);
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    visit(root, b"", &mut out)?;
+    Ok(sha256(&out))
+}
+
+/// RepoRecordedInput.File value: `missing`, `directory`, `other` or
+/// `file:<sha256>`.
+fn file_state(host: &Path) -> anyhow::Result<String> {
+    Ok(match fs::metadata(host) {
+        Err(_) => "missing".to_owned(),
+        Ok(metadata) if metadata.is_dir() => "directory".to_owned(),
+        Ok(metadata) if metadata.is_file() => format!("file:{}", file_sha256(host)?),
+        Ok(_) => "other".to_owned(),
+    })
+}
+
 fn file_sha256(path: &Path) -> anyhow::Result<String> {
     let (digest, _) = Algorithm::Sha256
         .hash_file(path)
@@ -838,6 +928,57 @@ fn decompressor_for_name(basename: &[u8], shown: &str) -> anyhow::Result<&'stati
 }
 
 impl Context {
+    /// The StarlarkBaseExternalContext of a module extension
+    /// (ModuleExtensionContext.java:72-86): `working_directory` is its
+    /// temporary working directory, `extension_id` `LABEL%NAME`.
+    pub(crate) fn module_extension(
+        repositories: Arc<RepositorySet>,
+        working_directory: &Path,
+        label: Label,
+        extension_id: String,
+    ) -> anyhow::Result<Self> {
+        let workspace = fs::canonicalize(repositories.main_root()).with_context(|| {
+            format!(
+                "cannot resolve workspace root {}",
+                repositories.main_root().display()
+            )
+        })?;
+        Ok(Self {
+            repositories,
+            kind: Kind::ModuleExtension,
+            stage: working_directory.to_path_buf(),
+            workspace,
+            label,
+            canonical: extension_id,
+            state: RefCell::new(State::default()),
+            environment: RefCell::new(Watch::default()),
+        })
+    }
+
+    /// Use `client` for downloads (tests: a private trust root).
+    #[cfg(test)]
+    pub(crate) fn with_client(self, client: reqwest::blocking::Client) -> Self {
+        self.state.borrow_mut().client = Some(client);
+        self
+    }
+
+    /// The recorded inputs and environment observations after the callback.
+    pub(crate) fn finish(self) -> anyhow::Result<ExecutionInputs> {
+        let watched_env = self.environment.borrow().inputs()?;
+        let mut inputs = std::mem::take(&mut self.state.borrow_mut().inputs);
+        inputs.watched_env = watched_env;
+        Ok(inputs)
+    }
+
+    /// identifyingStringForLogging: `repository @@NAME` or
+    /// `module extension LABEL%NAME` (ModuleExtensionEvaluationProgress.java:26-28).
+    fn identifying(&self) -> String {
+        match self.kind {
+            Kind::Repository => format!("repository @@{}", self.canonical),
+            Kind::ModuleExtension => format!("module extension {}", self.canonical),
+        }
+    }
+
     fn stage_bytes(&self) -> &[u8] {
         self.stage.as_os_str().as_bytes()
     }
@@ -917,50 +1058,15 @@ impl Context {
         Ok((root.join(relative), label))
     }
 
-    /// Strict Label file read (template/read with a Label argument): the
-    /// package marker and every component must be real, non-symlink entries.
+    /// Label file read (read/template/patch with a Label argument):
+    /// getPathFromLabel (java:2386-2412; the package must exist), then a
+    /// read of that path, following symlinks like Bazel's.
     fn read_label(&self, canonical: &str) -> anyhow::Result<Vec<u8>> {
         let label = Label::parse_canonical(canonical).map_err(anyhow::Error::msg)?;
-        let raw_root = self
-            .repositories
-            .root(&label.repository)
-            .map_err(anyhow::Error::msg)?;
-        no_build_file(raw_root, &label)?;
-        let root = checked_root(raw_root)?;
-        let package = if label.package.is_empty() {
-            root.clone()
-        } else {
-            let path = parents(&root, &label.package, false)?;
-            real_dir(&path)?;
-            path
-        };
-        let mut marker = false;
-        for name in ["BUILD.bazel", "BUILD"] {
-            match fs::symlink_metadata(package.join(name)) {
-                Ok(metadata) => {
-                    ensure!(
-                        metadata.file_type().is_file(),
-                        "package BUILD marker must be a regular file, not a symlink"
-                    );
-                    marker = true;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
+        let (path, _) = self.label_path(&label.repository, &label.package, &label.name)?;
+        if fs::metadata(&path).is_ok_and(|metadata| metadata.is_dir()) {
+            bail!("attempting to read() a directory: {}", path.display());
         }
-        ensure!(
-            marker,
-            "Unable to load package for {label}: template label {label} requires a package BUILD file"
-        );
-        let path = parents(&package, &label.name, false)?;
-        match fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.is_dir() => {
-                bail!("attempting to read() a directory: {}", path.display())
-            }
-            Err(error) => return Err(file_not_found(&path, &error)),
-            Ok(_) => {}
-        }
-        regular_file(&path)?;
         read_file(&path)
     }
 
@@ -982,6 +1088,10 @@ impl Context {
         if relative.is_empty() {
             return Ok(String::new());
         }
+        if self.kind == Kind::ModuleExtension {
+            // The working directory is scratch, never published to the store.
+            return Ok(relative.to_owned());
+        }
         ensure!(
             relative.len() <= 4096,
             "repository path must contain 1..4096 bytes"
@@ -1001,6 +1111,7 @@ impl Context {
     /// makeDirectories for an output: parents become real directories; a
     /// symlinked parent is never traversed while writing.
     fn output_parents(&self, relative: &str) -> anyhow::Result<PathBuf> {
+        self.ensure_stage()?;
         if relative.is_empty() {
             return Ok(self.stage.clone());
         }
@@ -1009,14 +1120,13 @@ impl Context {
 
     fn write(&self, path: &[u8], bytes: &[u8], executable: bool) -> anyhow::Result<()> {
         let relative = self.output(path)?;
-        let mut state = self.state.borrow_mut();
         ensure!(
             !relative.is_empty(),
             "Could not create {}: is the repository directory",
             display(path)
         );
         let path = self.output_parents(&relative)?;
-        state.created = true;
+        self.state.borrow_mut().created = true;
         // `p.getPath().delete()` removes a file, a symlink (never its target)
         // or an EMPTY directory; a non-empty one fails in unix_jni.
         match fs::symlink_metadata(&path) {
@@ -1048,29 +1158,93 @@ impl Context {
         Ok(())
     }
 
-    fn mark_created(&self) {
+    /// Create the working directory if needed and note that it exists.
+    fn mark_created(&self) -> anyhow::Result<()> {
+        self.ensure_stage()?;
         self.state.borrow_mut().created = true;
+        Ok(())
     }
 
-    /// toRepoCacheFriendlyPath + RepoRecordedInput.File (java:1656-1733).
-    fn watch(&self, path: &[u8], watch: ShouldWatch) -> anyhow::Result<()> {
-        if watch == ShouldWatch::No {
+    /// A module extension's working directory is created on first use
+    /// (`makeDirectories`/`createDirectory`), under an exclusive lock that
+    /// serializes native processes sharing the cache; a stale directory left
+    /// by an interrupted process is deleted first. Repository stages exist.
+    fn ensure_stage(&self) -> anyhow::Result<()> {
+        if self.kind != Kind::ModuleExtension || self.state.borrow().lock.is_some() {
             return Ok(());
+        }
+        use fs2::FileExt;
+        let parent = self
+            .stage
+            .parent()
+            .ok_or_else(|| anyhow!("module extension working directory has no parent"))?;
+        fs::create_dir_all(parent)?;
+        let mut name = self.stage.file_name().unwrap_or_default().to_owned();
+        name.push(".lock");
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(parent.join(name))?;
+        lock.lock_exclusive()
+            .map_err(|error| anyhow!("cannot lock module extension working directory: {error}"))?;
+        remove_tree(&self.stage)?;
+        fs::create_dir(&self.stage)?;
+        self.state.borrow_mut().lock = Some(lock);
+        Ok(())
+    }
+
+    /// toRepoCacheFriendlyPath (java:1656-1704): the key `path` is recorded
+    /// under, or None when it is not watched. A module extension may not
+    /// watch paths outside the workspace and the external repositories
+    /// (`allowWatchingPathsOutsideWorkspace = false`,
+    /// ModuleExtensionContext.java:85); native external repositories live in
+    /// the repository cache (Bazel: `<output_base>/external`).
+    fn watch_key(&self, path: &[u8], watch: ShouldWatch) -> anyhow::Result<Option<String>> {
+        if watch == ShouldWatch::No {
+            return Ok(None);
         }
         if self.under_stage(path).is_some() {
             if watch == ShouldWatch::Auto {
-                return Ok(());
+                return Ok(None);
             }
             bail!("attempted to watch path under working directory");
         }
-        let host = path_buf(path);
-        let state = match fs::metadata(&host) {
-            Err(_) => "missing".to_owned(),
-            Ok(metadata) if metadata.is_dir() => "directory".to_owned(),
-            Ok(metadata) if metadata.is_file() => format!("file:{}", file_sha256(&host)?),
-            Ok(_) => "other".to_owned(),
+        if self.kind == Kind::ModuleExtension && !self.in_workspace(path) && !self.in_external(path)
+        {
+            if watch == ShouldWatch::Auto {
+                return Ok(None);
+            }
+            bail!(
+                "attempted to watch path outside workspace, but it's prohibited in the current context"
+            );
+        }
+        Ok(Some(self.friendly(path)))
+    }
+
+    fn in_workspace(&self, path: &[u8]) -> bool {
+        let workspace = self.workspace.as_os_str().as_bytes();
+        path.strip_prefix(workspace)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(b"/"))
+    }
+
+    fn in_external(&self, path: &[u8]) -> bool {
+        let Ok(cache) = self.repositories.source_cache_path() else {
+            return false;
         };
-        self.record(self.friendly(path), "file", state)
+        let canonical = fs::canonicalize(cache).unwrap_or_else(|_| cache.to_path_buf());
+        [cache, canonical.as_path()].iter().any(|root| {
+            path.strip_prefix(root.as_os_str().as_bytes())
+                .is_some_and(|rest| rest.starts_with(b"/"))
+        })
+    }
+
+    /// RepoRecordedInput.File of `path` (java:1721-1738).
+    fn watch(&self, path: &[u8], watch: ShouldWatch) -> anyhow::Result<()> {
+        let Some(key) = self.watch_key(path, watch)? else {
+            return Ok(());
+        };
+        self.record(key, "file", file_state(&path_buf(path))?)
     }
 
     fn friendly(&self, path: &[u8]) -> String {
@@ -1205,6 +1379,7 @@ impl Context {
         urls: &[reqwest::Url],
         expected: Option<&Checksum>,
         sri: bool,
+        headers: &transport::RequestHeaders,
         target: DownloadTarget<'_>,
     ) -> Result<(transport::Fetched, PathBuf), DownloadFailure> {
         if !self.repositories.repository_downloads_enabled() {
@@ -1227,6 +1402,7 @@ impl Context {
             urls,
             expected,
             sri,
+            headers,
             &mut |url| {
                 path = match (directory, file) {
                     (Some(directory), _) => directory.join(storage_name(url)),
@@ -1250,6 +1426,182 @@ impl Context {
         }
     }
 
+    /// The transfer phase of download() (java:841-895, completeDownload
+    /// java:658-697): errors here surface from `wait()` for `block = False`.
+    fn download(
+        &self,
+        request: &DownloadRequest,
+        output: &[u8],
+        relative: &str,
+        executable: bool,
+        allow_fail: bool,
+        canonical_id: &str,
+    ) -> anyhow::Result<DownloadOutcome> {
+        self.facility("download");
+        let urls = &request.urls;
+        // makeDirectories(outputPath) (java:862): parents are real directories.
+        let target = if relative.is_empty() {
+            // A module extension's working directory does not exist before
+            // its first write, so download(output='') creates a FILE there.
+            if self.kind == Kind::ModuleExtension && fs::symlink_metadata(&self.stage).is_err() {
+                self.ensure_stage()?;
+                fs::remove_dir(&self.stage)?;
+                self.state.borrow_mut().created = true;
+            } else {
+                self.mark_created()?;
+            }
+            self.stage.clone()
+        } else {
+            self.mark_created()?;
+            self.output_parents(relative)?
+        };
+        if fs::symlink_metadata(&target).is_ok_and(|metadata| metadata.is_dir()) {
+            if allow_fail {
+                return Ok(DownloadOutcome::Failed);
+            }
+            return Err(download_error(
+                urls,
+                output,
+                &format!(
+                    "{} (Is a directory)",
+                    display(target.as_os_str().as_bytes())
+                ),
+            ));
+        }
+        // DownloadManager.java:247-261: with a checksum, an existing output
+        // whose digest already matches is used without any download (also
+        // with downloads disabled: the disable check comes later, java:331).
+        let reused = request.expected.as_ref().and_then(|expected| {
+            fs::metadata(&target)
+                .is_ok_and(|metadata| metadata.is_file())
+                .then(|| expected.algorithm.hash_file(&target).ok())
+                .flatten()
+                .filter(|(digest, _)| *digest == expected.bytes)
+                .map(|(_, size)| (expected.clone(), size))
+        });
+        let cached = match (&reused, &request.expected) {
+            (None, Some(expected)) => self
+                .cache_get(expected, canonical_id, &target)?
+                .map(|size| (expected.clone(), size)),
+            _ => None,
+        };
+        let (checksum, size) = match reused.or(cached) {
+            Some(found) => found,
+            None => match self.fetch_to(
+                urls,
+                request.expected.as_ref(),
+                request.sri,
+                &request.headers,
+                DownloadTarget::File(&target),
+            ) {
+                Ok((fetched, _)) => {
+                    self.cache_put(&fetched.checksum, &target, canonical_id)?;
+                    (fetched.checksum, fetched.size)
+                }
+                Err(failure)
+                    if allow_fail && matches!(failure.error, TypedIoError::Completion(_)) =>
+                {
+                    return Ok(DownloadOutcome::Failed);
+                }
+                Err(failure) => return Err(failure.into_error(urls, output)),
+            },
+        };
+        if executable {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&target)?.permissions().mode();
+            fs::set_permissions(&target, fs::Permissions::from_mode(mode | 0o111))?;
+        }
+        if let Some(error) = &request.deferred {
+            bail!("Checksum error in {}: {error}", self.identifying());
+        }
+        Ok(DownloadOutcome::Done(checksum, size))
+    }
+
+    /// The repository download cache (DownloadCache.java, `--repository_cache`):
+    /// blobs keyed by checksum under `<cache>/downloads/<algorithm>/<hex>`
+    /// (shared with registry archives), canonical ids as marker files.
+    fn cache_paths(&self, checksum: &Checksum, canonical_id: &str) -> Option<(PathBuf, PathBuf)> {
+        let root = self.repositories.source_cache_path().ok()?;
+        let algorithm = checksum.algorithm.name();
+        let key = transport::hex(&checksum.bytes);
+        let marker = root
+            .join("download_ids")
+            .join(algorithm)
+            .join(&key)
+            .join(format!("id-{}", transport::sha256(canonical_id.as_bytes())));
+        Some((root.join("downloads").join(algorithm).join(key), marker))
+    }
+
+    /// DownloadManager.java:264-277 + DownloadCache.get (java:146-221): a
+    /// verified blob with the expected checksum (and canonical id, when one
+    /// is given) is copied to `target` without any network access, even when
+    /// downloads are disabled.
+    fn cache_get(
+        &self,
+        expected: &Checksum,
+        canonical_id: &str,
+        target: &Path,
+    ) -> anyhow::Result<Option<u64>> {
+        let Some((blob, marker)) = self.cache_paths(expected, canonical_id) else {
+            return Ok(None);
+        };
+        if !fs::symlink_metadata(&blob).is_ok_and(|metadata| metadata.is_file()) {
+            return Ok(None);
+        }
+        let Ok((digest, size)) = expected.algorithm.hash_file(&blob) else {
+            return Ok(None);
+        };
+        if digest != expected.bytes || (!canonical_id.is_empty() && !marker.exists()) {
+            return Ok(None);
+        }
+        if fs::symlink_metadata(target).is_ok_and(|metadata| !metadata.is_dir()) {
+            fs::remove_file(target)?;
+        }
+        {
+            let mut source = fs::File::open(&blob)?;
+            let mut destination = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(target)?;
+            std::io::copy(&mut source, &mut destination)?;
+        }
+        Ok(Some(size))
+    }
+
+    /// DownloadManager.java:381-386: every completed download enters the
+    /// cache, keyed by the given checksum or by its SHA-256.
+    fn cache_put(
+        &self,
+        checksum: &Checksum,
+        source: &Path,
+        canonical_id: &str,
+    ) -> anyhow::Result<()> {
+        let Some((blob, marker)) = self.cache_paths(checksum, canonical_id) else {
+            return Ok(());
+        };
+        let directory = blob.parent().expect("cache blob parent");
+        fs::create_dir_all(directory)?;
+        let present = fs::symlink_metadata(&blob).is_ok_and(|metadata| metadata.is_file())
+            && checksum
+                .algorithm
+                .hash_file(&blob)
+                .is_ok_and(|(digest, _)| digest == checksum.bytes);
+        if !present {
+            let mut temp = tempfile::NamedTempFile::new_in(directory)?;
+            std::io::copy(&mut fs::File::open(source)?, temp.as_file_mut())?;
+            temp.persist(&blob).map_err(|error| error.error)?;
+        }
+        if !canonical_id.is_empty() {
+            fs::create_dir_all(marker.parent().expect("marker parent"))?;
+            OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&marker)?;
+        }
+        Ok(())
+    }
+
     /// Stream-extract the archive file into `output` (stage-relative),
     /// merging like Bazel's decompressors writing into an existing directory.
     fn extract_archive(
@@ -1261,7 +1613,7 @@ impl Context {
         archive: &[u8],
     ) -> anyhow::Result<()> {
         let normalized = normalized_prefix(strip_prefix);
-        self.mark_created();
+        self.mark_created()?;
         let destination = if output.is_empty() {
             self.stage.clone()
         } else {
@@ -1309,6 +1661,38 @@ impl Context {
         temporary.close()?;
         Ok(())
     }
+}
+
+impl Drop for Context {
+    /// A module extension's working directory is deleted whatever the
+    /// outcome (ModuleExtensionContext.shouldDeleteWorkingDirectoryOnClose,
+    /// java:96-101), while its lock is still held.
+    fn drop(&mut self) {
+        if self.kind == Kind::ModuleExtension && self.state.borrow().lock.is_some() {
+            let _ = remove_tree(&self.stage);
+        }
+    }
+}
+
+/// Delete a tree, making directories writable first (a callback may have
+/// extracted read-only directories), never following symlinks.
+pub(crate) fn remove_tree(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+        Ok(metadata) if !metadata.is_dir() => return fs::remove_file(path),
+        Ok(metadata) => {
+            let mode = metadata.permissions().mode();
+            if mode & 0o700 != 0o700 {
+                fs::set_permissions(path, fs::Permissions::from_mode(mode | 0o700))?;
+            }
+        }
+    }
+    for entry in fs::read_dir(path)? {
+        remove_tree(&entry?.path())?;
+    }
+    fs::remove_dir(path)
 }
 
 /// Where a download streams to.
@@ -1464,16 +1848,33 @@ fn validate_stripping(
     Ok(())
 }
 
+/// A repository_ctx or module_ctx receiver.
+fn external_receiver(this: Value<'_>) -> bool {
+    values::RepositoryCtx::from_value(this).is_some() || crate::extension_ctx::is_module_ctx(this)
+}
+
 fn exec_receiver(this: Value<'_>) -> anyhow::Result<()> {
-    ensure!(
-        values::RepositoryCtx::from_value(this).is_some(),
-        "expected repository_ctx"
-    );
+    ensure!(external_receiver(this), "expected repository_ctx");
     Ok(())
 }
 
-starlark::methods_static!(REPOSITORY_METHODS = repository_methods);
+starlark::methods_static!(REPOSITORY_METHODS = all_repository_methods);
 starlark::methods_static!(PATH_METHODS = path_methods);
+starlark::methods_static!(PENDING_DOWNLOAD_METHODS = pending_download_methods);
+
+#[starlark_module]
+fn pending_download_methods(builder: &mut MethodsBuilder) {
+    /// PendingDownload.await (java:640-651): the blocking call's result.
+    fn wait<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        let pending = this
+            .downcast_ref::<PendingDownload>()
+            .ok_or_else(|| anyhow!("expected PendingDownload"))?;
+        match &pending.outcome {
+            Ok(outcome) => Ok(outcome.alloc(heap)),
+            Err(message) => Err(anyhow::Error::msg(message.clone())),
+        }
+    }
+}
 
 /// A private, value-free marker carried intact by ErrorKind::Native. Only this
 /// method's failures suppress source diagnostics; user messages cannot opt in.
@@ -1512,7 +1913,7 @@ fn getenv_impl<'v>(
     eval: &mut Evaluator<'v, '_, '_>,
 ) -> Result<Value<'v>, GetenvError> {
     // Validate the genuine receiver and phase before inspecting user arguments.
-    if values::RepositoryCtx::from_value(this).is_none() {
+    if !external_receiver(this) {
         return Err(GetenvError::Receiver);
     }
     let context = context(eval).map_err(|_| GetenvError::Phase)?;
@@ -1583,8 +1984,133 @@ fn dict_cast_error(value: Value<'_>, what: &str) -> Option<String> {
         })
 }
 
-fn not_implemented(method: &str) -> anyhow::Error {
-    anyhow!("repository_ctx.{method}() is not implemented by the native profile")
+/// getAuthContents + getAuthHeaders (java:350-415): `basic` and `pattern`
+/// entries become an Authorization header for exactly that URL; entries of
+/// other types are ignored.
+fn auth_headers(
+    method: &str,
+    auth: Value<'_>,
+) -> anyhow::Result<Vec<(reqwest::Url, transport::Headers)>> {
+    use base64::Engine as _;
+    let dict = DictRef::from_value(auth).ok_or_else(|| {
+        anyhow!(
+            "in call to {method}(), parameter 'auth' got value of type '{}', want 'dict'",
+            auth.get_type()
+        )
+    })?;
+    // Dict.cast(x, String.class, Dict.class, "auth") (Dict.java:659-684).
+    if let Some((key, value)) = dict
+        .iter()
+        .find(|(key, value)| key.unpack_str().is_none() || DictRef::from_value(*value).is_none())
+    {
+        bail!(
+            "got dict<{}, {}> for 'auth', want dict<string, dict>",
+            key.get_type(),
+            value.get_type()
+        );
+    }
+    let mut result = Vec::new();
+    for (key, value) in dict.iter() {
+        let key = key.unpack_str().expect("checked");
+        let entry = DictRef::from_value(value).expect("checked");
+        let get = |name: &str| {
+            entry
+                .iter()
+                .find(|(key, _)| key.unpack_str() == Some(name))
+                .map(|(_, value)| value)
+        };
+        // Starlark/Java string conversion of an arbitrary value.
+        let text = |value: Value<'_>| match value.unpack_str() {
+            Some(text) => text.to_owned(),
+            None => value.to_str(),
+        };
+        let header = match get("type").and_then(|value| value.unpack_str()) {
+            Some("basic") => {
+                let (Some(login), Some(password)) = (get("login"), get("password")) else {
+                    bail!(
+                        "Found request to do basic auth for {key} without 'login' and 'password' being provided."
+                    );
+                };
+                let credentials = format!("{}:{}", text(login), text(password));
+                // credentials.getBytes(UTF_8) of the Java string.
+                let encoded =
+                    base64::engine::general_purpose::STANDARD.encode(credentials.as_bytes());
+                format!("Basic {encoded}").into_bytes()
+            }
+            Some("pattern") => {
+                let Some(pattern) = get("pattern") else {
+                    bail!(
+                        "Found request to do pattern auth for {key} without a pattern being provided"
+                    );
+                };
+                let mut result = text(pattern);
+                for component in ["password", "login"] {
+                    let demarcated = format!("<{component}>");
+                    if !result.contains(&demarcated) {
+                        continue;
+                    }
+                    let Some(value) = get(component) else {
+                        bail!(
+                            "Auth pattern contains {demarcated} but it was not provided in auth dict."
+                        );
+                    };
+                    result = result.replace(&demarcated, &text(value));
+                }
+                latin1(&result, "auth pattern")?
+            }
+            _ => continue,
+        };
+        // new URI(key): a key no request can match is never used.
+        if let Ok(url) = reqwest::Url::parse(key) {
+            result.push((url, vec![("Authorization".to_owned(), header)]));
+        }
+    }
+    Ok(result)
+}
+
+/// getHeaderContents (java:417-441): string or sequence-of-string values.
+fn header_contents(method: &str, headers: Value<'_>) -> anyhow::Result<transport::Headers> {
+    if DictRef::from_value(headers).is_none() {
+        bail!(
+            "in call to {method}(), parameter 'headers' got value of type '{}', want 'dict'",
+            headers.get_type()
+        );
+    }
+    if let Some(error) = dict_cast_error(headers, "headers") {
+        bail!(error);
+    }
+    let dict = DictRef::from_value(headers).expect("checked");
+    let mut result = Vec::new();
+    for (key, value) in dict.iter() {
+        let name = key.unpack_str().expect("checked").to_owned();
+        let values = if let Some(text) = value.unpack_str() {
+            vec![text]
+        } else if let Some(items) = ListRef::from_value(value)
+            .map(|list| list.content().to_vec())
+            .or_else(|| TupleRef::from_value(value).map(|tuple| tuple.content().to_vec()))
+        {
+            items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    item.unpack_str().ok_or_else(|| {
+                        anyhow!(
+                            "at index {index} of header values, got element of type {}, want string",
+                            item.get_type()
+                        )
+                    })
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?
+        } else {
+            bail!(
+                "headers argument must be a dict whose keys are string and whose values are either string or sequence of string"
+            );
+        };
+        for value in values {
+            result.push((name.clone(), latin1(value, "header value")?));
+        }
+    }
+    Ok(result)
 }
 
 /// Validated `url`/checksum/auth/headers arguments of download() and
@@ -1592,6 +2118,7 @@ fn not_implemented(method: &str) -> anyhow::Error {
 /// validateChecksum java:512-541).
 struct DownloadRequest {
     urls: Vec<reqwest::Url>,
+    headers: transport::RequestHeaders,
     expected: Option<Checksum>,
     /// A malformed checksum, raised only after the download attempt
     /// (java:1094-1101, 1168-1170).
@@ -1610,15 +2137,14 @@ impl DownloadRequest {
         auth: Option<Value<'v>>,
         headers: Option<Value<'v>>,
     ) -> anyhow::Result<Self> {
-        for (option, name) in [(auth, "auth"), (headers, "headers")] {
-            if let Some(option) = option {
-                let dict =
-                    DictRef::from_value(option).ok_or_else(|| anyhow!("{name} must be a dict"))?;
-                ensure!(
-                    dict.is_empty(),
-                    "{method}() {name} is not supported by the native download transport"
-                );
-            }
+        // getAuthHeaders(getAuthContents(auth)), then getHeaderContents
+        // (java:812-816), before the URLs.
+        let mut request_headers = transport::RequestHeaders::default();
+        if let Some(auth) = auth {
+            request_headers.auth = auth_headers(method, auth)?;
+        }
+        if let Some(headers) = headers {
+            request_headers.common = header_contents(method, headers)?;
         }
         let strings = url_strings(method, url)?;
         ensure!(
@@ -1650,6 +2176,7 @@ impl DownloadRequest {
         };
         Ok(Self {
             urls,
+            headers: request_headers,
             expected,
             deferred,
             sri: !integrity.is_empty(),
@@ -1667,6 +2194,22 @@ fn download_error(urls: &[reqwest::Url], path: &[u8], message: &str) -> anyhow::
             .join(", "),
         display(path)
     )
+}
+
+/// A finished download(): `success = False` under allow_fail, or the digest.
+#[derive(Debug, Clone)]
+pub(crate) enum DownloadOutcome {
+    Failed,
+    Done(Checksum, u64),
+}
+
+impl DownloadOutcome {
+    fn alloc<'v>(&self, heap: Heap<'v>) -> Value<'v> {
+        match self {
+            Self::Failed => heap.alloc(AllocStruct([("success", false)])),
+            Self::Done(checksum, size) => download_result(heap, checksum, *size),
+        }
+    }
 }
 
 /// calculateDownloadResult (java:559-583).
@@ -1710,8 +2253,9 @@ fn url_strings<'v>(method: &str, url: Value<'v>) -> anyhow::Result<Vec<&'v str>>
         .collect()
 }
 
+/// StarlarkBaseExternalContext members shared by repository_ctx and module_ctx.
 #[starlark_module]
-fn repository_methods(builder: &mut MethodsBuilder) {
+pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
     fn getenv<'v>(
         this: Value<'v>,
         args: &Arguments<'v, '_>,
@@ -1740,43 +2284,6 @@ fn repository_methods(builder: &mut MethodsBuilder) {
             anyhow!("repository file content above U+00FF is unsupported (Latin-1 byte strings)")
         })?;
         context.write(&path, &bytes, executable)?;
-        Ok(NoneType)
-    }
-
-    /// StarlarkRepositoryContext.createFileFromTemplate (java:258-359).
-    fn template<'v>(
-        this: Value<'v>,
-        #[starlark(require = pos)] path: Value<'v>,
-        #[starlark(require = pos)] template: Value<'v>,
-        substitutions: Option<Value<'v>>,
-        #[starlark(default = true)] executable: bool,
-        #[starlark(require = named, default = "auto")] watch_template: &str,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<NoneType> {
-        let _ = this;
-        let context = context(eval)?;
-        let output = context.path_of(path, "template", "path")?;
-        let replacements = string_dict(substitutions, "substitutions")?;
-        let watch = ShouldWatch::parse(watch_template)?;
-        let (source, mut bytes) = context.read_input(
-            template,
-            "template",
-            "template",
-            watch,
-            "attempting to use a directory as template",
-        )?;
-        context.output(&output)?;
-        {
-            let mut state = context.state.borrow_mut();
-            state.inputs.templates.push(TemplateInput {
-                source,
-                bytes: bytes.clone(),
-            });
-        }
-        for (key, value) in replacements {
-            bytes = replace_bytes(&bytes, &key, &value)?;
-        }
-        context.write(&output, &bytes, executable)?;
         Ok(NoneType)
     }
 
@@ -1822,147 +2329,18 @@ fn repository_methods(builder: &mut MethodsBuilder) {
     ) -> anyhow::Result<NoneType> {
         let _ = this;
         let context = context(eval)?;
-        let path = context.path_of(path, "watch", "path")?;
-        context.watch(&path, ShouldWatch::Yes)?;
-        Ok(NoneType)
-    }
-
-    /// StarlarkRepositoryContext.delete (java:373-405).
-    fn delete<'v>(
-        this: Value<'v>,
-        #[starlark(require = pos)] path: Value<'v>,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<bool> {
-        let _ = this;
-        let context = context(eval)?;
-        if path.unpack_str().is_none() && path.downcast_ref::<RepositoryPath>().is_none() {
-            bail!(
-                "in call to delete(), parameter 'path' got value of type '{}', want 'string or path'",
-                path.get_type()
-            );
+        let resolved = context.path_of(path, "watch", "path")?;
+        if context.kind == Kind::ModuleExtension
+            && let Some(canonical) = unpack_label(path)
+        {
+            // A Label names a file of a repository (Bazel: under the workspace
+            // or <output_base>/external), which a module extension may watch
+            // even when the native root is elsewhere (local_path_override).
+            return context
+                .record(canonical, "file", file_state(&path_buf(&resolved))?)
+                .map(|()| NoneType);
         }
-        let path = context.path_of(path, "delete", "path")?;
-        let workspace = context.workspace.as_os_str().as_bytes();
-        let in_workspace = path == workspace
-            || path
-                .strip_prefix(workspace)
-                .is_some_and(|rest| rest.starts_with(b"/"));
-        let Some(relative) = context.under_stage(&path) else {
-            if in_workspace {
-                let relative = display(path[workspace.len()..].strip_prefix(b"/").unwrap_or(b""));
-                let ignored = context
-                    .repositories
-                    .ignored_subdirectories("")
-                    .map_err(anyhow::Error::msg)?
-                    .matching_entry(&relative)
-                    .is_some();
-                ensure!(
-                    ignored,
-                    "delete() can only be applied to external paths (that is, outside the workspace or ignored in .bazelignore)"
-                );
-            }
-            bail!(
-                "repository_ctx.delete() of {} outside the repository directory is not supported by the native profile",
-                display(&path)
-            );
-        };
-        ensure!(
-            !relative.is_empty(),
-            "repository_ctx.delete() of the repository directory itself is not supported by the native profile"
-        );
-        let relative = context.output(&path)?;
-        let target = parents(&context.stage, &relative, false)?;
-        match fs::symlink_metadata(&target) {
-            Ok(metadata) if metadata.file_type().is_dir() => fs::remove_dir_all(&target)?,
-            Ok(_) => fs::remove_file(&target)?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-            Err(error) => return Err(error.into()),
-        }
-        Ok(true)
-    }
-
-    /// StarlarkRepositoryContext.rename (java:407-473).
-    fn rename<'v>(
-        this: Value<'v>,
-        #[starlark(require = pos)] src: Value<'v>,
-        #[starlark(require = pos)] dst: Value<'v>,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<NoneType> {
-        let _ = this;
-        let context = context(eval)?;
-        let source = context.path_of(src, "rename", "src")?;
-        let destination = context.path_of(dst, "rename", "dst")?;
-        let (from, to) = (context.output(&source)?, context.output(&destination)?);
-        // RepositoryFunctionException(IOException) text, java:456-466.
-        let failure = |reason: &dyn fmt::Display| {
-            anyhow!(
-                "java.io.IOException: Could not rename {} to {}: {reason}",
-                display(&source),
-                display(&destination)
-            )
-        };
-        ensure!(
-            !from.is_empty() && !to.is_empty(),
-            failure(&"the repository directory itself cannot be renamed")
-        );
-        if fs::symlink_metadata(context.stage.join(&to)).is_ok() {
-            return Err(failure(&"already exists"));
-        }
-        let from_path = parents(&context.stage, &from, false).map_err(|e| failure(&e))?;
-        let to_path = context.output_parents(&to).map_err(|e| failure(&e))?;
-        context.mark_created();
-        fs::rename(&from_path, &to_path).map_err(|error| {
-            // unix_jni.cc renameTo: "[unix_jni.cc:638] SRC -> DST (REASON)".
-            failure(&format!(
-                "[unix_jni.cc:638] {} -> {} ({})",
-                display(&source),
-                display(&destination),
-                io_reason(&error)
-            ))
-        })?;
-        Ok(NoneType)
-    }
-
-    /// StarlarkRepositoryContext.symlink (java:196-256). The link holds the
-    /// absolute target during the callback, exactly like Bazel. Links into the
-    /// repository directory are rewritten relative only after the callback
-    /// (`replant_symlinks`): the private stage path does not survive
-    /// publication, while Bazel leaves them absolute in <output_base>/external.
-    fn symlink<'v>(
-        this: Value<'v>,
-        #[starlark(require = pos)] target: Value<'v>,
-        #[starlark(require = pos)] link_name: Value<'v>,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<NoneType> {
-        let _ = this;
-        let context = context(eval)?;
-        let target = context.path_of(target, "symlink", "target")?;
-        let link = context.path_of(link_name, "symlink", "link_name")?;
-        let relative = context.output(&link)?;
-        // RepositoryFunctionException(IOException) text, java:240-250.
-        let failure = |reason: &dyn fmt::Display| {
-            anyhow!(
-                "java.io.IOException: Could not create symlink from {} to {}: {reason}",
-                display(&target),
-                display(&link)
-            )
-        };
-        ensure!(
-            !relative.is_empty(),
-            failure(&"the repository directory itself cannot be a symlink")
-        );
-        let host_link = context.output_parents(&relative).map_err(|e| failure(&e))?;
-        context.mark_created();
-        if fs::symlink_metadata(&host_link).is_ok() {
-            // unix_jni.cc symlink(): "[unix_jni.cc:297] LINK (File exists)".
-            return Err(failure(&format!(
-                "[unix_jni.cc:297] {} (File exists)",
-                display(&link)
-            )));
-        }
-        // Bazel creates the link to the absolute target path (java:232); so do
-        // we, so readlink/realpath inside the callback observe Bazel's values.
-        std::os::unix::fs::symlink(path_buf(&target), &host_link).map_err(|e| failure(&e))?;
+        context.watch(&resolved, ShouldWatch::Yes)?;
         Ok(NoneType)
     }
 
@@ -2085,6 +2463,8 @@ fn repository_methods(builder: &mut MethodsBuilder) {
                 environment.remove(key);
             }
         }
+        // createDirectory(workingDirectory) (java:2076).
+        context.mark_created()?;
         let directory = if working_directory.is_empty() {
             context.stage.clone()
         } else {
@@ -2124,12 +2504,7 @@ fn repository_methods(builder: &mut MethodsBuilder) {
                 }
             }
         };
-        {
-            let mut state = context.state.borrow_mut();
-            // createDirectory(workingDirectory) (java:2076).
-            state.created = true;
-            state.inputs.host_facilities.insert("execute");
-        }
+        context.facility("execute");
         let request = crate::repository_process::Request {
             argv,
             environment: environment.into_iter().collect(),
@@ -2231,9 +2606,6 @@ fn repository_methods(builder: &mut MethodsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
         let _ = this;
-        // canonical_id only keys Bazel's repository cache, which the native
-        // profile does not have; it never changes which bytes are accepted.
-        let _ = canonical_id;
         let context = context(eval)?;
         let strip_prefix = renamed_strip_prefix("download_and_extract", strip_prefix, stripPrefix)?;
         validate_stripping(
@@ -2269,30 +2641,55 @@ fn repository_methods(builder: &mut MethodsBuilder) {
             path.extend_from_slice(format!("/{temp}/{name}").as_bytes());
             (name.to_owned(), path)
         };
-        context.mark_created();
+        context.mark_created()?;
         let scratch = tempfile::Builder::new()
             .prefix(".download-")
             .tempdir_in(&context.stage)?;
         let urls = &request.urls;
-        let (fetched, file) = match context.fetch_to(
-            urls,
-            request.expected.as_ref(),
-            request.sri,
-            DownloadTarget::Directory(scratch.path()),
-        ) {
-            Ok(fetched) => fetched,
-            Err(failure) if allow_fail && matches!(failure.error, TypedIoError::Completion(_)) => {
-                return Ok(eval.heap().alloc(AllocStruct([("success", false)])));
+        // DownloadManager.java:264-277: a cache hit by checksum is named after
+        // the first URL (or Bazel's `cacheprobe` placeholder without URLs).
+        let cached = match &request.expected {
+            Some(expected) => {
+                let name = urls.first().map_or("cacheprobe".to_owned(), storage_name);
+                let file = scratch.path().join(&name);
+                context
+                    .cache_get(expected, canonical_id, &file)?
+                    .map(|size| (expected.clone(), size, file, urls.first().cloned()))
             }
-            Err(failure) => return Err(failure.into_error(urls, &downloaded(&urls[0]).1)),
+            None => None,
+        };
+        let (checksum, size, file, url) = match cached {
+            Some(cached) => cached,
+            None => match context.fetch_to(
+                urls,
+                request.expected.as_ref(),
+                request.sri,
+                &request.headers,
+                DownloadTarget::Directory(scratch.path()),
+            ) {
+                Ok((fetched, file)) => {
+                    context.cache_put(&fetched.checksum, &file, canonical_id)?;
+                    (fetched.checksum, fetched.size, file, Some(fetched.url))
+                }
+                Err(failure)
+                    if allow_fail && matches!(failure.error, TypedIoError::Completion(_)) =>
+                {
+                    return Ok(eval.heap().alloc(AllocStruct([("success", false)])));
+                }
+                Err(failure) => return Err(failure.into_error(urls, &downloaded(&urls[0]).1)),
+            },
         };
         if let Some(error) = &request.deferred {
-            bail!(
-                "Checksum error in repository @@{}: {error}",
-                context.canonical
-            );
+            bail!("Checksum error in {}: {error}", context.identifying());
         }
-        let (name, archive) = downloaded(&fetched.url);
+        let (name, archive) = match &url {
+            Some(url) => downloaded(url),
+            None => {
+                let mut path = output.clone();
+                path.extend_from_slice(format!("/{temp}/cacheprobe").as_bytes());
+                ("cacheprobe".to_owned(), path)
+            }
+        };
         let kind = if r#type.is_empty() {
             decompressor_for_name(name.as_bytes(), &display(&archive))?
         } else {
@@ -2300,11 +2697,7 @@ fn repository_methods(builder: &mut MethodsBuilder) {
         };
         context.extract_archive(&file, kind, strip_prefix, &relative, &archive)?;
         scratch.close()?;
-        Ok(download_result(
-            eval.heap(),
-            &fetched.checksum,
-            fetched.size,
-        ))
+        Ok(download_result(eval.heap(), &checksum, size))
     }
 
     /// StarlarkBaseExternalContext.download (java:799-895): like Bazel's
@@ -2316,7 +2709,10 @@ fn repository_methods(builder: &mut MethodsBuilder) {
     /// mirror responds. With a checksum, an output that already matches is
     /// reused without downloading (DownloadManager.java:247-261). `executable` adds
     /// the execute bits after success (setExecutable, java:676).
-    /// `block = False` (an asynchronous pending download) is unsupported.
+    /// `block = False` returns a PendingDownload whose `wait()` returns or
+    /// raises what the blocking call would (java:585-697). The native
+    /// download completes before the call returns, so it is never "pending
+    /// after the callback finished" (java:295-315).
     fn download<'v>(
         this: Value<'v>,
         url: Value<'v>,
@@ -2331,82 +2727,212 @@ fn repository_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named, default = true)] block: bool,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
-        let _ = (this, canonical_id);
+        let _ = this;
         let context = context(eval)?;
         let request = DownloadRequest::new(
             "download", url, sha256, integrity, allow_fail, auth, headers,
         )?;
-        ensure!(
-            block,
-            "download(block = False) is not supported by the native profile (asynchronous downloads)"
-        );
         let output = match output {
             Some(output) => context.path_of(output, "download", "output")?,
             None => context.stage_bytes().to_vec(),
         };
         // checkInOutputDirectory("write", outputPath) (java:861).
         let relative = context.output(&output)?;
-        context.facility("download");
-        context.mark_created();
-        let urls = &request.urls;
-        let failed = |message: &str| -> anyhow::Result<Value<'v>> {
-            Err(download_error(urls, &output, message))
-        };
-        // makeDirectories(outputPath) (java:862): parents are real directories.
-        let target = if relative.is_empty() {
-            context.stage.clone()
-        } else {
-            context.output_parents(&relative)?
-        };
-        if fs::symlink_metadata(&target).is_ok_and(|metadata| metadata.is_dir()) {
-            if allow_fail {
-                return Ok(eval.heap().alloc(AllocStruct([("success", false)])));
-            }
-            return failed(&format!(
-                "{} (Is a directory)",
-                display(target.as_os_str().as_bytes())
-            ));
+        let outcome = context.download(
+            &request,
+            &output,
+            &relative,
+            executable,
+            allow_fail,
+            canonical_id,
+        );
+        if block {
+            return Ok(outcome?.alloc(eval.heap()));
         }
-        // DownloadManager.java:247-261: with a checksum, an existing output
-        // whose digest already matches is used without any download (also
-        // with downloads disabled: the disable check comes later, java:331).
-        let reused = request.expected.as_ref().and_then(|expected| {
-            fs::metadata(&target)
-                .is_ok_and(|metadata| metadata.is_file())
-                .then(|| expected.algorithm.hash_file(&target).ok())
-                .flatten()
-                .filter(|(digest, _)| *digest == expected.bytes)
-                .map(|(_, size)| (expected.clone(), size))
-        });
-        let (checksum, size) = match reused {
-            Some(reused) => reused,
-            None => match context.fetch_to(
-                urls,
-                request.expected.as_ref(),
-                request.sri,
-                DownloadTarget::File(&target),
-            ) {
-                Ok((fetched, _)) => (fetched.checksum, fetched.size),
-                Err(failure)
-                    if allow_fail && matches!(failure.error, TypedIoError::Completion(_)) =>
-                {
-                    return Ok(eval.heap().alloc(AllocStruct([("success", false)])));
-                }
-                Err(failure) => return Err(failure.into_error(urls, &output)),
-            },
-        };
-        if executable {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = fs::metadata(&target)?.permissions().mode();
-            fs::set_permissions(&target, fs::Permissions::from_mode(mode | 0o111))?;
+        Ok(eval.heap().alloc(PendingDownload {
+            output: output.clone(),
+            outcome: outcome.map_err(|error| format!("{error:#}")),
+        }))
+    }
+}
+
+/// StarlarkRepositoryContext-only members.
+#[starlark_module]
+fn repository_methods(builder: &mut MethodsBuilder) {
+    /// StarlarkRepositoryContext.createFileFromTemplate (java:258-359).
+    fn template<'v>(
+        this: Value<'v>,
+        #[starlark(require = pos)] path: Value<'v>,
+        #[starlark(require = pos)] template: Value<'v>,
+        substitutions: Option<Value<'v>>,
+        #[starlark(default = true)] executable: bool,
+        #[starlark(require = named, default = "auto")] watch_template: &str,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let _ = this;
+        let context = context(eval)?;
+        let output = context.path_of(path, "template", "path")?;
+        let replacements = string_dict(substitutions, "substitutions")?;
+        let watch = ShouldWatch::parse(watch_template)?;
+        let (source, mut bytes) = context.read_input(
+            template,
+            "template",
+            "template",
+            watch,
+            "attempting to use a directory as template",
+        )?;
+        context.output(&output)?;
+        {
+            let mut state = context.state.borrow_mut();
+            state.inputs.templates.push(TemplateInput {
+                source,
+                bytes: bytes.clone(),
+            });
         }
-        if let Some(error) = &request.deferred {
+        for (key, value) in replacements {
+            bytes = replace_bytes(&bytes, &key, &value)?;
+        }
+        context.write(&output, &bytes, executable)?;
+        Ok(NoneType)
+    }
+
+    /// StarlarkRepositoryContext.delete (java:373-405).
+    fn delete<'v>(
+        this: Value<'v>,
+        #[starlark(require = pos)] path: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<bool> {
+        let _ = this;
+        let context = context(eval)?;
+        if path.unpack_str().is_none() && path.downcast_ref::<RepositoryPath>().is_none() {
             bail!(
-                "Checksum error in repository @@{}: {error}",
-                context.canonical
+                "in call to delete(), parameter 'path' got value of type '{}', want 'string or path'",
+                path.get_type()
             );
         }
-        Ok(download_result(eval.heap(), &checksum, size))
+        let path = context.path_of(path, "delete", "path")?;
+        let workspace = context.workspace.as_os_str().as_bytes();
+        let in_workspace = path == workspace
+            || path
+                .strip_prefix(workspace)
+                .is_some_and(|rest| rest.starts_with(b"/"));
+        let Some(relative) = context.under_stage(&path) else {
+            if in_workspace {
+                let relative = display(path[workspace.len()..].strip_prefix(b"/").unwrap_or(b""));
+                let ignored = context
+                    .repositories
+                    .ignored_subdirectories("")
+                    .map_err(anyhow::Error::msg)?
+                    .matching_entry(&relative)
+                    .is_some();
+                ensure!(
+                    ignored,
+                    "delete() can only be applied to external paths (that is, outside the workspace or ignored in .bazelignore)"
+                );
+            }
+            bail!(
+                "repository_ctx.delete() of {} outside the repository directory is not supported by the native profile",
+                display(&path)
+            );
+        };
+        ensure!(
+            !relative.is_empty(),
+            "repository_ctx.delete() of the repository directory itself is not supported by the native profile"
+        );
+        let relative = context.output(&path)?;
+        let target = parents(&context.stage, &relative, false)?;
+        match fs::symlink_metadata(&target) {
+            Ok(metadata) if metadata.file_type().is_dir() => fs::remove_dir_all(&target)?,
+            Ok(_) => fs::remove_file(&target)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.into()),
+        }
+        Ok(true)
+    }
+
+    /// StarlarkRepositoryContext.rename (java:407-473).
+    fn rename<'v>(
+        this: Value<'v>,
+        #[starlark(require = pos)] src: Value<'v>,
+        #[starlark(require = pos)] dst: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let _ = this;
+        let context = context(eval)?;
+        let source = context.path_of(src, "rename", "src")?;
+        let destination = context.path_of(dst, "rename", "dst")?;
+        let (from, to) = (context.output(&source)?, context.output(&destination)?);
+        // RepositoryFunctionException(IOException) text, java:456-466.
+        let failure = |reason: &dyn fmt::Display| {
+            anyhow!(
+                "java.io.IOException: Could not rename {} to {}: {reason}",
+                display(&source),
+                display(&destination)
+            )
+        };
+        ensure!(
+            !from.is_empty() && !to.is_empty(),
+            failure(&"the repository directory itself cannot be renamed")
+        );
+        if fs::symlink_metadata(context.stage.join(&to)).is_ok() {
+            return Err(failure(&"already exists"));
+        }
+        let from_path = parents(&context.stage, &from, false).map_err(|e| failure(&e))?;
+        let to_path = context.output_parents(&to).map_err(|e| failure(&e))?;
+        context.mark_created()?;
+        fs::rename(&from_path, &to_path).map_err(|error| {
+            // unix_jni.cc renameTo: "[unix_jni.cc:638] SRC -> DST (REASON)".
+            failure(&format!(
+                "[unix_jni.cc:638] {} -> {} ({})",
+                display(&source),
+                display(&destination),
+                io_reason(&error)
+            ))
+        })?;
+        Ok(NoneType)
+    }
+
+    /// StarlarkRepositoryContext.symlink (java:196-256). The link holds the
+    /// absolute target during the callback, exactly like Bazel. Links into the
+    /// repository directory are rewritten relative only after the callback
+    /// (`replant_symlinks`): the private stage path does not survive
+    /// publication, while Bazel leaves them absolute in <output_base>/external.
+    fn symlink<'v>(
+        this: Value<'v>,
+        #[starlark(require = pos)] target: Value<'v>,
+        #[starlark(require = pos)] link_name: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let _ = this;
+        let context = context(eval)?;
+        let target = context.path_of(target, "symlink", "target")?;
+        let link = context.path_of(link_name, "symlink", "link_name")?;
+        let relative = context.output(&link)?;
+        // RepositoryFunctionException(IOException) text, java:240-250.
+        let failure = |reason: &dyn fmt::Display| {
+            anyhow!(
+                "java.io.IOException: Could not create symlink from {} to {}: {reason}",
+                display(&target),
+                display(&link)
+            )
+        };
+        ensure!(
+            !relative.is_empty(),
+            failure(&"the repository directory itself cannot be a symlink")
+        );
+        let host_link = context.output_parents(&relative).map_err(|e| failure(&e))?;
+        context.mark_created()?;
+        if fs::symlink_metadata(&host_link).is_ok() {
+            // unix_jni.cc symlink(): "[unix_jni.cc:297] LINK (File exists)".
+            return Err(failure(&format!(
+                "[unix_jni.cc:297] {} (File exists)",
+                display(&link)
+            )));
+        }
+        // Bazel creates the link to the absolute target path (java:232); so do
+        // we, so readlink/realpath inside the callback observe Bazel's values.
+        std::os::unix::fs::symlink(path_buf(&target), &host_link).map_err(|e| failure(&e))?;
+        Ok(NoneType)
     }
 
     /// StarlarkRepositoryContext.patch (java:475-567): resolve the patch file
@@ -2473,18 +2999,33 @@ fn repository_methods(builder: &mut MethodsBuilder) {
         // PatchUtil writes create missing parents (writeLinesAs); existing
         // ancestors must be real directories (no symlinked parents).
         let root = context.stage.join(&relative);
-        context.mark_created();
+        context.mark_created()?;
         parsed.apply_tree_detailed(&root).map_err(report)?;
         Ok(NoneType)
     }
 
+    /// StarlarkRepositoryContext.watchTree (java:568-609): a directory's
+    /// type and its transitive tree (RepoRecordedInput.DirTree).
     fn watch_tree<'v>(
         this: Value<'v>,
-        #[starlark(args)] args: UnpackTuple<Value<'v>>,
-        #[starlark(kwargs)] kwargs: starlark::collections::SmallMap<String, Value<'v>>,
+        #[starlark(require = pos)] path: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
-        let _ = (this, args, kwargs);
-        Err(not_implemented("watch_tree"))
+        let _ = this;
+        let context = context(eval)?;
+        let path = context.path_of(path, "watch_tree", "path")?;
+        let host = path_buf(&path);
+        ensure!(
+            fs::metadata(&host).is_ok_and(|metadata| metadata.is_dir()),
+            "can't call watch_tree() on non-directory {}",
+            display(&path)
+        );
+        let Some(key) = context.watch_key(&path, ShouldWatch::Yes)? else {
+            return Ok(NoneType);
+        };
+        context.record(key.clone(), "file", file_state(&host)?)?;
+        context.record(key, "dirtree", format!("dirtree:{}", tree_digest(&host)?))?;
+        Ok(NoneType)
     }
 
     /// StarlarkRepositoryContext.repoMetadata (java:611-656). Both parameters
@@ -2530,6 +3071,11 @@ fn repository_methods(builder: &mut MethodsBuilder) {
             attrs,
         }))
     }
+}
+
+fn all_repository_methods(builder: &mut MethodsBuilder) {
+    base_methods(builder);
+    repository_methods(builder);
 }
 
 fn path_receiver<'v>(this: Value<'v>) -> anyhow::Result<&'v RepositoryPath> {
@@ -2626,7 +3172,8 @@ fn path_methods(builder: &mut MethodsBuilder) {
             entries.push(bytes);
             names.push(name.as_bytes().to_vec());
         }
-        if watch != ShouldWatch::No && context.under_stage(&path.bytes).is_none() {
+        // maybeWatchDirents (java:1740-1755): the type, then the entries.
+        if let Some(key) = context.watch_key(&path.bytes, watch)? {
             context.watch(&path.bytes, watch)?;
             names.sort_unstable();
             let mut hash = Vec::new();
@@ -2634,13 +3181,7 @@ fn path_methods(builder: &mut MethodsBuilder) {
                 hash.extend_from_slice(&name);
                 hash.push(0);
             }
-            context.record(
-                context.friendly(&path.bytes),
-                "dirents",
-                format!("dirents:{}", sha256(&hash)),
-            )?;
-        } else if watch == ShouldWatch::Yes {
-            bail!("attempted to watch path under working directory");
+            context.record(key, "dirents", format!("dirents:{}", sha256(&hash)))?;
         }
         let heap = eval.heap();
         Ok(heap.alloc(
@@ -2886,6 +3427,7 @@ pub fn execute(
         })?;
         let context = Context {
             repositories,
+            kind: Kind::Repository,
             stage: checked_root(stage)?,
             workspace,
             label: definition_label.clone(),
@@ -2917,9 +3459,9 @@ pub fn execute(
             }
             let implementation = heap.access_owned_frozen_value(&definition.implementation);
             let mut eval = Evaluator::new(&module);
+            // Bazel has no heap or step limit for repository rules; only the
+            // call-stack depth is bounded (Starlark forbids recursion).
             eval.set_max_callstack_size(128)?;
-            eval.set_max_tick_count(1_000_000)?;
-            eval.set_max_heap_size(128 * 1024 * 1024)?;
             eval.extra = Some(&context);
             for name in definition.environ.names() {
                 context
@@ -2963,10 +3505,7 @@ pub fn execute(
             Ok(())
         })?;
         replant_symlinks(&context.stage)?;
-        let watched_env = context.environment.borrow().inputs()?;
-        let mut state = context.state.into_inner();
-        state.inputs.watched_env = watched_env;
-        Ok(state.inputs)
+        context.finish()
     };
     run().map_err(|error| {
         format!(
@@ -3682,7 +4221,7 @@ R = repository_rule(implementation = _impl)
 
     #[cfg(unix)]
     #[test]
-    fn label_templates_reject_symlink_files_parents_and_markers() {
+    fn label_templates_follow_symlinked_files_packages_and_markers_like_bazel() {
         use std::os::unix::fs::symlink;
         let fixture = Fixture::new();
         fixture.file("actual", b"private");
@@ -3697,15 +4236,31 @@ R = repository_rule(implementation = _impl)
             fixture.root.path().join("alias"),
         )
         .unwrap();
-        for label in ["//pkg:link", "//alias:link"] {
-            let schema = format!("{{'src': attr.label(default='{label}')}}");
-            let error = fixture
+        // getPathFromLabel then a read that follows links (java:1631-1647).
+        // A symlinked package directory stays a separate native package
+        // restriction (workspace package lookup).
+        let error = fixture
+            .run_loaded(
+                fixture.load(
+                    "ctx.template('x', ctx.attr.src)",
+                    "{'src': attr.label(default='//alias:link')}",
+                ),
+                BTreeMap::new(),
+            )
+            .unwrap_err();
+        assert!(
+            error.contains("symlink package directories are unsupported"),
+            "{error}"
+        );
+        {
+            let schema = "{'src': attr.label(default='//pkg:link')}";
+            fixture
                 .run_loaded(
-                    fixture.load("ctx.template('x', ctx.attr.src)", &schema),
+                    fixture.load("ctx.template('x', ctx.attr.src)", schema),
                     BTreeMap::new(),
                 )
-                .unwrap_err();
-            assert!(error.contains("symlink"), "{error}");
+                .unwrap();
+            assert_eq!(fixture.bytes("x"), b"private");
         }
         fs::remove_file(fixture.root.path().join("pkg/BUILD")).unwrap();
         symlink(
@@ -3713,7 +4268,7 @@ R = repository_rule(implementation = _impl)
             fixture.root.path().join("pkg/BUILD"),
         )
         .unwrap();
-        let error = fixture
+        fixture
             .run_loaded(
                 fixture.load(
                     "ctx.template('x', ctx.attr.src)",
@@ -3721,8 +4276,8 @@ R = repository_rule(implementation = _impl)
                 ),
                 BTreeMap::new(),
             )
-            .unwrap_err();
-        assert!(error.contains("marker"), "{error}");
+            .unwrap();
+        assert_eq!(fixture.bytes("x"), b"private");
     }
 
     #[test]
@@ -4518,7 +5073,7 @@ ctx.extract("archive.tar.gz", "out", strip_prefix = "top")"#);
         fixture.error("ctx.download_and_extract('http://example.invalid/a.tar.gz')", "No URLs left after removing plain http URLs due to missing checksum. Please provide either a checksum or an https download location.");
         fixture.error("ctx.download_and_extract([1])", "Expected a string or sequence of strings for 'url' argument, but got 'int' item in the sequence");
         fixture.error("ctx.download_and_extract('https://example.invalid/a.tar.gz', sha256 = 'a' * 64, integrity = 'sha256-x')", "Expected either 'sha256' or 'integrity', but not both");
-        fixture.error("ctx.download_and_extract('https://example.invalid/a.tar.gz', auth = {'https://example.invalid': {}})", "auth is not supported");
+        fixture.error("ctx.download_and_extract('https://example.invalid/a.tar.gz', auth = {'https://example.invalid': {'type': 'basic'}})", "Found request to do basic auth for https://example.invalid without 'login' and 'password' being provided.");
         fixture.error(
             "ctx.download_and_extract('https://example.invalid/a.tar.gz', output = '../x')",
             "Cannot write outside of the repository directory",
@@ -4544,6 +5099,51 @@ ctx.extract("archive.tar.gz", "out", strip_prefix = "top")"#);
     }
 
     #[test]
+    fn malformed_zip_reports_zip_readers_missing_end_of_central_directory() {
+        let fixture = Fixture::new();
+        fs::write(fixture.stage.path().join("bad.zip"), b"not a zip archive").unwrap();
+        fixture.error(
+            "ctx.extract('bad.zip', 'out')",
+            &format!(
+                "java.io.IOException: Error extracting {stage}/bad.zip to {stage}: Zip file 'bad.zip' is malformed. It does not contain an end of central directory record.",
+                stage = fixture.stage_text()
+            ),
+        );
+    }
+
+    #[test]
+    fn download_cache_serves_checksummed_downloads_offline_and_keys_canonical_ids() {
+        use crate::extension_io::tests::{Server, response};
+        let digest = sha256(b"cached body");
+        let mut fixture = Fixture::new();
+        let server = Server::new(vec![response(200, b"cached body", "")]);
+        fixture.ok(&format!(
+            "ctx.download('{}/first', 'a', sha256 = '{digest}', canonical_id = 'id-1')",
+            server.url
+        ));
+        assert_eq!(server.count(), 1);
+        // DownloadManager.java:264-277 precede the disable check (java:331).
+        fixture.repositories = Arc::new(
+            (*fixture.repositories)
+                .clone()
+                .with_repository_downloads_enabled(false),
+        );
+        fixture.ok(&format!(
+            r#"r = ctx.download("https://example.invalid/other", "b", sha256 = "{digest}")
+(r.success and r.size_bytes == 11) or fail(r)
+ctx.read("b") == "cached body" or fail("bytes")
+ctx.download("https://example.invalid/other", "c", sha256 = "{digest}", canonical_id = "id-1").success or fail("id")"#
+        ));
+        fixture.error(
+            &format!(
+                "ctx.download('https://example.invalid/other', 'd', sha256 = '{digest}', canonical_id = 'id-2')"
+            ),
+            "repository downloads are disabled",
+        );
+        assert_eq!(server.count(), 1);
+    }
+
+    #[test]
     fn download_and_extract_fetches_verifies_and_extracts_from_a_loopback_fixture() {
         use crate::extension_io::tests::{Server, response};
         let archive = tar_gz(&[("top/a.txt", b"A"), ("top/sub/b.txt", b"B")]);
@@ -4562,6 +5162,8 @@ ctx.extract("archive.tar.gz", "out", strip_prefix = "top")"#);
 (r.success and r.sha256 == "{digest}" and r.size_bytes == {size} and r.integrity.startswith("sha256-")) or fail("result " + repr(r))
 t = ctx.download_and_extract(["{url}/no-extension"], "typed", "{digest}", "tgz")
 (t.success) or fail("typed")
+c = ctx.download_and_extract(["{url}/pkg.tar.gz"], "canon", "{digest}", canonical_id = "other")
+(c.success) or fail("canonical")
 m = ctx.download_and_extract("{url}/pkg.tar.gz", output = "mismatch", sha256 = "{zero}", allow_fail = True)
 (not m.success) or fail("mismatch")"#,
             zero = "0".repeat(64)
@@ -4569,7 +5171,11 @@ m = ctx.download_and_extract("{url}/pkg.tar.gz", output = "mismatch", sha256 = "
         assert_eq!(fixture.bytes("dl/a.txt"), b"A");
         assert_eq!(fixture.bytes("dl/sub/b.txt"), b"B");
         assert_eq!(fixture.bytes("typed/top/a.txt"), b"A");
+        assert_eq!(fixture.bytes("canon/top/a.txt"), b"A");
         assert!(!fixture.stage.path().join("mismatch/a.txt").exists());
+        // The repository download cache (DownloadManager.java:264-277): the
+        // second request with the same checksum is a cache hit without any
+        // request; a canonical id that was never recorded is a miss.
         assert_eq!(server.count(), 3);
         fixture.error(
             &format!(
@@ -4600,9 +5206,10 @@ m = ctx.download_and_extract("{url}/pkg.tar.gz", output = "mismatch", sha256 = "
 (r.success and r.sha256 == "{digest}" and r.size_bytes == {size}) or fail("result " + repr(r))
 t = ctx.download(["{url}/tool"], output = "bin/tool", executable = True, sha256 = "{tool}")
 t.success or fail("tool")
-m = ctx.download("{url}/other", "mismatch", sha256 = "{tool}", allow_fail = True)
+m = ctx.download("{url}/other", "mismatch", sha256 = "{never}", allow_fail = True)
 (not m.success) or fail("mismatch")"#,
             tool = sha256(b"tool"),
+            never = sha256(b"never served"),
         ));
         assert!(fixture.bytes("out/big.bin") == big);
         assert_eq!(fixture.bytes("bin/tool"), b"tool");
@@ -4624,15 +5231,22 @@ m = ctx.download("{url}/other", "mismatch", sha256 = "{tool}", allow_fail = True
                 "{name:?}"
             );
         }
+        // block = False: the failure surfaces from wait() (java:640-697).
+        // (A checksum in the download cache would be served without a request.)
+        let never = sha256(b"never served");
+        let gone = Server::new(vec![response(404, b"", "")]);
         fixture.error(
-            &format!("ctx.download('{url}/x', 'x', sha256 = '{digest}', block = False)"),
-            "download(block = False) is not supported",
+            &format!(
+                "p = ctx.download('{}/x', 'x', sha256 = '{never}', block = False)\nprint('pending')\np.wait()",
+                gone.url
+            ),
+            "Error downloading",
         );
         // HTTP failures use HttpDownloader's aggregated message (java:243-262).
         let missing = Server::new(vec![response(404, b"", ""), response(404, b"", "")]);
         let base = missing.url.clone();
         fixture.error(
-            &format!("ctx.download(['{base}/a', '{base}/b'], 'gone', sha256 = '{digest}')"),
+            &format!("ctx.download(['{base}/a', '{base}/b'], 'gone', sha256 = '{never}')"),
             &format!(
                 "java.io.IOException: Error downloading [{base}/a, {base}/b] to {}/gone: GET returned 404 Fixture",
                 fixture.stage_text()
@@ -4883,9 +5497,26 @@ d = {r: 1, s: 2}
         fixture.ok("(hasattr(ctx, 'download') and hasattr(ctx, 'execute') and not hasattr(ctx.attr, 'undeclared')) or fail('surface')\n(ctx.report_progress('status') == None and ctx.report_progress() == None) or fail('progress')");
         fixture.error(
             "ctx.file('partial', 'private')\nctx.watch_tree('x')",
-            "repository_ctx.watch_tree() is not implemented by the native profile",
+            "can't call watch_tree() on non-directory",
         );
         assert_eq!(fixture.bytes("partial"), b"private");
+        // watch_tree (StarlarkRepositoryContext.java:568-609): the directory
+        // type and its transitive tree; never inside the repository.
+        fixture.error(
+            "ctx.file('d/f', 'x')\nctx.watch_tree('d')",
+            "attempted to watch path under working directory",
+        );
+        fixture.file("tree/sub/leaf", b"leaf");
+        let inputs = fixture
+            .run(&format!(
+                "ctx.watch_tree({:?})",
+                fixture.root.path().join("tree").display()
+            ))
+            .unwrap();
+        let kinds: Vec<_> = inputs.files.iter().map(|f| f.kind).collect();
+        assert_eq!(kinds, ["file", "dirtree"]);
+        assert_eq!(inputs.files[0].state, "directory");
+        assert!(inputs.files[1].state.starts_with("dirtree:"));
         fixture.error("ctx.report_progress(1)", "report_progress");
         fixture.error("ctx.template('out', 'partial', None)", "dict");
         fixture.error(

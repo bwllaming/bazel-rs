@@ -163,8 +163,12 @@ the published location (relative symlinks into it are replanted, below).
   streams through the decompressor (constant memory, no size caps; see
   docs/REPOSITORY_IO_STREAMING.md). They defer a malformed checksum until after
   the attempt like Bazel, and return `struct(success, integrity, sha256,
-  size_bytes)`; `canonical_id` only keys Bazel's repository cache, which the
-  native profile does not have. `extract()` streams local archives of any size.
+  size_bytes)`. Like Bazel's repository cache (DownloadManager.java:244-386,
+  DownloadCache.java) every completed download is stored under
+  `<cache>/downloads/<algorithm>/<hex>` and a checksummed download is served
+  from there without any request (also with downloads disabled); a
+  `canonical_id` restricts such hits to entries stored with the same id
+  (N43). `extract()` streams local archives of any size.
   `download()` (StarlarkBaseExternalContext.java:799-895) streams straight into
   the output path like Bazel's HttpDownloader (java:90-109), so a checksum
   mismatch (detected at end of stream, HashInputStream.java:61-91) leaves the
@@ -173,7 +177,9 @@ the published location (relative symlinks into it are replanted, below).
   an output that already matches is reused without downloading, also offline
   (DownloadManager.java:247-261). It honours `executable` (execute bits
   added after success), `allow_fail`, `sha256`/`integrity` and returns the same
-  struct; `block = False` fails explicitly. Archive symlinks and tar hard links are
+  struct; `block = False` returns a `PendingDownload` whose `wait()` returns or
+  raises the blocking result (docs/EXTENSION_CTX_SURFACE.md); `auth` (basic and
+  pattern) and `headers` are sent like Bazel's (SBEC:350-441). Archive symlinks and tar hard links are
   extracted like Bazel (docs/ARCHIVE_SYMLINKS.md); the zip link-escape and
   missing hard-link target errors keep Bazel's text, naming the archive by its
   basename, wrapped in `java.io.IOException: Error extracting ARCHIVE to
@@ -292,15 +298,16 @@ refuses to traverse a symlinked parent while writing and requires output names
 the content-addressed store can represent (UTF-8 without control characters,
 `\`, `:`, `?`, `#` or `%`; depth 64; 4096 bytes). Arbitrary template bytes,
 including invalid UTF-8 and CRLF, are preserved. Label template and Label read
-inputs keep the strict source profile: a regular BUILD file and no symlinks.
+inputs resolve like Bazel's getPathFromLabel (the package must exist) and are
+read following symlinks; a symlinked package directory remains a native
+package-lookup restriction.
 
 ### Not implemented
 
-`ctx.download` and `ctx.watch_tree` exist (so `hasattr` matches Bazel) but fail
-with `repository_ctx.<method>() is not implemented by the native profile`.
-`module_ctx` keeps its narrower profile (no
-`execute`/`which`/`file`), but shares `os.environ`, `getenv` and
-`module_extension(environ=...)` with repository rules. `ctx.attr` has type
+Every StarlarkRepositoryContext member is implemented. `ctx.watch_tree(path)`
+records the directory and a digest of its tree (SRC:568-609).
+`module_ctx` shares the whole StarlarkBaseExternalContext implementation
+(docs/EXTENSION_CTX_SURFACE.md). `ctx.attr` has type
 `RepoDefinition` and `repr(ctx)` is Bazel's `<unknown object
 ...StarlarkRepositoryContext>`.
 
@@ -309,8 +316,8 @@ invocations unless a recorded input changed, while native re-runs every demanded
 repository in every invocation (unrecorded `os.environ` changes are therefore
 seen natively but not by Bazel); Starlark interpreter wording differs (`in call
 to F(), parameter 'P' got value of type ...`, `has no field or method`, ...);
-watch_tree, `download(block = False)`, `rename_files`, `strip_components`,
-single-file gz/xz/zst/bz2 and ar/7z formats, `auth`/`headers` and `delete()`
+`rename_files`, `strip_components`,
+single-file gz/xz/zst/bz2 and ar/7z formats and `delete()`
 outside the repository directory are native-explicit errors; the write
 restrictions above (symlinked parents, store-representable names, strict Label
 inputs) remain; the former 16 MiB input cap was removed in N32.
@@ -404,8 +411,9 @@ still differ for `title`, `capitalize` and `isspace`. Template file bytes never 
 strings and are not subject to that restriction. This does not establish complete
 Starlark language parity.
 
-Callbacks and each demanded definition-file evaluation are bounded to 128 call
-frames, one million evaluator ticks and a 128 MiB evaluator heap. Ordinary BUILD
+Callbacks and each demanded definition-file evaluation are bounded only to 128
+call frames (Starlark forbids recursion); like Bazel there is no tick or heap
+limit (the former 1 M ticks / 128 MiB heap were removed in N43). Ordinary BUILD
 loading is unchanged. Repository I/O has no size or operation-count caps (N32):
 files, templates, downloads and archives of any size are written and hashed in
 streaming fashion. Publication enforces only the store path profile (depth 64,

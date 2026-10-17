@@ -652,15 +652,6 @@ impl<'a> Loader<'a> {
                 eval.extra = Some(&context);
                 eval.set_max_callstack_size(128)
                     .map_err(|e| e.to_string())?;
-                if self.provenance_capture {
-                    // Definition initialization is execution too: limiting
-                    // only the later callback leaves top-level/helper work
-                    // in any transitive .bzl outside the repository budget.
-                    eval.set_max_tick_count(1_000_000)
-                        .map_err(|e| e.to_string())?;
-                    eval.set_max_heap_size(128 * 1024 * 1024)
-                        .map_err(|e| e.to_string())?;
-                }
                 eval.set_loader(&file_loader);
                 // Repository/extension definitions evaluate in the
                 // Latin-1 char model; BUILD/analysis loads do not.

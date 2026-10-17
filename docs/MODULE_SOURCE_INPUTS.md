@@ -10,62 +10,21 @@ toolchains or lockfiles. Semantics follow pinned Bazel 9.3 source
 (`e89755babf3e941bc1e9d8120b1cd48854ab9dfa`); native captures against genuine
 Bazel for this surface have **not** been run yet.
 
-## `module_ctx.path(path)`
+## `module_ctx.path(path)` and `module_ctx.read(path, *, watch = "auto")`
 
-| Argument | Native profile |
-|---|---|
-| `Label` | Resolved to the source file in its repository; returns a `path` value. |
-| `path` | Returned unchanged (`StarlarkBaseExternalContext.getPath`). |
-| string | **Unsupported**, explicit error. Bazel resolves it relative to the extension working directory; this profile has no such path view. |
-| other | Type error: `in call to path(), parameter 'path' got value of type '<t>', want 'string, Label, or path'`. |
-
-Only the **main repository** and repositories of the **resolved module graph**
-(root, registry, `local_path_override`, Git overrides, built-ins) are admitted.
-Extension-generated and `use_repo_rule` repositories fail explicitly instead of
-evaluating another extension re-entrantly. The label's package must exist
-(a regular `BUILD.bazel`/`BUILD`), otherwise
-`Unable to load package for <label>: <reason>` (Bazel's prefix; the reason text is
-native). As in Bazel, the file itself need not exist for `path()`. With Bazel 9.3's
-default `--incompatible_no_implicit_watch_label`, `path()` records no watch and
-adds no provenance.
-
-The `path` value is immutable and hashable, compares equal by host path, and
-`type()` is `"path"`. `str()` is the absolute host path of the resolved file
-(source roots are canonicalized; registry/Git roots are cache paths, not Bazel's
-`external/` layout) and `repr()` is its quoted form. **No members** are exposed:
-`basename`, `dirname`, `exists`, `is_dir`, `readdir`, `get_child`, `realpath`
-are absent, not fabricated. Putting `str(path)` into a repository attribute makes
-that host-specific path part of the generated repository's provenance, so cache
-keys then depend on the host and `--cache-dir` (a cache miss, not a wrong result).
-Source reads open the final component with `O_NOFOLLOW|O_NONBLOCK` on Linux.
-
-## `module_ctx.read(path, *, watch = "auto")`
-
-Strings keep the unchanged [owned scratch-path profile](MODULE_EXTENSION_IO.md),
-including its existing native `watch` messages. `Label` and `path` arguments read
-the resolved source file in Bazel's order: resolve (package check), validate
-`watch`, reject directories, read.
-
-- Bad `watch`: `bad value for 'watch' parameter; want 'yes', 'no', or 'auto', got <v>`.
-- Directory: `attempting to read() a directory: <abs path>`.
-- Missing file: `cannot read <abs path>: No such file or directory` (Bazel reports a
-  Java `FileNotFoundException` instead).
-- Any symlink on the repository-relative path, special files: explicit
-  unsupported errors (Bazel follows symlinks).
-- Each byte maps to U+0000..U+00FF (Latin-1), exactly like owned reads.
-- No size or call-count cap (N32 removed the former 8 MiB / 32-call budgets);
-  the content is read whole because Bazel returns it as a string (see the
-  [I/O profile](MODULE_EXTENSION_IO.md#execution-limits-and-lifetime)).
-  The opened file's identity and size are re-checked after reading.
-
-Every source read appends an ordered provenance observation
-`{"operation": "read_source", "label": "<canonical label>", "watch": "<v>",
-"sha256": "<hex>", "size_bytes": <n>}` to `extension_io`. No absolute path enters
-provenance. The digest is recorded for **all** watch modes, including `"no"`, so
-changing the file's bytes always rekeys the generated repositories even when every
-declaration is unchanged; restoring the bytes restores the previous key. This is a
-conservative overapproximation of Bazel's watch-based re-evaluation, not watch
-reuse: each fresh runtime reevaluates the callback anyway.
+Superseded by N43: `module_ctx` shares repository_ctx's
+StarlarkBaseExternalContext implementation ([EXTENSION_CTX_SURFACE.md](EXTENSION_CTX_SURFACE.md)).
+A string resolves against the extension's working directory
+(`<cache>/modextwd/<unique name>`), a Label resolves to its file (the package
+must exist, the file need not; any repository, including extension-generated
+ones), a `path` passes through. `path` values have Bazel's members (`basename`,
+`dirname`, `exists`, `is_dir`, `readdir`, `realpath`, `get_child`). `read`
+follows symlinks, reports missing files as Bazel's
+`java.io.FileNotFoundException: PATH (No such file or directory)`, and records a
+`file` input (`{"path", "kind": "file", "state": "file:<sha256>"}`; Label reads
+use the canonical label) unless `watch = "no"`, the path is in the working
+directory, or (`auto`) it is outside the workspace and the external
+repositories. Each byte maps to U+0000..U+00FF (Latin-1).
 
 ## `module_ctx.facts`
 
@@ -194,11 +153,10 @@ cache keys.
 
 ## Exclusions
 
-String `path()`/working-directory paths, `path` members, extension-generated or
-`use_repo_rule` source labels, symlinked sources, watch-based reuse, lockfile
-facts persistence, `bazel mod tidy`, `download_and_extract`,
-`execute`, `file`, `delete`, `which`, `getenv`, SDK extraction and toolchain
-registration remain unsupported. Tests: `src/extension_ctx.rs` and
+Watch-based reuse, lockfile facts persistence and `bazel mod tidy` remain
+unsupported (the working directory, `path` members, `download_and_extract`,
+`execute`, `file`, `which`, `getenv` are implemented, see
+[EXTENSION_CTX_SURFACE.md](EXTENSION_CTX_SURFACE.md)). Tests: `src/extension_ctx.rs` and
 `src/extension_metadata.rs` unit tests, the real-CLI `tests/module_path.rs` (root
 and `local_path_override` go.mod labels, generated repository consumed by a
 genrule, rekey on byte changes) and `tests/module_extensions.rs` (exact fixup

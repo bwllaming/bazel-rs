@@ -269,50 +269,36 @@ fn unused_unknown_routes_and_isolated_demands_do_not_fabricate_repositories() {
 }
 
 #[test]
-fn repeated_defaults_fail_gracefully_before_host_allocation_exhaustion() {
+fn repeated_defaults_have_no_native_host_limit() {
+    // Bazel bounds no extension input or result. 80 x 1 MiB defaults exceeded
+    // the former native 64 MiB weighted host budget (8 bytes per payload byte).
     for tag_defaults in [true, false] {
         let f = Fixture::new();
         let mut module = "module(name='main')\ne=use_extension('//:ext.bzl','files')\nuse_repo(e,chosen='made')\n".to_owned();
         if tag_defaults {
-            module.push_str(&"e.item()\n".repeat(600));
-            f.file("ext.bzl", "def _impl(ctx):\n    fail('CALLBACK_REACHED')\nfiles=module_extension(_impl,tag_classes={'item':tag_class({'payload':attr.string(default='x'*(1024*1024))})})\n");
+            module.push_str(&"e.item()\n".repeat(80));
+            f.file("ext.bzl", "def _impl(ctx):\n    len(ctx.modules[0].tags.item) == 80 or fail('count')\n    fail('CALLBACK_REACHED')\nfiles=module_extension(_impl,tag_classes={'item':tag_class({'payload':attr.string(default='x'*(1024*1024))})})\n");
         } else {
-            f.file("ext.bzl", "def _repo(ctx):\n    fail('FETCH_REACHED')\nr=repository_rule(_repo,attrs={'payload':attr.string(default='x'*(1024*1024))})\ndef _impl(ctx):\n    for i in range(600):\n        r(name='repo'+str(i))\n    r(name='made')\nfiles=module_extension(_impl)\n");
+            f.file("ext.bzl", "def _repo(ctx):\n    fail('FETCH_REACHED')\nr=repository_rule(_repo,attrs={'payload':attr.string(default='x'*(1024*1024))})\ndef _impl(ctx):\n    for i in range(80):\n        r(name='repo'+str(i))\n    r(name='made')\nfiles=module_extension(_impl)\n");
         }
         f.file("MODULE.bazel", module);
-        let output = Command::new("prlimit")
-            .args([
-                "--as=536870912",
-                "--core=0",
-                "--",
-                "timeout",
-                "30s",
-                env!("CARGO_BIN_EXE_bazel-rs"),
-                "--ignore_all_rc_files",
-                "--cache-dir=cache",
-                "query",
-                "@chosen//:data.txt",
-            ])
-            .current_dir(f.0.path())
-            .output()
-            .unwrap();
-        // An abort/OOM kill is not an acceptable unsupported-profile error.
+        let output = f.run(&["query", "@chosen//:data.txt"]);
         assert_eq!(output.status.code(), Some(1), "{}", error(&output));
-        assert!(
-            error(&output).contains("host") && error(&output).contains("limit"),
-            "{}",
-            error(&output)
-        );
-        assert!(
-            !error(&output).contains("CALLBACK_REACHED")
-                && !error(&output).contains("FETCH_REACHED")
-        );
+        let marker = if tag_defaults {
+            "CALLBACK_REACHED"
+        } else {
+            "FETCH_REACHED"
+        };
+        assert!(error(&output).contains(marker), "{}", error(&output));
+        assert!(!error(&output).contains("limit"), "{}", error(&output));
         assert!(f.roots().is_empty());
     }
 }
 
 #[test]
-fn canonical_label_expansion_is_charged_before_binding_lists() {
+fn canonical_label_expansion_has_no_native_host_limit() {
+    // 200 labels expanding to 65 KiB canonical names: above the former
+    // weighted host budget, accepted like Bazel.
     let symbol = "e".repeat(65_536);
     for tag_labels in [true, false] {
         let f = Fixture::new();
@@ -320,43 +306,26 @@ fn canonical_label_expansion_is_charged_before_binding_lists() {
             "module(name='main')\ne=use_extension('//:ext.bzl','{symbol}')\nuse_repo(e,chosen='made')\n"
         );
         let definition = if tag_labels {
-            module.push_str("e.item(refs=['@chosen//:data']*20000)\n");
+            module.push_str("e.item(refs=['@chosen//:data']*200)\n");
             format!(
-                "def _impl(ctx):\n    fail('CALLBACK_REACHED')\n{symbol}=module_extension(_impl,tag_classes={{'item':tag_class({{'refs':attr.label_list()}})}})\n"
+                "def _impl(ctx):\n    len(ctx.modules[0].tags.item[0].refs) == 200 or fail('count')\n    fail('CALLBACK_REACHED')\n{symbol}=module_extension(_impl,tag_classes={{'item':tag_class({{'refs':attr.label_list()}})}})\n"
             )
         } else {
             format!(
-                "def _repo(ctx):\n    fail('FETCH_REACHED')\nr=repository_rule(_repo,attrs={{'refs':attr.label_list()}})\ndef _impl(ctx):\n    r(name='made',refs=['@sibling//:data']*20000)\n    r(name='sibling')\n{symbol}=module_extension(_impl)\n"
+                "def _repo(ctx):\n    fail('FETCH_REACHED')\nr=repository_rule(_repo,attrs={{'refs':attr.label_list()}})\ndef _impl(ctx):\n    r(name='made',refs=['@sibling//:data']*200)\n    r(name='sibling')\n{symbol}=module_extension(_impl)\n"
             )
         };
         f.file("MODULE.bazel", module);
         f.file("ext.bzl", definition);
-        let output = Command::new("prlimit")
-            .args([
-                "--as=536870912",
-                "--core=0",
-                "--",
-                "timeout",
-                "30s",
-                env!("CARGO_BIN_EXE_bazel-rs"),
-                "--ignore_all_rc_files",
-                "--cache-dir=cache",
-                "query",
-                "@chosen//:data",
-            ])
-            .current_dir(f.0.path())
-            .output()
-            .unwrap();
+        let output = f.run(&["query", "@chosen//:data"]);
         assert_eq!(output.status.code(), Some(1), "{}", error(&output));
-        assert!(
-            error(&output).contains("host") && error(&output).contains("limit"),
-            "{}",
-            error(&output)
-        );
-        assert!(
-            !error(&output).contains("CALLBACK_REACHED")
-                && !error(&output).contains("FETCH_REACHED")
-        );
+        let marker = if tag_labels {
+            "CALLBACK_REACHED"
+        } else {
+            "FETCH_REACHED"
+        };
+        assert!(error(&output).contains(marker), "{}", error(&output));
+        assert!(!error(&output).contains("limit"), "{}", error(&output));
         assert!(f.roots().is_empty());
     }
 }
@@ -384,7 +353,7 @@ fn unsupported_context_operations_and_invalid_names_never_publish() {
         ),
         (
             "ctx.read(\"x\",watch=\"yes\")",
-            "unsupported module I/O profile: watch=yes on extension-owned files",
+            "attempted to watch path under working directory",
         ),
         ("maker(name='a+b',text='bad')", "invalid repository name"),
     ] {

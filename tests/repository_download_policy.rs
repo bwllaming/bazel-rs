@@ -520,7 +520,7 @@ fn remote_metadata_admission_follows_lockfile_mode_not_download_policy() {
 }
 
 #[test]
-fn unsupported_module_io_options_fail_explicitly_under_both_policies() {
+fn module_io_argument_failures_are_bazels_under_both_policies() {
     let fixture = Fixture::new(false, false);
     write(
         fixture.temp.path(),
@@ -529,13 +529,14 @@ fn unsupported_module_io_options_fail_explicitly_under_both_policies() {
     );
     write(fixture.temp.path(), "BUILD.bazel", "");
     for (operation, diagnostic) in [
+        // getUrls(ensureNonEmpty) precedes the pending download (java:818-823).
         (
             "ctx.download([],block=False)",
-            "unsupported module I/O profile: executable, async block=False, or canonical_id cache",
+            "java.io.IOException: urls not set",
         ),
         (
             "ctx.read('owned-input',watch='yes')",
-            "unsupported module I/O profile: watch=yes on extension-owned files",
+            "attempted to watch path under working directory",
         ),
     ] {
         write(

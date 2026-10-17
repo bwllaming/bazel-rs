@@ -20,9 +20,6 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 use std::time::Duration;
 
-/// Module-download checksum precheck window (docs/MODULE_EXTENSION_IO.md).
-/// A behavior boundary, not a size limit: larger bodies stream after it.
-pub(crate) const PRECHECK: usize = 32768;
 /// Streaming copy buffer.
 pub(crate) const BUFFER: usize = 64 * 1024;
 /// HttpConnector.MAX_REDIRECTS (HttpConnector.java:57).
@@ -38,9 +35,7 @@ pub(crate) enum TypedIoError {
     Validation(&'static str),
     Unsupported(&'static str),
     Policy(&'static str),
-    Resource(&'static str),
     Interruption,
-    Lifetime,
     Internal(&'static str),
 }
 
@@ -51,9 +46,7 @@ impl fmt::Display for TypedIoError {
             Self::Validation(s) => write!(f, "module I/O validation: {s}"),
             Self::Unsupported(s) => write!(f, "unsupported module I/O profile: {s}"),
             Self::Policy(s) => write!(f, "module I/O policy: {s}"),
-            Self::Resource(s) => write!(f, "module I/O resource limit: {s}"),
             Self::Interruption => f.write_str("module I/O interrupted"),
-            Self::Lifetime => f.write_str("module I/O receiver is foreign, frozen, or expired"),
             Self::Internal(s) => write!(f, "module I/O internal: {s}"),
         }
     }
@@ -95,7 +88,7 @@ pub(crate) enum Algorithm {
     Blake3,
 }
 impl Algorithm {
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Sha1 => "sha1",
             Self::Sha256 => "sha256",
@@ -112,6 +105,7 @@ impl Algorithm {
             Self::Sha512 => 64,
         }
     }
+    #[cfg(test)]
     pub(crate) fn hash(self, bytes: &[u8]) -> Vec<u8> {
         match self {
             Self::Sha1 => sha1::Sha1::digest(bytes).to_vec(),
@@ -194,12 +188,14 @@ impl Checksum {
             base64::engine::general_purpose::STANDARD.encode(&self.bytes)
         )
     }
+    #[cfg(test)]
     pub(crate) fn matches(&self, bytes: &[u8]) -> bool {
         self.algorithm.hash(bytes) == self.bytes
     }
 }
 pub(crate) struct Checksums {
     pub(crate) expected: Option<Checksum>,
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) deferred: Option<TypedIoError>,
 }
 pub(crate) fn checksums(sha: &str, integrity: &str) -> IoResult<Checksums> {
@@ -467,12 +463,84 @@ fn connection_failure(error: &reqwest::Error, url: &Url) -> OpenFailure {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn open(client: &Client, original: &Url) -> IoResult<Box<dyn Read>> {
     open_detailed(client, original).map_err(|failure| failure.error)
 }
 
+/// Extra request headers of `download(headers=, auth=)`
+/// (StarlarkBaseExternalContext.getHeaderContents/getAuthHeaders, java:350-441).
+/// `common` headers go on every request (HttpConnector.java:139-150 applies
+/// the header function to each connection, redirects included); `auth`
+/// headers only on a request whose URI equals the auth key (StaticCredentials
+/// keyed by URI), so they are not forwarded to a redirect target.
+/// Header names with their Latin-1 byte values.
+pub(crate) type Headers = Vec<(String, Vec<u8>)>;
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RequestHeaders {
+    /// Names and Latin-1 byte values, in call order.
+    pub(crate) common: Headers,
+    pub(crate) auth: Vec<(Url, Headers)>,
+}
+
+impl RequestHeaders {
+    /// HttpConnectorMultiplexer.getHeaderFunction (:133-151): the base
+    /// headers, then the credentials' request metadata, built keeping the
+    /// last value of a repeated name. The credentials are
+    /// CredentialHelperCredentials with the static `auth` headers as fallback
+    /// (BazelRepositoryModule.java:463-472): a helper that applies to `url`
+    /// replaces them entirely.
+    fn apply(
+        &self,
+        mut request: reqwest::blocking::RequestBuilder,
+        url: &Url,
+    ) -> reqwest::blocking::RequestBuilder {
+        // Both sides are Map<String, List<String>>: a credential header name
+        // replaces every base value of that name (buildKeepingLast).
+        let credentials: Headers = match crate::credentials::download_credentials(url.as_str()) {
+            Some(helper) => helper
+                .into_iter()
+                .map(|(name, value)| (name, value.into_bytes()))
+                .collect(),
+            None => self
+                .auth
+                .iter()
+                .filter(|(key, _)| key == url)
+                .flat_map(|(_, headers)| headers.iter().cloned())
+                .collect(),
+        };
+        let merged = self
+            .common
+            .iter()
+            .filter(|(name, _)| !credentials.iter().any(|(other, _)| other == name))
+            .cloned()
+            .chain(credentials.iter().cloned())
+            .collect::<Headers>();
+        for (name, value) in merged {
+            // The transport owns Accept-Encoding (gzip, decoded per Bazel's
+            // suffix rules); a user value would change what it must decode.
+            if name.eq_ignore_ascii_case("Accept-Encoding") {
+                continue;
+            }
+            request = request.header(name.as_str(), value.as_slice());
+        }
+        request
+    }
+}
+
 /// [`open`] with Bazel's description of a failure.
+#[cfg(test)]
 pub(crate) fn open_detailed(client: &Client, original: &Url) -> Result<Box<dyn Read>, OpenFailure> {
+    open_with_headers(client, original, &RequestHeaders::default())
+}
+
+/// [`open_detailed`] sending `headers`.
+pub(crate) fn open_with_headers(
+    client: &Client,
+    original: &Url,
+    headers: &RequestHeaders,
+) -> Result<Box<dyn Read>, OpenFailure> {
     // Only a validated 301 updates the next attempt's origin. The immutable
     // original URL still controls original-path gzip suffix suppression.
     let mut retry_origin: Option<Url> = None;
@@ -484,15 +552,13 @@ pub(crate) fn open_detailed(client: &Client, original: &Url) -> Result<Box<dyn R
             // HttpConnector asks ProxyHelper for every connection
             // (HttpConnector.java:125-136).
             crate::download_proxy::check(&current).map_err(TypedIoError::Completion)?;
-            // Credential helper headers per URL, redirect hops included
-            // (HttpConnectorMultiplexer.getHeaderFunction, :133-151; N41).
-            let mut request = client
+            let request = client
                 .get(current.clone())
                 .header("Accept-Encoding", "gzip");
-            for (name, value) in crate::credentials::download_headers(current.as_str()) {
-                request = request.header(name, value);
-            }
-            let response = request.send();
+            // Per URL, redirect hops included (HttpConnectorMultiplexer
+            // .getHeaderFunction, :133-151): base headers, then a credential
+            // helper's headers (N41) or else the static `auth` ones.
+            let response = headers.apply(request, &current).send();
             let response = match response {
                 Ok(response) => response,
                 Err(error) => {
@@ -664,6 +730,7 @@ pub(crate) fn fetch_to_file(
     urls: &[Url],
     expected: Option<&Checksum>,
     sri: bool,
+    headers: &RequestHeaders,
     destination: &mut dyn FnMut(&Url) -> std::path::PathBuf,
     keep_failed: bool,
     on_failure: &mut dyn FnMut(&Url, &BazelFailure),
@@ -677,7 +744,7 @@ pub(crate) fn fetch_to_file(
         let path = destination(url);
         let mut opened = false;
         let attempt = (|| -> Result<Fetched, OpenFailure> {
-            let mut reader = open_detailed(client, url)?;
+            let mut reader = open_with_headers(client, url, headers)?;
             opened = true;
             // Like ctx.file, replace (never write through) an existing
             // non-directory destination - a symlink or a hard-linked file -
@@ -809,7 +876,7 @@ pub(crate) mod tests {
     fn first_gzip_header_validation_never_requests_decoded_body_and_preserves_typed_errors() {
         let header = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 255];
         for error in [
-            TypedIoError::Resource("header budget"),
+            TypedIoError::Validation("header budget"),
             TypedIoError::Policy("header policy"),
             TypedIoError::Interruption,
         ] {
@@ -985,8 +1052,8 @@ pub(crate) mod tests {
             TypedIoError::Interruption
         );
         assert_eq!(
-            io_error(io::Error::other(TypedIoError::Resource("fixture"))),
-            TypedIoError::Resource("fixture")
+            io_error(io::Error::other(TypedIoError::Policy("fixture"))),
+            TypedIoError::Policy("fixture")
         );
         assert!(matches!(
             io_error(io::Error::other("Resource is not a classification")),
@@ -1043,6 +1110,7 @@ pub(crate) mod tests {
             &urls,
             Some(&expected),
             false,
+            &RequestHeaders::default(),
             &mut |url| {
                 let path = directory.path().join(url.path().trim_start_matches('/'));
                 targets.push(path.clone());
@@ -1070,6 +1138,7 @@ pub(crate) mod tests {
             &[Url::parse(&server.url).unwrap()],
             Some(&expected),
             true,
+            &RequestHeaders::default(),
             &mut |_| directory.path().join("mismatch"),
             false,
             &mut |_, _| {},
@@ -1096,6 +1165,7 @@ pub(crate) mod tests {
             &[Url::parse(&server.url).unwrap()],
             Some(&expected),
             false,
+            &RequestHeaders::default(),
             &mut |_| directory.path().join("kept"),
             true,
             &mut |_, _| {},

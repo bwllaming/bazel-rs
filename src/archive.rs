@@ -103,12 +103,14 @@ pub fn extract(
 /// DecompressorValue.decompress; other errors are native-profile limits.
 pub fn is_bazel_extraction_io_error(error: &str) -> bool {
     error.starts_with(ZIP_LINK_ESCAPE)
+        || error.starts_with(ZIP_MALFORMED)
         || (error.starts_with("File \"")
             && error.ends_with("\" does not exist")
             && error.contains("\" linked from \""))
 }
 
 const ZIP_LINK_ESCAPE: &str = "Zip entries cannot refer to files outside of their directory: ";
+const ZIP_MALFORMED: &str = "Zip file ";
 
 /// [`extract`] with the archive's display name, used where Bazel's own
 /// diagnostics name the archive (the zip link-escape error).
@@ -654,15 +656,6 @@ fn set_file_mode(file: &File, mode: u32) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_tar_string(field: &[u8]) -> Result<(), String> {
-    if let Some(end) = field.iter().position(|byte| *byte == 0)
-        && field[end..].iter().any(|byte| *byte != 0)
-    {
-        return Err("malformed tar path or link name: embedded NUL".into());
-    }
-    Ok(())
-}
-
 /// Consume only inert global comments without allocating metadata-sized buffers.
 /// Values are opaque bytes: embedded newlines, NULs and non-UTF-8 bytes have no
 /// extraction semantics. Framing is byte-length-delimited, never line-delimited.
@@ -741,12 +734,10 @@ fn extract_tar(reader: impl Read, state: &mut Extraction<'_>) -> Result<(), Stri
     for entry in entries {
         let mut entry = entry.map_err(|e| format!("read tar entry: {e}"))?;
         let header = entry.header();
-        let raw = header.as_bytes();
-        validate_tar_string(&raw[..100])?;
-        validate_tar_string(&raw[157..257])?;
-        if &raw[257..263] == b"ustar\0" {
-            validate_tar_string(&raw[345..500])?;
-        }
+        // Names, link names and ustar prefixes end at their first NUL; bytes
+        // after it are ignored (commons-compress TarUtils.parseName, used by
+        // Bazel's TarFunction): python-build-standalone archives carry such
+        // stale bytes in every header.
         let kind = header.entry_type();
         let directory = kind.is_dir();
         let global = kind == tar::EntryType::XGlobalHeader;
@@ -993,7 +984,19 @@ fn zip_link_escapes(link: &[String], target: &str) -> bool {
 }
 
 fn extract_zip<R: Read + Seek>(source: R, state: &mut Extraction<'_>) -> Result<(), String> {
-    let mut archive = zip::ZipArchive::new(source).map_err(|e| format!("read zip archive: {e}"))?;
+    let mut archive = zip::ZipArchive::new(source).map_err(|e| {
+        let text = e.to_string();
+        if text.contains("EOCD") || text.contains("central directory end") {
+            // ZipReader.findEndOfCentralDirectoryRecord (singlejar
+            // ZipReader.java:284-336), wrapped as an extraction IOException.
+            format!(
+                "{ZIP_MALFORMED}'{}' is malformed. It does not contain an end of central directory record.",
+                state.archive
+            )
+        } else {
+            format!("read zip archive: {text}")
+        }
+    })?;
     // Like Bazel's ZipReader (ZipFileData.java:39, 54, 203-204: a LinkedHashMap
     // keyed by name), ZipArchive keeps one record per name: the later record's
     // data at the first record's position.
@@ -1247,6 +1250,42 @@ mod tests {
                 "type {kind}"
             );
         }
+    }
+
+    #[test]
+    fn header_names_end_at_the_first_nul_like_commons_compress() {
+        // python-build-standalone archives leave stale bytes after the NUL
+        // terminator of every name and link name (TarUtils.parseName stops
+        // at the first NUL).
+        let mut builder = tar::Builder::new(Vec::new());
+        for (name, kind, link) in [
+            ("python/bin/tool", b'0', ""),
+            ("python/bin/alias", b'2', "tool"),
+        ] {
+            let mut header = tar::Header::new_ustar();
+            header.set_path(name).unwrap();
+            header.set_entry_type(tar::EntryType::new(kind));
+            header.set_mode(0o755);
+            header.set_size(if kind == b'0' { 4 } else { 0 });
+            if !link.is_empty() {
+                header.set_link_name(link).unwrap();
+                header.as_mut_bytes()[157 + link.len() + 1..157 + link.len() + 6]
+                    .copy_from_slice(b"stale");
+            }
+            header.as_mut_bytes()[name.len() + 1..name.len() + 6].copy_from_slice(b"stale");
+            header.set_cksum();
+            let data: &[u8] = if kind == b'0' { b"tool" } else { b"" };
+            builder.append(&header, data).unwrap();
+        }
+        let destination = run(&builder.into_inner().unwrap(), "tar", "python").unwrap();
+        assert_eq!(
+            fs::read(destination.path().join("bin/tool")).unwrap(),
+            b"tool"
+        );
+        assert_eq!(
+            fs::read_link(destination.path().join("bin/alias")).unwrap(),
+            Path::new("tool")
+        );
     }
 
     fn pax_record(key: &str, value: &[u8]) -> Vec<u8> {

@@ -178,9 +178,11 @@ declarations; full extension/repository APIs and toolchains remain incomplete.
 [Extension repository mapping](docs/EXTENSION_REPO_MAPPING.md) follows Bazel 9.3
 (host module mapping + siblings + self), and an apparent repository a context
 repository does not see is Bazel's deferred invalid label, failing only when used.
-[Bounded module-extension I/O](docs/MODULE_EXTENSION_IO.md) documents the candidate
-`module_ctx.download`/`read` implementation and `--repository_disable_download`
-policy (not an offline flag); final acceptance and release remain pending.
+`module_ctx` shares repository_ctx's whole StarlarkBaseExternalContext surface
+(download incl. `block = False`/`auth`/`headers`, extract, file, execute, which,
+watch, a working directory for string paths, full `path` values, `tag_sort_key`)
+without evaluator or result-size caps ([EXTENSION_CTX_SURFACE.md](docs/EXTENSION_CTX_SURFACE.md));
+`--repository_disable_download` is a download policy, not an offline flag.
 [MODULE.bazel.lock and registry caching](docs/REGISTRY_LOCKFILE.md) cover Bazel 9.3
 `--lockfile_mode` semantics for registry hashes and yanked versions, the
 content-addressed registry file cache, parallel registry fetching and the

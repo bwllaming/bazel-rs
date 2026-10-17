@@ -146,9 +146,12 @@ fn source_label_failures_are_explicit_and_publish_nothing() {
         ),
         (
             "ctx.read(Label('//:missing.mod'))",
-            "missing.mod: No such file or directory",
+            "missing.mod (No such file or directory)",
         ),
-        ("ctx.path('go.mod')", "module_ctx.path() of a string"),
+        (
+            "ctx.file('/tmp/opencode/n43-never-written', '')",
+            "Cannot write outside of the repository directory for path /tmp/opencode/n43-never-written",
+        ),
         (
             "return struct()",
             "expected module extension @@gorules+//:ext.bzl%go_sdk to return None or extension_metadata, got struct",

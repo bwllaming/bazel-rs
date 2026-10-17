@@ -1,0 +1,1888 @@
+{
+ "comparisons": [
+  {
+   "case": "ok",
+   "native": "\"in.txt\"",
+   "probe": "basename",
+   "reference": "\"in.txt\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "[\"download\", \"download_and_extract\", \"execute\", \"extension_metadata\", \"extract\", \"facts\", \"file\", \"getenv\", \"is_dev_dependency\", \"modules\", \"os\", \"path\", \"read\", \"report_progress\", \"root_module_has_non_dev_dependency\", \"tag_sort_key\", \"watch\", \"which\"]",
+   "probe": "dir",
+   "reference": "[\"download\", \"download_and_extract\", \"execute\", \"extension_metadata\", \"extract\", \"facts\", \"file\", \"getenv\", \"is_dev_dependency\", \"modules\", \"os\", \"path\", \"read\", \"report_progress\", \"root_module_has_non_dev_dependency\", \"tag_sort_key\", \"watch\", \"which\"]",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"<WS>/data\"",
+   "probe": "dirname",
+   "reference": "\"<WS>/data\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "[True, \"1cb088e170d3679e4aa5d047bfc1155ea41e8d17d20cd93f4b04aa562293b785\", 20, \"sha256-HLCI4XDTZ55KpdBHv8EVXqQejRfSDNk/SwSqViKTt4U=\", [\"integrity\", \"sha256\", \"size_bytes\", \"success\"], \"struct\"]",
+   "probe": "download",
+   "reference": "[True, \"1cb088e170d3679e4aa5d047bfc1155ea41e8d17d20cd93f4b04aa562293b785\", 20, \"sha256-HLCI4XDTZ55KpdBHv8EVXqQejRfSDNk/SwSqViKTt4U=\", [\"integrity\", \"sha256\", \"size_bytes\", \"success\"], \"struct\"]",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "[True, [\"integrity\", \"sha256\", \"size_bytes\", \"success\"]]",
+   "probe": "download_allow_fail",
+   "reference": "[True, [\"integrity\", \"sha256\", \"size_bytes\", \"success\"]]",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "[True, \"753cc5db804738ee62b97694a158b29e10711580c699fba8ca2cbad02e3ffd73\", 161, [\"integrity\", \"sha256\", \"size_bytes\", \"success\"]]",
+   "probe": "download_and_extract",
+   "reference": "[True, \"753cc5db804738ee62b97694a158b29e10711580c699fba8ca2cbad02e3ffd73\", 161, [\"integrity\", \"sha256\", \"size_bytes\", \"success\"]]",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "[True, \"755\\n\"]",
+   "probe": "download_exec",
+   "reference": "[True, \"755\\n\"]",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"{\\\"version\\\": \\\"1.2.3\\\"}\"",
+   "probe": "download_read",
+   "reference": "\"{\\\"version\\\": \\\"1.2.3\\\"}\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "[3, \"<WD>\\nhello\\n\", \"err\\n\"]",
+   "probe": "exec",
+   "reference": "[3, \"<WD>\\nhello\\n\", \"err\\n\"]",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "[\"return_code\", \"stderr\", \"stdout\"]",
+   "probe": "exec_dir",
+   "reference": "[\"return_code\", \"stderr\", \"stdout\"]",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"y-unset\\n\"",
+   "probe": "exec_env",
+   "reference": "\"y-unset\\n\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"input\\nhello\\n\"",
+   "probe": "exec_label_path_arg",
+   "reference": "\"input\\nhello\\n\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"644\\n755\\n\"",
+   "probe": "exec_mode",
+   "reference": "\"644\\n755\\n\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"exec_result\"",
+   "probe": "exec_type",
+   "reference": "\"exec_result\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"<WD>/sub\\n\"",
+   "probe": "exec_wd",
+   "reference": "\"<WD>/sub\\n\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "[True, False, True, False]",
+   "probe": "exists",
+   "reference": "[True, False, True, False]",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "None",
+   "probe": "extract",
+   "reference": "None",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "None",
+   "probe": "extract_label",
+   "reference": "None",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "[\"alpha\\n\", \"#!/bin/sh\\necho t\\n\", \"644\\n755\\n\"]",
+   "probe": "extracted",
+   "reference": "[\"alpha\\n\", \"#!/bin/sh\\necho t\\n\", \"644\\n755\\n\"]",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"zeta\\n\"",
+   "probe": "extracted_label",
+   "reference": "\"zeta\\n\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"zeta\\n\"",
+   "probe": "extracted_zip",
+   "reference": "\"zeta\\n\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "Facts({})",
+   "probe": "facts_print",
+   "reference": "Facts({})",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"<WS>/data/x/y/z\"",
+   "probe": "get_child",
+   "reference": "\"<WS>/data/x/y/z\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"<WS>/data\"",
+   "probe": "get_child_none",
+   "reference": "\"<WS>/data\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "[\"set-value\", None, \"dflt\"]",
+   "probe": "getenv",
+   "reference": "[\"set-value\", None, \"dflt\"]",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "1",
+   "probe": "hash",
+   "reference": "1",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "[False, False, True]",
+   "probe": "is_dev",
+   "reference": "[False, False, True]",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"<WS>/data/in.txt\"",
+   "probe": "label_path",
+   "reference": "\"<WS>/data/in.txt\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"\\\"<WS>/data/in.txt\\\"\"",
+   "probe": "label_path_repr",
+   "reference": "\"\\\"<WS>/data/in.txt\\\"\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "[3000000, 200000]",
+   "probe": "no_caps",
+   "reference": "[3000000, 200000]",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "[\"linux\", \"amd64\", True]",
+   "probe": "os",
+   "reference": "[\"linux\", \"amd64\", True]",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "True",
+   "probe": "passthrough",
+   "reference": "True",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "[\"basename\", \"dirname\", \"exists\", \"get_child\", \"is_dir\", \"readdir\", \"realpath\"]",
+   "probe": "path_dir",
+   "reference": "[\"basename\", \"dirname\", \"exists\", \"get_child\", \"is_dir\", \"readdir\", \"realpath\"]",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"<WD>/b/c\"",
+   "probe": "path_string",
+   "reference": "\"<WD>/b/c\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "True",
+   "probe": "pattern_auth",
+   "reference": "True",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "True",
+   "probe": "pending_allow_fail",
+   "reference": "True",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "[\"wait\"]",
+   "probe": "pending_dir",
+   "reference": "[\"wait\"]",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"<pending download to '<WD>/dl/pending.json'>\"",
+   "probe": "pending_repr",
+   "reference": "\"<pending download to '<WD>/dl/pending.json'>\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"PendingDownload\"",
+   "probe": "pending_type",
+   "reference": "\"PendingDownload\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "[True, \"956ac3d41c5accd505f437c03deecadde8d0406cc0629c1b39f485315b8c85e0\", 17]",
+   "probe": "pending_wait",
+   "reference": "[True, \"956ac3d41c5accd505f437c03deecadde8d0406cc0629c1b39f485315b8c85e0\", 17]",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "True",
+   "probe": "pending_wait_again",
+   "reference": "True",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "None",
+   "probe": "progress",
+   "reference": "None",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"input\\n\"",
+   "probe": "read_label",
+   "reference": "\"input\\n\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"input\\n\"",
+   "probe": "read_label_yes",
+   "reference": "\"input\\n\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"input\\n\"",
+   "probe": "read_link",
+   "reference": "\"input\\n\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"input\\n\"",
+   "probe": "read_no",
+   "reference": "\"input\\n\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "True",
+   "probe": "read_outside_auto",
+   "reference": "True",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"hello\\n\"",
+   "probe": "read_wd",
+   "reference": "\"hello\\n\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"hello\\n\"",
+   "probe": "read_wd_path",
+   "reference": "\"hello\\n\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "[\"BUILD.bazel\", \"in.txt\", \"link\", \"local.zip\", \"nested\"]",
+   "probe": "readdir",
+   "reference": "[\"BUILD.bazel\", \"in.txt\", \"link\", \"local.zip\", \"nested\"]",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"list\"",
+   "probe": "readdir_type",
+   "reference": "\"list\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "5",
+   "probe": "readdir_watch_yes",
+   "reference": "5",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"<WS>/data/in.txt\"",
+   "probe": "realpath",
+   "reference": "\"<WS>/data/in.txt\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "None",
+   "probe": "root_dirname",
+   "reference": "None",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "True",
+   "probe": "root_non_dev",
+   "reference": "True",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "[\"sort_key\", \"<sort_key>\", \"<sort_key>\", True, 1, True]",
+   "probe": "sort_key",
+   "reference": "[\"sort_key\", \"<sort_key>\", \"<sort_key>\", True, 1, True]",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "<sort_key module=0 tag=2>",
+   "probe": "sort_key_print",
+   "reference": "<sort_key module=0 tag=2>",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "[\"first\", \"second\", \"third\"]",
+   "probe": "sort_order",
+   "reference": "[\"first\", \"second\", \"third\"]",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"module_ctx\"",
+   "probe": "type",
+   "reference": "\"module_ctx\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "None",
+   "probe": "watch_label",
+   "reference": "None",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "None",
+   "probe": "watch_ws_path",
+   "reference": "None",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"<WD>\"",
+   "probe": "wd",
+   "reference": "\"<WD>\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "True",
+   "probe": "wd_exists_after_write",
+   "reference": "True",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "False",
+   "probe": "wd_exists_before_write",
+   "reference": "False",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"path\"",
+   "probe": "wd_type",
+   "reference": "\"path\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "None",
+   "probe": "which_missing",
+   "reference": "None",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": "\"/usr/bin/sh\"",
+   "probe": "which_sh",
+   "reference": "\"/usr/bin/sh\"",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": 0,
+   "probe": "exit",
+   "reference": 0,
+   "verdict": "MATCH"
+  },
+  {
+   "case": "ok",
+   "native": [
+    {
+     "authorization": null,
+     "path": "/data.json",
+     "x_multi": null,
+     "x_single": null
+    },
+    {
+     "authorization": null,
+     "path": "/tool",
+     "x_multi": null,
+     "x_single": null
+    },
+    {
+     "authorization": "Basic dXNlcjpwdw==",
+     "path": "/auth.json",
+     "x_multi": [
+      "a",
+      "b"
+     ],
+     "x_single": [
+      "one"
+     ]
+    },
+    {
+     "authorization": "Bearer tok",
+     "path": "/pattern.bin",
+     "x_multi": null,
+     "x_single": null
+    },
+    {
+     "authorization": null,
+     "path": "/arc.tar.gz",
+     "x_multi": null,
+     "x_single": null
+    },
+    {
+     "authorization": null,
+     "path": "/arc.zip",
+     "x_multi": null,
+     "x_single": null
+    }
+   ],
+   "probe": "http_requests",
+   "reference": [
+    {
+     "authorization": null,
+     "path": "/data.json",
+     "x_multi": null,
+     "x_single": null
+    },
+    {
+     "authorization": null,
+     "path": "/tool",
+     "x_multi": null,
+     "x_single": null
+    },
+    {
+     "authorization": "Basic dXNlcjpwdw==",
+     "path": "/auth.json",
+     "x_multi": [
+      "a",
+      "b"
+     ],
+     "x_single": [
+      "one"
+     ]
+    },
+    {
+     "authorization": "Bearer tok",
+     "path": "/pattern.bin",
+     "x_multi": null,
+     "x_single": null
+    },
+    {
+     "authorization": null,
+     "path": "/arc.tar.gz",
+     "x_multi": null,
+     "x_single": null
+    },
+    {
+     "authorization": null,
+     "path": "/arc.zip",
+     "x_multi": null,
+     "x_single": null
+    }
+   ],
+   "verdict": "MATCH"
+  },
+  {
+   "case": "default_output",
+   "native": "[True, True, False, \"{\\\"version\\\": \\\"1.2.3\\\"}\"]",
+   "probe": "default_output",
+   "reference": "[True, True, False, \"{\\\"version\\\": \\\"1.2.3\\\"}\"]",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "default_output",
+   "native": 0,
+   "probe": "exit",
+   "reference": 0,
+   "verdict": "MATCH"
+  },
+  {
+   "case": "rprobe",
+   "native": "[\"@@//data:other\", \"@@//data:rel\", \"@@//x:y\", \"\", \"\", \"@@foo+//p:m\", \"external/foo+\"]",
+   "probe": "label_methods",
+   "reference": "[\"@@//data:other\", \"@@//data:rel\", \"@@//x:y\", \"\", \"\", \"@@foo+//p:m\", \"external/foo+\"]",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "rprobe",
+   "native": "[\"attr\", \"delete\", \"download\", \"download_and_extract\", \"execute\", \"extract\", \"file\", \"getenv\", \"name\", \"original_name\", \"os\", \"patch\", \"path\", \"read\", \"rename\", \"repo_metadata\", \"report_progress\", \"symlink\", \"template\", \"watch\", \"watch_tree\", \"which\", \"workspace_root\"]",
+   "probe": "rdir",
+   "reference": "[\"attr\", \"delete\", \"download\", \"download_and_extract\", \"execute\", \"extract\", \"file\", \"getenv\", \"name\", \"original_name\", \"os\", \"patch\", \"path\", \"read\", \"rename\", \"repo_metadata\", \"report_progress\", \"symlink\", \"template\", \"watch\", \"watch_tree\", \"which\", \"workspace_root\"]",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "rprobe",
+   "native": "[\"PendingDownload\", \"<pending download to '<REPO>/p.json'>\", True]",
+   "probe": "rpending",
+   "reference": "[\"PendingDownload\", \"<pending download to '<REPO>/p.json'>\", True]",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "rprobe",
+   "native": "None",
+   "probe": "rwatch_tree",
+   "reference": "None",
+   "verdict": "MATCH"
+  },
+  {
+   "case": "rprobe",
+   "native": 0,
+   "probe": "exit",
+   "reference": 0,
+   "verdict": "MATCH"
+  },
+  {
+   "case": "m_path_int",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: in call to path(), parameter 'path' got value of type 'int', want 'string, Label, or path'",
+   "probe": "error",
+   "reference": "in call to path(), parameter 'path' got value of type 'int', want 'string, Label, or path'",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_read_missing",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: java.io.FileNotFoundException: <WD>/missing (No such file or directory)",
+   "probe": "error",
+   "reference": "java.io.FileNotFoundException: <WD>/missing (No such file or directory)",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_read_dir",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: attempting to read() a directory: <WD>/d",
+   "probe": "error",
+   "reference": "attempting to read() a directory: <WD>/d",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_read_label_dir",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: attempting to read() a directory: <WS>/data/nested",
+   "probe": "error",
+   "reference": "attempting to read() a directory: <WS>/data/nested",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_read_bad_watch",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: bad value for 'watch' parameter; want 'yes', 'no', or 'auto', got bad",
+   "probe": "error",
+   "reference": "bad value for 'watch' parameter; want 'yes', 'no', or 'auto', got bad",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_watch_wd",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: attempted to watch path under working directory",
+   "probe": "error",
+   "reference": "attempted to watch path under working directory",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_read_wd_yes",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: attempted to watch path under working directory",
+   "probe": "error",
+   "reference": "attempted to watch path under working directory",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_watch_outside",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: attempted to watch path outside workspace, but it's prohibited in the current context",
+   "probe": "error",
+   "reference": "attempted to watch path outside workspace, but it's prohibited in the current context",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_read_outside_yes",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: attempted to watch path outside workspace, but it's prohibited in the current context",
+   "probe": "error",
+   "reference": "attempted to watch path outside workspace, but it's prohibited in the current context",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_readdir_outside_yes",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: attempted to watch path outside workspace, but it's prohibited in the current context",
+   "probe": "error",
+   "reference": "attempted to watch path outside workspace, but it's prohibited in the current context",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_file_outside",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: Cannot write outside of the repository directory for path /tmp/opencode/n43cap-never-written",
+   "probe": "error",
+   "reference": "Cannot write outside of the repository directory for path /tmp/opencode/n43cap-never-written",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_label_no_package",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: Unable to load package for //nopkg:x: BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.",
+   "probe": "error",
+   "reference": "Unable to load package for //nopkg:x: BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_readdir_file",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: can't readdir(), not a directory: <WS>/data/in.txt",
+   "probe": "error",
+   "reference": "can't readdir(), not a directory: <WS>/data/in.txt",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_get_child_int",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: at index 0 of relative_paths, got element of type int, want string",
+   "probe": "error",
+   "reference": "at index 0 of relative_paths, got element of type int, want string",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_download_404",
+   "exit": [
+    0,
+    0
+   ],
+   "native": "@@+m_download_404+m_download_404//:x\n",
+   "probe": "error",
+   "reference": null,
+   "verdict": "MATCH"
+  },
+  {
+   "case": "m_download_404_uncached",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: java.io.IOException: Error downloading [http://127.0.0.1:36137/missing] to <WD>/o: GET returned 404 File not found",
+   "probe": "error",
+   "reference": "java.io.IOException: Error downloading [http://127.0.0.1:36137/missing] to <WD>/o: GET returned 404 File not found",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_pending_404_uncached",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: java.io.IOException: Error downloading [http://127.0.0.1:36137/missing] to <WD>/o: GET returned 404 File not found",
+   "probe": "error",
+   "reference": "java.io.IOException: Error downloading [http://127.0.0.1:36137/missing] to <WD>/o: GET returned 404 File not found",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_dae_404_uncached",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: java.io.IOException: Error downloading [http://127.0.0.1:36137/missing.zip] to <WD>/o/temp<N>/missing.zip: GET returned 404 File not found",
+   "probe": "error",
+   "reference": "java.io.IOException: Error downloading [http://127.0.0.1:36137/missing.zip] to <WD>/o/temp<N>/missing.zip: GET returned 404 File not found",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "r_pending_404_uncached",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: java.io.IOException: Error downloading [http://127.0.0.1:36137/missing] to <REPO>/o: GET returned 404 File not found",
+   "probe": "error",
+   "reference": "java.io.IOException: Error downloading [http://127.0.0.1:36137/missing] to <REPO>/o: GET returned 404 File not found",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_download_mismatch",
+   "exit": [
+    0,
+    0
+   ],
+   "native": "@@+m_download_mismatch+m_download_mismatch//:x\n",
+   "probe": "error",
+   "reference": null,
+   "verdict": "MATCH"
+  },
+  {
+   "case": "m_pending_404",
+   "exit": [
+    0,
+    0
+   ],
+   "native": "@@+m_pending_404+m_pending_404//:x\n",
+   "probe": "error",
+   "reference": null,
+   "verdict": "MATCH"
+  },
+  {
+   "case": "m_download_both_checksums",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: Expected either 'sha256' or 'integrity', but not both",
+   "probe": "error",
+   "reference": "Expected either 'sha256' or 'integrity', but not both",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_download_no_urls",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: java.io.IOException: urls not set",
+   "probe": "error",
+   "reference": "java.io.IOException: urls not set",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_download_outside",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: Cannot write outside of the repository directory for path /tmp/opencode/n43cap-never-written",
+   "probe": "error",
+   "reference": "Cannot write outside of the repository directory for path /tmp/opencode/n43cap-never-written",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_auth_basic",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: Found request to do basic auth for http://127.0.0.1:36137/tool without 'login' and 'password' being provided.",
+   "probe": "error",
+   "reference": "Found request to do basic auth for http://127.0.0.1:36137/tool without 'login' and 'password' being provided.",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_auth_pattern_missing",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: Found request to do pattern auth for http://127.0.0.1:36137/tool without a pattern being provided",
+   "probe": "error",
+   "reference": "Found request to do pattern auth for http://127.0.0.1:36137/tool without a pattern being provided",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_auth_pattern_component",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: Auth pattern contains <password> but it was not provided in auth dict.",
+   "probe": "error",
+   "reference": "Auth pattern contains <password> but it was not provided in auth dict.",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_headers_int",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: headers argument must be a dict whose keys are string and whose values are either string or sequence of string",
+   "probe": "error",
+   "reference": "headers argument must be a dict whose keys are string and whose values are either string or sequence of string",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_headers_list_int",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: at index 0 of header values, got element of type int, want string",
+   "probe": "error",
+   "reference": "at index 0 of header values, got element of type int, want string",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_auth_not_dict",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: got dict<string, int> for 'auth', want dict<string, dict>",
+   "probe": "error",
+   "reference": "got dict<string, int> for 'auth', want dict<string, dict>",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_extract_missing",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: Archive path '<WD>/nothing.zip' does not exist.",
+   "probe": "error",
+   "reference": "Archive path '<WD>/nothing.zip' does not exist.",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_extract_bad_prefix",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: java.io.IOException: Error extracting <WD>/a.zip to <WD> Prefix \"nope\" was given, but not found in the archive. Here are possible prefixes for this archive: \"zroot\".",
+   "probe": "error",
+   "reference": "java.io.IOException: Error extracting <WD>/a.zip to <WD> Prefix \"nope\" was given, but not found in the archive. Here are possible prefixes for this archive: \"zroot\".",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_dae_404",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: java.io.IOException: Error extracting <WD>/o/temp<N>/missing.zip to <WD>/o/temp<N>: Zip file 'missing.zip' is malformed. It does not contain an end of central directory record.",
+   "probe": "error",
+   "reference": "java.io.IOException: Error extracting <WD>/o/temp<N>/missing.zip to <WD>/o/temp<N>: Zip file 'missing.zip' is malformed. It does not contain an end of central directory record.",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_which_slash",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: Program argument of which() may not contain a / or a \\ ('a/b' given)",
+   "probe": "error",
+   "reference": "Program argument of which() may not contain a / or a \\ ('a/b' given)",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_execute_bad_arg",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: Argument 1 of execute is neither a path, label, nor string.",
+   "probe": "error",
+   "reference": "Argument 1 of execute is neither a path, label, nor string.",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_tag_sort_key_int",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: in call to tag_sort_key(), parameter 'tag' got value of type 'int', want 'bazel_module_tag'",
+   "probe": "error",
+   "reference": "in call to tag_sort_key(), parameter 'tag' got value of type 'int', want 'bazel_module_tag'",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "m_wait_twice_fail",
+   "exit": [
+    0,
+    0
+   ],
+   "native": "@@+m_wait_twice_fail+m_wait_twice_fail//:x\n",
+   "probe": "error",
+   "reference": null,
+   "verdict": "MATCH"
+  },
+  {
+   "case": "r_watch_tree_file",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: can't call watch_tree() on non-directory <WS>/data/in.txt",
+   "probe": "error",
+   "reference": "can't call watch_tree() on non-directory <WS>/data/in.txt",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "r_watch_tree_repo",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: attempted to watch path under working directory",
+   "probe": "error",
+   "reference": "attempted to watch path under working directory",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "r_pending_404",
+   "exit": [
+    0,
+    0
+   ],
+   "native": "",
+   "probe": "error",
+   "reference": null,
+   "verdict": "MATCH"
+  },
+  {
+   "case": "r_auth_basic",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: Found request to do basic auth for http://127.0.0.1:36137/tool without 'login' and 'password' being provided.",
+   "probe": "error",
+   "reference": "Found request to do basic auth for http://127.0.0.1:36137/tool without 'login' and 'password' being provided.",
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "r_same_package_bad",
+   "exit": [
+    1,
+    7
+   ],
+   "native": "error: invalid target name 'a:b': target names may not contain ':'",
+   "probe": "error",
+   "reference": "invalid target name 'a:b': target names may not contain ':'",
+   "verdict": "EXACT_MESSAGE"
+  }
+ ],
+ "counts": {
+  "EXACT_MESSAGE": 37,
+  "MATCH": 81
+ },
+ "environment": "env -i PATH=/usr/bin:/bin HOME TMPDIR LC_ALL=C N43_SET=set-value; umask 022; private workspace/output root/cache per engine; 127.0.0.1 server; offline",
+ "finished": "2026-10-17T06:33:00Z",
+ "head": "35b663ae4d416be9395005bfe124ce80cc2f9b8c",
+ "native_argv": "bazel-rs --ignore_all_rc_files --cache-dir=<private> query --lockfile_mode=off TARGET",
+ "native_restrictions_not_captured": [
+  "module_ctx is_isolated and load_wasm/execute_wasm stay absent (flag-gated off in Bazel 9.3 too)",
+  "downloads complete before download(block=False) returns (no parallelism)",
+  "distdir and URL rewriting are not modelled"
+ ],
+ "native_sha256": "8233eb1212f94131f1341050c5d925d0fe1215825e2cfa6dbfaa9ca54227a271",
+ "outside_written": false,
+ "post_capture_changes": [],
+ "purpose": "Paired genuine Bazel 9.3.0 vs native bazel-rs capture of N43 (docs/EXTENSION_CTX_SURFACE.md): module_ctx sharing repository_ctx's StarlarkBaseExternalContext surface (path of string/Label/path and every path member, file, read(watch), watch rules of module extensions, execute, which, report_progress, os, getenv, download with executable/allow_fail/block=False+wait/auth basic+pattern/headers, download_and_extract, extract incl. Label archives, the repository download cache), tag_sort_key, facts print, dir(module_ctx)/dir(repository_ctx), repository_ctx watch_tree and PendingDownload, Label.same_package_label/relative/repo_root, removed tick/heap caps (3M-iteration loop, 200k x 1KiB list), tar headers with stale bytes after the name NUL, and 38 error cases.",
+ "reference_argv": "bazel --batch --ignore_all_rc_files --output_user_root=<private> query --lockfile_mode=off --registry=file://<tests/fixtures/builtin_modules/registry> --incompatible_autoload_externally= --repository_cache=<private> TARGET",
+ "reference_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+ "requests": {},
+ "run": 2,
+ "run1_analysis": "Run 1 (history/run1_reference_receipt.json): 9 MISMATCH, all from genuine Bazel's repository download cache: checksummed downloads whose checksum was already cached (data.json/tool bodies) were served without any request, so /missing with a cached sha256 succeeded (allow_fail result success=True; m_download_404, m_download_mismatch, m_pending_404, m_wait_twice_fail, r_pending_404 exit 0), m_dae_404 extracted the cached JSON as a zip (Bazel's ZipReader malformed message), and the auth/header requests never reached the server. Fixes before run 2: native repository download cache (DownloadManager.java:244-386, DownloadCache.java:146-305) and ZipReader's malformed-zip text; the run-2 fixture serves unique bodies for auth/header probes and adds uncached 404 cases.",
+ "run_history": {
+  "run 1": "tests/fixtures/ext_ctx_surface/history/run1_reference_receipt.json (sha256 7d2fb197fda6f0c261a7b0e9db6a435c0e1a4590d0f49a7858c87f3e57e79bb3): 73 MATCH / 32 EXACT_MESSAGE / 9 MISMATCH, all from the missing native repository download cache"
+ },
+ "runs": {
+  "default_output": {
+   "native": {
+    "output_tail": "@@+default_output+default_output//:x\nN43|default_output|[True, True, False, \"{\\\"version\\\": \\\"1.2.3\\\"}\"]\n",
+    "requests": [],
+    "returncode": 0,
+    "seconds": 0.02
+   },
+   "reference": {
+    "output_tail": "@default_output//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: <WS>/defs.bzl:3:10: N43|default_output|[True, True, False, \"{\\\"version\\\": \\\"1.2.3\\\"}\"]\n",
+    "requests": [],
+    "returncode": 0,
+    "seconds": 1.87
+   }
+  },
+  "m_auth_basic": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:266, in _m_auth_basic\n      mctx.download(URL + \"/tool\", \"o\", sha256 = TOOL_SHA, auth = {URL + \"/tool\": {...\nerror: Found request to do basic auth for http://127.0.0.1:36137/tool without 'login' and 'password' being provided.\n   --> //:defs.bzl:266:5\n    |\n266 |     mctx.download(URL + \"/tool\", \"o\", sha256 = TOOL_SHA, auth = {URL + \"/tool\": {\"type\": \"basic\", \"login\": \"u\"}})\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:266:18: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 266, column 18, in _m_auth_basic\n\t\tmctx.download(URL + \"/tool\", \"o\", sha256 = TOOL_SHA, auth = {URL + \"/tool\": {\"type\": \"basic\", \"login\": \"u\"}})\nError in download: Found request to do basic auth for http://127.0.0.1:36137/tool without 'login' and 'password' being provided.\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_auth_basic\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.81
+   }
+  },
+  "m_auth_not_dict": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:291, in _m_auth_not_dict\n      mctx.download(URL + \"/tool\", \"o\", sha256 = TOOL_SHA, auth = {\"k\": 1})\nerror: got dict<string, int> for 'auth', want dict<string, dict>\n   --> //:defs.bzl:291:5\n    |\n291 |     mctx.download(URL + \"/tool\", \"o\", sha256 = TOOL_SHA, auth = {\"k\": 1})\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:291:18: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 291, column 18, in _m_auth_not_dict\n\t\tmctx.download(URL + \"/tool\", \"o\", sha256 = TOOL_SHA, auth = {\"k\": 1})\nError in download: got dict<string, int> for 'auth', want dict<string, dict>\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_auth_not_dict\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.8
+   }
+  },
+  "m_auth_pattern_component": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:276, in _m_auth_pattern_component\n      mctx.download(URL + \"/tool\", \"o\", sha256 = TOOL_SHA, auth = {URL + \"/tool\": {...\nerror: Auth pattern contains <password> but it was not provided in auth dict.\n   --> //:defs.bzl:276:5\n    |\n276 |     mctx.download(URL + \"/tool\", \"o\", sha256 = TOOL_SHA, auth = {URL + \"/tool\": {\"type\": \"pattern\", \"pattern\": \"Bearer <password>\"}})\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:276:18: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 276, column 18, in _m_auth_pattern_component\n\t\tmctx.download(URL + \"/tool\", \"o\", sha256 = TOOL_SHA, auth = {URL + \"/tool\": {\"type\": \"pattern\", \"pattern\": \"Bearer <password>\"}})\nError in download: Auth pattern contains <password> but it was not provided in auth dict.\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_auth_pattern_component\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.93
+   }
+  },
+  "m_auth_pattern_missing": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:271, in _m_auth_pattern_missing\n      mctx.download(URL + \"/tool\", \"o\", sha256 = TOOL_SHA, auth = {URL + \"/tool\": {...\nerror: Found request to do pattern auth for http://127.0.0.1:36137/tool without a pattern being provided\n   --> //:defs.bzl:271:5\n    |\n271 |     mctx.download(URL + \"/tool\", \"o\", sha256 = TOOL_SHA, auth = {URL + \"/tool\": {\"type\": \"pattern\"}})\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.02
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:271:18: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 271, column 18, in _m_auth_pattern_missing\n\t\tmctx.download(URL + \"/tool\", \"o\", sha256 = TOOL_SHA, auth = {URL + \"/tool\": {\"type\": \"pattern\"}})\nError in download: Found request to do pattern auth for http://127.0.0.1:36137/tool without a pattern being provided\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_auth_pattern_missing\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.85
+   }
+  },
+  "m_dae_404": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:307, in _m_dae_404\n      mctx.download_and_extract(URL + \"/missing.zip\", \"o\", sha256 = DATA_SHA)\nerror: java.io.IOException: Error extracting <WD>/o/temp<N>/missing.zip to <WD>/o/temp<N>: Zip file 'missing.zip' is malformed. It does not contain an end of central directory record.\n   --> //:defs.bzl:307:5\n    |\n307 |     mctx.download_and_extract(URL + \"/missing.zip\", \"o\", sha256 = DATA_SHA)\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:307:30: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 307, column 30, in _m_dae_404\n\t\tmctx.download_and_extract(URL + \"/missing.zip\", \"o\", sha256 = DATA_SHA)\nError in download_and_extract: java.io.IOException: Error extracting <WD>/o/temp<N>/missing.zip to <WD>/o/temp<N>: Zip file 'missing.zip' is malformed. It does not contain an end of central directory record.\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_dae_404\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.92
+   }
+  },
+  "m_dae_404_uncached": {
+   "native": {
+    "output_tail": "WARNING: Download from http://127.0.0.1:36137/missing.zip failed: class java.io.FileNotFoundException GET returned 404 File not found\nbazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:230, in _m_dae_404_uncached\n      mctx.download_and_extract(URL + \"/missing.zip\", \"o\", sha256 = NEVER_SHA)\nerror: java.io.IOException: Error downloading [http://127.0.0.1:36137/missing.zip] to <WD>/o/temp<N>/missing.zip: GET returned 404 File not found\n   --> //:defs.bzl:230:5\n    |\n230 |     mctx.download_and_extract(URL + \"/missing.zip\", \"o\", sha256 = NEVER_SHA)\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [
+     {
+      "authorization": null,
+      "path": "/missing.zip",
+      "x_multi": null,
+      "x_single": null
+     }
+    ],
+    "returncode": 1,
+    "seconds": 0.04
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: Download from http://127.0.0.1:36137/missing.zip failed: class java.io.FileNotFoundException GET returned 404 File not found\nERROR: <WS>/defs.bzl:230:30: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 230, column 30, in _m_dae_404_uncached\n\t\tmctx.download_and_extract(URL + \"/missing.zip\", \"o\", sha256 = NEVER_SHA)\nError in download_and_extract: java.io.IOException: Error downloading [http://127.0.0.1:36137/missing.zip] to <WD>/o/temp<N>/missing.zip: GET returned 404 File not found\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_dae_404_uncached\n",
+    "requests": [
+     {
+      "authorization": null,
+      "path": "/missing.zip",
+      "x_multi": null,
+      "x_single": null
+     }
+    ],
+    "returncode": 7,
+    "seconds": 2.1
+   }
+  },
+  "m_download_404": {
+   "native": {
+    "output_tail": "@@+m_download_404+m_download_404//:x\n",
+    "requests": [],
+    "returncode": 0,
+    "seconds": 0.02
+   },
+   "reference": {
+    "output_tail": "@m_download_404//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "requests": [],
+    "returncode": 0,
+    "seconds": 2.0
+   }
+  },
+  "m_download_404_uncached": {
+   "native": {
+    "output_tail": "WARNING: Download from http://127.0.0.1:36137/missing failed: class java.io.FileNotFoundException GET returned 404 File not found\nbazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:219, in _m_download_404_uncached\n      mctx.download(URL + \"/missing\", \"o\", sha256 = NEVER_SHA)\nerror: java.io.IOException: Error downloading [http://127.0.0.1:36137/missing] to <WD>/o: GET returned 404 File not found\n   --> //:defs.bzl:219:5\n    |\n219 |     mctx.download(URL + \"/missing\", \"o\", sha256 = NEVER_SHA)\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [
+     {
+      "authorization": null,
+      "path": "/missing",
+      "x_multi": null,
+      "x_single": null
+     }
+    ],
+    "returncode": 1,
+    "seconds": 0.03
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: Download from http://127.0.0.1:36137/missing failed: class java.io.FileNotFoundException GET returned 404 File not found\nERROR: <WS>/defs.bzl:219:18: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 219, column 18, in _m_download_404_uncached\n\t\tmctx.download(URL + \"/missing\", \"o\", sha256 = NEVER_SHA)\nError in download: java.io.IOException: Error downloading [http://127.0.0.1:36137/missing] to <WD>/o: GET returned 404 File not found\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_download_404_uncached\n",
+    "requests": [
+     {
+      "authorization": null,
+      "path": "/missing",
+      "x_multi": null,
+      "x_single": null
+     }
+    ],
+    "returncode": 7,
+    "seconds": 2.14
+   }
+  },
+  "m_download_both_checksums": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:251, in _m_download_both_checksums\n      mctx.download(URL + \"/tool\", \"o\", sha256 = DATA_SHA, integrity = \"sha256-AAAA\")\nerror: Expected either 'sha256' or 'integrity', but not both\n   --> //:defs.bzl:251:5\n    |\n251 |     mctx.download(URL + \"/tool\", \"o\", sha256 = DATA_SHA, integrity = \"sha256-AAAA\")\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:251:18: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 251, column 18, in _m_download_both_checksums\n\t\tmctx.download(URL + \"/tool\", \"o\", sha256 = DATA_SHA, integrity = \"sha256-AAAA\")\nError in download: Expected either 'sha256' or 'integrity', but not both\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_download_both_checksums\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.87
+   }
+  },
+  "m_download_mismatch": {
+   "native": {
+    "output_tail": "@@+m_download_mismatch+m_download_mismatch//:x\n",
+    "requests": [],
+    "returncode": 0,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "@m_download_mismatch//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "requests": [],
+    "returncode": 0,
+    "seconds": 1.93
+   }
+  },
+  "m_download_no_urls": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:256, in _m_download_no_urls\n      mctx.download([], \"o\")\nerror: java.io.IOException: urls not set\n   --> //:defs.bzl:256:5\n    |\n256 |     mctx.download([], \"o\")\n    |     ^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:256:18: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 256, column 18, in _m_download_no_urls\n\t\tmctx.download([], \"o\")\nError in download: java.io.IOException: urls not set\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_download_no_urls\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.89
+   }
+  },
+  "m_download_outside": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:261, in _m_download_outside\n      mctx.download(URL + \"/tool\", \"/tmp/opencode/n43cap-never-written\", sha256 = T...\nerror: Cannot write outside of the repository directory for path /tmp/opencode/n43cap-never-written\n   --> //:defs.bzl:261:5\n    |\n261 |     mctx.download(URL + \"/tool\", \"/tmp/opencode/n43cap-never-written\", sha256 = TOOL_SHA)\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:261:18: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 261, column 18, in _m_download_outside\n\t\tmctx.download(URL + \"/tool\", \"/tmp/opencode/n43cap-never-written\", sha256 = TOOL_SHA)\nError in download: Cannot write outside of the repository directory for path /tmp/opencode/n43cap-never-written\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_download_outside\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.85
+   }
+  },
+  "m_execute_bad_arg": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:317, in _m_execute_bad_arg\n      mctx.execute([\"sh\", 1])\nerror: Argument 1 of execute is neither a path, label, nor string.\n   --> //:defs.bzl:317:5\n    |\n317 |     mctx.execute([\"sh\", 1])\n    |     ^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.02
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:317:17: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 317, column 17, in _m_execute_bad_arg\n\t\tmctx.execute([\"sh\", 1])\nError in execute: Argument 1 of execute is neither a path, label, nor string.\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_execute_bad_arg\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.91
+   }
+  },
+  "m_extract_bad_prefix": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:302, in _m_extract_bad_prefix\n      mctx.extract(\"a.zip\", \"o\", strip_prefix = \"nope\")\nerror: java.io.IOException: Error extracting <WD>/a.zip to <WD> Prefix \"nope\" was given, but not found in the archive. Here are possible prefixes for this archive: \"zroot\".\n   --> //:defs.bzl:302:5\n    |\n302 |     mctx.extract(\"a.zip\", \"o\", strip_prefix = \"nope\")\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:302:17: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 302, column 17, in _m_extract_bad_prefix\n\t\tmctx.extract(\"a.zip\", \"o\", strip_prefix = \"nope\")\nError in extract: java.io.IOException: Error extracting <WD>/a.zip to <WD> Prefix \"nope\" was given, but not found in the archive. Here are possible prefixes for this archive: \"zroot\".\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_extract_bad_prefix\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.87
+   }
+  },
+  "m_extract_missing": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:296, in _m_extract_missing\n      mctx.extract(\"nothing.zip\")\nerror: Archive path '<WD>/nothing.zip' does not exist.\n   --> //:defs.bzl:296:5\n    |\n296 |     mctx.extract(\"nothing.zip\")\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:296:17: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 296, column 17, in _m_extract_missing\n\t\tmctx.extract(\"nothing.zip\")\nError in extract: Archive path '<WD>/nothing.zip' does not exist.\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_extract_missing\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.88
+   }
+  },
+  "m_file_outside": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:194, in _m_file_outside\n      mctx.file(\"/tmp/opencode/n43cap-never-written\", \"\")\nerror: Cannot write outside of the repository directory for path /tmp/opencode/n43cap-never-written\n   --> //:defs.bzl:194:5\n    |\n194 |     mctx.file(\"/tmp/opencode/n43cap-never-written\", \"\")\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:194:14: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 194, column 14, in _m_file_outside\n\t\tmctx.file(\"/tmp/opencode/n43cap-never-written\", \"\")\nError in file: Cannot write outside of the repository directory for path /tmp/opencode/n43cap-never-written\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_file_outside\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.67
+   }
+  },
+  "m_get_child_int": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:209, in _m_get_child_int\n      mctx.path(\".\").get_child(1)\nerror: at index 0 of relative_paths, got element of type int, want string\n   --> //:defs.bzl:209:5\n    |\n209 |     mctx.path(\".\").get_child(1)\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.02
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:209:29: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 209, column 29, in _m_get_child_int\n\t\tmctx.path(\".\").get_child(1)\nError in get_child: at index 0 of relative_paths, got element of type int, want string\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_get_child_int\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.84
+   }
+  },
+  "m_headers_int": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:281, in _m_headers_int\n      mctx.download(URL + \"/tool\", \"o\", sha256 = TOOL_SHA, headers = {\"X\": 1})\nerror: headers argument must be a dict whose keys are string and whose values are either string or sequence of string\n   --> //:defs.bzl:281:5\n    |\n281 |     mctx.download(URL + \"/tool\", \"o\", sha256 = TOOL_SHA, headers = {\"X\": 1})\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:281:18: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 281, column 18, in _m_headers_int\n\t\tmctx.download(URL + \"/tool\", \"o\", sha256 = TOOL_SHA, headers = {\"X\": 1})\nError in download: headers argument must be a dict whose keys are string and whose values are either string or sequence of string\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_headers_int\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.91
+   }
+  },
+  "m_headers_list_int": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:286, in _m_headers_list_int\n      mctx.download(URL + \"/tool\", \"o\", sha256 = TOOL_SHA, headers = {\"X\": [1]})\nerror: at index 0 of header values, got element of type int, want string\n   --> //:defs.bzl:286:5\n    |\n286 |     mctx.download(URL + \"/tool\", \"o\", sha256 = TOOL_SHA, headers = {\"X\": [1]})\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:286:18: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 286, column 18, in _m_headers_list_int\n\t\tmctx.download(URL + \"/tool\", \"o\", sha256 = TOOL_SHA, headers = {\"X\": [1]})\nError in download: at index 0 of header values, got element of type int, want string\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_headers_list_int\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.83
+   }
+  },
+  "m_label_no_package": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:199, in _m_label_no_package\n      mctx.path(Label(\"//nopkg:x\"))\nerror: Unable to load package for //nopkg:x: BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nopkg\n   --> //:defs.bzl:199:5\n    |\n199 |     mctx.path(Label(\"//nopkg:x\"))\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:199:14: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 199, column 14, in _m_label_no_package\n\t\tmctx.path(Label(\"//nopkg:x\"))\nError in path: Unable to load package for //nopkg:x: BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nopkg\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_label_no_package\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.7
+   }
+  },
+  "m_path_int": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:142, in _m_path_int\n      mctx.path(1)\nerror: in call to path(), parameter 'path' got value of type 'int', want 'string, Label, or path'\n   --> //:defs.bzl:142:5\n    |\n142 |     mctx.path(1)\n    |     ^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:142:14: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 142, column 14, in _m_path_int\n\t\tmctx.path(1)\nError in path: in call to path(), parameter 'path' got value of type 'int', want 'string, Label, or path'\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_path_int\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.84
+   }
+  },
+  "m_pending_404": {
+   "native": {
+    "output_tail": "@@+m_pending_404+m_pending_404//:x\n",
+    "requests": [],
+    "returncode": 0,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "@m_pending_404//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "requests": [],
+    "returncode": 0,
+    "seconds": 1.83
+   }
+  },
+  "m_pending_404_uncached": {
+   "native": {
+    "output_tail": "WARNING: Download from http://127.0.0.1:36137/missing failed: class java.io.FileNotFoundException GET returned 404 File not found\nbazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:225, in _m_pending_404_uncached\n      p.wait()\nerror: java.io.IOException: Error downloading [http://127.0.0.1:36137/missing] to <WD>/o: GET returned 404 File not found\n   --> //:defs.bzl:225:5\n    |\n225 |     p.wait()\n    |     ^^^^^^^^\n    |\n\n",
+    "requests": [
+     {
+      "authorization": null,
+      "path": "/missing",
+      "x_multi": null,
+      "x_single": null
+     }
+    ],
+    "returncode": 1,
+    "seconds": 0.04
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: Download from http://127.0.0.1:36137/missing failed: class java.io.FileNotFoundException GET returned 404 File not found\nERROR: <WS>/defs.bzl:225:11: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 225, column 11, in _m_pending_404_uncached\n\t\tp.wait()\nError in wait: java.io.IOException: Error downloading [http://127.0.0.1:36137/missing] to <WD>/o: GET returned 404 File not found\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_pending_404_uncached\n",
+    "requests": [
+     {
+      "authorization": null,
+      "path": "/missing",
+      "x_multi": null,
+      "x_single": null
+     }
+    ],
+    "returncode": 7,
+    "seconds": 2.19
+   }
+  },
+  "m_read_bad_watch": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:163, in _m_read_bad_watch\n      mctx.read(Label(\"//data:in.txt\"), watch = \"bad\")\nerror: bad value for 'watch' parameter; want 'yes', 'no', or 'auto', got bad\n   --> //:defs.bzl:163:5\n    |\n163 |     mctx.read(Label(\"//data:in.txt\"), watch = \"bad\")\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:163:14: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 163, column 14, in _m_read_bad_watch\n\t\tmctx.read(Label(\"//data:in.txt\"), watch = \"bad\")\nError in read: bad value for 'watch' parameter; want 'yes', 'no', or 'auto', got bad\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_read_bad_watch\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.92
+   }
+  },
+  "m_read_dir": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:153, in _m_read_dir\n      mctx.read(\"d\")\nerror: attempting to read() a directory: <WD>/d\n   --> //:defs.bzl:153:5\n    |\n153 |     mctx.read(\"d\")\n    |     ^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:153:14: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 153, column 14, in _m_read_dir\n\t\tmctx.read(\"d\")\nError in read: attempting to read() a directory: <WD>/d\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_read_dir\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.77
+   }
+  },
+  "m_read_label_dir": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:158, in _m_read_label_dir\n      mctx.read(Label(\"//data:nested\"))\nerror: attempting to read() a directory: <WS>/data/nested\n   --> //:defs.bzl:158:5\n    |\n158 |     mctx.read(Label(\"//data:nested\"))\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:158:14: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 158, column 14, in _m_read_label_dir\n\t\tmctx.read(Label(\"//data:nested\"))\nError in read: attempting to read() a directory: <WS>/data/nested\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_read_label_dir\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.9
+   }
+  },
+  "m_read_missing": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:147, in _m_read_missing\n      mctx.read(\"missing\")\nerror: java.io.FileNotFoundException: <WD>/missing (No such file or directory)\n   --> //:defs.bzl:147:5\n    |\n147 |     mctx.read(\"missing\")\n    |     ^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:147:14: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 147, column 14, in _m_read_missing\n\t\tmctx.read(\"missing\")\nError in read: java.io.FileNotFoundException: <WD>/missing (No such file or directory)\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_read_missing\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.93
+   }
+  },
+  "m_read_outside_yes": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:184, in _m_read_outside_yes\n      mctx.read(mctx.path(\"/etc/hostname\"), watch = \"yes\")\nerror: attempted to watch path outside workspace, but it's prohibited in the current context\n   --> //:defs.bzl:184:5\n    |\n184 |     mctx.read(mctx.path(\"/etc/hostname\"), watch = \"yes\")\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:184:14: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 184, column 14, in _m_read_outside_yes\n\t\tmctx.read(mctx.path(\"/etc/hostname\"), watch = \"yes\")\nError in read: attempted to watch path outside workspace, but it's prohibited in the current context\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_read_outside_yes\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.8
+   }
+  },
+  "m_read_wd_yes": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:174, in _m_read_wd_yes\n      mctx.read(\"x\", watch = \"yes\")\nerror: attempted to watch path under working directory\n   --> //:defs.bzl:174:5\n    |\n174 |     mctx.read(\"x\", watch = \"yes\")\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:174:14: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 174, column 14, in _m_read_wd_yes\n\t\tmctx.read(\"x\", watch = \"yes\")\nError in read: attempted to watch path under working directory\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_read_wd_yes\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.81
+   }
+  },
+  "m_readdir_file": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:204, in _m_readdir_file\n      mctx.path(Label(\"//data:in.txt\")).readdir()\nerror: can't readdir(), not a directory: <WS>/data/in.txt\n   --> //:defs.bzl:204:5\n    |\n204 |     mctx.path(Label(\"//data:in.txt\")).readdir()\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:204:46: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 204, column 46, in _m_readdir_file\n\t\tmctx.path(Label(\"//data:in.txt\")).readdir()\nError in readdir: can't readdir(), not a directory: <WS>/data/in.txt\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_readdir_file\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.71
+   }
+  },
+  "m_readdir_outside_yes": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:189, in _m_readdir_outside_yes\n      mctx.path(\"/etc\").readdir(watch = \"yes\")\nerror: attempted to watch path outside workspace, but it's prohibited in the current context\n   --> //:defs.bzl:189:5\n    |\n189 |     mctx.path(\"/etc\").readdir(watch = \"yes\")\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.02
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:189:30: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 189, column 30, in _m_readdir_outside_yes\n\t\tmctx.path(\"/etc\").readdir(watch = \"yes\")\nError in readdir: attempted to watch path outside workspace, but it's prohibited in the current context\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_readdir_outside_yes\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.75
+   }
+  },
+  "m_tag_sort_key_int": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:322, in _m_tag_sort_key_int\n      mctx.tag_sort_key(1)\nerror: in call to tag_sort_key(), parameter 'tag' got value of type 'int', want 'bazel_module_tag'\n   --> //:defs.bzl:322:5\n    |\n322 |     mctx.tag_sort_key(1)\n    |     ^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:322:22: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 322, column 22, in _m_tag_sort_key_int\n\t\tmctx.tag_sort_key(1)\nError in tag_sort_key: in call to tag_sort_key(), parameter 'tag' got value of type 'int', want 'bazel_module_tag'\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_tag_sort_key_int\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.89
+   }
+  },
+  "m_wait_twice_fail": {
+   "native": {
+    "output_tail": "@@+m_wait_twice_fail+m_wait_twice_fail//:x\n",
+    "requests": [],
+    "returncode": 0,
+    "seconds": 0.02
+   },
+   "reference": {
+    "output_tail": "@m_wait_twice_fail//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "requests": [],
+    "returncode": 0,
+    "seconds": 1.97
+   }
+  },
+  "m_watch_outside": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:179, in _m_watch_outside\n      mctx.watch(\"/etc/hostname\")\nerror: attempted to watch path outside workspace, but it's prohibited in the current context\n   --> //:defs.bzl:179:5\n    |\n179 |     mctx.watch(\"/etc/hostname\")\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:179:15: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 179, column 15, in _m_watch_outside\n\t\tmctx.watch(\"/etc/hostname\")\nError in watch: attempted to watch path outside workspace, but it's prohibited in the current context\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_watch_outside\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.83
+   }
+  },
+  "m_watch_wd": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:168, in _m_watch_wd\n      mctx.watch(\"x\")\nerror: attempted to watch path under working directory\n   --> //:defs.bzl:168:5\n    |\n168 |     mctx.watch(\"x\")\n    |     ^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:168:15: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 168, column 15, in _m_watch_wd\n\t\tmctx.watch(\"x\")\nError in watch: attempted to watch path under working directory\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_watch_wd\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.85
+   }
+  },
+  "m_which_slash": {
+   "native": {
+    "output_tail": "bazel-rs: module extension //:defs.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:312, in _m_which_slash\n      mctx.which(\"a/b\")\nerror: Program argument of which() may not contain a / or a \\ ('a/b' given)\n   --> //:defs.bzl:312:5\n    |\n312 |     mctx.which(\"a/b\")\n    |     ^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.02
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/defs.bzl:312:15: Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 312, column 15, in _m_which_slash\n\t\tmctx.which(\"a/b\")\nError in which: Program argument of which() may not contain a / or a \\ ('a/b' given)\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:defs.bzl%m_which_slash\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.92
+   }
+  },
+  "ok": {
+   "native": {
+    "output_tail": "@@+ok+ok//:x\nN43|dir|[\"download\", \"download_and_extract\", \"execute\", \"extension_metadata\", \"extract\", \"facts\", \"file\", \"getenv\", \"is_dev_dependency\", \"modules\", \"os\", \"path\", \"read\", \"report_progress\", \"root_module_has_non_dev_dependency\", \"tag_sort_key\", \"watch\", \"which\"]\nN43|type|\"module_ctx\"\nN43|wd_type|\"path\"\nN43|wd|\"<WD>\"\nN43|wd_exists_before_write|False\nN43|path_string|\"<WD>/b/c\"\nN43|label_path|\"<WS>/data/in.txt\"\nN43|label_path_repr|\"\\\"<WS>/data/in.txt\\\"\"\nN43|passthrough|True\nN43|hash|1\nN43|basename|\"in.txt\"\nN43|dirname|\"<WS>/data\"\nN43|root_dirname|None\nN43|exists|[True, False, True, False]\nN43|get_child|\"<WS>/data/x/y/z\"\nN43|get_child_none|\"<WS>/data\"\nN43|realpath|\"<WS>/data/in.txt\"\nN43|readdir|[\"BUILD.bazel\", \"in.txt\", \"link\", \"local.zip\", \"nested\"]\nN43|readdir_type|\"list\"\nN43|path_dir|[\"basename\", \"dirname\", \"exists\", \"get_child\", \"is_dir\", \"readdir\", \"realpath\"]\nN43|wd_exists_after_write|True\nN43|read_wd|\"hello\\n\"\nN43|read_wd_path|\"hello\\n\"\nN43|read_label|\"input\\n\"\nN43|read_label_yes|\"input\\n\"\nN43|read_link|\"input\\n\"\nN43|read_no|\"input\\n\"\nN43|watch_label|None\nN43|watch_ws_path|None\nN43|readdir_watch_yes|5\nN43|read_outside_auto|True\nN43|exec_type|\"exec_result\"\nN43|exec_dir|[\"return_code\", \"stderr\", \"stdout\"]\nN43|exec|[3, \"<WD>\\nhello\\n\", \"err\\n\"]\nN43|exec_wd|\"<WD>/sub\\n\"\nN43|exec_env|\"y-unset\\n\"\nN43|exec_mode|\"644\\n755\\n\"\nN43|exec_label_path_arg|\"input\\nhello\\n\"\nN43|which_sh|\"/usr/bin/sh\"\nN43|which_missing|None\nN43|progress|None\nN43|os|[\"linux\", \"amd64\", True]\nN43|getenv|[\"set-value\", None, \"dflt\"]\nN43|download|[True, \"1cb088e170d3679e4aa5d047bfc1155ea41e8d17d20cd93f4b04aa562293b785\", 20, \"sha256-HLCI4XDTZ55KpdBHv8EVXqQejRfSDNk/SwSqViKTt4U=\", [\"integrity\", \"sha256\", \"size_bytes\", \"success\"], \"struct\"]\nN43|download_read|\"{\\\"version\\\": \\\"1.2.3\\\"}\"\nN43|download_exec|[True, \"755\\n\"]\nN43|download_allow_fail|[True, [\"integrity\", \"sha256\", \"size_bytes\", \"success\"]]\nN43|pending_type|\"PendingDownload\"\nN43|pending_repr|\"<pending download to '<WD>/dl/pending.json'>\"\nN43|pending_dir|[\"wait\"]\nN43|pending_wait|[True, \"956ac3d41c5accd505f437c03deecadde8d0406cc0629c1b39f485315b8c85e0\", 17]\nN43|pending_wait_again|True\nN43|pending_allow_fail|True\nN43|pattern_auth|True\nN43|download_and_extract|[True, \"753cc5db804738ee62b97694a158b29e10711580c699fba8ca2cbad02e3ffd73\", 161, [\"integrity\", \"sha256\", \"size_bytes\", \"success\"]]\nN43|extracted|[\"alpha\\n\", \"#!/bin/sh\\necho t\\n\", \"644\\n755\\n\"]\nN43|extract|None\nN43|extracted_zip|\"zeta\\n\"\nN43|extract_label|None\nN43|extracted_label|\"zeta\\n\"\nN43|sort_order|[\"first\", \"second\", \"third\"]\nN43|sort_key|[\"sort_key\", \"<sort_key>\", \"<sort_key>\", True, 1, True]\nN43|sort_key_print| <sort_key module=0 tag=2>\nN43|is_dev|[False, False, True]\nN43|root_non_dev|True\nN43|facts_print| Facts({})\nN43|no_caps|[3000000, 200000]\n",
+    "requests": [
+     {
+      "authorization": null,
+      "path": "/data.json",
+      "x_multi": null,
+      "x_single": null
+     },
+     {
+      "authorization": null,
+      "path": "/tool",
+      "x_multi": null,
+      "x_single": null
+     },
+     {
+      "authorization": "Basic dXNlcjpwdw==",
+      "path": "/auth.json",
+      "x_multi": [
+       "a",
+       "b"
+      ],
+      "x_single": [
+       "one"
+      ]
+     },
+     {
+      "authorization": "Bearer tok",
+      "path": "/pattern.bin",
+      "x_multi": null,
+      "x_single": null
+     },
+     {
+      "authorization": null,
+      "path": "/arc.tar.gz",
+      "x_multi": null,
+      "x_single": null
+     },
+     {
+      "authorization": null,
+      "path": "/arc.zip",
+      "x_multi": null,
+      "x_single": null
+     }
+    ],
+    "returncode": 0,
+    "seconds": 0.63
+   },
+   "reference": {
+    "output_tail": "43cap3946601/reference/ws/defs.bzl:3:10: N43|basename|\"in.txt\"\nDEBUG: <WS>/defs.bzl:3:10: N43|dirname|\"<WS>/data\"\nDEBUG: <WS>/defs.bzl:3:10: N43|root_dirname|None\nDEBUG: <WS>/defs.bzl:3:10: N43|exists|[True, False, True, False]\nDEBUG: <WS>/defs.bzl:3:10: N43|get_child|\"<WS>/data/x/y/z\"\nDEBUG: <WS>/defs.bzl:3:10: N43|get_child_none|\"<WS>/data\"\nDEBUG: <WS>/defs.bzl:3:10: N43|realpath|\"<WS>/data/in.txt\"\nDEBUG: <WS>/defs.bzl:3:10: N43|readdir|[\"BUILD.bazel\", \"in.txt\", \"link\", \"local.zip\", \"nested\"]\nDEBUG: <WS>/defs.bzl:3:10: N43|readdir_type|\"list\"\nDEBUG: <WS>/defs.bzl:3:10: N43|path_dir|[\"basename\", \"dirname\", \"exists\", \"get_child\", \"is_dir\", \"readdir\", \"realpath\"]\nDEBUG: <WS>/defs.bzl:3:10: N43|wd_exists_after_write|True\nDEBUG: <WS>/defs.bzl:3:10: N43|read_wd|\"hello\\n\"\nDEBUG: <WS>/defs.bzl:3:10: N43|read_wd_path|\"hello\\n\"\nDEBUG: <WS>/defs.bzl:3:10: N43|read_label|\"input\\n\"\nDEBUG: <WS>/defs.bzl:3:10: N43|read_label_yes|\"input\\n\"\nDEBUG: <WS>/defs.bzl:3:10: N43|read_link|\"input\\n\"\nDEBUG: <WS>/defs.bzl:3:10: N43|read_no|\"input\\n\"\nDEBUG: <WS>/defs.bzl:3:10: N43|watch_label|None\nDEBUG: <WS>/defs.bzl:3:10: N43|watch_ws_path|None\nDEBUG: <WS>/defs.bzl:3:10: N43|readdir_watch_yes|5\nDEBUG: <WS>/defs.bzl:3:10: N43|read_outside_auto|True\nDEBUG: <WS>/defs.bzl:3:10: N43|exec_type|\"exec_result\"\nDEBUG: <WS>/defs.bzl:3:10: N43|exec_dir|[\"return_code\", \"stderr\", \"stdout\"]\nDEBUG: <WS>/defs.bzl:3:10: N43|exec|[3, \"<WD>\\nhello\\n\", \"err\\n\"]\nDEBUG: <WS>/defs.bzl:3:10: N43|exec_wd|\"<WD>/sub\\n\"\nDEBUG: <WS>/defs.bzl:3:10: N43|exec_env|\"y-unset\\n\"\nDEBUG: <WS>/defs.bzl:3:10: N43|exec_mode|\"644\\n755\\n\"\nDEBUG: <WS>/defs.bzl:3:10: N43|exec_label_path_arg|\"input\\nhello\\n\"\nDEBUG: <WS>/defs.bzl:3:10: N43|which_sh|\"/usr/bin/sh\"\nDEBUG: <WS>/defs.bzl:3:10: N43|which_missing|None\nDEBUG: <WS>/defs.bzl:3:10: N43|progress|None\nDEBUG: <WS>/defs.bzl:3:10: N43|os|[\"linux\", \"amd64\", True]\nDEBUG: <WS>/defs.bzl:3:10: N43|getenv|[\"set-value\", None, \"dflt\"]\nDEBUG: <WS>/defs.bzl:3:10: N43|download|[True, \"1cb088e170d3679e4aa5d047bfc1155ea41e8d17d20cd93f4b04aa562293b785\", 20, \"sha256-HLCI4XDTZ55KpdBHv8EVXqQejRfSDNk/SwSqViKTt4U=\", [\"integrity\", \"sha256\", \"size_bytes\", \"success\"], \"struct\"]\nDEBUG: <WS>/defs.bzl:3:10: N43|download_read|\"{\\\"version\\\": \\\"1.2.3\\\"}\"\nDEBUG: <WS>/defs.bzl:3:10: N43|download_exec|[True, \"755\\n\"]\nDEBUG: <WS>/defs.bzl:3:10: N43|download_allow_fail|[True, [\"integrity\", \"sha256\", \"size_bytes\", \"success\"]]\nDEBUG: <WS>/defs.bzl:3:10: N43|pending_type|\"PendingDownload\"\nDEBUG: <WS>/defs.bzl:3:10: N43|pending_repr|\"<pending download to '<WD>/dl/pending.json'>\"\nDEBUG: <WS>/defs.bzl:3:10: N43|pending_dir|[\"wait\"]\nDEBUG: <WS>/defs.bzl:3:10: N43|pending_wait|[True, \"956ac3d41c5accd505f437c03deecadde8d0406cc0629c1b39f485315b8c85e0\", 17]\nDEBUG: <WS>/defs.bzl:3:10: N43|pending_wait_again|True\nDEBUG: <WS>/defs.bzl:3:10: N43|pending_allow_fail|True\nDEBUG: <WS>/defs.bzl:3:10: N43|pattern_auth|True\nDEBUG: <WS>/defs.bzl:3:10: N43|download_and_extract|[True, \"753cc5db804738ee62b97694a158b29e10711580c699fba8ca2cbad02e3ffd73\", 161, [\"integrity\", \"sha256\", \"size_bytes\", \"success\"]]\nDEBUG: <WS>/defs.bzl:3:10: N43|extracted|[\"alpha\\n\", \"#!/bin/sh\\necho t\\n\", \"644\\n755\\n\"]\nDEBUG: <WS>/defs.bzl:3:10: N43|extract|None\nDEBUG: <WS>/defs.bzl:3:10: N43|extracted_zip|\"zeta\\n\"\nDEBUG: <WS>/defs.bzl:3:10: N43|extract_label|None\nDEBUG: <WS>/defs.bzl:3:10: N43|extracted_label|\"zeta\\n\"\nDEBUG: <WS>/defs.bzl:3:10: N43|sort_order|[\"first\", \"second\", \"third\"]\nDEBUG: <WS>/defs.bzl:3:10: N43|sort_key|[\"sort_key\", \"<sort_key>\", \"<sort_key>\", True, 1, True]\nDEBUG: <WS>/defs.bzl:98:10: N43|sort_key_print| <sort_key module=0 tag=2>\nDEBUG: <WS>/defs.bzl:3:10: N43|is_dev|[False, False, True]\nDEBUG: <WS>/defs.bzl:3:10: N43|root_non_dev|True\nDEBUG: <WS>/defs.bzl:101:10: N43|facts_print| Facts({})\nDEBUG: <WS>/defs.bzl:3:10: N43|no_caps|[3000000, 200000]\n",
+    "requests": [
+     {
+      "authorization": null,
+      "path": "/data.json",
+      "x_multi": null,
+      "x_single": null
+     },
+     {
+      "authorization": null,
+      "path": "/tool",
+      "x_multi": null,
+      "x_single": null
+     },
+     {
+      "authorization": "Basic dXNlcjpwdw==",
+      "path": "/auth.json",
+      "x_multi": [
+       "a",
+       "b"
+      ],
+      "x_single": [
+       "one"
+      ]
+     },
+     {
+      "authorization": "Bearer tok",
+      "path": "/pattern.bin",
+      "x_multi": null,
+      "x_single": null
+     },
+     {
+      "authorization": null,
+      "path": "/arc.tar.gz",
+      "x_multi": null,
+      "x_single": null
+     },
+     {
+      "authorization": null,
+      "path": "/arc.zip",
+      "x_multi": null,
+      "x_single": null
+     }
+    ],
+    "returncode": 0,
+    "seconds": 3.63
+   }
+  },
+  "r_auth_basic": {
+   "native": {
+    "output_tail": "bazel-rs: repository +r_auth_basic+r_auth_basic (//:defs.bzl%r_auth_basic): Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:350, in _r_auth_basic\n      ctx.download(ctx.attr.url + \"/tool\", \"o\", sha256 = TOOL_SHA, auth = {ctx.attr...\nerror: Found request to do basic auth for http://127.0.0.1:36137/tool without 'login' and 'password' being provided.\n   --> //:defs.bzl:350:5\n    |\n350 |     ctx.download(ctx.attr.url + \"/tool\", \"o\", sha256 = TOOL_SHA, auth = {ctx.attr.url + \"/tool\": {\"type\": \"basic\", \"password\": \"p\"}})\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Repo +r_auth_basic+r_auth_basic defined by rule r_auth_basic in @@//:defs.bzl\nERROR: <WS>/defs.bzl:350:17: An error occurred during the fetch of repository '+r_auth_basic+r_auth_basic':\n   Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 350, column 17, in _r_auth_basic\n\t\tctx.download(ctx.attr.url + \"/tool\", \"o\", sha256 = TOOL_SHA, auth = {ctx.attr.url + \"/tool\": {\"type\": \"basic\", \"password\": \"p\"}})\nError in download: Found request to do basic auth for http://127.0.0.1:36137/tool without 'login' and 'password' being provided.\nERROR: no such package '@@+r_auth_basic+r_auth_basic//': Found request to do basic auth for http://127.0.0.1:36137/tool without 'login' and 'password' being provided.\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.92
+   }
+  },
+  "r_pending_404": {
+   "native": {
+    "output_tail": "",
+    "requests": [],
+    "returncode": 0,
+    "seconds": 0.02
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Empty results\n",
+    "requests": [],
+    "returncode": 0,
+    "seconds": 1.98
+   }
+  },
+  "r_pending_404_uncached": {
+   "native": {
+    "output_tail": "WARNING: Download from http://127.0.0.1:36137/missing failed: class java.io.FileNotFoundException GET returned 404 File not found\nbazel-rs: repository +r_pending_404_uncached+r_pending_404_uncached (//:defs.bzl%r_pending_404_uncached): Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:235, in _r_pending_404_uncached\n      ctx.download(ctx.attr.url + \"/missing\", \"o\", sha256 = NEVER_SHA, block = Fals...\nerror: java.io.IOException: Error downloading [http://127.0.0.1:36137/missing] to <REPO>/o: GET returned 404 File not found\n   --> //:defs.bzl:235:5\n    |\n235 |     ctx.download(ctx.attr.url + \"/missing\", \"o\", sha256 = NEVER_SHA, block = False).wait()\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [
+     {
+      "authorization": null,
+      "path": "/missing",
+      "x_multi": null,
+      "x_single": null
+     }
+    ],
+    "returncode": 1,
+    "seconds": 0.05
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: Download from http://127.0.0.1:36137/missing failed: class java.io.FileNotFoundException GET returned 404 File not found\nINFO: Repo +r_pending_404_uncached+r_pending_404_uncached defined by rule r_pending_404_uncached in @@//:defs.bzl\nERROR: <WS>/defs.bzl:235:89: An error occurred during the fetch of repository '+r_pending_404_uncached+r_pending_404_uncached':\n   Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 235, column 89, in _r_pending_404_uncached\n\t\tctx.download(ctx.attr.url + \"/missing\", \"o\", sha256 = NEVER_SHA, block = False).wait()\nError in wait: java.io.IOException: Error downloading [http://127.0.0.1:36137/missing] to <REPO>/o: GET returned 404 File not found\nERROR: no such package '@@+r_pending_404_uncached+r_pending_404_uncached//': java.io.IOException: Error downloading [http://127.0.0.1:36137/missing] to <REPO>/o: GET returned 404 File not found\n",
+    "requests": [
+     {
+      "authorization": null,
+      "path": "/missing",
+      "x_multi": null,
+      "x_single": null
+     }
+    ],
+    "returncode": 7,
+    "seconds": 1.98
+   }
+  },
+  "r_same_package_bad": {
+   "native": {
+    "output_tail": "bazel-rs: repository +r_same_package_bad+r_same_package_bad (//:defs.bzl%r_same_package_bad): Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:355, in _r_same_package_bad\n      Label(\"//data:in.txt\").same_package_label(\"a:b\")\nerror: invalid target name 'a:b': target names may not contain ':'\n   --> //:defs.bzl:355:5\n    |\n355 |     Label(\"//data:in.txt\").same_package_label(\"a:b\")\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Repo +r_same_package_bad+r_same_package_bad defined by rule r_same_package_bad in @@//:defs.bzl\nERROR: <WS>/defs.bzl:355:46: An error occurred during the fetch of repository '+r_same_package_bad+r_same_package_bad':\n   Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 355, column 46, in _r_same_package_bad\n\t\tLabel(\"//data:in.txt\").same_package_label(\"a:b\")\nError in same_package_label: invalid target name 'a:b': target names may not contain ':'\nERROR: no such package '@@+r_same_package_bad+r_same_package_bad//': invalid target name 'a:b': target names may not contain ':'\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.85
+   }
+  },
+  "r_watch_tree_file": {
+   "native": {
+    "output_tail": "bazel-rs: repository +r_watch_tree_file+r_watch_tree_file (//:defs.bzl%r_watch_tree_file): Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:334, in _r_watch_tree_file\n      ctx.watch_tree(Label(\"//data:in.txt\"))\nerror: can't call watch_tree() on non-directory <WS>/data/in.txt\n   --> //:defs.bzl:334:5\n    |\n334 |     ctx.watch_tree(Label(\"//data:in.txt\"))\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Repo +r_watch_tree_file+r_watch_tree_file defined by rule r_watch_tree_file in @@//:defs.bzl\nERROR: <WS>/defs.bzl:334:19: An error occurred during the fetch of repository '+r_watch_tree_file+r_watch_tree_file':\n   Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 334, column 19, in _r_watch_tree_file\n\t\tctx.watch_tree(Label(\"//data:in.txt\"))\nError in watch_tree: can't call watch_tree() on non-directory <WS>/data/in.txt\nERROR: no such package '@@+r_watch_tree_file+r_watch_tree_file//': can't call watch_tree() on non-directory <WS>/data/in.txt\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.87
+   }
+  },
+  "r_watch_tree_repo": {
+   "native": {
+    "output_tail": "bazel-rs: repository +r_watch_tree_repo+r_watch_tree_repo (//:defs.bzl%r_watch_tree_repo): Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:340, in _r_watch_tree_repo\n      ctx.watch_tree(\"d\")\nerror: attempted to watch path under working directory\n   --> //:defs.bzl:340:5\n    |\n340 |     ctx.watch_tree(\"d\")\n    |     ^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+    "requests": [],
+    "returncode": 1,
+    "seconds": 0.01
+   },
+   "reference": {
+    "output_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Repo +r_watch_tree_repo+r_watch_tree_repo defined by rule r_watch_tree_repo in @@//:defs.bzl\nERROR: <WS>/defs.bzl:340:19: An error occurred during the fetch of repository '+r_watch_tree_repo+r_watch_tree_repo':\n   Traceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 340, column 19, in _r_watch_tree_repo\n\t\tctx.watch_tree(\"d\")\nError in watch_tree: attempted to watch path under working directory\nERROR: no such package '@@+r_watch_tree_repo+r_watch_tree_repo//': attempted to watch path under working directory\n",
+    "requests": [],
+    "returncode": 7,
+    "seconds": 1.94
+   }
+  },
+  "rprobe": {
+   "native": {
+    "output_tail": "@@+rprobe+rprobe//:x\nN43|rdir|[\"attr\", \"delete\", \"download\", \"download_and_extract\", \"execute\", \"extract\", \"file\", \"getenv\", \"name\", \"original_name\", \"os\", \"patch\", \"path\", \"read\", \"rename\", \"repo_metadata\", \"report_progress\", \"symlink\", \"template\", \"watch\", \"watch_tree\", \"which\", \"workspace_root\"]\nN43|rwatch_tree|None\nN43|rpending|[\"PendingDownload\", \"<pending download to '<REPO>/p.json'>\", True]\nN43|label_methods|[\"@@//data:other\", \"@@//data:rel\", \"@@//x:y\", \"\", \"\", \"@@foo+//p:m\", \"external/foo+\"]\n",
+    "requests": [],
+    "returncode": 0,
+    "seconds": 0.02
+   },
+   "reference": {
+    "output_tail": "@rprobe//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: <WS>/defs.bzl:3:10: N43|rdir|[\"attr\", \"delete\", \"download\", \"download_and_extract\", \"execute\", \"extract\", \"file\", \"getenv\", \"name\", \"original_name\", \"os\", \"patch\", \"path\", \"read\", \"rename\", \"repo_metadata\", \"report_progress\", \"symlink\", \"template\", \"watch\", \"watch_tree\", \"which\", \"workspace_root\"]\nDEBUG: <WS>/defs.bzl:3:10: N43|rwatch_tree|None\nDEBUG: <WS>/defs.bzl:3:10: N43|rpending|[\"PendingDownload\", \"<pending download to '<REPO>/p.json'>\", True]\nDEBUG: <WS>/defs.bzl:3:10: N43|label_methods|[\"@@//data:other\", \"@@//data:rel\", \"@@//x:y\", \"\", \"\", \"@@foo+//p:m\", \"external/foo+\"]\n",
+    "requests": [],
+    "returncode": 0,
+    "seconds": 1.91
+   }
+  }
+ },
+ "schema": "n43-ext-ctx-surface-reference-receipt/v1",
+ "scratch_removed": true,
+ "script_sha256": "32430ac785cf55bf21f8bf6953c4031dca267aa49c76b2083b854e752a0ce8b9",
+ "started": "2026-10-17T06:31:32Z",
+ "verdicts": {
+  "EXACT_MESSAGE": "Bazel's 'Error in F: MSG' (else last specific ERROR body), normalized, occurs in native output (whitespace squashed)",
+  "MATCH": "probe value (normalized <WD>/<WS>/<REPO>/<BASE>) or exit code identical",
+  "MISMATCH": "anything else"
+ }
+}

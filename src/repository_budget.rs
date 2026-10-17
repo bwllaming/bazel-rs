@@ -1,6 +1,8 @@
-//! Conservative host-allocation profile for ordinary extension preparation.
+//! Conservative host-allocation profile (BUILD-time preflights, JSON, module
+//! attribute conversion). Module extension preparation uses
+//! [`HostBudget::unbounded`]: Bazel bounds no extension result.
 //!
-//! This is not a process memory limit or a sandbox. Each preparation phase has
+//! This is not a process memory limit or a sandbox. Each bounded phase has
 //! a cumulative 64 MiB weighted-byte / 100,000-node budget. Borrowed inputs are
 //! charged before copying: 128 bytes per node and eight bytes per payload byte
 //! reserve space for retained copies, projection, and escaped JSON. Whole
@@ -32,6 +34,14 @@ impl Default for HostBudget {
 }
 
 impl HostBudget {
+    /// No byte or node ceiling: module extension preparation (bound tags,
+    /// recorded repository calls, generated repository specs). Bazel bounds
+    /// neither the size nor the number of extension results; only arithmetic
+    /// overflow and the nesting depth still fail.
+    pub(crate) fn unbounded() -> Self {
+        Self::with_ceilings(usize::MAX, usize::MAX)
+    }
+
     /// Change ceilings only; weights, depth, and reservation semantics stay fixed.
     pub(crate) fn with_ceilings(max_bytes: usize, max_nodes: usize) -> Self {
         Self {
@@ -266,6 +276,16 @@ impl HostBudget {
 mod tests {
     use super::*;
     use crate::custom_rule::AttrKind;
+
+    #[test]
+    fn the_extension_budget_has_no_byte_or_node_ceiling() {
+        let mut budget = HostBudget::unbounded();
+        for _ in 0..(MAX_NODES + 1) {
+            budget.node().unwrap();
+        }
+        budget.bytes(MAX_BYTES).unwrap();
+        assert!(budget.bytes(usize::MAX).unwrap_err().contains("overflow"));
+    }
 
     #[test]
     fn ceilings_change_only_limits_and_preserve_exact_default_diagnostics() {

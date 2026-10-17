@@ -94,29 +94,31 @@ runtime reevaluates the extension and demanded repository callback before reuse.
 ## Explicit boundaries
 
 Module/tag projections and their nested attribute lists are immutable. ASCII
-Starlark source/attribute guards, evaluator limits and bounded call-time snapshots
-apply; binary template files remain byte-preserving. Each demanded definition and
-callback has its own evaluator budget, not an aggregate workspace budget. This is
-not a security sandbox or complete Bazel byte-string implementation.
+Starlark source/attribute guards and call-time snapshots apply; binary template
+files remain byte-preserving. Like Bazel, callbacks and their definition files
+have no tick or heap limit, only a 128-frame call depth (N43). This is not a
+security sandbox or complete Bazel byte-string implementation.
 
-Host preparation phases additionally charge borrowed inputs before copying:
-64 MiB weighted bytes, 100,000 nodes and depth 64. The conservative charge is
+Extension preparation (bound tags, recorded calls, generated specs, provenance)
+has no size or count ceiling since N43 (Bazel has none); only arithmetic
+overflow and a nesting depth of 64 (a cycle guard) fail. The accounting below
+still applies to the bounded non-extension profiles: The conservative charge is
 eight bytes per payload byte plus 128 bytes per node, including repeated schemas
 and omitted defaults. Catalog mappings and attribute-descriptor defaults are also
 checked before expanding or copying them. Label conversion reserves mapped repository/package
 expansion before constructing and retaining each canonical label. This deliberately
 reserves space for retained copies and
 projections, rather than claiming an exact process-memory bound. Provenance is
-streamed from borrowed values into a separately bounded 64 MiB buffer; serialized
+streamed from borrowed values into an uncapped buffer (allocation failure is an
+explicit error); serialized
 bytes are length-framed rather than expanded into another JSON number array.
 
-The candidate [bounded module-context download/read profile](MODULE_EXTENSION_IO.md)
-adds owned synchronous I/O; final acceptance and release remain pending. The
-[source-input profile](MODULE_SOURCE_INPUTS.md) adds Label `path`/`read`, empty
-`facts` and `extension_metadata` (validated direct-deps lists and root `use_repo`
-fixup warnings; no `bazel mod tidy`). Isolation,
-persisted facts, OS environment inspection, string paths, delete/execute and SDK
-APIs remain unsupported. No placeholder platform or SDK repository is substituted. `mod graph` retains its existing explicit-module profile
+`module_ctx` has Bazel's full StarlarkBaseExternalContext surface, shared with
+repository_ctx ([EXTENSION_CTX_SURFACE.md](EXTENSION_CTX_SURFACE.md)), plus
+`tag_sort_key`; the [source-input profile](MODULE_SOURCE_INPUTS.md) documents
+empty `facts` and `extension_metadata` (validated direct-deps lists and root
+`use_repo` fixup warnings; no `bazel mod tidy`). Isolation and persisted facts
+remain unsupported. No placeholder platform or SDK repository is substituted. `mod graph` retains its existing explicit-module profile
 and does not execute active extensions.
 Genuine built-in module closure is now available through the separate opt-in
 [built-in profile](BUILTIN_MODULES.md); default semantics and complete

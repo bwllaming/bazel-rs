@@ -455,6 +455,10 @@ impl<'v> StarlarkValue<'v> for LabelValue {
         }
     }
 
+    fn get_methods() -> Option<&'static Methods> {
+        Some(LABEL_METHODS.methods())
+    }
+
     fn get_attr(&self, name: &str, heap: Heap<'v>) -> Option<Value<'v>> {
         if self.invalid_repository_getter(name) {
             return None;
@@ -463,7 +467,7 @@ impl<'v> StarlarkValue<'v> for LabelValue {
             "name" => heap.alloc(self.name.as_str()),
             "package" => heap.alloc(self.package.as_str()),
             "repo_name" | "workspace_name" => heap.alloc(self.repository.as_str()),
-            "workspace_root" => heap.alloc(if self.repository.is_empty() {
+            "workspace_root" | "repo_root" => heap.alloc(if self.repository.is_empty() {
                 String::new()
             } else {
                 format!("external/{}", self.repository)
@@ -489,11 +493,60 @@ impl<'v> StarlarkValue<'v> for LabelValue {
             "name",
             "package",
             "repo_name",
+            "repo_root",
             "workspace_name",
             "workspace_root",
         ]
         .map(String::from)
         .to_vec()
+    }
+}
+
+starlark::methods_static!(LABEL_METHODS = label_methods);
+
+#[starlark_module]
+fn label_methods(builder: &mut MethodsBuilder) {
+    /// Label.getSamePackageLabel (cmdline/Label.java:576-582).
+    fn same_package_label<'v>(
+        this: Value<'v>,
+        #[starlark(require = pos)] target_name: &str,
+    ) -> anyhow::Result<LabelValue> {
+        let label = LabelValue::from_value(this).ok_or_else(|| anyhow!("expected Label"))?;
+        // Label.create -> LabelValidator.validateTargetName (LabelSyntaxException).
+        if let Some(error) = crate::bazel_label::validate_target_name(target_name) {
+            bail!("invalid target name '{target_name}': {error}");
+        }
+        Ok(LabelValue {
+            repository: label.repository.clone(),
+            package: label.package.clone(),
+            name: target_name.to_owned(),
+        })
+    }
+
+    /// Label.getRelative (cmdline/Label.java:593-634): parsed in this label's
+    /// package with the innermost .bzl file's repository mapping.
+    fn relative<'v>(
+        this: Value<'v>,
+        #[starlark(require = pos)] rel_name: &str,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<LabelValue> {
+        let label = LabelValue::from_value(this).ok_or_else(|| anyhow!("expected Label"))?;
+        let resolved = if rel_name.starts_with('@') {
+            crate::loading::resolve_label(eval, rel_name)?
+        } else {
+            crate::label::Label::parse_in(
+                rel_name,
+                &label.repository,
+                &label.package,
+                &BTreeMap::new(),
+            )
+            .map_err(anyhow::Error::msg)?
+        };
+        Ok(LabelValue {
+            repository: resolved.repository,
+            package: resolved.package,
+            name: resolved.name,
+        })
     }
 }
 

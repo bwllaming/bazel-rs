@@ -1,256 +1,21 @@
-# Bounded module-extension download and read
+# Module-extension download and read
 
-This is the **candidate native implementation**, not final acceptance or a released
-feature. It executes real synchronous HTTP(S) downloads and reads their owned bytes
-inside [ordinary module callbacks](MODULE_EXTENSIONS.md). It does not add
-`repository_ctx.download`, `delete`, `execute` or `file`. Label/`path` source reads,
-`module_ctx.path`, empty facts and inert metadata are a separate
-[source-input profile](MODULE_SOURCE_INPUTS.md). The [repository-rule profile](REPOSITORY_RULES.md) is unchanged.
-No upstream fallback, fabricated download result or SDK map is substituted.
+**Superseded by N43.** `module_ctx.download`, `download_and_extract`, `read`,
+`path`, `file`, `extract`, `execute`, `which`, `watch` and `report_progress` are
+the shared StarlarkBaseExternalContext implementation of `repository_ctx`
+(`src/repository_ctx.rs`) running in the extension's working directory
+`<cache>/modextwd/<unique name>`; see
+[EXTENSION_CTX_SURFACE.md](EXTENSION_CTX_SURFACE.md),
+[REPOSITORY_RULES.md](REPOSITORY_RULES.md) and
+[REPOSITORY_IO_STREAMING.md](REPOSITORY_IO_STREAMING.md). The former bounded
+"owned scratch" profile (owned-file identity checks, the 32 KiB checksum
+precheck window, rejected `executable`/`block=False`/`canonical_id`/`auth`/
+`headers`, versioned `extension_io` observations of every download and read)
+was removed: Bazel records neither downloads nor working-directory reads as
+extension inputs. Recorded inputs are now `extension_inputs` (version 2:
+watched `files` and `host_facilities`) in the extension provenance.
 
-## Signatures and supported arguments
-
-```starlark
-module_ctx.download(url, output="", sha256="", executable=False,
-                    allow_fail=False, canonical_id="", auth={}, headers={},
-                    *, integrity="", block=True)
-module_ctx.read(path, *, watch="auto")
-```
-
-Arguments before `*` accept positional or keyword binding. Omitted `auth` and
-`headers` behave as empty dictionaries; explicit `None` is not supported.
-
-| Argument | Native profile |
-|---|---|
-| `url` | Required string, or ordered list/tuple of strings; every entry is validated before I/O or reuse. |
-| `output`, `path` | Strings naming owned working paths. `read` also accepts Label/`path` source inputs ([source profile](MODULE_SOURCE_INPUTS.md)); `output` does not. |
-| `sha256`, `integrity` | Strings, default empty; at most one may be nonempty. See checksum grammar below. |
-| `executable` | Boolean; only `False`. No executable output mode. |
-| `allow_fail` | Boolean, default `False`; only completion failures may return a failure struct. |
-| `canonical_id` | String; only empty. No canonical-ID cache behavior. |
-| `auth`, `headers` | Dictionaries; only empty. No authentication or custom headers. |
-| `block` | Keyword-only Boolean; only `True`. No asynchronous handle or API. |
-| `watch` | Keyword-only string; `"auto"` or `"no"`. `"yes"` on owned outputs is unsupported; other values are validation errors. |
-
-Wrong types, unknown arguments and unsupported controls fail explicitly, even with
-`allow_fail=True`; they are not disguised as failed network attempts.
-
-### Owned paths and byte reads
-
-Nonempty paths consist of slash-separated ASCII components using only letters,
-digits, `.`, `_` and `-`. Empty components, `.`/`..`, absolute paths, backslashes,
-non-ASCII names, symlinks, hard-linked files and special files are not admitted.
-Limits are listed below. Paths never address workspace, source or generated
-repository trees.
-
-`output=""` names the working root itself, **not** a URL-derived basename. The
-root starts absent: an empty-output download can make it a regular file, and
-`read("")` then reads that file. A named child instead creates parent directories.
-If the root is already a file, a child download fails during parent creation;
-if it is a directory, downloading to `""` cannot replace it with a file. These
-filesystem completion failures may be tolerated; directories are never readable
-as file contents.
-
-`read` accepts only files owned by this execution, including old bytes or partial
-outputs retained after a tolerated failed download. Missing/unowned paths and
-directories fail. Each byte maps directly to U+0000 through U+00FF (ISO-8859-1 /
-Latin-1), including NUL and all high bytes. This is **not UTF-8 decoding**, and
-UTF-8 re-encoding of the returned string is not a byte-preserving inverse.
-Such Latin-1 strings may be passed to repository declarations: repository string
-attributes and `ctx.file` contents accept U+0000..U+00FF and write one byte per
-character, matching Bazel. Source literals, names, labels and tag attributes stay
-ASCII. In extension and repository evaluation `json.decode` turns each `\u` escape
-run into its UTF-8 bytes (malformed surrogates become U+FFFD bytes), as Bazel does.
-String methods and `repr` follow Bazel's byte-string rules (see
-`docs/STRING_METHODS.md`). Remaining known divergences on Latin-1 byte data that
-is not valid UTF-8: `title`, `capitalize` and `isspace`; also `split()` without a
-separator and character-based `len`/indexing. `print`/stderr of high characters is UTF-8 here
-but raw bytes in Bazel; validators compare logical values, not stderr bytes.
-`watch="auto"` does not watch these owned files; `"no"` explicitly disables watching.
-Neither establishes external-file watching or persistent watch-based reuse.
-
-## URLs, checksums and results
-
-Only absolute HTTP(S) URLs with a host are admitted. URL text must be ASCII with
-valid percent escapes and no whitespace/control characters or forbidden URI
-characters. Credentials/userinfo and fragments are unsupported; query strings
-are retained. `file://` and other schemes are unsupported here.
-
-Initial plain-HTTP entries are removed when **both raw checksum argument strings
-are empty**. This test uses nonempty argument text, not successful checksum parsing:
-a malformed nonempty supported checksum can retain HTTP and fail later. It is not
-a general HTTP bypass option. An empty URL sequence (including one emptied by
-filtering) fails validation when `allow_fail=False`, before destination reuse.
-With `True`, matching destination reuse is still possible; otherwise it yields a
-completion failure without a request.
-
-- `sha256`: exactly 64 hexadecimal characters, either case.
-- `integrity`: one lowercase algorithm name followed by `-` and standard Base64:
-  `sha1`, `sha256`, `sha384`, `sha512` or `blake3`, with digest lengths of 20, 32,
-  48, 64 and 32 bytes respectively. Missing padding and nonzero unused trailing
-  bits are accepted; whitespace, extra padding, URL-safe Base64 and multiple SRI
-  tokens are not. Returned SRI uses canonical padded Base64.
-- Unknown/case-mismatched algorithm prefixes fail as unsupported before I/O.
-  Mutual exclusion is also an immediate error. Malformed
-  hex or Base64/length under a supported algorithm instead records a **delayed
-  validation error**: transfer proceeds without a valid expected digest. A
-  completed transfer then raises that error, even with `allow_fail=True`; a
-  tolerated completion failure returns first. Do not use malformed checksums as
-  an integrity guarantee.
-
-Successful results are immutable structs:
-
-| Selected digest | Exact fields |
-|---|---|
-| None supplied, `sha256`, or SHA-256 SRI | `success=True`, `integrity`, lowercase hex `sha256`, integer `size_bytes` |
-| SHA-1, SHA-384, SHA-512 or BLAKE3 SRI | `success=True`, `integrity`, integer `size_bytes`; **no `sha256` field** |
-| Tolerated completion failure | Only `success=False` |
-
-No expected checksum selects SHA-256 for successful result reporting, not for
-prior integrity verification. Digests and `size_bytes` describe the actual file
-bytes: decoded bytes for transparent gzip, compressed bytes when a suffix exception
-suppresses decoding. They are not header lengths or character counts.
-
-## Transfer and failure ordering
-
-After argument admission, a valid expected digest matching an existing owned
-destination reuses that file without a request. This happens **before** the
-download-disable check and is distinct from a persistent repository checksum cache.
-
-The dedicated transport verifies TLS certificates and hostnames, inherits no
-ambient proxy or authentication credentials, and sends no automatic referer.
-There is no public private-CA injection or TLS-disable option in this profile.
-It does not restrict destinations to a host allowlist and is not an SSRF sandbox.
-
-- Mirrors run in order, stopping at the first completed transfer. HTTP 200 and
-  206 are accepted; a 200 HTML page is still a successful byte download, not a
-  reason to try a second mirror. Application parsing remains the caller's job.
-- Redirects 301/302/303/307 are followed; 308 is not. Only a validated 301 updates
-  the origin of a connector retry. Temporary redirects do not; the initial URL
-  remains separately available for gzip suffix decisions. HTTPS-to-HTTP downgrade
-  is a hard safety-policy error.
-- Each mirror has at most two connector attempts for connect/timeout failures or
-  statuses 403/408/429 and 5xx except 501/505. This is not Bazel's general retry
-  policy. Body truncation is not generically retried; range resumption is unsupported.
-- `Content-Encoding` values `identity`, `gzip` and `x-gzip` are supported. Gzip is
-  decoded unless the **original or final URL path** ends in `.gz` or `.tgz`, ASCII
-  case-insensitively. Query text is not a path suffix. Other encodings are explicit
-  unsupported-profile errors. A malformed first gzip header fails before opening
-  the destination; body/trailer/later-member failures can occur after writes.
-
-With a valid expected checksum, up to **32 KiB (32768 bytes)** are read and hashed
-before opening the destination. An earlier EOF permits checksum rejection while
-preserving the old file. At exactly 32768 bytes, opening/truncation can precede the
-EOF checksum failure. Subsequent writes go directly to the destination: checksum
-mismatch or late stream failure can leave actual partial or complete replacement
-bytes. Existing permissions are preserved, not reset by chmod. Without a valid
-expected digest there is no checksum precheck. There is **no atomic rollback** or
-guarantee that a failed download leaves its destination unchanged.
-
-`allow_fail=True` catches only typed completion failures, such as exhausted mirror
-I/O/status errors, checksum mismatch, ordinary filesystem failure, or a disabled
-download without a matching destination. Validation, unsupported features,
-safety-policy violations, lifetime violations, interruption and internal
-failures remain hard errors (N32 removed the former resource-limit category;
-local resource failures such as `ENOSPC` are completion failures, as in Bazel). Final result/stat/hash and observation
-failures are outside this catch. `read` has no `allow_fail` option.
-
-## Download-disable policy
-
-The user-approved Bazel-default policy permits downloads:
-`--repository_disable_download` defaults to **false**. Setting it true gates module
-downloads after matching owned destination reuse. It also gates archive, overlay
-and registry-patch acquisition after verified tree/blob reuse, **including
-`file://` acquisition** in that separate materializer profile. A verified complete
-tree remains usable without its download blobs; corrupt/missing cache content does
-not authorize acquisition when disabled.
-
-Registry metadata/configuration reads and Git subprocess fetching are **not**
-blocked. Local override patch application is not registry-patch acquisition.
-This flag is neither offline mode nor an all-network ban; cache reuse does not
-prove that an invocation makes no network requests.
-
-`query`, `build` and `mod graph` parse the flag; `mod graph` still does not execute
-ordinary extensions. The legacy alias is `--experimental_repository_disable_download`.
-Both positive names accept `=true/1/yes/t/y` or `=false/0/no/f/n`, case-insensitively;
-without `=` they mean true. `--norepository_disable_download` and
-`--noexperimental_repository_disable_download` mean false and accept no value.
-Split values are not consumed; the last occurrence wins.
-
-Existing public library constructors/materializer wrappers remain default-enabled.
-`RepositorySet::with_repository_downloads_enabled(bool)` and
-`materializer::materialize_with_download_policy` carry the explicit policy.
-Policy changes use fresh runtime demand slots; the policy bit itself is excluded
-from persistent tree/blob keys, manifests and repository/extension provenance.
-Observed I/O outcomes can still change provenance.
-
-## Execution limits and lifetime
-
-N32 removed the former native "bounded profile" caps (8 mirrors, 8 redirects,
-64 requests, 32 download/read calls, 8 MiB per file, 32 MiB cumulative encoded
-and decoded bytes, 16 MiB live scratch, a 128 MiB work charge, path/URL/checksum
-text lengths and the 120-second cooperative deadline). Genuine Bazel has none of
-them; see [REPOSITORY_IO_STREAMING.md](REPOSITORY_IO_STREAMING.md).
-
-| Behavior | Value | Source |
-|---|---|---|
-| Connector attempts | 2 per mirror (native retry table, unchanged) | HttpConnector.java:246-300 (subset) |
-| Followed redirects | the 40th redirect fails with completion `Redirect loop detected` | HttpConnector.java:57, 205-208 |
-| Connect timeout | 10 s | HttpConnector.java:60 |
-| Read timeout | 20 s per request/read (inactivity), no whole-transfer deadline | HttpConnector.java:61, 155-157 |
-| Body size, call count, scratch size | unbounded; bodies stream to disk, hashed incrementally | DownloadManager / HashOutputStream |
-
-Downloads stream into the owned file in 64 KiB chunks while hashing; owned-file
-digests (reuse matching, results, provenance) are computed incrementally. Only
-`read()` materializes a file, because Bazel returns its content as a string.
-Local filesystem failures (for example `ENOSPC`) are typed completion failures
-carrying the OS reason (`No space left on device`), like Bazel's IOException.
-Blocking DNS cannot be forcibly canceled: there is **no hard DNS wall-clock
-guarantee** or general process-cancellation feature.
-
-Scratch storage is a lazily allocated host-owned RAII container with an initially
-absent working child. On Unix, the outer container requests0700 **at creation**,
-without a create-then-chmod window or reliance on a caller's ordinary0022/0077
-umask to remove group/other access. Working-child creation and downloaded-file
-modes are unchanged: the private ancestor protects them; fresh0644 and retained
-seed0640 contracts are not replaced by this directory policy. This is not a
-privacy guarantee against privileged/same-UID processes or filesystems that do
-not enforce these modes. Non-Unix behavior is unchanged; no Windows ACL or
-cross-platform privacy guarantee is claimed. Starlark contexts retain only a
-nonreused inert execution identity, not paths, clients or handles. An active matching receiver is required;
-foreign, frozen and expired receivers cannot borrow I/O authority. Client shutdown
-and explicit cleanup precede callback freezing; Drop covers errors/unwind with
-best-effort cleanup. Process kill can prevent cleanup. Ownership checks are not a
-sandbox against hostile same-UID filesystem mutation.
-
-## Provenance and reuse
-
-Nonempty completed-operation observations add optional
-`extension_io = {"version": 1, "observations": [...]}` to bounded ordinary-extension
-provenance. With zero I/O operations, the **entire field is omitted**, preserving
-the previous serialization bytes, field order and persistent keys.
-
-Observations are ordered: downloads record relative output, reuse, public result
-and resulting missing/directory/file state; reads record relative path, watch
-choice and file state. File state includes generation, byte SHA-256 and size.
-Label/`path` source reads record `read_source` with canonical label, watch choice,
-SHA-256 and size ([source profile](MODULE_SOURCE_INPUTS.md)).
-Overwrites and tolerated partial-failure states therefore contribute, even if
-the caller ignores the response or emits constant generated content. This is a
-conservative overapproximation of dependencies, not minimal dataflow tracking.
-
-The new observations contain no random absolute paths, execution IDs, timing,
-raw URLs or response bodies. Existing source provenance still contains original
-source bytes (including any embedded URLs); this is **not blanket secret redaction**.
-The whole callback and all declaration/import validation must succeed before
-generated-repository publication.
-
-A fresh runtime reevaluates callbacks and refetches mutable metadata before
-verified publication reuse. Within the same runtime, existing `DemandSlot`
-memoization remains. There is no URL-only persistent metadata cache, facts reuse,
-watch reuse or lockfile implementation. Stable generated/action cache keys are
-not evidence of download-free invocations. SDK extraction/execution, configured
-toolchains and full application/Bazel parity remain unestablished.
+The evidence notes below are historical (they describe the removed profile).
 
 ## Evidence boundaries
 
@@ -289,8 +54,8 @@ is not an unconditional filesystem-mode guarantee. Reference ctx.path/ctx.execut
 instrumentation does not expose those native APIs, and native tests/captures must
 establish their own corresponding results.
 
-Current implementation authority is [argument binding](../src/extension_ctx.rs),
-[transport and checksums](../src/extension_download.rs),
-[owned I/O](../src/extension_io.rs), [provenance](../src/repository.rs) and
+Current implementation authority is [the shared context](../src/repository_ctx.rs),
+[module_ctx](../src/extension_ctx.rs),
+[transport and checksums](../src/extension_download.rs), [provenance](../src/repository.rs) and
 [materializer policy](../src/materializer.rs). Historical plans/receipts do not
 widen these supported surfaces.

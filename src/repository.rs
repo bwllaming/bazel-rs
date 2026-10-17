@@ -1090,7 +1090,7 @@ impl RepositorySet {
                 Arc::new(self.clone()), &group.label, &group.symbol,
                 &crate::package::module_bzl_globals(),
             )?;
-            let mut preparation_budget = crate::repository_budget::HostBudget::default();
+            let mut preparation_budget = crate::repository_budget::HostBudget::unbounded();
             for (label, source) in &loaded.sources {
                 preparation_budget.string(label)?;
                 preparation_budget.bytes(source.bytes.len())?;
@@ -1107,7 +1107,8 @@ impl RepositorySet {
             self.check_extension_lockfile_before(&extension_id)?;
             let execution = crate::extension_ctx::execute(
                 Arc::new(self.clone()), &definition, &loaded.functions, &group.label,
-                &group.symbol, &group.participants, group.root_has_non_dev_dependency,
+                &group.symbol, &group.prefix, &group.participants,
+                group.root_has_non_dev_dependency,
             )?;
             self.check_extension_lockfile_after(
                 &extension_id,
@@ -1148,7 +1149,7 @@ impl RepositorySet {
                 generated_order.push(recorded.name.clone());
             }
             let mut repositories = BTreeMap::new();
-            let resolution_budget = std::cell::RefCell::new(crate::repository_budget::HostBudget::default());
+            let resolution_budget = std::cell::RefCell::new(crate::repository_budget::HostBudget::unbounded());
             for recorded in execution.repositories {
                 // Charge omitted defaults and supplied values before the binder
                 // expands either into another owned attribute map.
@@ -1231,8 +1232,10 @@ impl RepositorySet {
                 imports: &'a [serde_json::Value],
                 #[serde(skip_serializing_if = "crate::host_os::HostFactors::is_empty")]
                 host_factors: crate::host_os::HostFactors<'a>,
+                /// Recorded module_ctx inputs (watched files and directories,
+                /// non-hermetic host facilities); omitted when there are none.
                 #[serde(skip_serializing_if = "Option::is_none")]
-                extension_io: Option<ExtensionIo<'a>>,
+                extension_inputs: Option<ExtensionInputs<'a>>,
                 /// module_extension(environ=...) declarations and the digest of
                 /// declared/module_ctx.getenv observations; omitted when empty
                 /// so existing extension identities are unchanged.
@@ -1242,10 +1245,14 @@ impl RepositorySet {
                 watched_env: Option<&'a crate::repository_environment::WatchedEnvironment>,
             }
             #[derive(serde::Serialize)]
-            struct ExtensionIo<'a> {
+            struct ExtensionInputs<'a> {
                 version: u8,
-                observations: &'a [crate::extension_io::Observation],
+                #[serde(skip_serializing_if = "<[_]>::is_empty")]
+                files: &'a [crate::repository_ctx::FileInput],
+                #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+                host_facilities: &'a BTreeSet<&'static str>,
             }
+            let inputs = &execution.inputs;
             let provenance = bounded_provenance(&Provenance {
                 profile: "ordinary-file-template-v1",
                 public_label: group.label.to_string(),
@@ -1256,12 +1263,15 @@ impl RepositorySet {
                 generated_mapping: &generated_mapping, repositories: &repositories,
                 imports: &imports,
                 host_factors,
-                extension_io: (!execution.io_observations.is_empty()).then_some(ExtensionIo {
-                    version: 1, observations: &execution.io_observations,
-                }),
+                extension_inputs: (!inputs.files.is_empty() || !inputs.host_facilities.is_empty())
+                    .then_some(ExtensionInputs {
+                        version: 2,
+                        files: &inputs.files,
+                        host_facilities: &inputs.host_facilities,
+                    }),
                 environ: &definition.environ,
-                watched_env: execution.watched_env.as_ref(),
-            }, 64 * 1024 * 1024)?;
+                watched_env: inputs.watched_env.as_ref(),
+            }, usize::MAX)?; // No size cap (Bazel has none); allocation failure stays explicit.
             Ok(PreparedOrdinary { loaded, generated_mapping, repositories, provenance })
         })
     }
@@ -1589,7 +1599,6 @@ fn registry_source_root(
 #[cfg(test)]
 mod tests {
     use super::*;
-    include!("../tests/support/extension_io_boundary_provenance.rs");
 
     #[test]
     fn provenance_budget_counts_serialized_bytes_and_rejects_before_growth() {
@@ -2170,7 +2179,7 @@ mod tests {
     }
 
     #[test]
-    fn unused_failed_download_overwrite_and_reads_rekey_fresh_runtime_not_demand_memoization() {
+    fn module_downloads_are_host_facilities_not_content_inputs_and_rerun_per_runtime() {
         use crate::extension_io::tests::{Server, response};
         let a = vec![b'a'; 33000];
         let b = vec![b'b'; 33000];
@@ -2183,12 +2192,13 @@ mod tests {
         let f = environment_fixture(true, "[]", "ctx.file('value', 'constant')");
         f.write("extension.bzl", &format!("load(':rules.bzl', 'R')\ndef implementation(ctx):\n    ctx.download({url:?}, 'same', {sha:?}, allow_fail=True)\n    ctx.read('same', watch='no')\n    ctx.download({url:?}, 'same', {sha:?}, allow_fail=True)\n    R(name='repo')\n    R(name='other')\nextension=module_extension(implementation)\n", url=server.url, sha="00".repeat(32)));
         let mut roots = Vec::new();
-        let mut observations = Vec::new();
         for index in 0..3 {
             let repos = RepositorySet::new(f.0.clone());
             let canonical = repos.parse("@repo//:value", "", "").unwrap().repository;
             let root = repos.root(&canonical).unwrap().to_owned();
             assert_eq!(std::fs::read(root.join("value")).unwrap(), b"constant");
+            // Every fresh runtime re-evaluates the extension (two downloads),
+            // memoized within the runtime.
             assert_eq!(server.count(), (index + 1) * 2);
             assert_eq!(repos.root(&canonical).unwrap(), root);
             let other = repos.parse("@other//:value", "", "").unwrap().repository;
@@ -2196,26 +2206,21 @@ mod tests {
             assert_eq!(server.count(), (index + 1) * 2);
             let prepared = &repos.ordinary_repository(&canonical).unwrap().0;
             let value: serde_json::Value = serde_json::from_slice(&prepared.provenance).unwrap();
-            let io = &value["extension_io"];
-            assert_eq!(io["version"], 1);
-            assert_eq!(io["observations"].as_array().unwrap().len(), 3);
+            // Bazel records no input for a download or a read of the working
+            // directory (StarlarkBaseExternalContext.java:1656-1676); the
+            // non-hermetic facility is noted without URLs or content.
             assert_eq!(
-                io["observations"][0]["result"],
-                serde_json::json!({"success":false})
+                value["extension_inputs"],
+                serde_json::json!({"version": 2, "host_facilities": ["download"]})
             );
-            assert_eq!(io["observations"][0]["state"]["generation"], 1);
-            assert_eq!(io["observations"][1]["operation"], "read");
-            assert_eq!(io["observations"][2]["state"]["generation"], 2);
-            let receipt = serde_json::to_string(io).unwrap();
+            let receipt = serde_json::to_string(&value).unwrap();
             assert!(!receipt.contains(&server.url));
-            assert!(!receipt.contains("bazel-extension-io-"));
-            observations.push(receipt);
+            assert!(!receipt.contains("modextwd"));
             roots.push(root);
         }
-        assert_ne!(roots[0], roots[1]);
+        // Identical generated repositories publish identically.
+        assert_eq!(roots[0], roots[1]);
         assert_eq!(roots[0], roots[2]);
-        assert_ne!(observations[0], observations[1]);
-        assert_eq!(observations[0], observations[2]);
     }
 
     #[test]

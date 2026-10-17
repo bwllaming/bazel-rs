@@ -824,14 +824,23 @@ pub fn global() -> Option<&'static Credentials> {
 /// :133-151): helper headers; a helper failure is a warning and the request
 /// continues without credentials. Empty when no helper applies.
 pub fn download_headers(url: &str) -> Vec<(String, String)> {
-    let Some(credentials) = global() else {
-        return Vec::new();
-    };
+    download_credentials(url).unwrap_or_default()
+}
+
+/// CredentialHelperCredentials.getRequestMetadata (credentialhelper/
+/// CredentialHelperCredentials.java:61-79) as the downloader sees it:
+/// `Some` when a helper answers for `url` (its headers replace the static
+/// `auth` fallback entirely), `Some(empty)` after a helper failure (warned;
+/// getHeaderFunction continues without any credential headers), `None` when
+/// no helper applies and the static credentials (repository_ctx/module_ctx
+/// `auth`) are used instead.
+pub fn download_credentials(url: &str) -> Option<Vec<(String, String)>> {
+    let credentials = global()?;
     match credentials.headers(url) {
-        Ok(headers) => headers.unwrap_or_default(),
+        Ok(headers) => headers,
         Err(error) => {
             eprintln!("WARNING: Error retrieving auth headers, continuing without: {error}");
-            Vec::new()
+            Some(Vec::new())
         }
     }
 }

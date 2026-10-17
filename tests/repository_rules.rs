@@ -115,12 +115,12 @@ fn selected_module_aliases_do_not_force_unrelated_extension_namespace_resolution
 }
 
 #[test]
-fn demanded_definition_initialization_is_bounded_before_any_publication() {
+fn demanded_definition_initialization_has_no_step_limit() {
+    // Bazel bounds no Starlark steps (the former native cap was 1 M ticks).
     let f = Fixture::new();
-    f.file("helper.bzl", "def burn():\n    x = 0\n    for i in range(1000000000):\n        x = (x + 1) % 17\n    return x\nv = burn()\ndef greeting(x):\n    return x\n");
+    f.file("helper.bzl", "def burn():\n    x = 0\n    for i in range(3000000):\n        x = (x + 1) % 17\n    return x\nv = burn()\ndef greeting(x):\n    return x\n");
     let output = f.run(&["query", "@made//:data.txt"]);
-    rejected(&output, "ticks");
-    assert!(f.roots().is_empty());
+    assert!(output.status.success(), "{}", text(&output));
 }
 
 #[test]
@@ -290,12 +290,12 @@ fn callback_failure_unsupported_operations_and_paths_never_publish() {
         ("ctx.file('../outside', 'bad')", "path"),
         (
             "ctx.watch_tree('x')",
-            "repository_ctx.watch_tree() is not implemented by the native profile",
+            "can't call watch_tree() on non-directory",
         ),
-        // download() is implemented (N32); a block=False request is not.
+        // A pending download's failure surfaces from wait() (java:640-697).
         (
-            "ctx.download('https://example.invalid/x','x',sha256='0'*64,block=False)",
-            "download(block = False) is not supported by the native profile",
+            "ctx.download('https://example.invalid/x','x',sha256='0'*64,block=False).wait()",
+            "Error downloading [https://example.invalid/x]",
         ),
         (
             "ctx.symlink('a','../outside')",

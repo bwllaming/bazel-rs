@@ -20,7 +20,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::hash::Hash;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::custom_rule::AttrValue;
@@ -36,9 +36,10 @@ use crate::starlark_types::alloc_label;
 pub struct ExtensionExecution {
     pub repositories: Vec<RecordedRepository>,
     pub modules: Vec<BoundModule>,
-    pub(crate) io_observations: Vec<crate::extension_io::Observation>,
-    /// Digest of declared/getenv environment observations (values never kept).
-    pub(crate) watched_env: Option<crate::repository_environment::WatchedEnvironment>,
+    /// Recorded StarlarkBaseExternalContext inputs: watched files, reads,
+    /// host facilities, and the digest of declared/getenv environment
+    /// observations (values never kept).
+    pub(crate) inputs: crate::repository_ctx::ExecutionInputs,
     /// None when the callback returned None (ModuleExtensionMetadata.DEFAULT).
     pub metadata: Option<crate::extension_metadata::ExtensionMetadata>,
 }
@@ -67,7 +68,7 @@ mod values {
     use starlark::starlark_complex_value;
     use starlark::values::{
         Coerce, Freeze, NoSerialize, ProvidesStaticType, StarlarkPagablePanic, StarlarkValue,
-        Trace, starlark_value,
+        Trace, ValueError, starlark_value,
     };
 
     #[derive(ProvidesStaticType)]
@@ -75,9 +76,10 @@ mod values {
         pub repositories: Arc<RepositorySet>,
         pub public_label: Label,
         pub calls: CallRecorder,
-        pub io: RefCell<crate::extension_io::ScratchExecutionIo>,
-        /// Declared `environ` and `module_ctx.getenv` observations.
-        pub environment: RefCell<crate::repository_environment::Watch>,
+        /// The StarlarkBaseExternalContext half of module_ctx (working
+        /// directory, downloads, execute, watches, declared `environ` and
+        /// `getenv` observations), shared with repository_ctx.
+        pub base: crate::repository_ctx::Context,
     }
 
     #[derive(
@@ -94,6 +96,10 @@ mod values {
     pub(super) struct TagGen<V> {
         pub attrs: V,
         pub dev_dependency: bool,
+        /// TypeCheckedTag.SortKey (TypeCheckedTag.java:46-69): the module's
+        /// BFS index and the tag's index in its module's usage.
+        pub module_index: u32,
+        pub tag_index: u32,
     }
 
     impl<V> fmt::Display for TagGen<V> {
@@ -246,9 +252,6 @@ mod values {
         pub modules: V,
         pub os: V,
         pub root_has_non_dev_dependency: bool,
-        // Inert, never reused; no path, client, file handle or authority survives
-        // freezing. I/O additionally requires this live receiver's active Context.
-        pub execution_identity: u64,
     }
 
     impl<V> fmt::Display for ModuleCtxGen<V> {
@@ -284,8 +287,8 @@ mod values {
         }
 
         fn dir_attr(&self) -> Vec<String> {
-            // Methods (download, extension_metadata, is_dev_dependency, path,
-            // read) are listed by Value::dir_attr from MODULE_METHODS.
+            // Methods (StarlarkBaseExternalContext's and extension_metadata,
+            // is_dev_dependency, tag_sort_key) come from MODULE_METHODS.
             [
                 "modules",
                 "os",
@@ -297,52 +300,57 @@ mod values {
         }
     }
 
-    /// Bazel `path` (StarlarkPath.java) for a resolved source label only:
-    /// immutable, hashable, equal by host path. str() is the absolute host
-    /// path, repr() its quoted form. No basename/exists/readdir/... members.
+    /// TypeCheckedTag.SortKey (TypeCheckedTag.java:41-69): opaque, immutable,
+    /// ordered by (module index, tag index); repr `<sort_key>`, print()
+    /// `<sort_key module=M tag=T>`. A Java record: equal by both indices.
     #[derive(
         Debug,
         Clone,
+        Copy,
         PartialEq,
         Eq,
+        PartialOrd,
+        Ord,
         Hash,
         ProvidesStaticType,
         NoSerialize,
         Allocative,
         StarlarkPagablePanic,
     )]
-    pub(super) struct SourcePath {
-        /// Canonical label text (`//pkg:name` or `@@repo//pkg:name`).
-        pub label: String,
-        /// Absolute host path of the canonical repository root.
-        pub root: String,
-        /// Slash-separated repository-relative path (package/name).
-        pub relative: String,
-        /// Absolute host path of the resolved source file.
-        pub display: String,
+    pub(super) struct SortKey {
+        pub module_index: u32,
+        pub tag_index: u32,
     }
-    starlark::starlark_simple_value!(SourcePath);
+    starlark::starlark_simple_value!(SortKey);
 
-    impl fmt::Display for SourcePath {
+    impl fmt::Display for SortKey {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str(&starlark::values::string::StarlarkStr::repr(&self.display))
+            f.write_str("<sort_key>")
         }
     }
 
-    #[starlark_value(type = "path")]
-    impl<'v> StarlarkValue<'v> for SourcePath {
-        fn collect_str(&self, collector: &mut String) {
-            collector.push_str(&self.display);
+    #[starlark_value(type = "sort_key")]
+    impl<'v> StarlarkValue<'v> for SortKey {
+        fn collect_debug_print(&self, collector: &mut String, _eval: &Evaluator<'v, '_, '_>) {
+            collector.push_str(&format!(
+                "<sort_key module={} tag={}>",
+                self.module_index, self.tag_index
+            ));
         }
 
         fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
-            Ok(other
-                .downcast_ref::<Self>()
-                .is_some_and(|other| other.display == self.display))
+            Ok(other.downcast_ref::<Self>() == Some(self))
+        }
+
+        fn compare(&self, other: Value<'v>) -> starlark::Result<std::cmp::Ordering> {
+            match other.downcast_ref::<Self>() {
+                Some(other) => Ok(self.cmp(other)),
+                None => ValueError::unsupported_with(self, "compare", other),
+            }
         }
 
         fn write_hash(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
-            self.display.hash(hasher);
+            self.hash(hasher);
             Ok(())
         }
     }
@@ -424,25 +432,24 @@ mod values {
     }
 }
 use values::{
-    BazelModuleGen, Context, ExtensionMetadata, FrozenTag, ModuleCtxGen, SourcePath, Tag, TagGen,
+    BazelModuleGen, Context, ExtensionMetadata, FrozenTag, ModuleCtxGen, SortKey, Tag, TagGen,
     TagsGen,
 };
 
-fn io_receiver(this: Value<'_>, eval: &Evaluator<'_, '_, '_>) -> anyhow::Result<u64> {
-    use crate::extension_download::TypedIoError;
-    let receiver = this
-        .downcast_ref::<values::ModuleCtx>()
-        .ok_or(TypedIoError::Lifetime)?;
-    let context = context(eval).ok_or(TypedIoError::Lifetime)?;
-    context
-        .io
-        .borrow()
-        .check_receiver(receiver.execution_identity)?;
-    Ok(receiver.execution_identity)
-}
-
 fn context<'a>(eval: &'a Evaluator<'_, '_, '_>) -> Option<&'a Context> {
     eval.extra.and_then(|extra| extra.downcast_ref::<Context>())
+}
+
+/// The StarlarkBaseExternalContext of a running module extension.
+pub(crate) fn base_context<'a>(
+    eval: &'a Evaluator<'_, '_, '_>,
+) -> Option<&'a crate::repository_ctx::Context> {
+    context(eval).map(|context| &context.base)
+}
+
+/// Whether `value` is a module_ctx.
+pub(crate) fn is_module_ctx(value: Value<'_>) -> bool {
+    values::ModuleCtx::from_value(value).is_some()
 }
 
 /// True while evaluating a module-extension callback (byte-string profile).
@@ -494,153 +501,16 @@ pub(crate) fn record_repository_call<'v>(
     context.calls.record(me, args, &*eval)
 }
 
-starlark::methods_static!(MODULE_METHODS = module_methods);
+starlark::methods_static!(MODULE_METHODS = all_module_methods);
 
+fn all_module_methods(builder: &mut MethodsBuilder) {
+    crate::repository_ctx::base_methods(builder);
+    module_methods(builder);
+}
+
+/// ModuleExtensionContext-only members (ModuleExtensionContext.java:117-321).
 #[starlark_module]
 fn module_methods(builder: &mut MethodsBuilder) {
-    /// StarlarkBaseExternalContext.getEnvironmentValue (java:1535-1565):
-    /// recorded as an extension environment input, like repository_ctx.getenv.
-    fn getenv<'v>(
-        this: Value<'v>,
-        args: &Arguments<'v, '_>,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<Value<'v>> {
-        use crate::repository_ctx::GetenvError;
-        if this.downcast_ref::<values::ModuleCtx>().is_none() {
-            return Err(anyhow::Error::new(GetenvError::Receiver));
-        }
-        let context = context(eval).ok_or_else(|| anyhow::Error::new(GetenvError::Phase))?;
-        crate::repository_ctx::getenv_observed(
-            &context.environment,
-            context.repositories.environment(),
-            args,
-            eval.heap(),
-        )
-        .map_err(anyhow::Error::new)
-    }
-
-    fn download<'v>(
-        this: Value<'v>,
-        url: Value<'v>,
-        #[starlark(default = "")] output: &str,
-        #[starlark(default = "")] sha256: &str,
-        #[starlark(default = false)] executable: bool,
-        #[starlark(default = false)] allow_fail: bool,
-        #[starlark(default = "")] canonical_id: &str,
-        auth: Option<Value<'v>>,
-        headers: Option<Value<'v>>,
-        #[starlark(require = named, default = "")] integrity: &str,
-        #[starlark(require = named, default = true)] block: bool,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<Value<'v>> {
-        use crate::extension_download::TypedIoError;
-        let identity = io_receiver(this, eval)?;
-        // All unsupported controls and all sequence elements are checked before
-        // scratch creation, destination reuse, policy gating or transport.
-        if executable || !block || !canonical_id.is_empty() {
-            return Err(TypedIoError::Unsupported(
-                "executable, async block=False, or canonical_id cache",
-            )
-            .into());
-        }
-        for option in [auth, headers].into_iter().flatten() {
-            let dict = starlark::values::dict::DictRef::from_value(option).ok_or(
-                TypedIoError::Validation("auth and headers must be dictionaries"),
-            )?;
-            if !dict.is_empty() {
-                return Err(TypedIoError::Unsupported("nonempty auth or headers").into());
-            }
-        }
-        let strings = if let Some(text) = url.unpack_str() {
-            vec![text]
-        } else {
-            let values = if let Some(list) = starlark::values::list::ListRef::from_value(url) {
-                list.content()
-            } else if let Some(tuple) = starlark::values::tuple::TupleRef::from_value(url) {
-                tuple.content()
-            } else {
-                return Err(TypedIoError::Validation(
-                    "url must be a string, list, or tuple of strings",
-                )
-                .into());
-            };
-            if values.len() > 8 {
-                return Err(TypedIoError::Resource("8 mirrors per call").into());
-            }
-            values
-                .iter()
-                .map(|v| {
-                    v.unpack_str()
-                        .ok_or(TypedIoError::Validation("every URL must be a string"))
-                })
-                .collect::<Result<Vec<_>, _>>()?
-        };
-        let context = context(eval).ok_or(TypedIoError::Lifetime)?;
-        let mut io = context.io.borrow_mut();
-        let result = io.download(
-            identity,
-            context.repositories.repository_downloads_enabled(),
-            crate::extension_io::Download {
-                urls: &strings,
-                output,
-                sha256,
-                integrity,
-                allow_fail,
-            },
-        )?;
-        let heap = eval.heap();
-        let mut fields = vec![("success", heap.alloc(result.success))];
-        if let Some(integrity) = &result.integrity {
-            fields.push(("integrity", heap.alloc(integrity.as_str())));
-        }
-        if let Some(sha256) = &result.sha256 {
-            fields.push(("sha256", heap.alloc(sha256.as_str())));
-        }
-        if let Some(size) = result.size_bytes {
-            fields.push(("size_bytes", heap.alloc(size as i64)));
-        }
-        Ok(heap.alloc(AllocStruct(fields)))
-    }
-
-    fn read<'v>(
-        this: Value<'v>,
-        path: Value<'v>,
-        #[starlark(require = named, default = "auto")] watch: &str,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<String> {
-        let identity = io_receiver(this, eval)?;
-        let context = context(eval).ok_or(crate::extension_download::TypedIoError::Lifetime)?;
-        if let Some(path) = path.unpack_str() {
-            // Strings keep the owned scratch-path profile unchanged.
-            return Ok(context.io.borrow_mut().read(identity, path, watch)?);
-        }
-        // Bazel 9.3 StarlarkBaseExternalContext.java:1631-1647: getPath, then
-        // watch validation, then the directory check, then the byte read.
-        let source = source_path_argument(context, path, "read")?;
-        validate_watch(watch)?;
-        let host = checked_source_file(&source)?;
-        Ok(context
-            .io
-            .borrow_mut()
-            .read_source(identity, &source.label, watch, &host)?)
-    }
-
-    fn path<'v>(
-        this: Value<'v>,
-        path: Value<'v>,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> anyhow::Result<Value<'v>> {
-        io_receiver(this, eval)?;
-        // Bazel 9.3 StarlarkBaseExternalContext.java:1567-1600: a path value
-        // passes through unchanged; a Label resolves to its source file.
-        if path.downcast_ref::<SourcePath>().is_some() {
-            return Ok(path);
-        }
-        let context = context(eval).ok_or(crate::extension_download::TypedIoError::Lifetime)?;
-        let source = source_path_argument(context, path, "path")?;
-        Ok(eval.heap().alloc(source))
-    }
-
     fn extension_metadata<'v>(
         this: Value<'v>,
         #[starlark(args)] args: UnpackTuple<Value<'v>>,
@@ -666,6 +536,28 @@ fn module_methods(builder: &mut MethodsBuilder) {
         } else {
             bail!("is_dev_dependency expects a tag, got {}", tag.get_type())
         }
+    }
+
+    /// ModuleExtensionContext.getTagSortKey (java:163-184).
+    fn tag_sort_key<'v>(
+        this: Value<'v>,
+        #[starlark(require = pos)] tag: Value<'v>,
+    ) -> anyhow::Result<SortKey> {
+        let _ = this;
+        let (module_index, tag_index) = if let Some(tag) = tag.downcast_ref::<Tag>() {
+            (tag.module_index, tag.tag_index)
+        } else if let Some(tag) = tag.downcast_ref::<FrozenTag>() {
+            (tag.module_index, tag.tag_index)
+        } else {
+            bail!(
+                "in call to tag_sort_key(), parameter 'tag' got value of type '{}', want 'bazel_module_tag'",
+                tag.get_type()
+            )
+        };
+        Ok(SortKey {
+            module_index,
+            tag_index,
+        })
     }
 }
 
@@ -946,147 +838,6 @@ fn validate_fact(value: Value<'_>, remaining: i32) -> anyhow::Result<()> {
     )
 }
 
-/// Bazel's ShouldWatch.fromString (StarlarkBaseExternalContext.java:1709-1718).
-fn validate_watch(watch: &str) -> anyhow::Result<()> {
-    ensure!(
-        matches!(watch, "yes" | "no" | "auto"),
-        "bad value for 'watch' parameter; want 'yes', 'no', or 'auto', got {watch}"
-    );
-    Ok(())
-}
-
-/// Accept a genuine `path` or Label for module_ctx.path/read. Strings are a
-/// different (working-directory) profile and fail explicitly in path().
-fn source_path_argument(
-    context: &Context,
-    value: Value<'_>,
-    method: &str,
-) -> anyhow::Result<SourcePath> {
-    if let Some(path) = value.downcast_ref::<SourcePath>() {
-        return Ok(path.clone());
-    }
-    if let Some((repository, package, name)) = crate::starlark_types::label_parts(value) {
-        return resolve_source_label(&context.repositories, repository, package, name);
-    }
-    if value.unpack_str().is_some() {
-        bail!(
-            "module_ctx.path() of a string (a path relative to the extension working directory) is unsupported in the native profile; pass a Label"
-        );
-    }
-    bail!(
-        "in call to {method}(), parameter 'path' got value of type '{}', want 'string, Label, or path'",
-        value.get_type()
-    )
-}
-
-/// Bazel 9.3 getPathFromLabel (StarlarkBaseExternalContext.java:2386-2412)
-/// and RepositoryUtils.getRootedPathFromLabel: the package must exist; the file
-/// itself need not. Only the main repository and resolved module-graph
-/// repositories are admitted; extension-generated and use_repo_rule
-/// repositories would require re-entrant extension evaluation here.
-/// With --incompatible_no_implicit_watch_label (default true) path() records
-/// no watch, so no provenance observation is added here.
-fn resolve_source_label(
-    repositories: &RepositorySet,
-    repository: &str,
-    package: &str,
-    name: &str,
-) -> anyhow::Result<SourcePath> {
-    let label = Label {
-        repository: repository.to_owned(),
-        package: package.to_owned(),
-        name: name.to_owned(),
-    };
-    if !repository.is_empty()
-        && !repositories
-            .resolve_graph()
-            .map_err(anyhow::Error::msg)?
-            .modules
-            .contains_key(repository)
-    {
-        bail!(
-            "module_ctx.path({label}): only the main repository and resolved module-graph repositories are supported; extension-generated and use_repo_rule repositories are unsupported"
-        );
-    }
-    let root = repositories.root(repository).map_err(anyhow::Error::msg)?;
-    // RepositoryUtils.getRootedPathFromLabel: PackageLookupValue, which is
-    // DELETED_PACKAGE_VALUE inside an ignored directory.
-    if repositories
-        .ignored_subdirectories(repository)
-        .map_err(anyhow::Error::msg)?
-        .matching_entry(package)
-        .is_some()
-    {
-        bail!(
-            "Unable to load package for {label}: {}",
-            crate::ignored::DELETED_PACKAGE_MESSAGE
-        );
-    }
-    crate::workspace::package_build_file(root, package)
-        .map_err(|message| anyhow!("Unable to load package for {label}: {message}"))?;
-    let root = std::fs::canonicalize(root)
-        .map_err(|error| anyhow!("cannot resolve repository root for {label}: {error}"))?;
-    let root = root
-        .to_str()
-        .ok_or_else(|| anyhow!("non-UTF-8 repository root for {label} is unsupported"))?
-        .to_owned();
-    let relative = if package.is_empty() {
-        name.to_owned()
-    } else {
-        format!("{package}/{name}")
-    };
-    let display = Path::new(&root)
-        .join(&relative)
-        .to_str()
-        .expect("UTF-8 root and ASCII label")
-        .to_owned();
-    Ok(SourcePath {
-        label: label.to_string(),
-        root,
-        relative,
-        display,
-    })
-}
-
-/// Walk the repository-relative components without following symlinks and
-/// return the regular file's host path. Bazel follows symlinks; this profile
-/// rejects them explicitly rather than resolving outside the repository.
-fn checked_source_file(source: &SourcePath) -> anyhow::Result<PathBuf> {
-    let mut current = PathBuf::from(&source.root);
-    let components: Vec<&str> = source.relative.split('/').collect();
-    for (index, component) in components.iter().enumerate() {
-        current.push(component);
-        let metadata = match std::fs::symlink_metadata(&current) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                bail!("cannot read {}: No such file or directory", source.display)
-            }
-            Err(error) => bail!("cannot read {}: {error}", source.display),
-        };
-        if metadata.file_type().is_symlink() {
-            bail!(
-                "module_ctx.read() through a symlink is unsupported in the native profile: {}",
-                source.display
-            );
-        }
-        let last = index + 1 == components.len();
-        if metadata.is_dir() {
-            if last {
-                // StarlarkBaseExternalContext.java:1639-1641.
-                bail!("attempting to read() a directory: {}", source.display);
-            }
-        } else if !last {
-            bail!("cannot read {}: Not a directory", source.display);
-        } else if !metadata.is_file() {
-            bail!(
-                "module_ctx.read() of a special file is unsupported: {}",
-                source.display
-            );
-        }
-    }
-    Ok(current)
-}
-
 fn bind_modules(
     repositories: &RepositorySet,
     definition: &ExtensionDefinition,
@@ -1109,7 +860,7 @@ fn bind_modules(
     // Preflight the *whole group* while everything is borrowed. In particular,
     // empty raw tags still expand defaults; charging only raw JSON misses that
     // amplification. This also reserves projection/freeze and provenance space.
-    let mut budget = HostBudget::default();
+    let mut budget = HostBudget::unbounded();
     for participant in participants {
         budget.node()?;
         budget.string(&participant.owner)?;
@@ -1132,7 +883,7 @@ fn bind_modules(
             }
         }
     }
-    let resolution_budget = RefCell::new(HostBudget::default());
+    let resolution_budget = RefCell::new(HostBudget::unbounded());
     participants
         .iter()
         .map(|participant| {
@@ -1254,14 +1005,27 @@ fn projection(modules: &[BoundModule]) -> anyhow::Result<OwnedFrozenValue> {
     Module::with_temp_heap(|module| {
         let heap = module.heap();
         let mut views = Vec::new();
-        for bound in modules {
+        for (module_index, bound) in modules.iter().enumerate() {
+            // StarlarkBazelModule.create (java:115-152): a tag's index is its
+            // position among the module's tags for this extension, in MODULE
+            // order across tag classes.
+            let mut ordinals: Vec<usize> = bound
+                .tags
+                .values()
+                .flatten()
+                .map(|tag| tag.ordinal)
+                .collect();
+            ordinals.sort_unstable();
             let mut classes = BTreeMap::new();
             for (name, tags) in &bound.tags {
                 let mut views = Vec::new();
                 for tag in tags {
+                    let tag_index = ordinals.partition_point(|ordinal| *ordinal < tag.ordinal);
                     views.push(heap.alloc(TagGen {
                         attrs: alloc_attrs(heap, &tag.attributes)?,
                         dev_dependency: tag.dev_dependency,
+                        module_index: u32::try_from(module_index)?,
+                        tag_index: u32::try_from(tag_index)?,
                     }));
                 }
                 classes.insert(name.clone(), heap.alloc(views));
@@ -1291,12 +1055,33 @@ fn projection(modules: &[BoundModule]) -> anyhow::Result<OwnedFrozenValue> {
 
 /// Run the entire callback before returning any declarations. No generated
 /// repository is bound, mapped or materialized during this execution phase.
+/// The module extension's working directory, `<cache>/modextwd/<unique
+/// name>` (Bazel: `<output_base>/modextwd/<unique name>`,
+/// RegularRunnableExtension.java:364-368). It is created on first use and
+/// deleted afterwards by the shared context (repository_ctx::Context).
+fn working_directory(repositories: &RepositorySet, unique_name: &str) -> anyhow::Result<PathBuf> {
+    ensure!(
+        !unique_name.is_empty()
+            && !unique_name.contains('/')
+            && unique_name != "."
+            && unique_name != "..",
+        "invalid module extension unique name {unique_name:?}"
+    );
+    Ok(repositories
+        .source_cache_path()
+        .map_err(anyhow::Error::msg)?
+        .join("modextwd")
+        .join(unique_name))
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn execute(
     repositories: Arc<RepositorySet>,
     definition: &ExtensionDefinition,
     functions: &[OwnedFrozenValue],
     public_label: &Label,
     extension_name: &str,
+    unique_name: &str,
     participants: &[OrdinaryParticipant],
     root_has_non_dev_dependency: bool,
 ) -> Result<ExtensionExecution, String> {
@@ -1304,20 +1089,27 @@ pub fn execute(
         let modules =
             bind_modules(&repositories, definition, participants).map_err(anyhow::Error::msg)?;
         let projected = projection(&modules)?;
+        let working = working_directory(&repositories, unique_name)?;
+        let base = crate::repository_ctx::Context::module_extension(
+            repositories.clone(),
+            &working,
+            public_label.clone(),
+            format!("{}%{extension_name}", public_label.canonical_starlark()),
+        )?;
         let context = Context {
             repositories,
             public_label: public_label.clone(),
             calls: CallRecorder::default(),
-            io: RefCell::new(crate::extension_io::ScratchExecutionIo::new()?),
-            environment: RefCell::new(crate::repository_environment::Watch::default()),
+            base,
         };
         for name in definition.environ.names() {
             context
+                .base
                 .environment
                 .borrow_mut()
                 .observe(context.repositories.environment(), name)?;
         }
-        let repositories = Module::with_temp_heap(|module| -> anyhow::Result<_> {
+        let (frozen, metadata) = Module::with_temp_heap(|module| -> anyhow::Result<_> {
             let heap = module.heap();
             let ctx = heap.alloc(ModuleCtxGen {
                 modules: heap.access_owned_frozen_value(&projected),
@@ -1335,26 +1127,21 @@ pub fn execute(
                     }
                 },
                 root_has_non_dev_dependency,
-                execution_identity: context.io.borrow().identity(),
             });
             for function in functions {
                 heap.access_owned_frozen_value(function);
             }
             let implementation = heap.access_owned_frozen_value(&definition.implementation);
             let mut eval = Evaluator::new(&module);
+            // Bazel bounds neither the heap nor the number of steps of a
+            // module extension; only the call depth is bounded here.
             eval.set_max_callstack_size(128)?;
-            eval.set_max_tick_count(1_000_000)?;
-            eval.set_max_heap_size(128 * 1024 * 1024)?;
             eval.extra = Some(&context);
             let evaluated = {
                 let _model = starlark::values::string::enter_latin1_char_model(true);
                 eval.eval_function(implementation, &[ctx], &[])
             };
-            // No live HTTP/file handle remains in the synchronous authority.
-            // Close even when evaluation failed, BEFORE success or heap freeze.
-            let observations = context.io.borrow_mut().close();
             let returned = evaluated.map_err(crate::repository_ctx::callback_error)?;
-            let observations = observations?;
             // RegularRunnableExtension.java:298-318: None is DEFAULT metadata.
             ensure!(
                 returned.is_none() || returned.downcast_ref::<ExtensionMetadata>().is_some(),
@@ -1371,20 +1158,16 @@ pub fn execute(
                     "ordinary extension callback:{public_label}"
                 ))))
                 .map_err(|error| anyhow!("cannot freeze module extension callback: {error:?}"))?;
-            let watched_env = context.environment.borrow().inputs()?;
-            Ok((
-                context.calls.finish(&frozen).map_err(anyhow::Error::msg)?,
-                observations,
-                metadata,
-                watched_env,
-            ))
+            Ok((frozen, metadata))
         })?;
+        let Context { calls, base, .. } = context;
+        let repositories = calls.finish(&frozen).map_err(anyhow::Error::msg)?;
+        let inputs = base.finish()?;
         Ok(ExtensionExecution {
-            repositories: repositories.0,
+            repositories,
             modules,
-            io_observations: repositories.1,
-            metadata: repositories.2,
-            watched_env: repositories.3,
+            metadata,
+            inputs,
         })
     };
     run().map_err(|error| format!("module extension {public_label}: {error:#}"))
@@ -1393,9 +1176,6 @@ pub fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    include!("../tests/support/extension_io_callback_budget.rs");
-    include!("../tests/support/extension_io_preflight_cases.rs");
-    include!("../tests/support/extension_io_boundary_context.rs");
     use crate::bzlmod::ExtensionTag;
     use crate::extension_calls::RecordedValue;
     use crate::loading::{LoadedDefinition, load_definition_in};
@@ -1460,6 +1240,7 @@ mod tests {
                 &functions,
                 &label(),
                 "ext",
+                "_main+ext",
                 participants,
                 non_dev,
             )
@@ -1523,53 +1304,50 @@ mod tests {
     }
 
     #[test]
-    fn repeated_tag_defaults_fail_before_binding_or_projection() {
+    fn repeated_tag_and_repository_defaults_have_no_native_host_limit() {
+        // Bazel bounds no extension input or result; the former 64 MiB
+        // weighted host budget rejected 600 tags/calls with 1 MiB defaults.
         let fixture = Fixture::new();
         let classes = "{'t':tag_class({'value':attr.string(default='x' * 1048576)})}";
-        let one = [participant(vec![tag("t", 0, json!({}), false)])];
-        fixture.error(
-            "fail('CALLBACK_REACHED')",
-            classes,
-            &one,
-            "CALLBACK_REACHED",
-        );
         let many = [participant(
             (0..600).map(|i| tag("t", i, json!({}), false)).collect(),
         )];
-        let error = fixture
-            .run("fail('CALLBACK_REACHED')", classes, &many)
-            .unwrap_err();
-        assert!(
-            error.contains("host preparation weighted byte limit"),
-            "{error}"
+        fixture.error(
+            "len(ctx.modules[0].tags.t) == 600 or fail('count')\nfail('CALLBACK_REACHED')",
+            classes,
+            &many,
+            "CALLBACK_REACHED",
         );
-        assert!(!error.contains("CALLBACK_REACHED"), "{error}");
-        assert!(!fixture.root.path().join("cache").exists());
-    }
-
-    #[test]
-    fn repeated_repository_defaults_fail_during_recording_not_finish() {
-        let fixture = Fixture::new();
+        assert!(
+            !fixture
+                .root
+                .path()
+                .join("cache/modextwd/_main+ext")
+                .exists()
+        );
         for count in [1, 600] {
             let loaded = fixture.load_source(&format!(
                 "def _repo(ctx):\n    fail('FETCH_REACHED')\nr = repository_rule(_repo, attrs={{'value':attr.string(default='x' * 1048576)}})\ndef _impl(ctx):\n    for i in range({count}):\n        r(name='made' + str(i))\n    fail('CALLBACK_COMPLETED')\next = module_extension(_impl)\n"
             ));
             let error = fixture.run_loaded(loaded, &[], true).unwrap_err();
-            if count == 1 {
-                assert!(error.contains("CALLBACK_COMPLETED"), "{error}");
-            } else {
-                assert!(
-                    error.contains("host preparation weighted byte limit"),
-                    "{error}"
-                );
-                assert!(!error.contains("fail: CALLBACK_COMPLETED"), "{error}");
-            }
+            assert!(error.contains("CALLBACK_COMPLETED"), "{error}");
         }
+    }
+
+    #[test]
+    fn recording_defers_binding_of_unknown_and_missing_attributes() {
+        let fixture = Fixture::new();
         // Cost estimation must not eagerly bind unknown/missing mandatory attrs.
         let loaded = fixture.load_source("def _repo(ctx):\n    pass\nr = repository_rule(_repo, attrs={'required':attr.string(mandatory=True)})\ndef _impl(ctx):\n    r(name='made', unknown=True)\n    fail('DEFERRED_BINDING')\next = module_extension(_impl)\n");
         let error = fixture.run_loaded(loaded, &[], true).unwrap_err();
         assert!(error.contains("DEFERRED_BINDING"), "{error}");
-        assert!(!fixture.root.path().join("cache").exists());
+        assert!(
+            !fixture
+                .root
+                .path()
+                .join("cache/modextwd/_main+ext")
+                .exists()
+        );
     }
 
     #[test]
@@ -1848,7 +1626,6 @@ ctx.is_dev_dependency(t) or fail('hidden dev flag')
                     )
                     .unwrap(),
                     root_has_non_dev_dependency: false,
-                    execution_identity: 0,
                 }),
             );
             let source = "ctx.is_dev_dependency(foreign[0].tags.t[0]) or fail('foreign genuine tag rejected')";
@@ -1899,7 +1676,13 @@ words.append('after')
                 RecordedValue::String("@later//:target".to_owned())
             );
         }
-        assert!(!fixture.root.path().join("cache").exists());
+        assert!(
+            !fixture
+                .root
+                .path()
+                .join("cache/modextwd/_main+ext")
+                .exists()
+        );
     }
 
     #[test]
@@ -1932,13 +1715,42 @@ words.append('after')
         );
         fixture.error("r('positional')", "{}", &[], "positional");
         fixture.error("r(name='bad+name')", "{}", &[], "name");
-        assert!(!fixture.root.path().join("cache").exists());
+        assert!(
+            !fixture
+                .root
+                .path()
+                .join("cache/modextwd/_main+ext")
+                .exists()
+        );
     }
 
     #[test]
-    fn unsupported_context_facilities_are_absent_not_fabricated() {
+    fn module_ctx_members_are_bazels_base_and_extension_members_only() {
         let fixture = Fixture::new();
-        for field in ["delete", "tag_sort_key", "is_isolated", "file", "execute"] {
+        // dir(module_ctx) of Bazel 9.3: StarlarkBaseExternalContext members
+        // (load_wasm/execute_wasm need --experimental_repository_ctx_execute_wasm)
+        // and ModuleExtensionContext members (is_isolated needs
+        // --experimental_isolated_extension_usages).
+        fixture
+            .run(
+                "expected = ['download', 'download_and_extract', 'execute', 'extension_metadata', 'extract', 'facts', 'file', 'getenv', 'is_dev_dependency', 'modules', 'os', 'path', 'read', 'report_progress', 'root_module_has_non_dev_dependency', 'tag_sort_key', 'watch', 'which']\nsorted(dir(ctx)) == expected or fail(sorted(dir(ctx)))",
+                "{}",
+                &[],
+            )
+            .unwrap();
+        for field in [
+            "delete",
+            "symlink",
+            "template",
+            "rename",
+            "patch",
+            "watch_tree",
+            "repo_metadata",
+            "attr",
+            "name",
+            "is_isolated",
+            "load_wasm",
+        ] {
             fixture.error(&format!("ctx.{field}"), "{}", &[], field);
         }
         fixture.error(
@@ -1965,21 +1777,23 @@ json.decode('"\\u0041"') == 'A' or fail('ascii escape changed')
             .unwrap();
     }
 
-    fn observations(result: &ExtensionExecution) -> Vec<serde_json::Value> {
+    fn files(result: &ExtensionExecution) -> Vec<serde_json::Value> {
         result
-            .io_observations
+            .inputs
+            .files
             .iter()
             .map(|o| serde_json::to_value(o).unwrap())
             .collect()
     }
 
     #[test]
-    fn module_path_and_read_resolve_source_labels_with_byte_provenance() {
+    fn module_path_and_read_resolve_labels_and_watch_like_bazel() {
         let fixture = Fixture::new();
         let bytes = b"module example.com/app\n\ngo 1.27.1\n// \xe9\x00\n";
         fs::write(fixture.root.path().join("go.mod"), bytes).unwrap();
         fixture.file("sub/BUILD.bazel", "");
         fixture.file("sub/nested/data.txt", "nested");
+        std::os::unix::fs::symlink("go.mod", fixture.root.path().join("link")).unwrap();
         let root = fs::canonicalize(fixture.root.path()).unwrap();
         let expected = root.join("go.mod").to_str().unwrap().to_owned();
         let nested = root
@@ -1996,17 +1810,21 @@ type(p) == 'path' or fail(type(p))
 str(p) == {expected:?} or fail(str(p))
 repr(p) == repr({expected:?}) or fail(repr(p))
 ctx.path(p) == p or fail('path passthrough')
-ctx.path(Label('//:go.mod')) == p or fail('path equality')
 {{p: 1}}[ctx.path(Label('//:go.mod'))] == 1 or fail('path hash')
-dir(p) == [] or fail(dir(p))
-(not hasattr(p, 'basename') and not hasattr(p, 'exists')) or fail('fabricated path members')
+p.basename == 'go.mod' or fail(p.basename)
+p.dirname.get_child('go.mod') == p or fail('dirname/get_child')
+p.exists and not p.is_dir and p.dirname.is_dir or fail('exists/is_dir')
+sorted(dir(p)) == ['basename', 'dirname', 'exists', 'get_child', 'is_dir', 'readdir', 'realpath'] or fail(dir(p))
+ctx.path(Label('//:link')).realpath == p or fail('realpath')
+'go.mod' in [e.basename for e in p.dirname.readdir()] or fail('readdir')
 str(ctx.path(Label('//sub:nested/data.txt'))) == {nested:?} or fail('nested')
-str(ctx.path(Label('//:never_created'))) or fail('missing files resolve')
+not ctx.path(Label('//:never_created')).exists or fail('missing files resolve')
 text = ctx.read(p)
 len(text) == {size} or fail(len(text))
 text[-3:] == '\351\000\n' or fail('not Latin-1 byte chars')
 text == ctx.read(Label('//:go.mod'), watch='yes') or fail('label read')
-text == ctx.read(path=p, watch='no') or fail('watch no')
+text == ctx.read(p, watch='no') or fail('watch no')
+text == ctx.read(Label('//:link')) or fail('symlinks are followed')
 ctx.read(Label('//sub:nested/data.txt')) == 'nested' or fail('nested read')
 version = [l for l in text.split('\n') if l.startswith('go ')][0][3:]
 r(name='sdk', words=[version])
@@ -2022,99 +1840,152 @@ r(name='sdk', words=[version])
             RecordedValue::List(vec![RecordedValue::String("1.27.1".to_owned())])
         );
         let sha = crate::extension_download::sha256(bytes);
-        let observed = observations(&result);
-        assert_eq!(observed.len(), 4);
-        for (observation, watch) in observed[..3].iter().zip(["auto", "yes", "no"]) {
-            assert_eq!(
-                observation,
-                &json!({"operation": "read_source", "label": "//:go.mod", "watch": watch,
-                        "sha256": sha, "size_bytes": bytes.len()})
-            );
-        }
-        assert_eq!(observed[3]["label"], "//sub:nested/data.txt");
-        // Provenance never carries the absolute host path.
+        let observed = files(&result);
+        // The workspace directory is watched by readdir(watch='auto'); the
+        // Label reads record the canonical label; watch='no' records nothing.
+        assert!(observed.contains(
+            &json!({"path": "//:go.mod", "kind": "file", "state": format!("file:{sha}")})
+        ));
         assert!(
-            !serde_json::to_string(&observed)
-                .unwrap()
-                .contains(root.to_str().unwrap())
+            observed.contains(&json!({"path": "//sub:nested/data.txt", "kind": "file",
+            "state": format!("file:{}", crate::extension_download::sha256(b"nested"))}))
         );
-        assert!(!fixture.root.path().join("cache").exists());
+        assert!(
+            observed
+                .iter()
+                .any(|o| o["path"] == "@@//" && o["kind"] == "dirents")
+        );
+        // The working directory is removed afterwards.
+        assert!(
+            !fixture
+                .root
+                .path()
+                .join("cache/modextwd/_main+ext")
+                .exists()
+        );
     }
 
     #[test]
-    fn module_path_and_read_fail_explicitly_outside_the_source_profile() {
+    fn module_ctx_working_directory_file_io_execute_and_watch_restrictions() {
         let fixture = Fixture::new();
-        fixture.file("go.mod", "go 1.27.1\n");
-        fixture.file("dir/file", "");
-        std::os::unix::fs::symlink("go.mod", fixture.root.path().join("link")).unwrap();
-        fs::write(
-            fixture.root.path().join("large"),
-            vec![b'x'; 9 * 1024 * 1024],
-        )
-        .unwrap();
-        let root = fs::canonicalize(fixture.root.path()).unwrap();
-        for (body, expected) in [
-            (
-                "ctx.path(Label('//missing:go.mod'))".to_owned(),
-                "Unable to load package for //missing:go.mod: ".to_owned(),
-            ),
-            (
-                "ctx.read(Label('//missing:go.mod'), watch='bad')".to_owned(),
-                "Unable to load package for //missing:go.mod: ".to_owned(),
-            ),
-            (
-                "ctx.path('go.mod')".to_owned(),
-                "module_ctx.path() of a string".to_owned(),
-            ),
-            (
-                "ctx.path(1)".to_owned(),
-                "in call to path(), parameter 'path' got value of type 'int', want 'string, Label, or path'".to_owned(),
-            ),
-            (
-                "ctx.read(None)".to_owned(),
-                "in call to read(), parameter 'path' got value of type 'NoneType'".to_owned(),
-            ),
-            (
-                "ctx.path(Label('@@other+//:go.mod'))".to_owned(),
-                "extension-generated and use_repo_rule repositories are unsupported".to_owned(),
-            ),
-            (
-                "ctx.read(Label('//:go.mod'), watch='bad')".to_owned(),
-                "bad value for 'watch' parameter; want 'yes', 'no', or 'auto', got bad".to_owned(),
-            ),
-            (
-                "ctx.read(Label('//:absent'))".to_owned(),
-                format!("cannot read {}/absent: No such file or directory", root.display()),
-            ),
-            (
-                "ctx.read(Label('//:dir'))".to_owned(),
-                format!("attempting to read() a directory: {}/dir", root.display()),
-            ),
-            (
-                "ctx.read(ctx.path(Label('//:link')))".to_owned(),
-                "through a symlink is unsupported".to_owned(),
-            ),
-            (
-                "ctx.read(Label('//:go.mod/x'))".to_owned(),
-                "Not a directory".to_owned(),
-            ),
-            (
-                "ctx.read(Label('//:go.mod'), 'no')".to_owned(),
-                "read() accepts no more than 1 positional argument but got 2".to_owned(),
-            ),
-        ] {
-            fixture.error(&body, "{}", &[], &expected);
-        }
-        // No shared call budget or 8 MiB source-read cap (both former native
-        // limits): 33 reads and a 9 MiB source file succeed.
-        fixture
+        fixture.file("in.txt", "input");
+        let working = fs::canonicalize(fixture.root.path())
+            .unwrap()
+            .join("cache/modextwd/_main+ext");
+        let result = fixture
             .run(
-                "for i in range(33):\n    ctx.read(Label('//:go.mod'))\nlen(ctx.read(Label('//:large'))) == 9 * 1024 * 1024 or fail('large')",
+                &format!(
+                    r#"
+wd = ctx.path('.')
+str(wd) == {working:?} or fail(str(wd))
+str(ctx.path('a/b')) == {working:?} + '/a/b' or fail('relative')
+ctx.file('sub/f.txt', 'hello\n', executable=False)
+ctx.read('sub/f.txt') == 'hello\n' or fail('read back')
+ctx.path('sub/f.txt').exists or fail('exists')
+[p.basename for p in ctx.path('sub').readdir()] == ['f.txt'] or fail('readdir wd')
+res = ctx.execute(['sh', '-c', 'pwd; cat sub/f.txt; echo err >&2; exit 3'])
+type(res) == 'exec_result' or fail(type(res))
+res.return_code == 3 and res.stdout == {working:?} + '\nhello\n' and res.stderr == 'err\n' or fail(res.stdout)
+ctx.execute(['sh', '-c', 'pwd'], working_directory='sub').stdout == {working:?} + '/sub\n' or fail('working_directory')
+ctx.execute(['sh', '-c', 'echo $X'], environment={{'X': 'y'}}, quiet=True, timeout=5).stdout == 'y\n' or fail('environment')
+ctx.which('sh') != None or fail('which')
+ctx.which('definitely-not-a-program-n43') == None or fail('which missing')
+ctx.report_progress('working')
+ctx.watch(Label('//:in.txt'))
+ctx.read(Label('//:in.txt')) == 'input' or fail('label read')
+ctx.read(ctx.path('sub/f.txt'), watch='auto')
+"#
+                ),
                 "{}",
                 &[],
             )
             .unwrap();
-        assert!(!fixture.root.path().join("cache").exists());
+        assert!(!working.exists(), "working directory must be deleted");
+        let observed = files(&result);
+        assert!(observed.iter().all(|o| o["path"] != "sub/f.txt"));
+        assert!(
+            observed.contains(&json!({"path": "//:in.txt", "kind": "file",
+            "state": format!("file:{}", crate::extension_download::sha256(b"input"))}))
+        );
+        assert!(result.inputs.host_facilities.contains("execute"));
+        assert!(result.inputs.host_facilities.contains("which"));
+        for (body, expected) in [
+            (
+                "ctx.watch('x')",
+                "attempted to watch path under working directory",
+            ),
+            (
+                "ctx.read(ctx.path('/etc/hostname'), watch='yes')",
+                "attempted to watch path outside workspace, but it's prohibited in the current context",
+            ),
+            (
+                "ctx.watch('/etc/hostname')",
+                "attempted to watch path outside workspace, but it's prohibited in the current context",
+            ),
+            (
+                "ctx.file('/tmp/opencode/n43-never-written', '')",
+                "Cannot write outside of the repository directory for path /tmp/opencode/n43-never-written",
+            ),
+            ("ctx.read('missing')", "No such file or directory"),
+            (
+                "ctx.path(1)",
+                "in call to path(), parameter 'path' got value of type 'int', want 'string, Label, or path'",
+            ),
+            (
+                "ctx.read(Label('//missing:go.mod'))",
+                "Unable to load package for //missing:go.mod: ",
+            ),
+            (
+                "ctx.read('x', watch='bad')",
+                "bad value for 'watch' parameter; want 'yes', 'no', or 'auto', got bad",
+            ),
+        ] {
+            fixture.error(body, "{}", &[], expected);
+            assert!(!working.exists(), "working directory must be deleted");
+        }
+        // watch='auto' of a host path outside the workspace silently skips.
+        let result = fixture
+            .run("ctx.read(ctx.path('/etc/hostname'))", "{}", &[])
+            .unwrap();
+        assert!(result.inputs.files.is_empty());
+        assert!(!std::path::Path::new("/tmp/opencode/n43-never-written").exists());
+    }
+
+    #[test]
+    fn module_ctx_extract_and_download_and_extract_into_the_working_directory() {
+        use crate::extension_io::tests::{Server, response};
+        let fixture = Fixture::new();
+        let archive = {
+            let mut builder = tar::Builder::new(Vec::new());
+            let mut header = tar::Header::new_gnu();
+            header.set_size(5);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "top/data.txt", &b"inner"[..])
+                .unwrap();
+            builder.into_inner().unwrap()
+        };
+        fs::write(fixture.root.path().join("arc.tar"), &archive).unwrap();
+        let sha = crate::extension_download::sha256(&archive);
+        let server = Server::new(vec![response(200, &archive, "")]);
+        fixture
+            .run(
+                &format!(
+                    r#"
+ctx.extract(Label('//:arc.tar'), 'out', strip_prefix='top')
+ctx.read('out/data.txt') == 'inner' or fail('extract')
+r = ctx.download_and_extract('{url}/arc.tar', 'dl', sha256='{sha}', strip_prefix='top')
+r.success and r.sha256 == '{sha}' or fail(r)
+ctx.read('dl/data.txt') == 'inner' or fail('download_and_extract')
+"#,
+                    url = server.url
+                ),
+                "{}",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(server.count(), 1);
     }
 
     #[test]
@@ -2132,14 +2003,14 @@ str(f) == repr(f) or fail(str(f))
 dir(f) == ['get'] or fail(dir(f))
 hasattr(ctx, 'facts') or fail('hasattr')
 (ctx.facts == ctx.facts and f == ctx.facts and f != None) or fail('facts equality')
-sorted(dir(ctx)) == ['download', 'extension_metadata', 'facts', 'getenv', 'is_dev_dependency', 'modules', 'os', 'path', 'read', 'root_module_has_non_dev_dependency'] or fail(sorted(dir(ctx)))
+sorted(dir(ctx)) == ['download', 'download_and_extract', 'execute', 'extension_metadata', 'extract', 'facts', 'file', 'getenv', 'is_dev_dependency', 'modules', 'os', 'path', 'read', 'report_progress', 'root_module_has_non_dev_dependency', 'tag_sort_key', 'watch', 'which'] or fail(sorted(dir(ctx)))
 dir(ctx) == sorted(dir(ctx)) or fail('dir order')
 "#,
                 "{}",
                 &[],
             )
             .unwrap();
-        assert!(result.io_observations.is_empty());
+        assert!(result.inputs.files.is_empty());
         for (body, expected) in [
             ("{ctx.facts: 1}", "unhashable type: 'Facts'"),
             ("ctx.facts['k']", "Facts has no key \"k\""),
@@ -2398,132 +2269,127 @@ return m
         let sha = crate::extension_download::sha256(body);
         let fixture = Fixture::new();
         let result = fixture.run(&format!(r#"
-hasattr(ctx, 'download') or fail('download absent')
-hasattr(ctx, 'read') or fail('read absent')
-'download' in dir(ctx) or fail('dir download absent')
-'read' in dir(ctx) or fail('dir read absent')
 result = ctx.download(({url:?},), 'data', {sha:?}, False, False, '', {{}}, {{}}, integrity='', block=True)
 type(result) == 'struct' or fail('not a struct')
 sorted(dir(result)) == ['integrity', 'sha256', 'size_bytes', 'success'] or fail(dir(result))
 result.success and result.sha256 == {sha:?} and result.size_bytes == {size} or fail(result)
-json.decode(ctx.read(path='data', watch='auto'))['versions'][0] == '1.99.1' or fail('not actual JSON')
+json.decode(ctx.read('data', watch='auto'))['versions'][0] == '1.99.1' or fail('not actual JSON')
 ctx.download([], 'data', {sha:?}, allow_fail=True).success or fail('reuse failed')
 r(name='actual', words=[ctx.read('data', watch='no')])
 "#, url=server.url, size=body.len()), "{}", &[]).unwrap();
         assert_eq!(server.count(), 1);
-        assert_eq!(result.io_observations.len(), 4);
+        // Reads of the working directory are never recorded (java:1669-1676).
+        assert!(result.inputs.files.is_empty());
+        assert!(result.inputs.host_facilities.contains("download"));
         assert_eq!(result.repositories.len(), 1);
     }
 
     #[test]
-    fn module_download_preflight_types_and_unsupported_controls_make_no_requests() {
+    fn module_download_block_false_wait_auth_headers_and_executable() {
         use crate::extension_io::tests::{Server, response};
-        let server = Server::new(vec![response(200, b"unused", "")]);
+        let body = b"#!/bin/sh\necho ok\n";
+        let server = Server::new(vec![
+            response(200, body, ""),
+            response(404, b"", ""),
+            response(200, body, ""),
+        ]);
+        let sha = crate::extension_download::sha256(body);
         let fixture = Fixture::new();
-        let base = format!(
-            "ctx.download({:?}, sha256={:?}",
-            server.url,
-            "00".repeat(32)
+        let url = format!("{}/tool", server.url);
+        fixture
+            .run(
+                &format!(
+                    r#"
+pending = ctx.download({url:?}, 'tool', sha256={sha:?}, executable=True, block=False,
+    headers={{'X-Single': 'one', 'X-Multi': ['a', 'b']}},
+    auth={{{url:?}: {{'type': 'basic', 'login': 'user', 'password': 'pw'}}}})
+type(pending) == 'PendingDownload' or fail(type(pending))
+repr(pending) == "<pending download to '%s'>" % ctx.path('tool') or fail(repr(pending))
+dir(pending) == ['wait'] or fail(dir(pending))
+r = pending.wait()
+r.success and r.sha256 == {sha:?} or fail(r)
+pending.wait().success or fail('wait twice')
+ctx.execute(['test', '-x', ctx.path('tool')]).return_code == 0 or fail('executable')
+missing = ctx.download({url:?} + '-missing', 'missing', block=False, allow_fail=True)
+missing.wait().success == False or fail('allow_fail')
+# The repository download cache serves a known checksum without a request.
+ctx.download({url:?} + '-missing2', 'cached', sha256={sha:?}, block=False).wait().success or fail('cache')
+ctx.read('cached') == ctx.read('tool') or fail('cached bytes')
+"#
+                ),
+                "{}",
+                &[],
+            )
+            .unwrap();
+        let requests = server.requests.lock().unwrap().clone();
+        assert!(requests[0].contains("x-single: one\r\n"), "{}", requests[0]);
+        assert!(requests[0].contains("x-multi: a\r\n"), "{}", requests[0]);
+        assert!(requests[0].contains("x-multi: b\r\n"), "{}", requests[0]);
+        assert!(
+            requests[0].contains("authorization: Basic dXNlcjpwdw==\r\n"),
+            "{}",
+            requests[0]
         );
-        for suffix in [
-            ", executable=True)",
-            ", block=False)",
-            ", canonical_id='cache')",
-            ", auth={'x': {}})",
-            ", headers={'x': 'y'})",
-            ", auth=None)",
-            ", headers=[])",
-            ", executable=1)",
-            ", allow_fail=1)",
-            ", block='yes')",
-            ", output=Label('//:file'))",
-            ", integrity='sha256-AAAA')",
+        assert_eq!(requests.len(), 1, "{requests:?}");
+        // A failed pending download raises from wait() only.
+        let server = Server::new(vec![response(404, b"", "")]);
+        let never = crate::extension_download::sha256(b"never served");
+        fixture.error(
+            &format!(
+                "p = ctx.download('{}/x', 'x', sha256='{never}', block=False)\np.wait()",
+                server.url
+            ),
+            "{}",
+            &[],
+            "Error downloading",
+        );
+        for (body, expected) in [
+            (
+                "ctx.download('https://localhost/x', auth={'https://localhost/x': {'type': 'basic', 'login': 'u'}})",
+                "Found request to do basic auth for https://localhost/x without 'login' and 'password' being provided.",
+            ),
+            (
+                "ctx.download('https://localhost/x', auth={'https://localhost/x': {'type': 'pattern'}})",
+                "Found request to do pattern auth for https://localhost/x without a pattern being provided",
+            ),
+            (
+                "ctx.download('https://localhost/x', auth={'https://localhost/x': {'type': 'pattern', 'pattern': 'Bearer <password>'}})",
+                "Auth pattern contains <password> but it was not provided in auth dict.",
+            ),
+            (
+                "ctx.download('https://localhost/x', headers={'X': 1})",
+                "headers argument must be a dict whose keys are string and whose values are either string or sequence of string",
+            ),
+            (
+                "ctx.download('https://localhost/x', headers={'X': [1]})",
+                "at index 0 of header values, got element of type int, want string",
+            ),
+            (
+                "ctx.download('https://localhost/x', auth={'k': 1})",
+                "got dict<string, int> for 'auth', want dict<string, dict>",
+            ),
         ] {
-            assert!(
-                fixture.run(&(base.clone() + suffix), "{}", &[]).is_err(),
-                "{suffix}"
-            );
+            fixture.error(body, "{}", &[], expected);
         }
-        for body in [
-            "ctx.download([\"https://localhost\", 1], allow_fail=True)",
-            "ctx.download(1, allow_fail=True)",
-            "ctx.download({'https://localhost': 1}, allow_fail=True)",
-            "ctx.download([], '', '', False, True, '', {}, {}, 'sha256-AAAA')",
-            "ctx.download([], unknown=True)",
-            "ctx.read('file', 'no')",
-            "ctx.read('file', watch=1)",
-            "ctx.read('file', watch='invalid')",
-            "ctx.read(Label('//:file'))",
-        ] {
-            assert!(fixture.run(body, "{}", &[]).is_err(), "{body}");
-        }
-        assert_eq!(server.count(), 0);
-        fixture.run("result = ctx.download([], allow_fail=True)\ndir(result) == ['success'] and result.success == False or fail(result)", "{}", &[]).unwrap();
     }
 
     #[test]
-    fn foreign_frozen_and_expired_module_receivers_cannot_borrow_authority() {
-        let fixture = Fixture::new();
-        let io = crate::extension_io::ScratchExecutionIo::new().unwrap();
-        let id = io.identity();
-        let context = Context {
-            repositories: fixture.repositories.clone(),
-            public_label: label(),
-            calls: CallRecorder::default(),
-            io: RefCell::new(io),
-            environment: RefCell::default(),
-        };
-        let frozen = Module::with_temp_heap(|module| {
-            module.set(
-                "ctx",
-                module.heap().alloc(ModuleCtxGen {
-                    modules: Value::new_none(),
-                    os: Value::new_none(),
-                    root_has_non_dev_dependency: false,
-                    execution_identity: id,
-                }),
-            );
-            module.freeze().unwrap().get("ctx").unwrap()
-        });
-        Module::with_temp_heap(|module| {
-            let heap = module.heap();
-            let foreign = heap.alloc(ModuleCtxGen {
-                modules: Value::new_none(),
-                os: Value::new_none(),
-                root_has_non_dev_dependency: false,
-                execution_identity: id + 1,
-            });
-            let own = heap.alloc(ModuleCtxGen {
-                modules: Value::new_none(),
-                os: Value::new_none(),
-                root_has_non_dev_dependency: false,
-                execution_identity: id,
-            });
-            let mut eval = Evaluator::new(&module);
-            assert!(io_receiver(own, &eval).is_err());
-            eval.extra = Some(&context);
-            assert!(io_receiver(foreign, &eval).is_err());
-            assert!(io_receiver(heap.access_owned_frozen_value(&frozen), &eval).is_err());
-            assert_eq!(io_receiver(own, &eval).unwrap(), id);
-            context.io.borrow_mut().close().unwrap();
-            assert!(io_receiver(own, &eval).is_err());
-        });
-    }
-
-    #[test]
-    fn actual_context_checksumless_private_tls_reads_real_json_and_cleans_before_freeze() {
+    fn module_download_over_verified_tls_reads_real_json() {
         let server = crate::extension_io::tests::TlsServer::new();
         let fixture = Fixture::new();
-        let io = crate::extension_io::ScratchExecutionIo::new()
-            .unwrap()
-            .with_client(crate::extension_download::trusted_client(&server.pem));
-        let identity = io.identity();
+        let working = tempfile::tempdir_in("/tmp/opencode").unwrap();
         let context = Context {
             repositories: fixture.repositories.clone(),
             public_label: label(),
             calls: CallRecorder::default(),
-            io: RefCell::new(io),
-            environment: RefCell::default(),
+            base: crate::repository_ctx::Context::module_extension(
+                fixture.repositories.clone(),
+                working.path(),
+                label(),
+                "//:defs.bzl%ext".to_owned(),
+            )
+            .unwrap()
+            .with_client(crate::extension_download::trusted_client(&server.pem)),
         };
         Module::with_temp_heap(|module| {
             let heap = module.heap();
@@ -2533,18 +2399,14 @@ r(name='actual', words=[ctx.read('data', watch='no')])
                     modules: Value::new_none(),
                     os: Value::new_none(),
                     root_has_non_dev_dependency: false,
-                    execution_identity: identity,
                 }),
             );
             let mut eval = Evaluator::new(&module);
             eval.extra = Some(&context);
             eval.eval_module(starlark::syntax::AstModule::parse("tls.star", format!("r = ctx.download({:?}, 'data')\nr.success and r.size_bytes == 20 or fail(r)\njson.decode(ctx.read('data'))['real'] == 'tls bytes' or fail('not real data')\n", server.url), &starlark::syntax::Dialect::Standard).unwrap(), &crate::package::bzl_globals()).unwrap();
-            drop(eval);
-            let observations = context.io.borrow_mut().close().unwrap();
-            assert_eq!(observations.len(), 2);
-            assert!(context.io.borrow().check_receiver(identity).is_err());
-            module.freeze().unwrap();
         });
+        let Context { base, .. } = context;
+        assert!(base.finish().unwrap().host_facilities.contains("download"));
     }
 
     #[test]
@@ -2584,15 +2446,15 @@ r(name='actual', words=[ctx.read('data', watch='no')])
         let unread = fixture
             .run("e = ctx.os.environ\n(type(e) == 'dict' and getattr(ctx.os, 'environ', {}) == e) or fail('environ')\ne['X'] = 'y'\n('X' not in ctx.os.environ) or fail('fresh')\nr(name='m', words=[])", "{}", &[])
             .unwrap();
-        assert!(unread.watched_env.is_none());
+        assert!(unread.inputs.watched_env.is_none());
         assert_eq!(reader.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
         let read = fixture
             .run("r(name='m', words=[ctx.getenv('SYNTHETIC', 'default'), str(ctx.getenv('SYNTHETIC'))])", "{}", &[])
             .unwrap();
-        assert!(read.watched_env.is_some());
-        assert!(!format!("{:?}", read.watched_env).contains("SyntheticSecret"));
+        assert!(read.inputs.watched_env.is_some());
+        assert!(!format!("{:?}", read.inputs.watched_env).contains("SyntheticSecret"));
         assert!(
-            !serde_json::to_string(&read.watched_env)
+            !serde_json::to_string(&read.inputs.watched_env)
                 .unwrap()
                 .contains("SyntheticSecret")
         );
@@ -2618,7 +2480,7 @@ r(name='actual', words=[ctx.read('data', watch='no')])
         )
         .unwrap();
         let declared = fixture.run_loaded(loaded, &[], true).unwrap();
-        assert!(declared.watched_env.is_some());
+        assert!(declared.inputs.watched_env.is_some());
     }
 
     #[test]
@@ -2633,7 +2495,6 @@ r(name='actual', words=[ctx.read('data', watch='no')])
                         modules: Value::new_none(),
                         os: crate::host_os::alloc(heap, metadata.clone()).unwrap(),
                         root_has_non_dev_dependency: false,
-                        execution_identity: 0,
                     }),
                 );
             }
@@ -2717,9 +2578,82 @@ r(name='actual', words=[ctx.read('data', watch='no')])
     }
 
     #[test]
-    fn callback_tick_limit_is_enforced() {
+    fn callbacks_have_no_step_or_heap_limit() {
+        // Bazel bounds neither (former native caps: 1 M ticks, 128 MiB heap).
         let fixture = Fixture::new();
-        fixture.error("for i in range(2000000):\n    x = i + 1", "{}", &[], "tick");
+        fixture
+            .run(
+                "for i in range(2000000):\n    x = i + 1\nbig = ['x' * 1024 for i in range(200000)]\nlen(big) == 200000 or fail('heap')",
+                "{}",
+                &[],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn label_same_package_label_relative_and_repo_root() {
+        let fixture = Fixture::new();
+        fixture
+            .run(
+                r#"
+l = Label('//pkg:in.txt')
+str(l.same_package_label('other')) == '@@//pkg:other' or fail(l.same_package_label('other'))
+str(l.relative(':rel')) == '@@//pkg:rel' or fail('relative')
+str(l.relative('//x:y')) == '@@//x:y' or fail('absolute')
+l.repo_root == '' and Label('@@foo+//p:n').repo_root == 'external/foo+' or fail('repo_root')
+str(Label('@@foo+//p:n').relative(':m')) == '@@foo+//p:m' or fail('other repo')
+'relative' in dir(l) and 'same_package_label' in dir(l) and 'repo_root' in dir(l) or fail(dir(l))
+"#,
+                "{}",
+                &[],
+            )
+            .unwrap();
+        fixture.error(
+            "Label('//pkg:x').same_package_label('a:b')",
+            "{}",
+            &[],
+            "invalid target name 'a:b': target names may not contain ':'",
+        );
+    }
+
+    #[test]
+    fn tag_sort_key_orders_tags_across_classes_and_modules() {
+        let fixture = Fixture::new();
+        let tags = vec![
+            tag("b", 0, json!({"name": "first"}), false),
+            tag("a", 1, json!({"name": "second"}), false),
+            tag("b", 2, json!({"name": "third"}), true),
+        ];
+        let other = vec![tag("a", 0, json!({"name": "fourth"}), false)];
+        let mut second = participant(other);
+        second.owner = "other+".to_owned();
+        second.name = "other".to_owned();
+        second.is_root = false;
+        fixture
+            .run(
+                r#"
+all = []
+for m in ctx.modules:
+    for cls in [m.tags.a, m.tags.b]:
+        all.extend(cls)
+ordered = sorted(all, key = lambda t: ctx.tag_sort_key(t))
+[t.name for t in ordered] == ['first', 'second', 'third', 'fourth'] or fail([t.name for t in ordered])
+k = ctx.tag_sort_key(ordered[1])
+type(k) == 'sort_key' and repr(k) == '<sort_key>' and str(k) == '<sort_key>' or fail(repr(k))
+k == ctx.tag_sort_key(ordered[1]) and {k: 1}[ctx.tag_sort_key(ordered[1])] == 1 or fail('equality/hash')
+ctx.tag_sort_key(ordered[0]) < k and k < ctx.tag_sort_key(ordered[3]) or fail('order')
+ctx.is_dev_dependency(ordered[2]) or fail('dev')
+"#,
+                "{'a': tag_class(attrs={'name': attr.string()}), 'b': tag_class(attrs={'name': attr.string()})}",
+                &[participant(tags), second],
+            )
+            .unwrap();
+        fixture.error(
+            "ctx.tag_sort_key(1)",
+            "{}",
+            &[],
+            "in call to tag_sort_key(), parameter 'tag' got value of type 'int', want 'bazel_module_tag'",
+        );
     }
 
     #[test]

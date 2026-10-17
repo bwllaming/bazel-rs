@@ -35,7 +35,8 @@ remain. Pinned source: Bazel 9.3 (`/tmp/opencode/bazel-9.3-reference`).
   link) once a mirror responds; a checksum mismatch leaves the downloaded
   bytes, also under `allow_fail`; `executable` adds the
   execute bits after success (java:676); the result is
-  `calculateDownloadResult` (java:559-583). `block = False` fails explicitly.
+  `calculateDownloadResult` (java:559-583). `block = False` returns a
+  `PendingDownload` (N43, docs/EXTENSION_CTX_SURFACE.md).
 - **Failure reporting**: each failed mirror prints `WARNING: Download from URL
   failed: class CLASS MESSAGE` (HttpDownloader.recordFailure, java:217-240);
   a total failure is `java.io.IOException: Error downloading [URLS] to PATH:
@@ -87,7 +88,8 @@ Kept:
 - Bazel limits: 40 redirects, 10 s/20 s timeouts, zip symlink target
   `< 256` bytes (ZipDecompressor `MAX_PATH_LENGTH`), zstd window 2^31,
   `execute` timeouts given by the caller, checksum/integrity verification,
-  `canonical_id` accepted (no repository-cache keying natively).
+  `canonical_id` keys the repository download cache (N43,
+  docs/EXTENSION_CTX_SURFACE.md).
 - Safety by the correct mechanism, independent of size: per-entry path
   normalization and escape checks, no writes through symlinks, in-root hard
   links only, zip link-escape check, atomic publication.
@@ -99,8 +101,8 @@ Kept:
   `.timeout()`, which would be a whole-transfer deadline).
 - Not repository I/O, unchanged: the Starlark `json` module's decode/encode
   host budgets (docs/JSON.md; bound to the json validator's frozen plan), the
-  extension preparation budgets (repository_budget.rs, extension_calls.rs),
-  and the repository callback evaluator bounds (call frames, ticks, heap).
+  extension preparation budgets and the callback evaluator tick/heap bounds
+  were removed in N43 (docs/EXTENSION_CTX_SURFACE.md).
 - Explicitly unsupported: single-file gz/xz/zst/bz2, ar/deb, 7z,
-  `rename_files`, `strip_components > 0`, non-empty `auth`/`headers`,
-  `download(block = False)`.
+  `rename_files`, `strip_components > 0` (N43 added `auth`/`headers` and
+  `download(block = False)`).

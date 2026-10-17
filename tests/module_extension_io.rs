@@ -166,11 +166,8 @@ fn sha(bytes: &[u8]) -> String {
 }
 const BODY: &[u8] = br#"{"version":"go1.99.1","files":[{"sha256":"real-fixture-digest"}]}"#;
 
-include!("support/extension_io_preflight_cases.rs");
-include!("support/extension_io_boundary_cli.rs");
-
 #[test]
-fn checksummed_json_creates_real_repository_and_consumer_cache_but_fresh_cli_refetches() {
+fn checksummed_json_creates_real_repository_and_fresh_cli_reuses_the_download_cache() {
     let server = Server::new(BODY);
     let fixture = Fixture::new(&server.url, &sha(BODY));
     let expected = b"go1.99.1:real-fixture-digest";
@@ -179,11 +176,13 @@ fn checksummed_json_creates_real_repository_and_consumer_cache_but_fresh_cli_ref
     assert_eq!(roots.len(), 1);
     assert_eq!(fs::read(roots[0].join("data.txt")).unwrap(), expected);
     assert_eq!(server.count(), 1);
+    // Every fresh CLI re-evaluates the extension; the checksummed download is
+    // served by the repository download cache (DownloadManager.java:264-277).
     assert_eq!(fixture.build(&["build", "//:copy"]), expected);
-    assert_eq!(server.count(), 2);
+    assert_eq!(server.count(), 1);
     assert_eq!(fixture.roots(), roots);
     assert_eq!(fixture.build(&["build", "@chosen//:data.txt"]), expected);
-    assert_eq!(server.count(), 3);
+    assert_eq!(server.count(), 1);
     assert_eq!(fixture.roots(), roots);
     assert!(
         server
