@@ -4,6 +4,8 @@
 //! extensions and repository rules, like rules_jvm_external 6.7. Never uses a
 //! public registry or a reference Bazel executable.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+
+include!("support/executable_script.rs");
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
@@ -71,7 +73,9 @@ fn copy_dir(from: &Path, to: &Path) {
         if entry.file_type().unwrap().is_dir() {
             copy_dir(&entry.path(), &target);
         } else {
-            fs::copy(entry.path(), target).unwrap();
+            // An executable fixture is written by a separate process: no
+            // descriptor of it in this (spawning) test process (ETXTBSY).
+            copy_file(&entry.path(), &target);
         }
     }
 }
@@ -295,4 +299,16 @@ fn non_registry_module_locations_use_the_canonical_module_file_label() {
         last_error(&f.query("update", &["//:plain"])),
         "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a use_repo() call at @@collide_local+//:MODULE.bazel:4:9, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive"
     );
+}
+
+/// `fs::copy`, except that a file with any execute bit is re-created through
+/// `write_executable_script` (bytes and mode kept).
+fn copy_file(from: &Path, to: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = fs::metadata(from).unwrap().permissions().mode() & 0o7777;
+    if mode & 0o111 != 0 {
+        write_executable_script(to, fs::read(from).unwrap(), mode);
+    } else {
+        fs::copy(from, to).unwrap();
+    }
 }

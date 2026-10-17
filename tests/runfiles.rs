@@ -2,6 +2,8 @@
 //! executable and test rules (analysis only), docs/RUNFILES.md.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
+include!("support/executable_script.rs");
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -679,12 +681,10 @@ outexe = rule(_out, executable = True, attrs = {"executable": attr.output()})
         rejected(&ws.run(&["build", &format!("//pkg:{target}")]), message);
     }
     // A source file has a single-executable FilesToRunProvider without runfiles.
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(
-        ws.path().join("pkg/tool.sh"),
-        fs::Permissions::from_mode(0o755),
-    )
-    .unwrap();
+    // Re-created by a separate process (ETXTBSY: no descriptor of the
+    // executable in this spawning test process).
+    let tool = ws.path().join("pkg/tool.sh");
+    write_executable_script(&tool, fs::read(&tool).unwrap(), 0o755);
     let built = outputs(&ws.run(&["build", "//pkg:run_source"]));
     assert_eq!(built.len(), 1);
     // Unsupported executable `args` expansion fails explicitly (Bazel rejects
@@ -831,18 +831,17 @@ consumer(name = "consumer", binary = ":tool")
         &ws.run(&["build", "//shell:linked"]),
         "file 'shell/tool.sh' is not executable",
     );
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(
-        ws.path().join("shell/tool.sh"),
-        fs::Permissions::from_mode(0o755),
-    )
-    .unwrap();
+    // Re-created by a separate process (ETXTBSY: no descriptor of the
+    // executable in this spawning test process).
+    let tool = ws.path().join("shell/tool.sh");
+    write_executable_script(&tool, fs::read(&tool).unwrap(), 0o755);
     let linked = outputs(&ws.run(&["build", "//shell:linked"]));
     let (_, path) = linked
         .iter()
         .find(|(_, path)| path.ends_with("shell/linked"))
         .unwrap();
     assert_eq!(fs::read(path).unwrap(), b"#!/bin/sh\necho tool\n");
+    use std::os::unix::fs::PermissionsExt;
     assert_eq!(
         fs::metadata(path).unwrap().permissions().mode() & 0o7777,
         0o755
@@ -962,12 +961,10 @@ tools(name = "binary_tool", tool = ":bin")
         probes(&result),
         [serde_json::json!([true, "Outputs", false, true])]
     );
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(
-        ws.path().join("pkg/tool.sh"),
-        fs::Permissions::from_mode(0o755),
-    )
-    .unwrap();
+    // Re-created by a separate process (ETXTBSY: no descriptor of the
+    // executable in this spawning test process).
+    let tool = ws.path().join("pkg/tool.sh");
+    write_executable_script(&tool, fs::read(&tool).unwrap(), 0o755);
     for target in ["//pkg:source_tool", "//pkg:depset_tool"] {
         let built = outputs(&ws.run(&["build", target]));
         assert_eq!(built.len(), 1, "{target}");

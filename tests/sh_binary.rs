@@ -9,6 +9,8 @@
 //! and texts are genuine Bazel 9.3.0's (paired capture
 //! tests/fixtures/sh_binary/reference_receipt.json).
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+
+include!("support/executable_script.rs");
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -39,7 +41,9 @@ fn copy_tree(from: &Path, to: &Path) {
         if entry.file_type().unwrap().is_dir() {
             copy_tree(&entry.path(), &target);
         } else {
-            fs::copy(entry.path(), target).unwrap();
+            // An executable fixture is written by a separate process: no
+            // descriptor of it in this (spawning) test process (ETXTBSY).
+            copy_file(&entry.path(), &target);
         }
     }
 }
@@ -415,5 +419,17 @@ fn label_keyed_string_dict_keys_are_query_edges() {
     let text = String::from_utf8_lossy(&output.stdout);
     for label in ["//lk:p1", "//lk:p2", "//lk:a.txt"] {
         assert!(text.lines().any(|line| line == label), "{label} in {text}");
+    }
+}
+
+/// `fs::copy`, except that a file with any execute bit is re-created through
+/// `write_executable_script` (bytes and mode kept).
+fn copy_file(from: &Path, to: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = fs::metadata(from).unwrap().permissions().mode() & 0o7777;
+    if mode & 0o111 != 0 {
+        write_executable_script(to, fs::read(from).unwrap(), mode);
+    } else {
+        fs::copy(from, to).unwrap();
     }
 }

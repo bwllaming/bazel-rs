@@ -10,6 +10,8 @@
 //! is tests/fixtures/genrule_toolchains/workspace with N30's builtin-closure
 //! stubs (tests/fixtures/test_flags/stubs).
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+
+include!("support/executable_script.rs");
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -37,7 +39,9 @@ fn copy_tree(from: &Path, to: &Path) {
             fs::create_dir_all(&target).unwrap();
             copy_tree(&entry.path(), &target);
         } else {
-            fs::copy(entry.path(), target).unwrap();
+            // An executable fixture is written by a separate process: no
+            // descriptor of it in this (spawning) test process (ETXTBSY).
+            copy_file(&entry.path(), &target);
         }
     }
 }
@@ -421,5 +425,17 @@ fn location_maps_skip_the_middle_of_alias_chains() {
         ),
     ] {
         f.rejected(&format!("//gt:{target}"), message);
+    }
+}
+
+/// `fs::copy`, except that a file with any execute bit is re-created through
+/// `write_executable_script` (bytes and mode kept).
+fn copy_file(from: &Path, to: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = fs::metadata(from).unwrap().permissions().mode() & 0o7777;
+    if mode & 0o111 != 0 {
+        write_executable_script(to, fs::read(from).unwrap(), mode);
+    } else {
+        fs::copy(from, to).unwrap();
     }
 }

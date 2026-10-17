@@ -4,6 +4,8 @@
 //! (artifacts/runfiles_trees-capture.py extracts them from this file).
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
+include!("support/executable_script.rs");
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
@@ -167,8 +169,7 @@ impl Workspace {
         for (name, text, mode) in fixture() {
             let path = ws.path().join(name);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(&path, text).unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+            write_mode(&path, text, mode);
         }
         ws
     }
@@ -180,8 +181,7 @@ impl Workspace {
     fn file(&self, name: &str, text: &str, mode: u32) {
         let path = self.path().join(name);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, text).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+        write_mode(&path, text, mode);
     }
 
     fn command(&self, args: &[&str], cwd: &str) -> Command {
@@ -865,5 +865,17 @@ fn query_never_lists_runfiles_artifacts() {
                 "{pattern} lists {marker}:\n{stdout}"
             );
         }
+    }
+}
+
+/// Writes a fixture file with `mode`; an executable one (`bazel run` execs
+/// source scripts through the runfiles tree) is written by a separate process
+/// so that no descriptor of it exists in this spawning test process (ETXTBSY).
+fn write_mode(path: &Path, text: &str, mode: u32) {
+    if mode & 0o111 != 0 {
+        write_executable_script(path, text, mode);
+    } else {
+        fs::write(path, text).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
     }
 }
