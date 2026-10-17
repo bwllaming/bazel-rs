@@ -826,15 +826,27 @@ mod tests {
 
     #[test]
     fn deadline_kills_leader_and_descendant() {
-        let temp = Temp::new();
-        let runner = temp.fake("/bin/sleep 30 &\nprintf '%s %s\\n' \"$$\" \"$!\" > pids\nwait");
-        let start = Instant::now();
-        let error = runner
-            .run(&temp.0, &[], Duration::from_millis(150))
-            .unwrap_err();
-        assert!(error.contains("deadline exceeded"), "{error}");
-        assert!(start.elapsed() < TEST_TIMEOUT);
-        assert_descendants_dead(&temp.0);
+        // The deadline must fall after the script has started its descendant
+        // and written `pids`; on a loaded host 150 ms was sometimes not
+        // enough for /bin/sh to get there (no `pids`: ENOENT). Each attempt
+        // still ends by the deadline; a longer one is used only when the
+        // previous expired before the fixture was in place.
+        for deadline in [150, 1000, 3000] {
+            let temp = Temp::new();
+            let runner =
+                temp.fake("/bin/sleep 30 &\nprintf '%s %s\\n' \"$$\" \"$!\" > pids.tmp\nmv pids.tmp pids\nwait");
+            let start = Instant::now();
+            let error = runner
+                .run(&temp.0, &[], Duration::from_millis(deadline))
+                .unwrap_err();
+            assert!(error.contains("deadline exceeded"), "{error}");
+            assert!(start.elapsed() < TEST_TIMEOUT);
+            if temp.0.join("pids").exists() {
+                assert_descendants_dead(&temp.0);
+                return;
+            }
+        }
+        panic!("the fixture never started its descendant within 3 s");
     }
 
     #[test]
