@@ -1679,6 +1679,9 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    include!("../tests/support/forty_link_read.rs");
+
     #[test]
     #[cfg(unix)]
     fn rejects_multiple_link_cycle_and_excessive_hops_but_preserves_forty_hops() {
@@ -1695,7 +1698,10 @@ mod tests {
             }
             fixture.commit();
             let tree = fixture.tree();
-            assert_eq!(fs::read(tree.root.join("link0")).unwrap(), b"original\n");
+            assert_eq!(
+                read_through_forty_links(&tree.root.join("link0")),
+                b"original\n"
+            );
             let rejected_cache = fixture.temp.path().join("rejected-cache");
             if cycle {
                 fs::remove_file(fixture.origin.join("link39")).unwrap();

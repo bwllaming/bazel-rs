@@ -603,6 +603,9 @@ mod tests {
         }
 
         #[cfg(target_os = "linux")]
+        include!("../tests/support/forty_link_read.rs");
+
+        #[cfg(target_os = "linux")]
         #[test]
         fn accepted_chain_limit_matches_linux_file_resolution() {
             let temp = TempDir::new();
@@ -620,7 +623,7 @@ mod tests {
                 entries.insert(name, target);
             }
             validate(&regular, &entries).unwrap();
-            assert_eq!(fs::read(temp.0.join("link0")).unwrap(), b"payload");
+            assert_eq!(read_through_forty_links(&temp.0.join("link0")), b"payload");
             entries.insert("extra".into(), "link0".into());
             symlink("link0", temp.0.join("extra")).unwrap();
             assert_eq!(
