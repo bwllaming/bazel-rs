@@ -52,9 +52,10 @@ Implemented in `src/custom_rule.rs` (`implicit_outputs`,
   the function (`glob() can only be used while evaluating a BUILD file or a
   legacy macro`, `package_name() can only be used while evaluating a BUILD
   file or a legacy or symbolic macro`, `_f() does not accept positional
-  arguments, but got 1`); bazel-rs reports a generic package-context text and
-  starlark-rust's binding error after the same `In rule L:` prefix
-  (EXPECTED_MESSAGE_DIFFERENCE rows). The native `.bzl` `native` struct has
+  arguments, but got 1`); bazel-rs reports a generic package-context text
+  after the same `In rule L:` prefix (EXPECTED_MESSAGE_DIFFERENCE rows); since
+  N33 the positional-argument text is Bazel's exactly (the receipt's
+  `fn_kwonly` row predates it). The native `.bzl` `native` struct has
   no `existing_rules` (pre-existing), so that call fails earlier. Arguments come
   from every nonconfigurable attribute by Starlark name (private `_x`
   included; unset labels are `None`; labels are `Label`s). A missing or
@@ -121,8 +122,9 @@ read `ctx.outputs.stripped_binary`/`ctx.outputs.dwp_file`
 * An output named like its own rule: Bazel warns (`target 'x' is both a rule
   and a file; please choose another name for the rule`, Rule.java:638-644)
   and the generated file shadows the rule; bazel-rs fails explicitly.
-* Output names with characters outside the native label subset (e.g. the
-  literal `%{` of an unterminated placeholder) fail as before.
+* (Resolved with N38's label grammar: the literal `%{` of an unterminated
+  placeholder is a valid output name and builds `lit/lit%{name` like genuine
+  Bazel; the receipt's `lit` row, EXPECTED_NATIVE_UNSUPPORTED, predates it.)
 * Unset built-in string attributes other than via explicit values, and
   placeholders reading values the native profile resolves only later, fail
   explicitly. `--incompatible_no_rule_outputs_param` is not modelled.

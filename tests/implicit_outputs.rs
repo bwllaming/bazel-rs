@@ -329,9 +329,24 @@ fn analysis_errors_and_explicit_native_failures() {
     }
     // Bazel warns and lets the generated file shadow the rule.
     f.rejected("//selfname:x", "which the native profile does not model");
-    // `%{` is literal text in an output name Bazel accepts; the native label
-    // subset does not.
-    f.rejected("//lit:x", "unsupported target name \"lit%{name\"");
+}
+
+#[test]
+fn unterminated_placeholder_is_literal_output_name() {
+    // `%{` is literal text in an output name; with Bazel's label grammar
+    // (N38) native builds it like genuine Bazel (receipt row lit:build,
+    // reference_files ["lit/lit%{name"]).
+    let f = Fixture::new();
+    let (outputs, stderr) = f.build(&["//lit:x"]);
+    assert_eq!(
+        printed(&stderr),
+        "ctx.outputs(e = <generated file lit/lit%{name>, o = None, os = []) [\"e\", \"o\", \"os\"]"
+    );
+    let files = outputs
+        .iter()
+        .map(|(_, path)| path.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(files, ["lit/lit%{name"]);
 }
 
 #[test]
@@ -344,7 +359,10 @@ fn implicit_outputs_function_runs_without_package_context() {
             "can only be used while evaluating a BUILD file or a legacy or symbolic macro",
         );
     }
-    // Arguments are positional only: a keyword-only parameter is never bound.
-    f.rejected("//fn_kwonly:x", "In rule //fn_kwonly:x: ");
-    f.rejected("//fn_kwonly:x", "named-only parameter `name`");
+    // Arguments are positional only: a keyword-only parameter is never bound
+    // (Bazel's text since N33).
+    f.rejected(
+        "//fn_kwonly:x",
+        "In rule //fn_kwonly:x: _f_kwonly() does not accept positional arguments, but got 1",
+    );
 }
