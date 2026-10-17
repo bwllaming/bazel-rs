@@ -101,7 +101,10 @@ execution root `<cache>/tests/work/<key>-<pid>/execroot`:
   `TEST_SRCDIR`/`JAVA_RUNFILES`/`PYTHON_RUNFILES`/`RUNFILES_DIR` (relative
   runfiles directory), `TEST_TMPDIR=_tmp/<first 32 hex digits of the SHA-256
   Fingerprint of the executable exec path, shard and run>` (TestStrategy.getTmpDirName),
-  `RUN_UNDER_RUNFILES=1`, the strict action `PATH`, `--test_env`,
+  `RUN_UNDER_RUNFILES=1`, the configuration's action environment (N42: strict
+  `PATH` or inherited `PATH`/`LD_LIBRARY_PATH`, `--action_env`), its `--test_env`
+  environment (a configuration option, docs/ACTION_ENV.md; fixed values, then
+  inherited names the client sets; both keyed into the test action),
   RunEnvironmentInfo `environment`/`inherited_environment`, `TEST_TARGET`,
   `TEST_SIZE`, `TEST_TIMEOUT`, `TEST_WORKSPACE=_main`, `TEST_BINARY`,
   `TEST_RANDOM_SEED`/`TEST_RUN_NUMBER` (several runs), `TESTBRIDGE_TEST_ONLY`,
@@ -195,8 +198,11 @@ native CLI exits 1 with `bazel-rs:`). UNAVAILABLE: a genuine rules_shell
 `sh_test` (the fixture registry lacks `bazel_skylib@1.6.1`; natively genuine
 rules_shell rules also hit the N23f analysis gaps). Normalized: execution
 roots (Bazel sandbox vs native work directories), testlogs roots, the
-configuration mnemonic (`k8-fastbuild` vs `rust-fastbuild`, D1), `_tmp`
-fingerprints (they hash that exec path), durations and dates.
+configuration mnemonic (`k8-fastbuild` vs the then-native `rust-fastbuild`, D1), `_tmp`
+fingerprints (they hash that exec path), durations and dates. Since N41 closed D1
+the native roots are `k8-fastbuild` and the `_tmp` fingerprint is Bazel's for the same
+exec path (`tmp_dir_name_matches_bazel_fingerprint`); the integration-15 native replay
+against the logged reference reproduces every recorded verdict (M36: EXACT).
 
 ## Not covered
 
