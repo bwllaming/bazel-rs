@@ -76,14 +76,17 @@ CASES = [
     case('participants.bfs-alias-dev-version', probes=('valid', 'invalid-canonical')),
     case('labels.owners-and-forward-sibling'),
     case('identity.private-and-public-alias', probes=('private', 'public')),
+    # N43: module_ctx runs on repository_ctx's code with Bazel's watch rules and
+    # no evaluator tick caps; both were native boundaries before.
+    case('context.read-watch-working-directory'),
+    case('definition.large-evaluation', probes=('initialization', 'callback')),
     case('native.preparation-cycles', 'native_boundary', ('ordinary', 'direct')),
-    case('native.context-and-return', 'native_boundary', ('facts', 'read-watch', 'integer', 'dict')),
+    case('native.context-and-return', 'native_boundary', ('facts', 'integer', 'dict')),
     case('native.isolated-on-demand', 'native_boundary', ('demanded', 'unused', 'ungated')),
     case('native.immutable-projections', 'native_boundary', ('modules', 'tags', 'words')),
     case('native.refresh-and-repair', 'native_boundary', ('cold', 'tag-change', 'callback-change', 'input-change', 'repair')),
     case('native.parallel-publication', 'native_boundary', ('parallel-1', 'parallel-2')),
     case('native.names-and-laziness', 'native_boundary', ('invalid-name', 'unknown-canonical', 'main-only')),
-    case('native.tick-budgets', 'native_boundary', ('initialization', 'callback')),
 ]
 PLAN = [(c['name'], c['kind']) for c in CASES]
 DIAGNOSTICS = {
@@ -106,8 +109,10 @@ DIAGNOSTICS = {
     'immutable': r'(?:frozen|immutable)[^\n]*(?:list|value|mutat)|(?:mutat|append)[^\n]*(?:frozen|immutable)',
     'name': r'invalid repository name[^\n]*a\+b|a\+b[^\n]*(?:invalid|valid repository name)',
     'canonical': r'(?:unknown|not found|not visible|not defined|unavailable|unrecognized)[^\n]*\+unknown\+made|\+unknown\+made[^\n]*(?:unknown|not found|not visible|not defined|unavailable|unrecognized)',
-    'ticks': direct.DIAGNOSTICS['ticks'],
-    'read-watch': r'(?m)^error: unsupported module I/O profile: watch=yes on extension-owned files$',
+    # StarlarkBaseExternalContext.maybeWatch: watch="yes" on a path under the
+    # extension working directory. Genuine Bazel 9.3 prints this as
+    # "Error in read: ..."; native (N43) as its whole primary error line.
+    'read-watch': r'(?m)^(?:Error in read|error): attempted to watch path under working directory$',
 }
 DIAGNOSTICS['facts'] = (r'(?:no (?:attribute|field|method)|has no|not supported|unsupported)[^\n]*\bfacts\b'
                         r'|\bfacts\b[^\n]*(?:not supported|unsupported|not available|not found)')
@@ -131,24 +136,36 @@ def require_rejection(record, diagnostic):
             or not re.search(DIAGNOSTICS[diagnostic], text, re.I)):
         raise ValueError('expected controlled module-extension rejection: ' + diagnostic)
     if diagnostic == 'read-watch':
-        # Captured native call diagnostic: the supported read method rejects
-        # watch=yes after recording, before file lookup or repository execution.
-        planned = fixture('native.context-and-return', 'read-watch')['files']['ext.bzl'].decode().splitlines()
+        # The read method rejects watch=yes after recording, before file lookup
+        # or repository execution: exact native text, Bazel's traceback site.
+        planned = fixture('context.read-watch-working-directory')['files']['ext.bzl'].decode().splitlines()
         statement = '    ctx.read("x",watch="yes")'
         if planned.count(statement) != 1:
             raise ValueError('ambiguous planned read-watch call')
         line = planned.index(statement)+1
+        if (planned[line-2] != '    maker(name="made")'
+                or planned[line] != '    fail('+quote(FAIL_MARKER)+')'):
+            raise ValueError('read-watch call is not between declaration and sentinel')
+        if text.startswith('bazel-rs: '):
+            native = True
+        elif re.search(r'(?m)^Error in read: attempted to watch path under working directory$', text):
+            native = False
+        else:
+            raise ValueError('expected exact read-watch failure')
+        if not native:
+            if (not re.search(r'(?m)^\tFile "[^"\n]*/ext\.bzl", line ' + str(line) + r', column 13, in _impl$', text)
+                    or ('\t\t' + statement.strip() + '\n') not in text):
+                raise ValueError('expected genuine read-watch traceback at the planned call')
+            return
         expected = ('bazel-rs: module extension //:ext.bzl: Traceback (most recent call last):\n'
                     '  File <builtin>, in <module>\n'
                     '  * //:ext.bzl:'+str(line)+', in _impl\n'
                     '  '+statement+'\n'
-                    'error: unsupported module I/O profile: watch=yes on extension-owned files\n'
+                    'error: attempted to watch path under working directory\n'
                     ' --> //:ext.bzl:'+str(line)+':5\n'
                     '  |\n'+str(line)+' | '+statement+'\n'
                     '  |     '+'^'*len(statement.strip())+'\n  |\n\n')
-        if (code != 1 or record['stdout'] or text != expected
-                or planned[line-2] != '    maker(name="made")'
-                or planned[line] != '    fail('+quote(FAIL_MARKER)+')'):
+        if code != 1 or record['stdout'] or text != expected:
             raise ValueError('expected exact native read-watch option failure after declaration')
 
 def participants(files):
@@ -294,13 +311,15 @@ def fixture(name, probe='result'):
         # use_repo fixups) and ctx.facts surfaces moved to unit/CLI tests;
         # these probes keep the remaining explicit native boundaries.
         operation = {'facts': 'value=ctx.facts["missing"]',
-                     'read-watch': 'ctx.read("x",watch="yes")',
                      'integer': 'return 42', 'dict': 'return {}'}[probe]
         files['ext.bzl'] = extension('maker(name="made")\n' + operation)
-        if probe == 'read-watch':
-            files['ext.bzl'] = extension('maker(name="made")\n'+operation+'\nfail('+quote(FAIL_MARKER)+')')
-            files['rules.bzl'] = direct.rule('fail('+quote(LAZY_MARKER)+')')
         diagnostic = 'return' if probe in ('integer', 'dict') else probe
+    elif name == 'context.read-watch-working-directory':
+        # Was native.context-and-return read-watch (a native-only profile
+        # rejection before N43); now Bazel's maybeWatch error on both engines.
+        files['ext.bzl'] = extension('maker(name="made")\nctx.read("x",watch="yes")\nfail('+quote(FAIL_MARKER)+')')
+        files['rules.bzl'] = direct.rule('fail('+quote(LAZY_MARKER)+')')
+        diagnostic = 'read-watch'
     elif name == 'native.isolated-on-demand':
         files['MODULE.bazel'] = ROOT_MODULE + USAGE.replace('"files")', '"files",isolate=True)')
         # Integration-14 (N40) gates `isolate` like Bazel: without the flag the
@@ -339,8 +358,9 @@ def fixture(name, probe='result'):
                 target, diagnostic = '@@+unknown+made//:data', 'canonical'
             else:
                 main_only = True
-    elif name == 'native.tick-budgets':
-        diagnostic = 'ticks'
+    elif name == 'definition.large-evaluation':
+        # Was native.tick-budgets (native tick-cap rejections before N43): a
+        # large top-level or callback comprehension evaluates on both engines.
         files['ext.bzl'] = (extension('maker(name="made")', prefix='load(":rules.bzl","maker")\nINITIALIZATION=[i+1 for i in range(1000000)]\n') if probe == 'initialization'
                             else extension('maker(name="made")\nvalues=[i+1 for i in range(1000000)]'))
     if main_only:
@@ -600,9 +620,8 @@ def validate_check(check, report, args, workspace, reference):
                 raise ValueError('wrong rejection class')
             if phase['engine'] == 'native' and phase['publication_entries'] != []:
                 raise ValueError('negative phase published repositories')
-            if value['diagnostic'] == 'read-watch' and (phase['engine'] != 'native'
-                    or any(key in phase for key in ('artifacts', 'copy', 'canonical'))):
-                raise ValueError(value['diagnostic']+' boundary cannot publish outputs or claim reference parity')
+            if value['diagnostic'] == 'read-watch' and any(key in phase for key in ('artifacts', 'copy', 'canonical')):
+                raise ValueError(value['diagnostic']+' rejection cannot publish outputs')
             continue
         if value['main_only']:
             if success(records[0]).splitlines() != ['//:data'] or phase['publication_entries'] != []:
@@ -782,7 +801,7 @@ def main(argv=None):
         sources_unchanged=False, configuration={k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
         started_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
         limitations=[
-            '16 cases: eight differential, eight native boundaries; not full Bazel or application compatibility.',
+            '17 cases: ten differential, seven native boundaries; not full Bazel or application compatibility.',
             'Only bounded non-isolated callbacks returning None or extension_metadata (root use_repo fixup warnings, no mod tidy); empty facts, no OS or filesystem context fiction.',
             'Call-time mutable string-list snapshot is observable; unsupported nested dict/int-list attrs are not claimed.',
             'Genuine pinned Bazel built-in closure may download from BCR; no fake builtins or user workspace.',

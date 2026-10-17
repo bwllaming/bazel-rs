@@ -38,26 +38,35 @@ MESSAGES = {
     'immutable': 'trying to mutate a frozen list value',
     'name': 'invalid repository name "a+b"',
     'canonical': 'unknown canonical repository @@+unknown+made; extension repository not materialized',
-    'ticks': 'Maximum number of ticks exceeded',
     'facts': 'Facts has no key "missing": persisted facts are unsupported (native lockfile mode is off)',
-    # Literal stderr captured by the owned Rust read-watch fixture. These
-    # synthetic unit records replay its classifier contract, not execution.
+    # Literal native stderr of the read-watch fixture (integration-15 pre-gate
+    # binary, N43). These synthetic unit records replay its classifier
+    # contract, not execution.
     'read-watch': ('bazel-rs: module extension //:ext.bzl: Traceback (most recent call last):\n'
                    '  File <builtin>, in <module>\n'
                    '  * //:ext.bzl:4, in _impl\n'
                    '      ctx.read("x",watch="yes")\n'
-                   'error: unsupported module I/O profile: watch=yes on extension-owned files\n'
+                   'error: attempted to watch path under working directory\n'
                    ' --> //:ext.bzl:4:5\n'
                    '  |\n4 |     ctx.read("x",watch="yes")\n'
                    '  |     ^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\n'),
 }
+# Genuine Bazel 9.3.0 stderr for the same fixture (query @chosen//:data, exit 7),
+# captured in a private scratch output root; the workspace path is generic.
+REFERENCE_READ_WATCH = (
+    'Loading: 0 packages loaded\n'
+    'ERROR: /tmp/opencode/scratch/workspace/ext.bzl:4:13: Traceback (most recent call last):\n'
+    '\tFile "/tmp/opencode/scratch/workspace/ext.bzl", line 4, column 13, in _impl\n'
+    '\t\tctx.read("x",watch="yes")\n'
+    'Error in read: attempted to watch path under working directory\n'
+    'ERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:ext.bzl%files\n')
 
 
 class FixtureTests(unittest.TestCase):
-    def test_fixed_unique_plan_eight_differentials_eight_boundaries(self):
-        self.assertEqual(len(extensions.CASES), 16)
-        self.assertEqual(len(set(n for n, _ in extensions.PLAN)), 16)
-        self.assertEqual([c['kind'] for c in extensions.CASES], ['differential'] * 8 + ['native_boundary'] * 8)
+    def test_fixed_unique_plan_ten_differentials_seven_boundaries(self):
+        self.assertEqual(len(extensions.CASES), 17)
+        self.assertEqual(len(set(n for n, _ in extensions.PLAN)), 17)
+        self.assertEqual([c['kind'] for c in extensions.CASES], ['differential'] * 10 + ['native_boundary'] * 7)
         for item in extensions.CASES:
             self.assertTrue(item['probes'])
             self.assertEqual(len(item['probes']), len(set(item['probes'])))
@@ -65,11 +74,12 @@ class FixtureTests(unittest.TestCase):
                 steps = extensions.steps_for(item, probe, engine)
                 self.assertTrue(steps)
                 self.assertFalse(any(s[0] in ('test', 'run') for s in steps))
-        # Integration-14 (N40) added the native.isolated-on-demand 'ungated' probe.
+        # Integration-14 (N40) added the native.isolated-on-demand 'ungated' probe;
+        # integration-15 (N43) made read-watch and the former tick budgets differential.
         self.assertEqual(sum(len(c['probes']) for c in extensions.CASES), 37)
-        self.assertEqual(sum(len(extensions.phases_for(c)) for c in extensions.CASES), 50)
+        self.assertEqual(sum(len(extensions.phases_for(c)) for c in extensions.CASES), 53)
         self.assertEqual(sum(len(extensions.steps_for(c, probe, engine)) for c in extensions.CASES
-                             for probe, engine in extensions.phases_for(c)), 106)
+                             for probe, engine in extensions.phases_for(c)), 121)
 
     def test_unknown_fixture_names_or_probe_never_fall_back_to_baseline(self):
         for name, probe in [('made-up', 'result'), (extensions.CASES[0]['name'], 'made-up')]:
@@ -226,7 +236,7 @@ class FixtureTests(unittest.TestCase):
     def test_native_contexts_and_non_none_returns_are_not_parity(self):
         item = next(c for c in extensions.CASES if c['name'] == 'native.context-and-return')
         self.assertEqual(item['kind'], 'native_boundary')
-        self.assertEqual(item['probes'], ['facts', 'read-watch', 'integer', 'dict'])
+        self.assertEqual(item['probes'], ['facts', 'integer', 'dict'])
         # module_ctx.os.environ is supported; the former boundary is gone.
         with self.assertRaisesRegex(ValueError, 'unknown planned'):
             extensions.fixture(item['name'], 'os-environ')
@@ -242,7 +252,7 @@ class FixtureTests(unittest.TestCase):
         self.assertIn(b'return {}', extensions.fixture(item['name'], 'dict')['files']['ext.bzl'])
 
     def test_read_watch_reaches_option_after_recording_without_repo_execution(self):
-        value = extensions.fixture('native.context-and-return', 'read-watch')
+        value = extensions.fixture('context.read-watch-working-directory')
         source = value['files']['ext.bzl']
         self.assertEqual(value['diagnostic'], 'read-watch')
         self.assertIn(b'maker(name="made")\n    ctx.read("x",watch="yes")\n', source)
@@ -250,10 +260,13 @@ class FixtureTests(unittest.TestCase):
         self.assertIn(extensions.LAZY_MARKER.encode(), value['files']['rules.bzl'])
         self.assertNotIn(b'ctx.file', value['files']['rules.bzl'])
         self.assertNotIn('x', value['files'])
-        item = next(c for c in extensions.CASES if c['name'] == 'native.context-and-return')
-        self.assertNotIn(('read-watch', 'reference'), extensions.phases_for(item))
+        item = next(c for c in extensions.CASES if c['name'] == 'context.read-watch-working-directory')
+        self.assertEqual(item['kind'], 'differential')
+        self.assertEqual(extensions.phases_for(item), [('result', 'reference'), ('result', 'native')])
         with self.assertRaisesRegex(ValueError, 'unknown planned'):
             extensions.fixture(item['name'], 'read')
+        with self.assertRaisesRegex(ValueError, 'unknown planned'):
+            extensions.fixture('native.context-and-return', 'read-watch')
 
     def test_isolation_demand_boundary_does_not_force_unused_definition(self):
         for probe in ('demanded', 'unused', 'ungated'):
@@ -278,9 +291,19 @@ class FixtureTests(unittest.TestCase):
             self.assertIn(extensions.LOAD_MARKER.encode(), value['files']['ext.bzl'])
             self.assertEqual(value['target'], '@@+unknown+made//:data' if probe == 'unknown-canonical' else '//:data')
 
-    def test_budget_probes_are_full_initialization_and_post_record_callback(self):
-        init = extensions.fixture('native.tick-budgets', 'initialization')['files']['ext.bzl']
-        callback = extensions.fixture('native.tick-budgets', 'callback')['files']['ext.bzl']
+    def test_large_evaluation_probes_are_full_initialization_and_post_record_callback(self):
+        # N43 removed evaluator tick caps: the former native.tick-budgets
+        # rejections are paired positive builds.
+        item = next(c for c in extensions.CASES if c['name'] == 'definition.large-evaluation')
+        self.assertEqual(item['kind'], 'differential')
+        self.assertNotIn('native.tick-budgets', [c['name'] for c in extensions.CASES])
+        self.assertNotIn('ticks', extensions.DIAGNOSTICS)
+        for probe in item['probes']:
+            value = extensions.fixture(item['name'], probe)
+            self.assertIsNone(value['diagnostic'])
+            self.assertEqual(value['expected'], {'data': (b'hello Ada\n', False)})
+        init = extensions.fixture(item['name'], 'initialization')['files']['ext.bzl']
+        callback = extensions.fixture(item['name'], 'callback')['files']['ext.bzl']
         self.assertLess(init.index(b'INITIALIZATION='), init.index(b'def _impl'))
         self.assertLess(callback.index(b'maker(name="made")'), callback.index(b'values=['))
         self.assertIn(b'range(1000000)', init)
@@ -359,16 +382,18 @@ class DiagnosticTests(unittest.TestCase):
 
     def test_read_watch_requires_exact_typed_error_site_and_recording_phase(self):
         text = MESSAGES['read-watch']
-        error = 'error: unsupported module I/O profile: watch=yes on extension-owned files'
+        extensions.require_rejection(record(stderr=text, returncode=1), 'read-watch')
+        extensions.require_rejection(record(stderr=REFERENCE_READ_WATCH, returncode=7), 'read-watch')
+        error = 'error: attempted to watch path under working directory'
+        reference_error = 'Error in read: attempted to watch path under working directory'
         wrong_messages = [
             "module_ctx has no attribute 'read'", 'error: No such file or directory: x',
             'error: read failed', 'error: unsupported module I/O profile',
             text.replace(error, 'note: '+error[7:]),
             text.replace(error, '4 |     fail("'+error+'")'),
             text.replace(error, error+' extra'), text.replace(error, error.upper()),
-            text.replace('watch=yes on extension-owned files', 'watch=no on extension-owned files'),
-            text.replace('watch=yes on extension-owned files', 'watch=auto on extension-owned files'),
-            text.replace('watch=yes on extension-owned files', 'executable, async block=False, or canonical_id cache'),
+            text.replace(error, 'error: unsupported module I/O profile: watch=yes on extension-owned files'),
+            text.replace('under working directory', 'outside working directory'),
             text.replace('watch="yes"', 'watch="no"'),
             text.replace('watch="yes"', 'watch="auto"'),
             text.replace('//:ext.bzl', '//:rules.bzl'),
@@ -379,6 +404,11 @@ class DiagnosticTests(unittest.TestCase):
             text.replace('module extension //:ext.bzl', 'repository made (//:rules.bzl%maker)'),
             text+'error: Other\n', text+'1 actions executed, 0 cache hits\n',
             text+'0 actions executed, 1 cache hits\n', text+extensions.FAIL_MARKER+'\n',
+            REFERENCE_READ_WATCH.replace(reference_error, 'Error in read: ' + error[7:] + ' extra'),
+            REFERENCE_READ_WATCH.replace(reference_error, 'Error in watch: ' + error[7:]),
+            REFERENCE_READ_WATCH.replace('line 4, column 13', 'line 3, column 13'),
+            REFERENCE_READ_WATCH.replace('\t\tctx.read("x",watch="yes")\n', '\t\tctx.read("x")\n'),
+            REFERENCE_READ_WATCH.replace('/ext.bzl", line 4', '/rules.bzl", line 4'),
         ]
         for wrong in wrong_messages:
             with self.subTest(wrong=wrong), self.assertRaises(ValueError):
@@ -392,9 +422,8 @@ class DiagnosticTests(unittest.TestCase):
         # The pre-N20 bare native text no longer satisfies the classifier.
         with self.assertRaises(ValueError):
             extensions.require_rejection(record(stderr='error: Immutable', returncode=1), 'immutable')
-        for text in ('evaluation limit exceeded', 'memory exhausted', 'ticks: 1000000', 'timeout'):
-            with self.assertRaises(ValueError):
-                extensions.require_rejection(record(stderr=text, returncode=1), 'ticks')
+        # N43: no tick budget classifier remains to accept generic limit texts.
+        self.assertNotIn('ticks', extensions.DIAGNOSTICS)
 
     def test_canonical_identity_is_not_rewritten_from_apparent_alias(self):
         extensions.canonical_result(record('@@+files+made//:data\n'), '+files+made')
@@ -423,33 +452,49 @@ class EvidenceTests(unittest.TestCase):
             report = {'runs': [], 'checks': [], 'scratch_directory': str(scratch)}
             args = extensions.argument_parser().parse_args([])
             runner = mock.Mock(report=report)
-            item = next(c for c in extensions.CASES if c['name'] == 'native.context-and-return')
+            item = next(c for c in extensions.CASES if c['name'] == 'context.read-watch-working-directory')
+            reference = mock.Mock(startup=['/reference', '--batch'], output_base=scratch / 'reference/output')
 
             def synthetic(name, argv, cwd, timeout=None):
-                probe = name.removeprefix(item['name']+'.').split('.')[0]
-                diagnostic = extensions.fixture(item['name'], probe)['diagnostic']
-                entry = bind_streams(record(stderr=MESSAGES[diagnostic], returncode=1))
+                engine = name.split('.')[-2]
+                entry = bind_streams(record(stderr=MESSAGES['read-watch'] if engine == 'native' else REFERENCE_READ_WATCH,
+                                            returncode=1 if engine == 'native' else 7))
                 entry.update(id=len(report['runs']), name=name, argv=list(argv), cwd=str(cwd),
                              timeout_seconds=args.timeout)
                 report['runs'].append(entry)
                 return entry
 
+            def reference_run(name, command, *rest):
+                argv = extensions.command_argv(args, reference, 'reference', None, reference.registry,
+                                               command, rest[-1], list(rest[:-1]))
+                return synthetic(name, argv, workspace)
+
             runner.run.side_effect = synthetic
-            check = extensions.run_case(args, runner, scratch, workspace, None, item)
+            reference.run.side_effect = reference_run
+            check = extensions.run_case(args, runner, scratch, workspace, reference, item)
             self.assertEqual(check['status'], 'PASS')  # classifier seam, NOT CLI evidence
-            extensions.validate_check(check, report, args, workspace, None)
-            phase_index = next(i for i, p in enumerate(check['phases']) if p['probe'] == 'read-watch')
+            self.assertTrue(check['parity_claim'])
+            extensions.validate_check(check, report, args, workspace, reference)
+            self.assertEqual([p['engine'] for p in check['phases']], ['reference', 'native'])
+            reference_phase = check['phases'][0]
+            altered = copy.deepcopy(report)
+            entry = altered['runs'][reference_phase['runs'][0]['id']]
+            entry['stderr'] = REFERENCE_READ_WATCH.replace('line 4, column 13', 'line 3, column 13')
+            bind_streams(entry)
+            with self.assertRaises(ValueError):
+                extensions.validate_check(check, altered, args, workspace, reference)
+            phase_index = next(i for i, p in enumerate(check['phases']) if p['engine'] == 'native')
             phase = check['phases'][phase_index]
             run_id = phase['runs'][0]['id']
             text = MESSAGES['read-watch']
             for wrong in ("module_ctx has no attribute 'read'", 'error: No such file or directory: x',
                           'error: unsupported module I/O profile',
-                          text.replace('error: unsupported module I/O profile: watch=yes on extension-owned files',
+                          text.replace('error: attempted to watch path under working directory',
                                        "error: Variable `module_extension` not found"),
-                          text.replace('error: unsupported module I/O profile: watch=yes on extension-owned files',
+                          text.replace('error: attempted to watch path under working directory',
                                        "error: Variable `maker` not found"),
-                          text.replace('watch=yes', 'watch=auto'),
-                          text.replace('error: unsupported', '4 |     # error: unsupported'),
+                          text.replace('watch="yes"', 'watch="auto"'),
+                          text.replace('error: attempted', '4 |     # error: attempted'),
                           text.replace('//:ext.bzl:4:5', '//:ext.bzl:3:5'),
                           text+'error: Other\n'):
                 altered = copy.deepcopy(report)
@@ -461,9 +506,9 @@ class EvidenceTests(unittest.TestCase):
                 self.assertEqual(entry['stderr_sha256'], entry['stderr_full_sha256'])
                 self.assertEqual(len(wrong.encode()), entry['stderr_full_size_bytes'])
                 with self.subTest(wrong=wrong), self.assertRaises(ValueError):
-                    extensions.validate_check(check, altered, args, workspace, None)
+                    extensions.validate_check(check, altered, args, workspace, reference)
 
-            source = extensions.fixture(item['name'], 'read-watch')['files']['ext.bzl']
+            source = extensions.fixture(item['name'])['files']['ext.bzl']
             for wrong in (source.replace(b',watch="yes"', b''),
                           source.replace(b'watch="yes"', b'watch="no"'),
                           source.replace(b'    maker(name="made")\n', b''),
@@ -477,7 +522,7 @@ class EvidenceTests(unittest.TestCase):
                 for snapshot in ('inputs_before', 'inputs_after'):
                     altered['phases'][phase_index][snapshot][str(path)] = entry
                 with self.subTest(source=wrong), self.assertRaisesRegex(ValueError, 'snapshot differs'):
-                    extensions.validate_check(altered, report, args, workspace, None)
+                    extensions.validate_check(altered, report, args, workspace, reference)
 
             for change in ({'publication_entries': ['partial']}, {'artifacts': {}}, {'copy': {}},
                            {'canonical': '@@+files+made//:data'}, {'diagnostic': 'read'},
@@ -485,7 +530,7 @@ class EvidenceTests(unittest.TestCase):
                 altered = copy.deepcopy(check)
                 altered['phases'][phase_index].update(change)
                 with self.subTest(change=change), self.assertRaises(ValueError):
-                    extensions.validate_check(altered, report, args, workspace, None)
+                    extensions.validate_check(altered, report, args, workspace, reference)
 
     def test_read_watch_failure_cannot_leave_a_published_repository(self):
         # Mocked record only; no native/reference invocation or ambient lookup.
@@ -493,13 +538,13 @@ class EvidenceTests(unittest.TestCase):
             scratch = Path(directory)
             workspace = scratch / 'workspace'
             root = scratch / 'case'
-            value = extensions.materialize(root, workspace, 'native.context-and-return', 'read-watch')
+            value = extensions.materialize(root, workspace, 'context.read-watch-working-directory', 'result')
             cache = root / 'native-cache'
             (extensions.direct.trees_directory(cache) / ('a'*64)).mkdir(parents=True)
             runner = mock.Mock()
             runner.run.return_value = record(stderr=MESSAGES['read-watch'], returncode=1)
-            item = next(c for c in extensions.CASES if c['name'] == 'native.context-and-return')
-            phase = dict(probe='read-watch', engine='native', status='FAIL', runs=[], cache=str(cache),
+            item = next(c for c in extensions.CASES if c['name'] == 'context.read-watch-working-directory')
+            phase = dict(probe='result', engine='native', status='FAIL', runs=[], cache=str(cache),
                          registry=str(value['registry']), inputs_before=extensions.snapshot(value['paths']))
             extensions.run_phase(extensions.argument_parser().parse_args([]), runner, scratch, workspace,
                                  None, item, phase, value)
@@ -678,7 +723,7 @@ class LifecycleTests(unittest.TestCase):
         with mock.patch.object(extensions, 'run_case', side_effect=broken):
             extensions.run_all(None, runner, None, None, None)
         self.assertEqual(seen, [c['name'] for c in extensions.CASES])
-        self.assertEqual(len(report['checks']), 16)
+        self.assertEqual(len(report['checks']), 17)
         self.assertTrue(all(c['status'] == 'FAIL' and not c['parity_claim'] for c in report['checks']))
 
     def test_shutdown_failure_still_removes_owned_scratch_and_records_receipt(self):

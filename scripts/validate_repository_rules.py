@@ -147,8 +147,14 @@ CASES = [
     case('return.metadata-and-values', probes=('repo-metadata', 'attrs-metadata', 'dict', 'integer')),
     case('patch.label-strip-directory'),
     case('resolver.free-chr'),
+    # N43: former native boundaries. Label reads follow symlinks (a main-repo
+    # source symlink to a file outside the workspace is read through, like
+    # Bazel's repository_ctx.template -> getPathFromLabel/readFile), and there
+    # are no evaluator tick caps (a large top-level comprehension evaluates).
+    case('template.symlinked-source'),
+    case('definition.large-initialization'),
     case('native.rollback', 'native_boundary'),
-    case('native.path-containment', 'native_boundary', ('dotdot', 'absolute', 'source-symlink')),
+    case('native.path-containment', 'native_boundary', ('dotdot', 'absolute')),
     case('native.unsupported', 'native_boundary', ('facts_version_unsupported',)),
     # N38: raw non-ASCII .bzl literals are Latin-1 (literal.latin1-octal raw-source);
     # only MODULE.bazel raw non-ASCII and the \x/\u/\U escapes remain native rejections.
@@ -157,7 +163,6 @@ CASES = [
     case('native.refresh-and-repair', 'native_boundary', ('cold', 'helper-change', 'input-change', 'repair')),
     case('native.parallel-publication', 'native_boundary', ('parallel-1', 'parallel-2')),
     case('native.main-query-lazy', 'native_boundary'),
-    case('native.initialization-budget', 'native_boundary'),
 ]
 PLAN = [(c['name'], c['kind']) for c in CASES]
 DIAGNOSTICS = {
@@ -165,14 +170,12 @@ DIAGNOSTICS = {
     'unknown': r'(?:unknown|unexpected|no such|does not have)[^\n]*\bunknown_attr\b|\bunknown_attr\b[^\n]*(?:unknown|unexpected|not defined)',
     'rollback': r'(?:Error in fail:|\bfail(?:ed)?[: (]|error:)[^\n]*' + FAIL_MARKER,
     'path': r'(?:path|file)[^\n]*(?:relative|escap|outside|parent|absolute|unsafe|clean)|(?:unsafe|absolute)[^\n]*path',
-    'symlink': r'(?:symlink|symbolic link)[^\n]*(?:unsupported|forbidden|not supported|unsafe|regular)|(?:unsupported|unsafe|not supported)[^\n]*(?:symlink|symbolic link)|must be a regular file, not a symlink',
     'return': r'(?:return|returned)[^\n]*(?:None|unsupported|not supported)|(?:only|must)[^\n]*None',
     'facts_version_unsupported': r'\bmodule_extension with nonzero facts_version is unsupported\b',
     'ascii': r'(?:ASCII|non.ASCII|Unicode|unicode|escape|chr)[^\n]*(?:unsupported|not supported|forbidden|invalid|only|reject)|(?:unsupported|invalid|non.ASCII)[^\n]*(?:string|literal|escape|chr)',
     # Resolver.java:941-953 / Module.java:250-256: Bazel has no chr builtin.
     'undefined_chr': r"\bname 'chr' is not defined\b",
     'cycle': r'(?:repository|template|materializ)[^\n]*(?:cycle|cyclic)|(?:cycle|cyclic)[^\n]*(?:repository|template|made|other)',
-    'ticks': r'\bticks?\b[^\n]*(?:limit|budget|exceed)|(?:limit|budget|exceed)[^\n]*\bticks?\b',
 }
 UNRELATED = re.compile(r'panick?ed|\bpanic\b|internal error|FATAL:|crashed|segmentation fault|'
                        r'falling back|fallback to|timed out|timeout|could not download|download failed|'
@@ -302,13 +305,21 @@ def fixture(name, probe='result', outside=None):
         files['defs.bzl'] = rule(build_file(['data']) + '\nctx.file("data", "partial")\nfail("' + FAIL_MARKER + '")')
         diagnostic = 'rollback'
     elif name == 'native.path-containment':
-        if probe == 'source-symlink':
-            files['defs.bzl'] = TEMPLATE_DEFS
-            diagnostic = 'symlink'
-        else:
-            output = '../outside-marker' if probe == 'dotdot' else str(outside)
-            files['defs.bzl'] = rule('ctx.file(' + quote(output) + ', "ESCAPED")\n' + build_file(['data']))
-            diagnostic = 'path'
+        output = '../outside-marker' if probe == 'dotdot' else str(outside)
+        files['defs.bzl'] = rule('ctx.file(' + quote(output) + ', "ESCAPED")\n' + build_file(['data']))
+        diagnostic = 'path'
+    elif name == 'template.symlinked-source':
+        # private/source is a symlink to the outside sentinel (materialize);
+        # both engines read through it and leave the sentinel unchanged.
+        files['defs.bzl'] = rule(build_file(['data', 'read']) + '\n'
+                                 'ctx.template("data", ctx.attr._source, executable = False)\n'
+                                 'ctx.file("read", ctx.read(ctx.attr._source), executable = False)',
+                                 '{"_source": attr.label(default = Label("//private:source"))}')
+        expected = {'data': (OUTSIDE, False), 'read': (OUTSIDE, False)}
+    elif name == 'definition.large-initialization':
+        # Was native.initialization-budget (a native tick-cap rejection before
+        # N43): definition loading evaluates the whole comprehension, then _impl runs.
+        files['defs.bzl'] = 'INITIALIZATION = [i + 1 for i in range(1000000)]\n' + BASIC
     elif name == 'native.unsupported':
         body = {'facts_version_unsupported': 'return None'}[probe]
         files['defs.bzl'] = rule(build_file(['data']) + '\nctx.file("data", "partial")\n' + body)
@@ -385,11 +396,6 @@ def fixture(name, probe='result', outside=None):
         files['BUILD.bazel'] = 'exports_files(["data"])\n'
         files['data'] = b'main only\n'
         target = '//:data'
-    elif name == 'native.initialization-budget':
-        # A legal top-level comprehension must exhaust evaluator ticks during
-        # definition loading, before _impl can run or any repository can publish.
-        files['defs.bzl'] = 'INITIALIZATION = [i + 1 for i in range(1000000)]\n' + BASIC
-        diagnostic = 'ticks'
     # Root consumers read real generated files, including a trusted copy action.
     if not diagnostic and name != 'native.main-query-lazy':
         labels = (['@made//:data', '@dep//:payload'] if name == 'identity.root-and-dependency'
@@ -427,7 +433,7 @@ def materialize(case_root, workspace, name, probe, *, update=False):
         if path.is_symlink():
             path.unlink()
         path.write_bytes(raw)
-    if name == 'native.path-containment' and probe == 'source-symlink':
+    if name == 'template.symlinked-source':
         source = workspace / 'private/source'
         source.unlink()
         source.symlink_to(outside)
@@ -690,8 +696,7 @@ def validate_check(check, report, args, workspace, reference):
             raise ValueError('invalid or changed input evidence')
         for relative, raw in value['files'].items():
             entry = phase['inputs_before'][str(workspace / relative)]
-            source_link = (item['name'] == 'native.path-containment' and phase['probe'] == 'source-symlink'
-                           and relative == 'private/source')
+            source_link = item['name'] == 'template.symlinked-source' and relative == 'private/source'
             expected = os.fsencode(Path(phase['registry']).parent / 'outside-marker') if source_link else raw
             if entry['kind'] != ('symlink' if source_link else 'file') or not valid_evidence(entry, expected):
                 raise ValueError('input snapshot is not the planned real rule fixture')
@@ -795,7 +800,7 @@ def report_passes(report):
                 or not all(valid_evidence(v) for v in report['sources_before'].values())
                 or report['reference_release'] != 'bazel 9.3.0'
                 or report['executables']['reference']['sha256'] != REFERENCE_SHA256
-                or report['completed_checks'] != 21 or report['completed_differential_cases'] != 12):
+                or report['completed_checks'] != 22 or report['completed_differential_cases'] != 14):
             return False
         args = argument_parser().parse_args([])
         args.native = Path(report['configuration']['native'])
@@ -887,7 +892,7 @@ def main(argv=None):
                   case_inputs_sha256=digest(json.dumps(CASES, sort_keys=True).encode()),
                   configuration={k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
                   started_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                  limitations=['21 cases: twelve differential, nine native policy/lifecycle boundaries. No full Bazel parity.',
+                  limitations=['22 cases: fourteen differential, eight native policy/lifecycle boundaries. No full Bazel parity.',
                                'Raw non-ASCII MODULE.bazel literals are a native boundary; .bzl sources and octal escapes denote Latin-1 chars written as single bytes; raw templates preserve arbitrary bytes.',
                                'Callback returns follow RepositoryFetchFunction (dict keys checked, repo_metadata/other values accepted); reproducibility has no native caching effect.',
                                'Nonzero module_extension facts_version is unsupported at definition load; this native-only boundary is not differential parity or a callback execution claim.',

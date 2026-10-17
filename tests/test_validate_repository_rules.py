@@ -30,28 +30,27 @@ MESSAGES = {
     'unknown': "no such attribute 'unknown_attr' in 'maker' rule",
     'rollback': 'Error in fail: RULE_ROLLBACK_SENTINEL',
     'path': 'repository output path must be relative and clean',
-    'symlink': 'template source symlinks are unsupported',
     'return': 'repository rule return value is unsupported; expected None',
     'facts_version_unsupported': 'module_extension with nonzero facts_version is unsupported',
     'ascii': 'non-ASCII string literals are unsupported',
     'cycle': 'repository template dependency cycle: made -> other -> made',
-    'ticks': 'Maximum number of ticks exceeded',
 }
 
 
 class FixtureTests(unittest.TestCase):
-    def test_fixed_plan_has_twelve_differentials_and_nine_boundaries(self):
-        self.assertEqual(len(rules.CASES), 21)
-        self.assertEqual(len(set(name for name, _ in rules.PLAN)), 21)
-        self.assertEqual(sum(c['kind'] == 'differential' for c in rules.CASES), 12)
-        self.assertEqual([c['name'] for c in rules.CASES[:12]], [
+    def test_fixed_plan_has_fourteen_differentials_and_eight_boundaries(self):
+        self.assertEqual(len(rules.CASES), 22)
+        self.assertEqual(len(set(name for name, _ in rules.PLAN)), 22)
+        self.assertEqual(sum(c['kind'] == 'differential' for c in rules.CASES), 14)
+        self.assertEqual([c['name'] for c in rules.CASES[:14]], [
             'file.transitive-attrs-overwrite', 'template.binary-label-and-stage',
             'identity.root-and-dependency', 'generated.definition-and-template',
             'lazy.unused-callback', 'group.unused-missing-attribute',
             'group.unused-unknown-attribute', 'execute.host-process',
             'literal.latin1-octal', 'return.metadata-and-values',
-            'patch.label-strip-directory', 'resolver.free-chr'])
-        self.assertTrue(all(c['kind'] == 'native_boundary' for c in rules.CASES[12:]))
+            'patch.label-strip-directory', 'resolver.free-chr',
+            'template.symlinked-source', 'definition.large-initialization'])
+        self.assertTrue(all(c['kind'] == 'native_boundary' for c in rules.CASES[14:]))
         for item in rules.CASES:
             self.assertEqual(len(item['probes']), len(set(item['probes'])))
             for probe, engine in rules.phases_for(item):
@@ -83,19 +82,40 @@ class FixtureTests(unittest.TestCase):
         self.assertIn(b'ctx.file("octal", "\\000", executable = False)', value['files']['defs.bzl'])
         self.assertEqual(value['expected']['octal'], (b'\x00', False))
 
-    def test_initialization_budget_is_native_only_and_before_callback_execution(self):
-        item = rules.CASES[-1]
-        self.assertEqual(item['name'], 'native.initialization-budget')
-        self.assertEqual(item['kind'], 'native_boundary')
-        self.assertEqual(rules.phases_for(item), [('result', 'native')])
-        self.assertEqual(rules.steps_for(item, 'result', 'native'), [('query', '@made//:data', [])])
+    def test_large_initialization_is_differential_after_tick_caps_removed(self):
+        # N43 removed evaluator tick caps: the former native.initialization-budget
+        # rejection is now a paired positive build on both engines.
+        item = next(c for c in rules.CASES if c['name'] == 'definition.large-initialization')
+        self.assertEqual(item['kind'], 'differential')
+        self.assertNotIn('native.initialization-budget', [c['name'] for c in rules.CASES])
+        self.assertNotIn('ticks', rules.DIAGNOSTICS)
+        self.assertEqual(rules.phases_for(item), [('result', 'reference'), ('result', 'native')])
+        self.assertEqual(rules.steps_for(item, 'result', 'native'), [('build', '//:data', []), ('build', '//:copy', [])])
         value = rules.fixture(item['name'])
-        self.assertEqual(value['diagnostic'], 'ticks')
+        self.assertIsNone(value['diagnostic'])
+        self.assertEqual(value['expected'], {'data': (b'hello Ada\n', False)})
         self.assertTrue(value['files']['defs.bzl'].startswith(b'INITIALIZATION = [i + 1 for i in range(1000000)]\n'))
         self.assertIn(b'def _impl(ctx):', value['files']['defs.bzl'])
-        for message in ('timeout', 'evaluation limit exceeded', 'memory limit exceeded', 'ticks: 1000000'):
-            with self.assertRaises(ValueError):
-                rules.require_rejection(record(stderr=message, returncode=1), 'ticks')
+
+    def test_symlinked_template_source_is_differential_read_through(self):
+        # N43: Label reads follow symlinks like Bazel; the former native
+        # path-containment source-symlink rejection is a paired positive case.
+        item = next(c for c in rules.CASES if c['name'] == 'template.symlinked-source')
+        self.assertEqual(item['kind'], 'differential')
+        self.assertEqual(next(c for c in rules.CASES if c['name'] == 'native.path-containment')['probes'],
+                         ['dotdot', 'absolute'])
+        self.assertNotIn('symlink', rules.DIAGNOSTICS)
+        value = rules.fixture(item['name'], 'result', Path('/private/outside-marker'))
+        self.assertIsNone(value['diagnostic'])
+        self.assertEqual(value['expected'], {'data': (rules.OUTSIDE, False), 'read': (rules.OUTSIDE, False)})
+        self.assertIn(b'ctx.template("data", ctx.attr._source, executable = False)', value['files']['defs.bzl'])
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            materialized = rules.materialize(root / 'case', root / 'workspace', item['name'], 'result')
+            source = root / 'workspace/private/source'
+            self.assertTrue(source.is_symlink())
+            self.assertEqual(os.readlink(source), str(materialized['outside']))
+            self.assertEqual(source.read_bytes(), rules.OUTSIDE)
 
     def test_all_trusted_positive_fixture_bodies_are_lexically_well_formed(self):
         for item in rules.CASES:
@@ -306,12 +326,6 @@ class DiagnosticTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 rules.require_rejection(record(stderr=MESSAGES[diagnostic] + '\nError in fail: ' + rules.LAZY_MARKER, returncode=1), diagnostic)
 
-    def test_source_regular_file_guard_requires_explicit_symlink_reason(self):
-        # repository_ctx.rs regular_file() diagnostic, not captured CLI evidence.
-        rules.require_rejection(record(stderr='/private/source must be a regular file, not a symlink', returncode=1), 'symlink')
-        with self.assertRaises(ValueError):
-            rules.require_rejection(record(stderr='/private/source must be a regular file', returncode=1), 'symlink')
-
     def test_canonical_is_observed_not_apparent_label_normalization(self):
         rules.require_canonical(record('@@+maker+made//:data\n'), rules.ROOT_CANONICAL)
         rules.require_canonical(record('@@contractdep++maker+made//:data\n'), rules.DEP_CANONICAL)
@@ -473,8 +487,8 @@ class InvocationAndReportTests(unittest.TestCase):
 
     def test_counts_and_pass_strings_are_not_cli_evidence(self):
         synthetic = dict(checks=[dict(name=c['name'], kind=c['kind'], status='PASS') for c in rules.CASES],
-                         planned_checks=copy.deepcopy(rules.CASES), completed_checks=21,
-                         completed_differential_cases=12, errors=[], cleanup=[], scratch_cleaned=True,
+                         planned_checks=copy.deepcopy(rules.CASES), completed_checks=22,
+                         completed_differential_cases=14, errors=[], cleanup=[], scratch_cleaned=True,
                          sources_unchanged=True, reference_shutdown_succeeded=True)
         self.assertFalse(rules.report_passes(synthetic))
         for mutation in ('missing', 'duplicate', 'unexpected', 'reordered', 'wrong-kind'):
