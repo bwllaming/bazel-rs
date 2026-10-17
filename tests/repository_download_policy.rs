@@ -492,7 +492,7 @@ fn enabled_default_acquires_real_archive_overlay_and_patch_once() {
 }
 
 #[test]
-fn remote_metadata_still_requires_existing_lockfile_off_admission() {
+fn remote_metadata_admission_follows_lockfile_mode_not_download_policy() {
     let fixture = Fixture::new(false, false);
     for command in ["query", "build", "mod"] {
         let mut args = vec![command.to_owned()];
@@ -500,12 +500,21 @@ fn remote_metadata_still_requires_existing_lockfile_off_admission() {
             args.extend(["graph".into(), "--output=json".into()]);
         } else {
             args.push("//:version".into());
+            // Registry metadata is unaffected by the download policy; error
+            // mode refuses unhashed registry files before any request
+            // (IndexRegistry.java:171-179).
+            args.push("--lockfile_mode=error".into());
         }
         args.extend([
             DISABLED.into(),
             format!("--registry={}", fixture.server.url()),
         ]);
-        rejected(&fixture.invoke(&args, "cache"), "--lockfile_mode=off");
+        let expected = if command == "mod" {
+            "--lockfile_mode=off"
+        } else {
+            "Missing checksum for registry file http://"
+        };
+        rejected(&fixture.invoke(&args, "cache"), expected);
     }
     assert!(fixture.server.counts.lock().unwrap().is_empty());
 }
@@ -806,6 +815,8 @@ fn local_git_override_keeps_its_existing_transport_and_admission_with_downloads_
             "graph".into(),
             "--output=json".into(),
             DISABLED.into(),
+            // Explicit: never the default https://bcr.bazel.build/ registry.
+            format!("--registry={registry}"),
         ],
         "git-graph",
     ));

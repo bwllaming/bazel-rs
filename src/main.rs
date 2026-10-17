@@ -23,11 +23,18 @@ Build options: --jobs=N or --jobs N (positive integer; default: available CPUs, 
 Configuration (build): -c/--compilation_mode, --[no]stamp, --strip, --[no]force_pic,
   --define NAME=VALUE, --platforms, --host_platform, Starlark build settings
   --//pkg:flag=VALUE / --[no]//pkg:bool_flag (docs/CONFIGURATION.md).
-Repository options: --registry=URL (file/http/https, repeatable), --ignore_dev_dependency
+Repository options: --registry=URL (file/http/https, repeatable; default https://bcr.bazel.build/),
+  --ignore_dev_dependency
   --repository_disable_download[=BOOL] blocks uncached archive/overlay/patch acquisition.
   Verified caches, registry metadata and Git execution are unaffected (not an offline mode).
 Native transition: --experimental-builtin-modules[=true|false] opts into genuine Bazel 9.3 built-ins.
-Remote registries require explicit --lockfile_mode=off; other lockfile modes are unsupported.
+Lockfile: --lockfile_mode=update (default)|refresh|error|off reads/writes MODULE.bazel.lock
+  (registryFileHashes, selectedYankedVersions; extension sections kept verbatim, never added;
+  docs/REGISTRY_LOCKFILE.md). --allow_yanked_versions=MODULE@VERSION,... (repeatable).
+  Native-only --native-lockfile=workspace|readonly|/abs/path: readonly never writes a lockfile;
+  a path is a private lockfile read instead of (seeded from) the workspace one and written instead.
+  mod graph still requires --lockfile_mode=off for remote registries, including the default.
+  Fast warm probes of real workspaces: --native-lockfile=/private/MODULE.bazel.lock.
 External sources: local_path_override, registry local_path entries and verified archives.
 Native rules: filegroup(name, srcs), genrule(name, srcs, outs, cmd)
 Loading: local .bzl legacy macros, glob, package defaults and exports_files.
@@ -96,6 +103,10 @@ fn run() -> Result<(), String> {
     let mut repository_downloads_enabled = true;
     let mut configuration_options = bazel_rs::configuration::CommandLineOptions::default();
     let mut query_options = bazel_rs::engine::query::QueryOptions::default();
+    let mut lockfile_mode = bazel_rs::lockfile::LockfileMode::default();
+    let mut lockfile_target = bazel_rs::registry_session::LockfileTarget::Workspace;
+    let mut allowed_yanked_flags = Vec::new();
+    let mut raw_registries = Vec::new();
     let mut deferred = None;
     let rest = if command == "mod" {
         mod_arguments(&options)?
@@ -127,7 +138,33 @@ fn run() -> Result<(), String> {
                 native.parse(&command, unit)?;
             }
         }
+        if native.resolver.registries.is_empty() {
+            // Bazel's default registry list (N37); any explicit --registry
+            // replaces it.
+            native
+                .resolver
+                .registries
+                .push(bazel_rs::module_cli::registry_path(
+                    bazel_rs::registry::DEFAULT_REGISTRY,
+                )?);
+            native
+                .raw_registries
+                .push(bazel_rs::registry::DEFAULT_REGISTRY.to_owned());
+        }
         native.resolver.validate_registries()?;
+        if native.lockfile_mode != bazel_rs::lockfile::LockfileMode::Off {
+            for (raw, registry) in native
+                .raw_registries
+                .iter()
+                .zip(&native.resolver.registries)
+            {
+                registry.check_lockfile_spelling(raw)?;
+            }
+        }
+        lockfile_mode = native.lockfile_mode;
+        lockfile_target = native.lockfile_target;
+        allowed_yanked_flags = native.allowed_yanked_flags;
+        raw_registries = native.raw_registries;
         jobs = native.jobs.unwrap_or(jobs);
         resolver_options = native.resolver;
         repository_downloads_enabled = native.downloads;
@@ -191,12 +228,52 @@ fn run() -> Result<(), String> {
         ));
     }
     let current_package = current_package(&root, &cwd)?;
+    // BazelLockFileFunction/RegistryFunction: one registry session per
+    // invocation; BazelLockFileModule.afterCommand writes the lockfile
+    // after the command, also when it failed after resolution.
+    let allowed_yanked = bazel_rs::registry_session::parse_allowed_yanked(
+        std::env::var("BZLMOD_ALLOW_YANKED_VERSIONS")
+            .ok()
+            .as_deref(),
+        &allowed_yanked_flags,
+    )?;
+    let session = bazel_rs::registry_session::SessionHandle::new(
+        bazel_rs::registry_session::RegistrySession::open(
+            &root,
+            lockfile_mode,
+            &lockfile_target,
+            Some(cache.join("repositories")),
+            allowed_yanked,
+        )?
+        .with_spellings(
+            resolver_options
+                .registries
+                .iter()
+                .cloned()
+                .zip(raw_registries.iter().cloned()),
+        ),
+    );
+    resolver_options.registry_session = session.clone();
+    let _lockfile_writer = LockfileWriter(session);
     let repositories = Arc::new(
         bazel_rs::repository::RepositorySet::with_options(root.clone(), resolver_options)
             .with_repository_downloads_enabled(repository_downloads_enabled)
             .with_source_cache(cache.join("repositories")),
     );
     repositories.validate_root_module()?;
+    // Bazel computes the main repository mapping, hence module resolution,
+    // in every command; the lockfile records that resolution's remote
+    // registry files. With a lockfile and a remote --registry, resolve
+    // eagerly like Bazel; otherwise keep the native lazy profile
+    // (NATIVE_BOUNDARY, docs/REGISTRY_LOCKFILE.md).
+    if lockfile_mode != bazel_rs::lockfile::LockfileMode::Off
+        && raw_registries
+            .iter()
+            .any(|raw| raw.starts_with("http://") || raw.starts_with("https://"))
+        && root.join("MODULE.bazel").is_file()
+    {
+        repositories.resolve_graph()?;
+    }
     let mut engine = Engine::with_repositories(repositories.clone());
     if command == "build" {
         // Label-typed options convert with the main repository mapping
@@ -293,6 +370,17 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
+/// Writes the updated lockfile when the command ends (success or error).
+struct LockfileWriter(bazel_rs::registry_session::SessionHandle);
+
+impl Drop for LockfileWriter {
+    fn drop(&mut self) {
+        if let Some(warning) = self.0.session().and_then(|session| session.finish()) {
+            eprintln!("WARNING: {warning}");
+        }
+    }
+}
+
 fn parse_jobs(value: &str) -> Result<usize, String> {
     if !value.is_empty()
         && value.bytes().all(|byte| byte.is_ascii_digit())
@@ -335,13 +423,25 @@ struct NativeOptions {
     configuration: bazel_rs::configuration::CommandLineOptions,
     /// QueryCommand's own options (QueryOptions/CommonQueryOptions).
     query: bazel_rs::engine::query::QueryOptions,
+    /// --lockfile_mode (N37, docs/REGISTRY_LOCKFILE.md).
+    lockfile_mode: bazel_rs::lockfile::LockfileMode,
+    /// Native-only --native-lockfile.
+    lockfile_target: bazel_rs::registry_session::LockfileTarget,
+    /// --allow_yanked_versions values in order.
+    allowed_yanked_flags: Vec<String>,
+    /// --registry values as given (lockfile keys use Bazel's spelling).
+    raw_registries: Vec<String>,
 }
 
 impl NativeOptions {
     fn new(command: &str) -> Self {
         Self {
             jobs: None,
-            resolver: bazel_rs::module_graph::ResolverOptions::default(),
+            resolver: bazel_rs::module_graph::ResolverOptions {
+                // Every lockfile mode supports remote registries (N37).
+                allow_remote: matches!(command, "build" | "query"),
+                ..Default::default()
+            },
             downloads: true,
             configuration: if command == "query" {
                 // query is configuration-independent; it accepts (and validates)
@@ -351,6 +451,10 @@ impl NativeOptions {
                 bazel_rs::configuration::CommandLineOptions::default()
             },
             query: bazel_rs::engine::query::QueryOptions::default(),
+            lockfile_mode: bazel_rs::lockfile::LockfileMode::default(),
+            lockfile_target: bazel_rs::registry_session::LockfileTarget::Workspace,
+            allowed_yanked_flags: Vec::new(),
+            raw_registries: Vec::new(),
         }
     }
 
@@ -423,24 +527,33 @@ impl NativeOptions {
             self.resolver
                 .registries
                 .push(bazel_rs::module_cli::registry_path(value)?);
+            self.raw_registries.push(value.to_owned());
             true
         } else if let Some(value) = arg.strip_prefix("--registry=") {
             self.resolver
                 .registries
                 .push(bazel_rs::module_cli::registry_path(value)?);
+            self.raw_registries.push(value.to_owned());
             false
         } else if arg == "--lockfile_mode" || arg.starts_with("--lockfile_mode=") {
             let (value, used) = match arg.strip_prefix("--lockfile_mode=") {
                 Some(value) => (value, false),
                 None => (next.ok_or("--lockfile_mode requires a value")?, true),
             };
-            if value != "off" {
-                return Err(format!(
-                    "unsupported --lockfile_mode={value}; lockfile support is not implemented; use --lockfile_mode=off"
-                ));
-            }
-            self.resolver.allow_remote = true;
+            self.lockfile_mode = bazel_rs::lockfile::LockfileMode::parse(value)?;
             used
+        } else if let Some(value) = arg.strip_prefix("--native-lockfile=") {
+            self.lockfile_target = bazel_rs::registry_session::LockfileTarget::parse(value)?;
+            false
+        } else if arg == "--allow_yanked_versions" {
+            self.allowed_yanked_flags.push(
+                next.ok_or("--allow_yanked_versions requires a value")?
+                    .to_owned(),
+            );
+            true
+        } else if let Some(value) = arg.strip_prefix("--allow_yanked_versions=") {
+            self.allowed_yanked_flags.push(value.to_owned());
+            false
         } else if matches!(
             arg,
             "--ignore_dev_dependency"

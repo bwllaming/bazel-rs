@@ -54,6 +54,19 @@ impl Workspace {
                 self.path().join("private-cache").display()
             ))
             .args(args)
+            // Never fall back to the default https://bcr.bazel.build/ registry.
+            .args(
+                (!args.iter().any(|arg| arg.starts_with("--registry"))
+                    && args
+                        .iter()
+                        .any(|arg| matches!(*arg, "query" | "build" | "mod")))
+                .then(|| {
+                    format!(
+                        "--registry=file://{}",
+                        self.path().join("registry").display()
+                    )
+                }),
+            )
             .current_dir(cwd)
             .output()
             .unwrap();

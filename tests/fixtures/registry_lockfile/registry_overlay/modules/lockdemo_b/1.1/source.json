@@ -1,0 +1,5 @@
+{
+    "type": "git_repository",
+    "remote": "https://example.invalid/lockdemo_b.git",
+    "commit": "0123456789abcdef0123456789abcdef01234567"
+}

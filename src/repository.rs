@@ -510,6 +510,56 @@ impl RepositorySet {
         Ok(found)
     }
 
+    /// SingleExtensionEvalFunction.java:145-212 passes lockfile facts to the
+    /// extension; the native profile never does, so persisted facts fail.
+    fn check_extension_lockfile_before(&self, extension_id: &str) -> Result<(), String> {
+        let Some(session) = self.state.options.registry_session.session() else {
+            return Ok(());
+        };
+        if session.mode() != crate::lockfile::LockfileMode::Off
+            && session.lockfile().has_facts_for(extension_id)
+        {
+            return Err(format!(
+                "module extension {extension_id}: MODULE.bazel.lock records facts for this extension; passing persisted facts to module extensions is unsupported in the native profile (use --lockfile_mode=off)"
+            ));
+        }
+        Ok(())
+    }
+
+    /// --lockfile_mode=error (SingleExtensionEvalFunction.java:258-286,
+    /// 401-405): a non-reproducible extension must have an up-to-date lockfile
+    /// entry and facts must match. Without an entry this is Bazel's error;
+    /// validating an existing entry is not implemented and fails explicitly.
+    fn check_extension_lockfile_after(
+        &self,
+        extension_id: &str,
+        metadata: Option<&crate::extension_metadata::ExtensionMetadata>,
+        platform_dependent: bool,
+    ) -> Result<(), String> {
+        let Some(session) = self.state.options.registry_session.session() else {
+            return Ok(());
+        };
+        if session.mode() != crate::lockfile::LockfileMode::Error {
+            return Ok(());
+        }
+        let reproducible = metadata.is_some_and(|metadata| metadata.reproducible);
+        let has_facts = metadata.is_some_and(|metadata| metadata.has_facts);
+        if reproducible && !has_facts {
+            return Ok(());
+        }
+        if !reproducible
+            && !platform_dependent
+            && !session.lockfile().has_extension_entry_for(extension_id)
+        {
+            return Err(format!(
+                "The module extension '{extension_id}' does not exist in the lockfile"
+            ));
+        }
+        Err(format!(
+            "module extension {extension_id}: --lockfile_mode=error requires validating its MODULE.bazel.lock moduleExtensions/facts entries, which the native profile does not implement"
+        ))
+    }
+
     pub fn resolve_graph(&self) -> Result<&ResolvedGraph, String> {
         self.state
             .resolved
@@ -776,6 +826,7 @@ impl RepositorySet {
                 roots[repository]
                     .get_or_init(|| {
                         registry_source_root(
+                            &self.state.options.registry_session,
                             registry,
                             name,
                             version,
@@ -1023,9 +1074,16 @@ impl RepositorySet {
                 .map_err(|error| format!("module extension {}%{}: {error}", group.label, group.symbol))?;
             let host = self.host()?;
             let host_factors = host.factors(definition.os_dependent, definition.arch_dependent, &mut preparation_budget)?;
+            let extension_id = format!("{}%{}", group.label, group.symbol);
+            self.check_extension_lockfile_before(&extension_id)?;
             let execution = crate::extension_ctx::execute(
                 Arc::new(self.clone()), &definition, &loaded.functions, &group.label,
                 &group.symbol, &group.participants, group.root_has_non_dev_dependency,
+            )?;
+            self.check_extension_lockfile_after(
+                &extension_id,
+                execution.metadata.as_ref(),
+                definition.os_dependent || definition.arch_dependent,
             )?;
 
             // The requested extension host owns this mapping, not its first
@@ -1341,7 +1399,9 @@ impl RepositorySet {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn registry_source_root(
+    access: &crate::registry_session::SessionHandle,
     registry: &Registry,
     name: &str,
     version: &str,
@@ -1352,13 +1412,13 @@ fn registry_source_root(
 ) -> Result<PathBuf, String> {
     let relative = format!("modules/{name}/{version}/source.json");
     let descriptor = registry.location(&relative);
-    let source = registry
-        .read_object(&relative)?
+    let source = access
+        .read_object(registry, &relative)?
         .ok_or_else(|| format!("missing registry source descriptor {descriptor}"))?;
     match source.get("type") {
         Some(serde_json::Value::String(kind)) if kind == "local_path" => {}
         None => {
-            return crate::materializer::materialize_with_download_policy(
+            return crate::materializer::materialize_with_registry_config(
                 registry,
                 name,
                 version,
@@ -1367,10 +1427,11 @@ fn registry_source_root(
                 cache,
                 local_patches,
                 downloads_enabled,
+                access.read_object(registry, "bazel_registry.json")?,
             );
         }
         Some(serde_json::Value::String(kind)) if kind == "archive" => {
-            return crate::materializer::materialize_with_download_policy(
+            return crate::materializer::materialize_with_registry_config(
                 registry,
                 name,
                 version,
@@ -1379,6 +1440,7 @@ fn registry_source_root(
                 cache,
                 local_patches,
                 downloads_enabled,
+                access.read_object(registry, "bazel_registry.json")?,
             );
         }
         Some(kind) => return Err(format!("unsupported source type {kind} in {descriptor}")),
@@ -1411,7 +1473,7 @@ fn registry_source_root(
         path
     } else {
         let config_path = registry.location("bazel_registry.json");
-        let config = registry.read_object("bazel_registry.json").map_err(|error| {
+        let config = access.read_object(registry, "bazel_registry.json").map_err(|error| {
             format!("relative local_path source requires registry module_base_path: {error}")
         })?.ok_or_else(|| format!("relative local_path source requires registry module_base_path: missing {config_path}"))?;
         let base = config

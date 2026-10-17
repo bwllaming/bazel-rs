@@ -1,0 +1,6 @@
+{
+    "versions": ["1.0", "1.1"],
+    "yanked_versions": {
+        "1.0": "lockdemo yank: use 1.1"
+    }
+}

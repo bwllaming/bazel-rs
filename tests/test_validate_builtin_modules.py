@@ -90,9 +90,11 @@ class PlanAndFixtureTests(unittest.TestCase):
 
     def test_native_command_keeps_remote_disabled_and_reference_uses_shared_api(self):
         command = builtin.native_command(Path('/native'), Path('/private/cache'), Path('/private/mirror'), 'query', builtin.TARGET)
+        # Remote access is no longer gated by the lockfile mode; the local
+        # registry keeps it offline and off keeps MODULE.bazel.lock untouched.
         self.assertEqual(command, ['/native', '--ignore_all_rc_files', '--cache-dir=/private/cache', 'query',
-                                   '--registry=file:///private/mirror', builtin.SELECTOR, builtin.TARGET])
-        self.assertNotIn('--lockfile_mode=off', command)
+                                   '--lockfile_mode=off', '--registry=file:///private/mirror', builtin.SELECTOR,
+                                   builtin.TARGET])
         runner = mock.Mock()
         reference = builtin.DirectReference(Path('/official'), Path('/workspace'), Path('/scratch'), runner, 'builtin-modules')
         reference.registry = Path('/private/mirror')

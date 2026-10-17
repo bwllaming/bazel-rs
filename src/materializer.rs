@@ -169,6 +169,33 @@ pub fn materialize_with_download_policy(
     local_patches: &LocalPatchPlan,
     downloads_enabled: bool,
 ) -> Result<PathBuf, String> {
+    materialize_with_registry_config(
+        registry,
+        name,
+        version,
+        module_file,
+        source,
+        cache,
+        local_patches,
+        downloads_enabled,
+        registry.read_object("bazel_registry.json")?,
+    )
+}
+
+/// [`materialize_with_download_policy`] with a bazel_registry.json already
+/// read through the invocation's registry session.
+#[allow(clippy::too_many_arguments)]
+pub fn materialize_with_registry_config(
+    registry: &Registry,
+    name: &str,
+    version: &str,
+    module_file: &[u8],
+    source: &Map<String, Value>,
+    cache: &Path,
+    local_patches: &LocalPatchPlan,
+    downloads_enabled: bool,
+    config: Option<Map<String, Value>>,
+) -> Result<PathBuf, String> {
     local_patches.validate_materialization()?;
     for key in source.keys() {
         if !matches!(
@@ -226,7 +253,6 @@ pub fn materialize_with_download_policy(
         Integrity::parse(value.as_str().ok_or("patch integrity must be a string")?)?;
     }
     let mut urls = Vec::new();
-    let config = registry.read_object("bazel_registry.json")?;
     if let Some(config) = &config
         && let Some(mirrors) = config.get("mirrors")
     {

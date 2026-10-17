@@ -215,7 +215,8 @@ class PlanTests(unittest.TestCase):
         argv = settings.native_command(Path('/native'), Path('/cache'), 'build', '//:result')
         self.assertIn('--experimental-builtin-modules', argv)
         self.assertIn('--registry=' + settings.REGISTRY.as_uri(), argv)
-        self.assertNotIn('--lockfile_mode=off', argv)
+        # Explicit: no MODULE.bazel.lock I/O (docs/REGISTRY_LOCKFILE.md).
+        self.assertIn('--lockfile_mode=off', argv)
         sources = settings.source_paths()
         for path in (settings.FIXTURE / 'bazel-skylib-1.8.2.tar.gz', settings.FIXTURE / 'LICENSE',
                      settings.FIXTURE / 'skylib/rules/common_settings.bzl', settings.ROOT / 'src/main.rs'):

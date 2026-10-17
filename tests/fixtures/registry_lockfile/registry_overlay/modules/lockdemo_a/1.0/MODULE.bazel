@@ -1,0 +1,3 @@
+module(name = "lockdemo_a", version = "1.0")
+
+bazel_dep(name = "lockdemo_b", version = "1.0")

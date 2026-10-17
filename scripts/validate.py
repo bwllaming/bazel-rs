@@ -262,7 +262,10 @@ class Reference:
 
 
 def native_command(executable, cache, command, target):
-    return [str(executable), "--ignore_all_rc_files", "--cache-dir=" + str(cache), command, target]
+    # Explicit lockfile mode: never read/write a workspace MODULE.bazel.lock
+    # (docs/REGISTRY_LOCKFILE.md); fixtures need no registry.
+    return [str(executable), "--ignore_all_rc_files", "--cache-dir=" + str(cache), command,
+            "--lockfile_mode=off", target]
 
 
 def check(report, name, callback):

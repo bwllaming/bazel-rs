@@ -173,7 +173,8 @@ class InvocationAndErrorTests(unittest.TestCase):
         runner.run.return_value = record()
         repositories.native_invoke(Path("/native"), Path("/cache"), runner, Path("/fixture"), "build", "build", "@first//p:copy", 4)
         self.assertEqual(runner.run.call_args.args[1], [
-            "/native", "--ignore_all_rc_files", "--cache-dir=/cache", "build", "--jobs=4", "@first//p:copy"])
+            "/native", "--ignore_all_rc_files", "--cache-dir=/cache", "build", "--lockfile_mode=off", "--jobs=4",
+            "@first//p:copy"])
         runner.run.return_value = record(stderr="falling back to official")
         with self.assertRaisesRegex(ValueError, "fallback"):
             repositories.native_invoke(Path("/native"), Path("/cache"), runner, Path("/fixture"), "q", "query", "//p:all")

@@ -328,7 +328,8 @@ def steps_for(spec, engine):
 
 def native_command(executable, cache, command, target, extra=()):
     return [str(executable), '--ignore_all_rc_files', '--cache-dir=' + str(cache), command,
-            '--registry=' + REGISTRY.as_uri(), '--experimental-builtin-modules', *extra, target]
+            '--lockfile_mode=off', '--registry=' + REGISTRY.as_uri(), '--experimental-builtin-modules',
+            *extra, target]
 
 
 def prepare(workspace, spec):

@@ -37,9 +37,18 @@ impl Fixture {
         fs::write(path, content).unwrap();
     }
     fn run(&self, args: &[&str]) -> Output {
+        // Never fall back to the default https://bcr.bazel.build/ registry.
+        let explicit = args.iter().any(|arg| arg.starts_with("--registry"));
         Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
             .arg("--ignore_all_rc_files")
             .args(args)
+            .args(
+                (!explicit
+                    && args
+                        .iter()
+                        .any(|arg| matches!(*arg, "query" | "build" | "mod")))
+                .then(|| format!("--registry=file://{}", self.0.join("registry").display())),
+            )
             .current_dir(&self.0)
             .output()
             .unwrap()

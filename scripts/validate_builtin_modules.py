@@ -171,9 +171,11 @@ def require_query(record, engine):
 
 
 def native_command(executable, cache, registry, command, target, selector=SELECTOR, extra=()):
-    # In this CLI --lockfile_mode=off ENABLES remote access. Deliberately omit it.
+    # Explicit lockfile mode and local registry: no MODULE.bazel.lock I/O and
+    # never the default https://bcr.bazel.build/ registry.
     return [str(executable), '--ignore_all_rc_files', '--cache-dir=' + str(cache), command,
-            '--registry=' + registry.as_uri(), *([selector] if selector else []), *extra, target]
+            '--lockfile_mode=off', '--registry=' + registry.as_uri(), *([selector] if selector else []),
+            *extra, target]
 
 
 def traced_command(argv, trace):

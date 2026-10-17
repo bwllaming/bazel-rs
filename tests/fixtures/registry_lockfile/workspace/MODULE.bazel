@@ -1,0 +1,4 @@
+module(name = "lockdemo_root", version = "0.1")
+
+bazel_dep(name = "lockdemo_a", version = "1.0")
+bazel_dep(name = "lockdemo_c", version = "1.0")

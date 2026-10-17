@@ -46,7 +46,8 @@ impl BuiltinProfile {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ResolverOptions {
-    /// Explicit registry roots, searched in order. No implicit remote registry.
+    /// Registry roots, searched in order. The library default is empty; the
+    /// CLI supplies Bazel's default https://bcr.bazel.build/ without --registry.
     pub registries: Vec<Registry>,
     pub ignore_dev_dependencies: bool,
     pub builtin_profile: BuiltinProfile,
@@ -65,6 +66,9 @@ pub struct ResolverOptions {
     /// `--incompatible_disable_non_executable_java_binary` (:653-660), all
     /// default false and accepted by every loading command.
     pub java_semantics: JavaSemantics,
+    /// Registry access of this invocation: lockfile hashes, the registry
+    /// file cache and the per-URL memo. The default reads directly.
+    pub registry_session: crate::registry_session::SessionHandle,
 }
 
 /// [`ResolverOptions::java_semantics`].
@@ -85,7 +89,10 @@ impl ResolverOptions {
 
     fn validate_registry(&self, registry: &Registry) -> Result<(), String> {
         if registry.local_path().is_none() && !self.allow_remote {
-            return Err("--lockfile_mode=off is required for remote registries; lockfile support is not implemented".to_owned());
+            return Err(format!(
+                "--lockfile_mode=off is required for remote registries in native mod graph (its only lockfile mode); registry {registry} (the default registry is {})",
+                crate::registry::DEFAULT_REGISTRY
+            ));
         }
         Ok(())
     }
@@ -349,6 +356,7 @@ pub(crate) fn resolve_from_root_snapshot(
         root,
         overrides,
         use_embedded_builtin,
+        prefetched: Default::default(),
     };
     let nodes = discovery.collect()?;
     for name in overrides.keys() {
@@ -375,7 +383,6 @@ pub(crate) fn resolve_from_root_snapshot(
         let node = &nodes[key];
         let level = node.compatibility_level();
         let source = node.source.clone().expect("discovered non-root source");
-        check_yanked(&source)?;
         let canonical_name = canonical_names[key].clone();
         modules.insert(
             canonical_name.clone(),
@@ -391,11 +398,160 @@ pub(crate) fn resolve_from_root_snapshot(
         );
     }
     let root_mapping = mapping(&Key::Root, &nodes, &selected, &canonical_names)?;
-    Ok(ResolvedGraph {
+    let graph = ResolvedGraph {
         root: root.clone(),
         modules,
         root_mapping,
-    })
+    };
+    check_selected_registry_modules(&graph, options)?;
+    Ok(graph)
+}
+
+/// The registry work of BazelModuleResolutionFunction after selection, in
+/// resolved-graph (BFS) order: yanked versions (collectYankedVersionsValues
+/// and checkNoYankedVersions, :207-242 and :340-375) and, when a lockfile is
+/// in use, the repo specs of every selected remote registry module
+/// (source.json and bazel_registry.json, :113-131), whose hashes the lockfile
+/// records. Records the resolution in the registry session.
+fn check_selected_registry_modules(
+    graph: &ResolvedGraph,
+    options: &ResolverOptions,
+) -> Result<(), String> {
+    use crate::registry_session::{Fetch, YankedLookup};
+    let access = &options.registry_session;
+    let selected: Vec<(&Registry, &str, &str)> = graph
+        .modules_in_bfs_order()
+        .into_iter()
+        .filter_map(|module| match &module.source {
+            ModuleSource::Registry {
+                registry,
+                name,
+                version,
+                ..
+            } => Some((registry, name.as_str(), version.as_str())),
+            _ => None,
+        })
+        .collect();
+    let module_key = |name: &str, version: &str| {
+        format!("{name}@{}", if version.is_empty() { "_" } else { version })
+    };
+    let mut known = Vec::new();
+    let mut fetch = Vec::new();
+    for &(registry, name, version) in &selected {
+        let key = module_key(name, version);
+        let source_url = registry
+            .download_location(&format!("modules/{name}/{version}/source.json"))
+            .unwrap_or_default();
+        let lookup = match access.session() {
+            Some(session) => session.yanked_lookup(registry, &key, &source_url),
+            None => YankedLookup::Fetch,
+        };
+        match lookup {
+            YankedLookup::Known(info) => known.push((key, info)),
+            YankedLookup::Fetch => fetch.push((registry, name, version, key)),
+        }
+    }
+    access.prefetch(
+        fetch
+            .iter()
+            .map(|(registry, name, ..)| {
+                ((*registry).clone(), format!("modules/{name}/metadata.json"))
+            })
+            .collect(),
+    );
+    let mut values = known;
+    for (registry, name, version, key) in fetch {
+        values.push((key, selected_yanked_info(access, registry, name, version)?));
+    }
+    let mut selected_yanked = Vec::new();
+    for (key, info) in values {
+        let Some(info) = info else {
+            continue;
+        };
+        let allowed = access
+            .session()
+            .is_some_and(|session| session.yanked_allowed(&key));
+        if !allowed {
+            return Err(format!(
+                "Yanked version detected in your resolved dependency graph: {key}, for the reason: {info}.\nYanked versions may contain serious vulnerabilities and should not be used. To fix this, use a bazel_dep on a newer version of this module. To continue using this version, allow it using the --allow_yanked_versions flag or the BZLMOD_ALLOW_YANKED_VERSIONS env variable."
+            ));
+        }
+        selected_yanked.push((key, info));
+    }
+    // Bazel computes these repo specs in every lockfile mode; the native
+    // profile does so for remote registries when a lockfile is in use
+    // (lockfile-off keeps the lazy per-repository source.json reads).
+    if access.mode() != crate::lockfile::LockfileMode::Off {
+        let remote: Vec<_> = selected
+            .iter()
+            .filter(|(registry, ..)| registry.local_path().is_none())
+            .collect();
+        access.prefetch(
+            remote
+                .iter()
+                .map(|(registry, name, version)| {
+                    (
+                        (*registry).clone(),
+                        format!("modules/{name}/{version}/source.json"),
+                    )
+                })
+                .collect(),
+        );
+        for (registry, name, version) in remote {
+            let key = module_key(name, version);
+            let wrap = |error: String| {
+                format!("Unable to get module repo spec for {key} from registry: {error}")
+            };
+            let relative = format!("modules/{name}/{version}/source.json");
+            let Fetch::Found(bytes) = access.read(registry, &relative).map_err(wrap)? else {
+                return Err(wrap(format!(
+                    "Module {key}'s source.json not found in registry {}",
+                    access.registry_display(registry)
+                )));
+            };
+            let url = registry.location(&relative);
+            let source: serde_json::Value = std::str::from_utf8(&bytes)
+                .map_err(|error| error.to_string())
+                .and_then(|text| serde_json::from_str(text).map_err(|error| error.to_string()))
+                .map_err(|error| wrap(format!("Unable to parse json at url {url}: {error}")))?;
+            // IndexRegistry.getRepoSpec (:345-391): archive (the default) and
+            // local_path sources read bazel_registry.json; git_repository does not.
+            let kind = source
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("archive");
+            match kind {
+                "archive" | "local_path" => {
+                    access.read(registry, "bazel_registry.json").map_err(wrap)?;
+                }
+                "git_repository" => {}
+                other => {
+                    return Err(wrap(format!(
+                        "Invalid source type \"{other}\" for module {key}"
+                    )));
+                }
+            }
+        }
+    }
+    if let Some(session) = access.session() {
+        // The extension usage table (BazelDepGraphFunction.java:97-137)
+        // prunes preserved extension sections before writing.
+        let usages = if session.mode().writes() {
+            crate::repository_catalog::build(graph, options.ignore_dev_dependencies)
+                .ok()
+                .map(|catalog| crate::registry_session::ExtensionUsages {
+                    ids: catalog.usage_extension_ids,
+                    isolated_prefixes: catalog.isolated_usage_id_prefixes,
+                })
+        } else {
+            None
+        };
+        session.record_resolution(crate::registry_session::Resolution {
+            selected_yanked,
+            usages,
+        });
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -431,6 +587,8 @@ struct Discovery<'a> {
     overrides: &'a BTreeMap<String, ModuleOverride>,
     /// Internal default override, deliberately not representable in MODULE syntax.
     use_embedded_builtin: bool,
+    /// Keys whose MODULE.bazel was already handed to the parallel prefetch.
+    prefetched: std::cell::RefCell<BTreeSet<Key>>,
 }
 impl Discovery<'_> {
     fn collect(&self) -> Result<BTreeMap<Key, Node>, String> {
@@ -476,6 +634,12 @@ impl Discovery<'_> {
         let mut queue = VecDeque::from([Key::Root]);
         while let Some(key) = queue.pop_front() {
             if !loaded.contains_key(&key) {
+                // Discovery.java:113-137 fetches a whole horizon at once: in
+                // FIFO order, the first key not yet handed to the prefetch
+                // starts the next horizon, which is then the entire queue.
+                if !self.prefetched.borrow().contains(&key) {
+                    self.prefetch(std::iter::once(&key).chain(queue.iter()), loaded);
+                }
                 let entry = match &key {
                     Key::Root => (self.root.clone(), None),
                     Key::Module { name, version } => {
@@ -538,6 +702,64 @@ impl Discovery<'_> {
             );
         }
         Ok((nodes, unfulfilled_names))
+    }
+
+    /// Warm the registry memo with the first-registry MODULE.bazel of every
+    /// pending key that `load` would read from a registry.
+    fn prefetch<'k>(
+        &self,
+        keys: impl Iterator<Item = &'k Key>,
+        loaded: &BTreeMap<Key, (ModuleFile, Option<ModuleSource>)>,
+    ) {
+        if self.options.registry_session.session().is_none() {
+            return;
+        }
+        let mut prefetched = self.prefetched.borrow_mut();
+        let mut items = Vec::new();
+        for key in keys {
+            let Key::Module { name, version } = key else {
+                continue;
+            };
+            if loaded.contains_key(key) || !prefetched.insert(key.clone()) {
+                continue;
+            }
+            if version.normalized.is_empty()
+                || (name == "bazel_tools"
+                    && (self.use_embedded_builtin
+                        || self.options.builtin_profile == BuiltinProfile::ExplicitModules))
+            {
+                continue;
+            }
+            let registries = match self.overrides.get(name) {
+                Some(
+                    ModuleOverride::Git { .. }
+                    | ModuleOverride::Archive { .. }
+                    | ModuleOverride::LocalPath { .. },
+                ) => continue,
+                Some(
+                    ModuleOverride::SingleVersion { registry, .. }
+                    | ModuleOverride::MultipleVersion { registry, .. },
+                ) if !registry.is_empty() => match Registry::parse(registry) {
+                    Ok(registry) => vec![registry],
+                    Err(_) => continue,
+                },
+                _ => self.options.registries.clone(),
+            };
+            // Stop before the first registry `load` would reject.
+            let registries: Vec<_> = registries
+                .into_iter()
+                .take_while(|registry| self.options.validate_registry(registry).is_ok())
+                .collect();
+            if registries.is_empty() {
+                continue;
+            }
+            items.push((
+                registries,
+                format!("modules/{name}/{}/MODULE.bazel", version.normalized),
+            ));
+        }
+        drop(prefetched);
+        self.options.registry_session.prefetch_fallbacks(items);
     }
 
     fn dependency_key(&self, dep: &Dependency) -> Result<Key, String> {
@@ -702,9 +924,30 @@ impl Discovery<'_> {
             self.options.validate_registry(registry)?;
             let relative = format!("modules/{name}/{}/MODULE.bazel", version.normalized);
             let path = registry.location(&relative);
-            let Some(source) = registry.read_text(&relative)? else {
+            // ModuleFileFunction.java:820-850: a missing file tries the next
+            // registry; a MissingChecksumException is reported as is
+            // (:841-843); any other failure is an error accessing this one.
+            let fetched = self
+                .options
+                .registry_session
+                .read(registry, &relative)
+                .map_err(|error| {
+                    if registry.local_path().is_some()
+                        || error.starts_with("Missing checksum for registry file ")
+                    {
+                        error
+                    } else {
+                        format!(
+                            "Error accessing registry {}: {error}",
+                            self.options.registry_session.registry_display(registry)
+                        )
+                    }
+                })?;
+            let crate::registry_session::Fetch::Found(bytes) = fetched else {
                 continue;
             };
+            let source = std::str::from_utf8(&bytes)
+                .map_err(|_| format!("registry entry is not UTF-8: {path}"))?;
             let module_file = source.as_bytes().to_vec();
             let local_patches = match self.overrides.get(name) {
                 Some(ModuleOverride::SingleVersion { patches, .. }) => {
@@ -971,24 +1214,24 @@ fn mapping(
     Ok(mapping)
 }
 
-fn check_yanked(source: &ModuleSource) -> Result<(), String> {
-    let ModuleSource::Registry {
-        registry,
-        name,
-        version,
-        ..
-    } = source
-    else {
-        return Ok(());
-    };
+/// The yanked info of the selected `version` from metadata.json
+/// (IndexRegistry.getYankedVersions, :581-610).
+fn selected_yanked_info(
+    access: &crate::registry_session::SessionHandle,
+    registry: &Registry,
+    name: &str,
+    version: &str,
+) -> Result<Option<String>, String> {
     let relative = format!("modules/{name}/metadata.json");
     let path = registry.location(&relative);
-    let Some(text) = registry.read_text(&relative)? else {
-        return Ok(());
+    let crate::registry_session::Fetch::Found(bytes) = access.read(registry, &relative)? else {
+        return Ok(None);
     };
+    let text = String::from_utf8(bytes.to_vec())
+        .map_err(|_| format!("registry entry is not UTF-8: {path}"))?;
     // IndexRegistry.grabJson treats blank documents as absent metadata.
     if text.trim().is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     let metadata: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| format!("invalid registry metadata {path}: {e}"))?;
@@ -996,11 +1239,11 @@ fn check_yanked(source: &ModuleSource) -> Result<(), String> {
         .as_object()
         .ok_or_else(|| format!("registry metadata must be an object: {path}"))?;
     let Some(yanked) = object.get("yanked_versions") else {
-        return Ok(());
+        return Ok(None);
     };
     // IndexRegistry.getYankedVersions treats a null field as an empty map.
     if yanked.is_null() {
-        return Ok(());
+        return Ok(None);
     }
     let yanked = yanked
         .as_object()
@@ -1011,12 +1254,10 @@ fn check_yanked(source: &ModuleSource) -> Result<(), String> {
             .as_str()
             .ok_or_else(|| format!("yanked version reason must be a string: {path}"))?;
         if Version::parse(v)? == selected {
-            return Err(format!(
-                "selected module {name}@{version} is yanked: {reason}; yanked-version allowlists are unsupported"
-            ));
+            return Ok(Some(reason.to_owned()));
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 /// Normalize declared module versions for extension module views without
@@ -1649,7 +1890,7 @@ mod tests {
         f.metadata("a", r#"{"yanked_versions":{"1":"old security bug"}}"#);
         assert_eq!(f.resolve().modules["a+"].version, "2");
         f.metadata("a", r#"{"yanked_versions":{"2":"security bug"}}"#);
-        f.fails("is yanked: security bug");
+        f.fails("Yanked version detected in your resolved dependency graph: a@2, for the reason: security bug.");
         f.metadata("a", "not json");
         f.fails("invalid registry metadata");
         f.metadata("a", r#"{"yanked_versions":[]}"#);
@@ -2074,6 +2315,7 @@ mod tests {
             root: &root,
             overrides: &overrides,
             use_embedded_builtin: true,
+            prefetched: Default::default(),
         };
         let (module, source) = discovery.load("bazel_tools", &Version::default()).unwrap();
         assert_eq!(
@@ -2176,6 +2418,7 @@ mod tests {
                 root: &root,
                 use_embedded_builtin: !overrides.contains_key("bazel_tools"),
                 overrides: &overrides,
+                prefetched: Default::default(),
             };
             assert_eq!(
                 discovery.dependency_key(&dependency).unwrap(),
@@ -2291,6 +2534,7 @@ mod tests {
             root: &root,
             overrides: &root.overrides,
             use_embedded_builtin: false,
+            prefetched: Default::default(),
         };
         let nodes = discovery.collect().unwrap();
         assert_eq!(

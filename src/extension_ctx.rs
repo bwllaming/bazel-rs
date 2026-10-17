@@ -736,14 +736,19 @@ fn extension_metadata_call(
     let reproducible = values[2].and_then(|value| value.unpack_bool()) == Some(true);
     // ModuleExtensionMetadata.create: facts are validated before the
     // direct-dependency arguments (Dict.cast precedes create()).
+    let mut has_facts = false;
     if let Some(facts) = values[3] {
         validate_facts(facts)?;
+        has_facts =
+            starlark::values::dict::DictRef::from_value(facts).is_some_and(|dict| !dict.is_empty());
     }
-    create_metadata(
+    let mut metadata = create_metadata(
         values[0].unwrap_or(none),
         values[1].unwrap_or(none),
         reproducible,
-    )
+    )?;
+    metadata.has_facts = has_facts;
+    Ok(metadata)
 }
 
 /// Java Sequence implementations reachable from Starlark: list, tuple, range.
@@ -806,6 +811,7 @@ fn create_metadata(
         explicit_root_module_direct_dev_deps: None,
         use_all_repos,
         reproducible,
+        has_facts: false,
     };
     if deps.is_none() && dev_deps.is_none() {
         return Ok(mode(UseAllRepos::No));
@@ -860,6 +866,7 @@ fn create_metadata(
         explicit_root_module_direct_dev_deps: Some(explicit_dev_deps),
         use_all_repos: UseAllRepos::No,
         reproducible,
+        has_facts: false,
     })
 }
 

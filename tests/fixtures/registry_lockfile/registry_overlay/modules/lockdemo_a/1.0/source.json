@@ -1,0 +1,5 @@
+{
+    "url": "https://example.invalid/lockdemo_a-1.0.tar.gz",
+    "integrity": "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=",
+    "strip_prefix": "lockdemo_a-1.0"
+}

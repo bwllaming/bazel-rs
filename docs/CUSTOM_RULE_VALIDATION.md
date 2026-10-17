@@ -128,8 +128,9 @@ bazel-rs --ignore_all_rc_files mod graph --output=json
 bazel-rs --ignore_all_rc_files mod graph --output=json --registry=file:///absolute/path
 ```
 
-Registries are optional for graphs whose metadata is available without them,
-such as local-path overrides; there is no implicit network registry. This is
+Without `--registry` the default is Bazel's `https://bcr.bazel.build/`, which
+`mod graph` accepts only with an explicit `--lockfile_mode=off`; pass a
+`file://` registry (even an empty one) to stay offline. This is
 selected-module JSON only, with hidden extension information, not full `mod`
 parity. Implicit built-in modules, extension execution, unused-module/verbose
 views and text output are unsupported. Active extension usages fail even with

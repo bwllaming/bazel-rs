@@ -139,7 +139,8 @@ class ParserAndInvocationTests(unittest.TestCase):
         runner.run.return_value = record()
         custom.native_invoke(Path("/native"), Path("/cache"), runner, Path("/fixture"), "b", "build", "//:scalar", 4)
         self.assertEqual(runner.run.call_args.args[1], [
-            "/native", "--ignore_all_rc_files", "--cache-dir=/cache", "build", "--jobs=4", "//:scalar"])
+            "/native", "--ignore_all_rc_files", "--cache-dir=/cache", "build", "--lockfile_mode=off", "--jobs=4",
+            "//:scalar"])
         custom.native_invoke(Path("/native"), Path("/cache"), runner, Path("/fixture"), "q", "query", "//:all", 4)
         self.assertFalse(any(arg.startswith("--jobs") for arg in runner.run.call_args.args[1]))
 

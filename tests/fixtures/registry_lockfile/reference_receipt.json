@@ -1,0 +1,1047 @@
+{
+  "schema": "n37-registry-lockfile-reference-receipt/v1",
+  "purpose": "Paired genuine Bazel 9.3.0 vs native bazel-rs capture of MODULE.bazel.lock registry semantics (docs/REGISTRY_LOCKFILE.md): lockfile bytes, write-on-change, update/refresh/error/off modes, registry requests per invocation, yanked versions, not-found entries, version/parse/tamper/missing-hash errors. Evidence only; no test reads this file.",
+  "reference": {
+    "binary": "bazel-9.3.0-linux-x86_64",
+    "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+    "startup": "--batch --ignore_all_rc_files --output_user_root=<private, removed> --host_jvm_args=-Xmx512m",
+    "command_flags": "query //:all --registry=http://127.0.0.1:<port>/r1 --registry=http://127.0.0.1:<port>/r2 --lockfile_mode=MODE --repository_cache=<private> --noshow_progress --color=no --curses=no --incompatible_autoload_externally= --repository_disable_download [--allow_yanked_versions=...]"
+  },
+  "native": {
+    "binary": "target/release/bazel-rs",
+    "sha256": "55c01a63c1b7034759c827510e9f50a76f93d43da69cc1d8e76ccb5eb9474db1",
+    "command_flags": "--ignore_all_rc_files --cache-dir=<private> query --experimental-builtin-modules --registry=... --registry=... --lockfile_mode=MODE --repository_disable_download [--allow_yanked_versions=...] //:all"
+  },
+  "capture_fixture": {
+    "registry_r1": "tests/fixtures/builtin_modules/registry + tests/fixtures/registry_lockfile/registry_overlay",
+    "registry_r2": "tests/fixtures/registry_lockfile/registry_extra",
+    "workspace": "tests/fixtures/registry_lockfile/workspace",
+    "server": "python ThreadingHTTPServer on 127.0.0.1 (ephemeral port, shared by both engines; lockfile texts compared with the same port)"
+  },
+  "script": {
+    "path": "artifacts/lockfile-capture.py",
+    "sha256": "42c11190617e09e86ade487c100317c4dabbc70446ca4b25279626f4bb035b3d"
+  },
+  "environment": "env -i PATH=/usr/bin:/bin HOME=<private> TMPDIR=<private> LC_ALL=C.UTF-8; umask 022",
+  "counts": {
+    "steps": 18,
+    "exact": 14,
+    "documented_mismatch": 4
+  },
+  "genuine_fresh_lockfile": {
+    "sha256": "475ad8175bb6c307c0c7e7e24e1a61e3ec655bee7990d69f43f54d530686728d",
+    "registryFileHashes": 192,
+    "not_found": [
+      "http://127.0.0.1:<port>/r1/modules/lockdemo_c/1.0/MODULE.bazel",
+      "http://127.0.0.1:<port>/r2/bazel_registry.json"
+    ],
+    "selectedYankedVersions": {
+      "lockdemo_b@1.0": "lockdemo yank: use 1.1"
+    },
+    "native_identical": true
+  },
+  "mismatches": [
+    {
+      "step": "A/off",
+      "fields": [
+        "requests"
+      ],
+      "bazel_error": null,
+      "native_error": null,
+      "bazel_requests": {
+        "MODULE.bazel 200": 159,
+        "MODULE.bazel 404": 1,
+        "bazel_registry.json 200": 1,
+        "bazel_registry.json 404": 1,
+        "metadata.json 200": 29,
+        "metadata.json 404": 1,
+        "source.json 200": 30
+      },
+      "native_requests": {},
+      "bazel_rc": 0,
+      "native_rc": 0,
+      "documented": "NATIVE_BOUNDARY: Bazel resolves the module graph in every command; native --lockfile_mode=off keeps its lazy profile, so a main-repository query issues no registry request (docs/REGISTRY_LOCKFILE.md \"Eager resolution boundary\")."
+    },
+    {
+      "step": "A/update_malformed",
+      "fields": [
+        "error_contained"
+      ],
+      "bazel_error": "Error computing the main repository mapping: Failed to read and parse the MODULE.bazel.lock file with error: com.google.gson.stream.MalformedJsonException: Unterminated string at line 100 column 8 path $.registryFileHashes.",
+      "native_error": "Failed to read and parse the MODULE.bazel.lock file with error: malformed JSON (unterminated string) at line 100 column 8 near ``. Try deleting it and rerun the build.",
+      "bazel_requests": {},
+      "native_requests": {},
+      "bazel_rc": 48,
+      "native_rc": 1,
+      "documented": "Gson MalformedJsonException inner message is not reproduced; wrapper \"Failed to read and parse the MODULE.bazel.lock file with error: \" and suffix are Bazel's."
+    },
+    {
+      "step": "A/update_merge_conflict",
+      "fields": [
+        "error_contained"
+      ],
+      "bazel_error": "Error computing the main repository mapping: Failed to read and parse the MODULE.bazel.lock file with error: com.google.gson.stream.MalformedJsonException: Expected ':' at line 197 column 10 path $.<<<<<<<",
+      "native_error": "Failed to read and parse the MODULE.bazel.lock file with error: malformed JSON (expected name) at line 197 column 1 near `<<<<<<< HEAD`. This looks like a merge conflict. See https://bazel.build/external/lockfile#merge-conflicts for advice.",
+      "bazel_requests": {},
+      "native_requests": {},
+      "bazel_rc": 48,
+      "native_rc": 1,
+      "documented": "Gson inner message not reproduced (Bazel reads the lenient name \"<<<<<<<\"); both select the merge-conflict suffix."
+    },
+    {
+      "step": "A/update_invalid_checksum",
+      "fields": [
+        "error_contained"
+      ],
+      "bazel_error": null,
+      "native_error": "Failed to read and parse the MODULE.bazel.lock file with error: Invalid checksum: xyz. Try deleting it and rerun the build.",
+      "bazel_requests": {},
+      "native_requests": {},
+      "bazel_rc": 37,
+      "native_rc": 1,
+      "documented": "Genuine Bazel 9.3 crashes (exit 37, uncaught JsonParseException from GsonTypeAdapterUtil.java:393); native reports a parse error instead."
+    }
+  ],
+  "scenarios": [
+    {
+      "step": "A/update_fresh",
+      "mode": "update",
+      "extra": [
+        "--allow_yanked_versions=lockdemo_b@1.0"
+      ],
+      "verdict": "EXACT",
+      "compare": {
+        "rc": true,
+        "stdout": true,
+        "lockfile_bytes": true,
+        "lockfile_written": true,
+        "requests": true,
+        "error_contained": true
+      },
+      "bazel": {
+        "rc": 0,
+        "requests": {
+          "MODULE.bazel 200": 159,
+          "MODULE.bazel 404": 1,
+          "bazel_registry.json 200": 1,
+          "bazel_registry.json 404": 1,
+          "metadata.json 200": 29,
+          "metadata.json 404": 1,
+          "source.json 200": 30
+        },
+        "lockfile_written": true,
+        "lockfile_sha256": "475ad8175bb6c307c0c7e7e24e1a61e3ec655bee7990d69f43f54d530686728d",
+        "error": null
+      },
+      "native": {
+        "rc": 0,
+        "requests": {
+          "MODULE.bazel 200": 159,
+          "MODULE.bazel 404": 1,
+          "bazel_registry.json 200": 1,
+          "bazel_registry.json 404": 1,
+          "metadata.json 200": 29,
+          "metadata.json 404": 1,
+          "source.json 200": 30
+        },
+        "lockfile_written": true,
+        "lockfile_sha256": "475ad8175bb6c307c0c7e7e24e1a61e3ec655bee7990d69f43f54d530686728d",
+        "error": null
+      }
+    },
+    {
+      "step": "A/update_warm",
+      "mode": "update",
+      "extra": [
+        "--allow_yanked_versions=lockdemo_b@1.0"
+      ],
+      "verdict": "EXACT",
+      "compare": {
+        "rc": true,
+        "stdout": true,
+        "lockfile_bytes": true,
+        "lockfile_written": true,
+        "requests": true,
+        "error_contained": true
+      },
+      "bazel": {
+        "rc": 0,
+        "requests": {},
+        "lockfile_written": false,
+        "lockfile_sha256": "475ad8175bb6c307c0c7e7e24e1a61e3ec655bee7990d69f43f54d530686728d",
+        "error": null
+      },
+      "native": {
+        "rc": 0,
+        "requests": {},
+        "lockfile_written": false,
+        "lockfile_sha256": "475ad8175bb6c307c0c7e7e24e1a61e3ec655bee7990d69f43f54d530686728d",
+        "error": null
+      }
+    },
+    {
+      "step": "A/update_yanked_not_allowed",
+      "mode": "update",
+      "extra": [],
+      "verdict": "EXACT",
+      "compare": {
+        "rc": true,
+        "stdout": true,
+        "lockfile_bytes": true,
+        "lockfile_written": true,
+        "requests": true,
+        "error_contained": true
+      },
+      "bazel": {
+        "rc": 48,
+        "requests": {},
+        "lockfile_written": false,
+        "lockfile_sha256": "475ad8175bb6c307c0c7e7e24e1a61e3ec655bee7990d69f43f54d530686728d",
+        "error": "Error computing the main repository mapping: Yanked version detected in your resolved dependency graph: lockdemo_b@1.0, for the reason: lockdemo yank: use 1.1."
+      },
+      "native": {
+        "rc": 1,
+        "requests": {},
+        "lockfile_written": false,
+        "lockfile_sha256": "475ad8175bb6c307c0c7e7e24e1a61e3ec655bee7990d69f43f54d530686728d",
+        "error": "Yanked version detected in your resolved dependency graph: lockdemo_b@1.0, for the reason: lockdemo yank: use 1.1."
+      }
+    },
+    {
+      "step": "A/refresh",
+      "mode": "refresh",
+      "extra": [
+        "--allow_yanked_versions=lockdemo_b@1.0"
+      ],
+      "verdict": "EXACT",
+      "compare": {
+        "rc": true,
+        "stdout": true,
+        "lockfile_bytes": true,
+        "lockfile_written": true,
+        "requests": true,
+        "error_contained": true
+      },
+      "bazel": {
+        "rc": 0,
+        "requests": {
+          "MODULE.bazel 404": 1,
+          "bazel_registry.json 404": 1,
+          "metadata.json 200": 29,
+          "metadata.json 404": 1
+        },
+        "lockfile_written": false,
+        "lockfile_sha256": "475ad8175bb6c307c0c7e7e24e1a61e3ec655bee7990d69f43f54d530686728d",
+        "error": null
+      },
+      "native": {
+        "rc": 0,
+        "requests": {
+          "MODULE.bazel 404": 1,
+          "bazel_registry.json 404": 1,
+          "metadata.json 200": 29,
+          "metadata.json 404": 1
+        },
+        "lockfile_written": false,
+        "lockfile_sha256": "475ad8175bb6c307c0c7e7e24e1a61e3ec655bee7990d69f43f54d530686728d",
+        "error": null
+      }
+    },
+    {
+      "step": "A/error_complete",
+      "mode": "error",
+      "extra": [
+        "--allow_yanked_versions=lockdemo_b@1.0"
+      ],
+      "verdict": "EXACT",
+      "compare": {
+        "rc": true,
+        "stdout": true,
+        "lockfile_bytes": true,
+        "lockfile_written": true,
+        "requests": true,
+        "error_contained": true
+      },
+      "bazel": {
+        "rc": 0,
+        "requests": {},
+        "lockfile_written": false,
+        "lockfile_sha256": "475ad8175bb6c307c0c7e7e24e1a61e3ec655bee7990d69f43f54d530686728d",
+        "error": null
+      },
+      "native": {
+        "rc": 0,
+        "requests": {},
+        "lockfile_written": false,
+        "lockfile_sha256": "475ad8175bb6c307c0c7e7e24e1a61e3ec655bee7990d69f43f54d530686728d",
+        "error": null
+      }
+    },
+    {
+      "step": "A/off",
+      "mode": "off",
+      "extra": [
+        "--allow_yanked_versions=lockdemo_b@1.0"
+      ],
+      "verdict": "MISMATCH",
+      "compare": {
+        "rc": true,
+        "stdout": true,
+        "lockfile_bytes": true,
+        "lockfile_written": true,
+        "requests": false,
+        "error_contained": true
+      },
+      "bazel": {
+        "rc": 0,
+        "requests": {
+          "MODULE.bazel 200": 159,
+          "MODULE.bazel 404": 1,
+          "bazel_registry.json 200": 1,
+          "bazel_registry.json 404": 1,
+          "metadata.json 200": 29,
+          "metadata.json 404": 1,
+          "source.json 200": 30
+        },
+        "lockfile_written": false,
+        "lockfile_sha256": "475ad8175bb6c307c0c7e7e24e1a61e3ec655bee7990d69f43f54d530686728d",
+        "error": null
+      },
+      "native": {
+        "rc": 0,
+        "requests": {},
+        "lockfile_written": false,
+        "lockfile_sha256": "475ad8175bb6c307c0c7e7e24e1a61e3ec655bee7990d69f43f54d530686728d",
+        "error": null
+      }
+    },
+    {
+      "step": "A/error_missing_hash",
+      "mode": "error",
+      "extra": [
+        "--allow_yanked_versions=lockdemo_b@1.0"
+      ],
+      "verdict": "EXACT",
+      "compare": {
+        "rc": true,
+        "stdout": true,
+        "lockfile_bytes": true,
+        "lockfile_written": true,
+        "requests": true,
+        "error_contained": true
+      },
+      "bazel": {
+        "rc": 32,
+        "requests": {},
+        "lockfile_written": false,
+        "lockfile_sha256": "48fe9c792046848b139c3ac679b3179f0b857958a758f8c08ad68eb2359a631e",
+        "error": "Error computing the main repository mapping: Unable to get module repo spec for lockdemo_c@1.0 from registry: Missing checksum for registry file http://127.0.0.1:43023/r2/modules/lockdemo_c/1.0/source.json not permitted with --lockfile_mode=error. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile."
+      },
+      "native": {
+        "rc": 1,
+        "requests": {},
+        "lockfile_written": false,
+        "lockfile_sha256": "48fe9c792046848b139c3ac679b3179f0b857958a758f8c08ad68eb2359a631e",
+        "error": "Unable to get module repo spec for lockdemo_c@1.0 from registry: Missing checksum for registry file http://127.0.0.1:43023/r2/modules/lockdemo_c/1.0/source.json not permitted with --lockfile_mode=error. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile."
+      }
+    },
+    {
+      "step": "A/error_old_version",
+      "mode": "error",
+      "extra": [
+        "--allow_yanked_versions=lockdemo_b@1.0"
+      ],
+      "verdict": "EXACT",
+      "compare": {
+        "rc": true,
+        "stdout": true,
+        "lockfile_bytes": true,
+        "lockfile_written": true,
+        "requests": true,
+        "error_contained": true
+      },
+      "bazel": {
+        "rc": 48,
+        "requests": {},
+        "lockfile_written": false,
+        "lockfile_sha256": "0da53bb7821e0090ddc7e84814e02afb4583859cb93d696f6fed06e5a9a9da69",
+        "error": "Error computing the main repository mapping: The version of MODULE.bazel.lock is not supported by this version of Bazel. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile."
+      },
+      "native": {
+        "rc": 1,
+        "requests": {},
+        "lockfile_written": false,
+        "lockfile_sha256": "0da53bb7821e0090ddc7e84814e02afb4583859cb93d696f6fed06e5a9a9da69",
+        "error": "The version of MODULE.bazel.lock is not supported by this version of Bazel. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile."
+      }
+    },
+    {
+      "step": "A/update_old_version",
+      "mode": "update",
+      "extra": [
+        "--allow_yanked_versions=lockdemo_b@1.0"
+      ],
+      "verdict": "EXACT",
+      "compare": {
+        "rc": true,
+        "stdout": true,
+        "lockfile_bytes": true,
+        "lockfile_written": true,
+        "requests": true,
+        "error_contained": true
+      },
+      "bazel": {
+        "rc": 0,
+        "requests": {
+          "MODULE.bazel 200": 159,
+          "MODULE.bazel 404": 1,
+          "bazel_registry.json 200": 1,
+          "bazel_registry.json 404": 1,
+          "metadata.json 200": 29,
+          "metadata.json 404": 1,
+          "source.json 200": 30
+        },
+        "lockfile_written": true,
+        "lockfile_sha256": "475ad8175bb6c307c0c7e7e24e1a61e3ec655bee7990d69f43f54d530686728d",
+        "error": null
+      },
+      "native": {
+        "rc": 0,
+        "requests": {
+          "MODULE.bazel 200": 159,
+          "MODULE.bazel 404": 1,
+          "bazel_registry.json 200": 1,
+          "bazel_registry.json 404": 1,
+          "metadata.json 200": 29,
+          "metadata.json 404": 1,
+          "source.json 200": 30
+        },
+        "lockfile_written": true,
+        "lockfile_sha256": "475ad8175bb6c307c0c7e7e24e1a61e3ec655bee7990d69f43f54d530686728d",
+        "error": null
+      }
+    },
+    {
+      "step": "A/update_malformed",
+      "mode": "update",
+      "extra": [
+        "--allow_yanked_versions=lockdemo_b@1.0"
+      ],
+      "verdict": "MISMATCH",
+      "compare": {
+        "rc": true,
+        "stdout": true,
+        "lockfile_bytes": true,
+        "lockfile_written": true,
+        "requests": true,
+        "error_contained": false
+      },
+      "bazel": {
+        "rc": 48,
+        "requests": {},
+        "lockfile_written": false,
+        "lockfile_sha256": "54437ed9cd7857d304230cd5e1310cad86bbdb404dee71ceabd30103b82550ec",
+        "error": "Error computing the main repository mapping: Failed to read and parse the MODULE.bazel.lock file with error: com.google.gson.stream.MalformedJsonException: Unterminated string at line 100 column 8 path $.registryFileHashes."
+      },
+      "native": {
+        "rc": 1,
+        "requests": {},
+        "lockfile_written": false,
+        "lockfile_sha256": "54437ed9cd7857d304230cd5e1310cad86bbdb404dee71ceabd30103b82550ec",
+        "error": "Failed to read and parse the MODULE.bazel.lock file with error: malformed JSON (unterminated string) at line 100 column 8 near ``. Try deleting it and rerun the build."
+      }
+    },
+    {
+      "step": "A/update_merge_conflict",
+      "mode": "update",
+      "extra": [
+        "--allow_yanked_versions=lockdemo_b@1.0"
+      ],
+      "verdict": "MISMATCH",
+      "compare": {
+        "rc": true,
+        "stdout": true,
+        "lockfile_bytes": true,
+        "lockfile_written": true,
+        "requests": true,
+        "error_contained": false
+      },
+      "bazel": {
+        "rc": 48,
+        "requests": {},
+        "lockfile_written": false,
+        "lockfile_sha256": "b267b24b97e75fcec17d5b4ea08685cd3619bc2648e06aefdc0504ce0f6fd62e",
+        "error": "Error computing the main repository mapping: Failed to read and parse the MODULE.bazel.lock file with error: com.google.gson.stream.MalformedJsonException: Expected ':' at line 197 column 10 path $.<<<<<<<"
+      },
+      "native": {
+        "rc": 1,
+        "requests": {},
+        "lockfile_written": false,
+        "lockfile_sha256": "b267b24b97e75fcec17d5b4ea08685cd3619bc2648e06aefdc0504ce0f6fd62e",
+        "error": "Failed to read and parse the MODULE.bazel.lock file with error: malformed JSON (expected name) at line 197 column 1 near `<<<<<<< HEAD`. This looks like a merge conflict. See https://bazel.build/external/lockfile#merge-conflicts for advice."
+      }
+    },
+    {
+      "step": "A/update_invalid_checksum",
+      "mode": "update",
+      "extra": [
+        "--allow_yanked_versions=lockdemo_b@1.0"
+      ],
+      "verdict": "MISMATCH",
+      "compare": {
+        "rc": true,
+        "stdout": true,
+        "lockfile_bytes": true,
+        "lockfile_written": true,
+        "requests": true,
+        "error_contained": false
+      },
+      "bazel": {
+        "rc": 37,
+        "requests": {},
+        "lockfile_written": false,
+        "lockfile_sha256": "4bbc6c0b8dfead02faada8ed3d9b4939fa36c42de511ba1a3e351390830d83ff",
+        "error": null
+      },
+      "native": {
+        "rc": 1,
+        "requests": {},
+        "lockfile_written": false,
+        "lockfile_sha256": "4bbc6c0b8dfead02faada8ed3d9b4939fa36c42de511ba1a3e351390830d83ff",
+        "error": "Failed to read and parse the MODULE.bazel.lock file with error: Invalid checksum: xyz. Try deleting it and rerun the build."
+      }
+    },
+    {
+      "step": "A/update_unchanged_cold_cache",
+      "mode": "update",
+      "extra": [
+        "--allow_yanked_versions=lockdemo_b@1.0"
+      ],
+      "verdict": "EXACT",
+      "compare": {
+        "rc": true,
+        "stdout": true,
+        "lockfile_bytes": true,
+        "lockfile_written": true,
+        "requests": true,
+        "error_contained": true
+      },
+      "bazel": {
+        "rc": 0,
+        "requests": {
+          "MODULE.bazel 200": 159,
+          "bazel_registry.json 200": 1,
+          "source.json 200": 30
+        },
+        "lockfile_written": false,
+        "lockfile_sha256": "475ad8175bb6c307c0c7e7e24e1a61e3ec655bee7990d69f43f54d530686728d",
+        "error": null
+      },
+      "native": {
+        "rc": 0,
+        "requests": {
+          "MODULE.bazel 200": 159,
+          "bazel_registry.json 200": 1,
+          "source.json 200": 30
+        },
+        "lockfile_written": false,
+        "lockfile_sha256": "475ad8175bb6c307c0c7e7e24e1a61e3ec655bee7990d69f43f54d530686728d",
+        "error": null
+      }
+    },
+    {
+      "step": "B/update_fresh",
+      "mode": "update",
+      "extra": [
+        "--allow_yanked_versions=lockdemo_b@1.0"
+      ],
+      "verdict": "EXACT",
+      "compare": {
+        "rc": true,
+        "stdout": true,
+        "lockfile_bytes": true,
+        "lockfile_written": true,
+        "requests": true,
+        "error_contained": true
+      },
+      "bazel": {
+        "rc": 0,
+        "requests": {
+          "MODULE.bazel 200": 159,
+          "MODULE.bazel 404": 1,
+          "bazel_registry.json 200": 1,
+          "bazel_registry.json 404": 1,
+          "metadata.json 200": 29,
+          "metadata.json 404": 1,
+          "source.json 200": 30
+        },
+        "lockfile_written": true,
+        "lockfile_sha256": "475ad8175bb6c307c0c7e7e24e1a61e3ec655bee7990d69f43f54d530686728d",
+        "error": null
+      },
+      "native": {
+        "rc": 0,
+        "requests": {
+          "MODULE.bazel 200": 159,
+          "MODULE.bazel 404": 1,
+          "bazel_registry.json 200": 1,
+          "bazel_registry.json 404": 1,
+          "metadata.json 200": 29,
+          "metadata.json 404": 1,
+          "source.json 200": 30
+        },
+        "lockfile_written": true,
+        "lockfile_sha256": "475ad8175bb6c307c0c7e7e24e1a61e3ec655bee7990d69f43f54d530686728d",
+        "error": null
+      }
+    },
+    {
+      "step": "B/tampered_warm_cache",
+      "mode": "update",
+      "extra": [
+        "--allow_yanked_versions=lockdemo_b@1.0"
+      ],
+      "verdict": "EXACT",
+      "compare": {
+        "rc": true,
+        "stdout": true,
+        "lockfile_bytes": true,
+        "lockfile_written": true,
+        "requests": true,
+        "error_contained": true
+      },
+      "bazel": {
+        "rc": 0,
+        "requests": {},
+        "lockfile_written": false,
+        "lockfile_sha256": "475ad8175bb6c307c0c7e7e24e1a61e3ec655bee7990d69f43f54d530686728d",
+        "error": null
+      },
+      "native": {
+        "rc": 0,
+        "requests": {},
+        "lockfile_written": false,
+        "lockfile_sha256": "475ad8175bb6c307c0c7e7e24e1a61e3ec655bee7990d69f43f54d530686728d",
+        "error": null
+      }
+    },
+    {
+      "step": "B/tampered_cold_cache",
+      "mode": "update",
+      "extra": [
+        "--allow_yanked_versions=lockdemo_b@1.0"
+      ],
+      "verdict": "EXACT",
+      "compare": {
+        "rc": true,
+        "stdout": true,
+        "lockfile_bytes": true,
+        "lockfile_written": true,
+        "requests": true,
+        "error_contained": true
+      },
+      "bazel": {
+        "rc": 32,
+        "requests": {
+          "MODULE.bazel 200": 2
+        },
+        "lockfile_written": false,
+        "lockfile_sha256": "475ad8175bb6c307c0c7e7e24e1a61e3ec655bee7990d69f43f54d530686728d",
+        "error": "Error computing the main repository mapping: Error accessing registry http://127.0.0.1:43023/r1: Failed to fetch registry file http://127.0.0.1:43023/r1/modules/lockdemo_a/1.0/MODULE.bazel: Checksum was b0902eab9d2b01ab37a6a41a5896ae1ae90cf077caba9bd91b134c8d1d18ded7 but wanted 6140508ca5b96fd70c50b85c7c1b3359c641eb77dd7c729da1917bd4d12a3745"
+      },
+      "native": {
+        "rc": 1,
+        "requests": {
+          "MODULE.bazel 200": 2
+        },
+        "lockfile_written": false,
+        "lockfile_sha256": "475ad8175bb6c307c0c7e7e24e1a61e3ec655bee7990d69f43f54d530686728d",
+        "error": "Error accessing registry http://127.0.0.1:43023/r1: Failed to fetch registry file http://127.0.0.1:43023/r1/modules/lockdemo_a/1.0/MODULE.bazel: Checksum was b0902eab9d2b01ab37a6a41a5896ae1ae90cf077caba9bd91b134c8d1d18ded7 but wanted 6140508ca5b96fd70c50b85c7c1b3359c641eb77dd7c729da1917bd4d12a3745"
+      }
+    },
+    {
+      "step": "C/update_yanked_fresh",
+      "mode": "update",
+      "extra": [],
+      "verdict": "EXACT",
+      "compare": {
+        "rc": true,
+        "stdout": true,
+        "lockfile_bytes": true,
+        "lockfile_written": true,
+        "requests": true,
+        "error_contained": true
+      },
+      "bazel": {
+        "rc": 48,
+        "requests": {
+          "MODULE.bazel 200": 159,
+          "MODULE.bazel 404": 1,
+          "metadata.json 200": 29,
+          "metadata.json 404": 1
+        },
+        "lockfile_written": false,
+        "lockfile_sha256": null,
+        "error": "Error computing the main repository mapping: Yanked version detected in your resolved dependency graph: lockdemo_b@1.0, for the reason: lockdemo yank: use 1.1."
+      },
+      "native": {
+        "rc": 1,
+        "requests": {
+          "MODULE.bazel 200": 159,
+          "MODULE.bazel 404": 1,
+          "metadata.json 200": 29,
+          "metadata.json 404": 1
+        },
+        "lockfile_written": false,
+        "lockfile_sha256": null,
+        "error": "Yanked version detected in your resolved dependency graph: lockdemo_b@1.0, for the reason: lockdemo yank: use 1.1."
+      }
+    },
+    {
+      "step": "C/refresh_allow_all",
+      "mode": "refresh",
+      "extra": [
+        "--allow_yanked_versions=all"
+      ],
+      "verdict": "EXACT",
+      "compare": {
+        "rc": true,
+        "stdout": true,
+        "lockfile_bytes": true,
+        "lockfile_written": true,
+        "requests": true,
+        "error_contained": true
+      },
+      "bazel": {
+        "rc": 0,
+        "requests": {
+          "MODULE.bazel 200": 159,
+          "MODULE.bazel 404": 1,
+          "bazel_registry.json 200": 1,
+          "bazel_registry.json 404": 1,
+          "metadata.json 200": 29,
+          "metadata.json 404": 1,
+          "source.json 200": 30
+        },
+        "lockfile_written": true,
+        "lockfile_sha256": "475ad8175bb6c307c0c7e7e24e1a61e3ec655bee7990d69f43f54d530686728d",
+        "error": null
+      },
+      "native": {
+        "rc": 0,
+        "requests": {
+          "MODULE.bazel 200": 159,
+          "MODULE.bazel 404": 1,
+          "bazel_registry.json 200": 1,
+          "bazel_registry.json 404": 1,
+          "metadata.json 200": 29,
+          "metadata.json 404": 1,
+          "source.json 200": 30
+        },
+        "lockfile_written": true,
+        "lockfile_sha256": "475ad8175bb6c307c0c7e7e24e1a61e3ec655bee7990d69f43f54d530686728d",
+        "error": null
+      }
+    }
+  ],
+  "run_history": [
+    {
+      "run": 1,
+      "started": "2026-10-17T03:19:07Z",
+      "native_sha256": "ecf8224da0415b9cca49ba3d5eb2ffe8f266de09c5d3176baea2987637c3bc00",
+      "differences": [
+        {
+          "step": "A/off",
+          "fields": [
+            "requests"
+          ],
+          "bazel_error": null,
+          "native_error": null
+        },
+        {
+          "step": "A/update_malformed",
+          "fields": [
+            "error_contained"
+          ],
+          "bazel_error": "Error computing the main repository mapping: Failed to read and parse the MODULE.bazel.lock file with error: com.google.gson.stream.MalformedJsonException: Unterminated string at line 100 column 8 path $.registryFileHashes.",
+          "native_error": "Failed to read and parse the MODULE.bazel.lock file with error: malformed JSON (unterminated string) at line 100 column 8 near ``. Try deleting it and rerun the build."
+        },
+        {
+          "step": "A/update_merge_conflict",
+          "fields": [
+            "error_contained"
+          ],
+          "bazel_error": "Error computing the main repository mapping: Failed to read and parse the MODULE.bazel.lock file with error: com.google.gson.stream.MalformedJsonException: Expected ':' at line 197 column 10 path $.<<<<<<<",
+          "native_error": "Failed to read and parse the MODULE.bazel.lock file with error: malformed JSON (expected name) at line 197 column 1 near `<<<<<<< HEAD`. This looks like a merge conflict. See https://bazel.build/external/lockfile#merge-conflicts for advice."
+        },
+        {
+          "step": "A/update_invalid_checksum",
+          "fields": [
+            "error_contained"
+          ],
+          "bazel_error": null,
+          "native_error": "Failed to read and parse the MODULE.bazel.lock file with error: Invalid checksum: xyz. Try deleting it and rerun the build."
+        },
+        {
+          "step": "B/tampered_cold_cache",
+          "fields": [
+            "requests",
+            "error_contained"
+          ],
+          "bazel_error": "Error computing the main repository mapping: Error accessing registry http://127.0.0.1:43051/r1: Failed to fetch registry file http://127.0.0.1:43051/r1/modules/lockdemo_a/1.0/MODULE.bazel: Checksum was b0902eab9d2b01ab37a6a41a5896ae1ae90cf077caba9bd91b134c8d1d18ded7 but wanted 6140508ca5b96fd70c50b85c7c1b3359c641eb77dd7c729da1917bd4d12a3745",
+          "native_error": "Error accessing registry http://127.0.0.1:43051/r1/: Failed to fetch registry file http://127.0.0.1:43051/r1/modules/lockdemo_a/1.0/MODULE.bazel: Checksum was b0902eab9d2b01ab37a6a41a5896ae1ae90cf077caba9bd91b134c8d1d18ded7 but wanted 6140508ca5b96fd70c50b85c7c1b3359c641eb77dd7c729da1917bd4d12a3745"
+        }
+      ],
+      "fixes_before_run_2": [
+        "discovery prefetch follows registry fallback order (ModuleFileFunction.java:820-855); Bazel fetched r2 lockdemo_c MODULE.bazel in parallel in B/tampered_cold_cache",
+        "registry URL without trailing slash in \"Error accessing registry\" and \"source.json not found in registry\" messages (IndexRegistry.getUrl)",
+        "docs/REGISTRY_LOCKFILE.md, docs/capabilities.json (embedded by `capabilities`), README/ROADMAP/REMOTE_REPOSITORIES wording"
+      ]
+    },
+    {
+      "run": 2,
+      "started": "2026-10-17T03:28:43Z",
+      "finished": "2026-10-17T03:29:27Z",
+      "native_sha256": "55c01a63c1b7034759c827510e9f50a76f93d43da69cc1d8e76ccb5eb9474db1",
+      "note": "this receipt"
+    }
+  ],
+  "changes_after_capture_run": [
+    "see post_capture_changes"
+  ],
+  "code_probe": {
+    "script": "artifacts/code_lockfile_probe.py",
+    "sha256": "57f9c8d5ed9d7a06b49debc8d4105bbb994ed97bb173fa8be132e5dd4756dc7c",
+    "native_sha256": "55c01a63c1b7034759c827510e9f50a76f93d43da69cc1d8e76ccb5eb9474db1",
+    "checkout_unchanged": true,
+    "checkout_lockfile_version": 26,
+    "overlay": {
+      "sha256": "46e5fe09e11ab7f04903218e7ff735b1b429f457cc95abb77506c0c7e1f69f39",
+      "lockFileVersion": 28,
+      "registryFileHashes": 454,
+      "not_found": 0
+    },
+    "samples": {
+      "off": [
+        {
+          "phase": "cold",
+          "wall_s": 8.208,
+          "rc": 0
+        },
+        {
+          "phase": "warm",
+          "wall_s": 6.27,
+          "rc": 0
+        },
+        {
+          "phase": "warm",
+          "wall_s": 6.267,
+          "rc": 0
+        },
+        {
+          "phase": "warm",
+          "wall_s": 6.763,
+          "rc": 0
+        }
+      ],
+      "update_readonly": [
+        {
+          "phase": "cold",
+          "wall_s": 7.691,
+          "rc": 0
+        },
+        {
+          "phase": "warm",
+          "wall_s": 5.64,
+          "rc": 0
+        },
+        {
+          "phase": "warm",
+          "wall_s": 5.67,
+          "rc": 0
+        },
+        {
+          "phase": "warm",
+          "wall_s": 5.608,
+          "rc": 0
+        }
+      ],
+      "update_overlay": [
+        {
+          "phase": "cold",
+          "wall_s": 7.521,
+          "rc": 0
+        },
+        {
+          "phase": "warm",
+          "wall_s": 1.151,
+          "rc": 0
+        },
+        {
+          "phase": "warm",
+          "wall_s": 1.241,
+          "rc": 0
+        },
+        {
+          "phase": "warm",
+          "wall_s": 1.101,
+          "rc": 0
+        }
+      ],
+      "error_overlay_readonly_copy": [
+        {
+          "phase": "cold",
+          "wall_s": 6.335,
+          "rc": 1
+        },
+        {
+          "phase": "warm",
+          "wall_s": 0.218,
+          "rc": 1
+        },
+        {
+          "phase": "warm",
+          "wall_s": 0.211,
+          "rc": 1
+        },
+        {
+          "phase": "warm",
+          "wall_s": 0.203,
+          "rc": 1
+        }
+      ]
+    }
+  },
+  "post_capture_changes": [
+    "Usage pruning before writing (BazelLockFileModule.java:226-249, :270-280): moduleExtensions/facts/factsVersions filtered to extension IDs of the current usage table (repository_catalog usage_extension_ids / isolated prefixes); only non-empty facts and non-zero factsVersions kept; no write when the usage table cannot be built (:95-100). Tests: lockfile.rs pruning unit test, repository_catalog ID test, tests/registry_lockfile.rs extension_sections_are_kept_verbatim_but_pruned_by_usage.",
+    "Default registry https://bcr.bazel.build/ (BazelRepositoryModule.java:133) for query/build/mod graph without --registry; explicit --registry replaces it; mod graph still requires explicit --lockfile_mode=off (new message names the default). Eager resolution now also applies with the default remote registry in non-off modes.",
+    "Registry spelling as given (IndexRegistry.getUrl) in \"Error accessing registry\"/\"source.json not found\" messages; MissingChecksumException for MODULE.bazel reported unwrapped (ModuleFileFunction.java:841-843).",
+    "Tests that relied on no registry now pass explicit file:// registries (tests/module_cli.rs, tests/repositories.rs, tests/root_module_validation.rs helpers; tests/builtin_modules.rs, tests/repository_download_policy.rs, tests/module_cli.rs git test); module_cli unit tests updated + default-registry unit test. strace -e connect audit of the full cargo test: no connection to bcr.bazel.build; the only remaining non-loopback connections are the pre-existing GitHub archive download of tests/builtin_modules.rs (@arch query, explicit file:// builtin registry), present before this change.",
+    "scripts/validate.py, validate_build_settings.py, validate_builtin_modules.py native commands pass --lockfile_mode=off explicitly (others already did); 5 python unit tests updated.",
+    "Docs: REGISTRY_LOCKFILE.md (default registry and offline behaviour, pruning, version 28 written without the extension entries Bazel would regenerate, mod graph off-only, fast warm probes with --native-lockfile=<private path>, not-found wording), REMOTE_REPOSITORIES.md, REPOSITORY_VALIDATION.md, CUSTOM_RULE_VALIDATION.md, ROADMAP.md, README.md, capabilities.json, --help.",
+    "The paired lockfile capture (run 2 above) was NOT rerun after these changes; native_sha256 above is the run-2 binary. Historical receipts quoting \"registries []\" (toolchains, cc_features) are unchanged evidence of their capture time."
+  ],
+  "default_registry_capture": {
+    "script": {
+      "path": "artifacts/default-registry-capture.py",
+      "sha256": "c12ba2923b4e49aa490e2e859d363c20a21804513187c03083db52c16db7401e"
+    },
+    "method": "no --registry for either engine; every run traced with strace -f -e trace=connect; external_connects counts non-loopback AF_INET/AF_INET6 connects (0 = offline). Network blocking (unshare) is unavailable here, so offline steps are chosen to fail before any request: error mode without lockfile, update mode with a lockfile recording the module as \"not found\".",
+    "reference_flags": "--batch --ignore_all_rc_files --output_user_root=<private> --host_jvm_args=-Xmx512m query //:all --lockfile_mode=MODE --repository_cache=<private> --noshow_progress --color=no --curses=no --incompatible_autoload_externally= --repository_disable_download",
+    "native_flags": "--ignore_all_rc_files --cache-dir=<private> query --experimental-builtin-modules --lockfile_mode=MODE --repository_disable_download //:all",
+    "run1": {
+      "native_sha256": "ef0e968f5f34930b1e419d1e3ef25d953506e08a2fec3aac6d81dd78181c3e85",
+      "steps": [
+        {
+          "step": "error_no_lockfile",
+          "mode": "error",
+          "compare": {
+            "both_failed": true,
+            "both_offline": true,
+            "both_name_bcr": true,
+            "error_contained": false
+          },
+          "bazel": {
+            "rc": 48,
+            "external_connects": 0,
+            "lockfile_unchanged": true,
+            "error": "Error computing the main repository mapping: Missing checksum for registry file https://bcr.bazel.build/modules/lockdemo_offline_n37/1.0/MODULE.bazel not permitted with --lockfile_mode=error. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile."
+          },
+          "native": {
+            "rc": 1,
+            "external_connects": 0,
+            "lockfile_unchanged": true,
+            "error": "Error accessing registry https://bcr.bazel.build: Missing checksum for registry file https://bcr.bazel.build/modules/lockdemo_offline_n37/1.0/MODULE.bazel not permitted with --lockfile_mode=error. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile."
+          }
+        },
+        {
+          "step": "update_recorded_not_found",
+          "mode": "update",
+          "compare": {
+            "both_failed": true,
+            "both_offline": true,
+            "both_name_bcr": true,
+            "error_contained": false
+          },
+          "bazel": {
+            "rc": 48,
+            "external_connects": 0,
+            "lockfile_unchanged": true,
+            "error": "Error computing the main repository mapping: in module dependency chain <root> -> lockdemo_offline_n37@1.0: module lockdemo_offline_n37@1.0 not found in registries:\n* https://bcr.bazel.build/modules/lockdemo_offline_n37/1.0/MODULE.bazel: previously not found (as recorded in MODULE.bazel.lock, refresh with --lockfile_mode=refresh)"
+          },
+          "native": {
+            "rc": 1,
+            "external_connects": 0,
+            "lockfile_unchanged": true,
+            "error": "module lockdemo_offline_n37@1.0 was not found in registries [https://bcr.bazel.build/]"
+          }
+        }
+      ],
+      "fixes": [
+        "MissingChecksumException unwrapped for MODULE.bazel; registry spelling as given"
+      ]
+    },
+    "run2": {
+      "native_sha256": "c64f8f95caceb7c5256526cf942dd2df3f159081db403e8defa56eef02eaf5b1",
+      "bazel_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+      "steps": [
+        {
+          "step": "error_no_lockfile",
+          "mode": "error",
+          "compare": {
+            "both_failed": true,
+            "both_offline": true,
+            "both_name_bcr": true,
+            "error_contained": true
+          },
+          "bazel": {
+            "rc": 48,
+            "external_connects": 0,
+            "lockfile_unchanged": true,
+            "error": "Error computing the main repository mapping: Missing checksum for registry file https://bcr.bazel.build/modules/lockdemo_offline_n37/1.0/MODULE.bazel not permitted with --lockfile_mode=error. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile."
+          },
+          "native": {
+            "rc": 1,
+            "external_connects": 0,
+            "lockfile_unchanged": true,
+            "error": "Missing checksum for registry file https://bcr.bazel.build/modules/lockdemo_offline_n37/1.0/MODULE.bazel not permitted with --lockfile_mode=error. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile."
+          }
+        },
+        {
+          "step": "update_recorded_not_found",
+          "mode": "update",
+          "compare": {
+            "both_failed": true,
+            "both_offline": true,
+            "both_name_bcr": true,
+            "error_contained": false
+          },
+          "bazel": {
+            "rc": 48,
+            "external_connects": 0,
+            "lockfile_unchanged": true,
+            "error": "Error computing the main repository mapping: in module dependency chain <root> -> lockdemo_offline_n37@1.0: module lockdemo_offline_n37@1.0 not found in registries:\n* https://bcr.bazel.build/modules/lockdemo_offline_n37/1.0/MODULE.bazel: previously not found (as recorded in MODULE.bazel.lock, refresh with --lockfile_mode=refresh)"
+          },
+          "native": {
+            "rc": 1,
+            "external_connects": 0,
+            "lockfile_unchanged": true,
+            "error": "module lockdemo_offline_n37@1.0 was not found in registries [https://bcr.bazel.build/]"
+          }
+        }
+      ]
+    },
+    "mismatches": [
+      {
+        "step": "update_recorded_not_found",
+        "bazel": "Error computing the main repository mapping: in module dependency chain <root> -> lockdemo_offline_n37@1.0: module lockdemo_offline_n37@1.0 not found in registries:\n* https://bcr.bazel.build/modules/lockdemo_offline_n37/1.0/MODULE.bazel: previously not found (as recorded in MODULE.bazel.lock, refresh with --lockfile_mode=refresh)",
+        "native": "module lockdemo_offline_n37@1.0 was not found in registries [https://bcr.bazel.build/]",
+        "documented": "native not-found wording kept (validators match it); both name https://bcr.bazel.build/, both offline, both leave the lockfile unchanged"
+      }
+    ],
+    "native_mod_graph_default": {
+      "rc": 1,
+      "error": "--lockfile_mode=off is required for remote registries in native mod graph (its only lockfile mode); registry https://bcr.bazel.build/ (the default registry is https://bcr.bazel.build/)"
+    }
+  }
+}

@@ -166,6 +166,16 @@ declarations; full extension/repository APIs and toolchains remain incomplete.
 [Bounded module-extension I/O](docs/MODULE_EXTENSION_IO.md) documents the candidate
 `module_ctx.download`/`read` implementation and `--repository_disable_download`
 policy (not an offline flag); final acceptance and release remain pending.
+[MODULE.bazel.lock and registry caching](docs/REGISTRY_LOCKFILE.md) cover Bazel 9.3
+`--lockfile_mode` semantics for registry hashes and yanked versions, the
+content-addressed registry file cache, parallel registry fetching and the
+native-only `--native-lockfile` target for read-only probes. Without `--registry`
+the registry is Bazel's default `https://bcr.bazel.build/`. Fast warm probes of a
+real workspace use `--lockfile_mode=update --native-lockfile=/private/MODULE.bazel.lock`
+with a private `--cache-dir`: the checkout is never written, and hashed registry
+files come from the cache. Native writes version-28 lockfiles without the
+module-extension entries Bazel would regenerate. `mod graph` still requires an
+explicit `--lockfile_mode=off`.
 [Build-setting defaults](docs/BUILD_SETTINGS.md) execute genuine implementations
 and propagate native template-variable providers to explicit consumers; command-line
 setting values (`--//pkg:flag=value`), `flag_values` matching and `label_flag`/`label_setting`

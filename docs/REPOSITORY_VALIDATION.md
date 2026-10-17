@@ -32,7 +32,9 @@ No command delegates execution to official Bazel.
   bazel-rs --ignore_all_rc_files mod graph --output=json --registry=file:///absolute/registry
   ```
 
-  The option is not a startup flag. There is no implicit network registry.
+  The option is not a startup flag. Without it the default registry is
+  `https://bcr.bazel.build/` (Bazel 9.3); pass an explicit `file://` registry to
+  stay offline (docs/REGISTRY_LOCKFILE.md).
   Canonical `@@repo//pkg:target` labels bypass apparent-alias lookup, but loading
   still requires an available selected repository source root.
 

@@ -121,6 +121,14 @@ impl Options {
         if !output_json {
             return Err("native mod graph requires --output=json; the default text formatter is not implemented".to_owned());
         }
+        if options.resolver.registries.is_empty() {
+            // BazelRepositoryModule.java:133; still subject to the explicit
+            // --lockfile_mode=off requirement of this graph profile.
+            options
+                .resolver
+                .registries
+                .push(registry_path(crate::registry::DEFAULT_REGISTRY)?);
+        }
         options.resolver.validate_registries()?;
         Ok(options)
     }
@@ -670,9 +678,31 @@ mod tests {
     }
 
     #[test]
+    fn default_registry_is_bcr_and_still_requires_explicit_off() {
+        let error = Options::parse(&args(&["graph", "--output=json"])).unwrap_err();
+        assert!(error.starts_with("--lockfile_mode=off is required for remote registries"));
+        let options =
+            Options::parse(&args(&["graph", "--output=json", "--lockfile_mode=off"])).unwrap();
+        assert_eq!(
+            options.resolver.registries,
+            [Registry::parse(crate::registry::DEFAULT_REGISTRY).unwrap()]
+        );
+        let explicit = Options::parse(&args(&[
+            "graph",
+            "--output=json",
+            "--registry=file:///tmp/r",
+        ]))
+        .unwrap();
+        assert_eq!(
+            explicit.resolver.registries,
+            [Registry::parse("file:///tmp/r").unwrap()]
+        );
+    }
+
+    #[test]
     fn graph_download_policy_defaults_and_last_option_wins_without_split_values() {
         assert!(
-            Options::parse(&args(&["graph", "--output=json"]))
+            Options::parse(&args(&["graph", "--output=json", "--lockfile_mode=off"]))
                 .unwrap()
                 .repository_downloads_enabled
         );
@@ -694,7 +724,7 @@ mod tests {
                 false,
             ),
         ] {
-            let mut input = args(&["graph", "--output=json"]);
+            let mut input = args(&["graph", "--output=json", "--lockfile_mode=off"]);
             input.extend(args(&flags));
             assert_eq!(
                 Options::parse(&input).unwrap().repository_downloads_enabled,
@@ -705,6 +735,7 @@ mod tests {
             Options::parse(&args(&[
                 "graph",
                 "--output=json",
+                "--lockfile_mode=off",
                 "--repository_disable_download",
                 "false"
             ]))
@@ -719,6 +750,7 @@ mod tests {
         let selected = Options::parse(&args(&[
             "graph",
             "--output=json",
+            "--lockfile_mode=off",
             "--experimental-builtin-modules",
         ]))
         .unwrap();
@@ -729,6 +761,7 @@ mod tests {
         let reset = Options::parse(&args(&[
             "graph",
             "--output=json",
+            "--lockfile_mode=off",
             "--experimental-builtin-modules=true",
             "--experimental-builtin-modules=false",
         ]))
@@ -743,6 +776,7 @@ mod tests {
             Options::parse(&args(&[
                 "graph",
                 "--output=json",
+                "--lockfile_mode=off",
                 "--experimental-builtin-modules",
                 "--include_builtin"
             ]))
@@ -795,7 +829,13 @@ mod tests {
             "--depth=1",
         ] {
             assert!(
-                Options::parse(&args(&["graph", "--output=json", invalid])).is_err(),
+                Options::parse(&args(&[
+                    "graph",
+                    "--output=json",
+                    "--registry=file:///ok",
+                    invalid
+                ]))
+                .is_err(),
                 "{invalid}"
             );
         }
@@ -809,6 +849,7 @@ mod tests {
             !Options::parse(&args(&[
                 "graph",
                 "--output=json",
+                "--lockfile_mode=off",
                 "--ignore_dev_dependency",
                 "--noignore_dev_dependency"
             ]))

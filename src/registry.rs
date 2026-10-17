@@ -1,6 +1,8 @@
 //! Registry identity and uncached metadata/source transport. Metadata is
 //! returned as bytes (inherently in memory); source downloads stream into a
 //! caller-owned writer ([`download_to`]). Neither has an artificial size cap.
+//! Per-invocation caching, lockfile hashes and the registry file cache live
+//! in registry_session.
 //!
 //! Local registry trees are trusted not to change concurrently with reads;
 //! symlink checks have the same boundary as the resolver's original reader.
@@ -12,6 +14,11 @@ use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Duration;
+
+/// Bazel 9.3's registry list when no --registry is given
+/// (BazelRepositoryModule.java:133, used when RepositoryOptions.registries
+/// is null, RepositoryOptions.java:100-110).
+pub const DEFAULT_REGISTRY: &str = "https://bcr.bazel.build/";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Registry {
@@ -36,6 +43,29 @@ impl Registry {
                 .push("");
         }
         Ok(Self::Url(url.into()))
+    }
+
+    /// Bazel keys lockfile entries by the registry URL as given plus
+    /// `/modules/...` (IndexRegistry.constructUrl, :134-143). Native keys use
+    /// the normalized URL, so a lockfile requires the two to agree.
+    pub fn check_lockfile_spelling(&self, raw: &str) -> Result<(), String> {
+        match self {
+            Self::LocalPath(_) => Ok(()),
+            Self::Url(base) if base == raw || *base == format!("{raw}/") => Ok(()),
+            Self::Url(base) => Err(format!(
+                "registry URL {raw:?} is not in normalized form ({base:?}); lockfile keys would differ from Bazel's, so spell the registry as {:?} or use --lockfile_mode=off",
+                base.trim_end_matches('/')
+            )),
+        }
+    }
+
+    /// The registry as Bazel's messages spell IndexRegistry.getUrl() for the
+    /// usual spelling without a trailing slash.
+    pub fn bazel_url(&self) -> String {
+        match self {
+            Self::LocalPath(path) => format!("file://{}", path.display()),
+            Self::Url(base) => base.trim_end_matches('/').to_owned(),
+        }
     }
 
     pub fn local_path(&self) -> Option<&Path> {

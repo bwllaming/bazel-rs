@@ -50,9 +50,20 @@ impl Fixture {
             .unwrap()
     }
     fn command(&self, args: &[&str]) -> Output {
+        // Never fall back to the default https://bcr.bazel.build/ registry:
+        // commands without --registry use this fixture's local registry.
+        let local = format!("--registry=file://{}", self.0.join("registry").display());
+        let explicit = args.iter().any(|arg| arg.starts_with("--registry"));
         Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
             .arg("--ignore_all_rc_files")
             .args(args)
+            .args(
+                (!explicit
+                    && args
+                        .iter()
+                        .any(|arg| matches!(*arg, "mod" | "query" | "build")))
+                .then_some(local),
+            )
             .current_dir(&self.0)
             .output()
             .unwrap()
@@ -267,6 +278,11 @@ fn git_cli_relative_cache_is_cwd_relative_and_graph_uses_empty_key() {
             "graph",
             "--output=json",
         ])
+        // Explicit offline registry, never the default bcr.bazel.build.
+        .arg(format!(
+            "--registry=file://{}",
+            f.0.join("registry").display()
+        ))
         .current_dir(f.0.join("subdir"))
         .output()
         .unwrap();
@@ -689,35 +705,48 @@ fn http_server_and_module_errors_never_fall_back() {
 }
 
 #[test]
-fn http_dependency_free_commands_require_explicit_off_without_fetching() {
+fn http_dependency_free_commands_use_lockfile_modes_without_fetching() {
     let fixture = Fixture::new("module(name='root')\n");
     fixture.write("BUILD.bazel", "filegroup(name='empty')\n");
     fixture.write("MODULE.bazel.lock", "unchanged sentinel\n");
     let server = HttpRegistry::new();
     let registry = format!("--registry={}", server.url);
-    for command in [
-        vec!["mod", "graph", "--output=json"],
-        vec!["query", "//:empty"],
-        vec!["build", "//:empty"],
-    ] {
+    // mod graph keeps its lockfile-off-only profile.
+    let mut args = vec!["mod", "graph", "--output=json", &registry];
+    let rejected = fixture.command(&args);
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("--lockfile_mode=off is required"));
+    args.extend(["--lockfile_mode", "off"]);
+    succeeded(&fixture.command(&args));
+    // query/build support every lockfile mode. The sentinel has no
+    // lockFileVersion: the empty lockfile, except in error mode
+    // (BazelLockFileFunction.java:321-332); an unchanged empty value is not
+    // written (BazelLockFileModule.java:186).
+    for command in [vec!["query", "//:empty"], vec!["build", "//:empty"]] {
         let mut args = command;
         args.push(&registry);
-        let rejected = fixture.command(&args);
-        assert!(!rejected.status.success());
-        assert!(
-            String::from_utf8_lossy(&rejected.stderr).contains("--lockfile_mode=off is required")
-        );
-        for invalid in [
+        succeeded(&fixture.command(&args));
+        for mode in [
             "--lockfile_mode=update",
-            "--lockfile_mode=error",
             "--lockfile_mode=refresh",
+            "--lockfile_mode=off",
         ] {
-            args.push(invalid);
-            assert!(!fixture.command(&args).status.success());
+            args.push(mode);
+            succeeded(&fixture.command(&args));
             args.pop();
         }
-        args.extend(["--lockfile_mode", "off"]);
-        succeeded(&fixture.command(&args));
+        args.push("--lockfile_mode=error");
+        let failed = fixture.command(&args);
+        assert!(!failed.status.success());
+        assert!(String::from_utf8_lossy(&failed.stderr).contains(
+            "The version of MODULE.bazel.lock is not supported by this version of Bazel. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile."
+        ));
+        args.pop();
+        args.push("--lockfile_mode=bogus");
+        let failed = fixture.command(&args);
+        assert!(String::from_utf8_lossy(&failed.stderr).contains(
+            "While parsing option --lockfile_mode=bogus: Not a valid Lockfile mode: 'bogus' (should be off, update, refresh or error)"
+        ));
     }
     assert!(server.requests().is_empty());
     assert_eq!(

@@ -1,0 +1,1 @@
+module(name = "lockdemo_b", version = "1.1")

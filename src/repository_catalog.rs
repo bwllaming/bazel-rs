@@ -30,6 +30,13 @@ pub struct DirectCatalog {
     /// A runtime must split a canonical repository at its LAST '+' and look up
     /// the complete prefix, never select a group using string-prefix matching.
     pub ordinary_routes: BTreeMap<String, String>,
+    /// Bazel ModuleExtensionId strings (`label%name`) of every active
+    /// non-isolated ordinary usage: the rows of BazelDepGraphFunction's
+    /// extension usage table (:97-137) that can appear in a lockfile.
+    pub usage_extension_ids: BTreeSet<String>,
+    /// `label%name%<module key>+` prefixes of active isolated usages; the
+    /// exported proxy name completing the IsolationKey is not recorded.
+    pub isolated_usage_id_prefixes: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -133,6 +140,27 @@ pub fn build(graph: &ResolvedGraph, ignore_root_dev: bool) -> Result<DirectCatal
             if !usage.identity.is_repo_rule() {
                 if usage.identity.isolation.is_some() {
                     has_isolated = true;
+                    let raw_label = &usage.identity.label;
+                    let apparent_label = raw_label
+                        .strip_prefix('@')
+                        .filter(|_| raw_label.starts_with("@@"))
+                        .unwrap_or(raw_label);
+                    if let Ok(label) = Label::parse_in(apparent_label, owner, "", base_mapping) {
+                        // IsolationKey.toString (ModuleExtensionId.java:66-69)
+                        // with ModuleKey.toString (ModuleKey.java:63-68).
+                        let module_key = match graph.modules.get(owner.as_str()) {
+                            _ if owner.is_empty() => "<root>".to_owned(),
+                            Some(module) if module.version.is_empty() => {
+                                format!("{}@_", module.name)
+                            }
+                            Some(module) => format!("{}@{}", module.name, module.version),
+                            None => continue,
+                        };
+                        catalog.isolated_usage_id_prefixes.insert(format!(
+                            "{label}%{}%{module_key}+",
+                            usage.identity.extension_name
+                        ));
+                    }
                     continue;
                 }
                 // Public extension identities use only bazel_dep mappings, not
@@ -336,6 +364,9 @@ fn record_ordinary(
     budget: &mut crate::repository_budget::HostBudget,
 ) -> Result<(), String> {
     let symbol = &usage.identity.extension_name;
+    catalog
+        .usage_extension_ids
+        .insert(format!("{label}%{symbol}"));
     let group_id =
         serde_json::to_string(&(label.to_string(), symbol)).map_err(|e| e.to_string())?;
     if !catalog.ordinary_groups.contains_key(&group_id) {
@@ -786,13 +817,23 @@ module(name="dep")
 e=use_extension("//:ext.bzl", "maker")
 r=use_repo_rule("//:rules.bzl", "maker")
 r(name="direct")
+i=use_extension("//:iso.bzl", "iso", isolate=True)
 "#,
         );
-        assert!(
-            build(&graph, false)
-                .unwrap()
-                .repositories
-                .contains_key("dep++maker2+direct")
+        let catalog = build(&graph, false).unwrap();
+        assert!(catalog.repositories.contains_key("dep++maker2+direct"));
+        // Lockfile ModuleExtensionId spellings (GsonTypeAdapterUtil.java:176-187):
+        // one usage-table row for both spellings, none for the repo rule.
+        assert_eq!(
+            catalog.usage_extension_ids.iter().collect::<Vec<_>>(),
+            ["@@dep+//:ext.bzl%maker"]
+        );
+        assert_eq!(
+            catalog
+                .isolated_usage_id_prefixes
+                .iter()
+                .collect::<Vec<_>>(),
+            ["@@dep+//:iso.bzl%iso%dep@_+"]
         );
     }
 

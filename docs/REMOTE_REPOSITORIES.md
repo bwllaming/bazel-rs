@@ -1,8 +1,12 @@
 # Remote registry and archive profile
 
 This remains a native, incomplete Bazel 9.3 implementation, not full parity.
-Remote registry reads require an explicit `--lockfile_mode=off`; no lockfile is
-read or written. No default network registry is injected. Example:
+`query`/`build` support every `--lockfile_mode` (default `update`, which reads
+and writes `MODULE.bazel.lock`; see `docs/REGISTRY_LOCKFILE.md`); `mod graph`
+still requires an explicit `--lockfile_mode=off` for remote registries. Without
+`--registry`, the registry list is Bazel 9.3's default `https://bcr.bazel.build/`
+(`BazelRepositoryModule.java:133`); any explicit `--registry` replaces it.
+Example:
 
 ```sh
 bazel-rs --ignore_all_rc_files --cache-dir=/absolute/cache query \
@@ -19,10 +23,12 @@ continue to avoid evaluating the module graph.
 HTTP transport uses verified TLS, bounded redirects without HTTPS downgrade and
 Bazel's HttpConnector timeouts (10 s connect, 20 s per read; no whole-transfer
 deadline); there are no size limits (N32). Credentials, credential helpers,
-environment proxies and automatic content decoding are not enabled. Metadata is
-fresh per resolution rather than cached under an untrusted name/version key.
-This deliberately does not implement authentication, proxy configuration,
-conditional HTTP caching, lockfile pins or all Bazel downloader policies.
+environment proxies and automatic content decoding are not enabled. Registry
+files are fetched once per invocation; across invocations only files whose
+SHA-256 is recorded in MODULE.bazel.lock are reused (from the repository cache),
+never under an untrusted name/version key. This deliberately does not implement
+authentication, proxy configuration, conditional HTTP caching or all Bazel
+downloader policies.
 
 Archive sources support tar, tar.gz/tgz, tar.xz/txz, tar.zst/tzst, tar.bz2/tbz
 and stored/deflated ZIP (type inferred with Bazel's suffix search order), with

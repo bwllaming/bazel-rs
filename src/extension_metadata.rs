@@ -27,6 +27,9 @@ pub struct ExtensionMetadata {
     pub explicit_root_module_direct_dev_deps: Option<Vec<String>>,
     pub use_all_repos: UseAllRepos,
     pub reproducible: bool,
+    /// Whether `facts` was a non-empty dict. The facts themselves are
+    /// discarded; lockfile modes need to know that Bazel would record them.
+    pub has_facts: bool,
 }
 
 /// RepositoryName.VALID_USER_PROVIDED_NAME `[a-zA-Z0-9][-.\w]*` with

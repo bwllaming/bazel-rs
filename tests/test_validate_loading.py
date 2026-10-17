@@ -36,7 +36,8 @@ class ParserTests(unittest.TestCase):
         loading.native_invoke(Path("/native"), Path("/cache"), runner, Path("/repo"),
                               "build", "build", "//:flattened", 4)
         self.assertEqual(runner.run.call_args.args[1], [
-            "/native", "--ignore_all_rc_files", "--cache-dir=/cache", "build", "--jobs=4", "//:flattened"])
+            "/native", "--ignore_all_rc_files", "--cache-dir=/cache", "build", "--lockfile_mode=off", "--jobs=4",
+            "//:flattened"])
 
     def test_jobs_not_passed_to_query(self):
         runner = mock.Mock()

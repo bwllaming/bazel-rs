@@ -355,6 +355,8 @@ fn metadata_override_cannot_bypass_unsupported_builtin_graph_presentation() {
             "--output=json",
             "--experimental-builtin-modules",
             "--noinclude_builtin",
+            // Explicit offline registry: never the default https://bcr.bazel.build/.
+            "--registry=file:///nonexistent-offline-registry",
         ])
         .current_dir(root.path())
         .output()
