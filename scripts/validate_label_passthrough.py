@@ -2,8 +2,10 @@
 """N2 bounded Label passthrough harness. Preparation is NOT native acceptance.
 
 No interpreter emulation, fallback, ambient environment, or ignored fixture input.
-Pointer identity/frozen-owner lifetime remain Rust unit obligations. Reference
-invalid-state observations and native early rejection are intentional divergence.
+Pointer identity/frozen-owner lifetime remain Rust unit obligations. Invalid
+(unmapped) Labels are paired: both engines construct and pass them through, and
+the getter rejects with Bazel's text (integration-15; formerly native rejected
+construction eagerly, an intentional divergence).
 Both execution modes require the parent's freeze gate: bindings include Rust.
 """
 
@@ -53,8 +55,8 @@ CALLS = {**{'wrong-type-' + n: 'Label(' + v[0] + ')' for n, v in BAD_TYPES.items
          'keyword-native-name': 'Label(label_string="//:same")',
          'keyword-unknown': 'Label(unknown="//:same")',
          'positional-plus-keyword': 'Label("//:one", input="//:two")'}
-DIVERGENCES = ('invalid-passthrough', 'invalid-getter-after-passthrough')
-QUERIES = ('positive', *CALLS, *DIVERGENCES)
+INVALID = ('invalid-passthrough', 'invalid-getter-after-passthrough')
+QUERIES = ('positive', *CALLS, *INVALID)
 BUILDS = ('custom', 'extension')
 DATA = b'@@//:same\n@@dep+//:same\ndep+\n'
 REPOSITORY_FILES = {'BUILD.bazel': b'exports_files(["data.txt"])\n', 'data.txt': DATA, 'REPO.bazel': b''}
@@ -142,7 +144,7 @@ def fixture(case):
     if case in CALLS:
         files['probe.bzl'] = ('def run_probe():\n    print("BEFORE_CALL")\n    result = ' + CALLS[case]
             + '\n    print("UNEXPECTED_AFTER_CALL", result)\n    native.filegroup(name="ok")\n').encode()
-    elif case in DIVERGENCES:
+    elif case in INVALID:
         files['probe.bzl'] = ('''def run_probe():
     print("BEFORE_INVALID_CONSTRUCTION")
     original = Label("@not_visible//:missing")
@@ -154,7 +156,7 @@ def fixture(case):
 ''' + ('''    print("BEFORE_GETTER")
     value = copy.workspace_name
     print("UNEXPECTED_AFTER_GETTER", value)
-''' if case == DIVERGENCES[1] else '') + '    native.filegroup(name="ok")\n').encode()
+''' if case == INVALID[1] else '') + '    native.filegroup(name="ok")\n').encode()
     elif case in BUILDS:
         files['producer.bzl'] = (FIXTURES / 'producer.bzl').read_bytes()
         if case == 'custom':
@@ -289,7 +291,7 @@ def clean_row(row, *, case=None, engine=None):
     text = unblob(row['stderr']).decode('utf-8')
     require(type(row['returncode']) is int and not row['timeout'] and not row['spawn_error']
             and row['group_gone'] is True and not row['cleanup_signals'], 'process failure/cleanup')
-    if engine == 'native' and case in (*CALLS, *DIVERGENCES) and row['returncode'] == 1:
+    if engine == 'native' and case in (*CALLS, *INVALID) and row['returncode'] == 1:
         text = native_negative_body(text)
     require(not FORBIDDEN.search(text + unblob(row['stdout']).decode('utf-8')), 'fallback/infrastructure/crash/global failure')
     return text
@@ -360,23 +362,22 @@ def query_result(row, case, engine):
         require(source in text and re.search(r'probe\.bzl(?:", line |:)3\b', text), 'wrong target operation/callsite')
         diagnostic(case, engine, text)
         return 'PARITY_REJECTION_CATEGORY'
-    require(case in DIVERGENCES, 'unplanned query')
-    if engine == 'native':
-        require(row['returncode'] == 1 and not out and seen == ['BEFORE_INVALID_CONSTRUCTION'], 'native invalid state was fabricated or reached getter')
-        require('original = Label("@not_visible//:missing")' in text and
-                re.search(r'probe\.bzl(?:", line |:)3\b', text) and
-                re.search(r'(?m)^error: .*unknown apparent repository @not_visible\b.*$', text), 'native early construction diagnostic')
-        return 'INTENTIONAL_DIVERGENCE_EARLY_CONSTRUCTION'
+    require(case in INVALID, 'unplanned query')
+    # Integration-15: native constructs the unmapped Label (deferred invalid
+    # Label), copies and compares it like Bazel; only the getter rejects.
     expected = ['BEFORE_INVALID_CONSTRUCTION', 'INVALID_CONSTRUCTED', 'INVALID_PASSTHROUGH_OK']
-    if case == DIVERGENCES[0]:
+    if case == INVALID[0]:
         success(row, text)
-        require(row['returncode'] == 0 and out == b'//:ok\n' and seen == expected, 'reference invalid passthrough')
-        return 'REFERENCE_INVALID_PASSTHROUGH_ONLY'
+        require(row['returncode'] == 0 and out == b'//:ok\n' and seen == expected, 'invalid Label passthrough')
+        return 'PARITY_INVALID_PASSTHROUGH'
     expected += ['BEFORE_GETTER']
-    require(row['returncode'] == 7 and not out and seen == expected and
-        "Error: 'workspace_name' is not allowed on invalid Label @@[unknown repo 'not_visible' requested from @@]//:missing" in text.splitlines()
-        and 'value = copy.workspace_name' in text and re.search(r'probe\.bzl(?:", line |:)10\b', text), 'reference getter phase/visibility')
-    return 'REFERENCE_GETTER_VISIBILITY_ONLY'
+    body = "'workspace_name' is not allowed on invalid Label @@[unknown repo 'not_visible' requested from @@]//:missing"
+    require(row['returncode'] == (7 if engine == 'reference' else 1) and not out and seen == expected and
+        ('Error: ' if engine == 'reference' else 'error: ') + body in text.splitlines()
+        and 'value = copy.workspace_name' in text and re.search(r'probe\.bzl(?:", line |:)10\b', text), 'invalid Label getter phase/visibility')
+    if engine == 'native':
+        require(re.findall(r'(?m)^error: (.+)$', text) == [body], 'one native primary diagnostic required')
+    return 'PARITY_INVALID_GETTER'
 
 
 def output_paths(row, scratch, step):

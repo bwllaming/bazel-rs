@@ -77,8 +77,12 @@ DIAGNOSTICS = {
                     r'|module name mismatch at /[^\n]*/MODULE\.bazel: requested "opencode_gitcheck_dep", declared "opencode_gitcheck_wrong"'),
     'module_syntax': (r'MODULE\.bazel[^\n]*(?:parse error|syntax error|unexpected token)[^\n]*'
                       r'|(?:parse error|syntax error|unexpected token)[^\n]*MODULE\.bazel[^\n]*'
+                      # Integration-15: the location is the override repository's MODULE.bazel
+                      # label, Bazel's ModuleFile location for non-registry overrides
+                      # (ModuleFileFunction.java:769-776, getUnambiguousCanonicalForm), not
+                      # the former native staging-tree path.
                       r'|(?m:^bazel-rs: error: Parse error: unexpected new line, expected expression\n'
-                      r'--> /[^\n]*/MODULE\.bazel:1:1(?:\n|$))'),
+                      r'--> @@opencode_gitcheck_dep\+//:MODULE\.bazel:1:1(?:\n|$))'),
     'unknown_commit': r'(?:git[^\n]*(?:unknown|missing|not found)[^\n]*commit|(?:not our ref|couldn.t find remote ref|unadvertised object)[^\n]*[0-9a-f]{40})',
     'tag': r'git[^\n]*(?:\btags?\b[^\n]*(?:unsupported|not supported|not implemented)|(?:unsupported|not supported)[^\n]*\btags?\b)',
     'branch': r'git[^\n]*(?:\bbranch(?:es)?\b[^\n]*(?:unsupported|not supported|not implemented)|(?:unsupported|not supported)[^\n]*\bbranch(?:es)?\b)',

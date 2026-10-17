@@ -49,9 +49,10 @@ RECORDED_DIAGNOSTICS = {
     'module_name': ('bazel-rs: module name mismatch at /tmp/opencode/git-validation-y8p760la/native/'
                     'native.module-name-before-publication/repositories/git/trees/.stage-Pat85l/MODULE.bazel: '
                     'requested "opencode_gitcheck_dep", declared "opencode_gitcheck_wrong"\n'),
+    # Integration-15 pre-gate capture (native SHA256 12878a58...): Bazel's
+    # override MODULE.bazel label replaces the former staging-tree path.
     'module_syntax': ('bazel-rs: error: Parse error: unexpected new line, expected expression\n'
-                      '--> /tmp/opencode/git-validation-y8p760la/native/native.malformed-module-before-publication/'
-                      'repositories/git/trees/.stage-frEqCd/MODULE.bazel:1:1\n |\n |\n\n'),
+                      '--> @@opencode_gitcheck_dep+//:MODULE.bazel:1:1\n |\n |\n\n'),
     'tag': RECORDED_SELECTOR,
     'branch': RECORDED_SELECTOR,
     'submodules': RECORDED_SELECTOR,
@@ -116,6 +117,11 @@ class RecordedRegressionTests(unittest.TestCase):
                       message.replace('Parse error: unexpected new line, expected expression', 'repository evaluation failed'),
                       message.replace('\n--> ', '\nunrelated context\n--> '),
                       'Parse error: unexpected new line, expected expression\nMODULE.bazel not found',
+                      ('bazel-rs: error: Parse error: unexpected new line, expected expression\n'
+                       '--> /tmp/opencode/git-validation-y8p760la/native/native.malformed-module-before-publication/'
+                       'repositories/git/trees/.stage-frEqCd/MODULE.bazel:1:1\n |\n |\n\n'),
+                      message.replace('@@opencode_gitcheck_dep+//', '@@other+//'),
+                      message.replace('@@opencode_gitcheck_dep+//:MODULE.bazel', '@@opencode_gitcheck_dep+//:sub/MODULE.bazel'),
                       'MODULE.bazel\nerror: permission denied'):
             with self.subTest(wrong=wrong), self.assertRaises(ValueError):
                 gitcheck.require_rejection(record(stderr=wrong, returncode=1), 'module_syntax')

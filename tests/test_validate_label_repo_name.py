@@ -41,23 +41,19 @@ def negative(case, engine='reference'):
     """Source-backed synthetic diagnostics test the checker, never count as probes."""
     external = case.startswith('external')
     path = 'dep/probe.bzl' if external else 'probe.bzl'
-    line = 3 if engine == 'native' and case in qa.DIVERGENCE else 5
+    line = 5
     source = qa.fixture(case)[path].decode().splitlines()[line-1].strip()
-    phase = 'N1_BEGIN '+case+'\n'
-    if line == 5:
-        phase += 'N1_CONSTRUCTED '+case+' Label\n'
+    phase = 'N1_BEGIN '+case+'\n'+'N1_CONSTRUCTED '+case+' Label\n'
     site = ('File "/fixture/'+path+'", line '+str(line)+', column 5, in probe\n' if engine == 'reference' else
             ' --> '+('@@dep+//' if external else '//')+':probe.bzl:'+str(line)+':5\n')
     if engine == 'reference':
         message = ('cannot set .repo_name field of Label value' if case == 'assignment' else
             "'Label' value has no field or method 'missing_field'" if case == 'unknown-field' else
-            "'repo_name' is not allowed on invalid Label")
+            'Error: '+qa.invalid_label_message(case))
     else:
         message = ('error: cannot set .repo_name field of Label value' if case == 'assignment' else
             "error: 'Label' value has no field or method 'missing_field'" if case == 'unknown-field' else
-            'unknown apparent repository @'+('' if case == 'external-empty' else 'not_visible')+
-            ' from canonical repository '+('"dep+"' if external else '""')+
-            '; extension repository not materialized or dependency not declared')
+            'error: '+qa.invalid_label_message(case))
     return streams(dict(returncode=7 if engine == 'reference' else 1, client_reaped=True),
                    stderr=phase+site+'    '+source+'\n'+message+'\n')
 
@@ -98,7 +94,7 @@ def synthetic_report():
         inputs = {p: qa.encoded(raw) for p, raw in qa.fixture(case).items()}
         obs = dict(case=case, state=state, command=command, engine='reference', inputs=inputs,
             inputs_after=copy.deepcopy(inputs), run=len(report['runs']),
-            classification='INTENTIONAL_DIVERGENCE' if case in qa.DIVERGENCE else 'PAIRED_GETTER')
+            classification='PAIRED_GETTER')
         report['observations'].append(obs)
         stdout, stderr, code = '', '', 0
         if case not in qa.POSITIVE:
@@ -144,7 +140,9 @@ class LabelRepoNameTests(unittest.TestCase):
         self.assertEqual(len(qa.sequence('reference')), 13)
         self.assertEqual(len(qa.sequence('native')), 9)
         self.assertEqual(len(qa.CASES), 7)
-        self.assertEqual(len(qa.DIVERGENCE), 3)
+        # Integration-15: unmapped Labels are paired getter rejections, not divergence.
+        self.assertEqual(qa.UNMAPPED, ('root-unmapped', 'external-unmapped', 'external-empty'))
+        self.assertFalse(hasattr(qa, 'DIVERGENCE'))
 
     def test_fixtures_are_derived_and_portable(self):
         for case in qa.CASES:
@@ -303,7 +301,7 @@ class LabelRepoNameTests(unittest.TestCase):
                 obs[0]['inputs']['BUILD.bazel'] = qa.encoded(b'filegroup(name="result")\n')
                 obs[0]['inputs_after'] = copy.deepcopy(obs[0]['inputs'])
             else:
-                obs[-1]['classification'] = 'PAIRED_GETTER'
+                obs[-1]['classification'] = 'INTENTIONAL_DIVERGENCE'
             with self.subTest(operation=operation), self.assertRaises(ValueError):
                 qa.validate_report(report)
 

@@ -142,14 +142,19 @@ def query_row(case, engine='reference'):
     if case in suite.CALLS:
         return record('BEFORE_CALL\nprobe.bzl:3:19\n    result = ' + suite.CALLS[case] + '\n'
                       'Error in Label: ' + reference_error(case) + '\n', 7)
-    if engine == 'native':
-        return record('BEFORE_INVALID_CONSTRUCTION\nprobe.bzl:3:22\n    original = Label("@not_visible//:missing")\n'
-                      'error: unknown apparent repository @not_visible from canonical repository ""\n', 1)
     text = 'BEFORE_INVALID_CONSTRUCTION\nINVALID_CONSTRUCTED\nINVALID_PASSTHROUGH_OK\n'
-    if case == suite.DIVERGENCES[0]:
+    if case == suite.INVALID[0]:
         return record(text, stdout=b'//:ok\n')
+    body = "'workspace_name' is not allowed on invalid Label @@[unknown repo 'not_visible' requested from @@]//:missing"
+    if engine == 'native':
+        # Integration-15 pre-gate native shape (deferred invalid Label getter).
+        return record(text + 'BEFORE_GETTER\nbazel-rs: Traceback (most recent call last):\n'
+                      '  * /w/BUILD.bazel:2, in <module>\n      run_probe()\n'
+                      'error: ' + body + '\n  --> //:probe.bzl:10:13\n   |\n'
+                      '10 |     value = copy.workspace_name\n   |             ^^^^^^^^^^^^^^^^^^^\n   |\n\n'
+                      + suite.NATIVE_LOADING_FOOTER, 1)
     return record(text + 'BEFORE_GETTER\nprobe.bzl:10:17\n    value = copy.workspace_name\n'
-        "Error: 'workspace_name' is not allowed on invalid Label @@[unknown repo 'not_visible' requested from @@]//:missing\n", 7)
+        'Error: ' + body + '\n', 7)
 
 
 def publication():
@@ -376,16 +381,33 @@ class RejectionTests(unittest.TestCase):
                 with self.subTest(case=case, engine=engine):
                     self.assertEqual(suite.query_result(query_row(case, engine), case, engine), 'PARITY_REJECTION_CATEGORY')
 
-    def test_invalid_state_divergence_never_counts_as_getter_pass(self):
-        for case in suite.DIVERGENCES:
-            self.assertEqual(suite.query_result(query_row(case, 'native'), case, 'native'), 'INTENTIONAL_DIVERGENCE_EARLY_CONSTRUCTION')
-            self.assertTrue(suite.query_result(query_row(case), case, 'reference').startswith('REFERENCE_'))
-            with self.assertRaises(ValueError):
-                suite.query_result(query_row(case, 'native'), case, 'reference')
-        row = query_row(suite.DIVERGENCES[1], 'native')
-        row['stderr'] = suite.blob(suite.unblob(row['stderr']) + b'BEFORE_GETTER\n')
+    def test_invalid_label_passthrough_and_getter_are_paired(self):
+        # Integration-15: the former native early-construction divergence is gone.
+        self.assertFalse(hasattr(suite, 'DIVERGENCES'))
+        for case, result in zip(suite.INVALID, ('PARITY_INVALID_PASSTHROUGH', 'PARITY_INVALID_GETTER')):
+            for engine in ('reference', 'native'):
+                with self.subTest(case=case, engine=engine):
+                    self.assertEqual(suite.query_result(query_row(case, engine), case, engine), result)
+        getter = suite.INVALID[1]
         with self.assertRaises(ValueError):
-            suite.query_result(row, suite.DIVERGENCES[1], 'native')
+            suite.query_result(query_row(getter, 'native'), getter, 'reference')
+        with self.assertRaises(ValueError):
+            suite.query_result(query_row(getter), getter, 'native')
+        early = record('BEFORE_INVALID_CONSTRUCTION\nprobe.bzl:3:22\n    original = Label("@not_visible//:missing")\n'
+                       'error: unknown apparent repository @not_visible from canonical repository ""\n', 1)
+        for case in suite.INVALID:
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                suite.query_result(copy.deepcopy(early), case, 'native')
+        for old, new in ((b'BEFORE_GETTER\n', b''), (b"'workspace_name' is not", b"'repo_name' is not"),
+                         (b'probe.bzl:10:13', b'probe.bzl:9:13'), (b'requested from @@]', b'requested from @@dep+]')):
+            row = query_row(getter, 'native')
+            row['stderr'] = suite.blob(suite.unblob(row['stderr']).replace(old, new))
+            with self.subTest(old=old), self.assertRaises(ValueError):
+                suite.query_result(row, getter, 'native')
+        row = query_row(getter, 'native')
+        row['stderr'] = suite.blob(suite.unblob(row['stderr']).replace(b'\n  --> ', b'\nerror: Other\n  --> '))
+        with self.assertRaises(ValueError):
+            suite.query_result(row, getter, 'native')
 
     def test_exact_bare_markers_not_source_echo(self):
         self.assertEqual(suite.markers('    print("BEFORE_CALL")\n3 | print("BEFORE_CALL")\n'), [])

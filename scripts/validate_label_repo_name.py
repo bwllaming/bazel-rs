@@ -41,10 +41,13 @@ PLATFORM_PROVENANCE = dict(kind='verified_existing_genuine_cas_archive',
 CASES = ('pipeline', 'analysis', 'assignment', 'unknown-field', 'root-unmapped',
          'external-unmapped', 'external-empty')
 POSITIVE = CASES[:2]
-DIVERGENCE = CASES[4:]
+# Labels naming a repository the owner's mapping does not see. Since
+# integration-15 (N45 deferred invalid Labels, N43 single Label methods) native
+# constructs them like Bazel and the repo_name getter rejects: no divergence left.
+UNMAPPED = CASES[4:]
 LIMITATIONS = [
     'REFERENCE_PREPARATION is not native acceptance; native preparation must precede paired use.',
-    'Unknown apparent Labels: reference constructs then getter rejects; native rejects construction eagerly.',
+    'Unknown apparent Labels: both engines construct, then the repo_name getter rejects with Bazel\'s invalid-Label text.',
     'Label(existingLabel) is a KNOWN_EXISTING_UNSUPPORTED_PROFILE, deliberately not exercised.',
     'Full dir, direct print/repr parity, deprecation CLI flags, deferred invalid Labels are excluded.',
     'Only selected Label surface; no participant-module repo_name implementation is implied.',
@@ -179,7 +182,7 @@ def fixture(case):
     else:
         external = case.startswith('external')
         path = 'dep/probe.bzl' if external else 'probe.bzl'
-        label = '@//:root.txt' if case == 'external-empty' else '@not_visible//:missing' if case in DIVERGENCE else '//:root.txt'
+        label = '@//:root.txt' if case == 'external-empty' else '@not_visible//:missing' if case in UNMAPPED else '//:root.txt'
         operation = 'value.repo_name = "changed"' if case == 'assignment' else 'result = value.missing_field' if case == 'unknown-field' else 'result = value.repo_name'
         files[path] = ('def probe():\n    print("N1_BEGIN '+case+'")\n    value = Label('+json.dumps(label)+')\n'
                        '    print("N1_CONSTRUCTED '+case+' " + type(value))\n    '+operation+'\n    print("N1_AFTER '+case+'")\n')
@@ -234,13 +237,11 @@ def rejection(row, case, engine, files):
         raise ValueError('negative query reported action execution or cache counters')
     if row['returncode'] != (7 if engine == 'reference' else 1) or row['stdout']:
         raise ValueError('wrong controlled rejection status/output')
-    expected = ['N1_BEGIN '+case]
-    if engine == 'reference' or case not in DIVERGENCE:
-        expected.append('N1_CONSTRUCTED '+case+' Label')
+    expected = ['N1_BEGIN '+case, 'N1_CONSTRUCTED '+case+' Label']
     if markers(row) != expected:
         raise ValueError('wrong constructor/getter/callback phase')
     path = 'dep/probe.bzl' if case.startswith('external') else 'probe.bzl'
-    line = 3 if engine == 'native' and case in DIVERGENCE else 5
+    line = 5
     source = files[path].decode().splitlines()[line-1]
     text = row['stderr']
     site = ('probe.bzl", line '+str(line)+', column ' if engine == 'reference' else ':probe.bzl:'+str(line)+':')
@@ -249,20 +250,31 @@ def rejection(row, case, engine, files):
     if engine == 'reference':
         pattern = (r'cannot set \.repo_name field of Label value' if case == 'assignment' else
                    r"'Label' value has no field or method 'missing_field'" if case == 'unknown-field' else
-                   r"'repo_name' is not allowed on invalid Label")
+                   r"(?m)^Error: " + re.escape(invalid_label_message(case)) + '$')
     else:
         # Since N33 the interpreter reports Bazel's own assignment/unknown-field
         # texts (formerly "Operation `.repo_name=` not supported on type `Label`"
         # and "Object of type `Label` has no attribute `missing_field`"), anchored
-        # as the whole native error line. src/label.rs mapping miss still
-        # rejects eagerly (the documented DIVERGENCE cases).
+        # as the whole native error line. Since integration-15 an unmapped
+        # apparent repository yields a deferred invalid Label whose getter fails
+        # with Bazel's text (formerly an eager "unknown apparent repository"
+        # construction error).
         pattern = (r'(?m)^error: cannot set \.repo_name field of Label value$' if case == 'assignment' else
                    r"(?m)^error: 'Label' value has no field or method 'missing_field'$" if case == 'unknown-field' else
-                   re.escape('unknown apparent repository @'+('' if case == 'external-empty' else 'not_visible')+
-                       ' from canonical repository '+('"dep+"' if case.startswith('external') else '""')+
-                       '; extension repository not materialized or dependency not declared'))
+                   r"(?m)^error: " + re.escape(invalid_label_message(case)) + '$')
     if not re.search(pattern, text):
         raise ValueError('wrong Label field/type/visibility diagnostic')
+
+
+def invalid_label_message(case):
+    """Label.getRepository on an invalid repository (Label.java, RepositoryName.java)."""
+    if case not in UNMAPPED:
+        raise ValueError('not an unmapped Label case')
+    repo = '' if case == 'external-empty' else 'not_visible'
+    owner = '@@dep+' if case.startswith('external') else '@@'
+    target = '//:root.txt' if case == 'external-empty' else '//:missing'
+    return ("'repo_name' is not allowed on invalid Label @@[unknown repo '" + repo + "' requested from "
+            + owner + ']' + target)
 
 
 def source_paths():
@@ -448,7 +460,7 @@ def run_engine(args, report, runner, scratch, engine):
         controlled.materialize(workspace, dict(files=files))
         for _, state, command in (s for s in sequence(engine) if s[0] == case):
             obs = dict(case=case, engine=engine, state=state, command=command,
-                classification='INTENTIONAL_DIVERGENCE' if case in DIVERGENCE else 'PAIRED_GETTER',
+                classification='PAIRED_GETTER',
                 inputs={p: encoded(raw) for p, raw in files.items()}, run=len(report['runs']))
             report['observations'].append(obs)
             row = runner.run('.'.join((engine, case, state, command)), argv_for(args, scratch, case, engine, command), workspace)
@@ -556,7 +568,7 @@ def validate_report(report):
                 or row['name'] != '.'.join((engine, case, state, command))
                 or row['executable_sha256'] != report['pins_before']['executables'][engine]['sha256']):
             raise ValueError('command/executable detached from case')
-        if obs['classification'] != ('INTENTIONAL_DIVERGENCE' if case in DIVERGENCE else 'PAIRED_GETTER'):
+        if obs['classification'] != 'PAIRED_GETTER':
             raise ValueError('divergence mislabeled parity')
         if case not in POSITIVE:
             rejection(row, case, engine, files)
