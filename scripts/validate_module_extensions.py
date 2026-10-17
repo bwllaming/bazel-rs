@@ -78,7 +78,7 @@ CASES = [
     case('identity.private-and-public-alias', probes=('private', 'public')),
     case('native.preparation-cycles', 'native_boundary', ('ordinary', 'direct')),
     case('native.context-and-return', 'native_boundary', ('facts', 'read-watch', 'integer', 'dict')),
-    case('native.isolated-on-demand', 'native_boundary', ('demanded', 'unused')),
+    case('native.isolated-on-demand', 'native_boundary', ('demanded', 'unused', 'ungated')),
     case('native.immutable-projections', 'native_boundary', ('modules', 'tags', 'words')),
     case('native.refresh-and-repair', 'native_boundary', ('cold', 'tag-change', 'callback-change', 'input-change', 'repair')),
     case('native.parallel-publication', 'native_boundary', ('parallel-1', 'parallel-2')),
@@ -95,6 +95,11 @@ DIAGNOSTICS = {
     'cycle': r'(?:extension|repository|prepar)[^\n]*(?:cycle|cyclic)|(?:cycle|cyclic)[^\n]*(?:extension|repository|a_repo|b_repo)',
     'return': r'(?:return|returned)[^\n]*(?:None|unsupported|not supported)|(?:only|must)[^\n]*None',
     'isolated': r'isolat[^\n]*(?:unsupported|not supported)|(?:unsupported|not supported)[^\n]*isolat',
+    # Integration-14 (N40): `isolate` is enableOnlyWithFlag (ModuleFileGlobals.java);
+    # genuine Bazel 9.3 prints exactly this body without the flag.
+    'isolate-flag': re.escape("in call to use_extension(), parameter 'isolate' is experimental and thus "
+                              "unavailable with the current flags. It may be enabled by setting "
+                              "--experimental_isolated_extension_usages"),
     # ctx.modules / tags / string_list values are frozen lists: Starlark.checkMutable
     # (Starlark.java:262-265), printed natively since N20 (docs/STARLARK_VENDOR.md);
     # the former bare native 'Immutable' is no longer accepted.
@@ -298,8 +303,11 @@ def fixture(name, probe='result'):
         diagnostic = 'return' if probe in ('integer', 'dict') else probe
     elif name == 'native.isolated-on-demand':
         files['MODULE.bazel'] = ROOT_MODULE + USAGE.replace('"files")', '"files",isolate=True)')
-        # Native MODULE metadata accepts the option; demand must reject, not invent ctx values.
-        diagnostic = 'isolated' if probe == 'demanded' else None
+        # Integration-14 (N40) gates `isolate` like Bazel: without the flag the
+        # MODULE call itself fails (ungated). With the flag, native MODULE
+        # metadata accepts the option; demand must reject, not invent ctx values.
+        flags = [] if probe == 'ungated' else ['--experimental_isolated_extension_usages']
+        diagnostic = {'demanded': 'isolated', 'ungated': 'isolate-flag'}.get(probe)
         main_only = probe == 'unused'
     elif name == 'native.immutable-projections':
         files['MODULE.bazel'] += 'e.make(words=["before"])\n'
@@ -376,8 +384,11 @@ def steps_for(item, probe, engine):
     steps = [('build', '//:data', [])]
     if engine == 'reference':
         steps.append(('cquery', '//:data', ['--output=files']))
+    # Integration-14 (N39): plain native query prints Bazel's display form
+    # (@chosen//), so canonical identity is requested like Bazel does it:
+    # `query --consistent_labels` prints @@canonical// labels.
     steps.append(('cquery', value['target'], ['--output=starlark', '--starlark:expr=str(target.label)'])
-                 if engine == 'reference' else ('query', value['target'], []))
+                 if engine == 'reference' else ('query', value['target'], ['--consistent_labels']))
     steps.append(('build', '//:copy', []))
     if engine == 'reference':
         steps.append(('cquery', '//:copy', ['--output=files']))
@@ -437,7 +448,8 @@ def run_phase(args, runner, scratch, workspace, reference, item, phase, value, i
             paths = outputs(invoke('build', '//:data'), '//:data')
             phase['artifacts'] = direct.source_artifacts(paths, value['expected'],
                 cache=cache if engine == 'native' else None, reference=reference)
-            canonical = invoke('cquery', value['target'], ['--output=starlark', '--starlark:expr=str(target.label)']) if engine == 'reference' else invoke('query', value['target'])
+            canonical = (invoke('cquery', value['target'], ['--output=starlark', '--starlark:expr=str(target.label)'])
+                         if engine == 'reference' else invoke('query', value['target'], ['--consistent_labels']))
             canonical_result(canonical, value['canonical'])
             phase['canonical'] = '@@' + value['canonical'] + '//:data'
             if engine == 'reference':

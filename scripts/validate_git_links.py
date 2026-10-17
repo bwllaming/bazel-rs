@@ -502,9 +502,11 @@ def bzl_result(record, native=False):
     ../defs.real.bzl) loads in Bazel (its FileValue follows links) and natively
     (in-root source_links resolution), so the package query must succeed."""
     labels = shared.success(record).splitlines()
+    # Integration-14 (N39): native prints Bazel's display form (@gitdep//).
     if (sorted(map(shared.canonical, labels)) != list(map(shared.canonical, BZL_TARGETS))
-            or (native and labels != list(map(shared.canonical, labels)))):
+            or (native and labels != BZL_TARGETS)):
         raise ValueError('query through the linked .bzl did not return exactly the fixture target')
+    return shared.success(record)
 
 
 def artifact_path_ok(engine, path, scratch, item, output_base):
@@ -594,8 +596,12 @@ def run_case(args, runner, scratch, workspace, reference, item):
             shared.no_publication(cache)
             check['no_publication'] = True
         else:
+            query_stdout, bzl_stdout = {}, {}
             for engine in ('native', 'reference') if item['kind'] == 'differential' else ('native',):
-                shared.query_result(invoke(engine, 'query'), native=engine == 'native')
+                # Integration-14 (N39): both engines print Bazel's display form.
+                query_stdout[engine] = shared.query_result(invoke(engine, 'query'), native=engine == 'native')
+                if len(set(query_stdout.values())) > 1:
+                    raise ValueError('native query stdout differs from genuine Bazel display-form stdout')
                 root = build(engine, 'sources')
                 build(engine, 'copy')
                 if item['mode'] == 'warm':
@@ -615,12 +621,14 @@ def run_case(args, runner, scratch, workspace, reference, item):
                         if repaired != root:
                             raise ValueError('repair did not restore the same immutable cache tree')
                 if item['mode'] == 'consumers':
-                    bzl_result(invoke(engine, 'bzl'), native=engine == 'native')
+                    bzl_stdout[engine] = bzl_result(invoke(engine, 'bzl'), native=engine == 'native')
                     artifact(engine)
             if item['mode'] == 'consumers' and item['kind'] != 'differential':
                 # Reference comparison for the linked .bzl and source-artifact phases.
-                bzl_result(invoke('reference', 'bzl'))
+                bzl_stdout['reference'] = bzl_result(invoke('reference', 'bzl'))
                 artifact('reference')
+            if len(set(bzl_stdout.values())) > 1:
+                raise ValueError('native linked-.bzl query stdout differs from genuine Bazel display-form stdout')
         check.update(status='PASS', parity_claim=item['kind'] == 'differential')
     except (OSError, ValueError) as exc:
         check['error'] = str(exc)
@@ -771,6 +779,10 @@ def report_passes(report):
                     shared.success(record)
                     if key.endswith('.query'):
                         shared.query_result(record, key.startswith('native.'))
+            for phase in ('query', 'bzl'):
+                if ('native.' + phase in records and 'reference.' + phase in records
+                        and shared.success(records['native.' + phase]) != shared.success(records['reference.' + phase])):
+                    return False
             artifact_keys = {key for key in wanted if key.endswith(('.sources', '.copy'))}
             tree_keys = {key for key in artifact_keys if key.endswith('.sources')}
             if set(check['artifacts']) != artifact_keys | link_artifacts or set(check['trees']) != tree_keys:

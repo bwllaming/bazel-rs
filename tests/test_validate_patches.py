@@ -271,12 +271,15 @@ class ValidationTests(unittest.TestCase):
 
     def test_query_identity_and_graph_exactness(self):
         patches.query_result(record("@patched//:sources\n@patched//:copy\n"))
-        patches.query_result(record("@@opencode_patchcheck_dep+//:copy\n@@opencode_patchcheck_dep+//:sources\n"), native=True)
+        patches.query_result(record("@@opencode_patchcheck_dep+//:copy\n@@opencode_patchcheck_dep+//:sources\n"))
+        patches.query_result(record("@patched//:copy\n@patched//:sources\n"), native=True)
         for text in ("", "@patched//:copy\n", "//:sources\n//:copy\n", "@patched//:copy\n@patched//:copy\n"):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 patches.query_result(record(text))
-        with self.assertRaises(ValueError):
-            patches.query_result(record("@patched//:copy\n@patched//:sources\n"), native=True)
+        for text in ("@@opencode_patchcheck_dep+//:copy\n@@opencode_patchcheck_dep+//:sources\n",
+                     "@patched//:sources\n@patched//:copy\n"):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                patches.query_result(record(text), native=True)
         graph = patches.graph_expected(item("graph.dependency-before-mvs"))
         leaf = graph["dependencies"][0]["dependencies"][0]
         self.assertEqual(leaf["key"], "opencode_patchcheck_leaf@2.0")
@@ -408,7 +411,7 @@ class MainTests(unittest.TestCase):
                 elif value["mode"] == "graph":
                     result = record(json.dumps(patches.graph_expected(value)))
                 elif phase == "query":
-                    prefix = "@@opencode_patchcheck_dep+" if engine == "native" else "@patched"
+                    prefix = "@patched"  # both engines print Bazel's display form (N39)
                     result = record(prefix + "//:copy\n" + prefix + "//:sources\n")
                 else:
                     # Explicit expected fixture bytes, not a patch applier or fabricated CLI evidence.

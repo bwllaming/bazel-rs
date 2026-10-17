@@ -121,11 +121,13 @@ class FixtureTests(unittest.TestCase):
 
 
 class ParsingTests(unittest.TestCase):
-    def test_explicit_alias_mapping_and_native_canonical_requirement(self):
+    def test_explicit_alias_mapping_and_native_display_form_requirement(self):
         expected = ["@@dep+//:copy", "@@dep+//:sources"]
         self.assertEqual(remote.parse_labels("@remote//:sources\n@remote//:copy\n"), expected)
-        self.assertEqual(remote.parse_labels("\n".join(expected), native=True), expected)
-        for text, native in (("@remote//:copy", True), ("@@other+//:copy", False),
+        self.assertEqual(remote.parse_labels("@remote//:copy\n@remote//:sources\n", native=True), expected)
+        self.assertEqual(remote.parse_labels("\n".join(expected)), expected)
+        for text, native in (("@@dep+//:copy", True), ("@remote//:copy\n@@dep+//:sources", True),
+                             ("@@other+//:copy", False),
                              ("//:copy", False), ("@dep//:copy", False),
                              ("@remote//:copy\n@@dep+//:copy", False), ("not a label", False)):
             with self.subTest(text=text), self.assertRaises(ValueError):
@@ -272,9 +274,9 @@ class RegressionProbeTests(unittest.TestCase):
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_bytes(data)
                 (root.parent / "existing.json").write_bytes(b"original manifest")
-                return record("@@dep+//:copy\n@@dep+//:sources\n")
+                return record("@remote//:copy\n@remote//:sources\n")
             if fault == "successful-query":
-                return record("@@dep+//:copy\n@@dep+//:sources\n")
+                return record("@remote//:copy\n@remote//:sources\n")
             if fault == "archive-fetch":
                 server.requests.append({"path": archive_path})
             if fault == "new-tree":

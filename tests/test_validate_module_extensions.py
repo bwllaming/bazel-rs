@@ -33,6 +33,8 @@ MESSAGES = {
     'cycle': 'repository preparation cycle: a_repo -> b_repo -> a_repo',
     'return': 'expected module extension @@//:ext.bzl%files to return None or extension_metadata, got int',
     'isolated': 'isolated extension usage is not supported',
+    'isolate-flag': ("in call to use_extension(), parameter 'isolate' is experimental and thus unavailable "
+                     "with the current flags. It may be enabled by setting --experimental_isolated_extension_usages"),
     'immutable': 'trying to mutate a frozen list value',
     'name': 'invalid repository name "a+b"',
     'canonical': 'unknown canonical repository @@+unknown+made; extension repository not materialized',
@@ -63,10 +65,11 @@ class FixtureTests(unittest.TestCase):
                 steps = extensions.steps_for(item, probe, engine)
                 self.assertTrue(steps)
                 self.assertFalse(any(s[0] in ('test', 'run') for s in steps))
-        self.assertEqual(sum(len(c['probes']) for c in extensions.CASES), 36)
-        self.assertEqual(sum(len(extensions.phases_for(c)) for c in extensions.CASES), 49)
+        # Integration-14 (N40) added the native.isolated-on-demand 'ungated' probe.
+        self.assertEqual(sum(len(c['probes']) for c in extensions.CASES), 37)
+        self.assertEqual(sum(len(extensions.phases_for(c)) for c in extensions.CASES), 50)
         self.assertEqual(sum(len(extensions.steps_for(c, probe, engine)) for c in extensions.CASES
-                             for probe, engine in extensions.phases_for(c)), 105)
+                             for probe, engine in extensions.phases_for(c)), 106)
 
     def test_unknown_fixture_names_or_probe_never_fall_back_to_baseline(self):
         for name, probe in [('made-up', 'result'), (extensions.CASES[0]['name'], 'made-up')]:
@@ -253,11 +256,12 @@ class FixtureTests(unittest.TestCase):
             extensions.fixture(item['name'], 'read')
 
     def test_isolation_demand_boundary_does_not_force_unused_definition(self):
-        for probe in ('demanded', 'unused'):
+        for probe in ('demanded', 'unused', 'ungated'):
             value = extensions.fixture('native.isolated-on-demand', probe)
             self.assertIn(b'isolate=True', value['files']['MODULE.bazel'])
             self.assertEqual(value['main_only'], probe == 'unused')
-            self.assertEqual(value['diagnostic'], 'isolated' if probe == 'demanded' else None)
+            self.assertEqual(value['diagnostic'], {'demanded': 'isolated', 'ungated': 'isolate-flag'}.get(probe))
+            self.assertEqual(value['flags'], [] if probe == 'ungated' else ['--experimental_isolated_extension_usages'])
 
     def test_immutability_has_three_independent_nested_projection_probes(self):
         for probe, expression in [('modules', 'ctx.modules'), ('tags', 'ctx.modules[0].tags.make'),
@@ -536,7 +540,8 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(extensions.phases_for(item), [('parallel-1', 'native'), ('parallel-2', 'native')])
         for probe in item['probes']:
             self.assertEqual(extensions.steps_for(item, probe, 'native'), [
-                ('build', '//:data', []), ('query', '@chosen//:data', []), ('build', '//:copy', [])])
+                ('build', '//:data', []), ('query', '@chosen//:data', ['--consistent_labels']),
+                ('build', '//:copy', [])])
 
     def test_recording_runner_preserves_non_utf8_streams_and_executable_hash(self):
         report = {'runs': [], 'executables': {'native': {'path': '/not-executed', 'sha256': 'a' * 64}}}

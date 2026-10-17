@@ -367,6 +367,15 @@ class ContractTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 gitcheck.tree_manifest(root, expected)
 
+    def test_native_query_requires_bazel_display_form(self):
+        display = '@gitdep//:copy\n@gitdep//:sources\n'
+        canonical = '@@opencode_gitcheck_dep+//:copy\n@@opencode_gitcheck_dep+//:sources\n'
+        self.assertEqual(gitcheck.query_result(record(display), native=True), display)
+        self.assertEqual(gitcheck.query_result(record(canonical)), canonical)
+        for text in (canonical, '@gitdep//:sources\n@gitdep//:copy\n', '@gitdep//:copy\n'):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                gitcheck.query_result(record(text), native=True)
+
     def test_cli_flags_and_genuine_reference_cache_configuration(self):
         runner = mock.Mock()
         ref = gitcheck.PatchReference(Path('/official'), Path('/workspace'), Path('/scratch'), runner, 'git')
@@ -458,8 +467,8 @@ class MainTests(unittest.TestCase):
                         for filename, contents in gitcheck.expected_sources(value).items():
                             (tree / filename).write_bytes(contents)
                 elif phase == 'query':
-                    prefix = '@@' + gitcheck.DEP + '+' if engine == 'native' else '@gitdep'
-                    result = record(prefix + '//:copy\n' + prefix + '//:sources\n')
+                    # Both engines print Bazel's display form (integration-14 N39).
+                    result = record('@gitdep//:copy\n@gitdep//:sources\n')
                 else:
                     edited = value['mode'] == 'edit' and phase.startswith('again.')
                     if edited:
@@ -670,7 +679,7 @@ class MainTests(unittest.TestCase):
                 if argv[0] == '/usr/bin/git':
                     return original(self, name, argv, cwd, timeout)
                 if name.endswith('.query'):
-                    return record('@@opencode_gitcheck_dep+//:copy\n@@opencode_gitcheck_dep+//:sources\n')
+                    return record('@gitdep//:copy\n@gitdep//:sources\n')
                 if '.again.' in name:
                     raise RuntimeError('during edit')
                 tree = gitcheck.trees_directory(root / 'native/native.patch-edit-immutable') / 'old-key'

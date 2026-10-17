@@ -269,10 +269,13 @@ def canonical(target):
 
 
 def query_result(record, native=False):
+    # Integration-14 (N39): native query prints Bazel's display form, exactly
+    # like `bazel query`; the root-visible dep+ repository is @gitdep//.
     labels = success(record).splitlines()
     expected = ['@gitdep//:copy', '@gitdep//:sources']
-    if sorted(map(canonical, labels)) != sorted(map(canonical, expected)) or (native and labels != list(map(canonical, labels))):
+    if sorted(map(canonical, labels)) != sorted(map(canonical, expected)) or (native and labels != expected):
         raise ValueError('query did not return exactly the two fixture rule labels')
+    return success(record)
 
 
 def native_paths(record, target, scratch):
@@ -459,6 +462,7 @@ def run_case(args, runner, scratch, workspace, reference, item):
             root, evidence = graph_tree(cache, expected_sources(item))
             check.update(graph_tree=str(root), graph_manifest=evidence)
         else:
+            query_stdout = {}
             for engine in engines:
                 values, markers, payloads = {}, [], {}
                 if item['mode'] == 'poison':
@@ -468,7 +472,10 @@ def run_case(args, runner, scratch, workspace, reference, item):
                 old_env = dict(runner.env)
                 try:
                     with environment(runner, dict(old_env, **values)):
-                        query_result(invoke(engine, 'query', 'query', '@gitdep//:all'), native=engine == 'native')
+                        query_stdout[engine] = query_result(invoke(engine, 'query', 'query', '@gitdep//:all'),
+                                                            native=engine == 'native')
+                        if len(set(query_stdout.values())) > 1:
+                            raise ValueError('native query stdout differs from genuine Bazel display-form stdout')
                         root = build(engine, 'sources')
                         build(engine, 'copy')
                 finally:
@@ -659,6 +666,9 @@ def report_passes(report):
                     success(record)
                     if key.endswith('.query'):
                         query_result(record, key.startswith('native.'))
+            if ('native.query' in records and 'reference.query' in records
+                    and success(records['native.query']) != success(records['reference.query'])):
+                return False
             if item['diagnostic']:
                 if (check['no_publication'] is not True or check['artifacts']
                         or check['origin_unavailable'] != (item['diagnostic'] in BEFORE_FETCH)):

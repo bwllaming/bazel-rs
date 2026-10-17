@@ -411,8 +411,10 @@ def steps_for(family, probe, engine):
             steps.append(('graph', 'aquery', 'deps(//:consume)', ['--output=jsonproto']))
     if family == 'extension' or probe == 'module-bzl':
         steps.extend([('repository', 'cquery' if engine == 'reference' else 'build', '@generated//:data', ['--output=files'] if engine == 'reference' else []),
+            # Integration-14 (N39): plain native query prints Bazel's display
+            # form (@generated//); `query --consistent_labels` prints @@canonical//.
             ('canonical', 'cquery' if engine == 'reference' else 'query', '@generated//:data',
-                ['--output=starlark', '--starlark:expr="@@%s//%s:%s" % (target.label.repo_name,target.label.package,target.label.name)'] if engine == 'reference' else [])])
+                ['--output=starlark', '--starlark:expr="@@%s//%s:%s" % (target.label.repo_name,target.label.package,target.label.name)'] if engine == 'reference' else ['--consistent_labels'])])
     return steps
 
 

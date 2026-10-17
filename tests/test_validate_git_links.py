@@ -101,10 +101,11 @@ class CapturedDiagnosticTests(unittest.TestCase):
         self.assertNotIn('patch_link', links.DIAGNOSTICS)
         self.assertNotIn('source_link', links.DIAGNOSTICS)
         self.assertNotIn('bzl_link', links.DIAGNOSTICS)
-        native = '@@' + links.shared.DEP + '+//bzl:selected\n'
+        native = '@gitdep//bzl:selected\n'
+        canonical = '@@' + links.shared.DEP + '+//bzl:selected\n'
         links.bzl_result(record(native), native=True)
-        links.bzl_result(record('@gitdep//bzl:selected\n'))
-        for wrong, is_native in ((record('@gitdep//bzl:selected\n'), True), (record(''), False),
+        links.bzl_result(record(canonical))
+        for wrong, is_native in ((record(canonical), True), (record(''), False),
                                  (record(native + native), True),
                                  (record(stderr=RETIRED_REJECTIONS[0], returncode=1), True)):
             with self.assertRaises(ValueError):
@@ -538,7 +539,7 @@ class MainTests(unittest.TestCase):
                 if fault == 'input':
                     (cwd / 'git-local.patch').write_bytes(b'changed')
                 if phase == 'bzl':
-                    prefix = '@@' + links.shared.DEP + '+' if engine == 'native' else '@gitdep'
+                    prefix = '@gitdep'  # both engines print Bazel's display form (N39)
                     result = record(prefix + '//bzl:selected\n')
                 elif value['diagnostic']:
                     diagnostic = value['diagnostic']
@@ -563,7 +564,7 @@ class MainTests(unittest.TestCase):
                         write_tree(tree, links.layout(value, case_root, patched=True))
                         result = record('external/' + links.shared.DEP + '+/artifact/link\n' if phase.endswith('.files') else '')
                 elif phase == 'query':
-                    prefix = '@@' + links.shared.DEP + '+' if engine == 'native' else '@gitdep'
+                    prefix = '@gitdep'  # both engines print Bazel's display form (N39)
                     result = record(prefix + '//:copy\n' + prefix + '//:sources\n')
                 else:
                     source = 'sources' in phase

@@ -338,7 +338,9 @@ def query_result(record, native=False):
     labels = success(record).splitlines()
     expected = ["@patched//:copy", "@patched//:sources"]
     mapped = [canonical(label) for label in labels]
-    if sorted(mapped) != sorted(map(canonical, expected)) or (native and labels != mapped):
+    # Integration-14 (N39): native query prints Bazel's display form, exactly
+    # like `bazel query`; the root-visible dep+ repository is @patched//.
+    if sorted(mapped) != sorted(map(canonical, expected)) or (native and labels != expected):
         raise ValueError("query must identify exactly the fixture targets")
     return labels
 
@@ -458,8 +460,12 @@ def run_case(args, runner, scratch, workspace, reference, item):
             no_publication(cache)
             check["no_publication"] = True
         else:
+            query_stdout = {}
             for engine in engines:
-                query_result(invoke(engine, "query", "query", "@patched//:all"), native=engine == "native")
+                query_stdout[engine] = tuple(query_result(invoke(engine, "query", "query", "@patched//:all"),
+                                                          native=engine == "native"))
+                if len(set(query_stdout.values())) > 1:
+                    raise ValueError("native query stdout differs from genuine Bazel display-form stdout")
                 root = build(engine, "@patched//:sources", "sources")
                 build(engine, "@patched//:copy", "copy")
                 if item["mode"] == "cache":
@@ -551,6 +557,9 @@ def report_passes(report):
                     success(record)
                     if key.endswith("query"):
                         query_result(record, native=key.startswith("native."))
+            if ("native.query" in records and "reference.query" in records
+                    and success(records["native.query"]) != success(records["reference.query"])):
+                return False
             if item["mode"] == "graph" and item["expected"] == "success":
                 if item["kind"] == "differential":
                     compare_graphs(parse_graph(records["native.result"]), parse_graph(records["reference.result"]), graph_expected(item))

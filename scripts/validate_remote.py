@@ -253,11 +253,21 @@ def canonical_label(label):
     raise ValueError("unexpected fixture repository: " + label)
 
 
+def display_label(label):
+    """Bazel's query display form: the root module sees dep+ as @remote."""
+    canonical = canonical_label(label)
+    return "@remote//" + canonical.split("//", 1)[1]
+
+
 def parse_labels(stdout, native=False):
+    # Integration-14 (N39) native query prints Bazel's display form, exactly
+    # like `bazel query`: visible external repositories use the root module's
+    # apparent name (@remote//), never the canonical @@dep+// spelling.
     labels = [line for line in stdout.splitlines() if line]
     canonical = [canonical_label(label) for label in labels]
-    if len(canonical) != len(set(canonical)) or (native and labels != canonical):
-        raise ValueError("duplicate labels or noncanonical native labels")
+    if len(canonical) != len(set(canonical)) or (
+            native and labels != [display_label(label) for label in labels]):
+        raise ValueError("duplicate labels or non-display-form native labels")
     return sorted(canonical)
 
 
@@ -400,6 +410,8 @@ def compare(args, runner, scratch, workspace, fixture, reference, name):
     labels = {"native": require_success(native), "reference": require_success(official)}
     if parse_labels(labels["native"], native=True) != expected or parse_labels(labels["reference"]) != expected:
         raise ValueError("query repository identities differ from fixture inventory")
+    if labels["native"] != labels["reference"]:
+        raise ValueError("native query stdout differs from genuine Bazel display-form stdout")
     details = {"exact_query_stdout": labels, "canonical_labels": expected,
                "mapping": {"remote": "dep+"}, "builds": {}}
     for target, expected_bytes in (("@remote//:sources", EXPECTED_SOURCES), ("@remote//:copy", {"copy.bin": DATA})):
