@@ -327,9 +327,10 @@ static CLIENT: LazyLock<Result<Client, String>> =
 /// the whole transfer; no request-level `.timeout()` is set anywhere (in
 /// reqwest 0.12 that would be a whole-transfer deadline, TotalTimeoutBody).
 fn client_with(read_timeout: Duration) -> Result<Client, String> {
-    Client::builder()
+    // ProxyHelper over the command's repository environment
+    // (crate::download_proxy; IndexRegistry.java:235 passes nonstrictRepoEnv).
+    crate::download_proxy::configure(Client::builder().no_proxy())
         .user_agent("bazel-rs/0.1")
-        .no_proxy()
         .referer(false)
         .connect_timeout(crate::extension_download::CONNECT_TIMEOUT)
         .timeout(read_timeout)
@@ -343,6 +344,10 @@ fn client_with(read_timeout: Duration) -> Result<Client, String> {
                 attempt.error("too many HTTP redirects")
             } else if !redirect_allowed(attempt.url(), attempt.previous()) {
                 attempt.error("unsafe HTTP redirect")
+            } else if let Err(error) = crate::download_proxy::check(attempt.url()) {
+                // HttpConnector asks ProxyHelper again for every redirect
+                // (HttpConnector.java:125-136).
+                attempt.error(error)
             } else {
                 attempt.follow()
             }
@@ -363,6 +368,7 @@ fn open_http_with(
     client: &Client,
     url: Url,
 ) -> Result<Option<reqwest::blocking::Response>, String> {
+    crate::download_proxy::check(&url)?;
     // Do not expose reqwest errors: they may contain a redirect URL with secrets.
     // No request-level timeout: it would bound the whole body transfer.
     let response = client

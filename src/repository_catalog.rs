@@ -631,6 +631,7 @@ mod tests {
             EvaluationContext {
                 role,
                 ignore_dev_dependencies,
+                isolated_extension_usages: true,
             },
         )
         .unwrap()

@@ -122,6 +122,9 @@ impl GitRunner {
                 ("GIT_PROTOCOL_FROM_USER", "0"),
                 ("GIT_ATTR_NOSYSTEM", "1"),
             ])
+            // Bazel runs git with the repository environment, so its proxy
+            // variables reach Git (crate::download_proxy::git_environment).
+            .envs(crate::download_proxy::git_environment().iter().cloned())
             .env(
                 "GIT_ALLOW_PROTOCOL",
                 if self.allow_file {

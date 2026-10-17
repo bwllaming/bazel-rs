@@ -66,6 +66,8 @@ pub enum ModuleRole {
 pub struct EvaluationContext {
     pub role: ModuleRole,
     pub ignore_dev_dependencies: bool,
+    /// `--experimental_isolated_extension_usages` (crate::module_graph::ResolverOptions).
+    pub isolated_extension_usages: bool,
 }
 impl EvaluationContext {
     /// Bazel 9.3 uses this same predicate for ignoring overrides.
@@ -419,6 +421,7 @@ pub fn evaluate_for_resolution(
         EvaluationContext {
             role: ModuleRole::Root,
             ignore_dev_dependencies,
+            isolated_extension_usages: false,
         },
     )
 }
@@ -457,6 +460,7 @@ pub fn evaluate_source_for_resolution(
         EvaluationContext {
             role: ModuleRole::Root,
             ignore_dev_dependencies,
+            isolated_extension_usages: false,
         },
     )
 }
@@ -745,6 +749,16 @@ fn invoke<'v>(
         }));
     }
     if name == "use_extension" {
+        // `isolate` is enableOnlyWithFlag = "-experimental_isolated_extension_usages"
+        // (ModuleFileGlobals.java:436-449): passing it at all without the flag
+        // fails while binding arguments (BuiltinFunction.java:369-375).
+        if kwargs.0.contains_key("isolate")
+            && !collector.evaluation_context.isolated_extension_usages
+        {
+            bail!(
+                "in call to use_extension(), parameter 'isolate' is experimental and thus unavailable with the current flags. It may be enabled by setting --experimental_isolated_extension_usages"
+            );
+        }
         let pos: Vec<_> = args
             .positions(eval.heap())
             .map_err(|e| anyhow!("{e}"))?
@@ -1545,6 +1559,7 @@ e.tag(names=list(names))
         let context = EvaluationContext {
             role: ModuleRole::Dependency,
             ignore_dev_dependencies: false,
+            isolated_extension_usages: false,
         };
         let actual = evaluate_source_with_builtins(
             "@bazel_tools//:MODULE.bazel",
@@ -1790,7 +1805,42 @@ use_repo(x, "pkg", local="other")
     }
 
     #[test]
+    fn isolate_requires_experimental_isolated_extension_usages() {
+        // BuiltinFunction.java:369-375 with ModuleFileGlobals.java:436-449:
+        // also an explicit isolate=False fails without the flag.
+        for value in ["True", "False"] {
+            let error = evaluate_source(
+                "MODULE.bazel",
+                format!("e = use_extension('//:ext.bzl', 'ext', isolate={value})"),
+            )
+            .unwrap_err();
+            assert!(
+                error.contains("in call to use_extension(), parameter 'isolate' is experimental and thus unavailable with the current flags. It may be enabled by setting --experimental_isolated_extension_usages"),
+                "{error}"
+            );
+        }
+        assert!(
+            evaluate_source(
+                "MODULE.bazel",
+                "e = use_extension('//:ext.bzl', 'ext')".into()
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
     fn merged_extensions_preserve_declaration_dev_flags_and_isolation() {
+        let run = |s: &str| {
+            evaluate_source_with_context(
+                "MODULE.bazel",
+                s.to_owned(),
+                EvaluationContext {
+                    isolated_extension_usages: true,
+                    ..EvaluationContext::default()
+                },
+            )
+            .unwrap()
+        };
         let f = run(r#"
 a = use_extension("//:ext.bzl", "ext", dev_dependency=True)
 b = use_extension("//:ext.bzl", "ext")
@@ -2198,14 +2248,17 @@ r(name="second",x=x,y=y,module=module,ys=ys,zs=zs,ws=[str(v) for v in ws],count=
             EvaluationContext {
                 role: ModuleRole::Root,
                 ignore_dev_dependencies: true,
+                isolated_extension_usages: false,
             },
             EvaluationContext {
                 role: ModuleRole::Dependency,
                 ignore_dev_dependencies: false,
+                isolated_extension_usages: false,
             },
             EvaluationContext {
                 role: ModuleRole::Dependency,
                 ignore_dev_dependencies: true,
+                isolated_extension_usages: false,
             },
         ]
     }

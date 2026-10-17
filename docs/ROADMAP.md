@@ -71,9 +71,15 @@ remain unproven.
 These application runs pass `--ignore_all_rc_files`. With rc evaluation (N31,
 docs/BAZELRC.md) a native `build` or `query` in `~/code` without it evaluates the
 checkout's `.bazelrc` and stops at the first unmodelled option, the `common`
-group's `--credential_helper=…` (`.bazelrc:2`), naming the file and line; the
-remote cache, credential helper, sandbox, Java/macOS, `--repo_env` and other rc
-options remain unimplemented.
+group's `--credential_helper=…` (`.bazelrc:2`), naming the file and line. N40
+([RC_OPTIONS.md](RC_OPTIONS.md)) models or explicitly rejects every other rc
+option. The remote cache and credential helper are N41's. With those two lines
+removed in a scratch copy, `query //src/beyondwork.ai/utils/str:str` accepts every
+rc option and stops at `aspect_bazel_lib@2.22.5` missing from the (empty) native
+registries. `build` stops at `--java_runtime_version` (main's N28b, not in this
+base), and without that line at the rc Starlark flag
+`@com_google_protobuf//bazel/toolchains:prefer_prebuilt_protoc`, on the same
+missing module.
 
 The previously captured native query of `//src/beyondwork.ai/utils/str:str` failed
 before application analysis because `aspect_bazel_lib@2.22.5` is unavailable in

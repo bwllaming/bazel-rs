@@ -175,6 +175,8 @@ pub fn split_command_line(args: Vec<String>) -> Result<CommandLine, String> {
                 line.startup_args.push(format!("{arg}={value}"));
             }
         } else {
+            // Environment values are never echoed (docs/BAZELRC.md).
+            let arg = redacted_arg(&arg).unwrap_or_else(|| arg.to_string());
             return Err(format!(
                 "Unknown startup option: '{arg}'.\n  For more info, run '{PRODUCT} help startup_options'."
             ));
@@ -1065,6 +1067,8 @@ fn process_startup_flags(
             unary_option(arg, next, &key).map(|value| (*name, value))
         });
         let Some((name, value)) = matched else {
+            // Environment values are never echoed (docs/BAZELRC.md).
+            let arg = redacted_arg(arg).unwrap_or_else(|| arg.to_string());
             return Err(format!(
                 "Unknown startup option: '{arg}'.\n  For more info, run '{PRODUCT} help startup_options'."
             ));

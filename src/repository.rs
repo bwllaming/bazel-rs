@@ -287,6 +287,26 @@ impl RepositorySet {
         )
     }
 
+    /// Use this fixed repository environment (the client environment with
+    /// `--repo_env` applied, crate::repo_env) instead of reading the process
+    /// environment. Like other configuration builders, this starts fresh
+    /// demand memoization.
+    pub fn with_repository_environment(
+        self,
+        environment: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    ) -> Self {
+        Self::configured_environment(
+            self.state.root.clone(),
+            self.state.options.clone(),
+            self.state.source_cache.clone(),
+            Arc::new(crate::repository_environment::Snapshot::with_reader(
+                Arc::new(crate::repository_environment::FixedReader::new(environment)),
+            )),
+            self.state.host.clone(),
+            self.state.repository_downloads_enabled,
+        )
+    }
+
     pub fn repository_downloads_enabled(&self) -> bool {
         self.state.repository_downloads_enabled
     }
@@ -386,7 +406,16 @@ impl RepositorySet {
     /// remain deferred to the repository demand paths that enforce them.
     pub fn validate_root_module(&self) -> Result<(), String> {
         self.state.options.validate_registries()?;
-        self.root_module().map(|_| ())
+        self.root_module().map(|_| ()).map_err(|error| {
+            // A root-module failure without an event reaches query/build as
+            // RepositoryMappingResolutionException
+            // (skyframe/RepositoryMappingValue.java:158-171).
+            if error.starts_with(crate::module_graph::UNUSED_ISOLATED_USAGE) {
+                format!("Error computing the main repository mapping: {error}")
+            } else {
+                error
+            }
+        })
     }
 
     /// The Bzlmod module associated with a repository, for native
@@ -1792,6 +1821,7 @@ mod tests {
                 crate::bzlmod::EvaluationContext {
                     role: crate::bzlmod::ModuleRole::Root,
                     ignore_dev_dependencies: true,
+                    isolated_extension_usages: false,
                 },
             )
             .unwrap();
@@ -2866,7 +2896,13 @@ mod tests {
     fn base_aliases_stay_lazy_and_isolated_imports_fail_only_on_demand() {
         let f = Fixture::new();
         f.write("MODULE.bazel", "module(name='main')\ne=use_extension('//:absent.bzl','extension',isolate=True)\nuse_repo(e,'generated')\n");
-        let repos = RepositorySet::new(f.0.clone());
+        let repos = RepositorySet::with_options(
+            f.0.clone(),
+            ResolverOptions {
+                isolated_extension_usages: true,
+                ..Default::default()
+            },
+        );
         assert!(repos.resolution_size_bound("@main//:file", "", "").is_ok());
         assert_eq!(repos.parse("@main//:file", "", "").unwrap().repository, "");
         assert!(repos.state.direct.get().is_none());
@@ -2899,6 +2935,7 @@ mod tests {
             f.0.clone(),
             ResolverOptions {
                 ignore_dev_dependencies: true,
+                isolated_extension_usages: true,
                 ..Default::default()
             },
         );

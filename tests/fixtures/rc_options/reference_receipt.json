@@ -1,0 +1,2348 @@
+{
+ "cases": [
+  {
+   "args": [
+    "query",
+    "//:ok"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "build --incompatible_strict_action_env\ntest --test_output=errors\ntest --test_summary=terse\ncommon --attempt_to_print_relative_paths=true\nbuild --repo_env=JAVA_HOME=../bazel_tools/jdk\nbuild --macos_sdk_version=10.13\nbuild:dev --noremote_upload_local_results\ncommon --experimental_isolated_extension_usages\ncommon --incompatible_enable_proto_toolchain_resolution\nbuild:cross --sandbox_add_mount_pair=/tmp\nbuild:buildbarn --remote_executor=grpc://127.0.0.1:9\nbuild:buildbarn --remote_instance_name=dev\nbuild:buildbarn --remote_default_exec_properties=OSFamily=linux\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {},
+    "stdout": "//:ok\n",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "query",
+    "//:ok"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.22,
+   "id": "code-rc-query",
+   "native": {
+    "error": null,
+    "notes": [],
+    "outputs": {},
+    "stdout": "//:ok\n",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/code-rc-query/tmp/cache",
+    "query",
+    "//:ok"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:mode",
+    "//:sdk"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "build --incompatible_strict_action_env\ntest --test_output=errors\ntest --test_summary=terse\ncommon --attempt_to_print_relative_paths=true\nbuild --repo_env=JAVA_HOME=../bazel_tools/jdk\nbuild --macos_sdk_version=10.13\nbuild:dev --noremote_upload_local_results\ncommon --experimental_isolated_extension_usages\ncommon --incompatible_enable_proto_toolchain_resolution\nbuild:cross --sandbox_add_mount_pair=/tmp\nbuild:buildbarn --remote_executor=grpc://127.0.0.1:9\nbuild:buildbarn --remote_instance_name=dev\nbuild:buildbarn --remote_default_exec_properties=OSFamily=linux\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n",
+     "sdk.txt": "mac\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:mode",
+    "//:sdk"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.33,
+   "id": "code-rc-build",
+   "native": {
+    "error": "2 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n",
+     "sdk.txt": "mac\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/code-rc-build/tmp/cache",
+    "build",
+    "//:mode",
+    "//:sdk"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--config=dev",
+    "//:mode"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "build --incompatible_strict_action_env\ntest --test_output=errors\ntest --test_summary=terse\ncommon --attempt_to_print_relative_paths=true\nbuild --repo_env=JAVA_HOME=../bazel_tools/jdk\nbuild --macos_sdk_version=10.13\nbuild:dev --noremote_upload_local_results\ncommon --experimental_isolated_extension_usages\ncommon --incompatible_enable_proto_toolchain_resolution\nbuild:cross --sandbox_add_mount_pair=/tmp\nbuild:buildbarn --remote_executor=grpc://127.0.0.1:9\nbuild:buildbarn --remote_instance_name=dev\nbuild:buildbarn --remote_default_exec_properties=OSFamily=linux\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--config=dev",
+    "//:mode"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 7.95,
+   "id": "code-rc-config-dev",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/code-rc-config-dev/tmp/cache",
+    "build",
+    "--config=dev",
+    "//:mode"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--config=cross",
+    "//:mode"
+   ],
+   "classification": "EXPECTED_NATIVE_UNSUPPORTED",
+   "env": {},
+   "files": {
+    ".bazelrc": "build --incompatible_strict_action_env\ntest --test_output=errors\ntest --test_summary=terse\ncommon --attempt_to_print_relative_paths=true\nbuild --repo_env=JAVA_HOME=../bazel_tools/jdk\nbuild --macos_sdk_version=10.13\nbuild:dev --noremote_upload_local_results\ncommon --experimental_isolated_extension_usages\ncommon --incompatible_enable_proto_toolchain_resolution\nbuild:cross --sandbox_add_mount_pair=/tmp\nbuild:buildbarn --remote_executor=grpc://127.0.0.1:9\nbuild:buildbarn --remote_instance_name=dev\nbuild:buildbarn --remote_default_exec_properties=OSFamily=linux\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--config=cross",
+    "//:mode"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 7.85,
+   "id": "code-rc-config-sandbox",
+   "native": {
+    "error": "unsupported option --sandbox_add_mount_pair from rc file <WS>/.bazelrc:10 (config definition 'build:cross'): sandboxed execution is not implemented (native actions run unsandboxed in a private execroot)",
+    "notes": [],
+    "outputs": {
+     "mode.txt": null
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/code-rc-config-sandbox/tmp/cache",
+    "build",
+    "--config=cross",
+    "//:mode"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--config=buildbarn",
+    "//:mode"
+   ],
+   "classification": "EXPECTED_NATIVE_UNSUPPORTED",
+   "env": {},
+   "files": {
+    ".bazelrc": "build --incompatible_strict_action_env\ntest --test_output=errors\ntest --test_summary=terse\ncommon --attempt_to_print_relative_paths=true\nbuild --repo_env=JAVA_HOME=../bazel_tools/jdk\nbuild --macos_sdk_version=10.13\nbuild:dev --noremote_upload_local_results\ncommon --experimental_isolated_extension_usages\ncommon --incompatible_enable_proto_toolchain_resolution\nbuild:cross --sandbox_add_mount_pair=/tmp\nbuild:buildbarn --remote_executor=grpc://127.0.0.1:9\nbuild:buildbarn --remote_instance_name=dev\nbuild:buildbarn --remote_default_exec_properties=OSFamily=linux\n"
+   },
+   "genuine": {
+    "error": "BUILD.bazel:3:8: Executing genrule //:mode failed: Failed to query remote execution capabilities: finishConnect(..) failed: Connection refused: /127.0.0.1:9",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--config=buildbarn",
+    "//:mode"
+   ],
+   "genuine_returncode": 34,
+   "genuine_seconds": 8.56,
+   "id": "code-rc-config-buildbarn",
+   "native": {
+    "error": "unsupported option --remote_executor from rc file <WS>/.bazelrc:11 (config definition 'build:buildbarn'): remote execution is not implemented",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/code-rc-config-buildbarn/tmp/cache",
+    "build",
+    "--config=buildbarn",
+    "//:mode"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--experimental_strict_action_env",
+    "//:mode"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {},
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--experimental_strict_action_env",
+    "//:mode"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.53,
+   "id": "strict-action-env-default",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/strict-action-env-default/tmp/cache",
+    "build",
+    "--experimental_strict_action_env",
+    "//:mode"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--noincompatible_strict_action_env",
+    "//:mode"
+   ],
+   "classification": "EXPECTED_NATIVE_UNSUPPORTED",
+   "env": {},
+   "files": {},
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--noincompatible_strict_action_env",
+    "//:mode"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.27,
+   "id": "strict-action-env-false",
+   "native": {
+    "error": "unsupported option --noincompatible_strict_action_env: a non-strict action environment (PATH and LD_LIBRARY_PATH inherited from the client) is not implemented; only the Bazel 9.3 default --incompatible_strict_action_env=true is modelled",
+    "notes": [],
+    "outputs": {
+     "mode.txt": null
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/strict-action-env-false/tmp/cache",
+    "build",
+    "--noincompatible_strict_action_env",
+    "//:mode"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "query",
+    "--incompatible_strict_action_env",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {},
+   "genuine": {
+    "error": "--incompatible_strict_action_env :: Unrecognized option: --incompatible_strict_action_env",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "query",
+    "--incompatible_strict_action_env",
+    "//:ok"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 1.0,
+   "id": "strict-action-env-query",
+   "native": {
+    "error": "--incompatible_strict_action_env :: Unrecognized option: --incompatible_strict_action_env",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/strict-action-env-query/tmp/cache",
+    "query",
+    "--incompatible_strict_action_env",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "query",
+    "--incompatible_enable_proto_toolchain_resolution=false",
+    "//:ok"
+   ],
+   "classification": "EXPECTED_NATIVE_UNSUPPORTED",
+   "env": {},
+   "files": {},
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {},
+    "stdout": "//:ok\n",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "query",
+    "--incompatible_enable_proto_toolchain_resolution=false",
+    "//:ok"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 7.34,
+   "id": "proto-resolution-false",
+   "native": {
+    "error": "unsupported option --incompatible_enable_proto_toolchain_resolution=false: --incompatible_enable_proto_toolchain_resolution=false (the legacy --proto_compiler/--proto_toolchain_for_* path of proto rules) is not implemented; only the Bazel 9.3 default true is modelled",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/proto-resolution-false/tmp/cache",
+    "query",
+    "--incompatible_enable_proto_toolchain_resolution=false",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--test_output=errors",
+    "--test_summary=terse",
+    "//:mode"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {},
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--test_output=errors",
+    "--test_summary=terse",
+    "//:mode"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 7.84,
+   "id": "test-options-build",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/test-options-build/tmp/cache",
+    "build",
+    "--test_output=errors",
+    "--test_summary=terse",
+    "//:mode"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.02,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--test_output=chatty",
+    "//:mode"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {},
+   "genuine": {
+    "error": "While parsing option --test_output=chatty: Not a valid test output: 'chatty' (should be summary, errors, all or streamed)",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--test_output=chatty",
+    "//:mode"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 0.95,
+   "id": "test-output-invalid",
+   "native": {
+    "error": "While parsing option --test_output=chatty: Not a valid test output: 'chatty' (should be summary, errors, all or streamed)",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/test-output-invalid/tmp/cache",
+    "build",
+    "--test_output=chatty",
+    "//:mode"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "query",
+    "--test_output=errors",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {},
+   "genuine": {
+    "error": "--test_output=errors :: Unrecognized option: --test_output=errors",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "query",
+    "--test_output=errors",
+    "//:ok"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 0.98,
+   "id": "test-output-query",
+   "native": {
+    "error": "--test_output=errors :: Unrecognized option: --test_output=errors",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/test-output-query/tmp/cache",
+    "query",
+    "--test_output=errors",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "query",
+    "//:ok"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "common --test_output=errors\ncommon --announce_rc\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [
+     "Options provided by the client:\n  Inherited 'common' options: --isatty=0 --terminal_columns=80",
+     "Reading rc options for 'query' from <WS>/.bazelrc:\n  Inherited 'common' options: --test_output=errors --announce_rc\n  Ignored as unsupported by 'query': --test_output=errors"
+    ],
+    "outputs": {},
+    "stdout": "//:ok\n",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "query",
+    "//:ok"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 7.32,
+   "id": "common-test-output-query",
+   "native": {
+    "error": null,
+    "notes": [
+     "Options provided by the client:\n  Inherited 'common' options: --isatty=0 --terminal_columns=80",
+     "Reading rc options for 'query' from <WS>/.bazelrc:\n  Inherited 'common' options: --test_output=errors --announce_rc\n  Ignored as unsupported by 'query': --test_output=errors"
+    ],
+    "outputs": {},
+    "stdout": "//:ok\n",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/common-test-output-query/tmp/cache",
+    "query",
+    "//:ok"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--noremote_upload_local_results",
+    "//:mode"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {},
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--noremote_upload_local_results",
+    "//:mode"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.05,
+   "id": "remote-upload-local-results",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/remote-upload-local-results/tmp/cache",
+    "build",
+    "--noremote_upload_local_results",
+    "//:mode"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "query",
+    "--attempt_to_print_relative_paths=maybe",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {},
+   "genuine": {
+    "error": "While parsing option --attempt_to_print_relative_paths=maybe: 'maybe' is not a boolean",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "query",
+    "--attempt_to_print_relative_paths=maybe",
+    "//:ok"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 0.89,
+   "id": "relative-paths-bool",
+   "native": {
+    "error": "While parsing option --attempt_to_print_relative_paths=maybe: 'maybe' is not a boolean",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/relative-paths-bool/tmp/cache",
+    "query",
+    "--attempt_to_print_relative_paths=maybe",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--repo_env=N40_VALUE=one",
+    "//:copy"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {},
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "copy.txt": "one|none\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--repo_env=N40_VALUE=one",
+    "//:copy"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 7.85,
+   "id": "repo-env-set",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "copy.txt": "one|none\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/repo-env-set/tmp/cache",
+    "build",
+    "--repo_env=N40_VALUE=one",
+    "//:copy"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--repo_env",
+    "N40_VALUE=two",
+    "//:copy"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {},
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "copy.txt": "two|none\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--repo_env",
+    "N40_VALUE=two",
+    "//:copy"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 7.92,
+   "id": "repo-env-split",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "copy.txt": "two|none\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/repo-env-split/tmp/cache",
+    "build",
+    "--repo_env",
+    "N40_VALUE=two",
+    "//:copy"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--repo_env==N40_VALUE",
+    "//:copy"
+   ],
+   "classification": "EXACT",
+   "env": {
+    "N40_OTHER": "o",
+    "N40_VALUE": "client"
+   },
+   "files": {},
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "copy.txt": "unset|o\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--repo_env==N40_VALUE",
+    "//:copy"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 7.89,
+   "id": "repo-env-unset",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "copy.txt": "unset|o\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/repo-env-unset/tmp/cache",
+    "build",
+    "--repo_env==N40_VALUE",
+    "//:copy"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--repo_env==N40_VALUE",
+    "--repo_env=N40_VALUE",
+    "//:copy"
+   ],
+   "classification": "EXACT",
+   "env": {
+    "N40_VALUE": "client"
+   },
+   "files": {},
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "copy.txt": "client|none\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--repo_env==N40_VALUE",
+    "--repo_env=N40_VALUE",
+    "//:copy"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 7.94,
+   "id": "repo-env-inherit-after-unset",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "copy.txt": "client|none\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/repo-env-inherit-after-unset/tmp/cache",
+    "build",
+    "--repo_env==N40_VALUE",
+    "--repo_env=N40_VALUE",
+    "//:copy"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--repo_env=N40_VALUE=%bazel_workspace%/x",
+    "//:copy"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {},
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "copy.txt": "<WS>/x|none\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--repo_env=N40_VALUE=%bazel_workspace%/x",
+    "//:copy"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 7.97,
+   "id": "repo-env-workspace",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "copy.txt": "<WS>/x|none\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/repo-env-workspace/tmp/cache",
+    "build",
+    "--repo_env=N40_VALUE=%bazel_workspace%/x",
+    "//:copy"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:copy"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "common --repo_env=N40_VALUE=rc\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "copy.txt": "rc|none\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:copy"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 7.95,
+   "id": "repo-env-rc-common",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "copy.txt": "rc|none\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/repo-env-rc-common/tmp/cache",
+    "build",
+    "//:copy"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "query",
+    "//:ok"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "common --repo_env=N40_VALUE=rc\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {},
+    "stdout": "//:ok\n",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "query",
+    "//:ok"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 7.54,
+   "id": "repo-env-rc-query",
+   "native": {
+    "error": null,
+    "notes": [],
+    "outputs": {},
+    "stdout": "//:ok\n",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/repo-env-rc-query/tmp/cache",
+    "query",
+    "//:ok"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--repo_env=",
+    "//:mode"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {},
+   "genuine": {
+    "error": "While parsing option --repo_env=: Variable definitions must be in the form of a 'name=value', 'name', or '=name' assignment",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--repo_env=",
+    "//:mode"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 1.01,
+   "id": "repo-env-empty",
+   "native": {
+    "error": "While parsing option --repo_env=: Variable definitions must be in the form of a 'name=value', 'name', or '=name' assignment",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/repo-env-empty/tmp/cache",
+    "build",
+    "--repo_env=",
+    "//:mode"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--norepo_env",
+    "//:mode"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {},
+   "genuine": {
+    "error": "--norepo_env :: Illegal use of 'no' prefix on non-boolean option: --norepo_env",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--norepo_env",
+    "//:mode"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 1.07,
+   "id": "repo-env-no-prefix",
+   "native": {
+    "error": "--norepo_env :: Illegal use of 'no' prefix on non-boolean option: --norepo_env",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/repo-env-no-prefix/tmp/cache",
+    "build",
+    "--norepo_env",
+    "//:mode"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "query",
+    "//:ok"
+   ],
+   "classification": "EQUIVALENT_MESSAGE",
+   "env": {},
+   "files": {
+    "MODULE.bazel": "module(name = \"rc\")\ne = use_extension(\"//:ext.bzl\", \"ext\", isolate = True)\n",
+    "ext.bzl": "def _impl(ctx):\n    pass\n\next = module_extension(_impl)\n"
+   },
+   "genuine": {
+    "error": "<WS>/MODULE.bazel:2:3: Traceback (most recent call last):\n\tFile \"<WS>/MODULE.bazel\", line 2, column 3, in <toplevel>\n\t\te = use_extension(\"//:ext.bzl\", \"ext\", isolate = True)\nError in use_extension: in call to use_extension(), parameter 'isolate' is experimental and thus unavailable with the current flags. It may be enabled by setting --experimental_isolated_extension_usages",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "query",
+    "//:ok"
+   ],
+   "genuine_returncode": 48,
+   "genuine_seconds": 1.14,
+   "id": "isolate-without-flag",
+   "native": {
+    "error": "Traceback (most recent call last):\n  * <WS>/MODULE.bazel:2, in <module>\n      e = use_extension(\"//:ext.bzl\", \"ext\", isolate = True)\nerror: in call to use_extension(), parameter 'isolate' is experimental and thus unavailable with the current flags. It may be enabled by setting --experimental_isolated_extension_usages\n --> <WS>/MODULE.bazel:2:5\n  |\n2 | e = use_extension(\"//:ext.bzl\", \"ext\", isolate = True)\n  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/isolate-without-flag/tmp/cache",
+    "query",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "query",
+    "//:ok"
+   ],
+   "classification": "EQUIVALENT_MESSAGE",
+   "env": {},
+   "files": {
+    "MODULE.bazel": "module(name = \"rc\")\ne = use_extension(\"//:ext.bzl\", \"ext\", isolate = False)\n",
+    "ext.bzl": "def _impl(ctx):\n    pass\n\next = module_extension(_impl)\n"
+   },
+   "genuine": {
+    "error": "<WS>/MODULE.bazel:2:3: Traceback (most recent call last):\n\tFile \"<WS>/MODULE.bazel\", line 2, column 3, in <toplevel>\n\t\te = use_extension(\"//:ext.bzl\", \"ext\", isolate = False)\nError in use_extension: in call to use_extension(), parameter 'isolate' is experimental and thus unavailable with the current flags. It may be enabled by setting --experimental_isolated_extension_usages",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "query",
+    "//:ok"
+   ],
+   "genuine_returncode": 48,
+   "genuine_seconds": 1.22,
+   "id": "isolate-false-without-flag",
+   "native": {
+    "error": "Traceback (most recent call last):\n  * <WS>/MODULE.bazel:2, in <module>\n      e = use_extension(\"//:ext.bzl\", \"ext\", isolate = False)\nerror: in call to use_extension(), parameter 'isolate' is experimental and thus unavailable with the current flags. It may be enabled by setting --experimental_isolated_extension_usages\n --> <WS>/MODULE.bazel:2:5\n  |\n2 | e = use_extension(\"//:ext.bzl\", \"ext\", isolate = False)\n  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/isolate-false-without-flag/tmp/cache",
+    "query",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "query",
+    "//:ok"
+   ],
+   "classification": "MISMATCH",
+   "env": {},
+   "files": {
+    ".bazelrc": "common --experimental_isolated_extension_usages\n",
+    "MODULE.bazel": "module(name = \"rc\")\ne = use_extension(\"//:ext.bzl\", \"ext\", isolate = True)\n",
+    "ext.bzl": "def _impl(ctx):\n    pass\n\next = module_extension(_impl)\n"
+   },
+   "genuine": {
+    "error": "Error computing the main repository mapping: the isolated usage at <WS>/MODULE.bazel:2:18 of extension ext defined in @rc//:ext.bzl has no effect as no repositories are imported from it. Either import one or more repositories generated by the extension with use_repo or remove the usage.",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "query",
+    "//:ok"
+   ],
+   "genuine_returncode": 48,
+   "genuine_seconds": 1.52,
+   "id": "isolate-with-flag",
+   "native": {
+    "error": null,
+    "notes": [],
+    "outputs": {},
+    "stdout": "//:ok\n",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/isolate-with-flag/tmp/cache",
+    "query",
+    "//:ok"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:bad"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {
+    "BUILD.bazel": "filegroup(name = \"bad\", restricted_to = [])\n"
+   },
+   "genuine": {
+    "error": "<WS>/BUILD.bazel:1:10: in restricted_to attribute of filegroup rule //:bad: attribute cannot be empty",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:bad"
+   ],
+   "genuine_returncode": 1,
+   "genuine_seconds": 7.89,
+   "id": "relative-paths-off",
+   "native": {
+    "error": "<WS>/BUILD.bazel:1:10: in restricted_to attribute of filegroup rule //:bad: attribute cannot be empty",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/relative-paths-off/tmp/cache",
+    "build",
+    "//:bad"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:bad"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {
+    ".bazelrc": "common --attempt_to_print_relative_paths=true\n",
+    "BUILD.bazel": "filegroup(name = \"bad\", restricted_to = [])\n"
+   },
+   "genuine": {
+    "error": "BUILD.bazel:1:10: in restricted_to attribute of filegroup rule //:bad: attribute cannot be empty",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:bad"
+   ],
+   "genuine_returncode": 1,
+   "genuine_seconds": 7.83,
+   "id": "relative-paths-on",
+   "native": {
+    "error": "BUILD.bazel:1:10: in restricted_to attribute of filegroup rule //:bad: attribute cannot be empty",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/relative-paths-on/tmp/cache",
+    "build",
+    "//:bad"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--experimental_ui_attempt_to_print_relative_paths",
+    "//:bad"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {
+    "BUILD.bazel": "filegroup(name = \"bad\", restricted_to = [])\n"
+   },
+   "genuine": {
+    "error": "BUILD.bazel:1:10: in restricted_to attribute of filegroup rule //:bad: attribute cannot be empty",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--experimental_ui_attempt_to_print_relative_paths",
+    "//:bad"
+   ],
+   "genuine_returncode": 1,
+   "genuine_seconds": 7.79,
+   "id": "relative-paths-old-name",
+   "native": {
+    "error": "BUILD.bazel:1:10: in restricted_to attribute of filegroup rule //:bad: attribute cannot be empty",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/relative-paths-old-name/tmp/cache",
+    "build",
+    "--experimental_ui_attempt_to_print_relative_paths",
+    "//:bad"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--macos_sdk_version=10.13",
+    "//:sdk"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {},
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "sdk.txt": "mac\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--macos_sdk_version=10.13",
+    "//:sdk"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 7.88,
+   "id": "macos-sdk-select",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "sdk.txt": "mac\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/macos-sdk-select/tmp/cache",
+    "build",
+    "--macos_sdk_version=10.13",
+    "//:sdk"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--macos_sdk_version=10.13.0",
+    "//:sdk"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {},
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "sdk.txt": "other\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--macos_sdk_version=10.13.0",
+    "//:sdk"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 7.8,
+   "id": "macos-sdk-string-equality",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "sdk.txt": "other\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/macos-sdk-string-equality/tmp/cache",
+    "build",
+    "--macos_sdk_version=10.13.0",
+    "//:sdk"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--macos_sdk_version=x",
+    "//:sdk"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {},
+   "genuine": {
+    "error": "While parsing option --macos_sdk_version=x: Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got 'x'",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--macos_sdk_version=x",
+    "//:sdk"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 1.1,
+   "id": "macos-sdk-invalid",
+   "native": {
+    "error": "While parsing option --macos_sdk_version=x: Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got 'x'",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/macos-sdk-invalid/tmp/cache",
+    "build",
+    "--macos_sdk_version=x",
+    "//:sdk"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--macos_sdk_version=99999999999",
+    "//:sdk"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {},
+   "genuine": {
+    "error": "While parsing option --macos_sdk_version=99999999999: Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '99999999999'",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--macos_sdk_version=99999999999",
+    "//:sdk"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 0.95,
+   "id": "macos-sdk-overflow",
+   "native": {
+    "error": "While parsing option --macos_sdk_version=99999999999: Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '99999999999'",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/macos-sdk-overflow/tmp/cache",
+    "build",
+    "--macos_sdk_version=99999999999",
+    "//:sdk"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--ios_sdk_version=17.0",
+    "--tvos_sdk_version=1a2",
+    "--watchos_sdk_version=10.beta",
+    "//:sdk"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {},
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "sdk.txt": "other\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--ios_sdk_version=17.0",
+    "--tvos_sdk_version=1a2",
+    "--watchos_sdk_version=10.beta",
+    "//:sdk"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 7.63,
+   "id": "apple-sdk-versions",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "sdk.txt": "other\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/apple-sdk-versions/tmp/cache",
+    "build",
+    "--ios_sdk_version=17.0",
+    "--tvos_sdk_version=1a2",
+    "--watchos_sdk_version=10.beta",
+    "//:sdk"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "classification": "EXACT_ROUTE",
+   "env": {},
+   "flags": [
+    "--repo_env=http_proxy={proxy}"
+   ],
+   "genuine": {
+    "argv": [
+     "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+     "--batch",
+     "--output_user_root=<SCRATCH>/genuine-output-user-root",
+     "mod",
+     "graph",
+     "--output=json",
+     "--registry=http://registry.n40.invalid",
+     "--lockfile_mode=off",
+     "--repo_env=http_proxy=<PROXY>"
+    ],
+    "error": "Unable to get module repo spec for dep@1.0 from registry: Module dep@1.0's source.json not found in registry http://registry.n40.invalid",
+    "requests": {
+     "direct": [],
+     "forbidden": [],
+     "proxy": [
+      "GET http://registry.n40.invalid/modules/apple_support/2.5.2/MODULE.bazel HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/apple_support/2.5.2/source.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/apple_support/metadata.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/buildozer/8.5.1/MODULE.bazel HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/buildozer/8.5.1/source.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/buildozer/metadata.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/dep/1.0/MODULE.bazel HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/dep/1.0/source.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/dep/metadata.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/platforms/1.0.0/MODULE.bazel HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/platforms/1.0.0/source.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/platforms/metadata.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/protobuf/33.4/MODULE.bazel HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/protobuf/33.4/source.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/protobuf/metadata.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_cc/0.2.17/MODULE.bazel HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_cc/0.2.17/source.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_cc/metadata.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_java/9.1.0/MODULE.bazel HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_java/9.1.0/source.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_java/metadata.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_license/1.0.0/MODULE.bazel HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_license/1.0.0/source.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_license/metadata.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_python/1.7.0/MODULE.bazel HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_python/1.7.0/source.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_python/metadata.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_shell/0.6.1/MODULE.bazel HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_shell/0.6.1/source.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_shell/metadata.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/zlib/1.3.1.bcr.5/MODULE.bazel HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/zlib/1.3.1.bcr.5/source.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/zlib/metadata.json HTTP/1.1"
+     ]
+    },
+    "returncode": 37,
+    "seconds": 3.13
+   },
+   "id": "proxy-http-repo-env",
+   "native": {
+    "argv": [
+     "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+     "--cache-dir=<SCRATCH>/native/proxy-http-repo-env/tmp/cache",
+     "mod",
+     "graph",
+     "--output=json",
+     "--registry=http://registry.n40.invalid",
+     "--lockfile_mode=off",
+     "--repo_env=http_proxy=<PROXY>"
+    ],
+    "error": "bounded module graph profile; graph commands do not execute module extensions",
+    "requests": {
+     "direct": [],
+     "forbidden": [],
+     "proxy": [
+      "GET http://registry.n40.invalid/modules/dep/1.0/MODULE.bazel HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/dep/metadata.json HTTP/1.1"
+     ]
+    },
+    "returncode": 0,
+    "seconds": 0.02
+   },
+   "registry": "http://registry.n40.invalid",
+   "routed": {
+    "genuine": {
+     "direct": [],
+     "forbidden": [],
+     "proxy": [
+      "GET http://registry.n40.invalid/modules/dep/1.0/MODULE.bazel HTTP/1.1"
+     ]
+    },
+    "native": {
+     "direct": [],
+     "forbidden": [],
+     "proxy": [
+      "GET http://registry.n40.invalid/modules/dep/1.0/MODULE.bazel HTTP/1.1"
+     ]
+    }
+   }
+  },
+  {
+   "classification": "EXACT_ROUTE",
+   "env": {
+    "HTTP_PROXY": "{proxy}"
+   },
+   "flags": [],
+   "genuine": {
+    "argv": [
+     "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+     "--batch",
+     "--output_user_root=<SCRATCH>/genuine-output-user-root",
+     "mod",
+     "graph",
+     "--output=json",
+     "--registry=http://registry.n40.invalid",
+     "--lockfile_mode=off"
+    ],
+    "error": "Unable to get module repo spec for dep@1.0 from registry: Module dep@1.0's source.json not found in registry http://registry.n40.invalid",
+    "requests": {
+     "direct": [],
+     "forbidden": [],
+     "proxy": [
+      "GET http://registry.n40.invalid/modules/apple_support/2.5.2/MODULE.bazel HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/apple_support/2.5.2/source.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/apple_support/metadata.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/buildozer/8.5.1/MODULE.bazel HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/buildozer/8.5.1/source.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/buildozer/metadata.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/dep/1.0/MODULE.bazel HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/dep/1.0/source.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/dep/metadata.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/platforms/1.0.0/MODULE.bazel HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/platforms/1.0.0/source.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/platforms/metadata.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/protobuf/33.4/MODULE.bazel HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/protobuf/33.4/source.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/protobuf/metadata.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_cc/0.2.17/MODULE.bazel HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_cc/0.2.17/source.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_cc/metadata.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_java/9.1.0/MODULE.bazel HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_java/9.1.0/source.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_java/metadata.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_license/1.0.0/MODULE.bazel HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_license/1.0.0/source.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_license/metadata.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_python/1.7.0/MODULE.bazel HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_python/1.7.0/source.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_python/metadata.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_shell/0.6.1/MODULE.bazel HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_shell/0.6.1/source.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/rules_shell/metadata.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/zlib/1.3.1.bcr.5/MODULE.bazel HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/zlib/1.3.1.bcr.5/source.json HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/zlib/metadata.json HTTP/1.1"
+     ]
+    },
+    "returncode": 37,
+    "seconds": 3.18
+   },
+   "id": "proxy-http-client-env",
+   "native": {
+    "argv": [
+     "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+     "--cache-dir=<SCRATCH>/native/proxy-http-client-env/tmp/cache",
+     "mod",
+     "graph",
+     "--output=json",
+     "--registry=http://registry.n40.invalid",
+     "--lockfile_mode=off"
+    ],
+    "error": "bounded module graph profile; graph commands do not execute module extensions",
+    "requests": {
+     "direct": [],
+     "forbidden": [],
+     "proxy": [
+      "GET http://registry.n40.invalid/modules/dep/1.0/MODULE.bazel HTTP/1.1",
+      "GET http://registry.n40.invalid/modules/dep/metadata.json HTTP/1.1"
+     ]
+    },
+    "returncode": 0,
+    "seconds": 0.01
+   },
+   "registry": "http://registry.n40.invalid",
+   "routed": {
+    "genuine": {
+     "direct": [],
+     "forbidden": [],
+     "proxy": [
+      "GET http://registry.n40.invalid/modules/dep/1.0/MODULE.bazel HTTP/1.1"
+     ]
+    },
+    "native": {
+     "direct": [],
+     "forbidden": [],
+     "proxy": [
+      "GET http://registry.n40.invalid/modules/dep/1.0/MODULE.bazel HTTP/1.1"
+     ]
+    }
+   }
+  },
+  {
+   "classification": "EXACT_ROUTE",
+   "env": {},
+   "flags": [
+    "--repo_env=HTTP_PROXY={forbidden}",
+    "--repo_env=NO_PROXY=127.0.0.1"
+   ],
+   "genuine": {
+    "argv": [
+     "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+     "--batch",
+     "--output_user_root=<SCRATCH>/genuine-output-user-root",
+     "mod",
+     "graph",
+     "--output=json",
+     "--registry=<DIRECT>",
+     "--lockfile_mode=off",
+     "--repo_env=HTTP_PROXY=<FORBIDDEN>",
+     "--repo_env=NO_PROXY=127.0.0.1"
+    ],
+    "error": "Unable to get module repo spec for dep@1.0 from registry: Module dep@1.0's source.json not found in registry <DIRECT>",
+    "requests": {
+     "direct": [
+      "GET /modules/apple_support/2.5.2/MODULE.bazel HTTP/1.1",
+      "GET /modules/apple_support/2.5.2/source.json HTTP/1.1",
+      "GET /modules/apple_support/metadata.json HTTP/1.1",
+      "GET /modules/buildozer/8.5.1/MODULE.bazel HTTP/1.1",
+      "GET /modules/buildozer/8.5.1/source.json HTTP/1.1",
+      "GET /modules/buildozer/metadata.json HTTP/1.1",
+      "GET /modules/dep/1.0/MODULE.bazel HTTP/1.1",
+      "GET /modules/dep/1.0/source.json HTTP/1.1",
+      "GET /modules/dep/metadata.json HTTP/1.1",
+      "GET /modules/platforms/1.0.0/MODULE.bazel HTTP/1.1",
+      "GET /modules/platforms/1.0.0/source.json HTTP/1.1",
+      "GET /modules/platforms/metadata.json HTTP/1.1",
+      "GET /modules/protobuf/33.4/MODULE.bazel HTTP/1.1",
+      "GET /modules/protobuf/33.4/source.json HTTP/1.1",
+      "GET /modules/protobuf/metadata.json HTTP/1.1",
+      "GET /modules/rules_cc/0.2.17/MODULE.bazel HTTP/1.1",
+      "GET /modules/rules_cc/0.2.17/source.json HTTP/1.1",
+      "GET /modules/rules_cc/metadata.json HTTP/1.1",
+      "GET /modules/rules_java/9.1.0/MODULE.bazel HTTP/1.1",
+      "GET /modules/rules_java/9.1.0/source.json HTTP/1.1",
+      "GET /modules/rules_java/metadata.json HTTP/1.1",
+      "GET /modules/rules_license/1.0.0/MODULE.bazel HTTP/1.1",
+      "GET /modules/rules_license/1.0.0/source.json HTTP/1.1",
+      "GET /modules/rules_license/metadata.json HTTP/1.1",
+      "GET /modules/rules_python/1.7.0/MODULE.bazel HTTP/1.1",
+      "GET /modules/rules_python/1.7.0/source.json HTTP/1.1",
+      "GET /modules/rules_python/metadata.json HTTP/1.1",
+      "GET /modules/rules_shell/0.6.1/MODULE.bazel HTTP/1.1",
+      "GET /modules/rules_shell/0.6.1/source.json HTTP/1.1",
+      "GET /modules/rules_shell/metadata.json HTTP/1.1",
+      "GET /modules/zlib/1.3.1.bcr.5/MODULE.bazel HTTP/1.1",
+      "GET /modules/zlib/1.3.1.bcr.5/source.json HTTP/1.1",
+      "GET /modules/zlib/metadata.json HTTP/1.1"
+     ],
+     "forbidden": [],
+     "proxy": []
+    },
+    "returncode": 37,
+    "seconds": 3.08
+   },
+   "id": "proxy-no-proxy",
+   "native": {
+    "argv": [
+     "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+     "--cache-dir=<SCRATCH>/native/proxy-no-proxy/tmp/cache",
+     "mod",
+     "graph",
+     "--output=json",
+     "--registry=<DIRECT>",
+     "--lockfile_mode=off",
+     "--repo_env=HTTP_PROXY=<FORBIDDEN>",
+     "--repo_env=NO_PROXY=127.0.0.1"
+    ],
+    "error": "bounded module graph profile; graph commands do not execute module extensions",
+    "requests": {
+     "direct": [
+      "GET /modules/dep/1.0/MODULE.bazel HTTP/1.1",
+      "GET /modules/dep/metadata.json HTTP/1.1"
+     ],
+     "forbidden": [],
+     "proxy": []
+    },
+    "returncode": 0,
+    "seconds": 0.01
+   },
+   "registry": "{direct}",
+   "routed": {
+    "genuine": {
+     "direct": [
+      "GET /modules/dep/1.0/MODULE.bazel HTTP/1.1"
+     ],
+     "forbidden": [],
+     "proxy": []
+    },
+    "native": {
+     "direct": [
+      "GET /modules/dep/1.0/MODULE.bazel HTTP/1.1"
+     ],
+     "forbidden": [],
+     "proxy": []
+    }
+   }
+  },
+  {
+   "classification": "EXACT_ROUTE",
+   "env": {
+    "http_proxy": "{forbidden}"
+   },
+   "flags": [
+    "--repo_env==http_proxy"
+   ],
+   "genuine": {
+    "argv": [
+     "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+     "--batch",
+     "--output_user_root=<SCRATCH>/genuine-output-user-root",
+     "mod",
+     "graph",
+     "--output=json",
+     "--registry=<DIRECT>",
+     "--lockfile_mode=off",
+     "--repo_env==http_proxy"
+    ],
+    "error": "Unable to get module repo spec for dep@1.0 from registry: Module dep@1.0's source.json not found in registry <DIRECT>",
+    "requests": {
+     "direct": [
+      "GET /modules/apple_support/2.5.2/MODULE.bazel HTTP/1.1",
+      "GET /modules/apple_support/2.5.2/source.json HTTP/1.1",
+      "GET /modules/apple_support/metadata.json HTTP/1.1",
+      "GET /modules/buildozer/8.5.1/MODULE.bazel HTTP/1.1",
+      "GET /modules/buildozer/8.5.1/source.json HTTP/1.1",
+      "GET /modules/buildozer/metadata.json HTTP/1.1",
+      "GET /modules/dep/1.0/MODULE.bazel HTTP/1.1",
+      "GET /modules/dep/1.0/source.json HTTP/1.1",
+      "GET /modules/dep/metadata.json HTTP/1.1",
+      "GET /modules/platforms/1.0.0/MODULE.bazel HTTP/1.1",
+      "GET /modules/platforms/1.0.0/source.json HTTP/1.1",
+      "GET /modules/platforms/metadata.json HTTP/1.1",
+      "GET /modules/protobuf/33.4/MODULE.bazel HTTP/1.1",
+      "GET /modules/protobuf/33.4/source.json HTTP/1.1",
+      "GET /modules/protobuf/metadata.json HTTP/1.1",
+      "GET /modules/rules_cc/0.2.17/MODULE.bazel HTTP/1.1",
+      "GET /modules/rules_cc/0.2.17/source.json HTTP/1.1",
+      "GET /modules/rules_cc/metadata.json HTTP/1.1",
+      "GET /modules/rules_java/9.1.0/MODULE.bazel HTTP/1.1",
+      "GET /modules/rules_java/9.1.0/source.json HTTP/1.1",
+      "GET /modules/rules_java/metadata.json HTTP/1.1",
+      "GET /modules/rules_license/1.0.0/MODULE.bazel HTTP/1.1",
+      "GET /modules/rules_license/1.0.0/source.json HTTP/1.1",
+      "GET /modules/rules_license/metadata.json HTTP/1.1",
+      "GET /modules/rules_python/1.7.0/MODULE.bazel HTTP/1.1",
+      "GET /modules/rules_python/1.7.0/source.json HTTP/1.1",
+      "GET /modules/rules_python/metadata.json HTTP/1.1",
+      "GET /modules/rules_shell/0.6.1/MODULE.bazel HTTP/1.1",
+      "GET /modules/rules_shell/0.6.1/source.json HTTP/1.1",
+      "GET /modules/rules_shell/metadata.json HTTP/1.1",
+      "GET /modules/zlib/1.3.1.bcr.5/MODULE.bazel HTTP/1.1",
+      "GET /modules/zlib/1.3.1.bcr.5/source.json HTTP/1.1",
+      "GET /modules/zlib/metadata.json HTTP/1.1"
+     ],
+     "forbidden": [],
+     "proxy": []
+    },
+    "returncode": 37,
+    "seconds": 3.21
+   },
+   "id": "proxy-unset-client",
+   "native": {
+    "argv": [
+     "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+     "--cache-dir=<SCRATCH>/native/proxy-unset-client/tmp/cache",
+     "mod",
+     "graph",
+     "--output=json",
+     "--registry=<DIRECT>",
+     "--lockfile_mode=off",
+     "--repo_env==http_proxy"
+    ],
+    "error": "bounded module graph profile; graph commands do not execute module extensions",
+    "requests": {
+     "direct": [
+      "GET /modules/dep/1.0/MODULE.bazel HTTP/1.1",
+      "GET /modules/dep/metadata.json HTTP/1.1"
+     ],
+     "forbidden": [],
+     "proxy": []
+    },
+    "returncode": 0,
+    "seconds": 0.01
+   },
+   "registry": "{direct}",
+   "routed": {
+    "genuine": {
+     "direct": [
+      "GET /modules/dep/1.0/MODULE.bazel HTTP/1.1"
+     ],
+     "forbidden": [],
+     "proxy": []
+    },
+    "native": {
+     "direct": [
+      "GET /modules/dep/1.0/MODULE.bazel HTTP/1.1"
+     ],
+     "forbidden": [],
+     "proxy": []
+    }
+   }
+  },
+  {
+   "classification": "EXACT_ROUTE",
+   "env": {},
+   "flags": [
+    "--repo_env=HTTPS_PROXY={forbidden}"
+   ],
+   "genuine": {
+    "argv": [
+     "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+     "--batch",
+     "--output_user_root=<SCRATCH>/genuine-output-user-root",
+     "mod",
+     "graph",
+     "--output=json",
+     "--registry=https://registry.n40.invalid",
+     "--lockfile_mode=off",
+     "--repo_env=HTTPS_PROXY=<FORBIDDEN>"
+    ],
+    "error": "Error accessing registry https://registry.n40.invalid: Failed to fetch registry file https://registry.n40.invalid/modules/dep/1.0/MODULE.bazel: Unable to tunnel through proxy. Proxy returns \"HTTP/1.0 502 Bad Gateway\"",
+    "requests": {
+     "direct": [],
+     "forbidden": [
+      "CONNECT registry.n40.invalid:443 HTTP/1.1"
+     ],
+     "proxy": []
+    },
+    "returncode": 37,
+    "seconds": 12.56
+   },
+   "id": "proxy-https-connect",
+   "native": {
+    "argv": [
+     "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+     "--cache-dir=<SCRATCH>/native/proxy-https-connect/tmp/cache",
+     "mod",
+     "graph",
+     "--output=json",
+     "--registry=https://registry.n40.invalid",
+     "--lockfile_mode=off",
+     "--repo_env=HTTPS_PROXY=<FORBIDDEN>"
+    ],
+    "error": "HTTP request failed (connection, TLS, or redirect error)",
+    "requests": {
+     "direct": [],
+     "forbidden": [
+      "CONNECT registry.n40.invalid:443 HTTP/1.1"
+     ],
+     "proxy": []
+    },
+    "returncode": 1,
+    "seconds": 0.02
+   },
+   "registry": "https://registry.n40.invalid",
+   "routed": {
+    "genuine": {
+     "direct": [],
+     "forbidden": [
+      "CONNECT registry.n40.invalid:443 HTTP/1.1"
+     ],
+     "proxy": []
+    },
+    "native": {
+     "direct": [],
+     "forbidden": [
+      "CONNECT registry.n40.invalid:443 HTTP/1.1"
+     ],
+     "proxy": []
+    }
+   }
+  }
+ ],
+ "code_probe": [
+  {
+   "argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/code-probe/rc-query/cache",
+    "--noworkspace_rc",
+    "--bazelrc=<SCRATCH>/code-probe/bazelrc",
+    "query",
+    "//src/beyondwork.ai/utils/str:str"
+   ],
+   "cwd": "/home/coder/code",
+   "returncode": 1,
+   "stderr": "bazel-rs: src/beyondwork.ai/utils/str/BUILD.bazel:1:6-38: external repository load: module aspect_bazel_lib@2.22.5 was not found in registries []\n",
+   "variant": "rc"
+  },
+  {
+   "argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/code-probe/rc-build/cache",
+    "--noworkspace_rc",
+    "--bazelrc=<SCRATCH>/code-probe/bazelrc",
+    "build",
+    "//src/beyondwork.ai/utils/str:str"
+   ],
+   "cwd": "/home/coder/code",
+   "returncode": 1,
+   "stderr": "bazel-rs: unsupported option \"--java_runtime_version=remotejdk_11\" from rc file <SCRATCH>/code-probe/bazelrc:5 ('build' options); options are never silently ignored\n",
+   "variant": "rc"
+  },
+  {
+   "argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/code-probe/rc-nojava-query/cache",
+    "--noworkspace_rc",
+    "--bazelrc=<SCRATCH>/code-probe/bazelrc-nojava",
+    "query",
+    "//src/beyondwork.ai/utils/str:str"
+   ],
+   "cwd": "/home/coder/code",
+   "returncode": 1,
+   "stderr": "bazel-rs: src/beyondwork.ai/utils/str/BUILD.bazel:1:6-38: external repository load: module aspect_bazel_lib@2.22.5 was not found in registries []\n",
+   "variant": "rc-nojava"
+  },
+  {
+   "argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/code-probe/rc-nojava-build/cache",
+    "--noworkspace_rc",
+    "--bazelrc=<SCRATCH>/code-probe/bazelrc-nojava",
+    "build",
+    "//src/beyondwork.ai/utils/str:str"
+   ],
+   "cwd": "/home/coder/code",
+   "returncode": 1,
+   "stderr": "bazel-rs: @com_google_protobuf//bazel/toolchains:prefer_prebuilt_protoc :: Error loading option @com_google_protobuf//bazel/toolchains:prefer_prebuilt_protoc: module aspect_bazel_lib@2.22.5 was not found in registries []\n",
+   "variant": "rc-nojava"
+  },
+  {
+   "argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/code-probe/rc-nojava+coder-query/cache",
+    "--noworkspace_rc",
+    "--bazelrc=<SCRATCH>/code-probe/bazelrc-nojava",
+    "--bazelrc=<SCRATCH>/code-probe/bazelrc.coder",
+    "query",
+    "//src/beyondwork.ai/utils/str:str"
+   ],
+   "cwd": "/home/coder/code",
+   "returncode": 1,
+   "stderr": "bazel-rs: src/beyondwork.ai/utils/str/BUILD.bazel:1:6-38: external repository load: module aspect_bazel_lib@2.22.5 was not found in registries []\n",
+   "variant": "rc-nojava+coder"
+  },
+  {
+   "argv": [
+    "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/code-probe/rc-nojava+coder-build/cache",
+    "--noworkspace_rc",
+    "--bazelrc=<SCRATCH>/code-probe/bazelrc-nojava",
+    "--bazelrc=<SCRATCH>/code-probe/bazelrc.coder",
+    "build",
+    "//src/beyondwork.ai/utils/str:str"
+   ],
+   "cwd": "/home/coder/code",
+   "returncode": 1,
+   "stderr": "bazel-rs: @com_google_protobuf//bazel/toolchains:prefer_prebuilt_protoc :: Error loading option @com_google_protobuf//bazel/toolchains:prefer_prebuilt_protoc: module aspect_bazel_lib@2.22.5 was not found in registries []\n",
+   "variant": "rc-nojava+coder"
+  }
+ ],
+ "counts": {
+  "EQUIVALENT_MESSAGE": 2,
+  "EXACT": 17,
+  "EXACT_MESSAGE": 11,
+  "EXACT_ROUTE": 5,
+  "EXPECTED_NATIVE_UNSUPPORTED": 4,
+  "MISMATCH": 1
+ },
+ "counts_after_targeted_rerun": {
+  "EQUIVALENT_MESSAGE": 2,
+  "EXACT": 17,
+  "EXACT_MESSAGE": 12,
+  "EXACT_ROUTE": 5,
+  "EXPECTED_NATIVE_UNSUPPORTED": 4,
+  "MISMATCH": 0
+ },
+ "genuine": {
+  "path": "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "source_commit": "e89755babf3e941bc1e9d8120b1cd48854ab9dfa",
+  "version": "9.3.0"
+ },
+ "milestone": "N40",
+ "native": {
+  "sha256": "69e14403bdb7947b6f8cb1fadf6c229d05c7855aa1a54bf3906fba24d7afa4e1"
+ },
+ "normalization": "workspace and HOME paths replaced by <WS>/<HOME> (also inside build outputs); notes = INFO rc notes, warnings = rc warnings, error = first ERROR/FATAL (client log prefixes stripped) or bazel-rs: line; build outputs compared by content; proxy cases compare the request lines each local server received (server URLs as <PROXY>/<DIRECT>/<FORBIDDEN>)",
+ "post_capture_changes": [
+  "isolate-with-flag (the one MISMATCH): native now rejects a root-module isolated extension usage that imports no repository with Bazel's ModuleFileFunction.buildRootModuleFileValue text (bazel/bzlmod/ModuleFileFunction.java:573-584; location = the use_extension call, extension label normalized like ModuleFileGlobals.normalizeLabelString; a dev usage under --ignore_dev_dependency creates no usage). Native error for this case now: 'Error computing the main repository mapping: the isolated usage at <WS>/MODULE.bazel:2:18 of extension ext defined in @rc//:ext.bzl has no effect as no repositories are imported from it. Either import one or more repositories generated by the extension with use_repo or remove the usage.' Native now adds Bazel's query/build wrapper 'Error computing the main repository mapping: ' (skyframe/RepositoryMappingValue.java:158-171) to this event-less root-module failure; re-captured in targeted_rerun (EXACT_MESSAGE). Covered by tests/rc_options.rs isolate_requires_the_experimental_flag.",
+  "artifacts/rc_options-capture.py gained a --dry-native script-check mode before the capture; the capture itself ran without it.",
+  "download_proxy unit tests (ProxyHelper.createProxyIfNeeded details) and a per-redirect proxy CLI test added; docs: genrule environment divergence entry. No behavior change for captured cases."
+ ],
+ "post_capture_note": "The full capture was not rerun; isolate-with-flag, the only case the post-capture fix changes, was re-captured on both engines (targeted_rerun).",
+ "schema": "rc-options-reference-receipt-v1",
+ "targeted_rerun": {
+  "cases": [
+   {
+    "args": [
+     "query",
+     "//:ok"
+    ],
+    "classification": "EXACT_MESSAGE",
+    "env": {},
+    "files": {
+     ".bazelrc": "common --experimental_isolated_extension_usages\n",
+     "MODULE.bazel": "module(name = \"rc\")\ne = use_extension(\"//:ext.bzl\", \"ext\", isolate = True)\n",
+     "ext.bzl": "def _impl(ctx):\n    pass\n\next = module_extension(_impl)\n"
+    },
+    "genuine": {
+     "error": "Error computing the main repository mapping: the isolated usage at <WS>/MODULE.bazel:2:18 of extension ext defined in @rc//:ext.bzl has no effect as no repositories are imported from it. Either import one or more repositories generated by the extension with use_repo or remove the usage.",
+     "notes": [],
+     "outputs": {},
+     "stdout": "",
+     "warnings": []
+    },
+    "genuine_argv": [
+     "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+     "--batch",
+     "--output_user_root=<SCRATCH>/genuine-output-user-root",
+     "query",
+     "//:ok"
+    ],
+    "genuine_returncode": 48,
+    "genuine_seconds": 2.02,
+    "id": "isolate-with-flag",
+    "native": {
+     "error": "Error computing the main repository mapping: the isolated usage at <WS>/MODULE.bazel:2:18 of extension ext defined in @rc//:ext.bzl has no effect as no repositories are imported from it. Either import one or more repositories generated by the extension with use_repo or remove the usage.",
+     "notes": [],
+     "outputs": {},
+     "stdout": "",
+     "warnings": []
+    },
+    "native_argv": [
+     "/tmp/opencode/bazel-parity-rcoptions/target/release/bazel-rs",
+     "--cache-dir=<SCRATCH>/native/isolate-with-flag/tmp/cache",
+     "query",
+     "//:ok"
+    ],
+    "native_returncode": 1,
+    "native_seconds": 0.01,
+    "startup": []
+   }
+  ],
+  "command": "artifacts/rc_options-capture.py --only isolate-with-flag",
+  "counts": {
+   "EXACT_MESSAGE": 1
+  },
+  "genuine": {
+   "path": "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+   "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+   "source_commit": "e89755babf3e941bc1e9d8120b1cd48854ab9dfa",
+   "version": "9.3.0"
+  },
+  "native": {
+   "sha256": "0f059e10029f874246a0863f693007584211615dcf5dd5a12aa181ee9f770976"
+  },
+  "reason": "back the post-capture isolate-with-flag fix (root isolated usage without use_repo, with the RepositoryMappingValue.java:158-171 wrapper on query/build) with both engines"
+ }
+}

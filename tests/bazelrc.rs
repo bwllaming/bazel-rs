@@ -182,12 +182,9 @@ fn groups_inherit_in_order_and_common_ignores_other_commands_options() {
         ws.built(&["--noworkspace_rc"], &["build", ":mode"]),
         "fastbuild"
     );
-    let out = ws.run(&["build", ":mode"]);
-    assert!(
-        stderr(&out).contains("unsupported option \"--test_output=errors\" from rc file"),
-        "{}",
-        stderr(&out)
-    );
+    // `build` has --test_output; it has no effect without test execution
+    // (N40, crate::rc_options).
+    assert_eq!(ws.built(&[], &["build", ":mode"]), "dbg");
     ws.file(
         ".bazelrc",
         "build -c dbg\ncommon -c opt\ncommon --output=label_kind\nalways --define=x=1\n",
@@ -211,15 +208,11 @@ fn unmodelled_rc_options_name_their_file_and_line() {
         ".bazelrc",
         "# comment\nbuild \\\n  --remote_cache=https://example.invalid\nbuild:cross --sandbox_add_mount_pair=/tmp\ncommon --repo_env=SECRET=value\n",
     );
-    let error = ws.failed(&[], &["query", ":ok"]);
-    assert!(
-        error.contains(&format!(
-            "unsupported option --repo_env from rc file {}:5 ('common' options); repository environment overrides are not implemented",
-            rc_path(&ws, ".bazelrc")
-        )),
-        "{error}"
-    );
-    assert!(!error.contains("SECRET"), "{error}");
+    // --repo_env is modelled (N40, tests/rc_options.rs); its value is never
+    // printed.
+    let output = ws.run(&["query", ":ok"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(!stderr(&output).contains("value"), "{}", stderr(&output));
     ws.file(
         ".bazelrc",
         "# comment\nbuild \\\n  --remote_cache=https://example.invalid\nbuild:cross --sandbox_add_mount_pair=/tmp\n",
@@ -241,7 +234,7 @@ fn unmodelled_rc_options_name_their_file_and_line() {
     let error = ws.failed(&[], &["build", "--config=cross", ":ok"]);
     assert!(
         error.contains(&format!(
-            "unsupported option \"--sandbox_add_mount_pair=/tmp\" from rc file {}:1 (config definition 'build:cross')",
+            "unsupported option --sandbox_add_mount_pair from rc file {}:1 (config definition 'build:cross'): sandboxed execution is not implemented",
             rc_path(&ws, ".bazelrc")
         )),
         "{error}"

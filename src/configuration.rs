@@ -35,6 +35,9 @@ pub enum OptionKind {
     /// `String` (Converters.StringConverter, common/options/Converters.java:69-79,
     /// 226): the value as given.
     String,
+    /// DottedVersionConverter (build/lib/rules/apple/DottedVersionConverter.java:21-36),
+    /// default null.
+    DottedVersion,
 }
 
 /// One modelled native option (an `@Option` of a FragmentOptions class).
@@ -239,6 +242,53 @@ pub const OPTIONS: &[OptionDef] = &[
         source: "build/lib/analysis/config/CoreOptions.java:419-433",
         deprecation: None,
     },
+    // AppleCommandLineOptions SDK versions (N40): DottedVersion.Option values,
+    // stored as given (equality is by string, DottedVersion.java:128-139)
+    // and read by ctx.fragments.apple (AppleConfiguration.java:104-107).
+    OptionDef {
+        name: "ios_sdk_version",
+        old_name: None,
+        abbrev: None,
+        kind: OptionKind::DottedVersion,
+        default: "null",
+        allow_multiple: false,
+        non_configurable: false,
+        source: "build/lib/rules/apple/AppleCommandLineOptions.java:59-67",
+        deprecation: None,
+    },
+    OptionDef {
+        name: "watchos_sdk_version",
+        old_name: None,
+        abbrev: None,
+        kind: OptionKind::DottedVersion,
+        default: "null",
+        allow_multiple: false,
+        non_configurable: false,
+        source: "build/lib/rules/apple/AppleCommandLineOptions.java:70-78",
+        deprecation: None,
+    },
+    OptionDef {
+        name: "tvos_sdk_version",
+        old_name: None,
+        abbrev: None,
+        kind: OptionKind::DottedVersion,
+        default: "null",
+        allow_multiple: false,
+        non_configurable: false,
+        source: "build/lib/rules/apple/AppleCommandLineOptions.java:81-89",
+        deprecation: None,
+    },
+    OptionDef {
+        name: "macos_sdk_version",
+        old_name: None,
+        abbrev: None,
+        kind: OptionKind::DottedVersion,
+        default: "null",
+        allow_multiple: false,
+        non_configurable: false,
+        source: "build/lib/rules/apple/AppleCommandLineOptions.java:92-100",
+        deprecation: None,
+    },
 ];
 
 /// `--java_runtime_version` default (JavaOptions.java:373-379).
@@ -350,6 +400,8 @@ pub enum OptionValue {
     Labels(Vec<Label>),
     Label(Label),
     String(String),
+    /// A DottedVersion.Option (its string representation), `None` for null.
+    DottedVersion(Option<String>),
 }
 
 impl fmt::Display for OptionValue {
@@ -376,8 +428,61 @@ impl fmt::Display for OptionValue {
             }
             Self::Label(label) => f.write_str(&crate::rule_declarations::canonical_form(label)),
             Self::String(value) => f.write_str(value),
+            Self::DottedVersion(version) => f.write_str(version.as_deref().unwrap_or("null")),
         }
     }
+}
+
+/// DottedVersion.fromString (build/lib/rules/apple/DottedVersion.java:190-258)
+/// as a validity check: dot-separated components `\d+([a-z0-9]*?)?(\d+)?`
+/// (case-insensitive) until a descriptive component `[a-z]\w*`, at least
+/// one component, numbers within `int`.
+pub fn validate_dotted_version(version: &str) -> Result<(), String> {
+    let error = || {
+        format!(
+            "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '{version}'"
+        )
+    };
+    if version.is_empty() {
+        return Err(error());
+    }
+    let mut components = 0;
+    for component in version.split('.') {
+        let mut chars = component.chars();
+        // DESCRIPTIVE_COMPONENT_PATTERN `([a-z]\w*)`, CASE_INSENSITIVE.
+        if chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            break;
+        }
+        // COMPONENT_PATTERN: a leading digit, then only ASCII letters/digits.
+        if !component.starts_with(|c: char| c.is_ascii_digit())
+            || !component.chars().all(|c| c.is_ascii_alphanumeric())
+        {
+            return Err(error());
+        }
+        // Group 1 is the leading digit run; group 3 the trailing digit run
+        // after the lazy alpha sequence, when there is one.
+        let leading = component.bytes().take_while(u8::is_ascii_digit).count();
+        let rest = &component[leading..];
+        let trailing = rest.bytes().rev().take_while(u8::is_ascii_digit).count();
+        let numbers = [
+            &component[..leading],
+            if rest.is_empty() {
+                ""
+            } else {
+                &rest[rest.len() - trailing..]
+            },
+        ];
+        for number in numbers.into_iter().filter(|number| !number.is_empty()) {
+            number.parse::<i32>().map_err(|_| error())?;
+        }
+        components += 1;
+    }
+    if components == 0 {
+        return Err(error());
+    }
+    Ok(())
 }
 
 /// Resolve a label-typed option value (already `//`-prefixed per
@@ -465,6 +570,8 @@ pub fn convert(
         })
         .map(OptionValue::Label),
         OptionKind::String => Ok(OptionValue::String(input.to_owned())),
+        OptionKind::DottedVersion => validate_dotted_version(input)
+            .map(|()| OptionValue::DottedVersion(Some(input.to_owned()))),
     }
 }
 
@@ -566,6 +673,13 @@ pub struct NativeOptions {
     /// identity when false.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub no_config: bool,
+    /// `--ios_sdk_version`, `--watchos_sdk_version`, `--tvos_sdk_version`,
+    /// `--macos_sdk_version` (AppleCommandLineOptions.java:59-100, default
+    /// null), in that order; propagated to exec configurations
+    /// (builtin_exec_platforms.bzl:170-176). Omitted from the identity
+    /// serialization while all are null.
+    #[serde(skip_serializing_if = "AppleSdkVersions::is_unset")]
+    pub apple_sdk_versions: AppleSdkVersions,
 }
 
 /// The JavaOptions version strings (N28b).
@@ -620,6 +734,42 @@ pub fn host_cpu() -> &'static str {
     }
 }
 
+/// The four Apple SDK version options (DottedVersion.Option strings).
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct AppleSdkVersions {
+    pub ios: Option<String>,
+    pub watchos: Option<String>,
+    pub tvos: Option<String>,
+    pub macos: Option<String>,
+}
+
+impl AppleSdkVersions {
+    fn is_unset(&self) -> bool {
+        *self == Self::default()
+    }
+
+    fn slot(&mut self, name: &str) -> Option<&mut Option<String>> {
+        Some(match name {
+            "ios_sdk_version" => &mut self.ios,
+            "watchos_sdk_version" => &mut self.watchos,
+            "tvos_sdk_version" => &mut self.tvos,
+            "macos_sdk_version" => &mut self.macos,
+            _ => return None,
+        })
+    }
+
+    /// The value of one `*_sdk_version` option.
+    pub fn get(&self, name: &str) -> Option<&Option<String>> {
+        Some(match name {
+            "ios_sdk_version" => &self.ios,
+            "watchos_sdk_version" => &self.watchos,
+            "tvos_sdk_version" => &self.tvos,
+            "macos_sdk_version" => &self.macos,
+            _ => return None,
+        })
+    }
+}
+
 /// The default `--host_compilation_mode` (CoreOptions.java:406-417).
 pub const DEFAULT_HOST_COMPILATION_MODE: &str = "opt";
 
@@ -664,6 +814,7 @@ impl Default for NativeOptions {
             cpu: None,
             use_target_platform_for_tests: false,
             incompatible_auto_exec_groups: false,
+            apple_sdk_versions: AppleSdkVersions::default(),
         }
     }
 }
@@ -700,6 +851,9 @@ impl NativeOptions {
             }
             "tool_java_language_version" => {
                 OptionValue::String(self.java.tool_java_language_version.clone())
+            }
+            name if self.apple_sdk_versions.get(name).is_some() => {
+                OptionValue::DottedVersion(self.apple_sdk_versions.get(name).cloned().flatten())
             }
             _ => return None,
         })
@@ -1090,6 +1244,12 @@ impl CommandLineOptions {
                 ("tool_java_language_version", OptionValue::String(value)) => {
                     native.java.tool_java_language_version = value
                 }
+                (name, OptionValue::DottedVersion(version)) => {
+                    *native
+                        .apple_sdk_versions
+                        .slot(name)
+                        .expect("an Apple SDK version option") = version;
+                }
                 _ => unreachable!("converter shape of {}", option.name),
             }
         }
@@ -1230,6 +1390,66 @@ mod tests {
             "@@bazel_tools//tools:host_platform"
         );
         assert_eq!(join_english_list(&[]), "nothing");
+    }
+
+    #[test]
+    fn apple_sdk_versions_are_dotted_versions() {
+        let macos = option("macos_sdk_version").unwrap();
+        for valid in [
+            "10.13",
+            "10.13.0",
+            "3.3alpha2.4",
+            "1a2b",
+            "17.0.beta",
+            "1.2.experimental.x",
+            "07",
+        ] {
+            assert_eq!(
+                convert(macos, valid, &canonical),
+                Ok(OptionValue::DottedVersion(Some(valid.to_owned()))),
+                "{valid}"
+            );
+        }
+        for invalid in [
+            "",
+            "x",
+            "beta",
+            "10.",
+            ".1",
+            "1_0",
+            "1-2",
+            "99999999999",
+            "1a99999999999",
+            "10..1",
+        ] {
+            assert_eq!(
+                convert(macos, invalid, &canonical),
+                Err(format!(
+                    "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '{invalid}'"
+                )),
+                "{invalid}"
+            );
+        }
+        let set = parsed(&["--macos_sdk_version=10.13", "--ios_sdk_version", "17.0"]).unwrap();
+        assert_eq!(
+            set.native.apple_sdk_versions.macos.as_deref(),
+            Some("10.13")
+        );
+        assert_eq!(set.native.apple_sdk_versions.ios.as_deref(), Some("17.0"));
+        assert_eq!(
+            set.native.value("tvos_sdk_version"),
+            Some(OptionValue::DottedVersion(None))
+        );
+        assert_eq!(OptionValue::DottedVersion(None).to_string(), "null");
+        // Unset versions keep the identity of the default configuration.
+        assert_eq!(parsed(&[]).unwrap().id, Configuration::default().id);
+        assert_ne!(set.id, Configuration::default().id);
+        // query has no AppleCommandLineOptions.
+        let mut query = CommandLineOptions::for_query();
+        assert!(matches!(
+            query.parse("--macos_sdk_version=10.13", None),
+            Ok(Parsed::NotModelled)
+        ));
     }
 
     #[test]

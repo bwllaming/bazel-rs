@@ -1,4 +1,5 @@
-//! Value-safe rejection of unsupported overrides, never host-environment reads.
+//! Value-safe handling of `--repo_env` on the command line (N40: the option
+//! is modelled, crate::repo_env), and the library `mod` entry's rejection.
 use std::process::Command;
 
 const SECRET: &str = "SYNTHETIC_SECRET_42";
@@ -6,21 +7,20 @@ const ERROR: &str =
     "unsupported option --repo_env; repository environment overrides are not implemented";
 
 #[test]
-fn override_forms_reject_before_cli_dispatch_without_echoing_values() {
+fn override_forms_never_echo_values() {
     let workspace = tempfile::Builder::new()
         .prefix("repo-env-options-")
         .tempdir_in("/tmp/opencode")
         .unwrap();
-    // Even an absent MODULE/workspace must not bypass value-safe option handling.
+    // Variable names are not secret (`--repo_env=NAME` inherits NAME); values
+    // never appear in any diagnostic, whatever the outcome.
     let forms = [
         vec![format!("--repo_env=BAZEL_RS_ENV_FIXTURE={SECRET}")],
         vec![
             "--repo_env".to_owned(),
             format!("BAZEL_RS_ENV_FIXTURE={SECRET}"),
         ],
-        vec![format!("--repo_env={SECRET}")],
-        vec![format!("--repo_env=={SECRET}")],
-        vec![format!("--repo_env={SECRET}=")],
+        vec![format!("--repo_env=A={SECRET}=")],
         vec!["--repo_env".to_owned()],
     ];
     for command in [
@@ -44,11 +44,11 @@ fn override_forms_reject_before_cli_dispatch_without_echoing_values() {
                 .current_dir(workspace.path())
                 .output()
                 .unwrap();
-            assert_eq!(output.status.code(), Some(1));
+            assert_eq!(output.status.code(), Some(1), "{command:?} {form:?}");
             assert!(output.stdout.is_empty());
             let stderr = String::from_utf8(output.stderr).unwrap();
-            assert_eq!(stderr, format!("bazel-rs: {ERROR}\n"));
-            assert!(!stderr.contains(SECRET));
+            assert!(!stderr.contains(SECRET), "{stderr}");
+            assert!(!stderr.contains("panicked"), "{stderr}");
         }
     }
     assert!(
@@ -149,7 +149,10 @@ fn non_utf8_arguments_cannot_bypass_override_redaction_or_panic() {
         assert_eq!(output.status.code(), Some(1));
         assert!(output.stdout.is_empty());
         let error = String::from_utf8(output.stderr).unwrap();
-        assert_eq!(error, format!("bazel-rs: {ERROR}\n"));
+        assert_eq!(
+            error,
+            "bazel-rs: command-line arguments must be valid UTF-8\n"
+        );
         assert!(!error.contains(SECRET));
         assert!(!error.contains("panicked"));
     }

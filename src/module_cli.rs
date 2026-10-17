@@ -77,6 +77,14 @@ impl Options {
                 options.resolver.builtin_profile = profile;
                 continue;
             }
+            // A Starlark semantics option of MODULE.bazel evaluation
+            // (packages/semantics/BuildLanguageOptions.java:278-286).
+            if let Some(value) =
+                crate::configuration::boolean_option(arg, "experimental_isolated_extension_usages")
+            {
+                options.resolver.isolated_extension_usages = value?;
+                continue;
+            }
             let (flag, inline) = arg
                 .split_once('=')
                 .map_or((arg.as_str(), None), |(a, b)| (a, Some(b)));
@@ -160,6 +168,8 @@ pub fn models_graph_option(arg: &str) -> bool {
             | "--experimental_repository_disable_download"
             | "--noexperimental_repository_disable_download"
             | "--experimental-builtin-modules"
+            | "--experimental_isolated_extension_usages"
+            | "--noexperimental_isolated_extension_usages"
     )
 }
 

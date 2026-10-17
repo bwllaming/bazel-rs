@@ -468,21 +468,37 @@ fn module_ctx_environ_is_the_client_environment_too() {
 }
 
 #[test]
-fn repo_env_override_stays_rejected_before_callback_without_secret_echo() {
+fn repo_env_overrides_reach_os_environ_without_secret_echo() {
+    // --repo_env (N40, crate::repo_env): `=NAME` removes a client value and
+    // `NAME=VALUE` sets one in repository_ctx.os.environ
+    // (CommandEnvironment.java:393-416); values are never printed.
     let f = Fixture::new(Route::Direct);
-    f.repository("    ctx.os.environ\n", "'unreachable'", "");
-    let option = format!("--repo_env=SYNTHETIC_SECRET={SECRET}");
-    let output = f.run(
-        &["build", "//:copy", &option],
-        &[("SYNTHETIC_SECRET", SECRET)],
+    f.repository(
+        "",
+        "ctx.os.environ.get('SYNTHETIC_SECRET', 'absent') + '|' + ctx.os.environ.get('N40_SET', 'none')",
+        "",
     );
-    reject(&output, "unsupported option --repo_env");
-    assert_eq!(
-        error(&output),
-        "bazel-rs: unsupported option --repo_env; repository environment overrides are not implemented\n"
+    let built = Built::new(
+        f.run(
+            &[
+                "build",
+                "@made//:data",
+                "//:copy",
+                "--repo_env==SYNTHETIC_SECRET",
+                "--repo_env=N40_SET=set",
+            ],
+            &[("SYNTHETIC_SECRET", SECRET)],
+        ),
+        &[&f.label(), "//:copy"],
     );
-    assert!(!error(&output).contains("HOST_REPO_CALLBACK"));
-    f.clean_failure();
+    built.assert_bytes(b"absent|set");
+    assert!(!built.stderr.contains(SECRET));
+    let option = format!("--repo_env=N40_SET={SECRET}");
+    let built = Built::new(
+        f.run(&["build", "@made//:data", "//:copy", &option], &[]),
+        &[&f.label(), "//:copy"],
+    );
+    assert!(!built.stderr.contains(SECRET), "{}", built.stderr);
 }
 
 #[test]

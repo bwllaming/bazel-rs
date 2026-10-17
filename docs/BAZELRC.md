@@ -83,9 +83,13 @@ After expansion every option goes through the existing native parsers
 Options those parsers do not model fail explicitly, for example:
 
     unsupported option "--remote_cache=…" from rc file /ws/.bazelrc:3 ('build' options); options are never silently ignored
-    unsupported option "--sandbox_add_mount_pair=/tmp" from rc file /ws/.bazelrc:1 (config definition 'build:cross'); …
+    unsupported option --sandbox_add_mount_pair from rc file /ws/.bazelrc:1 (config definition 'build:cross'): sandboxed execution is not implemented …
 
-The value of `--repo_env` is never echoed in errors.
+The options of real rc files (`--repo_env`, `--attempt_to_print_relative_paths`,
+`--incompatible_strict_action_env`, the Apple SDK versions, test, remote and
+sandbox options, …) are modelled or fail explicitly as described in
+[RC_OPTIONS.md](RC_OPTIONS.md) (N40). The value of `--repo_env` is never echoed
+in errors.
 
 Deliberate differences from Bazel:
 
@@ -143,4 +147,5 @@ paired capture without root.
   `common --repo_env=…` lines) after the workspace rc. The first failure is
   unchanged, because the workspace rc's `common` options come first. It stops at the first unmodelled option:
   `--credential_helper=…` from `/home/coder/code/.bazelrc:2` (`'common'`
-  options), for both `build` and `query`.
+  options), for both `build` and `query`. For the stops after N40 (with the
+  remote-cache lines removed in a scratch copy), see [RC_OPTIONS.md](RC_OPTIONS.md).

@@ -255,6 +255,14 @@ fn unused_unknown_routes_and_isolated_demands_do_not_fabricate_repositories() {
     f.file("MODULE.bazel", "module(name='main')\ne=use_extension('//:ext.bzl','files',isolate=True)\nuse_repo(e,chosen='made')\n");
     reject(
         &f.run(&["query", "@chosen//:data.txt"]),
+        "parameter 'isolate' is experimental and thus unavailable with the current flags",
+    );
+    reject(
+        &f.run(&[
+            "query",
+            "--experimental_isolated_extension_usages",
+            "@chosen//:data.txt",
+        ]),
         "isolated module extensions unsupported",
     );
     assert!(f.roots().is_empty());

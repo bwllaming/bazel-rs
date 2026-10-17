@@ -112,6 +112,31 @@ impl EnvironmentReader for ProcessReader {
     }
 }
 
+/// A fixed repository environment computed once per command (the client
+/// environment with `--repo_env` applied, crate::repo_env), like Bazel's
+/// immutable `repoEnv` map (runtime/CommandEnvironment.java:414-416).
+pub(crate) struct FixedReader(BTreeMap<OsString, OsString>);
+
+impl FixedReader {
+    pub(crate) fn new(entries: impl IntoIterator<Item = (OsString, OsString)>) -> Self {
+        Self(entries.into_iter().collect())
+    }
+}
+
+impl EnvironmentReader for FixedReader {
+    fn read(&self, name: &str) -> Result<Option<OsString>, ReadError> {
+        Ok(self.0.get(std::ffi::OsStr::new(name)).cloned())
+    }
+
+    fn all(&self) -> Result<Vec<(OsString, OsString)>, ReadError> {
+        Ok(self
+            .0
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect())
+    }
+}
+
 pub(crate) enum Captured {
     Absent,
     Value(Arc<str>),
@@ -189,9 +214,10 @@ impl Snapshot {
     }
 
     /// Bazel's `repoEnv` for this command: the complete client environment,
-    /// since `--repo_env`/`--action_env` overrides are rejected by the native
-    /// CLI and `--experimental_strict_repo_env` defaults to false
-    /// (CommonCommandOptions.java:624-651). Snapshotted once per repository
+    /// with `--repo_env` applied when the command line installed a
+    /// [`FixedReader`] (crate::repo_env; `--action_env` is not a native option
+    /// and `--experimental_strict_repo_env` defaults to false,
+    /// CommonCommandOptions.java:624-651). Snapshotted once per repository
     /// set on first use, so every repository of one invocation observes the
     /// same map, like one Bazel command. Failures are cached, never partial.
     pub(crate) fn client_environment(&self) -> Result<Arc<ClientEnvironment>, EnvError> {

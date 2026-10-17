@@ -343,9 +343,9 @@ pub(crate) fn client() -> IoResult<Client> {
 fn client_builder() -> reqwest::blocking::ClientBuilder {
     // The blocking client applies `timeout` to sending the request and to
     // every individual body read: Bazel's per-read socket timeout, not a
-    // whole-transfer deadline.
-    Client::builder()
-        .no_proxy()
+    // whole-transfer deadline. ProxyHelper over the command's repository
+    // environment (crate::download_proxy; StarlarkBaseExternalContext.java:864-873).
+    crate::download_proxy::configure(Client::builder().no_proxy())
         .referer(false)
         .redirect(reqwest::redirect::Policy::none())
         .no_gzip()
@@ -481,6 +481,9 @@ pub(crate) fn open_detailed(client: &Client, original: &Url) -> Result<Box<dyn R
         let mut current = start.clone();
         let mut redirects = 0;
         loop {
+            // HttpConnector asks ProxyHelper for every connection
+            // (HttpConnector.java:125-136).
+            crate::download_proxy::check(&current).map_err(TypedIoError::Completion)?;
             let response = client
                 .get(current.clone())
                 .header("Accept-Encoding", "gzip")

@@ -52,11 +52,6 @@ fn run() -> Result<(), String> {
         .map(|arg| arg.to_string_lossy().into_owned())
         .unwrap_or_default();
     let args = argv.collect::<Vec<_>>();
-    // Reject override options before any startup, arity or command diagnostic
-    // could echo a secret-bearing inline or split argument.
-    for arg in &args {
-        bazel_rs::module_cli::reject_unsupported_repo_env_argument(arg)?;
-    }
     let args = args
         .into_iter()
         .map(|arg| {
@@ -108,8 +103,11 @@ fn run() -> Result<(), String> {
     let mut allowed_yanked_flags = Vec::new();
     let mut raw_registries = Vec::new();
     let mut deferred = None;
+    let rc_options;
     let rest = if command == "mod" {
-        mod_arguments(&options)?
+        let (rest, rc) = mod_arguments(&options)?;
+        rc_options = rc;
+        rest
     } else {
         // Errors in Bazel's parse order (rc options, the command line, then
         // each --config expansion), values in priority order (an expansion
@@ -166,16 +164,45 @@ fn run() -> Result<(), String> {
         allowed_yanked_flags = native.allowed_yanked_flags;
         raw_registries = native.raw_registries;
         jobs = native.jobs.unwrap_or(jobs);
+        native.resolver.isolated_extension_usages = native.rc.isolated_extension_usages;
         resolver_options = native.resolver;
         repository_downloads_enabled = native.downloads;
         configuration_options = native.configuration;
         query_options = native.query;
+        rc_options = native.rc;
         options.residue.iter().map(|arg| arg.text.clone()).collect()
     };
+    // The repository environment (client environment with --repo_env,
+    // CommandEnvironment.java:342-416) and the downloader's proxies over it
+    // (crate::download_proxy), fixed for the whole command.
+    let repository_environment = bazel_rs::repo_env::repository_environment(
+        std::env::vars_os(),
+        &rc_options.repo_env,
+        root.to_str(),
+    );
+    bazel_rs::download_proxy::install(
+        bazel_rs::download_proxy::ProxyEnvironment::from_environment(
+            repository_environment
+                .iter()
+                .map(|(name, value)| (name.as_os_str(), value.as_os_str())),
+        ),
+    )?;
+    let cache = cache.unwrap_or_else(|| root.join("bazel-rs-out"));
+    let cache = if cache.is_absolute() {
+        cache
+    } else {
+        cwd.join(cache)
+    };
+    // --attempt_to_print_relative_paths (LocationPrinter, crate::location_printer).
+    let _ = PRINTER.set(bazel_rs::location_printer::LocationPrinter::new(
+        rc_options.attempt_to_print_relative_paths,
+        root.clone(),
+        cache.clone(),
+    ));
     announce(&options);
     if let Some((error, position)) = deferred {
         for warning in &options.warnings[..position.warnings.min(options.warnings.len())] {
-            eprintln!("WARNING: {warning}");
+            warn(warning);
         }
         return Err(error);
     }
@@ -204,12 +231,6 @@ fn run() -> Result<(), String> {
     // The command's arguments, for the Starlark options' `Did you mean` hint
     // (runtime/BlazeOptionHandler.java:428-440).
     let command_args = line.command_args.clone();
-    let cache = cache.unwrap_or_else(|| root.join("bazel-rs-out"));
-    let cache = if cache.is_absolute() {
-        cache
-    } else {
-        cwd.join(cache)
-    };
     if command == "mod" {
         let output =
             bazel_rs::module_cli::run_with_source_cache(&root, &rest, &cache.join("repositories"))?;
@@ -258,7 +279,8 @@ fn run() -> Result<(), String> {
     let repositories = Arc::new(
         bazel_rs::repository::RepositorySet::with_options(root.clone(), resolver_options)
             .with_repository_downloads_enabled(repository_downloads_enabled)
-            .with_source_cache(cache.join("repositories")),
+            .with_source_cache(cache.join("repositories"))
+            .with_repository_environment(repository_environment),
     );
     repositories.validate_root_module()?;
     // Bazel computes the main repository mapping, hence module resolution,
@@ -303,7 +325,7 @@ fn run() -> Result<(), String> {
         // Loading option targets reports deprecation warnings, also before a
         // later option error.
         for warning in engine.take_warnings() {
-            eprintln!("WARNING: {warning}");
+            warn(&warning);
         }
         let starlark = starlark?;
         engine.set_configuration(bazel_rs::configuration::Configuration::new(
@@ -342,7 +364,7 @@ fn run() -> Result<(), String> {
     let labels = engine.select_for_build(&rest, &relative_directory);
     // Bazel reports pattern warnings as they happen, before a later error.
     for warning in engine.take_warnings() {
-        eprintln!("WARNING: {warning}");
+        warn(&warning);
     }
     let labels = labels?;
     let result = engine.build_with_jobs(&labels, &cache, jobs);
@@ -418,6 +440,8 @@ fn relative_directory(root: &Path, cwd: &Path) -> Result<String, String> {
 /// The native command options, parsed by the existing option handlers.
 struct NativeOptions {
     jobs: Option<usize>,
+    /// The N40 rc options outside the configuration (crate::rc_options).
+    rc: bazel_rs::rc_options::RcOptions,
     resolver: bazel_rs::module_graph::ResolverOptions,
     downloads: bool,
     configuration: bazel_rs::configuration::CommandLineOptions,
@@ -437,6 +461,7 @@ impl NativeOptions {
     fn new(command: &str) -> Self {
         Self {
             jobs: None,
+            rc: bazel_rs::rc_options::RcOptions::default(),
             resolver: bazel_rs::module_graph::ResolverOptions {
                 // Every lockfile mode supports remote registries (N37).
                 allow_remote: matches!(command, "build" | "query"),
@@ -476,6 +501,11 @@ impl NativeOptions {
             None
         };
         let used_next = if let Some(used) = query {
+            used
+        } else if let Some(used) =
+            self.rc
+                .parse(command, arg, next, &unit.option.origin_suffix())?
+        {
             used
         } else if let Some(disabled) =
             bazel_rs::module_cli::repository_disable_download_argument(arg)?
@@ -601,12 +631,6 @@ impl NativeOptions {
 fn unmodelled_option(arg: &bazelrc::Arg) -> String {
     let text = arg.text.as_str();
     let suffix = arg.origin_suffix();
-    // Never echo a repository environment value (it may carry a secret).
-    if text == "--repo_env" || text.starts_with("--repo_env=") {
-        return format!(
-            "unsupported option --repo_env{suffix}; repository environment overrides are not implemented"
-        );
-    }
     bazel_rs::configuration::unrecognized_option(text).unwrap_or_else(|| {
         format!("unsupported option {text:?}{suffix}; options are never silently ignored")
     })
@@ -616,7 +640,17 @@ fn unmodelled_option(arg: &bazelrc::Arg) -> String {
 /// order and the remaining residue, for crate::module_cli. Options from rc
 /// files that the native `mod graph` profile does not model fail here with
 /// their rc file:line.
-fn mod_arguments(options: &bazelrc::Expanded) -> Result<Vec<String>, String> {
+fn mod_arguments(
+    options: &bazelrc::Expanded,
+) -> Result<(Vec<String>, bazel_rs::rc_options::RcOptions), String> {
+    let rc_option = |rc: &mut bazel_rs::rc_options::RcOptions, unit: &bazelrc::Unit| {
+        rc.parse(
+            "mod",
+            &unit.option.text,
+            unit.value.as_ref().map(|value| value.text.as_str()),
+            &unit.option.origin_suffix(),
+        )
+    };
     for (step, position) in &options.steps {
         let error = match step {
             bazelrc::Step::Fail(error) => error.clone(),
@@ -626,24 +660,39 @@ fn mod_arguments(options: &bazelrc::Expanded) -> Result<Vec<String>, String> {
             {
                 bazelrc::native_only_error(name, &unit.option.origin_suffix())
             }
-            bazelrc::Step::Unit(unit)
-                if unit.option.from_rc()
-                    && !bazel_rs::module_cli::models_graph_option(&unit.option.text) =>
-            {
-                unmodelled_option(&unit.option)
-            }
-            bazelrc::Step::Unit(_) => continue,
+            // The N40 options (crate::rc_options), from rc files and the
+            // command line alike.
+            bazelrc::Step::Unit(unit) => match rc_option(&mut Default::default(), unit) {
+                Err(error) => error,
+                Ok(Some(_)) => continue,
+                Ok(None)
+                    if unit.option.from_rc()
+                        && !bazel_rs::module_cli::models_graph_option(&unit.option.text) =>
+                {
+                    unmodelled_option(&unit.option)
+                }
+                Ok(None) => continue,
+            },
         };
         return Err(early_exit(options, &error, *position));
     }
+    let mut rc = bazel_rs::rc_options::RcOptions::default();
     let mut residue = options.residue.iter().map(|arg| arg.text.clone());
     let mut args = residue.next().into_iter().collect::<Vec<_>>();
     for unit in &options.priority {
+        if rc_option(&mut rc, unit)?.is_some() {
+            continue;
+        }
         args.push(unit.option.text.clone());
         args.extend(unit.value.iter().map(|value| value.text.clone()));
     }
+    // MODULE.bazel evaluation semantics for crate::module_cli.
+    args.push(format!(
+        "--experimental_isolated_extension_usages={}",
+        rc.isolated_extension_usages
+    ));
     args.extend(residue);
-    Ok(args)
+    Ok((args, rc))
 }
 
 /// The client's rc evaluation (OptionProcessor::ParseOptions,
@@ -680,7 +729,7 @@ fn evaluate_rc(
         let read = bazelrc::read_rc_files(line, &env, &mut warnings);
         // The client logs these as it reads the files.
         for warning in warnings.drain(..) {
-            eprintln!("WARNING: {warning}");
+            warn(&warning);
         }
         read?
     };
@@ -694,7 +743,7 @@ fn evaluate_rc(
         return Err(error);
     }
     for warning in warnings {
-        eprintln!("WARNING: {warning}");
+        warn(&warning);
     }
     let blazerc = bazelrc::blazerc_options(&env, &rc_files);
     Ok(bazelrc::expand(
@@ -713,7 +762,7 @@ fn early_exit(options: &bazelrc::Expanded, error: &str, position: bazelrc::Posit
         eprintln!("INFO: {note}");
     }
     for warning in &options.warnings[..position.warnings.min(options.warnings.len())] {
-        eprintln!("WARNING: {warning}");
+        warn(warning);
     }
     error.to_owned()
 }
@@ -722,7 +771,7 @@ fn early_exit(options: &bazelrc::Expanded, error: &str, position: bazelrc::Posit
 /// (runtime/BlazeCommandDispatcher.java:578-624).
 fn announce(options: &bazelrc::Expanded) {
     for warning in &options.warnings {
-        eprintln!("WARNING: {warning}");
+        warn(warning);
     }
     if options.announce {
         for note in options.all_notes() {
@@ -764,8 +813,25 @@ fn terminal_columns() -> i64 {
         .unwrap_or(80)
 }
 
+/// The message printer of this command (--attempt_to_print_relative_paths),
+/// set once the command options are parsed.
+static PRINTER: std::sync::OnceLock<bazel_rs::location_printer::LocationPrinter> =
+    std::sync::OnceLock::new();
+
+fn located(message: &str) -> std::borrow::Cow<'_, str> {
+    match PRINTER.get() {
+        Some(printer) => printer.print(message),
+        None => std::borrow::Cow::Borrowed(message),
+    }
+}
+
+fn warn(warning: &str) {
+    eprintln!("WARNING: {}", located(warning));
+}
+
 fn main() {
     if let Err(error) = run() {
+        let error = located(&error);
         eprintln!("bazel-rs: {error}");
         std::process::exit(1);
     }

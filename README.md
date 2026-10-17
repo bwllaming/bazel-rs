@@ -136,7 +136,10 @@ being silently ignored. rc files are evaluated like Bazel 9.3 (system, workspace
 home, `$BAZELRC` and `--bazelrc` files, imports, `common`/`always`/command groups,
 `--config`, `--announce_rc`; [`docs/BAZELRC.md`](docs/BAZELRC.md)); every
 resulting option goes through the native parsers, and options the profile does not
-model fail naming the rc file:line they came from. `capabilities` prints the machine-readable
+model fail naming the rc file:line they came from. The options of real rc files
+(`--repo_env` with Bazel's downloader proxy rules, relative message paths, Apple
+SDK versions, test, remote and sandbox options, …) are covered in
+[`docs/RC_OPTIONS.md`](docs/RC_OPTIONS.md). `capabilities` prints the machine-readable
 scope in [`docs/capabilities.json`](docs/capabilities.json).
 
 ### Execution and cache limitations

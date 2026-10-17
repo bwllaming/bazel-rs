@@ -54,13 +54,15 @@ or a process memory sandbox.
 `os.environ` is the whole client environment (see [HOST_OS.md](HOST_OS.md)),
 never an empty or partial dictionary. `module_extension(environ=[...])` and
 `module_ctx.getenv` use this same bounded observation profile; their digest is
-part of the extension provenance. CLI environment overrides remain unsupported.
+part of the extension provenance. `--repo_env` (N40, [RC_OPTIONS.md](RC_OPTIONS.md))
+changes this environment for the whole command, before the first observation.
 A repository rule called by a module extension is distinct from the extension
 callback itself.
 
-Unsupported `--repo_env` forms are rejected with a fixed value-free message before
-startup, command or argument errors can echo an inline or split value, including
-non-UTF-8 arguments. No override is silently accepted or ignored.
+`--repo_env` values are never echoed: rc notes redact them, an `Unknown startup
+option` error shows `--repo_env=NAME=<redacted>`, and non-UTF-8 arguments fail
+before any parsing. The library `module_cli::run` entry still rejects
+`--repo_env` with a fixed value-free message.
 
 Reference contracts are preserved in
 `artifacts/repository-environ-contract.json` and

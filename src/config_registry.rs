@@ -444,6 +444,9 @@ pub fn exec_transition(
         use_target_platform_for_tests: defaults.use_target_platform_for_tests,
         // In CoreOptions' propagate list (builtin_exec_platforms.bzl:246).
         incompatible_auto_exec_groups: from.native.incompatible_auto_exec_groups,
+        // AppleCommandLineOptions propagates the SDK versions
+        // (builtin_exec_platforms.bzl:170-176).
+        apple_sdk_versions: from.native.apple_sdk_versions.clone(),
     };
     let starlark = from
         .starlark
@@ -478,8 +481,14 @@ const EXPLICIT_IN_OUTPUT_PATH: &[&str] = &["compilation_mode", "platform_suffix"
 fn native_option_strings(native: &NativeOptions) -> BTreeMap<&'static str, String> {
     let mut options = BTreeMap::new();
     for option in crate::configuration::OPTIONS {
-        if let Some(value) = native.value(option.name) {
-            options.insert(option.name, format!("={value}"));
+        match native.value(option.name) {
+            Some(crate::configuration::OptionValue::DottedVersion(None)) => {
+                options.insert(option.name, "@null".to_owned());
+            }
+            Some(value) => {
+                options.insert(option.name, format!("={value}"));
+            }
+            None => {}
         }
     }
     let list = |items: &[String]| format!("=[{}]", items.join(", "));
@@ -830,6 +839,7 @@ mod tests {
                 "--host_platform=//p:h",
                 "--extra_toolchains=//tc:x",
                 "--incompatible_auto_exec_groups",
+                "--macos_sdk_version=10.13",
             ])
             .native,
             BTreeMap::from([
@@ -854,6 +864,8 @@ mod tests {
         assert_eq!(native.platform_suffix, Some("exec"));
         // In CoreOptions' propagate list (builtin_exec_platforms.bzl:246).
         assert!(native.incompatible_auto_exec_groups);
+        // AppleCommandLineOptions propagates the SDK versions.
+        assert_eq!(native.apple_sdk_versions.macos.as_deref(), Some("10.13"));
         assert_eq!(
             exec.starlark,
             BTreeMap::from([(label("//f:universal"), SettingValue::Bool(true))])
