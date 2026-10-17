@@ -92,15 +92,17 @@ CASEPLAN = [
     # docs/RUNFILES.md): returning RunEnvironmentInfo with an executable builds
     # on both engines; without an executable both fail with Bazel's text.
     common.case('rule-build', ('executable', 'test', 'executable-missing', 'test-missing')),
-    # Only the `test`/`run` commands remain a native-only boundary.
-    common.case('native-boundary', ('test-command', 'run-command'), 'native_boundary'),
+    # Only the `test` command remains a native-only boundary (`run` exists
+    # since N23f, docs/RUNFILES_TREES.md; its paired evidence is
+    # tests/fixtures/runfiles_trees/reference_receipt.json).
+    common.case('native-boundary', ('test-command',), 'native_boundary'),
 ]
 PLAN = [(c['name'], c['kind']) for c in CASEPLAN]
 LIMITATIONS = [
     'Bounded metadata API, nested ordinary-provider transport and explicit rule-authored action env only.',
     'rule(executable=True)/rule(test=True) loading, query and the _test rule-class-name check are differential (rule-kind).',
     'Building executable/test rule targets that return RunEnvironmentInfo, and the missing-executable error, are differential (rule-build); runfiles trees are not compared.',
-    'The test and run commands are a native-only boundary with the exact native unsupported-command message, never a paired positive case.',
+    'The test command is a native-only boundary with the exact native unsupported-command message, never a paired positive case; the run command (N23f) is compared by artifacts/runfiles_trees-capture.py, not here.',
     'Inherited names remain metadata: no host reads or automatic action environment folding.',
     'Unicode and NUL values are metadata only; NUL is never passed to an OS environment.',
     'Reference-only preparation cannot claim native PASS; synthetic unit receipts are not engine evidence.',
@@ -394,7 +396,6 @@ DIAGNOSTICS = {
     'missing-executable-check_test': r"(?:^|: )The rule 'check_test' is executable\. It needs to create an executable File and pass it as the 'executable' parameter to the DefaultInfo it returns\.$",
     # Exact native text: the test/run commands do not exist natively.
     'test-command': r'^bazel-rs: unsupported command or startup option "test"; run --help for the native subset$',
-    'run-command': r'^bazel-rs: unsupported command or startup option "run"; run --help for the native subset$',
     # Bazel's exported-rule check (StarlarkRuleClassFunctions.java:1931-1937),
     # identical in both engines; it ends the error line.
     'misnamed-check': r"(?:^|: )Invalid rule class name 'check', test rule class names must end with '_test' and other rule classes must not$",

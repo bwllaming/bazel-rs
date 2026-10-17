@@ -1,11 +1,11 @@
 # Runfiles, DefaultInfo, executable and test rules (N23a, analysis only)
 
-N23a adds the Bazel 9.3 analysis model of runfiles. **No runfiles tree, no
-`<exe>.runfiles/MANIFEST`, no `_repo_mapping` entry and no `<exe>.repo_mapping`
-file is created until N23f.** Genuine Bazel creates all of them when it builds
-an executable or test target; natively they are never produced silently or
-faked: using a manifest as a file fails explicitly (below), and building an
-executable target produces only its files to build and runfiles artifacts. Source paths below are relative to
+N23a adds the Bazel 9.3 analysis model of runfiles. Since N23f
+(docs/RUNFILES_TREES.md) executables get their runfiles tree,
+`<exe>.runfiles/MANIFEST`, `_repo_mapping` entry and `<exe>.repo_mapping` file
+like genuine Bazel, tools with runfiles attach their tree to spawns and the
+`run` command exists; the N23a explicit gaps for those are gone. Source paths
+below are relative to
 `src/main/java/com/google/devtools/build/lib/` of the pinned Bazel 9.3 sources.
 Implementation: `src/runfiles.rs`, DefaultInfo in `src/starlark_types.rs`,
 `ctx.runfiles`/`ctx.executable` in `src/analysis_ctx.rs`/`src/analysis.rs` and
@@ -15,8 +15,10 @@ native providers in `src/engine.rs`.
 
 * Fields `files` (a COMPILE-order depset, shown as `order="postorder"`;
   analysis/Runfiles.java:497-503), `symlinks` and `root_symlinks` (STABLE
-  depsets of `SymlinkEntry`) and `empty_filenames` (always an empty string
-  depset: no Starlark API installs an empty-files supplier, :243-264).
+  depsets of `SymlinkEntry`) and `empty_filenames` (the empty-files
+  supplier's paths, :243-264: empty unless
+  `py_internal.merge_runfiles_with_generated_inits_empty_files_supplier`
+  installed the Python `__init__.py` supplier, N23f, docs/RUNFILES_TREES.md).
 * `merge(other)` and `merge_all(others)` (:830-885): merging with an empty side
   returns the other object itself; `merge_all` with exactly one non-empty input
   returns that input, with none returns `Runfiles.EMPTY`. Type errors use
@@ -24,8 +26,8 @@ native providers in `src/engine.rs`.
   'int', want 'runfiles'`, `at index 1 of param, got element of type int, want
   runfiles`).
 * The conflict policy (WARN/ERROR) propagates as the strictest one, even from
-  empty runfiles (Builder.merge, :638-662). It is retained; conflicts are only
-  detected when a manifest is built (N23f).
+  empty runfiles (Builder.merge, :638-662). Conflicts (obscured entries) are
+  reported when the runfiles manifest is built (N23f, docs/RUNFILES_TREES.md).
 * Identity: Bazel's Runfiles has no `equals`. Here two values are equal exactly
   when they share the same nested sets and policy, which is the same object in
   Bazel (`Runfiles.EMPTY` is one shared identity). `type()` is `runfiles`;
@@ -124,17 +126,15 @@ an executable), `...$SingleExecutableFilesToRunProvider` (file targets and
 single-file filegroups) or `...$FullFilesToRunProvider` (targets with runfiles
 support). Fields `executable`, `runfiles_manifest` and `repo_mapping_manifest`.
 With runfiles support the manifests are `<executable>.runfiles/MANIFEST`
-(`--build_runfile_links` default) and `<executable>.repo_mapping` in the
-executable's directory (analysis/RunfilesSupport.java:83-86, 405-440, 684-716).
-Bazel generates them (SourceManifestAction, SymlinkTreeAction,
-RepoMappingManifestAction) and accepts them as action inputs, DefaultInfo files
-and runfiles. Natively they are declared Files without actions until N23f:
-any such use fails explicitly with `<path> is the runfiles manifest of L:
-generating runfiles manifests, repository mapping manifests and runfiles trees
-is not supported by the native profile (N23f, docs/RUNFILES.md)` (or `the
-repository mapping manifest`). Their exact Bazel contents use absolute execroot
-target paths, which the native execution layout does not have; N23f must
-define the native target paths and compare normalized content.
+(`--build_runfile_links` default; `<executable>.runfiles_manifest` with
+`--nobuild_runfile_links`, none with `--nobuild_runfile_manifests`) and
+`<executable>.repo_mapping` in the executable's directory
+(analysis/RunfilesSupport.java:83-86, 305-325, 405-440, 684-716). Since N23f
+they are generated like Bazel (SourceManifestAction, SymlinkTreeAction,
+RepoMappingManifestAction; docs/RUNFILES_TREES.md) and usable as action
+inputs, DefaultInfo files and runfiles. Their contents use absolute target
+paths; native paths are those of the native execution layout (published cache
+entries), compared normalized by the N23f capture.
 
 Identity: a rule target's FilesToRunProvider is one object
 (`info.files_to_run == info.files_to_run`); a file target creates a new one on
@@ -164,10 +164,11 @@ every access, so the same comparison is `False` (FileConfiguredTarget.java:85-10
   the test-runner exec transition; they are recorded in the rule class but not
   analyzed or exposed in `ctx.attr` (N23g).
 * `bazel build` of an executable or test target builds its files to build and,
-  like OutputGroupInfo.HIDDEN_TOP_LEVEL (RuleConfiguredTargetBuilder.java:156-171),
-  the artifacts of its default runfiles without reporting them. The runfiles
-  tree, manifests and repo-mapping manifest are not created (N23f); `run` and
-  `test` commands do not exist.
+  like OutputGroupInfo.HIDDEN_TOP_LEVEL (RuleConfiguredTargetBuilder.java:144-171),
+  the artifacts of its default runfiles and its runfiles tree without
+  reporting them (N23f, docs/RUNFILES_TREES.md). `run` exists since N23f (not
+  for test targets); `test` does not (N23g). Simple `args` (whitespace
+  separated) are passed by `run`.
 
 ## `ctx.executable` and actions
 
@@ -188,10 +189,9 @@ every access, so the same comparison is `False` (FileConfiguredTarget.java:85-10
   `run`/`run_shell` `tools` accept a sequence or depset of Files,
   FilesToRunProviders and depsets of Files with Bazel's type errors
   (StarlarkActionFactory.java:765-806); a provider's files to run are staged as
-  inputs. When an executable or tool carries runfiles (a FullFilesToRunProvider
-  or a File from `ctx.executable` with one), analysis fails explicitly:
-  attaching executable runfiles to spawns needs runfiles trees (N23f; Bazel
-  accepts it).
+  inputs. An executable or tool with runfiles (a FullFilesToRunProvider or a
+  File from `ctx.executable` with one) attaches its runfiles tree to the spawn
+  (N23f, docs/RUNFILES_TREES.md).
 
 ## Native rules
 
@@ -227,8 +227,8 @@ DefaultInfo target view.
 
 ## Not covered (explicit or documented)
 
-runfiles trees, MANIFEST/`_repo_mapping`/`.repo_mapping` files and their actions
-(N23f), runfiles attached to actions (N23f), test-runner implicit dependencies,
-`args` tokenization and `bazel test`/`run` (N23g), the nested-set depth-limit message,
-empty-files suppliers. The native CLI also lists source files among a target's
-outputs, which Bazel's `--show_result` omits (pre-existing).
+test-runner implicit dependencies, `args` tokenization beyond whitespace
+separation and `bazel test` (N23g), the nested-set depth-limit message. The
+native CLI also lists source files among a target's outputs, which Bazel's
+`--show_result` omits (pre-existing). Runfiles trees, manifests, tool
+runfiles and `run` are N23f (docs/RUNFILES_TREES.md).

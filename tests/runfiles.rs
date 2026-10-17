@@ -424,8 +424,10 @@ use(name = "use", tool = ":bin")
     assert_eq!(fs::read_to_string(bin).unwrap(), "#!/bin/sh\necho bin\n");
     // The data genrule is a default runfile of //pkg:bin: built (hidden
     // top-level output group) but not reported.
+    // N23f: plus the repository mapping manifest, runfiles manifest and
+    // runfiles tree of each of the three executables.
     assert!(
-        errors(&result).contains("4 actions executed"),
+        errors(&result).contains("13 actions executed"),
         "{}",
         errors(&result)
     );
@@ -631,11 +633,8 @@ outexe = rule(_out, executable = True, attrs = {"executable": attr.output()})
     for (mode, message) in modes {
         rejected(&ws.run(&["build", &format!("//pkg:{mode}")]), message);
     }
-    // Explicit native gap: genuine Bazel builds the manifest (N23f).
-    rejected(
-        &ws.run(&["build", "//pkg:manifest"]),
-        "generating runfiles manifests, repository mapping manifests and runfiles trees is not supported by the native profile (N23f",
-    );
+    // Like genuine Bazel, the runfiles manifest is a generated file (N23f).
+    success(&ws.run(&["build", "//pkg:manifest"]));
     for (target, message) in [
         (
             "noexe",
@@ -661,18 +660,20 @@ outexe = rule(_out, executable = True, attrs = {"executable": attr.output()})
             "use_hidden",
             "in (an implicit dependency) attribute of hidden_use rule //pkg:use_hidden: //pkg:group does not refer to a valid executable target",
         ),
-        // Explicit N23d gaps: Bazel's analysis attaches the tool's runfiles
-        // (the build then fails because //pkg:lazy writes no output).
-        ("run_lazy", "action executable bazel-out/"),
+        // Like Bazel, the tool's runfiles tree is attached (N23f); the
+        // build then fails because //pkg:lazy writes no output.
+        (
+            "run_lazy",
+            "has missing or invalid output 'bazel-out/rust-fastbuild/bin/pkg/run_lazy.out'",
+        ),
         (
             "run_provider",
-            "attaching executable runfiles to actions is not supported by the native profile",
+            "has missing or invalid output 'bazel-out/rust-fastbuild/bin/pkg/run_provider.out'",
         ),
         (
             "outexe",
             "in outexe rule //pkg:outexe: Multiple outputs with the same key: executable",
         ),
-        ("manifest", "/pkg/lazy.runfiles/MANIFEST"),
     ] {
         rejected(&ws.run(&["build", &format!("//pkg:{target}")]), message);
     }
@@ -946,14 +947,11 @@ tools(name = "binary_tool", tool = ":bin")
             "no_action",
             "The following files have no generating action:\npkg/no_action.sh",
         ),
-        // Explicit N23d gap: the tool's runfiles are not attached to the spawn.
-        (
-            "binary_tool",
-            "attaching executable runfiles to actions is not supported by the native profile",
-        ),
     ] {
         rejected(&ws.run(&["build", &format!("//pkg:{target}")]), message);
     }
+    // N23f: the tool's runfiles tree is staged into the spawn.
+    success(&ws.run(&["build", "//pkg:binary_tool"]));
     let result = ws.run(&["build", "//pkg:values"]);
     success(&result);
     // DefaultInfo() == DefaultInfo() (NativeInfo value equality); every rule

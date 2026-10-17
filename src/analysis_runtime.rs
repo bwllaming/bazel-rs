@@ -43,6 +43,8 @@ pub struct RegisteredAction {
     /// `default-exec-group` unless `ctx.actions.run`/`run_shell` chose one,
     /// crate::exec_groups::ActionExecGroups::determine).
     pub exec_group: String,
+    /// Runfiles trees of the spawn's tools (N23f).
+    pub runfiles_trees: Vec<ToolRunfilesTree>,
 }
 
 // Marker derive only. These fields own Rust data, never hidden heap Values.
@@ -159,7 +161,10 @@ impl Context {
 
     pub(crate) fn known_file(&self, file: &File) -> bool {
         self.sync_default_executable();
-        self.dependency_files.contains(file) || self.declared.borrow().contains(file)
+        self.dependency_files.contains(file)
+            || self.declared.borrow().contains(file)
+            // N23f: the dependencies' runfiles and repository mapping manifests.
+            || self.runfiles.manifests.contains(file)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -188,6 +193,7 @@ impl Context {
             executable_file,
             deferred: None,
             exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
+            runfiles_trees: Vec::new(),
         })
     }
 
@@ -205,6 +211,7 @@ impl Context {
             executable_file,
             deferred,
             exec_group,
+            runfiles_trees,
         } = registration;
         ensure!(
             !outputs.is_empty(),
@@ -235,9 +242,6 @@ impl Context {
             );
         }
         for input in &inputs {
-            if let Some(gap) = self.runfiles.manifest_gap(input) {
-                bail!("{gap}");
-            }
             ensure!(
                 self.known_file(input),
                 "action input {} is not a dependency or declared output",
@@ -287,6 +291,7 @@ impl Context {
             outputs,
             deferred,
             exec_group,
+            runfiles_trees,
         });
         Ok(())
     }
@@ -311,6 +316,19 @@ pub(crate) struct Registration {
     /// The exec group (N35): `default-exec-group` unless run/run_shell chose
     /// one (crate::exec_groups::ActionExecGroups::determine).
     pub exec_group: String,
+    /// Runfiles trees of the spawn's tools (N23f).
+    pub runfiles_trees: Vec<ToolRunfilesTree>,
+}
+
+/// The runfiles tree of an action tool or executable, staged into the spawn
+/// below `<executable>.runfiles` (SpawnInputExpander.addSingleRunfilesTreeToInputs,
+/// exec/SpawnInputExpander.java:87-135): every mapping entry, never the
+/// MANIFEST (:212).
+#[derive(Clone, Debug)]
+pub struct ToolRunfilesTree {
+    /// The exec path of the runfiles directory.
+    pub directory: String,
+    pub mapping: crate::runfiles::RunfilesMapping,
 }
 
 pub(crate) fn context<'a>(eval: &'a Evaluator<'_, '_, '_>) -> anyhow::Result<&'a Context> {
@@ -567,18 +585,22 @@ fn register_spawn(
     context: &Context,
     options: SpawnOptions<'_>,
     mut inputs: Vec<File>,
+    mut runfiles_trees: Vec<ToolRunfilesTree>,
     executable: Vec<String>,
     command: String,
     program: Option<String>,
     function: &str,
     (shell_pad, executable_file): (bool, bool),
 ) -> anyhow::Result<()> {
+    // `input_manifests`: "Legacy argument. Ignored." (sequence or None,
+    // starlarkbuildapi/StarlarkActionFactoryApi.java:536-548).
     if let Some(manifests) = options.input_manifests
         && !manifests.is_none()
-        && ListRef::from_value(manifests).is_none_or(|list| !list.is_empty())
+        && crate::custom_rule::sequence_ref(manifests).is_none()
     {
         bail!(
-            "input_manifests (runfiles manifests of tools) are not supported by the native profile"
+            "in call to {function}(), parameter 'input_manifests' got value of type '{}', want 'sequence or NoneType'",
+            manifests.get_type()
         );
     }
     ensure!(
@@ -595,7 +617,9 @@ fn register_spawn(
             .unwrap_or_default(),
     );
     if let Some(tools) = options.tools {
-        inputs.extend(action_tools(context, tools, function, &options.groups)?);
+        let (files, trees) = action_tools(context, tools, function, &options.groups)?;
+        inputs.extend(files);
+        runfiles_trees.extend(trees);
     }
     // StarlarkActionFactory.determineExecGroup after the tools (N35).
     let exec_group = options.groups.determine()?;
@@ -663,6 +687,21 @@ fn register_spawn(
         executable_file,
         deferred,
         exec_group,
+        runfiles_trees,
+    })
+}
+
+/// The runfiles tree a FilesToRunProvider with runfiles support attaches to
+/// a spawn (StarlarkAction.Builder.addTool(FilesToRunProvider) adds the
+/// runfiles tree artifact, RuleConfiguredTargetBuilder.java:144-152).
+pub(crate) fn tool_runfiles_tree(
+    files_to_run: &crate::runfiles::FilesToRun,
+) -> Option<ToolRunfilesTree> {
+    let runfiles = files_to_run.runfiles.as_ref().filter(|r| !r.is_empty())?;
+    let executable = files_to_run.executable.as_ref()?;
+    Some(ToolRunfilesTree {
+        directory: format!("{}.runfiles", executable.path),
+        mapping: runfiles.runfiles_inputs(files_to_run.repo_mapping_manifest.as_ref(), None),
     })
 }
 
@@ -836,6 +875,7 @@ fn action_methods(builder: &mut MethodsBuilder) {
             executable_file: false,
             deferred,
             exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
+            runfiles_trees: Vec::new(),
         })?;
         Ok(NoneType)
     }
@@ -892,6 +932,7 @@ fn action_methods(builder: &mut MethodsBuilder) {
                 progress_message: progress_message.map(str::to_owned),
             },
             Vec::new(),
+            Vec::new(),
             executable,
             command.to_owned(),
             None,
@@ -903,56 +944,67 @@ fn action_methods(builder: &mut MethodsBuilder) {
 }
 
 /// The `tools` of run/run_shell (analysis/starlark/StarlarkActionFactory.java:765-806):
-/// Files, FilesToRunProviders and depsets of Files. Tools whose
-/// FilesToRunProvider carries runfiles need the runfiles tree attached to the
-/// spawn, which needs runfiles trees (N23f): explicit failure. Each tool that
-/// is not an executable attribute's is checked against the action's exec
-/// group arguments (N35, GroupArguments::check_tool).
+/// Files, FilesToRunProviders and depsets of Files. A FilesToRunProvider
+/// with runfiles (or a File of an executable attribute whose provider has
+/// them, StarlarkRuleContext.getExecutableRunfiles) attaches its runfiles
+/// tree (N23f). Each tool that is not an executable attribute's is checked
+/// against the action's exec group arguments (N35, GroupArguments::check_tool).
 fn action_tools(
     context: &Context,
     tools: Value<'_>,
     function: &str,
     groups: &GroupArguments,
-) -> anyhow::Result<Vec<File>> {
+) -> anyhow::Result<(Vec<File>, Vec<ToolRunfilesTree>)> {
     const WANT: &str = "expected value of type 'File, FilesToRunProvider or Depset of Files' for a member of parameter 'tools' but";
+    let mut files = Vec::new();
+    let mut trees = Vec::new();
+    let attach = |files: &mut Vec<File>, trees: &mut Vec<ToolRunfilesTree>, file: &File| {
+        if let Some(files_to_run) = context.runfiles.executables.borrow().get(file) {
+            files.extend(files_to_run.files.iter().cloned());
+            trees.extend(tool_runfiles_tree(files_to_run));
+        }
+    };
     let items: Vec<Value<'_>> = if let Some(list) = ListRef::from_value(tools) {
         list.iter().collect()
     } else if let Some(tuple) = starlark::values::tuple::TupleRef::from_value(tools) {
         tuple.iter().collect()
     } else if crate::starlark_types::is_depset(tools) {
         // Depset.cast(tools, Object.class, "tools").toList(): File elements.
-        let files = file_list(tools).map_err(|_| {
+        let depset_files = file_list(tools).map_err(|_| {
             anyhow!(
                 "{WANT} got a depset of '{}' instead",
                 crate::starlark_types::depset_element_type(tools).unwrap_or("unknown")
             )
         })?;
-        for file in &files {
+        for file in &depset_files {
             if !context.runfiles.is_executable(file) {
                 groups.check_tool()?;
             }
         }
-        return Ok(files);
+        for file in depset_files {
+            attach(&mut files, &mut trees, &file);
+            files.push(file);
+        }
+        return Ok((files, trees));
     } else {
         bail!(
             "in call to {function}(), parameter 'tools' got value of type '{}', want 'sequence or depset'",
             tools.get_type()
         );
     };
-    let mut files = Vec::new();
     for item in items {
         if let Some(file) = File::from_value(item) {
             if !context.runfiles.is_executable(file) {
                 groups.check_tool()?;
             }
-            context.runfiles.check_action_file(file, "tool")?;
             files.push(file.clone());
+            attach(&mut files, &mut trees, file);
         } else if let Some(files_to_run) = crate::runfiles::FilesToRun::from_value(item) {
             if !context.runfiles.is_from_dependencies(files_to_run) {
                 groups.check_tool()?;
             }
-            crate::runfiles::ensure_without_runfiles(files_to_run, "tool")?;
             files.extend(files_to_run.files.iter().cloned());
+            trees.extend(tool_runfiles_tree(files_to_run));
         } else if crate::starlark_types::is_depset(item) {
             groups.check_tool()?;
             if let Some(kind) = crate::starlark_types::depset_element_type(item)
@@ -965,7 +1017,7 @@ fn action_tools(
             bail!("{WANT} got {} instead", item.get_type());
         }
     }
-    Ok(files)
+    Ok((files, trees))
 }
 
 #[starlark_module]
@@ -1006,23 +1058,33 @@ fn direct_action_methods(builder: &mut MethodsBuilder) {
         // path from the execution root, argv[0] spelled like Bazel's
         // (crate::action::Action::executable_file, N41).
         let executable_file = executable.unpack_str().is_none();
+        let mut trees = Vec::new();
         let (program, bazel_executable) = if let Some(program) = executable.unpack_str() {
             (program.to_owned(), program.to_owned())
         } else {
-            let file =
-                if let Some(files_to_run) = crate::runfiles::FilesToRun::from_value(executable) {
-                    crate::runfiles::ensure_without_runfiles(files_to_run, "executable")?;
-                    // StarlarkAction.Builder.setExecutable(FilesToRunProvider)
-                    // also adds the provider's files to run as tools.
-                    extra_inputs.extend(files_to_run.files.iter().cloned());
-                    files_to_run.executable.clone().ok_or_else(|| {
-                        anyhow!("actions.run executable FilesToRunProvider has no executable")
-                    })?
-                } else {
-                    let file = unpack_file(executable)?;
-                    context.runfiles.check_action_file(&file, "executable")?;
-                    file
-                };
+            // StarlarkAction.Builder.setExecutable(FilesToRunProvider) also
+            // adds the provider's files to run (and its runfiles tree) as
+            // tools; a File of an executable attribute uses its provider
+            // (StarlarkActionFactory.java:433-441).
+            let provider = match crate::runfiles::FilesToRun::from_value(executable) {
+                Some(files_to_run) => Some(files_to_run.clone()),
+                None => context
+                    .runfiles
+                    .executables
+                    .borrow()
+                    .get(&unpack_file(executable)?)
+                    .cloned(),
+            };
+            if let Some(files_to_run) = &provider {
+                extra_inputs.extend(files_to_run.files.iter().cloned());
+                trees.extend(tool_runfiles_tree(files_to_run));
+            }
+            let file = match crate::runfiles::FilesToRun::from_value(executable) {
+                Some(files_to_run) => files_to_run.executable.clone().ok_or_else(|| {
+                    anyhow!("actions.run executable FilesToRunProvider has no executable")
+                })?,
+                None => unpack_file(executable)?,
+            };
             let path = file.path.clone();
             extra_inputs.push(file);
             (path.clone(), path)
@@ -1042,6 +1104,7 @@ fn direct_action_methods(builder: &mut MethodsBuilder) {
                 progress_message: progress_message.map(str::to_owned),
             },
             extra_inputs,
+            trees,
             vec![bazel_executable],
             String::new(),
             Some(program),
@@ -1125,6 +1188,7 @@ fn file_action_methods(builder: &mut MethodsBuilder) {
             exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
             shell_pad: false,
             executable_file: false,
+            runfiles_trees: Vec::new(),
         })?;
         Ok(NoneType)
     }
@@ -1209,6 +1273,7 @@ fn file_action_methods(builder: &mut MethodsBuilder) {
             exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
             shell_pad: false,
             executable_file: false,
+            runfiles_trees: Vec::new(),
         })?;
         Ok(NoneType)
     }
@@ -1298,6 +1363,7 @@ fn transform_build_info<'v>(
         exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
             shell_pad: false,
             executable_file: false,
+        runfiles_trees: Vec::new(),
     })?;
     Ok(alloc_file(eval.heap(), output))
 }

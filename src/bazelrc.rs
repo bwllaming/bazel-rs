@@ -1800,11 +1800,16 @@ pub fn expand(
     }
     flush(&mut last, &mut chunks);
 
-    // getCommandNamesToParse (:607-621): none of build/query/mod inherits.
-    let groups = ["always", "common", command];
+    // getCommandNamesToParse (:607-621): build/query/mod inherit nothing;
+    // `run` inherits `build` (RunCommand @Command inheritsOptionsFrom).
+    let groups: Vec<&str> = if command == "run" {
+        vec!["always", "common", "build", command]
+    } else {
+        vec!["always", "common", command]
+    };
     let mut items: Vec<Item> = Vec::new();
     // parseRcOptions (:199-251).
-    for group in groups {
+    for &group in &groups {
         for chunk in chunks.get(group).cloned().unwrap_or_default() {
             let inherited = if group == command { "" } else { "Inherited " };
             let source = if chunk.rc == "client" {

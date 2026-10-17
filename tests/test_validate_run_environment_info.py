@@ -43,8 +43,9 @@ def record(text='', code=1, **changes):
 class PlanTests(unittest.TestCase):
     def test_exact_plan_and_lexical_fixtures(self):
         self.assertEqual(len(suite.CASEPLAN), 9)
-        self.assertEqual(sum(len(c['probes']) for c in suite.CASEPLAN), 58)
-        self.assertEqual(suite.plan_receipt()['phases'], 114)
+        # 57 probes and 113 phases since N23f removed the run-command probe.
+        self.assertEqual(sum(len(c['probes']) for c in suite.CASEPLAN), 57)
+        self.assertEqual(suite.plan_receipt()['phases'], 113)
         self.assertEqual(suite.plan_receipt(True)['phases'], 56)
         for item in suite.CASEPLAN:
             self.assertEqual(len(item['probes']), len(set(item['probes'])))
@@ -161,11 +162,13 @@ class PlanTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'registry patch'):
                     suite.require_registry_patches(registry)
 
-    def test_test_and_run_commands_are_the_exact_native_boundary(self):
+    def test_test_command_is_the_exact_native_boundary(self):
         item = suite.CASEPLAN[-1]
         self.assertEqual((item['name'], item['kind']), ('native-boundary', 'native_boundary'))
         self.assertEqual(suite.phases_for(item, True), [])
-        for probe, command, symbol in (('test-command', 'test', 'check_test'), ('run-command', 'run', 'check')):
+        # `run` is implemented since N23f (docs/RUNFILES_TREES.md).
+        self.assertNotIn('run-command', item['probes'])
+        for probe, command, symbol in (('test-command', 'test', 'check_test'),):
             v = suite.fixture('native-boundary', probe)
             self.assertIn(b'return [DefaultInfo(executable=out)]', v['files']['defs/check.bzl'])
             self.assertIn(symbol.encode()+b'(name="check")', v['files']['app/BUILD.bazel'])

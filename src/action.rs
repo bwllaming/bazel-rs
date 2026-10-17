@@ -237,6 +237,42 @@ pub enum Transform {
     /// An action whose execution is an explicit native gap (its outputs are
     /// declared and registered, e.g. workspace-status transforms).
     Unsupported { message: String },
+    /// SourceManifestAction (SOURCE_SYMLINKS, analysis/SourceManifestAction.java):
+    /// the `<executable>.runfiles_manifest` lines `path target` of a runfiles
+    /// tree, sorted by path. Each entry names the input destination it links
+    /// to (the target is that input's absolute path) or `None` for an empty
+    /// file. Inputs are not read: like Bazel, the manifest records paths only.
+    RunfilesManifest {
+        entries: Vec<(String, Option<PathBuf>)>,
+    },
+    /// SymlinkTreeAction + RunfilesTreeAction (analysis/actions/SymlinkTreeAction.java,
+    /// exec/SymlinkTreeHelper.java): the only output is `<dir>/MANIFEST`, a
+    /// symlink to the input manifest (SymlinkTreeHelper.linkManifest); the
+    /// rest of `<dir>` (the entries' symlinks to absolute input paths, empty
+    /// files, directories and the always-created `_main` directory) is
+    /// published with it, plus a native sibling `executable` next to `<dir>`:
+    /// a hardlink of the executable's content-addressed blob (one inode), so
+    /// `$0.runfiles`, `realpath($0)` and `/proc/self/exe` all resolve to a
+    /// path whose `.runfiles` sibling exists, like Bazel's output tree.
+    /// `create == false` is RunfileSymlinksMode.SKIP
+    /// (createMinimalRunfilesDirectory: MANIFEST and `_main` only).
+    RunfilesTree {
+        entries: Vec<(String, Option<PathBuf>)>,
+        manifest: PathBuf,
+        executable: Option<PathBuf>,
+        create: bool,
+    },
+}
+
+impl Transform {
+    /// Runfiles transforms key and use their inputs' absolute paths, never
+    /// their contents (only the tree's input manifest is read).
+    fn reads_paths_only(&self) -> bool {
+        matches!(
+            self,
+            Transform::RunfilesManifest { .. } | Transform::RunfilesTree { .. }
+        )
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -307,6 +343,20 @@ struct Output {
     tree: Option<TreeManifest>,
     /// A symlink output's hex-encoded target (Transform::Symlink).
     symlink: Option<String>,
+    /// The runfiles tree published with a Transform::RunfilesTree MANIFEST.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runfiles: Option<RunfilesTreeManifest>,
+}
+
+/// A published runfiles tree: every entry below the tree root except
+/// `MANIFEST` (hex path, `dir`, `empty` or `link:<hex target>`), and the
+/// executable sibling, a hardlink of the executable's store blob (hex path
+/// relative to `outputs`, digest, mode).
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
+#[serde(deny_unknown_fields)]
+struct RunfilesTreeManifest {
+    entries: Vec<(String, String)>,
+    sibling_file: Option<(String, String, u32)>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
@@ -771,6 +821,35 @@ pub fn validate_structure(action: &Action) -> Result<(), String> {
             }
         }
         Some(Transform::Unsupported { .. }) => check_one_output(action, "unsupported")?,
+        Some(Transform::RunfilesManifest { entries }) => {
+            check_one_output(action, "runfiles manifest")?;
+            check_runfiles_entries(action, entries)?;
+        }
+        Some(Transform::RunfilesTree {
+            entries,
+            manifest,
+            executable,
+            ..
+        }) => {
+            check_one_output(action, "runfiles tree")?;
+            check_runfiles_entries(action, entries)?;
+            if action.outputs[0].file_name() != Some(std::ffi::OsStr::new("MANIFEST"))
+                || action.outputs[0]
+                    .parent()
+                    .is_none_or(|p| p.as_os_str().is_empty())
+                || !action.extra.tree_outputs.is_empty()
+            {
+                return Err("runfiles tree action output must be a <dir>/MANIFEST file".into());
+            }
+            for path in std::iter::once(manifest).chain(executable) {
+                if !action.inputs.iter().any(|(_, name)| name == path) {
+                    return Err(format!(
+                        "runfiles tree input '{}' is not an action input",
+                        path.display()
+                    ));
+                }
+            }
+        }
         None => {}
     }
     for tree in &action.extra.tree_inputs {
@@ -895,6 +974,46 @@ pub fn validate_structure(action: &Action) -> Result<(), String> {
     Ok(())
 }
 
+/// Runfiles entries: relative, normalized tree paths whose linked
+/// destinations are action inputs.
+fn check_runfiles_entries(
+    action: &Action,
+    entries: &[(String, Option<PathBuf>)],
+) -> Result<(), String> {
+    for (path, destination) in entries {
+        validate_relative(Path::new(path))
+            .map_err(|e| format!("invalid runfiles path '{path}': {e}"))?;
+        if let Some(destination) = destination
+            && !action.inputs.iter().any(|(_, name)| name == destination)
+        {
+            return Err(format!(
+                "runfiles entry '{path}' links to '{}', which is not an action input",
+                destination.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The entries of a runfiles transform with the absolute path each links to.
+fn frame_runfiles_entries(
+    hash: &mut Sha256,
+    entries: &[(String, Option<PathBuf>)],
+    origins: &BTreeMap<PathBuf, PathBuf>,
+) {
+    frame_count(hash, entries.len());
+    for (path, destination) in entries {
+        frame(hash, path.as_bytes());
+        match destination {
+            Some(destination) => {
+                frame(hash, b"link");
+                frame(hash, origins[destination].as_os_str().as_bytes());
+            }
+            None => frame(hash, b"empty"),
+        }
+    }
+}
+
 fn frame_input(hash: &mut Sha256, input: &Input) {
     frame(hash, input.digest.as_bytes());
     frame(hash, &input.executable.to_le_bytes());
@@ -926,13 +1045,28 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
     outputs.sort();
     let mut inputs: BTreeMap<PathBuf, Staged> = BTreeMap::new();
     let mut origins: BTreeMap<PathBuf, PathBuf> = BTreeMap::new();
+    let paths_only = action
+        .extra
+        .transform
+        .as_ref()
+        .filter(|transform| transform.reads_paths_only());
     for (source, destination) in &action.inputs {
-        let input = read_staged(source, action.extra.tree_inputs.contains(destination), root)?;
         if !origins.contains_key(destination) {
             let origin = std::path::absolute(source)
                 .map_err(|e| io_error("cannot resolve input", source, e))?;
             origins.insert(destination.clone(), origin);
         }
+        if let Some(transform) = paths_only {
+            match transform {
+                Transform::RunfilesTree {
+                    manifest,
+                    executable,
+                    ..
+                } if manifest == destination || executable.as_ref() == Some(destination) => {}
+                _ => continue,
+            }
+        }
+        let input = read_staged(source, action.extra.tree_inputs.contains(destination), root)?;
         if let Some(previous) = inputs.get(destination) {
             let same = match (previous, &input) {
                 (Staged::File(a), Staged::File(b)) => {
@@ -1000,6 +1134,33 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
         (None, _, Some(Transform::Unsupported { message })) => {
             frame(&mut hash, b"unsupported");
             frame(&mut hash, message.as_bytes());
+        }
+        (None, _, Some(Transform::RunfilesManifest { entries })) => {
+            frame(&mut hash, b"runfiles-manifest");
+            frame_runfiles_entries(&mut hash, entries, &origins);
+        }
+        (
+            None,
+            _,
+            Some(Transform::RunfilesTree {
+                entries,
+                manifest,
+                executable,
+                create,
+            }),
+        ) => {
+            frame(&mut hash, b"runfiles-tree");
+            frame(&mut hash, &[u8::from(*create)]);
+            frame_runfiles_entries(&mut hash, entries, &origins);
+            frame(&mut hash, origins[manifest].as_os_str().as_bytes());
+            match executable {
+                Some(executable) => {
+                    frame(&mut hash, b"sibling");
+                    frame(&mut hash, executable.as_os_str().as_bytes());
+                    frame(&mut hash, origins[executable].as_os_str().as_bytes());
+                }
+                None => frame(&mut hash, b"no-sibling"),
+            }
         }
         (None, Some(program), None) => {
             frame(&mut hash, b"direct");
@@ -1612,6 +1773,11 @@ fn cache_valid(
                 {
                     return Ok(None);
                 }
+                if let Some(tree) = &entry.runfiles
+                    && !runfiles_tree_valid(&directory.join("outputs"), name, tree, root)
+                {
+                    return Ok(None);
+                }
                 path = resolve_published(&path, Some(root))?;
             }
             match (&entry.tree, trees.contains(name)) {
@@ -1736,11 +1902,94 @@ fn run_transform(
     transform: &Transform,
     prepared: &PreparedAction,
     execroot: &Path,
+    store: (&Path, &Path),
 ) -> Result<(), String> {
     let output = execroot.join(&action.outputs[0]);
     let inputs = &prepared.inputs;
+    let origin = |destination: &PathBuf| -> Result<&Path, String> {
+        prepared
+            .origins
+            .get(destination)
+            .map(PathBuf::as_path)
+            .ok_or_else(|| format!("missing runfiles input '{}'", destination.display()))
+    };
     match transform {
         Transform::Unsupported { message } => Err(message.clone()),
+        Transform::RunfilesManifest { entries } => {
+            let mut sorted: Vec<&(String, Option<PathBuf>)> = entries.iter().collect();
+            sorted.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+            let mut text = Vec::new();
+            for (path, destination) in sorted {
+                let target = match destination {
+                    Some(destination) => Some(origin(destination)?.to_str().ok_or_else(|| {
+                        format!(
+                            "runfiles target '{}' is not valid UTF-8",
+                            destination.display()
+                        )
+                    })?),
+                    None => None,
+                };
+                crate::runfiles::manifest_line(path, target, &mut text);
+            }
+            write_file(&output, &text, 0)
+        }
+        Transform::RunfilesTree {
+            entries,
+            manifest,
+            executable,
+            create,
+        } => {
+            // The output is `<dir>/MANIFEST`; validate_structure checked it.
+            let directory = output.parent().expect("validated MANIFEST parent");
+            ensure_directory(directory)?;
+            if *create {
+                for (path, destination) in entries {
+                    if path == "MANIFEST" {
+                        // linkManifest replaces it (SymlinkTreeHelper.java:167-176).
+                        continue;
+                    }
+                    if path.starts_with("MANIFEST/") {
+                        return Err(format!(
+                            "runfiles entry '{path}' is below the runfiles MANIFEST"
+                        ));
+                    }
+                    let link = directory.join(path);
+                    if let Some(parent) = link.parent() {
+                        ensure_directory(parent)?;
+                    }
+                    match destination {
+                        Some(destination) => {
+                            std::os::unix::fs::symlink(origin(destination)?, &link)
+                                .map_err(|e| io_error("cannot create symbolic link", &link, e))?
+                        }
+                        None => {
+                            // FileSystemUtils.createEmptyFile: 0666 & ~umask.
+                            write_file(&link, b"", 0)?;
+                            set_mode(&link, 0o644)?;
+                        }
+                    }
+                }
+            }
+            // createWorkspaceSubdirectory (SymlinkTreeHelper.java:178-188).
+            ensure_directory(&directory.join(crate::runfiles::WORKSPACE_NAME))?;
+            std::os::unix::fs::symlink(origin(manifest)?, &output)
+                .map_err(|e| io_error("cannot create symbolic link", &output, e))?;
+            if let Some(executable) = executable {
+                let Some(Staged::File(input)) = inputs.get(executable) else {
+                    return Err(format!(
+                        "runfiles tree executable '{}' is not a regular file",
+                        executable.display()
+                    ));
+                };
+                let sibling = execroot.join(executable);
+                if let Some(parent) = sibling.parent() {
+                    ensure_directory(parent)?;
+                }
+                let (cas, root) = store;
+                link_ensured_blob(cas, root, input, &sibling, blob_mode(input))?;
+            }
+            Ok(())
+        }
         Transform::Template {
             template,
             substitutions,
@@ -1803,6 +2052,126 @@ fn run_transform(
                 .map_err(|e| io_error("cannot create symbolic link", &output, e))
         }
     }
+}
+
+/// The entries below a runfiles tree root other than its `MANIFEST`, in byte
+/// order, without following symlinks.
+fn runfiles_listing(root: &Path) -> Result<Vec<(String, String)>, String> {
+    real_directory(root)?;
+    let mut listing = Vec::new();
+    let mut pending = vec![PathBuf::new()];
+    while let Some(relative) = pending.pop() {
+        let directory = root.join(&relative);
+        let mut names = fs::read_dir(&directory)
+            .map_err(|e| io_error("cannot list directory", &directory, e))?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| io_error("cannot list directory", &directory, e))?;
+        names.sort();
+        for name in names {
+            let child = relative.join(&name);
+            if child == Path::new("MANIFEST") {
+                continue;
+            }
+            let path = root.join(&child);
+            let metadata =
+                fs::symlink_metadata(&path).map_err(|e| io_error("cannot inspect", &path, e))?;
+            let kind = if metadata.file_type().is_symlink() {
+                let target =
+                    fs::read_link(&path).map_err(|e| io_error("cannot read link", &path, e))?;
+                format!("link:{}", hex(target.as_os_str().as_bytes()))
+            } else if metadata.is_dir() {
+                pending.push(child.clone());
+                "dir".to_owned()
+            } else if metadata.is_file() && metadata.len() == 0 {
+                "empty".to_owned()
+            } else {
+                return Err(format!(
+                    "runfiles tree entry '{}' is not a symlink, directory or empty file",
+                    path.display()
+                ));
+            };
+            listing.push((hex(child.as_os_str().as_bytes()), kind));
+        }
+    }
+    listing.sort();
+    Ok(listing)
+}
+
+/// Move a created runfiles tree (all of `<dir>` but its already published
+/// MANIFEST) and the executable sibling (its blob's inode) into the
+/// completed outputs.
+fn publish_runfiles_tree(
+    execroot: &Path,
+    outputs: &Path,
+    manifest: &Path,
+    sibling: Option<(&PathBuf, &Input)>,
+) -> Result<RunfilesTreeManifest, String> {
+    let relative = manifest.parent().expect("validated MANIFEST parent");
+    let source = execroot.join(relative);
+    let target = outputs.join(relative);
+    let entries = runfiles_listing(&source)?;
+    for entry in fs::read_dir(&source).map_err(|e| io_error("cannot list directory", &source, e))? {
+        let name = entry.map_err(|e| e.to_string())?.file_name();
+        fs::rename(source.join(&name), target.join(&name))
+            .map_err(|e| io_error("cannot publish", &target.join(&name), e))?;
+    }
+    let sibling_file = match sibling {
+        Some((sibling, input)) => {
+            let from = execroot.join(sibling);
+            let to = outputs.join(sibling);
+            if let Some(parent) = to.parent() {
+                ensure_directory(parent)?;
+            }
+            fs::rename(&from, &to).map_err(|e| io_error("cannot publish", &to, e))?;
+            Some((
+                hex(sibling.as_os_str().as_bytes()),
+                input.digest.clone(),
+                blob_mode(input),
+            ))
+        }
+        None => None,
+    };
+    Ok(RunfilesTreeManifest {
+        entries,
+        sibling_file,
+    })
+}
+
+/// A published runfiles tree still has exactly the recorded entries, and the
+/// executable sibling is still a regular file with the recorded digest and
+/// mode.
+fn runfiles_tree_valid(
+    outputs: &Path,
+    manifest: &Path,
+    expected: &RunfilesTreeManifest,
+    root: &Path,
+) -> bool {
+    let relative = manifest.parent().unwrap_or(Path::new(""));
+    if runfiles_listing(&outputs.join(relative)).ok().as_ref() != Some(&expected.entries) {
+        return false;
+    }
+    match &expected.sibling_file {
+        None => true,
+        Some((name, digest, mode)) => {
+            let Some(name) = unhex(name) else {
+                return false;
+            };
+            let path = outputs.join(std::ffi::OsStr::from_bytes(&name));
+            read_input(&path, Some(root), false)
+                .is_ok_and(|actual| actual.digest == *digest && actual.mode == *mode)
+        }
+    }
+}
+
+fn unhex(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(text.get(index..index + 2)?, 16).ok())
+        .collect()
 }
 
 /// Execute an action or return its verified cached outputs in declaration order.
@@ -2125,7 +2494,7 @@ pub fn execute_with_remote(
             if write.executable { 0o111 } else { 0 },
         )?;
     } else if let Some(transform) = &action.extra.transform {
-        run_transform(action, transform, &prepared, &execroot)?;
+        run_transform(action, transform, &prepared, &execroot, (&cas, &root))?;
     } else if let Some(hit) = &remote_hit {
         // The downloaded (verified) outputs take the place of the process's;
         // they are published below like executed outputs.
@@ -2193,6 +2562,11 @@ pub fn execute_with_remote(
     // published.
     let symlink_target = match &action.extra.transform {
         Some(Transform::Symlink { target, .. }) => Some(target),
+        Some(Transform::RunfilesTree { manifest, .. }) => Some(manifest),
+        _ => None,
+    };
+    let runfiles_sibling = match &action.extra.transform {
+        Some(Transform::RunfilesTree { executable, .. }) => Some(executable.as_ref()),
         _ => None,
     };
     let completed = work.0.join("completed");
@@ -2222,6 +2596,18 @@ pub fn execute_with_remote(
                 }
                 fs::rename(&source, &target).map_err(|e| io_error("cannot publish", &target, e))?;
                 let symlink = Some(hex(link.as_os_str().as_bytes()));
+                let runfiles = match runfiles_sibling {
+                    Some(sibling) => Some(publish_runfiles_tree(
+                        &execroot,
+                        &completed.join("outputs"),
+                        name,
+                        sibling.map(|sibling| match &inputs[sibling] {
+                            Staged::File(input) => (sibling, input),
+                            Staged::Tree(_) => unreachable!("checked by run_transform"),
+                        }),
+                    )?),
+                    None => None,
+                };
                 return Ok(match &inputs[symlink_target] {
                     Staged::File(input) => Output {
                         name: hex_name,
@@ -2229,6 +2615,7 @@ pub fn execute_with_remote(
                         mode: input.mode,
                         tree: None,
                         symlink,
+                        runfiles,
                     },
                     Staged::Tree(tree) => {
                         listings.insert(name.clone(), tree_listing(tree));
@@ -2238,6 +2625,7 @@ pub fn execute_with_remote(
                             mode: TREE_ROOT_MODE,
                             tree: Some(tree_manifest(tree)),
                             symlink,
+                            runfiles: None,
                         }
                     }
                 });
@@ -2251,6 +2639,7 @@ pub fn execute_with_remote(
                     mode: TREE_ROOT_MODE,
                     tree: Some(tree_manifest(&tree)),
                     symlink: None,
+                    runfiles: None,
                 });
             }
             // Match metadata collection order: a successful action may leave a
@@ -2263,6 +2652,7 @@ pub fn execute_with_remote(
                 mode: OUTPUT_MODE,
                 tree: None,
                 symlink: None,
+                runfiles: None,
             })
         };
         let output = publish().map_err(|e| {
@@ -2407,6 +2797,90 @@ mod tests {
             // Published tree artifacts are read-only (0555) directories.
             let _ = remove_directory(&self.0);
         }
+    }
+
+    #[test]
+    fn runfiles_tree_publishes_links_and_validates_cached_entries() {
+        let fixture = Fixture::new();
+        let data = fixture.0.join("data.txt");
+        fs::write(&data, b"data\n").unwrap();
+        let manifest = fixture.0.join("b.runfiles_manifest");
+        fs::write(&manifest, b"_main/d data\n").unwrap();
+        let exe = fixture.0.join("b");
+        fs::write(&exe, b"#!/bin/sh\n").unwrap();
+        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        let action = Action {
+            id: "tree".into(),
+            command: String::new(),
+            inputs: vec![
+                (data.clone(), "pkg/data.txt".into()),
+                (manifest.clone(), "bin/pkg/b.runfiles_manifest".into()),
+                (exe.clone(), "bin/pkg/b".into()),
+            ],
+            outputs: vec!["bin/pkg/b.runfiles/MANIFEST".into()],
+            write: None,
+            program: None,
+            arguments: Vec::new(),
+            environment: BTreeMap::new(),
+            shell_strict: false,
+            extra: ActionExtra {
+                transform: Some(Transform::RunfilesTree {
+                    entries: vec![
+                        ("_main/pkg/d".into(), Some("pkg/data.txt".into())),
+                        ("_main/pkg/__init__.py".into(), None),
+                    ],
+                    manifest: "bin/pkg/b.runfiles_manifest".into(),
+                    executable: Some("bin/pkg/b".into()),
+                    create: true,
+                }),
+                ..ActionExtra::default()
+            },
+            ..Action::default()
+        };
+        let first = execute(&fixture.cache(), &action).unwrap();
+        assert!(!first.cache_hit);
+        let manifest_link = &first.outputs[0];
+        assert_eq!(fs::read_link(manifest_link).unwrap(), manifest);
+        let tree = manifest_link.parent().unwrap();
+        assert_eq!(fs::read_link(tree.join("_main/pkg/d")).unwrap(), data);
+        assert_eq!(
+            fs::metadata(tree.join("_main/pkg/__init__.py"))
+                .unwrap()
+                .len(),
+            0
+        );
+        // The sibling is the executable's store blob (one inode), not a link.
+        let sibling = tree.parent().unwrap().join("b");
+        let metadata = fs::symlink_metadata(&sibling).unwrap();
+        assert!(metadata.is_file());
+        assert_eq!(metadata.permissions().mode() & 0o7777, 0o555);
+        let blob = fixture
+            .cache()
+            .join("cas")
+            .join(format!("{}-555", digest(b"#!/bin/sh\n")));
+        assert_eq!(metadata.ino(), fs::metadata(&blob).unwrap().ino());
+        assert!(execute(&fixture.cache(), &action).unwrap().cache_hit);
+        // A damaged sibling or tree entry is rebuilt.
+        fs::remove_file(&sibling).unwrap();
+        assert!(!execute(&fixture.cache(), &action).unwrap().cache_hit);
+        fs::write(tree.join("_main/extra"), b"").unwrap();
+        assert!(!execute(&fixture.cache(), &action).unwrap().cache_hit);
+        // Content changes of a linked source do not change the tree.
+        fs::write(&data, b"changed\n").unwrap();
+        assert!(execute(&fixture.cache(), &action).unwrap().cache_hit);
+        // SKIP mode: only MANIFEST and `_main`.
+        let mut skip = action.clone();
+        if let Some(Transform::RunfilesTree { create, .. }) = &mut skip.extra.transform {
+            *create = false;
+        }
+        let skipped = execute(&fixture.cache(), &skip).unwrap();
+        let tree = skipped.outputs[0].parent().unwrap();
+        let mut names: Vec<_> = fs::read_dir(tree)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["MANIFEST", "_main"]);
     }
 
     #[test]

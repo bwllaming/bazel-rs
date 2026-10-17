@@ -7,6 +7,7 @@ const HELP: &str = "bazel-rs — experimental native build engine (NOT full Baze
 Usage:
   bazel-rs [STARTUP...] [--cache-dir=PATH] query [QUERY-OPTION...] EXPRESSION
   bazel-rs [STARTUP...] [--cache-dir=PATH] build [--jobs=N] [CONFIG...] TARGET...
+  bazel-rs [STARTUP...] [--cache-dir=PATH] run [BUILD OPTIONS...] [RUN OPTIONS...] TARGET [-- ARGS...]
   bazel-rs [STARTUP...] mod graph --output=json [--registry=URL]
   bazel-rs version | --version | capabilities
 
@@ -20,6 +21,11 @@ Query: the Bazel 9.3 query language (deps, rdeps, allpaths, somepath, attr, filt
   --output=label|label_kind|build|package|location|minrank|maxrank|graph,
   --order_output, --[no]implicit_deps, --[no]tool_deps, --[no]keep_going (docs/QUERY.md).
 Build options: --jobs=N or --jobs N (positive integer; default: available CPUs, max 32)
+Runfiles (build/run): --[no]build_runfile_links, --[no]build_runfile_manifests,
+  --enable_runfiles=auto|yes|no, --[no]incompatible_compact_repo_mapping_manifest
+  (runfiles trees, MANIFEST and _repo_mapping like Bazel 9.3; docs/RUNFILES_TREES.md).
+Run options: --script_path=PATH, --[no]run, --run_env=NAME[=VALUE]|=NAME, --[no]run_in_cwd,
+  --[no]omit_run_args, --run_under=COMMAND-PREFIX, --shell_executable=PATH.
 Configuration (build): -c/--compilation_mode, --[no]stamp, --strip, --[no]force_pic,
   --define NAME=VALUE, --platforms, --host_platform, Starlark build settings
   --//pkg:flag=VALUE / --[no]//pkg:bool_flag (docs/CONFIGURATION.md).
@@ -40,7 +46,7 @@ Native rules: filegroup(name, srcs), genrule(name, srcs, outs, cmd)
 Loading: local .bzl legacy macros, glob, package defaults and exports_files.
 Analysis: custom rules/attributes/providers, declared files, write/run/run_shell actions.
 No upstream fallback. Repository rules and module extensions have bounded native profiles.
-No test command, complete repository/extension APIs, execution platforms,
+No test command (test targets cannot be run either), complete repository/extension APIs, execution platforms,
 remote execution, sandbox, SkyQuery or xml/proto query output yet.
 Builds execute trusted shell commands locally; this is not a security sandbox.
 ";
@@ -80,7 +86,7 @@ fn run() -> Result<(), String> {
             println!("{}", include_str!("../docs/capabilities.json"));
             return Ok(());
         }
-        "query" | "build" | "mod" => {}
+        "query" | "build" | "mod" | "run" => {}
         _ => {
             return Err(format!(
                 "unsupported command or startup option {command:?}; run --help for the native subset"
@@ -104,6 +110,8 @@ fn run() -> Result<(), String> {
     let mut raw_registries = Vec::new();
     let mut credential_options = bazel_rs::credentials::CredentialOptions::default();
     let mut remote_options = bazel_rs::remote_cache::RemoteOptions::default();
+    let mut runfiles_options = bazel_rs::runfiles_tree::RunfilesOptions::default();
+    let mut run_options = bazel_rs::run_command::RunOptions::default();
     let mut deferred = None;
     let rc_options;
     let rest = if command == "mod" {
@@ -118,7 +126,7 @@ fn run() -> Result<(), String> {
         // unrecognized options in its first parsing round and reports them
         // when it reparses with the main repository mapping, after the rc
         // notes (OptionsParserImpl.java:811-815, BlazeCommandDispatcher.java:738-755, 1022).
-        let second_round = command == "build" && root.join("MODULE.bazel").exists();
+        let second_round = builds(&command) && root.join("MODULE.bazel").exists();
         for (step, position) in &options.steps {
             let result = match step {
                 bazelrc::Step::Fail(error) => Err(error.clone()),
@@ -174,6 +182,8 @@ fn run() -> Result<(), String> {
         rc_options = native.rc;
         credential_options = native.credentials;
         remote_options = native.remote;
+        runfiles_options = native.runfiles;
+        run_options = native.run;
         options.residue.iter().map(|arg| arg.text.clone()).collect()
     };
     // The repository environment (client environment with --repo_env,
@@ -234,6 +244,10 @@ fn run() -> Result<(), String> {
     if command == "build" && rest.is_empty() {
         return Err("build requires at least one target".into());
     }
+    // RunCommand.exec (runtime/commands/RunCommand.java:254-262).
+    if command == "run" && rest.is_empty() {
+        return Err("Must specify a target to run".into());
+    }
     // The command's arguments, for the Starlark options' `Did you mean` hint
     // (runtime/BlazeOptionHandler.java:428-440).
     let command_args = line.command_args.clone();
@@ -248,7 +262,7 @@ fn run() -> Result<(), String> {
     }
     // Bazel reads a workspace-root `platform_mappings` file by default
     // (PlatformOptions.java:172-187); platform mappings are not modelled.
-    if command == "build" && root.join("platform_mappings").exists() {
+    if builds(&command) && root.join("platform_mappings").exists() {
         return Err(format!(
             "platform mappings are not implemented in the native profile (found {})",
             root.join("platform_mappings").display()
@@ -303,7 +317,8 @@ fn run() -> Result<(), String> {
         repositories.resolve_graph()?;
     }
     let mut engine = Engine::with_repositories(repositories.clone());
-    if command == "build" {
+    engine.set_runfiles_options(runfiles_options);
+    if builds(&command) {
         // Label-typed options convert with the main repository mapping
         // (CoreOptionConverters.convertOptionsLabel, :351-357).
         let labels = |text: &str| {
@@ -367,16 +382,40 @@ fn run() -> Result<(), String> {
         }
         return Ok(());
     }
-    let labels = engine.select_for_build(&rest, &relative_directory);
+    let labels = if command == "run" {
+        // The first residue argument is the target; the rest are its
+        // arguments (RunCommand.java:251-252).
+        engine.select_for_build(&rest[..1], &relative_directory)
+    } else {
+        engine.select_for_build(&rest, &relative_directory)
+    };
     // Bazel reports pattern warnings as they happen, before a later error.
     for warning in engine.take_warnings() {
         warn(&warning);
     }
     let labels = labels?;
+    if command == "run" {
+        return run_target(RunContext {
+            engine: &mut engine,
+            labels,
+            pattern: &rest[0],
+            residue: &rest[1..],
+            cache: &cache,
+            jobs,
+            root: &root,
+            cwd: &cwd,
+            runfiles: runfiles_options,
+            options: &run_options,
+            remote_enabled,
+        });
+    }
     let result = engine.build_with_jobs(&labels, &cache, jobs);
     // Analysis warnings precede the result, also when the build fails.
     for warning in engine.take_warnings() {
         warn(&warning);
+    }
+    for error in engine.take_errors() {
+        eprintln!("ERROR: {error}");
     }
     let summary = result?;
     for (label, output) in summary.outputs {
@@ -414,6 +453,200 @@ impl Drop for LockfileWriter {
             warn(&warning);
         }
     }
+}
+
+/// Commands that build (`run` inherits the build options).
+fn builds(command: &str) -> bool {
+    command == "build" || command == "run"
+}
+
+struct RunContext<'a> {
+    engine: &'a mut Engine,
+    labels: Vec<bazel_rs::label::Label>,
+    pattern: &'a str,
+    residue: &'a [String],
+    cache: &'a Path,
+    jobs: usize,
+    root: &'a Path,
+    cwd: &'a Path,
+    runfiles: bazel_rs::runfiles_tree::RunfilesOptions,
+    options: &'a bazel_rs::run_command::RunOptions,
+    /// Whether the remote cache is set up (N41): the summary names its hits.
+    remote_enabled: bool,
+}
+
+/// `run` (runtime/commands/RunCommand.java:250-391): build exactly one
+/// executable target and its runfiles tree, then execute it in its
+/// runfiles directory (`<tree>/_main`) with the run environment, or write
+/// the `--script_path` script. The process replaces this one (exit code,
+/// stdin and terminal pass through).
+fn run_target(context: RunContext<'_>) -> Result<(), String> {
+    use bazel_rs::run_command::{RunInputs, command_line, random_uuid};
+    let RunContext {
+        engine,
+        labels,
+        pattern,
+        residue,
+        cache,
+        jobs,
+        root,
+        cwd,
+        runfiles,
+        options,
+        remote_enabled,
+    } = context;
+    // validateTargets (RunCommand.java:1052-1111).
+    if labels.len() > 1 {
+        let mut names: Vec<String> = labels.iter().map(|label| label.to_string()).collect();
+        let truncated = names.len() > 5;
+        names.truncate(5);
+        names.sort();
+        return Err(format!(
+            "Only a single target can be run. Your target pattern {pattern} expanded to the targets {}{}",
+            names.join(", "),
+            if truncated { "[TRUNCATED]" } else { "" }
+        ));
+    }
+    let Some(label) = labels.first() else {
+        return Err("No targets found to run".into());
+    };
+    match engine.runnable(label)? {
+        bazel_rs::engine::Runnable::No => {
+            return Err(format!("Cannot run target {label}: Not executable"));
+        }
+        bazel_rs::engine::Runnable::Test => {
+            return Err(format!(
+                "running test target {label} needs the test runner (TestRunnerAction, test-setup.sh and the test environment), which is not implemented by the native profile (N23g; docs/RUNFILES_TREES.md)"
+            ));
+        }
+        bazel_rs::engine::Runnable::Yes => {}
+    }
+    if let Some(value) = options.run_under.as_deref()
+        && let Some(first) = value.split_whitespace().next()
+        && (first.starts_with("//") || first.starts_with('@'))
+    {
+        return Err(format!(
+            "--run_under={value}: a label prefix (LabelRunUnder) is not supported by the native profile; use a command prefix"
+        ));
+    }
+    let result = engine.build_for_run(label, cache, jobs);
+    for warning in engine.take_warnings() {
+        warn(&warning);
+    }
+    for error in engine.take_errors() {
+        eprintln!("ERROR: {error}");
+    }
+    let (summary, target) = result?;
+    for (label, output) in &summary.outputs {
+        eprintln!("{label}\t{}", output.display());
+    }
+    if remote_enabled {
+        eprintln!(
+            "bazel-rs: {} actions executed, {} cache hits, {} remote cache hits (experimental local execution; not sandboxed)",
+            summary.executed, summary.cache_hits, summary.remote_hits
+        );
+    } else {
+        eprintln!(
+            "bazel-rs: {} actions executed, {} cache hits (experimental local execution; not sandboxed)",
+            summary.executed, summary.cache_hits
+        );
+    }
+    // getBuiltTargets/fullyValidateTarget (RunCommand.java:435-568, 1136-1185).
+    let Some(target) = target else {
+        return Err(format!("Cannot run target {label}: Not executable"));
+    };
+    if target.settings.test {
+        return Err(format!(
+            "running test target {label} needs the test runner (TestRunnerAction, test-setup.sh and the test environment), which is not implemented by the native profile (N23g; docs/RUNFILES_TREES.md)"
+        ));
+    }
+    if !runfiles.build_runfile_manifests {
+        return Err("--nobuild_runfile_manifests is incompatible with the \"run\" command".into());
+    }
+    let (executable, execroot, runfiles_working_directory) = match &target.runfiles {
+        Some(tree) => (
+            tree.executable.clone(),
+            tree.root.clone(),
+            Some(if runfiles.enable_runfiles {
+                tree.directory.join(bazel_rs::runfiles::WORKSPACE_NAME)
+            } else {
+                tree.directory.clone()
+            }),
+        ),
+        None => (target.executable.clone(), cache.to_path_buf(), None),
+    };
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let executable_bits = std::fs::metadata(&executable)
+            .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false);
+        if !executable_bits {
+            return Err(format!(
+                "Non-existent or non-executable {}",
+                executable.display()
+            ));
+        }
+    }
+    let utf8 = |path: &Path| {
+        path.to_str()
+            .map(str::to_owned)
+            .ok_or_else(|| format!("non-UTF-8 path {} is not supported", path.display()))
+    };
+    let client_env: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+    let build_id = random_uuid()?;
+    let line = command_line(&RunInputs {
+        workspace: &utf8(root)?,
+        working_directory: &utf8(cwd)?,
+        execroot: &utf8(&execroot)?,
+        build_id: &build_id,
+        client_env: &client_env,
+        options,
+        target_env: &target.settings.environment,
+        target_inherited: &target.settings.inherited,
+        executable: &utf8(&executable)?,
+        binary_args: &target.settings.args,
+        residue,
+        runfiles_working_directory: runfiles_working_directory
+            .as_deref()
+            .map(utf8)
+            .transpose()?
+            .as_deref(),
+    });
+    if let Some(script) = &options.script_path {
+        // handleScriptPath/writeScript (RunCommand.java:653-686, 1042-1049).
+        let path = cwd.join(script);
+        std::fs::write(&path, line.script(&options.shell))
+            .map_err(|e| format!("Error writing run script: {e}"))?;
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path)
+            .map_err(|e| format!("Error writing run script: {e}"))?
+            .permissions()
+            .mode();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode | 0o111))
+            .map_err(|e| format!("Error writing run script: {e}"))?;
+        return Ok(());
+    }
+    let prefix = if options.run { "Running" } else { "Runnable" };
+    eprintln!(
+        "bazel-rs: {prefix} command line: {}",
+        line.pretty(options.omit_run_args)
+    );
+    if !options.run {
+        return Ok(());
+    }
+    // The client's ExecuteRunRequest (src/main/cpp/blaze.cc:2167-2195):
+    // clear, then set the environment, change directory and exec.
+    let argv = line.argv(&options.shell);
+    let mut process = std::process::Command::new(&argv[0]);
+    process.args(&argv[1..]);
+    for name in &line.clear {
+        process.env_remove(name);
+    }
+    process.envs(&line.environment);
+    process.current_dir(&line.working_directory);
+    use std::os::unix::process::CommandExt;
+    let error = process.exec();
+    Err(format!("cannot execute {}: {error}", argv[0]))
 }
 
 fn parse_jobs(value: &str) -> Result<usize, String> {
@@ -472,6 +705,10 @@ struct NativeOptions {
     credentials: bazel_rs::credentials::CredentialOptions,
     /// The modelled RemoteOptions (N41, crate::remote_cache).
     remote: bazel_rs::remote_cache::RemoteOptions,
+    /// Runfiles tree options of build and run (N23f, crate::runfiles_tree).
+    runfiles: bazel_rs::runfiles_tree::RunfilesOptions,
+    /// RunCommand.RunOptions (N23f, crate::run_command).
+    run: bazel_rs::run_command::RunOptions,
 }
 
 impl NativeOptions {
@@ -481,12 +718,14 @@ impl NativeOptions {
             rc: bazel_rs::rc_options::RcOptions::default(),
             resolver: bazel_rs::module_graph::ResolverOptions {
                 // Every lockfile mode supports remote registries (N37).
-                allow_remote: matches!(command, "build" | "query"),
+                allow_remote: matches!(command, "build" | "query" | "run"),
                 ..Default::default()
             },
             downloads: true,
             credentials: Default::default(),
             remote: Default::default(),
+            runfiles: bazel_rs::runfiles_tree::RunfilesOptions::default(),
+            run: bazel_rs::run_command::RunOptions::default(),
             configuration: if command == "query" {
                 // query is configuration-independent; it accepts (and validates)
                 // the modelled CoreOptions (runtime/commands/QueryCommand.java:59-67).
@@ -619,14 +858,23 @@ impl NativeOptions {
         ) {
             self.resolver.ignore_dev_dependencies = false;
             false
-        } else if command == "build" && arg == "--jobs" {
+        } else if builds(command) && arg == "--jobs" {
             self.jobs = Some(parse_jobs(
                 next.ok_or("--jobs requires a positive integer")?,
             )?);
             true
-        } else if let Some(value) = arg.strip_prefix("--jobs=").filter(|_| command == "build") {
+        } else if let Some(value) = arg.strip_prefix("--jobs=").filter(|_| builds(command)) {
             self.jobs = Some(parse_jobs(value)?);
             false
+        } else if let Some(result) = builds(command).then(|| self.runfiles.parse(arg)).flatten() {
+            result?;
+            false
+        } else if let Some(used) = (command == "run")
+            .then(|| self.parse_run(arg, next))
+            .transpose()?
+            .flatten()
+        {
+            used
         } else if let Some(used) = self.credentials.parse(arg, next) {
             used?
         } else if let Some(used) = self.remote.parse(arg, next) {
@@ -644,6 +892,57 @@ impl NativeOptions {
             ));
         }
         Ok(())
+    }
+}
+
+impl NativeOptions {
+    /// One RunCommand.RunOptions option (or `--run_under`/`--shell_executable`):
+    /// `Some(used_next)` when it is one.
+    fn parse_run(&mut self, arg: &str, next: Option<&str>) -> Result<Option<bool>, String> {
+        let run = &mut self.run;
+        for (name, slot) in [
+            ("run", &mut run.run),
+            ("run_in_cwd", &mut run.run_in_cwd),
+            ("omit_run_args", &mut run.omit_run_args),
+        ] {
+            if let Some(value) = bazel_rs::configuration::boolean_option(arg, name) {
+                *slot = value?;
+                return Ok(Some(false));
+            }
+        }
+        for name in ["script_path", "run_env", "run_under", "shell_executable"] {
+            let flag = format!("--{name}");
+            let (value, used) = if arg == flag {
+                (
+                    next.ok_or_else(|| format!("{flag} requires a value"))?,
+                    true,
+                )
+            } else if let Some(value) = arg.strip_prefix(&format!("{flag}=")) {
+                (value, false)
+            } else {
+                continue;
+            };
+            match name {
+                "script_path" => run.script_path = Some(value.to_owned()),
+                // Converters.EnvVarsConverter: N42's parser (crate::action_env).
+                "run_env" => run.run_env.push(
+                    bazel_rs::action_env::EnvVar::parse(value)
+                        .map_err(|error| format!("While parsing option --run_env={value}: {error}"))?,
+                ),
+                "run_under" => {
+                    // RunUnderConverter (analysis/config/RunUnderConverter.java:33-57).
+                    if value.split_whitespace().next().is_none() {
+                        return Err(format!(
+                            "While parsing option --run_under={value}: Empty command"
+                        ));
+                    }
+                    run.run_under = Some(value.to_owned());
+                }
+                _ => run.shell = value.to_owned(),
+            }
+            return Ok(Some(used));
+        }
+        Ok(None)
     }
 }
 

@@ -166,7 +166,7 @@ published by hardlink/rename, never copied per action (docs/HARDLINK_STAGING.md)
 new scheduling stops and in-flight actions are joined. There is no process
 cancellation/timeout or persistent analysis server yet. Globs do not follow
 symlinks; potentially matching symlinks fail explicitly (Bazel can follow them).
-Full symbolic-macro schemas, test/run commands, runfiles trees,
+Full symbolic-macro schemas, the test command (and test targets under `run`),
 the full package-specification grammar and license metadata remain unsupported.
 External loading supports the
 bounded verified registry/archive, text-patch and pinned Git profiles described
@@ -208,8 +208,10 @@ follow links in `glob()` like Bazel (cycles and infinite expansions included,
 host-path reads only for repository-rule-generated repositories such as
 `local_jdk`) and accept `attr.label_keyed_string_dict` in repository rules and tags.
 [Runfiles](docs/RUNFILES.md) cover the analysis of `runfiles`, `ctx.runfiles`,
-DefaultInfo runfiles/executables, FilesToRunProvider and executable/test rules
-(no runfiles trees or manifest actions yet).
+DefaultInfo runfiles/executables, FilesToRunProvider and executable/test rules;
+[runfiles trees and `run`](docs/RUNFILES_TREES.md) build Bazel's runfiles
+trees, `MANIFEST` and `_repo_mapping` files, stage tool runfiles into actions
+and run executables (`bazel-rs run //target -- args`, `--script_path`).
 [The rule context surface](docs/CTX_SURFACE.md) gives `ctx` Bazel's 36 members:
 `ctx.fragments` with configuration fragments, `ctx.configuration`, output roots,
 `ctx.var` and Make-variable expansion, with unmodelled members failing explicitly.

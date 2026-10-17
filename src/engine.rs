@@ -115,6 +115,80 @@ struct ActionPlanning {
     /// The client environment inherited action variables resolve against,
     /// read once per build on first need (crate::action_env).
     client_environment: std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
+    /// The repositories of the packages each configured target transitively
+    /// depends on, itself included (RuleContext.getTransitivePackagesForRunfileRepoMappingManifest,
+    /// N23f): per configured target key, since select() can choose
+    /// different dependencies in different configurations.
+    repositories: BTreeMap<ConfiguredTargetKey, Arc<BTreeSet<String>>>,
+    /// The runfiles support nodes of each configured target with runfiles
+    /// support (N23f, Engine::plan_runfiles_support).
+    runfiles_nodes: BTreeMap<ConfiguredTargetKey, RunfilesNodes>,
+}
+
+/// What `bazel run` executes after the build (Engine::build_for_run).
+#[derive(Clone, Debug)]
+struct RunPlan {
+    /// FilesToRunProvider.getExecutable, `None` when not executable.
+    executable: Option<Artifact>,
+    /// The runfiles tree's MANIFEST (RunfilesSupport), if any.
+    tree: Option<Artifact>,
+    settings: crate::runfiles::RunSettings,
+}
+
+/// RunCommand.isExecutable (runtime/commands/RunCommand.java:1186-1211):
+/// whether a target may be run before it is built.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Runnable {
+    /// A file, an executable rule or an alias (AliasProvider.mayBeAlias).
+    Yes,
+    /// A test rule (TargetUtils.isTestRule).
+    Test,
+    No,
+}
+
+/// The executable of a `run` build (crate::engine::Engine::build_for_run).
+#[derive(Clone, Debug)]
+pub struct RunTarget {
+    /// The published executable (FilesToRunProvider.getExecutable).
+    pub executable: PathBuf,
+    /// The native runfiles root holding `bazel-out/...`: the published
+    /// executable sibling and its `.runfiles` tree (the execroot of
+    /// RunfilesSupport.getRunfilesDirectory), when the target has runfiles
+    /// support.
+    pub runfiles: Option<RunRunfiles>,
+    pub settings: crate::runfiles::RunSettings,
+}
+
+/// The runfiles of a `run` target.
+#[derive(Clone, Debug)]
+pub struct RunRunfiles {
+    /// `<root>/bazel-out/<cfg>/bin/<pkg>/<name>.runfiles`.
+    pub directory: PathBuf,
+    /// `<root>/bazel-out/<cfg>/bin/<pkg>/<name>`, a hardlink of the executable blob.
+    pub executable: PathBuf,
+    /// `<root>`, the analog of Bazel's execution root for BUILD_EXECROOT.
+    pub root: PathBuf,
+}
+
+/// The native actions of one RunfilesSupport (analysis/RunfilesSupport.java:280-347).
+#[derive(Clone, Debug)]
+struct RunfilesNodes {
+    /// SymlinkTreeAction's `<exe>.runfiles/MANIFEST`: built with the target
+    /// under --build_runfile_links, by `run` otherwise (absent without
+    /// runfiles manifests).
+    tree: Option<Artifact>,
+    /// SourceManifestAction's `<exe>.runfiles_manifest`
+    /// (--build_runfile_manifests).
+    manifest: Option<Artifact>,
+    /// RepoMappingManifestAction's `<exe>.repo_mapping`.
+    repo_mapping: Artifact,
+    /// The executable.
+    executable: Artifact,
+    /// Prefix conflicts reported by the manifest action, with the rule's
+    /// location and the conflict policy (ERROR when true).
+    conflicts: Vec<String>,
+    conflict_error: bool,
+    location: Option<String>,
 }
 
 /// An analyzed rule target in its configuration.
@@ -763,6 +837,14 @@ pub struct Engine {
     /// Source directories used as file targets (path -> label).
     /// Several labels (a directory and links to it, N28d) may name one.
     source_directories: BTreeMap<PathBuf, BTreeSet<Label>>,
+    /// The runfiles options of builds (N23f, crate::runfiles_tree).
+    runfiles_options: crate::runfiles_tree::RunfilesOptions,
+    /// The target of a `run` build and what it runs (Self::build_for_run).
+    run_request: Option<Label>,
+    run_plan: Option<RunPlan>,
+    /// Errors reported during a build that do not fail it, without the
+    /// `ERROR: ` prefix (runfiles prefix conflicts under ConflictPolicy.ERROR).
+    errors: Vec<String>,
 }
 
 impl Engine {
@@ -805,7 +887,16 @@ impl Engine {
             toolchain_implementations: BTreeSet::new(),
             deferred_duplicates: BTreeMap::new(),
             source_directories: BTreeMap::new(),
+            runfiles_options: crate::runfiles_tree::RunfilesOptions::default(),
+            run_request: None,
+            run_plan: None,
+            errors: Vec::new(),
         }
+    }
+
+    /// The runfiles options of later builds (`--build_runfile_links`, ...).
+    pub fn set_runfiles_options(&mut self, options: crate::runfiles_tree::RunfilesOptions) {
+        self.runfiles_options = options;
     }
 
     /// Analyze builds in `configuration` (default: the default configuration).
@@ -822,6 +913,12 @@ impl Engine {
     /// Bazel prints warnings before the error that stops it).
     pub fn take_warnings(&mut self) -> Vec<String> {
         std::mem::take(&mut self.warnings)
+    }
+
+    /// Errors reported by a build that did not fail it (printed with
+    /// Bazel's `ERROR: ` prefix by the CLI).
+    pub fn take_errors(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.errors)
     }
 
     fn ignored(&self, repository: &str) -> Result<Arc<IgnoredSubdirectories>, String> {
@@ -5532,6 +5629,107 @@ impl Engine {
         }
     }
 
+    /// The transitive repositories of the dependency `label` in
+    /// `config` (a rule transition's delegated key included); a dependency
+    /// that was not planned (a file, a no-config edge) contributes its own
+    /// repository.
+    fn dependency_repositories(
+        &self,
+        repositories: &BTreeMap<ConfiguredTargetKey, Arc<BTreeSet<String>>>,
+        label: Label,
+        config: Option<ConfigId>,
+    ) -> BTreeSet<String> {
+        let own = BTreeSet::from([label.repository.clone()]);
+        let Some(config) = config else {
+            return own;
+        };
+        let key = ConfiguredTargetKey::new(label, config);
+        let key = self.rule_delegations.get(&key).cloned().unwrap_or(key);
+        repositories
+            .get(&key)
+            .map(|known| (**known).clone())
+            .unwrap_or(own)
+    }
+
+    /// RunCommand.isExecutable of `label` (Runnable).
+    pub fn runnable(&mut self, label: &Label) -> Result<Runnable, String> {
+        Ok(match self.target(label)? {
+            Target::Source(_) | Target::Output(..) => Runnable::Yes,
+            Target::Rule(rule) if forwards(&rule) => Runnable::Yes,
+            Target::Rule(rule) => match &rule.custom {
+                Some(custom) if custom.declaration.builtin.kind.test => Runnable::Test,
+                Some(custom) if custom.declaration.builtin.kind.executable => Runnable::Yes,
+                _ => Runnable::No,
+            },
+        })
+    }
+
+    /// Build `label` for `bazel run` (RunCommand.runBuild/getBuiltTargets,
+    /// runtime/commands/RunCommand.java:394-568): its outputs, its
+    /// executable and its runfiles tree (always created,
+    /// RunCommand.ensureRunfilesBuilt, :996-1040).
+    pub fn build_for_run(
+        &mut self,
+        label: &Label,
+        cache: &Path,
+        jobs: usize,
+    ) -> Result<(BuildSummary, Option<RunTarget>), String> {
+        self.run_request = Some(label.clone());
+        self.run_plan = None;
+        let planned = self.plan_build(std::slice::from_ref(label));
+        self.run_request = None;
+        let (nodes, requested) = planned?;
+        let plan = self.run_plan.take();
+        let results = scheduler::execute_graph(cache, nodes, jobs)?;
+        let mut summary = BuildSummary::default();
+        for result in results.values() {
+            if result.cache_hit {
+                summary.cache_hits += 1;
+            } else {
+                summary.executed += 1;
+            }
+        }
+        for (key, mut artifact) in requested {
+            if let Some((id, index)) = &artifact.producer {
+                artifact.real = results[id].outputs[*index].clone();
+            }
+            summary.outputs.push((key.label, artifact.real));
+        }
+        let published = |artifact: &Artifact| match &artifact.producer {
+            Some((id, index)) => results[id].outputs[*index].clone(),
+            None => artifact.real.clone(),
+        };
+        let Some(plan) = plan else {
+            return Ok((summary, None));
+        };
+        let Some(executable) = &plan.executable else {
+            return Ok((summary, None));
+        };
+        let runfiles = plan.tree.as_ref().and_then(|tree| {
+            let manifest = published(tree);
+            let directory = manifest.parent()?.to_path_buf();
+            // `<root>/<tree exec dir>`: strip the exec path to find the root.
+            let exec_directory = tree.exec.parent()?;
+            let mut root = directory.clone();
+            for _ in exec_directory.components() {
+                root = root.parent()?.to_path_buf();
+            }
+            Some(RunRunfiles {
+                executable: root.join(&executable.exec),
+                directory,
+                root,
+            })
+        });
+        Ok((
+            summary,
+            Some(RunTarget {
+                executable: published(executable),
+                runfiles,
+                settings: plan.settings,
+            }),
+        ))
+    }
+
     /// Phase 2 of one planned target (in plan order): runs Starlark
     /// implementations and plans actions (ActionPlanning).
     fn plan_target(
@@ -5556,8 +5754,38 @@ impl Engine {
             source_inputs,
             client_environment,
             native_output_groups,
+            repositories,
+            runfiles_nodes,
             ..
         } = state;
+        // The transitive repositories of this configured target: its own and
+        // those of every (configured) dependency edge; Starlark rules redo
+        // this below with their resolved dependencies and toolchains.
+        let mut transitive: BTreeSet<String> = BTreeSet::from([rule.label.repository.clone()]);
+        let edge_exec = self.exec_configurations.get(key).copied();
+        for edge in dependency_edges(rule) {
+            let Ok(label) = self.resolve_rule_src(rule, &edge.label) else {
+                continue;
+            };
+            let edge_config = match &edge.cfg {
+                EdgeCfg::Target => Some(key.config),
+                EdgeCfg::Exec(None) => Some(edge_exec.unwrap_or(key.config)),
+                EdgeCfg::Exec(Some(group)) => Some(
+                    self.group_exec_configurations
+                        .get(&(key.clone(), group.clone()))
+                        .copied()
+                        .unwrap_or(key.config),
+                ),
+                EdgeCfg::NoConfig => None,
+                EdgeCfg::Starlark(attribute) => self
+                    .edge_configs
+                    .get(key)
+                    .and_then(|configs| configs.get(attribute))
+                    .copied(),
+            };
+            transitive.extend(self.dependency_repositories(repositories, label, edge_config));
+        }
+        repositories.insert(key.clone(), Arc::new(transitive.clone()));
         let key = key.clone();
         let config = key.config;
         let output_root = self.configurations.output_root(config);
@@ -5674,6 +5902,15 @@ impl Engine {
                     add_target(self.resolve_rule_src(rule, &text)?);
                 }
             }
+            let mut transitive: BTreeSet<String> = BTreeSet::from([rule.label.repository.clone()]);
+            for (label, edge_config, _) in &dependency_labels {
+                transitive.extend(self.dependency_repositories(
+                    repositories,
+                    label.clone(),
+                    Some(*edge_config),
+                ));
+            }
+            repositories.insert(key.clone(), Arc::new(transitive.clone()));
             for (label, edge_config, map_key) in dependency_labels {
                 let artifacts = self.artifacts(&label, edge_config, dry, declared)?;
                 let files = artifacts.iter().map(Artifact::file).collect::<Vec<_>>();
@@ -5709,6 +5946,12 @@ impl Engine {
                         )
                     })?;
                     available.insert(file, artifact.clone());
+                }
+                // N23f: the FilesToRunProvider manifests are generated files.
+                for file in runfiles.manifests() {
+                    if let Some(artifact) = artifact_index.get(&file) {
+                        available.insert(file, artifact.clone());
+                    }
                 }
                 let is_rule = matches!(&target, Target::Rule(rule) if !matches!(rule.kind, RuleKind::PackageGroup(_)));
                 let mut providers = custom_providers
@@ -5950,6 +6193,7 @@ impl Engine {
                 output_root: &output_root,
                 action_owner: &action_owner,
                 action_env: action_env.clone(),
+                runfiles: self.runfiles_options,
             };
             let (mut analyzed, mut printed) = analysis::analyze_buffered(
                 &analyzed_rule,
@@ -6039,8 +6283,26 @@ impl Engine {
                 }
             }
             runfiles_info.insert(key.clone(), analyzed.runfiles.clone());
-            for registered in analyzed.actions {
-                let inputs = registered
+            if let Some(nodes_of_target) = self.plan_runfiles_support(
+                &key,
+                rule,
+                &analyzed.runfiles,
+                &transitive,
+                &action_owner,
+                &main_ignored,
+                &available,
+                RunfilesPlanning {
+                    artifact_index,
+                    declared,
+                    producers,
+                    nodes,
+                    source_inputs,
+                },
+            )? {
+                runfiles_nodes.insert(key.clone(), nodes_of_target);
+            }
+            for mut registered in analyzed.actions {
+                let mut inputs = registered
                     .inputs
                     .iter()
                     .map(|file| {
@@ -6052,6 +6314,46 @@ impl Engine {
                         })
                     })
                     .collect::<Result<Vec<_>, _>>()?;
+                // N23f: the tools' runfiles trees, staged at their tree paths
+                // (SpawnInputExpander.addSingleRunfilesTreeToInputs,
+                // exec/SpawnInputExpander.java:87-135); empty files are
+                // empty parameter-file-like inputs (VirtualActionInput.EMPTY_MARKER).
+                for tree in &registered.runfiles_trees {
+                    for (path, file) in &tree.mapping {
+                        let destination = Path::new(&tree.directory).join(path);
+                        match file {
+                            Some(file) => {
+                                let mut artifact = available
+                                    .get(file)
+                                    .or_else(|| artifact_index.get(file))
+                                    .cloned()
+                                    .ok_or_else(|| {
+                                        format!(
+                                            "{}: tool runfile has no declared artifact: {}",
+                                            rule.label, file.path
+                                        )
+                                    })?;
+                                artifact.exec = destination;
+                                inputs.push(artifact);
+                            }
+                            None => {
+                                if !registered
+                                    .action
+                                    .extra
+                                    .param_files
+                                    .iter()
+                                    .any(|(existing, _)| *existing == destination)
+                                {
+                                    registered
+                                        .action
+                                        .extra
+                                        .param_files
+                                        .push((destination, Vec::new()));
+                                }
+                            }
+                        }
+                    }
+                }
                 source_inputs.insert(registered.action.id.clone(), source_paths(&inputs));
                 // The action's exec group decides its execution platform and
                 // exec properties (RuleContext.getActionOwner(execGroup)).
@@ -6062,13 +6364,42 @@ impl Engine {
                     self.action_executions
                         .insert(registered.action.id.clone(), execution.clone());
                 }
+                let empties: Vec<(PathBuf, Vec<u8>)> = registered
+                    .action
+                    .extra
+                    .param_files
+                    .iter()
+                    .filter(|(path, content)| {
+                        content.is_empty()
+                            && registered
+                                .runfiles_trees
+                                .iter()
+                                .any(|tree| path.starts_with(&tree.directory))
+                    })
+                    .cloned()
+                    .collect();
                 let mut action = registered.action;
                 if action.write.is_none() && action.extra.transform.is_none() {
                     action.execution_info = rule_execution_info(rule);
                     action.remote_unsupported = self.remote_platform_gate(rule, config, execution);
                 }
                 let mut planned = plan_action(action, inputs, &main_ignored, client_environment)?;
-                planned.deferred = registered.deferred;
+                // A deferred command line recomputes the parameter files;
+                // the runfiles empty files are kept.
+                planned.deferred = match (registered.deferred, empties.is_empty()) {
+                    (Some(deferred), false) => {
+                        let inner = deferred.0;
+                        Some(crate::scheduler::Deferred(Arc::new(
+                            move |listings: &crate::scheduler::TreeListings,
+                                  action: &mut Action| {
+                                inner(listings, action)?;
+                                action.extra.param_files.extend(empties.iter().cloned());
+                                Ok(())
+                            },
+                        )))
+                    }
+                    (deferred, _) => deferred,
+                };
                 nodes.push(planned);
             }
             let defaults = analyzed
@@ -6502,6 +6833,7 @@ impl Engine {
             declared,
             mut nodes,
             source_inputs,
+            runfiles_nodes,
             ..
         } = state;
         let mut requested: Vec<(ConfiguredTargetKey, Artifact)> = Vec::new();
@@ -6535,6 +6867,66 @@ impl Engine {
                     }
                 }
             }
+            // N23f: the runfiles tree artifact of an executable
+            // (RuleConfiguredTargetBuilder.java:144-158): RunfilesTreeAction
+            // needs the MANIFEST (SymlinkTreeAction, --build_runfile_links),
+            // or the input manifest, and the repository mapping manifest.
+            // `run` always creates the tree (RunCommand.ensureRunfilesBuilt).
+            let actual_key = self.configurations.top_key(actual.clone());
+            if let Some(support) = runfiles_nodes.get(&actual_key) {
+                let options = self.runfiles_options;
+                let running = self.run_request.as_ref() == Some(label);
+                let mut artifacts = vec![support.repo_mapping.clone()];
+                artifacts.extend(support.manifest.clone());
+                if options.links() || running {
+                    artifacts.extend(support.tree.clone());
+                }
+                for artifact in artifacts {
+                    if seen.insert((key.clone(), artifact.file())) {
+                        hidden.push((key.clone(), artifact));
+                    }
+                }
+            }
+            if self.run_request.as_ref() == Some(label) {
+                let files_to_run = runfiles_info
+                    .get(&actual_key)
+                    .and_then(|runfiles| runfiles.files_to_run.clone());
+                let executable = match runfiles_nodes.get(&actual_key) {
+                    Some(support) => Some(support.executable.clone()),
+                    None => match files_to_run.as_ref().and_then(|f| f.executable.as_ref()) {
+                        Some(file) => Some(artifact_index.get(file).cloned().ok_or_else(|| {
+                            format!(
+                                "{label}: executable has no declared artifact: {}",
+                                file.path
+                            )
+                        })?),
+                        // A file target: its own (single) artifact.
+                        None if !runfiles_info.contains_key(&actual_key) => {
+                            let artifacts = self.artifacts(actual, top, &dry, &declared)?;
+                            match artifacts.as_slice() {
+                                [single] => Some(single.clone()),
+                                _ => None,
+                            }
+                        }
+                        None => None,
+                    },
+                };
+                if let Some(executable) = &executable
+                    && seen.insert((key.clone(), executable.file()))
+                {
+                    hidden.push((key.clone(), executable.clone()));
+                }
+                self.run_plan = Some(RunPlan {
+                    executable,
+                    tree: runfiles_nodes
+                        .get(&actual_key)
+                        .and_then(|support| support.tree.clone()),
+                    settings: runfiles_info
+                        .get(&actual_key)
+                        .map(|runfiles| runfiles.run.clone())
+                        .unwrap_or_default(),
+                });
+            }
         }
         // Analyze everything first, but execute only the actions reachable from
         // requested outputs. Empty DefaultInfo must not execute unused actions.
@@ -6561,6 +6953,26 @@ impl Engine {
             }
         }
         nodes.retain(|node| required.contains(&node.action.id));
+        // SourceManifestAction.newDeterministicWriter (:233-273): prefix
+        // conflicts of an executed manifest action are events at the
+        // owner's location, errors under ConflictPolicy.ERROR.
+        for support in runfiles_nodes.values() {
+            let executed = support
+                .manifest
+                .as_ref()
+                .and_then(|manifest| manifest.producer.as_ref())
+                .is_some_and(|(id, _)| required.contains(id));
+            if executed {
+                for message in &support.conflicts {
+                    let text = located(support.location.as_deref(), message.clone());
+                    if support.conflict_error {
+                        self.errors.push(text);
+                    } else {
+                        self.warnings.push(text);
+                    }
+                }
+            }
+        }
         // Missing declared source files fail only where needed: as requested
         // outputs or as inputs of an executed action (ArtifactFunction
         // "missing input file", skyframe/ArtifactFunction.java:79-90, 404-430;
@@ -7109,6 +7521,230 @@ fn source_paths(inputs: &[Artifact]) -> Vec<PathBuf> {
         .filter(|artifact| artifact.producer.is_none() && seen.insert(&artifact.real))
         .map(|artifact| artifact.real.clone())
         .collect()
+}
+
+/// The planning state a runfiles support's nodes are registered in.
+struct RunfilesPlanning<'a> {
+    artifact_index: &'a mut BTreeMap<File, Artifact>,
+    declared: &'a mut Declared,
+    producers: &'a mut BTreeMap<PathBuf, ConfiguredTargetKey>,
+    nodes: &'a mut Vec<PlannedAction>,
+    source_inputs: &'a mut BTreeMap<String, Vec<PathBuf>>,
+}
+
+impl RunfilesPlanning<'_> {
+    /// Register the only output of a native runfiles node.
+    fn output(
+        &mut self,
+        key: &ConfiguredTargetKey,
+        id: &str,
+        file: &File,
+    ) -> Result<Artifact, String> {
+        let exec = PathBuf::from(&file.path);
+        register_output(self.producers, &exec, key)?;
+        let artifact = Artifact {
+            directory: false,
+            real: exec.clone(),
+            exec: exec.clone(),
+            producer: Some((id.to_owned(), 0)),
+            owner: file.owner.clone(),
+        };
+        self.artifact_index.insert(file.clone(), artifact.clone());
+        self.declared.insert((key.config, exec), artifact.clone());
+        Ok(artifact)
+    }
+}
+
+/// `file` with `suffix` appended to its paths (RunfilesSupport's derived
+/// artifacts next to the executable).
+fn suffixed_file(file: &File, suffix: &str) -> File {
+    File {
+        is_directory: false,
+        path: format!("{}{suffix}", file.path),
+        short_path: format!("{}{suffix}", file.short_path),
+        owner: file.owner.clone(),
+        is_source: false,
+    }
+}
+
+impl Engine {
+    /// RunfilesSupport.create (analysis/RunfilesSupport.java:280-347) for a
+    /// target with runfiles support: RepoMappingManifestAction (a native
+    /// write), SourceManifestAction (Transform::RunfilesManifest, with
+    /// --build_runfile_manifests) and SymlinkTreeAction/RunfilesTreeAction
+    /// (Transform::RunfilesTree). The tree node is always planned (`run`
+    /// creates the tree without --build_runfile_links, RunCommand.java:996-1040);
+    /// only reachable nodes execute.
+    #[allow(clippy::too_many_arguments)]
+    fn plan_runfiles_support(
+        &self,
+        key: &ConfiguredTargetKey,
+        rule: &Rule,
+        target: &crate::runfiles::TargetRunfiles,
+        transitive: &BTreeSet<String>,
+        action_owner: &str,
+        main_ignored: &IgnoredSubdirectories,
+        available: &BTreeMap<File, Artifact>,
+        mut planning: RunfilesPlanning<'_>,
+    ) -> Result<Option<RunfilesNodes>, String> {
+        let Some(files_to_run) = &target.files_to_run else {
+            return Ok(None);
+        };
+        let (Some(runfiles), Some(executable), Some(repo_mapping)) = (
+            files_to_run.runfiles.as_ref(),
+            files_to_run.executable.as_ref(),
+            files_to_run.repo_mapping_manifest.as_ref(),
+        ) else {
+            return Ok(None);
+        };
+        let options = self.runfiles_options;
+        let lookup = |index: &BTreeMap<File, Artifact>, file: &File| -> Result<Artifact, String> {
+            available
+                .get(file)
+                .or_else(|| index.get(file))
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "{}: runfiles file has no declared artifact identity: {}",
+                        rule.label, file.path
+                    )
+                })
+        };
+        let executable_artifact = lookup(planning.artifact_index, executable)?;
+        // RepoMappingManifestAction.
+        let repositories = &self.repositories;
+        let content = crate::runfiles_tree::repo_mapping_manifest(
+            runfiles,
+            transitive,
+            &|repository: &str| repositories.mapping(repository).cloned(),
+            options.compact_repo_mapping,
+        )?;
+        let id = format!("{action_owner}#repo_mapping");
+        planning.nodes.push(PlannedAction {
+            action: Action {
+                id: id.clone(),
+                command: String::new(),
+                inputs: Vec::new(),
+                outputs: vec![PathBuf::from(&repo_mapping.path)],
+                write: Some(crate::action::WriteAction {
+                    content,
+                    executable: false,
+                }),
+                program: None,
+                arguments: Vec::new(),
+                environment: BTreeMap::new(),
+                shell_strict: false,
+                extra: crate::action::ActionExtra::default(),
+                ..Action::default()
+            },
+            dependencies: Vec::new(),
+            deferred: None,
+        });
+        let repo_mapping_artifact = planning.output(key, &id, repo_mapping)?;
+        // The tree mapping; conflicts are reported by the manifest action.
+        let mut conflicts = Vec::new();
+        let mapping = runfiles.runfiles_inputs(Some(repo_mapping), Some(&mut conflicts));
+        let mut inputs: Vec<Artifact> = Vec::new();
+        let mut entries: Vec<(String, Option<PathBuf>)> = Vec::new();
+        for (path, file) in &mapping {
+            match file {
+                Some(file) => {
+                    let artifact = if file == repo_mapping {
+                        repo_mapping_artifact.clone()
+                    } else {
+                        lookup(planning.artifact_index, file)?
+                    };
+                    entries.push((path.clone(), Some(artifact.exec.clone())));
+                    inputs.push(artifact);
+                }
+                None => entries.push((path.clone(), None)),
+            }
+        }
+        let action = |id: &str, outputs: Vec<PathBuf>, transform| Action {
+            id: id.to_owned(),
+            command: String::new(),
+            inputs: Vec::new(),
+            outputs,
+            write: None,
+            program: None,
+            arguments: Vec::new(),
+            environment: BTreeMap::new(),
+            shell_strict: false,
+            extra: crate::action::ActionExtra {
+                transform: Some(transform),
+                ..crate::action::ActionExtra::default()
+            },
+            ..Action::default()
+        };
+        // Native transforms inherit no client environment (crate::action_env).
+        let no_client_environment = std::cell::OnceCell::new();
+        // SourceManifestAction: the input manifest.
+        let input_manifest = suffixed_file(executable, ".runfiles_manifest");
+        let manifest_artifact = if options.build_runfile_manifests {
+            let id = format!("{action_owner}#runfiles_manifest");
+            let planned = plan_action(
+                action(
+                    &id,
+                    vec![PathBuf::from(&input_manifest.path)],
+                    crate::action::Transform::RunfilesManifest {
+                        entries: entries.clone(),
+                    },
+                ),
+                inputs.clone(),
+                main_ignored,
+                &no_client_environment,
+            )?;
+            planning
+                .source_inputs
+                .insert(id.clone(), source_paths(&inputs));
+            planning.nodes.push(planned);
+            Some(planning.output(key, &id, &input_manifest)?)
+        } else {
+            None
+        };
+        // SymlinkTreeAction + RunfilesTreeAction. Without manifests (`run`
+        // then fails, RunCommand.java:503-513) the input manifest is still
+        // needed by the tree node, so the tree is only planned with them.
+        let tree_file = suffixed_file(executable, ".runfiles/MANIFEST");
+        let tree_id = format!("{action_owner}#runfiles_tree");
+        let tree = match &manifest_artifact {
+            Some(manifest) => {
+                let mut tree_inputs = inputs.clone();
+                tree_inputs.push(manifest.clone());
+                tree_inputs.push(executable_artifact.clone());
+                let planned = plan_action(
+                    action(
+                        &tree_id,
+                        vec![PathBuf::from(&tree_file.path)],
+                        crate::action::Transform::RunfilesTree {
+                            entries,
+                            manifest: manifest.exec.clone(),
+                            executable: Some(executable_artifact.exec.clone()),
+                            create: options.enable_runfiles,
+                        },
+                    ),
+                    tree_inputs.clone(),
+                    main_ignored,
+                    &no_client_environment,
+                )?;
+                planning
+                    .source_inputs
+                    .insert(tree_id.clone(), source_paths(&tree_inputs));
+                planning.nodes.push(planned);
+                Some(planning.output(key, &tree_id, &tree_file)?)
+            }
+            None => None,
+        };
+        Ok(Some(RunfilesNodes {
+            tree,
+            manifest: manifest_artifact,
+            repo_mapping: repo_mapping_artifact,
+            executable: executable_artifact,
+            conflicts,
+            conflict_error: runfiles.conflict_error(),
+            location: rule.location.clone(),
+        }))
+    }
 }
 
 fn plan_action(

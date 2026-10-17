@@ -100,6 +100,9 @@ pub(crate) enum Behavior {
     TestEnvironment,
     /// C++ toolchain features, variables and tools (`crate::cc_features`).
     CcFeatures(crate::cc_features::Op),
+    /// PyBuiltins.mergeRunfilesWithGeneratedInitsEmptyFilesSupplier
+    /// (rules/python/PyBuiltins.java:223-250).
+    PyMergeGeneratedInits,
 }
 
 /// The four Java builtin namespaces plus `cc_internal`; each has its own
@@ -951,6 +954,31 @@ fn call<'v>(
             "{qualified} {NOT_IMPLEMENTED} ({})",
             domain.describe()
         ))),
+        Behavior::PyMergeGeneratedInits => {
+            // `_py_builtins.merge_runfiles_with_generated_inits_empty_files_supplier(ctx, runfiles)`:
+            // both parameters are named-only (PyBuiltins.java:223-236).
+            const FUNCTION: &str = "merge_runfiles_with_generated_inits_empty_files_supplier";
+            let bound = bind_styled(
+                Style::Builtin,
+                FUNCTION,
+                &[
+                    param("ctx", false, true, true),
+                    param("runfiles", false, true, true),
+                ],
+                args,
+                heap,
+            )?;
+            let ctx = bound[0].expect("required parameter");
+            if ctx.get_type() != "ctx" {
+                return Err(type_error(FUNCTION, "ctx", ctx, "ctx"));
+            }
+            let runfiles = bound[1].expect("required parameter");
+            crate::runfiles::merge_with_generated_inits(runfiles, heap).map_err(|error| match error
+            {
+                Some(message) => failure(message),
+                None => type_error(FUNCTION, "runfiles", runfiles, "runfiles"),
+            })
+        }
         Behavior::CcInternalExports => {
             bind_styled(style, name, &[], args, heap)?;
             crate::cc_common::internal_exports(eval)
@@ -1548,9 +1576,14 @@ fn py_internal(heap: &FrozenHeap) -> FrozenValue {
     let mut fields: Vec<(&'static str, FrozenValue)> = PY_INTERNAL_FUNCTIONS
         .iter()
         .map(|(field, def, qualified)| {
+            let behavior = if *field == "merge_runfiles_with_generated_inits_empty_files_supplier" {
+                Behavior::PyMergeGeneratedInits
+            } else {
+                unimplemented
+            };
             (
                 *field,
-                builtins_function(heap, def, MODULE, qualified, unimplemented),
+                builtins_function(heap, def, MODULE, qualified, behavior),
             )
         })
         .collect();

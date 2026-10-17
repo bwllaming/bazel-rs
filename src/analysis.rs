@@ -1186,6 +1186,7 @@ pub fn analyze_in(
         output_root: crate::label::GENERATED_EXEC_ROOT,
         action_owner: &owner,
         action_env: Arc::new(crate::configuration::NativeOptions::default().action_environment()),
+        runfiles: crate::runfiles_tree::RunfilesOptions::default(),
     };
     let (result, printed) = analyze_buffered(rule, dependencies, repositories, &target);
     for line in printed {
@@ -1202,6 +1203,8 @@ pub(crate) struct ConfiguredOutputs<'a> {
     pub action_owner: &'a str,
     /// The configuration's shell action environment (crate::action_env).
     pub action_env: Arc<crate::action_env::ActionEnvironment>,
+    /// Which runfiles manifests RunfilesSupport declares (N23f).
+    pub runfiles: crate::runfiles_tree::RunfilesOptions,
 }
 
 /// `print()` output of an implementation, kept until the caller decides
@@ -1431,7 +1434,18 @@ fn analyze_inner(
                 },
                 predeclared,
                 context.runfiles.default_executable.as_ref(),
+                target.runfiles,
             )?;
+            let mut target_runfiles = target_runfiles;
+            // RunfilesSupport.computeActionEnvironment (:612-619): a Starlark
+            // rule's returned RunEnvironmentInfo.
+            if let Some((environment, inherited)) = custom
+                .get(crate::run_environment_info::PROVIDER_ID)
+                .and_then(|info| crate::run_environment_info::environment(*info))
+            {
+                target_runfiles.run.environment = environment;
+                target_runfiles.run.inherited = inherited;
+            }
             // checkDeclaredProviders (analysis/starlark/StarlarkRuleConfiguredTargetUtil.java:138-148)
             // iterates getStarlarkProviders() only: built-in provider keys
             // (DefaultInfo, OutputGroupInfo, ...) are never checked (:141).
@@ -1520,9 +1534,6 @@ fn analyze_inner(
             ))
         })?;
     for file in files.iter().chain(&provider_files) {
-        if let Some(gap) = context.runfiles.manifest_gap(file) {
-            bail!("{gap}");
-        }
         ensure!(
             context.known_file(file),
             "DefaultInfo contains unknown file {}",
@@ -1533,9 +1544,6 @@ fn analyze_inner(
     // FilesToRunProvider manifests are declared but have no action yet
     // (docs/RUNFILES.md).
     for file in target_runfiles.files() {
-        if let Some(gap) = context.runfiles.manifest_gap(&file) {
-            bail!("{gap}");
-        }
         ensure!(
             context.known_file(&file),
             "runfiles contain unknown file {}",

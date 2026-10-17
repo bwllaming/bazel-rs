@@ -121,10 +121,11 @@ runs eagerly at `add_joined` (Bazel: when the template action executes).
 * `execution_requirements` (string dict) is accepted and keyed; it has no
   local effect. `mnemonic`, `progress_message` and `resource_set` are
   accepted; `exec_group` and `toolchain` choose the action's exec group with
-  Bazel's checks (N35, docs/EXEC_GROUPS.md); nonempty `input_manifests`
-  fail explicitly. `param 'outputs' may not be empty` is Bazel's text.
-* Tools or executables whose FilesToRunProvider carries runfiles still fail
-  explicitly: runfiles trees are not built (N23f, docs/RUNFILES.md).
+  Bazel's checks (N35, docs/EXEC_GROUPS.md); `input_manifests` (a sequence
+  or None) is ignored like Bazel's legacy argument (N23f). `param 'outputs'
+  may not be empty` is Bazel's text.
+* Tools or executables whose FilesToRunProvider carries runfiles attach their
+  runfiles tree to the spawn (N23f, docs/RUNFILES_TREES.md).
 
 ## transform_version_file / transform_info_file
 

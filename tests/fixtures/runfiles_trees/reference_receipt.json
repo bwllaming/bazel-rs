@@ -1,0 +1,771 @@
+{
+ "schema": "n23f-runfiles-trees-reference-receipt/v1",
+ "purpose": "N23f runfiles trees and `run`: paired native vs genuine Bazel 9.3.0 capture. Evidence only; no test reads it.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private> --output_base=<private> --host_jvm_args=-Xmx512m",
+  "command_flags": "--registry=file://<private copy of tests/fixtures/builtin_modules/registry> --repository_disable_download --incompatible_autoload_externally= --lockfile_mode=off --noshow_progress --color=no --curses=no --repository_cache=<private, seeded> --distdir=<private> --shell_executable=/bin/bash",
+  "distdir": [
+   "platforms-1.0.0.tar.gz (tests/fixtures/label_passthrough)"
+  ],
+  "repository_cache": "one private cache shared by every reference instance, seeded by sha256 integrity with: abseil-cpp-20250814.1.tar.gz, apple_support/2.5.2/module_dot_bazel_version.patch, bazel_features-v1.42.1.tar.gz, bazel_features/1.42.1/module_dot_bazel_version.patch, buildozer-v8.5.1.tar.gz, googletest-1.17.0.tar.gz, platforms-1.0.0.tar.gz, protobuf-33.4.bazel.tar.gz, pybind11_bazel-2.12.0.zip, rules_apple.4.1.0.tar.gz, rules_cc-0.2.17.tar.gz, rules_cc/0.2.17/module_dot_bazel_version.patch, rules_java-9.1.0.tar.gz, rules_jvm_external-6.7.tar.gz, rules_kotlin-v1.9.6.tar.gz, rules_kotlin/1.9.6/module_dot_bazel_version.patch, rules_license-1.0.0.tar.gz, rules_proto-7.1.0.tar.gz, rules_python-1.7.0.tar.gz, rules_python/1.7.0/module_dot_bazel_version.patch, rules_shell-v0.6.1.tar.gz, rules_shell/0.6.1/module_dot_bazel_version.patch, rules_swift.3.1.2.tar.gz, rules_swift/3.1.2/module_dot_bazel_version.patch, stardoc-0.7.2.tar.gz"
+ },
+ "native": {
+  "binary": "target/debug/bazel-rs",
+  "sha256": "d954ab2e712227b9c29097a1811002e891ff24f3cafa7185f062ab9141d52f29",
+  "flags": "--ignore_all_rc_files --cache-dir=<private> (S1 also --experimental-builtin-modules --registry=<same registry>)"
+ },
+ "script": {
+  "path": "artifacts/runfiles_trees-capture.py",
+  "sha256": "8bd7fb1e0169306dbf16efc0883b54c6ef12fc9ab06424582ffd914574d1965a"
+ },
+ "fixture": {
+  "source": "tests/runfiles_trees.rs",
+  "sha256": "ca7adc70c2b8ebdbf56baa6b57466c820f6e8d08986cb4cf4befe044b8798751"
+ },
+ "source_state": {
+  "base_commit": "2356bf4",
+  "head": "2356bf4f8460317f89363b1b4910028d6bfc3617",
+  "diff_sha256": "32d6caeb8ba71f2d53b19a27a51ea7790201da6156b6f0c49392ac2779fb16fd",
+  "diff_scope": "git diff 2356bf4 plus the bytes of untracked non-ignored files, in path order"
+ },
+ "harness_adjustments": [
+  "rerun (the one allowed): a private repository cache seeded by integrity replaces the distdir archives so the registry patches of rules_shell and the test toolchain modules resolve with --repository_disable_download (run 1: download is disabled for S1/R5test); pkg/run.sh is removed after each engine's script scenarios (run 1: the reference's leftover run.sh appeared in native R1cwd `ls`); R5 compares the first error message (run 1: Bazel adds `Build did NOT complete successfully`); native explicit gaps are EXPECTED_NATIVE_UNSUPPORTED. Run 1: 76 EXACT, 11 MISMATCH, 1 REFERENCE_ONLY; no native source change between the runs."
+ ],
+ "post_capture_changes": [
+  "receipt annotation only (no rerun): S1 rows and R5test exit/stdout rows reclassified UNAVAILABLE (the reference failed to fetch @@rules_shell+ offline), with explanations; counts recomputed.",
+  "documentation only: docs/RUNFILES_TREES.md (new), docs/RUNFILES.md, docs/RUN_ENVIRONMENT_INFO.md, docs/ACTIONS_PARAMS.md, docs/BAZELRC.md, docs/ROADMAP.md, docs/capabilities.json (embedded by `capabilities`), README.md, artifacts/PROGRESS.md; no source or test change after the capture.",
+  "post-review source change (no recapture): the executable sibling next to <name>.runfiles is a hardlink of the executable's content-addressed blob instead of a symlink (src/action.rs; manifest field sibling_file with digest and mode), so /proc/self/exe and realpath($0) resolve next to the tree like Bazel; captured observations are unaffected (the capture normalizes argv0 via $BUILD_EXECROOT and never read the sibling's link target). New test executable_sibling_resolves_proc_self_exe_and_realpath_to_its_runfiles.",
+  "post-review source change (no recapture): the transitive-repository map behind <exe>.repo_mapping is keyed by configured target (src/engine.rs dependency_repositories, rule-transition delegation followed) instead of by label, so select() differences between configurations give each configuration its own source-repository lines; the capture fixture analyzes every target in one configuration, so its rows are unaffected. New test repo_mapping_source_repositories_follow_each_configuration (verified to fail with the previous label-keyed union).",
+  "post-review docs: docs/RUNFILES_TREES.md and docs/capabilities.json describe both changes."
+ ],
+ "environment": "env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 HOME/TMPDIR private, umask 022; scratch /tmp/opencode/n23f-capture removed after",
+ "normalization": "Bazel <ob>/execroot/_main/bazel-out/k8-fastbuild/bin/ and native <cache>/actions/<key>/outputs/bazel-out/rust-fastbuild/bin/ -> <BIN>/; execroot (Bazel <ob>/execroot/_main, native <cache>/actions/<key>/outputs) -> <EXECROOT>; Bazel <ob>/external/ and native <ws>/ext/ (the local_path_override root of ext+) -> <EXT>/; workspace -> <WS>; UUIDs -> <UUID>; k8-fastbuild/rust-fastbuild -> <CFG>; message prefixes ERROR:/INFO:/bazel-rs: stripped",
+ "started_at": "2026-10-17T11:34:26.520364+00:00",
+ "finished_at": "2026-10-17T11:35:41.686160+00:00",
+ "counts": {
+  "EXACT": 75,
+  "REFERENCE_ONLY": 1,
+  "MISMATCH": 6,
+  "UNAVAILABLE": 5,
+  "EXPECTED_NATIVE_UNSUPPORTED": 1
+ },
+ "rows": [
+  {
+   "case": "B1|b:MANIFEST_link",
+   "reference": "<BIN>/pkg/b.runfiles_manifest",
+   "native": "<BIN>/pkg/b.runfiles_manifest",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B1|b:manifest_bytes",
+   "reference": "_main/pkg/b <BIN>/pkg/b\n_main/pkg/b.gen <BIN>/pkg/b.gen\n_main/pkg/d.txt <WS>/pkg/d.txt\n_main/sym/d.txt <WS>/pkg/d.txt\n_repo_mapping <BIN>/pkg/b.repo_mapping\next+/data/e.txt <EXT>/ext+/data/e.txt\next+/rooted.txt <BIN>/pkg/b.gen\nrootsym.txt <WS>/pkg/d.txt\n",
+   "native": "_main/pkg/b <BIN>/pkg/b\n_main/pkg/b.gen <BIN>/pkg/b.gen\n_main/pkg/d.txt <WS>/pkg/d.txt\n_main/sym/d.txt <WS>/pkg/d.txt\n_repo_mapping <BIN>/pkg/b.repo_mapping\next+/data/e.txt <EXT>/ext+/data/e.txt\next+/rooted.txt <BIN>/pkg/b.gen\nrootsym.txt <WS>/pkg/d.txt\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B1|b:manifest_mode",
+   "reference": "0o555",
+   "native": "0o555",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B1|b:repo_mapping_bytes",
+   "reference": ",ext,ext+\n,rf,_main\next+,ext,ext+\n",
+   "native": ",ext,ext+\n,rf,_main\next+,ext,ext+\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B1|b:tree",
+   "reference": [
+    "MANIFEST -> <BIN>/pkg/b.runfiles_manifest",
+    "_main/",
+    "_main/pkg/",
+    "_main/pkg/b -> <BIN>/pkg/b",
+    "_main/pkg/b.gen -> <BIN>/pkg/b.gen",
+    "_main/pkg/d.txt -> <WS>/pkg/d.txt",
+    "_main/sym/",
+    "_main/sym/d.txt -> <WS>/pkg/d.txt",
+    "_repo_mapping -> <BIN>/pkg/b.repo_mapping",
+    "ext+/",
+    "ext+/data/",
+    "ext+/data/e.txt -> <EXT>/ext+/data/e.txt",
+    "ext+/rooted.txt -> <BIN>/pkg/b.gen",
+    "rootsym.txt -> <WS>/pkg/d.txt"
+   ],
+   "native": [
+    "MANIFEST -> <BIN>/pkg/b.runfiles_manifest",
+    "_main/",
+    "_main/pkg/",
+    "_main/pkg/b -> <BIN>/pkg/b",
+    "_main/pkg/b.gen -> <BIN>/pkg/b.gen",
+    "_main/pkg/d.txt -> <WS>/pkg/d.txt",
+    "_main/sym/",
+    "_main/sym/d.txt -> <WS>/pkg/d.txt",
+    "_repo_mapping -> <BIN>/pkg/b.repo_mapping",
+    "ext+/",
+    "ext+/data/",
+    "ext+/data/e.txt -> <EXT>/ext+/data/e.txt",
+    "ext+/rooted.txt -> <BIN>/pkg/b.gen",
+    "rootsym.txt -> <WS>/pkg/d.txt"
+   ],
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B1|exit",
+   "reference": 0,
+   "native": 0,
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B2|exit",
+   "reference": 0,
+   "native": 0,
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B2|outer:MANIFEST_link",
+   "reference": "<BIN>/pkg/outer.runfiles_manifest",
+   "native": "<BIN>/pkg/outer.runfiles_manifest",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B2|outer:manifest_bytes",
+   "reference": "_main/pkg/d.txt <WS>/pkg/d.txt\n_main/pkg/outer <BIN>/pkg/outer\n_main/pkg/outer.gen <BIN>/pkg/outer.gen\n_main/pkg/tool <BIN>/pkg/tool\n_main/pkg/tool.gen <BIN>/pkg/tool.gen\n_main/sym/d.txt <WS>/pkg/d.txt\n_repo_mapping <BIN>/pkg/outer.repo_mapping\next+/data/e.txt <EXT>/ext+/data/e.txt\next+/rooted.txt <BIN>/pkg/outer.gen\nrootsym.txt <WS>/pkg/d.txt\n",
+   "native": "_main/pkg/d.txt <WS>/pkg/d.txt\n_main/pkg/outer <BIN>/pkg/outer\n_main/pkg/outer.gen <BIN>/pkg/outer.gen\n_main/pkg/tool <BIN>/pkg/tool\n_main/pkg/tool.gen <BIN>/pkg/tool.gen\n_main/sym/d.txt <WS>/pkg/d.txt\n_repo_mapping <BIN>/pkg/outer.repo_mapping\next+/data/e.txt <EXT>/ext+/data/e.txt\next+/rooted.txt <BIN>/pkg/outer.gen\nrootsym.txt <WS>/pkg/d.txt\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B2|outer:manifest_mode",
+   "reference": "0o555",
+   "native": "0o555",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B2|outer:repo_mapping_bytes",
+   "reference": ",ext,ext+\n,rf,_main\next+,ext,ext+\n",
+   "native": ",ext,ext+\n,rf,_main\next+,ext,ext+\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B2|outer:tree",
+   "reference": [
+    "MANIFEST -> <BIN>/pkg/outer.runfiles_manifest",
+    "_main/",
+    "_main/pkg/",
+    "_main/pkg/d.txt -> <WS>/pkg/d.txt",
+    "_main/pkg/outer -> <BIN>/pkg/outer",
+    "_main/pkg/outer.gen -> <BIN>/pkg/outer.gen",
+    "_main/pkg/tool -> <BIN>/pkg/tool",
+    "_main/pkg/tool.gen -> <BIN>/pkg/tool.gen",
+    "_main/sym/",
+    "_main/sym/d.txt -> <WS>/pkg/d.txt",
+    "_repo_mapping -> <BIN>/pkg/outer.repo_mapping",
+    "ext+/",
+    "ext+/data/",
+    "ext+/data/e.txt -> <EXT>/ext+/data/e.txt",
+    "ext+/rooted.txt -> <BIN>/pkg/outer.gen",
+    "rootsym.txt -> <WS>/pkg/d.txt"
+   ],
+   "native": [
+    "MANIFEST -> <BIN>/pkg/outer.runfiles_manifest",
+    "_main/",
+    "_main/pkg/",
+    "_main/pkg/d.txt -> <WS>/pkg/d.txt",
+    "_main/pkg/outer -> <BIN>/pkg/outer",
+    "_main/pkg/outer.gen -> <BIN>/pkg/outer.gen",
+    "_main/pkg/tool -> <BIN>/pkg/tool",
+    "_main/pkg/tool.gen -> <BIN>/pkg/tool.gen",
+    "_main/sym/",
+    "_main/sym/d.txt -> <WS>/pkg/d.txt",
+    "_repo_mapping -> <BIN>/pkg/outer.repo_mapping",
+    "ext+/",
+    "ext+/data/",
+    "ext+/data/e.txt -> <EXT>/ext+/data/e.txt",
+    "ext+/rooted.txt -> <BIN>/pkg/outer.gen",
+    "rootsym.txt -> <WS>/pkg/d.txt"
+   ],
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B2|tool:MANIFEST_link",
+   "reference": "<BIN>/pkg/tool.runfiles_manifest",
+   "native": "<BIN>/pkg/tool.runfiles_manifest",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B2|tool:manifest_bytes",
+   "reference": "_main/pkg/d.txt <WS>/pkg/d.txt\n_main/pkg/tool <BIN>/pkg/tool\n_main/pkg/tool.gen <BIN>/pkg/tool.gen\n_repo_mapping <BIN>/pkg/tool.repo_mapping\next+/data/e.txt <EXT>/ext+/data/e.txt\n",
+   "native": "_main/pkg/d.txt <WS>/pkg/d.txt\n_main/pkg/tool <BIN>/pkg/tool\n_main/pkg/tool.gen <BIN>/pkg/tool.gen\n_repo_mapping <BIN>/pkg/tool.repo_mapping\next+/data/e.txt <EXT>/ext+/data/e.txt\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B2|tool:manifest_mode",
+   "reference": "0o555",
+   "native": "0o555",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B2|tool:repo_mapping_bytes",
+   "reference": ",ext,ext+\n,rf,_main\next+,ext,ext+\n",
+   "native": ",ext,ext+\n,rf,_main\next+,ext,ext+\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B2|tool:tree",
+   "reference": [
+    "MANIFEST -> <BIN>/pkg/tool.runfiles_manifest",
+    "_main/",
+    "_main/pkg/",
+    "_main/pkg/d.txt -> <WS>/pkg/d.txt",
+    "_main/pkg/tool -> <BIN>/pkg/tool",
+    "_main/pkg/tool.gen -> <BIN>/pkg/tool.gen",
+    "_repo_mapping -> <BIN>/pkg/tool.repo_mapping",
+    "ext+/",
+    "ext+/data/",
+    "ext+/data/e.txt -> <EXT>/ext+/data/e.txt"
+   ],
+   "native": [
+    "MANIFEST -> <BIN>/pkg/tool.runfiles_manifest",
+    "_main/",
+    "_main/pkg/",
+    "_main/pkg/d.txt -> <WS>/pkg/d.txt",
+    "_main/pkg/tool -> <BIN>/pkg/tool",
+    "_main/pkg/tool.gen -> <BIN>/pkg/tool.gen",
+    "_repo_mapping -> <BIN>/pkg/tool.repo_mapping",
+    "ext+/",
+    "ext+/data/",
+    "ext+/data/e.txt -> <EXT>/ext+/data/e.txt"
+   ],
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B3|exit",
+   "reference": 0,
+   "native": 0,
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B3|m.txt",
+   "reference": "_main/pkg/d.txt\n_main/pkg/tool\n_main/pkg/tool.gen\n_repo_mapping\next+/data/e.txt\n===\n,ext,ext+\n,rf,_main\next+,ext,ext+\n",
+   "native": "_main/pkg/d.txt\n_main/pkg/tool\n_main/pkg/tool.gen\n_repo_mapping\next+/data/e.txt\n===\n,ext,ext+\n,rf,_main\next+,ext,ext+\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B3|use.txt",
+   "reference": "./\n./_main/\n./_main/pkg/\n./_main/pkg/d.txt: main-data|\n./_main/pkg/tool: #!/bin/sh|echo tool-ran|\n./_main/pkg/tool.gen: generated|\n./_repo_mapping: ,ext,ext+|,rf,_main|ext+,ext,ext+|\n./ext+/\n./ext+/data/\n./ext+/data/e.txt: ext-data|\ntool\ntool.runfiles\nuse.txt\ntool-ran\n",
+   "native": "./\n./_main/\n./_main/pkg/\n./_main/pkg/d.txt: main-data|\n./_main/pkg/tool: #!/bin/sh|echo tool-ran|\n./_main/pkg/tool.gen: generated|\n./_repo_mapping: ,ext,ext+|,rf,_main|ext+,ext,ext+|\n./ext+/\n./ext+/data/\n./ext+/data/e.txt: ext-data|\ntool\ntool.runfiles\nuse.txt\ntool-ran\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B3|use_provider.txt",
+   "reference": "./\n./_main/\n./_main/pkg/\n./_main/pkg/d.txt: main-data|\n./_main/pkg/tool: #!/bin/sh|echo tool-ran|\n./_main/pkg/tool.gen: generated|\n./_repo_mapping: ,ext,ext+|,rf,_main|ext+,ext,ext+|\n./ext+/\n./ext+/data/\n./ext+/data/e.txt: ext-data|\ntool\ntool.runfiles\nuse_provider.txt\ntool-ran\n",
+   "native": "./\n./_main/\n./_main/pkg/\n./_main/pkg/d.txt: main-data|\n./_main/pkg/tool: #!/bin/sh|echo tool-ran|\n./_main/pkg/tool.gen: generated|\n./_repo_mapping: ,ext,ext+|,rf,_main|ext+,ext,ext+|\n./ext+/\n./ext+/data/\n./ext+/data/e.txt: ext-data|\ntool\ntool.runfiles\nuse_provider.txt\ntool-ran\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B3L",
+   "verdict": "REFERENCE_ONLY",
+   "reference": {
+    "exit": 0,
+    "use.txt": "./\n./MANIFEST: _main/pkg/d.txt <WS>/pkg/d.txt|_main/pkg/tool <BIN>/pkg/tool|_main/pkg/tool.gen <BIN>/pkg/tool.gen|_repo_mapping <BIN>/pkg/tool.repo_mapping|ext+/data/e.txt <EXT>/ext+/data/e.txt|\n./_main/\n./_main/pkg/\n./_main/pkg/d.txt: main-data|\n./_main/pkg/tool: #!/bin/sh|echo tool-ran|\n./_main/pkg/tool.gen: generated|\n./_repo_mapping: ,ext,ext+|,rf,_main|ext+,ext,ext+|\n./ext+/\n./ext+/data/\n./ext+/data/e.txt: ext-data|\ntool\ntool.gen\ntool.repo_mapping\ntool.runfiles\ntool.runfiles_manifest\nuse.txt\ntool-ran\n"
+   },
+   "explanation": "Reference with --spawn_strategy=local: the tool tree is the execroot symlink farm built by SymlinkTreeAction, so MANIFEST is present and entries are symlinks; native stages like a sandboxed spawn (SpawnInputExpander mapping without MANIFEST, :212). Evidence only (no native counterpart)."
+  },
+  {
+   "case": "B4|EMPTY",
+   "reference": [
+    "EMPTY [\"py/a/b/__init__.py\",\"py/a/__init__.py\",\"py/__init__.py\"]"
+   ],
+   "native": [
+    "EMPTY [\"py/a/b/__init__.py\",\"py/a/__init__.py\",\"py/__init__.py\"]"
+   ],
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B4|exit",
+   "reference": 0,
+   "native": 0,
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B4|p:MANIFEST_link",
+   "reference": "<BIN>/tools/build_defs/python/p.runfiles_manifest",
+   "native": "<BIN>/tools/build_defs/python/p.runfiles_manifest",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B4|p:manifest_bytes",
+   "reference": "_main/py/__init__.py \n_main/py/__pycache__/c.pyc <WS>/py/__pycache__/c.pyc\n_main/py/a/__init__.py \n_main/py/a/b/__init__.py \n_main/py/a/b/m.py <WS>/py/a/b/m.py\n_main/py/a/x.so <WS>/py/a/x.so\n_main/py/top.py <WS>/py/top.py\n_main/tools/build_defs/python/p <BIN>/tools/build_defs/python/p\n_repo_mapping <BIN>/tools/build_defs/python/p.repo_mapping\n",
+   "native": "_main/py/__init__.py \n_main/py/__pycache__/c.pyc <WS>/py/__pycache__/c.pyc\n_main/py/a/__init__.py \n_main/py/a/b/__init__.py \n_main/py/a/b/m.py <WS>/py/a/b/m.py\n_main/py/a/x.so <WS>/py/a/x.so\n_main/py/top.py <WS>/py/top.py\n_main/tools/build_defs/python/p <BIN>/tools/build_defs/python/p\n_repo_mapping <BIN>/tools/build_defs/python/p.repo_mapping\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B4|p:manifest_mode",
+   "reference": "0o555",
+   "native": "0o555",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B4|p:repo_mapping_bytes",
+   "reference": ",rf,_main\n",
+   "native": ",rf,_main\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B4|p:tree",
+   "reference": [
+    "MANIFEST -> <BIN>/tools/build_defs/python/p.runfiles_manifest",
+    "_main/",
+    "_main/py/",
+    "_main/py/__init__.py (file 644 0 bytes)",
+    "_main/py/__pycache__/",
+    "_main/py/__pycache__/c.pyc -> <WS>/py/__pycache__/c.pyc",
+    "_main/py/a/",
+    "_main/py/a/__init__.py (file 644 0 bytes)",
+    "_main/py/a/b/",
+    "_main/py/a/b/__init__.py (file 644 0 bytes)",
+    "_main/py/a/b/m.py -> <WS>/py/a/b/m.py",
+    "_main/py/a/x.so -> <WS>/py/a/x.so",
+    "_main/py/top.py -> <WS>/py/top.py",
+    "_main/tools/",
+    "_main/tools/build_defs/",
+    "_main/tools/build_defs/python/",
+    "_main/tools/build_defs/python/p -> <BIN>/tools/build_defs/python/p",
+    "_repo_mapping -> <BIN>/tools/build_defs/python/p.repo_mapping"
+   ],
+   "native": [
+    "MANIFEST -> <BIN>/tools/build_defs/python/p.runfiles_manifest",
+    "_main/",
+    "_main/py/",
+    "_main/py/__init__.py (file 644 0 bytes)",
+    "_main/py/__pycache__/",
+    "_main/py/__pycache__/c.pyc -> <WS>/py/__pycache__/c.pyc",
+    "_main/py/a/",
+    "_main/py/a/__init__.py (file 644 0 bytes)",
+    "_main/py/a/b/",
+    "_main/py/a/b/__init__.py (file 644 0 bytes)",
+    "_main/py/a/b/m.py -> <WS>/py/a/b/m.py",
+    "_main/py/a/x.so -> <WS>/py/a/x.so",
+    "_main/py/top.py -> <WS>/py/top.py",
+    "_main/tools/",
+    "_main/tools/build_defs/",
+    "_main/tools/build_defs/python/",
+    "_main/tools/build_defs/python/p -> <BIN>/tools/build_defs/python/p",
+    "_repo_mapping -> <BIN>/tools/build_defs/python/p.repo_mapping"
+   ],
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B5|conflict:MANIFEST_link",
+   "reference": "<BIN>/pkg/conflict.runfiles_manifest",
+   "native": "<BIN>/pkg/conflict.runfiles_manifest",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B5|conflict:manifest_bytes",
+   "reference": "_main/dir <WS>/pkg/d.txt\n_main/pkg/conflict <BIN>/pkg/conflict\n_repo_mapping <BIN>/pkg/conflict.repo_mapping\n",
+   "native": "_main/dir <WS>/pkg/d.txt\n_main/pkg/conflict <BIN>/pkg/conflict\n_repo_mapping <BIN>/pkg/conflict.repo_mapping\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B5|conflict:manifest_mode",
+   "reference": "0o555",
+   "native": "0o555",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B5|conflict:repo_mapping_bytes",
+   "reference": ",rf,_main\n",
+   "native": ",rf,_main\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B5|conflict:tree",
+   "reference": [
+    "MANIFEST -> <BIN>/pkg/conflict.runfiles_manifest",
+    "_main/",
+    "_main/dir -> <WS>/pkg/d.txt",
+    "_main/pkg/",
+    "_main/pkg/conflict -> <BIN>/pkg/conflict",
+    "_repo_mapping -> <BIN>/pkg/conflict.repo_mapping"
+   ],
+   "native": [
+    "MANIFEST -> <BIN>/pkg/conflict.runfiles_manifest",
+    "_main/",
+    "_main/dir -> <WS>/pkg/d.txt",
+    "_main/pkg/",
+    "_main/pkg/conflict -> <BIN>/pkg/conflict",
+    "_repo_mapping -> <BIN>/pkg/conflict.repo_mapping"
+   ],
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B5|conflict_lines",
+   "reference": [
+    "ERROR: <WS>/pkg/BUILD.bazel:13:9: runfiles symlink dir/x -> pkg/d.txt obscured by dir -> pkg/d.txt"
+   ],
+   "native": [
+    "ERROR: <WS>/pkg/BUILD.bazel:13:9: runfiles symlink dir/x -> pkg/d.txt obscured by dir -> pkg/d.txt"
+   ],
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B5|exit",
+   "reference": 0,
+   "native": 0,
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B6|exit",
+   "reference": 0,
+   "native": 0,
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B6|m.txt",
+   "reference": "_main/pkg/d.txt\n_main/pkg/tool\n_main/pkg/tool.gen\n_repo_mapping\next+/data/e.txt\n===\n,ext,ext+\n,rf,_main\next+,ext,ext+\n",
+   "native": "_main/pkg/d.txt\n_main/pkg/tool\n_main/pkg/tool.gen\n_repo_mapping\next+/data/e.txt\n===\n,ext,ext+\n,rf,_main\next+,ext,ext+\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B6|tool.runfiles_exists",
+   "reference": false,
+   "native": false,
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B6|tool.runfiles_manifest_exists",
+   "reference": true,
+   "native": true,
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B7|exit",
+   "reference": 0,
+   "native": 0,
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B7|tool:MANIFEST_link",
+   "reference": "<BIN>/pkg/tool.runfiles_manifest",
+   "native": "<BIN>/pkg/tool.runfiles_manifest",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B7|tool:manifest_bytes",
+   "reference": "_main/pkg/d.txt <WS>/pkg/d.txt\n_main/pkg/tool <BIN>/pkg/tool\n_main/pkg/tool.gen <BIN>/pkg/tool.gen\n_repo_mapping <BIN>/pkg/tool.repo_mapping\next+/data/e.txt <EXT>/ext+/data/e.txt\n",
+   "native": "_main/pkg/d.txt <WS>/pkg/d.txt\n_main/pkg/tool <BIN>/pkg/tool\n_main/pkg/tool.gen <BIN>/pkg/tool.gen\n_repo_mapping <BIN>/pkg/tool.repo_mapping\next+/data/e.txt <EXT>/ext+/data/e.txt\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B7|tool:manifest_mode",
+   "reference": "0o555",
+   "native": "0o555",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B7|tool:repo_mapping_bytes",
+   "reference": ",ext,ext+\n,rf,_main\next+,ext,ext+\n",
+   "native": ",ext,ext+\n,rf,_main\next+,ext,ext+\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B7|tool:tree",
+   "reference": [
+    "MANIFEST -> <BIN>/pkg/tool.runfiles_manifest",
+    "_main/"
+   ],
+   "native": [
+    "MANIFEST -> <BIN>/pkg/tool.runfiles_manifest",
+    "_main/"
+   ],
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B8|exit",
+   "reference": 0,
+   "native": 0,
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B8|run_error",
+   "reference": [
+    "--nobuild_runfile_manifests is incompatible with the \"run\" command"
+   ],
+   "native": [
+    "--nobuild_runfile_manifests is incompatible with the \"run\" command"
+   ],
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B8|run_exit_nonzero",
+   "reference": true,
+   "native": true,
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B8|tool.repo_mapping_exists",
+   "reference": true,
+   "native": true,
+   "verdict": "EXACT"
+  },
+  {
+   "case": "B8|tool.runfiles_manifest_exists",
+   "reference": false,
+   "native": false,
+   "verdict": "EXACT"
+  },
+  {
+   "case": "R1|exit",
+   "reference": 3,
+   "native": 3,
+   "verdict": "EXACT"
+  },
+  {
+   "case": "R1|running_line",
+   "reference": [
+    "Running command line: ../bazel-bin/pkg/b fixed <args omitted>"
+   ],
+   "native": [
+    "Running command line: <BIN>/pkg/b fixed <args omitted>"
+   ],
+   "verdict": "MISMATCH",
+   "explanation": "Bazel prints PathPrettyPrinter paths relative to the working directory through the convenience symlinks (../bazel-bin/pkg/b, RunCommand.java:868-910); native has no convenience symlinks and prints the absolute published path of the executable sibling link."
+  },
+  {
+   "case": "R1|stdout",
+   "reference": "argv0=bazel-out/<CFG>/bin/pkg/b\nargs=fixed x y z\ncwd=bazel-out/<CFG>/bin/pkg/b.runfiles/_main\nBUILD_WORKING_DIRECTORY=<WS>/pkg\nBUILD_WORKSPACE_DIRECTORY=<WS>\nCLIENT_UNSET=gone\nCLIENT_X=1\nFROM_TARGET=yes\nINHERIT_ME=inherited\nRUNFILES_DIR=/should/be/cleared\nRUN_SET=1\npkg\nsym\nmain-data\next-data\nMANIFEST\n_main\n_repo_mapping\next+\nrootsym.txt\nstdin=from-stdin\n",
+   "native": "argv0=bazel-out/<CFG>/bin/pkg/b\nargs=fixed x y z\ncwd=bazel-out/<CFG>/bin/pkg/b.runfiles/_main\nBUILD_WORKING_DIRECTORY=<WS>/pkg\nBUILD_WORKSPACE_DIRECTORY=<WS>\nCLIENT_X=1\nFROM_TARGET=yes\nINHERIT_ME=inherited\nRUN_SET=1\npkg\nsym\nmain-data\next-data\nMANIFEST\n_main\n_repo_mapping\next+\nrootsym.txt\nstdin=from-stdin\n",
+   "verdict": "MISMATCH",
+   "explanation": "Bazel --batch puts the whole client environment over the run environment (RunCommand.java:320-327: finalRunEnv.putAll(clientEnv) in batch mode), so the client values of RUNFILES_DIR and of the --run_env==CLIENT_UNSET variable survive; native follows the client/server contract (the client unsets environment_variable_to_clear, then sets the run environment, src/main/cpp/blaze.cc:2166-2195), which is what non-batch Bazel does. R1plain (no colliding client variables) is EXACT."
+  },
+  {
+   "case": "R1cwd|exit",
+   "reference": 3,
+   "native": 3,
+   "verdict": "EXACT"
+  },
+  {
+   "case": "R1cwd|running_line",
+   "reference": [
+    "Running command line: ../bazel-bin/pkg/b fixed"
+   ],
+   "native": [
+    "Running command line: <BIN>/pkg/b fixed"
+   ],
+   "verdict": "MISMATCH",
+   "explanation": "Bazel prints PathPrettyPrinter paths relative to the working directory through the convenience symlinks (../bazel-bin/pkg/b, RunCommand.java:868-910); native has no convenience symlinks and prints the absolute published path of the executable sibling link."
+  },
+  {
+   "case": "R1cwd|stdout",
+   "reference": "argv0=bazel-out/<CFG>/bin/pkg/b\nargs=fixed\ncwd=<WS>/pkg\nBUILD_WORKING_DIRECTORY=<WS>/pkg\nBUILD_WORKSPACE_DIRECTORY=<WS>\nFROM_TARGET=yes\nINHERIT_ME=inherited\nBUILD.bazel\nd.txt\ndefs.bzl\nscript.sh\nMANIFEST\n_main\n_repo_mapping\next+\nrootsym.txt\nstdin=from-stdin\n",
+   "native": "argv0=bazel-out/<CFG>/bin/pkg/b\nargs=fixed\ncwd=<WS>/pkg\nBUILD_WORKING_DIRECTORY=<WS>/pkg\nBUILD_WORKSPACE_DIRECTORY=<WS>\nFROM_TARGET=yes\nINHERIT_ME=inherited\nBUILD.bazel\nd.txt\ndefs.bzl\nscript.sh\nMANIFEST\n_main\n_repo_mapping\next+\nrootsym.txt\nstdin=from-stdin\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "R1plain|exit",
+   "reference": 3,
+   "native": 3,
+   "verdict": "EXACT"
+  },
+  {
+   "case": "R1plain|running_line",
+   "reference": [
+    "Running command line: ../bazel-bin/pkg/b fixed <args omitted>"
+   ],
+   "native": [
+    "Running command line: <BIN>/pkg/b fixed <args omitted>"
+   ],
+   "verdict": "MISMATCH",
+   "explanation": "Bazel prints PathPrettyPrinter paths relative to the working directory through the convenience symlinks (../bazel-bin/pkg/b, RunCommand.java:868-910); native has no convenience symlinks and prints the absolute published path of the executable sibling link."
+  },
+  {
+   "case": "R1plain|stdout",
+   "reference": "argv0=bazel-out/<CFG>/bin/pkg/b\nargs=fixed x y z\ncwd=bazel-out/<CFG>/bin/pkg/b.runfiles/_main\nBUILD_WORKING_DIRECTORY=<WS>/pkg\nBUILD_WORKSPACE_DIRECTORY=<WS>\nCLIENT_X=1\nFROM_TARGET=yes\nINHERIT_ME=inherited\nRUN_SET=1\npkg\nsym\nmain-data\next-data\nMANIFEST\n_main\n_repo_mapping\next+\nrootsym.txt\nstdin=from-stdin\n",
+   "native": "argv0=bazel-out/<CFG>/bin/pkg/b\nargs=fixed x y z\ncwd=bazel-out/<CFG>/bin/pkg/b.runfiles/_main\nBUILD_WORKING_DIRECTORY=<WS>/pkg\nBUILD_WORKSPACE_DIRECTORY=<WS>\nCLIENT_X=1\nFROM_TARGET=yes\nINHERIT_ME=inherited\nRUN_SET=1\npkg\nsym\nmain-data\next-data\nMANIFEST\n_main\n_repo_mapping\next+\nrootsym.txt\nstdin=from-stdin\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "R2|exit",
+   "reference": 0,
+   "native": 0,
+   "verdict": "EXACT"
+  },
+  {
+   "case": "R2|script",
+   "reference": "#!/bin/bash\ncd <BIN>/pkg/b.runfiles/_main && \\\n  exec env \\\n    -u JAVA_RUNFILES \\\n    -u RUNFILES_DIR \\\n    -u RUNFILES_MANIFEST_FILE \\\n    -u RUNFILES_MANIFEST_ONLY \\\n    -u TEST_SRCDIR \\\n    BUILD_EXECROOT=<EXECROOT> \\\n    BUILD_ID=<UUID> \\\n    BUILD_WORKING_DIRECTORY=<WS>/pkg \\\n    BUILD_WORKSPACE_DIRECTORY=<WS> \\\n    FROM_TARGET=yes \\\n  <BIN>/pkg/b fixed 'arg 1' \"$@\"",
+   "native": "#!/bin/bash\ncd <BIN>/pkg/b.runfiles/_main && \\\n  exec env \\\n    -u JAVA_RUNFILES \\\n    -u RUNFILES_DIR \\\n    -u RUNFILES_MANIFEST_FILE \\\n    -u RUNFILES_MANIFEST_ONLY \\\n    -u TEST_SRCDIR \\\n    BUILD_EXECROOT=<EXECROOT> \\\n    BUILD_ID=<UUID> \\\n    BUILD_WORKING_DIRECTORY=<WS>/pkg \\\n    BUILD_WORKSPACE_DIRECTORY=<WS> \\\n    FROM_TARGET=yes \\\n  <BIN>/pkg/b fixed 'arg 1' \"$@\"",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "R2|script_mode",
+   "reference": "0o755",
+   "native": "0o755",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "R2|script_run_exit",
+   "reference": 3,
+   "native": 3,
+   "verdict": "EXACT"
+  },
+  {
+   "case": "R2|script_run_stdout",
+   "reference": "argv0=bazel-out/<CFG>/bin/pkg/b\nargs=fixed arg 1 more\ncwd=bazel-out/<CFG>/bin/pkg/b.runfiles/_main\nBUILD_WORKING_DIRECTORY=<WS>/pkg\nBUILD_WORKSPACE_DIRECTORY=<WS>\nFROM_TARGET=yes\nINHERIT_ME=inherited\npkg\nsym\nmain-data\next-data\nMANIFEST\n_main\n_repo_mapping\next+\nrootsym.txt\nstdin=\n",
+   "native": "argv0=bazel-out/<CFG>/bin/pkg/b\nargs=fixed arg 1 more\ncwd=bazel-out/<CFG>/bin/pkg/b.runfiles/_main\nBUILD_WORKING_DIRECTORY=<WS>/pkg\nBUILD_WORKSPACE_DIRECTORY=<WS>\nFROM_TARGET=yes\nINHERIT_ME=inherited\npkg\nsym\nmain-data\next-data\nMANIFEST\n_main\n_repo_mapping\next+\nrootsym.txt\nstdin=\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "R3|exit",
+   "reference": 0,
+   "native": 0,
+   "verdict": "EXACT"
+  },
+  {
+   "case": "R3|script",
+   "reference": "#!/bin/bash\ncd <BIN>/pkg/b.runfiles/_main && \\\n  exec env \\\n    -u JAVA_RUNFILES \\\n    -u RUNFILES_DIR \\\n    -u RUNFILES_MANIFEST_FILE \\\n    -u RUNFILES_MANIFEST_ONLY \\\n    -u TEST_SRCDIR \\\n    BUILD_EXECROOT=<EXECROOT> \\\n    BUILD_ID=<UUID> \\\n    BUILD_WORKING_DIRECTORY=<WS>/pkg \\\n    BUILD_WORKSPACE_DIRECTORY=<WS> \\\n    FROM_TARGET=yes \\\n  /bin/bash -c 'env FOO=1 <BIN>/pkg/b fixed' \"$@\"",
+   "native": "#!/bin/bash\ncd <BIN>/pkg/b.runfiles/_main && \\\n  exec env \\\n    -u JAVA_RUNFILES \\\n    -u RUNFILES_DIR \\\n    -u RUNFILES_MANIFEST_FILE \\\n    -u RUNFILES_MANIFEST_ONLY \\\n    -u TEST_SRCDIR \\\n    BUILD_EXECROOT=<EXECROOT> \\\n    BUILD_ID=<UUID> \\\n    BUILD_WORKING_DIRECTORY=<WS>/pkg \\\n    BUILD_WORKSPACE_DIRECTORY=<WS> \\\n    FROM_TARGET=yes \\\n  /bin/bash -c 'env FOO=1 <BIN>/pkg/b fixed' \"$@\"",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "R3|script_mode",
+   "reference": "0o755",
+   "native": "0o755",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "R4|exit",
+   "reference": 0,
+   "native": 0,
+   "verdict": "EXACT"
+  },
+  {
+   "case": "R4|stdout",
+   "reference": "source-script a\n<WS>/pkg\n",
+   "native": "source-script a\n<WS>/pkg\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "R5all|exit_zero",
+   "reference": false,
+   "native": false,
+   "verdict": "EXACT"
+  },
+  {
+   "case": "R5all|message",
+   "reference": "Only a single target can be run. Your target pattern //pkg:all expanded to the targets //pkg:b, //pkg:conflict, //pkg:group, //pkg:m, //pkg:outer[TRUNCATED]",
+   "native": "Only a single target can be run. Your target pattern //pkg:all expanded to the targets //pkg:b, //pkg:conflict, //pkg:group, //pkg:m, //pkg:outer[TRUNCATED]",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "R5all|stdout",
+   "reference": "",
+   "native": "",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "R5group|exit_zero",
+   "reference": false,
+   "native": false,
+   "verdict": "EXACT"
+  },
+  {
+   "case": "R5group|message",
+   "reference": "Cannot run target //pkg:group: Not executable",
+   "native": "Cannot run target //pkg:group: Not executable",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "R5group|stdout",
+   "reference": "",
+   "native": "",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "R5none|exit_zero",
+   "reference": false,
+   "native": false,
+   "verdict": "EXACT"
+  },
+  {
+   "case": "R5none|message",
+   "reference": "Must specify a target to run",
+   "native": "Must specify a target to run",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "R5none|stdout",
+   "reference": "",
+   "native": "",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "R5test|exit_zero",
+   "reference": false,
+   "native": false,
+   "verdict": "UNAVAILABLE",
+   "explanation": "Test targets under `run` need TestRunnerAction/test-setup.sh (N23g): native fails explicitly; the reference could not fetch @@rules_shell+ offline: the seeded repository cache entry has no canonical-id marker (http_archive passes a default canonical id, the URL list, so RepositoryCache misses it under --repository_disable_download); the one allowed rerun was used, so this stays unavailable (the test toolchain resolution needs rules_shell)."
+  },
+  {
+   "case": "R5test|message",
+   "reference": "<EXT>/bazel_tools/tools/build_defs/repo/http.bzl:203:45: An error occurred during the fetch of repository 'rules_shell+':",
+   "native": "running test target //pkg:t_test needs the test runner (TestRunnerAction, test-setup.sh and the test environment), which is not implemented by the native profile (N23g; docs/RUNFILES_TREES.md)",
+   "verdict": "EXPECTED_NATIVE_UNSUPPORTED",
+   "explanation": "Test targets under `run` need TestRunnerAction/test-setup.sh (N23g): native fails explicitly; the reference could not fetch @@rules_shell+ offline: the seeded repository cache entry has no canonical-id marker (http_archive passes a default canonical id, the URL list, so RepositoryCache misses it under --repository_disable_download); the one allowed rerun was used, so this stays unavailable (the test toolchain resolution needs rules_shell)."
+  },
+  {
+   "case": "R5test|stdout",
+   "reference": "",
+   "native": "",
+   "verdict": "UNAVAILABLE",
+   "explanation": "Test targets under `run` need TestRunnerAction/test-setup.sh (N23g): native fails explicitly; the reference could not fetch @@rules_shell+ offline: the seeded repository cache entry has no canonical-id marker (http_archive passes a default canonical id, the URL list, so RepositoryCache misses it under --repository_disable_download); the one allowed rerun was used, so this stays unavailable (the test toolchain resolution needs rules_shell)."
+  },
+  {
+   "case": "R6|exit",
+   "reference": 0,
+   "native": 0,
+   "verdict": "EXACT"
+  },
+  {
+   "case": "R6|runnable_line",
+   "reference": [
+    "Runnable command line: bazel-bin/pkg/tool"
+   ],
+   "native": [
+    "Runnable command line: <BIN>/pkg/tool"
+   ],
+   "verdict": "MISMATCH",
+   "explanation": "Same as running_line: pretty-printed relative path (Bazel) vs absolute native path."
+  },
+  {
+   "case": "R6|stdout",
+   "reference": "tool-ran\n",
+   "native": "",
+   "verdict": "MISMATCH",
+   "explanation": "Bazel --batch ignores ExecRequest.should_exec: BlazeRuntime.batchMain (runtime/BlazeRuntime.java:1137-1180) runs every returned ExecRequest, so --norun still runs the target; the client honors should_exec (blaze.cc:2166-2167) and native does not run it."
+  },
+  {
+   "case": "S1|exit",
+   "reference": 1,
+   "native": 1,
+   "verdict": "UNAVAILABLE",
+   "explanation": "Genuine rules_shell sh_binary: the reference could not fetch @@rules_shell+ offline: the seeded repository cache entry has no canonical-id marker (http_archive passes a default canonical id, the URL list, so RepositoryCache misses it under --repository_disable_download); the one allowed rerun was used, so this stays unavailable. Natively it is not feasible either: analysis stops at pre-existing gaps (attribute flags SKIP_CONSTRAINTS_OVERRIDE on rules_shell sh_library/sh_binary `data`, then label_keyed_string_dict values of @rules_shell//shell/runfiles:runfiles_at_legacy_location); docs/RUNFILES_TREES.md."
+  },
+  {
+   "case": "S1|stderr_tail",
+   "reference": "ent call last):\n\tFile \"<EXT>/bazel_tools/tools/build_defs/repo/http.bzl\", line 203, column 45, in _http_archive_impl\n\t\tdownload_info = ctx.download_and_extract(\nError in download_and_extract: java.io.IOException: Failed to download repository @@rules_shell+: download is disabled.\nWARNING: Target pattern parsing failed.\nERROR: Skipping '//pkg:hello': no such package '@@rules_shell+//shell': java.io.IOException: Failed to download repository @@rules_shell+: download is disabled.\nERROR: no such package '@@rules_shell+//shell': java.io.IOException: Failed to download repository @@rules_shell+: download is disabled.\nINFO: Elapsed time: 1.669s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\nERROR: Build failed. Not running target\n",
+   "native": "bazel-rs: analysis of //pkg:hello: declared rule features accepted at load time but not analyzed by the native profile: attribute 'data' flags=[SKIP_CONSTRAINTS_OVERRIDE]\n",
+   "verdict": "UNAVAILABLE",
+   "explanation": "Genuine rules_shell sh_binary: the reference could not fetch @@rules_shell+ offline: the seeded repository cache entry has no canonical-id marker (http_archive passes a default canonical id, the URL list, so RepositoryCache misses it under --repository_disable_download); the one allowed rerun was used, so this stays unavailable. Natively it is not feasible either: analysis stops at pre-existing gaps (attribute flags SKIP_CONSTRAINTS_OVERRIDE on rules_shell sh_library/sh_binary `data`, then label_keyed_string_dict values of @rules_shell//shell/runfiles:runfiles_at_legacy_location); docs/RUNFILES_TREES.md."
+  },
+  {
+   "case": "S1|stdout",
+   "reference": "",
+   "native": "",
+   "verdict": "UNAVAILABLE",
+   "explanation": "Genuine rules_shell sh_binary: the reference could not fetch @@rules_shell+ offline: the seeded repository cache entry has no canonical-id marker (http_archive passes a default canonical id, the URL list, so RepositoryCache misses it under --repository_disable_download); the one allowed rerun was used, so this stays unavailable. Natively it is not feasible either: analysis stops at pre-existing gaps (attribute flags SKIP_CONSTRAINTS_OVERRIDE on rules_shell sh_library/sh_binary `data`, then label_keyed_string_dict values of @rules_shell//shell/runfiles:runfiles_at_legacy_location); docs/RUNFILES_TREES.md."
+  }
+ ]
+}

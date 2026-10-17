@@ -1,7 +1,9 @@
 //! Runfiles, SymlinkEntry and FilesToRunProvider analysis values and the
 //! RunfilesProvider/FilesToRunProvider of configured targets (N23a,
-//! docs/RUNFILES.md). Analysis only: no runfiles tree, manifest or
-//! repository-mapping action is registered here.
+//! docs/RUNFILES.md), and the runfiles mapping of a runfiles tree
+//! (Runfiles.getRunfilesInputs, N23f, docs/RUNFILES_TREES.md). The tree,
+//! manifest and repository-mapping actions are planned by crate::engine with
+//! crate::runfiles_tree.
 //!
 //! Paths below are under src/main/java/com/google/devtools/build/lib/ of the
 //! pinned Bazel 9.3 sources.
@@ -36,15 +38,29 @@ mod values {
     use super::*;
 
     /// analysis/Runfiles.java:70-215: artifacts (COMPILE order, :497-503),
-    /// symlinks and root symlinks (STABLE order) and the conflict policy. The
-    /// empty-files supplier is always the dummy one (no Starlark API sets it).
+    /// symlinks and root symlinks (STABLE order), the empty-files supplier
+    /// and the conflict policy.
     #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
     pub struct Runfiles {
         pub(in crate::runfiles) artifacts: Arc<DepsetNode>,
         pub(in crate::runfiles) symlinks: Arc<DepsetNode>,
         pub(in crate::runfiles) root_symlinks: Arc<DepsetNode>,
+        /// The EmptyFilesSupplier (Runfiles.java:170-182).
+        pub(in crate::runfiles) empty_files: EmptyFiles,
         /// ConflictPolicy.ERROR (Runfiles.java:192-203); WARN otherwise.
         pub(in crate::runfiles) conflict_error: bool,
+    }
+
+    /// Runfiles.EmptyFilesSupplier implementations: the dummy supplier
+    /// (Runfiles.java:74-91) and BazelPyBuiltins.GET_INIT_PY_FILES
+    /// (bazel/rules/python/BazelPyBuiltins.java:29-30, installed by
+    /// `py_internal.merge_runfiles_with_generated_inits_empty_files_supplier`,
+    /// rules/python/PyBuiltins.java:223-250).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Allocative)]
+    pub enum EmptyFiles {
+        #[default]
+        None,
+        PythonInit,
     }
 
     /// FilesToRunProvider and its two private subclasses
@@ -102,8 +118,8 @@ mod values {
         pub fields: OwnedFrozenValue,
     }
 }
+pub use values::{EmptyFiles, FilesToRun, FilesToRunKind, Runfiles};
 pub(crate) use values::{ExecutableStruct, Outputs};
-pub use values::{FilesToRun, FilesToRunKind, Runfiles};
 
 starlark_simple_value!(Runfiles);
 starlark_simple_value!(FilesToRun);
@@ -174,6 +190,7 @@ impl Runfiles {
         Arc::ptr_eq(&self.artifacts, &other.artifacts)
             && Arc::ptr_eq(&self.symlinks, &other.symlinks)
             && Arc::ptr_eq(&self.root_symlinks, &other.root_symlinks)
+            && self.empty_files == other.empty_files
             && self.conflict_error == other.conflict_error
     }
 
@@ -228,6 +245,288 @@ impl Runfiles {
     }
 }
 
+/// The directory of the main repository in runfiles trees: the workspace
+/// name, always `_main` with Bzlmod (RuleContext.getWorkspaceName;
+/// LabelConstants.DEFAULT_REPOSITORY_DIRECTORY).
+pub const WORKSPACE_NAME: &str = "_main";
+
+/// PathFragment.startsWith for normalized relative paths: segment-wise.
+fn starts_with_segments(path: &str, prefix: &str) -> bool {
+    prefix.is_empty()
+        || path == prefix
+        || path
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// PathFragment.getParentDirectory of a normalized relative path with more
+/// than one segment.
+fn parent(path: &str) -> Option<&str> {
+    path.rfind('/').map(|index| &path[..index])
+}
+
+/// java.lang.String.hashCode over UTF-16 code units.
+fn java_string_hash(text: &str) -> i32 {
+    text.encode_utf16().fold(0i32, |hash, unit| {
+        hash.wrapping_mul(31).wrapping_add(i32::from(unit))
+    })
+}
+
+/// The iteration order of a `java.util.HashSet<PathFragment>` filled with
+/// `items` in order (PathFragment.hashCode is its normalized string's,
+/// vfs/PathFragment.java:500-503): HashMap buckets `(h ^ h >>> 16) & (n - 1)`
+/// of the final table size `n` (16, doubled while the size exceeds 3/4 of
+/// it), each bucket in insertion order (resizes keep the relative order).
+fn java_hash_set_order(items: Vec<String>) -> Vec<String> {
+    let mut unique: Vec<String> = Vec::new();
+    let mut seen = BTreeSet::new();
+    for item in items {
+        if seen.insert(item.clone()) {
+            unique.push(item);
+        }
+    }
+    let mut capacity: usize = 16;
+    while unique.len() > capacity / 4 * 3 {
+        capacity *= 2;
+    }
+    let bucket = |item: &String| {
+        let hash = java_string_hash(item) as u32;
+        ((hash ^ (hash >> 16)) as usize) & (capacity - 1)
+    };
+    let mut indexed: Vec<(usize, usize, String)> = unique
+        .into_iter()
+        .enumerate()
+        .map(|(index, item)| (bucket(&item), index, item))
+        .collect();
+    indexed.sort();
+    indexed.into_iter().map(|(_, _, item)| item).collect()
+}
+
+impl EmptyFiles {
+    /// EmptyFilesSupplier.getExtraPaths: PythonUtils.GetInitPyFiles
+    /// (rules/python/PythonUtils.java:40-109) with BazelPyBuiltins'
+    /// `source -> false` package-init predicate. `manifest` is iterated in
+    /// order; the result is in HashSet order (ImmutableSet.copyOf).
+    pub(crate) fn extra_paths(self, manifest: &[String]) -> Vec<String> {
+        if self == EmptyFiles::None {
+            return Vec::new();
+        }
+        let known: BTreeSet<&str> = manifest.iter().map(String::as_str).collect();
+        let mut result = Vec::new();
+        for source in manifest {
+            // FileType.of(".py", ".so", ".pyc") (PythonUtils.java:32).
+            if ![".py", ".so", ".pyc"]
+                .iter()
+                .any(|suffix| source.ends_with(suffix))
+            {
+                continue;
+            }
+            let mut current = source.as_str();
+            while let Some(directory) = parent(current) {
+                current = directory;
+                let last = directory.rsplit('/').next().unwrap_or(directory);
+                if last != "__pycache__" {
+                    let init = format!("{directory}/__init__.py");
+                    let initc = format!("{directory}/__init__.pyc");
+                    if !known.contains(init.as_str()) && !known.contains(initc.as_str()) {
+                        result.push(init);
+                    }
+                }
+            }
+        }
+        java_hash_set_order(result)
+    }
+}
+
+/// One runfiles tree entry: the artifact a path links to, or an empty file.
+pub type RunfilesMapping = BTreeMap<String, Option<File>>;
+
+impl Runfiles {
+    /// Runfiles.getEmptyFilenames (Runfiles.java:255-265).
+    pub fn empty_filenames(&self) -> Vec<String> {
+        if self.empty_files == EmptyFiles::None {
+            return Vec::new();
+        }
+        let mut keys: Vec<String> = Vec::new();
+        let mut seen = BTreeSet::new();
+        for path in self
+            .symlink_entries(false)
+            .into_iter()
+            .map(|(path, _)| path)
+            .chain(self.artifacts().into_iter().map(|file| file.short_path))
+        {
+            if seen.insert(path.clone()) {
+                keys.push(path);
+            }
+        }
+        self.empty_files.extra_paths(&keys)
+    }
+
+    fn empty_filenames_node(&self) -> anyhow::Result<Arc<DepsetNode>> {
+        node(
+            self.empty_filenames()
+                .into_iter()
+                .map(Item::String)
+                .collect(),
+            Vec::new(),
+            Order::Default,
+            ItemType::String,
+        )
+    }
+
+    /// Runfiles.getRunfilesInputs (Runfiles.java:343-401): the runfiles tree
+    /// below `<executable>.runfiles`, keyed by tree-relative path (sorted like
+    /// the TreeMap of PathFragments). `None` values are empty files.
+    /// Symlinks then artifacts (later entries win), obscured entries dropped
+    /// (filterListForObscuringSymlinks, :267-314, each reported to
+    /// `conflicts` when it does not resolve to the same file through its
+    /// ancestor), the empty files, the workspace prefix (`..`-relative
+    /// external paths become siblings), root symlinks, `_repo_mapping` and
+    /// `_main/.runfile` when no entry is below `_main`.
+    pub fn runfiles_inputs(
+        &self,
+        repo_mapping: Option<&File>,
+        mut conflicts: Option<&mut Vec<String>>,
+    ) -> RunfilesMapping {
+        // LinkedHashMap: a replaced key keeps its first position.
+        let mut order: Vec<String> = Vec::new();
+        let mut manifest: BTreeMap<String, File> = BTreeMap::new();
+        let mut put = |path: String, file: File| {
+            if manifest.insert(path.clone(), file).is_none() {
+                order.push(path);
+            }
+        };
+        for (path, file) in self.symlink_entries(false) {
+            put(path, file);
+        }
+        for file in self.artifacts() {
+            put(file.short_path.clone(), file);
+        }
+        // filterListForObscuringSymlinks.
+        let mut kept: Vec<String> = Vec::new();
+        let mut clear: BTreeSet<String> = BTreeSet::new();
+        'outer: for source in &order {
+            let mut parents = Vec::new();
+            let mut current = source.as_str();
+            while let Some(prefix) = parent(current) {
+                current = prefix;
+                if clear.contains(prefix) {
+                    break;
+                }
+                parents.push(prefix.to_owned());
+                if let Some(ancestor) = manifest.get(prefix) {
+                    if let Some(conflicts) = conflicts.as_deref_mut() {
+                        let suffix = &source[prefix.len() + 1..];
+                        let via_ancestor = format!("{}/{suffix}", ancestor.path);
+                        let expected = &manifest[source].path;
+                        if via_ancestor != *expected {
+                            conflicts.push(format!(
+                                "runfiles symlink {source} -> {expected} obscured by {prefix} -> {}",
+                                ancestor.path
+                            ));
+                        }
+                    }
+                    continue 'outer;
+                }
+            }
+            clear.extend(parents);
+            kept.push(source.clone());
+        }
+        let mut entries: Vec<(String, Option<File>)> = kept
+            .iter()
+            .map(|path| (path.clone(), Some(manifest[path].clone())))
+            .collect();
+        for extra in self.empty_files.extra_paths(&kept) {
+            match entries.iter_mut().find(|(path, _)| *path == extra) {
+                Some(entry) => entry.1 = None,
+                None => entries.push((extra, None)),
+            }
+        }
+        let mut result = RunfilesMapping::new();
+        let mut saw_workspace = false;
+        for (path, file) in entries {
+            if let Some(external) = path.strip_prefix("../") {
+                saw_workspace |= starts_with_segments(external, WORKSPACE_NAME);
+                result.insert(external.to_owned(), file);
+            } else if path == ".." {
+                result.insert(String::new(), file);
+            } else {
+                saw_workspace = true;
+                result.insert(format!("{WORKSPACE_NAME}/{path}"), file);
+            }
+        }
+        for (path, file) in self.symlink_entries(true) {
+            saw_workspace |= starts_with_segments(&path, WORKSPACE_NAME);
+            result.insert(path, Some(file));
+        }
+        if let Some(manifest) = repo_mapping {
+            result.insert("_repo_mapping".to_owned(), Some(manifest.clone()));
+        }
+        if !saw_workspace {
+            result.insert(format!("{WORKSPACE_NAME}/.runfile"), None);
+        }
+        result
+    }
+}
+
+/// PyBuiltins.mergeRunfilesWithGeneratedInitsEmptyFilesSupplier
+/// (rules/python/PyBuiltins.java:237-250): new runfiles with the Python
+/// `__init__.py` supplier merged with `runfiles`, which must be non-empty.
+/// `Err(None)` is a parameter type error.
+pub(crate) fn merge_with_generated_inits<'v>(
+    runfiles: Value<'v>,
+    heap: Heap<'v>,
+) -> Result<Value<'v>, Option<String>> {
+    let runfiles = Runfiles::from_value(runfiles).ok_or(None)?;
+    if runfiles.is_empty() {
+        return Err(Some("input runfiles cannot be empty".to_owned()));
+    }
+    let mut builder = RunfilesBuilder::default();
+    builder
+        .set_empty_files(EmptyFiles::PythonInit)
+        .merge(runfiles);
+    let merged = builder.build().map_err(|error| Some(error.to_string()))?;
+    Ok(heap.alloc(merged))
+}
+
+/// SourceManifestAction.ManifestType.SOURCE_SYMLINKS.writeEntry
+/// (analysis/SourceManifestAction.java:369-404): `path target\n`, sorted by
+/// path; an empty file has no target (the trailing space stays). Paths with a
+/// space or newline (or a target with a newline) are escaped (`\s`, `\n`,
+/// `\b`) and the line starts with a space.
+pub fn manifest_line(path: &str, target: Option<&str>, out: &mut Vec<u8>) {
+    let needs_escaping = path.contains(' ')
+        || path.contains('\n')
+        || target.is_some_and(|target| target.contains('\n'));
+    let escape = |text: &str, spaces: bool| {
+        let mut escaped = String::with_capacity(text.len());
+        for c in text.chars() {
+            match c {
+                ' ' if spaces => escaped.push_str("\\s"),
+                '\n' => escaped.push_str("\\n"),
+                '\\' => escaped.push_str("\\b"),
+                other => escaped.push(other),
+            }
+        }
+        escaped
+    };
+    if needs_escaping {
+        out.push(b' ');
+        out.extend_from_slice(escape(path, true).as_bytes());
+    } else {
+        out.extend_from_slice(path.as_bytes());
+    }
+    out.push(b' ');
+    if let Some(target) = target {
+        if needs_escaping {
+            out.extend_from_slice(escape(target, false).as_bytes());
+        } else {
+            out.extend_from_slice(target.as_bytes());
+        }
+    }
+    out.push(b'\n');
+}
+
 impl fmt::Display for Runfiles {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // StarlarkValue.repr default (net/starlark/java/eval/StarlarkValue.java:50-52).
@@ -244,10 +543,17 @@ pub(crate) struct RunfilesBuilder {
     transitive_symlinks: Vec<Arc<DepsetNode>>,
     root_symlinks: Vec<Item>,
     transitive_root_symlinks: Vec<Arc<DepsetNode>>,
+    empty_files: EmptyFiles,
     conflict_error: bool,
 }
 
 impl RunfilesBuilder {
+    /// Builder.setEmptyFilesSupplier (Runfiles.java:603-611).
+    pub(crate) fn set_empty_files(&mut self, supplier: EmptyFiles) -> &mut Self {
+        self.empty_files = supplier;
+        self
+    }
+
     pub(crate) fn add_artifact(&mut self, file: File) -> &mut Self {
         self.direct.push(Item::File(file));
         self
@@ -288,6 +594,11 @@ impl RunfilesBuilder {
             .push(Arc::clone(&runfiles.symlinks));
         self.transitive_root_symlinks
             .push(Arc::clone(&runfiles.root_symlinks));
+        // Only one supplier exists natively, so the checkState of
+        // differing suppliers (:654-660) cannot fail.
+        if self.empty_files == EmptyFiles::None {
+            self.empty_files = runfiles.empty_files;
+        }
         self
     }
 
@@ -311,6 +622,7 @@ impl RunfilesBuilder {
                 Order::Default,
                 ItemType::Symlink,
             )?,
+            empty_files: self.empty_files,
             conflict_error: self.conflict_error,
         })
     }
@@ -355,13 +667,12 @@ fn runfiles_methods(builder: &mut MethodsBuilder) {
             node: Arc::clone(&this.root_symlinks),
         })
     }
-    /// Always empty: no Starlark API installs an empty-files supplier
-    /// (Runfiles.java:243-264).
+    /// Runfiles.getEmptyFilenamesForStarlark (Runfiles.java:246-265): a
+    /// STABLE depset of the supplier's extra paths.
     #[starlark(attribute)]
     fn empty_filenames(this: &Runfiles) -> anyhow::Result<Depset> {
-        let _ = this;
         Ok(Depset {
-            node: node(Vec::new(), Vec::new(), Order::Default, ItemType::String)?,
+            node: this.empty_filenames_node()?,
         })
     }
     /// Runfiles.merge (Runfiles.java:830-846): an empty side returns the
@@ -469,7 +780,8 @@ impl<'v> StarlarkValue<'v> for Runfiles {
         let depset = |node: &Arc<DepsetNode>| Depset {
             node: Arc::clone(node),
         };
-        let empty_files = node(Vec::new(), Vec::new(), Order::Default, ItemType::String)
+        let empty_files = self
+            .empty_filenames_node()
             .map(|node| depset(&node).to_string())
             .unwrap_or_else(|_| "depset([])".to_owned());
         write!(
@@ -609,7 +921,7 @@ impl FilesToRun {
     fn create(
         files_to_run: &[File],
         tree: bool,
-        support: Option<(Runfiles, File, File)>,
+        support: Option<(Runfiles, Option<File>, File)>,
         executable: Option<File>,
     ) -> Self {
         let count = files_to_run.len() + usize::from(tree);
@@ -631,7 +943,7 @@ impl FilesToRun {
             };
         }
         let (runfiles, runfiles_manifest, repo_mapping_manifest) = match support {
-            Some((runfiles, manifest, mapping)) => (Some(runfiles), Some(manifest), Some(mapping)),
+            Some((runfiles, manifest, mapping)) => (Some(runfiles), manifest, Some(mapping)),
             None => (None, None, None),
         };
         Self {
@@ -742,6 +1054,22 @@ pub struct TargetRunfiles {
     pub provider: Option<RunfilesProvider>,
     /// `None`: FilesToRunProvider.create(filesToBuild, null, null).
     pub files_to_run: Option<FilesToRun>,
+    /// What `bazel run` needs of a rule target (RunfilesSupport.getArgs and
+    /// getActionEnvironment, analysis/RunfilesSupport.java:546-652).
+    pub run: RunSettings,
+}
+
+/// The `run` command settings of a Starlark rule target.
+#[derive(Clone, Debug, Default)]
+pub struct RunSettings {
+    /// The tokenized `args` attribute (RunfilesSupport.computeArgs).
+    pub args: Vec<String>,
+    /// RunEnvironmentInfo.environment (computeActionEnvironment, :612-619).
+    pub environment: Vec<(String, String)>,
+    /// RunEnvironmentInfo.inherited_environment.
+    pub inherited: Vec<String>,
+    /// A test rule (TargetUtils.isTestRule).
+    pub test: bool,
 }
 
 impl TargetRunfiles {
@@ -749,6 +1077,7 @@ impl TargetRunfiles {
     pub fn file(file: File) -> Self {
         Self {
             provider: None,
+            run: RunSettings::default(),
             files_to_run: Some(FilesToRun {
                 fresh: true,
                 ..FilesToRun::single(file)
@@ -816,6 +1145,7 @@ impl TargetRunfiles {
                 data: data.build()?,
             }),
             files_to_run: Some(FilesToRun::create(outputs, false, None, None)),
+            run: RunSettings::default(),
         })
     }
 
@@ -838,6 +1168,7 @@ impl TargetRunfiles {
                 data: data.build()?,
             }),
             files_to_run: Some(FilesToRun::create(files, false, None, executable)),
+            run: RunSettings::default(),
         })
     }
 }
@@ -907,20 +1238,15 @@ pub(crate) struct ContextRunfiles {
     /// StarlarkAttributesCollection.getExecutableRunfilesMap
     /// (analysis/starlark/StarlarkAttributesCollection.java:410-430).
     pub executables: RefCell<BTreeMap<File, FilesToRun>>,
-    /// The dependencies' runfiles and repository-mapping manifests: declared
-    /// Files whose generating actions are N23f.
+    /// The dependencies' runfiles and repository-mapping manifests, which
+    /// their runfiles support generates (N23f).
     pub manifests: BTreeSet<File>,
 }
 
 impl ContextRunfiles {
-    /// The explicit N23f gap for using a runfiles manifest as a file.
-    pub(crate) fn manifest_gap(&self, file: &File) -> Option<String> {
-        self.manifests.contains(file).then(|| manifest_gap(file))
-    }
-
     /// An action executable/tool File: its FilesToRunProvider runfiles are
-    /// attached to the spawn by Bazel (StarlarkActionFactory.java:433-441,
-    /// :771-779); that attachment is not modelled yet.
+    /// attached to the spawn (StarlarkActionFactory.java:433-441, :771-779;
+    /// crate::analysis_runtime::tool_runfiles_tree).
     /// StarlarkRuleContext.getExecutableRunfiles != null
     /// (analysis/starlark/StarlarkRuleContext.java:981-983): `file` is an
     /// executable attribute's executable.
@@ -936,28 +1262,6 @@ impl ContextRunfiles {
             .values()
             .any(|known| known.id == files_to_run.id)
     }
-
-    pub(crate) fn check_action_file(&self, file: &File, what: &str) -> anyhow::Result<()> {
-        if let Some(files_to_run) = self.executables.borrow().get(file) {
-            ensure_without_runfiles(files_to_run, what)?;
-        }
-        Ok(())
-    }
-}
-
-/// The message for a FilesToRunProvider manifest used as an input, runfile or
-/// DefaultInfo file (Bazel builds it with the runfiles support actions,
-/// analysis/RunfilesSupport.java:280-345).
-pub(crate) fn manifest_gap(file: &File) -> String {
-    let kind = if file.path.ends_with(".runfiles/MANIFEST") {
-        "runfiles manifest"
-    } else {
-        "repository mapping manifest"
-    };
-    format!(
-        "{} is the {kind} of {}: generating runfiles manifests, repository mapping manifests and runfiles trees is not supported by the native profile (N23f, docs/RUNFILES.md)",
-        file.path, file.owner
-    )
 }
 
 impl TargetRunfiles {
@@ -974,20 +1278,6 @@ impl TargetRunfiles {
             })
             .collect()
     }
-}
-
-pub(crate) fn ensure_without_runfiles(files_to_run: &FilesToRun, what: &str) -> anyhow::Result<()> {
-    if let Some(runfiles) = &files_to_run.runfiles {
-        let shown = files_to_run
-            .executable
-            .as_ref()
-            .map_or_else(String::new, |file| format!(" {}", file.path));
-        ensure!(
-            runfiles.is_empty(),
-            "action {what}{shown} has runfiles; attaching executable runfiles to actions is not supported by the native profile (docs/RUNFILES.md)"
-        );
-    }
-    Ok(())
 }
 
 impl Outputs {
@@ -1428,6 +1718,7 @@ pub(crate) fn configure_target(
     rule: &RuleClassification<'_>,
     predeclared: Vec<File>,
     default_executable: Option<&DefaultExecutable>,
+    options: crate::runfiles_tree::RunfilesOptions,
 ) -> anyhow::Result<(Vec<File>, TargetRunfiles)> {
     let rule_class = rule.rule_class;
     let mut executable = info.executable;
@@ -1511,9 +1802,19 @@ pub(crate) fn configure_target(
                     rule.label
                 );
             }
+            // RunfilesSupport.create (analysis/RunfilesSupport.java:305-325):
+            // the MANIFEST in the tree with --build_runfile_links, the input
+            // manifest without, none with --nobuild_runfile_manifests.
+            let manifest = if options.links() {
+                Some(suffixed(file, ".runfiles/MANIFEST", rule.label))
+            } else if options.build_runfile_manifests {
+                Some(suffixed(file, ".runfiles_manifest", rule.label))
+            } else {
+                None
+            };
             Some((
                 provider.default.clone(),
-                suffixed(file, ".runfiles/MANIFEST", rule.label),
+                manifest,
                 suffixed(file, ".repo_mapping", rule.label),
             ))
         };
@@ -1528,11 +1829,27 @@ pub(crate) fn configure_target(
     } else {
         FilesToRun::create(&files, false, None, None)
     };
+    // ShellUtils.tokenize of each `args` value: the analysis gate above
+    // leaves only whitespace separation (no quotes, escapes or `$`).
+    let args = rule
+        .args
+        .iter()
+        .flat_map(|arg| {
+            arg.split([' ', '\t', '\n', '\r'])
+                .filter(|token| !token.is_empty())
+        })
+        .map(str::to_owned)
+        .collect();
     Ok((
         files,
         TargetRunfiles {
             provider: Some(provider),
             files_to_run: Some(files_to_run),
+            run: RunSettings {
+                args,
+                test: rule.test,
+                ..RunSettings::default()
+            },
         },
     ))
 }
@@ -1559,6 +1876,118 @@ mod tests {
             test,
             args: Vec::new(),
         }
+    }
+
+    fn source(path: &str, owner: &str) -> File {
+        File {
+            is_directory: false,
+            path: path.to_owned(),
+            short_path: path
+                .strip_prefix("external/")
+                .map_or_else(|| path.to_owned(), |rest| format!("../{rest}")),
+            owner: owner.to_owned(),
+            is_source: true,
+        }
+    }
+
+    #[test]
+    fn runfiles_inputs_prefix_external_and_drop_obscured_entries() {
+        let main = source("pkg/d.txt", "//pkg:d.txt");
+        let external = source("external/ext+/e.txt", "@@ext+//:e.txt");
+        let mut builder = RunfilesBuilder::default();
+        builder
+            .add_artifact(main.clone())
+            .add_artifact(external.clone());
+        builder
+            .symlinks
+            .push(Item::Symlink(symlink_entry("dir".into(), main.clone())));
+        builder.symlinks.push(Item::Symlink(symlink_entry(
+            "dir/x".into(),
+            external.clone(),
+        )));
+        builder
+            .root_symlinks
+            .push(Item::Symlink(symlink_entry("ext+/r".into(), main.clone())));
+        let runfiles = builder.build().unwrap();
+        let mapping_file = file("pkg/b.repo_mapping", "//pkg:b");
+        let mut conflicts = Vec::new();
+        let mapping = runfiles.runfiles_inputs(Some(&mapping_file), Some(&mut conflicts));
+        assert_eq!(
+            mapping.keys().map(String::as_str).collect::<Vec<_>>(),
+            [
+                "_main/dir",
+                "_main/pkg/d.txt",
+                "_repo_mapping",
+                "ext+/e.txt",
+                "ext+/r"
+            ]
+        );
+        assert_eq!(
+            conflicts,
+            ["runfiles symlink dir/x -> external/ext+/e.txt obscured by dir -> pkg/d.txt"]
+        );
+        // Only external entries: `_main/.runfile` keeps the directory.
+        let mut builder = RunfilesBuilder::default();
+        builder.add_artifact(external);
+        let mapping = builder.build().unwrap().runfiles_inputs(None, None);
+        assert_eq!(
+            mapping.keys().collect::<Vec<_>>(),
+            ["_main/.runfile", "ext+/e.txt"]
+        );
+        assert_eq!(mapping["_main/.runfile"], None);
+    }
+
+    #[test]
+    fn python_init_files_follow_get_init_py_files_and_hash_set_order() {
+        let manifest = [
+            "py/a/b/m.py",
+            "py/a/x.so",
+            "py/top.py",
+            "py/__pycache__/c.pyc",
+            "../ext+/q.py",
+        ]
+        .map(str::to_owned);
+        assert_eq!(
+            EmptyFiles::PythonInit.extra_paths(&manifest),
+            // HashMap buckets of String.hashCode (an independent computation
+            // gives the same order); the first three match genuine Bazel's
+            // empty_filenames for py/a/b/m.py, py/a/x.so, py/top.py.
+            [
+                "../ext+/__init__.py",
+                "../__init__.py",
+                "py/a/b/__init__.py",
+                "py/a/__init__.py",
+                "py/__init__.py"
+            ]
+        );
+        assert!(EmptyFiles::None.extra_paths(&manifest).is_empty());
+        // An existing __init__.py(c) suppresses the generated one.
+        let manifest = ["a/m.py", "a/__init__.pyc"].map(str::to_owned);
+        assert!(EmptyFiles::PythonInit.extra_paths(&manifest).is_empty());
+        assert_eq!(
+            java_string_hash("py/__init__.py"),
+            "py/__init__.py"
+                .chars()
+                .fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(c as i32))
+        );
+        // Larger sets resize the table (capacity 32 above 12 entries).
+        let many: Vec<String> = (0..13).map(|i| format!("f{i}")).collect();
+        let ordered = java_hash_set_order(many.clone());
+        assert_eq!(ordered.len(), 13);
+        assert_ne!(ordered, many);
+    }
+
+    #[test]
+    fn manifest_lines_escape_like_source_manifest_action() {
+        let mut out = Vec::new();
+        manifest_line("_main/a", Some("/x/a b"), &mut out);
+        manifest_line("_main/e", None, &mut out);
+        manifest_line("_main/s p\\q", Some("/t\\u"), &mut out);
+        manifest_line("_main/n", Some("/l\nm"), &mut out);
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "_main/a /x/a b\n_main/e \n _main/s\\sp\\bq /t\\bu\n _main/n /l\\nm\n"
+        );
     }
 
     #[test]
@@ -1648,6 +2077,7 @@ mod tests {
             &rule(false),
             vec![file("pkg/out", "//pkg:r")],
             None,
+            Default::default(),
         )
         .unwrap();
         assert_eq!(files, [file("pkg/out", "//pkg:r"), exe.clone()]);
@@ -1674,6 +2104,7 @@ mod tests {
             },
             Vec::new(),
             None,
+            Default::default(),
         )
         .unwrap_err();
         assert_eq!(error.to_string(), "Test rules have to define runfiles");
@@ -1690,6 +2121,7 @@ mod tests {
             },
             Vec::new(),
             None,
+            Default::default(),
         )
         .unwrap();
         assert_eq!(

@@ -4,17 +4,19 @@ This bounded native profile implements the metadata behavior below. It is not
 operational run/test support or full Bazel parity.
 
 The scope is genuine metadata construction, snapshots, equality, nested provider
-transport and explicit action consumption. It does **not** add `run`/`test`
-commands or automatic process environment handling. `rule(executable=True)` and
+transport and explicit action consumption. It does not add a `test` command;
+since N23f the `run` command applies a target's `environment` and
+`inherited_environment` (docs/RUNFILES_TREES.md). `rule(executable=True)` and
 `rule(test=True)` declarations load natively like Bazel (query and the `_test`
 rule-class-name check are the validator's differential `rule-kind` family), and
 since N23a (docs/RUNFILES.md) such targets are analyzed and built: returning
 `DefaultInfo(executable=...)` with RunEnvironmentInfo builds on both engines, and
 without an executable both fail with `The rule 'check' is executable. It needs to
 create an executable File and pass it as the 'executable' parameter to the
-DefaultInfo it returns.` (differential `rule-build` family). Only the `test` and
-`run` commands remain a native-only boundary (`bazel-rs: unsupported command or
-startup option "test"; run --help for the native subset`).
+DefaultInfo it returns.` (differential `rule-build` family). Only the `test`
+command remains a native-only boundary (`bazel-rs: unsupported command or
+startup option "test"; run --help for the native subset`); `run` exists since
+N23f (docs/RUNFILES_TREES.md).
 
 ## Constructor and ownership
 
@@ -96,8 +98,9 @@ execution. Nesting the value in a custom provider is different and is allowed.
 Deprecated `testing.TestEnvironment` uses a private compatibility flag and has
 different warning/return behavior. It is not implemented here and is not used as
 a bypass. Since N23a, executable and test rules (docs/RUNFILES.md) may return
-RunEnvironmentInfo directly; the value is retained as analysis metadata only
-(no `run`/`test` command consumes it yet).
+RunEnvironmentInfo directly; `run` applies it since N23f
+(RunfilesSupport.computeActionEnvironment, docs/RUNFILES_TREES.md); no `test`
+command consumes it yet.
 
 The complete run/test behavior remains future work. In the reference, inherited
 values override literals only when present, otherwise literal fallbacks survive.

@@ -50,7 +50,11 @@ are relative to `src/main/cpp/`, server paths to
   `while reading option defaults file '…': invalid command name '…'.` warnings.
   `--flag_alias` is restricted to `build`/`common`/`always`.
 * **Groups** (`:199-251`, `:607-621`): `always`, `common`, then the command.
-  `build`, `query` and `mod` inherit from no other command. `common` options that
+  `build`, `query` and `mod` inherit from no other command; `run` (N23f)
+  inherits `build` (groups `always`, `common`, `build`, `run`;
+  RunCommand's `inheritsOptionsFrom`). For `common` filtering `run` uses the
+  option data's "other commands" bit, which also covers other non-build
+  commands' options (an over-approximation). `common` options that
   the current command does not have, but some other Bazel 9.3 command does, are
   ignored and reported in the `Ignored as unsupported by '…'` note. Options
   unknown to every command are errors. The per-command option data comes from

@@ -73,6 +73,20 @@ pub(crate) fn errors_on_non_executable_rule(value: Value<'_>) -> bool {
     RunEnvironmentInfo::from_value(value).is_none_or(|info| info.0.error_on_non_executable)
 }
 
+/// RunEnvironmentInfo.getEnvironment and getInheritedEnvironment.
+pub(crate) type Environment = (Vec<(String, String)>, Vec<String>);
+
+/// The environment and inherited names of an instance, in insertion order
+/// (RunEnvironmentInfo.getEnvironment / getInheritedEnvironment).
+pub(crate) fn environment(value: Value<'_>) -> Option<Environment> {
+    RunEnvironmentInfo::from_value(value).map(|info| {
+        (
+            info.0.environment.clone(),
+            info.0.inherited_environment.clone(),
+        )
+    })
+}
+
 pub(crate) fn is_constructor(value: Value<'_>) -> bool {
     Constructor::from_value(value).is_some()
 }
