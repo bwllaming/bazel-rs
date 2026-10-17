@@ -10,7 +10,7 @@
 use crate::repo_env::EnvVar;
 
 /// The values of the options this module models, in priority order.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct RcOptions {
     /// `--repo_env` values (CommonCommandOptions.java:607-622), in order.
     pub repo_env: Vec<EnvVar>,
@@ -19,16 +19,6 @@ pub struct RcOptions {
     /// `--experimental_isolated_extension_usages`
     /// (packages/semantics/BuildLanguageOptions.java:278-286).
     pub isolated_extension_usages: bool,
-}
-
-impl Default for RcOptions {
-    fn default() -> Self {
-        Self {
-            repo_env: Vec::new(),
-            attempt_to_print_relative_paths: false,
-            isolated_extension_usages: false,
-        }
-    }
 }
 
 /// Remote execution options (remote/options/RemoteOptions.java:91, :601).
