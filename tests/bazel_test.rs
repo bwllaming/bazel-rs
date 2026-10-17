@@ -416,8 +416,23 @@ fn failing_test_xml_exit_code_and_reruns() {
         "exec ${PAGER:-/usr/bin/less} \"$0\" || exit 1\nExecuting tests from //pkg:fail_test\n-----------------------------------------------------------------------------\nfailing\nto-stderr\n"
     );
     let xml = fs::read_to_string(log.with_file_name("test.xml")).unwrap();
-    assert!(
-        xml.contains("<testcase name=\"pkg/fail_test.sh\" classname=\"\" status=\"run\" duration=\"0\" time=\"0\"><error message=\"exited with error code 1\"></error></testcase>"),
+    // The duration is the test's wall time in seconds (0 on an idle machine;
+    // more under heavy load), equal in both attributes.
+    let testcase = xml
+        .lines()
+        .find(|line| line.contains("<testcase "))
+        .unwrap_or_else(|| panic!("{xml}"));
+    let seconds = testcase
+        .split("duration=\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or_else(|| panic!("{xml}"));
+    assert!(seconds.parse::<u64>().is_ok(), "{xml}");
+    assert_eq!(
+        testcase.trim(),
+        format!(
+            "<testcase name=\"pkg/fail_test.sh\" classname=\"\" status=\"run\" duration=\"{seconds}\" time=\"{seconds}\"><error message=\"exited with error code 1\"></error></testcase>"
+        ),
         "{xml}"
     );
     assert_eq!(
