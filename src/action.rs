@@ -2752,6 +2752,8 @@ mod tests {
     use std::os::unix::fs::symlink;
     use std::sync::{Arc, Barrier};
 
+    include!("../tests/support/executable_script.rs");
+
     struct Fixture(PathBuf);
 
     impl Fixture {
@@ -2824,8 +2826,8 @@ mod tests {
 
         fn direct_action(&self, script: &str) -> Action {
             let source = self.0.join("executable-source");
-            fs::write(&source, script).unwrap();
-            fs::set_permissions(&source, fs::Permissions::from_mode(0o755)).unwrap();
+            // Not fs::write: see write_executable_script (ETXTBSY).
+            write_executable_script(&source, script, 0o755);
             Action {
                 id: "direct".into(),
                 command: String::new(),
@@ -3722,6 +3724,38 @@ mod tests {
         }
     }
 
+    /// A separate process holding `path` open for writing until dropped.
+    struct WriterProcess(std::process::Child);
+
+    impl WriterProcess {
+        fn open(path: &Path) -> Self {
+            use std::io::BufRead;
+            let mut child = Command::new("/bin/sh")
+                .arg("-c")
+                .arg(r#"exec 3>>"$1" && echo open && exec sleep 600"#)
+                .arg("writer")
+                .arg(path)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(child.stdout.take().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            assert_eq!(line, "open\n");
+            Self(child)
+        }
+    }
+
+    impl Drop for WriterProcess {
+        fn drop(&mut self) {
+            // Its descriptors are closed once it can be reaped.
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
     #[test]
     #[cfg(target_os = "linux")]
     fn spawn_retry_recovers_from_real_writable_executable_without_duplicate_execution() {
@@ -3731,7 +3765,13 @@ mod tests {
         );
         let executable = &action.inputs[0].0;
         let marker = fixture.0.join("ran");
-        let mut writer = Some(OpenOptions::new().write(true).open(executable).unwrap());
+        // The writer lives in a helper process, never in this one: a write
+        // descriptor opened here would be inherited by every child another
+        // test thread spawns meanwhile and would keep exec busy until those
+        // children exec, which on a loaded host outlasted the whole 127 ms
+        // retry budget. Killing and reaping the helper removes the only
+        // writer, so the retry after the first back-off must succeed.
+        let mut writer = Some(WriterProcess::open(executable));
         let mut stdout = create_log(&fixture.0.join("stdout")).unwrap();
         let mut stderr = create_log(&fixture.0.join("stderr")).unwrap();
         let mut command = Command::new(executable);
@@ -3755,8 +3795,7 @@ mod tests {
         )
         .unwrap();
         assert!(child.wait().unwrap().success());
-        assert!((2..=8).contains(&attempts));
-        assert_eq!(waits, attempts - 1);
+        assert_eq!((attempts, waits), (2, 1));
         assert_eq!(fs::read_to_string(marker).unwrap(), "run\n");
         assert_eq!(log_tail(&mut stdout).unwrap(), "stdout-message");
         assert_eq!(log_tail(&mut stderr).unwrap(), "stderr-message");
