@@ -103,6 +103,8 @@ mod symbolic_macro;
 mod target_pattern;
 mod template_dict;
 pub mod template_variable_info;
+pub mod test_command;
+pub mod test_runner;
 mod toolchain_info;
 pub mod toolchains;
 pub mod visibility;

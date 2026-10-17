@@ -166,7 +166,8 @@ published by hardlink/rename, never copied per action (docs/HARDLINK_STAGING.md)
 new scheduling stops and in-flight actions are joined. There is no process
 cancellation/timeout or persistent analysis server yet. Globs do not follow
 symlinks; potentially matching symlinks fail explicitly (Bazel can follow them).
-Full symbolic-macro schemas, the test command (and test targets under `run`),
+`bazel-rs test` runs tests locally like Bazel 9.3 (docs/TEST_COMMAND.md; no coverage).
+Full symbolic-macro schemas,
 the full package-specification grammar and license metadata remain unsupported.
 External loading supports the
 bounded verified registry/archive, text-patch and pinned Git profiles described

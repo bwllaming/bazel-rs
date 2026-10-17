@@ -157,17 +157,20 @@ every access, so the same comparison is `False` (FileConfiguredTarget.java:85-10
   is accepted when its values need no Make-variable/location expansion or shell
   tokenization (no `$`, quotes or backslashes); otherwise analysis fails
   explicitly (RunfilesSupport.computeArgs, :602-610). Shell tokenization of
-  `args` (ShellUtils.tokenize) and their use by `run`/`test` are N23g.
+  `args` (ShellUtils.tokenize) remains; `run` and `test` (N23g,
+  docs/TEST_COMMAND.md) use the whitespace-separated values.
 * The implicit test attributes `$test_wrapper`, `$xml_writer`, `$test_runtime`,
   `$test_setup_script`, `$xml_generator_script`, `$collect_coverage_script` and
   the coverage/run-under attributes (StarlarkRuleClassFunctions.java:258-378) use
-  the test-runner exec transition; they are recorded in the rule class but not
-  analyzed or exposed in `ctx.attr` (N23g).
+  the test-runner exec transition; they are not exposed in `ctx.attr`. In the
+  built-in profile they are analyzed as `exec(test)` dependency edges (N23g,
+  docs/TEST_COMMAND.md); the coverage report generator and run-under ones are
+  null without coverage/`--run_under`.
 * `bazel build` of an executable or test target builds its files to build and,
   like OutputGroupInfo.HIDDEN_TOP_LEVEL (RuleConfiguredTargetBuilder.java:144-171),
   the artifacts of its default runfiles and its runfiles tree without
   reporting them (N23f, docs/RUNFILES_TREES.md). `run` exists since N23f (not
-  for test targets); `test` does not (N23g). Simple `args` (whitespace
+  for test targets); `test` exists since N23g (docs/TEST_COMMAND.md). Simple `args` (whitespace
   separated) are passed by `run`.
 
 ## `ctx.executable` and actions
@@ -227,8 +230,7 @@ DefaultInfo target view.
 
 ## Not covered (explicit or documented)
 
-test-runner implicit dependencies, `args` tokenization beyond whitespace
-separation and `bazel test` (N23g), the nested-set depth-limit message. The
+`args` tokenization beyond whitespace separation, the nested-set depth-limit message. The
 native CLI also lists source files among a target's outputs, which Bazel's
 `--show_result` omits (pre-existing). Runfiles trees, manifests, tool
 runfiles and `run` are N23f (docs/RUNFILES_TREES.md).

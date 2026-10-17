@@ -2198,6 +2198,56 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
 /// backoff). Once a child starts, its wait result and exit status are never retried.
 /// Input files are staged as read-only hardlinks to store blobs (0444 plus
 /// their executable bits); a process that changes one in place fails.
+/// A regular file read by content for a process outside the action graph
+/// (a test action, crate::test_runner, N23g): its digest and executable
+/// bits, staged like any action input.
+#[derive(Clone)]
+pub struct ContentInput(Input);
+
+impl ContentInput {
+    pub fn digest(&self) -> &str {
+        &self.0.digest
+    }
+
+    pub fn executable(&self) -> bool {
+        self.0.executable != 0
+    }
+}
+
+/// The canonical cache root, created if needed, and its store directory.
+fn cache_store(cache_root: &Path) -> Result<(PathBuf, PathBuf), String> {
+    fs::create_dir_all(cache_root).map_err(|e| io_error("cannot create cache", cache_root, e))?;
+    let root = fs::canonicalize(cache_root)
+        .map_err(|e| io_error("cannot resolve cache", cache_root, e))?;
+    let cas = root.join(CAS);
+    ensure_directory(&cas)?;
+    Ok((root, cas))
+}
+
+/// Read `path` (a source file or a published output; published symlink
+/// outputs are followed) by content, like an action input (prepare).
+pub fn read_content_input(cache_root: &Path, path: &Path) -> Result<ContentInput, String> {
+    let (root, _) = cache_store(cache_root)?;
+    read_input(path, Some(&root), true).map(ContentInput)
+}
+
+/// Stage content inputs below `execroot` at their relative destinations:
+/// read-only hardlinks of the cache's content-addressed store (N36), like
+/// stage_inputs for an action.
+pub fn stage_content_inputs(
+    cache_root: &Path,
+    inputs: &[(ContentInput, PathBuf)],
+    execroot: &Path,
+) -> Result<(), String> {
+    let (root, cas) = cache_store(cache_root)?;
+    let mut staged = Vec::new();
+    for (input, destination) in inputs {
+        validate_relative(destination)?;
+        stage_file(&cas, &root, &input.0, execroot, destination, &mut staged)?;
+    }
+    Ok(())
+}
+
 pub fn execute(cache_root: &Path, action: &Action) -> Result<ActionResult, String> {
     execute_with_remote(cache_root, action, crate::remote_cache::active())
 }

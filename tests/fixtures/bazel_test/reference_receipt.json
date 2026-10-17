@@ -1,0 +1,770 @@
+{
+ "schema": "n23g-bazel-test-reference-receipt/v1",
+ "purpose": "Paired genuine Bazel 9.3.0 vs native bazel-rs capture of N23g (docs/TEST_COMMAND.md): bazel test (TestRunnerAction/StandaloneTestStrategy with genuine test-setup.sh and generate-xml.sh), environment, testlogs, test.xml/test.log bytes, summaries, exit codes, caching, sharding, flaky attempts, timeouts, test_suite expansion, filters and run of a test target. Fixture: tests/bazel_test.rs with tests/fixtures/test_flags/stubs. Evidence only; not an input of any test.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files (M37: --nosystem_rc --noworkspace_rc --nohome_rc --bazelrc=<private>) --output_user_root=<private> --output_base=<private> --host_jvm_args=-Xmx512m",
+  "flags": "--registry=file://<private copy of tests/fixtures/builtin_modules/registry> --incompatible_autoload_externally= --lockfile_mode=off --noshow_progress --color=no --curses=no --repository_cache=<private> --distdir=<seeded from verified local CAS>",
+  "env": "env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 INHERIT_ME=inherited FLAKY_MARKER=<private>, private HOME/TMPDIR, umask 022"
+ },
+ "native": {
+  "binary": "target/release/bazel-rs",
+  "sha256": "6348e5ee685f545bc95dcc65903669ecf0b7a6211ce522b90a7b7fe268a8998b",
+  "flags": "--ignore_all_rc_files --cache-dir=<private> --experimental-builtin-modules --registry=file://<same registry copy>"
+ },
+ "worktree": {
+  "head": "e66ede0a389901bd20b1a28f3fe857b6d0e7a458",
+  "src_diff_plus_untracked_sha256": "57ebd56df15fb6a31d9b6c8dca02227cb62b410cfd6990ef5771755a879c685d",
+  "untracked_src": [
+   "src/test_command.rs",
+   "src/test_runner.rs"
+  ]
+ },
+ "base_commit": "e66ede0a389901bd20b1a28f3fe857b6d0e7a458",
+ "script_sha256": "a966639ebef4f2080a080daa3206d8f5c0b46c0339a28a138753e7d84610a4fb",
+ "fixture_sha256": "b96bf8454eada9d9a210def150ac76de55da522ca8482f065d0ffddd6bae7504",
+ "distdir_seeded_count": 18,
+ "run": 2,
+ "harness_adjustments": [
+  "run 2 (the one allowed rerun): normalization of the per-engine scratch directory and of testlogs below the run-of-test execution root (run 1 M34 differed only there); EXACT_MESSAGE accepts reference ERROR messages without their prefix (native prints bazel-rs: and exits 1 for option errors); M36 gains --keep_going (run 1: --nokeep_going aborted a timing-dependent set of tests on the sharding error)."
+ ],
+ "run_1": {
+  "counts": {
+   "EXACT": 32,
+   "MISMATCH": 10,
+   "EXPECTED_NATIVE_UNSUPPORTED": 1,
+   "UNAVAILABLE": 1
+  },
+  "native_fixes_between_runs": [
+   "test.log of a test with failed attempts stays 0644 and attempt logs are 0555 (M6, M10)",
+   "--nokeep_going: a test action error stops tests not started yet (M36); --keep_going/-k for test",
+   "only the last key of a test action output is reusable from the cache, like the action cache (M37)",
+   "a build failure prints FAILED TO BUILD/NO STATUS summaries with exit 1 (M38)",
+   "the final build error is printed once (M8)"
+  ]
+ },
+ "scratch_removed": true,
+ "counts": {
+  "EXACT": 37,
+  "MISMATCH": 1,
+  "EXACT_MESSAGE": 4,
+  "EXPECTED_NATIVE_UNSUPPORTED": 1,
+  "UNAVAILABLE": 1
+ },
+ "rows": [
+  {
+   "row": "M1/pass_env_all",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--test_output=all",
+    "--test_arg=x",
+    "--test_arg=y z",
+    "--test_env=FOO2=v",
+    "--test_filter=flt",
+    "//pkg:pass_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "M2/pass_cached_all",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--test_output=all",
+    "--test_arg=x",
+    "--test_arg=y z",
+    "--test_env=FOO2=v",
+    "--test_filter=flt",
+    "//pkg:pass_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "M3/fail_errors",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--test_output=errors",
+    "//pkg:fail_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 3,
+   "native_exit": 3
+  },
+  {
+   "row": "M4/fail_rerun_auto",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//pkg:fail_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 3,
+   "native_exit": 3
+  },
+  {
+   "row": "M5/fail_cached_yes",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--cache_test_results=yes",
+    "//pkg:fail_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 3,
+   "native_exit": 3
+  },
+  {
+   "row": "M6/fail_attempts_2",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--flaky_test_attempts=2",
+    "--test_output=errors",
+    "//pkg:fail_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 3,
+   "native_exit": 3
+  },
+  {
+   "row": "M7/sharded_all",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--test_output=all",
+    "//pkg:sharded_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "M8/sharding_unsupported",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//pkg:noshard_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 3,
+   "native_exit": 3
+  },
+  {
+   "row": "M9/timeout",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--test_timeout=2",
+    "//pkg:slow_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 3,
+   "native_exit": 3
+  },
+  {
+   "row": "M10/flaky",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--test_env=FLAKY_MARKER",
+    "--test_output=errors",
+    "//pkg:flaky_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "M11/always_flaky",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//pkg:always_flaky_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 3,
+   "native_exit": 3
+  },
+  {
+   "row": "M12/signal",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--test_output=errors",
+    "//pkg:signal_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 3,
+   "native_exit": 3
+  },
+  {
+   "row": "M13/premature",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--test_output=errors",
+    "//pkg:premature_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 3,
+   "native_exit": 3
+  },
+  {
+   "row": "M14/undeclared_outputs",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//pkg:outputs_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "M15/terse",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--test_summary=terse",
+    "//pkg:pass_test",
+    "//pkg:fail_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 3,
+   "native_exit": 3
+  },
+  {
+   "row": "M16/detailed",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--test_summary=detailed",
+    "//pkg:xml_test",
+    "//pkg:fail_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 3,
+   "native_exit": 3
+  },
+  {
+   "row": "M17/summary_none",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--test_summary=none",
+    "//pkg:pass_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "M18/short_uncached",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--test_summary=short_uncached",
+    "//pkg:pass_test",
+    "//pkg:large_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "M19/streamed",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--test_output=streamed",
+    "--nocache_test_results",
+    "//pkg:fail_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 3,
+   "native_exit": 3
+  },
+  {
+   "row": "M20/tag_lang_filters",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--test_tag_filters=unit,lang",
+    "--test_lang_filters=sh_like",
+    "//pkg:all"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "M21/size_filter",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--test_size_filters=large",
+    "//pkg:all"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "M22/lang_filter",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--test_lang_filters=other_lang",
+    "//pkg:all"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "M23/all_filtered",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--test_size_filters=enormous",
+    "//pkg:all"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 4,
+   "native_exit": 4
+  },
+  {
+   "row": "M24/no_tests",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//nt:gen"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 4,
+   "native_exit": 4
+  },
+  {
+   "row": "M25/manual_explicit",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//pkg:manual_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "M26/suite",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//suite:suite"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "M27/suite_implicit",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//suite:implicit"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "M28/suite_tags",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//suite:small_only"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "M29/build_tests_only",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--build_tests_only",
+    "//nt:gen",
+    "//suite:b_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "M30/runs_per_test",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--runs_per_test=2",
+    "--test_output=all",
+    "//pkg:pass_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "M31/external_1",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//pkg:external_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "M32/external_2",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//pkg:external_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "M33/exclusive",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//pkg:exclusive_test",
+    "//pkg:large_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "M34/run_test_target",
+   "argv": [
+    "run",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//pkg:pass_test",
+    "--",
+    "r1"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "M35/repo_mapping_platforms",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--test_output=all",
+    "//plat:plat_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "M36/code_style_terse_errors",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--keep_going",
+    "--test_output=errors",
+    "--test_summary=terse",
+    "--test_timeout=5",
+    "//pkg:all",
+    "//suite:all"
+   ],
+   "verdict": "MISMATCH",
+   "reference_exit": 1,
+   "native_exit": 3,
+   "why": [
+    "exit",
+    "stdout",
+    "stderr_key"
+   ],
+   "reference_stdout": "e\n-- Test exited prematurely (TEST_PREMATURE_EXIT_FILE exists) --\n================================================================================\n==================== Test output for //pkg:flaky_test:\ntouch: cannot touch '': No such file or directory\nfirst\n================================================================================\n==================== Test output for //pkg:flaky_test:\ntouch: cannot touch '': No such file or directory\nfirst\n================================================================================\n==================== Test output for //pkg:flaky_test:\ntouch: cannot touch '': No such file or directory\nfirst\n================================================================================\n==================== Test output for //pkg:always_flaky_test:\nnever\n================================================================================\n==================== Test output for //pkg:always_flaky_test:\nnever\n================================================================================\n==================== Test output for //pkg:always_flaky_test:\nnever\n================================================================================\n==================== Test output for //pkg:signal_test:\ncrashing\n================================================================================\n==================== Test output for //pkg:slow_test:\nsleeping\n-- Test timed out at <DATE> --\n================================================================================\n//pkg:noshard_test                                              FAILED TO BUILD\n//pkg:slow_test                                                         TIMEOUT in <T>s\n  <TESTLOGS>/pkg/slow_test/test.log\n//pkg:fail_test                                                          FAILED in <T>s\n  <TESTLOGS>/pkg/fail_test/test.log\n//pkg:premature_test                                                     FAILED in <T>s\n  <TESTLOGS>/pkg/premature_test/test.log\n//pkg:signal_test                                                        FAILED in <T>s\n  <TESTLOGS>/pkg/signal_test/test.log\n//pkg:xml_test                                                           FAILED in <T>s\n  <TESTLOGS>/pkg/xml_test/test.log\n//pkg:always_flaky_test                                                  FAILED in 3 out of 3 in <T>s\n  Stats over 3 runs: <STATS>\n  <TESTLOGS>/pkg/always_flaky_test/test.log\n  <TESTLOGS>/pkg/always_flaky_test/test_attempts/attempt_1.log\n  <TESTLOGS>/pkg/always_flaky_test/test_attempts/attempt_2.log\n//pkg:flaky_test                                                         FAILED in 3 out of 3 in <T>s\n  Stats over 3 runs: <STATS>\n  <TESTLOGS>/pkg/flaky_test/test.log\n  <TESTLOGS>/pkg/flaky_test/test_attempts/attempt_1.log\n  <TESTLOGS>/pkg/flaky_test/test_attempts/attempt_2.log\n\nExecuted 18 out of 18 tests: 10 tests pass, 1 fails to build, and 7 fail locally.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
+   "native_stdout": "===============\n==================== Test output for //pkg:premature_test:\npremature\n-- Test exited prematurely (TEST_PREMATURE_EXIT_FILE exists) --\n================================================================================\n==================== Test output for //pkg:always_flaky_test:\nnever\n================================================================================\n==================== Test output for //pkg:always_flaky_test:\nnever\n================================================================================\n==================== Test output for //pkg:always_flaky_test:\nnever\n================================================================================\n==================== Test output for //pkg:flaky_test:\ntouch: cannot touch '': No such file or directory\nfirst\n================================================================================\n==================== Test output for //pkg:flaky_test:\ntouch: cannot touch '': No such file or directory\nfirst\n================================================================================\n==================== Test output for //pkg:flaky_test:\ntouch: cannot touch '': No such file or directory\nfirst\n================================================================================\n==================== Test output for //pkg:signal_test:\ncrashing\n================================================================================\n==================== Test output for //pkg:slow_test:\nsleeping\n-- Test timed out at <DATE> --\n================================================================================\n//pkg:slow_test                                                         TIMEOUT in <T>s\n  <TESTLOGS>/pkg/slow_test/test.log\n//pkg:fail_test                                                          FAILED in <T>s\n  <TESTLOGS>/pkg/fail_test/test.log\n//pkg:premature_test                                                     FAILED in <T>s\n  <TESTLOGS>/pkg/premature_test/test.log\n//pkg:signal_test                                                        FAILED in <T>s\n  <TESTLOGS>/pkg/signal_test/test.log\n//pkg:xml_test                                                           FAILED in <T>s\n  <TESTLOGS>/pkg/xml_test/test.log\n//pkg:always_flaky_test                                                  FAILED in 3 out of 3 in <T>s\n  Stats over 3 runs: <STATS>\n  <TESTLOGS>/pkg/always_flaky_test/test.log\n  <TESTLOGS>/pkg/always_flaky_test/test_attempts/attempt_1.log\n  <TESTLOGS>/pkg/always_flaky_test/test_attempts/attempt_2.log\n//pkg:flaky_test                                                         FAILED in 3 out of 3 in <T>s\n  Stats over 3 runs: <STATS>\n  <TESTLOGS>/pkg/flaky_test/test.log\n  <TESTLOGS>/pkg/flaky_test/test_attempts/attempt_1.log\n  <TESTLOGS>/pkg/flaky_test/test_attempts/attempt_2.log\n\nExecuted 17 out of 18 tests: 10 tests pass, 7 fail locally, and 1 was skipped.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
+   "reference_stderr_key": [
+    "      <TESTLOGS>/pkg/always_flaky_test/test.log",
+    "      <TESTLOGS>/pkg/always_flaky_test/test_attempts/attempt_1.log",
+    "      <TESTLOGS>/pkg/always_flaky_test/test_attempts/attempt_2.log",
+    "      <TESTLOGS>/pkg/flaky_test/test.log",
+    "      <TESTLOGS>/pkg/flaky_test/test_attempts/attempt_1.log",
+    "      <TESTLOGS>/pkg/flaky_test/test_attempts/attempt_2.log",
+    "      <TESTLOGS>/pkg/slow_test/test.log",
+    "ERROR: <WS>/pkg/BUILD:40:13: Testing //pkg:noshard_test (shard 1 of 2) failed: Sharding requested, but the test runner did not advertise support for it by touching TEST_SHARD_STATUS_FILE. Either remove the 'shard_count' attribute, use a test runner that supports sharding or temporarily disable this check via --noincompatible_check_sharding_support.",
+    "ERROR: <WS>/pkg/BUILD:40:13: Testing //pkg:noshard_test (shard 2 of 2) failed: Sharding requested, but the test runner did not advertise support for it by touching TEST_SHARD_STATUS_FILE. Either remove the 'shard_count' attribute, use a test runner that supports sharding or temporarily disable this check via --noincompatible_check_sharding_support.",
+    "FAIL: //pkg:always_flaky_test (Exit 2) (see <TESTLOGS>/pkg/always_flaky_test/test.log)",
+    "FAIL: //pkg:always_flaky_test (Exit 2) (see <TESTLOGS>/pkg/always_flaky_test/test_attempts/attempt_1.log)",
+    "FAIL: //pkg:always_flaky_test (Exit 2) (see <TESTLOGS>/pkg/always_flaky_test/test_attempts/attempt_2.log)",
+    "FAIL: //pkg:fail_test (Exit 1) (see <TESTLOGS>/pkg/fail_test/test.log)",
+    "FAIL: //pkg:flaky_test (Exit 1) (see <TESTLOGS>/pkg/flaky_test/test.log)",
+    "FAIL: //pkg:flaky_test (Exit 1) (see <TESTLOGS>/pkg/flaky_test/test_attempts/attempt_1.log)",
+    "FAIL: //pkg:flaky_test (Exit 1) (see <TESTLOGS>/pkg/flaky_test/test_attempts/attempt_2.log)",
+    "FAIL: //pkg:premature_test (Exit 0) (see <TESTLOGS>/pkg/premature_test/test.log)",
+    "FAIL: //pkg:signal_test (Segmentation fault) (see <TESTLOGS>/pkg/signal_test/test.log)",
+    "FAIL: //pkg:xml_test (Exit 1) (see <TESTLOGS>/pkg/xml_test/test.log)",
+    "TIMEOUT: //pkg:slow_test (Summary)"
+   ],
+   "native_stderr_key": [
+    "      <TESTLOGS>/pkg/always_flaky_test/test.log",
+    "      <TESTLOGS>/pkg/always_flaky_test/test_attempts/attempt_1.log",
+    "      <TESTLOGS>/pkg/always_flaky_test/test_attempts/attempt_2.log",
+    "      <TESTLOGS>/pkg/flaky_test/test.log",
+    "      <TESTLOGS>/pkg/flaky_test/test_attempts/attempt_1.log",
+    "      <TESTLOGS>/pkg/flaky_test/test_attempts/attempt_2.log",
+    "      <TESTLOGS>/pkg/slow_test/test.log",
+    "ERROR: <WS>/pkg/BUILD:40:13: Testing //pkg:noshard_test (shard 1 of 2) failed: Sharding requested, but the test runner did not advertise support for it by touching TEST_SHARD_STATUS_FILE. Either remove the 'shard_count' attribute, use a test runner that supports sharding or temporarily disable this check via --noincompatible_check_sharding_support.",
+    "ERROR: <WS>/pkg/BUILD:40:13: Testing //pkg:noshard_test (shard 2 of 2) failed: Sharding requested, but the test runner did not advertise support for it by touching TEST_SHARD_STATUS_FILE. Either remove the 'shard_count' attribute, use a test runner that supports sharding or temporarily disable this check via --noincompatible_check_sharding_support.",
+    "ERROR: Sharding requested, but the test runner did not advertise support for it by touching TEST_SHARD_STATUS_FILE. Either remove the 'shard_count' attribute, use a test runner that supports sharding or temporarily disable this check via --noincompatible_check_sharding_support.",
+    "FAIL: //pkg:always_flaky_test (Exit 2) (see <TESTLOGS>/pkg/always_flaky_test/test.log)",
+    "FAIL: //pkg:always_flaky_test (Exit 2) (see <TESTLOGS>/pkg/always_flaky_test/test_attempts/attempt_1.log)",
+    "FAIL: //pkg:always_flaky_test (Exit 2) (see <TESTLOGS>/pkg/always_flaky_test/test_attempts/attempt_2.log)",
+    "FAIL: //pkg:fail_test (Exit 1) (see <TESTLOGS>/pkg/fail_test/test.log)",
+    "FAIL: //pkg:flaky_test (Exit 1) (see <TESTLOGS>/pkg/flaky_test/test.log)",
+    "FAIL: //pkg:flaky_test (Exit 1) (see <TESTLOGS>/pkg/flaky_test/test_attempts/attempt_1.log)",
+    "FAIL: //pkg:flaky_test (Exit 1) (see <TESTLOGS>/pkg/flaky_test/test_attempts/attempt_2.log)",
+    "FAIL: //pkg:premature_test (Exit 0) (see <TESTLOGS>/pkg/premature_test/test.log)",
+    "FAIL: //pkg:signal_test (Segmentation fault) (see <TESTLOGS>/pkg/signal_test/test.log)",
+    "FAIL: //pkg:xml_test (Exit 1) (see <TESTLOGS>/pkg/xml_test/test.log)",
+    "TIMEOUT: //pkg:slow_test (Summary)"
+   ],
+   "reference_stderr_tail": "e <TESTLOGS>/pkg/always_flaky_test/test_attempts/attempt_1.log)\nFAIL: //pkg:premature_test (Exit 0) (see <TESTLOGS>/pkg/premature_test/test.log)\nINFO: From Testing //pkg:premature_test:\nFAIL: //pkg:flaky_test (Exit 1) (see <TESTLOGS>/pkg/flaky_test/test_attempts/attempt_2.log)\nFAIL: //pkg:always_flaky_test (Exit 2) (see <TESTLOGS>/pkg/always_flaky_test/test_attempts/attempt_2.log)\nFAIL: //pkg:flaky_test (Exit 1) (see <TESTLOGS>/pkg/flaky_test/test.log)\n\nFAILED: //pkg:flaky_test (Summary)\n      <TESTLOGS>/pkg/flaky_test/test.log\n      <TESTLOGS>/pkg/flaky_test/test_attempts/attempt_1.log\n      <TESTLOGS>/pkg/flaky_test/test_attempts/attempt_2.log\nFAIL: //pkg:always_flaky_test (Exit 2) (see <TESTLOGS>/pkg/always_flaky_test/test.log)\nINFO: From Testing //pkg:flaky_test:\n\nFAILED: //pkg:always_flaky_test (Summary)\n      <TESTLOGS>/pkg/always_flaky_test/test.log\n      <TESTLOGS>/pkg/always_flaky_test/test_attempts/attempt_1.log\n      <TESTLOGS>/pkg/always_flaky_test/test_attempts/attempt_2.log\nINFO: From Testing //pkg:always_flaky_test:\nFAIL: //pkg:signal_test (Segmentation fault) (see <TESTLOGS>/pkg/signal_test/test.log)\nINFO: From Testing //pkg:signal_test:\n\nTIMEOUT: //pkg:slow_test (Summary)\n      <TESTLOGS>/pkg/slow_test/test.log\nINFO: From Testing //pkg:slow_test:\nINFO: Found 18 test targets...\nINFO: Elapsed time: 6.434s, Critical Path: 5.07s\nINFO: 22 processes: 90 action cache hit, 3 internal, 45 processwrapper-sandbox.\nINFO: Build completed, 8 tests FAILED, 22 total actions\n",
+   "native_stderr_tail": "atible_check_sharding_support.\nFAIL: //pkg:flaky_test (Exit 1) (see <TESTLOGS>/pkg/flaky_test/test_attempts/attempt_1.log)\nFAIL: //pkg:always_flaky_test (Exit 2) (see <TESTLOGS>/pkg/always_flaky_test/test_attempts/attempt_2.log)\nFAIL: //pkg:flaky_test (Exit 1) (see <TESTLOGS>/pkg/flaky_test/test_attempts/attempt_2.log)\nFAIL: //pkg:always_flaky_test (Exit 2) (see <TESTLOGS>/pkg/always_flaky_test/test.log)\nINFO: From Testing //pkg:always_flaky_test:\n\nFAILED: //pkg:always_flaky_test (Summary)\n      <TESTLOGS>/pkg/always_flaky_test/test.log\n      <TESTLOGS>/pkg/always_flaky_test/test_attempts/attempt_1.log\n      <TESTLOGS>/pkg/always_flaky_test/test_attempts/attempt_2.log\nFAIL: //pkg:flaky_test (Exit 1) (see <TESTLOGS>/pkg/flaky_test/test.log)\nINFO: From Testing //pkg:flaky_test:\n\nFAILED: //pkg:flaky_test (Summary)\n      <TESTLOGS>/pkg/flaky_test/test.log\n      <TESTLOGS>/pkg/flaky_test/test_attempts/attempt_1.log\n      <TESTLOGS>/pkg/flaky_test/test_attempts/attempt_2.log\nFAIL: //pkg:signal_test (Segmentation fault) (see <TESTLOGS>/pkg/signal_test/test.log)\nINFO: From Testing //pkg:signal_test:\nINFO: From Testing //pkg:slow_test:\n\nTIMEOUT: //pkg:slow_test (Summary)\n      <TESTLOGS>/pkg/slow_test/test.log\nERROR: Sharding requested, but the test runner did not advertise support for it by touching TEST_SHARD_STATUS_FILE. Either remove the 'shard_count' attribute, use a test runner that supports sharding or temporarily disable this check via --noincompatible_check_sharding_support.\n",
+   "post_capture": "fixed after run 2 (see post_capture_changes); native-only re-run against the recorded reference: EXACT"
+  },
+  {
+   "row": "M37/rc_test_inherits_build",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//pkg:fail_test",
+    "//pkg:pass_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 3,
+   "native_exit": 3
+  },
+  {
+   "row": "M38/build_failure",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//bf:broken_test",
+    "//suite:b_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "M39/err_test_output",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--test_output=bogus",
+    "//pkg:pass_test"
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 2,
+   "native_exit": 1,
+   "why": "every reference error message present natively; exit, stderr_key differ",
+   "reference_stdout": "",
+   "native_stdout": "",
+   "reference_stderr_key": [
+    "ERROR: While parsing option --test_output=bogus: Not a valid test output: 'bogus' (should be summary, errors, all or streamed)"
+   ],
+   "native_stderr_key": [],
+   "reference_stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: While parsing option --test_output=bogus: Not a valid test output: 'bogus' (should be summary, errors, all or streamed)\n",
+   "native_stderr_tail": "bazel-rs: While parsing option --test_output=bogus: Not a valid test output: 'bogus' (should be summary, errors, all or streamed)\n",
+   "explanation": "Bazel exits 2 (command-line error) and prefixes ERROR:; the native CLI reports every error as `bazel-rs: MESSAGE` with exit 1 (documented convention, docs/BAZELRC.md)"
+  },
+  {
+   "row": "M40/err_test_timeout",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--test_timeout=1,2",
+    "//pkg:pass_test"
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 2,
+   "native_exit": 1,
+   "why": "every reference error message present natively; exit, stderr_key differ",
+   "reference_stdout": "",
+   "native_stdout": "",
+   "reference_stderr_key": [
+    "ERROR: While parsing option --test_timeout=1,2: Invalid number of comma-separated entries"
+   ],
+   "native_stderr_key": [],
+   "reference_stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: While parsing option --test_timeout=1,2: Invalid number of comma-separated entries\n",
+   "native_stderr_tail": "bazel-rs: While parsing option --test_timeout=1,2: Invalid number of comma-separated entries\n",
+   "explanation": "Bazel exits 2 (command-line error) and prefixes ERROR:; the native CLI reports every error as `bazel-rs: MESSAGE` with exit 1 (documented convention, docs/BAZELRC.md)"
+  },
+  {
+   "row": "M41/err_flaky_attempts",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--flaky_test_attempts=0",
+    "//pkg:pass_test"
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 2,
+   "native_exit": 1,
+   "why": "every reference error message present natively; exit, stderr_key differ",
+   "reference_stdout": "",
+   "native_stdout": "",
+   "reference_stderr_key": [
+    "ERROR: While parsing option --flaky_test_attempts=0: '0' should be >= 1"
+   ],
+   "native_stderr_key": [],
+   "reference_stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: While parsing option --flaky_test_attempts=0: '0' should be >= 1\n",
+   "native_stderr_tail": "bazel-rs: While parsing option --flaky_test_attempts=0: '0' should be >= 1\n",
+   "explanation": "Bazel exits 2 (command-line error) and prefixes ERROR:; the native CLI reports every error as `bazel-rs: MESSAGE` with exit 1 (documented convention, docs/BAZELRC.md)"
+  },
+  {
+   "row": "M42/err_size_filter",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--test_size_filters=-small,-medium,-large,-enormous",
+    "//pkg:pass_test"
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 2,
+   "native_exit": 1,
+   "why": "every reference error message present natively; exit, stderr_key differ",
+   "reference_stdout": "",
+   "native_stdout": "",
+   "reference_stderr_key": [
+    "ERROR: While parsing option --test_size_filters=-small,-medium,-large,-enormous: Test size filter '-small,-medium,-large,-enormous' definition cannot match any tests"
+   ],
+   "native_stderr_key": [],
+   "reference_stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: While parsing option --test_size_filters=-small,-medium,-large,-enormous: Test size filter '-small,-medium,-large,-enormous' definition cannot match any tests\n",
+   "native_stderr_tail": "bazel-rs: While parsing option --test_size_filters=-small,-medium,-large,-enormous: Test size filter '-small,-medium,-large,-enormous' definition cannot match any tests\n",
+   "explanation": "Bazel exits 2 (command-line error) and prefixes ERROR:; the native CLI reports every error as `bazel-rs: MESSAGE` with exit 1 (documented convention, docs/BAZELRC.md)"
+  },
+  {
+   "row": "M43/coverage_unsupported",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--collect_code_coverage",
+    "//pkg:pass_test"
+   ],
+   "verdict": "EXPECTED_NATIVE_UNSUPPORTED",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "why": null,
+   "reference_stdout": "",
+   "native_stdout": "",
+   "reference_stderr_key": [
+    "ERROR: No test targets were found, yet testing was requested"
+   ],
+   "native_stderr_key": [],
+   "reference_stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Using default value for --instrumentation_filter: \"^//pkg[/:]\".\nINFO: Override the above default with --instrumentation_filter\nERROR: error loading package '@@bazel_tools+remote_coverage_tools_extension+remote_coverage_tools//': cannot load '@@rules_java+//java:java_binary.bzl': no such file\nERROR: <SCRATCH>/<ENGINE>/main/ob/external/bazel_tools/tools/test/BUILD:126:6: error loading package '@@bazel_tools+remote_coverage_tools_extension+remote_coverage_tools//': cannot load '@@rules_java+//java:java_binary.bzl': no such file and referenced by '@@bazel_tools//tools/test:coverage_report_generator'\nERROR: Analysis of target '//pkg:pass_test' failed; build aborted: Analysis failed\nINFO: Elapsed time: 2.028s, Critical Path: 0.02s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\nERROR: No test targets were found, yet testing was requested\n",
+   "native_stderr_tail": "bazel-rs: unsupported option \"--collect_code_coverage\"; options are never silently ignored\n",
+   "explanation": "coverage (--collect_code_coverage, bazel coverage) is an explicit native gap"
+  },
+  {
+   "row": "G1/genuine_rules_shell_sh_test",
+   "argv": [
+    "test",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--test_output=all",
+    "//sh:genuine_sh_test"
+   ],
+   "verdict": "UNAVAILABLE",
+   "reference_exit": 32,
+   "native_exit": 1,
+   "why": "the offline reference could not run the row",
+   "reference_stdout": "",
+   "native_stdout": "//sh:genuine_sh_test                                            FAILED TO BUILD\n\nExecuted 0 out of 1 test: 1 fails to build.\n",
+   "reference_stderr_key": [],
+   "native_stderr_key": [],
+   "reference_stderr_tail": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Error computing the main repository mapping: Unable to get module repo spec for bazel_skylib@1.6.1 from registry: Module bazel_skylib@1.6.1's source.json not found in registry file://<SCRATCH>/registry\n",
+   "native_stderr_tail": "bazel-rs: <WS>/sh/BUILD:2:8: While resolving toolchains for target //sh:genuine_sh_test (25220f3): repository @@bazel_skylib+ is not materialized: missing registry source descriptor <SCRATCH>/registry/modules/bazel_skylib/1.6.1/source.json\n",
+   "explanation": "genuine rules_shell 0.6.1 needs bazel_skylib@1.6.1, which the fixture registry lacks (reference: \"Module bazel_skylib@1.6.1's source.json not found in registry\"; native: missing registry source descriptor). Native analysis of genuine rules_shell rules additionally hits pre-existing gaps (N23f)."
+  }
+ ],
+ "post_capture_changes": {
+  "worktree_after": {
+   "head": "e66ede0a389901bd20b1a28f3fe857b6d0e7a458",
+   "src_diff_plus_untracked_sha256": "9278dda019de0cbfc0d949ed626a71ae3302e7510de900c73dfcedafd6df1427",
+   "untracked_src": [
+    "src/test_command.rs",
+    "src/test_runner.rs"
+   ]
+  },
+  "changes": [
+   "--keep_going: a test action error (TestExecException) makes its target FAILED TO BUILD (its actions ran) and the command exit 1, and the final build error is not repeated (Bazel under -k completes the build; M36 run 2 MISMATCH)",
+   "review follow-up: cached results keep their stored test case (no re-parse of the stored test.xml for detailed/testcase summaries), matching TestRunnerAction.actionCacheHit (:686-700) and the N23g design probe of genuine Bazel (a cached result counts as an unknown test case); comment/docs only in src, pinned by a new assertion in summaries_filters_suites_and_exit_codes; native test actions documented as local-only (no remote/disk cache lookup or upload until a REAPI encoding of test outputs exists)"
+  ],
+  "verification": "the native side of M36 was re-run alone after the change (fresh cache, same fixture and harness) and compared with the recorded run-2 reference row by the capture's compare(): EXACT; tests/bazel_test.rs build_failures_keep_going_cache_index_and_attempt_modes asserts the genuine summary text. No paired rerun (the one allowed rerun was run 2).",
+  "fixture_after_sha256": "b474552eacafb26be8e39a2a98bb886d15d8447fd93e498c08367d9ad6ad8736",
+  "fixture_changes": "tests/bazel_test.rs after the capture: a Drop that makes the read-only test outputs writable so temporary workspaces are removed, a new test (build_failures_keep_going_cache_index_and_attempt_modes) and --keep_going/stderr assertions; the shared fixture constants (MODULE, DEFS, PKG_BUILD, SUITE_BUILD, NT_BUILD, DATA) are unchanged"
+ }
+}

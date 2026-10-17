@@ -242,10 +242,12 @@ cache corruption and concurrent-process tests; reproducibility tests across host
 
 ### 4. Test/run and ecosystem interfaces
 
-- Test execution, exit code 3, sharding, timeouts, test env, caching (N23g);
-  runfiles trees, `run`, command `--run_under` and script-path generation are
-  N23f (docs/RUNFILES_TREES.md); `--run_under` labels and test targets under
-  `run` remain.
+- Test execution, exit codes, sharding, timeouts, test env, caching, flaky
+  attempts, summaries, test_suite expansion and test targets under `run` are
+  N23g (docs/TEST_COMMAND.md); runfiles trees, `run`, command `--run_under` and
+  script-path generation are N23f (docs/RUNFILES_TREES.md). Coverage,
+  `--run_under` labels (and for tests), remote/sandboxed test strategies,
+  `--notest_keep_going` and a FAILED TO BUILD summary remain.
 - BEP, profiles, query output formats, target-pattern files, info/clean/shutdown.
 - Remaining supported OSes, upstream rule families and CLI compatibility matrix.
 

@@ -146,9 +146,9 @@ package targets, so `query` does not list them (tests/runfiles_trees.rs
 * Exactly one target (`Only a single target can be run. Your target pattern P
   expanded to the targets ...`, `No targets found to run`, `Must specify a
   target to run`); it must be a file, an executable rule or an alias
-  (`Cannot run target L: Not executable`, :1052-1211). Test rules (also through
-  an alias) fail explicitly: Bazel runs them through TestRunnerAction,
-  test-setup.sh and the test environment (getTestCommandLine, :754-850; N23g).
+  (`Cannot run target L: Not executable`, :1052-1211). Test rules run through
+  test-setup.sh with the test environment (getTestCommandLine, :754-850; N23g,
+  docs/TEST_COMMAND.md).
 * The target and its runfiles tree are built (the tree also with
   `--nobuild_runfile_links`, ensureRunfilesBuilt, :996-1040);
   `--nobuild_runfile_manifests` fails with Bazel's text (:503-513). The build's
@@ -217,7 +217,8 @@ at pre-existing gaps (attribute flag `SKIP_CONSTRAINTS_OVERRIDE` on rules_shell'
 
 ## Not covered
 
-`bazel test` and test targets under `run` (N23g); `--run_under` labels; Bazel's
+`--run_under` labels (`bazel test` and test targets under `run` are N23g,
+docs/TEST_COMMAND.md); Bazel's
 convenience symlinks and relative pretty paths; `--portable_paths` and
 `--emit_script_path_in_exec_request`; `args` needing Make/location expansion or
 quote/escape tokenization (docs/RUNFILES.md); fileset trees, unresolved

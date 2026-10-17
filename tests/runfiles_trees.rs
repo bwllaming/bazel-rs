@@ -646,10 +646,6 @@ fn run_validates_its_target() {
             "Only a single target can be run. Your target pattern //pkg:all expanded to the targets",
         ),
         (
-            vec!["run", "//pkg:t_test"],
-            "running test target //pkg:t_test needs the test runner",
-        ),
-        (
             vec!["run", "--run_under=//pkg:tool", "//pkg:b"],
             "a label prefix (LabelRunUnder) is not supported",
         ),

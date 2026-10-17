@@ -175,16 +175,19 @@ fn groups_inherit_in_order_and_common_ignores_other_commands_options() {
     let ws = Workspace::new();
     ws.file(
         ".bazelrc",
-        "build -c dbg\ncommon -c opt\ncommon --test_output=errors\ntest --bogus\nquery --bogus\nalways --define=x=1\n",
+        "build -c dbg\ncommon -c opt\ncommon --worker_verbose\ntest --bogus\nquery --bogus\nalways --define=x=1\n",
     );
     // build options override common ones regardless of order.
     assert_eq!(
         ws.built(&["--noworkspace_rc"], &["build", ":mode"]),
         "fastbuild"
     );
-    // `build` has --test_output; it has no effect without test execution
-    // (N40, crate::rc_options).
-    assert_eq!(ws.built(&[], &["build", ":mode"]), "dbg");
+    let out = ws.run(&["build", ":mode"]);
+    assert!(
+        stderr(&out).contains("unsupported option \"--worker_verbose\" from rc file"),
+        "{}",
+        stderr(&out)
+    );
     ws.file(
         ".bazelrc",
         "build -c dbg\ncommon -c opt\ncommon --output=label_kind\nalways --define=x=1\n",

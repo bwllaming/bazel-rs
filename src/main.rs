@@ -8,6 +8,7 @@ Usage:
   bazel-rs [STARTUP...] [--cache-dir=PATH] query [QUERY-OPTION...] EXPRESSION
   bazel-rs [STARTUP...] [--cache-dir=PATH] build [--jobs=N] [CONFIG...] TARGET...
   bazel-rs [STARTUP...] [--cache-dir=PATH] run [BUILD OPTIONS...] [RUN OPTIONS...] TARGET [-- ARGS...]
+  bazel-rs [STARTUP...] [--cache-dir=PATH] test [BUILD OPTIONS...] [TEST OPTIONS...] TARGET...
   bazel-rs [STARTUP...] mod graph --output=json [--registry=URL]
   bazel-rs version | --version | capabilities
 
@@ -46,7 +47,8 @@ Native rules: filegroup(name, srcs), genrule(name, srcs, outs, cmd)
 Loading: local .bzl legacy macros, glob, package defaults and exports_files.
 Analysis: custom rules/attributes/providers, declared files, write/run/run_shell actions.
 No upstream fallback. Repository rules and module extensions have bounded native profiles.
-No test command (test targets cannot be run either), complete repository/extension APIs, execution platforms,
+Test: bazel-rs test [BUILD OPTIONS...] [TEST OPTIONS...] TARGET... (local TestRunnerAction semantics;
+  docs/TEST_COMMAND.md); run also runs test targets. No coverage, complete repository/extension APIs, execution platforms,
 remote execution, sandbox, SkyQuery or xml/proto query output yet.
 Builds execute trusted shell commands locally; this is not a security sandbox.
 ";
@@ -86,7 +88,7 @@ fn run() -> Result<(), String> {
             println!("{}", include_str!("../docs/capabilities.json"));
             return Ok(());
         }
-        "query" | "build" | "mod" | "run" => {}
+        "query" | "build" | "mod" | "run" | "test" => {}
         _ => {
             return Err(format!(
                 "unsupported command or startup option {command:?}; run --help for the native subset"
@@ -112,6 +114,7 @@ fn run() -> Result<(), String> {
     let mut remote_options = bazel_rs::remote_cache::RemoteOptions::default();
     let mut runfiles_options = bazel_rs::runfiles_tree::RunfilesOptions::default();
     let mut run_options = bazel_rs::run_command::RunOptions::default();
+    let mut test_options = bazel_rs::test_command::TestOptions::default();
     let mut deferred = None;
     let rc_options;
     let rest = if command == "mod" {
@@ -184,6 +187,7 @@ fn run() -> Result<(), String> {
         remote_options = native.remote;
         runfiles_options = native.runfiles;
         run_options = native.run;
+        test_options = native.test;
         options.residue.iter().map(|arg| arg.text.clone()).collect()
     };
     // The repository environment (client environment with --repo_env,
@@ -241,8 +245,14 @@ fn run() -> Result<(), String> {
     } else {
         rest
     };
-    if command == "build" && rest.is_empty() {
-        return Err("build requires at least one target".into());
+    if (command == "build" || command == "test") && rest.is_empty() {
+        return Err(format!("{command} requires at least one target"));
+    }
+    // TestCommand.exec (runtime/commands/TestCommand.java:98-107).
+    if command == "test" && test_options.output == bazel_rs::test_command::TestOutput::Streamed {
+        eprintln!(
+            "WARNING: Streamed test output requested. All tests will be run without sharding, one at a time"
+        );
     }
     // RunCommand.exec (runtime/commands/RunCommand.java:254-262).
     if command == "run" && rest.is_empty() {
@@ -382,6 +392,19 @@ fn run() -> Result<(), String> {
         }
         return Ok(());
     }
+    if command == "test" {
+        return test_targets(TestContext {
+            engine: &mut engine,
+            patterns: &rest,
+            relative_directory: &relative_directory,
+            cache: &cache,
+            jobs,
+            root: &root,
+            runfiles: runfiles_options,
+            options: &test_options,
+            remote_enabled,
+        });
+    }
     let labels = if command == "run" {
         // The first residue argument is the target; the rest are its
         // arguments (RunCommand.java:251-252).
@@ -407,6 +430,7 @@ fn run() -> Result<(), String> {
             runfiles: runfiles_options,
             options: &run_options,
             remote_enabled,
+            test: &test_options,
         });
     }
     let result = engine.build_with_jobs(&labels, &cache, jobs);
@@ -455,9 +479,9 @@ impl Drop for LockfileWriter {
     }
 }
 
-/// Commands that build (`run` inherits the build options).
+/// Commands that build (`run` and `test` inherit the build options).
 fn builds(command: &str) -> bool {
-    command == "build" || command == "run"
+    command == "build" || command == "run" || command == "test"
 }
 
 struct RunContext<'a> {
@@ -473,6 +497,7 @@ struct RunContext<'a> {
     options: &'a bazel_rs::run_command::RunOptions,
     /// Whether the remote cache is set up (N41): the summary names its hits.
     remote_enabled: bool,
+    test: &'a bazel_rs::test_command::TestOptions,
 }
 
 /// `run` (runtime/commands/RunCommand.java:250-391): build exactly one
@@ -494,6 +519,7 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
         runfiles,
         options,
         remote_enabled,
+        test,
     } = context;
     // validateTargets (RunCommand.java:1052-1111).
     if labels.len() > 1 {
@@ -514,12 +540,7 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
         bazel_rs::engine::Runnable::No => {
             return Err(format!("Cannot run target {label}: Not executable"));
         }
-        bazel_rs::engine::Runnable::Test => {
-            return Err(format!(
-                "running test target {label} needs the test runner (TestRunnerAction, test-setup.sh and the test environment), which is not implemented by the native profile (N23g; docs/RUNFILES_TREES.md)"
-            ));
-        }
-        bazel_rs::engine::Runnable::Yes => {}
+        bazel_rs::engine::Runnable::Test | bazel_rs::engine::Runnable::Yes => {}
     }
     if let Some(value) = options.run_under.as_deref()
         && let Some(first) = value.split_whitespace().next()
@@ -555,13 +576,22 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
     let Some(target) = target else {
         return Err(format!("Cannot run target {label}: Not executable"));
     };
-    if target.settings.test {
-        return Err(format!(
-            "running test target {label} needs the test runner (TestRunnerAction, test-setup.sh and the test environment), which is not implemented by the native profile (N23g; docs/RUNFILES_TREES.md)"
-        ));
-    }
     if !runfiles.build_runfile_manifests {
         return Err("--nobuild_runfile_manifests is incompatible with the \"run\" command".into());
+    }
+    if target.settings.test {
+        return run_test(RunTest {
+            engine,
+            label,
+            target: &target,
+            residue,
+            cache,
+            root,
+            cwd,
+            runfiles,
+            options,
+            test,
+        });
     }
     let (executable, execroot, runfiles_working_directory) = match &target.runfiles {
         Some(tree) => (
@@ -649,6 +679,434 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
     Err(format!("cannot execute {}: {error}", argv[0]))
 }
 
+struct TestContext<'a> {
+    engine: &'a mut Engine,
+    patterns: &'a [String],
+    relative_directory: &'a str,
+    cache: &'a Path,
+    jobs: usize,
+    root: &'a Path,
+    runfiles: bazel_rs::runfiles_tree::RunfilesOptions,
+    options: &'a bazel_rs::test_command::TestOptions,
+    /// Whether the remote cache is set up (N41): the build summary names its
+    /// hits. Test actions themselves are local-only (docs/TEST_COMMAND.md).
+    remote_enabled: bool,
+}
+
+/// Label.print: `//pkg:name` or `@@repo//pkg:name`.
+fn label_print(label: &bazel_rs::label::Label) -> String {
+    if label.repository.is_empty() {
+        format!("//{}:{}", label.package, label.name)
+    } else {
+        format!("@@{}//{}:{}", label.repository, label.package, label.name)
+    }
+}
+
+/// The test spec of a built test target (TestActionBuilder.createTestAction,
+/// analysis/test/TestActionBuilder.java:224-480).
+fn test_spec(
+    label: &bazel_rs::label::Label,
+    info: bazel_rs::test_command::TestRuleInfo,
+    location: Option<String>,
+    target: &bazel_rs::engine::RunTarget,
+) -> Result<bazel_rs::test_runner::TestSpec, String> {
+    let utf8 = |path: &Path| {
+        path.to_str()
+            .map(str::to_owned)
+            .ok_or_else(|| format!("non-UTF-8 path {} is not supported", path.display()))
+    };
+    let Some(entries) = target.entries.clone() else {
+        return Err(format!(
+            "{}: test target has no runfiles support",
+            label_print(label)
+        ));
+    };
+    let package = if label.repository.is_empty() {
+        label.package.clone()
+    } else if label.package.is_empty() {
+        format!("external/{}", label.repository)
+    } else {
+        format!("external/{}/{}", label.repository, label.package)
+    };
+    let testlogs_package = if package.is_empty() {
+        format!("bazel-out/{}/testlogs", target.mnemonic)
+    } else {
+        format!("bazel-out/{}/testlogs/{package}", target.mnemonic)
+    };
+    Ok(bazel_rs::test_runner::TestSpec {
+        label: label_print(label),
+        info,
+        location,
+        executable: target.executable.clone(),
+        executable_exec: utf8(&target.executable_exec)?,
+        binary: target.executable_short_path.clone(),
+        entries,
+        testlogs_package,
+        args: target.settings.args.clone(),
+        target_env: target.settings.environment.clone(),
+        target_inherited: target.settings.inherited.clone(),
+        action_env: target.action_env.clone(),
+        test_env: target.test_env.clone(),
+    })
+}
+
+/// `test` (runtime/commands/TestCommand.java:124-243): build the targets,
+/// run the selected tests (crate::test_runner), print the summary and exit
+/// with Bazel's code: 0 when every test passed, 3 (TESTS_FAILED) otherwise,
+/// 4 (NO_TESTS_FOUND) without tests, 1 when the build failed.
+fn test_targets(context: TestContext<'_>) -> Result<(), String> {
+    use bazel_rs::test_command::{should_output_log, summary_text};
+    let TestContext {
+        engine,
+        patterns,
+        relative_directory,
+        cache,
+        jobs,
+        root,
+        runfiles,
+        options,
+        remote_enabled,
+    } = context;
+    let selected = engine.select_for_test(patterns, relative_directory);
+    for warning in engine.take_warnings() {
+        warn(&warning);
+    }
+    let (mut build, candidates) = selected?;
+    let mut tests = Vec::new();
+    let mut infos = std::collections::BTreeMap::new();
+    let any_candidate = !candidates.is_empty();
+    for label in candidates {
+        let (info, location) = engine
+            .test_rule_info(&label)?
+            .ok_or_else(|| format!("internal error: {label} is not a test rule"))?;
+        if options.accepts(&info) {
+            infos.insert(label.clone(), (info, location));
+            tests.push(label);
+        }
+    }
+    // TargetPatternPhaseFunction.java:136-139.
+    if tests.is_empty() && any_candidate {
+        eprintln!("WARNING: All specified test targets were excluded by filters");
+    }
+    if options.build_tests_only {
+        build = tests.clone();
+    }
+    let result = engine.build_for_tests(&build, &tests, cache, jobs);
+    for warning in engine.take_warnings() {
+        warn(&warning);
+    }
+    for error in engine.take_errors() {
+        eprintln!("ERROR: {error}");
+    }
+    let (summary, targets) = match result {
+        Ok(built) => built,
+        Err(error) => return test_build_failure(&error, &tests, options),
+    };
+    // Bazel reports built targets on stderr; stdout carries test output
+    // and the summary.
+    for (label, output) in &summary.outputs {
+        eprintln!("{label}\t{}", output.display());
+    }
+    if remote_enabled {
+        eprintln!(
+            "bazel-rs: {} actions executed, {} cache hits, {} remote cache hits (experimental local execution; not sandboxed)",
+            summary.executed, summary.cache_hits, summary.remote_hits
+        );
+    } else {
+        eprintln!(
+            "bazel-rs: {} actions executed, {} cache hits (experimental local execution; not sandboxed)",
+            summary.executed, summary.cache_hits
+        );
+    }
+    if tests.is_empty() {
+        eprintln!("ERROR: No test targets were found, yet testing was requested");
+        std::process::exit(4);
+    }
+    let mut specs = Vec::new();
+    for label in &tests {
+        let target = targets
+            .get(label)
+            .ok_or_else(|| format!("internal error: {label} was not built as a test"))?;
+        let (info, location) = infos.remove(label).expect("filtered test");
+        specs.push(test_spec(label, info, location, target)?);
+    }
+    let tools = bazel_rs::test_runner::Tools::embedded(cache)?;
+    let client_env: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+    let runner = bazel_rs::test_runner::Runner {
+        cache,
+        workspace: root,
+        options,
+        client_env: &client_env,
+        jobs,
+        runfiles_enabled: runfiles.enable_runfiles,
+        tools: &tools,
+    };
+    let outcome = runner.run(&specs)?;
+    let mut sorted: Vec<&bazel_rs::test_command::TestSummary> = outcome.summaries.iter().collect();
+    sorted.sort_by(|a, b| a.compare(b));
+    use std::io::Write;
+    let mut stdout = std::io::stdout().lock();
+    for summary in sorted {
+        if summary.num_cached > 0 && should_output_log(options.output, summary.status.passed()) {
+            let _ = stdout.write_all(&bazel_rs::test_runner::cached_output(summary, options));
+        }
+    }
+    let _ =
+        stdout.write_all(summary_text(&outcome.summaries, outcome.executed, options).as_bytes());
+    let _ = stdout.flush();
+    drop(stdout);
+    // The build's failure summary names the first action error once
+    // (BuildResultPrinter; genuine capture M8).
+    // Under --keep_going the build completes and repeats no error (M36).
+    if let Some(error) = outcome.errors.first().filter(|_| !options.keep_going) {
+        eprintln!("ERROR: {error}");
+    }
+    let passed = outcome
+        .summaries
+        .iter()
+        .all(|summary| summary.status.passed());
+    // A target that failed to build (a test action error under
+    // --keep_going) makes the build fail: exit 1, the more important code
+    // (DetailedExitCodeComparator, TestCommand.java:236-240).
+    let failed_to_build = outcome
+        .summaries
+        .iter()
+        .any(|summary| summary.status == bazel_rs::test_command::TestStatus::FailedToBuild);
+    std::process::exit(if failed_to_build {
+        1
+    } else if passed {
+        0
+    } else {
+        3
+    });
+}
+
+/// A failed build of `bazel test` (TestCommand.java:200-243 with
+/// AggregatingTestListener.differentialAnalyzeAndReport): the summary
+/// shows each test that failed to build (named by the failing actions'
+/// messages) as FAILED TO BUILD and the others as NO STATUS (never run,
+/// --nokeep_going); exit code 1. Under --keep_going Bazel would still run
+/// the tests that built, which the native all-or-nothing build cannot.
+fn test_build_failure(
+    error: &str,
+    tests: &[bazel_rs::label::Label],
+    options: &bazel_rs::test_command::TestOptions,
+) -> Result<(), String> {
+    use bazel_rs::test_command::{TestStatus, TestSummary, TestTimeout, summary_text};
+    if options.keep_going {
+        return Err(format!(
+            "{error}\n--keep_going with a build failure is not supported by the native test command: the native build stops at the first failing action, so tests that would build are not run"
+        ));
+    }
+    eprintln!("bazel-rs: {error}");
+    let mentions = |label: &str| {
+        error.match_indices(label).any(|(index, _)| {
+            error[index + label.len()..]
+                .chars()
+                .next()
+                .is_none_or(|next| !(next.is_alphanumeric() || "_-./+".contains(next)))
+        })
+    };
+    let summaries: Vec<TestSummary> = tests
+        .iter()
+        .map(|label| {
+            let shown = label_print(label);
+            let mut summary = TestSummary::aggregate(&shown, TestTimeout::Moderate, &[], false);
+            summary.status = if mentions(&shown) {
+                TestStatus::FailedToBuild
+            } else {
+                TestStatus::NoStatus
+            };
+            summary
+        })
+        .collect();
+    print!("{}", summary_text(&summaries, 0, options));
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    std::process::exit(1);
+}
+
+struct RunTest<'a> {
+    engine: &'a mut Engine,
+    label: &'a bazel_rs::label::Label,
+    target: &'a bazel_rs::engine::RunTarget,
+    residue: &'a [String],
+    cache: &'a Path,
+    root: &'a Path,
+    cwd: &'a Path,
+    runfiles: bazel_rs::runfiles_tree::RunfilesOptions,
+    options: &'a bazel_rs::run_command::RunOptions,
+    test: &'a bazel_rs::test_command::TestOptions,
+}
+
+/// `run` of a test target (RunCommand.getTestCommandLine,
+/// runtime/commands/RunCommand.java:754-850): test-setup.sh runs the test
+/// in an execution root with the test environment (computeTestEnvironment
+/// with the run variables), BUILD_EXECROOT set (test-setup.sh then execs
+/// the test without job control). Natively the execution root is
+/// `<cache>/test-run/<key>/execroot`: test-setup.sh at its exec path and
+/// the runfiles tree linked at `<executable>.runfiles`.
+fn run_test(context: RunTest<'_>) -> Result<(), String> {
+    use bazel_rs::run_command::{ENV_TO_CLEAR, random_uuid, shell_escape};
+    let RunTest {
+        engine,
+        label,
+        target,
+        residue,
+        cache,
+        root,
+        cwd,
+        runfiles,
+        options,
+        test,
+    } = context;
+    let Some((info, location)) = engine.test_rule_info(label)? else {
+        return Err(format!("internal error: {label} is not a test rule"));
+    };
+    let spec = test_spec(label, info, location, target)?;
+    // TestProvider.getTestStatusArtifacts must be a single action.
+    let shards = test.sharding.shards(spec.info.shard_count).max(0) as u32;
+    if shards > 1 || test.runs_per_test > 1 {
+        return Err("Run command does not support tests with more than one shard or run (--runs_per_test and shard_count must be 1)".into());
+    }
+    if options.run_under.is_some() {
+        return Err("--run_under with a test target is not supported by the native profile".into());
+    }
+    let Some(tree) = &target.runfiles else {
+        return Err(format!("{}: test target has no runfiles tree", spec.label));
+    };
+    let tools = bazel_rs::test_runner::Tools::embedded(cache)?;
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        spec.label.hash(&mut hasher);
+        target.mnemonic.hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
+    };
+    let execroot = cache.join("test-run").join(key).join("execroot");
+    if execroot.exists() {
+        let _ = std::process::Command::new("chmod")
+            .args(["-R", "u+w"])
+            .arg(&execroot)
+            .status();
+        std::fs::remove_dir_all(&execroot)
+            .map_err(|e| format!("cannot remove {}: {e}", execroot.display()))?;
+    }
+    let setup = execroot.join(bazel_rs::test_runner::SETUP_EXEC_PATH);
+    std::fs::create_dir_all(setup.parent().expect("setup parent"))
+        .map_err(|e| format!("cannot create {}: {e}", execroot.display()))?;
+    std::fs::copy(&tools.setup, &setup)
+        .map_err(|e| format!("cannot write {}: {e}", setup.display()))?;
+    let link = execroot.join(format!("{}.runfiles", spec.executable_exec));
+    std::fs::create_dir_all(link.parent().expect("runfiles parent"))
+        .map_err(|e| format!("cannot create {}: {e}", execroot.display()))?;
+    std::os::unix::fs::symlink(&tree.directory, &link)
+        .map_err(|e| format!("cannot link {}: {e}", link.display()))?;
+    let utf8 = |path: &Path| {
+        path.to_str()
+            .map(str::to_owned)
+            .ok_or_else(|| format!("non-UTF-8 path {} is not supported", path.display()))
+    };
+    let client_env: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+    let tmp = match &test.test_tmpdir {
+        Some(directory) => utf8(&root.join(directory).join("_tmp"))?,
+        None => "_tmp".to_owned(),
+    };
+    let tmp = format!(
+        "{tmp}/{}",
+        bazel_rs::test_command::tmp_dir_name(&spec.executable_exec, 0, 0)
+    );
+    let mut environment = std::collections::BTreeMap::from([
+        ("BUILD_WORKSPACE_DIRECTORY".to_owned(), utf8(root)?),
+        ("BUILD_WORKING_DIRECTORY".to_owned(), utf8(cwd)?),
+        ("BUILD_EXECROOT".to_owned(), utf8(&execroot)?),
+        ("BUILD_ID".to_owned(), random_uuid()?),
+    ]);
+    let name = label.name.clone();
+    environment.extend(bazel_rs::test_command::test_environment(
+        &bazel_rs::test_command::EnvInputs {
+            action_env: &spec.action_env,
+            test_env: &spec.test_env,
+            client_env: &client_env,
+            options: test,
+            target_env: &spec.target_env,
+            target_inherited: &spec.target_inherited,
+            label: &spec.label,
+            size: spec.info.size,
+            timeout_seconds: test.timeout_seconds(spec.info.timeout),
+            workspace: bazel_rs::test_runner::WORKSPACE,
+            binary: &spec.binary,
+            runfiles_dir: &format!("{}.runfiles", spec.executable_exec),
+            tmp_dir: &tmp,
+            base_dir: &format!("{}/{name}", spec.testlogs_package),
+            shard: 0,
+            total_shards: 0,
+            run: 0,
+            total_runs: 1,
+            runfiles_enabled: runfiles.enable_runfiles,
+        },
+    ));
+    let mut args = vec![
+        bazel_rs::test_runner::SETUP_EXEC_PATH.to_owned(),
+        spec.binary.clone(),
+    ];
+    args.extend(spec.args.iter().cloned());
+    args.extend(test.args.iter().cloned());
+    let fixed = args.len();
+    args.extend(residue.iter().cloned());
+    let escaped: Vec<String> = args.iter().map(|arg| shell_escape(arg)).collect();
+    let command = escaped.join(" ");
+    if let Some(script) = &options.script_path {
+        let text = format!(
+            "#!{}\ncd {} && \\\n  exec env \\\n    {} \\\n    {} \\\n  {command} \"$@\"",
+            options.shell,
+            shell_escape(&utf8(&execroot)?),
+            ENV_TO_CLEAR
+                .iter()
+                .map(|name| format!("-u {name}"))
+                .collect::<Vec<_>>()
+                .join(" \\\n    "),
+            environment
+                .iter()
+                .map(|(name, value)| format!("{}={}", shell_escape(name), shell_escape(value)))
+                .collect::<Vec<_>>()
+                .join(" \\\n    ")
+        );
+        let path = cwd.join(script);
+        std::fs::write(&path, text).map_err(|e| format!("Error writing run script: {e}"))?;
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path)
+            .map_err(|e| format!("Error writing run script: {e}"))?
+            .permissions()
+            .mode();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode | 0o111))
+            .map_err(|e| format!("Error writing run script: {e}"))?;
+        return Ok(());
+    }
+    let pretty = if residue.is_empty() {
+        escaped.join(" ")
+    } else if options.omit_run_args {
+        format!("{} <args omitted>", escaped[..fixed].join(" "))
+    } else {
+        escaped.join(" ")
+    };
+    let prefix = if options.run { "Running" } else { "Runnable" };
+    eprintln!("bazel-rs: {prefix} command line: {pretty}");
+    if !options.run {
+        return Ok(());
+    }
+    let mut process = std::process::Command::new(&options.shell);
+    process.args(["-c", &command]);
+    for name in ENV_TO_CLEAR {
+        process.env_remove(name);
+    }
+    process.envs(&environment);
+    process.current_dir(&execroot);
+    use std::os::unix::process::CommandExt;
+    let error = process.exec();
+    Err(format!("cannot execute {}: {error}", options.shell))
+}
+
 fn parse_jobs(value: &str) -> Result<usize, String> {
     if !value.is_empty()
         && value.bytes().all(|byte| byte.is_ascii_digit())
@@ -709,6 +1167,7 @@ struct NativeOptions {
     runfiles: bazel_rs::runfiles_tree::RunfilesOptions,
     /// RunCommand.RunOptions (N23f, crate::run_command).
     run: bazel_rs::run_command::RunOptions,
+    test: bazel_rs::test_command::TestOptions,
 }
 
 impl NativeOptions {
@@ -718,7 +1177,7 @@ impl NativeOptions {
             rc: bazel_rs::rc_options::RcOptions::default(),
             resolver: bazel_rs::module_graph::ResolverOptions {
                 // Every lockfile mode supports remote registries (N37).
-                allow_remote: matches!(command, "build" | "query" | "run"),
+                allow_remote: matches!(command, "build" | "query" | "run" | "test"),
                 ..Default::default()
             },
             downloads: true,
@@ -726,6 +1185,7 @@ impl NativeOptions {
             remote: Default::default(),
             runfiles: bazel_rs::runfiles_tree::RunfilesOptions::default(),
             run: bazel_rs::run_command::RunOptions::default(),
+            test: bazel_rs::test_command::TestOptions::default(),
             configuration: if command == "query" {
                 // query is configuration-independent; it accepts (and validates)
                 // the modelled CoreOptions (runtime/commands/QueryCommand.java:59-67).
@@ -869,7 +1329,7 @@ impl NativeOptions {
         } else if let Some(result) = builds(command).then(|| self.runfiles.parse(arg)).flatten() {
             result?;
             false
-        } else if let Some(used) = (command == "run")
+        } else if let Some(used) = (command == "run" || command == "test")
             .then(|| self.parse_run(arg, next))
             .transpose()?
             .flatten()
@@ -879,6 +1339,14 @@ impl NativeOptions {
             used?
         } else if let Some(used) = self.remote.parse(arg, next) {
             used?
+        } else if command == "test" && self.test.parse_keep_going(arg)? {
+            false
+        } else if let Some(used) = builds(command)
+            .then(|| self.test.parse(arg, next))
+            .transpose()?
+            .flatten()
+        {
+            used
         } else if let bazel_rs::configuration::Parsed::Consumed(used) =
             self.configuration.parse(arg, next)?
         {

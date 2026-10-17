@@ -1802,7 +1802,8 @@ pub fn expand(
 
     // getCommandNamesToParse (:607-621): build/query/mod inherit nothing;
     // `run` inherits `build` (RunCommand @Command inheritsOptionsFrom).
-    let groups: Vec<&str> = if command == "run" {
+    // `test` inherits `build` too (TestCommand @Command inheritsOptionsFrom).
+    let groups: Vec<&str> = if command == "run" || command == "test" {
         vec!["always", "common", "build", command]
     } else {
         vec!["always", "common", command]

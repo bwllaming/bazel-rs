@@ -41,7 +41,8 @@ in CoreOptions (`analysis/config/CoreOptions.java:1110-1123`), a boolean:
 * The configuration identity serializes it only when true, so every existing
   identity is unchanged. TestActionBuilder's use of the option (the test
   action owner, `analysis/test/TestActionBuilder.java:157-170`) has no native
-  counterpart: there is no `test` command.
+  counterpart: the host platform is the only execution platform of the
+  `test` command (N23g, docs/TEST_COMMAND.md).
 
 ## The default test exec group
 
@@ -85,8 +86,8 @@ Natively:
   `config.exec(exec_group = "test")` edges use it, it counts for automatic
   exec groups' toolchain parameter); the
   test-runner implicit attributes (`$test_wrapper`, `$xml_writer`,
-  `$test_runtime`, ..., whose exec transition targets this group) stay
-  unanalyzed (N23g, docs/RUNFILES.md). The execution platform is the host
+  `$test_runtime`, ..., whose exec transition targets this group) are
+  analyzed as its `exec(test)` edges (N23g, docs/TEST_COMMAND.md). The execution platform is the host
   platform (the only one natively).
 * **Divergence D3:** the group is resolved only in the built-in profile
   (`--experimental-builtin-modules`). Without it there is no `@bazel_tools`,

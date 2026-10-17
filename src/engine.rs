@@ -132,7 +132,11 @@ struct RunPlan {
     executable: Option<Artifact>,
     /// The runfiles tree's MANIFEST (RunfilesSupport), if any.
     tree: Option<Artifact>,
+    /// The runfiles mapping of the RunfilesSupport (RunfilesNodes::entries).
+    entries: Option<Vec<(String, Option<Artifact>)>>,
     settings: crate::runfiles::RunSettings,
+    /// The configuration of the target (its output directory mnemonic).
+    config: ConfigId,
 }
 
 /// RunCommand.isExecutable (runtime/commands/RunCommand.java:1186-1211):
@@ -157,6 +161,16 @@ pub struct RunTarget {
     /// support.
     pub runfiles: Option<RunRunfiles>,
     pub settings: crate::runfiles::RunSettings,
+    /// The executable's exec path (`bazel-out/<cfg>/bin/<pkg>/<name>`).
+    pub executable_exec: PathBuf,
+    /// The executable's runfiles path relative to the workspace runfiles
+    /// directory (Artifact.getRunfilesPath: `pkg/name`, `../repo/pkg/name`).
+    pub executable_short_path: String,
+    /// The runfiles mapping with published paths (`None`: an empty file),
+    /// when the target has runfiles support.
+    pub entries: Option<Vec<(String, Option<PathBuf>)>>,
+    /// The output directory mnemonic of the target's configuration.
+    pub mnemonic: String,
 }
 
 /// The runfiles of a `run` target.
@@ -184,6 +198,10 @@ struct RunfilesNodes {
     repo_mapping: Artifact,
     /// The executable.
     executable: Artifact,
+    /// The runfiles mapping (Runfiles.getRunfilesInputs, `_repo_mapping`
+    /// included): each runfiles path with its artifact, `None` for an empty
+    /// file. A test action stages these by content (N23g).
+    entries: Vec<(String, Option<Artifact>)>,
     /// Prefix conflicts reported by the manifest action, with the rule's
     /// location and the conflict policy (ERROR when true).
     conflicts: Vec<String>,
@@ -594,6 +612,32 @@ struct Edge {
 /// order of `rule.srcs` (Starlark attributes in name order,
 /// crate::package::custom_dependency_labels), then genrule `tools`, then
 /// the effective `package_metadata` (nonconfigurable, NoConfigTransition).
+/// The implicit test-runner attributes of every Starlark test rule that
+/// are analyzed without `--collect_code_coverage` and `--run_under`
+/// (StarlarkRuleClassFunctions.getTestBaseRule, analysis/starlark/StarlarkRuleClassFunctions.java:290-352):
+/// all use the exec transition of the `test` exec group. `:coverage_report_generator`
+/// is null without coverage (CoverageConfiguration.reportGenerator,
+/// analysis/test/CoverageConfiguration.java:98-103), the run-under
+/// attributes without `--run_under` (BaseRuleClasses.java:155-197).
+pub(crate) const TEST_RUNNER_ATTRIBUTES: [(&str, &str); 7] = [
+    ("$test_wrapper", "@@bazel_tools//tools/test:test_wrapper"),
+    ("$xml_writer", "@@bazel_tools//tools/test:xml_writer"),
+    ("$test_runtime", "@@bazel_tools//tools/test:runtime"),
+    ("$test_setup_script", "@@bazel_tools//tools/test:test_setup"),
+    (
+        "$xml_generator_script",
+        "@@bazel_tools//tools/test:test_xml_generator",
+    ),
+    (
+        "$collect_coverage_script",
+        "@@bazel_tools//tools/test:collect_coverage",
+    ),
+    (
+        ":coverage_support",
+        "@@bazel_tools//tools/test:coverage_support",
+    ),
+];
+
 fn dependency_edges(rule: &Rule) -> Vec<Edge> {
     let mut edges = attribute_edges(rule);
     edges.extend(rule.package_metadata.iter().map(|label| Edge {
@@ -840,8 +884,11 @@ pub struct Engine {
     /// The runfiles options of builds (N23f, crate::runfiles_tree).
     runfiles_options: crate::runfiles_tree::RunfilesOptions,
     /// The target of a `run` build and what it runs (Self::build_for_run).
-    run_request: Option<Label>,
-    run_plan: Option<RunPlan>,
+    run_requests: BTreeSet<Label>,
+    /// Whether the run requests need their runfiles tree (`run`), or only
+    /// the runfiles artifacts (`test` stages them itself).
+    run_trees: bool,
+    run_plans: BTreeMap<Label, RunPlan>,
     /// Errors reported during a build that do not fail it, without the
     /// `ERROR: ` prefix (runfiles prefix conflicts under ConflictPolicy.ERROR).
     errors: Vec<String>,
@@ -888,8 +935,9 @@ impl Engine {
             deferred_duplicates: BTreeMap::new(),
             source_directories: BTreeMap::new(),
             runfiles_options: crate::runfiles_tree::RunfilesOptions::default(),
-            run_request: None,
-            run_plan: None,
+            run_requests: BTreeSet::new(),
+            run_trees: true,
+            run_plans: BTreeMap::new(),
             errors: Vec::new(),
         }
     }
@@ -1945,7 +1993,7 @@ impl Engine {
         // analysis/DependencyResolutionHelpers.java:223-253): the exec
         // transition needs the parent's execution platform, which toolchain
         // resolution chose before any dependency (ExecutionTransitionFactory).
-        let edges = dependency_edges(&rule);
+        let edges = self.rule_edges(&rule);
         // ExecutionTransitionFactory.create (analysis/config/ExecutionTransitionFactory.java:76-114):
         // in the no-config (and a platform's empty) configuration
         // CommonOptions.EMPTY_OPTIONS has no Starlark exec transition
@@ -5651,6 +5699,217 @@ impl Engine {
             .unwrap_or(own)
     }
 
+    /// The dependency edges of a configured rule: its attribute edges and,
+    /// for a Starlark test rule in the built-in profile (where
+    /// `@bazel_tools` and the default `test` exec group exist, D3 of
+    /// docs/TEST_FLAGS.md), the implicit test-runner attributes
+    /// (TEST_RUNNER_ATTRIBUTES), so they are analyzed and their packages'
+    /// repositories reach the target's repository mapping manifest
+    /// (RuleContext.getTransitivePackagesForRunfileRepoMappingManifest; N23g).
+    fn rule_edges(&self, rule: &Rule) -> Vec<Edge> {
+        let mut edges = dependency_edges(rule);
+        let test = rule
+            .custom
+            .as_ref()
+            .is_some_and(|custom| custom.declaration.builtin.kind.test);
+        if test && self.repositories.root("bazel_tools").is_ok() {
+            edges.extend(
+                TEST_RUNNER_ATTRIBUTES
+                    .iter()
+                    .map(|(attribute, label)| Edge {
+                        label: (*label).to_owned(),
+                        attribute: (*attribute).to_owned(),
+                        cfg: EdgeCfg::Exec(Some(
+                            crate::exec_groups::TEST_EXEC_GROUP_NAME.to_owned(),
+                        )),
+                    }),
+            );
+        }
+        edges
+    }
+
+    /// The test properties of a test rule target (TestTargetProperties;
+    /// RuleConfiguredTargetBuilder.initializeTestProvider's shard_count
+    /// checks, analysis/RuleConfiguredTargetBuilder.java:470-484) and its
+    /// location; `None` for any other target.
+    pub fn test_rule_info(
+        &mut self,
+        label: &Label,
+    ) -> Result<Option<(crate::test_command::TestRuleInfo, Option<String>)>, String> {
+        use crate::custom_rule::AttrValue;
+        use crate::test_command::{TestRuleInfo, TestSize, TestTimeout};
+        let Target::Rule(rule) = self.target(label)? else {
+            return Ok(None);
+        };
+        let Some(custom) = &rule.custom else {
+            return Ok(None);
+        };
+        if !custom.declaration.builtin.kind.test {
+            return Ok(None);
+        }
+        let target = &custom.declaration.builtin.target;
+        let string = |name: &str| match target.attrs.get(name) {
+            Some(AttrValue::String(value)) => Some(value.clone()),
+            _ => None,
+        };
+        let boolean = |name: &str| matches!(target.attrs.get(name), Some(AttrValue::Bool(true)));
+        // Loading validated size and timeout (RuleClass.checkForValidSizeAndTimeoutValues).
+        let size = string("size")
+            .and_then(|size| TestSize::parse(&size))
+            .unwrap_or(TestSize::Medium);
+        let timeout = string("timeout")
+            .and_then(|timeout| TestTimeout::parse(&timeout))
+            .unwrap_or(size.default_timeout());
+        if target.configurable.contains_key("shard_count") {
+            return Err(located(
+                rule.location.as_deref(),
+                format!(
+                    "{label}: a select() in shard_count is not supported by the native test runner"
+                ),
+            ));
+        }
+        let shard_count = match target.attrs.get("shard_count") {
+            Some(AttrValue::Int(count)) => {
+                let attribute_error = |message: &str| {
+                    located(
+                        rule.location.as_deref(),
+                        format!(
+                            "in shard_count attribute of {} rule {}: {message}",
+                            target.rule_class,
+                            crate::rule_declarations::canonical_form(label)
+                        ),
+                    )
+                };
+                if *count < 0 {
+                    return Err(attribute_error("Must not be negative."));
+                }
+                if *count > 50 {
+                    return Err(attribute_error(
+                        "Having more than 50 shards is indicative of poor test organization. Please reduce the number of shards.",
+                    ));
+                }
+                *count
+            }
+            _ => -1,
+        };
+        Ok(Some((
+            TestRuleInfo {
+                rule_class: target.rule_class.clone(),
+                size,
+                timeout,
+                flaky: boolean("flaky"),
+                shard_count,
+                local: boolean("local"),
+                tags: target.tags.clone(),
+            },
+            rule.location.clone(),
+        )))
+    }
+
+    /// The targets to build and the tests to run of `bazel test PATTERNS`
+    /// (TargetPatternPhaseFunction, skyframe/TargetPatternPhaseFunction.java:95-250,
+    /// 400-500): every pattern's targets with test_suites replaced by their
+    /// tests (`--expand_test_suites`), and the tests among them
+    /// (FilteringPolicies.FILTER_TESTS: test rules and test_suites; manual
+    /// ones only when named explicitly), test suites expanded by
+    /// TestExpansionFunction (non-strict). The command-line test filters
+    /// are applied by the caller.
+    pub fn select_for_test(
+        &mut self,
+        patterns: &[String],
+        current_package: &str,
+    ) -> Result<(Vec<Label>, Vec<Label>), String> {
+        let mut build = BTreeSet::new();
+        let mut tests = BTreeSet::new();
+        for label in self.select_filtered(patterns, current_package, true)? {
+            if self.is_test_suite(&label)? {
+                let expanded = self.expand_test_suite(&label, &mut Vec::new())?;
+                build.extend(expanded.iter().cloned());
+                tests.extend(expanded);
+            } else if self.test_rule_info(&label)?.is_some() {
+                build.insert(label.clone());
+                tests.insert(label);
+            } else {
+                build.insert(label);
+            }
+        }
+        Ok((build.into_iter().collect(), tests.into_iter().collect()))
+    }
+
+    fn is_test_suite(&mut self, label: &Label) -> Result<bool, String> {
+        Ok(matches!(
+            self.target(label)?,
+            Target::Rule(rule) if matches!(rule.kind, RuleKind::Native("test_suite"))
+        ))
+    }
+
+    /// TestExpansionFunction.computeExpandedTests (skyframe/TestExpansionFunction.java:73-136):
+    /// the test rules of `tests` (or, when empty, the package's non-manual
+    /// tests, TestSuiteImplicitTestsAccumulator) filtered by the suite's
+    /// tags, plus the expansion of every test_suite in `tests`.
+    fn expand_test_suite(
+        &mut self,
+        suite: &Label,
+        active: &mut Vec<Label>,
+    ) -> Result<BTreeSet<Label>, String> {
+        use crate::test_command::{matches_filters, sort_tags_by_sense, suite_tags};
+        if active.contains(suite) {
+            return Err(format!("cycle in test_suite expansion at {suite}"));
+        }
+        let Target::Rule(rule) = self.target(suite)? else {
+            return Ok(BTreeSet::new());
+        };
+        let native = rule.native.clone().unwrap_or_default();
+        if native.configurable.contains_key("tests") {
+            return Err(located(
+                rule.location.as_deref(),
+                format!(
+                    "{suite}: a select() in test_suite tests is not supported by the native test runner"
+                ),
+            ));
+        }
+        let mut members = Vec::new();
+        for text in native.labels("tests") {
+            members.push(self.resolve_rule_src(&rule, &text)?);
+        }
+        let (required, excluded) = sort_tags_by_sense(&native.tags);
+        let mut result = BTreeSet::new();
+        let mut suites = Vec::new();
+        if members.is_empty() {
+            let package = suite.package_id();
+            self.load_package(&package)?;
+            let candidates: Vec<Label> = self.packages[&package]
+                .values()
+                .filter(|rule| !rule.is_manual())
+                .map(|rule| rule.label.clone())
+                .collect();
+            for label in candidates {
+                if let Some((info, _)) = self.test_rule_info(&label)?
+                    && matches_filters(&suite_tags(&info), &required, &excluded, true)
+                {
+                    result.insert(label);
+                }
+            }
+        } else {
+            for label in members {
+                if let Some((info, _)) = self.test_rule_info(&label)? {
+                    if matches_filters(&suite_tags(&info), &required, &excluded, true) {
+                        result.insert(label);
+                    }
+                } else if self.is_test_suite(&label)? {
+                    suites.push(label);
+                }
+            }
+        }
+        active.push(suite.clone());
+        for nested in suites {
+            let expanded = self.expand_test_suite(&nested, active)?;
+            result.extend(expanded);
+        }
+        active.pop();
+        Ok(result)
+    }
+
     /// RunCommand.isExecutable of `label` (Runnable).
     pub fn runnable(&mut self, label: &Label) -> Result<Runnable, String> {
         Ok(match self.target(label)? {
@@ -5674,12 +5933,48 @@ impl Engine {
         cache: &Path,
         jobs: usize,
     ) -> Result<(BuildSummary, Option<RunTarget>), String> {
-        self.run_request = Some(label.clone());
-        self.run_plan = None;
-        let planned = self.plan_build(std::slice::from_ref(label));
-        self.run_request = None;
+        let (summary, mut targets) = self.build_requests(
+            std::slice::from_ref(label),
+            std::slice::from_ref(label),
+            true,
+            cache,
+            jobs,
+        )?;
+        Ok((summary, targets.remove(label)))
+    }
+
+    /// Build `build` for `bazel test` (BuildTool with `setRunTests`,
+    /// runtime/commands/TestCommand.java:150-175): the targets to build, and
+    /// for each test of `tests` (a subset) its executable and the artifacts
+    /// of its runfiles, which the test action stages by content
+    /// (crate::test_runner). The runfiles tree itself is built only like
+    /// any `build` (`--build_runfile_links`).
+    pub fn build_for_tests(
+        &mut self,
+        build: &[Label],
+        tests: &[Label],
+        cache: &Path,
+        jobs: usize,
+    ) -> Result<(BuildSummary, BTreeMap<Label, RunTarget>), String> {
+        self.build_requests(build, tests, false, cache, jobs)
+    }
+
+    fn build_requests(
+        &mut self,
+        build: &[Label],
+        requests: &[Label],
+        trees: bool,
+        cache: &Path,
+        jobs: usize,
+    ) -> Result<(BuildSummary, BTreeMap<Label, RunTarget>), String> {
+        self.run_requests = requests.iter().cloned().collect();
+        self.run_trees = trees;
+        self.run_plans.clear();
+        let planned = self.plan_build(build);
+        self.run_requests.clear();
+        self.run_trees = true;
         let (nodes, requested) = planned?;
-        let plan = self.run_plan.take();
+        let plans = std::mem::take(&mut self.run_plans);
         let results = scheduler::execute_graph(cache, nodes, jobs)?;
         let mut summary = BuildSummary::default();
         for result in results.values() {
@@ -5699,35 +5994,46 @@ impl Engine {
             Some((id, index)) => results[id].outputs[*index].clone(),
             None => artifact.real.clone(),
         };
-        let Some(plan) = plan else {
-            return Ok((summary, None));
-        };
-        let Some(executable) = &plan.executable else {
-            return Ok((summary, None));
-        };
-        let runfiles = plan.tree.as_ref().and_then(|tree| {
-            let manifest = published(tree);
-            let directory = manifest.parent()?.to_path_buf();
-            // `<root>/<tree exec dir>`: strip the exec path to find the root.
-            let exec_directory = tree.exec.parent()?;
-            let mut root = directory.clone();
-            for _ in exec_directory.components() {
-                root = root.parent()?.to_path_buf();
-            }
-            Some(RunRunfiles {
-                executable: root.join(&executable.exec),
-                directory,
-                root,
-            })
-        });
-        Ok((
-            summary,
-            Some(RunTarget {
-                executable: published(executable),
-                runfiles,
-                settings: plan.settings,
-            }),
-        ))
+        let mut targets = BTreeMap::new();
+        for (label, plan) in plans {
+            let Some(executable) = &plan.executable else {
+                continue;
+            };
+            let runfiles = plan.tree.as_ref().and_then(|tree| {
+                let manifest = published(tree);
+                let directory = manifest.parent()?.to_path_buf();
+                // `<root>/<tree exec dir>`: strip the exec path to find the root.
+                let exec_directory = tree.exec.parent()?;
+                let mut root = directory.clone();
+                for _ in exec_directory.components() {
+                    root = root.parent()?.to_path_buf();
+                }
+                Some(RunRunfiles {
+                    executable: root.join(&executable.exec),
+                    directory,
+                    root,
+                })
+            });
+            let entries = plan.entries.as_ref().map(|entries| {
+                entries
+                    .iter()
+                    .map(|(path, artifact)| (path.clone(), artifact.as_ref().map(published)))
+                    .collect()
+            });
+            targets.insert(
+                label,
+                RunTarget {
+                    executable: published(executable),
+                    executable_exec: executable.exec.clone(),
+                    executable_short_path: executable.file().short_path,
+                    runfiles,
+                    entries,
+                    mnemonic: self.configurations.mnemonic(plan.config).to_owned(),
+                    settings: plan.settings,
+                },
+            );
+        }
+        Ok((summary, targets))
     }
 
     /// Phase 2 of one planned target (in plan order): runs Starlark
@@ -5763,7 +6069,7 @@ impl Engine {
         // this below with their resolved dependencies and toolchains.
         let mut transitive: BTreeSet<String> = BTreeSet::from([rule.label.repository.clone()]);
         let edge_exec = self.exec_configurations.get(key).copied();
-        for edge in dependency_edges(rule) {
+        for edge in self.rule_edges(rule) {
             let Ok(label) = self.resolve_rule_src(rule, &edge.label) else {
                 continue;
             };
@@ -5829,7 +6135,7 @@ impl Engine {
             // key in the implementation's dependency map
             // (analysis::dependency_key).
             let mut dependency_labels: Vec<(Label, ConfigId, String)> = Vec::new();
-            for edge in dependency_edges(rule) {
+            for edge in self.rule_edges(rule) {
                 let label = self.resolve_rule_src(rule, &edge.label)?;
                 let (edge_config, map_key) = match &edge.cfg {
                     EdgeCfg::Target => {
@@ -6875,7 +7181,7 @@ impl Engine {
             let actual_key = self.configurations.top_key(actual.clone());
             if let Some(support) = runfiles_nodes.get(&actual_key) {
                 let options = self.runfiles_options;
-                let running = self.run_request.as_ref() == Some(label);
+                let running = self.run_requests.contains(label) && self.run_trees;
                 let mut artifacts = vec![support.repo_mapping.clone()];
                 artifacts.extend(support.manifest.clone());
                 if options.links() || running {
@@ -6887,7 +7193,7 @@ impl Engine {
                     }
                 }
             }
-            if self.run_request.as_ref() == Some(label) {
+            if self.run_requests.contains(label) {
                 let files_to_run = runfiles_info
                     .get(&actual_key)
                     .and_then(|runfiles| runfiles.files_to_run.clone());
@@ -6916,16 +7222,21 @@ impl Engine {
                 {
                     hidden.push((key.clone(), executable.clone()));
                 }
-                self.run_plan = Some(RunPlan {
+                let plan = RunPlan {
                     executable,
                     tree: runfiles_nodes
                         .get(&actual_key)
                         .and_then(|support| support.tree.clone()),
+                    entries: runfiles_nodes
+                        .get(&actual_key)
+                        .map(|support| support.entries.clone()),
                     settings: runfiles_info
                         .get(&actual_key)
                         .map(|runfiles| runfiles.run.clone())
                         .unwrap_or_default(),
-                });
+                    config: top,
+                };
+                self.run_plans.insert(label.clone(), plan);
             }
         }
         // Analyze everything first, but execute only the actions reachable from
@@ -7646,6 +7957,7 @@ impl Engine {
         let mapping = runfiles.runfiles_inputs(Some(repo_mapping), Some(&mut conflicts));
         let mut inputs: Vec<Artifact> = Vec::new();
         let mut entries: Vec<(String, Option<PathBuf>)> = Vec::new();
+        let mut mapped: Vec<(String, Option<Artifact>)> = Vec::new();
         for (path, file) in &mapping {
             match file {
                 Some(file) => {
@@ -7655,9 +7967,13 @@ impl Engine {
                         lookup(planning.artifact_index, file)?
                     };
                     entries.push((path.clone(), Some(artifact.exec.clone())));
+                    mapped.push((path.clone(), Some(artifact.clone())));
                     inputs.push(artifact);
                 }
-                None => entries.push((path.clone(), None)),
+                None => {
+                    entries.push((path.clone(), None));
+                    mapped.push((path.clone(), None));
+                }
             }
         }
         let action = |id: &str, outputs: Vec<PathBuf>, transform| Action {
@@ -7740,6 +8056,7 @@ impl Engine {
             manifest: manifest_artifact,
             repo_mapping: repo_mapping_artifact,
             executable: executable_artifact,
+            entries: mapped,
             conflicts,
             conflict_error: runfiles.conflict_error(),
             location: rule.location.clone(),
