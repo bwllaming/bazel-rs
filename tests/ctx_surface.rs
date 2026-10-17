@@ -541,3 +541,109 @@ top(name = "top", tool = ":fx")
         "java=[\"-XX:ErrorFile=/dev/stderr\"]\nobjc=False\n"
     );
 }
+
+/// Merge adaptations (N23c x N18c/N30/N25d2a): the ctx surface is built per
+/// configured-target key, so a dependency behind an attribute transition, a
+/// rule-transitioned target and a target planned early for a config_setting
+/// (N30's flag_values flush) each see their own configuration in ctx.var,
+/// ctx.bin_dir, ctx.configuration and ctx.fragments (`//test` is on the
+/// private-API allowlist for `cpp.compilation_mode()`).
+const TRANSITION_DEFS: &str = r#"
+FFI = config_common.FeatureFlagInfo
+def _to_dbg(settings, attr):
+    return {"//command_line_option:compilation_mode": "dbg"}
+to_dbg = transition(implementation = _to_dbg, inputs = [], outputs = ["//command_line_option:compilation_mode"])
+def _line(ctx):
+    return "%s var=%s bin=%s cfg_bin=%s cpp=%s" % (
+        ctx.label.name,
+        ctx.var["COMPILATION_MODE"],
+        ctx.bin_dir.path,
+        ctx.configuration.bin_dir.path,
+        ctx.fragments.cpp.compilation_mode(),
+    )
+LineInfo = provider(fields = ["line"])
+def _leaf(ctx):
+    return [LineInfo(line = _line(ctx))]
+leaf = rule(implementation = _leaf, fragments = ["cpp"])
+leaf_dbg = rule(implementation = _leaf, fragments = ["cpp"], cfg = to_dbg)
+def _key(ctx):
+    print("KEY " + _line(ctx))
+    return [FFI(value = ctx.var["COMPILATION_MODE"])]
+key = rule(implementation = _key, fragments = ["cpp"])
+def _top(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    lines = [_line(ctx)] + [d[LineInfo].line for d in ctx.attr.edge + ctx.attr.deps] + [ctx.attr.mode]
+    ctx.actions.write(out, "\n".join(lines) + "\n")
+    return [DefaultInfo(files = depset([out]))]
+top = rule(implementation = _top, fragments = ["cpp"], attrs = {
+    "edge": attr.label_list(cfg = to_dbg),
+    "deps": attr.label_list(),
+    "mode": attr.string(),
+})
+"#;
+
+const TRANSITION_BUILD: &str = r#"load(":defs.bzl", "key", "leaf", "leaf_dbg", "top")
+leaf(name = "edge_leaf")
+leaf_dbg(name = "rule_leaf")
+key(name = "k")
+config_setting(name = "k_opt", flag_values = {":k": "opt"})
+top(
+    name = "t",
+    edge = [":edge_leaf"],
+    deps = [":rule_leaf"],
+    mode = select({":k_opt": "key saw opt", "//conditions:default": "key did not see opt"}),
+)
+"#;
+
+#[test]
+fn ctx_surface_is_per_configured_target_key() {
+    let ws = Workspace::new(&[
+        ("test/defs.bzl", TRANSITION_DEFS),
+        ("test/BUILD.bazel", TRANSITION_BUILD),
+    ]);
+    let built = ws.built(&["-c", "opt", "//test:t"]);
+    let lines: Vec<&str> = built.lines().collect();
+    assert_eq!(
+        lines[0], "t var=opt bin=bazel-out/rust-opt/bin cfg_bin=bazel-out/rust-opt/bin cpp=opt",
+        "{built}"
+    );
+    for (line, name) in [(lines[1], "edge_leaf"), (lines[2], "rule_leaf")] {
+        let fields: Vec<&str> = line.split(' ').collect();
+        assert_eq!(fields[0], name, "{built}");
+        assert_eq!(fields[1], "var=dbg", "{built}");
+        assert_eq!(fields[4], "cpp=dbg", "{built}");
+        let bin = fields[2].strip_prefix("bin=").unwrap();
+        assert!(
+            bin.starts_with("bazel-out/rust-dbg") && bin.ends_with("/bin"),
+            "{built}"
+        );
+        assert_eq!(fields[3], format!("cfg_bin={bin}"), "{built}");
+    }
+    // The flag_values key ran early (Engine::plan_pending) in its own
+    // configuration.
+    assert_eq!(lines[3], "key saw opt", "{built}");
+    let output = ws.run(&["build", "-c", "opt", "//test:t"]);
+    assert!(
+        errors(&output).contains("KEY k var=opt bin=bazel-out/rust-opt/bin"),
+        "{}",
+        errors(&output)
+    );
+}
+
+/// The apple fragment's version flags are null because the Apple version
+/// options are not accepted natively. Once `--xcode_version` and the
+/// `--<platform>_sdk_version` / `--<platform>_minimum_os` options are
+/// modelled, crate::ctx_surface must read them (as N25d2a DottedVersion
+/// values) and this test must change with it.
+#[test]
+fn apple_version_flags_stay_none_while_the_options_are_rejected() {
+    let ws = workspace();
+    for option in [
+        "--xcode_version=15.0",
+        "--ios_sdk_version=17.0",
+        "--macos_minimum_os=13.0",
+    ] {
+        let error = ws.rejected(&[option, "//test:sx"]);
+        assert!(error.contains(option.split('=').next().unwrap()), "{error}");
+    }
+}

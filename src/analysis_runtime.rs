@@ -394,8 +394,9 @@ fn string_dict(value: Value<'_>, what: &str) -> anyhow::Result<BTreeMap<String, 
 /// The default shell environment of the strict action environment
 /// (`--incompatible_strict_action_env`, true in Bazel 9.3:
 /// bazel/rules/BazelRuleClassProvider.java:74-87, 139-190, 346-362) without
-/// `--action_env`.
-const DEFAULT_SHELL_PATH: &str = "/bin:/usr/bin:/usr/local/bin";
+/// `--action_env`. Also `ctx.configuration.default_shell_env`
+/// (crate::ctx_surface): one value for both.
+pub(crate) const DEFAULT_SHELL_PATH: &str = "/bin:/usr/bin:/usr/local/bin";
 
 /// SpawnAction.createActionEnvironment (analysis/actions/SpawnAction.java:584-614):
 /// `env` alone, or the default shell environment overridden by `env`.

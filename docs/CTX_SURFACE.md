@@ -33,7 +33,7 @@ of every native configuration (for example `--collect_code_coverage`,
 | `build_file_path` | `pkg/BUILD.bazel` relative to its repository root (`--incompatible_stop_exporting_build_file_path` is false by default). |
 | `features`, `disabled_features` | `RuleContext.computeFeatures` (`RuleContext.java:268-276`, `packages/FeatureSet.java`): the package's features (REPO.bazel `repo()` and `package()` layers, each `FeatureSet.parse`d and merged with `FeatureSet.merge`, the finer layer winning: `PackageArgs.java:126-129, 175-177, 220-222`) merged with the rule's `features`, under the empty configuration features (`--features`/`--host_features` are rejected natively). |
 | `coverage_instrumented(target)` | False (coverage is never enabled natively); Bazel's parameter-type error. |
-| `exec_groups` | `StarlarkExecGroupCollection`: type `ExecGroupCollection`, repr `<ctx.exec_groups: >`; rules that declare `exec_groups` are not analyzed natively (toolchain gap), so the collection is always empty: `in` is False and indexing gives `In R rule L, unrecognized exec group 'X' requested. Available exec groups: []`. |
+| `exec_groups` | `StarlarkExecGroupCollection`: type `ExecGroupCollection`, repr `<ctx.exec_groups: >`; rules that declare `exec_groups` are not analyzed natively (toolchain gap), so the collection is always empty: `in` is False and indexing gives `In R rule L, unrecognized exec group 'X' requested. Available exec groups: []`. Divergence until N35: a Starlark test rule's default `test` exec group is resolved (docs/TEST_FLAGS.md) and present in Bazel's collection, but not in the native one. |
 | `tokenize`, `check_placeholders`, `package_relative_label` | `ShellUtils.tokenize` (`util/ShellUtils.java:90-143`), `ImplicitOutputsFunction.createPlaceholderSubstitutionFormatString`, `Label.parseWithPackageContext` with the rule repository's mapping (native label syntax messages, except Bazel's `target names may not contain ':'`). |
 | `split_attr` | `struct()`; an attribute with a Starlark transition fails explicitly. |
 | `super()` | `Can't use 'super' call, the rule has no parent.` (`rule(parent=...)` is rejected at load time). |
@@ -42,6 +42,16 @@ of every native configuration (for example `--collect_code_coverage`,
 | `build_setting_value` | of a non-setting: `attempting to access 'build_setting_value' of non-build setting L`. |
 | `resolve_tools` | Bazel's `--incompatible_disallow_ctx_resolve_tools` error. |
 | `info_file`, `version_file`, `resolve_command` | **fail explicitly** (workspace status artifacts and command resolution are not modelled). |
+
+Every configuration-derived member (`configuration`, `bin_dir`,
+`genfiles_dir`, `var`, `fragments`, `features`) is computed per configured
+target key (`Engine::ctx_surface` in `Engine::plan_target`), never from a
+build-global configuration: a dependency behind a Starlark attribute
+transition and a rule-transitioned target (N18c) see their transitioned
+configuration (e.g. `rust-dbg-ST-<hash>` roots and `COMPILATION_MODE`),
+exec and no-config targets theirs, and a `flag_values` key planned early for
+a `config_setting` (N30, docs/TEST_FLAGS.md) its own. `ctx.split_attr` of a
+rule with a Starlark-transition attribute fails explicitly.
 
 ## Configuration fragments
 
@@ -66,7 +76,10 @@ calling `failIfCalledOutsideDefaultAllowlist` check the calling `.bzl`.
   and `apple_cpus` from the host CPU defaults
   (`AppleCommandLineOptions.java:174-192`), `single_arch_platform` the
   `macos` `apple_platform` (`name`, `platform_type`, `is_device`,
-  `name_in_plist`), the version flags None, `prefer_mutual_xcode` True,
+  `name_in_plist`), the version flags None (`--xcode_version` and the
+  `--<platform>_sdk_version`/`--<platform>_minimum_os` options are rejected
+  natively; once modelled these must report them as DottedVersion values,
+  docs/XCODE_VERSION_INFO.md), `prefer_mutual_xcode` True,
   `include_xcode_exec_requirements` False.
 * `objc`: all 11 members; `copts_for_current_compilation_mode` is
   `["-O0", "-DDEBUG=1"]` in fastbuild and empty otherwise

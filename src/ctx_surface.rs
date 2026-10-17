@@ -576,8 +576,9 @@ fn configuration<'v>(this: Value<'v>) -> anyhow::Result<&'v CtxSurface> {
 /// BuildConfigurationValue.java:555-558): StrictActionEnvOptions
 /// `--incompatible_strict_action_env` (default true in Bazel 9.3,
 /// bazel/rules/BazelRuleClassProvider.java:73-90) fixes PATH; `--action_env`
-/// is not modelled natively (rejected).
-const STRICT_PATH: &str = "/bin:/usr/bin:/usr/local/bin";
+/// is not modelled natively (rejected). The same value N23d's
+/// `use_default_shell_env` actions run with (crate::analysis_runtime).
+const STRICT_PATH: &str = crate::analysis_runtime::DEFAULT_SHELL_PATH;
 
 #[starlark_module]
 fn configuration_methods(builder: &mut MethodsBuilder) {
@@ -1116,6 +1117,12 @@ fn members(kind: Kind) -> &'static [(&'static str, Member)] {
         // defaults (rules/apple/AppleCommandLineOptions.java:49-196, 305-306):
         // the version flags are null, `--experimental_prefer_mutual_xcode`
         // true, `--experimental_include_xcode_execution_requirements` false.
+        // The version flags stay null only while `--xcode_version` and
+        // `--{ios,macos,tvos,watchos}_{sdk_version,minimum_os}` are rejected
+        // by the native option parser; once modelled they must read the
+        // configuration's values as DottedVersion (DottedVersionConverter;
+        // crate::apple_xcode, N25d2a). Test hook:
+        // tests/ctx_surface.rs apple_version_flags_stay_none_while_the_options_are_rejected.
         Kind::Apple => &[
             ("apple_cpus", Field(V::Dyn(apple_cpus))),
             ("apple_platform_type", Field(V::Str("macos"))),
