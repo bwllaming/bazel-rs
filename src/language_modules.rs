@@ -803,23 +803,6 @@ pub(crate) fn bind_styled<'v>(
         .filter(|&i| params[i].positional)
         .collect();
     let positions: Vec<Value<'v>> = args.positions(heap)?.collect();
-    if positions.len() > slots.len() {
-        if slots.is_empty() {
-            return Err(failure(match style {
-                Style::Builtin => format!("{function}() got unexpected positional argument"),
-                Style::Def => format!(
-                    "{function}() does not accept positional arguments, but got {}",
-                    positions.len()
-                ),
-            }));
-        }
-        return Err(failure(format!(
-            "{function}() accepts no more than {} positional argument{} but got {}",
-            slots.len(),
-            if slots.len() == 1 { "" } else { "s" },
-            positions.len()
-        )));
-    }
     for (value, &slot) in positions.iter().zip(&slots) {
         bound[slot] = Some(*value);
     }
@@ -856,6 +839,27 @@ pub(crate) fn bind_styled<'v>(
             }
             Some(i) => bound[i] = Some(*value),
         }
+    }
+    // Bazel adds every argument before call() checks the positional count
+    // (BuiltinFunction.java:420, StarlarkFunction.java:507): an unknown
+    // keyword or a duplicate of a builtin, and a duplicate of a `def`, are
+    // reported before surplus positional arguments.
+    if positions.len() > slots.len() {
+        if slots.is_empty() {
+            return Err(failure(match style {
+                Style::Builtin => format!("{function}() got unexpected positional argument"),
+                Style::Def => format!(
+                    "{function}() does not accept positional arguments, but got {}",
+                    positions.len()
+                ),
+            }));
+        }
+        return Err(failure(format!(
+            "{function}() accepts no more than {} positional argument{} but got {}",
+            slots.len(),
+            if slots.len() == 1 { "" } else { "s" },
+            positions.len()
+        )));
     }
     // StarlarkFunction.java:389-403: plural for several, and a spelling
     // hint only when exactly one keyword is unknown.
@@ -1762,6 +1766,16 @@ t = platform_common.ToolchainInfo(z = [1], a = "x", m = None)
             ),
             (
                 "config_common.FeatureFlagInfo('a', value = 'b')",
+                "FeatureFlagInfo() got multiple values for argument 'value'",
+            ),
+            // BuiltinFunction.java:420: every argument is added (an unknown or
+            // duplicate keyword fails there) before the positional count.
+            (
+                "config_common.FeatureFlagInfo('a', 'b', valu = 'x')",
+                "FeatureFlagInfo() got unexpected keyword argument 'valu' (did you mean 'value'?)",
+            ),
+            (
+                "config_common.FeatureFlagInfo('a', 'b', value = 'x')",
                 "FeatureFlagInfo() got multiple values for argument 'value'",
             ),
             (

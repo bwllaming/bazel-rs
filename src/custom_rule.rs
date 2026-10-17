@@ -4931,14 +4931,15 @@ z = attr.string_dict()
             ),
             // rule()'s bool options are Boolean parameters: genuine Bazel 9.3.0
             // rejects 0/1 ("in call to rule(), parameter 'executable' got value of
-            // type 'int', want 'bool'"); native rejects through the typed signature.
+            // type 'int', want 'bool'"); native rejects through the typed signature
+            // with Bazel's text since N33.
             (
                 "rule(implementation=impl, executable=1)",
-                "Type of parameter `executable` doesn't match, expected `bool`, actual `int",
+                "in call to rule(), parameter 'executable' got value of type 'int', want 'bool'",
             ),
             (
                 "rule(implementation=impl, test=1)",
-                "Type of parameter `test` doesn't match, expected `bool`, actual `int",
+                "in call to rule(), parameter 'test' got value of type 'int', want 'bool'",
             ),
             (
                 "attr.label(cfg='bogus')",

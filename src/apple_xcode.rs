@@ -572,6 +572,16 @@ v = apple_common.dotted_version("1.2.0")
                 "apple_common.dotted_version('1', version = '2')",
                 "lambda() got multiple values for parameter 'version'",
             ),
+            // StarlarkFunction.java: a duplicate fails as it is added, an unknown
+            // keyword only after the positional count.
+            (
+                "apple_common.dotted_version('1', '2', version = '3')",
+                "lambda() got multiple values for parameter 'version'",
+            ),
+            (
+                "apple_common.dotted_version('1', '2', versio = '3')",
+                "lambda() accepts no more than 1 positional argument but got 2",
+            ),
         ] {
             let error = crate::language_modules::tests::run(FILE, call).unwrap_err();
             assert!(error.contains(message), "{call}: {error}");

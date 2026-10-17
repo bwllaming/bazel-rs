@@ -165,15 +165,23 @@ Paired capture result (`reference_receipt.json`): 25 EXACT, 4 MISMATCH,
 genuine Bazel's. Genuine `//e2e:host`, the real `host_xcodes`, writes exactly
 the fixture's `host_xcodes` lines. Natively, with the builtin profile, that
 target stops at `ctx.fragments` (N23c), as described above. The native e2e
-side was re-run with that profile, and the receipt's `history` explains why. All four mismatches are wording
-from the Starlark interpreter, and all four were declared before the run:
+side was re-run with that profile, and the receipt's `history` explains why.
 
-| Case | Genuine Bazel 9.3 | Native |
+The receipt's four MISMATCH rows were interpreter wording, declared before
+the run. Since N33 (Bazel 9.3's interpreter error texts in the vendored
+Starlark) all four print genuine Bazel's message exactly, and
+`tests/xcode_version_info.rs` asserts each reference text:
+
+| Case | Genuine Bazel 9.3 = native since N33 | Native at capture time |
 | --- | --- | --- |
 | `1 < dv("1")` | `unsupported comparison: int <=> DottedVersion` | ``Operation `compare` not supported for types `int` and `DottedVersion` `` |
 | `dv("1").nope` | `'DottedVersion' value has no field or method 'nope'` | ``Object of type `DottedVersion` has no attribute `nope` `` |
 | `XcodeVersionConfig()` | `_xcode_version_info_init() missing 14 required keyword-only arguments: ios_sdk_version, …, include_xcode_execution_info` | ``Missing named-only parameter `ios_sdk_version` for call to `@@_builtins//:common/xcode/providers.bzl._xcode_version_info_init` `` |
 | `XcodeVersionConfig("8.4")` | `_xcode_version_info_init() does not accept positional arguments, but got 1` | the same native text as the previous row |
+
+The receipt itself is historical: it records the capture-time native texts
+and is not re-labelled (no test reads it). The remaining difference is the
+`e2e` EXPECTED_NATIVE_GAP above.
 
 The first capture run showed that unknown keyword arguments lacked
 `SpellChecker.didYouMean`. `language_modules::bind_styled` now follows Bazel
@@ -181,9 +189,13 @@ for each call style:
 
 - **Builtins** (`BuiltinFunction.java:322-337`) fail at the first unknown
   keyword with a hint: `got unexpected keyword argument 'x' (did you mean 'y'?)`.
+  Every argument is added before the positional count
+  (`BuiltinFunction.java:420`), so an unknown or duplicate keyword is
+  reported before surplus positional arguments.
 - **`def`/lambda** (`StarlarkFunction.java:389-403`) collects every unknown
   keyword and pluralizes: `got unexpected keyword arguments: a, b`. The hint
   is added only when exactly one keyword is unknown. Duplicates say
-  `got multiple values for parameter 'x'` (`:482-485`).
+  `got multiple values for parameter 'x'` (`:482-485`) as they are added;
+  the positional count comes next, then the unknown keywords.
 
 Tracebacks and frames keep the existing native format.

@@ -156,6 +156,24 @@ fn dotted_version_and_provider_errors_fail_analysis() {
             "less_than_int",
             "unsupported comparison: DottedVersion <=> int",
         ),
+        // The four interpreter-wording MISMATCH rows of the paired capture
+        // (reference_receipt.json), exact since N33: genuine Bazel's messages.
+        (
+            "int_less_than",
+            "unsupported comparison: int <=> DottedVersion",
+        ),
+        (
+            "no_field",
+            "'DottedVersion' value has no field or method 'nope'",
+        ),
+        (
+            "info_no_args",
+            "_xcode_version_info_init() missing 14 required keyword-only arguments: ios_sdk_version, ios_minimum_os_version, visionos_sdk_version, visionos_minimum_os_version, watchos_sdk_version, watchos_minimum_os_version, tvos_sdk_version, tvos_minimum_os_version, macos_sdk_version, macos_minimum_os_version, xcode_version, availability, xcode_version_flag, include_xcode_execution_info",
+        ),
+        (
+            "info_positional",
+            "_xcode_version_info_init() does not accept positional arguments, but got 1",
+        ),
         ("info_bad_sdk", "but got '8..4'"),
         ("info_platform_type", "Unhandled platform type: beos"),
         ("info_platform", "Unhandled platform: struct(name = \"x\")"),

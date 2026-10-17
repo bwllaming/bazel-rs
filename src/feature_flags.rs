@@ -126,12 +126,6 @@ fn single_string_argument<'v>(
     heap: Heap<'v>,
 ) -> starlark::Result<String> {
     let positional = args.positions(heap)?.collect::<Vec<_>>();
-    if positional.len() > 1 {
-        return Err(error(format!(
-            "{method}() accepts no more than 1 positional argument but got {}",
-            positional.len()
-        )));
-    }
     let check = |value: Value<'v>| -> starlark::Result<String> {
         value.unpack_str().map(str::to_owned).ok_or_else(|| {
             error(format!(
@@ -158,6 +152,14 @@ fn single_string_argument<'v>(
                 "{method}() got multiple values for argument 'value'"
             )));
         }
+    }
+    // Every argument is added (types and keywords checked) before the
+    // positional count (BuiltinFunction.java:420).
+    if positional.len() > 1 {
+        return Err(error(format!(
+            "{method}() accepts no more than 1 positional argument but got {}",
+            positional.len()
+        )));
     }
     bound.ok_or_else(|| {
         error(format!(
