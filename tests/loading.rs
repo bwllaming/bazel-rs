@@ -157,6 +157,142 @@ fn bzl_top_level_package_mutation_and_load_cycles_fail() {
     assert!(stderr(&ws.run(&["query", "//:all"])).contains("load cycle"));
 }
 
+// Bazel evaluates each .bzl once per invocation (BzlLoadValue): a top-level
+// print appears once however many packages load the file, while macro prints
+// run per call. Load visibility is still checked for every loading package.
+#[test]
+fn bzl_modules_evaluate_once_per_invocation_and_check_visibility_per_package() {
+    let ws = Workspace::new();
+    let cache = ws.0.join("cache");
+    let cache = format!("--cache-dir={}", cache.display());
+    ws.file("defs/BUILD.bazel", "");
+    ws.file("defs/base.bzl", "print('base top-level')\nbase = 'f.txt'\n");
+    ws.file(
+        "defs/defs.bzl",
+        "load(':base.bzl', 'base')\nprint('defs top-level')\ndef m(name):\n    print('macro ' + name)\n    native.filegroup(name = name, srcs = [base])\n",
+    );
+    for package in ["a", "b", "c"] {
+        ws.file(
+            &format!("{package}/BUILD.bazel"),
+            &format!("load('//defs:defs.bzl', 'm')\nm(name = '{package}')\n"),
+        );
+    }
+    let result = ws.run(&[&cache, "query", "//..."]);
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_eq!(
+        stderr(&result),
+        "base top-level\ndefs top-level\nmacro a\nmacro b\nmacro c\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&result.stdout),
+        "//a:a\n//b:b\n//c:c\n"
+    );
+    ws.file(
+        "defs/defs.bzl",
+        "visibility(['//a/...', '//c/...'])\nprint('defs top-level')\ndef m(name):\n    native.filegroup(name = name)\n",
+    );
+    let result = ws.run(&[&cache, "query", "//..."]);
+    assert!(!result.status.success());
+    assert_eq!(
+        stderr(&result),
+        format!(
+            "defs top-level\nbazel-rs: {}:1:6: Starlark file //defs:defs.bzl is not visible for loading from package //b. Check the file's `visibility()` declaration.\nfile //b:BUILD.bazel contains .bzl load visibility violations\n",
+            ws.0.join("b/BUILD.bazel").display()
+        )
+    );
+}
+
+// The N44 memos and indexes are hash maps/sets (per-process random seeds):
+// none may be iterated into output. Two processes over a many-package,
+// many-input workspace must print byte-identical query and build output and
+// key the same actions.
+#[test]
+fn repeated_processes_produce_byte_identical_outputs() {
+    let ws = Workspace::new();
+    ws.file("defs/BUILD.bazel", "");
+    ws.file(
+        "defs/helpers.bzl",
+        "print('helpers loaded')\ndef suffix(name):\n    return name + '.out'\n",
+    );
+    ws.file(
+        "defs/defs.bzl",
+        r#"load(":helpers.bzl", "suffix")
+Info = provider(fields = ["files"])
+def _impl(ctx):
+    out = ctx.actions.declare_file(suffix(ctx.label.name))
+    args = ctx.actions.args()
+    args.add_all(ctx.files.srcs)
+    ctx.actions.run_shell(
+        outputs = [out],
+        inputs = ctx.files.srcs + ctx.files.deps,
+        arguments = [args],
+        command = "cat \"$@\" > " + out.path,
+    )
+    return [DefaultInfo(files = depset([out])), Info(files = depset([out]))]
+collect = rule(
+    implementation = _impl,
+    attrs = {
+        "srcs": attr.label_list(allow_files = True),
+        "deps": attr.label_list(allow_files = True),
+    },
+)
+def bundle(name, srcs):
+    print("bundle " + native.package_name() + ":" + name)
+    collect(name = name + "_c", srcs = srcs)
+    native.genrule(name = name + "_g", srcs = srcs, outs = [name + "_g.txt"], cmd = "cat $(SRCS) | sort > $@")
+    native.filegroup(name = name, srcs = [":" + name + "_c", ":" + name + "_g"])
+"#,
+    );
+    for p in 0..24 {
+        for f in 0..12 {
+            ws.file(
+                &format!("p{p:02}/d{}/f{f:02}.txt", f % 3),
+                &format!("{p} {f}\n"),
+            );
+        }
+        let dep = if p == 0 {
+            String::new()
+        } else {
+            format!("'//p{:02}:b0', ", p - 1)
+        };
+        ws.file(
+            &format!("p{p:02}/BUILD.bazel"),
+            &format!(
+                "load('//defs:defs.bzl', 'bundle', 'collect')\npackage(default_visibility = ['//visibility:public'])\nbundle(name = 'b0', srcs = glob(['**/*.txt']))\nbundle(name = 'b1', srcs = glob(['d1/*.txt', 'd2/*.txt'], exclude = ['d2/f05.txt']))\ncollect(name = 'all', srcs = glob(['**/*.txt']), deps = [{dep}':b0', ':b1'])\nexports_files(glob(['d0/*.txt']))\n"
+            ),
+        );
+    }
+    let run = |index: usize, args: &[&str]| {
+        let cache = ws.0.join(format!("cache{index}"));
+        let mut argv = vec![format!("--cache-dir={}", cache.display())];
+        argv.extend(args.iter().map(|arg| arg.to_string()));
+        let result = ws.run(&argv.iter().map(String::as_str).collect::<Vec<_>>());
+        assert!(result.status.success(), "{}", stderr(&result));
+        let normalize = |bytes: &[u8]| {
+            String::from_utf8_lossy(bytes).replace(&cache.display().to_string(), "CACHE")
+        };
+        let mut keys = fs::read_dir(cache.join("actions"))
+            .map(|entries| {
+                entries
+                    .map(|entry| entry.unwrap().file_name())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        keys.sort();
+        (normalize(&result.stdout), normalize(&result.stderr), keys)
+    };
+    for args in [&["query", "//..."][..], &["build", "--jobs=4", "//..."][..]] {
+        let first = run(0, args);
+        let second = run(1, args);
+        assert_eq!(first, second, "{args:?}");
+        assert_eq!(first.1.matches("helpers loaded").count(), 1);
+        assert_eq!(first.1.matches("bundle p07:b1").count(), 1);
+        if args[0] == "build" {
+            assert_eq!(first.2.len(), 24 * 5);
+        }
+    }
+}
+
 #[test]
 fn package_exports_and_build_syntax_are_strict() {
     let ws = Workspace::new();

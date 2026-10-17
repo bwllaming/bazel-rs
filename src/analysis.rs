@@ -2126,7 +2126,7 @@ r = rule(implementation=impl, attrs={
             declared: RefCell::new(Vec::new()),
             actions: RefCell::new(Vec::new()),
             active: Arc::new(AtomicBool::new(true)),
-            top_level_functions: Vec::new(),
+            top_level_functions: Default::default(),
             repositories: Arc::new(RepositorySet::new(std::path::PathBuf::from("."))),
             scope: crate::analysis_runtime::ScopeState::new("//pkg:rule".into(), BTreeSet::new()),
             subrule: Default::default(),

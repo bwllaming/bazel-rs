@@ -214,7 +214,9 @@ impl PackageArgs {
 
 #[derive(Clone, Debug, Default)]
 pub struct Package {
-    pub rules: BTreeMap<Label, Rule>,
+    /// Shared, immutable rule declarations: lookups clone the `Arc`, and
+    /// analysis copies a rule only to configure it.
+    pub rules: BTreeMap<Label, Arc<Rule>>,
     pub exports: BTreeMap<Label, Visibility>,
     pub default_visibility: Visibility,
     pub macro_names: BTreeSet<String>,
@@ -223,7 +225,7 @@ pub struct Package {
 }
 
 impl std::ops::Deref for Package {
-    type Target = BTreeMap<Label, Rule>;
+    type Target = BTreeMap<Label, Arc<Rule>>;
     fn deref(&self) -> &Self::Target {
         &self.rules
     }
@@ -264,6 +266,10 @@ mod collector {
         pub glob_io_error: RefCell<Option<String>>,
         /// The first Skyframe glob symlink issue (GlobsFunction).
         pub glob_symlink_issue: RefCell<Option<crate::source_links::SymlinkIssue>>,
+        /// The package's glob() outcomes by arguments and link policy
+        /// (GlobCache, packages/GlobCache.java: one traversal per pattern
+        /// and package evaluation). Lookups only: never iterated.
+        pub globs: RefCell<HashMap<super::GlobKey, crate::glob::GlobOutcome>>,
     }
 
     /// REPO.bazel evaluation state (packages/RepoThreadContext.java).
@@ -1363,17 +1369,34 @@ fn package_globals(builder: &mut GlobalsBuilder) {
             .map(|v| strings(v, "glob exclude"))
             .transpose()?
             .unwrap_or_default();
-        let outcome = crate::glob::glob(
-            &context.root,
-            &context.package,
-            &includes,
-            &excludes,
-            exclude_directories != 0,
+        let key = GlobKey {
+            includes,
+            excludes,
+            exclude_directories: exclude_directories != 0,
             allow_empty,
-            &context.ignored,
-            &context.repositories.link_policy(&context.repository),
-        )
-        .map_err(anyhow::Error::msg)?;
+            links: context.repositories.link_policy(&context.repository),
+        };
+        let cached = context.globs.borrow().get(&key).cloned();
+        let outcome = match cached {
+            Some(outcome) => outcome,
+            None => {
+                #[cfg(test)]
+                GLOB_WALKS.with(|walks| walks.set(walks.get() + 1));
+                let outcome = crate::glob::glob(
+                    &context.root,
+                    &context.package,
+                    &key.includes,
+                    &key.excludes,
+                    key.exclude_directories,
+                    key.allow_empty,
+                    &context.ignored,
+                    &key.links,
+                )
+                .map_err(anyhow::Error::msg)?;
+                context.globs.borrow_mut().insert(key, outcome.clone());
+                outcome
+            }
+        };
         // StarlarkNativeModule.runGlobOperation (StarlarkNativeModule.java:851-876):
         // an I/O error is an error event plus the package's IOException; the
         // call returns an empty list and evaluation continues.
@@ -1390,6 +1413,23 @@ fn package_globals(builder: &mut GlobalsBuilder) {
     fn package_name(eval: &mut Evaluator<'_, '_, '_>) -> anyhow::Result<String> {
         Ok(declarations(eval)?.package.clone())
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// glob() calls that walked the file system on this thread.
+    static GLOB_WALKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The arguments of a package's `glob()` call and the link policy it ran
+/// under: equal keys have equal outcomes within one package evaluation.
+#[derive(PartialEq, Eq, Hash)]
+struct GlobKey {
+    includes: Vec<String>,
+    excludes: Vec<String>,
+    exclude_directories: bool,
+    allow_empty: bool,
+    links: crate::source_links::LinkPolicy,
 }
 
 /// BUILD-file-only globals (BuildGlobals, not shared with `native`).
@@ -1721,6 +1761,19 @@ fn module_native_globals(builder: &mut GlobalsBuilder) {
 }
 
 /// BUILD-loaded extension globals. These deliberately omit native.bazel_version.
+/// The globals of BUILD files (BuildGlobals plus the `native` members).
+pub(crate) fn build_file_globals() -> Globals {
+    let mut globals = GlobalsBuilder::extended_by(&[LibraryExtension::SetType])
+        .with(rule_globals)
+        .with(native_rule_globals)
+        .with(package_globals)
+        .with(build_only_globals);
+    install_build_native_methods(&mut globals);
+    crate::json::install(&mut globals);
+    crate::rule_declarations::install_build(&mut globals);
+    globals.build()
+}
+
 pub fn bzl_globals() -> Globals {
     bzl_globals_for(BzlPhase::Build)
 }
@@ -1917,22 +1970,10 @@ fn evaluate_at(
     // Lexer errors (invalid escapes) fail the BUILD file like Bazel's parser.
     crate::repository_text::validate_source(&ast)?;
     crate::guarded_globals::check_universe(&ast)?;
-    let mut globals = GlobalsBuilder::extended_by(&[LibraryExtension::SetType])
-        .with(rule_globals)
-        .with(native_rule_globals)
-        .with(package_globals)
-        .with(build_only_globals);
-    install_build_native_methods(&mut globals);
-    crate::json::install(&mut globals);
-    crate::rule_declarations::install_build(&mut globals);
-    let globals = globals.build();
-    let bzl_globals = bzl_globals();
-    let loaded = crate::loading::load_modules_with_functions_in(
-        repositories.clone(),
-        package,
-        &ast,
-        &bzl_globals,
-    )?;
+    // Both global environments are immutable: built once per invocation.
+    let (globals, bzl_globals) = repositories.build_phase_globals();
+    let loaded =
+        crate::loading::load_build_modules_in(repositories.clone(), package, &ast, &bzl_globals)?;
     let modules = loaded
         .modules
         .iter()
@@ -1963,6 +2004,7 @@ fn evaluate_at(
         calls: call_expressions(&ast),
         glob_io_error: RefCell::new(None),
         glob_symlink_issue: RefCell::new(None),
+        globs: RefCell::default(),
     };
     let evaluated = Module::with_temp_heap(|module| {
         let mut evaluator = Evaluator::new(&module);
@@ -1997,6 +2039,8 @@ fn evaluate_at(
         return Err(crate::glob::symlink_issue_error(&issue, &package_display));
     }
     let mut declared_rules = declarations.rules.into_inner();
+    // One registry per package, shared by its Starlark rule targets.
+    let top_level_functions: Arc<[starlark::values::OwnedFrozenValue]> = loaded.functions.into();
     for pending in declarations.custom.into_inner() {
         let (implementation, _) = frozen
             .get_any_visibility(&pending.slot)
@@ -2013,7 +2057,7 @@ fn evaluate_at(
                         .map_err(|error| error.to_string())
                 })
                 .collect::<Result<_, _>>()?,
-            top_level_functions: loaded.functions.clone(),
+            top_level_functions: top_level_functions.clone(),
             transitions: pending
                 .transition_slots
                 .iter()
@@ -2085,7 +2129,10 @@ fn evaluate_at(
         }
     }
     Ok(Package {
-        rules,
+        rules: rules
+            .into_iter()
+            .map(|(label, rule)| (label, Arc::new(rule)))
+            .collect(),
         exports,
         default_visibility,
         macro_names: declarations.macro_names.into_inner(),
@@ -2326,7 +2373,13 @@ fn evaluate_source(
         source,
         &ignored,
     )
-    .map(|package| package.rules)
+    .map(|package| {
+        package
+            .rules
+            .into_iter()
+            .map(|(label, rule)| (label, Arc::unwrap_or_clone(rule)))
+            .collect()
+    })
 }
 
 fn validate_rules(declarations: Vec<Rule>) -> Result<BTreeMap<Label, Rule>, String> {
@@ -3454,6 +3507,7 @@ def legacy():
                 calls: HashMap::new(),
                 glob_io_error: RefCell::new(None),
                 glob_symlink_issue: RefCell::new(None),
+                globs: RefCell::default(),
             };
             Module::with_temp_heap(|module| {
                 module.set(
@@ -3960,6 +4014,42 @@ def macro(name):
     }
 
     #[test]
+    fn identical_globs_walk_once_per_package_evaluation_with_identical_results() {
+        let root = TempRoot::new();
+        for name in ["a.txt", "b.txt", "sub/c.txt", "x.in"] {
+            let path = root.0.join("pkg").join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, name).unwrap();
+        }
+        std::fs::write(
+            root.0.join("pkg/BUILD.bazel"),
+            "filegroup(name='a', srcs=glob(['**/*.txt']))\nfilegroup(name='b', srcs=glob(['**/*.txt']))\nfilegroup(name='c', srcs=glob(['**/*.txt'], exclude=['b.txt']))\nfilegroup(name='d', srcs=glob(['**/*.txt'], allow_empty=True))\nfilegroup(name='e', srcs=glob(['*.in']) + glob(['**/*.txt']))\n",
+        )
+        .unwrap();
+        let walks = GLOB_WALKS.with(std::cell::Cell::get);
+        let package = evaluate(&root.0, "pkg").unwrap();
+        // Distinct (include, exclude, exclude_directories, allow_empty)
+        // arguments walk; repeated ones reuse the package's outcome.
+        assert_eq!(GLOB_WALKS.with(std::cell::Cell::get) - walks, 4);
+        let srcs = |name: &str| {
+            package[&Label::parse(name, "pkg").unwrap()]
+                .srcs
+                .iter()
+                .map(|src| src.strip_prefix("//pkg:").unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        let all = ["a.txt", "b.txt", "sub/c.txt"].map(str::to_owned).to_vec();
+        assert_eq!(srcs(":a"), all);
+        assert_eq!(srcs(":b"), all);
+        assert_eq!(srcs(":c"), ["a.txt", "sub/c.txt"]);
+        assert_eq!(srcs(":d"), all);
+        assert_eq!(srcs(":e"), ["x.in", "a.txt", "b.txt", "sub/c.txt"]);
+        // Each evaluation has its own cache.
+        evaluate(&root.0, "pkg").unwrap();
+        assert_eq!(GLOB_WALKS.with(std::cell::Cell::get) - walks, 8);
+    }
+
+    #[test]
     fn custom_definition_globals_are_not_build_globals() {
         rejected("x = attr.string()", "attr");
         rejected("x = rule(implementation=print)", "rule");
@@ -3987,6 +4077,11 @@ r = rule(implementation=_impl)
             .as_ref()
             .unwrap();
         assert_eq!(first.top_level_functions.len(), 2);
+        // One shared registry per package, not a copy per target.
+        assert!(Arc::ptr_eq(
+            &first.top_level_functions,
+            &second.top_level_functions
+        ));
         assert!(
             first
                 .top_level_functions
@@ -3996,7 +4091,7 @@ r = rule(implementation=_impl)
         for (a, b) in first
             .top_level_functions
             .iter()
-            .zip(&second.top_level_functions)
+            .zip(second.top_level_functions.iter())
         {
             assert!(a.value().ptr_eq(b.value()));
         }

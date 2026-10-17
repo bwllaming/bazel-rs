@@ -196,7 +196,7 @@ fn wildcard_matches(pattern: &str, name: &str) -> bool {
 
 /// What a `glob()` call produced: its results, or the package-level errors
 /// Bazel reports for it after the BUILD file was evaluated.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GlobOutcome {
     /// Sorted, unique package-relative paths (empty after an I/O error).
     pub paths: Vec<String>,

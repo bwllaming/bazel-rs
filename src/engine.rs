@@ -21,7 +21,7 @@ use crate::toolchains::{
 };
 use crate::visibility::Visibility;
 use crate::workspace;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
@@ -72,8 +72,8 @@ type ResolvedInputs = (Vec<Artifact>, Locations);
 
 #[derive(Clone)]
 enum Target {
-    Rule(Rule),
-    Output(Rule, String),
+    Rule(Arc<Rule>),
+    Output(Arc<Rule>, String),
     Source(PathBuf),
 }
 
@@ -629,6 +629,25 @@ pub struct BuildSummary {
 pub struct Engine {
     repositories: Arc<RepositorySet>,
     packages: BTreeMap<PackageId, Package>,
+    // N44 hash maps/sets (declared_inputs, source_targets, analyzed_sources)
+    // answer lookups only and are never iterated: output order must not
+    // depend on the per-process hash seed (tests/loading.rs
+    // repeated_processes_produce_byte_identical_outputs).
+    /// Per loaded package, every label its non-macro rules name as an
+    /// input (Package.java:893-920's assumed input files), built on the
+    /// first source-file lookup in the package. Loaded packages never
+    /// change, so the index never goes stale (lookups only; no order).
+    declared_inputs: HashMap<PackageId, HashSet<Label>>,
+    /// Source-file targets already resolved: label -> path. A pure memo of
+    /// [`Self::target`]; its filesystem side effects are recorded once
+    /// (lookups only).
+    source_targets: HashMap<Label, PathBuf>,
+    /// Source-file targets analyzed: their analysis (the target and its
+    /// visibility's package groups) does not depend on the configuration or
+    /// the consumer, so it runs once per label (a ConfiguredTargetKey of an
+    /// input file has no configuration), not once per dependency edge
+    /// (lookups only).
+    analyzed_sources: HashSet<Label>,
     generated: BTreeMap<Label, (Label, String)>,
     group_nodes: BTreeMap<Label, Arc<GroupNode>>,
     group_budget: HostBudget,
@@ -723,6 +742,9 @@ impl Engine {
         Self {
             repositories,
             packages: BTreeMap::new(),
+            declared_inputs: HashMap::new(),
+            source_targets: HashMap::new(),
+            analyzed_sources: HashSet::new(),
             generated: BTreeMap::new(),
             group_nodes: BTreeMap::new(),
             group_budget: HostBudget::default(),
@@ -855,9 +877,84 @@ impl Engine {
         Ok(())
     }
 
+    /// The labels a package's rules name as inputs (the assumed input files
+    /// of Package.java:893-920): resolved `srcs` of every non-macro,
+    /// non-package_group rule, labels in any other native attribute or
+    /// select() (Package.java:897-920), built-in attributes and select()
+    /// keys/branches of Starlark rules, and the computed `package_metadata`
+    /// default (Rule.getLabels visits computed defaults too; paired capture
+    /// N28 B4/missing_default: `rule '//p:nope' does not exist`).
+    fn package_input_labels(&self, package: &Package) -> HashSet<Label> {
+        let mut labels = HashSet::new();
+        for rule in package.values().filter(|rule| {
+            rule.macro_owner.is_none() && !matches!(rule.kind, RuleKind::PackageGroup(_))
+        }) {
+            labels.extend(
+                rule.srcs
+                    .iter()
+                    .filter_map(|src| self.resolve_rule_src(rule, src).ok()),
+            );
+            if let Some(native) = &rule.native {
+                labels.extend(native.input_labels.iter().cloned());
+            }
+            if let Some(custom) = &rule.custom {
+                labels.extend(
+                    custom
+                        .declaration
+                        .builtin
+                        .target
+                        .input_labels
+                        .iter()
+                        .cloned(),
+                );
+                labels.extend(custom.declaration.configurable_labels.iter().cloned());
+            }
+            labels.extend(
+                rule.package_metadata
+                    .iter()
+                    .filter_map(|text| Label::parse_canonical(text).ok()),
+            );
+        }
+        labels
+    }
+
+    /// Whether `label` is an input file target of its loaded package: an
+    /// exported file, or a label one of its rules names as an input (the
+    /// index is built once per package).
+    fn declared_source(&mut self, label: &Label, package_id: &PackageId) -> bool {
+        let package = &self.packages[package_id];
+        if package.exports.contains_key(label) {
+            return true;
+        }
+        if package.macro_names.contains(&label.name) {
+            return false;
+        }
+        if !self.declared_inputs.contains_key(package_id) {
+            let labels = self.package_input_labels(package);
+            self.declared_inputs.insert(package_id.clone(), labels);
+        }
+        self.declared_inputs[package_id].contains(label)
+    }
+
+    /// Mutable access to a loaded package for unit tests, dropping the
+    /// derived per-package indexes and memos.
+    #[cfg(test)]
+    fn package_mut(&mut self, package: &PackageId) -> &mut Package {
+        self.declared_inputs.clear();
+        self.source_targets.clear();
+        self.analyzed_sources.clear();
+        self.packages.get_mut(package).unwrap()
+    }
+
     fn target(&mut self, label: &Label) -> Result<Target, String> {
-        self.load_package(&label.package_id())?;
-        if let Some(rule) = self.packages[&label.package_id()].get(label) {
+        // Loaded packages are immutable: a label resolved as a source file
+        // stays one (its rule, output and filesystem facts are fixed).
+        if let Some(path) = self.source_targets.get(label) {
+            return Ok(Target::Source(path.clone()));
+        }
+        let package_id = label.package_id();
+        self.load_package(&package_id)?;
+        if let Some(rule) = self.packages[&package_id].get(label) {
             return Ok(Target::Rule(rule.clone()));
         }
         if let Some((owner, output)) = self.generated.get(label) {
@@ -866,41 +963,22 @@ impl Engine {
                 output.clone(),
             ));
         }
-        let package = &self.packages[&label.package_id()];
-        let declared_source = package.exports.contains_key(label)
-            || (!package.macro_names.contains(&label.name)
-                && package
-                    .values()
-                    .filter(|rule| {
-                        rule.macro_owner.is_none()
-                            && !matches!(rule.kind, RuleKind::PackageGroup(_))
-                    })
-                    .any(|rule| {
-                        rule.srcs
-                            .iter()
-                            .any(|src| self.resolve_rule_src(rule, src).as_ref() == Ok(label))
-                            // Labels in any other native attribute or select()
-                            // are assumed input files too (Package.java:897-920).
-                            || rule
-                                .native
-                                .as_ref()
-                                .is_some_and(|native| native.input_labels.contains(label))
-                            // Built-in attributes of Starlark rules likewise.
-                            || rule.custom.as_ref().is_some_and(|custom| {
-                                custom.declaration.builtin.target.input_labels.contains(label)
-                                    // Starlark select() keys and branches.
-                                    || custom.declaration.configurable_labels.contains(label)
-                            })
-                            // The computed package_metadata default (Rule.getLabels
-                            // visits computed defaults too; paired capture N28
-                            // B4/missing_default: `rule '//p:nope' does not exist`).
-                            || rule.package_metadata.iter().any(|text| {
-                                Label::parse_canonical(text).as_ref() == Ok(label)
-                            })
-                    }));
-        if !declared_source {
+        if !self.declared_source(label, &package_id) {
             return Err(self.no_such_target(label)?);
         }
+        let (path, stable) = self.source_target(label)?;
+        if stable {
+            self.source_targets.insert(label.clone(), path.clone());
+        }
+        Ok(Target::Source(path))
+    }
+
+    /// The path of a declared source-file target, checking its package
+    /// boundaries and recording missing files and source directories, and
+    /// whether it may be memoized: a symlinked source resolves under the
+    /// link policy of the repositories materialized so far, so it is
+    /// resolved again on every lookup, as before.
+    fn source_target(&mut self, label: &Label) -> Result<(PathBuf, bool), String> {
         let repository_root = self.repositories.root(&label.repository)?.to_path_buf();
         let package_dir = repository_root.join(&label.package);
         let ignored = self.ignored(&label.repository)?;
@@ -929,7 +1007,7 @@ impl Engine {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     let full = package_dir.join(&label.name);
                     self.missing_sources.insert(full.clone(), label.clone());
-                    return Ok(Target::Source(full));
+                    return Ok((full, true));
                 }
                 Err(error) => return Err(format!("no target or source {label}: {error}")),
             };
@@ -960,7 +1038,7 @@ impl Engine {
                 // declared source that does not exist.
                 crate::source_links::Resolution::Missing(missing) => {
                     self.missing_sources.insert(missing.clone(), label.clone());
-                    return Ok(Target::Source(missing));
+                    return Ok((missing, false));
                 }
             }
         }
@@ -972,12 +1050,12 @@ impl Engine {
                 .entry(path.clone())
                 .or_default()
                 .insert(label.clone());
-            return Ok(Target::Source(path));
+            return Ok((path, !linked));
         }
         if !path.is_file() {
             return Err(format!("source is not a regular file: {label}"));
         }
-        Ok(Target::Source(path))
+        Ok((path, !linked))
     }
 
     /// NoSuchTargetException for an undeclared target of a loaded package:
@@ -1323,9 +1401,13 @@ impl Engine {
         configured: &mut ConfiguredNodes,
         plan: &mut Plan,
     ) -> Result<(), String> {
+        if self.analyzed_sources.contains(label) {
+            return Ok(());
+        }
         let rule = match self.target(label)? {
             Target::Source(_) => {
                 self.visible(&self.source_visibility(label), &label.package_id(), None)?;
+                self.analyzed_sources.insert(label.clone());
                 return Ok(());
             }
             Target::Rule(rule) => rule,
@@ -5101,7 +5183,8 @@ impl Engine {
         declared: &Declared,
     ) -> Result<ResolvedInputs, String> {
         let mut inputs = Vec::new();
-        let mut seen: BTreeMap<PathBuf, Artifact> = BTreeMap::new();
+        // Lookups only: `inputs` keeps the declaration order.
+        let mut seen: HashMap<PathBuf, Artifact> = HashMap::new();
         let mut locations = BTreeMap::new();
         for src in &rule.srcs {
             let label = self.resolve_rule_src(rule, src)?;
@@ -6232,7 +6315,7 @@ impl Engine {
         }
         for (label, labels) in &by_target {
             let location = match self.target(label) {
-                Ok(Target::Rule(rule) | Target::Output(rule, _)) => rule.location,
+                Ok(Target::Rule(rule) | Target::Output(rule, _)) => rule.location.clone(),
                 _ => None,
             };
             let shown = crate::rule_declarations::canonical_form(label);
@@ -6681,13 +6764,12 @@ fn planted(artifact: &Artifact, main_ignored: &IgnoredSubdirectories) -> bool {
 
 /// Source (non-generated) input paths of an action, deduplicated in order.
 fn source_paths(inputs: &[Artifact]) -> Vec<PathBuf> {
-    let mut paths: Vec<PathBuf> = Vec::new();
-    for artifact in inputs.iter().filter(|artifact| artifact.producer.is_none()) {
-        if !paths.contains(&artifact.real) {
-            paths.push(artifact.real.clone());
-        }
-    }
-    paths
+    let mut seen: HashSet<&Path> = HashSet::new();
+    inputs
+        .iter()
+        .filter(|artifact| artifact.producer.is_none() && seen.insert(&artifact.real))
+        .map(|artifact| artifact.real.clone())
+        .collect()
 }
 
 fn plan_action(
@@ -6708,7 +6790,8 @@ fn plan_action(
     action::validate_structure(&action)?;
     action.inputs.clear();
     let mut dependencies = Vec::new();
-    let mut seen = BTreeMap::new();
+    // Lookups only: dependencies and inputs keep the declaration order.
+    let mut seen = HashMap::new();
     for artifact in inputs {
         if let Some(previous) = seen.insert(artifact.exec.clone(), artifact.file()) {
             if previous != artifact.file() {
@@ -7111,7 +7194,7 @@ mod tests {
             if let Some(owner) = &rule.macro_owner {
                 package.macro_names.insert(owner.name.clone());
             }
-            package.rules.insert(rule.label.clone(), rule);
+            package.rules.insert(rule.label.clone(), Arc::new(rule));
         }
         engine
     }
@@ -7220,18 +7303,19 @@ mod tests {
         let Target::Rule(first) = engine.target(&leaf_label).unwrap() else {
             unreachable!()
         };
-        let RuleKind::PackageGroup(first) = first.kind else {
+        let RuleKind::PackageGroup(first) = &first.kind else {
             unreachable!()
         };
+        let first = Arc::clone(first);
         assert!(Arc::ptr_eq(&declaration, &first));
         for _ in 0..128 {
             let Target::Rule(next) = engine.target(&leaf_label).unwrap() else {
                 unreachable!()
             };
-            let RuleKind::PackageGroup(next) = next.kind else {
+            let RuleKind::PackageGroup(next) = &next.kind else {
                 unreachable!()
             };
-            assert!(Arc::ptr_eq(&first, &next));
+            assert!(Arc::ptr_eq(&first, next));
         }
         // GroupDefinition deliberately has no Clone implementation: every
         // generic Target/Rule snapshot above must share the declaration payload.
@@ -7526,14 +7610,14 @@ mod tests {
         engine
             .resolve_group(&test_label("//app:outside"), &mut Vec::new())
             .unwrap();
-        engine
-            .packages
-            .get_mut(&test_label("//app:outside").package_id())
-            .unwrap()
-            .rules
-            .get_mut(&test_label("//app:outside"))
-            .unwrap()
-            .macro_owner = Some(MacroOwner {
+        Arc::make_mut(
+            engine
+                .package_mut(&test_label("//app:outside").package_id())
+                .rules
+                .get_mut(&test_label("//app:outside"))
+                .unwrap(),
+        )
+        .macro_owner = Some(MacroOwner {
             definition_package: test_label("//defs:m.bzl").package_id(),
             name: "demo".into(),
         });
@@ -7801,6 +7885,153 @@ m = macro(implementation=emit)
         );
     }
 
+    fn source_path(engine: &mut Engine, label: &str) -> Result<PathBuf, String> {
+        match engine.target(&test_label(label))? {
+            Target::Source(path) => Ok(path),
+            Target::Rule(rule) | Target::Output(rule, _) => Err(format!("rule {}", rule.label)),
+        }
+    }
+
+    #[test]
+    fn source_targets_use_the_package_input_index_and_are_memoized_unless_linked() {
+        let f = Fixture::new();
+        f.write("app/data", "source");
+        f.write("app/dir/nested", "x");
+        f.write("app/macro_only", "x");
+        std::os::unix::fs::symlink("data", f.0.join("app/link")).unwrap();
+        let mut ordinary = test_rule("//app:files", None);
+        ordinary
+            .srcs
+            .extend([":data", ":missing", ":dir", ":link", "//app:canonical"].map(str::to_owned));
+        ordinary.package_metadata = vec!["//app:metadata".into()];
+        let mut macro_rule = test_rule("//app:demo", Some(("//app:m.bzl", "demo")));
+        macro_rule.srcs.push(":macro_only".into());
+        let mut engine = test_engine(f.0.clone(), vec![ordinary, macro_rule]);
+        // Repeated lookups answer exactly like the first (the linear scan's
+        // predicate, precomputed once for the package).
+        for _ in 0..2 {
+            assert_eq!(
+                source_path(&mut engine, "//app:data").unwrap(),
+                f.0.join("app/data")
+            );
+            assert_eq!(
+                source_path(&mut engine, "//app:missing").unwrap(),
+                f.0.join("app/missing")
+            );
+            assert_eq!(
+                source_path(&mut engine, "//app:dir").unwrap(),
+                f.0.join("app/dir")
+            );
+            assert_eq!(
+                source_path(&mut engine, "//app:link").unwrap(),
+                f.0.join("app/data")
+            );
+            assert_eq!(
+                source_path(&mut engine, "//app:canonical").unwrap(),
+                f.0.join("app/canonical")
+            );
+            assert_eq!(
+                source_path(&mut engine, "//app:metadata").unwrap(),
+                f.0.join("app/metadata")
+            );
+            assert_eq!(
+                source_path(&mut engine, "//app:files").unwrap_err(),
+                "rule //app:files"
+            );
+            for undeclared in ["//app:macro_only", "//app:undeclared"] {
+                let error = source_path(&mut engine, undeclared).unwrap_err();
+                assert!(error.contains("not declared in package 'app'"), "{error}");
+            }
+        }
+        assert_eq!(engine.declared_inputs.len(), 1);
+        assert_eq!(
+            engine.missing_sources,
+            ["canonical", "metadata", "missing"]
+                .map(|name| (
+                    f.0.join("app").join(name),
+                    test_label(&format!("//app:{name}"))
+                ))
+                .into_iter()
+                .collect::<BTreeMap<_, _>>()
+        );
+        assert_eq!(engine.source_directories.len(), 1);
+        for memoized in ["//app:data", "//app:missing", "//app:dir", "//app:metadata"] {
+            assert!(engine.source_targets.contains_key(&test_label(memoized)));
+        }
+        // A symlinked source resolves under the link policy of the
+        // repositories materialized so far: it is resolved on every lookup.
+        assert!(
+            !engine
+                .source_targets
+                .contains_key(&test_label("//app:link"))
+        );
+        assert!(
+            !engine
+                .source_targets
+                .contains_key(&test_label("//app:undeclared"))
+        );
+    }
+
+    #[test]
+    fn source_paths_keep_first_occurrences_in_order_without_generated_inputs() {
+        let artifact = |real: &str, producer: Option<usize>| Artifact {
+            directory: false,
+            real: real.into(),
+            exec: real.into(),
+            producer: producer.map(|index| ("//app:gen".to_owned(), index)),
+            owner: "//app:x".into(),
+        };
+        let inputs = [
+            artifact("b", None),
+            artifact("a", None),
+            artifact("gen", Some(0)),
+            artifact("b", None),
+            artifact("c", None),
+            artifact("a", None),
+        ];
+        assert_eq!(
+            source_paths(&inputs),
+            ["b", "a", "c"].map(PathBuf::from).to_vec()
+        );
+    }
+
+    #[test]
+    fn source_analysis_runs_once_per_label_and_failures_are_not_memoized() {
+        let f = Fixture::new();
+        f.write("app/data", "source");
+        f.write("app/grouped", "source");
+        let mut consumer = test_rule("//app:files", None);
+        consumer
+            .srcs
+            .extend([":data", ":data", ":grouped"].map(str::to_owned));
+        let mut engine = test_engine(f.0.clone(), vec![consumer]);
+        // The source's own visibility names a package group that does not exist.
+        engine
+            .package_mut(&test_label("//app:grouped").package_id())
+            .exports
+            .insert(
+                test_label("//app:grouped"),
+                Visibility::Labels(vec![test_label("//app:no_group")]),
+            );
+        let top = engine.configurations.top();
+        let analyze = |engine: &mut Engine, label: &str| {
+            engine.analyze(
+                &test_label(label),
+                top,
+                &mut Vec::new(),
+                &mut ConfiguredNodes::new(),
+                &mut Plan::new(),
+            )
+        };
+        analyze(&mut engine, "//app:data").unwrap();
+        assert!(engine.analyzed_sources.contains(&test_label("//app:data")));
+        analyze(&mut engine, "//app:data").unwrap();
+        let first = analyze(&mut engine, "//app:grouped").unwrap_err();
+        assert!(first.contains("no_group"), "{first}");
+        assert_eq!(analyze(&mut engine, "//app:grouped").unwrap_err(), first);
+        assert_eq!(engine.analyzed_sources.len(), 1);
+    }
+
     #[test]
     fn explicit_export_or_unbuilt_ordinary_reference_establishes_macro_source() {
         let f = Fixture::new();
@@ -7810,13 +8041,15 @@ m = macro(implementation=emit)
             macro_rule.srcs.push(":data".into());
             let mut engine = test_engine(f.0.clone(), vec![macro_rule]);
             let source = test_label("//app:data");
-            let package = engine.packages.get_mut(&source.package_id()).unwrap();
+            let package = engine.package_mut(&source.package_id());
             if exported {
                 package.exports.insert(source.clone(), Visibility::Private);
             } else {
                 let mut ordinary = test_rule("//app:unselected", None);
                 ordinary.srcs.push(":data".into());
-                package.rules.insert(ordinary.label.clone(), ordinary);
+                package
+                    .rules
+                    .insert(ordinary.label.clone(), Arc::new(ordinary));
             }
             assert_eq!(
                 engine.select(&["//app:data".into()], "").unwrap(),
@@ -7850,11 +8083,9 @@ m = macro(implementation=emit)
         );
         let rule = test_rule("//app:demo", Some(("//defs:m.bzl", "demo")));
         engine
-            .packages
-            .get_mut(&label.package_id())
-            .unwrap()
+            .package_mut(&label.package_id())
             .rules
-            .insert(label.clone(), rule);
+            .insert(label.clone(), Arc::new(rule));
         assert!(matches!(engine.target(&label), Ok(Target::Rule(_))));
         let output = test_label("//app:reserved_output");
         engine
@@ -7894,7 +8125,7 @@ m = macro(implementation=emit)
                 "//app:demo",
                 true,
             );
-            let package = engine.packages.get_mut(&source.package_id()).unwrap();
+            let package = engine.package_mut(&source.package_id());
             let grant = Visibility::Private.with_package(&test_label("//defs:x").package_id());
             if exported {
                 package.exports.insert(source, grant);
@@ -7920,14 +8151,14 @@ m = macro(implementation=emit)
         let label = test_label("//app:demo");
         let mut engine = Engine::new(f.0.clone());
         engine.load_package(&label.package_id()).unwrap();
-        engine
-            .packages
-            .get_mut(&label.package_id())
-            .unwrap()
-            .rules
-            .get_mut(&label)
-            .unwrap()
-            .macro_owner = Some(MacroOwner {
+        Arc::make_mut(
+            engine
+                .package_mut(&label.package_id())
+                .rules
+                .get_mut(&label)
+                .unwrap(),
+        )
+        .macro_owner = Some(MacroOwner {
             definition_package: test_label("//defs:m.bzl").package_id(),
             name: "demo".into(),
         });

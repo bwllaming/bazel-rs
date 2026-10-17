@@ -5,7 +5,7 @@
 //! Paths below are relative to `src/main/java/com/google/devtools/build/lib/`.
 //! Only loading is modeled here; analysis is in `crate::engine` (classes
 //! without native analysis fail explicitly there).
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use anyhow::{anyhow, bail};
 use starlark::values::Value;
@@ -1321,7 +1321,8 @@ pub(crate) fn input_labels(target: &NativeTarget, nodep: impl Fn(&str) -> bool) 
             }
         }
     }
-    let mut seen = BTreeSet::new();
+    // First occurrences in attribute order; the set only answers lookups.
+    let mut seen = std::collections::HashSet::with_capacity(labels.len());
     labels.retain(|label| seen.insert(label.clone()));
     labels
 }

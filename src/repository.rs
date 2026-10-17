@@ -44,6 +44,15 @@ struct RepositoryState {
     /// Canonical forms of materialized roots and blocked prefixes for the
     /// link policy, memoized per invocation (published roots never move).
     link_canonical: std::sync::Mutex<BTreeMap<PathBuf, PathBuf>>,
+    /// BUILD-phase `.bzl` modules evaluated in this invocation, shared by
+    /// every package that loads them (BzlLoadValue; crate::loading).
+    build_bzl: crate::loading::BzlCache,
+    /// The BUILD-file and BUILD-phase `.bzl` globals (immutable), built on
+    /// first use.
+    build_globals: OnceLock<(
+        starlark::environment::Globals,
+        starlark::environment::Globals,
+    )>,
 }
 
 type IgnoredResult = Result<Arc<crate::ignored::IgnoredSubdirectories>, String>;
@@ -197,8 +206,34 @@ impl RepositorySet {
                 host,
                 ignored: std::sync::Mutex::default(),
                 link_canonical: std::sync::Mutex::default(),
+                build_bzl: crate::loading::BzlCache::default(),
+                build_globals: OnceLock::new(),
             }),
         }
+    }
+
+    /// The BUILD-file globals and the BUILD-phase `.bzl` globals
+    /// (crate::package), shared by every package of the invocation.
+    pub(crate) fn build_phase_globals(
+        &self,
+    ) -> (
+        starlark::environment::Globals,
+        starlark::environment::Globals,
+    ) {
+        self.state
+            .build_globals
+            .get_or_init(|| {
+                (
+                    crate::package::build_file_globals(),
+                    crate::package::bzl_globals(),
+                )
+            })
+            .clone()
+    }
+
+    /// The invocation's cache of BUILD-phase `.bzl` modules (crate::loading).
+    pub(crate) fn build_bzl_cache(&self) -> &crate::loading::BzlCache {
+        &self.state.build_bzl
     }
 
     /// The repository's ignored subdirectories (`IgnoredSubdirectoriesValue`),

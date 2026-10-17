@@ -237,11 +237,38 @@ pub fn load_modules_with_functions_in(
     ast: &AstModule,
     globals: &Globals,
 ) -> Result<LoadedModules, String> {
+    load_build_file_modules(repositories, package, ast, globals, false)
+}
+
+/// [`load_modules_with_functions_in`] for a BUILD file evaluated with the
+/// BUILD-phase `.bzl` globals (crate::package::bzl_globals): each `.bzl` is
+/// evaluated once per repository set (the invocation) and its frozen module
+/// is shared by every package that loads it, as Bazel's BzlLoadValue is
+/// computed once per label (so a top-level `print` runs once, too). Loads
+/// are still traversed per package in the same order, with the same cycle,
+/// depth and per-requester visibility checks; failures are not cached.
+pub fn load_build_modules_in(
+    repositories: Arc<RepositorySet>,
+    package: &PackageId,
+    ast: &AstModule,
+    globals: &Globals,
+) -> Result<LoadedModules, String> {
+    load_build_file_modules(repositories, package, ast, globals, true)
+}
+
+fn load_build_file_modules(
+    repositories: Arc<RepositorySet>,
+    package: &PackageId,
+    ast: &AstModule,
+    globals: &Globals,
+    shared: bool,
+) -> Result<LoadedModules, String> {
     let labels = dependencies(&repositories, package, ast)?;
     if labels.is_empty() {
         return Ok(LoadedModules::default());
     }
     let mut loader = Loader::new(repositories, globals, false);
+    loader.shared = shared;
     for label in labels {
         loader.load(label)?;
     }
@@ -301,8 +328,69 @@ fn dependencies(
         .collect()
 }
 
+/// One successfully evaluated BUILD-phase `.bzl` module: what a loader
+/// needs to reuse it without reading, parsing or evaluating it again.
+struct CachedBzl {
+    module: FrozenModule,
+    visibility: BzlVisibility,
+    /// The module's own retained top-level functions, in name order.
+    functions: Vec<OwnedFrozenValue>,
+    /// Its direct loads in load-statement order (`dependencies`).
+    loads: Vec<Label>,
+}
+
+/// A BUILD-phase `.bzl` label's value for the invocation: the evaluated
+/// module, or the error of its own reading, parsing, load-visibility check,
+/// evaluation or freezing (Bazel's stored BzlLoadValue error). Its print
+/// events were emitted once, when it was evaluated.
+type CachedResult = Result<Arc<CachedBzl>, String>;
+
+/// The `.bzl` modules a repository set (one invocation) has evaluated for
+/// BUILD files, by canonical label. Lookups and inserts take the lock
+/// briefly; it is never held while evaluating. Lookups only: never iterated.
+#[derive(Default)]
+pub(crate) struct BzlCache {
+    modules: std::sync::Mutex<HashMap<Label, CachedResult>>,
+}
+
+impl std::fmt::Debug for BzlCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let count = self.modules.lock().map_or(0, |modules| modules.len());
+        f.debug_struct("BzlCache").field("modules", &count).finish()
+    }
+}
+
+impl BzlCache {
+    fn get(&self, label: &Label) -> Result<Option<CachedResult>, String> {
+        Ok(self
+            .modules
+            .lock()
+            .map_err(|_| "bzl module cache poisoned".to_owned())?
+            .get(label)
+            .cloned())
+    }
+
+    /// Keep the first evaluation of a label (a later concurrent one is not
+    /// published), like a Skyframe value.
+    fn insert(&self, label: Label, result: Result<CachedBzl, String>) -> Result<(), String> {
+        self.modules
+            .lock()
+            .map_err(|_| "bzl module cache poisoned".to_owned())?
+            .entry(label)
+            .or_insert_with(|| result.map(Arc::new));
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.modules.lock().unwrap().len()
+    }
+}
+
 struct Loader<'a> {
     repositories: Arc<RepositorySet>,
+    /// Reuse and publish modules in the repository set's [`BzlCache`].
+    shared: bool,
     globals: &'a Globals,
     cache: HashMap<Label, FrozenModule>,
     /// Stored with each frozen module; checks are per requesting package.
@@ -314,7 +402,9 @@ struct Loader<'a> {
 
 enum Work {
     Enter(Label),
-    Finish(Label, PathBuf, Box<AstModule>),
+    Finish(Label, PathBuf, Box<AstModule>, Vec<Label>),
+    /// A module of the invocation's cache, after its loads were visited.
+    Reuse(Label, Arc<CachedBzl>),
 }
 
 impl<'a> Loader<'a> {
@@ -325,6 +415,7 @@ impl<'a> Loader<'a> {
     ) -> Self {
         Self {
             repositories,
+            shared: false,
             globals,
             cache: HashMap::new(),
             visibilities: HashMap::new(),
@@ -353,99 +444,56 @@ impl<'a> Loader<'a> {
                             chain(&active, &label)
                         ));
                     }
-                    let path = self.source_path(&label)?;
-                    let bytes = fs::read(&path)
-                        .map_err(|e| format!("cannot read {label} ({}): {e}", path.display()))?;
-                    let source = std::str::from_utf8(&bytes)
-                        .map_err(|e| format!("cannot read {label} ({}): {e}", path.display()))?
-                        .to_owned();
-                    if self.provenance_capture {
-                        self.sources.insert(
-                            label.to_string(),
-                            SourceProvenance {
-                                bytes,
-                                mapping: self.repositories.mapping(&label.repository)?.clone(),
-                            },
-                        );
+                    // A cached module's loads are visited exactly as if it
+                    // were evaluated here (same order, cycle and depth checks).
+                    // A cached failure is replayed for every loading package.
+                    if self.shared
+                        && let Some(cached) = self.repositories.build_bzl_cache().get(&label)?
+                    {
+                        let cached = cached?;
+                        active.push(label.clone());
+                        let loads = cached.loads.clone();
+                        work.push(Work::Reuse(label, cached));
+                        work.extend(loads.into_iter().rev().map(Work::Enter));
+                        continue;
                     }
-                    // Bazel extension files allow definitions but not top-level
-                    // if/for statements. Do not enable the Extended dialect.
-                    let dialect = Dialect {
-                        enable_keyword_only_arguments: true,
-                        enable_load_reexport: false,
-                        ..Dialect::Standard
-                    };
-                    let ast = AstModule::parse(&label.to_string(), source, &dialect)
-                        .map_err(|e| format!("cannot parse {label}: {e}"))?;
-                    // Bazel's lexer rejects invalid escapes in every .bzl
-                    // (Lexer.java:389-403), whether or not the code runs.
-                    crate::repository_text::validate_source(&ast)?;
-                    if self.provenance_capture {
-                        crate::repository_text::validate_execution_source(&ast)?;
-                    }
-                    validate_bzl_load_order(&ast)?;
-                    crate::guarded_globals::check(&label, &ast)?;
-                    crate::guarded_globals::check_universe(&ast)?;
-                    let dependencies = dependencies(&self.repositories, &label.package_id(), &ast)?;
+                    let (path, ast, dependencies) = self
+                        .enter_module(&label)
+                        .or_else(|error| self.failed(&label, error))?;
                     active.push(label.clone());
-                    work.push(Work::Finish(label, path, Box::new(ast)));
-                    work.extend(dependencies.into_iter().rev().map(Work::Enter));
+                    work.extend(
+                        std::iter::once(Work::Finish(
+                            label,
+                            path,
+                            Box::new(ast),
+                            dependencies.clone(),
+                        ))
+                        .chain(dependencies.into_iter().rev().map(Work::Enter)),
+                    );
                 }
-                Work::Finish(label, path, ast) => {
-                    let function_names = top_level_function_names(&ast);
-                    // BzlLoadFunction.java:845-856: after the direct loads are
-                    // computed, before this file executes.
-                    self.check_load_visibilities(
-                        &label.package_id(),
-                        &format!("module {label}"),
-                        &path.to_string_lossy(),
-                        &ast,
-                    )?;
-                    let imports = self.imports(&label.package_id(), &ast)?;
-                    let modules = imports.iter().map(|(id, m)| (id.as_str(), m)).collect();
-                    let file_loader = ReturnFileLoader { modules: &modules };
-                    let (frozen, visibility) = Module::with_temp_heap(|module| {
-                        let visibility = {
-                            let context = ExtensionContext {
-                                label: label.clone(),
-                                repositories: self.repositories.clone(),
-                                byte_strings: self.provenance_capture,
-                            };
-                            let initialization = InitGuard::begin(&context);
-                            let mut eval = Evaluator::new(&module);
-                            eval.extra = Some(&context);
-                            eval.set_max_callstack_size(128)
-                                .map_err(|e| e.to_string())?;
-                            if self.provenance_capture {
-                                // Definition initialization is execution too: limiting
-                                // only the later callback leaves top-level/helper work
-                                // in any transitive .bzl outside the repository budget.
-                                eval.set_max_tick_count(1_000_000)
-                                    .map_err(|e| e.to_string())?;
-                                eval.set_max_heap_size(128 * 1024 * 1024)
-                                    .map_err(|e| e.to_string())?;
-                            }
-                            eval.set_loader(&file_loader);
-                            // Repository/extension definitions evaluate in the
-                            // Latin-1 char model; BUILD/analysis loads do not.
-                            let _model = starlark::values::string::enter_latin1_char_model(
-                                self.provenance_capture,
-                            );
-                            eval.eval_module(*ast, self.globals)
-                                .map_err(|e| format!("cannot evaluate {label}: {e}"))?;
-                            drop(eval);
-                            initialization.finish()
-                        };
-                        module
-                            .freeze_named(FrozenHeapName::User(Box::new(label.to_string())))
-                            .map_err(|e| format!("cannot freeze {label}: {e:?}"))
-                            .map(|frozen| (frozen, visibility))
-                    })?;
-                    for name in function_names {
-                        let (function, _) = frozen.get_any_visibility(&name).map_err(|e| {
-                            format!("cannot retain top-level function {name:?} from {label}: {e}")
-                        })?;
-                        self.functions.push(function);
+                Work::Reuse(label, cached) => {
+                    self.functions.extend(cached.functions.iter().cloned());
+                    self.cache.insert(label.clone(), cached.module.clone());
+                    self.visibilities
+                        .insert(label.clone(), cached.visibility.clone());
+                    let finished = active.pop();
+                    debug_assert_eq!(finished.as_ref(), Some(&label));
+                }
+                Work::Finish(label, path, ast, loads) => {
+                    let own_functions = self.functions.len();
+                    let (frozen, visibility) = self
+                        .finish_module(&label, &path, *ast)
+                        .or_else(|error| self.failed(&label, error))?;
+                    if self.shared {
+                        self.repositories.build_bzl_cache().insert(
+                            label.clone(),
+                            Ok(CachedBzl {
+                                module: frozen.clone(),
+                                visibility: visibility.clone(),
+                                functions: self.functions[own_functions..].to_vec(),
+                                loads,
+                            }),
+                        )?;
                     }
                     self.cache.insert(label.clone(), frozen);
                     self.visibilities.insert(label.clone(), visibility);
@@ -455,6 +503,123 @@ impl<'a> Loader<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Publish the failure of `label`'s own loading in the invocation's
+    /// cache. Cycle and depth errors depend on the traversal and are never
+    /// published; a module whose load fails is not evaluated and so caches
+    /// nothing itself (the failing load is replayed when it is visited).
+    fn failed<T>(&self, label: &Label, error: String) -> Result<T, String> {
+        if self.shared {
+            self.repositories
+                .build_bzl_cache()
+                .insert(label.clone(), Err(error.clone()))?;
+        }
+        Err(error)
+    }
+
+    /// Read, parse and statically check a module; its direct loads.
+    fn enter_module(&mut self, label: &Label) -> Result<(PathBuf, AstModule, Vec<Label>), String> {
+        let path = self.source_path(label)?;
+        let bytes = fs::read(&path)
+            .map_err(|e| format!("cannot read {label} ({}): {e}", path.display()))?;
+        let source = std::str::from_utf8(&bytes)
+            .map_err(|e| format!("cannot read {label} ({}): {e}", path.display()))?
+            .to_owned();
+        if self.provenance_capture {
+            self.sources.insert(
+                label.to_string(),
+                SourceProvenance {
+                    bytes,
+                    mapping: self.repositories.mapping(&label.repository)?.clone(),
+                },
+            );
+        }
+        // Bazel extension files allow definitions but not top-level
+        // if/for statements. Do not enable the Extended dialect.
+        let dialect = Dialect {
+            enable_keyword_only_arguments: true,
+            enable_load_reexport: false,
+            ..Dialect::Standard
+        };
+        let ast = AstModule::parse(&label.to_string(), source, &dialect)
+            .map_err(|e| format!("cannot parse {label}: {e}"))?;
+        // Bazel's lexer rejects invalid escapes in every .bzl
+        // (Lexer.java:389-403), whether or not the code runs.
+        crate::repository_text::validate_source(&ast)?;
+        if self.provenance_capture {
+            crate::repository_text::validate_execution_source(&ast)?;
+        }
+        validate_bzl_load_order(&ast)?;
+        crate::guarded_globals::check(label, &ast)?;
+        crate::guarded_globals::check_universe(&ast)?;
+        let dependencies = dependencies(&self.repositories, &label.package_id(), &ast)?;
+        Ok((path, ast, dependencies))
+    }
+
+    /// Check a module's load visibilities, evaluate and freeze it, and
+    /// retain its top-level functions (appended to `self.functions`).
+    fn finish_module(
+        &mut self,
+        label: &Label,
+        path: &Path,
+        ast: AstModule,
+    ) -> Result<(FrozenModule, BzlVisibility), String> {
+        let function_names = top_level_function_names(&ast);
+        // BzlLoadFunction.java:845-856: after the direct loads are
+        // computed, before this file executes.
+        self.check_load_visibilities(
+            &label.package_id(),
+            &format!("module {label}"),
+            &path.to_string_lossy(),
+            &ast,
+        )?;
+        let imports = self.imports(&label.package_id(), &ast)?;
+        let modules = imports.iter().map(|(id, m)| (id.as_str(), m)).collect();
+        let file_loader = ReturnFileLoader { modules: &modules };
+        let (frozen, visibility) = Module::with_temp_heap(|module| {
+            let visibility = {
+                let context = ExtensionContext {
+                    label: label.clone(),
+                    repositories: self.repositories.clone(),
+                    byte_strings: self.provenance_capture,
+                };
+                let initialization = InitGuard::begin(&context);
+                let mut eval = Evaluator::new(&module);
+                eval.extra = Some(&context);
+                eval.set_max_callstack_size(128)
+                    .map_err(|e| e.to_string())?;
+                if self.provenance_capture {
+                    // Definition initialization is execution too: limiting
+                    // only the later callback leaves top-level/helper work
+                    // in any transitive .bzl outside the repository budget.
+                    eval.set_max_tick_count(1_000_000)
+                        .map_err(|e| e.to_string())?;
+                    eval.set_max_heap_size(128 * 1024 * 1024)
+                        .map_err(|e| e.to_string())?;
+                }
+                eval.set_loader(&file_loader);
+                // Repository/extension definitions evaluate in the
+                // Latin-1 char model; BUILD/analysis loads do not.
+                let _model =
+                    starlark::values::string::enter_latin1_char_model(self.provenance_capture);
+                eval.eval_module(ast, self.globals)
+                    .map_err(|e| format!("cannot evaluate {label}: {e}"))?;
+                drop(eval);
+                initialization.finish()
+            };
+            module
+                .freeze_named(FrozenHeapName::User(Box::new(label.to_string())))
+                .map_err(|e| format!("cannot freeze {label}: {e:?}"))
+                .map(|frozen| (frozen, visibility))
+        })?;
+        for name in function_names {
+            let (function, _) = frozen.get_any_visibility(&name).map_err(|e| {
+                format!("cannot retain top-level function {name:?} from {label}: {e}")
+            })?;
+            self.functions.push(function);
+        }
+        Ok((frozen, visibility))
     }
 
     fn check_load_visibilities(
@@ -741,6 +906,8 @@ mod tests {
 
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
     static EVALUATIONS: AtomicUsize = AtomicUsize::new(0);
+    static SHARED_EVALUATIONS: AtomicUsize = AtomicUsize::new(0);
+    static FAILING_EVALUATIONS: AtomicUsize = AtomicUsize::new(0);
 
     struct Temp(PathBuf);
 
@@ -830,6 +997,16 @@ mod tests {
 
         fn count_evaluation() -> anyhow::Result<i32> {
             EVALUATIONS.fetch_add(1, Ordering::Relaxed);
+            Ok(21)
+        }
+
+        fn count_failing_evaluation() -> anyhow::Result<i32> {
+            FAILING_EVALUATIONS.fetch_add(1, Ordering::Relaxed);
+            Ok(21)
+        }
+
+        fn count_shared_evaluation() -> anyhow::Result<i32> {
+            SHARED_EVALUATIONS.fetch_add(1, Ordering::Relaxed);
             Ok(21)
         }
 
@@ -1265,6 +1442,160 @@ scalar = 42
         // The cache belongs to the invocation, not the process.
         load_modules(&temp.0, "", &parse(source), &globals).unwrap();
         assert_eq!(EVALUATIONS.load(Ordering::Relaxed), 2);
+    }
+
+    fn root_package() -> PackageId {
+        PackageId {
+            repository: String::new(),
+            package: String::new(),
+        }
+    }
+
+    fn function_reprs(loaded: &LoadedModules) -> Vec<String> {
+        loaded
+            .functions
+            .iter()
+            .map(|function| function.value().to_repr())
+            .collect()
+    }
+
+    #[test]
+    fn build_loads_share_each_module_per_repository_set_with_unchanged_results() {
+        // The cache is shareable by future parallel package loading.
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<BzlCache>();
+        assert_send_sync::<RepositorySet>();
+        let temp = Temp::new();
+        temp.file("helpers/BUILD", "");
+        temp.file(
+            "helpers/shared.bzl",
+            "def _own(x):\n    return x\ndef helper(x):\n    return _own(x)\nvalue = count_shared_evaluation()\n",
+        );
+        temp.file(
+            "left.bzl",
+            "load('//helpers:shared.bzl', 'helper', 'value')\ndef left_fn():\n    return helper(value)\nleft = value\n",
+        );
+        temp.file(
+            "right.bzl",
+            "load('@//helpers:shared.bzl', 'value')\ndef right_fn():\n    return value\nright = value\n",
+        );
+        let globals = GlobalsBuilder::standard().with(test_globals).build();
+        let first_source = "load(':left.bzl', 'left')\nload(':right.bzl', 'right')\nleft + right\n";
+        let second_source =
+            "load(':right.bzl', 'right')\nload(':left.bzl', 'left')\nright + left\n";
+        let package = root_package();
+        let repositories = Arc::new(RepositorySet::new(temp.0.clone()));
+        let fresh = |source: &str| {
+            load_modules_with_functions_in(
+                Arc::new(RepositorySet::new(temp.0.clone())),
+                &package,
+                &parse(source),
+                &globals,
+            )
+            .unwrap()
+        };
+        SHARED_EVALUATIONS.store(0, Ordering::Relaxed);
+        let first = load_build_modules_in(
+            repositories.clone(),
+            &package,
+            &parse(first_source),
+            &globals,
+        )
+        .unwrap();
+        let second = load_build_modules_in(
+            repositories.clone(),
+            &package,
+            &parse(second_source),
+            &globals,
+        )
+        .unwrap();
+        // One evaluation per label and repository set (BzlLoadValue).
+        assert_eq!(SHARED_EVALUATIONS.load(Ordering::Relaxed), 1);
+        assert_eq!(repositories.build_bzl_cache().len(), 3);
+        // Both packages see the same frozen values ...
+        let left = |loaded: &LoadedModules| loaded.modules[":left.bzl"].get("left_fn").unwrap();
+        assert!(left(&first).value().ptr_eq(left(&second).value()));
+        assert_eq!(evaluate(second_source, &second.modules, &globals), 42);
+        // ... and exactly the transitive function registry, in the order an
+        // uncached per-package load visits the graph.
+        assert_eq!(function_reprs(&first), function_reprs(&fresh(first_source)));
+        assert_eq!(
+            function_reprs(&second),
+            function_reprs(&fresh(second_source))
+        );
+        assert_eq!(function_reprs(&second).len(), 4);
+        // A new repository set (invocation) evaluates again.
+        assert_eq!(SHARED_EVALUATIONS.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn shared_build_loads_keep_cycle_depth_and_failure_semantics() {
+        let temp = Temp::new();
+        for i in 0..MAX_LOAD_DEPTH {
+            temp.file(
+                &format!("m{i}.bzl"),
+                &format!("load(':m{}.bzl', _x='x')\nx=_x\n", i + 1),
+            );
+        }
+        temp.file(&format!("m{MAX_LOAD_DEPTH}.bzl"), "x = 1\n");
+        temp.file(
+            "bad.bzl",
+            "load(':m255.bzl', 'x')\ny = count_failing_evaluation()\nfail('boom')\n",
+        );
+        temp.file("uses_bad.bzl", "load(':bad.bzl', 'x')\n");
+        temp.file("unparsable.bzl", "x = (\n");
+        temp.file("a.bzl", "load(':b.bzl', 'x')\n");
+        temp.file("b.bzl", "load(':a.bzl', 'x')\n");
+        let globals = GlobalsBuilder::standard().with(test_globals).build();
+        let package = root_package();
+        let repositories = Arc::new(RepositorySet::new(temp.0.clone()));
+        let shared = |source: &str| {
+            load_build_modules_in(repositories.clone(), &package, &parse(source), &globals)
+        };
+        let fresh = |source: &str| {
+            load_modules_with_functions_in(
+                Arc::new(RepositorySet::new(temp.0.clone())),
+                &package,
+                &parse(source),
+                &globals,
+            )
+            .unwrap_err()
+        };
+        // The cached chain below m1 is traversed again from m0: the depth
+        // limit applies as when every module is evaluated per package.
+        assert!(shared("load(':m1.bzl', 'x')").is_ok());
+        let deep = shared("load(':m0.bzl', 'x')").unwrap_err();
+        assert_eq!(deep, fresh("load(':m0.bzl', 'x')"));
+        assert!(deep.contains("load depth limit 256 exceeded"));
+        // Cycle errors name the traversal's chain: never cached.
+        for root in ["a", "b", "a"] {
+            let source = format!("load(':{root}.bzl', 'x')");
+            assert_eq!(shared(&source).unwrap_err(), fresh(&source));
+        }
+        // A failing module is evaluated (its prints emitted) once; its stored
+        // error is replayed for every loading package and every dependent.
+        FAILING_EVALUATIONS.store(0, Ordering::Relaxed);
+        let failed = shared("load(':bad.bzl', 'x')").unwrap_err();
+        assert!(failed.contains("boom"), "{failed}");
+        for source in ["load(':bad.bzl', 'x')", "load(':uses_bad.bzl', 'x')"] {
+            assert_eq!(shared(source).unwrap_err(), failed);
+        }
+        assert_eq!(FAILING_EVALUATIONS.load(Ordering::Relaxed), 1);
+        assert_eq!(fresh("load(':uses_bad.bzl', 'x')"), failed);
+        assert_eq!(FAILING_EVALUATIONS.load(Ordering::Relaxed), 2);
+        let unparsable = shared("load(':unparsable.bzl', 'x')").unwrap_err();
+        assert!(unparsable.contains("cannot parse"), "{unparsable}");
+        assert_eq!(
+            shared("load(':unparsable.bzl', 'x')").unwrap_err(),
+            unparsable
+        );
+        let cache = repositories.build_bzl_cache().modules.lock().unwrap();
+        let failure = |name: &str| cache[&Label::parse_canonical(name).unwrap()].clone().err();
+        assert_eq!(failure("//:bad.bzl"), Some(failed));
+        assert_eq!(failure("//:unparsable.bzl"), Some(unparsable));
+        for uncached in ["//:uses_bad.bzl", "//:a.bzl", "//:b.bzl", "//:m0.bzl"] {
+            assert!(!cache.contains_key(&Label::parse_canonical(uncached).unwrap()));
+        }
     }
 
     #[test]

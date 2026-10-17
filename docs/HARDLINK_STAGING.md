@@ -152,7 +152,8 @@ End to end through the CLI (`artifacts/staging-bench.py`, 50 genrules over a
 2000-file glob, `--jobs=8`, release binaries) a cold build took 109.8 s before
 and 71.9 s after, a warm one (all hits) 104.6 s and 69.3 s; about 65 s of the
 after runs is single-threaded analysis/planning before the first action
-(outside staging; a follow-up). Peak RSS fell from 4.19 GB to 116 MB (inputs
+(outside staging; N44 reduced the whole run to 4.9 s cold and 2.3 s warm,
+docs/LOADING_VALIDATION.md). Peak RSS fell from 4.19 GB to 116 MB (inputs
 are no longer held in memory) and peak cache disk from 3.59 GB to 0.69 GB
 (0.51 GB settled). `validate_structure`'s overlap check, run three times per
 action, is now O(n log n) (adjacent pairs in component order), with the

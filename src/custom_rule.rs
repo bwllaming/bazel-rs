@@ -435,7 +435,8 @@ pub struct CustomInvocation {
     pub implementation: OwnedFrozenValue,
     /// Strong frozen roots for direct declarations, including factory closures.
     pub subrules: Vec<OwnedFrozenValue>,
-    pub top_level_functions: Vec<OwnedFrozenValue>,
+    /// The package's transitive `.bzl` top-level functions (shared).
+    pub top_level_functions: std::sync::Arc<[OwnedFrozenValue]>,
     /// Retained Starlark `transition()` objects: `""` for the rule's `cfg`
     /// (an incoming rule transition), else the attribute name (an outgoing
     /// attribute transition); crate::starlark_transitions.
