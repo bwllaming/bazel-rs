@@ -444,6 +444,20 @@ fn archive_type(source: &Map<String, Value>, url: &str) -> Result<String, String
     }
 }
 
+/// The repository download cache's blob directory for one checksum
+/// algorithm, `<repository cache>/downloads/<algorithm>` (DownloadCache.java):
+/// shared by module/registry archives (this module), hashed registry
+/// files (crate::registry_session) and repository_ctx/module_ctx downloads
+/// (crate::repository_ctx). Blobs are named by their lowercase hex digest.
+pub(crate) fn download_cache_dir(repository_cache: &Path, algorithm: &str) -> PathBuf {
+    repository_cache.join("downloads").join(algorithm)
+}
+
+/// `<repository cache>/downloads/<algorithm>/<hex>` ([`download_cache_dir`]).
+pub(crate) fn download_cache_blob(repository_cache: &Path, algorithm: &str, hex: &str) -> PathBuf {
+    download_cache_dir(repository_cache, algorithm).join(hex)
+}
+
 /// The verified content-addressed blob for `integrity`, downloading it when
 /// absent or corrupt. The body streams into a temporary file in the cache
 /// directory while being hashed; only a verified file is published, by an
@@ -454,7 +468,7 @@ fn cached_download(
     integrity: &Integrity,
     downloads_enabled: bool,
 ) -> Result<PathBuf, String> {
-    let directory = crate::repository_store::download_cache_dir(cache, &integrity.algorithm);
+    let directory = download_cache_dir(cache, &integrity.algorithm);
     ensure_directory(&directory)?;
     let path = directory.join(hex(&integrity.digest));
     reject_symlink(&path)?;

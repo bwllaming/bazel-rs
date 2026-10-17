@@ -1535,7 +1535,7 @@ impl Context {
             .join(&key)
             .join(format!("id-{}", transport::sha256(canonical_id.as_bytes())));
         Some((
-            crate::repository_store::download_cache_blob(root, algorithm, &key),
+            crate::materializer::download_cache_blob(root, algorithm, &key),
             marker,
         ))
     }
