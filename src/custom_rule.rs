@@ -653,8 +653,7 @@ impl AttrKind {
         match self {
             Self::String => string(value, what),
             Self::Int => int(value, what),
-            Self::Bool => value
-                .unpack_bool()
+            Self::Bool => attr_bool(value)
                 .is_none()
                 .then(|| expected("boolean", value, what)),
             Self::Label => label(value, what),
@@ -774,7 +773,7 @@ impl AttrKind {
             {
                 Some("a dict of strings to lists of strings or Labels")
             }
-            Self::Bool if value.unpack_bool().is_none() => Some("a bool"),
+            Self::Bool if attr_bool(value).is_none() => Some("a bool"),
             Self::Label if !value.is_none() && !is_label(value) => Some("a string or Label"),
             Self::LabelList
                 if !sequence_ref(value).is_some_and(|list| list.iter().copied().all(is_label)) =>
@@ -902,11 +901,10 @@ impl AttrKind {
                     .unpack_i32()
                     .ok_or_else(|| anyhow!("expected a 32-bit int"))?,
             ),
-            Self::Bool => AttrValue::Bool(
-                value
-                    .unpack_bool()
-                    .ok_or_else(|| anyhow!("expected a bool"))?,
-            ),
+            // Type.BOOLEAN also converts the integers 0 and 1 (Type.java:409-428).
+            Self::Bool => {
+                AttrValue::Bool(attr_bool(value).ok_or_else(|| anyhow!("expected a bool"))?)
+            }
             Self::Label => AttrValue::Label(if value.is_none() {
                 None
             } else {
@@ -4043,6 +4041,16 @@ pub fn rule_globals(builder: &mut GlobalsBuilder) {
     builder.frozen_heap().add_reference(attrs.heap());
     let members = builder.alloc(AllocStruct(attrs.iter()));
     builder.set("attr", crate::starlark_types::AttrModule(members));
+}
+
+/// Type.BOOLEAN conversion: True/False, or the integers 0 and 1
+/// (Type.java:409-428).
+fn attr_bool(value: Value) -> Option<bool> {
+    value.unpack_bool().or_else(|| match value.unpack_i32() {
+        Some(0) => Some(false),
+        Some(1) => Some(true),
+        _ => None,
+    })
 }
 
 #[cfg(test)]

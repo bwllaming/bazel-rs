@@ -480,9 +480,15 @@ fn parse_attribute(
                 .and_then(|n| i32::try_from(n).ok())
                 .ok_or_else(|| "expected a 32-bit int".to_owned())?,
         ),
+        // Type.BOOLEAN also converts the integers 0 and 1 (Type.java:409-428).
         AttrKind::Bool => AttrValue::Bool(
             value
                 .as_bool()
+                .or_else(|| match value.as_i64() {
+                    Some(0) => Some(false),
+                    Some(1) => Some(true),
+                    _ => None,
+                })
                 .ok_or_else(|| "expected a bool".to_owned())?,
         ),
         AttrKind::Label => AttrValue::Label(Some(resolve(string()?)?.to_string())),

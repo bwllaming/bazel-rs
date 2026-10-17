@@ -328,3 +328,38 @@ defaults=rule(implementation=_impl,attrs={'word':attr.string(default='fallback')
         b"definition default:fallback"
     );
 }
+
+#[test]
+fn bool_attributes_accept_the_integers_zero_and_one_like_type_boolean() {
+    // Type.BOOLEAN.convert (Type.java:409-428) accepts True/False and the
+    // integers 0 and 1; hermetic_cc_toolchain passes `supports_param_files = 0`.
+    let ws = Workspace::new(
+        r#"
+def _impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.write(output=out, content=repr(ctx.attr.flag))
+    return [DefaultInfo(files=depset([out]))]
+flagged = rule(implementation=_impl, attrs={"flag": attr.bool()})
+"#,
+        "load(':defs.bzl', 'flagged')\nflagged(name='zero', flag=0)\nflagged(name='one', flag=1)\n",
+    );
+    let built = outputs(&ws.run(&["build", "//:zero", "//:one"]));
+    let mut texts: Vec<String> = built
+        .iter()
+        .map(|path| fs::read_to_string(path).unwrap())
+        .collect();
+    texts.sort();
+    assert_eq!(texts, ["False", "True"]);
+    fs::write(
+        ws.0.join("BUILD.bazel"),
+        "load(':defs.bzl', 'flagged')\nflagged(name='two', flag=2)\n",
+    )
+    .unwrap();
+    let output = ws.run(&["build", "//:two"]);
+    assert!(!output.status.success());
+    assert!(
+        errors(&output).contains("expected a bool"),
+        "{}",
+        errors(&output)
+    );
+}
