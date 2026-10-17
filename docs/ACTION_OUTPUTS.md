@@ -11,16 +11,20 @@ mode `000`; path validation precedes chmod so symlinks are not followed.
 Initial write permissions and shell-selected modes remain visible during the
 action. `WriteAction.executable` still participates in the action key; distinct
 write requests do not collapse merely because their published modes match.
-Source and repository file permissions, staging input copies and manifest-file
-permissions are not changed by this policy.
+Source and repository file permissions and manifest-file permissions are not
+changed by this policy. Staged inputs are read-only hardlinks to the
+content-addressed store (`0444` plus the keyed executable bits) since N36
+(docs/HARDLINK_STAGING.md).
 
 The `native-action-v5` cache identity invalidated earlier mode-preserving entries
-(manifests are now `native-action-v6`, docs/ACTIONS_PARAMS.md).
+(manifests are now `native-action-v7`, docs/ACTIONS_PARAMS.md and
+docs/HARDLINK_STAGING.md).
 Cache hits require exact `0555` output permissions, executable masks and content
 digests. Writable, non-executable or privileged-mode tampering causes a rebuild.
 The upstream writable-output option (`0755`) is not implemented. Tree
 artifacts (docs/ACTIONS_PARAMS.md) normalize the root and every entry below
-it to `0555`; symlink outputs carry their target's mode.
+it to `0555`; symlink outputs are real symlinks and so show their target's
+mode (docs/HARDLINK_STAGING.md).
 
 The pinned reference contract is `OutputPermissions.READONLY` and
 `ActionOutputMetadataStore.getOutputMetadata`: commit

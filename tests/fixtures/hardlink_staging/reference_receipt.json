@@ -1,0 +1,543 @@
+{
+ "schema": "n36-hardlink-staging-reference-receipt/v1",
+ "purpose": "Paired genuine Bazel 9.3.0 vs native bazel-rs capture of N36 (docs/HARDLINK_STAGING.md): one source reachable at two input paths (a header and its actions.symlink _virtual_includes alias, and a generated header and its alias) is one inode inside the action (stat -L st_ino equality), actions.symlink outputs are real symlinks resolving to their target, and staged-input modes/writability/lstat kinds. Evidence only; no test reads it.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private> --output_base=<private> --host_jvm_args=-Xmx512m",
+  "command_flags": "--registry=file://<private copy of tests/fixtures/builtin_modules/registry> --repository_disable_download --incompatible_autoload_externally= --lockfile_mode=off --noshow_progress --color=no --curses=no --repository_cache=<private> --distdir=<private: platforms-1.0.0.tar.gz> --shell_executable=/bin/bash --show_result=1000",
+  "strategies": {
+   "reference-local": "--spawn_strategy=local",
+   "reference-default": "(default strategy)",
+   "reference-hermetic": "--spawn_strategy=linux-sandbox --experimental_use_hermetic_linux_sandbox"
+  }
+ },
+ "native": {
+  "after": "target/debug/bazel-rs (N36 worktree)",
+  "before": "6ae0cc8 target/debug/bazel-rs (copy staging)",
+  "flags": "--ignore_all_rc_files --cache-dir=<private> build --registry=file://<private copy of the same registry>"
+ },
+ "script": {
+  "path": "artifacts/staging-capture.py",
+  "sha256": "f4b85963907933cc22c4ed1dc81099bd9e065af63c6810d7604ffb41b817126e"
+ },
+ "fixture": {
+  "source": "tests/hardlink_staging.rs (DEFS, BUILD, pkg/hdr.h)",
+  "sha256": "3d7d77d92c79554273a240ce6877a4cafebf4ee7d4e8311b6af1528e89a4ce23"
+ },
+ "environment": "env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 HOME/TMPDIR private, umask 022; scratch /tmp/opencode/n36-capture",
+ "normalization": "in_action:* = lines of identity.txt written by the consumer action; published:* = followed mode/bytes, lstat kind and followed-inode equality with the target (workspace pkg/hdr.h, or the published pkg/gen.h) of each engine's published outputs",
+ "started_at": "2026-10-17T01:35:31.423234+00:00",
+ "finished_at": "2026-10-17T01:35:41.092170+00:00",
+ "engines": {
+  "reference-local": {
+   "code": 0,
+   "strategy": "4 internal, 1 local.",
+   "observations": {
+    "in_action:source_vs_virtual": "same",
+    "in_action:generated_vs_virtual": "same",
+    "in_action:source_vs_generated": "different",
+    "in_action:source_mode": "644",
+    "in_action:generated_mode": "555",
+    "in_action:source_writable": "yes",
+    "in_action:generated_writable": "no",
+    "in_action:source_lstat": "regular file",
+    "in_action:virtual_lstat": "symbolic link",
+    "published:pkg/_virtual_includes/lib/hdr.h:lstat_kind": "symlink",
+    "published:pkg/_virtual_includes/lib/hdr.h:mode": "0o644",
+    "published:pkg/_virtual_includes/lib/hdr.h:content": "#pragma once\nint from_header = 1;\n",
+    "published:pkg/_virtual_includes/lib/hdr.h:same_inode_as_target": "true",
+    "published:pkg/_virtual_includes/lib/gen.h:lstat_kind": "symlink",
+    "published:pkg/_virtual_includes/lib/gen.h:mode": "0o555",
+    "published:pkg/_virtual_includes/lib/gen.h:content": "#pragma once\nint generated = 1;\n",
+    "published:pkg/_virtual_includes/lib/gen.h:same_inode_as_target": "true",
+    "published:pkg/gen.h:lstat_kind": "file",
+    "published:pkg/gen.h:mode": "0o555",
+    "published:pkg/gen.h:content": "#pragma once\nint generated = 1;\n"
+   },
+   "stderr_tail": null
+  },
+  "reference-default": {
+   "code": 0,
+   "strategy": "4 internal, 1 processwrapper-sandbox.",
+   "observations": {
+    "in_action:source_vs_virtual": "same",
+    "in_action:generated_vs_virtual": "same",
+    "in_action:source_vs_generated": "different",
+    "in_action:source_mode": "644",
+    "in_action:generated_mode": "555",
+    "in_action:source_writable": "yes",
+    "in_action:generated_writable": "no",
+    "in_action:source_lstat": "symbolic link",
+    "in_action:virtual_lstat": "symbolic link",
+    "published:pkg/_virtual_includes/lib/hdr.h:lstat_kind": "symlink",
+    "published:pkg/_virtual_includes/lib/hdr.h:mode": "0o644",
+    "published:pkg/_virtual_includes/lib/hdr.h:content": "#pragma once\nint from_header = 1;\n",
+    "published:pkg/_virtual_includes/lib/hdr.h:same_inode_as_target": "true",
+    "published:pkg/_virtual_includes/lib/gen.h:lstat_kind": "symlink",
+    "published:pkg/_virtual_includes/lib/gen.h:mode": "0o555",
+    "published:pkg/_virtual_includes/lib/gen.h:content": "#pragma once\nint generated = 1;\n",
+    "published:pkg/_virtual_includes/lib/gen.h:same_inode_as_target": "true",
+    "published:pkg/gen.h:lstat_kind": "file",
+    "published:pkg/gen.h:mode": "0o555",
+    "published:pkg/gen.h:content": "#pragma once\nint generated = 1;\n"
+   },
+   "stderr_tail": null
+  },
+  "reference-hermetic": {
+   "code": 2,
+   "strategy": null,
+   "observations": null,
+   "stderr_tail": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: 'linux-sandbox' was requested for explicit default strategies but no strategy with that identifier was registered. Valid values are: [dynamic_worker, processwrapper-sandbox, standalone, dynamic, remote, worker, sandboxed, local]\nINFO: Elapsed time: 1.595s, Critical Path: 0.00s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\n"
+  },
+  "native-before": {
+   "code": 0,
+   "sha256": "075b5be51cc329e026d63f5eb7482016e84b10301abaf8e19e17268954ad128a",
+   "observations": {
+    "in_action:source_vs_virtual": "different",
+    "in_action:generated_vs_virtual": "different",
+    "in_action:source_vs_generated": "different",
+    "in_action:source_mode": "644",
+    "in_action:generated_mode": "755",
+    "in_action:source_writable": "yes",
+    "in_action:generated_writable": "yes",
+    "in_action:source_lstat": "regular file",
+    "in_action:virtual_lstat": "regular file",
+    "published:pkg/_virtual_includes/lib/hdr.h:lstat_kind": "file",
+    "published:pkg/_virtual_includes/lib/hdr.h:mode": "0o644",
+    "published:pkg/_virtual_includes/lib/hdr.h:content": "#pragma once\nint from_header = 1;\n",
+    "published:pkg/_virtual_includes/lib/hdr.h:same_inode_as_target": "false",
+    "published:pkg/_virtual_includes/lib/gen.h:lstat_kind": "file",
+    "published:pkg/_virtual_includes/lib/gen.h:mode": "0o555",
+    "published:pkg/_virtual_includes/lib/gen.h:content": "#pragma once\nint generated = 1;\n",
+    "published:pkg/_virtual_includes/lib/gen.h:same_inode_as_target": "false",
+    "published:pkg/gen.h:lstat_kind": "file",
+    "published:pkg/gen.h:mode": "0o555",
+    "published:pkg/gen.h:content": "#pragma once\nint generated = 1;\n"
+   },
+   "rebuild": [
+    "bazel-rs: 0 actions executed, 4 cache hits (experimental local execution; not sandboxed)"
+   ],
+   "stderr_tail": null
+  },
+  "native-after": {
+   "code": 0,
+   "sha256": "07a1ee2ea80a48a70bf4c5f65fe4bb79fe4c04db3266b1770cb56cf2926722b1",
+   "observations": {
+    "in_action:source_vs_virtual": "same",
+    "in_action:generated_vs_virtual": "same",
+    "in_action:source_vs_generated": "different",
+    "in_action:source_mode": "444",
+    "in_action:generated_mode": "555",
+    "in_action:source_writable": "no",
+    "in_action:generated_writable": "no",
+    "in_action:source_lstat": "regular file",
+    "in_action:virtual_lstat": "regular file",
+    "published:pkg/_virtual_includes/lib/hdr.h:lstat_kind": "symlink",
+    "published:pkg/_virtual_includes/lib/hdr.h:mode": "0o644",
+    "published:pkg/_virtual_includes/lib/hdr.h:content": "#pragma once\nint from_header = 1;\n",
+    "published:pkg/_virtual_includes/lib/hdr.h:same_inode_as_target": "true",
+    "published:pkg/_virtual_includes/lib/gen.h:lstat_kind": "symlink",
+    "published:pkg/_virtual_includes/lib/gen.h:mode": "0o555",
+    "published:pkg/_virtual_includes/lib/gen.h:content": "#pragma once\nint generated = 1;\n",
+    "published:pkg/_virtual_includes/lib/gen.h:same_inode_as_target": "true",
+    "published:pkg/gen.h:lstat_kind": "file",
+    "published:pkg/gen.h:mode": "0o555",
+    "published:pkg/gen.h:content": "#pragma once\nint generated = 1;\n"
+   },
+   "rebuild": [
+    "bazel-rs: 0 actions executed, 4 cache hits (experimental local execution; not sandboxed)"
+   ],
+   "stderr_tail": null
+  }
+ },
+ "counts": {
+  "EXACT": 34,
+  "MISMATCH": 7,
+  "UNAVAILABLE": 1
+ },
+ "rows": [
+  {
+   "case": "reference-default|in_action:generated_mode",
+   "reference": "555",
+   "native": "555",
+   "native_before": "755",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-default|in_action:generated_vs_virtual",
+   "reference": "same",
+   "native": "same",
+   "native_before": "different",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-default|in_action:generated_writable",
+   "reference": "no",
+   "native": "no",
+   "native_before": "yes",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-default|in_action:source_lstat",
+   "reference": "symbolic link",
+   "native": "regular file",
+   "native_before": "regular file",
+   "verdict": "MISMATCH"
+  },
+  {
+   "case": "reference-default|in_action:source_mode",
+   "reference": "644",
+   "native": "444",
+   "native_before": "644",
+   "verdict": "MISMATCH"
+  },
+  {
+   "case": "reference-default|in_action:source_vs_generated",
+   "reference": "different",
+   "native": "different",
+   "native_before": "different",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-default|in_action:source_vs_virtual",
+   "reference": "same",
+   "native": "same",
+   "native_before": "different",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-default|in_action:source_writable",
+   "reference": "yes",
+   "native": "no",
+   "native_before": "yes",
+   "verdict": "MISMATCH"
+  },
+  {
+   "case": "reference-default|in_action:virtual_lstat",
+   "reference": "symbolic link",
+   "native": "regular file",
+   "native_before": "regular file",
+   "verdict": "MISMATCH"
+  },
+  {
+   "case": "reference-default|published:pkg/_virtual_includes/lib/gen.h:content",
+   "reference": "#pragma once\nint generated = 1;\n",
+   "native": "#pragma once\nint generated = 1;\n",
+   "native_before": "#pragma once\nint generated = 1;\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-default|published:pkg/_virtual_includes/lib/gen.h:lstat_kind",
+   "reference": "symlink",
+   "native": "symlink",
+   "native_before": "file",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-default|published:pkg/_virtual_includes/lib/gen.h:mode",
+   "reference": "0o555",
+   "native": "0o555",
+   "native_before": "0o555",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-default|published:pkg/_virtual_includes/lib/gen.h:same_inode_as_target",
+   "reference": "true",
+   "native": "true",
+   "native_before": "false",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-default|published:pkg/_virtual_includes/lib/hdr.h:content",
+   "reference": "#pragma once\nint from_header = 1;\n",
+   "native": "#pragma once\nint from_header = 1;\n",
+   "native_before": "#pragma once\nint from_header = 1;\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-default|published:pkg/_virtual_includes/lib/hdr.h:lstat_kind",
+   "reference": "symlink",
+   "native": "symlink",
+   "native_before": "file",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-default|published:pkg/_virtual_includes/lib/hdr.h:mode",
+   "reference": "0o644",
+   "native": "0o644",
+   "native_before": "0o644",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-default|published:pkg/_virtual_includes/lib/hdr.h:same_inode_as_target",
+   "reference": "true",
+   "native": "true",
+   "native_before": "false",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-default|published:pkg/gen.h:content",
+   "reference": "#pragma once\nint generated = 1;\n",
+   "native": "#pragma once\nint generated = 1;\n",
+   "native_before": "#pragma once\nint generated = 1;\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-default|published:pkg/gen.h:lstat_kind",
+   "reference": "file",
+   "native": "file",
+   "native_before": "file",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-default|published:pkg/gen.h:mode",
+   "reference": "0o555",
+   "native": "0o555",
+   "native_before": "0o555",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-local|in_action:generated_mode",
+   "reference": "555",
+   "native": "555",
+   "native_before": "755",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-local|in_action:generated_vs_virtual",
+   "reference": "same",
+   "native": "same",
+   "native_before": "different",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-local|in_action:generated_writable",
+   "reference": "no",
+   "native": "no",
+   "native_before": "yes",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-local|in_action:source_lstat",
+   "reference": "regular file",
+   "native": "regular file",
+   "native_before": "regular file",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-local|in_action:source_mode",
+   "reference": "644",
+   "native": "444",
+   "native_before": "644",
+   "verdict": "MISMATCH"
+  },
+  {
+   "case": "reference-local|in_action:source_vs_generated",
+   "reference": "different",
+   "native": "different",
+   "native_before": "different",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-local|in_action:source_vs_virtual",
+   "reference": "same",
+   "native": "same",
+   "native_before": "different",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-local|in_action:source_writable",
+   "reference": "yes",
+   "native": "no",
+   "native_before": "yes",
+   "verdict": "MISMATCH"
+  },
+  {
+   "case": "reference-local|in_action:virtual_lstat",
+   "reference": "symbolic link",
+   "native": "regular file",
+   "native_before": "regular file",
+   "verdict": "MISMATCH"
+  },
+  {
+   "case": "reference-local|published:pkg/_virtual_includes/lib/gen.h:content",
+   "reference": "#pragma once\nint generated = 1;\n",
+   "native": "#pragma once\nint generated = 1;\n",
+   "native_before": "#pragma once\nint generated = 1;\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-local|published:pkg/_virtual_includes/lib/gen.h:lstat_kind",
+   "reference": "symlink",
+   "native": "symlink",
+   "native_before": "file",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-local|published:pkg/_virtual_includes/lib/gen.h:mode",
+   "reference": "0o555",
+   "native": "0o555",
+   "native_before": "0o555",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-local|published:pkg/_virtual_includes/lib/gen.h:same_inode_as_target",
+   "reference": "true",
+   "native": "true",
+   "native_before": "false",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-local|published:pkg/_virtual_includes/lib/hdr.h:content",
+   "reference": "#pragma once\nint from_header = 1;\n",
+   "native": "#pragma once\nint from_header = 1;\n",
+   "native_before": "#pragma once\nint from_header = 1;\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-local|published:pkg/_virtual_includes/lib/hdr.h:lstat_kind",
+   "reference": "symlink",
+   "native": "symlink",
+   "native_before": "file",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-local|published:pkg/_virtual_includes/lib/hdr.h:mode",
+   "reference": "0o644",
+   "native": "0o644",
+   "native_before": "0o644",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-local|published:pkg/_virtual_includes/lib/hdr.h:same_inode_as_target",
+   "reference": "true",
+   "native": "true",
+   "native_before": "false",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-local|published:pkg/gen.h:content",
+   "reference": "#pragma once\nint generated = 1;\n",
+   "native": "#pragma once\nint generated = 1;\n",
+   "native_before": "#pragma once\nint generated = 1;\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-local|published:pkg/gen.h:lstat_kind",
+   "reference": "file",
+   "native": "file",
+   "native_before": "file",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-local|published:pkg/gen.h:mode",
+   "reference": "0o555",
+   "native": "0o555",
+   "native_before": "0o555",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "reference-hermetic",
+   "verdict": "UNAVAILABLE",
+   "reference_code": 2,
+   "reference_stderr_tail": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: 'linux-sandbox' was requested for explicit default strategies but no strategy with that identifier was registered. Valid values are: [dynamic_worker, processwrapper-sandbox, standalone, dynamic, remote, worker, sandboxed, local]\nINFO: Elapsed time: 1.595s, Critical Path: 0.00s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\n"
+  },
+  {
+   "case": "native-after|rebuild-cache-hits",
+   "native": [
+    "bazel-rs: 0 actions executed, 4 cache hits (experimental local execution; not sandboxed)"
+   ],
+   "verdict": "EXACT"
+  }
+ ],
+ "mismatch_analysis": {
+  "reference-default|in_action:source_lstat": {
+   "reference": "symbolic link",
+   "native": "regular file",
+   "explanation": "Bazel sandboxes stage every input as a symlink (SymlinkedSandboxedSpawn.copyFile, :128-129); native stages hardlinks (regular files), like Bazel's hermetic linux-sandbox (HardlinkedSandboxedSpawn, :75-102). Followed bytes, identity and executable bits agree."
+  },
+  "reference-default|in_action:source_mode": {
+   "reference": "644",
+   "native": "444",
+   "explanation": "Inputs are hardlinks to read-only store blobs (0444 plus the keyed executable bits) so an in-place write cannot corrupt the content-addressed store shared by every action; Bazel stages a symlink into the execroot whose target is the writable source file (0644). Only the write bits differ; executable bits are equal and keyed."
+  },
+  "reference-default|in_action:source_writable": {
+   "reference": "yes",
+   "native": "no",
+   "explanation": "Same cause as source_mode: native store blobs are read-only. Bazel local and processwrapper-sandbox expose the writable source through symlinks (linux-sandbox, unavailable here, mounts it read-only so access(W_OK) fails there too)."
+  },
+  "reference-default|in_action:virtual_lstat": {
+   "reference": "symbolic link",
+   "native": "regular file",
+   "explanation": "Same cause as source_lstat: inside the action native inputs are hardlinks, never symlinks; Bazel exposes the symlink output (and in sandboxes a symlink to it)."
+  },
+  "reference-local|in_action:source_mode": {
+   "reference": "644",
+   "native": "444",
+   "explanation": "Inputs are hardlinks to read-only store blobs (0444 plus the keyed executable bits) so an in-place write cannot corrupt the content-addressed store shared by every action; Bazel stages a symlink into the execroot whose target is the writable source file (0644). Only the write bits differ; executable bits are equal and keyed."
+  },
+  "reference-local|in_action:source_writable": {
+   "reference": "yes",
+   "native": "no",
+   "explanation": "Same cause as source_mode: native store blobs are read-only. Bazel local and processwrapper-sandbox expose the writable source through symlinks (linux-sandbox, unavailable here, mounts it read-only so access(W_OK) fails there too)."
+  },
+  "reference-local|in_action:virtual_lstat": {
+   "reference": "symbolic link",
+   "native": "regular file",
+   "explanation": "Same cause as source_lstat: inside the action native inputs are hardlinks, never symlinks; Bazel exposes the symlink output (and in sandboxes a symlink to it)."
+  }
+ },
+ "changed_by_n36": {
+  "in_action:generated_mode": {
+   "before": "755",
+   "after": "555",
+   "reference": "555"
+  },
+  "in_action:generated_vs_virtual": {
+   "before": "different",
+   "after": "same",
+   "reference": "same"
+  },
+  "in_action:generated_writable": {
+   "before": "yes",
+   "after": "no",
+   "reference": "no"
+  },
+  "in_action:source_mode": {
+   "before": "644",
+   "after": "444",
+   "reference": "644"
+  },
+  "in_action:source_vs_virtual": {
+   "before": "different",
+   "after": "same",
+   "reference": "same"
+  },
+  "in_action:source_writable": {
+   "before": "yes",
+   "after": "no",
+   "reference": "yes"
+  },
+  "published:pkg/_virtual_includes/lib/gen.h:lstat_kind": {
+   "before": "file",
+   "after": "symlink",
+   "reference": "symlink"
+  },
+  "published:pkg/_virtual_includes/lib/gen.h:same_inode_as_target": {
+   "before": "false",
+   "after": "true",
+   "reference": "true"
+  },
+  "published:pkg/_virtual_includes/lib/hdr.h:lstat_kind": {
+   "before": "file",
+   "after": "symlink",
+   "reference": "symlink"
+  },
+  "published:pkg/_virtual_includes/lib/hdr.h:same_inode_as_target": {
+   "before": "false",
+   "after": "true",
+   "reference": "true"
+  }
+ }
+}

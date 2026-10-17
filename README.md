@@ -139,8 +139,10 @@ hermetic execution. The action environment is cleared and explicitly set, but
 undeclared host tools/files, time and network responses are not tracked. Cache
 correctness requires actions to depend only on declared inputs and a stable host
 tool environment. Absolute temporary/working paths must not enter outputs.
-Regular files and tree artifacts are supported; symlink outputs are published as
-copies and unresolved symlinks are unsupported (docs/ACTIONS_PARAMS.md). On action failure,
+Regular files and tree artifacts are supported; symlink outputs are real symlinks
+and unresolved symlinks are unsupported (docs/ACTIONS_PARAMS.md). Inputs are
+staged as read-only hardlinks to a content-addressed store and outputs are
+published by hardlink/rename, never copied per action (docs/HARDLINK_STAGING.md). On action failure,
 new scheduling stops and in-flight actions are joined. There is no process
 cancellation/timeout or persistent analysis server yet. Globs do not follow
 symlinks; potentially matching symlinks fail explicitly (Bazel can follow them).

@@ -84,10 +84,11 @@ Citations are to the pinned Bazel source
 `symlink(output, target_file=None, target_path=None, target_type=None,
 is_executable=False, progress_message=None)` follows
 `StarlarkActionFactory.symlink` (`:254-354`) including its argument errors.
-With `target_file` the output observes the target's bytes and permission bits
-(a source file keeps its mode, a generated file `0555`; directories are copied
-as trees). It is published as a copy, not a filesystem symlink (an `lstat`
-differs). `is_executable=True` checks the target's owner execute bit at
+With `target_file` the output is a real symlink to the target's absolute
+input path (`SymlinkAction.java:218-238`; since N36, docs/HARDLINK_STAGING.md),
+so it observes the target's bytes, permission bits (a source file keeps its
+mode, a generated file `0555`) and inode; a directory target gives a symlink to
+the target tree. `is_executable=True` checks the target's owner execute bit at
 execution with Bazel's message (`SymlinkAction.java:296-330`), prefixed like
 Bazel's action failures by the expanded progress message (`Creating symlink
 %{output} failed: ...`; `%{label}`, `%{output}`, `%{input}` are expanded,
@@ -150,7 +151,10 @@ so expanded arguments and parameter-file contents are keyed like any other.
 * `ctx.actions.write` to a declared directory fails at analysis natively;
   Bazel registers it and fails at execution with an I/O exception naming the
   absolute execroot path.
-* Symlink outputs are copies (an `lstat` sees a regular file or directory).
+* Symlink outputs were copies until N36; they are real symlinks now
+  (docs/HARDLINK_STAGING.md). Inside a consuming action every input,
+  including a symlink output, is a read-only hardlink (Bazel's sandboxes
+  stage symlinks).
 * map_each of non-directory values, TemplateDict map_each and the
   file/directory conflict run at analysis as before; directory contents are
   mapped at execution like Bazel.
