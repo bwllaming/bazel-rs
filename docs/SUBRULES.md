@@ -154,7 +154,8 @@ fragment.name`. Implicit-dependency visibility relative to the rule's `.bzl`
 **Remaining captured differences** (see the receipt for exact strings):
 struct `repr` (Bazel sorts fields and prints ` = `; N22 repr work on a separate
 branch, pre-N22 here), unknown-fragment message, interpreter argument-binding
-text, rule `ctx.fragments`/`ctx.executable` (absent natively, outside N24), and
+text, rule `ctx.executable` (outside N24; rule `ctx.fragments` is N23c,
+docs/CTX_SURFACE.md), and
 options/queries the native profile rejects explicitly (`--output=build`,
 `--toolchain_resolution_debug`, `--fdo_optimize`, `--collect_code_coverage`,
 `deps()`).

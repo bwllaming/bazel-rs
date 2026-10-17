@@ -333,6 +333,7 @@ fn make_ctx<'v>(
     context: &Context,
     dependencies: &BTreeMap<String, DependencyTarget>,
     heap: Heap<'v>,
+    surface: Arc<crate::ctx_surface::RuleSurface>,
 ) -> anyhow::Result<Value<'v>> {
     let invocation = rule
         .custom
@@ -412,6 +413,7 @@ fn make_ctx<'v>(
             backing,
             value,
             context.scope.root(),
+            surface,
         ))
     } else {
         Ok(crate::analysis_ctx::alloc_rule(
@@ -421,7 +423,86 @@ fn make_ctx<'v>(
             None,
             invocation.target_platform.clone(),
             invocation.toolchains.clone(),
+            surface,
         ))
+    }
+}
+
+/// RuleContext.getDefaultTemplateVariableProviders (analysis/RuleContext.java:900-940):
+/// the TemplateVariableInfo of the prerequisites of the attributes
+/// `toolchains`, `:cc_toolchain`, `$toolchains`, `$cc_toolchain`, in that
+/// order (DEFAULT_MAKE_VARIABLE_ATTRIBUTES), before the resolved toolchains'.
+/// Starlark `_x` attributes are `$x`, or `:x` when late-bound
+/// (AttributeValueSource.convertToNativeName). A non-empty built-in
+/// `toolchains` attribute is a value gap (crate::custom_rule::builtin_gaps).
+fn with_attribute_template_variables(
+    invocation: &crate::custom_rule::CustomInvocation,
+    dependencies: &BTreeMap<String, DependencyTarget>,
+) -> crate::ctx_surface::CtxSurface {
+    let mut surface = (*invocation.surface).clone();
+    let mut from_attributes = Vec::new();
+    for (name, late_bound) in [
+        ("_cc_toolchain", true),
+        ("_toolchains", false),
+        ("_cc_toolchain", false),
+    ] {
+        let Some(spec) = invocation.schema.get(name) else {
+            continue;
+        };
+        if spec.declaration.late_bound != late_bound {
+            continue;
+        }
+        let labels = match invocation.attrs.get(name) {
+            Some(AttrValue::Label(Some(label))) => vec![label.clone()],
+            Some(AttrValue::Labels(labels)) => labels.clone(),
+            _ => Vec::new(),
+        };
+        let exec = matches!(spec.declaration.cfg, crate::rule_declarations::Cfg::Exec(_));
+        for label in labels {
+            if let Some(variables) = dependencies
+                .get(&dependency_key(&label, exec))
+                .and_then(|target| {
+                    target
+                        .providers
+                        .get(crate::template_variable_info::PROVIDER_ID)
+                })
+                .and_then(|provider| crate::template_variable_info::variables(provider.value()))
+            {
+                from_attributes.push(variables);
+            }
+        }
+    }
+    from_attributes.append(&mut surface.template_variables);
+    surface.template_variables = from_attributes;
+    surface
+}
+
+/// The per-target facts of the N23c `ctx` members (crate::ctx_surface).
+fn rule_surface(
+    rule: &Rule,
+    invocation: &crate::custom_rule::CustomInvocation,
+    repositories: &RepositorySet,
+    dependencies: &BTreeMap<String, DependencyTarget>,
+) -> crate::ctx_surface::RuleSurface {
+    let label = crate::rule_declarations::canonical_form(&rule.label);
+    crate::ctx_surface::RuleSurface {
+        config: Arc::new(with_attribute_template_variables(invocation, dependencies)),
+        rule_class: invocation.declaration.rule_class.clone(),
+        label: rule.label.clone(),
+        declared_fragments: invocation.declaration.fragments.clone(),
+        target_description: format!("{} rule {label}", invocation.declaration.rule_class),
+        has_alwayslink_attribute: invocation.schema.contains_key("alwayslink"),
+        split_transition_attribute: invocation.schema.values().any(|spec| {
+            matches!(
+                spec.declaration.cfg,
+                crate::rule_declarations::Cfg::Starlark { .. }
+            )
+        }),
+        mapping: repositories
+            .mapping(&rule.label.repository)
+            .cloned()
+            .unwrap_or_default(),
+        errors: Default::default(),
     }
 }
 
@@ -1194,6 +1275,7 @@ fn analyze_inner(
             }))
         })
         .transpose()?;
+    let surface = Arc::new(rule_surface(rule, invocation, &repositories, dependencies));
     let context = Context {
         label: rule.label.clone(),
         output_root: target.output_root.to_owned(),
@@ -1242,7 +1324,7 @@ fn analyze_inner(
     }
     let (files, providers, provider_files, provider_keys, target_runfiles) =
         Module::with_temp_heap(|module| -> anyhow::Result<_> {
-            let ctx = make_ctx(rule, &context, dependencies, module.heap())?;
+            let ctx = make_ctx(rule, &context, dependencies, module.heap(), surface.clone())?;
             // Bazel's implicit DefaultInfo includes only predeclared outputs.
             let predeclared = context.declared.borrow().clone();
             let mut eval = Evaluator::new(&module);
@@ -1258,6 +1340,19 @@ fn analyze_inner(
             // on both successful callback return and ordinary evaluation error.
             context.scope.finish();
             context.active.store(false, Ordering::Release);
+            // Attribute and rule errors reported during the implementation
+            // (ctx.expand_make_variables, ctx.expand_location) fail the target
+            // after it returns (StarlarkRuleConfiguredTargetUtil.buildRule
+            // checks RuleContext.hasErrors), reported before an evaluation error.
+            let reported = surface.take_errors();
+            if !reported.is_empty() {
+                let mut message = reported.join("\n");
+                if let Err(error) = &returned {
+                    message.push('\n');
+                    message.push_str(&error.to_string());
+                }
+                bail!("{message}");
+            }
             let returned = returned.map_err(|error| anyhow!(error.to_string()))?;
             check_return_shape(returned)?;
             let returned_default = crate::starlark_types::returned_default_info(returned)?;

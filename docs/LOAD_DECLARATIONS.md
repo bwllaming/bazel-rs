@@ -231,9 +231,9 @@ A target fails analysis with the message above if it uses any of these:
 `toolchains` and `exec_compatible_with` drive toolchain resolution
 (docs/TOOLCHAINS.md).
 
-Accepted, kept, and with no effect on analysis: `fragments`,
-`host_fragments` (`ctx.fragments` is not available, so reading it is an
-explicit attribute error), `doc`, `extendable`, `for_dependency_resolution`,
+`fragments` decides which configuration fragments `ctx.fragments` may
+read (docs/CTX_SURFACE.md). Accepted, kept, and with no effect on analysis:
+`host_fragments` (ignored by Bazel 9.3 too), `doc`, `extendable`, `for_dependency_resolution`,
 `subrules` (existing behavior), `provides` (checked).
 
 ## Remaining explicit boundaries

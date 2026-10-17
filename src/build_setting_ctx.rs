@@ -8,6 +8,7 @@ pub(crate) fn wrap<'v>(
     backing: Value<'v>,
     value: SettingValue,
     scope: ScopeHandle,
+    surface: std::sync::Arc<crate::ctx_surface::RuleSurface>,
 ) -> Value<'v> {
     crate::analysis_ctx::alloc_rule(
         heap,
@@ -16,6 +17,7 @@ pub(crate) fn wrap<'v>(
         Some(value),
         crate::platforms::TargetPlatform::Absent,
         None,
+        surface,
     )
 }
 
@@ -50,6 +52,7 @@ mod tests {
                     backing,
                     SettingValue::StringList(vec!["seed".to_owned()]),
                     scope.root(),
+                    Default::default(),
                 ),
             );
             let globals = GlobalsBuilder::extended_by(&[LibraryExtension::StructType]).build();
@@ -81,6 +84,7 @@ mod tests {
                     backing,
                     SettingValue::StringList(vec!["seed".to_owned()]),
                     scope.root(),
+                    Default::default(),
                 ),
             );
             assert!(module.freeze().is_err());

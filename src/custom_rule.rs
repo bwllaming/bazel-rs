@@ -296,6 +296,10 @@ pub struct InvocationDeclaration {
     /// `rule(toolchains = ...)`: canonical type labels and `mandatory`, in
     /// declaration order (RuleClass.getToolchainTypes).
     pub toolchain_types: Vec<(String, bool)>,
+    /// `rule(fragments = [...])` (ConfigurationFragmentPolicy,
+    /// StarlarkRuleClassFunctions.java:1051-1052): the fragments
+    /// `ctx.fragments` may access besides the universal ones.
+    pub fragments: Vec<String>,
     /// `rule(exec_compatible_with = ...)` canonical labels
     /// (RuleClass.getExecutionPlatformConstraints).
     pub exec_compatible_with: Vec<String>,
@@ -361,6 +365,9 @@ pub struct CppConfigurationView {
     /// The no-config configuration has no configuration fragments at all
     /// (CommonOptions.EMPTY_OPTIONS, analysis/config/CommonOptions.java:32-42).
     pub no_fragments: bool,
+    /// An exec configuration: the exec transition appends `-g0` to `--copt`
+    /// and `--cxxopt` on non-Windows hosts (builtin_exec_platforms.bzl:341-342).
+    pub exec: bool,
 }
 
 impl Default for CppConfigurationView {
@@ -370,6 +377,7 @@ impl Default for CppConfigurationView {
             strip: "sometimes",
             force_pic: false,
             no_fragments: false,
+            exec: false,
         }
     }
 }
@@ -381,6 +389,7 @@ impl CppConfigurationView {
             strip: native.strip,
             force_pic: native.force_pic,
             no_fragments: native.no_config,
+            exec: native.is_exec,
         }
     }
 
@@ -407,6 +416,9 @@ pub struct CustomInvocation {
     /// The configuration's C++ options for `subrule_ctx.fragments.cpp`, set by
     /// crate::engine before analysis.
     pub cpp: CppConfigurationView,
+    /// The configuration facts of the N23c `ctx` members, set by
+    /// crate::engine before analysis (crate::ctx_surface).
+    pub surface: std::sync::Arc<crate::ctx_surface::CtxSurface>,
     pub implementation: OwnedFrozenValue,
     /// Strong frozen roots for direct declarations, including factory closures.
     pub subrules: Vec<OwnedFrozenValue>,
@@ -1546,6 +1558,7 @@ mod values {
                     transition_gaps,
                     toolchain_gaps,
                     toolchain_types: self.declaration.toolchains.clone(),
+                    fragments: self.declaration.fragments.clone(),
                     exec_compatible_with: self.declaration.exec_compatible_with.clone(),
                     definition_label: self.declaration.definition_label.clone(),
                     definition_environment_label: self

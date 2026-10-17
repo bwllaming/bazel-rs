@@ -4500,6 +4500,79 @@ impl Engine {
             })
     }
 
+    /// The configuration facts of the N23c `ctx` members of `rule` analyzed
+    /// in `config` (crate::ctx_surface).
+    fn ctx_surface(
+        &self,
+        rule: &Rule,
+        config: ConfigId,
+        output_root: &str,
+        target_platform: crate::platforms::TargetPlatform,
+        template_variables: Vec<Vec<(String, String)>>,
+    ) -> crate::ctx_surface::CtxSurface {
+        use crate::ctx_surface::FeatureSet;
+        let configuration = self.configurations.get(config);
+        let native = &configuration.native;
+        // RuleContext.computeFeatures (analysis/RuleContext.java:268-276): the
+        // package's features, then the rule's `features`, under the
+        // configuration's (`--features`/`--host_features`, rejected natively).
+        let package = self
+            .packages
+            .get(&rule.label.package_id())
+            .map(|package| package.args.features.clone())
+            .unwrap_or_default();
+        let own = rule
+            .custom
+            .as_ref()
+            .and_then(|custom| custom.declaration.builtin.target.attrs.get("features"))
+            .map(|value| match value {
+                crate::custom_rule::AttrValue::Strings(features) => {
+                    FeatureSet::parse(features.iter().map(String::as_str))
+                }
+                _ => FeatureSet::default(),
+            })
+            .unwrap_or_default();
+        let features = FeatureSet::merge_with_global(
+            &FeatureSet::merge(&package, &own),
+            &FeatureSet::default(),
+        );
+        // Package.Metadata buildFilename relative to the source root: the
+        // package path and the BUILD file name of the rule's location.
+        let build_file = rule
+            .location
+            .as_deref()
+            .and_then(|location| {
+                let path = location.rsplitn(3, ':').nth(2)?;
+                Path::new(path).file_name()?.to_str().map(str::to_owned)
+            })
+            .unwrap_or_else(|| "BUILD".to_owned());
+        let build_file_path = if rule.label.package.is_empty() {
+            build_file
+        } else {
+            format!("{}/{build_file}", rule.label.package)
+        };
+        crate::ctx_surface::CtxSurface {
+            bin_dir: output_root.to_owned(),
+            compilation_mode: native.compilation_mode,
+            defines: native.define.clone(),
+            is_exec: native.is_exec,
+            no_config: native.no_config,
+            stamp: native.stamp,
+            platforms: if native.platforms.is_empty() {
+                vec![native.host_platform.clone()]
+            } else {
+                native.platforms.clone()
+            },
+            host_platform: native.host_platform.clone(),
+            short_id: configuration.id.to_string()[..7].to_owned(),
+            cpp: crate::custom_rule::CppConfigurationView::of(native),
+            target_platform,
+            template_variables,
+            features,
+            build_file_path,
+        }
+    }
+
     /// The testonly error of [`Self::validate_prerequisite`] (`None` when
     /// valid); deprecation warnings are recorded. `dependency` is the end of
     /// an alias chain and `description` its describeTargetWithAliases text.
@@ -4927,10 +5000,26 @@ impl Engine {
                 // with ConfiguredTargetFunction.java:348-366: the
                 // ToolchainInfo of each resolved implementation (through
                 // an alias), else TargetNotToolchainException.
+                let mut template_variables = Vec::new();
                 custom.toolchains = if uses_toolchains {
                     let mut toolchains = BTreeMap::new();
                     let mut requested = Vec::new();
                     if let Some(context) = self.toolchain_contexts.get(&key) {
+                        for (_, implementation) in &context.resolved {
+                            // ResolvedToolchainContext.load (analysis/ResolvedToolchainContext.java:56-85):
+                            // the resolved toolchains' TemplateVariableInfo (`ctx.var`).
+                            if let Some(variables) = custom_providers
+                                .get(&dependency_key(implementation.clone()))
+                                .and_then(|providers| {
+                                    providers.get(crate::template_variable_info::PROVIDER_ID)
+                                })
+                                .and_then(|provider| {
+                                    crate::template_variable_info::variables(provider.value())
+                                })
+                            {
+                                template_variables.push(variables);
+                            }
+                        }
                         for (info, implementation) in &context.resolved {
                             let Some(provider) = custom_providers
                                 .get(&dependency_key(implementation.clone()))
@@ -4995,6 +5084,21 @@ impl Engine {
                 } else {
                     None
                 };
+                // The configured target's own key and configuration (an
+                // exec, no-config or Starlark-transitioned configuration
+                // included), never a build-global one.
+                custom.surface = Arc::new(self.ctx_surface(
+                    rule,
+                    config,
+                    &output_root,
+                    match self.platforms.get(&target) {
+                        Some(Ok(platform)) => {
+                            crate::platforms::TargetPlatform::Resolved(platform.clone())
+                        }
+                        _ => crate::platforms::TargetPlatform::Deferred,
+                    },
+                    template_variables,
+                ));
             }
             // print() output of a discarded attempt is dropped: Bazel
             // runs the implementation once, after its target platform is
@@ -5016,7 +5120,19 @@ impl Engine {
                 // The target's own configuration's target platform.
                 let platform = self.target_platform(config, configured, &mut Vec::new())?;
                 if let Some(custom) = analyzed_rule.custom.as_mut() {
-                    custom.target_platform = crate::platforms::TargetPlatform::Resolved(platform);
+                    // A rule without toolchain resolution keeps its absent
+                    // platform (ctx.target_platform_has_constraint); the
+                    // configuration's platform serves `$(TARGET_CPU)`.
+                    if matches!(
+                        custom.target_platform,
+                        crate::platforms::TargetPlatform::Deferred
+                    ) {
+                        custom.target_platform =
+                            crate::platforms::TargetPlatform::Resolved(platform.clone());
+                    }
+                    let mut surface = (*custom.surface).clone();
+                    surface.target_platform = crate::platforms::TargetPlatform::Resolved(platform);
+                    custom.surface = Arc::new(surface);
                 }
                 (analyzed, printed) = analysis::analyze_buffered(
                     &analyzed_rule,

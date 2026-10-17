@@ -173,6 +173,9 @@ host-path reads only for repository-rule-generated repositories such as
 [Runfiles](docs/RUNFILES.md) cover the analysis of `runfiles`, `ctx.runfiles`,
 DefaultInfo runfiles/executables, FilesToRunProvider and executable/test rules
 (no runfiles trees or manifest actions yet).
+[The rule context surface](docs/CTX_SURFACE.md) gives `ctx` Bazel's 36 members:
+`ctx.fragments` with configuration fragments, `ctx.configuration`, output roots,
+`ctx.var` and Make-variable expansion, with unmodelled members failing explicitly.
 [Local repository metadata](docs/LOCAL_REPOSITORIES.md) retains the local flag and
 provides the compatibility version only in MODULE-loaded native bindings.
 [Extension introspection](docs/EXISTING_RULES.md) enforces active-callback phase

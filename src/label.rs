@@ -41,7 +41,7 @@ pub struct PackageId {
     pub package: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Label {
     /// Canonical repository name; empty for the main repository.
     pub repository: String,

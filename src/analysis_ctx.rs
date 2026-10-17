@@ -14,6 +14,7 @@ use std::fmt;
 use crate::analysis_runtime::ScopeHandle;
 use crate::configuration::SettingValue;
 
+use crate::ctx_surface::RuleSurface;
 use crate::platforms::TargetPlatform;
 use crate::toolchain_info::ToolchainContextData;
 use std::sync::Arc;
@@ -40,6 +41,11 @@ mod values {
         #[allocative(skip)]
         #[trace(static)]
         pub toolchains: Option<Arc<ToolchainContextData>>,
+        /// The configuration and rule facts of the N23c members
+        /// (crate::ctx_surface).
+        #[allocative(skip)]
+        #[trace(static)]
+        pub surface: Arc<RuleSurface>,
     }
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
     pub(super) struct SettingCtx<'v> {
@@ -119,20 +125,83 @@ impl fmt::Display for SubruleCtx<'_> {
     }
 }
 
-starlark::methods_static!(RULE_METHODS = rule_properties);
+starlark::methods_static!(RULE_METHODS = all_rule_properties);
 starlark::methods_static!(SETTING_METHODS = all_setting_properties);
 starlark::methods_static!(SUBRULE_METHODS = subrule_properties);
 
+/// The StarlarkRuleContextApi members (dir order, 36 in Bazel 9.3).
+const CTX_MEMBERS: [&str; 36] = [
+    "actions",
+    "aspect_ids",
+    "attr",
+    "bin_dir",
+    "build_file_path",
+    "build_setting_value",
+    "check_placeholders",
+    "configuration",
+    "coverage_instrumented",
+    "created_actions",
+    "disabled_features",
+    "exec_groups",
+    "executable",
+    "expand_location",
+    "expand_make_variables",
+    "features",
+    "file",
+    "files",
+    "fragments",
+    "genfiles_dir",
+    "info_file",
+    "label",
+    "outputs",
+    "package_relative_label",
+    "resolve_command",
+    "resolve_tools",
+    "rule",
+    "runfiles",
+    "split_attr",
+    "super",
+    "target_platform_has_constraint",
+    "tokenize",
+    "toolchains",
+    "var",
+    "version_file",
+    "workspace_name",
+];
+
+fn unknown_ctx_member(name: &str) -> String {
+    let fields = CTX_MEMBERS.map(str::to_owned);
+    crate::ctx_surface::no_field_message("ctx", name, &fields)
+}
+
 #[starlark_value(type = "ctx")]
 impl<'v> StarlarkValue<'v> for RuleCtx<'v> {
+    fn get_attr(&self, name: &str, heap: Heap<'v>) -> Option<Value<'v>> {
+        crate::ctx_surface::ctx_super(name, heap)
+    }
+    fn dir_attr(&self) -> Vec<String> {
+        vec!["super".to_owned()]
+    }
     fn get_methods() -> Option<&'static Methods> {
         Some(RULE_METHODS.methods())
+    }
+    fn unknown_attribute_message(&self, name: &str) -> Option<String> {
+        Some(unknown_ctx_member(name))
     }
 }
 #[starlark_value(type = "ctx")]
 impl<'v> StarlarkValue<'v> for SettingCtx<'v> {
+    fn get_attr(&self, name: &str, heap: Heap<'v>) -> Option<Value<'v>> {
+        crate::ctx_surface::ctx_super(name, heap)
+    }
+    fn dir_attr(&self) -> Vec<String> {
+        vec!["super".to_owned()]
+    }
     fn get_methods() -> Option<&'static Methods> {
         Some(SETTING_METHODS.methods())
+    }
+    fn unknown_attribute_message(&self, name: &str) -> Option<String> {
+        Some(unknown_ctx_member(name))
     }
 }
 #[starlark_value(type = "subrule_ctx")]
@@ -267,7 +336,27 @@ fn rule_ctx<'v>(this: Value<'v>) -> anyhow::Result<&'v RuleCtx<'v>> {
 
 fn all_setting_properties(builder: &mut MethodsBuilder) {
     rule_properties(builder);
+    crate::analysis_ctx_surface::surface_properties(builder);
     setting_properties(builder);
+}
+
+fn all_rule_properties(builder: &mut MethodsBuilder) {
+    rule_properties(builder);
+    crate::analysis_ctx_surface::surface_properties(builder);
+    crate::analysis_ctx_surface::non_setting_properties(builder);
+}
+
+/// The rule surface of a rule context value (ObjcConfiguration's `ctx` argument).
+pub(crate) fn rule_surface<'v>(value: Value<'v>) -> Option<&'v RuleSurface> {
+    rule_ctx(value).ok().map(|ctx| &*ctx.surface)
+}
+
+/// The current rule context's surface, after the scope check
+/// (StarlarkRuleContext.checkMutable).
+pub(crate) fn current_surface<'v>(value: Value<'v>) -> anyhow::Result<&'v Arc<RuleSurface>> {
+    let ctx = rule_ctx(value)?;
+    ctx.scope.check_current()?;
+    Ok(&ctx.surface)
 }
 
 #[starlark_module]
@@ -336,12 +425,14 @@ pub(crate) fn alloc_rule<'v>(
     value: Option<SettingValue>,
     platform: TargetPlatform,
     toolchains: Option<Arc<ToolchainContextData>>,
+    surface: Arc<RuleSurface>,
 ) -> Value<'v> {
     let ctx = RuleCtx {
         backing,
         scope,
         platform,
         toolchains,
+        surface,
     };
     match value {
         Some(value) => heap.alloc_complex_no_freeze(SettingCtx { ctx, value }),
@@ -377,6 +468,25 @@ mod tests {
     use starlark::syntax::{AstModule, Dialect};
     use starlark::values::structs::AllocStruct;
     use std::collections::BTreeSet;
+
+    /// Methods bind without reading the context.
+    fn is_method(name: &str) -> bool {
+        matches!(
+            name,
+            "target_platform_has_constraint"
+                | "runfiles"
+                | "coverage_instrumented"
+                | "expand_make_variables"
+                | "expand_location"
+                | "tokenize"
+                | "check_placeholders"
+                | "package_relative_label"
+                | "resolve_command"
+                | "resolve_tools"
+                | "created_actions"
+                | "super"
+        )
+    }
 
     #[test]
     fn native_rule_and_setting_properties_guard_reads_not_introspection() {
@@ -418,34 +528,24 @@ mod tests {
                     setting.then(|| SettingValue::StringList(vec!["seed".into()])),
                     TargetPlatform::Absent,
                     None,
+                    Default::default(),
                 );
                 module.set("ctx", ctx);
-                let mut expected = vec![
-                    "actions",
-                    "attr",
-                    "executable",
-                    "file",
-                    "files",
-                    "label",
-                    "outputs",
-                    "runfiles",
-                    "target_platform_has_constraint",
-                    "toolchains",
-                ];
-                if setting {
-                    expected.push("build_setting_value");
-                }
-                expected.sort();
+                // Every StarlarkRuleContext member of Bazel 9.3 (dir(ctx)).
+                let expected = CTX_MEMBERS.to_vec();
                 assert_eq!(ctx.dir_attr(), expected);
-                for name in &expected {
+                // Members whose read fails in every rule context (aspect-only,
+                // unmodelled, or a build setting's value of a non-setting).
+                let failing = |name: &str| {
+                    matches!(name, "aspect_ids" | "rule" | "info_file" | "version_file")
+                        || (!setting && name == "build_setting_value")
+                };
+                for name in expected.iter().filter(|name| !failing(name)) {
                     ctx.get_attr_error(name, heap).unwrap();
                 }
                 let child = owner.enter("S".into(), BTreeSet::new()).unwrap();
                 // Methods bind without reading; properties guard the read.
-                for name in expected
-                    .iter()
-                    .filter(|name| !matches!(**name, "target_platform_has_constraint" | "runfiles"))
-                {
+                for name in expected.iter().filter(|name| !is_method(name)) {
                     let error = ctx.get_attr_error(name, heap).unwrap_err();
                     assert!(
                         error.to_string().contains("scope receiver"),
@@ -472,10 +572,7 @@ mod tests {
                     Some("//:target")
                 );
                 owner.finish();
-                for name in expected
-                    .iter()
-                    .filter(|name| !matches!(**name, "target_platform_has_constraint" | "runfiles"))
-                {
+                for name in expected.iter().filter(|name| !is_method(name)) {
                     assert!(ctx.get_attr_error(name, heap).is_err());
                 }
             });
@@ -497,6 +594,7 @@ mod tests {
                         None,
                         TargetPlatform::Absent,
                         None,
+                        Default::default(),
                     ),
                     "subrule" => alloc_subrule(
                         heap,

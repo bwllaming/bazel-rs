@@ -287,6 +287,9 @@ fn collection_methods(builder: &mut MethodsBuilder) {
 /// `hasattr`/`dir` never call attribute getters, so the `.bzl` globals route
 /// these two builtins through here first.
 fn structure_hasattr(value: Value<'_>, name: &str) -> Option<anyhow::Result<bool>> {
+    if let Some(result) = crate::ctx_surface::fragments_hasattr(value, name) {
+        return Some(result);
+    }
     value.downcast_ref::<FragmentCollection>()?;
     Some((|| {
         let collection = collection(value)?;
@@ -300,6 +303,9 @@ fn structure_hasattr(value: Value<'_>, name: &str) -> Option<anyhow::Result<bool
 }
 
 fn structure_dir(value: Value<'_>) -> Option<Vec<String>> {
+    if let Some(names) = crate::ctx_surface::fragments_dir(value) {
+        return Some(names);
+    }
     let collection = value.downcast_ref::<FragmentCollection>()?;
     let mut names = collection.declared.clone();
     names.sort();
@@ -354,11 +360,23 @@ fn receiver<'v>(this: Value<'v>) -> anyhow::Result<&'v CppFragment> {
 
 /// The immutable empty list Bazel returns for an empty ImmutableList member
 /// (Starlark.fromJava: StarlarkList.immutableCopyOf).
-fn empty_list<'v>() -> Value<'v> {
+pub(crate) fn empty_list<'v>() -> Value<'v> {
     static EMPTY: OnceLock<(FrozenHeapRef, FrozenValue)> = OnceLock::new();
     let (_, value) = EMPTY.get_or_init(|| {
         let heap = FrozenHeap::new();
         let value = heap.alloc(starlark::values::list::AllocList::EMPTY);
+        (heap.into_ref(), value)
+    });
+    value.to_value()
+}
+
+/// The immutable `["-g0"]` of an exec configuration's `--copt`/`--cxxopt`
+/// (builtin_exec_platforms.bzl:341-342 on non-Windows hosts).
+fn exec_g0<'v>() -> Value<'v> {
+    static G0: OnceLock<(FrozenHeapRef, FrozenValue)> = OnceLock::new();
+    let (_, value) = G0.get_or_init(|| {
+        let heap = FrozenHeap::new();
+        let value = heap.alloc(starlark::values::list::AllocList(["-g0"]));
         (heap.into_ref(), value)
     });
     value.to_value()
@@ -414,8 +432,11 @@ fn cpp_methods(builder: &mut MethodsBuilder) {
     /// CppConfiguration.java:292, 515-527; --copt, --experimental_omitfp default false.
     #[starlark(attribute)]
     fn copts<'v>(this: Value<'v>) -> anyhow::Result<Value<'v>> {
-        receiver(this)?;
-        Ok(empty_list())
+        Ok(if receiver(this)?.view.exec {
+            exec_g0()
+        } else {
+            empty_list()
+        })
     }
     /// CppConfiguration.java:637-646; --cs_fdo_instrument default null.
     fn cs_fdo_instrument<'v>(
@@ -444,8 +465,11 @@ fn cpp_methods(builder: &mut MethodsBuilder) {
     /// CppConfiguration.java:293, 529-531; --cxxopt.
     #[starlark(attribute)]
     fn cxxopts<'v>(this: Value<'v>) -> anyhow::Result<Value<'v>> {
-        receiver(this)?;
-        Ok(empty_list())
+        Ok(if receiver(this)?.view.exec {
+            exec_g0()
+        } else {
+            empty_list()
+        })
     }
     /// CppConfiguration.java:799-807; --incompatible_disable_nocopts default true.
     fn disable_nocopts<'v>(
@@ -757,6 +781,11 @@ fn cpp_methods(builder: &mut MethodsBuilder) {
         private_api(eval)?;
         Ok(false)
     }
+}
+
+/// A `cpp` fragment of the given configuration (rule `ctx.fragments.cpp`).
+pub(crate) fn alloc_cpp(heap: Heap<'_>, view: CppConfigurationView) -> Value<'_> {
+    heap.alloc(CppFragment { view })
 }
 
 /// A fresh `subrule_ctx.fragments` for one subrule invocation.

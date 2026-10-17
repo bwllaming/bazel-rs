@@ -219,15 +219,14 @@ interpreter no-field wording for runfiles/SymlinkEntry/DefaultInfo values,
 positional/keyword argument wording (`merge(other=)`, `DefaultInfo(x)`,
 `attr.label_list(executable=)`), `ctx.actions.symlink` (N23d at the time;
 implemented since, docs/ACTIONS_PARAMS.md), the provider
-type/repr of `DefaultInfo` (N22), `dir(ctx)` (N23c members), and the explicit
+type/repr of `DefaultInfo` (N22), `dir(ctx)` (at the time; N23c now has
+Bazel's 36 members), and the explicit
 `args`, `run_lazy`/`run_provider` and source-listing differences described
 below. No mismatch concerns runfiles content, order, identity or the
 DefaultInfo target view.
 
 ## Not covered (explicit or documented)
 
-`ctx.workspace_name`
-(N23c) and the other ctx members (Bazel's `dir(ctx)` has 36 names, native 10),
 runfiles trees, MANIFEST/`_repo_mapping`/`.repo_mapping` files and their actions
 (N23f), runfiles attached to actions (N23f), test-runner implicit dependencies,
 `args` tokenization and `bazel test`/`run` (N23g), the nested-set depth-limit message,

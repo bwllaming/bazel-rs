@@ -60,6 +60,11 @@ pub fn is_constructor(value: Value<'_>) -> bool {
     Constructor::from_value(value).is_some()
 }
 
+/// The variables of a TemplateVariableInfo instance, in order (`ctx.var`).
+pub(crate) fn variables(value: Value<'_>) -> Option<Vec<(String, String)>> {
+    TemplateVariableInfo::from_value(value).map(|info| info.variables.clone())
+}
+
 pub fn is_instance(value: Value<'_>) -> bool {
     TemplateVariableInfo::from_value(value).is_some()
 }

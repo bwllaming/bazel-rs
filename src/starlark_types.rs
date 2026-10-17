@@ -381,6 +381,25 @@ pub fn alloc_label<'v>(heap: Heap<'v>, canonical: &str) -> anyhow::Result<Value<
     Ok(heap.alloc(LabelValue::parse(canonical)?))
 }
 
+/// An empty `preorder` depset of strings (e.g. JavaConfiguration
+/// `default_javac_flags_depset`, rules/java/JavaConfiguration.java).
+pub(crate) fn empty_preorder_string_depset<'v>(heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+    Ok(heap.alloc(Depset::compose(
+        Vec::new(),
+        Vec::new(),
+        Order::Preorder,
+        Some(ItemType::String),
+    )?))
+}
+
+/// [`alloc_label`] on a frozen heap (immutable containers of labels).
+pub(crate) fn alloc_frozen_label(
+    heap: &starlark::values::FrozenHeap,
+    canonical: &str,
+) -> anyhow::Result<starlark::values::FrozenValue> {
+    Ok(heap.alloc(LabelValue::parse(canonical)?))
+}
+
 #[starlark_value(type = "Label")]
 impl<'v> StarlarkValue<'v> for LabelValue {
     /// Label.str (cmdline/Label.java:740-754) under Bazel 9.3's default

@@ -163,7 +163,10 @@ pub struct PackageArgs {
     pub default_visibility: Option<Visibility>,
     pub default_testonly: Option<bool>,
     pub default_deprecation: Option<String>,
-    pub features: Vec<String>,
+    /// PackageArgs.features: a FeatureSet merged layer by layer, the finer
+    /// (later) layer winning (PackageArgs.java:126-129, 175-177, 220-222;
+    /// FeatureSet.merge, packages/FeatureSet.java:83-90).
+    pub features: crate::ctx_surface::FeatureSet,
     pub license: Option<Vec<String>>,
     pub default_compatible_with: Option<Vec<Label>>,
     pub default_restricted_to: Option<Vec<Label>>,
@@ -183,11 +186,10 @@ impl PackageArgs {
         if other.default_deprecation.is_some() {
             self.default_deprecation = other.default_deprecation;
         }
-        // FeatureSet.merge keeps both sets (PackageArgs.java:220-222).
-        for feature in other.features {
-            if !self.features.contains(&feature) {
-                self.features.push(feature);
-            }
+        // PackageArgs.mergeWith (PackageArgs.java:220-222): FeatureSet.merge,
+        // the package() layer over the REPO.bazel layer.
+        if other.features != crate::ctx_surface::FeatureSet::default() {
+            self.features = crate::ctx_surface::FeatureSet::merge(&self.features, &other.features);
         }
         if other.license.is_some() {
             self.license = other.license;
@@ -1478,11 +1480,11 @@ fn process_package_arg(
             let AttrValue::Strings(features) = convert(NativeType::StringList)? else {
                 unreachable!("string list conversion")
             };
-            for feature in features {
-                if !args.features.contains(&feature) {
-                    args.features.push(feature);
-                }
-            }
+            // Builder.mergeFeatures(FeatureSet.parse(...)) (PackageArgs.java:175-177).
+            args.features = crate::ctx_surface::FeatureSet::merge(
+                &args.features,
+                &crate::ctx_surface::FeatureSet::parse(features.iter().map(String::as_str)),
+            );
         }
         "licenses" => {
             args.license = Some(crate::native_rules::convert_license(value, what)?);
@@ -2029,6 +2031,7 @@ fn evaluate_at(
             target_platform: crate::platforms::TargetPlatform::Absent,
             toolchains: None,
             cpp: Default::default(),
+            surface: Default::default(),
             declaration: pending.declaration,
         });
     }

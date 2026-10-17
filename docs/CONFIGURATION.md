@@ -397,10 +397,9 @@ platform), so its outputs cannot collide, and action cache keys differ by
 the configuration (`LABEL[CONFIG8]`).
 
 **Remaining exec divergences (paired capture, tests/fixtures/exec_transition/reference_receipt.json):**
-the CPU token `rust` where Bazel writes `k8` (D1); `ctx.bin_dir`,
-`ctx.genfiles_dir`, `ctx.var` and `File.root` are absent (interpreter
-`has no attribute` errors; N23c — adding them as erroring attributes would
-change `dir(ctx)`); the CLI lists source files among a target's outputs
+the CPU token `rust` where Bazel writes `k8` (D1, also in `ctx.bin_dir`,
+`ctx.genfiles_dir` and `ctx.var`, docs/CTX_SURFACE.md); `File.root` is
+absent; the CLI lists source files among a target's outputs
 where Bazel's `--show_result` omits them; action reuse after another
 configuration's build: Bazel's output tree is path-keyed, so an action whose
 `bazel-out` output another build overwrote is re-run, while native outputs
@@ -1154,12 +1153,11 @@ documented divergences:
 * `dict | select(...)` (dict on the left) and Starlark binary-operator error
   wording (`Operation ... not supported` versus `unsupported binary
   operation: X op Y`) come from the vendored interpreter.
-* `ctx.var`, `ctx.bin_dir` and `ctx.fragments` are absent from the native
-  rule `ctx` (pre-existing, N23c); in the no-config configuration Bazel's
-  `ctx.var["COMPILATION_MODE"]` is `fastbuild`, `ctx.bin_dir.path`
-  `bazel-out/fastbuild-noconfig/bin` and `ctx.fragments.cpp` fails with
-  `There is no configuration fragment named 'cpp'. Available fragments: ''`
-  (paired capture N28 B4/p_var, p_bindir, p_cpp).
+* In the no-config configuration `ctx.var["COMPILATION_MODE"]` is
+  `fastbuild`, `ctx.bin_dir.path` `bazel-out/fastbuild-noconfig/bin` and
+  `ctx.fragments.cpp` fails with `There is no configuration fragment named
+  'cpp'. Available fragments: ''` on both sides (paired capture N28
+  B4/p_var, p_bindir, p_cpp; implemented by N23c, docs/CTX_SURFACE.md).
 * The CLI lists source files of a source-only filegroup; Bazel prints
   `(nothing to build)`.
 * Starlark-level locations (load-time conversion errors, `fail()` in a rule

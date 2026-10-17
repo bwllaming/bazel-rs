@@ -1084,7 +1084,7 @@ Outer = subrule(implementation=outer, subrules=deps)
 deps.clear()
 declared = [Outer]
 def impl(ctx):
-    (dir(ctx) == ['actions', 'attr', 'executable', 'file', 'files', 'label', 'outputs', 'runfiles', 'target_platform_has_constraint', 'toolchains']) or fail('rule fields')
+    (len(dir(ctx)) == 36 and 'fragments' in dir(ctx) and 'toolchains' in dir(ctx)) or fail('rule fields')
     p = Outer()
     (p.owner == ctx.label) or fail('wrong owner')
     return [p, DefaultInfo(files=depset([p.file]))]
