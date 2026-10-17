@@ -709,6 +709,8 @@ impl<'v> StarlarkValue<'v> for File {
                     String::new()
                 },
             }),
+            // Artifact.getOwnerLabel: null for workspace status artifacts.
+            "owner" if self.owner.is_empty() => Value::new_none(),
             "owner" => heap.alloc(
                 LabelValue::parse(&self.owner).expect("File owner must be an absolute valid label"),
             ),

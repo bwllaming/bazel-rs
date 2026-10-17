@@ -1,0 +1,79 @@
+{
+ "schema": "n54-small-fix-reference-receipt/v1",
+ "fixture": "workspace_status",
+ "purpose": "ctx.info_file / ctx.version_file (StarlarkRuleContext.java:994-1004): the owner-less bazel-out/{stable,volatile}-status.txt File values, their attributes and Args expansion; as an action input the workspace status action is not modelled natively.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "flags": "as artifacts/go_transitions-capture.py, without --host_platform"
+ },
+ "native": {
+  "binary": "target/debug/bazel-rs",
+  "sha256": "58601064a1ec306c4403bc30a6b81adfc58ecab6ceec29a2fb304063a31a4776",
+  "worktree": {
+   "base_commit": "51ce4ae8f6150f4037c74867ee2beb6f7d50d18e",
+   "src_diff_plus_untracked_sha256": "0602615284126b0fddd0475f2ff72b4c5c4df9b9d7aa380fd03f196a520beab8",
+   "untracked_src": []
+  }
+ },
+ "capture_script": {
+  "path": "artifacts/small-fixes-capture.py (ignored)",
+  "sha256": "a8eca3671ac2ba160233e3ed233e530a334c7a46619f59031a13c5608012029b",
+  "harness_sha256": "c6eaf955cb08ff8a4de4be36efe3911f0871bfbddecdf8e60296dca9828e2b98"
+ },
+ "fixture_tree_sha256": [
+  "7932998c7445ee372bca583860abe4476b63e04b5117e46a2ab96702b860642f",
+  2
+ ],
+ "verdicts": {
+  "EXACT_D1": "equal exit class; per target equal output paths and bytes after bazel-out/k8-<mode> -> rust-<mode>",
+  "EXPECTED_NATIVE_GAP": "genuine succeeds; native fails with the declared explicit message",
+  "MISMATCH": "anything else"
+ },
+ "scenarios": {
+  "O/outputs": {
+   "args": [],
+   "targets": [
+    "//ws:ws"
+   ],
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_seconds": 3.1,
+   "native_seconds": 0.3,
+   "rows": {
+    "//ws:ws": {
+     "verdict": "EXACT_D1",
+     "reference_paths": [
+      "bazel-out/k8-fastbuild/bin/ws/ws.args",
+      "bazel-out/k8-fastbuild/bin/ws/ws.txt"
+     ],
+     "native_paths": [
+      "bazel-out/rust-fastbuild/bin/ws/ws.args",
+      "bazel-out/rust-fastbuild/bin/ws/ws.txt"
+     ]
+    }
+   },
+   "label": "EXACT_D1"
+  },
+  "G///ws:ws_input": {
+   "target": "//ws:ws_input",
+   "declared_gap": "the workspace status action is not executed natively",
+   "reference_exit": 0,
+   "native_exit": 1,
+   "reference_outputs": [
+    [
+     "bazel-out/k8-fastbuild/bin/ws/ws_input.txt",
+     "1\n"
+    ]
+   ],
+   "native_stderr_tail": "bazel-rs: analysis of //ws:ws_input: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //ws:defs.bzl:26, in _ws_input_impl\n      ctx.actions.run_shell(\nerror: action input bazel-out/volatile-status.txt: workspace status artifacts (ctx.info_file/ctx.version_file) are not produced by the native profile\n  --> //ws:defs.bzl:26:5\n   |\n26 |       ctx.actions.run_shell(\n   |  _____^\n27 | |         outputs = [out],\n28 | |         inputs = [ctx.version_file],\n29 | |         command = \"grep -c BUILD_TIMESTAMP %s > %s\" % (ctx.version_file.path, out.path),\n30 | |     )\n   | |_____^\n   |\n\n",
+   "label": "EXPECTED_NATIVE_GAP"
+  }
+ },
+ "scratch_removed": true,
+ "counts": {
+  "EXACT_D1": 1,
+  "EXPECTED_NATIVE_GAP": 1
+ },
+ "post_capture_changes": "none to src after the capture; the native worktree hash covers both small fixes (ctx.info_file/version_file and provider payload files), committed as two consecutive commits on 51ce4ae"
+}

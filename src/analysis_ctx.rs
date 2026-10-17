@@ -581,7 +581,7 @@ mod tests {
                 // Members whose read fails in every rule context (aspect-only,
                 // unmodelled, or a build setting's value of a non-setting).
                 let failing = |name: &str| {
-                    matches!(name, "aspect_ids" | "rule" | "info_file" | "version_file")
+                    matches!(name, "aspect_ids" | "rule")
                         || (!setting && name == "build_setting_value")
                 };
                 // Without a toolchain collection ctx.exec_groups fails

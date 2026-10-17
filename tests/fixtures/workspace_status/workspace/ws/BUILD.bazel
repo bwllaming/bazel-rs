@@ -1,0 +1,5 @@
+load(":defs.bzl", "ws", "ws_input")
+
+ws(name = "ws")
+
+ws_input(name = "ws_input")

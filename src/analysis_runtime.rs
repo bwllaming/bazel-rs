@@ -84,6 +84,28 @@ impl LoadedFunctions {
     }
 }
 
+/// A workspace status artifact (BazelWorkspaceStatusModule.java:280-281):
+/// a derived artifact of the build-data root `bazel-out` without an owner
+/// label (WorkspaceStatusValue.BUILD_INFO_KEY).
+pub(crate) fn workspace_status_file(name: &str) -> File {
+    File {
+        path: format!("bazel-out/{name}"),
+        short_path: name.to_owned(),
+        owner: String::new(),
+        is_source: false,
+        is_directory: false,
+    }
+}
+
+pub(crate) fn is_workspace_status_file(file: &File) -> bool {
+    file.owner.is_empty()
+        && !file.is_source
+        && matches!(
+            file.path.as_str(),
+            "bazel-out/stable-status.txt" | "bazel-out/volatile-status.txt"
+        )
+}
+
 #[derive(Clone, Debug)]
 pub struct RegisteredAction {
     pub action: Action,
@@ -215,6 +237,9 @@ impl Context {
     }
 
     pub(crate) fn known_file(&self, file: &File) -> bool {
+        if is_workspace_status_file(file) {
+            return true;
+        }
         self.sync_default_executable();
         self.dependency_files.contains(file)
             || self.declared.borrow().contains(file)
@@ -297,6 +322,12 @@ impl Context {
             );
         }
         for input in &inputs {
+            if is_workspace_status_file(input) {
+                bail!(
+                    "action input {}: workspace status artifacts (ctx.info_file/ctx.version_file) are not produced by the native profile",
+                    input.path
+                );
+            }
             ensure!(
                 self.known_file(input),
                 "action input {} is not a dependency or declared output",

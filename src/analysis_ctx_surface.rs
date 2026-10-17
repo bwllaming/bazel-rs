@@ -167,19 +167,28 @@ pub(crate) fn surface_properties(builder: &mut MethodsBuilder) {
         surface::expand_location(rule, input, &entries, short_paths)
             .map_err(starlark::Error::new_other)
     }
-    /// StarlarkRuleContext.getStableWorkspaceStatus (:994-998).
+    /// StarlarkRuleContext.getStableWorkspaceStatus (:994-998): the
+    /// workspace status action's `bazel-out/stable-status.txt`
+    /// (SkyframeExecutor.java:1479-1486, an owner-less derived artifact of
+    /// the build-data root). Using it as an action input fails explicitly
+    /// (crate::analysis_runtime::workspace_status_gap).
     #[starlark(attribute)]
-    fn info_file<'v>(this: Value<'v>) -> anyhow::Result<NoneType> {
+    fn info_file<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
         current_surface(this)?;
-        bail!("ctx.info_file is not implemented by the native profile (workspace status artifacts)")
+        Ok(crate::starlark_types::alloc_file(
+            heap,
+            crate::analysis_runtime::workspace_status_file("stable-status.txt"),
+        ))
     }
-    /// StarlarkRuleContext.getVolatileWorkspaceStatus (:1000-1004).
+    /// StarlarkRuleContext.getVolatileWorkspaceStatus (:1000-1004):
+    /// `bazel-out/volatile-status.txt` (SkyframeExecutor.java:1488-1496).
     #[starlark(attribute)]
-    fn version_file<'v>(this: Value<'v>) -> anyhow::Result<NoneType> {
+    fn version_file<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
         current_surface(this)?;
-        bail!(
-            "ctx.version_file is not implemented by the native profile (workspace status artifacts)"
-        )
+        Ok(crate::starlark_types::alloc_file(
+            heap,
+            crate::analysis_runtime::workspace_status_file("volatile-status.txt"),
+        ))
     }
     /// StarlarkRuleContext.getFeatures (:776-780): an immutable list.
     #[starlark(attribute)]

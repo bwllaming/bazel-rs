@@ -229,7 +229,6 @@ fn workspace() -> Workspace {
         "make_subst",
         "exec_group",
         "tokenize",
-        "info_file",
         "location",
         "unknown_member",
         "android",
@@ -363,10 +362,6 @@ fn rule_context_errors_use_bazel_texts_or_fail_explicitly() {
         (
             "tokenize",
             "unterminated quotation while tokenizing ''unterminated'",
-        ),
-        (
-            "info_file",
-            "ctx.info_file is not implemented by the native profile",
         ),
         // N53: the location map of the rule (docs/MAKE_VARIABLES.md).
         (

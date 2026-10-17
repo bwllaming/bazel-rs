@@ -40,7 +40,8 @@ of every native configuration (for example `--features`, `--action_env`, `--test
 | `rule`, `aspect_ids` | `'X' is only available in aspect implementations`. |
 | `build_setting_value` | of a non-setting: `attempting to access 'build_setting_value' of non-build setting L`. |
 | `resolve_tools` | Bazel's `--incompatible_disallow_ctx_resolve_tools` error. |
-| `info_file`, `version_file`, `resolve_command` | **fail explicitly** (workspace status artifacts and command resolution are not modelled). |
+| `info_file`, `version_file` | the workspace status action's `bazel-out/stable-status.txt` / `bazel-out/volatile-status.txt` (`SkyframeExecutor.java:1479-1496`): generated Files without an owner (`owner` None, root `bazel-out`, short path the basename; tests/fixtures/workspace_status/reference_receipt.json); as an action input they fail explicitly (the workspace status action is not executed natively). |
+| `resolve_command` | **fails explicitly** (command resolution is not modelled). |
 
 Every configuration-derived member (`configuration`, `bin_dir`,
 `genfiles_dir`, `var`, `fragments`, `features`) is computed per configured
