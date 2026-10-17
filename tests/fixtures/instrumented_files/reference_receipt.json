@@ -1,0 +1,328 @@
+{
+ "schema": "n54-instrumented-files-reference-receipt/v1",
+ "purpose": "Paired native vs genuine Bazel 9.3.0 capture of coverage_common.instrumented_files_info and InstrumentedFilesInfo without --collect_code_coverage: the EMPTY instance (type, repr, dir, fields, equality), InstrumentedFilesInfo in/[] on Starlark, filegroup, genrule, output-file, alias and source targets, parameter validation and private-API texts, and coverage configurations from a Starlark transition (native gap). Evidence only.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "flags": "as artifacts/go_transitions-capture.py, without --host_platform"
+ },
+ "native": {
+  "binary": "target/debug/bazel-rs",
+  "sha256": "4970a29bdbdd11a2c1f6978e00a9a7344af1a15319efc9e09301631985771c6a",
+  "argv": "--ignore_all_rc_files --cache-dir=<private> build --experimental-builtin-modules --registry=<same registry copy>",
+  "worktree": {
+   "base_commit": "26c6ba78050d10796c00aff430a56048bf336bf7",
+   "src_diff_plus_untracked_sha256": "78e44537ae4403656b418d307b3f4c0a58dc660491997c8c46c4681c9a47abc2",
+   "untracked_src": [
+    "src/instrumented_files.rs"
+   ]
+  }
+ },
+ "capture_script": {
+  "path": "artifacts/instrumented_files-capture.py (ignored)",
+  "sha256": "98ff5e9e533adc8f5468425fcad954281f767d3d3907fbfab7c96c4e894c96b9",
+  "harness": "artifacts/go_transitions-capture.py",
+  "harness_sha256": "c6eaf955cb08ff8a4de4be36efe3911f0871bfbddecdf8e60296dca9828e2b98"
+ },
+ "fixture_tree_sha256": [
+  "c1585b486db285ea903caffbefe1b01d88107d99bd2071d7968851b955291eb4",
+  5
+ ],
+ "verdicts": {
+  "EXACT_D1": "equal exit class; per target equal output paths and bytes after bazel-out/k8-<mode> -> rust-<mode>",
+  "EXACT_MESSAGE": "Bazel's `Error in depset: MSG` equals the native `error: MSG`",
+  "EXPECTED_NATIVE_GAP": "genuine succeeds; native fails with the declared explicit message",
+  "MISMATCH": "anything else"
+ },
+ "declared_gaps": {
+  "cov": "instrumented files collection in a --collect_code_coverage configuration (instrumentation filter not modelled)",
+  "cov_p": "InstrumentedFilesInfo / coverage_instrumented in a --collect_code_coverage configuration"
+ },
+ "scenarios": {
+  "O/reports": {
+   "args": [],
+   "targets": [
+    "//inf:p"
+   ],
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_seconds": 3.8,
+   "native_seconds": 0.3,
+   "rows": {
+    "//inf:p": {
+     "verdict": "EXACT_D1",
+     "reference_paths": [
+      "bazel-out/k8-fastbuild/bin/inf/p.txt"
+     ],
+     "native_paths": [
+      "bazel-out/rust-fastbuild/bin/inf/p.txt"
+     ]
+    }
+   },
+   "label": "EXACT_D1"
+  },
+  "E/ctx_string": {
+   "target": "//inf:bad_ctx_string",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "in call to instrumented_files_info(), parameter 'ctx' got value of type 'string', want 'ctx'",
+   "native_message": "in call to instrumented_files_info(), parameter 'ctx' got value of type 'string', want 'ctx'",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/source_string": {
+   "target": "//inf:bad_source_string",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "in call to instrumented_files_info(), parameter 'source_attributes' got value of type 'string', want 'sequence'",
+   "native_message": "in call to instrumented_files_info(), parameter 'source_attributes' got value of type 'string', want 'sequence'",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/source_int": {
+   "target": "//inf:bad_source_int",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "at index 1 of source_attributes, got element of type int, want string",
+   "native_message": "at index 1 of source_attributes, got element of type int, want string",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/deps_none": {
+   "target": "//inf:bad_deps_none",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "at index 0 of dependency_attributes, got element of type NoneType, want string",
+   "native_message": "at index 0 of dependency_attributes, got element of type NoneType, want string",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/ext_string": {
+   "target": "//inf:bad_ext_string",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "in call to instrumented_files_info(), parameter 'extensions' got value of type 'string', want 'sequence or NoneType'",
+   "native_message": "in call to instrumented_files_info(), parameter 'extensions' got value of type 'string', want 'sequence or NoneType'",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/ext_int": {
+   "target": "//inf:bad_ext_int",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "at index 0 of extensions, got element of type int, want string",
+   "native_message": "at index 0 of extensions, got element of type int, want string",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/metadata_string": {
+   "target": "//inf:bad_metadata_string",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "at index 0 of metadata_files, got element of type string, want File",
+   "native_message": "at index 0 of metadata_files, got element of type string, want File",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/metadata_depset": {
+   "target": "//inf:bad_metadata_depset",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "in call to instrumented_files_info(), parameter 'metadata_files' got value of type 'depset', want 'sequence'",
+   "native_message": "in call to instrumented_files_info(), parameter 'metadata_files' got value of type 'depset', want 'sequence'",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/baseline_string": {
+   "target": "//inf:bad_baseline_string",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "at index 0 of baseline_coverage_files, got element of type string, want File",
+   "native_message": "at index 0 of baseline_coverage_files, got element of type string, want File",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/reported_strings": {
+   "target": "//inf:bad_reported_strings",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "for 'reported_to_actual_sources', got a depset of 'string', expected a depset of 'tuple'",
+   "native_message": "for 'reported_to_actual_sources', got a depset of 'string', expected a depset of 'tuple'",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/reported_list": {
+   "target": "//inf:bad_reported_list",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "in call to instrumented_files_info(), parameter 'reported_to_actual_sources' got value of type 'list', want 'depset or NoneType'",
+   "native_message": "in call to instrumented_files_info(), parameter 'reported_to_actual_sources' got value of type 'list', want 'depset or NoneType'",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/reported_tuples": {
+   "target": "//inf:bad_reported_tuples",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "file '//inf:defs.bzl' cannot use private API",
+   "native_message": "file '//inf:defs.bzl' cannot use private API",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/env_private": {
+   "target": "//inf:bad_env_private",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "file '//inf:defs.bzl' cannot use private API",
+   "native_message": "file '//inf:defs.bzl' cannot use private API",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/env_int": {
+   "target": "//inf:bad_env_int",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "got dict<int, string> for 'coverage_environment', want dict<string, string>",
+   "native_message": "got dict<int, string> for 'coverage_environment', want dict<string, string>",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/env_list": {
+   "target": "//inf:bad_env_list",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "in call to instrumented_files_info(), parameter 'coverage_environment' got value of type 'list', want 'dict'",
+   "native_message": "in call to instrumented_files_info(), parameter 'coverage_environment' got value of type 'list', want 'dict'",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/support_int": {
+   "target": "//inf:bad_support_int",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "at index 0 of coverage_support_files, got element of type int, want one of depset, File or FilesToRunProvider",
+   "native_message": "at index 0 of coverage_support_files, got element of type int, want one of depset, File or FilesToRunProvider",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/support_strings": {
+   "target": "//inf:bad_support_strings",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "for 'coverage_support_files', got a depset of 'string', expected a depset of 'File'",
+   "native_message": "for 'coverage_support_files', got a depset of 'string', expected a depset of 'File'",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/support_file": {
+   "target": "//inf:bad_support_file",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "file '//inf:defs.bzl' cannot use private API",
+   "native_message": "file '//inf:defs.bzl' cannot use private API",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/support_string_arg": {
+   "target": "//inf:bad_support_string_arg",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "in call to instrumented_files_info(), parameter 'coverage_support_files' got value of type 'string', want 'sequence or depset'",
+   "native_message": "in call to instrumented_files_info(), parameter 'coverage_support_files' got value of type 'string', want 'sequence or depset'",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/unknown_kw": {
+   "target": "//inf:bad_unknown_kw",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "instrumented_files_info() got unexpected keyword argument 'sources'",
+   "native_message": "instrumented_files_info() got unexpected keyword argument 'sources'",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/two_positional": {
+   "target": "//inf:bad_two_positional",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "instrumented_files_info() accepts no more than 1 positional argument but got 2",
+   "native_message": "instrumented_files_info() accepts no more than 1 positional argument but got 2",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/missing_ctx": {
+   "target": "//inf:bad_missing_ctx",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "instrumented_files_info() missing 1 required positional argument: ctx",
+   "native_message": "instrumented_files_info() missing 1 required positional argument: ctx",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/construct": {
+   "target": "//inf:bad_construct",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "'Provider' object is not callable",
+   "native_message": "'Provider' object is not callable",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/get_env": {
+   "target": "//inf:bad_get_env",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "file '//inf:defs.bzl' cannot use private API",
+   "native_message": "file '//inf:defs.bzl' cannot use private API",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/get_support": {
+   "target": "//inf:bad_get_support",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "file '//inf:defs.bzl' cannot use private API",
+   "native_message": "file '//inf:defs.bzl' cannot use private API",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/order": {
+   "target": "//inf:bad_order",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "at index 0 of extensions, got element of type int, want string",
+   "native_message": "at index 0 of extensions, got element of type int, want string",
+   "label": "EXACT_MESSAGE"
+  },
+  "G/cov": {
+   "target": "//inf:cov",
+   "declared_gap": "instrumented files collection in a --collect_code_coverage configuration (instrumentation filter not modelled)",
+   "reference_exit": 0,
+   "native_exit": 1,
+   "reference_outputs": [
+    [
+     "bazel-out/k8-fastbuild-ST-0a6d1b0f07f2/bin/inf/top.a",
+     "top"
+    ]
+   ],
+   "native_message": "coverage_common.instrumented_files_info() in a configuration with --collect_code_coverage (set by a Starlark transition) is not implemented in the native profile (coverage instrumentation: --instrumentation_filter, --instrument_test_targets and --coverage_output_generator are not modelled)",
+   "label": "EXPECTED_NATIVE_GAP"
+  },
+  "G/cov_p": {
+   "target": "//inf:cov_p",
+   "declared_gap": "InstrumentedFilesInfo / coverage_instrumented in a --collect_code_coverage configuration",
+   "reference_exit": 0,
+   "native_exit": 1,
+   "reference_outputs": [
+    [
+     "bazel-out/k8-fastbuild-ST-0a6d1b0f07f2/bin/inf/p.txt",
+     "lib: InstrumentedFilesInfo struct(instrumented_files = depset([<source file inf/a.go>]), metadata_files = depset([])) [\"get_coverage_environment\", \"get_coverage_support_files\", \"instrumented_files\", \"metadata_files\"] [<source file inf/a.go>] depset([])\ntop: InstrumentedFilesInfo struct(instrumented_files = depset([<source file inf/a.go>]), metadata_files = depset([])) [\"get_coverage_environment\", \"get_coverage_support_files\", \"instrumented_files\", \"metadata_files\"] [<source file inf/a.go>] depset([])\nfg: InstrumentedFilesInfo struct(instrumented_files = depset([<source file inf/a.go>]), metadata_files = depset([])) [\"get_coverage_environment\", \"get_coverage_support_files\", \"instrumented_files\", \"metadata_files\"] [<source file inf/a.go>] depset([])\ngen: InstrumentedFilesInfo struct(instrumented_files = depset([<source file inf/a.go>]), metadata_files = depset([])) [\"get_coverage_environment\", \"get_coverage_support_files\", \"instrumented_files\", \"metadata_files\"] [<source file inf/a.go>] depset([])\ngen.go: InstrumentedFilesInfo struct(instrumented_files = depset([<source file inf/a.go>]), metadata_files = depset([])) [\"get_coverage_environment\", \"get_coverage_support_files\", \"instrumented_files\", \"metadata_files\"] [<source file inf/a.go>] depset([])\na.go: absent\nlib: InstrumentedFilesInfo struct(instrumented_files = depset([<source file inf/a.go>]), metadata_files = depset([])) [\"get_coverage_environment\", \"get_coverage_support_files\", \"instrumented_files\", \"metadata_files\"] [<source file inf/a.go>] depset([])\nfg: InstrumentedFilesInfo struct(instrumented_files = depset([<source file inf/a.go>]), metadata_files = depset([])) [\"get_coverage_environment\", \"get_coverage_support_files\", \"instrumented_files\", \"metadata_files\"] [<source file inf/a.go>] depset([])\nol: InstrumentedFilesInfo struct(instrumented_files = depset([<source file inf/a.go>]), metadata_files = depset([])) [\"get_coverage_environment\", \"get_coverage_support_files\", \"instrumented_files\", \"metadata_files\"] [<source file inf/a.go>] depset([])\nol.out: InstrumentedFilesInfo struct(instrumented_files = depset([<source file inf/a.go>]), metadata_files = depset([])) [\"get_coverage_environment\", \"get_coverage_support_files\", \"instrumented_files\", \"metadata_files\"] [<source file inf/a.go>] depset([])\npl: InstrumentedFilesInfo struct(instrumented_files = depset([]), metadata_files = depset([])) [\"get_coverage_environment\", \"get_coverage_support_files\", \"instrumented_files\", \"metadata_files\"] [] depset([])\nfull=struct(instrumented_files = depset([]), metadata_files = depset([<source file inf/a.go>])) plain=struct(instrumented_files = depset([]), metadata_files = depset([])) eq=False hash=2\nprovider=<function InstrumentedFilesInfo> Provider True\nfiles_type=depset True\nempty_ext=struct(instrumented_files = depset([]), metadata_files = depset([]))\ninstrumented=True\ndep_instrumented=[True, True, True, True, True, False, True, True, True, True, True]\ncoverage_enabled=True\n"
+    ]
+   ],
+   "native_message": "coverage_common.instrumented_files_info() in a configuration with --collect_code_coverage (set by a Starlark transition) is not implemented in the native profile (coverage instrumentation: --instrumentation_filter, --instrument_test_targets and --coverage_output_generator are not modelled)",
+   "label": "EXPECTED_NATIVE_GAP"
+  }
+ },
+ "distdir_seeded": {
+  "abseil-cpp-20250814.1.tar.gz": "1692f77d1739bacf3f94337188b78583cf09bab7e420d2dc6c5605a4f86785a1",
+  "bazel_features-v1.42.1.tar.gz": "8189bac9a6bf9cc155a854c4cbebfebf58b9ca7a2d0a67645f7d0c1f83c523ac",
+  "buildozer-v8.5.1.tar.gz": "bd0786e0f8b6aed8c35898b4c06f64ba853d61d7c8361edb5a8d43c6ea37f5c6",
+  "googletest-1.17.0.tar.gz": "65fab701d9829d38cb77c14acdc431d2108bfdbf8979e40eb8ae567edf10b27c",
+  "platforms-1.0.0.tar.gz": "3384eb1c30762704fbe38e440204e114154086c8fc8a8c2e3e28441028c019a8",
+  "protobuf-33.4.bazel.tar.gz": "687e98a471973b5c5fd711750c40b8b82c0ade33f649db65e00b290f29345a2b",
+  "pybind11_bazel-2.12.0.zip": "a58c25c5fe063a70057fa20cb8e15f3bda19b1030305bcb533af1e45f36a4a55",
+  "rules_apple.4.1.0.tar.gz": "20152b14d9a420afc15ace905c02fd6425ddceb084630f3f043b287adf0fcdbd",
+  "rules_cc-0.2.17.tar.gz": "283fa1cdaaf172337898749cf4b9b1ef5ea269da59540954e51fba0e7b8f277a",
+  "rules_java-9.1.0.tar.gz": "4e1a28a25c2efa53500c928d22ceffbc505dd95b335a2d025836a293b592212f",
+  "rules_jvm_external-6.7.tar.gz": "a1e351607f04fed296ba33c4977d3fe2a615ed50df7896676b67aac993c53c18",
+  "rules_kotlin-v1.9.6.tar.gz": "3b772976fec7bdcda1d84b9d39b176589424c047eb2175bed09aac630e50af43",
+  "rules_license-1.0.0.tar.gz": "26d4021f6898e23b82ef953078389dd49ac2b5618ac564ade4ef87cced147b38",
+  "rules_proto-7.1.0.tar.gz": "14a225870ab4e91869652cfd69ef2028277fc1dc4910d65d353b62d6e0ae21f4",
+  "rules_python-1.7.0.tar.gz": "f609f341d6e9090b981b3f45324d05a819fd7a5a56434f849c761971ce2c47da",
+  "rules_shell-v0.6.1.tar.gz": "e6b87c89bd0b27039e3af2c5da01147452f240f75d505f5b6880874f31036307",
+  "rules_swift.3.1.2.tar.gz": "5eff717c18bb513285b499add68f2331509cd4e411ff085e96a86b3342c1e5aa",
+  "stardoc-0.7.2.tar.gz": "0e1ed4a98f26e718776bd64d053d02bb34d98572ccd03d6ba355112a1205706b"
+ },
+ "scratch_removed": true,
+ "counts": {
+  "EXACT_D1": 1,
+  "EXACT_MESSAGE": 26,
+  "EXPECTED_NATIVE_GAP": 2
+ },
+ "post_capture_changes": "none to src/Cargo (src diff+untracked hash at receipt write equals native.worktree: True)"
+}

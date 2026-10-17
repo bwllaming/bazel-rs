@@ -6457,6 +6457,31 @@ impl Engine {
                     };
                     providers.insert(crate::output_group_info::PROVIDER_ID.to_owned(), value);
                 }
+                // InstrumentedFilesInfo.EMPTY (coverage disabled): filegroup
+                // and genrule add it (Filegroup.java:63-108,
+                // GenRuleBase.java:234-239); an output file answers with its
+                // generating rule's or EMPTY (OutputFileConfiguredTarget.java:100-107).
+                // In a coverage configuration both would collect: explicit.
+                let instrumented = match &target {
+                    Target::Rule(rule) => {
+                        matches!(rule.kind, RuleKind::Filegroup | RuleKind::Genrule)
+                    }
+                    Target::Output(..) => true,
+                    Target::Source(_) => false,
+                };
+                if instrumented && !providers.contains_key(crate::instrumented_files::PROVIDER_ID) {
+                    let info = if self
+                        .configurations
+                        .get(edge_config)
+                        .native
+                        .collect_code_coverage
+                    {
+                        crate::instrumented_files::coverage_gap_frozen(&actual.to_string())?
+                    } else {
+                        crate::instrumented_files::empty_frozen()?
+                    };
+                    providers.insert(crate::instrumented_files::PROVIDER_ID.to_owned(), info);
+                }
                 dependency_targets.insert(
                     map_key,
                     DependencyTarget {

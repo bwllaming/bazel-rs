@@ -345,6 +345,12 @@ fn rule_properties(builder: &mut MethodsBuilder) {
     }
 }
 
+/// Whether the configuration of the rule `ctx` has coverage enabled
+/// (`--collect_code_coverage`, set natively only by a Starlark transition).
+pub(crate) fn coverage_enabled(ctx: Value<'_>) -> anyhow::Result<bool> {
+    Ok(rule_ctx(ctx)?.surface.config.coverage_enabled)
+}
+
 fn rule_ctx<'v>(this: Value<'v>) -> anyhow::Result<&'v RuleCtx<'v>> {
     if let Some(ctx) = this.downcast_ref::<RuleCtx>() {
         return Ok(ctx);

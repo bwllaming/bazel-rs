@@ -2014,6 +2014,7 @@ fn bzl_globals_for(phase: BzlPhase) -> Globals {
     crate::rule_declarations::install(&mut bzl);
     crate::template_variable_info::install(&mut bzl);
     crate::run_environment_info::install(&mut bzl);
+    crate::instrumented_files::install(&mut bzl);
     package_specification::install(&mut bzl);
     crate::providers::globals(&mut bzl);
     crate::repository_rule::globals(&mut bzl);

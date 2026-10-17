@@ -75,6 +75,11 @@ pub(crate) fn requirement_info(value: Value<'_>) -> anyhow::Result<ProviderRequi
             crate::run_environment_info::PROVIDER_ID,
             "RunEnvironmentInfo",
         )
+    } else if crate::instrumented_files::is_constructor(value) {
+        (
+            crate::instrumented_files::PROVIDER_ID,
+            "InstrumentedFilesInfo",
+        )
     } else if crate::package_specification::is_constructor(value) {
         (
             crate::package_specification::PROVIDER_ID,
@@ -553,6 +558,9 @@ pub fn provider_identity(value: Value<'_>) -> Option<String> {
     if crate::run_environment_info::is_constructor(value) {
         return Some(crate::run_environment_info::PROVIDER_ID.to_owned());
     }
+    if crate::instrumented_files::is_constructor(value) {
+        return Some(crate::instrumented_files::PROVIDER_ID.to_owned());
+    }
     if crate::package_specification::is_constructor(value) {
         return Some(crate::package_specification::PROVIDER_ID.to_owned());
     }
@@ -585,8 +593,8 @@ pub fn instance_identity(value: Value<'_>) -> Option<String> {
     if crate::run_environment_info::is_instance(value) {
         return Some(crate::run_environment_info::PROVIDER_ID.to_owned());
     }
-    if crate::instrumented_files_info::is_instance(value) {
-        return Some(crate::instrumented_files_info::PROVIDER_ID.to_owned());
+    if crate::instrumented_files::is_instance(value) {
+        return Some(crate::instrumented_files::PROVIDER_ID.to_owned());
     }
     if crate::package_specification::is_instance(value) {
         return Some(crate::package_specification::PROVIDER_ID.to_owned());
@@ -741,8 +749,9 @@ pub fn provider_files(value: Value<'_>) -> anyhow::Result<Vec<File>> {
             } else if crate::template_variable_info::is_instance(value)
                 || crate::package_specification::is_instance(value)
                 || crate::run_environment_info::is_instance(value)
+                || crate::instrumented_files::is_instance(value)
                 || crate::feature_flags::is_instance(value)
-                || crate::instrumented_files_info::is_instance(value)
+                || crate::instrumented_files::is_instance(value)
             {
                 // Its fully owned string-to-string snapshot cannot contain
                 // files (InstrumentedFilesInfo.EMPTY holds empty sets only).
@@ -935,6 +944,7 @@ mod tests {
             .with(globals)
             .with(crate::template_variable_info::install)
             .with(crate::run_environment_info::install)
+            .with(crate::instrumented_files::install)
             .with(crate::package_specification::install)
             .build()
     }

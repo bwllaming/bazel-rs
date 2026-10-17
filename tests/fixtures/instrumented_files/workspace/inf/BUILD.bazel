@@ -1,0 +1,57 @@
+load(":defs.bzl", "bad", "cov_edge", "lib", "outlib", "plain", "probe")
+
+exports_files(["a.go"])
+
+lib(name = "lib", srcs = ["a.go", "b.txt"])
+
+lib(name = "top", srcs = ["a.go"], deps = [":lib", ":fg"], data = [":gen"])
+
+filegroup(name = "fg", srcs = ["a.go", ":lib"])
+
+genrule(name = "gen", srcs = ["a.go"], outs = ["gen.go"], cmd = "cp $< $@")
+
+outlib(name = "ol", srcs = ["a.go"], out = "ol.out")
+
+plain(name = "pl")
+
+alias(name = "lib_alias", actual = ":lib")
+
+alias(name = "fg_alias", actual = ":fg")
+
+probe(
+    name = "p",
+    src = "a.go",
+    deps = [":lib", ":top", ":fg", ":gen", ":gen.go", "a.go", ":lib_alias", ":fg_alias", ":ol", ":ol.out", ":pl"],
+)
+
+[bad(name = "bad_" + kind, kind = kind) for kind in [
+    "ctx_string",
+    "source_string",
+    "source_int",
+    "deps_none",
+    "ext_string",
+    "ext_int",
+    "metadata_string",
+    "metadata_depset",
+    "baseline_string",
+    "reported_strings",
+    "reported_list",
+    "reported_tuples",
+    "env_private",
+    "env_int",
+    "env_list",
+    "support_int",
+    "support_strings",
+    "support_file",
+    "support_string_arg",
+    "unknown_kw",
+    "two_positional",
+    "missing_ctx",
+    "construct",
+    "get_env",
+    "get_support",
+    "order",
+]]
+
+cov_edge(name = "cov", dep = ":top")
+cov_edge(name = "cov_p", dep = ":p")

@@ -541,7 +541,7 @@ impl<'v> Encoder<'_, 'v> {
     fn container(&mut self, value: Value<'v>) -> Result<()> {
         if crate::starlark_types::is_default_info(value)
             || crate::run_environment_info::is_instance(value)
-            || crate::instrumented_files_info::is_instance(value)
+            || crate::instrumented_files::is_instance(value)
             || crate::template_variable_info::is_instance(value)
             || crate::package_specification::is_instance(value)
         {

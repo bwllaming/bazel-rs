@@ -1,0 +1,18 @@
+lib: InstrumentedFilesInfo struct(instrumented_files = depset([]), metadata_files = depset([])) ["get_coverage_environment", "get_coverage_support_files", "instrumented_files", "metadata_files"] [] depset([])
+top: InstrumentedFilesInfo struct(instrumented_files = depset([]), metadata_files = depset([])) ["get_coverage_environment", "get_coverage_support_files", "instrumented_files", "metadata_files"] [] depset([])
+fg: InstrumentedFilesInfo struct(instrumented_files = depset([]), metadata_files = depset([])) ["get_coverage_environment", "get_coverage_support_files", "instrumented_files", "metadata_files"] [] depset([])
+gen: InstrumentedFilesInfo struct(instrumented_files = depset([]), metadata_files = depset([])) ["get_coverage_environment", "get_coverage_support_files", "instrumented_files", "metadata_files"] [] depset([])
+gen.go: InstrumentedFilesInfo struct(instrumented_files = depset([]), metadata_files = depset([])) ["get_coverage_environment", "get_coverage_support_files", "instrumented_files", "metadata_files"] [] depset([])
+a.go: absent
+lib: InstrumentedFilesInfo struct(instrumented_files = depset([]), metadata_files = depset([])) ["get_coverage_environment", "get_coverage_support_files", "instrumented_files", "metadata_files"] [] depset([])
+fg: InstrumentedFilesInfo struct(instrumented_files = depset([]), metadata_files = depset([])) ["get_coverage_environment", "get_coverage_support_files", "instrumented_files", "metadata_files"] [] depset([])
+ol: InstrumentedFilesInfo struct(instrumented_files = depset([]), metadata_files = depset([])) ["get_coverage_environment", "get_coverage_support_files", "instrumented_files", "metadata_files"] [] depset([])
+ol.out: InstrumentedFilesInfo struct(instrumented_files = depset([]), metadata_files = depset([])) ["get_coverage_environment", "get_coverage_support_files", "instrumented_files", "metadata_files"] [] depset([])
+pl: absent
+full=struct(instrumented_files = depset([]), metadata_files = depset([])) plain=struct(instrumented_files = depset([]), metadata_files = depset([])) eq=True hash=1
+provider=<function InstrumentedFilesInfo> Provider True
+files_type=depset True
+empty_ext=struct(instrumented_files = depset([]), metadata_files = depset([]))
+instrumented=False
+dep_instrumented=[False, False, False, False, False, False, False, False, False, False, False]
+coverage_enabled=False

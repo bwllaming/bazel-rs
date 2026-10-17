@@ -50,7 +50,7 @@ mod guarded_globals;
 mod host_os;
 pub mod ignored;
 mod implicit_outputs;
-mod instrumented_files_info;
+mod instrumented_files;
 mod json;
 pub mod label;
 pub mod language_modules;

@@ -98,7 +98,7 @@ pub(crate) enum Behavior {
     ExecGroup,
     ConfigurationField,
     TestEnvironment,
-    /// `coverage_common.instrumented_files_info` (crate::instrumented_files_info).
+    /// coverage_common.instrumented_files_info (crate::instrumented_files).
     InstrumentedFilesInfo,
     /// C++ toolchain features, variables and tools (`crate::cc_features`).
     CcFeatures(crate::cc_features::Op),
@@ -1085,7 +1085,9 @@ fn call<'v>(
         Behavior::ToolchainType => toolchain_type(args, eval),
         Behavior::ExecGroup => exec_group(args, eval),
         Behavior::ConfigurationField => configuration_field(args, eval),
-        Behavior::InstrumentedFilesInfo => crate::instrumented_files_info::call(style, args, eval),
+        Behavior::InstrumentedFilesInfo => {
+            crate::instrumented_files::instrumented_files_info(style, args, eval)
+        }
         Behavior::TestEnvironment => {
             let bound = bind_styled(
                 style,
