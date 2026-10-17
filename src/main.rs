@@ -925,10 +925,12 @@ impl NativeOptions {
             match name {
                 "script_path" => run.script_path = Some(value.to_owned()),
                 // Converters.EnvVarsConverter: N42's parser (crate::action_env).
-                "run_env" => run.run_env.push(
-                    bazel_rs::action_env::EnvVar::parse(value)
-                        .map_err(|error| format!("While parsing option --run_env={value}: {error}"))?,
-                ),
+                "run_env" => {
+                    run.run_env
+                        .push(bazel_rs::action_env::EnvVar::parse(value).map_err(|error| {
+                            format!("While parsing option --run_env={value}: {error}")
+                        })?)
+                }
                 "run_under" => {
                     // RunUnderConverter (analysis/config/RunUnderConverter.java:33-57).
                     if value.split_whitespace().next().is_none() {

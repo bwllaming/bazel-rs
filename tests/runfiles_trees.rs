@@ -394,19 +394,9 @@ fn runfiles_options_select_the_artifacts_and_tree_mode() {
     // --nobuild_runfile_links: the input manifest and repository mapping,
     // no tree; FilesToRunProvider.runfiles_manifest is the input manifest.
     success(&ws.run(&["build", "--nobuild_runfile_links", "//pkg:tool", "//pkg:m"]));
-    assert!(
-        published(
-            &ws,
-            "bazel-out/k8-fastbuild/bin/pkg/tool.runfiles/MANIFEST"
-        )
-        .is_empty()
-    );
+    assert!(published(&ws, "bazel-out/k8-fastbuild/bin/pkg/tool.runfiles/MANIFEST").is_empty());
     assert_eq!(
-        published(
-            &ws,
-            "bazel-out/k8-fastbuild/bin/pkg/tool.runfiles_manifest"
-        )
-        .len(),
+        published(&ws, "bazel-out/k8-fastbuild/bin/pkg/tool.runfiles_manifest").len(),
         1
     );
     let m = single(&ws, "bazel-out/k8-fastbuild/bin/pkg/m.txt");
@@ -417,10 +407,7 @@ fn runfiles_options_select_the_artifacts_and_tree_mode() {
     // --enable_runfiles=no: only MANIFEST and the `_main` directory.
     let ws = Workspace::new();
     success(&ws.run(&["build", "--enable_runfiles=no", "//pkg:tool"]));
-    let manifest = single(
-        &ws,
-        "bazel-out/k8-fastbuild/bin/pkg/tool.runfiles/MANIFEST",
-    );
+    let manifest = single(&ws, "bazel-out/k8-fastbuild/bin/pkg/tool.runfiles/MANIFEST");
     assert_eq!(
         listing(&ws, manifest.parent().unwrap()),
         [
@@ -431,13 +418,7 @@ fn runfiles_options_select_the_artifacts_and_tree_mode() {
     // --nobuild_runfile_manifests: only the repository mapping manifest.
     let ws = Workspace::new();
     success(&ws.run(&["build", "--nobuild_runfile_manifests", "//pkg:tool"]));
-    assert!(
-        published(
-            &ws,
-            "bazel-out/k8-fastbuild/bin/pkg/tool.runfiles_manifest"
-        )
-        .is_empty()
-    );
+    assert!(published(&ws, "bazel-out/k8-fastbuild/bin/pkg/tool.runfiles_manifest").is_empty());
     assert_eq!(
         published(&ws, "bazel-out/k8-fastbuild/bin/pkg/tool.repo_mapping").len(),
         1
@@ -876,8 +857,16 @@ fn query_never_lists_runfiles_artifacts() {
         success(&output);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!stdout.is_empty(), "{pattern}");
-        for marker in [".runfiles", ".repo_mapping", "runfiles_manifest", "MANIFEST"] {
-            assert!(!stdout.contains(marker), "{pattern} lists {marker}:\n{stdout}");
+        for marker in [
+            ".runfiles",
+            ".repo_mapping",
+            "runfiles_manifest",
+            "MANIFEST",
+        ] {
+            assert!(
+                !stdout.contains(marker),
+                "{pattern} lists {marker}:\n{stdout}"
+            );
         }
     }
 }
