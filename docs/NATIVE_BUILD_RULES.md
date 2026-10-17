@@ -333,19 +333,11 @@ Recorded by the paired capture (`tests/fixtures/native_rules/reference_receipt.j
 * `package_group` (a `native` builtin since before N13) has `type()`
   `function` and repr `package_group`; Bazel: `builtin_function_or_method`,
   `<built-in method package_group of native value>`.
-* Genrule action environment (pre-existing; fix planned as its own increment):
-  native genrules run with exactly `PATH=/usr/bin:/bin`, `LANG=C`, `LC_ALL=C`
-  (plus `TMPDIR`; `src/action.rs` `ENV`). Bazel 9.3 gives them the
-  configuration's default shell environment, which under
-  `--incompatible_strict_action_env` (default true) is only
-  `PATH=/bin:/usr/bin:/usr/local/bin`, with no `LANG`/`LC_ALL`
-  (`bazel/rules/BazelRuleClassProvider.java:140-200, 347-360`). Observable
-  consequences: tools installed only in `/usr/local/bin` are found by Bazel but
-  not natively; `PATH` order differs; commands see a C locale natively and the
-  unset (POSIX default) locale under Bazel; `env`-dependent outputs differ; and
-  the native action cache key frames this environment, so keys differ from any
-  Bazel-shaped environment. The custom-rule `use_default_shell_env` strict PATH
-  is modelled separately (N23d).
+* Genrule action environment: resolved by N42. Genrules get their
+  configuration's Bazel 9.3 shell environment (strict
+  `PATH=/bin:/usr/bin:/usr/local/bin` by default, `--action_env`, exec
+  configurations' `--host_action_env`; no native `LANG`/`LC_ALL`), with a
+  fresh `TMPDIR` (docs/ACTION_ENV.md).
 * Analysis order: when several targets fail, native stops at the first one it
   analyzes, so the first reported error of a wildcard build can differ from
   Bazel's (`--keep_going` is not implemented).

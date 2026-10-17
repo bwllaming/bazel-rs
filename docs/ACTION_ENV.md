@@ -40,7 +40,8 @@ release 9.3.0).
 * `--action_env` never reaches repository rules or module extensions:
   `--incompatible_repo_env_ignores_action_env` keeps its Bazel 9.3 default
   true (`runtime/CommonCommandOptions.java:624-634`,
-  `runtime/CommandEnvironment.java:342-375`); `--repo_env` stays rejected.
+  `runtime/CommandEnvironment.java:342-375`). `--repo_env` (N40,
+  docs/RC_OPTIONS.md) feeds only the repository environment, never actions.
 
 ## A configuration's shell environment
 
@@ -65,11 +66,12 @@ propagates `--host_action_env` and `--incompatible_strict_action_env`
 `ctx.configuration.default_shell_env` is
 `BuildConfigurationValue.getLocalShellEnvironment`, the fixed part
 (`analysis/config/BuildConfigurationValue.java:556-558`):
-`ActionEnvironment::default_shell_env`. `ctx.configuration` is not on this
-branch; N23c's member must read the configured target's
-`Context::action_env.default_shell_env()` instead of a PATH constant (the
+`ActionEnvironment::default_shell_env`. N23c's member reads the configured
+target's `Context::action_env.default_shell_env()` (`CtxSurface::action_env`
+is that same value, set by `crate::analysis`) instead of a PATH constant (the
 former `analysis_runtime::DEFAULT_SHELL_PATH` is gone), so `--action_env`
-and the exec configuration are reflected.
+and the exec configuration's `--host_action_env` are reflected
+(`tests/action_env.rs` `default_shell_env_is_the_fixed_part`).
 
 ## Per-action environments
 
@@ -148,4 +150,5 @@ script only). Observed:
 
 `--enable_runfiles=false` (`RUNFILES_MANIFEST_ONLY`), `--shell_executable`
 (the shell is `/bin/bash`), Windows, the test action environment (no test
-command), `select()` on the environment options, and `--repo_env`.
+command), `select()` on the environment options; `--repo_env` reaches
+repositories only (N40).

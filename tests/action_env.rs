@@ -397,3 +397,102 @@ fn option_diagnostics_follow_the_env_vars_converter() {
     );
     assert_eq!(String::from_utf8_lossy(&output.stdout), "//pkg:gen\n");
 }
+
+/// N23c's `ctx.configuration.default_shell_env` is the configured target's
+/// fixed action environment (BuildConfigurationValue.getLocalShellEnvironment,
+/// N42 merge): `--action_env` in target configurations, `--host_action_env`
+/// in exec configurations. Expected values are the paired capture's
+/// REFERENCE_ONLY rows (tests/fixtures/action_env/reference_receipt.json,
+/// `cfg/shell_env.json` and `cfg/via_cfg_tool.json`, `json.encode`).
+#[test]
+fn default_shell_env_is_the_fixed_part() {
+    let ws = Workspace::new();
+    for (name, text) in [
+        (
+            "cfg/defs.bzl",
+            r#"
+Shell = provider(fields = ["text"])
+
+def _shell_impl(ctx):
+    text = json.encode(ctx.configuration.default_shell_env)
+    if ctx.attr.tool:
+        text = ctx.attr.tool[Shell].text
+    out = ctx.actions.declare_file(ctx.label.name + ".json")
+    ctx.actions.write(out, text + "\n")
+    return [DefaultInfo(files = depset([out])), Shell(text = text)]
+
+shell = rule(implementation = _shell_impl, attrs = {"tool": attr.label(cfg = "exec")})
+"#,
+        ),
+        (
+            "cfg/BUILD.bazel",
+            "load(':defs.bzl', 'shell')\nshell(name = 'shell_env')\nshell(name = 'tool')\nshell(name = 'via_cfg_tool', tool = ':tool')\n",
+        ),
+    ] {
+        let path = ws.path().join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+    const STRICT: &str = r#"{"PATH":"/bin:/usr/bin:/usr/local/bin"}"#;
+    for (flags, target, exec) in [
+        (&[][..], STRICT, STRICT),
+        (
+            &["--action_env=FOO=bar"][..],
+            r#"{"FOO":"bar","PATH":"/bin:/usr/bin:/usr/local/bin"}"#,
+            STRICT,
+        ),
+        (
+            &[
+                "--action_env=HOME",
+                "--action_env=USER",
+                "--action_env=NOT_IN_CLIENT",
+            ][..],
+            STRICT,
+            STRICT,
+        ),
+        (&["--action_env==PATH"][..], "{}", STRICT),
+        (
+            &[
+                "--action_env=FOO=bar",
+                "--action_env=HOME",
+                "--action_env==PATH",
+                "--action_env=A=1",
+                "--action_env=B=2",
+                "--action_env==A",
+            ][..],
+            r#"{"B":"2","FOO":"bar"}"#,
+            STRICT,
+        ),
+        (
+            &[
+                "--host_action_env=HOST=1",
+                "--host_action_env=USER",
+                "--action_env=TARGET=1",
+            ][..],
+            r#"{"PATH":"/bin:/usr/bin:/usr/local/bin","TARGET":"1"}"#,
+            r#"{"HOST":"1","PATH":"/bin:/usr/bin:/usr/local/bin"}"#,
+        ),
+        (&["--host_action_env==PATH"][..], STRICT, "{}"),
+        (
+            &["--action_env=TMPDIR=/explicit", "--action_env=EMPTY="][..],
+            r#"{"EMPTY":"","PATH":"/bin:/usr/bin:/usr/local/bin","TMPDIR":"/explicit"}"#,
+            STRICT,
+        ),
+        (&["--noincompatible_strict_action_env"][..], "{}", "{}"),
+        (&["--test_env=T=1", "--test_env=HOME"][..], STRICT, STRICT),
+    ] {
+        let mut args = flags.to_vec();
+        args.extend(["//cfg:shell_env", "//cfg:via_cfg_tool"]);
+        let (outputs, _) = ws.build(&CLIENT, &args);
+        assert_eq!(
+            environment(&outputs, "cfg/shell_env.json"),
+            [target],
+            "{flags:?}"
+        );
+        assert_eq!(
+            environment(&outputs, "cfg/via_cfg_tool.json"),
+            [exec],
+            "{flags:?}"
+        );
+    }
+}

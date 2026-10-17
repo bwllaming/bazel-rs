@@ -153,9 +153,11 @@ fn code_rc_options_reach_query_and_build() {
 fn defaults_are_accepted_and_other_values_are_explicit() {
     let f = Fixture::new();
     for (args, marker) in [
+        // --noincompatible_strict_action_env is modelled since N42
+        // (tests/action_env.rs); query still does not know it.
         (
-            &["build", "--noincompatible_strict_action_env", "//:plain"][..],
-            "a non-strict action environment",
+            &["query", "--noincompatible_strict_action_env", "//:plain"][..],
+            "--noincompatible_strict_action_env :: Unrecognized option: --noincompatible_strict_action_env",
         ),
         (
             &[
@@ -180,6 +182,10 @@ fn defaults_are_accepted_and_other_values_are_explicit() {
     ] {
         rejected(&f.run(args), marker);
     }
+    assert_eq!(
+        built(&f.run(&["build", "--noincompatible_strict_action_env", "//:plain"])),
+        "plain\n"
+    );
     assert_eq!(
         built(&f.run(&[
             "build",

@@ -609,8 +609,11 @@ fn configuration_methods(builder: &mut MethodsBuilder) {
             .collect::<Vec<_>>();
         Ok(frozen_dict(heap, &env))
     }
-    /// BuildConfigurationValue.getTestEnv (:709-712): `--test_env` is not
-    /// modelled natively (rejected), so empty.
+    /// BuildConfigurationValue.getTestEnv (:709-712): `--test_env` is
+    /// accepted and recorded since N42, but TestOptions are trimmed from the
+    /// modelled configurations (`--trim_test_configuration`, the untrimmed
+    /// identity only; docs/ACTION_ENV.md), so empty. A test rule's own
+    /// (untrimmed) configuration is not modelled (no test command).
     #[starlark(attribute)]
     fn test_env<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
         configuration(this)?;

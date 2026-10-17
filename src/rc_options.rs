@@ -186,26 +186,9 @@ impl RcOptions {
             }
             return Ok(Some(false));
         }
-        if let Some(value) = boolean(
-            arg,
-            &[
-                "incompatible_strict_action_env",
-                "experimental_strict_action_env",
-            ],
-        ) {
-            if !build {
-                return Err(unrecognized());
-            }
-            // Default true (bazel/rules/BazelRuleClassProvider.java:73-87); the
-            // strict default shell environment is PATH=/bin:/usr/bin:/usr/local/bin
-            // (:140-200, :347-360).
-            if !value? {
-                return Err(format!(
-                    "unsupported option {arg}{origin}: a non-strict action environment (PATH and LD_LIBRARY_PATH inherited from the client) is not implemented; only the Bazel 9.3 default --incompatible_strict_action_env=true is modelled"
-                ));
-            }
-            return Ok(Some(false));
-        }
+        // `--[no]incompatible_strict_action_env` is a configuration option
+        // since N42 (crate::configuration, docs/ACTION_ENV.md): both values
+        // are modelled there, so it is not claimed here.
         for (name, type_name, values) in [
             ("test_output", "test output", TEST_OUTPUT),
             ("test_summary", "test summary", TEST_SUMMARY),
@@ -268,7 +251,6 @@ mod tests {
         let options = parse(
             "build",
             &[
-                "--incompatible_strict_action_env",
                 "--test_output=errors",
                 "--test_summary",
                 "TERSE",
@@ -334,11 +316,20 @@ mod tests {
             error("build", &["--attempt_to_print_relative_paths=maybe"]),
             "While parsing option --attempt_to_print_relative_paths=maybe: 'maybe' is not a boolean"
         );
+        // N42 models both values of --incompatible_strict_action_env in the
+        // configuration parser; RcOptions does not claim it.
+        for arg in [
+            "--incompatible_strict_action_env",
+            "--noincompatible_strict_action_env",
+            "--experimental_strict_action_env=false",
+        ] {
+            assert_eq!(
+                RcOptions::default().parse("build", arg, None, "").unwrap(),
+                None,
+                "{arg}"
+            );
+        }
         for (args, needle) in [
-            (
-                &["--noincompatible_strict_action_env"][..],
-                "non-strict action environment",
-            ),
             (
                 &["--incompatible_enable_proto_toolchain_resolution=false"][..],
                 "legacy --proto_compiler",
