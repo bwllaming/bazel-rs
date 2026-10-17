@@ -2223,7 +2223,7 @@ ctx.actions.write(first, 'hello')
             ),
             (
                 "ctx.actions.run_shell(outputs=[out], command='true', exec_group='other')",
-                "not supported by the native profile",
+                "Action declared for non-existent exec group 'other'.",
             ),
             (
                 "ctx.actions.run_shell(outputs=[out], command='true', tools=1)",

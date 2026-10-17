@@ -5134,9 +5134,8 @@ r(name='z')",
         );
         assert!(!custom.attrs.contains_key("target_compatible_with"));
         let gaps = value_gaps(custom).join("; ");
-        for expected in ["attribute 'transitive_configs' = [\"//:t\"] (configuration trimming)"] {
-            assert!(gaps.contains(expected), "{expected}: {gaps}");
-        }
+        let expected = "attribute 'transitive_configs' = [\"//:t\"] (configuration trimming)";
+        assert!(gaps.contains(expected), "{expected}: {gaps}");
         // package_metadata edges are analyzed (N28c, crate::engine).
         assert!(!gaps.contains("package_metadata"), "{gaps}");
         // exec_group_compatible_with is resolved natively (docs/EXEC_GROUPS.md).

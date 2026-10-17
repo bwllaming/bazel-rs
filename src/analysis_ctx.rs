@@ -440,6 +440,7 @@ fn subrule_properties(builder: &mut MethodsBuilder) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn alloc_rule<'v>(
     heap: Heap<'v>,
     backing: Value<'v>,
