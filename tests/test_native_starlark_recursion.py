@@ -93,7 +93,9 @@ def collect():
             continue
         if is_starlark(path.name):
             out[rel] = path.read_text(errors='replace')
-        elif path.name.endswith(('.tar.gz', '.tgz')):
+        elif path.name.endswith(('.tar.gz', '.tgz')) and tarfile.is_tarfile(path):
+            # N46's implicit-outputs fixtures name placeholder `in.tar.gz`
+            # files that are not archives (and hold no Starlark).
             archive_sources(path, rel, out)
     for directory in ('src', 'tests'):
         for path in sorted((ROOT / directory).rglob('*.rs')):
