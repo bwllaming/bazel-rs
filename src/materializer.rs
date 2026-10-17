@@ -454,7 +454,7 @@ fn cached_download(
     integrity: &Integrity,
     downloads_enabled: bool,
 ) -> Result<PathBuf, String> {
-    let directory = cache.join("downloads").join(&integrity.algorithm);
+    let directory = crate::repository_store::download_cache_dir(cache, &integrity.algorithm);
     ensure_directory(&directory)?;
     let path = directory.join(hex(&integrity.digest));
     reject_symlink(&path)?;

@@ -240,6 +240,35 @@ fn repo_env_reaches_repository_rules_and_invalidates_them() {
 }
 
 #[test]
+fn repo_env_reaches_module_ctx() {
+    // N43's module_ctx shares repository_ctx's environment: getenv,
+    // os.environ and execute see --repo_env (N40) like repository rules.
+    let f = Fixture::new();
+    f.file(
+        "ws/MODULE.bazel",
+        "module(name='main')\next = use_extension('//:ext.bzl', 'ext')\nuse_repo(ext, 'from_ext')\n",
+    );
+    f.file(
+        "ws/ext.bzl",
+        "def _repo(rctx):\n    rctx.file('BUILD.bazel', \"exports_files(['data.txt'])\\n\")\n    rctx.file('data.txt', rctx.attr.value, executable=False)\nrepo = repository_rule(_repo, attrs={'value': attr.string()})\ndef _ext(mctx):\n    shell = mctx.execute(['/bin/sh', '-c', 'printf %s \"$N40_VALUE\"']).stdout\n    repo(name='from_ext', value=mctx.getenv('N40_VALUE', 'unset') + '|' + mctx.os.environ.get('N40_OTHER', 'none') + '|' + shell + '\\n')\next = module_extension(_ext)\n",
+    );
+    let value = |args: &[&str], environment: &[(&str, &str)]| {
+        let mut all = vec!["build"];
+        all.extend_from_slice(args);
+        all.push("@from_ext//:data.txt");
+        built(&f.run_env(&all, environment))
+    };
+    assert_eq!(value(&[], &[]), "unset|none|\n");
+    assert_eq!(
+        value(&["--repo_env=N40_VALUE=one", "--repo_env=N40_OTHER=o"], &[]),
+        "one|o|one\n"
+    );
+    let client = [("N40_VALUE", "client")];
+    assert_eq!(value(&["--repo_env==N40_VALUE"], &client), "unset|none|\n");
+    assert_eq!(value(&[], &client), "client|none|client\n");
+}
+
+#[test]
 fn repo_env_values_are_never_printed() {
     let f = Fixture::new();
     f.file(

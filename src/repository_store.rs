@@ -44,6 +44,20 @@ struct Entry {
     symlink: Option<String>,
 }
 
+/// The repository download cache's blob directory for one checksum
+/// algorithm, `<repository cache>/downloads/<algorithm>` (DownloadCache.java):
+/// shared by module/registry archives (crate::materializer), hashed registry
+/// files (crate::registry_session) and repository_ctx/module_ctx downloads
+/// (crate::repository_ctx). Blobs are named by their lowercase hex digest.
+pub(crate) fn download_cache_dir(repository_cache: &Path, algorithm: &str) -> PathBuf {
+    repository_cache.join("downloads").join(algorithm)
+}
+
+/// `<repository cache>/downloads/<algorithm>/<hex>` ([`download_cache_dir`]).
+pub(crate) fn download_cache_blob(repository_cache: &Path, algorithm: &str, hex: &str) -> PathBuf {
+    download_cache_dir(repository_cache, algorithm).join(hex)
+}
+
 /// Execute into a private stage, then verify and publish its complete tree.
 /// `execute` returns exact serialized runtime input provenance, after validating
 /// its result. `provenance` identifies the definition, attributes and mappings.

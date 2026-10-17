@@ -1529,7 +1529,10 @@ impl Context {
             .join(algorithm)
             .join(&key)
             .join(format!("id-{}", transport::sha256(canonical_id.as_bytes())));
-        Some((root.join("downloads").join(algorithm).join(key), marker))
+        Some((
+            crate::repository_store::download_cache_blob(root, algorithm, &key),
+            marker,
+        ))
     }
 
     /// DownloadManager.java:264-277 + DownloadCache.get (java:146-221): a

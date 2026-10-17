@@ -2602,6 +2602,11 @@ str(l.relative(':rel')) == '@@//pkg:rel' or fail('relative')
 str(l.relative('//x:y')) == '@@//x:y' or fail('absolute')
 l.repo_root == '' and Label('@@foo+//p:n').repo_root == 'external/foo+' or fail('repo_root')
 str(Label('@@foo+//p:n').relative(':m')) == '@@foo+//p:m' or fail('other repo')
+# Label.create strips a trailing '/.' (N38) like Label() does.
+str(l.same_package_label('d/.')) == '@@//pkg:d' or fail(l.same_package_label('d/.'))
+# An apparent repository the mapping does not see is a deferred invalid
+# label (N45), like Label().
+str(l.relative('@nope//:t')) == "@@[unknown repo 'nope' requested from @@]//:t" or fail(l.relative('@nope//:t'))
 'relative' in dir(l) and 'same_package_label' in dir(l) and 'repo_root' in dir(l) or fail(dir(l))
 "#,
                 "{}",

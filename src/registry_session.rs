@@ -171,7 +171,8 @@ impl RegistrySession {
             mode,
             lockfile,
             write_path,
-            cas: repository_cache.map(|cache| cache.join("downloads").join("sha256")),
+            cas: repository_cache
+                .map(|cache| crate::repository_store::download_cache_dir(&cache, "sha256")),
             allowed_yanked,
             memo: Mutex::default(),
             recorded: Mutex::default(),

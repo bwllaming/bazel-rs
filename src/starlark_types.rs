@@ -512,14 +512,18 @@ fn label_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = pos)] target_name: &str,
     ) -> anyhow::Result<LabelValue> {
         let label = LabelValue::from_value(this).ok_or_else(|| anyhow!("expected Label"))?;
-        // Label.create -> LabelValidator.validateTargetName (LabelSyntaxException).
-        if let Some(error) = crate::bazel_label::validate_target_name(target_name) {
-            bail!("invalid target name '{target_name}': {error}");
-        }
-        Ok(LabelValue {
+        // Label.create (cmdline/Label.java:303-311): crate::label::Label::with_name.
+        let created = crate::label::Label {
             repository: label.repository.clone(),
             package: label.package.clone(),
-            name: target_name.to_owned(),
+            name: label.name.clone(),
+        }
+        .with_name(target_name)
+        .map_err(anyhow::Error::msg)?;
+        Ok(LabelValue {
+            repository: created.repository,
+            package: created.package,
+            name: created.name,
         })
     }
 
@@ -531,8 +535,10 @@ fn label_methods(builder: &mut MethodsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<LabelValue> {
         let label = LabelValue::from_value(this).ok_or_else(|| anyhow!("expected Label"))?;
+        // Label.parseWithPackageContext: an apparent repository the mapping
+        // does not see is a deferred invalid label (N45), like Label().
         let resolved = if rel_name.starts_with('@') {
-            crate::loading::resolve_label(eval, rel_name)?
+            crate::loading::resolve_label_deferred(eval, rel_name)?
         } else {
             crate::label::Label::parse_in(
                 rel_name,

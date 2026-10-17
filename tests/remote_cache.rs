@@ -672,6 +672,63 @@ fn registry_downloads_ask_the_helper_per_url() {
 }
 
 #[test]
+fn ctx_downloads_prefer_the_credential_helper_over_auth() {
+    // CredentialHelperCredentials with StaticCredentials(auth) as fallback
+    // (BazelRepositoryModule.java:463-472): a helper that applies to the URL
+    // replaces repository_ctx/module_ctx `auth` entirely; headers= stay and a
+    // helper header replaces a base header of the same name.
+    let ws = Workspace::new();
+    let server = Server::new();
+    server.serve("/helped", b"helped\n");
+    server.serve("/static", b"static\n");
+    ws.file(
+        "MODULE.bazel",
+        "module(name = \"rc\")\next = use_extension(\"//:ext.bzl\", \"ext\")\nuse_repo(ext, \"dl\")\n",
+    );
+    ws.file(
+        "ext.bzl",
+        &format!(
+            r#"def _repo(rctx):
+    rctx.file("BUILD.bazel", "exports_files(['data.txt'])\n")
+    rctx.file("data.txt", rctx.attr.text)
+repo = repository_rule(_repo, attrs = {{"text": attr.string()}})
+def _ext(mctx):
+    auth = {{"type": "basic", "login": "user", "password": "pw"}}
+    url = "{url}"
+    mctx.download(url + "/helped", "a", sha256 = "52c6ec2a332dce3710447fc481cdf15d10d4a2e7bee8e8e3943e290f2d9e99d8", headers = {{"X-Base": "base", "X-Token": "base"}}, auth = {{url + "/helped": auth}})
+    mctx.download("http://localhost:{port}/static", "b", sha256 = "652cabf0de6cd70f66f72b17d6409203b84909be9864261feb614943f2e6cc62", auth = {{"http://localhost:{port}/static": auth}})
+    repo(name = "dl", text = mctx.read("a") + mctx.read("b"))
+ext = module_extension(_ext)
+"#,
+            url = server.url(),
+            port = server.port
+        ),
+    );
+    ws.file("BUILD.bazel", "");
+    let helper = ws.helper(
+        "dl",
+        "echo '{\"headers\":{\"Authorization\":[\"Bearer helper\"],\"X-Token\":[\"helper\"]}}'",
+    );
+    let output = ws.run(
+        "c",
+        &[
+            "build",
+            &format!("--credential_helper=127.0.0.1={}", helper.display()),
+            "@dl//:data.txt",
+        ],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    let log = server.take_log();
+    let helped = log.iter().find(|r| r.path == "/helped").unwrap();
+    assert_eq!(helped.header("authorization"), ["Bearer helper"]);
+    assert_eq!(helped.header("x-token"), ["helper"]);
+    assert_eq!(helped.header("x-base"), ["base"]);
+    // No helper for `localhost`: the static auth applies.
+    let fallback = log.iter().find(|r| r.path == "/static").unwrap();
+    assert_eq!(fallback.header("authorization"), ["Basic dXNlcjpwdw=="]);
+}
+
+#[test]
 fn strict_action_env_is_the_modelled_default() {
     let ws = Workspace::new();
     let built = ws.run(
