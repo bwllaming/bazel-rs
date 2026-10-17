@@ -29,8 +29,10 @@ verbatim in Bazel's stderr). Pinned source: `/tmp/opencode/bazel-9.3-reference`.
 * The same parser serves BUILD attributes, `load()`, `Label()`, select keys,
   visibility and `package_group` specifications, repository-rule and tag
   attributes, `PackageSpecificationInfo.contains` (`Label.parseCanonical`) and
-  the command line. An unknown apparent repository still fails eagerly
-  (docs/LABEL_PASSTHROUGH.md); that is not a syntax question.
+  the command line. An unknown apparent repository in BUILD attributes and
+  `Label()` is a deferred invalid label failing only when used (N45,
+  docs/EXTENSION_REPO_MAPPING.md); target patterns and `load()` still fail
+  eagerly. That is not a syntax question.
 
 ## Target patterns (`src/target_pattern.rs`, `Engine::select_filtered`)
 
