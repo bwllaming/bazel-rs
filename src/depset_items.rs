@@ -15,8 +15,12 @@
 //! com/google/devtools/build/lib/packages/StructImpl.java:97-132), with the
 //! same fields, repr and type. Values whose identity Bazel compares (depsets
 //! by their NestedSet, targets, runfiles, functions) keep it through shared
-//! native handles. A value that is immutable in Bazel but has no owned native
-//! form (a frozen list or dict, a closure, other built-in objects) fails
+//! native handles. N49b: a frozen list or dict inside an element is an owned
+//! snapshot too (StarlarkList.equals element-wise and never equal to a tuple,
+//! net/starlark/java/eval/StarlarkList.java:244-252; Dict by contents,
+//! Dict.java:203-211) and is re-allocated **frozen** by `to_list()`
+//! ([`alloc_frozen_container`]). A value that is immutable in Bazel but has no
+//! owned native form (a frozen set, a closure, other built-in objects) fails
 //! explicitly.
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -24,7 +28,10 @@ use std::sync::Arc;
 
 use allocative::Allocative;
 use anyhow::bail;
-use starlark::values::list::ListRef;
+use starlark::collections::SmallMap;
+use starlark::environment::Module;
+use starlark::values::dict::{Dict, DictRef};
+use starlark::values::list::{AllocList, ListRef};
 use starlark::values::structs::StructRef;
 use starlark::values::tuple::TupleRef;
 use starlark::values::{Heap, OwnedFrozenValue, Value};
@@ -102,6 +109,79 @@ impl StructItem {
     }
 }
 
+/// A frozen dict inside a depset element (N49b), in insertion order.
+/// Dict.equals/hashCode compare the contents
+/// (net/starlark/java/eval/Dict.java:203-211: `contents.equals`, a
+/// LinkedHashMap, so order-insensitive); equality and ordering here use the
+/// entries sorted by key (keys are unique).
+#[derive(Clone, Debug, Allocative)]
+pub(crate) struct DictItem(pub Vec<(Item, Item)>);
+
+impl DictItem {
+    fn sorted(&self) -> Vec<&(Item, Item)> {
+        let mut entries = self.0.iter().collect::<Vec<_>>();
+        entries.sort();
+        entries
+    }
+}
+
+impl PartialEq for DictItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.len() == other.0.len() && self.sorted() == other.sorted()
+    }
+}
+
+impl Eq for DictItem {}
+
+impl PartialOrd for DictItem {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for DictItem {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.sorted().cmp(&other.sorted())
+    }
+}
+
+/// A frozen list or dict re-allocated from its snapshot (N49b): on a temporary
+/// module's heap, frozen with it, and kept alive by `heap` — the
+/// crate::ctx_surface `frozen` pattern (a value on a private frozen heap the
+/// receiving heap references), through a module freeze because struct and
+/// provider-instance contents have no direct frozen-heap constructor. Mutating
+/// it fails with Bazel's `trying to mutate a frozen list value` (`dict`)
+/// (Mutability.checkMutable, net/starlark/java/eval/Starlark.java:264).
+pub(crate) fn alloc_frozen_container<'v>(heap: Heap<'v>, item: &Item) -> Value<'v> {
+    let owned = Module::with_temp_heap(|module| {
+        let h = module.heap();
+        let value = match item {
+            Item::List(items) => h.alloc(AllocList(items.iter().map(|item| item.alloc(h)))),
+            Item::Dict(dict) => {
+                let mut map = SmallMap::with_capacity(dict.0.len());
+                for (key, value) in &dict.0 {
+                    let key = key.alloc(h);
+                    // The snapshot of a key of a (hashable) dict re-allocates
+                    // a value of the same type and contents.
+                    let key = key
+                        .get_hashed()
+                        .expect("a snapshot of a dict key stays hashable");
+                    map.insert_hashed(key, value.alloc(h));
+                }
+                h.alloc(Dict::new(map))
+            }
+            _ => item.alloc(h),
+        };
+        module.set("value", value);
+        module
+            .freeze()
+            .expect("freezing owned depset element values cannot fail")
+            .get("value")
+            .expect("the frozen module has the value")
+    });
+    heap.access_owned_frozen_value(&owned)
+}
+
 /// A depset as a value: Depset.equals delegates to NestedSet's identity
 /// (collect/nestedset/Depset.java:552-562; NestedSet has no equals
 /// override), so a depset equals only itself — and every empty depset of
@@ -112,7 +192,7 @@ impl StructItem {
 pub(crate) struct DepsetItem(pub Depset);
 
 impl DepsetItem {
-    fn key(&self) -> (&'static str, usize) {
+    pub(crate) fn key(&self) -> (&'static str, usize) {
         let node = &self.0.node;
         if node.empty {
             (node.order.name(), 0)
@@ -347,6 +427,49 @@ pub(crate) fn check_element(value: Value<'_>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The frozen copy of a list-like or dict (`entries` are the elements, or the
+/// key/value pairs) whose contents are all immutable and have owned
+/// snapshots without a configured target (whose re-allocation would not keep
+/// its `==` identity): `cc_internal.freeze`'s StarlarkList/Dict.immutableCopyOf
+/// (N49b, crate::cc_common::freeze). `None` otherwise.
+pub(crate) fn frozen_copy<'v>(
+    heap: Heap<'v>,
+    elements: &[Value<'v>],
+    pairs: bool,
+) -> Option<Value<'v>> {
+    fn has_target(item: &Item) -> bool {
+        match item {
+            Item::Target(_) => true,
+            Item::Tuple(items) | Item::List(items) => items.iter().any(has_target),
+            Item::Dict(dict) => dict.0.iter().any(|(k, v)| has_target(k) || has_target(v)),
+            Item::Struct(item) => item.fields.iter().any(|(_, value)| has_target(value)),
+            _ => false,
+        }
+    }
+    let mut items = Vec::with_capacity(elements.len());
+    for &value in elements {
+        if !matches!(mutability(value, 0), Mutability::Immutable) {
+            return None;
+        }
+        let item = snapshot(value, &|_| None, 0).ok()?;
+        if has_target(&item) {
+            return None;
+        }
+        items.push(item);
+    }
+    let container = if pairs {
+        let mut entries = Vec::with_capacity(items.len() / 2);
+        let mut items = items.into_iter();
+        while let (Some(key), Some(value)) = (items.next(), items.next()) {
+            entries.push((key, value));
+        }
+        Item::Dict(DictItem(entries))
+    } else {
+        Item::List(items)
+    };
+    Some(alloc_frozen_container(heap, &container))
+}
+
 /// The owned snapshot of a checked (immutable) element.
 pub(crate) fn snapshot(
     value: Value<'_>,
@@ -419,14 +542,43 @@ pub(crate) fn snapshot(
                 .collect::<anyhow::Result<Vec<_>>>()?,
             location,
         }))
-    } else if matches!(value.get_type(), "list" | "dict" | "set") {
-        return gap(&format!(
-            "a frozen {} (immutable in Bazel; native snapshots would be mutable)",
-            value.get_type()
-        ));
+    } else if let Some(list) = ListRef::from_value(value) {
+        // Only a frozen list passes the element check; a frozen list's
+        // contents are frozen too.
+        if value.unpack_frozen().is_none() {
+            bail!("depset elements must not be mutable values");
+        }
+        Item::List(
+            list.iter()
+                .map(|item| snapshot(item, functions, depth + 1))
+                .collect::<anyhow::Result<_>>()?,
+        )
+    } else if let Some(dict) = DictRef::from_value(value) {
+        if value.unpack_frozen().is_none() {
+            bail!("depset elements must not be mutable values");
+        }
+        Item::Dict(DictItem(
+            dict.iter()
+                .map(|(key, value)| {
+                    Ok((
+                        snapshot(key, functions, depth + 1)?,
+                        snapshot(value, functions, depth + 1)?,
+                    ))
+                })
+                .collect::<anyhow::Result<_>>()?,
+        ))
+    } else if value.get_type() == "set" {
+        return gap("a frozen set (immutable in Bazel; no owned native snapshot)");
     } else {
         return gap(&format!("a value of type '{}'", value.get_type()));
     })
+}
+
+/// Evaluates `code` with the analysis globals and Starlark's `struct`
+/// (crate::starlark_types tests).
+#[cfg(test)]
+pub(crate) fn tests_eval(code: &str) -> Result<String, String> {
+    tests::eval(code)
 }
 
 #[cfg(test)]
@@ -435,7 +587,7 @@ mod tests {
     use starlark::eval::Evaluator;
     use starlark::syntax::{AstModule, Dialect};
 
-    fn eval(code: &str) -> Result<String, String> {
+    pub(super) fn eval(code: &str) -> Result<String, String> {
         let globals = crate::starlark_types::analysis_test_globals();
         let ast = AstModule::parse("t.bzl", code.to_owned(), &Dialect::Standard)
             .map_err(|e| e.to_string())?;
@@ -499,6 +651,90 @@ mod tests {
                 "i = depset([1])\nd = depset([struct(d = i, n = None), struct(d = i, n = None)])\nl = d.to_list()\n\"%s %s %s\" % (len(l), l[0].d == i, l[0].n)"
             ),
             Ok("1 True None".to_owned())
+        );
+    }
+
+    /// Evaluates `code` with the globals of a frozen module (its lists and
+    /// dicts are frozen, like a loaded `.bzl` file's or a dependency's).
+    fn eval_with_frozen(frozen_code: &str, code: &str) -> Result<String, String> {
+        let globals = crate::starlark_types::analysis_test_globals();
+        let frozen = Module::with_temp_heap(|module| {
+            let ast = AstModule::parse("f.bzl", frozen_code.to_owned(), &Dialect::Standard)
+                .map_err(|e| e.to_string())?;
+            Evaluator::new(&module)
+                .eval_module(ast, &globals)
+                .map_err(|e| e.to_string())?;
+            module.freeze().map_err(|e| format!("{e:?}"))
+        })?;
+        let ast = AstModule::parse("t.bzl", code.to_owned(), &Dialect::Standard)
+            .map_err(|e| e.to_string())?;
+        Module::with_temp_heap(|module| {
+            for name in frozen.names() {
+                let value = frozen.get(name.as_str()).unwrap();
+                module.set(
+                    name.as_str(),
+                    module.heap().access_owned_frozen_value(&value),
+                );
+            }
+            let mut evaluator = Evaluator::new(&module);
+            evaluator
+                .eval_module(ast, &globals)
+                .map(|value| value.to_str())
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    #[test]
+    fn frozen_lists_and_dicts_inside_elements() {
+        const FROZEN: &str = "L = [1, ('t',)]\nL2 = [1, ('t',)]\nD = {'b': 2, 'a': [1]}\nD2 = {'a': [1], 'b': 2}\nN = [[1], {'k': [2]}]";
+        // Equality element-wise / by contents; a list never equals a tuple;
+        // dict insertion order kept, not compared.
+        assert_eq!(
+            eval_with_frozen(
+                FROZEN,
+                "l = depset([struct(l = L), struct(l = L2), struct(l = tuple(L)), struct(m = D), struct(m = D2)]).to_list()\n\"%s %r %s %s %s\" % (len(l), l, type(l[0].l), l[0].l == L, l[2].m == D2)"
+            ),
+            Ok("3 [struct(l = [1, (\"t\",)]), struct(l = (1, (\"t\",))), struct(m = {\"b\": 2, \"a\": [1]})] list True True".to_owned())
+        );
+        // The re-allocated containers are frozen, also nested ones.
+        for (code, message) in [
+            (
+                "depset([struct(l = L)]).to_list()[0].l.append(1)",
+                "trying to mutate a frozen list value",
+            ),
+            (
+                "depset([struct(n = N)]).to_list()[0].n[0].append(1)",
+                "trying to mutate a frozen list value",
+            ),
+            (
+                "depset([struct(n = N)]).to_list()[0].n[1].pop('k')",
+                "trying to mutate a frozen dict value",
+            ),
+            (
+                "depset([struct(m = D)]).to_list()[0].m['a'].append(2)",
+                "trying to mutate a frozen list value",
+            ),
+            // Top-level frozen lists and dicts stay rejected.
+            ("depset([L])", "depsets cannot contain items of type 'list'"),
+            ("depset([D])", "depsets cannot contain items of type 'dict'"),
+            // A mutable list is still a mutable element.
+            (
+                "depset([struct(l = [1])])",
+                "depset elements must not be mutable values",
+            ),
+            // Lambdas stay explicit.
+            (
+                "depset([struct(f = lambda: 1)])",
+                "is not implemented in the native profile",
+            ),
+        ] {
+            let error = eval_with_frozen(FROZEN, code).unwrap_err();
+            assert!(error.contains(message), "{code}: {error}");
+        }
+        // A tuple holding a frozen list may be a top-level element.
+        assert_eq!(
+            eval_with_frozen(FROZEN, "repr(depset([(L,), (L2,), (N,)]))"),
+            Ok("depset([([1, (\"t\",)],), ([[1], {\"k\": [2]}],)])".to_owned())
         );
     }
 

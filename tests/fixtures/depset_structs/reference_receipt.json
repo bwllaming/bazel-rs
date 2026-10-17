@@ -1,6 +1,6 @@
 {
- "schema": "n49-depset-structs-reference-receipt/v1",
- "purpose": "Paired native vs genuine Bazel 9.3.0 capture of depsets of struct() values and Starlark provider instances: strict Depset.checkElement (immutability, top-level list/dict), StructImpl equality dedup across direct/transitive and targets, mixing struct and provider instances, element type errors, nested depsets/None/Target/runfiles/global def fields, traversal orders. Evidence only.",
+ "schema": "n49-depset-structs-reference-receipt/v2",
+ "purpose": "Paired native vs genuine Bazel 9.3.0 capture of depsets of struct() values and Starlark provider instances: strict Depset.checkElement (immutability, top-level list/dict), StructImpl equality dedup across direct/transitive and targets, mixing struct and provider instances, element type errors, nested depsets/None/Target/runfiles/global def fields, traversal orders; N49b: frozen lists/dicts inside struct elements (equality, dedup, repr, frozen-value mutation errors), the single-transitive identity shortcut (==, in, dict keys, dedup), empty transitive depsets skipped before type/order checks, and the order-incompatibility message. Evidence only.",
  "reference": {
   "binary": "bazel-9.3.0-linux-x86_64",
   "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
@@ -8,34 +8,31 @@
  },
  "native": {
   "binary": "target/debug/bazel-rs",
-  "sha256": "092f446398e98741c99a0908f42c675a98a9cb814042681cf7e2a7cc05e29047",
+  "sha256": "38997ac79d3d9bae7e7bbcb695b88f80348d069886bf604b0cdabaab24c9dc81",
   "argv": "--ignore_all_rc_files --cache-dir=<private> build --experimental-builtin-modules --registry=<same registry copy>",
   "worktree": {
-   "base_commit": "5f8f5eb476ec467b844a7bdc0d2efaf617415fc8",
-   "src_diff_plus_untracked_sha256": "082fa41c2e441dcd0c32ea4d8d71a9ff14e1001ddcd0c45aa231f6a586094262",
-   "untracked_src": [
-    "src/depset_items.rs"
-   ]
+   "base_commit": "26c6ba78050d10796c00aff430a56048bf336bf7",
+   "src_diff_plus_untracked_sha256": "f5178443f93f497fcceaf33869d868c8b69d93759f47e6c4d1f35355c39ae436",
+   "untracked_src": []
   }
  },
  "capture_script": {
   "path": "artifacts/depset_structs-capture.py (ignored)",
-  "sha256": "eb86d4b8d94a431126a74b8846adfa24aba493f71666d272b59c26a34e914056",
+  "sha256": "542c841515023aa5b935e77025d01076ec50a1852afd340268ddc4b47d472a26",
   "harness": "artifacts/go_transitions-capture.py",
   "harness_sha256": "c6eaf955cb08ff8a4de4be36efe3911f0871bfbddecdf8e60296dca9828e2b98"
  },
  "fixture_tree_sha256": [
-  "8b577ea9ee9be4be5547122fa76e9b1b03a9bd427256247067f14b61812bf3e0",
-  3
+  "0652c9563e22ba508469765b17452448335ee1754d0efe256638c05a6948d538",
+  5
  ],
  "verdicts": {
   "EXACT_D1": "equal exit class; per target equal output paths and bytes after bazel-out/k8-<mode> -> rust-<mode>",
-  "EXACT_MESSAGE": "Bazel's `Error in depset: MSG` equals the native `error: MSG`",
+  "EXACT_MESSAGE": "Bazel's `Error in <fn>: MSG` equals the native `error: MSG`",
   "EXPECTED_NATIVE_GAP": "genuine succeeds; native fails with the declared explicit message",
   "MISMATCH": "anything else"
  },
  "declared_gaps": {
-  "frozen_list_field": "a frozen list inside a depset element (immutable in Bazel) has no immutable native snapshot",
   "lambda_field": "a closure/lambda inside a depset element (StarlarkFunction.isImmutable) has no owned native form"
  },
  "scenarios": {
@@ -45,11 +42,13 @@
     "//ds:r_default",
     "//ds:r_post",
     "//ds:r_pre",
-    "//ds:r_topo"
+    "//ds:r_topo",
+    "//df:report",
+    "//ds:bad_frozen_list_field"
    ],
    "reference_exit": 0,
    "native_exit": 0,
-   "reference_seconds": 3.4,
+   "reference_seconds": 3.0,
    "native_seconds": 0.3,
    "rows": {
     "//ds:r_default": {
@@ -86,6 +85,24 @@
      ],
      "native_paths": [
       "bazel-out/rust-fastbuild/bin/ds/r_topo.txt"
+     ]
+    },
+    "//df:report": {
+     "verdict": "EXACT_D1",
+     "reference_paths": [
+      "bazel-out/k8-fastbuild/bin/df/report.txt"
+     ],
+     "native_paths": [
+      "bazel-out/rust-fastbuild/bin/df/report.txt"
+     ]
+    },
+    "//ds:bad_frozen_list_field": {
+     "verdict": "EXACT_D1",
+     "reference_paths": [
+      "bazel-out/k8-fastbuild/bin/ds/bad_frozen_list_field.txt"
+     ],
+     "native_paths": [
+      "bazel-out/rust-fastbuild/bin/ds/bad_frozen_list_field.txt"
      ]
     }
    },
@@ -155,19 +172,101 @@
    "native_message": "depset elements must not be mutable values",
    "label": "EXACT_MESSAGE"
   },
-  "G/frozen_list_field": {
-   "target": "//ds:bad_frozen_list_field",
-   "declared_gap": "a frozen list inside a depset element (immutable in Bazel) has no immutable native snapshot",
-   "reference_exit": 0,
+  "E/df_append": {
+   "target": "//df:bad_append",
+   "reference_exit": 1,
    "native_exit": 1,
-   "reference_outputs": [
-    [
-     "bazel-out/k8-fastbuild/bin/ds/bad_frozen_list_field.txt",
-     "[struct(l = [\"frozen\"])]\n"
-    ]
-   ],
-   "native_message": "a depset element containing a frozen list (immutable in Bazel; native snapshots would be mutable) is not implemented in the native profile",
-   "label": "EXPECTED_NATIVE_GAP"
+   "reference_message": "trying to mutate a frozen list value",
+   "native_message": "trying to mutate a frozen list value",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/df_append_global": {
+   "target": "//df:bad_append_global",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "trying to mutate a frozen list value",
+   "native_message": "trying to mutate a frozen list value",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/df_append_nested": {
+   "target": "//df:bad_append_nested",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "trying to mutate a frozen list value",
+   "native_message": "trying to mutate a frozen list value",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/df_dict_pop": {
+   "target": "//df:bad_dict_pop",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "trying to mutate a frozen dict value",
+   "native_message": "trying to mutate a frozen dict value",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/df_dict_setdefault": {
+   "target": "//df:bad_dict_setdefault",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "trying to mutate a frozen dict value",
+   "native_message": "trying to mutate a frozen dict value",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/df_top_frozen_dict": {
+   "target": "//df:bad_top_frozen_dict",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "depsets cannot contain items of type 'dict'",
+   "native_message": "depsets cannot contain items of type 'dict'",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/df_top_frozen_list_global": {
+   "target": "//df:bad_top_frozen_list_global",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "depsets cannot contain items of type 'list'",
+   "native_message": "depsets cannot contain items of type 'list'",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/df_order_pre_post": {
+   "target": "//df:bad_order_pre_post",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "Order 'preorder' is incompatible with order 'postorder'",
+   "native_message": "Order 'preorder' is incompatible with order 'postorder'",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/df_order_topo_pre": {
+   "target": "//df:bad_order_topo_pre",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "Order 'topological' is incompatible with order 'preorder'",
+   "native_message": "Order 'topological' is incompatible with order 'preorder'",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/df_order_post_topo": {
+   "target": "//df:bad_order_post_topo",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "Order 'postorder' is incompatible with order 'topological'",
+   "native_message": "Order 'postorder' is incompatible with order 'topological'",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/df_order_after_type": {
+   "target": "//df:bad_order_after_type",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "cannot add an item of type 'int' to a depset of 'string'",
+   "native_message": "cannot add an item of type 'int' to a depset of 'string'",
+   "label": "EXACT_MESSAGE"
+  },
+  "E/df_order_second": {
+   "target": "//df:bad_order_second",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_message": "Order 'preorder' is incompatible with order 'topological'",
+   "native_message": "Order 'preorder' is incompatible with order 'topological'",
+   "label": "EXACT_MESSAGE"
   },
   "G/lambda_field": {
    "target": "//ds:bad_lambda_field",
@@ -207,8 +306,8 @@
  "scratch_removed": true,
  "counts": {
   "EXACT_D1": 1,
-  "EXACT_MESSAGE": 8,
-  "EXPECTED_NATIVE_GAP": 2
+  "EXACT_MESSAGE": 20,
+  "EXPECTED_NATIVE_GAP": 1
  },
  "history": [
   {
@@ -246,13 +345,72 @@
     "//ds:r_topo": "MISMATCH"
    },
    "note": "run 1: Depset equality was structural (Bazel: NestedSet identity) and mixed-order traversal used the outer layout; fixed for run 2; fixture gained the orders=/deep= probe lines"
+  },
+  {
+   "native_sha256": "092f446398e98741c99a0908f42c675a98a9cb814042681cf7e2a7cc05e29047",
+   "worktree": {
+    "base_commit": "5f8f5eb476ec467b844a7bdc0d2efaf617415fc8",
+    "src_diff_plus_untracked_sha256": "082fa41c2e441dcd0c32ea4d8d71a9ff14e1001ddcd0c45aa231f6a586094262",
+    "untracked_src": [
+     "src/depset_items.rs"
+    ]
+   },
+   "capture_script_sha256": "eb86d4b8d94a431126a74b8846adfa24aba493f71666d272b59c26a34e914056",
+   "counts": {
+    "EXACT_D1": 1,
+    "EXACT_MESSAGE": 8,
+    "EXPECTED_NATIVE_GAP": 2
+   },
+   "scenario_labels": {
+    "O/reports": "EXACT_D1",
+    "E/mutable_field": "EXACT_MESSAGE",
+    "E/list": "EXACT_MESSAGE",
+    "E/dict": "EXACT_MESSAGE",
+    "E/frozen_list": "EXACT_MESSAGE",
+    "E/builtin": "EXACT_MESSAGE",
+    "E/mix": "EXACT_MESSAGE",
+    "E/mix_transitive": "EXACT_MESSAGE",
+    "E/mutable_provider_field": "EXACT_MESSAGE",
+    "G/frozen_list_field": "EXPECTED_NATIVE_GAP",
+    "G/lambda_field": "EXPECTED_NATIVE_GAP"
+   },
+   "o_reports_rows": {
+    "//ds:r_default": "EXACT_D1",
+    "//ds:r_post": "EXACT_D1",
+    "//ds:r_pre": "EXACT_D1",
+    "//ds:r_topo": "EXACT_D1"
+   },
+   "post_capture_changes": "none to src/Cargo (src diff+untracked hash at receipt write equals native.worktree: True)",
+   "key_findings": {
+    "depset_equality": "Depset == is NestedSet identity in Bazel 9.3 (depset([1]) == depset([1]) is False; empty depsets of an order are equal), so structs holding separately created depsets are not deduplicated (run 1 MISMATCH; fixed).",
+    "traversal": "each NestedSet node keeps its own order layout; a default/preorder node inside a topological depset is not reversed (run 1 r_topo MISMATCH; native flatten fixed; orders=/deep= probes equal in run 2).",
+    "struct_dedup": "struct() values and provider instances with equal fields (same provider) deduplicate across direct, transitive and targets; struct() never equals a provider instance; both share the element type struct.",
+    "gaps": "Bazel accepts frozen lists and lambdas inside depset elements (outputs recorded in G/*); native fails explicitly."
+   },
+   "note": "N49 run 2 (approved N49 receipt), superseded by the N49b capture"
   }
  ],
- "post_capture_changes": "none to src/Cargo (src diff+untracked hash at receipt write equals native.worktree: True)",
- "key_findings": {
-  "depset_equality": "Depset == is NestedSet identity in Bazel 9.3 (depset([1]) == depset([1]) is False; empty depsets of an order are equal), so structs holding separately created depsets are not deduplicated (run 1 MISMATCH; fixed).",
-  "traversal": "each NestedSet node keeps its own order layout; a default/preorder node inside a topological depset is not reversed (run 1 r_topo MISMATCH; native flatten fixed; orders=/deep= probes equal in run 2).",
-  "struct_dedup": "struct() values and provider instances with equal fields (same provider) deduplicate across direct, transitive and targets; struct() never equals a provider instance; both share the element type struct.",
-  "gaps": "Bazel accepts frozen lists and lambdas inside depset elements (outputs recorded in G/*); native fails explicitly."
- }
+ "post_capture_changes": {
+  "capture_state": {
+   "base_commit": "26c6ba78050d10796c00aff430a56048bf336bf7",
+   "src_diff_plus_untracked_sha256": "f5178443f93f497fcceaf33869d868c8b69d93759f47e6c4d1f35355c39ae436",
+   "note": "src diff at capture time = git diff 26c6ba7 -- src Cargo.toml Cargo.lock (no untracked src)"
+  },
+  "after_capture_src_diff_sha256": "5e369c970b6a78f9cd3b20e4f8cbffb9a24edbcbe5c19a7438bf2827a7f6b839",
+  "behavior_changes": "none",
+  "changes": [
+   "cargo fmt of src/cc_common.rs (freeze: line wrapping only)",
+   "doc comments: src/depset_items.rs module header (N49b frozen containers)",
+   "unit tests only: depset_items frozen_lists_and_dicts_inside_elements (+ eval_with_frozen/tests_eval helpers), starlark_types depset_single_transitive_identity_shortcut / depset_order_incompatibility_text_and_check_order, exact Order text in depset_mixed_orders_and_empty_compatibility_match_reference, typed empty transitive now accepted in depset_shared_nodes_typed_empty_and_native_helpers, cc_common freeze rows",
+   "tests/depset_structs.rs (df rows, expected //df:report bytes = native output of the captured binary, EXACT_D1 to Bazel), tests/depset_identity_keys.rs (golden action keys recorded with the pre-N49b binary at 26c6ba7), docs/DEPSETS.md"
+  ],
+  "fixture": "unchanged after capture (fixture_tree_sha256 is that of the captured tree)",
+  "reruns": "none: capture run 1 had no MISMATCH"
+ },
+ "key_findings": [
+  "Frozen lists/dicts inside struct elements (from a dependency provider or a loaded .bzl global) are accepted by Bazel; native owned snapshots match repr, ==, `in`, dedup (list never equals tuple; dicts equal regardless of insertion order, first kept) and to_list() re-allocates them frozen: append/pop/setdefault fail with \"trying to mutate a frozen list/dict value\" (E/df_append*, E/df_dict_*). Top-level frozen list/dict stay \"depsets cannot contain items of type ...\" (E/df_top_*).",
+  "Single-transitive identity shortcut: depset(transitive=[x]), [depset(), x], [x, depset(order=topological)], [x, x], chains, depset([1], transitive=[depset([1])]) and topological same-order are the same depset (==, in, dict keys, struct/depset dedup); a compatible-but-different order, two distinct sets, or a direct element not equal to a singleton make a new depset (//df:report).",
+  "Empty transitive depsets are skipped before type and order checks (a typed empty target.files with string direct elements is accepted); non-empty ones are type-checked before order-checked; the text is \"Order 'preorder' is incompatible with order 'postorder'\" (E/df_order_*).",
+  "Depsets are hashable (identity) in Bazel; native now implements write_hash consistently with Depset ==."
+ ]
 }

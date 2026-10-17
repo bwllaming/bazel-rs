@@ -1,0 +1,26 @@
+load(":defs.bzl", "fbad", "fleaf", "freport")
+
+fleaf(name = "leaf")
+
+filegroup(name = "empty")
+
+freport(
+    name = "report",
+    dep = ":leaf",
+    empty = ":empty",
+)
+
+[fbad(name = "bad_" + kind, dep = ":leaf", kind = kind) for kind in [
+    "append",
+    "append_global",
+    "append_nested",
+    "dict_pop",
+    "dict_setdefault",
+    "top_frozen_dict",
+    "top_frozen_list_global",
+    "order_pre_post",
+    "order_topo_pre",
+    "order_post_topo",
+    "order_after_type",
+    "order_second",
+]]

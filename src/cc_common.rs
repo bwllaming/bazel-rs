@@ -442,9 +442,16 @@ pub(crate) fn check_private_api_call<'v>(
 /// `cc_internal.freeze(value)` (CcStarlarkInternal.java:949-960): a dict becomes
 /// an immutable dict copy, any other Java `Iterable` (list, tuple, range, set)
 /// an immutable list copy, and everything else (e.g. depset, struct) is returned
-/// unchanged. starlark-rust has no immutable-but-unfrozen containers, so the
-/// copies here are fresh values that become immutable only when their module
-/// freezes; mutating a `freeze()` result during analysis is a known divergence.
+/// unchanged. starlark-rust has no immutable-but-unfrozen containers: when
+/// every element (key and value) is immutable and has an owned snapshot
+/// without a configured target, the copy is a genuinely frozen list/dict
+/// re-allocated from those snapshots (N49b, crate::depset_items::frozen_copy),
+/// so it is immutable (`trying to mutate a frozen list value`) and may sit in
+/// a depset element — rules_cc's LinkerInputInfo
+/// (cc/private/link/create_linker_input.bzl:63-68). Otherwise it is a fresh
+/// mutable copy that becomes immutable only when its module freezes
+/// (mutating it, or putting it in a depset element, during analysis is a known
+/// divergence).
 pub(crate) fn freeze<'v>(
     value: Value<'v>,
     heap: starlark::values::Heap<'v>,
@@ -453,10 +460,24 @@ pub(crate) fn freeze<'v>(
     use starlark::values::list::AllocList;
     if let Some(dict) = DictRef::from_value(value) {
         let entries: Vec<(Value<'v>, Value<'v>)> = dict.iter().collect();
+        let flat = entries
+            .iter()
+            .flat_map(|(k, v)| [*k, *v])
+            .collect::<Vec<_>>();
+        if let Some(frozen) = crate::depset_items::frozen_copy(heap, &flat, true) {
+            return Ok(frozen);
+        }
         return Ok(heap.alloc(AllocDict(entries)));
     }
     if matches!(value.get_type(), "list" | "tuple" | "range" | "set") {
         let items: Vec<Value<'v>> = value.iterate(heap)?.collect();
+        if items.is_empty() {
+            // StarlarkList.immutableCopyOf of nothing: the shared empty list.
+            return Ok(crate::subrule_fragments::empty_list());
+        }
+        if let Some(frozen) = crate::depset_items::frozen_copy(heap, &items, false) {
+            return Ok(frozen);
+        }
         return Ok(heap.alloc(AllocList(items)));
     }
     Ok(value)
@@ -714,6 +735,13 @@ _d = depset([1])
 _src.append(3)
 (_frozen == [1, [2]]) or fail("freeze copies")
 EMPTY = cc_internal.freeze([])
+# N49b: an immutable copy of immutable contents is frozen, so it may sit in a
+# depset element (rules_cc create_linker_input.bzl:63-68).
+_flags = cc_internal.freeze(["-lm", ("x",)])
+_opts = cc_internal.freeze({"a": (1,), "b": "s"})
+_li = depset([struct(user_link_flags = _flags, opts = _opts, libraries = cc_internal.freeze(depset([struct(a = 1)]).to_list()))])
+(_li.to_list()[0].user_link_flags == ["-lm", ("x",)] and _li.to_list()[0].opts == {"a": (1,), "b": "s"}) or fail("freeze in depset")
+(len(depset([struct(l = _flags), struct(l = cc_internal.freeze(["-lm", ("x",)]))]).to_list()) == 1) or fail("freeze equality")
 "#
         );
         pass("@@rules_cc+//cc/private:cc_common.bzl", &source);
@@ -725,6 +753,14 @@ EMPTY = cc_internal.freeze([])
             (
                 "cc_internal.freeze(value = [])",
                 "freeze() got named argument for positional-only parameter 'value'",
+            ),
+            (
+                "cc_internal.freeze(['-lm']).append('-lc')",
+                "trying to mutate a frozen list value",
+            ),
+            (
+                "cc_internal.freeze({'a': 1}).pop('a')",
+                "trying to mutate a frozen dict value",
             ),
             (
                 "cc_internal.create_cc_compile_action()",

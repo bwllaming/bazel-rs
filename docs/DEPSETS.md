@@ -2,7 +2,7 @@
 
 Code: `src/starlark_types.rs` (`Depset`, `DepsetNode`, `Item`, `depset()`),
 `src/depset_items.rs` (N49 element checks and snapshots). Tests: unit tests
-in both modules, `tests/depset_structs.rs`. Pinned source:
+in both modules, `tests/depset_structs.rs`, `tests/depset_identity_keys.rs`. Pinned source:
 `/tmp/opencode/bazel-9.3-reference` (e89755b, Release 9.3.0); Java paths are
 relative to `src/main/java/`.
 
@@ -62,16 +62,66 @@ capture run 1 showed it), configured targets, runfiles and functions by
 identity. So two equal-looking structs holding separately created depsets
 are both kept.
 
-Explicit gaps (Bazel accepts them): a frozen list/dict/set inside an element
-(an owned snapshot would be mutable), a closure or lambda, and any other
-value whose immutability is not modelled (provider constructors, built-in
-provider instances such as DefaultInfo, ...): `a depset element containing
-... is not implemented in the native profile`. Known approximations: a
-depset that Bazel collapses to its single transitive child
-(`depset(transitive = [x])` is `x`'s NestedSet) is a new node natively, so
-it compares unequal to `x`; native functions are per-package `.bzl` evaluations, so the same
-`def` reached through two packages' evaluations is two functions natively
-(one in Bazel).
+Explicit gaps (Bazel accepts them): a frozen set inside an element, a
+closure or lambda, and any other value whose immutability is not modelled
+(provider constructors, built-in provider instances such as DefaultInfo,
+built-in functions inside a frozen list, ...): `a depset element containing
+... is not implemented in the native profile`. Known approximations: native
+functions are per-package `.bzl` evaluations, so the same `def` reached
+through two packages' evaluations is two functions natively (one in Bazel);
+a configured target element compares by label and the identity of its
+provider objects, and `to_list()` re-allocates it, so it is not `==` to the
+original Target value (no per-configured-target native handle on this base;
+for integration with N44's shared configured targets).
+
+## Frozen lists and dicts inside elements (N49b)
+
+A frozen list or dict is immutable (`Starlark.isImmutable`), so it may sit
+inside a struct, provider instance or tuple element — rules_cc's
+LinkerInputInfo (`cc/private/link/create_linker_input.bzl:63-68`) holds
+`_cc_internal.freeze(list)` values and goes into `linker_inputs` depsets. A
+**top-level** frozen list or dict stays rejected (`depsets cannot contain
+items of type 'list'`, `'dict'`). Natively it is an owned snapshot
+(`Item::List`, `Item::Dict` with its insertion order): a list equals a list
+with equal elements and never a tuple (StarlarkList.equals,
+`net/starlark/java/eval/StarlarkList.java:244-252`); a dict equals a dict
+with the same entries in any order (Dict.equals/hashCode,
+`Dict.java:203-211`), and the first one encountered is kept. `to_list()`
+re-allocates the container frozen (on a temporary module heap, frozen and
+referenced by the receiving heap — the `ctx_surface` frozen-value pattern),
+so `append`, `pop`, `setdefault`, ... fail with Bazel's `trying to mutate a
+frozen list value` (`dict`) (Mutability.checkMutable,
+`net/starlark/java/eval/Starlark.java:264`), also for nested containers.
+
+`cc_internal.freeze(x)` (CcStarlarkInternal.java:949-960, an immutable copy)
+returns such a frozen re-allocated copy when every element (key and value) is
+immutable and snapshottable without a configured target (`depset_items::frozen_copy`);
+otherwise it is still a fresh mutable copy (documented divergence in
+`src/cc_common.rs`).
+
+## Identity of a depset built from one transitive set (N49b)
+
+Depset.fromDirectAndTransitive (`collect/nestedset/Depset.java:353-405`)
+skips empty transitive depsets before any check (`:380-381`), so neither the
+order nor the element type of an empty child matters (also a typed native
+empty depset such as an empty `target.files`); each other child is
+type-checked, then order-checked: `Order 'preorder' is incompatible with
+order 'postorder'` (`:382-386`, Order.isCompatible `Order.java:185-187`:
+equal orders or one of them `default`). If the builder is empty the result
+is the order's shared empty depset. NestedSetBuilder.buildInternal
+(`NestedSetBuilder.java:181-202`) returns the one transitive set itself when
+there is exactly one distinct non-empty transitive set (the builders
+deduplicate by identity) of the **same** order (not merely compatible), and
+either no direct element or only one that equals that set's single element;
+fromDirectAndTransitive then returns the original Depset (`:396-402`).
+Natively `Depset::compose` returns the same DAG node, so
+`depset(transitive = [x]) == x`, `depset(transitive = [depset(), x, x]) == x`,
+`depset([1], transitive = [depset([1])])` is that inner depset, `in`, dict
+keys (a depset is hashable by its identity, `Depset.java:552-556`) and
+depset/struct dedup all agree with Bazel; `depset(transitive = [x],
+order = "preorder")` of a default `x` is a new depset. Elements, order and
+action keys are unchanged (`tests/depset_identity_keys.rs`, golden keys
+recorded with the pre-N49b binary).
 
 ## Traversal
 
@@ -93,4 +143,5 @@ the same type; cannot mix ...`), and mutable elements are Bazel's
 `depset elements must not be mutable values` (was `... is unsupported`).
 
 Paired capture: `artifacts/depset_structs-capture.py`, receipt
-`tests/fixtures/depset_structs/reference_receipt.json`.
+`tests/fixtures/depset_structs/reference_receipt.json` (N49b rows: package
+`df` of the fixture workspace; the N49 capture is in its `history`).

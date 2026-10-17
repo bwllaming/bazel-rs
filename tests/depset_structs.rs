@@ -25,15 +25,19 @@ impl Workspace {
                 .tempdir_in(base)
                 .unwrap(),
         );
-        let source = manifest().join("tests/fixtures/depset_structs/workspace/ds");
-        fs::create_dir_all(ws.0.path().join("ds")).unwrap();
-        for entry in fs::read_dir(&source).unwrap() {
-            let path = entry.unwrap().path();
-            fs::copy(
-                &path,
-                ws.0.path().join("ds").join(path.file_name().unwrap()),
-            )
-            .unwrap();
+        for package in ["ds", "df"] {
+            let source = manifest()
+                .join("tests/fixtures/depset_structs/workspace")
+                .join(package);
+            fs::create_dir_all(ws.0.path().join(package)).unwrap();
+            for entry in fs::read_dir(&source).unwrap() {
+                let path = entry.unwrap().path();
+                fs::copy(
+                    &path,
+                    ws.0.path().join(package).join(path.file_name().unwrap()),
+                )
+                .unwrap();
+            }
         }
         fs::write(
             ws.0.path().join("MODULE.bazel"),
@@ -114,16 +118,61 @@ fn element_checks_and_gaps() {
             "mutable_provider_field",
             "depset elements must not be mutable values",
         ),
+        // N49b (df): frozen re-allocated containers, top-level frozen
+        // list/dict, the order-incompatibility text, type before order.
+        ("//df:bad_append", "trying to mutate a frozen list value"),
         (
-            "frozen_list_field",
-            "a depset element containing a frozen list (immutable in Bazel; native snapshots would be mutable) is not implemented in the native profile",
+            "//df:bad_append_global",
+            "trying to mutate a frozen list value",
+        ),
+        (
+            "//df:bad_append_nested",
+            "trying to mutate a frozen list value",
+        ),
+        ("//df:bad_dict_pop", "trying to mutate a frozen dict value"),
+        (
+            "//df:bad_dict_setdefault",
+            "trying to mutate a frozen dict value",
+        ),
+        (
+            "//df:bad_top_frozen_dict",
+            "depsets cannot contain items of type 'dict'",
+        ),
+        (
+            "//df:bad_top_frozen_list_global",
+            "depsets cannot contain items of type 'list'",
+        ),
+        (
+            "//df:bad_order_pre_post",
+            "Order 'preorder' is incompatible with order 'postorder'",
+        ),
+        (
+            "//df:bad_order_topo_pre",
+            "Order 'topological' is incompatible with order 'preorder'",
+        ),
+        (
+            "//df:bad_order_post_topo",
+            "Order 'postorder' is incompatible with order 'topological'",
+        ),
+        (
+            "//df:bad_order_after_type",
+            "cannot add an item of type 'int' to a depset of 'string'",
+        ),
+        (
+            "//df:bad_order_second",
+            "Order 'preorder' is incompatible with order 'topological'",
         ),
         (
             "lambda_field",
             "a depset element containing a function that is not a global def of a loaded .bzl file is not implemented in the native profile",
         ),
     ] {
-        let output = ws.run(&[&format!("//ds:bad_{kind}")]);
+        let label = if kind.contains(':') {
+            kind.to_owned()
+        } else {
+            format!("//ds:bad_{kind}")
+        };
+        let output = ws.run(&[&label]);
         assert_eq!(output.status.code(), Some(1), "{kind}");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
@@ -132,3 +181,71 @@ fn element_checks_and_gaps() {
         );
     }
 }
+
+/// N49b: frozen lists/dicts inside struct elements and the single-transitive
+/// identity shortcut. The expected report is genuine Bazel 9.3.0's (paired
+/// capture, reference_receipt.json O/reports //df:report and
+/// //ds:bad_frozen_list_field: EXACT_D1).
+#[test]
+fn frozen_containers_and_single_transitive_identity_follow_bazel() {
+    let ws = Workspace::fixture();
+    for (label, expected) in [
+        ("//df:report", DF_REPORT),
+        ("//ds:bad_frozen_list_field", "[struct(l = [\"frozen\"])]\n"),
+    ] {
+        let output = ws.run(&[label]);
+        assert!(
+            output.status.success(),
+            "{label}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let path = stdout.lines().next().unwrap().split_once('\t').unwrap().1;
+        assert_eq!(fs::read_to_string(path).unwrap(), expected, "{label}");
+    }
+}
+
+const DF_REPORT: &str = r#"frozen_len=1
+frozen_repr=[struct(l = ["x", <generated file df/leaf.f>], m = {"k": [1, 2], "j": None, "f": <generated file df/leaf.f>})]
+frozen_types=list dict File
+frozen_eq=True True True
+frozen_in=True True
+list_vs_tuple=2 [struct(l = ["g1", ("t",)]), struct(l = ("g1", ("t",)))]
+same_contents=1 [struct(l = ["g1", ("t",)])]
+dict_order=1 [struct(m = {"b": 2, "a": 1})] True
+nested=2 [struct(n = [[1, 2], {"k": [3]}, (4,)]), struct(v = [[1], (2,), {"m": {"n": [5]}}])]
+nested_types=["list", "dict", "tuple", "list", "tuple", "dict"]
+top_tuple=1 [(["g1", ("t",)],)]
+frozen_depset_repr=depset([struct(l = ["g1", ("t",)], m = {"b": 2, "a": 1})])
+files=[<generated file df/leaf.f>]
+dict_keys=["b", "a"]
+single=True
+empty_sibling=True
+empty_sibling_after=True
+empty_incompatible_sibling=True
+repeated=True
+chain=True
+direct_equal_singleton=True
+direct_dup_equal_singleton=True
+direct_other_singleton=False
+direct_in_multi=False
+two_sets=False
+compatible_order=False
+default_of_preorder=False
+same_preorder=True
+topological=True
+topological_repeated=True
+topological_direct=True
+preorder_direct_other_order=False
+in_list=True
+not_in_list=False
+dict_key="v"
+dict_key_other="missing"
+struct_dedup=1
+depset_dedup=1
+empty_result=True
+empty_typed_skipped=["s"]
+empty_typed_result=True
+repr="[depset([1, 2]), depset([1, 2], order = \"topological\"), depset([1, 2], order = \"preorder\")]"
+list=[[1, 2], [1, 2, 3]]
+"#;

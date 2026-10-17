@@ -138,6 +138,11 @@ mod owned {
         Runfiles(crate::depset_items::RunfilesItem),
         /// N49: a global `def` (StarlarkFunction.isImmutable).
         Function(crate::depset_items::FunctionItem),
+        /// N49b: a frozen list inside an element (never a top-level
+        /// element; StarlarkList.equals: element-wise, never equal to a tuple).
+        List(Vec<Item>),
+        /// N49b: a frozen dict inside an element, compared by contents.
+        Dict(crate::depset_items::DictItem),
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Allocative)]
@@ -163,6 +168,8 @@ mod owned {
         Target,
         Runfiles,
         Function,
+        List,
+        Dict,
     }
 
     #[derive(Debug, Allocative, StarlarkPagable)]
@@ -845,6 +852,9 @@ impl Item {
             Self::Target(item) => heap.alloc(item.0.as_ref().clone()),
             Self::Runfiles(item) => heap.alloc(item.0.as_ref().clone()),
             Self::Function(item) => heap.access_owned_frozen_value(&item.0),
+            Self::List(_) | Self::Dict(_) => {
+                crate::depset_items::alloc_frozen_container(heap, self)
+            }
         }
     }
 
@@ -863,6 +873,8 @@ impl Item {
             Self::Target(_) => ItemType::Target,
             Self::Runfiles(_) => ItemType::Runfiles,
             Self::Function(_) => ItemType::Function,
+            Self::List(_) => ItemType::List,
+            Self::Dict(_) => ItemType::Dict,
         }
     }
 }
@@ -913,6 +925,8 @@ impl ItemType {
             Self::Target => "Target",
             Self::Runfiles => "runfiles",
             Self::Function => "function",
+            Self::List => "list",
+            Self::Dict => "dict",
         }
     }
 
@@ -931,6 +945,8 @@ impl ItemType {
             10 => Ok(Self::Target),
             11 => Ok(Self::Runfiles),
             12 => Ok(Self::Function),
+            13 => Ok(Self::List),
+            14 => Ok(Self::Dict),
             _ => bail!("invalid serialized depset element type {tag}"),
         }
     }
@@ -987,6 +1003,12 @@ impl starlark::pagable::StarlarkSerialize for Item {
             Self::Tuple(items) => items.starlark_serialize(ctx),
             Self::Symlink(entry) => entry.starlark_serialize(ctx),
             Self::None => Ok(()),
+            Self::List(items) => items.starlark_serialize(ctx),
+            Self::Dict(dict) => {
+                let (keys, values): (Vec<_>, Vec<_>) = dict.0.iter().cloned().unzip();
+                keys.starlark_serialize(ctx)?;
+                values.starlark_serialize(ctx)
+            }
             // Snapshots of Starlark values are analysis-only.
             Self::Struct(_)
             | Self::Depset(_)
@@ -1013,6 +1035,14 @@ impl starlark::pagable::StarlarkDeserialize for Item {
             ItemType::Tuple => Self::Tuple(Vec::starlark_deserialize(ctx)?),
             ItemType::Symlink => Self::Symlink(SymlinkEntry::starlark_deserialize(ctx)?),
             ItemType::NoneType => Self::None,
+            ItemType::List => Self::List(Vec::starlark_deserialize(ctx)?),
+            ItemType::Dict => {
+                let keys = Vec::<Item>::starlark_deserialize(ctx)?;
+                let values = Vec::<Item>::starlark_deserialize(ctx)?;
+                Self::Dict(crate::depset_items::DictItem(
+                    keys.into_iter().zip(values).collect(),
+                ))
+            }
             kind => {
                 return Err(starlark::Error::new_other(anyhow!(
                     "a depset of {} elements cannot be deserialized",
@@ -1051,6 +1081,26 @@ impl fmt::Display for Item {
             Self::Target(item) => write!(f, "{}", item.0),
             Self::Runfiles(item) => write!(f, "{}", item.0),
             Self::Function(item) => f.write_str(&item.0.value().to_repr()),
+            Self::List(items) => {
+                f.write_str("[")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i != 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{item}")?;
+                }
+                f.write_str("]")
+            }
+            Self::Dict(dict) => {
+                f.write_str("{")?;
+                for (i, (key, value)) in dict.0.iter().enumerate() {
+                    if i != 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{key}: {value}")?;
+                }
+                f.write_str("}")
+            }
         }
     }
 }
@@ -1100,21 +1150,28 @@ impl Depset {
         for item in &direct {
             merge_type(item.kind())?;
         }
+        // Depset.fromDirectAndTransitive (collect/nestedset/Depset.java:380-390):
+        // an empty transitive depset is skipped before any check (so neither
+        // its order nor its element type matters); each other one is
+        // type-checked, then order-checked (Order.isCompatible,
+        // collect/nestedset/Order.java:185-187).
+        let children: Vec<_> = children.into_iter().filter(|child| !child.empty).collect();
         for child in &children {
-            // Bazel 9.3 accepts incompatible orders on empty children. Type
-            // metadata, when present, must still survive empty native depsets.
-            if !child.empty && !order.compatible(child.order) {
+            if let Some(kind) = child.element_type {
+                merge_type(kind)?;
+            }
+            if !order.compatible(child.order) {
                 bail!(
-                    "depset order {:?} is incompatible with order {:?}",
+                    "Order '{}' is incompatible with order '{}'",
                     order.name(),
                     child.order.name()
                 );
             }
-            if let Some(kind) = child.element_type {
-                merge_type(kind)?;
-            }
         }
-        let children: Vec<_> = children.into_iter().filter(|child| !child.empty).collect();
+        let direct = dedup(direct);
+        if let Some(node) = Self::reused(&direct, &children, order) {
+            return Ok(Self { node });
+        }
         let depth = children.iter().map(|child| child.depth).max().unwrap_or(0) + 1;
         if depth > MAX_DEPTH {
             bail!("depset exceeds DAG depth limit {MAX_DEPTH}");
@@ -1122,13 +1179,39 @@ impl Depset {
         Ok(Self {
             node: Arc::new(DepsetNode {
                 empty: direct.is_empty() && children.is_empty(),
-                direct: dedup(direct),
+                direct,
                 children,
                 order,
                 element_type,
                 depth,
             }),
         })
+    }
+
+    /// NestedSetBuilder.buildInternal
+    /// (collect/nestedset/NestedSetBuilder.java:181-202): a set built from
+    /// exactly one distinct non-empty transitive set (the builders
+    /// deduplicate them by identity, :288-313, :353-390) of the **same**
+    /// order, with no direct element or with one equal to that set's single
+    /// element (its `children` is then that element, NestedSet.java:253-262),
+    /// is that set; Depset.fromDirectAndTransitive (Depset.java:396-402)
+    /// then returns the original depset. Natively the result is the same DAG
+    /// node, so `==`, `in`, dict keys and depset/struct dedup see one depset
+    /// (N49b; paired capture tests/fixtures/depset_structs, df/report).
+    fn reused(
+        direct: &[Item],
+        children: &[Arc<DepsetNode>],
+        order: Order,
+    ) -> Option<Arc<DepsetNode>> {
+        let first = children.first()?;
+        if first.order != order || !children.iter().all(|child| Arc::ptr_eq(child, first)) {
+            return None;
+        }
+        match direct {
+            [] => Some(Arc::clone(first)),
+            [only] if first.single_item() == Some(only) => Some(Arc::clone(first)),
+            _ => None,
+        }
     }
 
     /// NestedSet.toList (collect/nestedset/NestedSet.java:485-498, 604-627):
@@ -1191,6 +1274,30 @@ impl Depset {
     }
 }
 
+impl DepsetNode {
+    /// The element of a set with exactly one distinct element, stopping at
+    /// the second distinct one.
+    fn single_item(&self) -> Option<&Item> {
+        let mut stack = vec![self];
+        let mut seen = HashSet::new();
+        let mut found: Option<&Item> = None;
+        while let Some(node) = stack.pop() {
+            if !seen.insert(node as *const DepsetNode) {
+                continue;
+            }
+            for item in &node.direct {
+                match found {
+                    None => found = Some(item),
+                    Some(first) if first == item => {}
+                    Some(_) => return None,
+                }
+            }
+            stack.extend(node.children.iter().map(|child| &**child));
+        }
+        found
+    }
+}
+
 starlark::methods_static!(DEPSET_METHODS = depset_methods);
 
 #[starlark_module]
@@ -1223,6 +1330,15 @@ impl<'v> StarlarkValue<'v> for Depset {
             crate::depset_items::DepsetItem(self.clone())
                 == crate::depset_items::DepsetItem(other.clone())
         }))
+    }
+
+    /// Depset.hashCode is the NestedSet's (identity) hash (Depset.java:552-556);
+    /// a depset is immutable, so hashable (Starlark.checkHashable).
+    fn write_hash(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
+        crate::depset_items::DepsetItem(self.clone())
+            .key()
+            .hash(hasher);
+        Ok(())
     }
 }
 
@@ -1293,7 +1409,10 @@ pub(crate) fn contained_depset_files(value: Value<'_>) -> Option<Vec<File>> {
                 Item::Symlink(entry) if files.insert(entry.target.clone()) => {
                     result.push(entry.target.clone())
                 }
-                Item::Tuple(items) => stack.extend(items.iter().rev()),
+                Item::Tuple(items) | Item::List(items) => stack.extend(items.iter().rev()),
+                Item::Dict(dict) => {
+                    stack.extend(dict.0.iter().rev().flat_map(|(key, value)| [value, key]))
+                }
                 _ => {}
             }
         }
@@ -2819,7 +2938,7 @@ ok = (len(labels.to_list()) == 2 and owner == target.label and
                         &format!(
                             "depset(['x'], order='{parent}', transitive=[depset(['y'], order='{child}')])"
                         ),
-                        "incompatible",
+                        &format!("Order '{parent}' is incompatible with order '{child}'"),
                     );
                     pass(&format!(
                         "depset(['x'], order='{parent}', transitive=[depset(order='{child}')]).to_list() == ['x']"
@@ -2830,6 +2949,73 @@ ok = (len(labels.to_list()) == 2 and owner == target.label and
                 }
             }
         }
+    }
+
+    #[test]
+    fn depset_single_transitive_identity_shortcut() {
+        // NestedSetBuilder.buildInternal / Depset.fromDirectAndTransitive
+        // (paired capture tests/fixtures/depset_structs df/report).
+        for (expression, expected) in [
+            ("depset(transitive = [x]) == x", true),
+            ("depset(transitive = [depset(), x]) == x", true),
+            (
+                "depset(transitive = [x, depset(order = 'topological')]) == x",
+                true,
+            ),
+            ("depset(transitive = [x, x]) == x", true),
+            ("depset(transitive = [depset(transitive = [x])]) == x", true),
+            ("depset([1], transitive = [one]) == one", true),
+            ("depset([1, 1], transitive = [one]) == one", true),
+            ("depset([2], transitive = [one]) == one", false),
+            ("depset([1], transitive = [x]) == x", false),
+            ("depset(transitive = [x, one]) == x", false),
+            ("depset(transitive = [x], order = 'preorder') == x", false),
+            ("depset(transitive = [p]) == p", false),
+            ("depset(transitive = [p], order = 'preorder') == p", true),
+            (
+                "depset(transitive = [t, t], order = 'topological') == t",
+                true,
+            ),
+            ("depset(transitive = [x]) in [x]", true),
+            ("{x: 1}.get(depset(transitive = [x])) == 1", true),
+            ("{x: 1}.get(depset([1, 2])) == None", true),
+            (
+                "len(depset([struct(d = x), struct(d = depset(transitive = [x]))]).to_list()) == 1",
+                true,
+            ),
+            (
+                "len(depset([x, depset(transitive = [x]), depset(transitive = [depset(), x, x])]).to_list()) == 1",
+                true,
+            ),
+        ] {
+            let source = format!(
+                "x = depset([1, 2])\none = depset([1])\np = depset([1, 2], order = 'preorder')\nt = depset([1, 2], order = 'topological')\n{expression}"
+            );
+            let result = crate::depset_items::tests_eval(&source);
+            assert_eq!(
+                result,
+                Ok(if expected { "True" } else { "False" }.to_owned()),
+                "{expression}"
+            );
+        }
+    }
+
+    #[test]
+    fn depset_order_incompatibility_text_and_check_order() {
+        // Depset.java:380-390: type, then Order.isCompatible (paired
+        // capture df/bad_order_*).
+        fail(
+            "depset(['x'], order='preorder', transitive=[depset(['y'], order='postorder')])",
+            "Order 'preorder' is incompatible with order 'postorder'",
+        );
+        fail(
+            "depset(order='postorder', transitive=[depset(['y'], order='topological')])",
+            "Order 'postorder' is incompatible with order 'topological'",
+        );
+        fail(
+            "depset(['x'], order='preorder', transitive=[depset([1], order='postorder')])",
+            "cannot add an item of type 'int' to a depset of 'string'",
+        );
     }
 
     #[test]
@@ -3032,18 +3218,21 @@ ok = (len(labels.to_list()) == 2 and owner == target.label and
             let empty = alloc_depset(module.heap(), vec![]);
             module.set("empty", empty);
             assert_eq!(unpack_depset(empty).unwrap(), Vec::<File>::new());
+            // Depset.fromDirectAndTransitive skips an empty transitive depset
+            // before its type check (Depset.java:380-381; paired capture
+            // df/report empty_typed_skipped), also a typed native empty one.
             let ast = AstModule::parse(
                 "typed.star",
-                "depset(['string'], transitive=[empty])".to_owned(),
+                "depset(['string'], transitive=[empty]).to_list() == ['string'] and depset(transitive=[empty]) == depset()".to_owned(),
                 &Dialect::Standard,
             )
             .unwrap();
-            assert!(
+            assert_eq!(
                 Evaluator::new(&module)
                     .eval_module(ast, &globals())
-                    .unwrap_err()
-                    .to_string()
-                    .contains("cannot add an item of type 'File' to a depset of 'string'")
+                    .unwrap()
+                    .unpack_bool(),
+                Some(true)
             );
             module.set("a", alloc_file(module.heap(), file("pkg/a.txt")));
             module.set("b", alloc_file(module.heap(), file("pkg/b")));
