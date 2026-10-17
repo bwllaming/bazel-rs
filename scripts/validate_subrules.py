@@ -118,7 +118,7 @@ LIMITATIONS = [
     'Subrule ctx.toolchains positive path needs automatic exec groups, which the engine rejects before analysis; only the non-AEG Bazel error is compared.',
     'Original case01 reads dir(ctx.fragments) and remains outside I0. Named zeroattrs-no-config-views derives from scope contract seed-data fixture, not case01.',
     'Scope/Args fixture derivatives omit only unused local_platform BUILD declaration and use genuine pinned platforms distfile; original receipts never rewritten.',
-    'Ordinary ctx full dir is not compared. Bazel ordinary ctx has build_setting_value structurally; native intentionally omits it and checks this only in ordinary-setting-visibility. Subrule ctx dir is exactly actions/fragments/label/toolchains.',
+    'Ordinary ctx full dir is not compared. Bazel ordinary ctx has build_setting_value structurally; since N23c native has it too (hasattr/dir both True), checked only in ordinary-setting-visibility. Subrule ctx dir is exactly actions/fragments/label/toolchains.',
     'Java post-error scope restoration is SOURCE_DERIVED; native host tests, not invented Starlark catch/continuation, verify it.',
     'Root ctx/current actions are native nonfreezable profile; no cross-analysis persisted-context parity claim.',
     'Earlier H2 safe self-XOR ConcurrentModificationException gap remains intentional divergence, not an I0 runtime feature case or this Args NPE.',
@@ -473,9 +473,10 @@ def fixture(family, probe):
     else:
         if probe == 'ordinary-setting-visibility':
             # First genuine preparation observed True for Bazel; not paired
-            # parity. Preserve that discovery, and test native's bounded table.
+            # parity. Since N23c the native rule ctx exposes all 36 Bazel
+            # members, so native matches that observation.
             body = write_result('repr((hasattr(ctx,"build_setting_value"),"build_setting_value" in dir(ctx)))+"\\n"')
-            v['expected'] = {'consume.out': b'(False, False)\n'}
+            v['expected'] = {'consume.out': b'(True, True)\n'}
         elif probe == 'lifted-label-list':
             # Native-only: Bazel 9.3 crashes (exit 37) on any lifted label_list.
             prefix = ('def _sub(ctx,_deps):\n    print("I0_CHILD")\n    return None\n'

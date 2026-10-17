@@ -283,7 +283,7 @@ class PlanTests(unittest.TestCase):
     def test_ordinary_setting_visibility_is_explicit_native_profile_not_parity(self):
         v=s.fixture('boundaries','ordinary-setting-visibility')
         self.assertTrue(v['native_only']);self.assertIsNone(v['diagnostic'])
-        self.assertEqual(v['expected'],{'consume.out':b'(False, False)\n'})
+        self.assertEqual(v['expected'],{'consume.out':b'(True, True)\n'})
         self.assertIn('Bazel ordinary ctx has build_setting_value',str(s.LIMITATIONS))
         self.assertNotIn(b'build_setting_value',s.fixture('context','surface')['files']['defs.bzl'])
 

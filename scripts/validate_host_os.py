@@ -554,7 +554,7 @@ def run_phase(args, runner, scratch, workspace, ref, item, probe, engine):
             if actual != 'reference':
                 # Consumer input logical label and mode remain fixed. Repository
                 # provenance/source-only changes are not action-cache inputs.
-                common.action_counts(row, (0, 1) if raw in seen_bytes else (1, 0))
+                common.action_counts(row, migration_counts(engine, index, raw in seen_bytes))
                 seen_bytes.add(raw)
                 seen_roots.add(Path(obs['roots']['data.txt']).name)
                 if obs['publications'] != sorted(seen_roots):
@@ -579,6 +579,19 @@ def run_phase(args, runner, scratch, workspace, ref, item, probe, engine):
     phase['status'] = 'PASS'
     return phase
 
+
+
+def migration_counts(engine, index, seen):
+    """Expected (executed, hits) for one build of a phase.
+
+    The K-to-L migration's first L build (index 2) rebuilds once: N23d/N36
+    moved native action-cache manifests from native-action-v5 to v7, and a
+    manifest of another format is a cache miss (docs/HARDLINK_STAGING.md,
+    "pre-v7 entries rebuild once"). Every other build keeps the old rule.
+    """
+    if engine == 'migration' and index == 2:
+        return (1, 0)
+    return (0, 1) if seen else (1, 0)
 
 def shutdown(ref, runner, report):
     pidfile = ref.output_base / 'server/server.pid.txt'
@@ -787,7 +800,7 @@ def validate_phase(phase, report, args, scratch, workspace, ref):
                 if (set(data) != {'format', 'profile', 'identity', 'files'} or data['format'] != 1
                         or data['profile'] != 'direct-file-template-v1' or data['identity'] != Path(path).stem):
                     raise ValueError('legacy manifest schema/profile changed')
-            common.action_counts(row, (0, 1) if raw in seen_bytes else (1, 0))
+            common.action_counts(row, migration_counts(engine, index, raw in seen_bytes))
             seen_bytes.add(raw)
         elif any(k in obs for k in ('metadata', 'publications')):
             raise ValueError('reference cannot claim native identity')
