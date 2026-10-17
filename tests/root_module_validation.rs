@@ -341,10 +341,16 @@ fn root_module_nested_cwd_uses_workspace_root_and_current_package() {
             assert_eq!(output.stdout, b"//app:check\n");
             // The residue is joined by spaces into one query expression
             // (QueryOptionHelper.java:48), lexed like Bazel's query Lexer.
+            // A query syntax error exits 2 (ExitCode.COMMAND_LINE_ERROR, N39).
             let output = ws.run(&[command, "//app:check", "//first:first"]);
-            rejected(
-                &output,
-                "Error while parsing '//app:check //first:first': unexpected token '//first:first' after query expression '//app:check'",
+            assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+            assert!(output.stdout.is_empty());
+            assert!(
+                stderr(&output).contains(
+                    "ERROR: Error while parsing '//app:check //first:first': unexpected token '//first:first' after query expression '//app:check'"
+                ),
+                "{}",
+                stderr(&output)
             );
             let output = ws.run(&[command, "'//app:check'"]);
             assert_eq!(output.stdout, b"//app:check\n");
@@ -373,11 +379,6 @@ fn root_module_cli_argument_errors_and_metadata_commands_precede_recording() {
             vec!["build", "--unsupported-root-module-option", "//app:check"],
             "--unsupported-root-module-option :: Unrecognized option: --unsupported-root-module-option",
         ),
-        // QueryOptionHelper.java:61-68, before any loading.
-        (
-            vec!["query"],
-            "missing query expression. Type 'bazel help query' for syntax and help",
-        ),
         (vec!["build", "--jobs=0", "//app:check"], "positive integer"),
     ] {
         let output = ws.run(&args);
@@ -386,6 +387,15 @@ fn root_module_cli_argument_errors_and_metadata_commands_precede_recording() {
         assert!(!stderr(&output).contains("MODULE.bazel"));
         ws.not_loaded(&output);
     }
+    // QueryOptionHelper.java:61-68, before any loading: readQuery's
+    // "missing query expression" is the command's failure detail without an
+    // event, exit 2 and nothing on stderr (genuine Bazel 9.3,
+    // tests/fixtures/query_language error.no_expression).
+    let output = ws.run(&["query"]);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert!(output.stdout.is_empty());
+    assert_eq!(stderr(&output), "");
+    ws.not_loaded(&output);
     for command in ["version", "capabilities"] {
         let output = ws.run(&[command]);
         success(&output);

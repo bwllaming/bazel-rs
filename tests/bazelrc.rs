@@ -190,19 +190,14 @@ fn groups_inherit_in_order_and_common_ignores_other_commands_options() {
     );
     ws.file(
         ".bazelrc",
-        "build -c dbg\ncommon -c opt\ncommon --output=label\nalways --define=x=1\n",
+        "build -c dbg\ncommon -c opt\ncommon --output=label_kind\nalways --define=x=1\n",
     );
     assert_eq!(ws.built(&[], &["build", ":mode"]), "dbg");
     assert_eq!(ws.built(&[], &["build", ":define"]), "x");
-    // --output is a query option: native query does not model it.
-    let error = ws.failed(&[], &["query", ":ok"]);
-    assert!(
-        error.contains(&format!(
-            "unsupported option \"--output=label\" from rc file {}:3 ('common' options); options are never silently ignored",
-            rc_path(&ws, ".bazelrc")
-        )),
-        "{error}"
-    );
+    // --output is a query option (N39): `common` applies it to query.
+    let out = ws.run(&["query", ":ok"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(out.stdout, b"filegroup rule //:ok\n");
     // `always` options are not ignored for commands without them.
     ws.file(".bazelrc", "always --test_output=errors\n");
     let error = ws.failed(&[], &["query", ":ok"]);

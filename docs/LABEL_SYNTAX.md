@@ -58,16 +58,15 @@ verbatim in Bazel's stderr). Pinned source: `/tmp/opencode/bazel-9.3-reference`.
   `while parsing ':all': ...`; `query` does not.
 * `query`: the residue is joined by spaces (`QueryOptionHelper.java:41-48`) and
   lexed like Bazel's query `Lexer` (`query2/engine/Lexer.java:119-318`, in
-  `src/query_expression.rs`). Spaces and ASCII punctuation other than
-  `*/@.-_:$~[]` end an unquoted word, so `query //sp ace:all` is Bazel's
-  `Error while parsing '//sp ace:all': unexpected token 'ace:all' after query
-  expression '//sp'` and `query //(group)/...` an unknown-function error; quote
-  the pattern (`query '"//sp ace:all"'`). Only a single target literal is
-  evaluated: functions, operators, `let`, `set` and parentheses are explicit
-  native gaps (`query expression '...' is not implemented in the native
-  profile`). Syntax errors (`premature end of input`, `unclosed quotation`,
-  `syntax error at '...'`, `target literal must not begin with (-)`) use Bazel's
-  texts.
+  `src/query_language.rs`, N39's full query language). Spaces and ASCII
+  punctuation other than `*/@.-_:$~[]` end an unquoted word, so
+  `query //sp ace:all` is Bazel's `Error while parsing '//sp ace:all':
+  unexpected token 'ace:all' after query expression '//sp'` and
+  `query //(group)/...` an unknown-function error; quote the pattern
+  (`query '"//sp ace:all"'`). Every target-literal word is a target pattern
+  parsed and expanded as above (docs/QUERY.md). Syntax errors (`premature end
+  of input`, `unclosed quotation`, `syntax error at '...'`, `target literal
+  must not begin with (-)`) use Bazel's texts (exit 2).
 
 ## Package discovery and boundaries
 

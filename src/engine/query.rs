@@ -462,12 +462,38 @@ struct Env<'a> {
     main_mapping_order: Vec<String>,
 }
 
+/// QueryOptionHelper.readQuery (runtime/commands/QueryOptionHelper.java:
+/// 41-70): the residue joined by spaces, else the `--query_file` contents
+/// (ISO_8859_1). `None` is a readQuery failure, which QueryCommand returns as
+/// the command's failure detail without an event
+/// (QueryEnvironmentBasedCommand.java:
+/// `return BlazeCommandResult.failureDetail(e.getFailureDetail())`): exit 2,
+/// nothing on stderr (paired capture error.no_expression). The failures are
+/// "missing query expression. Type 'bazel help query' for syntax and help",
+/// "Command-line query and --query_file cannot both be specified" and
+/// "I/O error reading from PATH".
+pub fn read_query(residue: &[String], options: &QueryOptions) -> Option<String> {
+    if !residue.is_empty() {
+        if !options.query_file.is_empty() {
+            return None;
+        }
+        return Some(residue.join(" "));
+    }
+    if options.query_file.is_empty() {
+        return None;
+    }
+    let cwd = std::env::current_dir().ok()?;
+    let bytes = std::fs::read(cwd.join(&options.query_file)).ok()?;
+    Some(bytes.into_iter().map(char::from).collect())
+}
+
 impl Engine {
-    /// Evaluate one `bazel query` command. `Err` is a native fatal loading
+    /// Evaluate one `bazel query` command's expression (read by
+    /// [`read_query`] before any loading). `Err` is a native fatal loading
     /// failure (printed as `bazel-rs: ...`, exit 1).
     pub fn query(
         &mut self,
-        residue: &[String],
+        query: &str,
         options: &QueryOptions,
         relative_directory: &str,
     ) -> Result<QueryOutcome, String> {
@@ -482,33 +508,7 @@ impl Engine {
             outcome.exit_code = code;
             Ok(outcome)
         };
-        // QueryOptionHelper.readQuery failures are returned as the command's
-        // failure detail without an event (QueryEnvironmentBasedCommand.java:
-        // `return BlazeCommandResult.failureDetail(e.getFailureDetail())`).
-        let silent = |mut outcome: QueryOutcome, code: i32| {
-            outcome.exit_code = code;
-            Ok(outcome)
-        };
-        // QueryOptionHelper.readQuery (runtime/commands/QueryOptionHelper.java).
-        let query = if !residue.is_empty() {
-            if !options.query_file.is_empty() {
-                // "Command-line query and --query_file cannot both be specified"
-                return silent(outcome, 2);
-            }
-            residue.join(" ")
-        } else if !options.query_file.is_empty() {
-            let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-            let path = cwd.join(&options.query_file);
-            match std::fs::read(&path) {
-                // ISO_8859_1 decoding.
-                Ok(bytes) => bytes.into_iter().map(char::from).collect(),
-                // "I/O error reading from PATH"
-                Err(_) => return silent(outcome, 2),
-            }
-        } else {
-            // "missing query expression. Type 'bazel help query' for syntax and help"
-            return silent(outcome, 2);
-        };
+        let query = query.to_owned();
         if !FORMATTERS.contains(&options.output.as_str()) {
             return fail(
                 outcome,

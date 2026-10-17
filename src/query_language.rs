@@ -800,4 +800,73 @@ mod tests {
             .collect_target_patterns(&mut patterns);
         assert_eq!(patterns, ["//a", "//b", "//c"]);
     }
+
+    /// N38's single-literal lexer cases (its src/query_expression.rs, merged
+    /// into this lexer): the same words and Bazel syntax-error texts.
+    #[test]
+    fn n38_single_literals_and_syntax_errors() {
+        for (query, literal) in [
+            ("//...", "//..."),
+            ("//p:*", "//p:*"),
+            ("@@rules++ext+repo//:x", "@@rules++ext+repo//:x"),
+            ("'//sp ace:a b'", "//sp ace:a b"),
+            ("\"//(group)/...\"", "//(group)/..."),
+            ("//caf\u{e9}:x", "//caf\u{e9}:x"),
+            ("  //a:b  ", "//a:b"),
+        ] {
+            match parse(query) {
+                Ok(Expr::Target(word)) => assert_eq!(word, literal, "{query:?}"),
+                other => panic!("{query:?}: {:?}", other.map(|expr| expr.to_string())),
+            }
+        }
+        for (query, message) in [
+            (
+                "//sp ace:all",
+                "Error while parsing '//sp ace:all': unexpected token 'ace:all' after query expression '//sp'",
+            ),
+            (
+                "@a b//:x",
+                "Error while parsing '@a b//:x': unexpected token 'b//:x' after query expression '@a'",
+            ),
+            (
+                "//(group)/...",
+                "Error while parsing '//(group)/...': unknown function '//' at '// ( group'; expected one of ['allpaths', 'attr', 'buildfiles', 'deps', 'executables', 'filter', 'kind', 'labels', 'loadfiles', 'rdeps', 'same_pkg_direct_rdeps', 'siblings', 'some', 'somepath', 'tests', 'visible']",
+            ),
+            ("", "Error while parsing '': premature end of input"),
+            ("'//x", "Error while parsing ''//x': unclosed quotation"),
+            (
+                "- //x",
+                "Error while parsing '- //x': syntax error at '- //x'",
+            ),
+            (
+                "'-x'",
+                "Error while parsing ''-x'': target literal must not begin with (-): -x",
+            ),
+            (
+                "'a b' c",
+                "Error while parsing ''a b' c': unexpected token 'c' after query expression '\"a b\"'",
+            ),
+        ] {
+            assert_eq!(
+                format!(
+                    "Error while parsing '{}': {}",
+                    truncate(query),
+                    error(query)
+                ),
+                message,
+                "{query:?}"
+            );
+        }
+        // Expressions N38 reported as native gaps are the full language now.
+        for query in [
+            "deps(//x)",
+            "//a + //b",
+            "//a - //b",
+            "let x = //a in $x",
+            "set(//a)",
+            "(//a)",
+        ] {
+            assert!(parse(query).is_ok(), "{query:?}");
+        }
+    }
 }

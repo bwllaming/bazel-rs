@@ -33,11 +33,23 @@ Java's `PatternSyntaxException` text, other Java-only constructs differ). A
 fancy-regex runtime failure (its backtracking limit) is an explicit query
 error, never a non-match; Java has no such limit.
 
-Target patterns: `//pkg:target`, relative `:t`/`t`, `//pkg` (`//pkg:pkg`),
-`:all`, `:*`, `:all-targets`, `//pkg/...`, `//...`, `...:*` and
-`...:all-targets`, external `@repo//...` forms. A rule named `all` wins over
-the wildcard with Bazel's ambiguity warning; an empty recursive pattern is
-`no targets found beneath 'dir'`; ignored directories warn like `build`.
+Target patterns: every target-literal word is parsed and expanded like a
+`build` pattern (N38, docs/LABEL_SYNTAX.md): `TargetPattern.Parser` with the
+working directory below the workspace root as relativeDirectory
+(`crate::target_pattern::parse`), then `Engine::expand_pattern` with
+FilteringPolicies.NO_FILTER. That covers `//pkg:target`, relative `:t`/`t`,
+`//pkg` (`//pkg:pkg`), path-as-target words, `:all`, `:*`, `:all-targets`,
+`//pkg/...`, `//...`, `...:*`, `...:all-targets` and external `@repo//...`
+forms. An absolute `:all` naming an existing target wins over the wildcard
+with Bazel's ambiguity warning; an empty recursive pattern is `no targets
+found beneath 'dir'`; ignored directories warn like `build`. A leading `-` is
+the query's `except` operator, never a negative pattern. Label syntax errors
+are N38's typed TargetParsingExceptions; loading failures keep the
+NoSuchPackage/NoSuchTarget classification (skipped under `--keep_going`).
+`query` with no expression (QueryOptionHelper.readQuery: `missing query
+expression`, or both a residue and `--query_file`) exits 2 before any loading
+with nothing on stderr, as genuine Bazel 9.3 does (receipt case
+error.no_expression).
 
 ## Graph semantics
 

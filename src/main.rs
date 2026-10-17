@@ -148,14 +148,16 @@ fn run() -> Result<(), String> {
         eprintln!("WARNING: {warning}");
     }
     // QueryOptionHelper.readQuery (runtime/commands/QueryOptionHelper.java:
-    // 41-70): the residue joined by spaces is the query expression.
+    // 41-70), before any loading: the residue joined by spaces is the query
+    // expression (else --query_file). Its failures ("missing query
+    // expression. Type 'bazel help query' for syntax and help", ...) are the
+    // command's failure detail without an event: exit 2, silent, like
+    // genuine Bazel 9.3 (tests/fixtures/query_language, error.no_expression).
     let rest = if command == "query" {
-        if rest.is_empty() {
-            return Err(
-                "missing query expression. Type 'bazel help query' for syntax and help".into(),
-            );
+        match bazel_rs::engine::query::read_query(&rest, &query_options) {
+            Some(query) => vec![query],
+            None => std::process::exit(2),
         }
-        vec![rest.join(" ")]
     } else {
         rest
     };
@@ -237,7 +239,7 @@ fn run() -> Result<(), String> {
     // (cmdline/TargetPattern.java:783-789).
     let relative_directory = relative_directory(&root, &cwd)?;
     if command == "query" {
-        let outcome = engine.query(&rest, &query_options, &relative_directory);
+        let outcome = engine.query(&rest[0], &query_options, &relative_directory);
         // Pattern warnings precede the query's own events.
         for warning in engine.take_warnings() {
             eprintln!("WARNING: {warning}");
