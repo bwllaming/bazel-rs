@@ -171,6 +171,10 @@ pub struct RunTarget {
     pub entries: Option<Vec<(String, Option<PathBuf>)>>,
     /// The output directory mnemonic of the target's configuration.
     pub mnemonic: String,
+    /// The configuration's action environment (N42), TestPolicy step 2.
+    pub action_env: crate::action_env::ActionEnvironment,
+    /// The configuration's `--test_env` environment (N42), TestPolicy step 3.
+    pub test_env: crate::action_env::ActionEnvironment,
 }
 
 /// The runfiles of a `run` target.
@@ -5817,11 +5821,11 @@ impl Engine {
     pub fn select_for_test(
         &mut self,
         patterns: &[String],
-        current_package: &str,
+        relative_directory: &str,
     ) -> Result<(Vec<Label>, Vec<Label>), String> {
         let mut build = BTreeSet::new();
         let mut tests = BTreeSet::new();
-        for label in self.select_filtered(patterns, current_package, true)? {
+        for label in self.select_filtered(patterns, relative_directory, true)? {
             if self.is_test_suite(&label)? {
                 let expanded = self.expand_test_suite(&label, &mut Vec::new())?;
                 build.extend(expanded.iter().cloned());
@@ -6029,6 +6033,12 @@ impl Engine {
                     runfiles,
                     entries,
                     mnemonic: self.configurations.mnemonic(plan.config).to_owned(),
+                    action_env: self
+                        .configurations
+                        .get(plan.config)
+                        .native
+                        .action_environment(),
+                    test_env: self.configurations.get(plan.config).native.test_environment(),
                     settings: plan.settings,
                 },
             );

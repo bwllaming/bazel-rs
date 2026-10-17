@@ -9,7 +9,6 @@
 //! Paths below are under src/main/java/com/google/devtools/build/lib/ of the
 //! pinned Bazel 9.3 sources.
 
-use crate::run_command::EnvVar;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -212,8 +211,6 @@ pub struct TestOptions {
     pub output: TestOutput,
     pub summary: TestSummaryFormat,
     pub cache_test_results: TriState,
-    /// `--test_env` (Converters.EnvVarsConverter).
-    pub env: Vec<EnvVar>,
     /// `--test_arg`.
     pub args: Vec<String>,
     /// `--test_filter` (TESTBRIDGE_TEST_ONLY).
@@ -252,7 +249,6 @@ impl Default for TestOptions {
             output: TestOutput::Summary,
             summary: TestSummaryFormat::Short,
             cache_test_results: TriState::Auto,
-            env: Vec::new(),
             args: Vec::new(),
             filter: None,
             runner_fail_fast: false,
@@ -494,11 +490,13 @@ impl TestOptions {
             self.cache_test_results = TriState::Yes;
             return Ok(Some(false));
         }
-        const VALUED: [&str; 18] = [
+        // `--test_env` is a configuration option (N42, TestConfiguration;
+        // crate::configuration) and reaches the test through the
+        // configuration's test ActionEnvironment (EnvInputs::test_env).
+        const VALUED: [&str; 17] = [
             "test_output",
             "test_summary",
             "cache_test_results",
-            "test_env",
             "test_arg",
             "test_filter",
             "test_timeout",
@@ -517,7 +515,7 @@ impl TestOptions {
         for name in VALUED {
             let flag = format!("--{name}");
             let (value, used) = if arg == flag {
-                // test_filter/test_env/test_arg take any separate value.
+                // test_filter/test_arg take any separate value.
                 (
                     next.ok_or_else(|| format!("{flag} requires a value"))?,
                     true,
@@ -580,10 +578,6 @@ impl TestOptions {
                     }
                 };
             }
-            "test_env" => self.env.push(
-                EnvVar::parse(value)
-                    .map_err(|error| error.replacen("--run_env", "--test_env", 1))?,
-            ),
             "test_arg" => self.args.push(value.to_owned()),
             "test_filter" => self.filter = Some(value.to_owned()),
             "test_timeout" => self.timeouts = parse_timeouts(flag, value)?,
@@ -990,6 +984,12 @@ pub fn test_directory(name: &str, shard: u32, shards: u32, run: u32, runs: u32) 
 
 /// What the test environment is computed from.
 pub struct EnvInputs<'a> {
+    /// The configuration's action environment (`--action_env`, strict PATH;
+    /// BuildConfigurationValue.getActionEnvironment, N42).
+    pub action_env: &'a crate::action_env::ActionEnvironment,
+    /// The configuration's test environment (`--test_env`;
+    /// BuildConfigurationValue.getTestActionEnvironment, N42).
+    pub test_env: &'a crate::action_env::ActionEnvironment,
     pub client_env: &'a BTreeMap<String, String>,
     pub options: &'a TestOptions,
     /// RunEnvironmentInfo.environment and inherited_environment.
@@ -1015,9 +1015,20 @@ pub struct EnvInputs<'a> {
     pub runfiles_enabled: bool,
 }
 
-/// The default action environment of the configuration
-/// (`--incompatible_strict_action_env`, true in Bazel 9.3).
-pub const ACTION_PATH: &str = crate::analysis_runtime::DEFAULT_SHELL_PATH;
+/// ActionEnvironment.resolve (actions/ActionEnvironment.java:113-122): the
+/// fixed values, then the inherited names the client environment sets.
+fn resolve_into(
+    env: &mut BTreeMap<String, String>,
+    environment: &crate::action_env::ActionEnvironment,
+    client_env: &BTreeMap<String, String>,
+) {
+    env.extend(environment.fixed.clone());
+    for name in &environment.inherited {
+        if let Some(value) = client_env.get(name) {
+            env.insert(name.clone(), value.clone());
+        }
+    }
+}
 
 /// TestPolicy.computeTestEnvironment (exec/TestPolicy.java:56-101) with
 /// StandaloneTestStrategy.DEFAULT_LOCAL_POLICY (exec/StandaloneTestStrategy.java:75-87)
@@ -1038,24 +1049,11 @@ pub fn test_environment(inputs: &EnvInputs<'_>) -> BTreeMap<String, String> {
     }
     put(&mut env, "TEST_TMPDIR", inputs.tmp_dir);
     put(&mut env, "RUN_UNDER_RUNFILES", "1");
-    // The configuration's action environment (--action_env is not modelled:
-    // the strict default PATH).
-    put(&mut env, "PATH", ACTION_PATH);
-    // --test_env (ActionEnvironment.resolve: fixed values, then inherited
-    // ones present in the client environment).
-    for variable in &inputs.options.env {
-        match variable {
-            EnvVar::Set(name, value) => put(&mut env, name, value),
-            EnvVar::Inherit(name) => {
-                if let Some(value) = inputs.client_env.get(name) {
-                    put(&mut env, name, value);
-                }
-            }
-            EnvVar::Unset(name) => {
-                env.remove(name);
-            }
-        }
-    }
+    // The configuration's action environment, then its test environment
+    // (TestPolicy.java:88-92; both enter TestRunnerAction.computeKey,
+    // :542-543, through the keyed environment).
+    resolve_into(&mut env, inputs.action_env, inputs.client_env);
+    resolve_into(&mut env, inputs.test_env, inputs.client_env);
     // The rule's RunEnvironmentInfo (TestRunnerAction.getExtraTestEnv).
     for (name, value) in inputs.target_env {
         put(&mut env, name, value);

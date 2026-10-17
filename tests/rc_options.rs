@@ -141,11 +141,14 @@ fn code_rc_options_reach_query_and_build() {
         ),
     );
     assert!(!stderr(&buildbarn).contains("buildbarn.invalid"));
-    // The test options never apply to build/query; the test command is
-    // explicit at command level.
-    rejected(
-        &f.run(&["test", "//:plain"]),
-        "unsupported command or startup option \"test\"",
+    // The `test` group's options reach N23g's test command (and never
+    // build/query): a non-test target is built and Bazel's exit 4 follows.
+    let test = f.run(&["test", "//:plain"]);
+    assert_eq!(test.status.code(), Some(4), "{}", stderr(&test));
+    assert!(
+        stderr(&test).contains("ERROR: No test targets were found, yet testing was requested"),
+        "{}",
+        stderr(&test)
     );
 }
 

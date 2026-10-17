@@ -410,7 +410,7 @@ fn failing_test_xml_exit_code_and_reruns() {
     ));
     assert!(summary(&output).ends_with("\nExecuted 1 out of 1 test: 1 fails locally.\n"));
     let log = &logs(&output)[0];
-    assert!(log.ends_with("bazel-out/rust-fastbuild/testlogs/pkg/fail_test/test.log"));
+    assert!(log.ends_with("bazel-out/k8-fastbuild/testlogs/pkg/fail_test/test.log"));
     assert_eq!(
         fs::read_to_string(log).unwrap(),
         "exec ${PAGER:-/usr/bin/less} \"$0\" || exit 1\nExecuting tests from //pkg:fail_test\n-----------------------------------------------------------------------------\nfailing\nto-stderr\n"
@@ -534,11 +534,11 @@ fn sharding_flaky_timeout_and_signals() {
         .flatten()
         .map(|entry| entry.path())
         .find(|path| {
-            path.join("bazel-out/rust-fastbuild/testlogs/pkg/outputs_test")
+            path.join("bazel-out/k8-fastbuild/testlogs/pkg/outputs_test")
                 .exists()
         })
         .unwrap();
-    let base = entry.join("bazel-out/rust-fastbuild/testlogs/pkg/outputs_test");
+    let base = entry.join("bazel-out/k8-fastbuild/testlogs/pkg/outputs_test");
     assert_eq!(
         fs::read_to_string(base.join("test.outputs/out.txt")).unwrap(),
         "hello\n"

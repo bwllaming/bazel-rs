@@ -70,6 +70,9 @@ pub struct TestSpec {
     pub args: Vec<String>,
     pub target_env: Vec<(String, String)>,
     pub target_inherited: Vec<String>,
+    /// The target configuration's action and test environments (N42).
+    pub action_env: crate::action_env::ActionEnvironment,
+    pub test_env: crate::action_env::ActionEnvironment,
 }
 
 /// The genuine test runner scripts of the embedded `@bazel_tools`.
@@ -425,6 +428,8 @@ impl Runner<'_> {
     fn environment(&self, unit: &Unit<'_>, paths: &Paths) -> BTreeMap<String, String> {
         let spec = unit.spec;
         test_environment(&EnvInputs {
+            action_env: &spec.action_env,
+            test_env: &spec.test_env,
             client_env: self.client_env,
             options: self.options,
             target_env: &spec.target_env,

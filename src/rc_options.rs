@@ -19,13 +19,6 @@ pub struct RcOptions {
     /// `--experimental_isolated_extension_usages`
     /// (packages/semantics/BuildLanguageOptions.java:278-286).
     pub isolated_extension_usages: bool,
-    /// `--test_output` (exec/ExecutionOptions.java:271-293); only test
-    /// execution reads it (runtime/commands/TestCommand.java:84-100,
-    /// runtime/TestSummaryPrinter.java:51-90), so it has no effect on `build`.
-    pub test_output: &'static str,
-    /// `--test_summary` (exec/ExecutionOptions.java:311-330); test-only like
-    /// `--test_output`.
-    pub test_summary: &'static str,
 }
 
 impl Default for RcOptions {
@@ -34,24 +27,9 @@ impl Default for RcOptions {
             repo_env: Vec::new(),
             attempt_to_print_relative_paths: false,
             isolated_extension_usages: false,
-            test_output: "summary",
-            test_summary: "short",
         }
     }
 }
-
-/// ExecutionOptions.TestOutputFormat (:528-549), EnumConverter names.
-const TEST_OUTPUT: &[&str] = &["summary", "errors", "all", "streamed"];
-/// ExecutionOptions.TestSummaryFormat (:552-577).
-const TEST_SUMMARY: &[&str] = &[
-    "short",
-    "short_uncached",
-    "terse",
-    "detailed",
-    "detailed_uncached",
-    "none",
-    "testcase",
-];
 
 /// Remote execution options (remote/options/RemoteOptions.java:91, :601).
 /// `--remote_instance_name` (:367) is N41's: HTTP caches accept and ignore it.
@@ -99,35 +77,6 @@ fn boolean(arg: &str, names: &[&str]) -> Option<Result<bool, String>> {
         .find_map(|name| crate::configuration::boolean_option(arg, name))
 }
 
-/// EnumConverter (common/options/EnumConverter.java:32-67).
-fn enumeration(
-    form: &str,
-    value: &str,
-    type_name: &str,
-    values: &'static [&'static str],
-) -> Result<&'static str, String> {
-    values
-        .iter()
-        .find(|candidate| candidate.eq_ignore_ascii_case(value))
-        .copied()
-        .ok_or_else(|| {
-            let mut list = String::new();
-            for (index, candidate) in values.iter().enumerate() {
-                if index > 0 {
-                    list.push_str(if index + 1 < values.len() {
-                        ", "
-                    } else {
-                        " or "
-                    });
-                }
-                list.push_str(candidate);
-            }
-            format!(
-                "While parsing option {form}: Not a valid {type_name}: '{value}' (should be {list})"
-            )
-        })
-}
-
 impl RcOptions {
     /// Parse one option of `command` (`build`, `query` or `mod`). `Ok(None)`
     /// when `arg` is not one of these options; `Ok(Some(used_next))` when it
@@ -139,7 +88,8 @@ impl RcOptions {
         next: Option<&str>,
         origin: &str,
     ) -> Result<Option<bool>, String> {
-        let build = command == "build";
+        // `run` and `test` inherit build's options (N23f, N23g).
+        let build = matches!(command, "build" | "run" | "test");
         let unrecognized = || invalid_argument(arg, format!("Unrecognized option: {arg}"));
         if let Some(parsed) = value_option(arg, next, "repo_env") {
             let (form, value, used) = parsed?;
@@ -180,22 +130,15 @@ impl RcOptions {
         // `--[no]incompatible_strict_action_env` is a configuration option
         // since N42 (crate::configuration, docs/ACTION_ENV.md): both values
         // are modelled there, so it is not claimed here.
-        for (name, type_name, values) in [
-            ("test_output", "test output", TEST_OUTPUT),
-            ("test_summary", "test summary", TEST_SUMMARY),
-        ] {
-            if let Some(parsed) = value_option(arg, next, name) {
+        // `--test_output`/`--test_summary` (exec/ExecutionOptions.java:271-330)
+        // are N23g's test options (crate::test_command::TestOptions) of the
+        // building commands; other commands do not have them.
+        for name in ["test_output", "test_summary"] {
+            if value_option(arg, next, name).is_some() {
                 if !build {
                     return Err(unrecognized());
                 }
-                let (form, value, used) = parsed?;
-                let value = enumeration(&form, value, type_name, values)?;
-                if name == "test_output" {
-                    self.test_output = value;
-                } else {
-                    self.test_summary = value;
-                }
-                return Ok(Some(used));
+                return Ok(None);
             }
         }
         if let Some(parsed) = value_option(arg, next, "sandbox_add_mount_pair") {
@@ -242,9 +185,6 @@ mod tests {
         let options = parse(
             "build",
             &[
-                "--test_output=errors",
-                "--test_summary",
-                "TERSE",
                 "--attempt_to_print_relative_paths=true",
                 "--repo_env=JAVA_HOME=../bazel_tools/jdk",
                 "--experimental_isolated_extension_usages",
@@ -267,10 +207,22 @@ mod tests {
                 "{arg}"
             );
         }
-        assert_eq!(
-            (options.test_output, options.test_summary),
-            ("errors", "terse")
-        );
+        // --test_output/--test_summary belong to N23g's TestOptions for the
+        // building commands (crate::test_command, tested there).
+        for command in ["build", "run", "test"] {
+            assert_eq!(
+                RcOptions::default()
+                    .parse(command, "--test_output=errors", None, "")
+                    .unwrap(),
+                None
+            );
+            assert_eq!(
+                RcOptions::default()
+                    .parse(command, "--test_summary", Some("terse"), "")
+                    .unwrap(),
+                None
+            );
+        }
         assert_eq!(
             options.repo_env,
             [
@@ -303,10 +255,6 @@ mod tests {
         assert_eq!(
             error("build", &["--norepo_env"]),
             "--norepo_env :: Illegal use of 'no' prefix on non-boolean option: --norepo_env"
-        );
-        assert_eq!(
-            error("build", &["--test_output=some"]),
-            "While parsing option --test_output=some: Not a valid test output: 'some' (should be summary, errors, all or streamed)"
         );
         assert_eq!(
             error("query", &["--test_output=errors"]),
