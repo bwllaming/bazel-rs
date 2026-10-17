@@ -359,11 +359,11 @@ cov_edge(name = "cov_late", dep = ":late", value = "@bool_true")
         stderr.contains("//cov:late: the late-bound attribute '_gen' (configuration_field(\"coverage\", ...)) in a configuration with --collect_code_coverage"),
         "{stderr}"
     );
-    // N50's coverage_common.instrumented_files_info is InstrumentedFilesInfo.EMPTY
-    // only outside a coverage configuration (integration-15).
+    // coverage_common.instrumented_files_info (N54, crate::instrumented_files)
+    // is InstrumentedFilesInfo.EMPTY only outside a coverage configuration.
     let stderr = ws.rejected(&args(&profile, &[], &["//cov:cov_ifi".to_owned()]));
     assert!(
-        stderr.contains("coverage_common.instrumented_files_info in a configuration with --collect_code_coverage (set by a Starlark transition) is not implemented in the native profile"),
+        stderr.contains("coverage_common.instrumented_files_info() in a configuration with --collect_code_coverage (set by a Starlark transition) is not implemented in the native profile"),
         "{stderr}"
     );
     ws.report(&args(&profile, &[], &["//cov:ifi".to_owned()]));

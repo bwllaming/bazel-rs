@@ -63,23 +63,18 @@ still fails analysis explicitly when the attribute has a value.
 
 ## `coverage_common.instrumented_files_info`
 
-CoverageCommon.instrumentedFilesInfo (`analysis/test/CoverageCommon.java:46-117`):
-parameter types (`in call to instrumented_files_info(), parameter 'ctx' got
-value of type 'NoneType', want 'ctx'`), the body's casts (`at index 0 of
-source_attributes, got element of type int, want string`, coverage support
-files, `coverage_environment` dict types), the private-API restriction of
-non-empty support files / environment / reported sources (`file
-'//cov:defs.bzl' cannot use private API`), then InstrumentedFilesInfo.EMPTY:
-the command-line `--collect_code_coverage` is rejected, so outside a coverage
-configuration InstrumentedFilesCollector.collect returns it (`:96-109`). In a
-configuration where a Starlark transition set `--collect_code_coverage` (N47)
-the call fails explicitly after the checks, like `ctx.coverage_instrumented()`
-(instrumentation filters are not modelled). The value has type
-`InstrumentedFilesInfo`, empty `instrumented_files`/`metadata_files` depsets,
-NativeInfo's repr `struct(instrumented_files = depset([]), metadata_files =
-depset([]))` and equality; it is a returned provider of the target. Non-empty
-`reported_to_actual_sources` fails explicitly. The `InstrumentedFilesInfo`
-global and its `get_coverage_*` methods are not provided.
+On integration-15 the implementation is N54's `src/instrumented_files.rs`
+(docs/COVERAGE.md), which supersedes N50's: the same parameter types, casts
+in Bazel's order and private-API restriction (N50's rows E8-E12 replay with
+their recorded verdicts), then InstrumentedFilesInfo.EMPTY without
+`--collect_code_coverage`; `reported_to_actual_sources` is only cast like
+Bazel. The `InstrumentedFilesInfo` global, `target[InstrumentedFilesInfo]`
+for filegroup/genrule/output files/aliases and the private `get_coverage_*`
+methods exist. In a configuration where a Starlark transition set
+`--collect_code_coverage` (N47) the call fails explicitly and every rule
+without InstrumentedFilesInfo/ToolchainInfo carries the unmodelled coverage
+provider whose members fail explicitly (RuleConfiguredTargetBuilder's
+forwardAll).
 
 ## `skip_conflict_checking`
 
@@ -133,5 +128,5 @@ receipt (`reference_run_outputs`); genuine `bazel test //sh:t` PASSED.
   of the same transition); that wider identity is follow-up N55 (one frozen
   Target value per configured node, keyed by ConfiguredTargetKey, pointer
   identity).
-* `InstrumentedFilesInfo` as a global / `target[InstrumentedFilesInfo]`,
-  coverage collection.
+* Coverage collection (N54 provides the InstrumentedFilesInfo surface without
+  coverage; collecting in coverage configurations is explicit).
