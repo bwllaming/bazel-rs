@@ -247,8 +247,8 @@ fn stamped_build_info_and_toolchains_attribute_fail_explicitly() {
     let text = stderr(&output);
     assert!(!output.status.success(), "{text}");
     for needle in [
-        "actions.transform_version_file output bazel-out/rust-fastbuild/bin/external/bazel_tools/tools/build_defs/build_info/volatile_file.h: workspace status (build info) transformation is not supported by the native profile",
-        "actions.transform_info_file output bazel-out/rust-fastbuild/bin/external/bazel_tools/tools/build_defs/build_info/non_volatile_file.h",
+        "actions.transform_version_file output bazel-out/k8-fastbuild/bin/external/bazel_tools/tools/build_defs/build_info/volatile_file.h: workspace status (build info) transformation is not supported by the native profile",
+        "actions.transform_info_file output bazel-out/k8-fastbuild/bin/external/bazel_tools/tools/build_defs/build_info/non_volatile_file.h",
     ] {
         assert!(text.contains(needle), "{needle:?} in:\n{text}");
     }

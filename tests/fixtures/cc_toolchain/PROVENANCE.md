@@ -3,7 +3,8 @@
 `workspace/` is hand-written for N25d4/N25d5 (docs/CC_TOOLCHAIN.md).
 `expected/*.json` are the native outputs of `tests/cc_toolchain.rs`'s builds;
 the paired genuine Bazel 9.3 capture (`reference_receipt.json`) compares them
-with genuine outputs (bazel-out mnemonic divergence D1 normalized).
+with genuine outputs (bazel-out mnemonic divergence D1 normalized; since
+N41's k8 roots the expected files are byte-identical to the genuine outputs).
 
 `vendor/` and `vendor_shared.txt` (paths taken from
 `tests/fixtures/cc_features/vendor`, byte-identical) are byte copies of the

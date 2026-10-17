@@ -279,7 +279,7 @@
   "dynamic_runtime_lib": {
    "depset": []
   },
-  "dynamic_runtime_solib_dir": "bazel-out/rust-fastbuild/bin/_solib__zig_Cx86_U64-linux-gnu.2.28_Ucc",
+  "dynamic_runtime_solib_dir": "bazel-out/k8-fastbuild/bin/_solib__zig_Cx86_U64-linux-gnu.2.28_Ucc",
   "gcov_executable": "/usr/bin/false",
   "generate_modmap": {
    "owner": "@@bazel_tools//tools/cpp/modules_tools:generate-modmap",
@@ -306,14 +306,14 @@
   "ABI": "fixture-abi",
   "ABI_GLIBC_VERSION": "fixture-abi-libc",
   "AR": "/usr/bin/fixture-ar",
-  "BINDIR": "bazel-out/rust-fastbuild/bin",
+  "BINDIR": "bazel-out/k8-fastbuild/bin",
   "CC": "/usr/bin/fixture-gcc",
   "CC_FLAGS": "-legacy-cc-flags --sysroot=/fixture/sysroot",
   "COMPILATION_MODE": "fastbuild",
   "CROSSTOOLTOP": "tc",
   "C_COMPILER": "fixture-compiler",
   "FIXTURE_MAKE_VAR": "fixture-value",
-  "GENDIR": "bazel-out/rust-fastbuild/bin",
+  "GENDIR": "bazel-out/k8-fastbuild/bin",
   "GLIBC_VERSION": "fixture-libc",
   "LD": "tc/bin/fixture-ld",
   "NM": "/usr/bin/fixture-nm",

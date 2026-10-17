@@ -164,6 +164,6 @@ fn file_reachable_only_through_a_provider_closure_is_not_a_known_input() {
     // (docs/CC_TOOLCHAIN.md), so the input is unknown, explicitly.
     rejected(
         &ws.build(&[":consumer"]),
-        "action input bazel-out/rust-fastbuild/bin/hidden.txt is not a dependency or declared output",
+        "action input bazel-out/k8-fastbuild/bin/hidden.txt is not a dependency or declared output",
     );
 }

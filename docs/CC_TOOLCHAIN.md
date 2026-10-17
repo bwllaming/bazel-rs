@@ -115,11 +115,10 @@ demanding them through any consumer.
   to the provider-file walk) used as an action input fails with
   `action input <path> is not a dependency or declared output`
   (tests/output_group_info.rs).
-- Output paths use the native `rust-<mode>` mnemonics (docs/CONFIGURATION.md
-  D1), so `ctx.bin_dir`-derived values such as
-  `CcToolchainInfo.dynamic_runtime_solib_dir` read
-  `bazel-out/rust-fastbuild/bin/_solib__...` where Bazel prints
-  `bazel-out/k8-fastbuild/bin/_solib__...`.
+- Output paths use Bazel's `k8-<mode>` / `k8-opt-exec` roots since N41
+  closed divergence D1 (docs/CONFIGURATION.md), so `ctx.bin_dir`-derived
+  values such as `CcToolchainInfo.dynamic_runtime_solib_dir` read
+  `bazel-out/k8-fastbuild/bin/_solib__...` exactly as Bazel prints them.
 
 ## Evidence
 
@@ -142,13 +141,16 @@ demanding them through any consumer.
   (harness `artifacts/cc_toolchain-capture.py`, complete genuine modules on both
   engines). Final run: F1 (target, exec, zig, build-info dump, redacted
   header, eight concurrent consumers), F1 `-c dbg` and F2 (host
-  `@local_config_cc`, target and exec) are EXACT_D1 — byte-identical after
-  mapping Bazel's `bazel-out/k8-<mode>` / `k8-opt-exec[-ST-<hash>]` to the
-  native mnemonics; the trimmed test vendor gives the same native bytes as the
+  `@local_config_cc`, target and exec) were EXACT_D1 — byte-identical after
+  mapping Bazel's `bazel-out/k8-<mode>` / `k8-opt-exec` to the then-native
+  `rust-` mnemonics; on integration-15 (k8 roots, no mapping) every one of
+  them is byte-identical to the receipt's `reference_sha256` (EXACT; native
+  replay recorded in the receipt's `post_capture_changes`, no new genuine
+  run); the trimmed test vendor gives the same native bytes as the
   complete modules (EXACT); the stamped build-info outputs and the genrule
   `toolchains` attribute are the declared EXPECTED_NATIVE_GAPs (genuine:
   `/usr/bin/fixture-gcc|/usr/bin/fixture-ar|tc|fixture-value|`).
-- Finding of the first capture run (not C++-specific, not changed here):
-  Bazel rejects recursive Starlark functions (`function 'enc' called
-  recursively`) while the native interpreter allows recursion; the fixture
-  probe was made non-recursive.
+- Finding of the first capture run (not C++-specific): Bazel rejects
+  recursive Starlark functions (`function 'enc' called recursively`); the
+  native interpreter did too since N48; the fixture probe was made
+  non-recursive.

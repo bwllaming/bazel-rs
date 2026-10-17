@@ -445,6 +445,88 @@
   {
    "what": "review follow-ups after the final run (not re-captured): native rule targets get one frozen OutputGroupInfo per configured target (shared through aliases); _validation_transitive from a rule outside INTERNAL_STARLARK_API_ALLOWLIST fails with Bazel's private-API text, an allowlisted one merges into _validation; Label.relative keeps //visibility and //conditions in the main repository. None of these paths is exercised by the captured fixture: tests/cc_toolchain.rs still yields byte-identical native outputs equal to the tracked expected files. New tests: tests/output_group_info.rs, label_relative_and_same_package_label (reserved packages). Docs: executable hidden-top-level difference, closure-only Files.",
    "src_diff_plus_untracked_sha256_now": "16ca1cd699650184c321e327a6513baa599b117628175f5a06c09ddfa4d2c309"
+  },
+  {
+   "what": "integration-15 native replay under k8 output roots (N41 closed D1; no new genuine run): tests/cc_toolchain.rs's builds on the merged tree (debug binary) produce documents whose sha256 equals each recorded reference_sha256, so the EXACT_D1 rows are EXACT without the rust-<mode> -> k8-<mode> mapping; tests/fixtures/cc_toolchain/expected/*.json were replaced by those k8 bytes (exactly the D1-reversed previous files). The genuine exec root here is k8-opt-exec (no ST- hash), as the native one.",
+   "rows": [
+    {
+     "scenario": "F1/target_exec_zig_build_info",
+     "output": "//probe:target",
+     "native_sha256": "6d21bff0c5188453c501d8e8cacb194b447c4429d0004ba4ba0da0621eda9980",
+     "reference_sha256": "6d21bff0c5188453c501d8e8cacb194b447c4429d0004ba4ba0da0621eda9980",
+     "verdict": "EXACT"
+    },
+    {
+     "scenario": "F1/target_exec_zig_build_info",
+     "output": "//probe:exec (exec cfg)",
+     "native_sha256": "f247bda838f6d63ea2b3e2e2a9a2518721aa3dd128e1bb9c7616f91ce4357568",
+     "reference_sha256": "f247bda838f6d63ea2b3e2e2a9a2518721aa3dd128e1bb9c7616f91ce4357568",
+     "verdict": "EXACT"
+    },
+    {
+     "scenario": "F1/target_exec_zig_build_info",
+     "output": "//zig:probe",
+     "native_sha256": "5ab7f495f5261be3300d32c8bbc335b1ff14f6b8add6e581c79a523172803800",
+     "reference_sha256": "5ab7f495f5261be3300d32c8bbc335b1ff14f6b8add6e581c79a523172803800",
+     "verdict": "EXACT"
+    },
+    {
+     "scenario": "F1/target_exec_zig_build_info",
+     "output": "//zig:exec (exec cfg)",
+     "native_sha256": "a073a2936c8cdcb0e22f04bcc2a8b6f1c4524f167e9fab2d25485084617cc090",
+     "reference_sha256": "a073a2936c8cdcb0e22f04bcc2a8b6f1c4524f167e9fab2d25485084617cc090",
+     "verdict": "EXACT"
+    },
+    {
+     "scenario": "F1/target_exec_zig_build_info",
+     "output": "//bi:dump",
+     "native_sha256": "5e9f9197ea16b9be8fa50de8fb5cc5c690674340d824d618a85317335697131a",
+     "reference_sha256": "5e9f9197ea16b9be8fa50de8fb5cc5c690674340d824d618a85317335697131a",
+     "verdict": "EXACT"
+    },
+    {
+     "scenario": "F1/target_exec_zig_build_info",
+     "output": "//probe:par0..par7 (even)",
+     "native_sha256": "3cb226d248373859734673254840957af6b69f71f33d05ffccd83b396f9b9cf1",
+     "reference_sha256": "3cb226d248373859734673254840957af6b69f71f33d05ffccd83b396f9b9cf1",
+     "verdict": "EXACT"
+    },
+    {
+     "scenario": "F1/target_exec_zig_build_info",
+     "output": "//probe:par0..par7 (odd)",
+     "native_sha256": "35e6c836c4fbe258854bcf3228e894d0185053f11c44a1329abf630b6e59ab3f",
+     "reference_sha256": "35e6c836c4fbe258854bcf3228e894d0185053f11c44a1329abf630b6e59ab3f",
+     "verdict": "EXACT"
+    },
+    {
+     "scenario": "F1/dbg",
+     "output": "//probe:target",
+     "native_sha256": "d8192cdaf490a93f02e7d9425295682195fc1b6c7f19f3aab01b3b2d14e2c660",
+     "reference_sha256": "d8192cdaf490a93f02e7d9425295682195fc1b6c7f19f3aab01b3b2d14e2c660",
+     "verdict": "EXACT"
+    },
+    {
+     "scenario": "F1/dbg",
+     "output": "//probe:exec (exec cfg)",
+     "native_sha256": "f247bda838f6d63ea2b3e2e2a9a2518721aa3dd128e1bb9c7616f91ce4357568",
+     "reference_sha256": "f247bda838f6d63ea2b3e2e2a9a2518721aa3dd128e1bb9c7616f91ce4357568",
+     "verdict": "EXACT"
+    },
+    {
+     "scenario": "F2/host_local_config_cc",
+     "output": "//probe:host",
+     "native_sha256": "58be96e35ed5da3791812be221bc2792dc3a1c25a6027c222a70857f83ae1f0c",
+     "reference_sha256": "58be96e35ed5da3791812be221bc2792dc3a1c25a6027c222a70857f83ae1f0c",
+     "verdict": "EXACT"
+    },
+    {
+     "scenario": "F2/host_local_config_cc",
+     "output": "//probe:host_exec (exec cfg)",
+     "native_sha256": "5686e8d73a7401001955114655a86d5c36e63e6a75f4cafb87e948dffcbaaddd",
+     "reference_sha256": "5686e8d73a7401001955114655a86d5c36e63e6a75f4cafb87e948dffcbaaddd",
+     "verdict": "EXACT"
+    }
+   ]
   }
  ]
 }

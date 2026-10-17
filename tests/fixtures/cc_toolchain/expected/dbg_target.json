@@ -560,7 +560,7 @@
   "dynamic_runtime_lib": {
    "depset": []
   },
-  "dynamic_runtime_solib_dir": "bazel-out/rust-dbg/bin/_solib__tc_Ccc",
+  "dynamic_runtime_solib_dir": "bazel-out/k8-dbg/bin/_solib__tc_Ccc",
   "gcov_executable": "/usr/bin/fixture-gcov",
   "generate_modmap": {
    "owner": "@@bazel_tools//tools/cpp/modules_tools:generate-modmap",
@@ -587,14 +587,14 @@
   "ABI": "fixture-abi",
   "ABI_GLIBC_VERSION": "fixture-abi-libc",
   "AR": "/usr/bin/fixture-ar",
-  "BINDIR": "bazel-out/rust-dbg/bin",
+  "BINDIR": "bazel-out/k8-dbg/bin",
   "CC": "/usr/bin/fixture-gcc",
   "CC_FLAGS": "-legacy-cc-flags --sysroot=/fixture/sysroot",
   "COMPILATION_MODE": "dbg",
   "CROSSTOOLTOP": "tc",
   "C_COMPILER": "fixture-compiler",
   "FIXTURE_MAKE_VAR": "fixture-value",
-  "GENDIR": "bazel-out/rust-dbg/bin",
+  "GENDIR": "bazel-out/k8-dbg/bin",
   "GLIBC_VERSION": "fixture-libc",
   "LD": "tc/bin/fixture-ld",
   "NM": "/usr/bin/fixture-nm",
