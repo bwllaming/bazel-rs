@@ -1,0 +1,282 @@
+{
+ "base_commit": "cfa224b0619e78619394aae076c16cf49d1e2e19",
+ "compared_build_files": {
+  "cov/ok.txt": "InstrumentedFilesInfo\nstruct(instrumented_files = depset([]), metadata_files = depset([]))\ndepset([])\ndepset([])\nTrue\n",
+  "dump/dump.txt": "target @@bazel_tools//tools/test:collect_coverage\n  files ../bazel_tools/tools/test/collect_coverage.sh ../bazel_tools/tools/test/collect_coverage\n  executable ../bazel_tools/tools/test/collect_coverage\n  default_runfiles.files ../bazel_tools/tools/test/collect_coverage.sh ../bazel_tools/tools/test/collect_coverage\n  default_runfiles.symlinks \n  default_runfiles.root_symlinks \n  default_runfiles.empty_filenames \n  data_runfiles.files ../bazel_tools/tools/test/collect_coverage.sh ../bazel_tools/tools/test/collect_coverage\n  data_runfiles.symlinks \n  data_runfiles.root_symlinks \n  data_runfiles.empty_filenames \n  env {} inherit []\ntarget @@//sh:bin\n  files sh/bin.sh sh/bin\n  executable sh/bin\n  default_runfiles.files sh/greeting.txt sh/data.txt sh/lib.sh sh/bin.sh sh/bin\n  default_runfiles.symlinks \n  default_runfiles.root_symlinks \n  default_runfiles.empty_filenames \n  data_runfiles.files sh/greeting.txt sh/data.txt sh/lib.sh sh/bin.sh sh/bin\n  data_runfiles.symlinks \n  data_runfiles.root_symlinks \n  data_runfiles.empty_filenames \n  env {\"GREETING\": \"hi\"} inherit [\"HOME\"]\ntarget @@//sh:launcher\n  files sh/bin.sh sh/launcher\n  executable sh/launcher\n  default_runfiles.files sh/greeting.txt sh/data.txt sh/lib.sh sh/bin.sh sh/launcher\n  default_runfiles.symlinks \n  default_runfiles.root_symlinks bazel_tools/tools/bash/runfiles/runfiles.bash=../rules_shell+/shell/runfiles/runfiles.bash\n  default_runfiles.empty_filenames \n  data_runfiles.files sh/greeting.txt sh/data.txt sh/lib.sh sh/bin.sh sh/launcher\n  data_runfiles.symlinks \n  data_runfiles.root_symlinks bazel_tools/tools/bash/runfiles/runfiles.bash=../rules_shell+/shell/runfiles/runfiles.bash\n  data_runfiles.empty_filenames \n  env {} inherit []\ntarget @@//sh:lib\n  files sh/lib.sh sh/data.txt\n  executable None\n  default_runfiles.files sh/data.txt sh/lib.sh\n  default_runfiles.symlinks \n  default_runfiles.root_symlinks \n  default_runfiles.empty_filenames \n  data_runfiles.files sh/data.txt sh/lib.sh\n  data_runfiles.symlinks \n  data_runfiles.root_symlinks \n  data_runfiles.empty_filenames \ntarget @@//sh:t\n  files sh/t.sh sh/t\n  executable sh/t\n  default_runfiles.files sh/greeting.txt sh/data.txt sh/lib.sh sh/t.sh sh/t\n  default_runfiles.symlinks \n  default_runfiles.root_symlinks \n  default_runfiles.empty_filenames \n  data_runfiles.files sh/greeting.txt sh/data.txt sh/lib.sh sh/t.sh sh/t\n  data_runfiles.symlinks \n  data_runfiles.root_symlinks \n  data_runfiles.empty_filenames \n  env {} inherit []\ntarget @@rules_shell+//shell/runfiles:runfiles_impl\n  files \n  executable None\n  default_runfiles.files \n  default_runfiles.symlinks \n  default_runfiles.root_symlinks bazel_tools/tools/bash/runfiles/runfiles.bash=../rules_shell+/shell/runfiles/runfiles.bash\n  default_runfiles.empty_filenames \n  data_runfiles.files \n  data_runfiles.symlinks \n  data_runfiles.root_symlinks bazel_tools/tools/bash/runfiles/runfiles.bash=../rules_shell+/shell/runfiles/runfiles.bash\n  data_runfiles.empty_filenames \n",
+  "lk/flags.txt": "Target @@//lk:a.txt f [\"lk/a.txt\"]\nfiles lk/a.txt\ntype dict\nlen 1\nlookup f\nin True\nhash_dict 1\n",
+  "lk/plain.txt": "Target @@//lk:p2 second [\"lk/b.txt\"]\nTarget @@//lk:p1 first [\"lk/a.txt\"]\nTarget @@//lk:c.txt file [\"lk/c.txt\"]\nTarget @@//lk:fg group [\"lk/c.txt\", \"lk/a.txt\"]\nTarget @@//lk:p2 aliased [\"lk/b.txt\"]\nfiles lk/b.txt lk/a.txt lk/c.txt\ntype dict\nlen 5\nlookup second\nin True\nhash_dict 5\n",
+  "lk/prov_ok.txt": "Target @@//lk:p1 x [\"lk/a.txt\"]\nTarget @@//lk:p2 y [\"lk/b.txt\"]\nfiles lk/a.txt lk/b.txt\ntype dict\nlen 2\nlookup x\nin True\nhash_dict 2\n",
+  "lk/rules.txt": "Target @@//lk:p1 r [\"lk/a.txt\"]\nfiles lk/a.txt\ntype dict\nlen 1\nlookup r\nin True\nhash_dict 1\n",
+  "lk/sel.txt": "Target @@//lk:p2 dflt [\"lk/b.txt\"]\nTarget @@//lk:a.txt always [\"lk/a.txt\"]\nfiles lk/b.txt lk/a.txt\ntype dict\nlen 2\nlookup dflt\nin True\nhash_dict 2\n",
+  "sh/bin": "#!/bin/bash\necho \"bin $# $*\"\ncat sh/greeting.txt 2>/dev/null || echo no-greeting\necho \"RUNFILES_DIR=${RUNFILES_DIR:+set}\"\nls\n",
+  "sh/launcher": "#!/usr/bin/bash\n\n# --- begin runfiles.bash initialization v3 ---\nset -uo pipefail; set +e; f=bazel_tools/tools/bash/runfiles/runfiles.bash\n# shellcheck disable=SC1090\nsource \"${RUNFILES_DIR:-/dev/null}/$f\" 2>/dev/null ||   source \"$(grep -sm1 \"^$f \" \"${RUNFILES_MANIFEST_FILE:-/dev/null}\" | cut -f2- -d' ')\" 2>/dev/null ||   source \"$0.runfiles/$f\" 2>/dev/null ||   source \"$(grep -sm1 \"^$f \" \"$0.runfiles_manifest\" | cut -f2- -d' ')\" 2>/dev/null ||   source \"$(grep -sm1 \"^$f \" \"$0.exe.runfiles_manifest\" | cut -f2- -d' ')\" 2>/dev/null ||   { echo>&2 \"ERROR: cannot find $f\"; exit 1; }; f=; set -e\n# --- end runfiles.bash initialization v3 ---\n\nrunfiles_export_envvars\n\nexec \"$(rlocation \"_main/sh/bin.sh\")\" \"$@\"\n",
+  "sh/t": "#!/bin/bash\necho sh_test ok\n"
+ },
+ "counts": {
+  "EXACT": 11,
+  "EXACT_MESSAGE": 7,
+  "EXPECTED_NATIVE_UNSUPPORTED": 4
+ },
+ "flags": {
+  "native": "--ignore_all_rc_files --cache-dir=<private seeded> --experimental-builtin-modules --registry=file://<copy> --lockfile_mode=off --repository_disable_download",
+  "reference": "--batch --ignore_all_rc_files --output_user_root/--output_base=<private> --registry=file://<copy> --lockfile_mode=off --repository_disable_download --repository_cache=<private seeded> --noshow_progress --color=no --curses=no"
+ },
+ "native_sha256": "623b70cc57ba3a6f391e31a30b69b8befe9197d2044d95824b061c8dbcba1ce1",
+ "notes": [
+  "Run 2 E5 (unknown attribute flag) is EXACT_MESSAGE only because the run-2 harness also classifies Bazel's load-time 'ERROR: Traceback (most recent call last):' line as a header; the message 'unknown attribute flag 'BOGUS_FLAG'' matches (run 1: EXACT). The framing note text names analysis errors; for E5 it is the load-time traceback framing.",
+  "EXACT_MESSAGE rows E8-E13 differ only in Bazel's 'ERROR: LOC: in R rule L: ' + Java-style traceback framing vs native 'analysis of L: Traceback' (pre-existing, general to all analysis-time Starlark errors).",
+  "EXPECTED_NATIVE_UNSUPPORTED: R1/R2 bazel run and runfiles trees (N23f, unmerged; reference outputs and trees recorded in reference_run_outputs), T1 bazel test (N23g, unmerged; reference PASSED), G1 flags other than SKIP_CONSTRAINTS_OVERRIDE.",
+  "bazel_skylib 1.6.1: not needed; the genuine builtin closure selects 1.8.2 (source.json in the fixture registry, archive in the seeded CAS)."
+ ],
+ "post_capture_changes": [],
+ "reference_run_outputs": {
+  "R1/run_bin": {
+   "manifest": "_main/sh/bin <ob>/execroot/_main/bazel-out/k8-fastbuild/bin/sh/bin\n_main/sh/bin.sh <ws>/sh/bin.sh\n_main/sh/data.txt <ws>/sh/data.txt\n_main/sh/greeting.txt <ws>/sh/greeting.txt\n_main/sh/lib.sh <ws>/sh/lib.sh\n_repo_mapping <ob>/execroot/_main/bazel-out/k8-fastbuild/bin/sh/bin.repo_mapping\n",
+   "repo_mapping": ",shb,_main\n",
+   "runfiles_tree": [
+    "MANIFEST symlink",
+    "_main dir",
+    "_main/sh dir",
+    "_main/sh/bin symlink",
+    "_main/sh/bin.sh symlink",
+    "_main/sh/data.txt symlink",
+    "_main/sh/greeting.txt symlink",
+    "_main/sh/lib.sh symlink",
+    "_repo_mapping symlink"
+   ],
+   "stdout": "bin 2 a b\nhello\nRUNFILES_DIR=\nsh\n"
+  },
+  "R2/run_launcher": {
+   "manifest": "_main/sh/bin.sh <ws>/sh/bin.sh\n_main/sh/data.txt <ws>/sh/data.txt\n_main/sh/greeting.txt <ws>/sh/greeting.txt\n_main/sh/launcher <ob>/execroot/_main/bazel-out/k8-fastbuild/bin/sh/launcher\n_main/sh/lib.sh <ws>/sh/lib.sh\n_repo_mapping <ob>/execroot/_main/bazel-out/k8-fastbuild/bin/sh/launcher.repo_mapping\nbazel_tools/tools/bash/runfiles/runfiles.bash <ob>/external/rules_shell+/shell/runfiles/runfiles.bash\n",
+   "repo_mapping": ",bazel_tools,bazel_tools\n,shb,_main\nplatforms,bazel_tools,bazel_tools\nrules_shell+,bazel_tools,bazel_tools\nrules_shell++sh_configure+local_config_shell,bazel_tools,bazel_tools\n",
+   "runfiles_tree": [
+    "MANIFEST symlink",
+    "_main dir",
+    "_main/sh dir",
+    "_main/sh/bin.sh symlink",
+    "_main/sh/data.txt symlink",
+    "_main/sh/greeting.txt symlink",
+    "_main/sh/launcher symlink",
+    "_main/sh/lib.sh symlink",
+    "_repo_mapping symlink",
+    "bazel_tools dir",
+    "bazel_tools/tools dir",
+    "bazel_tools/tools/bash dir",
+    "bazel_tools/tools/bash/runfiles dir",
+    "bazel_tools/tools/bash/runfiles/runfiles.bash symlink"
+   ],
+   "stdout": "bin 2 a b\nhello\nRUNFILES_DIR=set\nsh\n"
+  }
+ },
+ "reference_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+ "reference_test_stdout_tail": "==================== Test output for //sh:t:\nsh_test ok\n================================================================================\n//sh:t                                                                   PASSED in 0.0s\n\nExecuted 1 out of 1 test: 1 test passes.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
+ "rows": {
+  "E1/duplicate_labels": {
+   "messages": [
+    "//e1:dup: duplicate labels in attribute 'm' of 'lk': //e1:a.txt (as [\"a.txt\", \":a.txt\", \"//e1:a.txt\"])"
+   ],
+   "native_exit": 1,
+   "reference_exit": 1,
+   "verdict": "EXACT",
+   "why": null
+  },
+  "E10/cov_env_private_api": {
+   "messages": [
+    "file '//cov:defs.bzl' cannot use private API"
+   ],
+   "native_exit": 1,
+   "reference_exit": 1,
+   "verdict": "EXACT_MESSAGE",
+   "why": "analysis-error framing: Bazel traceback header 'in cov rule //cov:env: ' vs native \"analysis of L: Traceback\" (pre-existing general framing)"
+  },
+  "E11/cov_support": {
+   "messages": [
+    "at index 0 of coverage_support_files, got element of type int, want one of depset, File or FilesToRunProvider"
+   ],
+   "native_exit": 1,
+   "reference_exit": 1,
+   "verdict": "EXACT_MESSAGE",
+   "why": "analysis-error framing: Bazel traceback header 'in cov rule //cov:support: ' vs native \"analysis of L: Traceback\" (pre-existing general framing)"
+  },
+  "E12/cov_seq": {
+   "messages": [
+    "in call to instrumented_files_info(), parameter 'dependency_attributes' got value of type 'string', want 'sequence'"
+   ],
+   "native_exit": 1,
+   "reference_exit": 1,
+   "verdict": "EXACT_MESSAGE",
+   "why": "analysis-error framing: Bazel traceback header 'in cov rule //cov:seq: ' vs native \"analysis of L: Traceback\" (pre-existing general framing)"
+  },
+  "E13/skip_conflict_external": {
+   "messages": [
+    "file '@@other_rules+//:defs.bzl' cannot use private API"
+   ],
+   "native_exit": 1,
+   "reference_exit": 1,
+   "verdict": "EXACT_MESSAGE",
+   "why": "analysis-error framing: Bazel traceback header 'in skipper rule //skip:x: ' vs native \"analysis of L: Traceback\" (pre-existing general framing)"
+  },
+  "E2/allow_rules": {
+   "messages": [
+    "in m attribute of lk_rules rule //e2:bad: genrule rule '//e2:g' is misplaced here (expected prov)",
+    "in m attribute of lk_rules rule //e2:bad: alias '//e2:ga' referring to genrule rule '//e2:g' is misplaced here (expected prov)"
+   ],
+   "native_exit": 1,
+   "reference_exit": 1,
+   "verdict": "EXACT",
+   "why": null
+  },
+  "E3/providers": {
+   "messages": [
+    "in m attribute of lk_prov rule //e3:bad: '//e3:fg' does not have mandatory providers: 'P'"
+   ],
+   "native_exit": 1,
+   "reference_exit": 1,
+   "verdict": "EXACT",
+   "why": null
+  },
+  "E4/no_files": {
+   "messages": [
+    "in m attribute of lk_strict rule //e4:bad: source file '//e4:f.txt' is misplaced here (expected no files)"
+   ],
+   "native_exit": 1,
+   "reference_exit": 1,
+   "verdict": "EXACT",
+   "why": null
+  },
+  "E5/unknown_flag": {
+   "messages": [
+    "unknown attribute flag 'BOGUS_FLAG'"
+   ],
+   "native_exit": 1,
+   "reference_exit": 1,
+   "verdict": "EXACT_MESSAGE",
+   "why": "analysis-error framing: Bazel traceback header 'Traceback (most recent call last):' vs native \"analysis of L: Traceback\" (pre-existing general framing)"
+  },
+  "E6/allow_rules_and_providers": {
+   "messages": [
+    "in m attribute of lk_both rule //e6:bad: filegroup rule '//e6:fg' is misplaced here (expected prov) and '//e6:fg' does not have mandatory providers: 'P'"
+   ],
+   "native_exit": 1,
+   "reference_exit": 1,
+   "verdict": "EXACT",
+   "why": null
+  },
+  "E7/sh_binary_deps_allow_rules": {
+   "messages": [
+    "in deps attribute of sh_binary rule //bad:b: genrule rule '//bad:g' is misplaced here (expected sh_library)"
+   ],
+   "native_exit": 1,
+   "reference_exit": 1,
+   "verdict": "EXACT",
+   "why": null
+  },
+  "E8/cov_ctx": {
+   "messages": [
+    "in call to instrumented_files_info(), parameter 'ctx' got value of type 'NoneType', want 'ctx'"
+   ],
+   "native_exit": 1,
+   "reference_exit": 1,
+   "verdict": "EXACT_MESSAGE",
+   "why": "analysis-error framing: Bazel traceback header 'in cov rule //cov:ctx: ' vs native \"analysis of L: Traceback\" (pre-existing general framing)"
+  },
+  "E9/cov_source": {
+   "messages": [
+    "at index 0 of source_attributes, got element of type int, want string"
+   ],
+   "native_exit": 1,
+   "reference_exit": 1,
+   "verdict": "EXACT_MESSAGE",
+   "why": "analysis-error framing: Bazel traceback header 'in cov rule //cov:source: ' vs native \"analysis of L: Traceback\" (pre-existing general framing)"
+  },
+  "G1/other_flags": {
+   "messages": null,
+   "native_exit": 1,
+   "reference_exit": 0,
+   "verdict": "EXPECTED_NATIVE_UNSUPPORTED",
+   "why": "DIRECT_COMPILE_TIME_INPUT stays an explicit gap"
+  },
+  "Q1/deps": {
+   "messages": null,
+   "native_exit": 0,
+   "reference_exit": 0,
+   "verdict": "EXACT",
+   "why": null
+  },
+  "Q2/labels_select": {
+   "messages": null,
+   "native_exit": 0,
+   "reference_exit": 0,
+   "verdict": "EXACT",
+   "why": null
+  },
+  "R1/run_bin": {
+   "messages": null,
+   "native_exit": 1,
+   "reference_exit": 0,
+   "verdict": "EXPECTED_NATIVE_UNSUPPORTED",
+   "why": "bazel run + runfiles trees: N23f"
+  },
+  "R2/run_launcher": {
+   "messages": null,
+   "native_exit": 1,
+   "reference_exit": 0,
+   "verdict": "EXPECTED_NATIVE_UNSUPPORTED",
+   "why": "bazel run + runfiles trees: N23f"
+  },
+  "S1/build_all": {
+   "messages": null,
+   "native_exit": 0,
+   "reference_exit": 0,
+   "verdict": "EXACT",
+   "why": null
+  },
+  "S2/select_opt": {
+   "messages": null,
+   "native_exit": 0,
+   "reference_exit": 0,
+   "verdict": "EXACT",
+   "why": null
+  },
+  "S3/collect_coverage": {
+   "messages": null,
+   "native_exit": 0,
+   "reference_exit": 0,
+   "verdict": "EXACT",
+   "why": null
+  },
+  "T1/test_sh_test": {
+   "messages": null,
+   "native_exit": 1,
+   "reference_exit": 0,
+   "verdict": "EXPECTED_NATIVE_UNSUPPORTED",
+   "why": "bazel test: N23g"
+  }
+ },
+ "run_1": {
+  "cause": "harness: traceback header line treated as an error message",
+  "counts": {
+   "EXACT": 12,
+   "EXPECTED_NATIVE_UNSUPPORTED": 4,
+   "MISMATCH": 6
+  },
+  "mismatch_rows": [
+   "E8/cov_ctx",
+   "E9/cov_source",
+   "E10/cov_env_private_api",
+   "E11/cov_support",
+   "E12/cov_seq",
+   "E13/skip_conflict_external"
+  ],
+  "native_changes_after_run_1": []
+ },
+ "scratch_removed": true,
+ "script_sha256": "4de632f0a68c7fe3c45b8813137087f0b007cb3397ba1240c39afe384b1e45f0",
+ "seeded_cas_blobs": 230,
+ "source_diff_sha256": "a20e8d1cd80a7337c188fc8720899b0d78e70ba0f9b4a06000c76044975dfae5",
+ "untracked_src": [
+  "src/instrumented_files_info.rs"
+ ],
+ "what": "N50 genuine rules_shell sh_binary/sh_test analysis: genuine Bazel 9.3.0 vs native (artifacts/sh_binary-capture.py)",
+ "workspace": "tests/fixtures/sh_binary/workspace (genuine rules_shell 0.6.1 from tests/fixtures/builtin_modules/registry, full builtin closure)"
+}

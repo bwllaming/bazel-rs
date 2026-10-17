@@ -2826,7 +2826,7 @@ nonempty = rule(impl, attrs = {'counts': attr.int_list(allow_empty = False)})\n"
     fn label_dict_attributes_declare_like_starlark_attr_module() {
         let module = passes(&format!(
             "{IMPL}a = attr.string_keyed_label_dict(default = {{'k': ':x', 'l': Label('//other:y')}}, allow_files = True, providers = [P], configurable = False)\n\
-             b = attr.label_list_dict(False, default = {{'k': [':x', '@@//z:z'], 'e': ()}}, skip_validations = True, flags = ['F'], cfg = 'exec')\n\
+             b = attr.label_list_dict(False, default = {{'k': [':x', '@@//z:z'], 'e': ()}}, skip_validations = True, flags = ['ORDER_INDEPENDENT'], cfg = 'exec')\n\
              c = attr.string_keyed_label_dict()\n\
              d = attr.label_list_dict()\n\
              (type(a) == 'Attribute' and repr(a) == '<attr.string_keyed_label_dict>' and repr(b) == '<attr.label_list_dict>') or fail(repr(a))\n"
@@ -2857,7 +2857,7 @@ nonempty = rule(impl, attrs = {'counts': attr.int_list(allow_empty = False)})\n"
         );
         assert!(b.non_empty && b.declaration.skip_validations);
         assert_eq!(b.declaration.cfg, Cfg::Exec(None));
-        assert_eq!(b.declaration.flags, ["F"]);
+        assert_eq!(b.declaration.flags, ["ORDER_INDEPENDENT"]);
         assert_eq!(spec("c").default, AttrValue::StringKeyedLabelDict(vec![]));
         assert_eq!(spec("d").default, AttrValue::LabelListDict(vec![]));
         for (expression, expected) in [

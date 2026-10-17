@@ -1,0 +1,12 @@
+# Offline test replacement (not genuine): rules_shell 0.6.1's MODULE.bazel
+# depends on bazel_features/bazel_skylib and registers @local_config_shell
+# through its sh_configure extension; this fixture registers the fixed
+# //shell/toolchains:linux_sh_toolchain instead (see ../README.md).
+module(
+    name = "rules_shell",
+    version = "0.6.1",
+)
+
+bazel_dep(name = "platforms", version = "1.0.0")
+
+register_toolchains("//shell/toolchains:all")

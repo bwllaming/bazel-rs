@@ -3382,6 +3382,11 @@ impl Engine {
             let labels = match value {
                 crate::custom_rule::AttrValue::Label(Some(label)) => vec![label.clone()],
                 crate::custom_rule::AttrValue::Labels(labels) => labels.clone(),
+                // DictType.visitLabels of LabelKeyedDictType: the keys
+                // (packages/Type.java:504-514, BuildType.java:436-439).
+                crate::custom_rule::AttrValue::LabelKeyedStringDict(entries) => {
+                    entries.iter().map(|(label, _)| label.clone()).collect()
+                }
                 crate::custom_rule::AttrValue::StringKeyedLabelDict(entries) => {
                     entries.iter().map(|(_, label)| label.clone()).collect()
                 }
@@ -3446,7 +3451,16 @@ impl Engine {
                                 "internal error: prerequisite {map_key} of {shown} (attribute {name}) has no analyzed dependency entry"
                             )
                         })?;
-                        analysis::prerequisite_errors(name, spec, target, consumer)
+                        let described = target.rule_class.as_ref().map(|class| {
+                            describe_with_aliases(&chain, &actual, &format!("{class} rule"))
+                        });
+                        analysis::prerequisite_errors(
+                            name,
+                            spec,
+                            target,
+                            consumer,
+                            described.as_deref(),
+                        )
                     }
                     _ => match allowed {
                         crate::custom_rule::AllowedFileTypes::None => {
@@ -6319,6 +6333,12 @@ impl Engine {
                             .cloned()
                             .unwrap_or_default(),
                         runfiles,
+                        rule_class: match &target {
+                            Target::Rule(rule) if !matches!(rule.kind, RuleKind::PackageGroup(_)) => {
+                                Some(rule.rule_class_name().to_owned())
+                            }
+                            _ => None,
+                        },
                     },
                 );
             }

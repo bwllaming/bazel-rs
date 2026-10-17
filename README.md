@@ -214,6 +214,9 @@ DefaultInfo runfiles/executables, FilesToRunProvider and executable/test rules;
 [runfiles trees and `run`](docs/RUNFILES_TREES.md) build Bazel's runfiles
 trees, `MANIFEST` and `_repo_mapping` files, stage tool runfiles into actions
 and run executables (`bazel-rs run //target -- args`, `--script_path`).
+[Genuine rules_shell](docs/SH_BINARY.md) `sh_binary`, `sh_test` and `sh_library`
+analyze and build: `attr.label_keyed_string_dict` rule values, `allow_rules`,
+`flags`, `coverage_common.instrumented_files_info` and the private-API allowlist.
 [The rule context surface](docs/CTX_SURFACE.md) gives `ctx` Bazel's 36 members:
 `ctx.fragments` with configuration fragments, `ctx.configuration`, output roots,
 `ctx.var` and Make-variable expansion, with unmodelled members failing explicitly.

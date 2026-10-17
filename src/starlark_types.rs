@@ -1688,6 +1688,16 @@ impl<'v> StarlarkValue<'v> for Target {
         collector.push_str("OutputGroupInfo]>");
     }
 
+    /// Configured targets are immutable Starlark values, hence hashable
+    /// (StarlarkValue.isHashable/isImmutable, net/starlark/java/eval/StarlarkValue.java;
+    /// AbstractConfiguredTarget.isImmutable), with Java identity equality:
+    /// the default pointer `equals` is kept and the hash is consistent with it.
+    /// `ctx.attr` label-keyed dictionaries use them as keys.
+    fn write_hash(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
+        self.label.canonical_form().hash(hasher);
+        Ok(())
+    }
+
     fn get_attr(&self, name: &str, heap: Heap<'v>) -> Option<Value<'v>> {
         Some(match name {
             "files" => alloc_depset(heap, self.files.clone()),

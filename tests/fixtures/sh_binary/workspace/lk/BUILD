@@ -1,0 +1,13 @@
+load(":defs.bzl", "lk", "lk_both", "lk_flags", "lk_prov", "lk_rules", "prov")
+package(default_visibility = ["//visibility:public"])
+prov(name = "p1", srcs = ["a.txt"])
+prov(name = "p2", srcs = ["b.txt"])
+alias(name = "p2_alias", actual = ":p2")
+filegroup(name = "fg", srcs = ["c.txt", "a.txt"])
+config_setting(name = "opt", values = {"compilation_mode": "opt"})
+lk(name = "plain", m = {":p2": "second", ":p1": "first", "c.txt": "file", ":fg": "group", ":p2_alias": "aliased"})
+lk(name = "sel", m = select({":opt": {":p1": "opt"}, "//conditions:default": {":p2": "dflt"}}) | {"a.txt": "always"})
+lk_rules(name = "rules", m = {":p1": "r"})
+lk_prov(name = "prov_ok", m = {":p1": "x", ":p2_alias": "y"})
+
+lk_flags(name = "flags", m = {"a.txt": "f"})

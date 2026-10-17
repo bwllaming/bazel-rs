@@ -1466,51 +1466,15 @@ pub(crate) fn alloc_executable_struct<'v>(heap: Heap<'v>, fields: OwnedFrozenVal
     heap.alloc(ExecutableStruct { fields })
 }
 
-/// BuiltinRestriction.INTERNAL_STARLARK_API_ALLOWLIST main-repository
-/// entries (packages/BuiltinRestriction.java:36-92).
-const PRIVATE_API_MAIN_PACKAGES: &[&str] = &[
-    "test",
-    "bazel_internal/test_rules",
-    "tools/build_defs/build_info",
-    "bazel_internal/test_rules/cc",
-    "tools/build_defs/android",
-    "third_party/bazel_rules/rules_android",
-    "third_party/apple_crosstool",
-    "third_party/cpptoolchains/portable_llvm/build_defs",
-    "third_party/bazel_rules/rules_apple",
-    "third_party/bazel_rules/rules_cc",
-    "tools/build_defs/cc",
-    "third_party/bazel_rules/rules_java/java",
-    "third_party/bazel_rules/rules_rust/rust/private",
-    "third_party/crubit",
-    "third_party/gpus/cuda",
-    "tools/build_defs/packaging",
-    "tools/build_defs/go",
-    "third_party/protobuf",
-];
-
 /// BuiltinRestriction.failIfCalledOutsideDefaultAllowlist for the innermost
-/// `.bzl` (packages/BuiltinRestriction.java:178-205).
+/// `.bzl` (packages/BuiltinRestriction.java:178-205): the whole
+/// INTERNAL_STARLARK_API_ALLOWLIST (:36-92), including external module
+/// entries such as `rules_shell` (`@@rules_shell+//...`, reposMatch :120-140)
+/// and the main repository's apparent-name mapping.
 fn check_private_api(eval: &Evaluator<'_, '_, '_>) -> anyhow::Result<()> {
-    let label = crate::loading::definition_label(eval)
+    crate::loading::definition_label(eval)
         .ok_or_else(|| anyhow!("skip_conflict_checking: no calling .bzl file"))?;
-    if label.repository == "_builtins" {
-        return Ok(());
-    }
-    ensure!(
-        label.repository.is_empty(),
-        "skip_conflict_checking=True from {}: the private-API allowlist of external repositories (apparent-name mapping) is not supported by the native profile",
-        crate::rule_declarations::canonical_form(&label)
-    );
-    let allowed = PRIVATE_API_MAIN_PACKAGES
-        .iter()
-        .any(|prefix| label.package == *prefix || label.package.starts_with(&format!("{prefix}/")));
-    ensure!(
-        allowed,
-        "file '{}' cannot use private API",
-        crate::rule_declarations::canonical_form(&label)
-    );
-    Ok(())
+    crate::subrule_fragments::private_api(eval).map_err(|error| anyhow!("{error}"))
 }
 
 fn file_items(value: Value<'_>, what: &str) -> anyhow::Result<Vec<File>> {

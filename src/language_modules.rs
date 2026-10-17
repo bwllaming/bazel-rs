@@ -98,6 +98,8 @@ pub(crate) enum Behavior {
     ExecGroup,
     ConfigurationField,
     TestEnvironment,
+    /// `coverage_common.instrumented_files_info` (crate::instrumented_files_info).
+    InstrumentedFilesInfo,
     /// C++ toolchain features, variables and tools (`crate::cc_features`).
     CcFeatures(crate::cc_features::Op),
     /// PyBuiltins.mergeRunfilesWithGeneratedInitsEmptyFilesSupplier
@@ -245,6 +247,9 @@ impl Namespace {
             }
             (Namespace::ConfigCommon, "toolchain_type") => method(Behavior::ToolchainType),
             (Namespace::ConfigCommon, _) => method(Behavior::Unimplemented(Domain::Config)),
+            (Namespace::CoverageCommon, "instrumented_files_info") => {
+                method(Behavior::InstrumentedFilesInfo)
+            }
             (Namespace::CoverageCommon, _) => method(Behavior::Unimplemented(Domain::Coverage)),
             (Namespace::Testing, "ExecutionInfo") => provider(Domain::Testing),
             (Namespace::Testing, "TestEnvironment") => method(Behavior::TestEnvironment),
@@ -1080,6 +1085,7 @@ fn call<'v>(
         Behavior::ToolchainType => toolchain_type(args, eval),
         Behavior::ExecGroup => exec_group(args, eval),
         Behavior::ConfigurationField => configuration_field(args, eval),
+        Behavior::InstrumentedFilesInfo => crate::instrumented_files_info::call(style, args, eval),
         Behavior::TestEnvironment => {
             let bound = bind_styled(
                 style,
@@ -1824,7 +1830,7 @@ t = platform_common.ToolchainInfo(z = [1], a = "x", m = None)
             ),
             (
                 "coverage_common.instrumented_files_info(None)",
-                "coverage_common.instrumented_files_info is not implemented in the native profile (analysis-time coverage API)",
+                "in call to instrumented_files_info(), parameter 'ctx' got value of type 'NoneType', want 'ctx'",
             ),
             (
                 "testing.ExecutionInfo({})",

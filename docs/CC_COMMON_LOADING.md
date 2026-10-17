@@ -177,7 +177,8 @@ The remaining members are as follows:
 | `testing` | `testing` | `ExecutionInfo`, `TestEnvironment`, `analysis_test` |
 
 `repr` follows Bazel: the default `<unknown object CLASS>`, except
-`<coverage_common>`. The provider members have repr `<function NAME>`
+`<coverage_common>`. `coverage_common.instrumented_files_info` is implemented
+since N50 (docs/SH_BINARY.md). The provider members have repr `<function NAME>`
 (`BuiltinProvider`) and type `Provider`. The exception is
 `config_common.FeatureFlagInfo`: its class `ConfigFeatureFlagProvider.Constructor`
 carries its own `@StarlarkBuiltin(name = "FeatureFlagInfo")`, so its type is

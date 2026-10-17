@@ -1,0 +1,5 @@
+module(name = "shb")
+
+bazel_dep(name = "rules_shell", version = "0.6.1")
+bazel_dep(name = "other_rules", version = "1.0")
+local_path_override(module_name = "other_rules", path = "other_rules")

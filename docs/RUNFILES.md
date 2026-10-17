@@ -73,8 +73,11 @@ symlinks, root_symlinks, *, skip_conflict_checking)`
 * `skip_conflict_checking=True` is a private API
   (BuiltinRestriction.failIfCalledOutsideDefaultAllowlist): main-repository
   `.bzl` files outside the allowlist fail with `file '//p:defs.bzl' cannot use
-  private API`; allowlisted main packages are honored; external repositories
-  (whose allowlist entries need apparent-name mapping) fail explicitly.
+  private API`; the whole default allowlist is honored (N50): main packages,
+  the main repository's apparent-name mapping, `bazel_tools` and external
+  module entries by canonical-name prefix (`rules_shell+`, reposMatch,
+  BuiltinRestriction.java:120-140); others fail with `file
+  '@@other_rules+//:defs.bzl' cannot use private API`.
 
 ## DefaultInfo
 

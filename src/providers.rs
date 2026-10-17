@@ -585,6 +585,9 @@ pub fn instance_identity(value: Value<'_>) -> Option<String> {
     if crate::run_environment_info::is_instance(value) {
         return Some(crate::run_environment_info::PROVIDER_ID.to_owned());
     }
+    if crate::instrumented_files_info::is_instance(value) {
+        return Some(crate::instrumented_files_info::PROVIDER_ID.to_owned());
+    }
     if crate::package_specification::is_instance(value) {
         return Some(crate::package_specification::PROVIDER_ID.to_owned());
     }
@@ -739,8 +742,10 @@ pub fn provider_files(value: Value<'_>) -> anyhow::Result<Vec<File>> {
                 || crate::package_specification::is_instance(value)
                 || crate::run_environment_info::is_instance(value)
                 || crate::feature_flags::is_instance(value)
+                || crate::instrumented_files_info::is_instance(value)
             {
-                // Its fully owned string-to-string snapshot cannot contain files.
+                // Its fully owned string-to-string snapshot cannot contain
+                // files (InstrumentedFilesInfo.EMPTY holds empty sets only).
             } else if let Some(values) = crate::cc_variables::payload(value) {
                 // C++ build Variables: File-valued variables are inputs.
                 for child in values {

@@ -123,7 +123,8 @@ Following `StarlarkAttrModuleApi.java` and `StarlarkAttrModule.java:317-565`:
   is off, its default; with it, Bazel's `'cfg = "host"' is deprecated ...`
   error, docs/CONFIGURATION.md), `transition()`, `config.exec/target/none()` (otherwise Bazel's
   `cfg must be either 'target', 'exec' ...`); `executable=True` requires `cfg`;
-  `aspects=[...]` takes exported aspects; also `allow_rules`, `flags`,
+  `aspects=[...]` takes exported aspects; also `allow_rules`, `flags` (each
+  a PropertyFlag name, else `unknown attribute flag 'X'`, Attribute.java:466-479),
   `skip_validations`, `for_dependency_resolution`; nested `providers` lists
   (OR of ANDs) as before.
 * `attr.label(default=configuration_field(...))`: a late-bound default,
@@ -193,7 +194,9 @@ Every prerequisite of a Starlark `attr.label`, `attr.label_list`,
   events form a NestedSet (`skyframe/SkyFunctionEnvironment.java:318-321`,
   `collect/nestedset/NestedSetBuilder.java:43, 86`). Visibility,
   `config_setting` visibility and testonly checks still fail earlier, on
-  their own. `label_keyed_string_dict` values stay an explicit gap.
+  their own. `label_keyed_string_dict` keys are validated like any
+  prerequisite since N50, and `allow_rules` applies RuleContext's rule-class
+  check with the mandatory-provider fallback (docs/SH_BINARY.md).
 * A source directory is an input-file target like any file, matched by name
   (`godir.go` passes `[".go"]`, `dir` gets the error pair). Using one as an
   action input or requested output (Bazel tracks source directories
@@ -219,8 +222,8 @@ A target fails analysis with the message above if it uses any of these:
   chosen `select()` branch, docs/CONFIGURATION.md) is non-empty:
   `cfg` other than target, exec and a Starlark `transition()` (N18c:
   `config.none()`, `analysis_test_transition`),
-  non-empty `aspects`, `allow_rules`, non-empty `flags`, `skip_validations=True`, any
-  `label_keyed_string_dict` value;
+  non-empty `aspects`, non-empty `flags` other than `SKIP_CONSTRAINTS_OVERRIDE`
+  (a documented no-op, docs/SH_BINARY.md), `skip_validations=True`;
 * always: a late-bound (`configuration_field`) default whose field is not
   resolved natively (resolved fields are ordinary values, docs/SUBRULES.md);
 * `aspect()` objects are never applied; `transition()` implementations are

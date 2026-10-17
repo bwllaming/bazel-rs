@@ -249,19 +249,17 @@ impl AttrDeclaration {
                 "attribute '{name}' late-bound default (configuration_field{field})"
             ));
         }
-        // Extension-list allow_files/allow_single_file are validated at
-        // analysis (AllowedFileTypes, crate::engine, crate::analysis).
-        if let Some(rules) = &self.allow_rules {
-            features.push(format!(
-                "attribute '{name}' allow_rules=[{}]",
-                rules.join(", ")
-            ));
-        }
-        if !self.flags.is_empty() {
-            features.push(format!(
-                "attribute '{name}' flags=[{}]",
-                self.flags.join(", ")
-            ));
+        // Extension-list allow_files/allow_single_file and allow_rules are
+        // validated at analysis (AllowedFileTypes, crate::engine
+        // starlark_prerequisite_errors, crate::analysis::prerequisite_errors).
+        let flags = self
+            .flags
+            .iter()
+            .filter(|flag| !NO_OP_ATTRIBUTE_FLAGS.contains(&flag.as_str()))
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        if !flags.is_empty() {
+            features.push(format!("attribute '{name}' flags=[{}]", flags.join(", ")));
         }
         if self.skip_validations {
             features.push(format!("attribute '{name}' skip_validations=True"));
@@ -269,6 +267,47 @@ impl AttrDeclaration {
         features
     }
 }
+
+/// Attribute.PropertyFlag names (packages/Attribute.java:83-205);
+/// `attr.*(flags = [...])` resolves each with PropertyFlag.valueOf and fails
+/// with `unknown attribute flag 'X'` otherwise (Attribute.java:466-479).
+pub(crate) const ATTRIBUTE_FLAGS: &[&str] = &[
+    "MANDATORY",
+    "EXECUTABLE",
+    "UNDOCUMENTED",
+    "TAGGABLE",
+    "ORDER_INDEPENDENT",
+    "STRICT_LABEL_CHECKING",
+    "DIRECT_COMPILE_TIME_INPUT",
+    "NON_EMPTY",
+    "SINGLE_ARTIFACT",
+    "SILENT_RULECLASS_FILTER",
+    "SKIP_ANALYSIS_TIME_FILETYPE_CHECK",
+    "CHECK_ALLOWED_VALUES",
+    "NONCONFIGURABLE",
+    "CONFIGURABLE_ATTR_WAS_USER_SET",
+    "SKIP_PREREQ_VALIDATOR_CHECKS",
+    "CHECK_CONSTRAINTS_OVERRIDE",
+    "SKIP_CONSTRAINTS_OVERRIDE",
+    "OUTPUT_LICENSES",
+    "HAS_STARLARK_DEFINED_TRANSITION",
+    "HAS_ANALYSIS_TEST_TRANSITION",
+    "IS_TOOL_DEPENDENCY",
+    "STARLARK_DEFINED",
+    "SKIP_VALIDATIONS",
+    "FOR_DEPENDENCY_RESOLUTION",
+    "FOR_DEPENDENCY_RESOLUTION_EXPLICITLY_SET",
+];
+
+/// Flags whose only effect native analysis provably shares. SKIP_CONSTRAINTS_OVERRIDE
+/// is read only by RuleContextConstraintSemantics.getConstraintCheckedDependencies
+/// (analysis/constraints/RuleContextConstraintSemantics.java:731-736, via
+/// Attribute.skipConstraintsOverride, packages/Attribute.java:2096-2098): it
+/// removes the attribute's dependencies from the constraint-environment check.
+/// Native analysis performs no environment check at all, and every input that
+/// could make that check fail (non-empty `compatible_with`/`restricted_to`,
+/// environment rules) is an explicit gap, so skipping it is a no-op.
+const NO_OP_ATTRIBUTE_FLAGS: &[&str] = &["SKIP_CONSTRAINTS_OVERRIDE"];
 
 /// An element of a `select()`-valued BUILD attribute (BuildType.SelectorList).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -549,6 +588,37 @@ fn definition_package(eval: &Evaluator<'_, '_, '_>) -> Option<crate::label::Labe
 }
 
 type LabelResolver<'a> = dyn Fn(&str) -> anyhow::Result<crate::label::Label> + 'a;
+
+/// LabelKeyedDictType.convert's collision report (packages/BuildType.java:449-490):
+/// `duplicate labels in WHAT: L (as [k1, k2]), ...` with each label's
+/// canonical form and the repr of the original keys, in first-seen order.
+/// None when no keys collide (or a key does not resolve; parsing reports it).
+fn value_label_duplicates(
+    value: Value<'_>,
+    resolver: Option<&LabelResolver<'_>>,
+    what: &str,
+) -> Option<String> {
+    let dict = DictRef::from_value(value)?;
+    let mut originals: Vec<(String, Vec<String>)> = Vec::new();
+    for (key, _) in dict.iter() {
+        let label = label_value(key, resolver).ok()?;
+        match originals.iter_mut().find(|(seen, _)| *seen == label) {
+            Some((_, keys)) => keys.push(key.to_repr()),
+            None => originals.push((label, vec![key.to_repr()])),
+        }
+    }
+    let duplicates = originals
+        .iter()
+        .filter(|(_, keys)| keys.len() > 1)
+        .map(|(label, keys)| {
+            let label = crate::label::Label::parse_canonical(label)
+                .map(|label| crate::rule_declarations::canonical_form(&label))
+                .unwrap_or_else(|_| label.clone());
+            format!(" {label} (as [{}])", keys.join(", "))
+        })
+        .collect::<Vec<_>>();
+    (!duplicates.is_empty()).then(|| format!("duplicate labels in {what}:{}", duplicates.join(",")))
+}
 
 fn label_value(value: Value<'_>, resolver: Option<&LabelResolver<'_>>) -> anyhow::Result<String> {
     if let Some(label) = crate::starlark_types::unpack_label(value) {
@@ -1415,15 +1485,25 @@ mod values {
                         // `//pkg:x: expected one of [False, True, 0, 1] for attribute
                         // 'K' of 'R', but got V (T)` (Type.java:409-428;
                         // AttributeConversionContext.toString, BuildType.java:374-376).
-                        if spec.kind == AttrKind::Bool
-                            && let Some(error) = spec.kind.conversion_error(
-                                *value,
-                                &format!("attribute '{key}' of '{rule_class}'"),
-                            )
-                        {
-                            return Err(starlark::Error::new_other(anyhow!(
-                                "{target_text}: {error}"
-                            )));
+                        // Label-keyed dictionaries: LabelKeyedDictType.convert's
+                        // element types, then `duplicate labels in attribute 'K'
+                        // of 'R': L (as [k1, k2])` (BuildType.java:449-490),
+                        // reported as `//pkg:x: ...` (AttributeProvider.java:252-267).
+                        if matches!(spec.kind, AttrKind::Bool | AttrKind::LabelKeyedStringDict) {
+                            let what = format!("attribute '{key}' of '{rule_class}'");
+                            if let Some(error) =
+                                spec.kind.conversion_error(*value, &what).or_else(|| {
+                                    (spec.kind == AttrKind::LabelKeyedStringDict)
+                                        .then(|| {
+                                            value_label_duplicates(*value, Some(resolver), &what)
+                                        })
+                                        .flatten()
+                                })
+                            {
+                                return Err(starlark::Error::new_other(anyhow!(
+                                    "{target_text}: {error}"
+                                )));
+                            }
                         }
                         let parsed = (|| {
                             budget
@@ -2176,6 +2256,11 @@ fn configurable_parts(
         if let Some(error) = spec.kind.conversion_error(value, what) {
             bail!("{error}");
         }
+        if spec.kind == AttrKind::LabelKeyedStringDict
+            && let Some(error) = value_label_duplicates(value, Some(resolve), what)
+        {
+            bail!("{error}");
+        }
         spec.kind
             .preflight_value_with_budget(value, &mut budget.borrow_mut())?;
         let parsed = spec.kind.parse(value, Some(resolve))?;
@@ -2879,11 +2964,6 @@ pub(crate) fn value_gaps(invocation: &CustomInvocation) -> Vec<String> {
         if present && (!spec.declaration.late_bound || spec.declaration.late_bound_resolvable()) {
             features.extend(spec.declaration.unanalyzed(name));
         }
-        if present && spec.kind == AttrKind::LabelKeyedStringDict {
-            features.push(format!(
-                "attribute '{name}' attr.label_keyed_string_dict value"
-            ));
-        }
     }
     features.extend(builtin_gaps(&invocation.declaration.builtin.target));
     features
@@ -3338,6 +3418,13 @@ fn dependency_descriptor<'v>(
     declaration.explicit_default |= late_bound || computed.is_some();
     declaration.configurable_set = options.configurable.is_some();
     declaration.flags = crate::rule_declarations::noneable_strings(options.flags, "flags")?;
+    if let Some(flag) = declaration
+        .flags
+        .iter()
+        .find(|flag| !ATTRIBUTE_FLAGS.contains(&flag.as_str()))
+    {
+        bail!("unknown attribute flag '{flag}'");
+    }
     declaration.for_dependency_resolution = options.for_dependency_resolution;
     declaration.skip_validations = options.skip_validations;
     descriptor.0.non_empty = !allow_empty;

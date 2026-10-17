@@ -35,6 +35,9 @@ pub struct DependencyTarget {
     pub provider_keys: Vec<String>,
     /// RunfilesProvider/FilesToRunProvider (docs/RUNFILES.md).
     pub runfiles: crate::runfiles::TargetRunfiles,
+    /// The actual rule's class name (ConfiguredTargetAndData.getRuleClass):
+    /// `None` for files and package groups.
+    pub rule_class: Option<String>,
 }
 
 use crate::analysis_runtime::Context;
@@ -175,11 +178,16 @@ fn canonical_text(label: &str) -> String {
 /// are validated by crate::engine (their errors precede analysis). Labels
 /// are the prerequisite's own (ConfiguredTargetAndData.getTargetLabel, the
 /// alias's actual).
+///
+/// `described` is the prerequisite's AliasProvider.describeTargetWithAliases
+/// WITH_KIND text (`KIND rule 'L'`, through its alias chain); without it the
+/// target is described without aliases.
 pub(crate) fn prerequisite_errors(
     name: &str,
     spec: &AttrSpec,
     target: &DependencyTarget,
     consumer: Consumer<'_>,
+    described: Option<&str>,
 ) -> Vec<String> {
     let mut errors = Vec::new();
     let shown = canonical_text(&target.label);
@@ -190,18 +198,51 @@ pub(crate) fn prerequisite_errors(
                 || provider.id == crate::output_group_info::PROVIDER_ID
                 || target.providers.contains_key(&provider.id)
         };
+        // RuleContext.Builder.validateRuleDependency (analysis/RuleContext.java:2002-2022):
+        // an allowed rule class accepts the prerequisite (checkRuleDependencyClass,
+        // :2024-2045); otherwise the rejected class is remembered, satisfied
+        // mandatory providers still accept it (:2070-2096), and the unfulfilled
+        // requirements are joined with StringUtil.joinEnglishList(_, "and").
+        // Starlark attributes never set a warning predicate (:2052-2068).
+        let rule_class = target.rule_class.as_deref().unwrap_or_default();
+        let mut unfulfilled = Vec::new();
+        let class_allowed = match &spec.declaration.allow_rules {
+            None => false,
+            Some(allowed) if allowed.iter().any(|allowed| allowed == rule_class) => true,
+            Some(allowed) => {
+                // RuleClassNamePredicate.only: an ImmutableSet of the names,
+                // described by StringUtil.joinEnglishList (packages/RuleClass.java:541-548).
+                let mut names: Vec<&str> = Vec::new();
+                for allowed in allowed {
+                    if !names.contains(&allowed.as_str()) {
+                        names.push(allowed);
+                    }
+                }
+                let described = described
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("{rule_class} rule '{shown}'"));
+                // badPrerequisiteMessage (:1819-1830).
+                unfulfilled.push(format!(
+                    "{described} is misplaced here (expected {})",
+                    join_english_list(&names, "or")
+                ));
+                false
+            }
+        };
         // RuleContext.Builder.checkRuleDependencyMandatoryProviders
         // (analysis/RuleContext.java:2070-2095) with the missing providers'
         // RequiredProviders.getDescription (packages/RequiredProviders.java:157-190,
         // 207-212, 308-321): per alternative, the missing providers, quoted,
         // bracketed when several, joined with " or ".
-        if !spec.required_providers.is_empty()
-            && !spec
+        let providers_satisfied = !spec.required_providers.is_empty()
+            && spec
                 .required_providers
                 .iter()
-                .any(|clause| clause.iter().all(provided))
-        {
-            errors.push(format!(
+                .any(|clause| clause.iter().all(provided));
+        if class_allowed || providers_satisfied {
+            unfulfilled.clear();
+        } else if !spec.required_providers.is_empty() {
+            unfulfilled.push(format!(
                 "'{}' does not have mandatory providers: {}",
                 target.label,
                 spec.required_providers
@@ -221,6 +262,9 @@ pub(crate) fn prerequisite_errors(
                     .collect::<Vec<_>>()
                     .join(" or ")
             ));
+        }
+        if !unfulfilled.is_empty() {
+            errors.push(join_english_list(&unfulfilled, "and"));
         }
     }
     // validateDirectPrerequisiteFileTypes: a single-file attribute needs
@@ -263,6 +307,31 @@ pub(crate) fn prerequisite_errors(
     errors
 }
 
+/// StringUtil.joinEnglishList(choices, lastSeparator) with the Oxford comma
+/// (util/StringUtil.java:44-73): `a`, `a or b`, `a, b, or c`; `nothing` when empty.
+pub(crate) fn join_english_list<S: AsRef<str>>(choices: &[S], last_separator: &str) -> String {
+    let mut text = String::new();
+    for (index, choice) in choices.iter().enumerate() {
+        if index > 0 {
+            let last = index + 1 == choices.len();
+            if !last || index >= 2 {
+                text.push(',');
+            }
+            if last {
+                text.push(' ');
+                text.push_str(last_separator);
+            }
+            text.push(' ');
+        }
+        text.push_str(choice.as_ref());
+    }
+    if text.is_empty() {
+        "nothing".to_owned()
+    } else {
+        text
+    }
+}
+
 fn dependency<'a>(
     label: &str,
     name: &str,
@@ -280,7 +349,17 @@ fn dependency<'a>(
     );
     // crate::engine reports every prerequisite error before analysis; this
     // keeps the direct analysis entry points checked.
-    if let Some(error) = prerequisite_errors(name, spec, target, consumer)
+    // The alias chain is unknown here; a requested label naming another
+    // target is described as a one-step alias.
+    let described = target.rule_class.as_ref().map(|class| {
+        let actual = format!("{class} rule '{}'", canonical_text(&target.label));
+        if label == target.label {
+            actual
+        } else {
+            format!("alias '{}' referring to {actual}", canonical_text(label))
+        }
+    });
+    if let Some(error) = prerequisite_errors(name, spec, target, consumer, described.as_deref())
         .into_iter()
         .next()
     {
@@ -630,13 +709,27 @@ fn ctx_attribute_structs<'v>(
             AttrValue::Int(value) => heap.alloc(*value),
             AttrValue::Ints(values) => heap.alloc(values.clone()),
             AttrValue::LabelKeyedStringDict(entries) => {
-                // Nonempty values are rejected by the unanalyzed-feature gate.
-                ensure!(
-                    entries.is_empty(),
-                    "attribute {name}: attr.label_keyed_string_dict values are {}",
-                    crate::rule_declarations::NOT_ANALYZED
-                );
-                heap.alloc(starlark::values::dict::AllocDict::EMPTY)
+                // StarlarkAttributesCollection.Builder.convertAttributeValue
+                // (analysis/starlark/StarlarkAttributesCollection.java:361-369):
+                // a frozen dict of the prerequisite Targets, in prerequisite
+                // (key visitation) order, to their string values; the
+                // attribute's files are ctx.files (:398-409).
+                let labels = entries.iter().map(|(label, _)| label.as_str());
+                let targets = dict_prerequisites(
+                    labels,
+                    name,
+                    spec,
+                    dependencies,
+                    &attribute_prefix(name),
+                    consumer,
+                    heap,
+                )?;
+                files.insert(name.clone(), targets.files);
+                let mut items = Vec::new();
+                for (label, value) in entries {
+                    items.push((targets.values[label.as_str()], heap.alloc(value.as_str())));
+                }
+                heap.alloc(starlark::values::dict::AllocDict(items))
             }
             AttrValue::StringKeyedLabelDict(entries) => {
                 // StarlarkAttributesCollection.convertStringToLabelMap
@@ -1832,6 +1925,7 @@ strict = rule(implementation=consumer_impl, attrs={"dep": attr.label(providers=[
                 provider_keys: producer.provider_keys,
                 is_filegroup: false,
                 runfiles: producer.runfiles,
+                rule_class: Some("producer".into()),
             },
         )]);
         let consumer = analyze(&package[&Label::parse("//:consumer", "").unwrap()], &deps).unwrap();
@@ -1933,6 +2027,7 @@ erased = attr.label(providers=[[], [NotPackageSpecificationInfo]])
             provider_keys: Vec::new(),
             is_filegroup: false,
             runfiles: Default::default(),
+            rule_class: Some("dep_rule".into()),
         };
         (BTreeMap::from([(target.label.clone(), target)]), specs)
     }

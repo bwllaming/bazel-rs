@@ -83,8 +83,9 @@ or `allow_single_file`. The types are `BuildType.LABEL_DICT_UNARY`
   `StarlarkAttributesCollection.java:300-390`); mutation fails with Bazel's
   `trying to mutate a frozen dict value` / `trying to mutate a frozen list
   value` (vendored message, docs/STARLARK_VENDOR.md).
-  `cfg`, `aspects`, `allow_rules`, `flags` and `skip_validations` keep the
-  existing explicit unanalyzed-feature gate; extension-list `allow_files` is
+  `cfg`, `aspects`, `flags` (except the no-op `SKIP_CONSTRAINTS_OVERRIDE`) and
+  `skip_validations` keep the existing explicit unanalyzed-feature gate;
+  `allow_rules` is validated since N50 (docs/SH_BINARY.md); extension-list `allow_files` is
   validated (docs/LOAD_DECLARATIONS.md, "Extension-list `allow_files`").
 * Repository rules and module-extension tags accept both kinds (Bazel does not
   restrict repository attribute types, `bazel/repository/starlark/StarlarkRepositoryModule.java:80-91`,
@@ -104,8 +105,9 @@ or `allow_single_file`. The types are `BuildType.LABEL_DICT_UNARY`
   `attr.label_keyed_string_dict` is supported there since N29 (Label-keyed
   frozen dicts, docs/GLOB_SYMLINKS.md); `attr.int_list` remains unsupported.
 
-`attr.label_keyed_string_dict` values remain an explicit analysis gap
-(N12): its `ctx.attr` keys would be Targets.
+`attr.label_keyed_string_dict` rule values are analyzed since N50: `ctx.attr`
+is a frozen dict of the prerequisite Targets to their strings
+(StarlarkAttributesCollection.java:361-369), see docs/SH_BINARY.md.
 
 ## Computed (function) defaults
 
