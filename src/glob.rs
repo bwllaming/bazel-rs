@@ -150,6 +150,16 @@ impl<'a> Pattern<'a> {
         })
     }
 
+    /// Whether some state still to consume a component (of `states`, from
+    /// [`Self::states`]) is a wildcard component: UnixGlob reads a directory
+    /// before the next component only then (vfs/UnixGlob.java:778-788).
+    fn wildcard_next(&self, states: &[bool]) -> bool {
+        self.components
+            .iter()
+            .zip(states)
+            .any(|(component, active)| *active && component.contains('*'))
+    }
+
     fn matches(&self, path: &str) -> bool {
         self.match_states(path, MatchMode::Exclude)[self.components.len()]
     }
@@ -238,6 +248,9 @@ struct Pending {
     /// Reached through a link to a host path outside every repository.
     host: bool,
     relative: String,
+    /// Its entries when already read by UnixGlob's early readdir (see
+    /// [`Walker::walk`]).
+    listing: Option<Vec<fs::DirEntry>>,
 }
 
 /// One include pattern's traversal result.
@@ -250,11 +263,28 @@ enum Walk {
 /// UnixGlob's `[unix_jni.cc:382] PATH (strerror)` stat failure text
 /// (unix_jni.cc PostException via `NativePosixFiles.stat`).
 fn jni_error(path: &Path, error: &io::Error) -> String {
+    jni_error_at(382, path, error)
+}
+
+/// A JNI IOException `[unix_jni.cc:LINE] PATH (strerror)` raised by
+/// POST_EXCEPTION_FROM_ERRNO at `line` of unix_jni.cc.
+fn jni_error_at(line: u32, path: &Path, error: &io::Error) -> String {
     let text = error.to_string();
     let text = text
         .rsplit_once(" (os error ")
         .map_or(text.as_str(), |(message, _)| message);
-    format!("[unix_jni.cc:382] {} ({text})", path.display())
+    format!("[unix_jni.cc:{line}] {} ({text})", path.display())
+}
+
+/// UnixGlob's `readdir` (`NativePosixFiles.readdir`, unix_jni.cc:552-601):
+/// an `opendir` failure is `[unix_jni.cc:562] PATH (strerror)`, a `readdir`
+/// failure `[unix_jni.cc:581] PATH (strerror)`; both are the legacy globber's
+/// IOException (DefaultSyscallCache.readdirImpl does not wrap them).
+fn read_listing(directory: &Path) -> Result<Vec<fs::DirEntry>, String> {
+    fs::read_dir(directory)
+        .map_err(|error| jni_error_at(562, directory, &error))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| jni_error_at(581, directory, &error))
 }
 
 /// Return the results of `glob()` like Bazel 9.3's SINGLE_GLOBS_HYBRID
@@ -321,9 +351,10 @@ pub fn glob(
     };
     let mut values = crate::source_links::FileValues::default();
     let mut symlink_issue = None;
+    let mut deferred = None;
     let mut results = BTreeSet::new();
     for (pattern, text) in patterns.iter().zip(includes) {
-        match walker.walk(pattern, &mut values, &mut symlink_issue)? {
+        match walker.walk(pattern, &mut values, &mut symlink_issue, &mut deferred)? {
             Walk::Io(error) => {
                 let excluded = if excludes.is_empty() {
                     String::new()
@@ -354,6 +385,11 @@ pub fn glob(
             }
         }
     }
+    // A boundary lookup the legacy globber treated as missing (is_subpackage):
+    // only now, as no legacy I/O error preempted the Skyframe glob.
+    if let Some(error) = deferred {
+        return Err(error);
+    }
     results.retain(|path| !exclusions.iter().any(|pattern| pattern.matches(path)));
     if !allow_empty && results.is_empty() {
         return Err("all files in the glob have been excluded, but allow_empty is set to False (the default value of allow_empty can be set with --incompatible_disallow_empty_glob).".to_owned());
@@ -380,6 +416,7 @@ impl Walker<'_> {
         pattern: &Pattern<'_>,
         values: &mut crate::source_links::FileValues,
         symlink_issue: &mut Option<crate::source_links::SymlinkIssue>,
+        deferred: &mut Option<String>,
     ) -> Result<Walk, String> {
         use crate::source_links::{FileKind, SymlinkIssue};
         let mut pending = vec![Pending {
@@ -388,20 +425,18 @@ impl Walker<'_> {
             anchor: self.canonical_root.to_path_buf(),
             host: false,
             relative: String::new(),
+            listing: None,
         }];
         let mut result = BTreeSet::new();
         let mut host_entries = 0usize;
         while let Some(current) = pending.pop() {
-            let listing = match fs::read_dir(&current.logical) {
-                Ok(listing) => listing,
-                Err(error) => return Ok(Walk::Io(jni_error(&current.logical, &error))),
+            let mut entries = match current.listing {
+                Some(entries) => entries,
+                None => match read_listing(&current.logical) {
+                    Ok(entries) => entries,
+                    Err(error) => return Ok(Walk::Io(error)),
+                },
             };
-            let mut entries = listing.collect::<Result<Vec<_>, _>>().map_err(|error| {
-                format!(
-                    "cannot read glob entry in {}: {error}",
-                    current.logical.display()
-                )
-            })?;
             if current.host {
                 host_entries += entries.len();
                 if host_entries > MAX_HOST_ENTRIES {
@@ -518,12 +553,30 @@ impl Walker<'_> {
                     {
                         continue;
                     }
+                    // UnixGlob.reallyGlob (vfs/UnixGlob.java:778-797) reads a
+                    // directory whose next pattern component has a wildcard
+                    // *before* asking whether to traverse it; that readdir's
+                    // IOException is the legacy globber's error even for a
+                    // subpackage, and its dirents answer the BUILD lookup.
+                    // (Bazel reads ignored directories too; native does not.)
+                    let listing = if descend && pattern.wildcard_next(&state) {
+                        match read_listing(&logical) {
+                            Ok(entries) => Some(entries),
+                            Err(error) => return Ok(Walk::Io(error)),
+                        }
+                    } else {
+                        None
+                    };
                     // GlobCache.isSubPackage asks PathPackageLocator
                     // .getPackageBuildFileNullable (pkgcache/PathPackageLocator
                     // .java:83-96), which only looks for a BUILD file: a
                     // directory whose name is no valid package name is a
                     // boundary too (paired capture tests/fixtures/label_syntax).
-                    if is_subpackage(&logical)? {
+                    // FILES globs never ask for a directory that is only a
+                    // result (GlobCache.java:362-372).
+                    if (descend || !self.exclude_directories)
+                        && is_subpackage(&logical, listing.as_deref(), deferred)
+                    {
                         continue;
                     }
                     if descend {
@@ -533,6 +586,7 @@ impl Walker<'_> {
                             anchor,
                             host,
                             relative: path.clone(),
+                            listing,
                         });
                     }
                     if self.exclude_directories {
@@ -562,24 +616,52 @@ impl Walker<'_> {
 /// (`FileValue.isFile()`, PackageLookupFunction.java:321), so a BUILD link to
 /// a file counts, a dangling or directory BUILD does not. MODULE.bazel,
 /// REPO.bazel and WORKSPACE files are no boundaries.
-fn is_subpackage(directory: &Path) -> Result<bool, String> {
-    for marker in ["BUILD.bazel", "BUILD"] {
-        let path = directory.join(marker);
-        match fs::metadata(&path) {
-            Ok(metadata) if metadata.is_file() => return Ok(true),
-            Ok(_) => {}
-            Err(error)
-                if error.kind() == io::ErrorKind::NotFound
-                    || error.kind() == io::ErrorKind::NotADirectory => {}
-            Err(error) => {
-                return Err(format!(
-                    "cannot inspect glob boundary {}: {error}",
-                    path.display()
-                ));
-            }
+///
+/// Like the legacy globber's lookup (PathPackageLocator.getFilePath,
+/// pkgcache/PathPackageLocator.java:275-294, through
+/// DefaultSyscallCache.getType, skyframe/DefaultSyscallCache.java:194-251),
+/// the directory's `listing` from UnixGlob's early readdir answers when there
+/// is one (only a BUILD symlink is statted), any other lookup is a followed
+/// stat, and an I/O error is "Treat[ed] as a missing file": the legacy globber
+/// goes on (and may fail later, e.g. with `ELOOP` deeper in an ancestor
+/// recursion, which then is the package's error). The first such error is
+/// kept in `deferred`: Bazel's Skyframe glob looks the subpackage up again
+/// after a successful legacy glob and fails there (a BUILD symlink cycle is
+/// `Symlink cycle detected while trying to find BUILD file`), which native
+/// does not model and so reports as its own error.
+fn is_subpackage(
+    directory: &Path,
+    listing: Option<&[fs::DirEntry]>,
+    deferred: &mut Option<String>,
+) -> bool {
+    let mut followed_file = |path: &Path| match fs::metadata(path) {
+        Ok(metadata) => metadata.is_file(),
+        Err(error)
+            if error.kind() == io::ErrorKind::NotFound
+                || error.kind() == io::ErrorKind::NotADirectory =>
+        {
+            false
         }
-    }
-    Ok(false)
+        Err(error) => {
+            deferred.get_or_insert_with(|| {
+                format!("cannot inspect glob boundary {}: {error}", path.display())
+            });
+            false
+        }
+    };
+    ["BUILD.bazel", "BUILD"].into_iter().any(|marker| {
+        let path = directory.join(marker);
+        let Some(entries) = listing else {
+            return followed_file(&path);
+        };
+        entries
+            .iter()
+            .find(|entry| entry.file_name() == marker)
+            .is_some_and(|entry| match entry.file_type() {
+                Ok(kind) if !kind.is_symlink() => kind.is_file(),
+                _ => followed_file(&path),
+            })
+    })
 }
 
 #[cfg(test)]
@@ -1281,23 +1363,35 @@ mod tests {
         // rename_lock sequence changed, and the ref-walk retry keeps the
         // links the RCU attempt already counted (total_link_count), so a
         // path of j links fails once j + (links counted before the retry,
-        // at most j) exceeds 40, i.e. at j >= 21. Bazel's JNI stat sees the
+        // at most j) exceeds 40, i.e. at j >= 21. Bazel's JNI calls see the
         // same kernel behaviour; the exact depth is not a property of glob.
+        // So the refusal is the stat of a link (`.../up`, j <= 41), or, early,
+        // the readdir of a directory the 40-link stat reached (`.../up` or
+        // `.../up/b`, j <= 40): Bazel reads both before checking for a BUILD
+        // file, a check whose I/O errors are no errors (is_subpackage).
         temp.file("p/a/b/x.rs");
         symlink("..", temp.0.join("p/a/b/up")).unwrap();
         let error = run(&["**/x.rs"], &[]).unwrap_err();
-        let prefix = format!(
-            "no such package 'p': error globbing [**/x.rs] op=FILES: [unix_jni.cc:382] {}/p/a/b/up",
-            root.display()
-        );
-        let repeats = error
-            .strip_prefix(&prefix)
+        let prefix = "no such package 'p': error globbing [**/x.rs] op=FILES: [unix_jni.cc:";
+        let chain = format!("] {}/p/a/b/up", root.display());
+        let refusal = error
+            .strip_prefix(prefix)
             .and_then(|rest| rest.strip_suffix(" (Too many levels of symbolic links)"))
-            .map(|rest| (rest.len() / "/b/up".len(), rest))
-            .filter(|(count, rest)| *rest == "/b/up".repeat(*count))
-            .map(|(count, _)| count);
+            .and_then(|rest| rest.split_once(&chain))
+            .and_then(|(line, rest)| {
+                let (rest, tail) = match rest.strip_suffix("/b") {
+                    Some(rest) => (rest, "/b"),
+                    None => (rest, ""),
+                };
+                let count = rest.len() / "/b/up".len();
+                (rest == "/b/up".repeat(count)).then_some((line, count, tail))
+            });
         assert!(
-            repeats.is_some_and(|count| (20..=40).contains(&count)),
+            refusal.is_some_and(|(line, count, tail)| match (line, tail) {
+                ("382", "") => (20..=40).contains(&count),
+                ("562", "" | "/b") => (20..=39).contains(&count),
+                _ => false,
+            }),
             "{error}"
         );
         // Literal and single-level patterns through it do not recurse.
@@ -1309,6 +1403,54 @@ mod tests {
             run(&["**/*.rs"], &[]).unwrap(),
             ["a/b/x.rs", "side/a.rs", "sub/a.rs"]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn boundary_lookup_errors_are_no_legacy_globber_errors() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let temp = Temp::new();
+        let root = canonical(&temp);
+        temp.file("d/x.rs");
+        symlink("BUILD", temp.0.join("d/BUILD")).unwrap();
+        // Paired with Bazel 9.3: the BUILD lookup's ELOOP is a missing BUILD
+        // file to the legacy globber, which goes on into d and fails statting
+        // the BUILD link as a `**` dirent.
+        assert_eq!(
+            temp.run(&["**/*.rs"], &[], true, true).unwrap_err(),
+            format!(
+                "no such package '': error globbing [**/*.rs] op=FILES: [unix_jni.cc:382] {}/d/BUILD (Too many levels of symbolic links)",
+                root.display()
+            )
+        );
+        // Without a legacy error Bazel's Skyframe glob reports the lookup
+        // (`Symlink cycle detected while trying to find BUILD file`), which
+        // native reports as its own error.
+        assert_eq!(
+            temp.run(&["*/*.rs"], &[], true, true).unwrap_err(),
+            format!(
+                "cannot inspect glob boundary {}/d/BUILD: Too many levels of symbolic links (os error 40)",
+                root.display()
+            )
+        );
+        fs::remove_file(temp.0.join("d/BUILD")).unwrap();
+        // An unreadable directory fails UnixGlob's early readdir (opendir,
+        // unix_jni.cc:562; paired with Bazel 9.3) before its BUILD lookup.
+        temp.file("locked/z.rs");
+        let locked = temp.0.join("locked");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let unreadable = fs::read_dir(&locked).is_err();
+        let error = temp.run(&["**/*.rs"], &[], true, true);
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        if unreadable {
+            assert_eq!(
+                error.unwrap_err(),
+                format!(
+                    "no such package '': error globbing [**/*.rs] op=FILES: [unix_jni.cc:562] {}/locked (Permission denied)",
+                    root.display()
+                )
+            );
+        }
     }
 
     #[cfg(unix)]

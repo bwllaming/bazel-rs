@@ -31,9 +31,20 @@ shows which one each observable comes from:
    path; Linux may refuse from the 21st link on while other processes rename
    files, as an RCU path walk's retry keeps its link count, for Bazel too)
    fails with `[unix_jni.cc:382] PATH (Too many levels of symbolic
-   links)`. Directories whose BUILD/BUILD.bazel resolves to a file are
+   links)`. A directory whose next pattern component has a wildcard is read
+   *before* its BUILD lookup (`UnixGlob.java:778-797`); a readdir failure is
+   `[unix_jni.cc:562] PATH (strerror)` (opendir; `:581` for readdir), e.g.
+   an unreadable directory or, under concurrent renames, `a/b/up/…/b`.
+   Directories whose BUILD/BUILD.bazel resolves to a file are
    subpackages and never traversed (`GlobCache.java:131-156`); ignored
-   subdirectories neither. `StarlarkNativeModule.runGlobOperation`
+   subdirectories neither. That BUILD lookup (`PathPackageLocator.getFilePath`,
+   `pkgcache/PathPackageLocator.java:275-294`) answers from the readdir's
+   dirents when it has them and treats any I/O error as a missing BUILD file:
+   it is never the legacy globber's error. If no legacy error follows, Bazel's
+   Skyframe glob fails the lookup instead (a BUILD symlink cycle is `Symlink
+   cycle detected while trying to find BUILD file PATH`); native reports
+   that case as its own `cannot inspect glob boundary PATH: …` error.
+   `StarlarkNativeModule.runGlobOperation`
    (`packages/StarlarkNativeModule.java:851-876`) turns the IOException into an
    error event, the package's IOException
    (`TargetDefinitionContext.java:499-504`, the last one wins) and an empty
