@@ -22,7 +22,10 @@ fn action_env_is_not_a_make_variable_source() {
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
         .arg("--ignore_all_rc_files")
-        .arg(format!("--cache-dir={}", dir.path().join("cache").display()))
+        .arg(format!(
+            "--cache-dir={}",
+            dir.path().join("cache").display()
+        ))
         .args([
             "build",
             "--host_platform=//p:host",
@@ -85,7 +88,10 @@ use = rule(_use, attrs = {"deps": attr.label_list(), "text": attr.string()})
     let run = |target: &str| {
         Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
             .arg("--ignore_all_rc_files")
-            .arg(format!("--cache-dir={}", dir.path().join("cache").display()))
+            .arg(format!(
+                "--cache-dir={}",
+                dir.path().join("cache").display()
+            ))
             .args(["build", "--host_platform=//p:host", target])
             .current_dir(&ws)
             .env_clear()
@@ -95,7 +101,11 @@ use = rule(_use, attrs = {"deps": attr.label_list(), "text": attr.string()})
             .unwrap()
     };
     let input = run("//:input");
-    assert!(input.status.success(), "{}", String::from_utf8_lossy(&input.stderr));
+    assert!(
+        input.status.success(),
+        "{}",
+        String::from_utf8_lossy(&input.stderr)
+    );
     let location = run("//:location");
     let stderr = String::from_utf8_lossy(&location.stderr);
     assert!(!location.status.success(), "{stderr}");

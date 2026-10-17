@@ -1015,10 +1015,9 @@ fn ctx_attribute_structs<'v>(
                     };
                     executables.insert(name.clone(), executable);
                 }
-                let dependency = value
-                    .as_deref()
-                    .zip(target)
-                    .map(|(requested, target)| alloc_dependency(heap, &interner, requested, target));
+                let dependency = value.as_deref().zip(target).map(|(requested, target)| {
+                    alloc_dependency(heap, &interner, requested, target)
+                });
                 // A label attribute with a Starlark (split) transition is a
                 // list of its prerequisites
                 // (StarlarkAttributesCollection.convertAttributeValue,
@@ -1058,7 +1057,9 @@ fn ctx_attribute_structs<'v>(
                     labels
                         .iter()
                         .zip(&targets)
-                        .map(|(requested, target)| alloc_dependency(heap, &interner, requested, target))
+                        .map(|(requested, target)| {
+                            alloc_dependency(heap, &interner, requested, target)
+                        })
                         .collect::<Vec<_>>(),
                 )
             }

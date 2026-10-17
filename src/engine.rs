@@ -3789,7 +3789,7 @@ impl Engine {
                 rule_class: &class,
                 label: &shown,
             }
-            .attribute_message(&attribute.name, "");
+            .attribute_message(attribute.name, "");
             for dependency in labels {
                 let (chain, actual) = self.alias_chain(configured, config, dependency);
                 let actual_target = self.target(&actual)?;
@@ -5286,7 +5286,7 @@ impl Engine {
                                 rule_class: rule.rule_class_name(),
                                 label: &rule_shown,
                             }
-                            .attribute_message(&attribute.name, &error),
+                            .attribute_message(attribute.name, &error),
                         ));
                     }
                 }
