@@ -528,3 +528,79 @@ fn announce_rc_redacts_environment_values() {
         "{notes}"
     );
 }
+
+/// Options modelled after the N31 base (N28a Java semantics flags, N28b
+/// Java version options, N30 --use_target_platform_for_tests) go through the
+/// same ordered rc pass as every other option: group priority, `common`
+/// ignoring by command (query has no JavaOptions), command-line override,
+/// converter errors and the deprecation warning once per invocation.
+#[test]
+fn later_modelled_options_go_through_the_rc_pass() {
+    let ws = Workspace::new();
+    ws.file(
+        "java/BUILD.bazel",
+        r#"config_setting(name = "jdk17", values = {"java_runtime_version": "remotejdk_17"})
+config_setting(name = "utp", values = {"use_target_platform_for_tests": "true"})
+genrule(
+    name = "jdk",
+    outs = ["jdk.txt"],
+    cmd = select({":jdk17": "echo 17 > $@", "//conditions:default": "echo default > $@"}),
+)
+genrule(
+    name = "utp_on",
+    outs = ["utp.txt"],
+    cmd = select({":utp": "echo on > $@", "//conditions:default": "echo off > $@"}),
+)
+"#,
+    );
+    ws.file(
+        ".bazelrc",
+        "build --java_runtime_version=remotejdk_17\ncommon --tool_java_runtime_version=remotejdk_21\n",
+    );
+    assert_eq!(ws.built(&[], &["build", "//java:jdk"]), "17");
+    assert_eq!(
+        ws.built(
+            &[],
+            &["build", "--java_runtime_version=local_jdk", "//java:jdk"]
+        ),
+        "default"
+    );
+    // A JavaOptions option is not a query option: `common` skips it there.
+    let output = ws.run(&["query", "//java:jdk"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    ws.file(".bazelrc", "query --java_runtime_version=remotejdk_17\n");
+    let error = ws.failed(&[], &["query", "//java:jdk"]);
+    assert!(
+        error.contains(
+            "--java_runtime_version=remotejdk_17 :: Unrecognized option: --java_runtime_version=remotejdk_17"
+        ),
+        "{error}"
+    );
+    // CoreOptions --use_target_platform_for_tests: build and query, one warning.
+    ws.file(".bazelrc", "common --use_target_platform_for_tests\n");
+    let warning = "WARNING: Option 'use_target_platform_for_tests' is deprecated";
+    let output = ws.run(&["build", "--use_target_platform_for_tests", "//java:utp_on"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        stderr(&output).matches(warning).count(),
+        1,
+        "{}",
+        stderr(&output)
+    );
+    assert_eq!(ws.built(&[], &["build", "//java:utp_on"]), "on");
+    let output = ws.run(&["query", "//java:utp_on"]);
+    assert!(
+        output.status.success() && stderr(&output).contains(warning),
+        "{}",
+        stderr(&output)
+    );
+    // N28a Starlark semantics flags are accepted from rc files and converted.
+    ws.file(
+        ".bazelrc",
+        "common --experimental_google_legacy_api\nbuild --incompatible_java_info_merge_runtime_module_flags\nbuild --noincompatible_disable_non_executable_java_binary\n",
+    );
+    assert_eq!(ws.built(&[], &["build", "//java:jdk"]), "default");
+    ws.file(".bazelrc", "build --experimental_google_legacy_api=maybe\n");
+    let error = ws.failed(&[], &["build", "//java:jdk"]);
+    assert!(error.contains("'maybe' is not a boolean"), "{error}");
+}
