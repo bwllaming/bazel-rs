@@ -31,16 +31,16 @@ MESSAGES = {
     'rollback': 'Error in fail: RULE_ROLLBACK_SENTINEL',
     'path': 'repository output path must be relative and clean',
     'return': 'repository rule return value is unsupported; expected None',
-    'facts_version_unsupported': 'module_extension with nonzero facts_version is unsupported',
     'ascii': 'non-ASCII string literals are unsupported',
     'cycle': 'repository template dependency cycle: made -> other -> made',
 }
 
 
 class FixtureTests(unittest.TestCase):
-    def test_fixed_plan_has_fourteen_differentials_and_eight_boundaries(self):
-        self.assertEqual(len(rules.CASES), 22)
-        self.assertEqual(len(set(name for name, _ in rules.PLAN)), 22)
+    def test_fixed_plan_has_fourteen_differentials_and_seven_boundaries(self):
+        self.assertEqual(len(rules.CASES), 21)
+        self.assertEqual(len(set(name for name, _ in rules.PLAN)), 21)
+        self.assertNotIn('native.unsupported', [name for name, _ in rules.PLAN])
         self.assertEqual(sum(c['kind'] == 'differential' for c in rules.CASES), 14)
         self.assertEqual([c['name'] for c in rules.CASES[:14]], [
             'file.transitive-attrs-overwrite', 'template.binary-label-and-stage',
@@ -203,30 +203,16 @@ class FixtureTests(unittest.TestCase):
         self.assertIn(b'INVALID_UNUSED_DEFINITION_EVALUATED', lazy['files']['defs.bzl'])
         self.assertEqual(lazy['target'], '//:data')
 
-    def test_facts_version_is_the_only_unsupported_policy_boundary(self):
-        item = next(c for c in rules.CASES if c['name'] == 'native.unsupported')
-        self.assertEqual(item['kind'], 'native_boundary')
-        self.assertEqual(item['probes'], ['facts_version_unsupported'])
-        value = rules.fixture('native.unsupported', 'facts_version_unsupported')
-        self.assertEqual(value['diagnostic'], 'facts_version_unsupported')
-        self.assertEqual(rules.steps_for(item, 'facts_version_unsupported', 'native'), [('query', '@made//:data', [])])
-        for probe in ('metadata', 'integer'):
-            with self.assertRaises(KeyError):
-                rules.fixture('native.unsupported', probe)
+    def test_execute_is_a_differential_not_a_boundary(self):
         # Bazel accepts repository_ctx.execute; it is a differential, never a boundary.
-        with self.assertRaises(KeyError):
-            rules.fixture('native.unsupported', 'execute')
         self.assertNotIn('execute', rules.DIAGNOSTICS)
+        self.assertNotIn('facts_version_unsupported', rules.DIAGNOSTICS)
         execute = rules.fixture('execute.host-process')
         self.assertIsNone(execute['diagnostic'])
         self.assertIn(b'ctx.execute(["/bin/sh", "-c", ', execute['files']['defs.bzl'])
         self.assertIn(b'environment = {"EXEC_VALUE": "two"}', execute['files']['defs.bzl'])
         self.assertIn(b'ctx.which("sh")', execute['files']['defs.bzl'])
         self.assertEqual(execute['expected'], {'data': (b'3|one|two|err|True|data\n', False)})
-        extension = rules.fixture('native.unsupported', 'facts_version_unsupported')['files']['defs.bzl']
-        self.assertIn(b'maker = repository_rule(implementation = _impl, attrs = {})', extension)
-        self.assertIn(b'ordinary = module_extension(implementation = _impl, facts_version = 1)', extension)
-        self.assertNotIn(b'use_extension', extension)
 
 
 class BazelFaithfulN26Tests(unittest.TestCase):
@@ -283,22 +269,6 @@ class BazelFaithfulN26Tests(unittest.TestCase):
 
 
 class DiagnosticTests(unittest.TestCase):
-    def test_actual_facts_version_diagnostic_and_stale_absence_rejection(self):
-        # Exact shared-file debug CLI output; no runtime artifact dependency.
-        from test_validate_direct_repositories import RECORDED_FACTS_VERSION
-        rules.require_rejection(record(stderr=RECORDED_FACTS_VERSION, returncode=1), 'facts_version_unsupported')
-        for stale in ("Variable `module_extension` not found", "name 'module_extension' is not defined",
-                      'module_extension is unsupported', 'module_extension constructor is not supported'):
-            for stderr in (stale, RECORDED_FACTS_VERSION + stale):
-                with self.subTest(stderr=stderr), self.assertRaises(ValueError):
-                    rules.require_rejection(record(stderr=stderr, returncode=1), 'facts_version_unsupported')
-        for wrong in ('module_extension with nonempty environ is unsupported',
-                      'module_extension facts_version must be a nonnegative 32-bit int',
-                      'module_extension with nonzero facts_version is supported',
-                      RECORDED_FACTS_VERSION + 'permission denied'):
-            with self.subTest(wrong=wrong), self.assertRaises(ValueError):
-                rules.require_rejection(record(stderr=wrong, returncode=1), 'facts_version_unsupported')
-
     def test_synthetic_classifiers_accept_only_expected_controlled_markers(self):
         for diagnostic, text in MESSAGES.items():
             with self.subTest(diagnostic=diagnostic):
@@ -487,7 +457,7 @@ class InvocationAndReportTests(unittest.TestCase):
 
     def test_counts_and_pass_strings_are_not_cli_evidence(self):
         synthetic = dict(checks=[dict(name=c['name'], kind=c['kind'], status='PASS') for c in rules.CASES],
-                         planned_checks=copy.deepcopy(rules.CASES), completed_checks=22,
+                         planned_checks=copy.deepcopy(rules.CASES), completed_checks=21,
                          completed_differential_cases=14, errors=[], cleanup=[], scratch_cleaned=True,
                          sources_unchanged=True, reference_shutdown_succeeded=True)
         self.assertFalse(rules.report_passes(synthetic))

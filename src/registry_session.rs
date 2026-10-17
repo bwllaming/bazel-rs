@@ -76,22 +76,33 @@ pub struct RegistrySession {
     memo: Mutex<HashMap<String, Arc<FetchSlot>>>,
     recorded: Mutex<BTreeMap<String, Option<String>>>,
     resolution: Mutex<Option<Resolution>>,
-    /// Whether every module extension the command demanded evaluated
-    /// successfully in this invocation (the loading phase completed), and how
-    /// many were evaluated. BazelLockFileModule.afterCommand combines
+    /// Whether every module extension the command demanded resolved
+    /// successfully in this invocation (the loading phase completed: each
+    /// one evaluated, or reused from an up-to-date MODULE.bazel.lock
+    /// entry). BazelLockFileModule.afterCommand combines
     /// BazelModuleResolutionValue and BazelDepGraphValue with the
     /// SingleExtensionValues "evaluated in the current build" (:95-100,
     /// :105-141). The native gate is fail-closed and STRICTER than Bazel:
     /// until the whole module resolution — demanded extensions included —
-    /// succeeded, `updated_lockfile` stays None and nothing is written,
-    /// whereas genuine Bazel still writes after a demanded extension failed
-    /// (E1c2: rc=1, lockfile rewritten; expected native mismatch).
+    /// succeeded, `updated_lockfile` and `updated_hidden_lockfile` stay
+    /// None and nothing is written, whereas genuine Bazel still writes
+    /// after a demanded extension failed (E1c2: rc=1, lockfile rewritten;
+    /// expected native mismatch).
     extensions_evaluated: AtomicBool,
-    /// The evaluated count of the gated invocation, for the write-path
-    /// diagnostic only.
-    evaluated_extensions: AtomicUsize,
+    /// The resolved count (evaluated or reused) of the gated invocation,
+    /// for the write-path diagnostic only.
+    resolved_extensions: AtomicUsize,
     /// Normalized registry URL -> spelling as given (IndexRegistry.getUrl()).
     spellings: BTreeMap<String, String>,
+    /// The hidden lockfile (Bazel: `<output_base>/MODULE.bazel.lock`,
+    /// BazelLockFileFunction.java:75-79), read in update mode; any read
+    /// failure is the empty lockfile (:96-98). None without a cache path.
+    hidden: Option<(PathBuf, Lockfile)>,
+    /// The SingleExtensionValues done in this invocation, in completion order.
+    extension_results: Mutex<Vec<crate::lockfile_extensions::ExtensionResult>>,
+    /// `--native-lockfile=readonly`: a stateless probe mode that writes no
+    /// lockfile at all, not even the hidden one (reads are kept).
+    readonly: bool,
 }
 
 /// What BazelModuleResolutionValue and the BazelDepGraphValue usage table
@@ -193,9 +204,43 @@ impl RegistrySession {
             recorded: Mutex::default(),
             resolution: Mutex::default(),
             extensions_evaluated: AtomicBool::new(false),
-            evaluated_extensions: AtomicUsize::new(0),
+            resolved_extensions: AtomicUsize::new(0),
             spellings: BTreeMap::new(),
+            hidden: None,
+            extension_results: Mutex::default(),
+            readonly: *target == LockfileTarget::ReadOnly,
         })
+    }
+
+    /// Use `path` as the hidden lockfile (native: under `--cache-dir`, keyed
+    /// by the workspace, like Bazel's per-workspace output base).
+    pub fn with_hidden_lockfile(mut self, path: PathBuf) -> Self {
+        let lockfile = if self.mode == LockfileMode::Off {
+            Lockfile::default()
+        } else {
+            lockfile::read(&path, LockfileMode::Update).unwrap_or_default()
+        };
+        self.hidden = Some((path, lockfile));
+        self
+    }
+
+    /// The hidden lockfile's value (empty without one).
+    pub fn hidden_lockfile(&self) -> &Lockfile {
+        static EMPTY: OnceLock<Lockfile> = OnceLock::new();
+        self.hidden.as_ref().map_or_else(
+            || EMPTY.get_or_init(Lockfile::default),
+            |(_, lockfile)| lockfile,
+        )
+    }
+
+    /// A SingleExtensionValue was computed (evaluated or taken from a lockfile).
+    pub(crate) fn record_extension_result(
+        &self,
+        result: crate::lockfile_extensions::ExtensionResult,
+    ) {
+        let mut results = self.extension_results.lock().expect("extension results");
+        results.retain(|known| known.id != result.id);
+        results.push(result);
     }
 
     pub fn mode(&self) -> LockfileMode {
@@ -460,16 +505,17 @@ impl RegistrySession {
     }
 
     /// The loading phase — module resolution and every demanded module
-    /// extension evaluation — succeeded: the SingleExtensionValues
-    /// BazelLockFileModule.afterCommand collects, "evaluated in the current
-    /// build" (:105-141), exist for this invocation and the lockfile may be
-    /// written. A command that fails before this point — extension
-    /// evaluation included — leaves MODULE.bazel.lock untouched (stricter
-    /// than Bazel, see `extensions_evaluated`). `evaluated` only feeds the
-    /// write-path diagnostic.
-    pub fn mark_module_extensions_evaluated(&self, evaluated: usize) {
-        self.evaluated_extensions
-            .store(evaluated, Ordering::Release);
+    /// extension resolution (evaluation or lockfile reuse) — succeeded: the
+    /// SingleExtensionValues BazelLockFileModule.afterCommand collects,
+    /// "evaluated in the current build" (:105-141), exist for this
+    /// invocation and the lockfile may be written. A command that fails
+    /// before this point — extension evaluation included — leaves
+    /// MODULE.bazel.lock untouched (stricter than Bazel, see
+    /// `extensions_evaluated`). `resolved` only feeds the write-path
+    /// diagnostic.
+    pub fn mark_module_extensions_resolved(&self, resolved: usize) {
+        self.resolved_extensions
+            .store(resolved, Ordering::Release);
         self.extensions_evaluated.store(true, Ordering::Release);
     }
 
@@ -491,41 +537,124 @@ impl RegistrySession {
             .filter(|(url, _)| !url.starts_with("file:"))
             .map(|(url, hash)| (url.clone(), hash.clone()))
             .collect();
-        let mut new = Lockfile {
+        let results = self
+            .extension_results
+            .lock()
+            .expect("extension results")
+            .clone();
+        let has_usages = |id: &str| usages.contains(id);
+        let (facts, facts_versions) = crate::lockfile_extensions::combine_facts(
+            &self.lockfile.facts,
+            &self.lockfile.facts_versions,
+            &results,
+            &has_usages,
+        );
+        let new = Lockfile {
             version: lockfile::LOCK_FILE_VERSION,
             registry_file_hashes,
             selected_yanked_versions: resolution.selected_yanked,
-            module_extensions: self.lockfile.module_extensions.clone(),
-            facts: self.lockfile.facts.clone(),
-            facts_versions: self.lockfile.facts_versions.clone(),
+            module_extensions: crate::lockfile_extensions::combine_extensions(
+                &self.lockfile.module_extensions,
+                &results,
+                &has_usages,
+                false,
+            ),
+            facts,
+            facts_versions,
         };
-        new.prune_extensions(|id| usages.contains(id));
         (new != self.lockfile).then_some(new)
     }
 
-    /// Write the updated lockfile, if any, to the configured target. Like
+    /// The hidden lockfile BazelLockFileModule.afterCommand would write
+    /// (:206-226): reproducible extension results and the facts of this
+    /// invocation's results, never the workspace lockfile's. Gated exactly
+    /// like `updated_lockfile` (fail-closed; stricter than Bazel) and never
+    /// written by `--native-lockfile=readonly`, which reads only.
+    pub fn updated_hidden_lockfile(&self) -> Option<(PathBuf, Lockfile)> {
+        if !self.mode.writes() || self.readonly {
+            return None;
+        }
+        if !self.extensions_evaluated.load(Ordering::Acquire) {
+            return None;
+        }
+        let (path, old) = self.hidden.as_ref()?;
+        let resolution = self.resolution.lock().expect("resolution record").clone()?;
+        let usages = resolution.usages?;
+        let results = self
+            .extension_results
+            .lock()
+            .expect("extension results")
+            .clone();
+        let has_usages = |id: &str| usages.contains(id);
+        let (facts, facts_versions) = crate::lockfile_extensions::combine_facts(
+            &old.facts,
+            &old.facts_versions,
+            &results,
+            &has_usages,
+        );
+        let new = Lockfile {
+            version: lockfile::LOCK_FILE_VERSION,
+            registry_file_hashes: BTreeMap::new(),
+            selected_yanked_versions: Vec::new(),
+            module_extensions: crate::lockfile_extensions::combine_extensions(
+                &old.module_extensions,
+                &results,
+                &has_usages,
+                true,
+            ),
+            facts,
+            facts_versions,
+        };
+        (new != *old).then(|| (path.clone(), new))
+    }
+
+    /// Write the updated lockfiles, if any: the workspace lockfile to the
+    /// configured target and the hidden lockfile. Like
     /// BazelLockFileModule.updateLockfile, failures do not fail the command.
     /// The native-only diagnostic of how many module extensions the
-    /// invocation evaluated prints only after bytes were actually written
-    /// (write-only-if-changed; Bazel prints nothing).
+    /// invocation resolved (evaluated or reused from an up-to-date lockfile
+    /// entry) prints only after workspace-lockfile bytes were actually
+    /// written (write-only-if-changed; Bazel prints nothing).
     pub fn finish(&self) -> Option<String> {
-        let path = self.write_path.as_ref()?;
-        let lockfile = self.updated_lockfile()?;
-        match std::fs::write(path, lockfile.serialize()) {
-            Ok(()) => {
-                let evaluated = self.evaluated_extensions.load(Ordering::Acquire);
-                if evaluated > 0 {
-                    eprintln!(
-                        "bazel-rs: evaluated {evaluated} module extension(s) for MODULE.bazel.lock"
-                    );
-                }
-                None
+        let mut warnings = Vec::new();
+        if let Some((path, hidden)) = self.updated_hidden_lockfile() {
+            let written = path
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| std::fs::write(&path, hidden.serialize()));
+            if let Err(error) = written {
+                warnings.push(format!(
+                    "Error while updating the hidden MODULE.bazel.lock file: {error}"
+                ));
             }
-            Err(error) => Some(format!(
-                "Error while updating MODULE.bazel.lock file: {error}"
-            )),
         }
+        if let (Some(path), Some(lockfile)) = (self.write_path.as_ref(), self.updated_lockfile()) {
+            match std::fs::write(path, lockfile.serialize()) {
+                Ok(()) => {
+                    let resolved = self.resolved_extensions.load(Ordering::Acquire);
+                    if resolved > 0 {
+                        eprintln!(
+                            "bazel-rs: resolved {resolved} module extension(s) for MODULE.bazel.lock"
+                        );
+                    }
+                }
+                Err(error) => warnings.push(format!(
+                    "Error while updating MODULE.bazel.lock file: {error}"
+                )),
+            }
+        }
+        (!warnings.is_empty()).then(|| warnings.join("\n"))
     }
+}
+
+/// The native hidden lockfile of `workspace` under `--cache-dir` (Bazel:
+/// `<output_base>/MODULE.bazel.lock`; an output base is per workspace).
+pub fn hidden_lockfile_path(cache_dir: &Path, workspace: &Path) -> PathBuf {
+    let canonical = std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+    cache_dir
+        .join("hidden-lockfiles")
+        .join(sha256_hex(canonical.as_os_str().as_encoded_bytes()))
+        .join(lockfile::LOCKFILE_NAME)
 }
 
 impl SessionHandle {
@@ -797,7 +926,7 @@ mod tests {
             selected_yanked: Vec::new(),
             usages: Some(ExtensionUsages::default()),
         });
-        first.mark_module_extensions_evaluated(0);
+        first.mark_module_extensions_resolved(0);
         assert_eq!(first.finish(), None);
         let text = std::fs::read_to_string(dir.path().join("MODULE.bazel.lock")).unwrap();
         assert!(
@@ -823,7 +952,7 @@ mod tests {
             selected_yanked: Vec::new(),
             usages: Some(ExtensionUsages::default()),
         });
-        second.mark_module_extensions_evaluated(0);
+        second.mark_module_extensions_resolved(0);
         assert!(second.updated_lockfile().is_none());
         // Refresh retries "not found"; error mode requires hashes.
         let refresh = session(dir.path(), LockfileMode::Refresh, None);
@@ -989,7 +1118,7 @@ mod tests {
         // usage-table extension evaluated (BazelLockFileModule.java:95-100).
         assert_eq!(session.finish(), None);
         assert!(!overlay.exists());
-        session.mark_module_extensions_evaluated(0);
+        session.mark_module_extensions_resolved(0);
         assert_eq!(session.finish(), None);
         assert!(overlay.exists());
         assert!(
@@ -1010,7 +1139,7 @@ mod tests {
             usages: Some(ExtensionUsages::default()),
         });
         assert!(readonly.updated_lockfile().is_none());
-        readonly.mark_module_extensions_evaluated(0);
+        readonly.mark_module_extensions_resolved(0);
         assert!(readonly.updated_lockfile().is_some());
         assert_eq!(readonly.finish(), None);
     }

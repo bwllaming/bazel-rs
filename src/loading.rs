@@ -192,6 +192,83 @@ pub struct LoadedDefinition {
     pub value: OwnedFrozenValue,
     pub functions: Vec<OwnedFrozenValue>,
     pub sources: BTreeMap<String, SourceProvenance>,
+    /// Direct loads of every evaluated `.bzl` file, in load-statement order
+    /// (duplicates kept): BzlLoadFunction's programLoads (:808-870).
+    pub load_graph: HashMap<Label, Vec<Label>>,
+    /// Repository mapping lookups of the transitive load closure: load
+    /// statements with an apparent repository and top-level `Label()` calls
+    /// (BzlLoadValue.getRecordedRepoMappings, BzlLoadFunction.java:808-931).
+    pub repo_mappings: Vec<RecordedRepoMapping>,
+}
+
+/// One RepoRecordedInput.RecordedRepoMapping observation: the repository whose
+/// mapping was consulted, the apparent name, and the canonical result (None
+/// when no visible repository has that name).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RecordedRepoMapping {
+    pub from: String,
+    pub apparent: String,
+    pub canonical: Option<String>,
+}
+
+thread_local! {
+    /// Recorders of the `.bzl` files whose top level is being evaluated by a
+    /// provenance-capturing loader (innermost last); see [`record_label_repo_mapping`].
+    static LOAD_RECORDERS: std::cell::RefCell<Vec<Vec<RecordedRepoMapping>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The apparent repository of a label string, if it names one (`@name//...`
+/// or `@name`, not `@@canonical`): Label.Parts.repo() when !repoIsCanonical.
+pub(crate) fn apparent_repository(text: &str) -> Option<&str> {
+    let rest = text.strip_prefix('@')?;
+    if rest.starts_with('@') {
+        return None;
+    }
+    Some(rest.split_once("//").map_or(rest, |(name, _)| name))
+}
+
+/// The canonical name a resolved label's repository records, None when the
+/// apparent name was not visible (RepositoryName.isVisible).
+fn recorded_canonical(label: &Label) -> Option<String> {
+    (!label.repository.starts_with('[')).then(|| label.repository.clone())
+}
+
+/// `Label()` (StarlarkRuleClassFunctions.label, :2124-2143) records the
+/// mapping lookup of an apparent repository in the thread's
+/// RepoMappingRecorder: a module extension's context
+/// (StarlarkBaseExternalContext.java:209-216), or the `.bzl` file being
+/// loaded (BzlLoadFunction.java:1396). Other phases record nothing.
+pub(crate) fn record_label_repo_mapping(eval: &Evaluator<'_, '_, '_>, text: &str, label: &Label) {
+    let Some(apparent) = apparent_repository(text) else {
+        return;
+    };
+    let from = if let Some(label) = definition_label(eval) {
+        label.repository
+    } else if let Some(package) = crate::extension_ctx::definition_package(eval) {
+        package.repository
+    } else {
+        return;
+    };
+    let entry = RecordedRepoMapping {
+        from,
+        apparent: apparent.to_owned(),
+        canonical: recorded_canonical(label),
+    };
+    if crate::extension_ctx::record_repo_mapping(eval, &entry) {
+        return;
+    }
+    if eval
+        .extra
+        .and_then(|extra| extra.downcast_ref::<ExtensionContext>())
+        .is_some()
+    {
+        LOAD_RECORDERS.with(|recorders| {
+            if let Some(frame) = recorders.borrow_mut().last_mut() {
+                frame.push(entry);
+            }
+        });
+    }
 }
 
 /// Load a public export directly from a canonical `.bzl` label, without a BUILD
@@ -256,6 +333,8 @@ fn load_frozen_export_in(
         value,
         functions: loader.functions,
         sources: loader.sources,
+        load_graph: loader.load_graph,
+        repo_mappings: loader.repo_mappings,
     })
 }
 
@@ -447,6 +526,9 @@ struct Loader<'a> {
     sources: BTreeMap<String, SourceProvenance>,
     /// Direct loads of every evaluated `.bzl` file.
     load_graph: HashMap<Label, Vec<Label>>,
+    /// Provenance capture only: repository mapping lookups of load
+    /// statements and top-level `Label()` calls ([`LoadedDefinition`]).
+    repo_mappings: Vec<RecordedRepoMapping>,
 }
 
 enum Work {
@@ -472,6 +554,7 @@ impl<'a> Loader<'a> {
             provenance_capture,
             sources: BTreeMap::new(),
             load_graph: HashMap::new(),
+            repo_mappings: Vec::new(),
         }
     }
 
@@ -617,6 +700,19 @@ impl<'a> Loader<'a> {
         crate::guarded_globals::check(label, &ast)?;
         crate::guarded_globals::check_universe(&ast)?;
         let dependencies = dependencies(&self.repositories, &label.package_id(), &ast)?;
+        if self.provenance_capture {
+            // Label.parseWithPackageContext with the load's recorder
+            // (BzlLoadFunction.getLoadLabels, :808-820).
+            for (load, resolved) in ast.loads().iter().zip(&dependencies) {
+                if let Some(apparent) = apparent_repository(load.module_id) {
+                    self.repo_mappings.push(RecordedRepoMapping {
+                        from: label.repository.clone(),
+                        apparent: apparent.to_owned(),
+                        canonical: recorded_canonical(resolved),
+                    });
+                }
+            }
+        }
         Ok((path, ast, dependencies))
     }
 
@@ -657,8 +753,17 @@ impl<'a> Loader<'a> {
                 // Latin-1 char model; BUILD/analysis loads do not.
                 let _model =
                     starlark::values::string::enter_latin1_char_model(self.provenance_capture);
-                eval.eval_module(ast, self.globals)
-                    .map_err(|e| format!("cannot evaluate {label}: {e}"))?;
+                if self.provenance_capture {
+                    LOAD_RECORDERS.with(|recorders| recorders.borrow_mut().push(Vec::new()));
+                }
+                let evaluated = eval.eval_module(ast, self.globals);
+                if self.provenance_capture {
+                    let recorded = LOAD_RECORDERS
+                        .with(|recorders| recorders.borrow_mut().pop())
+                        .unwrap_or_default();
+                    self.repo_mappings.extend(recorded);
+                }
+                evaluated.map_err(|e| format!("cannot evaluate {label}: {e}"))?;
                 drop(eval);
                 initialization.finish()
             };

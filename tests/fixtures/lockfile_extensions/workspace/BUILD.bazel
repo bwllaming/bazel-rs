@@ -1,0 +1,3 @@
+exports_files(["data.txt"])
+
+filegroup(name = "root_group")

@@ -40,6 +40,9 @@ pub struct RecordedRepository {
     pub definition: RuleDefinition,
     pub attributes: BTreeMap<String, RecordedValue>,
     pub name: String,
+    /// Keyword names in call order: the order of a RepoSpec's attributes
+    /// (RepoRule.instantiate, bazel/repository/RepoRule.java:87-120).
+    pub order: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -47,6 +50,7 @@ struct PendingCall {
     slot: String,
     attributes: BTreeMap<String, RecordedValue>,
     name: String,
+    order: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -85,12 +89,14 @@ impl CallRecorder {
         args.no_positional_args(eval.heap())
             .map_err(|e| anyhow!("{e}"))?;
         let named = args.names_map().map_err(|e| anyhow!("{e}"))?;
+        let order = named.keys().map(|key| key.as_str().to_owned()).collect();
         self.record_values(
             me,
             named
                 .iter()
                 .map(|(key, value)| (key.as_str(), *value))
                 .collect(),
+            order,
             eval,
         )
     }
@@ -99,6 +105,7 @@ impl CallRecorder {
         &self,
         me: Value<'v>,
         raw: BTreeMap<&str, Value<'v>>,
+        order: Vec<String>,
         eval: &Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
         repository_rule::validate_invokable_value(me)?;
@@ -133,6 +140,7 @@ impl CallRecorder {
             slot,
             attributes,
             name: name.to_owned(),
+            order,
         });
         Ok(Value::new_none())
     }
@@ -152,6 +160,7 @@ impl CallRecorder {
                     definition: repository_rule::unpack(&callee)?,
                     attributes: call.attributes,
                     name: call.name,
+                    order: call.order,
                 })
             })
             .collect()

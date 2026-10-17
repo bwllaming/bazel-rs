@@ -2154,6 +2154,7 @@ pub fn analysis_globals(builder: &mut GlobalsBuilder) {
                         e
                     }
                 })?;
+            crate::loading::record_label_repo_mapping(eval, label_string, &label);
             return Ok(eval.heap().alloc(LabelValue::parse(&label.to_string())?));
         }
         Ok(eval.heap().alloc(LabelValue::parse(

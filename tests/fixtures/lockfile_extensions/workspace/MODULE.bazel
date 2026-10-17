@@ -1,0 +1,40 @@
+module(name = "lockroot", version = "1.0")
+
+bazel_dep(name = "lockdep", version = "2.0")
+local_path_override(
+    module_name = "lockdep",
+    path = "lockdep",
+)
+
+ext = use_extension("//:ext.bzl", "ext")
+ext.config(
+    id = "alpha",
+    count = 3,
+    enabled = True,
+    target = "@lockdep//:lib",
+    targets = ["//:data.txt", "@lockdep//:lib"],
+    items = ["x", "@@raw", "'quoted'"],
+    mapping = {"k": "v", "@@key": "v2"},
+)
+ext.config(id = "beta")
+use_repo(ext, "gen_alpha", "gen_beta", "gen_http")
+
+ext_dev = use_extension("//:ext.bzl", "ext", dev_dependency = True)
+ext_dev.config(id = "gamma", count = -7)
+use_repo(ext_dev, "gen_gamma")
+
+plat = use_extension("//:platform_ext.bzl", "plat")
+use_repo(plat, "gen_plat")
+
+repro = use_extension("//:repro_ext.bzl", "repro")
+use_repo(repro, "gen_repro")
+
+meta = use_extension("//:meta_ext.bzl", "meta")
+use_repo(meta, "gen_meta")
+
+facts = use_extension("//:facts_ext.bzl", "facts_ext")
+use_repo(facts, "gen_facts")
+
+dep_ext = use_extension("@lockdep//:dep_ext.bzl", "dep_ext")
+dep_ext.item(value = "from_root")
+use_repo(dep_ext, "dep_gen")

@@ -400,6 +400,12 @@ struct Encoder<'a, 'v> {
     active: Vec<Value<'v>>,
     math: Option<float::Math>,
 }
+/// `json.encode(value)`, as FactsAdapter.write encodes extension facts
+/// (bazel/bzlmod/FactsAdapter.java:45-60).
+pub(crate) fn encode_value<'v>(value: Value<'v>, heap: Heap<'v>) -> anyhow::Result<String> {
+    encode(value, heap, &mut JsonBudget::default()).map_err(|error| anyhow::anyhow!("{error}"))
+}
+
 fn encode<'v>(value: Value<'v>, heap: Heap<'v>, budget: &mut JsonBudget) -> Result<String> {
     budget.array(64, std::mem::size_of::<Value>())?;
     let mut active = Vec::new();

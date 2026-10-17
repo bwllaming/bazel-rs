@@ -298,6 +298,9 @@ fn run() -> Result<(), String> {
             Some(cache.join("repositories")),
             allowed_yanked,
         )?
+        .with_hidden_lockfile(bazel_rs::registry_session::hidden_lockfile_path(
+            &cache, &root,
+        ))
         .with_spellings(
             resolver_options
                 .registries
@@ -524,8 +527,8 @@ impl LockfileGate {
         }
         // The count only feeds the write-path diagnostic; Bazel prints
         // nothing here.
-        let evaluated = self.repositories.evaluated_module_extensions();
-        session.mark_module_extensions_evaluated(evaluated);
+        let resolved = self.repositories.resolved_module_extensions();
+        session.mark_module_extensions_resolved(resolved);
     }
 }
 

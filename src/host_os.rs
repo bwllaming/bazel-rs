@@ -106,6 +106,11 @@ impl HostFactors<'_> {
     pub(crate) fn is_empty(&self) -> bool {
         self.os.is_none() && self.arch.is_none()
     }
+
+    /// ModuleExtensionEvalFactors.toString (`general`, `os:linux,arch:amd64`).
+    pub(crate) fn lockfile_key(&self) -> String {
+        crate::lockfile_extensions::factors_key(self.os, self.arch)
+    }
 }
 
 /// Version inside the hashed execution inputs deliberately rekeys every executed

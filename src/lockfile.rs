@@ -7,11 +7,9 @@
 //! (GsonTypeAdapterUtil.java:401-405, `disableHtmlEscaping`) followed by a
 //! newline, only when the new value differs from the value read.
 //!
-//! Native scope: `registryFileHashes` and `selectedYankedVersions` are
-//! computed by native resolution. `moduleExtensions`, `facts` and
-//! `factsVersions` are NOT computed: the sections read are kept verbatim and
-//! no entry is ever added (module extensions are always re-evaluated). The
-//! hidden output-base lockfile is not implemented.
+//! `registryFileHashes` and `selectedYankedVersions` are computed by native
+//! resolution; `moduleExtensions`, `facts` and `factsVersions` by module
+//! extension evaluation and lockfile reuse (crate::lockfile_extensions).
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -93,7 +91,8 @@ pub struct Lockfile {
     pub registry_file_hashes: BTreeMap<String, Option<String>>,
     /// ModuleKey string ("name@version") -> yanked info, in map order.
     pub selected_yanked_versions: Vec<(String, String)>,
-    /// Kept verbatim; native never computes these sections.
+    /// Extension ID -> eval factors -> LockFileModuleExtension, as read (number
+    /// spellings and member order kept) or computed (crate::lockfile_extensions).
     pub module_extensions: Vec<(String, Json)>,
     pub facts: Vec<(String, Json)>,
     pub facts_versions: Vec<(String, Json)>,
@@ -197,7 +196,21 @@ impl Lockfile {
                 "moduleExtensions".into(),
                 Json::Object(self.module_extensions.clone()),
             ),
-            ("facts".into(), Json::Object(self.facts.clone())),
+            // FactsAdapter.write: Gson drops object members whose value is null.
+            (
+                "facts".into(),
+                Json::Object(
+                    self.facts
+                        .iter()
+                        .map(|(id, facts)| {
+                            (
+                                id.clone(),
+                                crate::lockfile_extensions::drop_null_members(facts),
+                            )
+                        })
+                        .collect(),
+                ),
+            ),
             (
                 "factsVersions".into(),
                 Json::Object(self.facts_versions.clone()),
@@ -669,7 +682,7 @@ impl Parser<'_> {
 }
 
 /// Gson JsonWriter string escaping without HTML escaping.
-fn write_string(out: &mut String, text: &str) {
+pub(crate) fn write_string(out: &mut String, text: &str) {
     out.push('"');
     for ch in text.chars() {
         match ch {
@@ -692,7 +705,7 @@ fn write_string(out: &mut String, text: &str) {
 }
 
 /// Gson pretty printing: two-space indent, `": "`, empty containers `{}`/`[]`.
-fn write_pretty(out: &mut String, value: &Json, depth: usize) {
+pub(crate) fn write_pretty(out: &mut String, value: &Json, depth: usize) {
     let indent = |out: &mut String, depth: usize| {
         out.push('\n');
         for _ in 0..depth {

@@ -1,4 +1,4 @@
-# MODULE.bazel.lock, registry file cache and parallel registry fetching (N37)
+# MODULE.bazel.lock, registry file cache and parallel registry fetching (N37, N52)
 
 Native `query` and `build` read and write the workspace `MODULE.bazel.lock` the
 way Bazel 9.3 does for the parts that registry resolution determines, keep
@@ -34,17 +34,22 @@ registries.
   byte-for-byte untouched. Writes happen after the command, including a command
   that failed after its loading phase (target selection) succeeded, but never in
   `error` or `off` mode. A command that fails earlier — module resolution or any
-  demanded module extension evaluation — writes nothing at all: the write gate
-  opens only when the whole resolution succeeded (loading phase). This
-  fail-closed gate is **stricter than Bazel**: `BazelLockFileModule.afterCommand`
-  combines whatever evaluated (:105-141, over `getDoneValues()`) and genuine
-  Bazel 9.3 still rewrote MODULE.bazel.lock (184 `registryFileHashes`,
-  `moduleExtensions: {}`) for a command that failed on a demanded extension
-  (`fail()` in its implementation; the E1c2 observation) — an expected native
-  mismatch. As in Bazel, a write failure does not fail the command (native
-  prints a warning). When bytes were actually written, native prints the
-  diagnostic `bazel-rs: evaluated N module extension(s) for
-  MODULE.bazel.lock`; Bazel prints nothing.
+  demanded module extension resolution (evaluation or lockfile reuse) — writes
+  nothing at all, the hidden lockfile included: the write gate opens only when
+  the whole resolution succeeded (loading phase). This fail-closed gate is
+  **stricter than Bazel**: `BazelLockFileModule.afterCommand` combines whatever
+  evaluated (:105-141, over `getDoneValues()`) and genuine Bazel 9.3 still
+  rewrote MODULE.bazel.lock (184 `registryFileHashes`, `moduleExtensions: {}`)
+  for a command that failed on a demanded extension (`fail()` in its
+  implementation; the E1c2 observation) — an expected native mismatch. Stale
+  entries are no loophole: a demanded extension that failed leaves no new
+  result, so `combineModuleExtensions` keeps the old entry and a later write
+  would re-serialize it unchanged (and the unchanged-value rule suppresses the
+  write). As in Bazel, a write failure does not fail the command (native
+  prints a warning). When workspace-lockfile bytes were actually written,
+  native prints the diagnostic `bazel-rs: resolved N module extension(s) for
+  MODULE.bazel.lock` (N counts extensions the invocation resolved — evaluated
+  or reused from an up-to-date entry); Bazel prints nothing.
 - Only remote URLs are recorded. `file:` registries are never written
   (`BazelLockFileModule.java:158-167`) and they ignore hashes
   (`bzlmod/RegistryFactoryImpl.java:59-71`).
@@ -103,57 +108,211 @@ checksum" and recorded like `RegistryFileDownloadEvent` (`:157-163`).
   Results, including errors, are consumed in the original sequential order, so
   diagnostics stay deterministic.
 
-## Module extensions and facts (native scope)
+## Module extensions and facts (N52)
 
-The native profile does not compute `moduleExtensions` entries: it has no
-`bzlTransitiveDigest`, `usagesDigest` or recorded inputs. **Native writes
-version-28 lockfiles without the extension entries Bazel would regenerate.**
-For a fresh or old-version lockfile, Bazel would add an entry for every
-non-reproducible extension it evaluated; native writes `"moduleExtensions": {}`.
-Genuine Bazel re-evaluates those extensions and adds the entries on its next
-write.
+Native computes, writes, validates and reuses `moduleExtensions` entries and
+`facts` as Bazel 9.3 does. Paths in this section are relative to
+`src/main/java/com/google/devtools/build/lib/`; the implementation is
+`src/lockfile_extensions.rs` and `RepositorySet::{extension_lock,
+reusable_lock_entry, repositories_from_lock_entry, record_extension_lock}` in
+`src/repository.rs`.
 
-- Existing `moduleExtensions`, `facts` and `factsVersions` values are kept
-  verbatim. The original number spellings and member order are preserved, so
-  they re-serialize exactly as Gson does. Extensions are always re-evaluated, and
-  no entry is ever added.
-- Before writing, the sections are pruned like `BazelLockFileModule.afterCommand`
-  does when there are no new results:
-  - Extension entries are kept only for extension IDs in the current usage
-    table (`combineModuleExtensions`, `:270-280`).
-  - Facts are kept only for used extensions and only when not `Facts.EMPTY`
-    (`:226-235`).
-  - `factsVersions` are kept only for kept facts and only when non-zero
-    (`:237-249`).
+### Entry format
 
-  The usage table follows `BazelDepGraphFunction.java:97-137`: active usages,
-  labels resolved with each module's bazel_dep mapping, and IDs spelled as in
-  `GsonTypeAdapterUtil.java:176-187`. An isolated usage matches by its
-  `label%name%<module key>+` prefix, because native does not record the exported
-  proxy name. If the usage table cannot be built, the command fails and
-  nothing is written. Bazel fails the command as well
-  (`getExtensionUsagesById`, `:115-130`) and writes nothing without a
-  `BazelDepGraphValue` (`:95-100`). Native uses Bazel's text: `Error computing
-  the main repository mapping: invalid label for module extension found at
-  <file>:<line>:<col>: no repo visible as '@x' here`. The location is the
-  usage's first `use_extension` left parenthesis. Before N51 native silently
-  skipped the write. Order is the file
-  order; Bazel sorts by `ModuleExtensionId.LEXICOGRAPHIC_COMPARATOR`, which is
-  already the order of a Bazel-written file.
-  - Genuine Bazel reads such a file the same way: missing entries are evaluated
-    again, and stale entries are detected by their digests.
-  - Bazel itself would record new non-reproducible extension entries and drop
-    entries of extensions that are no longer used. Native does neither.
-    `--native-lockfile` exists so probes avoid that difference in a shared
-    checkout.
-- Persisted facts are not passed to extensions. An extension whose ID has facts
-  in the lockfile fails explicitly in every lockfile mode.
-- In `error` mode, a non-reproducible extension, or one that returns facts,
-  fails:
-  - Bazel's `The module extension 'ID' does not exist in the lockfile` when the
-    lockfile has no entry for it.
-  - Otherwise an explicit "validating … is not implemented" error.
-- The hidden output-base lockfile is not implemented.
+`moduleExtensions` maps a ModuleExtensionId, spelled like
+`GsonTypeAdapterUtil.java:176-187` (`//:ext.bzl%ext`, `@@dep+//:x.bzl%x`), to
+eval-factor keys (`general`, or `os:linux,arch:amd64` for `os_dependent`/
+`arch_dependent` extensions; `bazel/bzlmod/ModuleExtensionEvalFactors.java`,
+`RegularRunnableExtension.java:203-207`). Each LockFileModuleExtension
+(`bazel/bzlmod/LockFileModuleExtension.java:30-73`) is written with these fields:
+
+- **`bzlTransitiveDigest`**: base64 of BzlLoadValue's transitive digest for a
+  Bzlmod key. It is the SHA-256 over the SHA-256 of the extension `.bzl` bytes,
+  followed by the transitive digests of its loads in load-statement order
+  (`skyframe/BzlLoadFunction.java:858-879`). Bzlmod keys add no builtins digest
+  (`:1350-1365`). `@bazel_tools` files are the embedded Bazel 9.3 tools, so
+  digests over them match Bazel 9.3 only. Lockfiles written by other Bazel
+  versions differ wherever an extension loads `@bazel_tools`.
+- **`usagesDigest`**: `SingleExtensionUsagesValue.hashForEvaluation`
+  (`bazel/bzlmod/SingleExtensionUsagesValue.java:78-99`). It is the SHA-256 of
+  the UTF-16LE code units (Guava `hashUnencodedChars`) of the compact Gson
+  JSON of the trimmed usages. That JSON lists, per module key, the
+  normalized `extensionBzlFile` (`ModuleFileGlobals.java:486-519`), the
+  extension name, `proxies: []`, and the tags with their kwargs in call order.
+  Tag values are written like `AttributeValuesAdapter` (`'`-wrapping of `@@…`
+  and `'…'` strings, `None` members dropped), at `Location.BUILTIN`, followed
+  by `repoOverrides: {}`. Then come the unique name (`+ext`, `dep++ext`), the
+  abridged modules (`name`, declared `version`, key `<root>`/`name@version`/
+  `name@_`), `repoMappings: {}` and `repoOverrides: {}`.
+- **`recordedInputs`**: RepoRecordedInput.WithValue strings
+  (`rules/repository/RepoRecordedInput.java`), with Bazel's escaping (`\s`,
+  `\n`, `\\`, `\0` for null), in recording order
+  (`StarlarkBaseExternalContext.java:255-280`, first value wins):
+  1. `ENV:` for `module_extension(environ=...)`, sorted by name
+     (`ModuleExtensionContext.java:91-93`).
+  2. The static `REPO_MAPPING:` table, rows by repository name and columns by
+     apparent name (`cmdline/Label.java:266-281`). It holds load statements
+     and top-level `Label()` calls of the transitive `.bzl` closure, plus
+     label-typed tag attributes (`RegularRunnableExtension.java:352-365`).
+  3. Observations during the implementation in order: `FILE:` (read/watch/
+     path-readdir type: digest, `DIR` or `ENOENT`), `DIRENTS:` (Fingerprint
+     of the sorted names), `ENV:` (`getenv`) and `REPO_MAPPING:` (`Label()`
+     with an apparent repository).
+
+  Workspace paths are `@@//path` and external repository files `@@repo//path`.
+- **`generatedRepoSpecs`**: in creation order, each repo spec has these parts:
+  - `repoRuleId`: `@@bzl//pkg:file.bzl%rule`, the defining file and exported
+    name.
+  - `attributes`: only explicitly given, non-`None` attributes except `name`,
+    `tags`, `deprecation` and `visibility`, in call order
+    (`bazel/repository/RepoRule.java:87-120`). Values are the type-checked
+    values: labels in `@@repo//pkg:name` form, escaped strings, ints, bools,
+    lists and dicts (`bazel/bzlmod/AttributeValuesAdapter.java`).
+- **`moduleExtensionMetadata`**: present unless the result equals
+  ModuleExtensionMetadata.DEFAULT, whose comparison includes empty facts
+  (`LockfileModuleExtensionMetadata.java:148-159`). Fields:
+  `explicitRootModuleDirectDeps`/`explicitRootModuleDirectDevDeps` (omitted
+  when null), `useAllRepos` and `reproducible`.
+
+`facts` holds, per extension, the `extension_metadata(facts=...)` dict:
+`json.encode` of the normalized value, re-indented by Gson
+(`bazel/bzlmod/FactsAdapter.java`; object members whose value is `None` are
+dropped on write, as Gson does). `factsVersions` holds the non-zero
+`module_extension(facts_version=...)` of extensions that have facts.
+
+### Which results are recorded, and where
+
+After the command, BazelLockFileModule.afterCommand (`:63-226`) runs in
+`update` and `refresh`. It combines the old entries with the results of this
+invocation:
+
+- An entry is kept only while the extension still has usages.
+
+The usage table follows `BazelDepGraphFunction.java:97-137`: active usages,
+labels resolved with each module's bazel_dep mapping, and IDs spelled as in
+`GsonTypeAdapterUtil.java:176-187`. An isolated usage matches by its
+`label%name%<module key>+` prefix, because native does not record the exported
+proxy name. If the usage table cannot be built, the command fails and
+nothing is written. Bazel fails the command as well
+(`getExtensionUsagesById`, `:115-130`) and writes nothing without a
+`BazelDepGraphValue` (`:95-100`). Native uses Bazel's text: `Error computing
+the main repository mapping: invalid label for module extension found at
+<file>:<line>:<col>: no repo visible as '@x' here`. The location is the
+usage's first `use_extension` left parenthesis. Before N51 native silently
+skipped the write.
+- A new result replaces the entry with the same factors, and entries with
+  other dependencies (`:262-330`) are dropped.
+- IDs are sorted by `ModuleExtensionId.LEXICOGRAPHIC_COMPARATOR`.
+
+Non-reproducible results go to the workspace lockfile. Results with
+`reproducible = True` go to the **hidden lockfile**: Bazel's
+`<output_base>/MODULE.bazel.lock`, which native keeps at
+`<cache-dir>/hidden-lockfiles/<sha256 of the workspace path>/MODULE.bazel.lock`.
+That file is read in update mode, and any read failure counts as empty
+(`BazelLockFileFunction.java:75-98`). Facts go to both files. Results taken
+from a lockfile are recorded again unchanged. As before, a file is written
+only when its value changes.
+
+### Reuse and validation (`SingleExtensionEvalFunction.java:144-407`)
+
+Except in `off` mode, the entry for the current factors is taken from the
+workspace lockfile, or failing that from the hidden lockfile. It is
+up to date when all of these hold:
+
+- Its `bzlTransitiveDigest` and `usagesDigest` equal the current ones.
+- No recorded input is outdated. Inputs are compared in list order with
+  Bazel's describeChange texts. A `FILE` in an external repository fetches
+  that repository, as Bazel does. A `REPO_MAPPING` that was not visible
+  (null) is always outdated, because RepositoryMapping.get never returns null.
+- For a reproducible entry, the lockfile facts are empty or equal to the
+  hidden lockfile's facts.
+
+An up-to-date entry is used **without running the extension**: no prints, no
+downloads, no module_ctx side effects. Its repositories are rebuilt from
+`generatedRepoSpecs`. Each `repoRuleId` is loaded from its `.bzl` file and the
+attributes are deserialized like `AttributeValuesAdapter.read`. The use_repo
+fixup is generated from the locked metadata, and the import checks run as
+after an evaluation. With a lockfile in use, generated repositories are keyed
+by what the result determines (rule definitions, attributes, mapping and
+sources), so an evaluated result and a reused one have the same repository
+identity. In `off` mode the previous evaluation-based identity is kept.
+
+Facts passed to the extension as `module_ctx.facts` are the workspace
+lockfile's (when its `factsVersions` matches `facts_version`), otherwise the
+hidden lockfile's (`:145-183`). `Facts` supports `[]`, `in`, `get` and value
+equality; `print` shows `Facts(<repr>)`.
+
+`--lockfile_mode=error`:
+
+- An outdated non-reproducible entry fails with
+  ``MODULE.bazel.lock is no longer up-to-date because <reasons>. Please run
+  `bazel mod deps --lockfile_mode=update` to update your lockfile.``. All
+  reasons are listed, joined by `,`.
+- A non-reproducible extension without an entry fails with
+  `The module extension '<@@id>'[ for platform <factors>] does not exist in
+  the lockfile`.
+- Facts that differ from the workspace lockfile's fail with
+  `… because the extension '<@@id>' has changed its facts: <repr> != <repr>. …`.
+
+Messages print IDs as `ModuleExtensionId.toString`, for example
+`@@//:ext.bzl%ext`. An extension that recorded a `REPO_MAPPING` to an
+invisible repository prints Bazel's
+`produced an invalid lockfile entry because it referenced @x` warning.
+
+### Native limits (explicit failures)
+
+- In `update` and `refresh`, an extension whose observations have no Bazel
+  representation fails with `cannot write its MODULE.bazel.lock entry: …`
+  instead of writing an inexact entry. Examples are a watched special file and
+  a watched path in no known repository. Validating a `DIRTREE` input reports
+  it as outdated with an explicit reason. It cannot be recorded by
+  `module_ctx`.
+- Tag values that Bazel's AttributeValuesAdapter cannot serialize fail
+  explicitly. Bazel throws for these: floats, ints outside 32 bits, and
+  non-string dict keys.
+- Isolated usages, `override_repo` and `inject_repo` stay unsupported in
+  MODULE evaluation, so `isolationKey` and `repoOverrides` are never needed.
+- Innate `use_repo_rule` extensions are never recorded, as in Bazel.
+- `--native-lockfile=readonly` is a native-only stateless probe mode; Bazel has
+  no analogue. It reads the workspace lockfile and the hidden lockfile (so
+  their up-to-date entries are still reused) but writes neither: an extension
+  without an up-to-date entry runs again in every readonly invocation. An
+  absolute-path target writes the private lockfile and the hidden lockfile.
+- **Probes sharing a `--cache-dir` see reproducible-extension reuse.** In
+  `update`/`refresh` with the workspace or a private-path target, the first
+  run stores reproducible results in the cache's hidden lockfile and later
+  runs with the same cache and workspace skip those extensions, as a Bazel
+  output base does (their print output and side effects disappear). To observe
+  evaluations, use a fresh `--cache-dir`, `--native-lockfile=readonly` on a
+  fresh cache, or `--lockfile_mode=off`.
+- **Entries recorded inside `@@bazel_tools`'s load closure in the default
+  profile.** Without `--experimental-builtin-modules`, `@@bazel_tools` has no
+  contents (N51 makes it visible in every mapping but still unloadable;
+  docs/BUILTIN_MODULES.md). A Bazel-written entry whose `recordedInputs` holds
+  `REPO_MAPPING:bazel_tools,…` (a load or `Label()` inside a `@bazel_tools`
+  file of the extension's closure) therefore looks outdated
+  (`source repo @@bazel_tools doesn't exist anymore`): `update` re-evaluates
+  the extension (whose `@bazel_tools` load then fails explicitly), and
+  `error` fails explicitly where Bazel passes. Use the built-in profile for
+  such lockfiles.
+- The validator probes that asserted `module_extension(facts_version=N)` is
+  unsupported were retired in N52 (`native.facts-version-unsupported` in
+  `scripts/validate_direct_repositories.py`, `native.unsupported` in
+  `scripts/validate_repository_rules.py`; plan counts 47 and 20). Nonzero
+  `facts_version` is covered differentially by this section's receipt.
+
+### Evidence
+
+- The paired capture `artifacts/lockfile_extensions-capture.py` writes the
+  receipt `tests/fixtures/lockfile_extensions/reference_receipt.json`. The
+  fixture is `tests/fixtures/lockfile_extensions/workspace`, with a
+  `file://` registry. Every step matches: exit status, lockfile bytes and
+  whether the file was written, which extensions were evaluated (reuse), and
+  error texts.
+- CLI tests: `tests/lockfile_extensions.rs`. Unit tests are in
+  `src/lockfile_extensions.rs`.
+- ~/code: `artifacts/code_lockfile_extensions_probe.py`; see the receipt's
+  `code_probe`.
 
 ## Default registry and offline behaviour
 
@@ -211,7 +370,8 @@ exits 0 natively and 48 in Bazel.
 ## Native-only `--native-lockfile=workspace|readonly|/absolute/path`
 
 - `workspace` (default): Bazel's behavior.
-- `readonly`: reads the workspace lockfile and never writes any lockfile.
+- `readonly`: reads the workspace lockfile (and the hidden lockfile) and never
+  writes any lockfile, not even the hidden one (N52).
 - An absolute path is a private lockfile:
   - It is read instead of the workspace lockfile. If it does not exist yet, the
     workspace lockfile is read instead, as a seed.

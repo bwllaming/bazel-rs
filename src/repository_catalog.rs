@@ -65,6 +65,53 @@ pub struct OrdinaryParticipant {
     pub tags: Vec<ExtensionTag>,
     pub imports: Vec<RepositoryImport>,
     pub source_profile_error: Option<String>,
+    /// ModuleKey.toString (ModuleKey.java:63-68): `<root>` or `NAME@VERSION`
+    /// of the selected key (`_` for an empty key version).
+    pub module_key: String,
+    /// ModuleExtensionUsage.extensionBzlFile: the module's spelling normalized
+    /// by ModuleFileGlobals.normalizeLabelString (ModuleFileGlobals.java:486-519),
+    /// e.g. `@lockroot//:ext.bzl` (first spelling when several resolve alike).
+    pub extension_bzl_file: String,
+}
+
+/// ModuleFileGlobals.normalizeLabelString (ModuleFileGlobals.java:486-519):
+/// parse `raw` in the module's own repository `own` (the root module also maps
+/// the empty apparent name to it), then print the apparent repository name in
+/// the unambiguous canonical form without its first `@`.
+pub fn normalize_extension_bzl_file(raw: &str, own: &str, is_root: bool) -> Result<String, String> {
+    let (repository, rest) = if let Some(rest) = raw.strip_prefix('@') {
+        let rest = rest.strip_prefix('@').unwrap_or(rest);
+        match rest.split_once("//") {
+            Some((repository, rest)) => (Some(repository), format!("//{rest}")),
+            None => (Some(rest), format!("//:{rest}")),
+        }
+    } else if raw.starts_with("//") {
+        (None, raw.to_owned())
+    } else {
+        (None, format!("//:{}", raw.strip_prefix(':').unwrap_or(raw)))
+    };
+    let repository = match repository {
+        None => own,
+        Some("") if is_root => own,
+        Some(repository) => repository,
+    };
+    let label = Label::parse_canonical(&rest)
+        .map_err(|error| format!("invalid label \"{raw}\": {error}"))?;
+    Ok(format!("@{repository}//{}:{}", label.package, label.name))
+}
+
+/// ModuleKey.toString of a graph owner, None for an unknown owner.
+fn module_key(graph: &ResolvedGraph, owner: &str) -> Option<String> {
+    if owner.is_empty() {
+        return Some("<root>".to_owned());
+    }
+    graph.modules.get(owner).map(|module| {
+        if module.version.is_empty() {
+            format!("{}@_", module.name)
+        } else {
+            format!("{}@{}", module.name, module.version)
+        }
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -146,6 +193,25 @@ pub fn build(graph: &ResolvedGraph, ignore_root_dev: bool) -> Result<DirectCatal
                     }
                     continue;
                 }
+                // The lockfile usage identity (SingleExtensionUsagesValue):
+                // ModuleKey.toString and ModuleFileGlobals.normalizeLabelString
+                // of the module's own spelling (first spelling when several
+                // resolve alike). The label itself comes from usage_label
+                // (Bazel error wording; @@ spelling resolved apparent).
+                let own_name = module
+                    .module
+                    .as_ref()
+                    .map_or("", |info| info.effective_repo_name());
+                let identity = ParticipantIdentity {
+                    module_key: module_key(graph, owner).ok_or_else(|| {
+                        format!("internal error: no selected module for MODULE owner {owner:?}")
+                    })?,
+                    extension_bzl_file: normalize_extension_bzl_file(
+                        &usage.identity.label,
+                        own_name,
+                        owner.is_empty(),
+                    )?,
+                };
                 record_ordinary(
                     &mut catalog,
                     &mut prefixes,
@@ -153,6 +219,7 @@ pub fn build(graph: &ResolvedGraph, ignore_root_dev: bool) -> Result<DirectCatal
                     module,
                     usage,
                     label,
+                    identity,
                     ignore_dev,
                     &mut budget,
                 )?;
@@ -319,6 +386,12 @@ fn charge_mapping(
     Ok(())
 }
 
+/// The lockfile usage identity of one participant (SingleExtensionUsagesValue).
+struct ParticipantIdentity {
+    module_key: String,
+    extension_bzl_file: String,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn record_ordinary(
     catalog: &mut DirectCatalog,
@@ -327,6 +400,7 @@ fn record_ordinary(
     module: &ModuleFile,
     usage: &ExtensionUsage,
     label: Label,
+    identity: ParticipantIdentity,
     ignore_dev: bool,
     budget: &mut crate::repository_budget::HostBudget,
 ) -> Result<(), String> {
@@ -388,6 +462,8 @@ fn record_ordinary(
                 tags: Vec::new(),
                 imports: Vec::new(),
                 source_profile_error: module.source_profile_error.clone(),
+                module_key: identity.module_key,
+                extension_bzl_file: identity.extension_bzl_file,
             });
             group.participants.len() - 1
         }

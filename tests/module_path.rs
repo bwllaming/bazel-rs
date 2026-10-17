@@ -12,6 +12,11 @@ const ROOT_GO_MOD: &str = "module example.com/app\n\ngo 1.27.1\n";
 const DEP_GO_MOD: &str = "module example.com/gorules\n\ngo 1.25.0\n";
 const EXPECTED: &[u8] =
     b"main:download:1.27.1:True\nmain:from_file:1.27.1\ngorules:from_file:1.25.0\n";
+/// After the first evaluation MODULE.bazel.lock holds the extension's facts,
+/// which Bazel passes to every later evaluation as module_ctx.facts
+/// (SingleExtensionEvalFunction.java:145-183).
+const EXPECTED_WITH_FACTS: &[u8] =
+    b"main:download:1.27.1:False\nmain:from_file:1.27.1\ngorules:from_file:1.25.0\n";
 
 impl Fixture {
     fn new() -> Self {
@@ -108,13 +113,14 @@ fn go_sdk_shaped_extension_reads_go_mod_labels_and_rekeys_on_source_bytes() {
     let first = f.roots();
     assert_eq!(first.len(), 1);
     assert_eq!(fs::read(first[0].join("data.txt")).unwrap(), EXPECTED);
-    // Unchanged inputs: identical generated-repository identity.
+    // Unchanged inputs: the (reproducible) result is reused from the hidden
+    // lockfile, with an identical generated-repository identity.
     assert_eq!(f.build(), EXPECTED);
     assert_eq!(f.roots(), first);
-    // Same parsed version, different go.mod bytes: the read_source digest
-    // alone rekeys the extension even though every declaration is identical.
+    // Different go.mod bytes: the recorded FILE input is outdated, so the
+    // extension runs again, now seeing the facts persisted by the first run.
     f.file("go.mod", format!("{ROOT_GO_MOD}// comment\n"));
-    assert_eq!(f.build(), EXPECTED);
+    assert_eq!(f.build(), EXPECTED_WITH_FACTS);
     let second = f.roots();
     assert_eq!(second.len(), 2);
     assert!(second.contains(&first[0]));
@@ -122,14 +128,14 @@ fn go_sdk_shaped_extension_reads_go_mod_labels_and_rekeys_on_source_bytes() {
     f.file("dep/go.mod", DEP_GO_MOD.replace("1.25.0", "1.26.2"));
     assert_eq!(
         f.build(),
-        b"main:download:1.27.1:True\nmain:from_file:1.27.1\ngorules:from_file:1.26.2\n"
+        b"main:download:1.27.1:False\nmain:from_file:1.27.1\ngorules:from_file:1.26.2\n"
     );
     let third = f.roots();
     assert_eq!(third.len(), 3);
-    // Restoring the original bytes restores the original identity.
+    // Restoring the original bytes restores the identity of the same result.
     f.file("go.mod", ROOT_GO_MOD);
     f.file("dep/go.mod", DEP_GO_MOD);
-    assert_eq!(f.build(), EXPECTED);
+    assert_eq!(f.build(), EXPECTED_WITH_FACTS);
     assert_eq!(f.roots(), third);
     assert_eq!(fs::read_dir(f.0.path().join("tmp")).unwrap().count(), 0);
 }

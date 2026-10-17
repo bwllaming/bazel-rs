@@ -28,15 +28,17 @@ repositories. Each byte maps to U+0000..U+00FF (Latin-1).
 
 ## `module_ctx.facts`
 
-Always the empty `Facts` value: there is no lockfile, matching Bazel's
-`--lockfile_mode=off` (`SingleExtensionEvalFunction.java:145-150`). `type()` is
-`"Facts"`; `str()`/`repr()` are `Facts(<opaque, inspect with print()>)`;
-`get(key, default = None)` returns the default; `in` is `False`; equality is by
-value (`ctx.facts == ctx.facts`, as in Bazel); hashing fails with
+The facts persisted in MODULE.bazel.lock for this extension (N52,
+[REGISTRY_LOCKFILE.md](REGISTRY_LOCKFILE.md)): the workspace lockfile's when its
+`factsVersions` matches `facts_version`, else the hidden lockfile's, else empty
+(`SingleExtensionEvalFunction.java:145-183`); always empty with
+`--lockfile_mode=off`. `type()` is `"Facts"`; `str()`/`repr()` are
+`Facts(<opaque, inspect with print()>)`; `print(facts)` is `Facts(<repr of the
+dict>)` (`Facts({})` when empty); `get(key, default = None)`, `key in facts` and
+`facts[key]` read the persisted dict; equality is by value; hashing fails with
 `unhashable type: 'Facts'`; iteration, `len` and `keys` are unsupported.
-Divergences: `print(facts)` shows the opaque form (Bazel prints `Facts({})`), and
-`facts[key]` fails explicitly (`Facts has no key ...`) where Bazel's lookup yields
-an internal null.
+Divergence: `facts[key]` for a missing key fails explicitly (`Facts has no key
+...`) where Bazel's lookup yields an internal null.
 
 ## `module_ctx.extension_metadata(*, ...)`
 
@@ -58,7 +60,8 @@ are `in call to extension_metadata(), parameter '<p>' got value of type '<t>', w
   bool, int, float, string, list, tuple or dict
   (`'<repr>' (<type>) is not supported in facts`), nesting at most seven levels
   (`Facts cannot be nested more than 7 levels deep`). Facts are validated
-  **before** the dependency parameters, then discarded (no lockfile).
+  **before** the dependency parameters; non-empty facts are written to
+  MODULE.bazel.lock (`json.encode` of the value, [REGISTRY_LOCKFILE.md](REGISTRY_LOCKFILE.md)).
 - `root_module_direct_deps`, `root_module_direct_dev_deps`
   (`ModuleExtensionMetadata.create`, `ModuleExtensionMetadata.java:88-174`), in order:
   1. both `None`: no use_repo metadata;
@@ -153,8 +156,8 @@ cache keys.
 
 ## Exclusions
 
-Watch-based reuse, lockfile facts persistence and `bazel mod tidy` remain
-unsupported (the working directory, `path` members, `download_and_extract`,
+`bazel mod tidy` remains unsupported (lockfile reuse driven by recorded inputs
+and facts persistence are N52, [REGISTRY_LOCKFILE.md](REGISTRY_LOCKFILE.md)) (the working directory, `path` members, `download_and_extract`,
 `execute`, `file`, `which`, `getenv` are implemented, see
 [EXTENSION_CTX_SURFACE.md](EXTENSION_CTX_SURFACE.md)). Tests: `src/extension_ctx.rs` and
 `src/extension_metadata.rs` unit tests, the real-CLI `tests/module_path.rs` (root

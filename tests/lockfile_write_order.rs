@@ -64,7 +64,7 @@ fn stderr(result: &Output) -> String {
     String::from_utf8_lossy(&result.stderr).into_owned()
 }
 
-const MARKER: &str = "bazel-rs: evaluated 1 module extension(s) for MODULE.bazel.lock";
+const MARKER: &str = "bazel-rs: resolved 1 module extension(s) for MODULE.bazel.lock";
 
 #[test]
 fn failing_extension_in_update_writes_no_lockfile_and_fails() {
@@ -75,7 +75,7 @@ fn failing_extension_in_update_writes_no_lockfile_and_fails() {
     assert!(!stderr(&result).contains("panicked"), "{}", stderr(&result));
     assert!(stderr(&result).contains("EVAL_BOOM"), "{}", stderr(&result));
     assert!(
-        !stderr(&result).contains("evaluated"),
+        !stderr(&result).contains("module extension(s) for MODULE.bazel.lock"),
         "{}",
         stderr(&result)
     );
@@ -100,8 +100,8 @@ fn successful_update_evaluates_all_demanded_extensions_then_writes() {
     let f = Fixture::new(GOOD_EXT);
     f.file("a/BUILD.bazel", DEMANDING);
     // Content that a local-only resolution drops: a successful update
-    // rewrites the file (extension entries stay unwritten: the documented
-    // N52 gap).
+    // rewrites the file; since N52 the extension's moduleExtensions entry
+    // is computed and written with Bazel's digests.
     f.file(
         "MODULE.bazel.lock",
         "{\n  \"lockFileVersion\": 28,\n  \"registryFileHashes\": {\n    \"https://stale/a\": \"not found\"\n  }\n}\n",
@@ -120,18 +120,27 @@ fn successful_update_evaluates_all_demanded_extensions_then_writes() {
         lock.starts_with("{\n  \"lockFileVersion\": 28,\n"),
         "{lock}"
     );
+    assert!(lock.contains("\"moduleExtensions\": {"), "{lock}");
+    assert!(lock.contains("\"//:ext.bzl%files\": {"), "{lock}");
     assert!(
-        lock.ends_with(
-            "  \"moduleExtensions\": {},\n  \"facts\": {},\n  \"factsVersions\": {}\n}\n"
-        ),
+        lock.contains("\"bzlTransitiveDigest\": "),
+        "{lock}"
+    );
+    assert!(
+        lock.contains("\"usagesDigest\": "),
+        "{lock}"
+    );
+    assert!(
+        lock.contains("\"generatedRepoSpecs\": {"),
         "{lock}"
     );
     assert!(!lock.contains("stale"), "{lock}");
     // Write-only-if-changed: an unchanged value is not rewritten and the
-    // diagnostic stays silent.
+    // diagnostic stays silent, although the extension counts as resolved
+    // (an up-to-date entry is reused, never re-evaluated).
     let warm = f.query("update");
     assert!(warm.status.success(), "{}", stderr(&warm));
-    assert!(!stderr(&warm).contains("evaluated"), "{}", stderr(&warm));
+    assert!(!stderr(&warm).contains(MARKER), "{}", stderr(&warm));
     assert_eq!(f.lock().unwrap(), lock);
 }
 
@@ -147,7 +156,7 @@ fn off_mode_stays_lazy() {
         String::from_utf8_lossy(&result.stdout)
     );
     assert!(
-        !stderr(&result).contains("evaluated"),
+        !stderr(&result).contains("module extension(s) for MODULE.bazel.lock"),
         "{}",
         stderr(&result)
     );
@@ -161,7 +170,7 @@ fn error_mode_keeps_its_on_demand_validation() {
     let result = f.query("error");
     assert!(result.status.success(), "{}", stderr(&result));
     assert!(
-        !stderr(&result).contains("evaluated"),
+        !stderr(&result).contains("module extension(s) for MODULE.bazel.lock"),
         "{}",
         stderr(&result)
     );

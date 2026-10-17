@@ -1,0 +1,5 @@
+module(name = "lockdep", version = "2.0")
+
+dep_ext = use_extension("//:dep_ext.bzl", "dep_ext")
+dep_ext.item(value = "from_dep", label = "@lockdep//:lib")
+use_repo(dep_ext, "dep_gen")

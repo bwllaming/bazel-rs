@@ -33,7 +33,6 @@ MESSAGES = {
     "syntax_kwargs": "**kwargs must be a dict literal in MODULE.bazel",
     "syntax_star": "*args are not allowed in MODULE.bazel",
     "syntax_rebinding": 'global binding "x" may not be reassigned; first bound at MODULE.bazel:3:1',
-    "facts_version_unsupported": "module_extension with nonzero facts_version is unsupported",
     "declaration_loaded": "Error in fail: declaration fixture was loaded",
 }
 
@@ -60,59 +59,7 @@ RECORDED_COLLISIONS = (
     (48, "Error in call: The repo name 'generated' cannot be defined by a repo rule at /tmp/opencode/direct-repositories-hhwllx6h/workspace/MODULE.bazel:6:6 as it is already defined by a repo rule at /tmp/opencode/direct-repositories-hhwllx6h/workspace/MODULE.bazel:5:5"),
 )
 
-# Exact debug CLI output retained in artifacts/ordinary-direct-boundary-update.json.
-# The full file exports a supported repository_rule AND a nonzero-facts extension.
-RECORDED_FACTS_VERSION = (
-    "bazel-rs: cannot evaluate //:defs.bzl: Traceback (most recent call last):\n"
-    "  * //:defs.bzl:7, in <module>\n"
-    "      ext = module_extension(implementation = _ext_impl, facts_version = 1)\n"
-    "error: module_extension with nonzero facts_version is unsupported\n"
-    " --> //:defs.bzl:7:7\n"
-    "  |\n"
-    "7 | ext = module_extension(implementation = _ext_impl, facts_version = 1)\n"
-    "  |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"
-    "  |\n\n"
-)
-
-
 class RecordedDiagnosticTests(unittest.TestCase):
-    def test_actual_facts_version_unsupported_constructor(self):
-        result = record(stdout="", stderr=RECORDED_FACTS_VERSION, returncode=1)
-        self.assertEqual(direct.require_rejection(result, "facts_version_unsupported"),
-                         {"diagnostic_class": "facts_version_unsupported", "returncode": 1})
-
-    def test_facts_version_boundary_rejects_unrelated_failures(self):
-        good = record(stderr=RECORDED_FACTS_VERSION, returncode=1)
-        for stderr in (
-                "network unavailable", "permission denied", "syntax error", "module_extension",
-                "Variable `repository_rule` not found", "Variable `other` not found\nmodule_extension()",
-                "module_extension source file not found", "repository rule execution is not implemented",
-                "module_extension(name = ) syntax error",
-                *(RECORDED_FACTS_VERSION + suffix for suffix in (
-                    "network unavailable", "permission denied", "syntax error", "parse error",
-                    "unexpected token", "panicked", "internal error", "FATAL:", "crashed", "falling back"))):
-            with self.subTest(stderr=stderr), self.assertRaises(ValueError):
-                direct.require_rejection(dict(good, stderr=stderr), "facts_version_unsupported")
-        for change in ({"returncode": 0}, {"returncode": None}, {"returncode": -9}, {"returncode": 101},
-                       {"returncode": 139}, {"returncode": True}, {"timed_out": True},
-                       {"interrupted": True}, {"spawn_error": "absent"}, {"stdout": "@@generated//:data\n"}):
-            with self.subTest(change=change), self.assertRaises(ValueError):
-                direct.require_rejection(dict(good, **change), "facts_version_unsupported")
-
-    def test_facts_version_boundary_rejects_stale_absence_and_other_profiles(self):
-        for stderr in ("Variable `module_extension` not found", "name 'module_extension' is not defined",
-                       "module_extension is unsupported", "module_extension constructor is not supported",
-                       "module_extension with nonempty environ is unsupported",
-                       "module_extension facts_version must be a nonnegative 32-bit int",
-                       "module_extension with nonzero facts_version is supported"):
-            with self.subTest(stderr=stderr), self.assertRaises(ValueError):
-                direct.require_rejection(record(stderr=stderr, returncode=1), "facts_version_unsupported")
-        for stale in ("Variable `module_extension` not found", "name 'module_extension' is not defined",
-                      "module_extension is unsupported", "module_extension constructor is not supported"):
-            with self.subTest(stale=stale), self.assertRaises(ValueError):
-                direct.require_rejection(record(stderr=RECORDED_FACTS_VERSION + stale, returncode=1),
-                                         "facts_version_unsupported")
-
     def test_actual_native_and_reference_declaration_type_errors(self):
         for code, stderr in RECORDED_DECLARATION_TYPES:
             with self.subTest(stderr=stderr):
@@ -140,19 +87,16 @@ class RecordedDiagnosticTests(unittest.TestCase):
 
 
 class FixtureTests(unittest.TestCase):
-    def test_inventory_has_distinct_inputs_and_only_two_nonparity_probes(self):
-        self.assertEqual(len(direct.CASES), 48)
-        self.assertEqual(len(set(name for name, _ in direct.PLAN)), 48)
+    def test_inventory_has_distinct_inputs_and_only_one_nonparity_probe(self):
+        # N52 retired the native-only nonzero facts_version boundary: it is
+        # supported and compared against genuine Bazel by
+        # tests/fixtures/lockfile_extensions/reference_receipt.json.
+        self.assertEqual(len(direct.CASES), 47)
+        self.assertEqual(len(set(name for name, _ in direct.PLAN)), 47)
         self.assertEqual([(name, kind) for name, kind in direct.PLAN if kind != "differential"], [
-            ("active-unused.load-probe", "reference_laziness_probe"),
-            ("native.facts-version-unsupported", "native_capability_boundary")])
-        self.assertTrue(all(item["target"] == "@dep//:data" for item in direct.CASES[:-1]))
-        self.assertEqual(direct.CASES[-1]["target"], "@generated//:data")
-        self.assertEqual(direct.CASES[-1]["diagnostic_class"], "facts_version_unsupported")
-        self.assertEqual(direct.CASES[-1]["defs"], direct.REAL_DEFS.replace(
-            "module_extension(implementation = _ext_impl)",
-            "module_extension(implementation = _ext_impl, facts_version = 1)"))
-        self.assertTrue(all("facts_version" not in item["defs"] for item in direct.CASES[:-1]))
+            ("active-unused.load-probe", "reference_laziness_probe")])
+        self.assertTrue(all(item["target"] == "@dep//:data" for item in direct.CASES))
+        self.assertTrue(all("facts_version" not in item["defs"] for item in direct.CASES))
         self.assertEqual(direct.CANONICAL, "@@decldep+//:data")
 
     def test_private_registry_uses_exact_case_modules_and_real_rule_definition(self):
@@ -258,7 +202,7 @@ class ComparisonTests(unittest.TestCase):
                     direct.require_rejection(record(stderr=wrong, returncode=1), diagnostic)
 
     def test_syntax_errors_are_still_rejected_for_semantic_classes_and_successful_queries(self):
-        for diagnostic in ("declaration_signature", "collision", "facts_version_unsupported"):
+        for diagnostic in ("declaration_signature", "collision"):
             with self.subTest(diagnostic=diagnostic), self.assertRaises(ValueError):
                 direct.require_rejection(record(stderr=MESSAGES[diagnostic] + "\nsyntax error", returncode=1), diagnostic)
         with self.assertRaises(ValueError):
@@ -291,20 +235,6 @@ class ComparisonTests(unittest.TestCase):
                 direct.evaluate(item, native, record(stderr=stderr, returncode=1), check)
             self.assertEqual(check["status"], "REFERENCE_FAILURE")
 
-    def test_facts_version_unsupported_is_native_only_and_requires_specific_profile(self):
-        item = direct.CASES[-1]
-        check = {}
-        direct.evaluate(item, record(stderr=RECORDED_FACTS_VERSION, returncode=1), None, check)
-        self.assertFalse(check["parity_claim"])
-        self.assertEqual(check["status"], "PASS")
-        self.assertIn("Nonzero module_extension facts_version remains unsupported", check["details"])
-        self.assertIn("supported repository rule", check["details"])
-        for result in (record("@@generated//:data\n"), record(stderr="unknown apparent repository generated", returncode=1)):
-            with self.assertRaises(ValueError):
-                direct.evaluate(item, result, None, {})
-
-
-class InvocationTests(unittest.TestCase):
     def test_direct_commands_private_caches_explicit_flags_and_no_overrides(self):
         runner = mock.Mock()
         reference = direct.DirectReference(Path("/official"), Path("/workspace"), Path("/scratch"), runner, "r")
@@ -410,8 +340,6 @@ class MainTests(unittest.TestCase):
                     elif item["diagnostic_class"] == "collision":
                         code, message = RECORDED_COLLISIONS[4 if engine == "reference" else 0]
                         result = record(stderr=message, returncode=code)
-                    elif item["diagnostic_class"] == "facts_version_unsupported":
-                        result = record(stderr=RECORDED_FACTS_VERSION, returncode=1)
                     elif item["diagnostic_class"].startswith("syntax_"):
                         if fault == "wrong-syntax-" + engine:
                             wrong = "syntax_star" if item["diagnostic_class"] == "syntax_kwargs" else "syntax_kwargs"
@@ -485,13 +413,6 @@ class MainTests(unittest.TestCase):
                 self.assertEqual(observation["defs"], direct.REAL_DEFS + 'fail("declaration fixture was loaded")\n')
                 self.assertNotIn("facts_version", observation["defs"])
                 self.assertIn('repo(name = "generated")', observation["root"])
-            elif name == "native.facts-version-unsupported":
-                self.assertNotIn("fail(", observation["defs"])
-                self.assertIn("repository_rule(implementation = _repo_impl)", observation["defs"])
-                self.assertIn("module_extension(implementation = _ext_impl, facts_version = 1)", observation["defs"])
-                self.assertEqual(observation["defs"], direct.CASES[-1]["defs"])
-                self.assertEqual(observation["argv"][-1], "@generated//:data")
-                self.assertEqual(observation["engine"], "native")
             else:
                 self.assertEqual(observation["argv"][-1], "@dep//:data")
 
@@ -500,17 +421,17 @@ class MainTests(unittest.TestCase):
         self.assertEqual(code, 0, report["errors"])
         self.assertEqual(report["status"], "PASS")
         self.assertEqual(seen, {(name, engine) for name in matrix for engine in ("native", "reference")})
-        self.assertEqual(len(observations), 95)
-        self.assertEqual(len({str(o["registry"]) for o in observations}), 48)
+        self.assertEqual(len(observations), 94)
+        self.assertEqual(len({str(o["registry"]) for o in observations}), 47)
         self.assertEqual(len({str(o["cwd"]) for o in observations}), 1)
-        self.assertEqual(len({arg for o in observations for arg in o["argv"] if arg.startswith("--cache-dir=")}), 48)
+        self.assertEqual(len({arg for o in observations for arg in o["argv"] if arg.startswith("--cache-dir=")}), 47)
         for check in report["checks"]:
             self.assertTrue(check["inputs_unchanged"])
             self.assertEqual(check["files_before"], check["files_after"])
         self.assertEqual(report["completed_differential_cases"], 46)
         self.assertFalse(any("Native generated repositories cannot execute" in text
                              for text in report["limitations"]))
-        self.assertTrue(any("Nonzero module_extension facts_version remains unsupported" in text
+        self.assertTrue(any("Nonzero module_extension facts_version is supported since N52" in text
                             for text in report["limitations"]))
         self.assertTrue(any("native mod graph does not execute extensions" in text
                             for text in report["limitations"]))
@@ -585,7 +506,7 @@ class MainTests(unittest.TestCase):
             elif mutation == "pin":
                 changed["executables"]["reference"]["sha256"] = "wrong"
             elif mutation == "parity":
-                changed["checks"][-1]["parity_claim"] = True
+                changed["checks"][-1]["parity_claim"] = not changed["checks"][-1]["parity_claim"]
             with self.subTest(mutation=mutation):
                 self.assertFalse(direct.report_passes(changed))
 

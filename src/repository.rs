@@ -543,56 +543,6 @@ impl RepositorySet {
         Ok(found)
     }
 
-    /// SingleExtensionEvalFunction.java:145-212 passes lockfile facts to the
-    /// extension; the native profile never does, so persisted facts fail.
-    fn check_extension_lockfile_before(&self, extension_id: &str) -> Result<(), String> {
-        let Some(session) = self.state.options.registry_session.session() else {
-            return Ok(());
-        };
-        if session.mode() != crate::lockfile::LockfileMode::Off
-            && session.lockfile().has_facts_for(extension_id)
-        {
-            return Err(format!(
-                "module extension {extension_id}: MODULE.bazel.lock records facts for this extension; passing persisted facts to module extensions is unsupported in the native profile (use --lockfile_mode=off)"
-            ));
-        }
-        Ok(())
-    }
-
-    /// --lockfile_mode=error (SingleExtensionEvalFunction.java:258-286,
-    /// 401-405): a non-reproducible extension must have an up-to-date lockfile
-    /// entry and facts must match. Without an entry this is Bazel's error;
-    /// validating an existing entry is not implemented and fails explicitly.
-    fn check_extension_lockfile_after(
-        &self,
-        extension_id: &str,
-        metadata: Option<&crate::extension_metadata::ExtensionMetadata>,
-        platform_dependent: bool,
-    ) -> Result<(), String> {
-        let Some(session) = self.state.options.registry_session.session() else {
-            return Ok(());
-        };
-        if session.mode() != crate::lockfile::LockfileMode::Error {
-            return Ok(());
-        }
-        let reproducible = metadata.is_some_and(|metadata| metadata.reproducible);
-        let has_facts = metadata.is_some_and(|metadata| metadata.has_facts);
-        if reproducible && !has_facts {
-            return Ok(());
-        }
-        if !reproducible
-            && !platform_dependent
-            && !session.lockfile().has_extension_entry_for(extension_id)
-        {
-            return Err(format!(
-                "The module extension '{extension_id}' does not exist in the lockfile"
-            ));
-        }
-        Err(format!(
-            "module extension {extension_id}: --lockfile_mode=error requires validating its MODULE.bazel.lock moduleExtensions/facts entries, which the native profile does not implement"
-        ))
-    }
-
     pub fn resolve_graph(&self) -> Result<&ResolvedGraph, String> {
         self.state
             .resolved
@@ -608,13 +558,15 @@ impl RepositorySet {
             .map_err(Clone::clone)
     }
 
-    /// How many module extensions this invocation evaluated (prepared
-    /// ordinary groups). BazelLockFileModule.afterCommand collects the
-    /// SingleExtensionValues "evaluated in the current build" (:105-111) —
-    /// demand-driven, like SingleExtensionEvalFunction. Count-only input for
-    /// the write-path diagnostic: the catalog is metadata-only, and a
-    /// resolution error maps to 0, which merely omits the diagnostic.
-    pub fn evaluated_module_extensions(&self) -> usize {
+    /// How many module extensions this invocation resolved — evaluated or
+    /// reused from an up-to-date MODULE.bazel.lock entry (prepared ordinary
+    /// groups with a ready result either way). BazelLockFileModule.
+    /// afterCommand collects the SingleExtensionValues "evaluated in the
+    /// current build" (:105-111) — demand-driven, like
+    /// SingleExtensionEvalFunction. Count-only input for the write-path
+    /// diagnostic: the catalog is metadata-only, and a resolution error
+    /// maps to 0, which merely omits the diagnostic.
+    pub fn resolved_module_extensions(&self) -> usize {
         self.direct_runtime()
             .map(|runtime| {
                 runtime
@@ -1133,18 +1085,54 @@ impl RepositorySet {
                 .map_err(|error| format!("module extension {}%{}: {error}", group.label, group.symbol))?;
             let host = self.host()?;
             let host_factors = host.factors(definition.os_dependent, definition.arch_dependent, &mut preparation_budget)?;
-            let extension_id = format!("{}%{}", group.label, group.symbol);
-            self.check_extension_lockfile_before(&extension_id)?;
-            let execution = crate::extension_ctx::execute(
-                Arc::new(self.clone()), &definition, &loaded.functions, &group.label,
-                &group.symbol, &group.prefix, &group.participants,
-                group.root_has_non_dev_dependency,
-            )?;
-            self.check_extension_lockfile_after(
-                &extension_id,
-                execution.metadata.as_ref(),
-                definition.os_dependent || definition.arch_dependent,
-            )?;
+            // SingleExtensionEvalFunction.compute (Bazel 9.3:144-318): a valid
+            // lockfile entry is used instead of running the extension.
+            let mut loaded = loaded;
+            let lock = self.extension_lock(group, &definition, &loaded, host_factors.lockfile_key())?;
+            let reused = match &lock {
+                Some(lock) => self.reusable_lock_entry(lock)?,
+                None => None,
+            };
+            let (recorded_repositories, metadata, execution) = match &reused {
+                Some(entry) => {
+                    let (recorded, functions) = self.repositories_from_lock_entry(entry)?;
+                    loaded.functions.extend(functions);
+                    let metadata = crate::lockfile_extensions::member(entry, "moduleExtensionMetadata")
+                        .map(crate::lockfile_extensions::metadata_from_json)
+                        .transpose()?;
+                    (recorded, metadata, None)
+                }
+                None => {
+                    let facts = lock.as_ref().map(|lock| lock.facts.clone()).unwrap_or_default();
+                    let mut execution = crate::extension_ctx::execute(
+                        Arc::new(self.clone()), &definition, &loaded.functions, &group.label,
+                        &group.symbol, &group.prefix, &group.participants,
+                        group.root_has_non_dev_dependency, facts,
+                    )?;
+                    let recorded = std::mem::take(&mut execution.repositories);
+                    (recorded, execution.metadata.clone(), Some(execution))
+                }
+            };
+            // RepoRule.instantiate stores only explicitly specified, non-None
+            // attributes, in call order (bazel/repository/RepoRule.java:110-117).
+            let explicit_attributes: BTreeMap<String, Vec<String>> = recorded_repositories
+                .iter()
+                .map(|recorded| {
+                    let names = recorded
+                        .order
+                        .iter()
+                        .filter(|name| {
+                            !crate::lockfile_extensions::LEGACY_BUILTIN_ATTRIBUTES.contains(&name.as_str())
+                                && !matches!(
+                                    recorded.attributes.get(name.as_str()),
+                                    None | Some(crate::extension_calls::RecordedValue::None)
+                                )
+                        })
+                        .cloned()
+                        .collect();
+                    (recorded.name.clone(), names)
+                })
+                .collect();
 
             // The requested extension host owns this mapping, not its first
             // importing MODULE. Install all siblings before binding any spec.
@@ -1157,7 +1145,7 @@ impl RepositorySet {
             let mut names = BTreeSet::new();
             // generatedRepoSpecs.keySet(): creation order, for metadata fixups.
             let mut generated_order = Vec::new();
-            for recorded in &execution.repositories {
+            for recorded in &recorded_repositories {
                 preparation_budget.string(&recorded.name)?;
                 preparation_budget.bytes(group.prefix.len())?;
                 crate::bzlmod::validate_repo_name(&recorded.name).map_err(|e| e.to_string())?;
@@ -1180,7 +1168,7 @@ impl RepositorySet {
             }
             let mut repositories = BTreeMap::new();
             let resolution_budget = std::cell::RefCell::new(crate::repository_budget::HostBudget::unbounded());
-            for recorded in execution.repositories {
+            for recorded in recorded_repositories {
                 // Charge omitted defaults and supplied values before the binder
                 // expands either into another owned attribute map.
                 preparation_budget.schema(&recorded.definition.schema)?;
@@ -1206,10 +1194,49 @@ impl RepositorySet {
                     root: DemandSlot::new(),
                 });
             }
+            if let Some(lock) = &lock {
+                let specs = generated_order
+                    .iter()
+                    .map(|name| {
+                        let repository = &repositories[name];
+                        let mut attributes = Vec::new();
+                        for attribute in &explicit_attributes[name] {
+                            if let Some(value) = repository.attributes.get(attribute) {
+                                attributes.push((
+                                    attribute.clone(),
+                                    crate::lockfile_extensions::attribute_json(value)?,
+                                ));
+                            }
+                        }
+                        Ok((
+                            name.clone(),
+                            crate::lockfile::Json::Object(vec![
+                                (
+                                    "repoRuleId".into(),
+                                    crate::lockfile::Json::String(
+                                        crate::lockfile_extensions::repo_rule_id(
+                                            &repository.definition.identity,
+                                        )?,
+                                    ),
+                                ),
+                                ("attributes".into(), crate::lockfile::Json::Object(attributes)),
+                            ]),
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                self.record_extension_lock(
+                    lock,
+                    reused.as_ref(),
+                    execution.as_ref(),
+                    &loaded,
+                    metadata.as_ref(),
+                    specs,
+                )?;
+            }
             // SingleExtensionEvalFunction.createSingleExtensionValue (Bazel
             // 9.3:455-487) then SingleExtensionFunction.java:53: metadata errors
             // fail the evaluation; the fixup warning precedes the import check.
-            if let (Some(metadata), Some(root_usage)) = (&execution.metadata, &group.root_usage) {
+            if let (Some(metadata), Some(root_usage)) = (&metadata, &group.root_usage) {
                 match crate::extension_metadata::generate_fixup(metadata, root_usage, &generated_order) {
                     Ok(Some(fixup)) => eprintln!("{}", fixup.warning()),
                     Ok(None) => {}
@@ -1282,13 +1309,21 @@ impl RepositorySet {
                 #[serde(skip_serializing_if = "BTreeSet::is_empty")]
                 host_facilities: &'a BTreeSet<&'static str>,
             }
-            let inputs = &execution.inputs;
+            // With a lockfile, an extension result may be evaluated or taken
+            // from MODULE.bazel.lock; generated repositories then depend only
+            // on what the result determines (specs, mapping, sources), so both
+            // paths give the same identity. Without one, the evaluation's
+            // bound tags and recorded inputs are kept (previous identities).
+            let no_inputs = crate::repository_ctx::ExecutionInputs::default();
+            let evaluated = execution.as_ref().filter(|_| lock.is_none());
+            let inputs = evaluated.map_or(&no_inputs, |execution| &execution.inputs);
+            let modules = evaluated.map_or(&[][..], |execution| &execution.modules[..]);
             let provenance = bounded_provenance(&Provenance {
                 profile: "ordinary-file-template-v1",
                 public_label: group.label.to_string(),
                 symbol: &group.symbol, prefix: &group.prefix,
                 sources: &loaded.sources, tag_classes: &definition.tag_classes,
-                modules: &execution.modules, source_guards: &source_guards,
+                modules, source_guards: &source_guards,
                 root_has_non_dev_dependency: group.root_has_non_dev_dependency,
                 generated_mapping: &generated_mapping, repositories: &repositories,
                 imports: &imports,
@@ -1624,6 +1659,467 @@ fn registry_source_root(
         ));
     }
     Ok(root)
+}
+
+/// The lockfile view of one module extension evaluation
+/// (SingleExtensionEvalFunction.java:144-213).
+struct ExtensionLock {
+    mode: crate::lockfile::LockfileMode,
+    /// GsonTypeAdapterUtil's ModuleExtensionId spelling (`//:ext.bzl%ext`).
+    id: String,
+    /// ModuleExtensionId.toString (`@@//:ext.bzl%ext`), used in messages.
+    display_id: String,
+    factors: String,
+    bzl_transitive_digest: String,
+    usages_digest: String,
+    /// The facts passed to the extension: the workspace lockfile's when
+    /// present (and of the current facts_version), else the hidden lockfile's.
+    facts: Vec<(String, crate::lockfile::Json)>,
+    /// The workspace lockfile's facts, for error mode (:271-282).
+    workspace_facts: Vec<(String, crate::lockfile::Json)>,
+    /// The hidden lockfile's facts of the current facts_version, if any.
+    hidden_facts: Option<Vec<(String, crate::lockfile::Json)>>,
+    facts_version: i64,
+    /// The entry for these factors: the workspace lockfile's, else the hidden one's.
+    locked: Option<crate::lockfile::Json>,
+    /// RepoRecordedInput.EnvVar.wrap of module_extension(environ=...),
+    /// sorted by name (ModuleExtensionContext.java:91-93).
+    static_env: Vec<crate::lockfile_extensions::RecordedInput>,
+}
+
+impl RepositorySet {
+    /// The lockfile state of `group` in this invocation; None without a
+    /// lockfile (`--lockfile_mode=off` or no registry session).
+    fn extension_lock(
+        &self,
+        group: &repository_catalog::OrdinaryGroup,
+        definition: &crate::module_extension::ExtensionDefinition,
+        loaded: &loading::LoadedDefinition,
+        factors: String,
+    ) -> Result<Option<ExtensionLock>, String> {
+        use crate::lockfile::Json;
+        use crate::lockfile_extensions as lx;
+        let Some(session) = self.state.options.registry_session.session() else {
+            return Ok(None);
+        };
+        let mode = session.mode();
+        if mode == crate::lockfile::LockfileMode::Off {
+            return Ok(None);
+        }
+        let id = format!("{}%{}", group.label, group.symbol);
+        let display_id = format!("{}%{}", group.label.canonical_starlark(), group.symbol);
+        let context = |error: String| format!("module extension {display_id}: {error}");
+        let facts_version = i64::from(definition.facts_version);
+        let workspace = session.lockfile();
+        let hidden = session.hidden_lockfile();
+        let facts_of = |lockfile: &crate::lockfile::Lockfile| {
+            lockfile
+                .facts
+                .iter()
+                .find(|(key, _)| key == &id)
+                .map(|(_, value)| match value {
+                    Json::Object(members) => members.clone(),
+                    _ => Vec::new(),
+                })
+        };
+        let hidden_facts = facts_of(hidden)
+            .filter(|_| lx::facts_version_of(&hidden.facts_versions, &id) == facts_version);
+        let mut workspace_facts = Vec::new();
+        let mut facts = Vec::new();
+        if let Some(found) = facts_of(workspace) {
+            if lx::facts_version_of(&workspace.facts_versions, &id) == facts_version {
+                workspace_facts = found.clone();
+                facts = found;
+            }
+        } else if let Some(found) = &hidden_facts {
+            facts = found.clone();
+        }
+        let entry_of = |lockfile: &crate::lockfile::Lockfile| {
+            lockfile
+                .module_extensions
+                .iter()
+                .find(|(key, _)| key == &id)
+                .and_then(|(_, per_factors)| lx::member(per_factors, &factors))
+                .cloned()
+        };
+        let locked = entry_of(workspace).or_else(|| entry_of(hidden));
+        let mut names: Vec<&String> = definition.environ.names().iter().collect();
+        names.sort_by(|a, b| crate::lockfile::java_string_cmp(a, b));
+        names.dedup();
+        let mut static_env = Vec::new();
+        for name in names {
+            let value = self
+                .environment()
+                .lookup(name)
+                .map_err(|error| context(error.to_string()))?;
+            static_env.push(lx::RecordedInput::env(name, value));
+        }
+        let usages = lx::usages_value(group).map_err(context)?;
+        Ok(Some(ExtensionLock {
+            mode,
+            bzl_transitive_digest: lx::bzl_transitive_digest(
+                &group.label,
+                &loaded.load_graph,
+                &loaded.sources,
+            )
+            .map_err(context)?,
+            usages_digest: lx::usages_digest(&usages),
+            id,
+            display_id,
+            factors,
+            facts,
+            workspace_facts,
+            hidden_facts,
+            facts_version,
+            locked,
+            static_env,
+        }))
+    }
+
+    /// SingleExtensionEvalFunction.tryGettingValueFromLockFile (:331-407):
+    /// the locked entry if it is up to date. In error mode an outdated
+    /// non-reproducible entry is Bazel's error with every detected reason.
+    fn reusable_lock_entry(
+        &self,
+        lock: &ExtensionLock,
+    ) -> Result<Option<crate::lockfile::Json>, String> {
+        use crate::lockfile::Json;
+        use crate::lockfile_extensions as lx;
+        let Some(entry) = &lock.locked else {
+            return Ok(None);
+        };
+        let all = lock.mode == crate::lockfile::LockfileMode::Error;
+        let id = &lock.display_id;
+        let mut diffs = Vec::new();
+        let string = |name: &str| match lx::member(entry, name) {
+            Some(Json::String(text)) => Some(text.as_str()),
+            _ => None,
+        };
+        if string("bzlTransitiveDigest") != Some(lock.bzl_transitive_digest.as_str()) {
+            diffs.push(format!(
+                "the implementation of the extension '{id}' or one of its transitive .bzl files has changed"
+            ));
+        }
+        if (all || diffs.is_empty()) && string("usagesDigest") != Some(lock.usages_digest.as_str())
+        {
+            diffs.push(format!("the usages of the extension '{id}' have changed"));
+        }
+        if all || diffs.is_empty() {
+            let inputs = match lx::member(entry, "recordedInputs") {
+                Some(Json::Array(inputs)) => inputs.clone(),
+                _ => Vec::new(),
+            };
+            if let Some(reason) = lx::outdated_input(&inputs, &LockInputProbe(self)) {
+                diffs.push(format!(
+                    "an input to the extension '{id}' changed: {reason}"
+                ));
+            }
+        }
+        let reproducible = lx::entry_is_reproducible(entry);
+        if (all || diffs.is_empty())
+            && reproducible
+            && !lock.facts.is_empty()
+            && Some(&lock.facts) != lock.hidden_facts.as_ref()
+        {
+            diffs.push(format!(
+                "the facts recorded in the lockfile for the extension '{id}' do not match the result of its most recent evaluation"
+            ));
+        }
+        if diffs.is_empty() {
+            return Ok(Some(entry.clone()));
+        }
+        if all && !reproducible {
+            return Err(lx::outdated_message(&diffs.join(",")));
+        }
+        Ok(None)
+    }
+
+    /// The repository calls of a locked entry's generatedRepoSpecs: each
+    /// RepoRuleId's rule loaded from its .bzl file (BzlmodRepoRuleCreator),
+    /// attributes deserialized like AttributeValuesAdapter.read.
+    fn repositories_from_lock_entry(
+        &self,
+        entry: &crate::lockfile::Json,
+    ) -> Result<
+        (
+            Vec<crate::extension_calls::RecordedRepository>,
+            Vec<starlark::values::OwnedFrozenValue>,
+        ),
+        String,
+    > {
+        use crate::extension_calls::{RecordedRepository, RecordedValue};
+        use crate::lockfile::Json;
+        use crate::lockfile_extensions as lx;
+        let Some(Json::Object(specs)) = lx::member(entry, "generatedRepoSpecs") else {
+            return Err("MODULE.bazel.lock entry without generatedRepoSpecs".to_owned());
+        };
+        let mut definitions: BTreeMap<String, repository_rule::RuleDefinition> = BTreeMap::new();
+        let mut functions = Vec::new();
+        let mut repositories = Vec::new();
+        for (name, spec) in specs {
+            let Some(Json::String(rule_id)) = lx::member(spec, "repoRuleId") else {
+                return Err(format!(
+                    "MODULE.bazel.lock repo spec {name:?} without a repoRuleId"
+                ));
+            };
+            if !definitions.contains_key(rule_id) {
+                let (label, rule) = lx::parse_repo_rule_id(rule_id)?;
+                let loaded = loading::load_module_extension_in(
+                    Arc::new(self.clone()),
+                    &label,
+                    &rule,
+                    &crate::package::module_bzl_globals(),
+                )?;
+                let definition = repository_rule::unpack(&loaded.value)
+                    .map_err(|error| format!("repoRuleId {rule_id}: {error}"))?;
+                functions.extend(loaded.functions);
+                definitions.insert(rule_id.clone(), definition);
+            }
+            let mut attributes = BTreeMap::new();
+            let mut order = vec!["name".to_owned()];
+            attributes.insert("name".to_owned(), RecordedValue::String(name.clone()));
+            if let Some(Json::Object(members)) = lx::member(spec, "attributes") {
+                for (attribute, value) in members {
+                    attributes.insert(attribute.clone(), lx::recorded_value(value)?);
+                    order.push(attribute.clone());
+                }
+            }
+            repositories.push(RecordedRepository {
+                definition: definitions[rule_id].clone(),
+                attributes,
+                name: name.clone(),
+                order,
+            });
+        }
+        Ok((repositories, functions))
+    }
+
+    /// After a SingleExtensionValue exists: Bazel's error-mode checks for an
+    /// evaluated extension (:237-282) and the result BazelLockFileModule
+    /// records (:117-136, LockFileModuleExtension.WithFactors).
+    fn record_extension_lock(
+        &self,
+        lock: &ExtensionLock,
+        reused: Option<&crate::lockfile::Json>,
+        execution: Option<&crate::extension_ctx::ExtensionExecution>,
+        loaded: &loading::LoadedDefinition,
+        metadata: Option<&crate::extension_metadata::ExtensionMetadata>,
+        specs: Vec<(String, crate::lockfile::Json)>,
+    ) -> Result<(), String> {
+        use crate::lockfile::{Json, LockfileMode};
+        use crate::lockfile_extensions as lx;
+        let session = self
+            .state
+            .options
+            .registry_session
+            .session()
+            .ok_or("internal error: lockfile without a registry session")?;
+        if let Some(entry) = reused {
+            if lock.mode.writes() {
+                session.record_extension_result(lx::ExtensionResult {
+                    id: lock.id.clone(),
+                    factors: lock.factors.clone(),
+                    entry: entry.clone(),
+                    facts: Json::Object(lock.facts.clone()),
+                    facts_version: lock.facts_version,
+                });
+            }
+            return Ok(());
+        }
+        let execution = execution.ok_or("internal error: neither reused nor evaluated")?;
+        // The ModuleExtensionContext's recorded inputs: static environment,
+        // static repository mappings (rows by repository name, columns by
+        // apparent name; ImmutableTable in Label.SimpleRepoMappingRecorder,
+        // cmdline/Label.java:266-281), then observations in order.
+        let mut table: BTreeMap<(String, String), Option<String>> = BTreeMap::new();
+        for entry in loaded
+            .repo_mappings
+            .iter()
+            .chain(&execution.tag_repo_mappings)
+        {
+            table.insert(
+                (entry.from.clone(), entry.apparent.clone()),
+                entry.canonical.clone(),
+            );
+        }
+        let mut static_mappings: Vec<_> = table.into_iter().collect();
+        static_mappings.sort_by(|((a_from, a_name), _), ((b_from, b_name), _)| {
+            crate::lockfile::java_string_cmp(a_from, b_from)
+                .then_with(|| crate::lockfile::java_string_cmp(a_name, b_name))
+        });
+        let mut recorded = Vec::new();
+        for input in &lock.static_env {
+            lx::push_recorded(&mut recorded, input.clone());
+        }
+        for ((from, apparent), canonical) in static_mappings {
+            lx::push_recorded(
+                &mut recorded,
+                lx::RecordedInput::repo_mapping(&from, &apparent, canonical),
+            );
+        }
+        for input in &execution.inputs.bazel {
+            lx::push_recorded(&mut recorded, input.clone());
+        }
+        // SingleExtensionEvalFunction.java:237-257.
+        let invisible: Vec<String> = recorded
+            .iter()
+            .filter(|input| input.key.starts_with("REPO_MAPPING:") && input.value.is_none())
+            .filter_map(|input| {
+                lx::unescape(&input.key["REPO_MAPPING:".len()..])
+                    .and_then(|key| key.split_once(',').map(|(_, name)| format!("@{name}")))
+            })
+            .collect();
+        if !invisible.is_empty() {
+            eprintln!(
+                "WARNING: The module extension {} produced an invalid lockfile entry because it referenced {}. Please report this issue to its maintainers.",
+                lock.display_id,
+                invisible.join(", ")
+            );
+        }
+        let reproducible = metadata.is_some_and(|metadata| metadata.reproducible);
+        if lock.mode == LockfileMode::Error && !reproducible {
+            return Err(format!(
+                "The module extension '{}'{} does not exist in the lockfile",
+                lock.display_id,
+                if lock.factors == "general" {
+                    String::new()
+                } else {
+                    format!(" for platform {}", lock.factors)
+                }
+            ));
+        }
+        let new_facts = match metadata.and_then(|metadata| metadata.facts.as_deref()) {
+            Some(text) => match crate::lockfile::parse_json(text) {
+                Ok(Json::Object(members)) => members,
+                _ => return Err(format!("internal error: invalid facts encoding {text}")),
+            },
+            None => Vec::new(),
+        };
+        if lock.mode == LockfileMode::Error
+            && Json::Object(new_facts.clone()) != Json::Object(lock.workspace_facts.clone())
+        {
+            return Err(lx::outdated_message(&format!(
+                "the extension '{}' has changed its facts: {} != {}",
+                lock.display_id,
+                facts_repr(&new_facts)?,
+                facts_repr(&lock.workspace_facts)?
+            )));
+        }
+        if !lock.mode.writes() {
+            return Ok(());
+        }
+        if let Some(reason) = &execution.inputs.bazel_unsupported {
+            return Err(format!(
+                "module extension {}: cannot write its MODULE.bazel.lock entry: {reason} (use --lockfile_mode=off)",
+                lock.display_id
+            ));
+        }
+        let entry = lx::entry_json(
+            &lock.bzl_transitive_digest,
+            &lock.usages_digest,
+            &recorded,
+            specs,
+            lx::metadata_json(metadata),
+        );
+        session.record_extension_result(lx::ExtensionResult {
+            id: lock.id.clone(),
+            factors: lock.factors.clone(),
+            entry,
+            facts: Json::Object(new_facts),
+            facts_version: lock.facts_version,
+        });
+        Ok(())
+    }
+}
+
+/// Starlark.repr of a Facts value (SingleExtensionEvalFunction.java:275-280).
+fn facts_repr(members: &[(String, crate::lockfile::Json)]) -> Result<String, String> {
+    starlark::environment::Module::with_temp_heap(|module| {
+        crate::extension_ctx::alloc_json(
+            module.heap(),
+            &crate::lockfile::Json::Object(members.to_vec()),
+        )
+        .map(|value| value.to_repr())
+        .map_err(|error| error.to_string())
+    })
+}
+
+/// Current values of recorded inputs (RepoRecordedInput.getValue).
+struct LockInputProbe<'a>(&'a RepositorySet);
+
+impl LockInputProbe<'_> {
+    fn host_path(
+        &self,
+        path: &crate::lockfile_extensions::FriendlyPath,
+    ) -> Result<PathBuf, String> {
+        Ok(match path.repository.as_deref() {
+            None => PathBuf::from(&path.path),
+            Some("") => self.0.main_root().join(&path.path),
+            Some(repository) => self.0.root(repository)?.join(&path.path),
+        })
+    }
+}
+
+impl crate::lockfile_extensions::InputProbe for LockInputProbe<'_> {
+    fn file(&self, path: &crate::lockfile_extensions::FriendlyPath) -> Result<String, String> {
+        let host = self
+            .host_path(path)
+            .map_err(|error| format!("failed to stat {path}: {error}"))?;
+        match std::fs::metadata(&host) {
+            Ok(metadata) if metadata.is_dir() => Ok("DIR".to_owned()),
+            Ok(metadata) if metadata.is_file() => {
+                let bytes = std::fs::read(&host)
+                    .map_err(|error| format!("failed to stat {path}: {error}"))?;
+                Ok(
+                    sha2::Digest::finalize(<sha2::Sha256 as sha2::Digest>::new_with_prefix(&bytes))
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect(),
+                )
+            }
+            Ok(_) => Err(format!(
+                "failed to stat {path}: special files are not supported by the native profile"
+            )),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                Ok("ENOENT".to_owned())
+            }
+            Err(error) => Err(format!("failed to stat {path}: {error}")),
+        }
+    }
+
+    fn dirents(&self, path: &crate::lockfile_extensions::FriendlyPath) -> Result<String, String> {
+        use std::os::unix::ffi::OsStrExt as _;
+        let host = self.host_path(path)?;
+        let names = std::fs::read_dir(&host)
+            .and_then(|entries| {
+                entries
+                    .map(|entry| entry.map(|entry| entry.file_name().as_bytes().to_vec()))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .map_err(|error| format!("failed to list {path}: {error}"))?;
+        Ok(crate::lockfile_extensions::dirents_marker_value(&names))
+    }
+
+    fn env(&self, name: &str) -> Result<Option<String>, String> {
+        self.0
+            .environment()
+            .lookup(name)
+            .map_err(|error| error.to_string())
+    }
+
+    fn mapping(&self, from: &str, apparent: &str) -> Result<Option<String>, String> {
+        Ok(self.0.mapping(from).ok().map(|mapping| {
+            mapping
+                .get(apparent)
+                .cloned()
+                .unwrap_or_else(|| apparent.to_owned())
+        }))
+    }
 }
 
 #[cfg(test)]

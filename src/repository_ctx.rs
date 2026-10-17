@@ -65,6 +65,14 @@ pub struct ExecutionInputs {
     /// so no cached publication is ever reused without re-running them.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub host_facilities: BTreeSet<&'static str>,
+    /// Module extensions only: the RepoRecordedInput.WithValue observations
+    /// in recording order (StarlarkBaseExternalContext.recordInputWithValue,
+    /// java:255-280), for MODULE.bazel.lock. Never part of a provenance.
+    #[serde(skip)]
+    pub(crate) bazel: Vec<crate::lockfile_extensions::RecordedInput>,
+    /// Why an observation has no Bazel lockfile representation, if any.
+    #[serde(skip)]
+    pub bazel_unsupported: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1246,7 +1254,9 @@ impl Context {
         let Some(key) = self.watch_key(path, watch)? else {
             return Ok(());
         };
-        self.record(key, "file", file_state(&path_buf(path))?)
+        let state = file_state(&path_buf(path))?;
+        self.record_bazel_file(&key, path, &state);
+        self.record(key, "file", state)
     }
 
     fn friendly(&self, path: &[u8]) -> String {
@@ -1258,6 +1268,94 @@ impl Context {
             Some(rest) => format!("@@//{}", display(rest.strip_prefix(b"/").unwrap_or(rest))),
             None => display(path),
         }
+    }
+
+    /// Append a module extension's Bazel recorded input (first value wins).
+    pub(crate) fn record_bazel(&self, input: crate::lockfile_extensions::RecordedInput) {
+        if self.kind == Kind::ModuleExtension {
+            crate::lockfile_extensions::push_recorded(
+                &mut self.state.borrow_mut().inputs.bazel,
+                input,
+            );
+        }
+    }
+
+    fn bazel_unsupported(&self, reason: String) {
+        if self.kind == Kind::ModuleExtension {
+            let mut state = self.state.borrow_mut();
+            if state.inputs.bazel_unsupported.is_none() {
+                state.inputs.bazel_unsupported = Some(reason);
+            }
+        }
+    }
+
+    /// RepoCacheFriendlyPath of a watched host path (`watch_key` admitted it):
+    /// `@@//rel` in the workspace, `@@REPO//rel` in an external repository.
+    fn bazel_friendly(&self, friendly: &str, path: &[u8]) -> Option<String> {
+        if friendly.starts_with("@@//") {
+            return Some(friendly.to_owned());
+        }
+        let host = path_buf(path);
+        let mut best: Option<(usize, String)> = None;
+        for (name, root) in self.repositories.materialized_roots() {
+            if name.is_empty() {
+                continue;
+            }
+            let root = fs::canonicalize(&root).unwrap_or(root);
+            if let Ok(rest) = host.strip_prefix(&root)
+                && best
+                    .as_ref()
+                    .is_none_or(|(len, _)| root.as_os_str().len() > *len)
+            {
+                best = Some((
+                    root.as_os_str().len(),
+                    format!("@@{name}//{}", rest.to_string_lossy()),
+                ));
+            }
+        }
+        best.map(|(_, path)| path)
+    }
+
+    /// A file observation of a watched host path, for the lockfile.
+    fn record_bazel_file(&self, friendly: &str, path: &[u8], state: &str) {
+        if self.kind != Kind::ModuleExtension {
+            return;
+        }
+        match (
+            self.bazel_friendly(friendly, path),
+            crate::lockfile_extensions::file_marker_value(state),
+        ) {
+            (Some(bazel), Ok(value)) => {
+                self.record_bazel(crate::lockfile_extensions::RecordedInput::file(
+                    &bazel, value,
+                ));
+            }
+            (None, _) => self.bazel_unsupported(format!(
+                "the module extension watched {}, which is in no known repository",
+                display(path)
+            )),
+            (_, Err(reason)) => self.bazel_unsupported(reason),
+        }
+    }
+
+    /// RepoRecordedInput.File of a file named by a canonical label.
+    fn record_label(&self, canonical: String, state: String) -> anyhow::Result<()> {
+        if self.kind == Kind::ModuleExtension {
+            match (
+                Label::parse_canonical(&canonical),
+                crate::lockfile_extensions::file_marker_value(&state),
+            ) {
+                (Ok(label), Ok(value)) => {
+                    let path = crate::lockfile_extensions::FriendlyPath::of_label(&label);
+                    self.record_bazel(crate::lockfile_extensions::RecordedInput::file(
+                        &path.to_string(),
+                        value,
+                    ));
+                }
+                (Err(error), _) | (_, Err(error)) => self.bazel_unsupported(error),
+            }
+        }
+        self.record(canonical, "file", state)
     }
 
     fn record(&self, path: String, kind: &'static str, state: String) -> anyhow::Result<()> {
@@ -1292,11 +1390,7 @@ impl Context {
             // one would change the pre-N21 identity of existing repositories.
             // Label read() calls had no previous identity and are recorded.
             if method != "template" && watch != ShouldWatch::No {
-                self.record(
-                    canonical.clone(),
-                    "file",
-                    format!("file:{}", sha256(&bytes)),
-                )?;
+                self.record_label(canonical.clone(), format!("file:{}", sha256(&bytes)))?;
             }
             return Ok((canonical, bytes));
         }
@@ -1951,12 +2045,20 @@ fn getenv_impl<'v>(
         return Err(GetenvError::Receiver);
     }
     let context = context(eval).map_err(|_| GetenvError::Phase)?;
-    getenv_observed(
+    let mut observed = None;
+    let value = getenv_observed(
         &context.environment,
         context.repositories.environment(),
         args,
         eval.heap(),
-    )
+        &mut observed,
+    )?;
+    if let Some((name, captured)) = observed {
+        context.record_bazel(crate::lockfile_extensions::RecordedInput::env(
+            &name, captured,
+        ));
+    }
+    Ok(value)
 }
 
 /// Shared `getenv(name, default=None)` (StarlarkBaseExternalContext.java:
@@ -1967,6 +2069,7 @@ pub(crate) fn getenv_observed<'v>(
     snapshot: &crate::repository_environment::Snapshot,
     args: &Arguments<'v, '_>,
     heap: Heap<'v>,
+    observed: &mut Option<(String, Option<String>)>,
 ) -> Result<Value<'v>, GetenvError> {
     // Discard binder errors without formatting or retaining their payloads.
     args.no_named_args().map_err(|_| GetenvError::Arguments)?;
@@ -1981,6 +2084,13 @@ pub(crate) fn getenv_observed<'v>(
         return Err(GetenvError::Default);
     }
     let entry = watch.borrow_mut().observe(snapshot, name)?;
+    *observed = Some((
+        name.to_owned(),
+        match entry.captured()? {
+            Captured::Absent => None,
+            Captured::Value(value) => Some(value.to_string()),
+        },
+    ));
     match entry.captured()? {
         Captured::Absent => Ok(default),
         Captured::Value(value) => {
@@ -2371,7 +2481,7 @@ pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
             // or <output_base>/external), which a module extension may watch
             // even when the native root is elsewhere (local_path_override).
             return context
-                .record(canonical, "file", file_state(&path_buf(&resolved))?)
+                .record_label(canonical, file_state(&path_buf(&resolved))?)
                 .map(|()| NoneType);
         }
         context.watch(&resolved, ShouldWatch::Yes)?;
@@ -3013,13 +3123,13 @@ fn repository_methods(builder: &mut MethodsBuilder) {
             // Labels keep the strict native source profile of read()/template().
             if fs::symlink_metadata(&host).is_err() {
                 if watch != ShouldWatch::No {
-                    context.record(canonical, "file", "missing".to_owned())?;
+                    context.record_label(canonical, "missing".to_owned())?;
                 }
                 return Err(missing());
             }
             let bytes = context.read_label(&canonical)?;
             if watch != ShouldWatch::No {
-                context.record(canonical, "file", format!("file:{}", sha256(&bytes)))?;
+                context.record_label(canonical, format!("file:{}", sha256(&bytes)))?;
             }
             bytes
         } else {
@@ -3215,11 +3325,18 @@ fn path_methods(builder: &mut MethodsBuilder) {
         // maybeWatchDirents (java:1740-1755): the type, then the entries.
         if let Some(key) = context.watch_key(&path.bytes, watch)? {
             context.watch(&path.bytes, watch)?;
+            let bazel_names = names.clone();
             names.sort_unstable();
             let mut hash = Vec::new();
             for name in names {
                 hash.extend_from_slice(&name);
                 hash.push(0);
+            }
+            if let Some(bazel) = context.bazel_friendly(&key, &path.bytes) {
+                context.record_bazel(crate::lockfile_extensions::RecordedInput::dirents(
+                    &bazel,
+                    crate::lockfile_extensions::dirents_marker_value(&bazel_names),
+                ));
             }
             context.record(key, "dirents", format!("dirents:{}", sha256(&hash)))?;
         }

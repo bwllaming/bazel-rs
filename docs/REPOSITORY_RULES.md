@@ -460,8 +460,11 @@ differentials and nine native-only boundary/lifecycle checks. N21 replaced the
 `execute.host-process`; N26 added four more (`literal.latin1-octal`,
 `return.metadata-and-values`, `patch.label-strip-directory` and the rejection
 differential `resolver.free-chr`) and removed the `octal`/`chr` ascii-profile
-and `metadata`/`integer` return probes from the native boundaries (21 cases:
-twelve differential, nine boundaries). That report predates both and needs
+and `metadata`/`integer` return probes from the native boundaries. N52 retired
+the `native.unsupported` nonzero `facts_version` boundary, which is supported and
+compared against genuine Bazel by
+`tests/fixtures/lockfile_extensions/reference_receipt.json` (20 cases: twelve
+differential, eight boundaries). That report predates all three and needs
 recapture. Seven adjacent
 Git-link, Git, local-repository, declaration, patch, remote and module reports
 pass against the same release binary. Reports retain hashes, actual output

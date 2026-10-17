@@ -62,9 +62,11 @@ and ordinary extension tags (`artifacts/direct-attribute-reference.json`). That
 probe executes repository implementations only in official Bazel: it is evidence
 for native MODULE metadata, not native repository execution.
 
-The current declaration harness retains 46 CLI differential cases, one separately
-classified lazy-loading probe, and one native-only nonzero-extension-facts-version
-boundary check. It retains fixture bytes, command diagnostics, binary hashes and
-cleanup receipts. The lazy-loading probe also passes against the reference;
-the unsupported facts-version error is explicitly not execution parity. Adjacent module,
+The current declaration harness retains 46 CLI differential cases and one
+separately classified lazy-loading probe. It retains fixture bytes, command
+diagnostics, binary hashes and cleanup receipts. The lazy-loading probe also
+passes against the reference. N52 retired the former native-only
+nonzero-extension-facts-version boundary check: `facts_version` is supported
+and compared against genuine Bazel by
+`tests/fixtures/lockfile_extensions/reference_receipt.json`. Adjacent module,
 local-repository and remote-archive reports pass 16, 20 and 17 checks respectively.

@@ -42,6 +42,9 @@ pub struct ExtensionExecution {
     pub(crate) inputs: crate::repository_ctx::ExecutionInputs,
     /// None when the callback returned None (ModuleExtensionMetadata.DEFAULT).
     pub metadata: Option<crate::extension_metadata::ExtensionMetadata>,
+    /// Repository mapping lookups of label-typed tag attributes
+    /// (StarlarkBazelModule.create's recorder, RegularRunnableExtension.java:352-365).
+    pub tag_repo_mappings: Vec<crate::loading::RecordedRepoMapping>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -251,6 +254,7 @@ mod values {
     pub(super) struct ModuleCtxGen<V> {
         pub modules: V,
         pub os: V,
+        pub facts: V,
         pub root_has_non_dev_dependency: bool,
     }
 
@@ -280,7 +284,7 @@ mod values {
                 "root_module_has_non_dev_dependency" => {
                     Some(heap.alloc(self.root_has_non_dev_dependency))
                 }
-                "facts" => Some(heap.alloc(EmptyFacts)),
+                "facts" => Some(self.facts.to_value()),
                 // Unsupported context facilities are absent, never dummy values.
                 _ => None,
             }
@@ -355,46 +359,72 @@ mod values {
         }
     }
 
-    /// Bazel `Facts` (Facts.java). The native profile has no lockfile, so it is
-    /// always Facts.EMPTY (SingleExtensionEvalFunction.java:145-150).
+    /// Bazel `Facts` (bazel/bzlmod/Facts.java): the facts persisted in the
+    /// lockfile for this extension (SingleExtensionEvalFunction.java:145-183),
+    /// Facts.EMPTY without any.
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
-    pub(super) struct EmptyFacts;
-    starlark::starlark_simple_value!(EmptyFacts);
+    pub(super) struct Facts {
+        #[allocative(skip)]
+        pub members: Vec<(String, crate::lockfile::Json)>,
+    }
+    starlark::starlark_simple_value!(Facts);
 
-    impl fmt::Display for EmptyFacts {
+    impl fmt::Display for Facts {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             // Facts.java repr: contents are not leaked to Starlark.
             f.write_str("Facts(<opaque, inspect with print()>)")
         }
     }
 
+    impl Facts {
+        pub(super) fn get(&self, key: &str) -> Option<&crate::lockfile::Json> {
+            self.members
+                .iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| value)
+        }
+    }
+
     #[starlark_value(type = "Facts")]
-    impl<'v> StarlarkValue<'v> for EmptyFacts {
-        /// Facts.debugPrint (bazel/bzlmod/Facts.java:162-168) of Facts.EMPTY
-        /// (Facts.java:60): `Facts({})`.
-        fn collect_debug_print(&self, collector: &mut String, _eval: &Evaluator<'v, '_, '_>) {
-            collector.push_str("Facts({})");
+    impl<'v> StarlarkValue<'v> for Facts {
+        /// Facts.debugPrint (bazel/bzlmod/Facts.java:162-168): `Facts(<repr>)`.
+        fn collect_debug_print(&self, collector: &mut String, eval: &Evaluator<'v, '_, '_>) {
+            let value = super::alloc_json(
+                eval.heap(),
+                &crate::lockfile::Json::Object(self.members.clone()),
+            )
+            .map(|value| value.to_repr())
+            .unwrap_or_else(|error| format!("<{error}>"));
+            collector.push_str(&format!("Facts({value})"));
         }
 
         fn get_methods() -> Option<&'static Methods> {
             Some(FACTS_METHODS.methods())
         }
 
-        fn at(&self, index: Value<'v>, _heap: Heap<'v>) -> starlark::Result<Value<'v>> {
-            // Bazel's getIndex yields Java null for a missing key; fail explicitly.
-            Err(starlark::Error::new_other(anyhow!(
-                "Facts has no key {}: persisted facts are unsupported (native lockfile mode is off)",
-                index.to_repr()
-            )))
+        fn at(&self, index: Value<'v>, heap: Heap<'v>) -> starlark::Result<Value<'v>> {
+            match index.unpack_str().and_then(|key| self.get(key)) {
+                Some(value) => super::alloc_json(heap, value).map_err(starlark::Error::new_other),
+                // Bazel's getIndex yields Java null for a missing key; fail explicitly.
+                None => Err(starlark::Error::new_other(anyhow!(
+                    "Facts has no key {}",
+                    index.to_repr()
+                ))),
+            }
         }
 
-        fn is_in(&self, _other: Value<'v>) -> starlark::Result<bool> {
-            Ok(false)
+        fn is_in(&self, other: Value<'v>) -> starlark::Result<bool> {
+            Ok(other
+                .unpack_str()
+                .is_some_and(|key| self.get(key).is_some()))
         }
 
         fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
-            // Facts.equals compares contents; every native Facts is Facts.EMPTY.
-            Ok(other.downcast_ref::<EmptyFacts>().is_some())
+            // AutoValue Facts.equals: Dict equality of the values.
+            Ok(other.downcast_ref::<Facts>().is_some_and(|other| {
+                crate::lockfile::Json::Object(other.members.clone())
+                    == crate::lockfile::Json::Object(self.members.clone())
+            }))
         }
 
         fn write_hash(&self, _hasher: &mut StarlarkHasher) -> starlark::Result<()> {
@@ -438,6 +468,73 @@ use values::{
 
 fn context<'a>(eval: &'a Evaluator<'_, '_, '_>) -> Option<&'a Context> {
     eval.extra.and_then(|extra| extra.downcast_ref::<Context>())
+}
+
+/// Starlark value of a facts JSON value (Json.decode of FactsAdapter.read):
+/// strings are Bazel's Latin-1 internal strings of their UTF-8 bytes.
+pub(crate) fn alloc_json<'v>(
+    heap: Heap<'v>,
+    value: &crate::lockfile::Json,
+) -> anyhow::Result<Value<'v>> {
+    use crate::lockfile::Json;
+    let text = |text: &str| crate::host_os::latin1_text(text.as_bytes());
+    Ok(match value {
+        Json::Null => Value::new_none(),
+        Json::Bool(b) => Value::new_bool(*b),
+        Json::Number(number) => {
+            if let Ok(int) = number.parse::<i32>() {
+                heap.alloc(int)
+            } else if let Ok(int) = number.parse::<i64>() {
+                heap.alloc(int)
+            } else if number.contains(['.', 'e', 'E']) {
+                heap.alloc(
+                    number
+                        .parse::<f64>()
+                        .map_err(|_| anyhow!("invalid facts number {number}"))?,
+                )
+            } else {
+                bail!("facts integer {number} exceeds 64 bits; unsupported by the native profile")
+            }
+        }
+        Json::String(value) => heap.alloc(text(value)),
+        Json::Array(items) => {
+            let items = items
+                .iter()
+                .map(|item| alloc_json(heap, item))
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            heap.alloc(starlark::values::list::AllocList(items))
+        }
+        Json::Object(members) => {
+            let mut dict = SmallMap::new();
+            for (key, item) in members {
+                let key = heap.alloc_str(&text(key)).to_value();
+                dict.insert_hashed(
+                    key.get_hashed().map_err(|error| anyhow!("{error}"))?,
+                    alloc_json(heap, item)?,
+                );
+            }
+            heap.alloc(starlark::values::dict::Dict::new(dict))
+        }
+    })
+}
+
+/// Record a `Label()` repository mapping lookup made while a module
+/// extension's implementation runs; false outside one.
+pub(crate) fn record_repo_mapping(
+    eval: &Evaluator<'_, '_, '_>,
+    entry: &crate::loading::RecordedRepoMapping,
+) -> bool {
+    let Some(context) = context(eval) else {
+        return false;
+    };
+    context
+        .base
+        .record_bazel(crate::lockfile_extensions::RecordedInput::repo_mapping(
+            &entry.from,
+            &entry.apparent,
+            entry.canonical.clone(),
+        ));
+    true
 }
 
 /// The StarlarkBaseExternalContext of a running module extension.
@@ -515,10 +612,11 @@ fn module_methods(builder: &mut MethodsBuilder) {
         this: Value<'v>,
         #[starlark(args)] args: UnpackTuple<Value<'v>>,
         #[starlark(kwargs)] kwargs: SmallMap<String, Value<'v>>,
+        heap: Heap<'v>,
     ) -> anyhow::Result<ExtensionMetadata> {
         let _ = this;
         Ok(ExtensionMetadata {
-            metadata: extension_metadata_call(&args.items, &kwargs)?,
+            metadata: extension_metadata_call(&args.items, &kwargs, heap)?,
         })
     }
 
@@ -565,14 +663,20 @@ starlark::methods_static!(FACTS_METHODS = facts_methods);
 
 #[starlark_module]
 fn facts_methods(builder: &mut MethodsBuilder) {
-    /// Facts.java `get(key, default=None)`; native facts are always empty.
+    /// Facts.java `get(key, default=None)`.
     fn get<'v>(
         this: Value<'v>,
         key: &str,
         default: Option<Value<'v>>,
+        heap: Heap<'v>,
     ) -> anyhow::Result<Value<'v>> {
-        let _ = (this, key);
-        Ok(default.unwrap_or_else(Value::new_none))
+        let facts = this
+            .downcast_ref::<values::Facts>()
+            .ok_or_else(|| anyhow!("get requires a Facts receiver"))?;
+        match facts.get(key) {
+            Some(value) => alloc_json(heap, value),
+            None => Ok(default.unwrap_or_else(Value::new_none)),
+        }
     }
 }
 
@@ -588,9 +692,10 @@ const METADATA_PARAMS: [&str; 4] = [
 /// ModuleExtensionContext.extensionMetadata: named arguments are matched and
 /// type-checked in CALL order, unexpected positionals are reported afterwards
 /// (BuiltinFunction.java:310-430), then Dict.cast(facts), then create().
-fn extension_metadata_call(
-    positional: &[Value<'_>],
-    named: &SmallMap<String, Value<'_>>,
+fn extension_metadata_call<'v>(
+    positional: &[Value<'v>],
+    named: &SmallMap<String, Value<'v>>,
+    heap: Heap<'v>,
 ) -> anyhow::Result<crate::extension_metadata::ExtensionMetadata> {
     let mut values: [Option<Value<'_>>; 4] = [None; 4];
     for (name, value) in named.iter() {
@@ -629,10 +734,20 @@ fn extension_metadata_call(
     // ModuleExtensionMetadata.create: facts are validated before the
     // direct-dependency arguments (Dict.cast precedes create()).
     let mut has_facts = false;
+    let mut facts_json = None;
     if let Some(facts) = values[3] {
         validate_facts(facts)?;
         has_facts =
             starlark::values::dict::DictRef::from_value(facts).is_some_and(|dict| !dict.is_empty());
+        if has_facts {
+            // json.encode sorts dict keys and writes tuples as lists, so it
+            // equals the encoding of Facts.validateAndNormalize's value.
+            let encoded = crate::json::encode_value(facts, heap)?;
+            facts_json = Some(
+                crate::lockfile_extensions::internal_to_unicode(&encoded)
+                    .map_err(anyhow::Error::msg)?,
+            );
+        }
     }
     let mut metadata = create_metadata(
         values[0].unwrap_or(none),
@@ -640,6 +755,7 @@ fn extension_metadata_call(
         reproducible,
     )?;
     metadata.has_facts = has_facts;
+    metadata.facts = facts_json;
     Ok(metadata)
 }
 
@@ -704,6 +820,7 @@ fn create_metadata(
         use_all_repos,
         reproducible,
         has_facts: false,
+        facts: None,
     };
     if deps.is_none() && dev_deps.is_none() {
         return Ok(mode(UseAllRepos::No));
@@ -759,6 +876,7 @@ fn create_metadata(
         use_all_repos: UseAllRepos::No,
         reproducible,
         has_facts: false,
+        facts: None,
     })
 }
 
@@ -842,6 +960,7 @@ fn bind_modules(
     repositories: &RepositorySet,
     definition: &ExtensionDefinition,
     participants: &[OrdinaryParticipant],
+    recorded: &RefCell<Vec<crate::loading::RecordedRepoMapping>>,
 ) -> Result<Vec<BoundModule>, String> {
     // Check every source profile before binding/allocating any projection.
     for participant in participants {
@@ -917,7 +1036,20 @@ fn bind_modules(
                                 "",
                                 mapping,
                             ))?;
-                        repositories.parse(text, &participant.owner, "")
+                        let label = repositories.parse(text, &participant.owner, "")?;
+                        // LabelConverter with the static recorder
+                        // (StarlarkBazelModule.java:117-121).
+                        if let Some(apparent) = crate::loading::apparent_repository(text) {
+                            recorded
+                                .borrow_mut()
+                                .push(crate::loading::RecordedRepoMapping {
+                                    from: participant.owner.clone(),
+                                    apparent: apparent.to_owned(),
+                                    canonical: (!label.repository.starts_with('['))
+                                        .then(|| label.repository.clone()),
+                                });
+                        }
+                        Ok(label)
                     },
                     &repo_mapping_where,
                     &[],
@@ -1084,10 +1216,12 @@ pub fn execute(
     unique_name: &str,
     participants: &[OrdinaryParticipant],
     root_has_non_dev_dependency: bool,
+    facts: Vec<(String, crate::lockfile::Json)>,
 ) -> Result<ExtensionExecution, String> {
     let run = || -> anyhow::Result<ExtensionExecution> {
-        let modules =
-            bind_modules(&repositories, definition, participants).map_err(anyhow::Error::msg)?;
+        let tag_repo_mappings = RefCell::new(Vec::new());
+        let modules = bind_modules(&repositories, definition, participants, &tag_repo_mappings)
+            .map_err(anyhow::Error::msg)?;
         let projected = projection(&modules)?;
         let working = working_directory(&repositories, unique_name)?;
         let base = crate::repository_ctx::Context::module_extension(
@@ -1126,6 +1260,9 @@ pub fn execute(
                         }
                     }
                 },
+                facts: heap.alloc(values::Facts {
+                    members: facts.clone(),
+                }),
                 root_has_non_dev_dependency,
             });
             for function in functions {
@@ -1168,6 +1305,7 @@ pub fn execute(
             modules,
             metadata,
             inputs,
+            tag_repo_mappings: tag_repo_mappings.into_inner(),
         })
     };
     run().map_err(|error| format!("module extension {public_label}: {error:#}"))
@@ -1243,6 +1381,7 @@ mod tests {
                 "_main+ext",
                 participants,
                 non_dev,
+                Vec::new(),
             )
         }
 
@@ -1280,6 +1419,8 @@ mod tests {
             tags,
             imports: Vec::new(),
             source_profile_error: None,
+            module_key: "<root>".to_owned(),
+            extension_bzl_file: "@root//:defs.bzl".to_owned(),
         }
     }
 
@@ -1298,6 +1439,7 @@ mod tests {
                 .iter()
                 .map(|(key, value)| (key.clone(), value.clone()))
                 .collect(),
+            attribute_order: attrs.as_object().unwrap().keys().cloned().collect(),
             declaration: 0,
             dev_dependency,
         }
@@ -1625,6 +1767,9 @@ ctx.is_dev_dependency(t) or fail('hidden dev flag')
                         crate::host_os::HostSnapshot::default().get().unwrap(),
                     )
                     .unwrap(),
+                    facts: heap.alloc(values::Facts {
+                        members: Vec::new(),
+                    }),
                     root_has_non_dev_dependency: false,
                 }),
             );
@@ -2398,6 +2543,9 @@ ctx.read('cached') == ctx.read('tool') or fail('cached bytes')
                 heap.alloc(ModuleCtxGen {
                     modules: Value::new_none(),
                     os: Value::new_none(),
+                    facts: heap.alloc(values::Facts {
+                        members: Vec::new(),
+                    }),
                     root_has_non_dev_dependency: false,
                 }),
             );
@@ -2494,6 +2642,9 @@ ctx.read('cached') == ctx.read('tool') or fail('cached bytes')
                     heap.alloc(ModuleCtxGen {
                         modules: Value::new_none(),
                         os: crate::host_os::alloc(heap, metadata.clone()).unwrap(),
+                        facts: heap.alloc(values::Facts {
+                            members: Vec::new(),
+                        }),
                         root_has_non_dev_dependency: false,
                     }),
                 );

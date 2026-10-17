@@ -18,8 +18,8 @@ pub enum UseAllRepos {
     Dev,
 }
 
-/// Owned ModuleExtensionMetadata minus facts (native facts are discarded:
-/// there is no lockfile). Explicit lists keep LinkedHashSet insertion order
+/// Owned ModuleExtensionMetadata; facts are kept as their JSON encoding.
+/// Explicit lists keep LinkedHashSet insertion order
 /// and are duplicate-free by construction (ModuleExtensionMetadata.java:139-166).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Allocative)]
 pub struct ExtensionMetadata {
@@ -27,9 +27,11 @@ pub struct ExtensionMetadata {
     pub explicit_root_module_direct_dev_deps: Option<Vec<String>>,
     pub use_all_repos: UseAllRepos,
     pub reproducible: bool,
-    /// Whether `facts` was a non-empty dict. The facts themselves are
-    /// discarded; lockfile modes need to know that Bazel would record them.
+    /// Whether `facts` was a non-empty dict (not Facts.EMPTY).
     pub has_facts: bool,
+    /// `json.encode` of the normalized facts (FactsAdapter.write's first
+    /// step) when `has_facts`; persisted in the lockfile's `facts`.
+    pub facts: Option<String>,
 }
 
 /// RepositoryName.VALID_USER_PROVIDED_NAME `[a-zA-Z0-9][-.\w]*` with

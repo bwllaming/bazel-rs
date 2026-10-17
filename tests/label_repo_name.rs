@@ -305,16 +305,16 @@ fn real_extension_tag_owner_defaults_participant_boundary_and_cold_warm_bytes() 
         cold_publication,
         "publication identity, manifest, or file inventory changed"
     );
-    // NATIVE_PROFILE: fresh CLI processes run callbacks even when publication
-    // and consumer action identities are reused. Not Bazel callback parity.
+    // The warm run takes the extension result from MODULE.bazel.lock, as
+    // Bazel does (SingleExtensionEvalFunction.tryGettingValueFromLockFile).
+    // NATIVE_PROFILE: fresh CLI processes still run repository callbacks
+    // even when publication and consumer action identities are reused.
+    let count =
+        |diagnostic: &str, marker: &str| diagnostic.lines().filter(|line| *line == marker).count();
+    assert_eq!(count(&cold, "EXTENSION_CALLBACK"), 1, "{cold}");
+    assert_eq!(count(&warm, "EXTENSION_CALLBACK"), 0, "{warm}");
     for diagnostic in [&cold, &warm] {
-        for marker in ["EXTENSION_CALLBACK", "REPO_CALLBACK"] {
-            assert_eq!(
-                diagnostic.lines().filter(|line| *line == marker).count(),
-                1,
-                "{diagnostic}"
-            );
-        }
+        assert_eq!(count(diagnostic, "REPO_CALLBACK"), 1, "{diagnostic}");
     }
 }
 

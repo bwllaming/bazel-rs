@@ -216,9 +216,17 @@ fn label_template_repositories_keep_their_pre_n21_publication_identity() {
     f.file("ext.bzl", "load(':defs.bzl','make')\ndef _impl(ctx):\n    make(name='made', source='//:data.tpl')\next = module_extension(_impl)\n");
     f.build("//:copy");
     if golden {
+        // N52: with a lockfile (the default `update` mode) an extension
+        // result may come from MODULE.bazel.lock, so generated repositories
+        // are keyed by what the result determines (specs, mapping, sources),
+        // not by the evaluation's bound tags or recorded inputs. Re-pinned
+        // for integration-16: N51 adds @@bazel_tools to every module's
+        // mapping, which changes the mapping component of the key (N52's
+        // branch pin was 550c5b0f…; i15's evaluation-keyed pin was
+        // ea2fc9f3…).
         assert_eq!(
             identity(&f),
-            "ea2fc9f3e2be3e153395a3e34cc657d52053f0277d1824d89ac548d935469653"
+            "d0e5e900b0a9e707a57f586101dfb0675219c692d4e17bc93c24d715c14665ea"
         );
     }
 }

@@ -217,6 +217,10 @@ pub struct ExtensionTag {
     /// Owned after MODULE evaluation; nested mutable values retain their final
     /// contents, rather than being deep-copied when the tag is called.
     pub attributes: BTreeMap<String, Json>,
+    /// Keyword argument names in call order: Bazel's Tag.attributeValues is
+    /// the call's kwargs Dict (ModuleFileGlobals TagCallable), whose order the
+    /// lockfile usages digest observes (SingleExtensionUsagesValue.hashForEvaluation).
+    pub attribute_order: Vec<String>,
     pub declaration: usize,
     pub dev_dependency: bool,
 }
@@ -371,6 +375,12 @@ mod values {
             let record = || -> anyhow::Result<()> {
                 args.no_positional_args(eval.heap())
                     .map_err(|e| anyhow!("{e}"))?;
+                let attribute_order = args
+                    .names_map()
+                    .map_err(|e| anyhow!("{e}"))?
+                    .keys()
+                    .map(|name| name.as_str().to_owned())
+                    .collect();
                 let attributes = Kwargs::new(args)?.0;
                 let collector = context(eval)?;
                 let mut state = collector.state.borrow_mut();
@@ -391,6 +401,7 @@ mod values {
                     name: self.name.clone(),
                     ordinal,
                     attributes: BTreeMap::new(),
+                    attribute_order,
                     declaration: self.proxy.declaration,
                     dev_dependency: usage.declarations[self.proxy.declaration].dev_dependency,
                 });
@@ -1176,6 +1187,7 @@ fn record_repo_rule<'v>(
         name: "repo".to_owned(),
         ordinal,
         attributes: BTreeMap::new(),
+        attribute_order: Vec::new(),
         declaration,
         dev_dependency,
     });

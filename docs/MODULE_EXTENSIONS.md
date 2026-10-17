@@ -39,7 +39,8 @@ introspection or skip duplicate repository declarations.
 `module_extension` accepts a callable implementation and `tag_classes`, plus
 `doc`. Named boolean `os_dependent` and `arch_dependent` flags retain only their
 selected host factors in preparation identity, independently of `ctx.os` reads.
-Only empty `environ` and zero `facts_version` are supported. See
+`environ` and `facts_version` are supported (`facts_version` keys the
+lockfile facts, [REGISTRY_LOCKFILE.md](REGISTRY_LOCKFILE.md)). See
 [HOST_OS.md](HOST_OS.md) for the Linux/x86_64 compile-target profile and repository
 fingerprint migration. Other unsupported options fail explicitly.
 `tag_class(attrs={}, *, doc=None)` owns a frozen descriptor schema and is unhashable.
@@ -116,9 +117,11 @@ bytes are length-framed rather than expanded into another JSON number array.
 `module_ctx` has Bazel's full StarlarkBaseExternalContext surface, shared with
 repository_ctx ([EXTENSION_CTX_SURFACE.md](EXTENSION_CTX_SURFACE.md)), plus
 `tag_sort_key`; the [source-input profile](MODULE_SOURCE_INPUTS.md) documents
-empty `facts` and `extension_metadata` (validated direct-deps lists and root
-`use_repo` fixup warnings; no `bazel mod tidy`). Isolation and persisted facts
-remain unsupported. No placeholder platform or SDK repository is substituted. `mod graph` retains its existing explicit-module profile
+`facts` and `extension_metadata` (validated direct-deps lists and root
+`use_repo` fixup warnings; no `bazel mod tidy`). Facts persist in
+MODULE.bazel.lock, and lockfile entries are written and reused like Bazel's
+([REGISTRY_LOCKFILE.md](REGISTRY_LOCKFILE.md), N52). Isolation remains
+unsupported. No placeholder platform or SDK repository is substituted. `mod graph` retains its existing explicit-module profile
 and does not execute active extensions.
 Genuine built-in module closure is now available through the separate opt-in
 [built-in profile](BUILTIN_MODULES.md); default semantics and complete

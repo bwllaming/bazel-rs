@@ -1,0 +1,883 @@
+{
+ "schema": "n52-lockfile-extensions-reference-receipt/v1",
+ "purpose": "Paired genuine Bazel 9.3.0 vs native bazel-rs capture of MODULE.bazel.lock moduleExtensions and facts (docs/REGISTRY_LOCKFILE.md, N52): lockfile bytes and write-on-change per step, which extensions were evaluated (reuse from the workspace and hidden lockfiles is observed through LOCKEXT_EVAL print markers), error-mode staleness/missing-entry/changed-facts texts. tests/lockfile_extensions.rs reads genuine_lockfiles.update_fresh.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private, removed> --host_jvm_args=-Xmx768m",
+  "command_flags": "query QUERY --registry=file://<scratch>/registry --lockfile_mode=MODE --repository_cache=<private> --noshow_progress --color=no --curses=no --incompatible_autoload_externally= --repository_disable_download"
+ },
+ "native": {
+  "binary": "target/release/bazel-rs",
+  "sha256": "8e2e0e8add2814964b949df2ccc08bac41d44183908feec1d770c9511b4b7ffb",
+  "command_flags": "--ignore_all_rc_files --cache-dir=<private> query --experimental-builtin-modules --registry=file://<scratch>/registry --lockfile_mode=MODE --repository_disable_download QUERY"
+ },
+ "capture_fixture": {
+  "workspace": "tests/fixtures/lockfile_extensions/workspace",
+  "registry": "tests/fixtures/builtin_modules/registry (private copy, file://)",
+  "environment": "env -i PATH=/usr/bin:/bin HOME=<private> TMPDIR=<private> LC_ALL=C.UTF-8 LOCKEXT_STATIC='s 1' LOCKEXT_DYN=a (steps change LOCKEXT_DYN/LOCKEXT_STATIC)",
+  "host": "linux x86_64 (eval factors os:linux,arch:amd64)"
+ },
+ "script": "artifacts/lockfile_extensions-capture.py (run 2 = this receipt; run 1 recorded the genuine side before the native implementation)",
+ "counts": {
+  "steps": 22,
+  "exact": 22,
+  "mismatch": 0
+ },
+ "scenarios": [
+  {
+   "chain": "A",
+   "name": "update_fresh",
+   "mode": "update",
+   "query": "@gen_alpha//:all + @gen_beta//:all + @gen_gamma//:all + @gen_plat//:all + @gen_repro//:all + @gen_meta//:all + @gen_facts//:all + @dep_gen//:all",
+   "verdict": "EXACT",
+   "compare": {
+    "rc": true,
+    "lockfile_bytes": true,
+    "lockfile_written": true,
+    "evaluated": true,
+    "error_contained": true,
+    "stdout": true
+   },
+   "bazel": {
+    "rc": 0,
+    "evaluated": [
+     "LOCKEXT_EVAL dep_ext",
+     "LOCKEXT_EVAL ext",
+     "LOCKEXT_EVAL facts previous=none",
+     "LOCKEXT_EVAL meta",
+     "LOCKEXT_EVAL plat",
+     "LOCKEXT_EVAL repro"
+    ],
+    "lockfile_written": true,
+    "lockfile_sha256": "ac7c102b434248b8198672d3523b96dadc5a49cb9bc3834945f4a5173758a1d0",
+    "error": null
+   },
+   "native": {
+    "rc": 0,
+    "evaluated": [
+     "LOCKEXT_EVAL dep_ext",
+     "LOCKEXT_EVAL ext",
+     "LOCKEXT_EVAL facts previous=none",
+     "LOCKEXT_EVAL meta",
+     "LOCKEXT_EVAL plat",
+     "LOCKEXT_EVAL repro"
+    ],
+    "lockfile_written": true,
+    "lockfile_sha256": "ac7c102b434248b8198672d3523b96dadc5a49cb9bc3834945f4a5173758a1d0",
+    "error": null
+   },
+   "bazel_run1_identical": true
+  },
+  {
+   "chain": "A",
+   "name": "update_warm",
+   "mode": "update",
+   "query": "@gen_alpha//:all + @gen_beta//:all + @gen_gamma//:all + @gen_plat//:all + @gen_repro//:all + @gen_meta//:all + @gen_facts//:all + @dep_gen//:all",
+   "verdict": "EXACT",
+   "compare": {
+    "rc": true,
+    "lockfile_bytes": true,
+    "lockfile_written": true,
+    "evaluated": true,
+    "error_contained": true,
+    "stdout": true
+   },
+   "bazel": {
+    "rc": 0,
+    "evaluated": [],
+    "lockfile_written": false,
+    "lockfile_sha256": "ac7c102b434248b8198672d3523b96dadc5a49cb9bc3834945f4a5173758a1d0",
+    "error": null
+   },
+   "native": {
+    "rc": 0,
+    "evaluated": [],
+    "lockfile_written": false,
+    "lockfile_sha256": "ac7c102b434248b8198672d3523b96dadc5a49cb9bc3834945f4a5173758a1d0",
+    "error": null
+   },
+   "bazel_run1_identical": true
+  },
+  {
+   "chain": "A",
+   "name": "error_up_to_date",
+   "mode": "error",
+   "query": "@gen_alpha//:all + @gen_beta//:all + @gen_gamma//:all + @gen_plat//:all + @gen_repro//:all + @gen_meta//:all + @gen_facts//:all + @dep_gen//:all",
+   "verdict": "EXACT",
+   "compare": {
+    "rc": true,
+    "lockfile_bytes": true,
+    "lockfile_written": true,
+    "evaluated": true,
+    "error_contained": true,
+    "stdout": true
+   },
+   "bazel": {
+    "rc": 0,
+    "evaluated": [],
+    "lockfile_written": false,
+    "lockfile_sha256": "ac7c102b434248b8198672d3523b96dadc5a49cb9bc3834945f4a5173758a1d0",
+    "error": null
+   },
+   "native": {
+    "rc": 0,
+    "evaluated": [],
+    "lockfile_written": false,
+    "lockfile_sha256": "ac7c102b434248b8198672d3523b96dadc5a49cb9bc3834945f4a5173758a1d0",
+    "error": null
+   },
+   "bazel_run1_identical": true
+  },
+  {
+   "chain": "A",
+   "name": "refresh",
+   "mode": "refresh",
+   "query": "@gen_alpha//:all + @gen_beta//:all + @gen_gamma//:all + @gen_plat//:all + @gen_repro//:all + @gen_meta//:all + @gen_facts//:all + @dep_gen//:all",
+   "verdict": "EXACT",
+   "compare": {
+    "rc": true,
+    "lockfile_bytes": true,
+    "lockfile_written": true,
+    "evaluated": true,
+    "error_contained": true,
+    "stdout": true
+   },
+   "bazel": {
+    "rc": 0,
+    "evaluated": [],
+    "lockfile_written": false,
+    "lockfile_sha256": "ac7c102b434248b8198672d3523b96dadc5a49cb9bc3834945f4a5173758a1d0",
+    "error": null
+   },
+   "native": {
+    "rc": 0,
+    "evaluated": [],
+    "lockfile_written": false,
+    "lockfile_sha256": "ac7c102b434248b8198672d3523b96dadc5a49cb9bc3834945f4a5173758a1d0",
+    "error": null
+   },
+   "bazel_run1_identical": true
+  },
+  {
+   "chain": "A",
+   "name": "off",
+   "mode": "off",
+   "query": "@gen_alpha//:all + @gen_beta//:all + @gen_gamma//:all + @gen_plat//:all + @gen_repro//:all + @gen_meta//:all + @gen_facts//:all + @dep_gen//:all",
+   "verdict": "EXACT",
+   "compare": {
+    "rc": true,
+    "lockfile_bytes": true,
+    "lockfile_written": true,
+    "evaluated": true,
+    "error_contained": true,
+    "stdout": true
+   },
+   "bazel": {
+    "rc": 0,
+    "evaluated": [
+     "LOCKEXT_EVAL dep_ext",
+     "LOCKEXT_EVAL ext",
+     "LOCKEXT_EVAL facts previous=none",
+     "LOCKEXT_EVAL meta",
+     "LOCKEXT_EVAL plat",
+     "LOCKEXT_EVAL repro"
+    ],
+    "lockfile_written": false,
+    "lockfile_sha256": "ac7c102b434248b8198672d3523b96dadc5a49cb9bc3834945f4a5173758a1d0",
+    "error": null
+   },
+   "native": {
+    "rc": 0,
+    "evaluated": [
+     "LOCKEXT_EVAL dep_ext",
+     "LOCKEXT_EVAL ext",
+     "LOCKEXT_EVAL facts previous=none",
+     "LOCKEXT_EVAL meta",
+     "LOCKEXT_EVAL plat",
+     "LOCKEXT_EVAL repro"
+    ],
+    "lockfile_written": false,
+    "lockfile_sha256": "ac7c102b434248b8198672d3523b96dadc5a49cb9bc3834945f4a5173758a1d0",
+    "error": null
+   },
+   "bazel_run1_identical": true
+  },
+  {
+   "chain": "A",
+   "name": "error_file_changed",
+   "mode": "error",
+   "query": "@gen_alpha//:all + @gen_beta//:all + @gen_gamma//:all + @gen_plat//:all + @gen_repro//:all + @gen_meta//:all + @gen_facts//:all + @dep_gen//:all",
+   "verdict": "EXACT",
+   "compare": {
+    "rc": true,
+    "lockfile_bytes": true,
+    "lockfile_written": true,
+    "evaluated": true,
+    "error_contained": true,
+    "stdout": true
+   },
+   "bazel": {
+    "rc": 7,
+    "evaluated": [],
+    "lockfile_written": false,
+    "lockfile_sha256": "ac7c102b434248b8198672d3523b96dadc5a49cb9bc3834945f4a5173758a1d0",
+    "error": "Target parsing failed due to unexpected exception: MODULE.bazel.lock is no longer up-to-date because an input to the extension '@@//:ext.bzl%ext' changed: file info or contents of @@//data.txt changed. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile."
+   },
+   "native": {
+    "rc": 1,
+    "evaluated": [],
+    "lockfile_written": false,
+    "lockfile_sha256": "ac7c102b434248b8198672d3523b96dadc5a49cb9bc3834945f4a5173758a1d0",
+    "error": "MODULE.bazel.lock is no longer up-to-date because an input to the extension '@@//:ext.bzl%ext' changed: file info or contents of @@//data.txt changed. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile."
+   },
+   "bazel_run1_identical": true
+  },
+  {
+   "chain": "A",
+   "name": "update_file_changed",
+   "mode": "update",
+   "query": "@gen_alpha//:all + @gen_beta//:all + @gen_gamma//:all + @gen_plat//:all + @gen_repro//:all + @gen_meta//:all + @gen_facts//:all + @dep_gen//:all",
+   "verdict": "EXACT",
+   "compare": {
+    "rc": true,
+    "lockfile_bytes": true,
+    "lockfile_written": true,
+    "evaluated": true,
+    "error_contained": true,
+    "stdout": true
+   },
+   "bazel": {
+    "rc": 0,
+    "evaluated": [
+     "LOCKEXT_EVAL ext"
+    ],
+    "lockfile_written": true,
+    "lockfile_sha256": "f73f4fbae925ebd6f0c0823f057ecaab748939bc732705cb6fcf538883f39b9b",
+    "error": null
+   },
+   "native": {
+    "rc": 0,
+    "evaluated": [
+     "LOCKEXT_EVAL ext"
+    ],
+    "lockfile_written": true,
+    "lockfile_sha256": "f73f4fbae925ebd6f0c0823f057ecaab748939bc732705cb6fcf538883f39b9b",
+    "error": null
+   },
+   "bazel_run1_identical": true
+  },
+  {
+   "chain": "A",
+   "name": "update_file_restored",
+   "mode": "update",
+   "query": "@gen_alpha//:all + @gen_beta//:all + @gen_gamma//:all + @gen_plat//:all + @gen_repro//:all + @gen_meta//:all + @gen_facts//:all + @dep_gen//:all",
+   "verdict": "EXACT",
+   "compare": {
+    "rc": true,
+    "lockfile_bytes": true,
+    "lockfile_written": true,
+    "evaluated": true,
+    "error_contained": true,
+    "stdout": true
+   },
+   "bazel": {
+    "rc": 0,
+    "evaluated": [
+     "LOCKEXT_EVAL ext"
+    ],
+    "lockfile_written": true,
+    "lockfile_sha256": "ac7c102b434248b8198672d3523b96dadc5a49cb9bc3834945f4a5173758a1d0",
+    "error": null
+   },
+   "native": {
+    "rc": 0,
+    "evaluated": [
+     "LOCKEXT_EVAL ext"
+    ],
+    "lockfile_written": true,
+    "lockfile_sha256": "ac7c102b434248b8198672d3523b96dadc5a49cb9bc3834945f4a5173758a1d0",
+    "error": null
+   },
+   "bazel_run1_identical": true
+  },
+  {
+   "chain": "A",
+   "name": "error_env_changed",
+   "mode": "error",
+   "query": "@gen_alpha//:all + @gen_beta//:all + @gen_gamma//:all + @gen_plat//:all + @gen_repro//:all + @gen_meta//:all + @gen_facts//:all + @dep_gen//:all",
+   "verdict": "EXACT",
+   "compare": {
+    "rc": true,
+    "lockfile_bytes": true,
+    "lockfile_written": true,
+    "evaluated": true,
+    "error_contained": true,
+    "stdout": true
+   },
+   "bazel": {
+    "rc": 7,
+    "evaluated": [],
+    "lockfile_written": false,
+    "lockfile_sha256": "ac7c102b434248b8198672d3523b96dadc5a49cb9bc3834945f4a5173758a1d0",
+    "error": "Target parsing failed due to unexpected exception: MODULE.bazel.lock is no longer up-to-date because an input to the extension '@@//:ext.bzl%ext' changed: environment variable LOCKEXT_DYN changed: 'a' -> 'b'. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile."
+   },
+   "native": {
+    "rc": 1,
+    "evaluated": [],
+    "lockfile_written": false,
+    "lockfile_sha256": "ac7c102b434248b8198672d3523b96dadc5a49cb9bc3834945f4a5173758a1d0",
+    "error": "MODULE.bazel.lock is no longer up-to-date because an input to the extension '@@//:ext.bzl%ext' changed: environment variable LOCKEXT_DYN changed: 'a' -> 'b'. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile."
+   },
+   "bazel_run1_identical": true
+  },
+  {
+   "chain": "A",
+   "name": "update_env_changed",
+   "mode": "update",
+   "query": "@gen_alpha//:all + @gen_beta//:all + @gen_gamma//:all + @gen_plat//:all + @gen_repro//:all + @gen_meta//:all + @gen_facts//:all + @dep_gen//:all",
+   "verdict": "EXACT",
+   "compare": {
+    "rc": true,
+    "lockfile_bytes": true,
+    "lockfile_written": true,
+    "evaluated": true,
+    "error_contained": true,
+    "stdout": true
+   },
+   "bazel": {
+    "rc": 0,
+    "evaluated": [
+     "LOCKEXT_EVAL ext"
+    ],
+    "lockfile_written": true,
+    "lockfile_sha256": "be772fd591bb1b5b54177f7537da24b0419110b422871c160c72655773a2f88e",
+    "error": null
+   },
+   "native": {
+    "rc": 0,
+    "evaluated": [
+     "LOCKEXT_EVAL ext"
+    ],
+    "lockfile_written": true,
+    "lockfile_sha256": "be772fd591bb1b5b54177f7537da24b0419110b422871c160c72655773a2f88e",
+    "error": null
+   },
+   "bazel_run1_identical": true
+  },
+  {
+   "chain": "A",
+   "name": "error_static_env_changed",
+   "mode": "error",
+   "query": "@gen_alpha//:all + @gen_beta//:all + @gen_gamma//:all + @gen_plat//:all + @gen_repro//:all + @gen_meta//:all + @gen_facts//:all + @dep_gen//:all",
+   "verdict": "EXACT",
+   "compare": {
+    "rc": true,
+    "lockfile_bytes": true,
+    "lockfile_written": true,
+    "evaluated": true,
+    "error_contained": true,
+    "stdout": true
+   },
+   "bazel": {
+    "rc": 7,
+    "evaluated": [],
+    "lockfile_written": false,
+    "lockfile_sha256": "be772fd591bb1b5b54177f7537da24b0419110b422871c160c72655773a2f88e",
+    "error": "Target parsing failed due to unexpected exception: MODULE.bazel.lock is no longer up-to-date because an input to the extension '@@//:ext.bzl%ext' changed: environment variable LOCKEXT_STATIC changed: 's 1' -> 's2'. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile."
+   },
+   "native": {
+    "rc": 1,
+    "evaluated": [],
+    "lockfile_written": false,
+    "lockfile_sha256": "be772fd591bb1b5b54177f7537da24b0419110b422871c160c72655773a2f88e",
+    "error": "MODULE.bazel.lock is no longer up-to-date because an input to the extension '@@//:ext.bzl%ext' changed: environment variable LOCKEXT_STATIC changed: 's 1' -> 's2'. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile."
+   },
+   "bazel_run1_identical": true
+  },
+  {
+   "chain": "A",
+   "name": "error_dirents_changed",
+   "mode": "error",
+   "query": "@gen_alpha//:all + @gen_beta//:all + @gen_gamma//:all + @gen_plat//:all + @gen_repro//:all + @gen_meta//:all + @gen_facts//:all + @dep_gen//:all",
+   "verdict": "EXACT",
+   "compare": {
+    "rc": true,
+    "lockfile_bytes": true,
+    "lockfile_written": true,
+    "evaluated": true,
+    "error_contained": true,
+    "stdout": true
+   },
+   "bazel": {
+    "rc": 7,
+    "evaluated": [],
+    "lockfile_written": false,
+    "lockfile_sha256": "be772fd591bb1b5b54177f7537da24b0419110b422871c160c72655773a2f88e",
+    "error": "Target parsing failed due to unexpected exception: MODULE.bazel.lock is no longer up-to-date because an input to the extension '@@//:ext.bzl%ext' changed: directory entries of @@//dir changed. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile."
+   },
+   "native": {
+    "rc": 1,
+    "evaluated": [],
+    "lockfile_written": false,
+    "lockfile_sha256": "be772fd591bb1b5b54177f7537da24b0419110b422871c160c72655773a2f88e",
+    "error": "MODULE.bazel.lock is no longer up-to-date because an input to the extension '@@//:ext.bzl%ext' changed: directory entries of @@//dir changed. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile."
+   },
+   "bazel_run1_identical": true
+  },
+  {
+   "chain": "A",
+   "name": "error_usages_changed",
+   "mode": "error",
+   "query": "@gen_alpha//:all + @gen_beta//:all + @gen_gamma//:all + @gen_plat//:all + @gen_repro//:all + @gen_meta//:all + @gen_facts//:all + @dep_gen//:all",
+   "verdict": "EXACT",
+   "compare": {
+    "rc": true,
+    "lockfile_bytes": true,
+    "lockfile_written": true,
+    "evaluated": true,
+    "error_contained": true,
+    "stdout": true
+   },
+   "bazel": {
+    "rc": 7,
+    "evaluated": [],
+    "lockfile_written": false,
+    "lockfile_sha256": "be772fd591bb1b5b54177f7537da24b0419110b422871c160c72655773a2f88e",
+    "error": "Target parsing failed due to unexpected exception: MODULE.bazel.lock is no longer up-to-date because the usages of the extension '@@//:ext.bzl%ext' have changed. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile."
+   },
+   "native": {
+    "rc": 1,
+    "evaluated": [],
+    "lockfile_written": false,
+    "lockfile_sha256": "be772fd591bb1b5b54177f7537da24b0419110b422871c160c72655773a2f88e",
+    "error": "MODULE.bazel.lock is no longer up-to-date because the usages of the extension '@@//:ext.bzl%ext' have changed. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile."
+   },
+   "bazel_run1_identical": true
+  },
+  {
+   "chain": "A",
+   "name": "error_bzl_changed",
+   "mode": "error",
+   "query": "@gen_alpha//:all + @gen_beta//:all + @gen_gamma//:all + @gen_plat//:all + @gen_repro//:all + @gen_meta//:all + @gen_facts//:all + @dep_gen//:all",
+   "verdict": "EXACT",
+   "compare": {
+    "rc": true,
+    "lockfile_bytes": true,
+    "lockfile_written": true,
+    "evaluated": true,
+    "error_contained": true,
+    "stdout": true
+   },
+   "bazel": {
+    "rc": 7,
+    "evaluated": [],
+    "lockfile_written": false,
+    "lockfile_sha256": "be772fd591bb1b5b54177f7537da24b0419110b422871c160c72655773a2f88e",
+    "error": "Target parsing failed due to unexpected exception: MODULE.bazel.lock is no longer up-to-date because the implementation of the extension '@@//:ext.bzl%ext' or one of its transitive .bzl files has changed. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile."
+   },
+   "native": {
+    "rc": 1,
+    "evaluated": [],
+    "lockfile_written": false,
+    "lockfile_sha256": "be772fd591bb1b5b54177f7537da24b0419110b422871c160c72655773a2f88e",
+    "error": "MODULE.bazel.lock is no longer up-to-date because the implementation of the extension '@@//:ext.bzl%ext' or one of its transitive .bzl files has changed. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile."
+   },
+   "bazel_run1_identical": true
+  },
+  {
+   "chain": "A",
+   "name": "error_entry_missing",
+   "mode": "error",
+   "query": "@gen_alpha//:all",
+   "verdict": "EXACT",
+   "compare": {
+    "rc": true,
+    "lockfile_bytes": true,
+    "lockfile_written": true,
+    "evaluated": true,
+    "error_contained": true,
+    "stdout": true
+   },
+   "bazel": {
+    "rc": 7,
+    "evaluated": [
+     "LOCKEXT_EVAL ext"
+    ],
+    "lockfile_written": false,
+    "lockfile_sha256": "f7036c063bc3a56084baf8b9d6042cfbb5eb21bfb10e5463a37e728d5192180e",
+    "error": "Target parsing failed due to unexpected exception: The module extension '@@//:ext.bzl%ext' does not exist in the lockfile"
+   },
+   "native": {
+    "rc": 1,
+    "evaluated": [
+     "LOCKEXT_EVAL ext"
+    ],
+    "lockfile_written": false,
+    "lockfile_sha256": "f7036c063bc3a56084baf8b9d6042cfbb5eb21bfb10e5463a37e728d5192180e",
+    "error": "The module extension '@@//:ext.bzl%ext' does not exist in the lockfile"
+   },
+   "bazel_run1_identical": true
+  },
+  {
+   "chain": "A",
+   "name": "error_facts_edited",
+   "mode": "error",
+   "query": "@gen_facts//:all",
+   "verdict": "EXACT",
+   "compare": {
+    "rc": true,
+    "lockfile_bytes": true,
+    "lockfile_written": true,
+    "evaluated": true,
+    "error_contained": true,
+    "stdout": true
+   },
+   "bazel": {
+    "rc": 7,
+    "evaluated": [
+     "LOCKEXT_EVAL facts previous=edited"
+    ],
+    "lockfile_written": false,
+    "lockfile_sha256": "987e794f346961ddd03f887f6c4a3706a545da5edcbfc07d83a2ef81e258ac7b",
+    "error": "Target parsing failed due to unexpected exception: MODULE.bazel.lock is no longer up-to-date because the extension '@@//:facts_ext.bzl%facts_ext' has changed its facts: {\"hash\": \"abc123\", \"list\": [1, 2.5, True, \"s\"], \"nested\": {\"a\": {\"b\": \"c\"}, \"z\": 1}} != {\"hash\": \"edited\", \"list\": [1, 2.5, True, \"s\"], \"nested\": {\"a\": {\"b\": \"c\"}, \"z\": 1}}. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile."
+   },
+   "native": {
+    "rc": 1,
+    "evaluated": [
+     "LOCKEXT_EVAL facts previous=edited"
+    ],
+    "lockfile_written": false,
+    "lockfile_sha256": "987e794f346961ddd03f887f6c4a3706a545da5edcbfc07d83a2ef81e258ac7b",
+    "error": "MODULE.bazel.lock is no longer up-to-date because the extension '@@//:facts_ext.bzl%facts_ext' has changed its facts: {\"hash\": \"abc123\", \"list\": [1, 2.5, True, \"s\"], \"nested\": {\"a\": {\"b\": \"c\"}, \"z\": 1}} != {\"hash\": \"edited\", \"list\": [1, 2.5, True, \"s\"], \"nested\": {\"a\": {\"b\": \"c\"}, \"z\": 1}}. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile."
+   },
+   "bazel_run1_identical": true
+  },
+  {
+   "chain": "A",
+   "name": "update_facts_edited",
+   "mode": "update",
+   "query": "@gen_facts//:all",
+   "verdict": "EXACT",
+   "compare": {
+    "rc": true,
+    "lockfile_bytes": true,
+    "lockfile_written": true,
+    "evaluated": true,
+    "error_contained": true,
+    "stdout": true
+   },
+   "bazel": {
+    "rc": 0,
+    "evaluated": [
+     "LOCKEXT_EVAL facts previous=edited"
+    ],
+    "lockfile_written": true,
+    "lockfile_sha256": "be772fd591bb1b5b54177f7537da24b0419110b422871c160c72655773a2f88e",
+    "error": null
+   },
+   "native": {
+    "rc": 0,
+    "evaluated": [
+     "LOCKEXT_EVAL facts previous=edited"
+    ],
+    "lockfile_written": true,
+    "lockfile_sha256": "be772fd591bb1b5b54177f7537da24b0419110b422871c160c72655773a2f88e",
+    "error": null
+   },
+   "bazel_run1_identical": true
+  },
+  {
+   "chain": "A",
+   "name": "update_cold_caches",
+   "mode": "update",
+   "query": "@gen_alpha//:all + @gen_beta//:all + @gen_gamma//:all + @gen_plat//:all + @gen_repro//:all + @gen_meta//:all + @gen_facts//:all + @dep_gen//:all",
+   "verdict": "EXACT",
+   "compare": {
+    "rc": true,
+    "lockfile_bytes": true,
+    "lockfile_written": true,
+    "evaluated": true,
+    "error_contained": true,
+    "stdout": true
+   },
+   "bazel": {
+    "rc": 0,
+    "evaluated": [
+     "LOCKEXT_EVAL facts previous=abc123",
+     "LOCKEXT_EVAL repro"
+    ],
+    "lockfile_written": false,
+    "lockfile_sha256": "be772fd591bb1b5b54177f7537da24b0419110b422871c160c72655773a2f88e",
+    "error": null
+   },
+   "native": {
+    "rc": 0,
+    "evaluated": [
+     "LOCKEXT_EVAL facts previous=abc123",
+     "LOCKEXT_EVAL repro"
+    ],
+    "lockfile_written": false,
+    "lockfile_sha256": "be772fd591bb1b5b54177f7537da24b0419110b422871c160c72655773a2f88e",
+    "error": null
+   },
+   "bazel_run1_identical": true
+  },
+  {
+   "chain": "A",
+   "name": "update_usage_removed",
+   "mode": "update",
+   "query": "@gen_alpha//:all + @gen_beta//:all + @gen_gamma//:all + @gen_plat//:all + @gen_repro//:all + @gen_facts//:all + @dep_gen//:all",
+   "verdict": "EXACT",
+   "compare": {
+    "rc": true,
+    "lockfile_bytes": true,
+    "lockfile_written": true,
+    "evaluated": true,
+    "error_contained": true,
+    "stdout": true
+   },
+   "bazel": {
+    "rc": 0,
+    "evaluated": [],
+    "lockfile_written": true,
+    "lockfile_sha256": "9d70ba2501ffda5c4fec670eabae57620dd7775d09caa3e27a44aa06db11bb4f",
+    "error": null
+   },
+   "native": {
+    "rc": 0,
+    "evaluated": [],
+    "lockfile_written": true,
+    "lockfile_sha256": "9d70ba2501ffda5c4fec670eabae57620dd7775d09caa3e27a44aa06db11bb4f",
+    "error": null
+   },
+   "bazel_run1_identical": true
+  },
+  {
+   "chain": "B",
+   "name": "error_fresh_general",
+   "mode": "error",
+   "query": "@gen_alpha//:all",
+   "verdict": "EXACT",
+   "compare": {
+    "rc": true,
+    "lockfile_bytes": true,
+    "lockfile_written": true,
+    "evaluated": true,
+    "error_contained": true,
+    "stdout": true
+   },
+   "bazel": {
+    "rc": 7,
+    "evaluated": [
+     "LOCKEXT_EVAL ext"
+    ],
+    "lockfile_written": false,
+    "lockfile_sha256": null,
+    "error": "Target parsing failed due to unexpected exception: The module extension '@@//:ext.bzl%ext' does not exist in the lockfile"
+   },
+   "native": {
+    "rc": 1,
+    "evaluated": [
+     "LOCKEXT_EVAL ext"
+    ],
+    "lockfile_written": false,
+    "lockfile_sha256": null,
+    "error": "The module extension '@@//:ext.bzl%ext' does not exist in the lockfile"
+   },
+   "bazel_run1_identical": true
+  },
+  {
+   "chain": "B",
+   "name": "error_fresh_platform",
+   "mode": "error",
+   "query": "@gen_plat//:all",
+   "verdict": "EXACT",
+   "compare": {
+    "rc": true,
+    "lockfile_bytes": true,
+    "lockfile_written": true,
+    "evaluated": true,
+    "error_contained": true,
+    "stdout": true
+   },
+   "bazel": {
+    "rc": 7,
+    "evaluated": [
+     "LOCKEXT_EVAL plat"
+    ],
+    "lockfile_written": false,
+    "lockfile_sha256": null,
+    "error": "Target parsing failed due to unexpected exception: The module extension '@@//:platform_ext.bzl%plat' for platform os:linux,arch:amd64 does not exist in the lockfile"
+   },
+   "native": {
+    "rc": 1,
+    "evaluated": [
+     "LOCKEXT_EVAL plat"
+    ],
+    "lockfile_written": false,
+    "lockfile_sha256": null,
+    "error": "The module extension '@@//:platform_ext.bzl%plat' for platform os:linux,arch:amd64 does not exist in the lockfile"
+   },
+   "bazel_run1_identical": true
+  },
+  {
+   "chain": "B",
+   "name": "error_fresh_reproducible",
+   "mode": "error",
+   "query": "@gen_repro//:all",
+   "verdict": "EXACT",
+   "compare": {
+    "rc": true,
+    "lockfile_bytes": true,
+    "lockfile_written": true,
+    "evaluated": true,
+    "error_contained": true,
+    "stdout": true
+   },
+   "bazel": {
+    "rc": 0,
+    "evaluated": [
+     "LOCKEXT_EVAL repro"
+    ],
+    "lockfile_written": false,
+    "lockfile_sha256": null,
+    "error": null
+   },
+   "native": {
+    "rc": 0,
+    "evaluated": [
+     "LOCKEXT_EVAL repro"
+    ],
+    "lockfile_written": false,
+    "lockfile_sha256": null,
+    "error": null
+   },
+   "bazel_run1_identical": true
+  }
+ ],
+ "genuine_lockfiles": {
+  "update_fresh": "{\n  \"lockFileVersion\": 28,\n  \"registryFileHashes\": {},\n  \"selectedYankedVersions\": {},\n  \"moduleExtensions\": {\n    \"//:ext.bzl%ext\": {\n      \"general\": {\n        \"bzlTransitiveDigest\": \"yihtDMuH/2t7vXx+o2DIFv4gj/jLuq3bzpY2XQXtpdg=\",\n        \"usagesDigest\": \"X3mYA996lIW7klWgIBo/hIpDbHS5iUHlYAAxvyOrNNU=\",\n        \"recordedInputs\": [\n          \"ENV:LOCKEXT_STATIC s\\\\s1\",\n          \"REPO_MAPPING:,bazel_tools bazel_tools\",\n          \"REPO_MAPPING:,lockdep lockdep+\",\n          \"FILE:@@//data.txt 072453d251751cff98d3b5b55bbdbaa7adc0625f5f2bb883f78ea58a813bc711\",\n          \"FILE:@@//dir DIR\",\n          \"DIRENTS:@@//dir 5a5736b653c61e7ab983256db6a482802c3501344c90a6a4a84430e9196e7544\",\n          \"ENV:LOCKEXT_DYN a\",\n          \"ENV:LOCKEXT_MISSING \\\\0\"\n        ],\n        \"generatedRepoSpecs\": {\n          \"gen_alpha\": {\n            \"repoRuleId\": \"@@//:repo.bzl%gen_repo\",\n            \"attributes\": {\n              \"s\": \"'@@escaped'\",\n              \"i\": 3,\n              \"b\": true,\n              \"l\": \"@@lockdep+//:lib\",\n              \"ll\": [\n                \"@@//:data.txt\",\n                \"@@lockdep+//:lib\",\n                \"@@lockdep+//:lib\"\n              ],\n              \"sl\": [\n                \"x\",\n                \"'@@raw'\",\n                \"''quoted''\",\n                \"BUILD.bazel\",\n                \"one.txt\",\n                \"two.txt\",\n                \"a\",\n                \"None\",\n                \"'@@bazel_tools//tools/build_defs/repo:http.bzl'\"\n              ],\n              \"sd\": {\n                \"k\": \"v\",\n                \"'@@key'\": \"v2\"\n              },\n              \"sld\": {\n                \"ids\": [\n                  \"alpha:3\",\n                  \"beta:1\",\n                  \"gamma:-7\"\n                ]\n              },\n              \"lksd\": {\n                \"@@//:data.txt\": \"data\",\n                \"@@+ext+gen_beta//:x\": \"sibling\"\n              }\n            }\n          },\n          \"gen_beta\": {\n            \"repoRuleId\": \"@@//:repo.bzl%gen_repo\",\n            \"attributes\": {\n              \"s\": \"data v1\",\n              \"i\": 1,\n              \"b\": false,\n              \"ll\": [\n                \"@@lockdep+//:lib\"\n              ],\n              \"sl\": [\n                \"BUILD.bazel\",\n                \"one.txt\",\n                \"two.txt\",\n                \"a\",\n                \"None\",\n                \"'@@bazel_tools//tools/build_defs/repo:http.bzl'\"\n              ],\n              \"sd\": {},\n              \"sld\": {\n                \"ids\": [\n                  \"alpha:3\",\n                  \"beta:1\",\n                  \"gamma:-7\"\n                ]\n              },\n              \"lksd\": {\n                \"@@//:data.txt\": \"data\",\n                \"@@+ext+gen_beta//:x\": \"sibling\"\n              }\n            }\n          },\n          \"gen_gamma\": {\n            \"repoRuleId\": \"@@//:repo.bzl%gen_repo\",\n            \"attributes\": {\n              \"s\": \"data v1\",\n              \"i\": -7,\n              \"b\": false,\n              \"ll\": [\n                \"@@lockdep+//:lib\"\n              ],\n              \"sl\": [\n                \"BUILD.bazel\",\n                \"one.txt\",\n                \"two.txt\",\n                \"a\",\n                \"None\",\n                \"'@@bazel_tools//tools/build_defs/repo:http.bzl'\"\n              ],\n              \"sd\": {},\n              \"sld\": {\n                \"ids\": [\n                  \"alpha:3\",\n                  \"beta:1\",\n                  \"gamma:-7\"\n                ]\n              },\n              \"lksd\": {\n                \"@@//:data.txt\": \"data\",\n                \"@@+ext+gen_beta//:x\": \"sibling\"\n              }\n            }\n          },\n          \"gen_http\": {\n            \"repoRuleId\": \"@@bazel_tools//tools/build_defs/repo:http.bzl%http_archive\",\n            \"attributes\": {\n              \"urls\": [\n                \"http://127.0.0.1:9/never.tar.gz\"\n              ],\n              \"sha256\": \"0000000000000000000000000000000000000000000000000000000000000000\",\n              \"build_file_content\": \"filegroup(name = \\\"x\\\")\\n\",\n              \"strip_prefix\": \"never\"\n            }\n          }\n        }\n      }\n    },\n    \"//:meta_ext.bzl%meta\": {\n      \"general\": {\n        \"bzlTransitiveDigest\": \"X+0yHShcqN83fsUrZGj28RS1SsHDMW2J2y1tA1tlmW4=\",\n        \"usagesDigest\": \"2fa2GFdTaqhK5HXbvc+dq03f8Ze9vuSs1ldDJtfR1R0=\",\n        \"recordedInputs\": [],\n        \"generatedRepoSpecs\": {\n          \"gen_meta\": {\n            \"repoRuleId\": \"@@//:repo.bzl%gen_repo\",\n            \"attributes\": {\n              \"b\": true\n            }\n          }\n        },\n        \"moduleExtensionMetadata\": {\n          \"explicitRootModuleDirectDeps\": [\n            \"gen_meta\"\n          ],\n          \"explicitRootModuleDirectDevDeps\": [],\n          \"useAllRepos\": \"NO\",\n          \"reproducible\": false\n        }\n      }\n    },\n    \"//:platform_ext.bzl%plat\": {\n      \"os:linux,arch:amd64\": {\n        \"bzlTransitiveDigest\": \"tXDV/s77+tV8IpGvEBREqj96eUVb1FajrfF25s15mWs=\",\n        \"usagesDigest\": \"j49h65UOoGKujssnbPELHNwIbjP/+H0ocxH7jrzyoEE=\",\n        \"recordedInputs\": [],\n        \"generatedRepoSpecs\": {\n          \"gen_plat\": {\n            \"repoRuleId\": \"@@//:repo.bzl%gen_repo\",\n            \"attributes\": {\n              \"s\": \"linux/amd64\"\n            }\n          }\n        }\n      }\n    },\n    \"@@lockdep+//:dep_ext.bzl%dep_ext\": {\n      \"general\": {\n        \"bzlTransitiveDigest\": \"oYjJwI2jq6tvAqW88uUrINYONwdFthhv0Z5NXohM9qc=\",\n        \"usagesDigest\": \"e/crB+foX2T5uAQH6fnEBe46dj/As5Mk8fgV9N7k+NI=\",\n        \"recordedInputs\": [\n          \"REPO_MAPPING:lockdep+,bazel_tools bazel_tools\",\n          \"REPO_MAPPING:lockdep+,lockdep lockdep+\"\n        ],\n        \"generatedRepoSpecs\": {\n          \"dep_gen\": {\n            \"repoRuleId\": \"@@lockdep+//:dep_repo.bzl%dep_repo\",\n            \"attributes\": {\n              \"values\": [\n                \"lockroot@1.0:from_root\",\n                \"lockdep@2.0:from_dep\"\n              ],\n              \"root\": \"@@lockdep+//:lib\"\n            }\n          }\n        }\n      }\n    }\n  },\n  \"facts\": {\n    \"//:facts_ext.bzl%facts_ext\": {\n      \"hash\": \"abc123\",\n      \"list\": [\n        1,\n        2.5,\n        true,\n        \"s\"\n      ],\n      \"nested\": {\n        \"a\": {\n          \"b\": \"c\"\n        },\n        \"z\": 1\n      }\n    }\n  },\n  \"factsVersions\": {\n    \"//:facts_ext.bzl%facts_ext\": 3\n  }\n}\n",
+  "hidden_after_update_fresh": "{\n  \"lockFileVersion\": 28,\n  \"registryFileHashes\": {},\n  \"selectedYankedVersions\": {},\n  \"moduleExtensions\": {\n    \"//:facts_ext.bzl%facts_ext\": {\n      \"general\": {\n        \"bzlTransitiveDigest\": \"ShXf75YGmT03Fuf+I/s/NRwCplYxWrJ+jYibYCzXkfs=\",\n        \"usagesDigest\": \"jaAOKm75+FKU5JJa9vUZa2ZYjmqRZ4ONTLONBGpHAbo=\",\n        \"recordedInputs\": [],\n        \"generatedRepoSpecs\": {\n          \"gen_facts\": {\n            \"repoRuleId\": \"@@//:repo.bzl%gen_repo\",\n            \"attributes\": {\n              \"s\": \"facts\"\n            }\n          }\n        },\n        \"moduleExtensionMetadata\": {\n          \"useAllRepos\": \"NO\",\n          \"reproducible\": true\n        }\n      }\n    },\n    \"//:repro_ext.bzl%repro\": {\n      \"general\": {\n        \"bzlTransitiveDigest\": \"54GkzJsgWNZ4i0TB/0pPyKDK4YoHBWVEbOWPeK6onkY=\",\n        \"usagesDigest\": \"08nXY92HrwdG9ZWyehd9LiK+ejB/6DDT2Ryj73B+YuM=\",\n        \"recordedInputs\": [],\n        \"generatedRepoSpecs\": {\n          \"gen_repro\": {\n            \"repoRuleId\": \"@@//:repo.bzl%gen_repo\",\n            \"attributes\": {\n              \"i\": 42\n            }\n          }\n        },\n        \"moduleExtensionMetadata\": {\n          \"useAllRepos\": \"NO\",\n          \"reproducible\": true\n        }\n      }\n    }\n  },\n  \"facts\": {\n    \"//:facts_ext.bzl%facts_ext\": {\n      \"hash\": \"abc123\",\n      \"list\": [\n        1,\n        2.5,\n        true,\n        \"s\"\n      ],\n      \"nested\": {\n        \"a\": {\n          \"b\": \"c\"\n        },\n        \"z\": 1\n      }\n    }\n  },\n  \"factsVersions\": {\n    \"//:facts_ext.bzl%facts_ext\": 3\n  }\n}\n",
+  "update_env_changed": "{\n  \"lockFileVersion\": 28,\n  \"registryFileHashes\": {},\n  \"selectedYankedVersions\": {},\n  \"moduleExtensions\": {\n    \"//:ext.bzl%ext\": {\n      \"general\": {\n        \"bzlTransitiveDigest\": \"yihtDMuH/2t7vXx+o2DIFv4gj/jLuq3bzpY2XQXtpdg=\",\n        \"usagesDigest\": \"X3mYA996lIW7klWgIBo/hIpDbHS5iUHlYAAxvyOrNNU=\",\n        \"recordedInputs\": [\n          \"ENV:LOCKEXT_STATIC s\\\\s1\",\n          \"REPO_MAPPING:,bazel_tools bazel_tools\",\n          \"REPO_MAPPING:,lockdep lockdep+\",\n          \"FILE:@@//data.txt 072453d251751cff98d3b5b55bbdbaa7adc0625f5f2bb883f78ea58a813bc711\",\n          \"FILE:@@//dir DIR\",\n          \"DIRENTS:@@//dir 5a5736b653c61e7ab983256db6a482802c3501344c90a6a4a84430e9196e7544\",\n          \"ENV:LOCKEXT_DYN b\",\n          \"ENV:LOCKEXT_MISSING \\\\0\"\n        ],\n        \"generatedRepoSpecs\": {\n          \"gen_alpha\": {\n            \"repoRuleId\": \"@@//:repo.bzl%gen_repo\",\n            \"attributes\": {\n              \"s\": \"'@@escaped'\",\n              \"i\": 3,\n              \"b\": true,\n              \"l\": \"@@lockdep+//:lib\",\n              \"ll\": [\n                \"@@//:data.txt\",\n                \"@@lockdep+//:lib\",\n                \"@@lockdep+//:lib\"\n              ],\n              \"sl\": [\n                \"x\",\n                \"'@@raw'\",\n                \"''quoted''\",\n                \"BUILD.bazel\",\n                \"one.txt\",\n                \"two.txt\",\n                \"b\",\n                \"None\",\n                \"'@@bazel_tools//tools/build_defs/repo:http.bzl'\"\n              ],\n              \"sd\": {\n                \"k\": \"v\",\n                \"'@@key'\": \"v2\"\n              },\n              \"sld\": {\n                \"ids\": [\n                  \"alpha:3\",\n                  \"beta:1\",\n                  \"gamma:-7\"\n                ]\n              },\n              \"lksd\": {\n                \"@@//:data.txt\": \"data\",\n                \"@@+ext+gen_beta//:x\": \"sibling\"\n              }\n            }\n          },\n          \"gen_beta\": {\n            \"repoRuleId\": \"@@//:repo.bzl%gen_repo\",\n            \"attributes\": {\n              \"s\": \"data v1\",\n              \"i\": 1,\n              \"b\": false,\n              \"ll\": [\n                \"@@lockdep+//:lib\"\n              ],\n              \"sl\": [\n                \"BUILD.bazel\",\n                \"one.txt\",\n                \"two.txt\",\n                \"b\",\n                \"None\",\n                \"'@@bazel_tools//tools/build_defs/repo:http.bzl'\"\n              ],\n              \"sd\": {},\n              \"sld\": {\n                \"ids\": [\n                  \"alpha:3\",\n                  \"beta:1\",\n                  \"gamma:-7\"\n                ]\n              },\n              \"lksd\": {\n                \"@@//:data.txt\": \"data\",\n                \"@@+ext+gen_beta//:x\": \"sibling\"\n              }\n            }\n          },\n          \"gen_gamma\": {\n            \"repoRuleId\": \"@@//:repo.bzl%gen_repo\",\n            \"attributes\": {\n              \"s\": \"data v1\",\n              \"i\": -7,\n              \"b\": false,\n              \"ll\": [\n                \"@@lockdep+//:lib\"\n              ],\n              \"sl\": [\n                \"BUILD.bazel\",\n                \"one.txt\",\n                \"two.txt\",\n                \"b\",\n                \"None\",\n                \"'@@bazel_tools//tools/build_defs/repo:http.bzl'\"\n              ],\n              \"sd\": {},\n              \"sld\": {\n                \"ids\": [\n                  \"alpha:3\",\n                  \"beta:1\",\n                  \"gamma:-7\"\n                ]\n              },\n              \"lksd\": {\n                \"@@//:data.txt\": \"data\",\n                \"@@+ext+gen_beta//:x\": \"sibling\"\n              }\n            }\n          },\n          \"gen_http\": {\n            \"repoRuleId\": \"@@bazel_tools//tools/build_defs/repo:http.bzl%http_archive\",\n            \"attributes\": {\n              \"urls\": [\n                \"http://127.0.0.1:9/never.tar.gz\"\n              ],\n              \"sha256\": \"0000000000000000000000000000000000000000000000000000000000000000\",\n              \"build_file_content\": \"filegroup(name = \\\"x\\\")\\n\",\n              \"strip_prefix\": \"never\"\n            }\n          }\n        }\n      }\n    },\n    \"//:meta_ext.bzl%meta\": {\n      \"general\": {\n        \"bzlTransitiveDigest\": \"X+0yHShcqN83fsUrZGj28RS1SsHDMW2J2y1tA1tlmW4=\",\n        \"usagesDigest\": \"2fa2GFdTaqhK5HXbvc+dq03f8Ze9vuSs1ldDJtfR1R0=\",\n        \"recordedInputs\": [],\n        \"generatedRepoSpecs\": {\n          \"gen_meta\": {\n            \"repoRuleId\": \"@@//:repo.bzl%gen_repo\",\n            \"attributes\": {\n              \"b\": true\n            }\n          }\n        },\n        \"moduleExtensionMetadata\": {\n          \"explicitRootModuleDirectDeps\": [\n            \"gen_meta\"\n          ],\n          \"explicitRootModuleDirectDevDeps\": [],\n          \"useAllRepos\": \"NO\",\n          \"reproducible\": false\n        }\n      }\n    },\n    \"//:platform_ext.bzl%plat\": {\n      \"os:linux,arch:amd64\": {\n        \"bzlTransitiveDigest\": \"tXDV/s77+tV8IpGvEBREqj96eUVb1FajrfF25s15mWs=\",\n        \"usagesDigest\": \"j49h65UOoGKujssnbPELHNwIbjP/+H0ocxH7jrzyoEE=\",\n        \"recordedInputs\": [],\n        \"generatedRepoSpecs\": {\n          \"gen_plat\": {\n            \"repoRuleId\": \"@@//:repo.bzl%gen_repo\",\n            \"attributes\": {\n              \"s\": \"linux/amd64\"\n            }\n          }\n        }\n      }\n    },\n    \"@@lockdep+//:dep_ext.bzl%dep_ext\": {\n      \"general\": {\n        \"bzlTransitiveDigest\": \"oYjJwI2jq6tvAqW88uUrINYONwdFthhv0Z5NXohM9qc=\",\n        \"usagesDigest\": \"e/crB+foX2T5uAQH6fnEBe46dj/As5Mk8fgV9N7k+NI=\",\n        \"recordedInputs\": [\n          \"REPO_MAPPING:lockdep+,bazel_tools bazel_tools\",\n          \"REPO_MAPPING:lockdep+,lockdep lockdep+\"\n        ],\n        \"generatedRepoSpecs\": {\n          \"dep_gen\": {\n            \"repoRuleId\": \"@@lockdep+//:dep_repo.bzl%dep_repo\",\n            \"attributes\": {\n              \"values\": [\n                \"lockroot@1.0:from_root\",\n                \"lockdep@2.0:from_dep\"\n              ],\n              \"root\": \"@@lockdep+//:lib\"\n            }\n          }\n        }\n      }\n    }\n  },\n  \"facts\": {\n    \"//:facts_ext.bzl%facts_ext\": {\n      \"hash\": \"abc123\",\n      \"list\": [\n        1,\n        2.5,\n        true,\n        \"s\"\n      ],\n      \"nested\": {\n        \"a\": {\n          \"b\": \"c\"\n        },\n        \"z\": 1\n      }\n    }\n  },\n  \"factsVersions\": {\n    \"//:facts_ext.bzl%facts_ext\": 3\n  }\n}\n",
+  "update_usage_removed": "{\n  \"lockFileVersion\": 28,\n  \"registryFileHashes\": {},\n  \"selectedYankedVersions\": {},\n  \"moduleExtensions\": {\n    \"//:ext.bzl%ext\": {\n      \"general\": {\n        \"bzlTransitiveDigest\": \"yihtDMuH/2t7vXx+o2DIFv4gj/jLuq3bzpY2XQXtpdg=\",\n        \"usagesDigest\": \"X3mYA996lIW7klWgIBo/hIpDbHS5iUHlYAAxvyOrNNU=\",\n        \"recordedInputs\": [\n          \"ENV:LOCKEXT_STATIC s\\\\s1\",\n          \"REPO_MAPPING:,bazel_tools bazel_tools\",\n          \"REPO_MAPPING:,lockdep lockdep+\",\n          \"FILE:@@//data.txt 072453d251751cff98d3b5b55bbdbaa7adc0625f5f2bb883f78ea58a813bc711\",\n          \"FILE:@@//dir DIR\",\n          \"DIRENTS:@@//dir 5a5736b653c61e7ab983256db6a482802c3501344c90a6a4a84430e9196e7544\",\n          \"ENV:LOCKEXT_DYN b\",\n          \"ENV:LOCKEXT_MISSING \\\\0\"\n        ],\n        \"generatedRepoSpecs\": {\n          \"gen_alpha\": {\n            \"repoRuleId\": \"@@//:repo.bzl%gen_repo\",\n            \"attributes\": {\n              \"s\": \"'@@escaped'\",\n              \"i\": 3,\n              \"b\": true,\n              \"l\": \"@@lockdep+//:lib\",\n              \"ll\": [\n                \"@@//:data.txt\",\n                \"@@lockdep+//:lib\",\n                \"@@lockdep+//:lib\"\n              ],\n              \"sl\": [\n                \"x\",\n                \"'@@raw'\",\n                \"''quoted''\",\n                \"BUILD.bazel\",\n                \"one.txt\",\n                \"two.txt\",\n                \"b\",\n                \"None\",\n                \"'@@bazel_tools//tools/build_defs/repo:http.bzl'\"\n              ],\n              \"sd\": {\n                \"k\": \"v\",\n                \"'@@key'\": \"v2\"\n              },\n              \"sld\": {\n                \"ids\": [\n                  \"alpha:3\",\n                  \"beta:1\",\n                  \"gamma:-7\"\n                ]\n              },\n              \"lksd\": {\n                \"@@//:data.txt\": \"data\",\n                \"@@+ext+gen_beta//:x\": \"sibling\"\n              }\n            }\n          },\n          \"gen_beta\": {\n            \"repoRuleId\": \"@@//:repo.bzl%gen_repo\",\n            \"attributes\": {\n              \"s\": \"data v1\",\n              \"i\": 1,\n              \"b\": false,\n              \"ll\": [\n                \"@@lockdep+//:lib\"\n              ],\n              \"sl\": [\n                \"BUILD.bazel\",\n                \"one.txt\",\n                \"two.txt\",\n                \"b\",\n                \"None\",\n                \"'@@bazel_tools//tools/build_defs/repo:http.bzl'\"\n              ],\n              \"sd\": {},\n              \"sld\": {\n                \"ids\": [\n                  \"alpha:3\",\n                  \"beta:1\",\n                  \"gamma:-7\"\n                ]\n              },\n              \"lksd\": {\n                \"@@//:data.txt\": \"data\",\n                \"@@+ext+gen_beta//:x\": \"sibling\"\n              }\n            }\n          },\n          \"gen_gamma\": {\n            \"repoRuleId\": \"@@//:repo.bzl%gen_repo\",\n            \"attributes\": {\n              \"s\": \"data v1\",\n              \"i\": -7,\n              \"b\": false,\n              \"ll\": [\n                \"@@lockdep+//:lib\"\n              ],\n              \"sl\": [\n                \"BUILD.bazel\",\n                \"one.txt\",\n                \"two.txt\",\n                \"b\",\n                \"None\",\n                \"'@@bazel_tools//tools/build_defs/repo:http.bzl'\"\n              ],\n              \"sd\": {},\n              \"sld\": {\n                \"ids\": [\n                  \"alpha:3\",\n                  \"beta:1\",\n                  \"gamma:-7\"\n                ]\n              },\n              \"lksd\": {\n                \"@@//:data.txt\": \"data\",\n                \"@@+ext+gen_beta//:x\": \"sibling\"\n              }\n            }\n          },\n          \"gen_http\": {\n            \"repoRuleId\": \"@@bazel_tools//tools/build_defs/repo:http.bzl%http_archive\",\n            \"attributes\": {\n              \"urls\": [\n                \"http://127.0.0.1:9/never.tar.gz\"\n              ],\n              \"sha256\": \"0000000000000000000000000000000000000000000000000000000000000000\",\n              \"build_file_content\": \"filegroup(name = \\\"x\\\")\\n\",\n              \"strip_prefix\": \"never\"\n            }\n          }\n        }\n      }\n    },\n    \"//:platform_ext.bzl%plat\": {\n      \"os:linux,arch:amd64\": {\n        \"bzlTransitiveDigest\": \"tXDV/s77+tV8IpGvEBREqj96eUVb1FajrfF25s15mWs=\",\n        \"usagesDigest\": \"j49h65UOoGKujssnbPELHNwIbjP/+H0ocxH7jrzyoEE=\",\n        \"recordedInputs\": [],\n        \"generatedRepoSpecs\": {\n          \"gen_plat\": {\n            \"repoRuleId\": \"@@//:repo.bzl%gen_repo\",\n            \"attributes\": {\n              \"s\": \"linux/amd64\"\n            }\n          }\n        }\n      }\n    },\n    \"@@lockdep+//:dep_ext.bzl%dep_ext\": {\n      \"general\": {\n        \"bzlTransitiveDigest\": \"oYjJwI2jq6tvAqW88uUrINYONwdFthhv0Z5NXohM9qc=\",\n        \"usagesDigest\": \"e/crB+foX2T5uAQH6fnEBe46dj/As5Mk8fgV9N7k+NI=\",\n        \"recordedInputs\": [\n          \"REPO_MAPPING:lockdep+,bazel_tools bazel_tools\",\n          \"REPO_MAPPING:lockdep+,lockdep lockdep+\"\n        ],\n        \"generatedRepoSpecs\": {\n          \"dep_gen\": {\n            \"repoRuleId\": \"@@lockdep+//:dep_repo.bzl%dep_repo\",\n            \"attributes\": {\n              \"values\": [\n                \"lockroot@1.0:from_root\",\n                \"lockdep@2.0:from_dep\"\n              ],\n              \"root\": \"@@lockdep+//:lib\"\n            }\n          }\n        }\n      }\n    }\n  },\n  \"facts\": {\n    \"//:facts_ext.bzl%facts_ext\": {\n      \"hash\": \"abc123\",\n      \"list\": [\n        1,\n        2.5,\n        true,\n        \"s\"\n      ],\n      \"nested\": {\n        \"a\": {\n          \"b\": \"c\"\n        },\n        \"z\": 1\n      }\n    }\n  },\n  \"factsVersions\": {\n    \"//:facts_ext.bzl%facts_ext\": 3\n  }\n}\n"
+ },
+ "run_history": {
+  "run1": {
+   "started": "2026-10-17T16:36:01Z",
+   "native_sha256": "aa53440352b320652bd0208b5419731a8562513d33bfee45c30a881201a3602d",
+   "note": "Genuine side identical to run 2 in every step (rc, evaluated, lockfile sha256, error). Native side was the pre-N52 binary: facts_version unsupported, no entries written."
+  },
+  "run2": {
+   "started": "2026-10-17T18:43:37Z",
+   "finished": "2026-10-17T18:44:23Z"
+  }
+ },
+ "final_binary_replay": {
+  "native_sha256": "c0df8b4b6f8edacfeb84d908a442e81c376b3fc825d95ebee4cc9021e0117a16",
+  "note": "--native-only replay of the final binary against the run 2 genuine side",
+  "exact": 22,
+  "steps": 22
+ },
+ "offline_hypothesis_checks": [
+  "bzlTransitiveDigest = SHA-256(SHA-256(bytes) ++ transitive digests of loads in program order): matched genuine for //:platform_ext.bzl before any native code (BzlLoadFunction.java:858-879)",
+  "usagesDigest = SHA-256(UTF-16LE(compact Gson JSON of trimmed SingleExtensionUsagesValue)): matched genuine for all four non-reproducible fixture extensions (SingleExtensionUsagesValue.java:78-99)"
+ ],
+ "code_probe": {
+  "script": "artifacts/code_lockfile_extensions_probe.py",
+  "query": "//src/... + //thirdparty/...",
+  "binary_sha256": "34a700845c0bf90383886782642fe652d380cb3f8c008822f9ec1f17967d1448",
+  "invocation": "env -i PATH=/usr/bin:/bin HOME=<priv> TMPDIR=<priv> LC_ALL=C.UTF-8, cwd ~/code, --ignore_all_rc_files --cache-dir=<priv> query --experimental-builtin-modules --registry=https://bcr.bazel.build --lockfile_mode=update --native-lockfile=<private path>; no remote cache or execution",
+  "runs": [
+   {
+    "phase": "cold",
+    "rc": 0,
+    "wall_s": 279.524,
+    "stdout_lines": 18464,
+    "private_lockfile_sha256": "6e01e3c5df4da71f154aad900cad25f2dc47060b2166169da2eba08fe9f2cc97"
+   },
+   {
+    "phase": "warm",
+    "rc": 0,
+    "wall_s": 243.039,
+    "stdout_lines": 18464,
+    "private_lockfile_sha256": "6e01e3c5df4da71f154aad900cad25f2dc47060b2166169da2eba08fe9f2cc97"
+   }
+  ],
+  "checkout_unchanged": true,
+  "checkout_lockfile_sha256": "4253ac664842a1d32f261c809d509373efb5b3d7d6a52ed83a31c617289b1d5a",
+  "tracked_lockfile_version": 26,
+  "tracked_only_extensions": [
+   "@@aspect_rules_aws+//aws:extensions.bzl%aws",
+   "@@aspect_rules_js+//npm:extensions.bzl%pnpm",
+   "@@buildifier_prebuilt+//:defs.bzl%buildifier_prebuilt_deps_extension",
+   "@@envoy_api+//bazel:repositories.bzl%non_module_deps",
+   "@@googleapis+//:extensions.bzl%switched_rules",
+   "@@pybind11_bazel+//:internal_configure.bzl%internal_configure_extension",
+   "@@rules_kotlin+//src/main/starlark/core/repositories:bzlmod_setup.bzl%rules_kotlin_extensions",
+   "@@rules_nodejs+//nodejs:extensions.bzl%node",
+   "@@rules_oci+//oci:extensions.bzl%oci",
+   "@@rules_perl+//perl:extensions.bzl%perl_repositories",
+   "@@rules_python+//python/uv:uv.bzl%uv"
+  ],
+  "native_only_extensions": [],
+  "entries": {
+   "//thirdparty:extensions.bzl%workspace_deps general": {
+    "keys_equal": true,
+    "bzlTransitiveDigest": false,
+    "usagesDigest": true,
+    "recordedInputs": true,
+    "recordedInputs_as_sets": true,
+    "generatedRepoSpecs": true,
+    "generatedRepoSpecs_names": true,
+    "differing_specs": [],
+    "moduleExtensionMetadata": true,
+    "recordedInputs_tracked_only": [],
+    "recordedInputs_native_only": []
+   },
+   "@@aspect_tools_telemetry+//:extension.bzl%telemetry general": {
+    "keys_equal": true,
+    "bzlTransitiveDigest": true,
+    "usagesDigest": true,
+    "recordedInputs": true,
+    "recordedInputs_as_sets": true,
+    "generatedRepoSpecs": true,
+    "generatedRepoSpecs_names": true,
+    "differing_specs": [],
+    "moduleExtensionMetadata": true,
+    "recordedInputs_tracked_only": [],
+    "recordedInputs_native_only": []
+   },
+   "@@rules_python+//python/extensions:config.bzl%config general": {
+    "keys_equal": true,
+    "bzlTransitiveDigest": false,
+    "usagesDigest": true,
+    "recordedInputs": true,
+    "recordedInputs_as_sets": true,
+    "generatedRepoSpecs": true,
+    "generatedRepoSpecs_names": true,
+    "differing_specs": [],
+    "moduleExtensionMetadata": true,
+    "recordedInputs_tracked_only": [],
+    "recordedInputs_native_only": []
+   },
+   "@@yq.bzl+//yq:extensions.bzl%yq general": {
+    "keys_equal": true,
+    "bzlTransitiveDigest": true,
+    "usagesDigest": true,
+    "recordedInputs": true,
+    "recordedInputs_as_sets": true,
+    "generatedRepoSpecs": true,
+    "generatedRepoSpecs_names": true,
+    "differing_specs": [],
+    "moduleExtensionMetadata": true,
+    "recordedInputs_tracked_only": [],
+    "recordedInputs_native_only": []
+   }
+  },
+  "facts_equal": {
+   "@@rules_go+//go:extensions.bzl%go_sdk": true
+  },
+  "interpretation": "Query loads packages only, so only the extensions loading demands are evaluated (Bazel likewise); the tracked lockfile also has entries from builds. For every evaluated extension generatedRepoSpecs, recordedInputs, usagesDigest and metadata equal the tracked (version 26) entries and the go_sdk facts are identical. bzlTransitiveDigest differs exactly for the extensions that load @bazel_tools (REPO_MAPPING:...,bazel_tools in their recordedInputs): the tracked file was written by an older Bazel whose embedded @bazel_tools differs; on the fixture, whose ext.bzl loads @bazel_tools http.bzl, native equals genuine 9.3.0."
+ }
+}

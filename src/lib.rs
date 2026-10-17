@@ -61,6 +61,7 @@ pub mod loading;
 mod location_expander;
 pub mod location_printer;
 pub mod lockfile;
+mod lockfile_extensions;
 pub mod materializer;
 pub mod module_cli;
 pub mod module_extension;

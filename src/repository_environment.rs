@@ -229,6 +229,14 @@ impl Snapshot {
             .clone()
     }
 
+    /// The repository environment value of `name` (RepoEnvironmentFunction).
+    pub(crate) fn lookup(&self, name: &str) -> Result<Option<String>, EnvError> {
+        Ok(match self.observe(name)?.captured()? {
+            Captured::Absent => None,
+            Captured::Value(value) => Some(value.to_string()),
+        })
+    }
+
     fn observe(&self, name: &str) -> Result<Arc<Entry>, EnvError> {
         validate_length(name)?;
         // Caller reserves borrowed-name work before reaching this bounded scan.

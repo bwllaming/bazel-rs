@@ -30,6 +30,8 @@ pub struct ExtensionDefinition {
     /// `module_extension(environ=...)`: names observed (recorded) before the
     /// callback, like repository_rule environ (ModuleExtension.getEnvVariables).
     pub environ: crate::repository_environment::DeclaredEnvironment,
+    /// `module_extension(facts_version=...)` (ModuleExtension.factsVersion).
+    pub facts_version: i32,
 }
 
 const _: fn() = || {
@@ -83,6 +85,7 @@ mod values {
         pub implementation: V,
         pub os_dependent: bool,
         pub arch_dependent: bool,
+        pub facts_version: i32,
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
         pub tag_classes: BTreeMap<String, TagClass>,
@@ -140,6 +143,7 @@ pub fn unpack(value: &OwnedFrozenValue) -> Result<ExtensionDefinition, String> {
         os_dependent: definition.os_dependent,
         arch_dependent: definition.arch_dependent,
         environ: definition.environ.clone(),
+        facts_version: definition.facts_version,
         tag_classes: definition
             .tag_classes
             .iter()
@@ -258,9 +262,6 @@ pub fn globals(builder: &mut GlobalsBuilder) {
         if facts_version < 0 {
             bail!("module_extension facts_version must be a nonnegative 32-bit int");
         }
-        if facts_version != 0 {
-            bail!("module_extension with nonzero facts_version is unsupported");
-        }
         let classes = DictRef::from_value(tag_classes)
             .ok_or_else(|| anyhow!("module_extension tag_classes must be a dict"))?;
         let mut tag_classes = BTreeMap::new();
@@ -285,6 +286,7 @@ pub fn globals(builder: &mut GlobalsBuilder) {
             implementation,
             os_dependent,
             arch_dependent,
+            facts_version,
             tag_classes,
             doc,
             environ,
@@ -1056,6 +1058,15 @@ mod tests {
     #[test]
     fn signatures_and_bounded_options_are_explicit() {
         extension("def impl(ctx):\n    return None\nT = tag_class(attrs={}, doc=None)\nEmpty = tag_class()\nE = module_extension(implementation=impl, tag_classes={}, doc=None, environ=[], os_dependent=False, arch_dependent=False, facts_version=0)").unwrap();
+        // ModuleExtension.factsVersion is kept for MODULE.bazel.lock factsVersions.
+        let versioned = extension(
+            "def impl(ctx):\n    return None\nE = module_extension(impl, facts_version=2147483647)",
+        )
+        .unwrap();
+        assert_eq!(
+            unpack(&versioned.get("E").unwrap()).unwrap().facts_version,
+            i32::MAX
+        );
         extension("def impl(ctx):\n    return None\nE = module_extension(impl, environ=['HOME', 'PATH', 'HOME'])").unwrap();
         for (expression, expected) in [
             ("tag_class(None)", "dict"),
@@ -1077,14 +1088,6 @@ mod tests {
             ("module_extension(impl, os_dependent=1)", "bool"),
             ("module_extension(impl, arch_dependent='yes')", "bool"),
             ("module_extension(impl, facts_version=-1)", "nonnegative"),
-            (
-                "module_extension(impl, facts_version=1)",
-                "nonzero facts_version is unsupported",
-            ),
-            (
-                "module_extension(impl, facts_version=2147483647)",
-                "nonzero facts_version is unsupported",
-            ),
             ("module_extension(impl, facts_version=2147483648)", "int"),
             ("module_extension(impl, facts_version=-2147483649)", "int"),
             ("module_extension(impl, facts_version=True)", "int"),

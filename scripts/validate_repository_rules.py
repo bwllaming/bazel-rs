@@ -21,9 +21,11 @@ import tempfile
 
 from validate import ROOT, Runner, reference_output_paths, require_success, write_report
 from validate_direct_repositories import (DirectReference, REFERENCE_SHA256,
-                                          BOUNDARY_INFRASTRUCTURE_ERROR, STALE_EXTENSION_ERROR,
                                           argument_parser as common_parser,
                                           validate_binaries)
+
+# Infrastructure failures (validate_label_repo_name.py rejects these too).
+BOUNDARY_INFRASTRUCTURE_ERROR = re.compile(r"\bnetwork\b|\bdownload\b|permission denied|access denied|connection (?:refused|reset|timed out)", re.I)
 
 
 SOURCES = [ROOT / p for p in (
@@ -155,7 +157,12 @@ CASES = [
     case('definition.large-initialization'),
     case('native.rollback', 'native_boundary'),
     case('native.path-containment', 'native_boundary', ('dotdot', 'absolute')),
-    case('native.unsupported', 'native_boundary', ('facts_version_unsupported',)),
+    # N52 retired native.unsupported (nonzero module_extension facts_version):
+    # it is supported and compared against genuine Bazel by
+    # tests/fixtures/lockfile_extensions/reference_receipt.json.
+    # (The path-containment source-symlink probe that N52's older base still
+    # had is retired here by N43's follow-symlinks behavior; the paired
+    # positive case is template.symlinked-source above.)
     # N38: raw non-ASCII .bzl literals are Latin-1 (literal.latin1-octal raw-source);
     # only MODULE.bazel raw non-ASCII and the \x/\u/\U escapes remain native rejections.
     case('native.ascii-profile', 'native_boundary', ('module-unicode', 'hex', 'u', 'U')),
@@ -171,7 +178,6 @@ DIAGNOSTICS = {
     'rollback': r'(?:Error in fail:|\bfail(?:ed)?[: (]|error:)[^\n]*' + FAIL_MARKER,
     'path': r'(?:path|file)[^\n]*(?:relative|escap|outside|parent|absolute|unsafe|clean)|(?:unsafe|absolute)[^\n]*path',
     'return': r'(?:return|returned)[^\n]*(?:None|unsupported|not supported)|(?:only|must)[^\n]*None',
-    'facts_version_unsupported': r'\bmodule_extension with nonzero facts_version is unsupported\b',
     'ascii': r'(?:ASCII|non.ASCII|Unicode|unicode|escape|chr)[^\n]*(?:unsupported|not supported|forbidden|invalid|only|reject)|(?:unsupported|invalid|non.ASCII)[^\n]*(?:string|literal|escape|chr)',
     # Resolver.java:941-953 / Module.java:250-256: Bazel has no chr builtin.
     'undefined_chr': r"\bname 'chr' is not defined\b",
@@ -197,8 +203,6 @@ def require_rejection(record, diagnostic):
     if (type(code) is not int or not 0 < code < 128 or code == 101 or record['timed_out']
             or record.get('spawn_error') or record.get('interrupted') or record.get('output_truncated')
             or record['stdout'].strip() or UNRELATED.search(text)
-            or (diagnostic == 'facts_version_unsupported'
-                and (BOUNDARY_INFRASTRUCTURE_ERROR.search(text) or STALE_EXTENSION_ERROR.search(text)))
             or (diagnostic in ('missing', 'unknown') and LAZY_MARKER in text)
             or (diagnostic not in ('ascii', 'undefined_chr') and re.search(r'syntax error', text, re.I))
             or not re.search(DIAGNOSTICS[diagnostic], text, re.I)):
@@ -320,11 +324,6 @@ def fixture(name, probe='result', outside=None):
         # Was native.initialization-budget (a native tick-cap rejection before
         # N43): definition loading evaluates the whole comprehension, then _impl runs.
         files['defs.bzl'] = 'INITIALIZATION = [i + 1 for i in range(1000000)]\n' + BASIC
-    elif name == 'native.unsupported':
-        body = {'facts_version_unsupported': 'return None'}[probe]
-        files['defs.bzl'] = rule(build_file(['data']) + '\nctx.file("data", "partial")\n' + body)
-        files['defs.bzl'] += 'ordinary = module_extension(implementation = _impl, facts_version = 1)\n'
-        diagnostic = probe
     elif name == 'literal.latin1-octal':
         # Lexer.java:372-395: an octal escape is the char NNN & 0xff, which
         # repository_ctx.file writes as that single byte.
@@ -800,7 +799,7 @@ def report_passes(report):
                 or not all(valid_evidence(v) for v in report['sources_before'].values())
                 or report['reference_release'] != 'bazel 9.3.0'
                 or report['executables']['reference']['sha256'] != REFERENCE_SHA256
-                or report['completed_checks'] != 22 or report['completed_differential_cases'] != 14):
+                or report['completed_checks'] != 21 or report['completed_differential_cases'] != 14):
             return False
         args = argument_parser().parse_args([])
         args.native = Path(report['configuration']['native'])
@@ -892,10 +891,10 @@ def main(argv=None):
                   case_inputs_sha256=digest(json.dumps(CASES, sort_keys=True).encode()),
                   configuration={k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
                   started_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                  limitations=['22 cases: fourteen differential, eight native policy/lifecycle boundaries. No full Bazel parity.',
+                  limitations=['21 cases: fourteen differential, seven native policy/lifecycle boundaries. No full Bazel parity.',
                                'Raw non-ASCII MODULE.bazel literals are a native boundary; .bzl sources and octal escapes denote Latin-1 chars written as single bytes; raw templates preserve arbitrary bytes.',
                                'Callback returns follow RepositoryFetchFunction (dict keys checked, repo_metadata/other values accepted); reproducibility has no native caching effect.',
-                               'Nonzero module_extension facts_version is unsupported at definition load; this native-only boundary is not differential parity or a callback execution claim.',
+                               'Nonzero module_extension facts_version is supported since N52 (differential evidence: tests/fixtures/lockfile_extensions/reference_receipt.json); the former native.unsupported boundary is retired.',
                                'Genuine reference built-ins may download from BCR; no fake platforms or bazel_tools.',
                                'Bytes and executable bits compared; read-only cache permission differences are recorded.',
                                'Elapsed subprocess durations are diagnostics, not performance measurements.',

@@ -119,6 +119,12 @@ rejected, not approximated with a MODULE override.
 
 ## Remaining boundaries
 
+MODULE.bazel.lock entries that genuine Bazel recorded with
+`REPO_MAPPING:bazel_tools,…` inputs (lookups inside `@@bazel_tools`'s `.bzl`
+closure) look outdated outside this profile, where `@@bazel_tools` has no
+contents: `update` re-evaluates, `error` fails explicitly where Bazel passes
+(docs/REGISTRY_LOCKFILE.md, "Native limits").
+
 This profile supplies real resources and dependency closure, not SDK execution,
 unrestricted repository contexts, complete built-in rules, toolchains, lockfiles,
 or successful whole-application builds/tests. Genuine loaded definitions still
