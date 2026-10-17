@@ -94,8 +94,11 @@ found for types:\n  //:b\n  //:a`), so the rule's `ctx.toolchains` sees them.
 toolchains must enable automatic exec-groups. For more info, see
 https://bazel.build/extending/auto-exec-groups#migration-aegs`
 (`StarlarkSubrule.java:377-397`; captured with and without toolchain types).
-Rules with `_use_auto_exec_groups = True` or `--incompatible_auto_exec_groups`
-remain explicit engine gaps.
+Under automatic exec groups (`_use_auto_exec_groups = True` or
+`--incompatible_auto_exec_groups`) it is the rule's automatic-group context
+narrowed to the subrule's types, and the subrule's actions take its type as
+`toolchain` and reject `exec_group`/`toolchain` arguments (N35,
+docs/EXEC_GROUPS.md).
 
 **Fragments** (`StarlarkSubrule.java:562-597`): the collection's fields are the
 DECLARED fragments: `dir(ctx.fragments)` lists them sorted, and `hasattr`/dot/

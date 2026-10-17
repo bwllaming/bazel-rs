@@ -228,6 +228,17 @@ pub const OPTIONS: &[OptionDef] = &[
         source: "build/lib/rules/java/JavaOptions.java:397-403",
         deprecation: None,
     },
+    OptionDef {
+        name: "incompatible_auto_exec_groups",
+        old_name: None,
+        abbrev: None,
+        kind: OptionKind::Bool,
+        default: "false",
+        allow_multiple: false,
+        non_configurable: false,
+        source: "build/lib/analysis/config/CoreOptions.java:419-433",
+        deprecation: None,
+    },
 ];
 
 /// `--java_runtime_version` default (JavaOptions.java:373-379).
@@ -541,6 +552,14 @@ pub struct NativeOptions {
     /// Omitted from the identity when false.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub use_target_platform_for_tests: bool,
+    /// `--incompatible_auto_exec_groups` (CoreOptions.java:419-433, default
+    /// false): RuleContext.useAutoExecGroups of a rule class whose targets
+    /// have no `_use_auto_exec_groups` attribute (RuleClass.AutoExecGroupsMode,
+    /// packages/RuleClass.java:179-203; docs/EXEC_GROUPS.md). Propagated by
+    /// the exec transition (builtin_exec_platforms.bzl:246). Omitted from the
+    /// identity when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub incompatible_auto_exec_groups: bool,
     /// CoreOptions.cpu (`--cpu`, CoreOptions.java:279-292; AutoCpuConverter
     /// gives the host CPU for the default ""): `None` is the host CPU, a
     /// value only a Starlark transition can set natively (the command-line
@@ -661,6 +680,7 @@ impl Default for NativeOptions {
             no_config: false,
             cpu: None,
             use_target_platform_for_tests: false,
+            incompatible_auto_exec_groups: false,
         }
     }
 }
@@ -686,6 +706,9 @@ impl NativeOptions {
             "host_platform" => OptionValue::Label(self.host_platform.clone()),
             "use_target_platform_for_tests" => {
                 OptionValue::Bool(self.use_target_platform_for_tests)
+            }
+            "incompatible_auto_exec_groups" => {
+                OptionValue::Bool(self.incompatible_auto_exec_groups)
             }
             "java_runtime_version" => OptionValue::String(self.java.java_runtime_version.clone()),
             "java_language_version" => OptionValue::String(self.java.java_language_version.clone()),
@@ -1068,6 +1091,9 @@ impl CommandLineOptions {
                 ("host_platform", OptionValue::Label(label)) => native.host_platform = label,
                 ("use_target_platform_for_tests", OptionValue::Bool(value)) => {
                     native.use_target_platform_for_tests = value
+                }
+                ("incompatible_auto_exec_groups", OptionValue::Bool(value)) => {
+                    native.incompatible_auto_exec_groups = value
                 }
                 ("java_runtime_version", OptionValue::String(value)) => {
                     native.java.java_runtime_version = value

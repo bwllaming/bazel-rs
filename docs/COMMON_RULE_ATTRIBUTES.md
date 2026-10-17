@@ -245,13 +245,13 @@ fail analysis: the testonly check below uses the effective value.
   such as `no-cache`/`no-remote`/`no-sandbox` are not applied to actions:
   native actions always run locally, unsandboxed and cached — the genrule
   divergence of docs/NATIVE_BUILD_RULES.md), `features` (no `ctx.features`
-  is exposed), `exec_properties` (local execution).
+  is exposed), `exec_properties` (validated and combined per exec group,
+  recorded per action, not applied by local execution; docs/EXEC_GROUPS.md).
 * Values whose semantics are not implemented make analysis fail explicitly
   (`declared rule features not analyzed by the native profile: ...`), never
   silently: non-empty `target_compatible_with` (constraint analysis and
   incompatible target skipping), `compatible_with`/`restricted_to`
-  (constraint environments), `exec_group_compatible_with`
-  (execution platform resolution), `toolchains` (TemplateVariableInfo Make
+  (constraint environments), `toolchains` (TemplateVariableInfo Make
   variables), `aspect_hints`, `transitive_configs`, a non-empty `expect_failure` (expected-failure
   analysis; `""` has no effect, `StarlarkRuleConfiguredTargetUtil.java:80-131`).
   `exec_compatible_with` takes part in toolchain resolution (it filters the

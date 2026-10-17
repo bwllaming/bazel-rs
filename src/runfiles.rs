@@ -921,6 +921,22 @@ impl ContextRunfiles {
     /// An action executable/tool File: its FilesToRunProvider runfiles are
     /// attached to the spawn by Bazel (StarlarkActionFactory.java:433-441,
     /// :771-779); that attachment is not modelled yet.
+    /// StarlarkRuleContext.getExecutableRunfiles != null
+    /// (analysis/starlark/StarlarkRuleContext.java:981-983): `file` is an
+    /// executable attribute's executable.
+    pub(crate) fn is_executable(&self, file: &File) -> bool {
+        self.executables.borrow().contains_key(file)
+    }
+
+    /// StarlarkRuleContext.areRunfilesFromDeps (:985-992): `files_to_run` is
+    /// an executable attribute's FilesToRunProvider (identity).
+    pub(crate) fn is_from_dependencies(&self, files_to_run: &FilesToRun) -> bool {
+        self.executables
+            .borrow()
+            .values()
+            .any(|known| known.id == files_to_run.id)
+    }
+
     pub(crate) fn check_action_file(&self, file: &File, what: &str) -> anyhow::Result<()> {
         if let Some(files_to_run) = self.executables.borrow().get(file) {
             ensure_without_runfiles(files_to_run, what)?;

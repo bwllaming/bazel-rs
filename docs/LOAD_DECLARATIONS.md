@@ -209,7 +209,7 @@ cfg="target")` are analyzed since N23a (docs/RUNFILES.md).
 A target fails analysis with the message above if it uses any of these:
 
 * rule level: `analysis_test=True`, `_skylark_testable=True`, `output_to_genfiles=True`,
-  `dependency_resolution_rule=True`, non-empty `exec_groups`, `cfg =
+  `dependency_resolution_rule=True`, `cfg =
   config.none()` (a Starlark `transition()` is applied since N18c,
   docs/CONFIGURATION.md), dict `outputs`
   (the implicit outputs exist for loading, but not as `ctx.outputs`);

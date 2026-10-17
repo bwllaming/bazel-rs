@@ -252,10 +252,19 @@ mod values {
             let label = crate::starlark_types::alloc_target(eval.heap(), &label_text, Vec::new())
                 .get_attr_error("label", eval.heap())?;
             let name = self.name();
-            let actions = crate::analysis_runtime::alloc_actions_for(
+            // The subrule's requested toolchain types
+            // (SubruleContext.requestedToolchains, StarlarkSubrule.java:342-350).
+            let requested = self
+                .toolchains
+                .iter()
+                .map(|(text, _)| crate::toolchains::parse_label(text))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| starlark::Error::new_other(anyhow!(error)))?;
+            let actions = crate::analysis_runtime::alloc_subrule_actions(
                 eval.heap(),
                 handle.clone(),
                 crate::analysis_ctx::subrule_context_repr(name, &label_text),
+                requested.clone(),
             );
             let fragments = crate::subrule_fragments::alloc_collection(
                 eval.heap(),
@@ -264,7 +273,22 @@ mod values {
                 handle.clone(),
                 context.subrule.cpp,
             );
-            let toolchains = context.subrule.toolchains.clone();
+            let toolchains = match &context.subrule.toolchains {
+                SubruleToolchains::AutoExecGroups(data) => SubruleToolchains::AutoExecGroups(
+                    std::sync::Arc::new(crate::toolchain_info::ToolchainContextData {
+                        target_description: data.target_description.clone(),
+                        requested: data
+                            .requested
+                            .iter()
+                            .filter(|(label, _)| requested.contains(label))
+                            .cloned()
+                            .collect(),
+                        toolchains: data.toolchains.clone(),
+                        repositories: data.repositories.clone(),
+                    }),
+                ),
+                other => other.clone(),
+            };
             let ctx = crate::analysis_ctx::alloc_subrule(
                 eval.heap(),
                 name,
@@ -304,9 +328,10 @@ pub(crate) enum SubruleToolchains {
     /// packages/RuleClass.java:178-202; --incompatible_auto_exec_groups is
     /// false, analysis/config/CoreOptions.java:419-432).
     NoAutoExecGroups,
-    /// `_use_auto_exec_groups = True`; crate::engine rejects such rules
-    /// before analysis, so this is never observed.
-    AutoExecGroups,
+    /// RuleContext.useAutoExecGroups: the rule's `ctx.toolchains` data
+    /// (the automatic groups' requested types, crate::engine), narrowed to
+    /// the subrule's own types (getAutomaticExecGroupLabels, :399-403).
+    AutoExecGroups(std::sync::Arc<crate::toolchain_info::ToolchainContextData>),
 }
 
 /// Subrule inputs of one rule analysis, owned by the analysis Context.
@@ -322,19 +347,17 @@ pub(crate) struct RuleEnvironment {
 
 impl RuleEnvironment {
     pub(crate) fn new(
-        toolchain_context: bool,
+        toolchain_context: Option<std::sync::Arc<crate::toolchain_info::ToolchainContextData>>,
         auto_exec_groups: bool,
         cpp: crate::custom_rule::CppConfigurationView,
     ) -> Self {
         Self {
             lifted: RefCell::new(None),
             cpp,
-            toolchains: if !toolchain_context {
-                SubruleToolchains::NotValid
-            } else if auto_exec_groups {
-                SubruleToolchains::AutoExecGroups
-            } else {
-                SubruleToolchains::NoAutoExecGroups
+            toolchains: match toolchain_context {
+                None => SubruleToolchains::NotValid,
+                Some(data) if auto_exec_groups => SubruleToolchains::AutoExecGroups(data),
+                Some(_) => SubruleToolchains::NoAutoExecGroups,
             },
         }
     }
@@ -1316,6 +1339,7 @@ r = rule(implementation=impl, subrules=[S])
             scope: ScopeState::new("//:target".into(), direct_ids([allowed.value()]).unwrap()),
             subrule: Default::default(),
             runfiles: Default::default(),
+            exec_groups: Default::default(),
         };
         Module::with_temp_heap(|module| {
             let heap = module.heap();
@@ -1462,6 +1486,7 @@ S = subrule(implementation=callback)
             scope: ScopeState::new("//:target".into(), direct_ids([owned.value()]).unwrap()),
             subrule: Default::default(),
             runfiles: Default::default(),
+            exec_groups: Default::default(),
         };
         Module::with_temp_heap(|module| {
             let s = module.heap().access_owned_frozen_value(&owned);

@@ -85,6 +85,12 @@ Implemented:
   `config_feature_flag` and `config_setting(flag_values)` over feature flags
   as rules_python 1.x uses them; feature-flag transitions fail explicitly
   (docs/TEST_FLAGS.md).
+- Exec groups: `rule(exec_groups)` with per-group toolchain resolution,
+  `ctx.exec_groups`, automatic exec groups (`_use_auto_exec_groups`,
+  `--incompatible_auto_exec_groups`), `ctx.actions.run`/`run_shell`
+  `exec_group`/`toolchain`, per-group `exec_properties` and
+  `exec_group_compatible_with`, `config.exec(exec_group = ...)` edges, on the
+  host platform as the only execution platform (docs/EXEC_GROUPS.md).
 - `package(...)` and `REPO.bazel` `repo(...)` arguments, including late
   default visibility, `licenses()`, and `exports_files`.
   Exports default to public regardless of package defaults. Implicit files inherit

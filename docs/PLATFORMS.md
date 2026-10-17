@@ -4,7 +4,7 @@ Native analysis of `constraint_setting`, `constraint_value` and `platform`,
 the build's target platform, `config_setting(constraint_values = ...)` and
 `constraint_value` targets used directly as `select()` keys. Toolchain
 resolution against these platforms is N17 (docs/TOOLCHAINS.md); execution
-platform registrations and exec groups stay explicit failures.
+platform registrations stay explicit failures (exec groups: docs/EXEC_GROUPS.md).
 
 Pinned source: `/tmp/opencode/bazel-9.3-reference` (e89755b, Release 9.3.0).
 Paths are relative to `src/main/java/com/google/devtools/build/lib/`. Code:
@@ -320,7 +320,7 @@ and referenced by '//:cv_missing'`) or select() key error.
   rule: `register_execution_platforms("//:p") is not implemented in the native
   profile: execution platform resolution (N17)`; `--extra_execution_platforms`
   is an unsupported option.
-* Exec groups (N18d); the exec transition is modelled (N18b,
+* Exec groups are N35 (docs/EXEC_GROUPS.md); the exec transition is modelled (N18b,
   docs/CONFIGURATION.md: an exec configuration's target platform is the
   execution platform, the end of the host platform's alias chain); platform
   `flags` as the target

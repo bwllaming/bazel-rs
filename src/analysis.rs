@@ -423,6 +423,7 @@ fn make_ctx<'v>(
             None,
             invocation.target_platform.clone(),
             invocation.toolchains.clone(),
+            invocation.exec_groups.clone(),
             surface,
         ))
     }
@@ -1303,13 +1304,11 @@ fn analyze_inner(
             crate::subrule::direct_ids(invocation.subrules.iter().map(|value| value.value()))?,
         ),
         subrule: crate::subrule::RuleEnvironment::new(
-            invocation.toolchains.is_some(),
-            matches!(
-                invocation.attrs.get("_use_auto_exec_groups"),
-                Some(AttrValue::Bool(true))
-            ),
+            invocation.toolchains.clone(),
+            invocation.use_auto_exec_groups,
             invocation.cpp,
         ),
+        exec_groups: invocation.action_exec_groups.clone(),
         runfiles: crate::runfiles::ContextRunfiles {
             default_executable,
             manifests: dependencies
@@ -2132,6 +2131,7 @@ r = rule(implementation=impl, attrs={
             scope: crate::analysis_runtime::ScopeState::new("//pkg:rule".into(), BTreeSet::new()),
             subrule: Default::default(),
             runfiles: Default::default(),
+            exec_groups: Default::default(),
         }
     }
 

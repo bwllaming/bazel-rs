@@ -202,6 +202,36 @@ fn caller_bzl(text: &str, location: Location<'_>) -> anyhow::Result<Label> {
     })
 }
 
+/// LabelConverter.forBzlEvaluatingThread(thread).convert(text)
+/// (cmdline/LabelConverter.java:41-44) for a label string an analysis-time
+/// builtin receives (`ctx.actions.run(toolchain = "...")`): parsed with the
+/// innermost calling `.bzl`'s repository mapping and package; a syntax
+/// error is the LabelSyntaxException's message
+/// (StarlarkActionFactory.determineExecGroup, :861-871), an apparent
+/// repository the caller does not see stays unresolvable.
+pub(crate) fn parse_bzl_label(
+    repositories: &RepositorySet,
+    text: &str,
+    location: Location<'_>,
+) -> anyhow::Result<Label> {
+    crate::bazel_label::Parts::parse(text).map_err(|error| anyhow!("{error}"))?;
+    let (repository, package) = if text.starts_with("@@") {
+        (String::new(), String::new())
+    } else {
+        let caller = caller_bzl(text, location)?;
+        (caller.repository, caller.package)
+    };
+    match repositories.parse(text, &repository, &package) {
+        Ok(label) => Ok(label),
+        Err(error) if error.starts_with("unknown apparent repository") => {
+            crate::toolchains::deferred_label_text(text, &repository)
+                .ok_or_else(|| anyhow!("{error}"))
+                .and_then(|text| crate::toolchains::parse_label(&text).map_err(anyhow::Error::msg))
+        }
+        Err(error) => Err(anyhow!("{error}")),
+    }
+}
+
 impl fmt::Debug for ToolchainContextData {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ToolchainContextData")

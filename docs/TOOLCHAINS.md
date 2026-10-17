@@ -6,8 +6,8 @@ toolchain resolution of every rule that declares `rule(toolchains = ...)`
 against the target platform and the host execution platform, and the
 Starlark side: `platform_common.ToolchainInfo(...)`, `dep[ToolchainInfo]` and
 `ctx.toolchains`. The execution platform is always the host platform:
-registered execution platforms and exec groups stay explicit failures
-(below). Exec configurations (N18b, docs/CONFIGURATION.md "Exec
+registered execution platforms stay explicit failures (below); exec groups
+resolve per group against it (N35, docs/EXEC_GROUPS.md). Exec configurations (N18b, docs/CONFIGURATION.md "Exec
 transition") resolve toolchains like any configuration: their target
 platform is the parent's execution platform, `--extra_toolchains` propagates
 into them (PlatformOptions, `builtin_exec_platforms.bzl:411-419`), and their
@@ -264,18 +264,15 @@ resolves never silently becomes `None`.
 * Registered execution platforms (`register_execution_platforms`,
   `--extra_execution_platforms`): the host platform is the only execution
   platform; `required_settings` of platforms.
-* Declared exec groups (`rule(exec_groups = ...)`; the implicit `test` exec
-  group of Starlark test rules resolves, docs/TEST_FLAGS.md), automatic exec groups (a
-  `_use_auto_exec_groups` attribute that is True; `--incompatible_auto_exec_groups`
-  defaults to false, `analysis/config/CoreOptions.java:419-432`,
-  `packages/RuleClass.java:179-203`), `exec_group_compatible_with`, named
-  exec-group transitions (`config.exec("G")`, N18d).
+* Declared and automatic exec groups, `exec_group_compatible_with`,
+  `ctx.exec_groups` and `config.exec(exec_group = NAME)` are N35
+  (docs/EXEC_GROUPS.md); only exec groups of aspects remain unsupported.
 * `genrule(toolchains = ...)` and the Starlark `toolchains` attribute (Make
-  variables), `genrule(exec_compatible_with = ...)`, toolchains of aspects,
-  and a subrule's `ctx.toolchains` (it needs automatic exec groups; without
-  them it is Bazel's `subrules using toolchains must enable automatic
-  exec-groups` error). A subrule's toolchain types are requested by the
-  consuming rule (docs/SUBRULES.md).
+  variables), `genrule(exec_compatible_with = ...)` and toolchains of
+  aspects. A subrule's `ctx.toolchains` needs automatic exec groups (without
+  them Bazel's `subrules using toolchains must enable automatic exec-groups`
+  error; with them docs/EXEC_GROUPS.md). A subrule's toolchain types are
+  requested by the consuming rule (docs/SUBRULES.md).
 * Negative registration patterns (`--extra_toolchains=-//x:y`), `:*` and
   `:all-targets` registrations (a Bazel crash, above), and
   `--toolchain_resolution_debug` (an unsupported option).

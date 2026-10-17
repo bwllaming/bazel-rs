@@ -303,6 +303,9 @@ pub struct InvocationDeclaration {
     /// `rule(exec_compatible_with = ...)` canonical labels
     /// (RuleClass.getExecutionPlatformConstraints).
     pub exec_compatible_with: Vec<String>,
+    /// `rule(exec_groups = ...)` (RuleClass.getDeclaredExecGroups), in
+    /// declaration order (docs/EXEC_GROUPS.md).
+    pub exec_groups: Vec<crate::rule_declarations::DeclaredExecGroup>,
     /// The `.bzl` that called rule() (`ctx.toolchains` string keys).
     pub definition_label: String,
     /// RuleClass.getRuleDefinitionEnvironmentLabel: the `.bzl` being
@@ -413,6 +416,16 @@ pub struct CustomInvocation {
     /// The resolved toolchain context (`ctx.toolchains`), set by
     /// crate::engine; `None` for rules without toolchain resolution.
     pub toolchains: Option<std::sync::Arc<crate::toolchain_info::ToolchainContextData>>,
+    /// The ToolchainCollection behind `ctx.exec_groups`, set by crate::engine;
+    /// `None` for rules without toolchain resolution.
+    #[allow(private_interfaces)]
+    pub exec_groups: Option<std::sync::Arc<crate::exec_groups::ExecGroupsData>>,
+    /// RuleContext.useAutoExecGroups, set by crate::engine.
+    pub use_auto_exec_groups: bool,
+    /// The exec groups actions may choose (crate::exec_groups), set by
+    /// crate::engine.
+    #[allow(private_interfaces)]
+    pub action_exec_groups: crate::exec_groups::ActionExecGroups,
     /// The configuration's C++ options for `subrule_ctx.fragments.cpp`, set by
     /// crate::engine before analysis.
     pub cpp: CppConfigurationView,
@@ -1560,6 +1573,7 @@ mod values {
                     toolchain_types: self.declaration.toolchains.clone(),
                     fragments: self.declaration.fragments.clone(),
                     exec_compatible_with: self.declaration.exec_compatible_with.clone(),
+                    exec_groups: self.declaration.exec_groups.clone(),
                     definition_label: self.declaration.definition_label.clone(),
                     definition_environment_label: self
                         .declaration
@@ -1609,7 +1623,8 @@ pub(crate) struct RuleDeclaration {
     pub fragments: Vec<String>,
     pub host_fragments: Vec<String>,
     pub toolchains: Vec<(String, bool)>,
-    pub exec_groups: Vec<String>,
+    /// `rule(exec_groups = ...)` in declaration order (docs/EXEC_GROUPS.md).
+    pub exec_groups: Vec<crate::rule_declarations::DeclaredExecGroup>,
     pub exec_compatible_with: Vec<String>,
     pub cfg: crate::rule_declarations::Cfg,
     pub provides: Vec<ProviderRequirement>,
@@ -1642,7 +1657,7 @@ impl RuleDeclaration {
     /// (rule transition, toolchain/execution platform resolution, other).
     fn phased_gaps(&self) -> (Vec<String>, Vec<String>, Vec<String>) {
         let mut transition = Vec::new();
-        let mut toolchain = Vec::new();
+        let toolchain = Vec::new();
         let mut features = Vec::new();
         if self.analysis_test {
             features.push("rule(analysis_test=True)".to_owned());
@@ -1660,16 +1675,11 @@ impl RuleDeclaration {
         if self.dependency_resolution_rule {
             features.push("rule(dependency_resolution_rule=True)".to_owned());
         }
-        // rule(toolchains=...) and rule(exec_compatible_with=...) are
-        // resolved natively (crate::toolchains, docs/TOOLCHAINS.md).
-        if !self.exec_groups.is_empty() {
-            toolchain.push(format!(
-                "rule(exec_groups=[{}]) (execution platform resolution)",
-                self.exec_groups.join(", ")
-            ));
-        }
-        // A Starlark rule transition is modelled (crate::starlark_transitions);
-        // config.none() is not.
+        // rule(toolchains=...), rule(exec_compatible_with=...) and
+        // rule(exec_groups=...) are resolved natively (crate::toolchains,
+        // docs/TOOLCHAINS.md, docs/EXEC_GROUPS.md). A Starlark rule
+        // transition is modelled (crate::starlark_transitions); config.none()
+        // is not.
         if !self.cfg.is_target()
             && !matches!(self.cfg, crate::rule_declarations::Cfg::Starlark { .. })
         {
@@ -1887,9 +1897,9 @@ fn builtin_gaps(builtin: &crate::native_rules::NativeTarget) -> Vec<String> {
         let reason = match key.as_str() {
             "target_compatible_with" => "incompatible target skipping (constraint analysis)",
             "compatible_with" | "restricted_to" => "constraint environments",
-            // `exec_compatible_with` filters the execution platforms of the
-            // native toolchain resolution (crate::engine, docs/TOOLCHAINS.md).
-            "exec_group_compatible_with" => "execution platform resolution",
+            // `exec_compatible_with` and `exec_group_compatible_with` filter
+            // the execution platforms of the native toolchain resolution
+            // (crate::engine, docs/TOOLCHAINS.md, docs/EXEC_GROUPS.md).
             "toolchains" => "TemplateVariableInfo Make variables",
             "aspect_hints" => "aspect hints",
             "transitive_configs" => "configuration trimming",
@@ -3742,7 +3752,7 @@ fn define_rule<'v>(
     let host_fragments =
         crate::rule_declarations::cast_strings(args.host_fragments, "host_fragments")?;
     let toolchains = crate::rule_declarations::toolchains(eval, args.toolchains, eval.heap())?;
-    let exec_groups = crate::rule_declarations::exec_groups(args.exec_groups)?;
+    let exec_groups = crate::rule_declarations::declared_exec_groups(args.exec_groups)?;
     if build_setting.is_some() && !cfg.is_none() {
         bail!("Build setting rules cannot use the `cfg` param to apply transitions to themselves.");
     }
@@ -5124,14 +5134,13 @@ r(name='z')",
         );
         assert!(!custom.attrs.contains_key("target_compatible_with"));
         let gaps = value_gaps(custom).join("; ");
-        for expected in [
-            "attribute 'transitive_configs' = [\"//:t\"] (configuration trimming)",
-            "attribute 'exec_group_compatible_with' = ",
-        ] {
+        for expected in ["attribute 'transitive_configs' = [\"//:t\"] (configuration trimming)"] {
             assert!(gaps.contains(expected), "{expected}: {gaps}");
         }
         // package_metadata edges are analyzed (N28c, crate::engine).
         assert!(!gaps.contains("package_metadata"), "{gaps}");
+        // exec_group_compatible_with is resolved natively (docs/EXEC_GROUPS.md).
+        assert!(!gaps.contains("exec_group_compatible_with"), "{gaps}");
         let y = rule(":y").custom.as_ref().unwrap();
         assert_eq!(y.declaration.builtin.deprecation.as_deref(), Some("own"));
         assert!(!y.declaration.builtin.testonly);

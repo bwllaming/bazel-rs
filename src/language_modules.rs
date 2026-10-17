@@ -1162,6 +1162,18 @@ pub(crate) fn java_class_simple_name(value: Value<'_>) -> String {
     name.to_owned()
 }
 
+/// The DeclaredExecGroup `name` of an `exec_group(...)` value.
+pub(crate) fn declared_exec_group(
+    name: String,
+    value: Value<'_>,
+) -> Option<crate::rule_declarations::DeclaredExecGroup> {
+    ExecGroup::from_value(value).map(|group| crate::rule_declarations::DeclaredExecGroup {
+        name,
+        toolchains: group.toolchains.clone(),
+        exec_compatible_with: group.exec_compatible_with.clone(),
+    })
+}
+
 /// StarlarkRuleClassFunctions.execGroup / parseToolchainTypes: duplicate
 /// types keep the first position and the strictest (mandatory) requirement.
 fn exec_group<'v>(

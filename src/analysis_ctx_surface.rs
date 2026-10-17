@@ -84,12 +84,9 @@ pub(crate) fn surface_properties(builder: &mut MethodsBuilder) {
         }
         Ok(false)
     }
-    /// StarlarkRuleContext.execGroups (:906-910).
-    #[starlark(attribute)]
-    fn exec_groups<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
-        let rule = current_surface(this)?;
-        Ok(surface::alloc_exec_groups(heap, &rule.target_description))
-    }
+    // ctx.exec_groups is N35's StarlarkExecGroupCollection over the
+    // ToolchainCollection (crate::analysis_ctx rule_properties,
+    // crate::exec_groups).
     /// StarlarkRuleContext.expandMakeVariables (:950-978).
     fn expand_make_variables<'v>(
         this: Value<'v>,

@@ -780,6 +780,38 @@ pub(crate) fn exec_groups(value: Value<'_>) -> anyhow::Result<Vec<String>> {
     Ok(names)
 }
 
+/// A `rule(exec_groups = ...)` entry (packages/DeclaredExecGroup.java:43-53,
+/// StarlarkRuleClassFunctions.execGroup, :2146-2160): canonical toolchain
+/// type labels with `mandatory` and canonical execution constraint labels,
+/// in declaration order.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Allocative)]
+pub struct DeclaredExecGroup {
+    pub name: String,
+    pub toolchains: Vec<(String, bool)>,
+    pub exec_compatible_with: Vec<String>,
+}
+
+/// [`exec_groups`] with each group's declaration, in the dict's order
+/// (RuleClass.Builder keeps a LinkedHashMap, packages/RuleClass.java:747).
+pub(crate) fn declared_exec_groups(value: Value<'_>) -> anyhow::Result<Vec<DeclaredExecGroup>> {
+    let names = exec_groups(value)?;
+    let Some(dict) = DictRef::from_value(value) else {
+        return Ok(Vec::new());
+    };
+    Ok(names
+        .into_iter()
+        .zip(dict.iter())
+        .map(|(name, (_, group))| {
+            crate::language_modules::declared_exec_group(name.clone(), group).unwrap_or(
+                DeclaredExecGroup {
+                    name,
+                    ..Default::default()
+                },
+            )
+        })
+        .collect())
+}
+
 /// Starlark `Identifier.isValid`.
 pub(crate) fn is_identifier(name: &str) -> bool {
     !name.is_empty()
@@ -2219,7 +2251,14 @@ mod tests {
             r.declaration.toolchains,
             [("//tc:a".to_owned(), true), ("//tc:b".to_owned(), true)]
         );
-        assert_eq!(r.declaration.exec_groups, ["g"]);
+        assert_eq!(
+            r.declaration
+                .exec_groups
+                .iter()
+                .map(|group| group.name.as_str())
+                .collect::<Vec<_>>(),
+            ["g"]
+        );
         assert_eq!(r.declaration.fragments, ["cpp"]);
         assert_eq!(r.declaration.host_fragments, ["java"]);
         assert_eq!(r.declaration.provides.len(), 2);

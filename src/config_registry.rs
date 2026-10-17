@@ -442,6 +442,8 @@ pub fn exec_transition(
         cpu: None,
         // Not in CoreOptions' propagate list (builtin_exec_platforms.bzl:231-275).
         use_target_platform_for_tests: defaults.use_target_platform_for_tests,
+        // In CoreOptions' propagate list (builtin_exec_platforms.bzl:246).
+        incompatible_auto_exec_groups: from.native.incompatible_auto_exec_groups,
     };
     let starlark = from
         .starlark
@@ -827,6 +829,7 @@ mod tests {
                 "--platforms=//p:t",
                 "--host_platform=//p:h",
                 "--extra_toolchains=//tc:x",
+                "--incompatible_auto_exec_groups",
             ])
             .native,
             BTreeMap::from([
@@ -849,6 +852,8 @@ mod tests {
         assert_eq!(native.host_platform, label("//p:h"));
         assert_eq!(native.extra_toolchains, ["//tc:x"]);
         assert_eq!(native.platform_suffix, Some("exec"));
+        // In CoreOptions' propagate list (builtin_exec_platforms.bzl:246).
+        assert!(native.incompatible_auto_exec_groups);
         assert_eq!(
             exec.starlark,
             BTreeMap::from([(label("//f:universal"), SettingValue::Bool(true))])
@@ -859,6 +864,7 @@ mod tests {
         // Defaults: --host_compilation_mode is `opt`.
         let default = exec_transition(&Configuration::default(), label("//p:exec"), &none);
         assert_eq!(default.native.compilation_mode, "opt");
+        assert!(!default.native.incompatible_auto_exec_groups);
         assert_eq!(mnemonic(&default, &default), Ok("exec-opt-exec".to_owned()));
     }
 

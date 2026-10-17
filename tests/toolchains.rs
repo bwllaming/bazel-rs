@@ -872,11 +872,9 @@ auto = rule(implementation = _empty, toolchains = ["//tc:type"], attrs = {"_use_
         ws.rejected(&["//s:broken"])
             .contains("broken implementation"),
     );
-    // Automatic exec groups stay an explicit gap.
-    assert!(
-        ws.rejected(&["//s:auto"])
-            .contains("attribute '_use_auto_exec_groups' = True (automatic exec groups)")
-    );
+    // Automatic exec groups resolve natively (docs/EXEC_GROUPS.md).
+    let output = ws.run(&["build", "--host_platform=//p:linux", "//s:auto"]);
+    assert!(output.status.success(), "{}", errors(&output));
 }
 
 #[test]

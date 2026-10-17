@@ -80,12 +80,10 @@ Natively:
   target //tt:noinfo, but that target does not provide ToolchainInfo`.
   The type is optional, so no match (a target platform the host cannot
   satisfy) is not an error.
-* Its ToolchainInfo is not visible: `ctx.exec_groups` (N23c) is always the
-  empty collection natively, also for a test rule whose `test` group was
-  resolved (Bazel's collection has `test`; `"test" in ctx.exec_groups` is
-  False natively and indexing it fails with the unrecognized-exec-group text;
-  N35), declared exec groups and
-  `exec_group_compatible_with` fail explicitly (docs/TOOLCHAINS.md), and the
+* Its ToolchainInfo is visible through `ctx.exec_groups["test"].toolchains`
+  (N35, docs/EXEC_GROUPS.md: a declared `test` group replaces it,
+  `config.exec(exec_group = "test")` edges use it, it counts for automatic
+  exec groups' toolchain parameter); the
   test-runner implicit attributes (`$test_wrapper`, `$xml_writer`,
   `$test_runtime`, ..., whose exec transition targets this group) stay
   unanalyzed (N23g, docs/RUNFILES.md). The execution platform is the host
@@ -208,8 +206,8 @@ needed during action planning ...`).
   option) and `transitive_configs` values (common-attribute gap,
   docs/COMMON_RULE_ATTRIBUTES.md): Bazel's tagged trimming
   (`ConfigFeatureFlagTaggedTrimmingTransitionFactory.java`).
-* A non-empty `ctx.exec_groups` (the resolved `test` group; N35), declared
-  exec groups, the test-runner implicit attributes and the `test` command.
+* The test-runner implicit attributes and the `test` command (exec groups:
+  docs/EXEC_GROUPS.md).
 
 ## Tests
 

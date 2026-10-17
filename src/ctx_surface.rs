@@ -336,14 +336,6 @@ mod values {
         pub is_device: bool,
     }
 
-    /// StarlarkExecGroupCollection (analysis/starlark/StarlarkExecGroupCollection.java)
-    /// without exec groups: rules declaring `exec_groups` are not analyzed
-    /// natively (crate::custom_rule, toolchain gaps).
-    #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
-    pub struct ExecGroups {
-        pub target_description: String,
-    }
-
     /// `ctx.super` (StarlarkRuleContext.callParent, StarlarkRuleContext.java:615-665).
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
     pub struct SuperMethod;
@@ -451,7 +443,6 @@ starlark::starlark_simple_value!(Configuration);
 starlark::starlark_simple_value!(RuleFragments);
 starlark::starlark_simple_value!(FragmentMethod);
 starlark::starlark_simple_value!(ApplePlatform);
-starlark::starlark_simple_value!(ExecGroups);
 starlark::starlark_simple_value!(SuperMethod);
 
 impl fmt::Display for SuperMethod {
@@ -1473,50 +1464,6 @@ impl<'v> StarlarkValue<'v> for ApplePlatform {
     fn unknown_attribute_message(&self, name: &str) -> Option<String> {
         Some(no_field_message("apple_platform", name, &self.dir_attr()))
     }
-}
-
-// ---------------------------------------------------------------------------
-// ctx.exec_groups
-// ---------------------------------------------------------------------------
-
-impl fmt::Display for ExecGroups {
-    /// StarlarkExecGroupCollection.repr (StarlarkExecGroupCollection.java:131-136).
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("<ctx.exec_groups: >")
-    }
-}
-
-/// castGroupName (StarlarkExecGroupCollection.java:121-128).
-fn group_name<'v>(key: Value<'v>) -> starlark::Result<&'v str> {
-    key.unpack_str().ok_or_else(|| {
-        starlark::Error::new_other(anyhow!(
-            "exec groups only support indexing by exec group name, got {} of type {} instead",
-            key.to_repr(),
-            key.get_type()
-        ))
-    })
-}
-
-#[starlark_value(type = "ExecGroupCollection")]
-impl<'v> StarlarkValue<'v> for ExecGroups {
-    fn is_in(&self, other: Value<'v>) -> starlark::Result<bool> {
-        group_name(other)?;
-        Ok(false)
-    }
-
-    fn at(&self, index: Value<'v>, _heap: Heap<'v>) -> starlark::Result<Value<'v>> {
-        let group = group_name(index)?;
-        Err(starlark::Error::new_other(anyhow!(
-            "In {}, unrecognized exec group '{group}' requested. Available exec groups: []",
-            self.target_description
-        )))
-    }
-}
-
-pub(crate) fn alloc_exec_groups<'v>(heap: Heap<'v>, target_description: &str) -> Value<'v> {
-    heap.alloc(ExecGroups {
-        target_description: target_description.to_owned(),
-    })
 }
 
 // ---------------------------------------------------------------------------

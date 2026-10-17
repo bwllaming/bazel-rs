@@ -41,6 +41,11 @@ mod values {
         #[allocative(skip)]
         #[trace(static)]
         pub toolchains: Option<Arc<ToolchainContextData>>,
+        /// The ToolchainCollection behind `ctx.exec_groups`; `None` for
+        /// rules without toolchain resolution.
+        #[allocative(skip)]
+        #[trace(static)]
+        pub exec_groups: Option<Arc<crate::exec_groups::ExecGroupsData>>,
         /// The configuration and rule facts of the N23c members
         /// (crate::ctx_surface).
         #[allocative(skip)]
@@ -298,6 +303,22 @@ fn rule_properties(builder: &mut MethodsBuilder) {
             ctx.toolchains.clone(),
         ))
     }
+    /// StarlarkRuleContext.execGroups (analysis/starlark/StarlarkRuleContext.java:906-910):
+    /// a StarlarkExecGroupCollection over the ToolchainCollection. A rule
+    /// without toolchain resolution has none: Bazel 9.3 fails there with a
+    /// NullPointerException (AutoValue_StarlarkExecGroupCollection), so the
+    /// native profile fails explicitly.
+    #[starlark(attribute)]
+    fn exec_groups<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        let ctx = rule_ctx(this)?;
+        ctx.scope.check_current()?;
+        match &ctx.exec_groups {
+            Some(data) => Ok(crate::exec_groups::alloc_collection(heap, data.clone())),
+            None => bail!(
+                "ctx.exec_groups of a rule without toolchain resolution is not supported by the native profile (Bazel 9.3 has no toolchain collection there and fails with a NullPointerException)"
+            ),
+        }
+    }
     /// StarlarkRuleContext.targetPlatformHasConstraint
     /// (analysis/starlark/StarlarkRuleContext.java:902-904; RuleContext.java:1144-1150):
     /// whether the target platform's value for the setting is this value.
@@ -411,9 +432,10 @@ fn subrule_properties(builder: &mut MethodsBuilder) {
             SubruleToolchains::NoAutoExecGroups => bail!(
                 "subrules using toolchains must enable automatic exec-groups. For more info, see https://bazel.build/extending/auto-exec-groups#migration-aegs"
             ),
-            SubruleToolchains::AutoExecGroups => bail!(
-                "subrule toolchains with automatic exec groups are not implemented by the native profile"
-            ),
+            SubruleToolchains::AutoExecGroups(data) => Ok(crate::toolchain_info::alloc_context(
+                heap,
+                Some(data.clone()),
+            )),
         }
     }
 }
@@ -425,6 +447,7 @@ pub(crate) fn alloc_rule<'v>(
     value: Option<SettingValue>,
     platform: TargetPlatform,
     toolchains: Option<Arc<ToolchainContextData>>,
+    exec_groups: Option<Arc<crate::exec_groups::ExecGroupsData>>,
     surface: Arc<RuleSurface>,
 ) -> Value<'v> {
     let ctx = RuleCtx {
@@ -432,6 +455,7 @@ pub(crate) fn alloc_rule<'v>(
         scope,
         platform,
         toolchains,
+        exec_groups,
         surface,
     };
     match value {
@@ -528,6 +552,7 @@ mod tests {
                     setting.then(|| SettingValue::StringList(vec!["seed".into()])),
                     TargetPlatform::Absent,
                     None,
+                    None,
                     Default::default(),
                 );
                 module.set("ctx", ctx);
@@ -540,7 +565,13 @@ mod tests {
                     matches!(name, "aspect_ids" | "rule" | "info_file" | "version_file")
                         || (!setting && name == "build_setting_value")
                 };
-                for name in expected.iter().filter(|name| !failing(name)) {
+                // Without a toolchain collection ctx.exec_groups fails
+                // explicitly (crate::exec_groups, N35).
+                assert!(ctx.get_attr_error("exec_groups", heap).is_err());
+                for name in expected
+                    .iter()
+                    .filter(|name| !failing(name) && **name != "exec_groups")
+                {
                     ctx.get_attr_error(name, heap).unwrap();
                 }
                 let child = owner.enter("S".into(), BTreeSet::new()).unwrap();
@@ -593,6 +624,7 @@ mod tests {
                         owner.root(),
                         None,
                         TargetPlatform::Absent,
+                        None,
                         None,
                         Default::default(),
                     ),

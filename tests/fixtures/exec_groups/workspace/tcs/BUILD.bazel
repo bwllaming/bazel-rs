@@ -1,0 +1,2 @@
+toolchain(name = "t1_tc", toolchain = "//eg:t1_impl", toolchain_type = "//eg:t1")
+toolchain(name = "noinfo_tc", toolchain = "//eg:noinfo_impl", toolchain_type = "//eg:tnoinfo")

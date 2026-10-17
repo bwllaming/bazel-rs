@@ -197,7 +197,7 @@ target's configuration (below).
 
 Increment N18a makes the configuration of every analyzed target explicit,
 without any visible behavior change; exec transitions (N18b), Starlark 1:1
-transitions (N18c) and split transitions/exec groups (N18d) build on it.
+transitions (N18c) and split transitions (N18d) build on it; exec groups are N35 (docs/EXEC_GROUPS.md).
 Code: `src/config_registry.rs`, `src/engine.rs`, `src/analysis.rs`,
 `src/analysis_runtime.rs`, `src/label.rs`.
 
@@ -281,8 +281,9 @@ traceback format),
 `cfg = config.exec()` (the default exec group), and genrule `tools`
 (`rules/genrule/GenRuleBaseRule.java:89-92`). Only resolved values form
 edges: an unselected or empty exec attribute needs nothing.
-`config.exec("G")` names an exec group that cannot exist natively (rule
-`exec_groups` fail explicitly first, N18d): a rule that uses toolchain
+`config.exec("G")` uses the execution platform of the rule's exec group `G`
+(declared, the default `test` group or automatic; N35, docs/EXEC_GROUPS.md);
+for an unknown group a rule that uses toolchain
 resolution reports Bazel's dependency error `LOC: Attr 'A' declares a
 transition for non-existent exec group 'G'`
 (`analysis/DependencyResolutionHelpers.java:243-253`,
@@ -752,9 +753,10 @@ confirmed by the paired capture (`D10/gap_order`, `T10`):
    (`ConfigConditions.java:64-83`, docs/PLATFORMS.md); a
    `config_setting(constraint_values = ...)` resolves the target platform
    before its own conditions.
-3. Rule-level execution platform gaps (`exec_groups`, automatic exec
-   groups), then toolchain resolution (docs/TOOLCHAINS.md) — Bazel resolves
-   toolchains after the conditions and before dependency resolution.
+3. Toolchain resolution (docs/TOOLCHAINS.md) of the default context and
+   every exec group (docs/EXEC_GROUPS.md; their `exec_group_compatible_with`
+   is checked before the target platform) — Bazel resolves toolchains after
+   the conditions and before dependency resolution.
 4. Native classes without native analysis (everything but `filegroup`,
    `genrule`, `config_setting`, `alias`, `label_flag`, `label_setting`,
    `constraint_setting`, `constraint_value`, `platform`) and
@@ -1188,8 +1190,7 @@ documented divergences:
   `analysis_test_transition`, `transition.and_then`, `--flag_alias`, Starlark
   transitions on native options outside the modelled ones (writing
   `copt` or any other unmodelled option; `--cpu` and `--copt` on the command
-  line; `select()` on `cpu`), exec groups
-  (`config.exec("G")` names, N18d),
+  line; `select()` on `cpu`),
   `--flag_alias`,
   `--debug_select_always_succeed`, `--incompatible_disable_select_on`,
   platform mappings, every other build option, `cquery`/`config` commands.

@@ -1,0 +1,1564 @@
+{
+ "schema": "n35-exec-groups-reference-receipt/v1",
+ "purpose": "Paired genuine Bazel 9.3.0 vs native bazel-rs capture of N35 (docs/EXEC_GROUPS.md): rule(exec_groups) with exec_group(toolchains, exec_compatible_with), per-group toolchain resolution, ctx.exec_groups, automatic exec groups (_use_auto_exec_groups and --incompatible_auto_exec_groups), actions.run/run_shell exec_group and toolchain, exec_properties and exec_group_compatible_with per group, config.exec(exec_group) edges, subrule toolchains under automatic exec groups and the interaction with the default test exec group. Workspaces use tests/fixtures/test_flags/stubs (N30). Evidence only; not an input of any test.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private> --output_base=<private> --host_jvm_args=-Xmx512m",
+  "flags": "--registry=file://<private copy of tests/fixtures/builtin_modules/registry> --incompatible_autoload_externally= --lockfile_mode=off --repository_cache=<private> --distdir=<seeded from verified local CAS>",
+  "env": "env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8, private HOME/TMPDIR, umask 022"
+ },
+ "native": {
+  "binary": "target/release/bazel-rs",
+  "sha256": "54fbe9c01d6be524e7e35722883336141b3ad4a6e38edefc67edda5ba04fb878",
+  "flags": "--experimental-builtin-modules --registry=file://<same registry copy> (explicit-module profile where noted)"
+ },
+ "worktree": {
+  "head": "2aab8fcd9f1d4f6b026981b23f5bea418423412d",
+  "src_diff_plus_untracked_sha256": "05716e1c7cd540d002dda8cc8ec476f703128bd5d0b6650bf11578fa4cf6e544",
+  "untracked_src": [
+   "src/exec_groups.rs"
+  ]
+ },
+ "script_sha256": "7bcaa0e1a5f9ddd9c3a55070862b210b0feac140f53c22d6be70b629b2450ae2",
+ "stubs_tree_sha256": "30907e8d162d5ebe72823902dca51fc69d6b711c8d1bbcb2a642b387846f85c1",
+ "distdir_seeded_count": 18,
+ "scratch_removed": true,
+ "counts": {
+  "EXACT": 48,
+  "EXACT_MESSAGE": 27,
+  "EXPECTED_NATIVE_UNSUPPORTED": 1
+ },
+ "rows": [
+  {
+   "row": "A1/ctx_exec_groups",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "A2/unknown_group",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g_unknown"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "In groups rule //eg:g_unknown, unrecognized exec group 'zzz' requested. Available exec groups: [empty, link]"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []",
+    "EG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>",
+    "EG3 t1_impl True False None",
+    "EG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]"
+   ],
+   "native_stderr": "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []\nEG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>\nEG3 t1_impl True False None\nEG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]\nbazel-rs: analysis of //eg:g_unknown: Traceback (most recent call last):\n  File <builtin>, in <module>\nerror: In groups rule //eg:g_unknown, unrecognized exec group 'zzz' requested. Available exec groups: [empty, link]\n  --> //eg:defs.bzl:95:9\n   |\n95 |         egs[\"zzz\"]\n   |         ^^^^^^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "A3/unknown_group_suggestion",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g_lnk"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "In groups rule //eg:g_lnk, unrecognized exec group 'lnk' requested. Available exec groups: [empty, link]"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []",
+    "EG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>",
+    "EG3 t1_impl True False None",
+    "EG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]"
+   ],
+   "native_stderr": "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []\nEG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>\nEG3 t1_impl True False None\nEG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]\nbazel-rs: analysis of //eg:g_lnk: Traceback (most recent call last):\n  File <builtin>, in <module>\nerror: In groups rule //eg:g_lnk, unrecognized exec group 'lnk' requested. Available exec groups: [empty, link]\n  --> //eg:defs.bzl:97:9\n   |\n97 |         egs[\"lnk\"]\n   |         ^^^^^^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "A4/int_key",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g_int"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "exec groups only support indexing by exec group name, got 1 of type int instead"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []",
+    "EG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>",
+    "EG3 t1_impl True False None",
+    "EG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]"
+   ],
+   "native_stderr": "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []\nEG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>\nEG3 t1_impl True False None\nEG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]\nbazel-rs: analysis of //eg:g_int: Traceback (most recent call last):\n  File <builtin>, in <module>\nerror: exec groups only support indexing by exec group name, got 1 of type int instead\n  --> //eg:defs.bzl:99:9\n   |\n99 |         egs[1]\n   |         ^^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "A5/int_in",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g_int_in"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "exec groups only support indexing by exec group name, got 1 of type int instead"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []",
+    "EG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>",
+    "EG3 t1_impl True False None",
+    "EG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]"
+   ],
+   "native_stderr": "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []\nEG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>\nEG3 t1_impl True False None\nEG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]\nbazel-rs: analysis of //eg:g_int_in: Traceback (most recent call last):\n  File <builtin>, in <module>\nerror: exec groups only support indexing by exec group name, got 1 of type int instead\n   --> //eg:defs.bzl:101:15\n    |\n101 |         print(1 in egs)\n    |               ^^^^^^^^\n    |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "A6/default_group_key",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g_default"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "In groups rule //eg:g_default, unrecognized exec group 'default-exec-group' requested. Available exec groups: [empty, link]"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []",
+    "EG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>",
+    "EG3 t1_impl True False None",
+    "EG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]"
+   ],
+   "native_stderr": "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []\nEG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>\nEG3 t1_impl True False None\nEG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]\nbazel-rs: analysis of //eg:g_default: Traceback (most recent call last):\n  File <builtin>, in <module>\nerror: In groups rule //eg:g_default, unrecognized exec group 'default-exec-group' requested. Available exec groups: [empty, link]\n   --> //eg:defs.bzl:103:9\n    |\n103 |         egs[\"default-exec-group\"]\n    |         ^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "A7/group_type_not_requested",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g_not_requested"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "In groups rule //eg:g_not_requested, toolchain type //eg:t2 was requested but only types [//eg:t1, //eg:t2opt] are configured"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []",
+    "EG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>",
+    "EG3 t1_impl True False None",
+    "EG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]"
+   ],
+   "native_stderr": "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []\nEG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>\nEG3 t1_impl True False None\nEG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]\nbazel-rs: analysis of //eg:g_not_requested: Traceback (most recent call last):\n  File <builtin>, in <module>\nerror: In groups rule //eg:g_not_requested, toolchain type //eg:t2 was requested but only types [//eg:t1, //eg:t2opt] are configured\n   --> //eg:defs.bzl:105:9\n    |\n105 |         link.toolchains[\"//eg:t2\"]\n    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "A8/default_context_has_no_group_types",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g_default_tc"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "In groups rule //eg:g_default_tc, toolchain type //eg:t1 was requested but only types [] are configured"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []",
+    "EG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>",
+    "EG3 t1_impl True False None",
+    "EG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]"
+   ],
+   "native_stderr": "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []\nEG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>\nEG3 t1_impl True False None\nEG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]\nbazel-rs: analysis of //eg:g_default_tc: Traceback (most recent call last):\n  File <builtin>, in <module>\nerror: In groups rule //eg:g_default_tc, toolchain type //eg:t1 was requested but only types [] are configured\n   --> //eg:defs.bzl:107:9\n    |\n107 |         ctx.toolchains[\"//eg:t1\"]\n    |         ^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "A9/strict_group_constraints",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:strict"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "A10/strict_group_constraints_host_cv",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--host_platform=//eg:hostcv",
+    "//eg:strict"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "A11/strict_group_toolchain",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:strict_tc"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "A12/group_missing_mandatory_type",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:missing"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "A13/group_impl_without_toolchaininfo",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:noinfo"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "A14/exec_compatible_with_default_only",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g_ecw"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "A15/foreign_target_platform",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--platforms=//eg:other",
+    "//eg:g"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "B1/actions_in_groups",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g_actions"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "B2/shell_nope",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g_shell_nope"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "Action declared for non-existent exec group 'nope'."
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []",
+    "EG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>",
+    "EG3 t1_impl True False None",
+    "EG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]"
+   ],
+   "native_stderr": "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []\nEG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>\nEG3 t1_impl True False None\nEG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]\nbazel-rs: analysis of //eg:g_shell_nope: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //eg:defs.bzl:108, in _groups\n      return [DefaultInfo(files = depset(_actions(ctx, ctx.attr.modes)))]\n  * //eg:defs.bzl:29, in _actions\n      ctx.actions.run_shell(outputs = [out], command = \"echo ok > \" + out.path, exe...\nerror: Action declared for non-existent exec group 'nope'.\n  --> //eg:defs.bzl:29:13\n   |\n29 |             ctx.actions.run_shell(outputs = [out], command = \"echo ok > \" + out.path, exec_group = \"nope\")\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "B3/shell_default_group",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g_shell_default"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "Invalid name for exec group 'default-exec-group'."
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []",
+    "EG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>",
+    "EG3 t1_impl True False None",
+    "EG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]"
+   ],
+   "native_stderr": "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []\nEG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>\nEG3 t1_impl True False None\nEG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]\nbazel-rs: analysis of //eg:g_shell_default: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //eg:defs.bzl:108, in _groups\n      return [DefaultInfo(files = depset(_actions(ctx, ctx.attr.modes)))]\n  * //eg:defs.bzl:31, in _actions\n      ctx.actions.run_shell(outputs = [out], command = \"echo ok > \" + out.path, exe...\nerror: Invalid name for exec group 'default-exec-group'.\n  --> //eg:defs.bzl:31:13\n   |\n31 |             ctx.actions.run_shell(outputs = [out], command = \"echo ok > \" + out.path, exec_group = \"default-exec-group\")\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "B4/shell_auto_name_without_aeg",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g_shell_auto_name"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "Action declared for non-existent exec group '//eg:t1'."
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []",
+    "EG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>",
+    "EG3 t1_impl True False None",
+    "EG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]"
+   ],
+   "native_stderr": "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []\nEG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>\nEG3 t1_impl True False None\nEG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]\nbazel-rs: analysis of //eg:g_shell_auto_name: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //eg:defs.bzl:108, in _groups\n      return [DefaultInfo(files = depset(_actions(ctx, ctx.attr.modes)))]\n  * //eg:defs.bzl:33, in _actions\n      ctx.actions.run_shell(outputs = [out], command = \"echo ok > \" + out.path, exe...\nerror: Action declared for non-existent exec group '//eg:t1'.\n  --> //eg:defs.bzl:33:13\n   |\n33 |             ctx.actions.run_shell(outputs = [out], command = \"echo ok > \" + out.path, exec_group = \"//eg:t1\")\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "B5/shell_exec_group_int",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g_shell_int"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "in call to run_shell(), parameter 'exec_group' got value of type 'int', want 'string or NoneType'"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []",
+    "EG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>",
+    "EG3 t1_impl True False None",
+    "EG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]"
+   ],
+   "native_stderr": "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []\nEG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>\nEG3 t1_impl True False None\nEG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]\nbazel-rs: analysis of //eg:g_shell_int: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //eg:defs.bzl:108, in _groups\n      return [DefaultInfo(files = depset(_actions(ctx, ctx.attr.modes)))]\n  * //eg:defs.bzl:35, in _actions\n      ctx.actions.run_shell(outputs = [out], command = \"echo ok > \" + out.path, exe...\nerror: in call to run_shell(), parameter 'exec_group' got value of type 'int', want 'string or NoneType'\n  --> //eg:defs.bzl:35:13\n   |\n35 |             ctx.actions.run_shell(outputs = [out], command = \"echo ok > \" + out.path, exec_group = 1)\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "B6/shell_test_group_non_test",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g_shell_test"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "Action declared for non-existent exec group 'test'."
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []",
+    "EG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>",
+    "EG3 t1_impl True False None",
+    "EG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]"
+   ],
+   "native_stderr": "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []\nEG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>\nEG3 t1_impl True False None\nEG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]\nbazel-rs: analysis of //eg:g_shell_test: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //eg:defs.bzl:108, in _groups\n      return [DefaultInfo(files = depset(_actions(ctx, ctx.attr.modes)))]\n  * //eg:defs.bzl:37, in _actions\n      ctx.actions.run_shell(outputs = [out], command = \"echo ok > \" + out.path, exe...\nerror: Action declared for non-existent exec group 'test'.\n  --> //eg:defs.bzl:37:13\n   |\n37 |             ctx.actions.run_shell(outputs = [out], command = \"echo ok > \" + out.path, exec_group = \"test\")\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "B7/run_toolchain_int",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g_run_toolchain_int"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "in call to run(), parameter 'toolchain' got value of type 'int', want 'Label, string, or NoneType'"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []",
+    "EG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>",
+    "EG3 t1_impl True False None",
+    "EG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]"
+   ],
+   "native_stderr": "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []\nEG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>\nEG3 t1_impl True False None\nEG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]\nbazel-rs: analysis of //eg:g_run_toolchain_int: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //eg:defs.bzl:108, in _groups\n      return [DefaultInfo(files = depset(_actions(ctx, ctx.attr.modes)))]\n  * //eg:defs.bzl:67, in _actions\n      ctx.actions.run(outputs = [out], executable = script, arguments = [out.path],...\nerror: in call to run(), parameter 'toolchain' got value of type 'int', want 'Label, string, or NoneType'\n  --> //eg:defs.bzl:67:13\n   |\n67 |             ctx.actions.run(outputs = [out], executable = script, arguments = [out.path], toolchain = 1)\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "B8/run_toolchain_syntax",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g_run_toolchain_syntax"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "invalid target name 'a:b': target names may not contain ':'"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []",
+    "EG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>",
+    "EG3 t1_impl True False None",
+    "EG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]"
+   ],
+   "native_stderr": "EG1 ExecGroupCollection <ctx.exec_groups: empty, link> True True False False []\nEG2 ExecGroupContext <exec_group_context> [\"toolchains\"] ToolchainContext <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt>\nEG3 t1_impl True False None\nEG4 <toolchain_context.resolved_labels: > <toolchain_context.resolved_labels: > [] [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]\nbazel-rs: analysis of //eg:g_run_toolchain_syntax: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //eg:defs.bzl:108, in _groups\n      return [DefaultInfo(files = depset(_actions(ctx, ctx.attr.modes)))]\n  * //eg:defs.bzl:69, in _actions\n      ctx.actions.run(outputs = [out], executable = script, arguments = [out.path],...\nerror: invalid target name 'a:b': target names may not contain ':'\n  --> //eg:defs.bzl:69:13\n   |\n69 |             ctx.actions.run(outputs = [out], executable = script, arguments = [out.path], toolchain = \"//eg:a:b\")\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "B9/shell_tools_without_aeg",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g_shell_tools",
+    "//eg:g_run"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "B10/exec_properties_groups",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g_props"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "B11/exec_properties_unknown_group",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g_props_bad"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "B12/exec_properties_unknown_groups",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g_props_bad_two"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "B13/exec_properties_platform",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--host_platform=//eg:hostprops",
+    "//eg:g_props"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "B14/exec_group_compatible_with_unsatisfied",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g_egcw"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "B15/exec_group_compatible_with_empty_group",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g_egcw_empty"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "B16/exec_group_compatible_with_unknown",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g_egcw_nope"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "B17/exec_group_compatible_with_label_without_aeg",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g_egcw_label"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "B18/exec_group_compatible_with_host_cv",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--host_platform=//eg:hostcv",
+    "//eg:g_egcw",
+    "//eg:g_egcw_empty"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "B19/config_exec_group_edges",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--platforms=//eg:other",
+    "//eg:g_tools"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "B20/config_exec_unknown_group",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g_nope_tool"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "C1/aeg_ctx",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:a"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "C2/aeg_not_requested",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:a_not_requested"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "In auto rule //eg:a_not_requested, toolchain type //eg:t3 was requested but only types [//eg:t1, //eg:t2opt] are configured"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "AUTO1 <ctx.exec_groups: //eg:t1, //eg:t2opt, link> <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt> t1_impl None True",
+    "AUTO2 t1_impl <toolchain_context.resolved_labels: //eg:t1> False [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]"
+   ],
+   "native_stderr": "AUTO1 <ctx.exec_groups: //eg:t1, //eg:t2opt, link> <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt> t1_impl None True\nAUTO2 t1_impl <toolchain_context.resolved_labels: //eg:t1> False [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]\nbazel-rs: analysis of //eg:a_not_requested: Traceback (most recent call last):\n  File <builtin>, in <module>\nerror: In auto rule //eg:a_not_requested, toolchain type //eg:t3 was requested but only types [//eg:t1, //eg:t2opt] are configured\n   --> //eg:defs.bzl:133:9\n    |\n133 |         ctx.toolchains[\"//eg:t3\"]\n    |         ^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "C3/aeg_actions_ok",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:a_shell",
+    "//eg:a_shell_tools_none",
+    "//eg:a_shell_tools_t1",
+    "//eg:a_shell_tools_link",
+    "//eg:a_run_none",
+    "//eg:a_run_t1",
+    "//eg:a_run_t1_label",
+    "//eg:a_run_t1_relative",
+    "//eg:a_run_link_t2opt",
+    "//eg:a_run_link",
+    "//eg:a_run_string"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "C4/aeg_shell_tools_unset",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:a_shell_tools"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "Couldn't identify if tools are from implicit dependencies or a toolchain. Please set the toolchain parameter. If you're not using a toolchain, set it to 'None'."
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "AUTO1 <ctx.exec_groups: //eg:t1, //eg:t2opt, link> <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt> t1_impl None True",
+    "AUTO2 t1_impl <toolchain_context.resolved_labels: //eg:t1> False [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]"
+   ],
+   "native_stderr": "AUTO1 <ctx.exec_groups: //eg:t1, //eg:t2opt, link> <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt> t1_impl None True\nAUTO2 t1_impl <toolchain_context.resolved_labels: //eg:t1> False [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]\nbazel-rs: analysis of //eg:a_shell_tools: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //eg:defs.bzl:134, in _auto\n      return [DefaultInfo(files = depset(_actions(ctx, ctx.attr.modes)))]\n  * //eg:defs.bzl:39, in _actions\n      ctx.actions.run_shell(outputs = [out], inputs = [src], tools = [src], command...\nerror: Couldn't identify if tools are from implicit dependencies or a toolchain. Please set the toolchain parameter. If you're not using a toolchain, set it to 'None'.\n  --> //eg:defs.bzl:39:13\n   |\n39 |             ctx.actions.run_shell(outputs = [out], inputs = [src], tools = [src], command = \"echo ok > \" + out.path)\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "C5/aeg_shell_tools_depset",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:a_shell_tools_depset"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "Couldn't identify if tools are from implicit dependencies or a toolchain. Please set the toolchain parameter. If you're not using a toolchain, set it to 'None'."
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "AUTO1 <ctx.exec_groups: //eg:t1, //eg:t2opt, link> <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt> t1_impl None True",
+    "AUTO2 t1_impl <toolchain_context.resolved_labels: //eg:t1> False [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]"
+   ],
+   "native_stderr": "AUTO1 <ctx.exec_groups: //eg:t1, //eg:t2opt, link> <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt> t1_impl None True\nAUTO2 t1_impl <toolchain_context.resolved_labels: //eg:t1> False [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]\nbazel-rs: analysis of //eg:a_shell_tools_depset: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //eg:defs.bzl:134, in _auto\n      return [DefaultInfo(files = depset(_actions(ctx, ctx.attr.modes)))]\n  * //eg:defs.bzl:41, in _actions\n      ctx.actions.run_shell(outputs = [out], inputs = [src], tools = depset([src]),...\nerror: Couldn't identify if tools are from implicit dependencies or a toolchain. Please set the toolchain parameter. If you're not using a toolchain, set it to 'None'.\n  --> //eg:defs.bzl:41:13\n   |\n41 |             ctx.actions.run_shell(outputs = [out], inputs = [src], tools = depset([src]), command = \"echo ok > \" + out.path)\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "C6/aeg_run_unset",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:a_run"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "Couldn't identify if tools are from implicit dependencies or a toolchain. Please set the toolchain parameter. If you're not using a toolchain, set it to 'None'."
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "AUTO1 <ctx.exec_groups: //eg:t1, //eg:t2opt, link> <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt> t1_impl None True",
+    "AUTO2 t1_impl <toolchain_context.resolved_labels: //eg:t1> False [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]"
+   ],
+   "native_stderr": "AUTO1 <ctx.exec_groups: //eg:t1, //eg:t2opt, link> <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt> t1_impl None True\nAUTO2 t1_impl <toolchain_context.resolved_labels: //eg:t1> False [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]\nbazel-rs: analysis of //eg:a_run: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //eg:defs.bzl:134, in _auto\n      return [DefaultInfo(files = depset(_actions(ctx, ctx.attr.modes)))]\n  * //eg:defs.bzl:49, in _actions\n      ctx.actions.run(outputs = [out], executable = script, arguments = [out.path])\nerror: Couldn't identify if tools are from implicit dependencies or a toolchain. Please set the toolchain parameter. If you're not using a toolchain, set it to 'None'.\n  --> //eg:defs.bzl:49:13\n   |\n49 |             ctx.actions.run(outputs = [out], executable = script, arguments = [out.path])\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "C7/aeg_run_unknown_toolchain",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:a_run_t3"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "Action declared for non-existent toolchain '//eg:t3'."
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "AUTO1 <ctx.exec_groups: //eg:t1, //eg:t2opt, link> <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt> t1_impl None True",
+    "AUTO2 t1_impl <toolchain_context.resolved_labels: //eg:t1> False [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]"
+   ],
+   "native_stderr": "AUTO1 <ctx.exec_groups: //eg:t1, //eg:t2opt, link> <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt> t1_impl None True\nAUTO2 t1_impl <toolchain_context.resolved_labels: //eg:t1> False [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]\nbazel-rs: analysis of //eg:a_run_t3: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //eg:defs.bzl:134, in _auto\n      return [DefaultInfo(files = depset(_actions(ctx, ctx.attr.modes)))]\n  * //eg:defs.bzl:59, in _actions\n      ctx.actions.run(outputs = [out], executable = script, arguments = [out.path],...\nerror: Action declared for non-existent toolchain '//eg:t3'.\n  --> //eg:defs.bzl:59:13\n   |\n59 |             ctx.actions.run(outputs = [out], executable = script, arguments = [out.path], toolchain = \"//eg:t3\")\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "C8/aeg_run_incompatible",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:a_run_link_t1"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "`toolchain` and `exec_group` parameters inside actions.{run, run_shell} are not compatible; use one of them or define `toolchain` which is compatible with the exec_group (already exists inside the `exec_group`)"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "AUTO1 <ctx.exec_groups: //eg:t1, //eg:t2opt, link> <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt> t1_impl None True",
+    "AUTO2 t1_impl <toolchain_context.resolved_labels: //eg:t1> False [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]"
+   ],
+   "native_stderr": "AUTO1 <ctx.exec_groups: //eg:t1, //eg:t2opt, link> <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt> t1_impl None True\nAUTO2 t1_impl <toolchain_context.resolved_labels: //eg:t1> False [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]\nbazel-rs: analysis of //eg:a_run_link_t1: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //eg:defs.bzl:134, in _auto\n      return [DefaultInfo(files = depset(_actions(ctx, ctx.attr.modes)))]\n  * //eg:defs.bzl:61, in _actions\n      ctx.actions.run(outputs = [out], executable = script, arguments = [out.path],...\nerror: `toolchain` and `exec_group` parameters inside actions.{run, run_shell} are not compatible; use one of them or define `toolchain` which is compatible with the exec_group (already exists inside the `exec_group`)\n  --> //eg:defs.bzl:61:13\n   |\n61 |             ctx.actions.run(outputs = [out], executable = script, arguments = [out.path], exec_group = \"link\", toolchain = \"//eg:t1\")\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "C9/aeg_exec_group_auto_name",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:a_shell_auto_name"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "Invalid name for exec group '//eg:t1'."
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "AUTO1 <ctx.exec_groups: //eg:t1, //eg:t2opt, link> <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt> t1_impl None True",
+    "AUTO2 t1_impl <toolchain_context.resolved_labels: //eg:t1> False [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]"
+   ],
+   "native_stderr": "AUTO1 <ctx.exec_groups: //eg:t1, //eg:t2opt, link> <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt> t1_impl None True\nAUTO2 t1_impl <toolchain_context.resolved_labels: //eg:t1> False [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]\nbazel-rs: analysis of //eg:a_shell_auto_name: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //eg:defs.bzl:134, in _auto\n      return [DefaultInfo(files = depset(_actions(ctx, ctx.attr.modes)))]\n  * //eg:defs.bzl:33, in _actions\n      ctx.actions.run_shell(outputs = [out], command = \"echo ok > \" + out.path, exe...\nerror: Invalid name for exec group '//eg:t1'.\n  --> //eg:defs.bzl:33:13\n   |\n33 |             ctx.actions.run_shell(outputs = [out], command = \"echo ok > \" + out.path, exec_group = \"//eg:t1\")\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "C10/aeg_egcw_unsatisfied",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:a_egcw"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "C11/aeg_egcw_relative",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:a_egcw_rel"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "C12/aeg_egcw_unknown_type",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:a_egcw_bad"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "C13/aeg_egcw_syntax",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:a_egcw_syntax"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "C14/aeg_egcw_declared_group",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:a_egcw_group"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "C15/aeg_exec_properties_label_group",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:a_props"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "C16/flag_off",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:f"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "C17/flag_on",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--incompatible_auto_exec_groups",
+    "//eg:f"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "C18/flag_on_run_unset",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--incompatible_auto_exec_groups",
+    "//eg:f_run"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "Couldn't identify if tools are from implicit dependencies or a toolchain. Please set the toolchain parameter. If you're not using a toolchain, set it to 'None'."
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "AUTO1 <ctx.exec_groups: //eg:t1, //eg:t2opt, link> <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt> t1_impl None True",
+    "AUTO2 t1_impl <toolchain_context.resolved_labels: //eg:t1> False [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]"
+   ],
+   "native_stderr": "AUTO1 <ctx.exec_groups: //eg:t1, //eg:t2opt, link> <toolchain_context.resolved_labels: //eg:t1, //eg:t2opt> t1_impl None True\nAUTO2 t1_impl <toolchain_context.resolved_labels: //eg:t1> False [Label(\"//eg:t1\"), Label(\"//eg:t2opt\")]\nbazel-rs: analysis of //eg:f_run: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //eg:defs.bzl:134, in _auto\n      return [DefaultInfo(files = depset(_actions(ctx, ctx.attr.modes)))]\n  * //eg:defs.bzl:49, in _actions\n      ctx.actions.run(outputs = [out], executable = script, arguments = [out.path])\nerror: Couldn't identify if tools are from implicit dependencies or a toolchain. Please set the toolchain parameter. If you're not using a toolchain, set it to 'None'.\n  --> //eg:defs.bzl:49:13\n   |\n49 |             ctx.actions.run(outputs = [out], executable = script, arguments = [out.path])\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "C19/attribute_opt_out_with_flag",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--incompatible_auto_exec_groups",
+    "//eg:o"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "C20/no_toolchains_run_unset",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:p_run"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "C21/no_toolchains_tools_unset",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:p_tools"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "C22/flag_value_parse",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--incompatible_auto_exec_groups=maybe",
+    "//eg:f"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 2,
+   "native_exit": 1,
+   "reference_errors": [
+    "While parsing option --incompatible_auto_exec_groups=maybe: 'maybe' is not a boolean"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [],
+   "native_stderr": "bazel-rs: While parsing option --incompatible_auto_exec_groups=maybe: 'maybe' is not a boolean\n",
+   "framing": {
+    "exit": [
+     2,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": false
+   }
+  },
+  {
+   "row": "C23/query_flag",
+   "argv": [
+    "query",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--incompatible_auto_exec_groups",
+    "//eg:f"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "C24/subrule_run",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:s_run"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "C25/subrule_exec_group",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:s_exec_group"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "'exec_group' may not be specified in subrules"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "RULE t1_impl",
+    "SUB <toolchain_context.resolved_labels: //eg:t1> t1_impl [Label(\"//eg:t1\")]"
+   ],
+   "native_stderr": "RULE t1_impl\nSUB <toolchain_context.resolved_labels: //eg:t1> t1_impl [Label(\"//eg:t1\")]\nbazel-rs: analysis of //eg:s_exec_group: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //eg:defs.bzl:175, in _withsub\n      return [DefaultInfo(files = depset([S(ctx.attr.mode)]))]\n  File <builtin>, in <subrule S>\n  File <builtin>, in None\n  * //eg:defs.bzl:164, in _sub\n      ctx.actions.run(outputs = [out], executable = script, arguments = [out.path],...\nerror: 'exec_group' may not be specified in subrules\n   --> //eg:defs.bzl:164:9\n    |\n164 |         ctx.actions.run(outputs = [out], executable = script, arguments = [out.path], exec_group = \"link\")\n    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "C26/subrule_toolchain",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:s_toolchain"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "'toolchain' may not be specified in subrules"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "RULE t1_impl",
+    "SUB <toolchain_context.resolved_labels: //eg:t1> t1_impl [Label(\"//eg:t1\")]"
+   ],
+   "native_stderr": "RULE t1_impl\nSUB <toolchain_context.resolved_labels: //eg:t1> t1_impl [Label(\"//eg:t1\")]\nbazel-rs: analysis of //eg:s_toolchain: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //eg:defs.bzl:175, in _withsub\n      return [DefaultInfo(files = depset([S(ctx.attr.mode)]))]\n  File <builtin>, in <subrule S>\n  File <builtin>, in None\n  * //eg:defs.bzl:166, in _sub\n      ctx.actions.run(outputs = [out], executable = script, arguments = [out.path],...\nerror: 'toolchain' may not be specified in subrules\n   --> //eg:defs.bzl:166:9\n    |\n166 |         ctx.actions.run(outputs = [out], executable = script, arguments = [out.path], toolchain = \"//eg:t1\")\n    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "C27/subrule_toolchain_none",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:s_toolchain_none"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "'toolchain' may not be specified in subrules"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "RULE t1_impl",
+    "SUB <toolchain_context.resolved_labels: //eg:t1> t1_impl [Label(\"//eg:t1\")]"
+   ],
+   "native_stderr": "RULE t1_impl\nSUB <toolchain_context.resolved_labels: //eg:t1> t1_impl [Label(\"//eg:t1\")]\nbazel-rs: analysis of //eg:s_toolchain_none: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //eg:defs.bzl:175, in _withsub\n      return [DefaultInfo(files = depset([S(ctx.attr.mode)]))]\n  File <builtin>, in <subrule S>\n  File <builtin>, in None\n  * //eg:defs.bzl:168, in _sub\n      ctx.actions.run(outputs = [out], executable = script, arguments = [out.path],...\nerror: 'toolchain' may not be specified in subrules\n   --> //eg:defs.bzl:168:9\n    |\n168 |         ctx.actions.run(outputs = [out], executable = script, arguments = [out.path], toolchain = None)\n    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "D1/test_ctx_exec_groups",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:eg_test"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "D2/declared_test_group_overrides",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:own_test"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "D3/config_exec_test_group",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--platforms=//eg:other",
+    "//eg:cov_test"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "D4/aeg_test_tools_unset",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:auto_test_tools"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "Couldn't identify if tools are from implicit dependencies or a toolchain. Please set the toolchain parameter. If you're not using a toolchain, set it to 'None'."
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "AUTOTEST <ctx.exec_groups: test>"
+   ],
+   "native_stderr": "AUTOTEST <ctx.exec_groups: test>\nbazel-rs: analysis of //eg:auto_test_tools: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //eg:defs.bzl:207, in _auto_test\n      _actions(ctx, ctx.attr.modes)\n  * //eg:defs.bzl:39, in _actions\n      ctx.actions.run_shell(outputs = [out], inputs = [src], tools = [src], command...\nerror: Couldn't identify if tools are from implicit dependencies or a toolchain. Please set the toolchain parameter. If you're not using a toolchain, set it to 'None'.\n  --> //eg:defs.bzl:39:13\n   |\n39 |             ctx.actions.run_shell(outputs = [out], inputs = [src], tools = [src], command = \"echo ok > \" + out.path)\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "D5/aeg_test_shell",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:auto_test_shell"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "D6/test_exec_properties",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:eg_test_props"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "D7/non_test_exec_properties_test_group",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:g_props_test"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "D8/test_exec_groups_explicit_profile",
+   "argv": [
+    "build",
+    "--host_platform=//eg:other",
+    "--platforms=//eg:other",
+    "//eg:eg_test"
+   ],
+   "native_profile": "explicit",
+   "verdict": "EXPECTED_NATIVE_UNSUPPORTED",
+   "reference_exit": 0,
+   "native_exit": 1,
+   "reference_errors": [],
+   "reference_warnings": [],
+   "reference_prints": [
+    "TEST1 <ctx.exec_groups: test> True <toolchain_context.resolved_labels: @@bazel_tools//tools/test:default_test_toolchain_type> struct() [Label(\"@@bazel_tools//tools/test:default_test_toolchain_type\")]"
+   ],
+   "native_stderr": "bazel-rs: analysis of //eg:eg_test: Traceback (most recent call last):\n  File <builtin>, in <module>\nerror: the toolchains of the default `test` exec group need the built-in @bazel_tools repository (--experimental-builtin-modules); without it the group is not resolved by the native profile (divergence D3, docs/TEST_FLAGS.md)\n   --> //eg:defs.bzl:186:11\n    |\n186 |     tcs = egs[\"test\"].toolchains\n    |           ^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n"
+  },
+  {
+   "row": "D9/declared_groups_explicit_profile",
+   "argv": [
+    "build",
+    "--host_platform=//eg:other",
+    "--platforms=//eg:other",
+    "//eg:g"
+   ],
+   "native_profile": "explicit",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "E1/rules_python_library_shape",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:py"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "E2/rules_python_test_shape",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--platforms=//eg:other",
+    "//eg:py_test"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "E3/rules_go_link_shape",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:go"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "E4/rules_cc_test_shape",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//eg:cc_test"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "E5/rules_python_shapes_flag",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--incompatible_auto_exec_groups",
+    "//eg:py",
+    "//eg:go"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  }
+ ]
+}

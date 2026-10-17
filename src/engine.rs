@@ -690,9 +690,16 @@ pub struct Engine {
     /// The resolved toolchain context of each toolchain-resolving rule of
     /// the build (UnloadedToolchainContext), read by the build loop.
     toolchain_contexts: BTreeMap<ConfiguredTargetKey, UnloadedToolchainContext>,
-    /// The resolved default `test` exec group of a Starlark test rule
-    /// (RuleClass.DEFAULT_TEST_RUNNER_EXEC_GROUP; docs/TEST_FLAGS.md).
-    test_toolchain_contexts: BTreeMap<ConfiguredTargetKey, UnloadedToolchainContext>,
+    /// The other exec groups of each toolchain-resolving rule's
+    /// ToolchainCollection (docs/EXEC_GROUPS.md; the default `test` group of
+    /// a Starlark test rule, docs/TEST_FLAGS.md).
+    exec_group_contexts: BTreeMap<ConfiguredTargetKey, crate::exec_groups::TargetExecGroups>,
+    /// The exec configuration of each named exec group with
+    /// `config.exec(exec_group = NAME)` dependency edges.
+    group_exec_configurations: BTreeMap<(ConfiguredTargetKey, String), ConfigId>,
+    /// The exec group, execution platform and exec properties of each
+    /// planned Starlark action (docs/EXEC_GROUPS.md).
+    action_executions: BTreeMap<String, crate::exec_groups::ActionExecution>,
     /// Phase-2 state of the current build (Self::plan_pending).
     action_planning: Option<ActionPlanning>,
     /// Targets analyzed as toolchain implementations: their own resolution
@@ -737,7 +744,9 @@ impl Engine {
             rule_delegations: BTreeMap::new(),
             requested_trimmed_root: None,
             toolchain_contexts: BTreeMap::new(),
-            test_toolchain_contexts: BTreeMap::new(),
+            exec_group_contexts: BTreeMap::new(),
+            group_exec_configurations: BTreeMap::new(),
+            action_executions: BTreeMap::new(),
             action_planning: None,
             toolchain_implementations: BTreeSet::new(),
             deferred_duplicates: BTreeMap::new(),
@@ -1426,6 +1435,10 @@ impl Engine {
             self.empty_configuration_rules.insert(key.clone());
         }
         let uses_toolchains = uses_toolchain_resolution(&rule) && !in_empty_configuration;
+        // The exec groups (ToolchainContextUtil.getUnloadedToolchainContextsInputs,
+        // RuleTransitionApplier): before the target platform.
+        let (use_auto_exec_groups, processed_groups) =
+            self.exec_group_inputs(&rule, config, !in_empty_configuration)?;
         let mut target_platform = None;
         if uses_toolchains && !self.default_target_platform(config) {
             target_platform = Some(self.target_platform(config, configured, plan)?);
@@ -1437,53 +1450,56 @@ impl Engine {
         if uses_toolchains {
             self.check_execution_platform_registrations()?;
         }
-        if let Some(custom) = &rule.custom {
-            // Exec groups and automatic exec groups (a `_use_auto_exec_groups`
-            // attribute that is True, packages/RuleClass.java:179-203; the
-            // --incompatible_auto_exec_groups default is false,
-            // analysis/config/CoreOptions.java:419-432) are not modelled.
-            let mut gaps = custom.declaration.toolchain_gaps.clone();
-            if matches!(
-                custom.attrs.get("_use_auto_exec_groups"),
-                Some(crate::custom_rule::AttrValue::Bool(true))
-            ) {
-                gaps.push(
-                    "attribute '_use_auto_exec_groups' = True (automatic exec groups)".to_owned(),
-                );
+        if let Some(custom) = &rule.custom
+            && !custom.declaration.toolchain_gaps.is_empty()
+        {
+            return Err(custom_gap_error(&rule, &custom.declaration.toolchain_gaps));
+        }
+        // ToolchainResolutionFunction (skyframe/toolchains/ToolchainResolutionFunction.java:62-131)
+        // for the default exec group; under automatic exec groups its key has
+        // no toolchain types (ToolchainContextUtil.createDefaultToolchainContextKey,
+        // :120-144).
+        let toolchain_context = if uses_toolchains {
+            let mut key = self.toolchain_context_key(&rule, config)?;
+            if use_auto_exec_groups {
+                key.types.clear();
             }
-            if !gaps.is_empty() {
-                return Err(custom_gap_error(&rule, &gaps));
+            self.resolve_toolchains(&rule, config, key, active, configured, plan)?
+        } else {
+            None
+        };
+        // Every other exec group of the ToolchainCollection, after the
+        // default context (UnloadedToolchainContextsProducer.java:88-126;
+        // only the first error propagates, :181-186): the declared groups
+        // (the default `test` group of a Starlark test rule,
+        // RuleClass.java:153-167), then the automatic groups. Divergence D3
+        // (docs/TEST_FLAGS.md): without the built-in profile there is no
+        // `@bazel_tools`, so the default test group is not resolved.
+        let mut exec_groups = crate::exec_groups::TargetExecGroups {
+            use_auto_exec_groups,
+            groups: Vec::new(),
+        };
+        if uses_toolchains {
+            for group in processed_groups {
+                let types = group
+                    .key
+                    .types
+                    .iter()
+                    .map(|requirement| requirement.label.clone())
+                    .collect();
+                let context = if group.builtin_only {
+                    None
+                } else {
+                    self.resolve_toolchains(&rule, config, group.key, active, configured, plan)?
+                };
+                exec_groups.groups.push(crate::exec_groups::ResolvedGroup {
+                    name: group.name,
+                    types,
+                    context,
+                    builtin_only: group.builtin_only,
+                });
             }
         }
-        // ToolchainResolutionFunction (skyframe/toolchains/ToolchainResolutionFunction.java:62-131).
-        let toolchain_context = if uses_toolchains {
-            let key = self.toolchain_context_key(&rule, config)?;
-            self.resolve_toolchains(&rule, config, key, active, configured, plan)?
-        } else {
-            None
-        };
-        // The default test exec group of a Starlark test rule, resolved after
-        // the default context (UnloadedToolchainContextsProducer.java:88-126;
-        // only the first error propagates, :181-186): the optional
-        // `@bazel_tools//tools/test:default_test_toolchain_type`
-        // (RuleClass.java:153-167, StarlarkRuleClassFunctions.java:1078-1082),
-        // no execution constraints and no forced execution platform
-        // (DeclaredExecGroup.process, :94-128). Declared exec groups fail
-        // before (custom_gap_error). Divergence D3 (docs/TEST_FLAGS.md):
-        // without the built-in profile there is no `@bazel_tools`, so the
-        // group is not resolved.
-        let test_toolchain_context = if uses_toolchains
-            && self.repositories.has_builtin_modules()
-            && rule
-                .custom
-                .as_ref()
-                .is_some_and(|custom| custom.declaration.builtin.kind.test)
-        {
-            let key = crate::toolchains::default_test_exec_group_key();
-            self.resolve_toolchains(&rule, config, key, active, configured, plan)?
-        } else {
-            None
-        };
         native_analysis_gate(&rule)?;
         let conditions = ordered.iter().cloned().collect::<BTreeMap<_, _>>();
         let resolver = configured_attributes::Resolver {
@@ -1583,28 +1599,51 @@ impl Engine {
                 // (ExecutionTransitionFactory.java:194-197).
                 config
             };
+        // The exec configurations of named exec groups
+        // (config.exec(exec_group = NAME)): the group's execution platform.
+        let mut group_configs: BTreeMap<String, ConfigId> = BTreeMap::new();
         for edge in edges {
             let dep_config = match &edge.cfg {
                 EdgeCfg::Target => config,
                 EdgeCfg::Exec(None) => exec_config,
                 EdgeCfg::NoConfig => self.configurations.intern_no_config(),
-                // Named exec groups (exec_groups fail before, so the group
-                // never exists): a dependency error when the rule has
-                // toolchain contexts (DependencyResolutionHelpers.java:243-253,
-                // DependencyProducer.ExecGroupErrorEmitter), otherwise no
-                // execution platform and a no-op transition.
-                EdgeCfg::Exec(Some(group)) => {
-                    if uses_toolchains {
-                        return Err(located(
-                            rule.location.as_deref(),
-                            format!(
-                                "Attr '{}' declares a transition for non-existent exec group '{group}'",
-                                edge.attribute
-                            ),
-                        ));
+                // DependencyResolutionHelpers.getExecutionPlatformLabel
+                // (analysis/DependencyResolutionHelpers.java:223-253): a
+                // group of the ToolchainCollection gives its execution
+                // platform; an unknown group is a dependency error when the
+                // rule has toolchain contexts (DependencyProducer.ExecGroupErrorEmitter);
+                // without them there is no execution platform and the
+                // transition is a no-op.
+                EdgeCfg::Exec(Some(group)) if uses_toolchains => {
+                    if let Some(group_config) = group_configs.get(group) {
+                        *group_config
+                    } else {
+                        let Some(resolved) =
+                            exec_groups.groups.iter().find(|item| item.name == *group)
+                        else {
+                            return Err(located(
+                                rule.location.as_deref(),
+                                format!(
+                                    "Attr '{}' declares a transition for non-existent exec group '{group}'",
+                                    edge.attribute
+                                ),
+                            ));
+                        };
+                        let context = resolved.context.clone();
+                        let group_config = self.exec_configuration(
+                            &rule,
+                            config,
+                            context.as_ref(),
+                            configured,
+                            plan,
+                        )?;
+                        self.group_exec_configurations
+                            .insert((key.clone(), group.clone()), group_config);
+                        group_configs.insert(group.clone(), group_config);
+                        group_config
                     }
-                    config
                 }
+                EdgeCfg::Exec(Some(_)) => config,
                 // Applied per dependency edge (DependencyProducer), so
                 // print() output repeats per edge; the result is per
                 // attribute (its values do not depend on the edge).
@@ -1745,8 +1784,8 @@ impl Engine {
         // DependencyResolver.java:835-866), each once.
         // Every exec group's toolchains are dependencies too, in
         // ToolchainCollection order (default first; :358-373).
-        for context in [&toolchain_context, &test_toolchain_context]
-            .into_iter()
+        for context in std::iter::once(&toolchain_context)
+            .chain(exec_groups.groups.iter().map(|group| &group.context))
             .flatten()
         {
             for implementation in context.resolved_labels() {
@@ -1885,8 +1924,8 @@ impl Engine {
         if let Some(context) = toolchain_context {
             self.toolchain_contexts.insert(key.clone(), context);
         }
-        if let Some(context) = test_toolchain_context {
-            self.test_toolchain_contexts.insert(key.clone(), context);
+        if uses_toolchains {
+            self.exec_group_contexts.insert(key.clone(), exec_groups);
         }
         configured.insert(
             key.clone(),
@@ -1904,6 +1943,150 @@ impl Engine {
         );
         plan.push((key, rule));
         Ok(())
+    }
+
+    /// ResolvedToolchainContext.load (analysis/ResolvedToolchainContext.java:48-110)
+    /// with ConfiguredTargetFunction.java:348-366 for one exec group: the
+    /// ToolchainInfo of each resolved implementation (through an alias),
+    /// else TargetNotToolchainException. `None` is a context that needed no
+    /// platform: no toolchains.
+    fn load_toolchain_context(
+        &self,
+        rule: &Rule,
+        config: ConfigId,
+        context: Option<&UnloadedToolchainContext>,
+        target_description: &str,
+        custom_providers: &BTreeMap<
+            ConfiguredTargetKey,
+            BTreeMap<String, starlark::values::OwnedFrozenValue>,
+        >,
+    ) -> Result<crate::toolchain_info::ToolchainContextData, String> {
+        let mut toolchains = BTreeMap::new();
+        let mut requested = Vec::new();
+        if let Some(context) = context {
+            for (info, implementation) in &context.resolved {
+                let Some(provider) = custom_providers
+                    .get(&ConfiguredTargetKey::new(implementation.clone(), config))
+                    .and_then(|providers| providers.get(crate::toolchain_info::PROVIDER_ID))
+                else {
+                    return Err(self.toolchain_error(
+                        rule,
+                        config,
+                        "",
+                        &crate::toolchains::not_a_toolchain(&info.type_label, implementation),
+                    ));
+                };
+                toolchains.insert(info.type_label.clone(), provider.clone());
+            }
+            requested = context
+                .requested
+                .iter()
+                .map(|(label, info)| (label.clone(), info.type_label.clone()))
+                .collect();
+        }
+        Ok(crate::toolchain_info::ToolchainContextData {
+            target_description: target_description.to_owned(),
+            requested,
+            toolchains,
+            repositories: self.repositories.clone(),
+        })
+    }
+
+    /// ExecGroupCollection.Builder.build (analysis/ExecGroupCollection.java:52-64),
+    /// run by RuleContext.Builder.build (analysis/RuleContext.java:1491-1531)
+    /// before the implementation: per exec group of the ToolchainCollection
+    /// (`None` for a rule without toolchain resolution), its execution
+    /// platform (the host platform natively) and combined exec properties;
+    /// an exec_properties key naming an unknown group is an
+    /// InvalidExecGroupException at the target's location
+    /// (ConfiguredTargetFunction.java:390-395, 468-469).
+    fn action_execution_table(
+        &self,
+        rule: &Rule,
+        config: ConfigId,
+        groups: Option<&crate::exec_groups::TargetExecGroups>,
+    ) -> Result<Vec<crate::exec_groups::ActionExecution>, String> {
+        let host = self.configurations.get(config).native.host_platform.clone();
+        let raw = match rule.custom.as_ref().and_then(|custom| {
+            custom
+                .declaration
+                .builtin
+                .target
+                .attrs
+                .get("exec_properties")
+        }) {
+            None => Vec::new(),
+            Some(crate::custom_rule::AttrValue::StringDict(entries)) => entries.clone(),
+            Some(_) => {
+                return Err(located(
+                    rule.location.as_deref(),
+                    "a configurable exec_properties value is not supported by the native profile"
+                        .to_owned(),
+                ));
+            }
+        };
+        // The execution platform of a context; a context that needed no
+        // platform runs on the host platform, whose properties are known
+        // once it was resolved (the default host platform has none).
+        let platform_of =
+            |context: Option<&UnloadedToolchainContext>| -> (Label, Vec<(String, String)>) {
+                match context {
+                    Some(context) => (
+                        context.exec_platform.label.clone(),
+                        context.exec_platform.exec_properties.clone(),
+                    ),
+                    None => {
+                        let properties = match self
+                            .platforms
+                            .get(&ConfiguredTargetKey::new(host.clone(), config))
+                        {
+                            Some(Ok(info)) => info.exec_properties.clone(),
+                            _ => Vec::new(),
+                        };
+                        (host.clone(), properties)
+                    }
+                }
+            };
+        let key = ConfiguredTargetKey::new(rule.label.clone(), config);
+        let mut platforms = Vec::new();
+        if let Some(groups) = groups {
+            platforms.push((
+                crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
+                platform_of(self.toolchain_contexts.get(&key)),
+            ));
+            for group in &groups.groups {
+                platforms.push((group.name.clone(), platform_of(group.context.as_ref())));
+            }
+        }
+        let collection = platforms
+            .iter()
+            .map(
+                |(name, (_, properties))| crate::exec_groups::GroupPlatform {
+                    name,
+                    platform_properties: properties,
+                },
+            )
+            .collect::<Vec<_>>();
+        let combined = crate::exec_groups::combined_exec_properties(
+            groups.map(|_| collection.as_slice()),
+            &raw,
+            &self.display_form(&rule.label),
+        )
+        .map_err(|error| located(rule.location.as_deref(), error.to_string()))?;
+        Ok(combined
+            .into_iter()
+            .map(|(name, properties)| {
+                let platform = platforms
+                    .iter()
+                    .find(|(group, _)| *group == name)
+                    .map_or_else(|| host.clone(), |(_, (label, _))| label.clone());
+                crate::exec_groups::ActionExecution {
+                    exec_group: name,
+                    platform,
+                    properties,
+                }
+            })
+            .collect())
     }
 
     /// The configuration of `rule`'s exec-transition edges (its default exec
@@ -2750,7 +2933,21 @@ impl Engine {
             // Self::edge_configs) or the target's; the dependency map key
             // follows the same edge (analysis::attribute_dependency_key).
             let edge_config = match &spec.declaration.cfg {
-                crate::rule_declarations::Cfg::Exec(_) => exec_config,
+                crate::rule_declarations::Cfg::Exec(group)
+                    if group
+                        .as_deref()
+                        .is_none_or(|group| group == crate::exec_groups::DEFAULT_EXEC_GROUP_NAME) =>
+                {
+                    exec_config
+                }
+                // A named exec group's configuration (N35,
+                // Engine::group_exec_configurations); none without toolchain
+                // contexts (a no-op transition).
+                crate::rule_declarations::Cfg::Exec(Some(group)) => self
+                    .group_exec_configurations
+                    .get(&(key.clone(), group.clone()))
+                    .copied()
+                    .unwrap_or(config),
                 crate::rule_declarations::Cfg::Starlark {
                     analysis_test: false,
                     ..
@@ -3324,34 +3521,247 @@ impl Engine {
             ..Default::default()
         };
         if let Some(custom) = &rule.custom {
-            for (text, mandatory) in &custom.declaration.toolchain_types {
-                key.types.push(ToolchainTypeRequirement {
-                    label: crate::toolchains::parse_label(text)?,
-                    mandatory: *mandatory,
-                    ignore_if_invalid: false,
-                });
-            }
-            // The rule class's constraints, then the target's
-            // `exec_compatible_with` (an ImmutableSet, :152-164).
-            let mut labels = Vec::new();
-            for text in &custom.declaration.exec_compatible_with {
-                labels.push(Label::parse_canonical(text)?);
-            }
-            for text in custom
-                .declaration
-                .builtin
-                .target
-                .labels("exec_compatible_with")
-            {
-                labels.push(self.resolve_rule_src(rule, &text)?);
-            }
-            for label in labels {
-                if !key.exec_constraints.contains(&label) {
-                    key.exec_constraints.push(label);
-                }
-            }
+            key.types = requirements(&custom.declaration.toolchain_types)?;
+            key.exec_constraints = self.default_exec_constraints(rule)?;
         }
         Ok(key)
+    }
+
+    /// Label.getDisplayForm with the main repository's mapping
+    /// (cmdline/Label.java:511-513, RepositoryName.getDisplayForm).
+    fn display_form(&self, label: &Label) -> String {
+        if label.repository.is_empty() {
+            return label.to_string();
+        }
+        let mapping = self.repositories.mapping("").cloned().unwrap_or_default();
+        let repository = mapping
+            .iter()
+            .find(|(_, canonical)| **canonical == label.repository)
+            .map_or_else(
+                || format!("@@{}", label.repository),
+                |(apparent, _)| format!("@{apparent}"),
+            );
+        format!("{repository}//{}:{}", label.package, label.name)
+    }
+
+    /// ToolchainContextUtil.getExecutionPlatformConstraints (:150-167): the
+    /// rule class's constraints, then the target's `exec_compatible_with`
+    /// (an ImmutableSet).
+    fn default_exec_constraints(&self, rule: &Rule) -> Result<Vec<Label>, String> {
+        let Some(custom) = &rule.custom else {
+            return Ok(Vec::new());
+        };
+        let mut labels = Vec::new();
+        for text in &custom.declaration.exec_compatible_with {
+            labels.push(Label::parse_canonical(text)?);
+        }
+        for text in custom
+            .declaration
+            .builtin
+            .target
+            .labels("exec_compatible_with")
+        {
+            labels.push(self.resolve_rule_src(rule, &text)?);
+        }
+        let mut unique = Vec::new();
+        for label in labels {
+            if !unique.contains(&label) {
+                unique.push(label);
+            }
+        }
+        Ok(unique)
+    }
+
+    /// RuleClass.AutoExecGroupsMode.DYNAMIC.isEnabled (packages/RuleClass.java:179-203)
+    /// for a Starlark rule: its `_use_auto_exec_groups` attribute, else
+    /// `--incompatible_auto_exec_groups`.
+    fn use_auto_exec_groups(&self, rule: &Rule, config: ConfigId) -> Result<bool, String> {
+        let Some(custom) = &rule.custom else {
+            return Ok(false);
+        };
+        match custom.attrs.get("_use_auto_exec_groups") {
+            None => Ok(self
+                .configurations
+                .get(config)
+                .native
+                .incompatible_auto_exec_groups),
+            Some(crate::custom_rule::AttrValue::Bool(value)) => Ok(*value),
+            Some(_) => Err(located(
+                rule.location.as_deref(),
+                "a non-boolean '_use_auto_exec_groups' attribute: Bazel 9.3 reads it as a boolean (RuleClass.AutoExecGroupsMode.isEnabled) and fails; not supported by the native profile".to_owned(),
+            )),
+        }
+    }
+
+    /// ToolchainContextUtil.getUnloadedToolchainContextsInputs
+    /// (skyframe/toolchains/ToolchainContextUtil.java:42-93) for the exec
+    /// groups: RuleClass.AutoExecGroupsMode.DYNAMIC (packages/RuleClass.java:179-203:
+    /// a `_use_auto_exec_groups` attribute, else
+    /// `--incompatible_auto_exec_groups`), the per-group
+    /// `exec_group_compatible_with` constraints (:169-245, an
+    /// InvalidExecGroupException at the target's location,
+    /// skyframe/DependencyResolver.java:627-636) and DeclaredExecGroup.process
+    /// (packages/DeclaredExecGroup.java:94-150): the declared groups (the
+    /// default `test` group of a test rule that declares none,
+    /// StarlarkRuleClassFunctions.java:1066-1082), then one automatic group
+    /// per rule toolchain type, named by its Label.toString().
+    fn exec_group_inputs(
+        &self,
+        rule: &Rule,
+        config: ConfigId,
+        with_platform_configuration: bool,
+    ) -> Result<(bool, Vec<crate::exec_groups::ProcessedGroup>), String> {
+        use crate::exec_groups::{ProcessedGroup, TEST_EXEC_GROUP_NAME, invalid_exec_group};
+        let Some(custom) = &rule.custom else {
+            return Ok((false, Vec::new()));
+        };
+        let use_auto = self.use_auto_exec_groups(rule, config)?;
+        let default_types = requirements(&custom.declaration.toolchain_types)?;
+        let default_exec = self.default_exec_constraints(rule)?;
+        // The rule class's declared groups: rule(exec_groups), then the
+        // default test group.
+        let mut declared: Vec<(String, Vec<ToolchainTypeRequirement>, Vec<Label>, bool)> =
+            Vec::new();
+        for group in &custom.declaration.exec_groups {
+            let mut constraints = Vec::new();
+            for text in &group.exec_compatible_with {
+                constraints.push(Label::parse_canonical(text)?);
+            }
+            declared.push((
+                group.name.clone(),
+                requirements(&group.toolchains)?,
+                constraints,
+                false,
+            ));
+        }
+        if custom.declaration.builtin.kind.test
+            && !declared
+                .iter()
+                .any(|(name, ..)| name == TEST_EXEC_GROUP_NAME)
+        {
+            declared.push((
+                TEST_EXEC_GROUP_NAME.to_owned(),
+                crate::toolchains::default_test_exec_group_key().types,
+                Vec::new(),
+                !self.repositories.has_builtin_modules(),
+            ));
+        }
+        // getPerExecGroupExecutionPlatformConstraints (:169-245).
+        let mut extra: Vec<(String, Vec<Label>)> = Vec::new();
+        let mut extra_auto: Vec<(Label, Vec<Label>)> = Vec::new();
+        let entries = match custom
+            .declaration
+            .builtin
+            .target
+            .attrs
+            .get("exec_group_compatible_with")
+        {
+            Some(crate::custom_rule::AttrValue::StringListDict(entries))
+                if with_platform_configuration =>
+            {
+                entries.clone()
+            }
+            _ => Vec::new(),
+        };
+        let target = crate::rule_declarations::canonical_form(&rule.label);
+        let invalid = |key: &str, valid: &[&str]| {
+            located(
+                rule.location.as_deref(),
+                invalid_exec_group("execution constraints", &target, &[key], valid),
+            )
+        };
+        for (key, texts) in entries {
+            let mut labels = Vec::new();
+            for text in &texts {
+                labels.push(self.resolve_rule_src(rule, text)?);
+            }
+            if crate::exec_groups::is_valid_group_name(&key) {
+                if !declared.iter().any(|(name, ..)| *name == key) {
+                    let names = declared
+                        .iter()
+                        .map(|(name, ..)| name.as_str())
+                        .collect::<Vec<_>>();
+                    return Err(invalid(&key, &names));
+                }
+                match extra.iter_mut().find(|(name, _)| *name == key) {
+                    Some((_, existing)) => existing.extend(labels),
+                    None => extra.push((key, labels)),
+                }
+            } else if use_auto {
+                let Ok(label) =
+                    self.repositories
+                        .parse(&key, &rule.label.repository, &rule.label.package)
+                else {
+                    return Err(invalid(&key, &[]));
+                };
+                if !default_types
+                    .iter()
+                    .any(|requirement| requirement.label == label)
+                {
+                    // Display forms of the types, for a main-repository rule
+                    // only (:218-226).
+                    let suggestions = if rule.label.repository.is_empty() {
+                        default_types
+                            .iter()
+                            .map(|requirement| self.display_form(&requirement.label))
+                            .collect::<Vec<_>>()
+                    } else {
+                        Vec::new()
+                    };
+                    let names = suggestions.iter().map(String::as_str).collect::<Vec<_>>();
+                    return Err(invalid(&key, &names));
+                }
+                match extra_auto.iter_mut().find(|(seen, _)| *seen == label) {
+                    Some((_, existing)) => existing.extend(labels),
+                    None => extra_auto.push((label, labels)),
+                }
+            } else {
+                return Err(invalid(&key, &[]));
+            }
+        }
+        let union = |base: &[Label], more: Option<&Vec<Label>>| {
+            let mut labels = base.to_vec();
+            for label in more.into_iter().flatten() {
+                if !labels.contains(label) {
+                    labels.push(label.clone());
+                }
+            }
+            labels
+        };
+        let mut processed = Vec::new();
+        for (name, types, constraints, builtin_only) in declared {
+            let more = extra
+                .iter()
+                .find(|(group, _)| *group == name)
+                .map(|(_, labels)| labels);
+            processed.push(ProcessedGroup {
+                key: ToolchainContextKey {
+                    types,
+                    exec_constraints: union(&constraints, more),
+                    forced_exec: false,
+                },
+                name,
+                builtin_only,
+            });
+        }
+        if use_auto {
+            for requirement in default_types {
+                let more = extra_auto
+                    .iter()
+                    .find(|(label, _)| *label == requirement.label)
+                    .map(|(_, labels)| labels);
+                processed.push(ProcessedGroup {
+                    name: requirement.label.to_string(),
+                    key: ToolchainContextKey {
+                        exec_constraints: union(&default_exec, more),
+                        types: vec![requirement],
+                        forced_exec: false,
+                    },
+                    builtin_only: false,
+                });
+            }
+        }
+        Ok((use_auto, processed))
     }
 
     /// ToolchainResolutionFunction.compute (skyframe/toolchains/ToolchainResolutionFunction.java:62-131)
@@ -4840,8 +5250,17 @@ impl Engine {
                     EdgeCfg::Target => {
                         (config, analysis::dependency_key(&label.to_string(), false))
                     }
-                    EdgeCfg::Exec(_) => (
+                    EdgeCfg::Exec(None) => (
                         exec_config,
+                        analysis::dependency_key(&label.to_string(), true),
+                    ),
+                    // A named exec group's configuration (N35); the
+                    // transition is a no-op without toolchain contexts.
+                    EdgeCfg::Exec(Some(group)) => (
+                        self.group_exec_configurations
+                            .get(&(key.clone(), group.clone()))
+                            .copied()
+                            .unwrap_or(config),
                         analysis::dependency_key(&label.to_string(), true),
                     ),
                     EdgeCfg::NoConfig => (
@@ -4873,12 +5292,13 @@ impl Engine {
                     dependency_labels.push((label, config, map_key));
                 }
             };
-            for context in [
-                self.toolchain_contexts.get(&key),
-                self.test_toolchain_contexts.get(&key),
-            ]
-            .into_iter()
-            .flatten()
+            let target_exec_groups = self.exec_group_contexts.get(&key).cloned();
+            for context in
+                std::iter::once(self.toolchain_contexts.get(&key))
+                    .chain(target_exec_groups.iter().flat_map(|groups| {
+                        groups.groups.iter().map(|group| group.context.as_ref())
+                    }))
+                    .flatten()
             {
                 for implementation in context.resolved_labels() {
                     add_target(implementation);
@@ -4971,6 +5391,7 @@ impl Engine {
             // platform is resolved only when the implementation asks,
             // then the (side-effect free) analysis runs again.
             let mut analyzed_rule = rule.clone();
+            let mut action_execution = Vec::new();
             let uses_toolchains =
                 uses_toolchain_resolution(rule) && !self.empty_configuration_rules.contains(&key);
             let target = dependency_key(
@@ -5000,14 +5421,28 @@ impl Engine {
                 // with ConfiguredTargetFunction.java:348-366: the
                 // ToolchainInfo of each resolved implementation (through
                 // an alias), else TargetNotToolchainException.
+                // RuleContext.fromToolchains (analysis/RuleContext.java:914-924):
+                // the TemplateVariableInfo (`ctx.var`) of the resolved
+                // toolchains of every ToolchainCollection context
+                // (ResolvedToolchainContext.load, :56-85), default first.
                 let mut template_variables = Vec::new();
-                custom.toolchains = if uses_toolchains {
-                    let mut toolchains = BTreeMap::new();
-                    let mut requested = Vec::new();
-                    if let Some(context) = self.toolchain_contexts.get(&key) {
+                if uses_toolchains {
+                    let exec_groups = target_exec_groups.clone().unwrap_or_default();
+                    let target_description = format!(
+                        "{} rule {}",
+                        rule.rule_class_name(),
+                        crate::rule_declarations::canonical_form(&rule.label)
+                    );
+                    for context in std::iter::once(self.toolchain_contexts.get(&key))
+                        .chain(
+                            exec_groups
+                                .groups
+                                .iter()
+                                .map(|group| group.context.as_ref()),
+                        )
+                        .flatten()
+                    {
                         for (_, implementation) in &context.resolved {
-                            // ResolvedToolchainContext.load (analysis/ResolvedToolchainContext.java:56-85):
-                            // the resolved toolchains' TemplateVariableInfo (`ctx.var`).
                             if let Some(variables) = custom_providers
                                 .get(&dependency_key(implementation.clone()))
                                 .and_then(|providers| {
@@ -5020,70 +5455,102 @@ impl Engine {
                                 template_variables.push(variables);
                             }
                         }
-                        for (info, implementation) in &context.resolved {
-                            let Some(provider) = custom_providers
-                                .get(&dependency_key(implementation.clone()))
-                                .and_then(|providers| {
-                                    providers.get(crate::toolchain_info::PROVIDER_ID)
-                                })
-                            else {
-                                return Err(self.toolchain_error(
-                                    rule,
-                                    config,
-                                    "",
-                                    &crate::toolchains::not_a_toolchain(
-                                        &info.type_label,
-                                        implementation,
-                                    ),
-                                ));
-                            };
-                            toolchains.insert(info.type_label.clone(), provider.clone());
-                        }
-                        requested = context
-                            .requested
-                            .iter()
-                            .map(|(label, info)| (label.clone(), info.type_label.clone()))
-                            .collect();
                     }
-                    // The test exec group's context loads the same way
-                    // (each ToolchainCollection context, default first);
-                    // its ToolchainInfo is only reachable through
-                    // ctx.exec_groups, which the native profile does not
-                    // expose.
-                    if let Some(context) = self.test_toolchain_contexts.get(&key) {
-                        for (info, implementation) in &context.resolved {
-                            if custom_providers
-                                .get(&dependency_key(implementation.clone()))
-                                .and_then(|providers| {
-                                    providers.get(crate::toolchain_info::PROVIDER_ID)
-                                })
-                                .is_none()
-                            {
-                                return Err(self.toolchain_error(
+                    let default = self.load_toolchain_context(
+                        rule,
+                        config,
+                        self.toolchain_contexts.get(&key),
+                        &target_description,
+                        custom_providers,
+                    )?;
+                    let mut groups = Vec::new();
+                    for group in &exec_groups.groups {
+                        let toolchains = if group.builtin_only {
+                            crate::exec_groups::GroupToolchains::BuiltinOnly
+                        } else {
+                            crate::exec_groups::GroupToolchains::Resolved(Arc::new(
+                                self.load_toolchain_context(
                                     rule,
                                     config,
-                                    "",
-                                    &crate::toolchains::not_a_toolchain(
-                                        &info.type_label,
-                                        implementation,
-                                    ),
-                                ));
+                                    group.context.as_ref(),
+                                    &target_description,
+                                    custom_providers,
+                                )?,
+                            ))
+                        };
+                        groups.push((group.name.clone(), toolchains));
+                    }
+                    // ctx.toolchains (StarlarkRuleContext.java:877-898):
+                    // under automatic exec groups the requested types of the
+                    // automatic groups, each resolved in its own group
+                    // (RuleContext.getToolchainInfo, :1132-1150).
+                    custom.toolchains = Some(Arc::new(if exec_groups.use_auto_exec_groups {
+                        let mut merged = crate::toolchain_info::ToolchainContextData {
+                            target_description: target_description.clone(),
+                            requested: Vec::new(),
+                            toolchains: BTreeMap::new(),
+                            repositories: self.repositories.clone(),
+                        };
+                        for (name, toolchains) in &groups {
+                            if let crate::exec_groups::GroupToolchains::Resolved(data) = toolchains
+                                && crate::exec_groups::is_automatic(name)
+                            {
+                                for entry in &data.requested {
+                                    if !merged.requested.contains(entry) {
+                                        merged.requested.push(entry.clone());
+                                    }
+                                }
+                                for (type_label, info) in &data.toolchains {
+                                    merged
+                                        .toolchains
+                                        .entry(type_label.clone())
+                                        .or_insert_with(|| info.clone());
+                                }
                             }
                         }
-                    }
-                    Some(Arc::new(crate::toolchain_info::ToolchainContextData {
-                        target_description: format!(
-                            "{} rule {}",
-                            rule.rule_class_name(),
-                            crate::rule_declarations::canonical_form(&rule.label)
-                        ),
-                        requested,
-                        toolchains,
-                        repositories: self.repositories.clone(),
-                    }))
+                        merged
+                    } else {
+                        default
+                    }));
+                    custom.exec_groups = Some(Arc::new(crate::exec_groups::ExecGroupsData {
+                        target_description,
+                        groups,
+                    }));
+                    custom.use_auto_exec_groups = exec_groups.use_auto_exec_groups;
+                    let mut action_groups = vec![(
+                        crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
+                        Vec::new(),
+                    )];
+                    action_groups.extend(
+                        exec_groups
+                            .groups
+                            .iter()
+                            .map(|group| (group.name.clone(), group.types.clone())),
+                    );
+                    custom.action_exec_groups = crate::exec_groups::ActionExecGroups {
+                        groups: Some(action_groups),
+                        use_auto_exec_groups: exec_groups.use_auto_exec_groups,
+                        subrule: None,
+                    };
                 } else {
-                    None
-                };
+                    // No ToolchainCollection (RuleContext.getToolchainContexts
+                    // is null); RuleContext.useAutoExecGroups still applies to
+                    // the actions' toolchain parameter.
+                    let use_auto = self.use_auto_exec_groups(rule, config)?;
+                    custom.toolchains = None;
+                    custom.exec_groups = None;
+                    custom.use_auto_exec_groups = use_auto;
+                    custom.action_exec_groups = crate::exec_groups::ActionExecGroups {
+                        groups: None,
+                        use_auto_exec_groups: use_auto,
+                        subrule: None,
+                    };
+                }
+                action_execution = self.action_execution_table(
+                    rule,
+                    config,
+                    target_exec_groups.as_ref().filter(|_| uses_toolchains),
+                )?;
                 // The configured target's own key and configuration (an
                 // exec, no-config or Starlark-transitioned configuration
                 // included), never a build-global one.
@@ -5209,6 +5676,15 @@ impl Engine {
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 source_inputs.insert(registered.action.id.clone(), source_paths(&inputs));
+                // The action's exec group decides its execution platform and
+                // exec properties (RuleContext.getActionOwner(execGroup)).
+                if let Some(execution) = action_execution
+                    .iter()
+                    .find(|execution| execution.exec_group == registered.exec_group)
+                {
+                    self.action_executions
+                        .insert(registered.action.id.clone(), execution.clone());
+                }
                 let mut planned = plan_action(registered.action, inputs, &main_ignored)?;
                 planned.deferred = registered.deferred;
                 nodes.push(planned);
@@ -5533,7 +6009,9 @@ impl Engine {
         self.exec_configurations.clear();
         self.deferred_duplicates.clear();
         self.toolchain_contexts.clear();
-        self.test_toolchain_contexts.clear();
+        self.exec_group_contexts.clear();
+        self.group_exec_configurations.clear();
+        self.action_executions.clear();
         self.toolchain_implementations.clear();
         self.edge_configs.clear();
         self.rule_delegations.clear();
@@ -6068,6 +6546,21 @@ fn located_lines(location: Option<&str>, messages: &str) -> String {
 }
 
 /// Event text with Bazel's `LOCATION: ` prefix when the location is known.
+/// ToolchainTypeRequirements of canonical `(label, mandatory)` pairs
+/// (crate::toolchains::parse_label keeps deferred unknown repositories).
+fn requirements(types: &[(String, bool)]) -> Result<Vec<ToolchainTypeRequirement>, String> {
+    types
+        .iter()
+        .map(|(text, mandatory)| {
+            Ok(ToolchainTypeRequirement {
+                label: crate::toolchains::parse_label(text)?,
+                mandatory: *mandatory,
+                ignore_if_invalid: false,
+            })
+        })
+        .collect()
+}
+
 fn located(location: Option<&str>, message: String) -> String {
     match location {
         Some(location) => format!("{location}: {message}"),
@@ -7693,6 +8186,79 @@ m = macro(implementation=emit)
                 .intern_exec(exec, test_label("//p:linux"), &BTreeSet::new()),
             Ok(exec)
         );
+    }
+
+    /// N35 (docs/EXEC_GROUPS.md): each action runs in the exec group it
+    /// chose (`exec_group = ...`, or under automatic exec groups the group
+    /// of its `toolchain`), with that group's execution platform and
+    /// combined exec properties (ExecGroupCollection.computeCombinedExecProperties:
+    /// platform default, target default, platform group, target group); a
+    /// `config.exec(exec_group = NAME)` edge uses the group's execution
+    /// platform.
+    #[test]
+    fn actions_run_in_their_exec_groups_with_combined_properties() {
+        let (f, mut engine) = two_configuration_engine(
+            "load('//r:defs.bzl', 'eg', 'gen')\ngen(name='leaf')\neg(name='e', tool=':leaf', exec_properties={'k': 't', 'link.k': 'tl', 'link.only': 'o'})\n",
+            "",
+            "def _eg_impl(ctx):\n    outs = []\n    for name, kw in [('a', {}), ('b', {'exec_group': 'link'}), ('c', {'toolchain': '//tc:type'}), ('d', {'toolchain': None})]:\n        out = ctx.actions.declare_file(ctx.label.name + '.' + name)\n        ctx.actions.run_shell(outputs=[out], command='touch ' + out.path, **kw)\n        outs.append(out)\n    return [DefaultInfo(files=depset(outs))]\neg = rule(implementation=_eg_impl, toolchains=['//tc:type'], exec_groups={'link': exec_group()}, attrs={'_use_auto_exec_groups': attr.bool(default=True), 'tool': attr.label(cfg=config.exec(exec_group='link'))})\n",
+        );
+        f.write(
+            "p/BUILD",
+            "platform(name='linux', constraint_values=['//os:linux'], exec_properties={'p': 'v', 'link.p': 'vl', '//tc:type.p': 'va'}, visibility=['//visibility:public'])\n",
+        );
+        let labels = engine.select_for_build(&["//:e".into()], "").unwrap();
+        engine.plan_build(&labels).unwrap();
+        let top = engine.configurations.top();
+        let key = ConfiguredTargetKey::new(test_label("//:e"), top);
+        let pairs = |items: &[(&str, &str)]| {
+            items
+                .iter()
+                .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
+                .collect::<Vec<_>>()
+        };
+        let execution = |index: usize| engine.action_executions[&format!("//:e#{index}")].clone();
+        let expected =
+            |group: &str, properties: &[(&str, &str)]| crate::exec_groups::ActionExecution {
+                exec_group: group.to_owned(),
+                platform: test_label("//p:linux"),
+                properties: pairs(properties),
+            };
+        assert_eq!(
+            execution(0),
+            expected("default-exec-group", &[("p", "v"), ("k", "t")])
+        );
+        assert_eq!(
+            execution(1),
+            expected("link", &[("p", "vl"), ("k", "tl"), ("only", "o")])
+        );
+        assert_eq!(
+            execution(2),
+            expected("//tc:type", &[("p", "va"), ("k", "t")])
+        );
+        assert_eq!(
+            execution(3),
+            expected("default-exec-group", &[("p", "v"), ("k", "t")])
+        );
+        // The automatic exec group of //tc:type and the declared group.
+        let groups = &engine.exec_group_contexts[&key];
+        assert!(groups.use_auto_exec_groups);
+        assert_eq!(
+            groups
+                .groups
+                .iter()
+                .map(|group| group.name.as_str())
+                .collect::<Vec<_>>(),
+            ["link", "//tc:type"]
+        );
+        // config.exec(exec_group = "link"): the group's execution platform.
+        let exec = engine.group_exec_configurations[&(key.clone(), "link".to_owned())];
+        assert_eq!(
+            engine
+                .configurations
+                .intern_exec(top, test_label("//p:linux"), &BTreeSet::new()),
+            Ok(exec)
+        );
+        assert!(!engine.exec_configurations.contains_key(&key));
     }
 
     /// The registered-toolchain guards are per configuration: computing

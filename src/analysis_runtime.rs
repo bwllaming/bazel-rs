@@ -39,6 +39,10 @@ pub struct RegisteredAction {
     pub outputs: Vec<File>,
     /// Execution-time completion (tree artifact expansion).
     pub deferred: Option<Deferred>,
+    /// The exec group the action runs in (StarlarkAction.Builder.setExecGroup;
+    /// `default-exec-group` unless `ctx.actions.run`/`run_shell` chose one,
+    /// crate::exec_groups::ActionExecGroups::determine).
+    pub exec_group: String,
 }
 
 // Marker derive only. These fields own Rust data, never hidden heap Values.
@@ -67,6 +71,8 @@ mod owned {
         /// ctx.outputs.executable and the executable-attribute
         /// FilesToRunProviders (crate::runfiles).
         pub runfiles: crate::runfiles::ContextRunfiles,
+        /// The exec groups an action may run in (crate::exec_groups).
+        pub exec_groups: crate::exec_groups::ActionExecGroups,
     }
 
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
@@ -76,6 +82,11 @@ mod owned {
         pub scope: ScopeHandle,
         /// The repr of the owning rule or subrule context.
         pub context: String,
+        /// A subrule's action factory: the subrule's requested toolchain
+        /// types (StarlarkSubrule.SubruleContext.maybeOverride*, :464-481).
+        #[allocative(skip)]
+        #[trace(static)]
+        pub subrule: Option<Vec<Label>>,
     }
 }
 use owned::Actions;
@@ -169,6 +180,7 @@ impl Context {
             environment,
             extra: ActionExtra::default(),
             deferred: None,
+            exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
         })
     }
 
@@ -183,6 +195,7 @@ impl Context {
             environment,
             mut extra,
             deferred,
+            exec_group,
         } = registration;
         ensure!(
             !outputs.is_empty(),
@@ -261,6 +274,7 @@ impl Context {
             inputs,
             outputs,
             deferred,
+            exec_group,
         });
         Ok(())
     }
@@ -277,6 +291,9 @@ pub(crate) struct Registration {
     pub environment: BTreeMap<String, String>,
     pub extra: ActionExtra,
     pub deferred: Option<Deferred>,
+    /// The exec group (N35): `default-exec-group` unless run/run_shell chose
+    /// one (crate::exec_groups::ActionExecGroups::determine).
+    pub exec_group: String,
 }
 
 pub(crate) fn context<'a>(eval: &'a Evaluator<'_, '_, '_>) -> anyhow::Result<&'a Context> {
@@ -338,7 +355,110 @@ pub(crate) fn alloc_actions_for<'v>(
     scope: ScopeHandle,
     context: String,
 ) -> Value<'v> {
-    heap.alloc_complex_no_freeze(Actions { scope, context })
+    heap.alloc_complex_no_freeze(Actions {
+        scope,
+        context,
+        subrule: None,
+    })
+}
+
+/// A subrule's action factory with the subrule's requested toolchain types.
+pub(crate) fn alloc_subrule_actions<'v>(
+    heap: Heap<'v>,
+    scope: ScopeHandle,
+    context: String,
+    toolchains: Vec<Label>,
+) -> Value<'v> {
+    heap.alloc_complex_no_freeze(Actions {
+        scope,
+        context,
+        subrule: Some(toolchains),
+    })
+}
+
+/// The exec group arguments of `ctx.actions.run`/`run_shell`
+/// (StarlarkActionFactoryApi: `exec_group` string or None, `toolchain`
+/// Label, string or None, default unbound) with the subrule overrides.
+struct GroupArguments {
+    exec_group: Option<String>,
+    toolchain: crate::exec_groups::ToolchainArgument,
+    groups: crate::exec_groups::ActionExecGroups,
+}
+
+fn group_arguments(
+    this: Value<'_>,
+    context: &Context,
+    function: &str,
+    exec_group: Option<Value<'_>>,
+    toolchain: Option<Value<'_>>,
+    eval: &Evaluator<'_, '_, '_>,
+) -> anyhow::Result<GroupArguments> {
+    use crate::exec_groups::ToolchainArgument;
+    let exec_group = match exec_group {
+        None => None,
+        Some(value) if value.is_none() => None,
+        Some(value) => Some(
+            value
+                .unpack_str()
+                .ok_or_else(|| {
+                    anyhow!(
+                        "in call to {function}(), parameter 'exec_group' got value of type '{}', want 'string or NoneType'",
+                        value.get_type()
+                    )
+                })?
+                .to_owned(),
+        ),
+    };
+    let toolchain = match toolchain {
+        None => ToolchainArgument::Unbound,
+        Some(value) if value.is_none() => ToolchainArgument::None,
+        Some(value) => {
+            if let Some(label) = crate::starlark_types::unpack_label(value) {
+                ToolchainArgument::Label(
+                    Label::parse_canonical(&label).map_err(anyhow::Error::msg)?,
+                )
+            } else if let Some(text) = value.unpack_str() {
+                // LabelConverter.forBzlEvaluatingThread: the calling .bzl's
+                // repository mapping and package
+                // (StarlarkActionFactory.determineExecGroup, :861-871).
+                ToolchainArgument::Label(crate::toolchain_info::parse_bzl_label(
+                    &context.repositories,
+                    text,
+                    &|| eval.call_stack_top_location(),
+                )?)
+            } else {
+                bail!(
+                    "in call to {function}(), parameter 'toolchain' got value of type '{}', want 'Label, string, or NoneType'",
+                    value.get_type()
+                );
+            }
+        }
+    };
+    let receiver = this
+        .downcast_ref::<Actions>()
+        .ok_or_else(|| anyhow!("expected actions receiver"))?;
+    let mut groups = context.exec_groups.clone();
+    groups.subrule = receiver.subrule.clone();
+    let toolchain = groups.override_arguments(exec_group.as_deref(), toolchain)?;
+    Ok(GroupArguments {
+        exec_group,
+        toolchain,
+        groups,
+    })
+}
+
+impl GroupArguments {
+    /// checkToolchainParameterIsSet for an executable or tool that is not an
+    /// executable attribute's (StarlarkActionFactory.java:433-454, 764-800).
+    fn check_tool(&self) -> anyhow::Result<()> {
+        self.groups
+            .check_toolchain_parameter(self.exec_group.as_deref(), &self.toolchain)
+    }
+
+    fn determine(&self) -> anyhow::Result<String> {
+        self.groups
+            .determine(self.exec_group.as_deref(), &self.toolchain)
+    }
 }
 
 fn action_receiver<'a>(
@@ -427,7 +547,8 @@ struct SpawnOptions<'v> {
     use_default_shell_env: bool,
     execution_requirements: Option<Value<'v>>,
     input_manifests: Option<Value<'v>>,
-    exec_group: Option<Value<'v>>,
+    /// The exec group arguments, already type-checked (N35).
+    groups: GroupArguments,
     progress_message: Option<String>,
 }
 
@@ -450,14 +571,6 @@ fn register_spawn(
             "input_manifests (runfiles manifests of tools) are not supported by the native profile"
         );
     }
-    if let Some(group) = options.exec_group
-        && !group.is_none()
-    {
-        bail!(
-            "exec_group={} of {function}() is not supported by the native profile (single execution platform)",
-            group.to_repr()
-        );
-    }
     ensure!(
         ListRef::from_value(options.outputs).is_some(),
         "outputs must be a list of Files"
@@ -472,8 +585,10 @@ fn register_spawn(
             .unwrap_or_default(),
     );
     if let Some(tools) = options.tools {
-        inputs.extend(action_tools(context, tools, function)?);
+        inputs.extend(action_tools(context, tools, function, &options.groups)?);
     }
+    // StarlarkActionFactory.determineExecGroup after the tools (N35).
+    let exec_group = options.groups.determine()?;
     let parts = match options.arguments {
         Some(arguments) => crate::args::command_line_parts(arguments)?,
         None => Vec::new(),
@@ -534,6 +649,7 @@ fn register_spawn(
             ..extra
         },
         deferred,
+        exec_group,
     })
 }
 
@@ -702,6 +818,7 @@ fn action_methods(builder: &mut MethodsBuilder) {
             environment: BTreeMap::new(),
             extra: ActionExtra::default(),
             deferred,
+            exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
         })?;
         Ok(NoneType)
     }
@@ -725,7 +842,13 @@ fn action_methods(builder: &mut MethodsBuilder) {
     ) -> anyhow::Result<NoneType> {
         let context = action_receiver(this, eval, false)?;
         // Scheduling hints with no effect on a local spawn's results.
-        let _ = (mnemonic, resource_set, toolchain);
+        let _ = (mnemonic, resource_set);
+        let groups = group_arguments(this, context, "run_shell", exec_group, toolchain, eval)?;
+        // runShell resolves the execution platform of a string command
+        // first (StarlarkActionFactory.java:634-642, getExecutionPlatform:589-599).
+        if let Some(group) = &groups.exec_group {
+            groups.groups.verify_exec_group(group)?;
+        }
         // ShellCommand (analysis/actions/ShellCommand.java:37-48): padded with
         // "" only when `arguments` is nonempty.
         let pad = arguments.is_some_and(|value| {
@@ -748,7 +871,7 @@ fn action_methods(builder: &mut MethodsBuilder) {
                 use_default_shell_env,
                 execution_requirements,
                 input_manifests,
-                exec_group,
+                groups,
                 progress_message: progress_message.map(str::to_owned),
             },
             Vec::new(),
@@ -764,8 +887,15 @@ fn action_methods(builder: &mut MethodsBuilder) {
 /// The `tools` of run/run_shell (analysis/starlark/StarlarkActionFactory.java:765-806):
 /// Files, FilesToRunProviders and depsets of Files. Tools whose
 /// FilesToRunProvider carries runfiles need the runfiles tree attached to the
-/// spawn, which needs runfiles trees (N23f): explicit failure.
-fn action_tools(context: &Context, tools: Value<'_>, function: &str) -> anyhow::Result<Vec<File>> {
+/// spawn, which needs runfiles trees (N23f): explicit failure. Each tool that
+/// is not an executable attribute's is checked against the action's exec
+/// group arguments (N35, GroupArguments::check_tool).
+fn action_tools(
+    context: &Context,
+    tools: Value<'_>,
+    function: &str,
+    groups: &GroupArguments,
+) -> anyhow::Result<Vec<File>> {
     const WANT: &str = "expected value of type 'File, FilesToRunProvider or Depset of Files' for a member of parameter 'tools' but";
     let items: Vec<Value<'_>> = if let Some(list) = ListRef::from_value(tools) {
         list.iter().collect()
@@ -773,12 +903,18 @@ fn action_tools(context: &Context, tools: Value<'_>, function: &str) -> anyhow::
         tuple.iter().collect()
     } else if crate::starlark_types::is_depset(tools) {
         // Depset.cast(tools, Object.class, "tools").toList(): File elements.
-        return file_list(tools).map_err(|_| {
+        let files = file_list(tools).map_err(|_| {
             anyhow!(
                 "{WANT} got a depset of '{}' instead",
                 crate::starlark_types::depset_element_type(tools).unwrap_or("unknown")
             )
-        });
+        })?;
+        for file in &files {
+            if !context.runfiles.is_executable(file) {
+                groups.check_tool()?;
+            }
+        }
+        return Ok(files);
     } else {
         bail!(
             "in call to {function}(), parameter 'tools' got value of type '{}', want 'sequence or depset'",
@@ -788,12 +924,19 @@ fn action_tools(context: &Context, tools: Value<'_>, function: &str) -> anyhow::
     let mut files = Vec::new();
     for item in items {
         if let Some(file) = File::from_value(item) {
+            if !context.runfiles.is_executable(file) {
+                groups.check_tool()?;
+            }
             context.runfiles.check_action_file(file, "tool")?;
             files.push(file.clone());
         } else if let Some(files_to_run) = crate::runfiles::FilesToRun::from_value(item) {
+            if !context.runfiles.is_from_dependencies(files_to_run) {
+                groups.check_tool()?;
+            }
             crate::runfiles::ensure_without_runfiles(files_to_run, "tool")?;
             files.extend(files_to_run.files.iter().cloned());
         } else if crate::starlark_types::is_depset(item) {
+            groups.check_tool()?;
             if let Some(kind) = crate::starlark_types::depset_element_type(item)
                 && kind != "File"
             {
@@ -828,7 +971,18 @@ fn direct_action_methods(builder: &mut MethodsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let context = action_receiver(this, eval, false)?;
-        let _ = (mnemonic, resource_set, toolchain);
+        let _ = (mnemonic, resource_set);
+        let groups = group_arguments(this, context, "run", exec_group, toolchain, eval)?;
+        // The executable first (StarlarkActionFactory.run, :433-458).
+        if let Some(file) = File::from_value(executable) {
+            if !context.runfiles.is_executable(file) {
+                groups.check_tool()?;
+            }
+        } else if let Some(files_to_run) = crate::runfiles::FilesToRun::from_value(executable)
+            && !context.runfiles.is_from_dependencies(files_to_run)
+        {
+            groups.check_tool()?;
+        }
         let mut extra_inputs = Vec::new();
         let (program, bazel_executable) = if let Some(program) = executable.unpack_str() {
             (program.to_owned(), program.to_owned())
@@ -863,7 +1017,7 @@ fn direct_action_methods(builder: &mut MethodsBuilder) {
                 use_default_shell_env,
                 execution_requirements,
                 input_manifests,
-                exec_group,
+                groups,
                 progress_message: progress_message.map(str::to_owned),
             },
             extra_inputs,
@@ -946,6 +1100,7 @@ fn file_action_methods(builder: &mut MethodsBuilder) {
                 ..ActionExtra::default()
             },
             deferred: None,
+            exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
         })?;
         Ok(NoneType)
     }
@@ -1027,6 +1182,7 @@ fn file_action_methods(builder: &mut MethodsBuilder) {
                 ..ActionExtra::default()
             },
             deferred: None,
+            exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
         })?;
         Ok(NoneType)
     }
@@ -1113,6 +1269,7 @@ fn transform_build_info<'v>(
             ..ActionExtra::default()
         },
         deferred: None,
+        exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
     })?;
     Ok(alloc_file(eval.heap(), output))
 }
@@ -1277,6 +1434,7 @@ mod tests {
             scope: ScopeState::new("rule".into(), BTreeSet::from(["S".into()])),
             subrule: Default::default(),
             runfiles: Default::default(),
+            exec_groups: Default::default(),
         }
     }
 
@@ -1478,6 +1636,7 @@ r=rule(implementation=_rule,subrules=[S])
             scope: ScopeState::new("rule".into(), BTreeSet::from(["S".into()])),
             subrule: Default::default(),
             runfiles: Default::default(),
+            exec_groups: Default::default(),
         };
         let owner = make_context();
         let foreign = make_context();
