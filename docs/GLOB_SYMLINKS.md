@@ -28,7 +28,9 @@ shows which one each observable comes from:
    skipped (`UnixGlob.java:814-818, 864-866`); a cycle, a link to its own
    descendant, or a recursion through a link to an ancestor *without* a BUILD
    file (`a/b/up -> ..` under `**`: `a/b/up/b/up/…` until the 41st link of one
-   path) fails with `[unix_jni.cc:382] PATH (Too many levels of symbolic
+   path; Linux may refuse from the 21st link on while other processes rename
+   files, as an RCU path walk's retry keeps its link count, for Bazel too)
+   fails with `[unix_jni.cc:382] PATH (Too many levels of symbolic
    links)`. Directories whose BUILD/BUILD.bazel resolves to a file are
    subpackages and never traversed (`GlobCache.java:131-156`); ignored
    subdirectories neither. `StarlarkNativeModule.runGlobOperation`
@@ -216,7 +218,7 @@ Native (`repository_rule::label_dict_json` and
 
 * `glob.rs`: followed file/directory/dangling links, legacy I/O errors for
   cycles (also when excluded, literal or `allow_empty`), descendant links and
-  ancestor recursions (41-link paths), Skyframe expansions for links to
+  ancestor recursions (41-link paths, earlier under concurrent renames), Skyframe expansions for links to
   package directories (wildcard vs literal), only BUILD boundaries, linked
   subpackages, BUILD-link markers, the host/materialized/blocked policy and
   store skipping, GlobberUtils empty texts.

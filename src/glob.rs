@@ -1247,16 +1247,31 @@ mod tests {
         fs::remove_file(temp.0.join("p/up")).unwrap();
         fs::remove_file(temp.0.join("p/sub/back")).unwrap();
         // A link to an ancestor without a BUILD file: the legacy globber
-        // recurses until the kernel refuses the 41st link of one path.
+        // recurses until the kernel refuses a path, normally at the 41st
+        // link (MAXSYMLINKS 40). Under concurrent renames anywhere on the
+        // host (other tests publishing atomically) Linux may refuse earlier:
+        // a `..` step of an RCU path walk fails with -ECHILD when the global
+        // rename_lock sequence changed, and the ref-walk retry keeps the
+        // links the RCU attempt already counted (total_link_count), so a
+        // path of j links fails once j + (links counted before the retry,
+        // at most j) exceeds 40, i.e. at j >= 21. Bazel's JNI stat sees the
+        // same kernel behaviour; the exact depth is not a property of glob.
         temp.file("p/a/b/x.rs");
         symlink("..", temp.0.join("p/a/b/up")).unwrap();
         let error = run(&["**/x.rs"], &[]).unwrap_err();
-        let deep = format!("{}/p/a/b/up{}", root.display(), "/b/up".repeat(40));
-        assert_eq!(
-            error,
-            format!(
-                "no such package 'p': error globbing [**/x.rs] op=FILES: [unix_jni.cc:382] {deep} (Too many levels of symbolic links)"
-            )
+        let prefix = format!(
+            "no such package 'p': error globbing [**/x.rs] op=FILES: [unix_jni.cc:382] {}/p/a/b/up",
+            root.display()
+        );
+        let repeats = error
+            .strip_prefix(&prefix)
+            .and_then(|rest| rest.strip_suffix(" (Too many levels of symbolic links)"))
+            .map(|rest| (rest.len() / "/b/up".len(), rest))
+            .filter(|(count, rest)| *rest == "/b/up".repeat(*count))
+            .map(|(count, _)| count);
+        assert!(
+            repeats.is_some_and(|count| (20..=40).contains(&count)),
+            "{error}"
         );
         // Literal and single-level patterns through it do not recurse.
         assert_eq!(run(&["a/b/up/b/x.rs"], &[]).unwrap(), ["a/b/up/b/x.rs"]);
