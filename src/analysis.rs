@@ -1913,6 +1913,7 @@ erased = attr.label(providers=[[], [NotPackageSpecificationInfo]])
             short_path: path.into(),
             owner: "//pkg:dep".into(),
             is_source: false,
+            is_directory: false,
         };
         // RuleContext.java:1975-1993: no file to build, or none matching.
         let expected =
