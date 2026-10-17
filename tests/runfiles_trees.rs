@@ -307,29 +307,29 @@ fn listing(ws: &Workspace, root: &Path) -> Vec<String> {
 }
 
 const B_TREE: &str = "\
-MANIFEST -> <OUT>/bazel-out/rust-fastbuild/bin/pkg/b.runfiles_manifest
+MANIFEST -> <OUT>/bazel-out/k8-fastbuild/bin/pkg/b.runfiles_manifest
 _main/
 _main/pkg/
-_main/pkg/b -> <OUT>/bazel-out/rust-fastbuild/bin/pkg/b
-_main/pkg/b.gen -> <OUT>/bazel-out/rust-fastbuild/bin/pkg/b.gen
+_main/pkg/b -> <OUT>/bazel-out/k8-fastbuild/bin/pkg/b
+_main/pkg/b.gen -> <OUT>/bazel-out/k8-fastbuild/bin/pkg/b.gen
 _main/pkg/d.txt -> <WS>/pkg/d.txt
 _main/sym/
 _main/sym/d.txt -> <WS>/pkg/d.txt
-_repo_mapping -> <OUT>/bazel-out/rust-fastbuild/bin/pkg/b.repo_mapping
+_repo_mapping -> <OUT>/bazel-out/k8-fastbuild/bin/pkg/b.repo_mapping
 ext+/
 ext+/data/
 ext+/data/e.txt -> <WS>/ext/data/e.txt
-ext+/rooted.txt -> <OUT>/bazel-out/rust-fastbuild/bin/pkg/b.gen
+ext+/rooted.txt -> <OUT>/bazel-out/k8-fastbuild/bin/pkg/b.gen
 rootsym.txt -> <WS>/pkg/d.txt";
 
 const B_MANIFEST: &str = "\
-_main/pkg/b <OUT>/bazel-out/rust-fastbuild/bin/pkg/b
-_main/pkg/b.gen <OUT>/bazel-out/rust-fastbuild/bin/pkg/b.gen
+_main/pkg/b <OUT>/bazel-out/k8-fastbuild/bin/pkg/b
+_main/pkg/b.gen <OUT>/bazel-out/k8-fastbuild/bin/pkg/b.gen
 _main/pkg/d.txt <WS>/pkg/d.txt
 _main/sym/d.txt <WS>/pkg/d.txt
-_repo_mapping <OUT>/bazel-out/rust-fastbuild/bin/pkg/b.repo_mapping
+_repo_mapping <OUT>/bazel-out/k8-fastbuild/bin/pkg/b.repo_mapping
 ext+/data/e.txt <WS>/ext/data/e.txt
-ext+/rooted.txt <OUT>/bazel-out/rust-fastbuild/bin/pkg/b.gen
+ext+/rooted.txt <OUT>/bazel-out/k8-fastbuild/bin/pkg/b.gen
 rootsym.txt <WS>/pkg/d.txt
 ";
 
@@ -339,7 +339,7 @@ fn executable_targets_build_runfiles_trees_manifests_and_repo_mappings() {
     let built = outputs(&ws.run(&["build", "//pkg:b"]));
     // Only the files to build are reported.
     assert_eq!(built.keys().collect::<Vec<_>>(), ["//pkg:b"]);
-    let manifest = single(&ws, "bazel-out/rust-fastbuild/bin/pkg/b.runfiles/MANIFEST");
+    let manifest = single(&ws, "bazel-out/k8-fastbuild/bin/pkg/b.runfiles/MANIFEST");
     let tree = manifest.parent().unwrap();
     assert_eq!(listing(&ws, tree).join("\n"), B_TREE);
     // The MANIFEST is a symlink to the input manifest (SymlinkTreeHelper.linkManifest).
@@ -354,7 +354,7 @@ fn executable_targets_build_runfiles_trees_manifests_and_repo_mappings() {
     );
     // Main repository entries, then the external repository's (its own
     // mapping), then the module name; root symlinks under ext+ count.
-    let mapping = single(&ws, "bazel-out/rust-fastbuild/bin/pkg/b.repo_mapping");
+    let mapping = single(&ws, "bazel-out/k8-fastbuild/bin/pkg/b.repo_mapping");
     assert_eq!(
         fs::read_to_string(mapping).unwrap(),
         ",ext,ext+\n,rf,_main\next+,ext,ext+\n"
@@ -384,7 +384,7 @@ fn executable_targets_build_runfiles_trees_manifests_and_repo_mappings() {
         "{}",
         stderr(&again)
     );
-    let manifest = single(&ws, "bazel-out/rust-fastbuild/bin/pkg/b.runfiles/MANIFEST");
+    let manifest = single(&ws, "bazel-out/k8-fastbuild/bin/pkg/b.runfiles/MANIFEST");
     assert_eq!(listing(&ws, manifest.parent().unwrap()).join("\n"), B_TREE);
 }
 
@@ -397,19 +397,19 @@ fn runfiles_options_select_the_artifacts_and_tree_mode() {
     assert!(
         published(
             &ws,
-            "bazel-out/rust-fastbuild/bin/pkg/tool.runfiles/MANIFEST"
+            "bazel-out/k8-fastbuild/bin/pkg/tool.runfiles/MANIFEST"
         )
         .is_empty()
     );
     assert_eq!(
         published(
             &ws,
-            "bazel-out/rust-fastbuild/bin/pkg/tool.runfiles_manifest"
+            "bazel-out/k8-fastbuild/bin/pkg/tool.runfiles_manifest"
         )
         .len(),
         1
     );
-    let m = single(&ws, "bazel-out/rust-fastbuild/bin/pkg/m.txt");
+    let m = single(&ws, "bazel-out/k8-fastbuild/bin/pkg/m.txt");
     assert_eq!(
         fs::read_to_string(m).unwrap(),
         "_main/pkg/d.txt\n_main/pkg/tool\n_main/pkg/tool.gen\n_repo_mapping\next+/data/e.txt\n===\n,ext,ext+\n,rf,_main\next+,ext,ext+\n"
@@ -419,12 +419,12 @@ fn runfiles_options_select_the_artifacts_and_tree_mode() {
     success(&ws.run(&["build", "--enable_runfiles=no", "//pkg:tool"]));
     let manifest = single(
         &ws,
-        "bazel-out/rust-fastbuild/bin/pkg/tool.runfiles/MANIFEST",
+        "bazel-out/k8-fastbuild/bin/pkg/tool.runfiles/MANIFEST",
     );
     assert_eq!(
         listing(&ws, manifest.parent().unwrap()),
         [
-            "MANIFEST -> <OUT>/bazel-out/rust-fastbuild/bin/pkg/tool.runfiles_manifest",
+            "MANIFEST -> <OUT>/bazel-out/k8-fastbuild/bin/pkg/tool.runfiles_manifest",
             "_main/"
         ]
     );
@@ -434,12 +434,12 @@ fn runfiles_options_select_the_artifacts_and_tree_mode() {
     assert!(
         published(
             &ws,
-            "bazel-out/rust-fastbuild/bin/pkg/tool.runfiles_manifest"
+            "bazel-out/k8-fastbuild/bin/pkg/tool.runfiles_manifest"
         )
         .is_empty()
     );
     assert_eq!(
-        published(&ws, "bazel-out/rust-fastbuild/bin/pkg/tool.repo_mapping").len(),
+        published(&ws, "bazel-out/k8-fastbuild/bin/pkg/tool.repo_mapping").len(),
         1
     );
     let rejected = ws.run(&["run", "--nobuild_runfile_manifests", "//pkg:tool"]);
@@ -473,11 +473,11 @@ fn tool_runfiles_trees_are_staged_into_actions() {
     success(&ws.run(&["build", "//pkg:outer"]));
     let manifest = single(
         &ws,
-        "bazel-out/rust-fastbuild/bin/pkg/outer.runfiles_manifest",
+        "bazel-out/k8-fastbuild/bin/pkg/outer.runfiles_manifest",
     );
     assert_eq!(
         normalize(&ws, &fs::read_to_string(manifest).unwrap()),
-        "_main/pkg/d.txt <WS>/pkg/d.txt\n_main/pkg/outer <OUT>/bazel-out/rust-fastbuild/bin/pkg/outer\n_main/pkg/outer.gen <OUT>/bazel-out/rust-fastbuild/bin/pkg/outer.gen\n_main/pkg/tool <OUT>/bazel-out/rust-fastbuild/bin/pkg/tool\n_main/pkg/tool.gen <OUT>/bazel-out/rust-fastbuild/bin/pkg/tool.gen\n_main/sym/d.txt <WS>/pkg/d.txt\n_repo_mapping <OUT>/bazel-out/rust-fastbuild/bin/pkg/outer.repo_mapping\next+/data/e.txt <WS>/ext/data/e.txt\next+/rooted.txt <OUT>/bazel-out/rust-fastbuild/bin/pkg/outer.gen\nrootsym.txt <WS>/pkg/d.txt\n"
+        "_main/pkg/d.txt <WS>/pkg/d.txt\n_main/pkg/outer <OUT>/bazel-out/k8-fastbuild/bin/pkg/outer\n_main/pkg/outer.gen <OUT>/bazel-out/k8-fastbuild/bin/pkg/outer.gen\n_main/pkg/tool <OUT>/bazel-out/k8-fastbuild/bin/pkg/tool\n_main/pkg/tool.gen <OUT>/bazel-out/k8-fastbuild/bin/pkg/tool.gen\n_main/sym/d.txt <WS>/pkg/d.txt\n_repo_mapping <OUT>/bazel-out/k8-fastbuild/bin/pkg/outer.repo_mapping\next+/data/e.txt <WS>/ext/data/e.txt\next+/rooted.txt <OUT>/bazel-out/k8-fastbuild/bin/pkg/outer.gen\nrootsym.txt <WS>/pkg/d.txt\n"
     );
 }
 
@@ -495,7 +495,7 @@ fn python_empty_files_and_obscured_symlinks() {
     );
     let manifest = single(
         &ws,
-        "bazel-out/rust-fastbuild/bin/tools/build_defs/python/p.runfiles/MANIFEST",
+        "bazel-out/k8-fastbuild/bin/tools/build_defs/python/p.runfiles/MANIFEST",
     );
     let tree = listing(&ws, manifest.parent().unwrap());
     assert!(
@@ -523,11 +523,11 @@ fn python_empty_files_and_obscured_symlinks() {
     );
     let manifest = single(
         &ws,
-        "bazel-out/rust-fastbuild/bin/pkg/conflict.runfiles_manifest",
+        "bazel-out/k8-fastbuild/bin/pkg/conflict.runfiles_manifest",
     );
     assert_eq!(
         normalize(&ws, &fs::read_to_string(manifest).unwrap()),
-        "_main/dir <WS>/pkg/d.txt\n_main/pkg/conflict <OUT>/bazel-out/rust-fastbuild/bin/pkg/conflict\n_repo_mapping <OUT>/bazel-out/rust-fastbuild/bin/pkg/conflict.repo_mapping\n"
+        "_main/dir <WS>/pkg/d.txt\n_main/pkg/conflict <OUT>/bazel-out/k8-fastbuild/bin/pkg/conflict\n_repo_mapping <OUT>/bazel-out/k8-fastbuild/bin/pkg/conflict.repo_mapping\n"
     );
 }
 
@@ -564,7 +564,7 @@ fn run_executes_the_target_in_its_runfiles_directory() {
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         format!(
-            "argv0=bazel-out/rust-fastbuild/bin/pkg/b\nargs=fixed x y z\ncwd=bazel-out/rust-fastbuild/bin/pkg/b.runfiles/_main\nBUILD_WORKING_DIRECTORY={workspace}/pkg\nBUILD_WORKSPACE_DIRECTORY={workspace}\nCLIENT_X=1\nFROM_TARGET=yes\nINHERIT_ME=inherited\nRUN_SET=1\npkg\nsym\nmain-data\next-data\nMANIFEST\n_main\n_repo_mapping\next+\nrootsym.txt\nstdin=from-stdin\n"
+            "argv0=bazel-out/k8-fastbuild/bin/pkg/b\nargs=fixed x y z\ncwd=bazel-out/k8-fastbuild/bin/pkg/b.runfiles/_main\nBUILD_WORKING_DIRECTORY={workspace}/pkg\nBUILD_WORKSPACE_DIRECTORY={workspace}\nCLIENT_X=1\nFROM_TARGET=yes\nINHERIT_ME=inherited\nRUN_SET=1\npkg\nsym\nmain-data\next-data\nMANIFEST\n_main\n_repo_mapping\next+\nrootsym.txt\nstdin=from-stdin\n"
         )
     );
     assert!(
@@ -596,7 +596,7 @@ fn run_script_path_writes_the_script() {
     assert_eq!(lines[0], "#!/bin/bash");
     assert!(
         lines[1].starts_with("cd /")
-            && lines[1].ends_with("/bazel-out/rust-fastbuild/bin/pkg/b.runfiles/_main && \\")
+            && lines[1].ends_with("/bazel-out/k8-fastbuild/bin/pkg/b.runfiles/_main && \\")
     );
     assert_eq!(
         &lines[2..8],
@@ -622,7 +622,7 @@ fn run_script_path_writes_the_script() {
     );
     assert_eq!(lines[12], "    FROM_TARGET=yes \\");
     assert_eq!(lines[13], "    INHERIT_ME=inherited \\");
-    assert!(lines[14].ends_with("/bazel-out/rust-fastbuild/bin/pkg/b fixed 'arg 1' \"$@\""));
+    assert!(lines[14].ends_with("/bazel-out/k8-fastbuild/bin/pkg/b fixed 'arg 1' \"$@\""));
     assert!(!script.ends_with('\n'));
     // The script runs the target like `run` (stdin from /dev/null here).
     let output = Command::new(&script_path)
@@ -671,6 +671,11 @@ fn run_validates_its_target() {
         (
             vec!["run", "--run_under=//pkg:tool", "//pkg:b"],
             "a label prefix (LabelRunUnder) is not supported",
+        ),
+        // --run_env converts with N42's EnvVarsConverter (crate::action_env).
+        (
+            vec!["run", "--run_env=", "//pkg:b"],
+            "While parsing option --run_env=: Variable definitions must be in the form of a 'name=value', 'name', or '=name' assignment",
         ),
     ] {
         let output = ws.run(&args);
@@ -773,7 +778,7 @@ fn executable_sibling_resolves_proc_self_exe_and_realpath_to_its_runfiles() {
     success(&output);
     let exe = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
     assert!(
-        exe.ends_with("bazel-out/rust-fastbuild/bin/pkg2/readlink"),
+        exe.ends_with("bazel-out/k8-fastbuild/bin/pkg2/readlink"),
         "{}",
         exe.display()
     );
@@ -786,7 +791,7 @@ fn executable_sibling_resolves_proc_self_exe_and_realpath_to_its_runfiles() {
     // One inode: the published executable, its store blob and the sibling.
     let sibling = fs::symlink_metadata(&exe).unwrap();
     assert!(sibling.is_file());
-    let published = published_without_tree(&ws, "bazel-out/rust-fastbuild/bin/pkg2/readlink");
+    let published = published_without_tree(&ws, "bazel-out/k8-fastbuild/bin/pkg2/readlink");
     assert_eq!(fs::metadata(published).unwrap().ino(), sibling.ino());
     assert!(sibling.nlink() >= 3);
     // A script resolving realpath($0) also lands next to its runfiles.
@@ -796,7 +801,7 @@ fn executable_sibling_resolves_proc_self_exe_and_realpath_to_its_runfiles() {
     let mut lines = stdout.lines();
     let real = PathBuf::from(lines.next().unwrap());
     assert!(
-        real.ends_with("bazel-out/rust-fastbuild/bin/pkg2/real"),
+        real.ends_with("bazel-out/k8-fastbuild/bin/pkg2/real"),
         "{stdout}"
     );
     assert!(real.with_file_name("real.runfiles").is_dir());
@@ -850,10 +855,29 @@ fn repo_mapping_source_repositories_follow_each_configuration() {
     // (the `ext+/rooted.txt` root symlink).
     let (plain, opt): (Vec<_>, Vec<_>) = contents
         .into_iter()
-        .partition(|(config, _)| config == "rust-fastbuild");
+        .partition(|(config, _)| config == "k8-fastbuild");
     assert_eq!(plain.len(), 1);
     assert_eq!(plain[0].1, ",ext,ext+\n,rf,_main\n");
     assert_eq!(opt.len(), 1);
-    assert!(opt[0].0.starts_with("rust-opt"), "{}", opt[0].0);
+    assert!(opt[0].0.starts_with("k8-opt"), "{}", opt[0].0);
     assert_eq!(opt[0].1, ",ext,ext+\n,rf,_main\next+,ext,ext+\n");
+}
+
+#[test]
+fn query_never_lists_runfiles_artifacts() {
+    // Runfiles trees, manifests and repo mappings are analysis-time
+    // artifacts of RunfilesSupport, not package targets: Bazel's query
+    // (and the native N39 query) lists only the rules and files of the
+    // package, also after a build created them.
+    let ws = Workspace::new();
+    success(&ws.run(&["build", "//pkg:b", "//pkg:use"]));
+    for pattern in ["//pkg:*", "//pkg:all", "deps(//pkg:use)"] {
+        let output = ws.run(&["query", pattern]);
+        success(&output);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(!stdout.is_empty(), "{pattern}");
+        for marker in [".runfiles", ".repo_mapping", "runfiles_manifest", "MANIFEST"] {
+            assert!(!stdout.contains(marker), "{pattern} lists {marker}:\n{stdout}");
+        }
+    }
 }

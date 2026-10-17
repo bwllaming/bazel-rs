@@ -729,6 +729,54 @@ ext = module_extension(_ext)
 }
 
 #[test]
+fn tool_runfiles_enter_the_remote_input_root() {
+    // N23f stages a tool's runfiles tree into the spawn (SpawnInputExpander);
+    // the REAPI input root carries the same files, so a changed runfile is
+    // a different remote key and the same runfiles hit again (N41).
+    let ws = Workspace::new();
+    ws.file(
+        "pkg/BUILD.bazel",
+        "load(\":defs.bzl\", \"tool\", \"use\")\ntool(name = \"tool\", data = [\"d.txt\"])\nuse(name = \"use\", tool = \":tool\")\n",
+    );
+    ws.file(
+        "pkg/defs.bzl",
+        r##"def _tool(ctx):
+    exe = ctx.actions.declare_file(ctx.label.name)
+    ctx.actions.write(exe, "#!/bin/sh\ncat \"$0.runfiles/_main/pkg/d.txt\" > \"$1\"\n", is_executable = True)
+    return [DefaultInfo(executable = exe, runfiles = ctx.runfiles(files = ctx.files.data))]
+tool = rule(_tool, executable = True, attrs = {"data": attr.label_list(allow_files = True)})
+def _use(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.run(executable = ctx.executable.tool, arguments = [out.path], outputs = [out], mnemonic = "UseTool")
+    return [DefaultInfo(files = depset([out]))]
+use = rule(_use, attrs = {"tool": attr.label(executable = True, cfg = "target")})
+"##,
+    );
+    let server = Server::new();
+    let cache = format!("--remote_cache={}", server.url());
+    let build = |local: &str| {
+        let output = ws.run(local, &["build", &cache, "//pkg:use"]);
+        assert!(output.status.success(), "{}", stderr(&output));
+        (outputs(&output)["//pkg:use"].clone(), stderr(&output))
+    };
+    ws.file("pkg/d.txt", "one\n");
+    let (first, log) = build("c1");
+    assert_eq!(first, "one\n");
+    assert!(log.contains(", 0 remote cache hits"), "{log}");
+    // Only the runfile changes: a fresh local cache must not reuse the
+    // first remote result.
+    ws.file("pkg/d.txt", "two\n");
+    let (second, log) = build("c2");
+    assert_eq!(second, "two\n");
+    assert!(log.contains(", 0 remote cache hits"), "{log}");
+    // The first runfiles again: the remote entry is found.
+    ws.file("pkg/d.txt", "one\n");
+    let (third, log) = build("c3");
+    assert_eq!(third, "one\n");
+    assert!(log.contains(", 1 remote cache hits"), "{log}");
+}
+
+#[test]
 fn strict_action_env_is_the_modelled_default() {
     let ws = Workspace::new();
     let built = ws.run(

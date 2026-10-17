@@ -664,11 +664,11 @@ outexe = rule(_out, executable = True, attrs = {"executable": attr.output()})
         // build then fails because //pkg:lazy writes no output.
         (
             "run_lazy",
-            "has missing or invalid output 'bazel-out/rust-fastbuild/bin/pkg/run_lazy.out'",
+            "has missing or invalid output 'bazel-out/k8-fastbuild/bin/pkg/run_lazy.out'",
         ),
         (
             "run_provider",
-            "has missing or invalid output 'bazel-out/rust-fastbuild/bin/pkg/run_provider.out'",
+            "has missing or invalid output 'bazel-out/k8-fastbuild/bin/pkg/run_provider.out'",
         ),
         (
             "outexe",

@@ -114,7 +114,8 @@ entries link to, never input contents: a changed source keeps its link (live,
 like Bazel's symlinks into the workspace), a changed generated input has a new
 published path and so a new tree. Cache hits re-check every tree entry, the
 MANIFEST link and the sibling's digest and mode; a damaged tree is rebuilt. The manifest
-JSON records the tree (`runfiles`, an optional field of `native-action-v7`).
+JSON records the tree (`runfiles`, an optional field of the manifest format,
+`native-action-v8` since the N41 merge).
 
 ## Tools with runfiles in actions
 
@@ -129,7 +130,13 @@ files as N36 hardlinks, empty files as empty files. Inside the action the
 entries are regular files where Bazel's sandboxes show symlinks (and
 `--spawn_strategy=local` shows the execroot symlink farm with `MANIFEST`,
 capture B3L). `input_manifests` is accepted and ignored ("Legacy argument.
-Ignored.", sequence or None).
+Ignored.", sequence or None). The same staged entries (and the empty files,
+as parameter-file inputs) form the REAPI input root of the spawn's remote
+cache key (N41, crate::action::remote_action): a changed runfile is a
+different remote key (tests/remote_cache.rs
+`tool_runfiles_enter_the_remote_input_root`). Runfiles artifacts are never
+package targets, so `query` does not list them (tests/runfiles_trees.rs
+`query_never_lists_runfiles_artifacts`).
 
 ## `run` (runtime/commands/RunCommand.java)
 
@@ -159,7 +166,8 @@ Ignored.", sequence or None).
   :853-860): `BUILD_WORKSPACE_DIRECTORY`, `BUILD_WORKING_DIRECTORY`,
   `BUILD_EXECROOT` (native: the tree node's `outputs` directory), `BUILD_ID`
   (a random UUID), then `--run_env` (`NAME=VALUE`, `NAME`, `=NAME`;
-  Converters.EnvVarsConverter), then the target's RunEnvironmentInfo
+  Converters.EnvVarsConverter, the parser of `--action_env`,
+  crate::action_env::EnvVar), then the target's RunEnvironmentInfo
   `environment` and `inherited_environment` (ActionEnvironment.resolve).
   `JAVA_RUNFILES`, `RUNFILES_DIR`, `RUNFILES_MANIFEST_FILE`,
   `RUNFILES_MANIFEST_ONLY` and `TEST_SRCDIR` are cleared (:214-224). Native
