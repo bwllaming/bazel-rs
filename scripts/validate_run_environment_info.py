@@ -92,17 +92,19 @@ CASEPLAN = [
     # docs/RUNFILES.md): returning RunEnvironmentInfo with an executable builds
     # on both engines; without an executable both fail with Bazel's text.
     common.case('rule-build', ('executable', 'test', 'executable-missing', 'test-missing')),
-    # Only the `test` command remains a native-only boundary (`run` exists
-    # since N23f, docs/RUNFILES_TREES.md; its paired evidence is
+    # `bazel test` exists natively since N23g (formerly the only native-only
+    # boundary here): a test rule's RunEnvironmentInfo environment and inherited
+    # host variable reach the test on both engines (`run` exists since N23f,
+    # docs/RUNFILES_TREES.md; its paired evidence is
     # tests/fixtures/runfiles_trees/reference_receipt.json).
-    common.case('native-boundary', ('test-command',), 'native_boundary'),
+    common.case('test-command', ('environment',)),
 ]
 PLAN = [(c['name'], c['kind']) for c in CASEPLAN]
 LIMITATIONS = [
     'Bounded metadata API, nested ordinary-provider transport and explicit rule-authored action env only.',
     'rule(executable=True)/rule(test=True) loading, query and the _test rule-class-name check are differential (rule-kind).',
     'Building executable/test rule targets that return RunEnvironmentInfo, and the missing-executable error, are differential (rule-build); runfiles trees are not compared.',
-    'The test command is a native-only boundary with the exact native unsupported-command message, never a paired positive case; the run command (N23f) is compared by artifacts/runfiles_trees-capture.py, not here.',
+    'The test command (N23g) is differential (test-command): exit code and test summary only, the passing test proving RunEnvironmentInfo environment/inherited_environment reached it; test.log/test.xml bytes are not compared. The run command (N23f) is compared by artifacts/runfiles_trees-capture.py, not here.',
     'Inherited names remain metadata: no host reads or automatic action environment folding.',
     'Unicode and NUL values are metadata only; NUL is never passed to an OS environment.',
     'Reference-only preparation cannot claim native PASS; synthetic unit receipts are not engine evidence.',
@@ -142,6 +144,15 @@ READY, ENTERED = 'RUNENV_READY', 'RUNENV_CONSUMER'
 HOST = {'RUNENV_CONTRACT_LITERAL': 'HOST_SYNTHETIC', 'RUNENV_CONTRACT_SECOND': 'HOST_SECOND'}
 KEYS = 'P=provider()\nOther=provider()\nR=RunEnvironmentInfo\n'
 INFO = 'R({"Z":"z","A":"a"},["N","N"])'
+# The test passes only if both RunEnvironmentInfo entries reach its environment.
+TEST_SCRIPT = ('#!/bin/sh\nprintf "%s:%s\\n" "${RUNENV_TEST_VALUE-unset}" "${RUNENV_CONTRACT_LITERAL-unset}"\n'
+    '[ "${RUNENV_TEST_VALUE-}" = "set" ] && [ "${RUNENV_CONTRACT_LITERAL-}" = "' + HOST['RUNENV_CONTRACT_LITERAL'] + '" ]\n')
+# Genuine Bazel 9.3 and native (N23g) print the same summary on stdout
+# (TerminalTestSummaryPrinter); only the duration varies.
+TEST_SUMMARY = re.compile(r'//app:check {62}PASSED in [0-9]+\.[0-9]s\n\n'
+    r'Executed 1 out of 1 test: 1 test passes\.\n'
+    r'There were tests whose specified size is too big\. Use the --test_verbose_timeout_warnings '
+    r'command line option to see which ones these are\.\n')
 
 
 def write(expression):
@@ -331,17 +342,20 @@ def fixture(name, probe):
             body = ('out=ctx.actions.declare_file(ctx.label.name+".out")\n'
                 'ctx.actions.write(out,repr(R()),is_executable=True)\n'
                 'return [DefaultInfo(executable=out),'+INFO+']\n')
-    elif name == 'native-boundary':
-        command = probe.split('-')[0]
-        symbol = 'check_test' if command == 'test' else 'check'
-        extra = ','+('test' if command == 'test' else 'executable')+'=True'
+            # Bazel's executable action set (aquery //app:check, both kinds):
+            # FileWrite, RepoMappingManifest, SourceSymlinkManifest and
+            # SymlinkTree; native builds the same runfiles actions since N23f.
+            value['actions'] = 4
+    elif name == 'test-command':
+        # TestActionBuilder/TestRunnerAction: RunEnvironmentInfo.environment is
+        # set and inherited_environment read from the client environment (HOST).
+        symbol, extra = 'check_test', ',test=True'
         files['app/BUILD.bazel'] = 'load("//defs:check.bzl","'+symbol+'")\n'+symbol+'(name="check")\n'
         body = ('out=ctx.actions.declare_file(ctx.label.name+".out")\n'
-            'ctx.actions.write(out,repr(R()),is_executable=True)\n'
-            'return [DefaultInfo(executable=out)]\n')
-        value.update(queries=[('//app:check', ['//app:check'])], command=command)
-        reject(command+'-command', 'command')
-        value.update(markers=[], callback=False)
+            'ctx.actions.write(out,'+repr(TEST_SCRIPT)+',is_executable=True)\n'
+            'return [DefaultInfo(executable=out),R({"RUNENV_TEST_VALUE":"set"},["RUNENV_CONTRACT_LITERAL"])]\n')
+        value.update(queries=[('//app:check', ['//app:check'])], expected={}, actions=0, stage='test',
+            test_command=True)
     elif name == 'rule-kind':
         kind = probe.split('-')[0]
         extra = '' if kind == 'plain' else ','+kind+'=True'
@@ -394,8 +408,6 @@ DIAGNOSTICS = {
     # engines (analysis/starlark/StarlarkRuleConfiguredTargetUtil.java:418-428).
     'missing-executable-check': r"(?:^|: )The rule 'check' is executable\. It needs to create an executable File and pass it as the 'executable' parameter to the DefaultInfo it returns\.$",
     'missing-executable-check_test': r"(?:^|: )The rule 'check_test' is executable\. It needs to create an executable File and pass it as the 'executable' parameter to the DefaultInfo it returns\.$",
-    # Exact native text: the test/run commands do not exist natively.
-    'test-command': r'^bazel-rs: unsupported command or startup option "test"; run --help for the native subset$',
     # Bazel's exported-rule check (StarlarkRuleClassFunctions.java:1931-1937),
     # identical in both engines; it ends the error line.
     'misnamed-check': r"(?:^|: )Invalid rule class name 'check', test rule class names must end with '_test' and other rule classes must not$",
@@ -437,6 +449,9 @@ def steps_for(value, engine):
         return steps
     if value['diagnostic']:
         return steps+[(value['failure_command'], value['target'], [])]
+    if value.get('test_command'):
+        return steps+[('test', value['target'], ['--experimental_convenience_symlinks=ignore', '--jobs=2']
+                       if engine == 'reference' else [])]
     for _ in range(2):
         steps.append(('build', value['target'], []))
         if engine == 'reference':
@@ -469,7 +484,7 @@ def require_markers(record, value, command, first, engine, rejection):
     entered = utility.marker_count(record, ENTERED)
     if (command == 'query' or (rejection and value['stage'] != 'callback')) and entered:
         raise ValueError('analysis callback executed before prerequisite validation')
-    if value['callback'] and command == 'build' and (first or engine == 'native' or rejection) and not entered:
+    if value['callback'] and command in ('build', 'test') and (first or engine == 'native' or rejection or command == 'test') and not entered:
         raise ValueError('missing actual consumer callback')
 
 
@@ -567,6 +582,10 @@ def validate_phase(phase, report, args, workspace, reference, item):
             if sorted(r['stdout'].splitlines()) != value['queries'][i][1]:
                 raise ValueError('query did not return exact planned targets')
             continue
+        if command == 'test':
+            if not value.get('test_command') or r['returncode'] != 0 or not TEST_SUMMARY.fullmatch(r['stdout']):
+                raise ValueError('test command did not pass with the exact test summary')
+            continue
         if command == 'build':
             if engine == 'native':
                 common.action_counts(r, (value['actions'], 0) if build_index == 0 else (0, value['actions']))
@@ -582,7 +601,7 @@ def validate_phase(phase, report, args, workspace, reference, item):
             if e['kind'] != 'file' or e['mode'] != 0o555 or not valid_evidence(e, value['expected'][Path(e['path']).name], True):
                 raise ValueError('consumer bytes or executable mode mismatch')
         output_index += 1
-    if value['diagnostic'] or value.get('query_only'):
+    if value['diagnostic'] or value.get('query_only') or value.get('test_command'):
         if phase['outputs']:
             raise ValueError('rejected or query-only phase published outputs')
     elif len(phase['outputs']) != 2 or phase['outputs'][0] != phase['outputs'][1]:

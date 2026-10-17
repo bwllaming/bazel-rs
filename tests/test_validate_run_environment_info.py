@@ -43,10 +43,11 @@ def record(text='', code=1, **changes):
 class PlanTests(unittest.TestCase):
     def test_exact_plan_and_lexical_fixtures(self):
         self.assertEqual(len(suite.CASEPLAN), 9)
-        # 57 probes and 113 phases since N23f removed the run-command probe.
+        # 57 probes since N23f removed the run-command probe; 114 phases since
+        # N23g made the test-command probe differential (was native-only).
         self.assertEqual(sum(len(c['probes']) for c in suite.CASEPLAN), 57)
-        self.assertEqual(suite.plan_receipt()['phases'], 113)
-        self.assertEqual(suite.plan_receipt(True)['phases'], 56)
+        self.assertEqual(suite.plan_receipt()['phases'], 114)
+        self.assertEqual(suite.plan_receipt(True)['phases'], 57)
         for item in suite.CASEPLAN:
             self.assertEqual(len(item['probes']), len(set(item['probes'])))
             for probe in item['probes']:
@@ -62,6 +63,8 @@ class PlanTests(unittest.TestCase):
                 elif v.get('query_only'):
                     self.assertEqual(suite.steps_for(v, 'native'), [('query', '//app:check', [])])
                     self.assertEqual(suite.steps_for(v, 'reference'), [('query', '//app:check', [])])
+                elif v.get('test_command'):
+                    self.assertEqual([c for c, _, _ in suite.steps_for(v, 'native')], ['query', 'test'])
                 else:
                     self.assertEqual(sum(c == 'build' for c, _, _ in suite.steps_for(v, 'native')), 2)
 
@@ -69,8 +72,9 @@ class PlanTests(unittest.TestCase):
         for family, probe in [('invented', 'x'), ('constructor', 'invented')]:
             with self.assertRaisesRegex(ValueError, 'unknown planned'):
                 suite.fixture(family, probe)
-        self.assertEqual(suite.phases_for(suite.CASEPLAN[-1], True), [])
-        self.assertTrue(all(e == 'native' for _, e in suite.phases_for(suite.CASEPLAN[-1])))
+        # No native-only boundary remains (test-command is differential since N23g).
+        self.assertFalse(any(c['kind'] == 'native_boundary' for c in suite.CASEPLAN))
+        self.assertEqual(suite.phases_for(suite.CASEPLAN[-1]), [('environment', 'reference'), ('environment', 'native')])
 
     def test_executable_and_test_rule_declarations_are_differential_until_analysis(self):
         # Native loads rule(executable=True)/rule(test=True) like Bazel, so
@@ -114,7 +118,9 @@ class PlanTests(unittest.TestCase):
             self.assertIn(symbol.encode()+b'=rule(implementation=_impl,attrs={},'+kind+b'=True)', v['files']['defs/check.bzl'])
             self.assertIn(b'return [DefaultInfo(executable=out),'+suite.INFO.encode()+b']', v['files']['defs/check.bzl'])
             self.assertIn(symbol.encode()+b'(name="check")', v['files']['app/BUILD.bazel'])
-            self.assertEqual((v['diagnostic'], v['stage'], v['callback'], v['actions']), (None, 'success', True, 1))
+            # Integration-15 (N23f runfiles): FileWrite + RepoMappingManifest +
+            # SourceSymlinkManifest + SymlinkTree, Bazel's aquery action set.
+            self.assertEqual((v['diagnostic'], v['stage'], v['callback'], v['actions']), (None, 'success', True, 4))
             self.assertEqual(v['expected'], {'check.out': b'struct(environment = {}, inherited_environment = [])'})
             self.assertEqual(v['returncodes'], {'native': 0, 'reference': 0})
             self.assertEqual(sum(c == 'build' for c, _, _ in suite.steps_for(v, 'native')), 2)
@@ -162,29 +168,37 @@ class PlanTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'registry patch'):
                     suite.require_registry_patches(registry)
 
-    def test_test_command_is_the_exact_native_boundary(self):
+    def test_test_command_is_differential_with_run_environment(self):
+        # N23g implements `bazel test`: the former native-only boundary is a
+        # paired positive case whose test passes only with both environment entries.
         item = suite.CASEPLAN[-1]
-        self.assertEqual((item['name'], item['kind']), ('native-boundary', 'native_boundary'))
-        self.assertEqual(suite.phases_for(item, True), [])
-        # `run` is implemented since N23f (docs/RUNFILES_TREES.md).
-        self.assertNotIn('run-command', item['probes'])
-        for probe, command, symbol in (('test-command', 'test', 'check_test'),):
-            v = suite.fixture('native-boundary', probe)
-            self.assertIn(b'return [DefaultInfo(executable=out)]', v['files']['defs/check.bzl'])
-            self.assertIn(symbol.encode()+b'(name="check")', v['files']['app/BUILD.bazel'])
-            self.assertEqual((v['stage'], v['failure_command'], v['diagnostic'], v['callback'], v['markers']),
-                             ('command', command, probe, False, []))
-            self.assertEqual(suite.steps_for(v, 'native'), [('query', '//app:check', []), (command, '//app:check', [])])
-            message = 'bazel-rs: unsupported command or startup option "'+command+'"; run --help for the native subset'
-            suite.require_rejection(record(message), v['diagnostic'], 1)
-            suite.require_markers(record(message), v, command, False, 'native', True)
-            with self.assertRaises(ValueError):
-                suite.require_markers(record(suite.ENTERED+'\n'+message), v, command, False, 'native', True)
-            other = 'run' if command == 'test' else 'test'
-            for text in (message.replace('"'+command+'"', '"'+other+'"'), message+' x', '  '+message,
-                         'error: '+command+' is not supported'):
-                with self.subTest(probe=probe, text=text), self.assertRaises(ValueError):
-                    suite.require_rejection(record(text), v['diagnostic'], 1)
+        self.assertEqual((item['name'], item['kind'], item['probes']), ('test-command', 'differential', ['environment']))
+        self.assertNotIn('native-boundary', [c['name'] for c in suite.CASEPLAN])
+        self.assertNotIn('test-command', suite.DIAGNOSTICS)
+        self.assertEqual(suite.phases_for(item, True), [('environment', 'reference')])
+        v = suite.fixture('test-command', 'environment')
+        raw = v['files']['defs/check.bzl']
+        self.assertIn(b'check_test=rule(implementation=_impl,attrs={},test=True)', raw)
+        self.assertIn(b'R({"RUNENV_TEST_VALUE":"set"},["RUNENV_CONTRACT_LITERAL"])', raw)
+        self.assertIn(b'= "HOST_SYNTHETIC" ]', raw)
+        self.assertEqual(suite.HOST['RUNENV_CONTRACT_LITERAL'], 'HOST_SYNTHETIC')
+        self.assertIn(b'check_test(name="check")', v['files']['app/BUILD.bazel'])
+        self.assertEqual((v['diagnostic'], v['stage'], v['callback'], v['expected'], v['returncodes']),
+                         (None, 'test', True, {}, {'native': 0, 'reference': 0}))
+        self.assertEqual(suite.steps_for(v, 'native'), [('query', '//app:check', []), ('test', '//app:check', [])])
+        self.assertEqual(suite.steps_for(v, 'reference'), [('query', '//app:check', []),
+            ('test', '//app:check', ['--experimental_convenience_symlinks=ignore', '--jobs=2'])])
+        summary = ('//app:check' + ' ' * 62 + 'PASSED in 0.0s\n\nExecuted 1 out of 1 test: 1 test passes.\n'
+                   'There were tests whose specified size is too big. Use the --test_verbose_timeout_warnings '
+                   'command line option to see which ones these are.\n')
+        self.assertTrue(suite.TEST_SUMMARY.fullmatch(summary))
+        for wrong in (summary.replace('PASSED', 'FAILED'), summary.replace('1 test passes', '1 fails locally'),
+                      summary.replace('//app:check', '//app:other'), summary + 'extra\n', ''):
+            with self.subTest(wrong=wrong):
+                self.assertIsNone(suite.TEST_SUMMARY.fullmatch(wrong))
+        suite.require_markers(record(suite.READY+'\n'+suite.ENTERED+'\n'), v, 'test', False, 'native', False)
+        with self.assertRaises(ValueError):
+            suite.require_markers(record(suite.READY+'\n'), v, 'test', False, 'reference', False)
 
     def test_unicode_nul_not_normalized_or_os_environment(self):
         v = suite.fixture('constructor', 'unicode-nul')
@@ -585,9 +599,9 @@ class ReplayTests(unittest.TestCase):
 
     def test_wrong_phase_order_and_boundary_reference_rejected(self):
         args = suite.argument_parser().parse_args(['--reference-only'])
-        for item in (suite.CASEPLAN[0], suite.CASEPLAN[-1]):
+        for item, engine in ((suite.CASEPLAN[0], 'reference'), (suite.CASEPLAN[-1], 'native')):
             check = dict(name=item['name'], kind=item['kind'], status='PASS',
-                phases=[dict(probe=p, engine='reference') for p in reversed(item['probes'])])
+                phases=[dict(probe=p, engine=engine) for p in reversed(item['probes'])])
             with mock.patch.object(suite, 'validate_phase') as replay:
                 with self.assertRaisesRegex(ValueError, 'missing, reordered'):
                     suite.validate_check(check, {}, args, Path('/unused'), None)
