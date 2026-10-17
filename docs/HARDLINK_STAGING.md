@@ -158,6 +158,23 @@ are no longer held in memory) and peak cache disk from 3.59 GB to 0.69 GB
 action, is now O(n log n) (adjacent pairs in component order), with the
 previous quadratic scan kept only to name the first overlap in declaration order.
 
+## Module-extension I/O native capture
+
+The native diagnostic capture of `scripts/validate_module_extension_io.py`
+(`tests/fixtures/module_extension_io/native_capture.py`) snapshots each case's
+whole `--cache-dir`. Before N36 it required every cache file to be single-link;
+with N36 the consumer's published output and its `cas/<sha256>-555` blob are
+one inode. The snapshot now accepts a hardlinked file only when all `st_nlink`
+names of that `(st_dev, st_ino)` were walked inside the case's cache root (a
+name outside the cache, or in another case's cache, is still a blocker;
+symlinks and special files are still rejected) and records each group as
+`links`. A recorded group must be one `cas/` blob plus published action outputs
+with identical bytes and mode. `cas/` is a publication root: every blob must be
+named by its own digest and read-only mode (`0444` plus executable bits), and a
+negative case may leave none. Action manifests are checked as
+`native-action-v7` regular-file outputs (`mode` `0555`, no `tree`/`symlink`).
+Retained copies under `native-cache/` are independent single-link files.
+
 ## Paired capture
 
 `artifacts/staging-capture.py` builds the fixture of

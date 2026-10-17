@@ -1248,10 +1248,20 @@ def native_artifact_fixture(root, case=None, phase="cold", data_encoding="latin-
     action_root = cache / "actions" / action_id
     output = action_root / "outputs" / collector.OUTPUT
     output.parent.mkdir(parents=True)
-    output.write_bytes(data)
-    output.chmod(0o555)
-    qa.save_json(action_root / "manifest.json", {"format": "native-action-v5", "key": action_id,
-        "outputs": [{"name": collector.OUTPUT.encode().hex(), "digest": qa.digest(data), "executable": 0o111}]})
+    # N36 layout (docs/HARDLINK_STAGING.md): the staged input's store copy
+    # cas/<sha>-444 and the output blob cas/<sha>-555, which IS the published
+    # output inode (one hardlink group), plus a v7 action manifest.
+    store = cache / "cas"
+    store.mkdir()
+    (store / (qa.digest(data) + "-444")).write_bytes(data)
+    (store / (qa.digest(data) + "-444")).chmod(0o444)
+    blob = store / (qa.digest(data) + "-555")
+    blob.write_bytes(data)
+    blob.chmod(0o555)
+    os.link(blob, output)
+    qa.save_json(action_root / "manifest.json", {"format": "native-action-v7", "key": action_id,
+        "outputs": [{"name": collector.OUTPUT.encode().hex(), "digest": qa.digest(data), "mode": 0o555,
+                     "tree": None, "symlink": None}]})
     planned = collector.plan(root, "/unit-native-not-executed")
     spec = next(r for r in planned if r["case"] == case.name and r["phase"] == phase)
     source = qa.render(case, origin)["extension.bzl"]
@@ -1410,7 +1420,7 @@ class NativeCollectorTests(unittest.TestCase):
         frames = b"".join(qa.MARKER + qa.canonical(e) + b"\n" for e in qa.expected_events(case))
         row = {"spec": spec, "status": 1, "stdout": qa.blob(b""), "stderr": qa.blob(frames + b"unrelated error\n"),
                "requests": [], "artifacts": {"cache_root": str(root / "scratch/cache" / case.name),
-                   "repositories": [], "actions": [], "decode_errors": [], "files": {}, "directories": {},
+                   "repositories": [], "actions": [], "decode_errors": [], "files": {}, "directories": {}, "links": [],
                    "cache_exists": False, "publication_entries": [], "unaccounted_publications": []}}
         frozen = {"plan": collector.plan(root, "/not-executed"), "origin": "http://127.0.0.1:18080",
                   "fixtures": {case.name: {"extension.bzl": qa.blob(source)}}}
@@ -1438,6 +1448,171 @@ class NativeCollectorTests(unittest.TestCase):
             collector.compare_pair({}, nf, {}, rf, {"counts": counts, "runtime_binding": {**binding, "ledger_sha256": "f" * 64}}, {"counts": counts})
         with self.assertRaises(ValueError):
             collector.compare_pair({}, {**nf, "runtime_binding": {"source_count": 8}}, {}, rf, native_result, {"counts": counts})
+
+
+class NativeHardlinkStoreTests(unittest.TestCase):
+    """N36 content-addressed store: in-cache hardlink groups, cas/ accounting, v7 manifests."""
+
+    def fixture(self, directory):
+        collector, case, row, spec, frozen = native_artifact_fixture(Path(directory))
+        cache = Path(row["artifacts"]["cache_root"])
+        key = row["artifacts"]["actions"][0]["key"]
+        output = "actions/" + key + "/outputs/" + collector.OUTPUT
+        blob = next(name for name in row["artifacts"]["files"] if name.endswith("-555"))
+        return collector, case, row, spec, frozen, cache, output, blob
+
+    def test_in_cache_hardlink_group_is_measured_recorded_and_accepted(self):
+        with tempfile.TemporaryDirectory(prefix="module-extension-io-native-unit-") as directory:
+            collector, case, row, spec, frozen, cache, output, blob = self.fixture(directory)
+            self.assertEqual(row["artifacts"]["links"], [sorted([output, blob])])
+            self.assertEqual((cache / output).stat().st_nlink, 2)
+            self.assertEqual(row["artifacts"]["unaccounted_publications"], [])
+            self.assertEqual(row["artifacts"]["decode_errors"], [])
+            self.assertIn(blob, row["artifacts"]["publication_entries"])
+            self.assertEqual(collector.validate_stage(row, spec, case, frozen)["issues"], [])
+            # A copy/rename fallback publication (no group) is equally valid.
+            fallback = copy.deepcopy(row)
+            fallback["artifacts"]["links"] = []
+            self.assertEqual(collector.validate_stage(fallback, spec, case, frozen)["issues"], [])
+
+    def test_link_with_a_name_outside_the_cache_or_standalone_is_rejected(self):
+        with tempfile.TemporaryDirectory(prefix="module-extension-io-native-unit-") as directory:
+            collector, case, row, spec, frozen, cache, output, blob = self.fixture(directory)
+            outside = Path(directory) / "outside-name"
+            os.link(cache / blob, outside)
+            with self.assertRaisesRegex(collector.RuntimeViolation, "outside the snapshotted cache"):
+                collector.observe(Path(directory), case)
+            # Another case's cache is outside this case's snapshot too.
+            outside.unlink()
+            other = cache.parent / "other-case"
+            other.mkdir()
+            os.link(cache / blob, other / "alias")
+            with self.assertRaisesRegex(collector.RuntimeViolation, "outside the snapshotted cache"):
+                collector.observe(Path(directory), case)
+            (other / "alias").unlink()
+            collector.observe(Path(directory), case)
+            # Without the whole-tree proof a single file must still be single-link.
+            with self.assertRaisesRegex(collector.RuntimeViolation, "linked native publication"):
+                collector.snapshot_file(cache / blob, cache)
+
+    def test_symlinks_and_special_files_are_still_rejected(self):
+        with tempfile.TemporaryDirectory(prefix="module-extension-io-native-unit-") as directory:
+            collector, case, row, spec, frozen, cache, output, blob = self.fixture(directory)
+            (cache / "cas/link").symlink_to(cache / blob)
+            with self.assertRaises(collector.RuntimeViolation):
+                collector.observe(Path(directory), case)
+            (cache / "cas/link").unlink()
+            os.mkfifo(cache / "cas/fifo")
+            with self.assertRaises(collector.RuntimeViolation):
+                collector.observe(Path(directory), case)
+
+    def test_recorded_link_groups_must_have_n36_shape(self):
+        with tempfile.TemporaryDirectory(prefix="module-extension-io-native-unit-") as directory:
+            collector, case, row, spec, frozen, cache, output, blob = self.fixture(directory)
+            files = row["artifacts"]["files"]
+            data_file = next(name for name in files if name.endswith("/data.json"))
+            input_blob = next(name for name in files if name.endswith("-444"))
+            manifest = "actions/" + row["artifacts"]["actions"][0]["key"] + "/manifest.json"
+            for groups in ([sorted([blob, data_file])],              # repository tree aliasing a blob
+                           [sorted([blob, input_blob])],             # two blobs on one inode (and bytes/mode differ)
+                           [sorted([output, manifest])],             # no blob, aliased manifest
+                           [[output]],                               # a group of one name
+                           [sorted([blob, output, "cas/missing"])],  # names a non-recorded file
+                           [[max(output, blob), min(output, blob)]],  # noncanonical order
+                           [sorted([blob, output])] * 2):            # a name in two groups
+                with self.subTest(groups=groups):
+                    bad = copy.deepcopy(row)
+                    bad["artifacts"]["links"] = groups
+                    with self.assertRaises((collector.RuntimeViolation, ValueError)):
+                        collector.validate_stage(bad, spec, case, frozen)
+            bad = copy.deepcopy(row)
+            del bad["artifacts"]["links"]
+            with self.assertRaises(collector.RuntimeViolation):
+                collector.validate_stage(bad, spec, case, frozen)
+
+    def test_cas_blobs_must_name_their_own_digest_and_read_only_mode(self):
+        with tempfile.TemporaryDirectory(prefix="module-extension-io-native-unit-") as directory:
+            collector, case, row, spec, frozen, cache, output, blob = self.fixture(directory)
+            digest = qa.digest(b"stray")
+            variants = [("cas/" + "0" * 64 + "-444", b"stray", 0o444),   # name is not the content digest
+                        ("cas/" + digest + "-555", b"stray", 0o444),     # mode differs from the name
+                        ("cas/" + digest + "-644", b"stray", 0o644),     # writable blob
+                        ("cas/" + digest, b"stray", 0o444),              # no mode suffix
+                        ("cas/.tmp-" + digest, b"stray", 0o644),         # leftover temporary
+                        ("cas/nested/" + digest + "-444", b"stray", 0o444)]
+            for relative, data, mode in variants:
+                with self.subTest(relative=relative):
+                    path = cache / relative
+                    path.parent.mkdir(exist_ok=True)
+                    path.write_bytes(data)
+                    path.chmod(mode)
+                    artifacts = collector.observe(Path(directory), case)
+                    self.assertIn(relative, artifacts["unaccounted_publications"])
+                    bad = {**row, "artifacts": artifacts}
+                    with self.assertRaises(collector.RuntimeViolation):
+                        collector.validate_stage(bad, spec, case, frozen)
+                    path.unlink()
+                    if path.parent.name == "nested":
+                        path.parent.rmdir()
+            # A stale but valid blob is legitimate: the store has no GC.
+            (cache / ("cas/" + digest + "-444")).write_bytes(b"stray")
+            (cache / ("cas/" + digest + "-444")).chmod(0o444)
+            artifacts = collector.observe(Path(directory), case)
+            self.assertEqual(artifacts["unaccounted_publications"], [])
+            self.assertEqual(collector.validate_stage({**row, "artifacts": artifacts}, spec, case, frozen)["issues"], [])
+
+    def test_action_manifest_must_be_v7_regular_file_outputs(self):
+        with tempfile.TemporaryDirectory(prefix="module-extension-io-native-unit-") as directory:
+            collector, case, row, spec, frozen, cache, output, blob = self.fixture(directory)
+            path = cache / "actions" / row["artifacts"]["actions"][0]["key"] / "manifest.json"
+            good = qa.load_json(path.read_bytes())
+            name, entry = good["outputs"][0]["name"], good["outputs"][0]
+            variants = [{**good, "format": "native-action-v5",
+                         "outputs": [{"name": name, "digest": entry["digest"], "executable": 0o111}]},
+                        {**good, "format": "native-action-v6"},
+                        {**good, "outputs": [{**entry, "mode": 0o755}]},
+                        {**good, "outputs": [{**entry, "symlink": "2f6574632f706173737764"}]},
+                        {**good, "outputs": [{**entry, "tree": {"files": [], "directories": []}}]},
+                        {**good, "outputs": [{k: v for k, v in entry.items() if k != "tree"}]}]
+            for manifest in variants:
+                with self.subTest(manifest=manifest):
+                    qa.save_json(path, manifest)
+                    artifacts = collector.observe(Path(directory), case)
+                    self.assertTrue(artifacts["decode_errors"])
+                    with self.assertRaises(collector.RuntimeViolation):
+                        collector.validate_stage({**row, "artifacts": artifacts}, spec, case, frozen)
+            qa.save_json(path, good)
+            self.assertEqual(collector.observe(Path(directory), case)["decode_errors"], [])
+
+    def test_negative_case_cannot_leave_store_blobs_or_link_groups(self):
+        with tempfile.TemporaryDirectory(prefix="module-extension-io-native-unit-") as directory:
+            root = Path(directory)
+            collector = qa.native_collector()
+            case = next(c for c in qa.cases() if c.name == "http-filter-false")
+            source = qa.render(case, "http://127.0.0.1:18080")["extension.bzl"]
+            planned = collector.plan(root, "/unit-native-not-executed")
+            spec = next(r for r in planned if r["case"] == case.name and r["phase"] == "negative")
+            frozen = {"plan": planned, "origin": "http://127.0.0.1:18080",
+                      "fixtures": {case.name: {"extension.bzl": qa.blob(source)}}}
+            (root / "scratch/tmp").mkdir(parents=True)
+            cache = root / "scratch/cache" / case.name
+            (cache / "cas").mkdir(parents=True)  # an empty namespace is not a publication
+            frames = b"".join(qa.MARKER + qa.canonical(e) + b"\n" for e in qa.expected_events(case))
+            row = {"spec": spec, "status": 1, "stdout": qa.blob(b""), "requests": [],
+                   "stderr": qa.blob(frames + unit_native_diagnostic(case, source)),
+                   "artifacts": collector.observe(root, case)}
+            self.assertEqual(collector.validate_stage(row, spec, case, frozen)["issues"], [])
+            blob = cache / "cas" / (qa.digest(b"x") + "-444")
+            blob.write_bytes(b"x")
+            blob.chmod(0o444)
+            row["artifacts"] = collector.observe(root, case)
+            with self.assertRaises(collector.RuntimeViolation):
+                collector.validate_stage(row, spec, case, frozen)
+            os.link(blob, cache / "alias")
+            row["artifacts"] = collector.observe(root, case)
+            self.assertEqual(row["artifacts"]["links"], [sorted(["alias", "cas/" + blob.name])])
+            with self.assertRaises(collector.RuntimeViolation):
+                collector.validate_stage(row, spec, case, frozen)
 
 
 class HTTPHeaderCaseTests(unittest.TestCase):
@@ -1758,6 +1933,30 @@ class CompleteNativeReceiptTests(unittest.TestCase):
         self.assertEqual(result["counts"]["matched"], 2)
         (self.worktree / "unit-verifier.py").write_bytes(b"changed current QA\n")
         with self.assertRaises(ValueError): self.n.replay(self.args)
+
+    def test_recorded_live_link_groups_replay_against_single_link_retained_copies(self):
+        row = self.row("cold")
+        key = row["artifacts"]["actions"][0]["key"]
+        self.assertEqual(len(row["artifacts"]["links"]), 1)
+        self.assertIn("actions/" + key + "/outputs/" + self.n.OUTPUT, row["artifacts"]["links"][0])
+        retained = self.root / "native-cache" / row["spec"]["case"] / "cold"
+        self.assertEqual(self.n.snapshot_tree(retained, self.n.budget_for(snapshot=True))["links"], [])
+        self.assertEqual(self.n.replay(self.args)["counts"]["matched"], 2)
+        # A rehashed observation whose group aliases the repository tree fails.
+        data_file = next(name for name in row["artifacts"]["files"] if name.endswith("/data.json"))
+        row["artifacts"]["links"] = [sorted(row["artifacts"]["links"][0] + [data_file])]
+        qa.save_json(self.root / "commands" / f'{row["spec"]["ordinal"]:04d}' / "native-observation.json", row["artifacts"])
+        self.seal()
+        with self.assertRaises((ValueError, self.n.RuntimeViolation)): self.n.replay(self.args)
+        # Retained evidence that is itself hardlinked is not an independent copy.
+        row["artifacts"]["links"] = []
+        qa.save_json(self.root / "commands" / f'{row["spec"]["ordinal"]:04d}' / "native-observation.json", row["artifacts"])
+        blob = next(retained / name for name in row["artifacts"]["files"] if name.endswith("-555"))
+        output = retained / "actions" / key / "outputs" / self.n.OUTPUT
+        output.unlink()
+        os.link(blob, output)
+        self.seal()
+        with self.assertRaises((ValueError, self.n.RuntimeViolation)): self.n.replay(self.args)
 
     def test_rehashed_negative_orphans_and_malformed_manifest_hard_reject(self):
         row = self.row("negative")

@@ -19,6 +19,9 @@ import time
 Q = None
 OUTPUT = "bazel-out/rust-fastbuild/bin/consumed.json"
 CANONICAL_REPOSITORY = "+io+made"
+# N36 manifest format (src/action.rs MANIFEST_FORMAT); the action KEY framing
+# is still native-action-v5 and is not observable in the cache layout.
+ACTION_MANIFEST_FORMAT = "native-action-v7"
 NATIVE_VERSION = b"bazel-rs 0.1.0 (experimental; compatibility target Bazel 9.3.0)\n"
 SUMMARY = re.compile(rb"bazel-rs: ([0-9]+) actions executed, ([0-9]+) cache hits \(experimental local execution; not sandboxed\)")
 SCHEMA = "module-io-native-diagnostic-v2"
@@ -587,24 +590,91 @@ def negative_diagnostic(tail, case, source):
         raise ValueError("native diagnostic wording/site/phase differs from frozen source profile")
 
 
-def snapshot_file(path, boundary, budget=None):
+def snapshot_file(path, boundary, budget=None, walked=None):
+    """One regular file's bytes/mode.
+
+    Standalone (``walked`` is None) a file must be single-link: nothing proves
+    where its other names live. Inside ``snapshot_tree`` the walk's own lstat
+    is passed and a hardlinked file is accepted only after the whole walk has
+    proven that EVERY name of the inode is inside the snapshotted root
+    (N36 publishes action outputs as hardlinks of ``cas/<sha256>-<mode>``).
+    """
     budget = budget or budget_for(snapshot=True)
     data, pin = budget.read(path, boundary=boundary, limit=budget.limits["artifact_file_bytes"])
-    if path.lstat().st_nlink != 1:
-        raise RuntimeViolation("nonregular/linked native publication: " + str(path))
+    after = path.lstat()
+    if walked is None:
+        if after.st_nlink != 1:
+            raise RuntimeViolation("nonregular/linked native publication: " + str(path))
+    elif FSBudget.signature(after) != FSBudget.signature(walked):
+        raise RuntimeViolation("native publication changed between walk and read: " + str(path))
     budget.check()
     return {"mode": pin["mode"], "data": Q.blob(data)}
 
 
 def snapshot_tree(root, budget, *, missing=False):
-    files, directories = {}, {}
+    """Bytes/modes of every entry plus the measured in-root hardlink groups.
+
+    Symlinks, devices, FIFOs and sockets are still rejected by the walk. A
+    regular file with st_nlink > 1 is accepted only if exactly st_nlink names
+    of that (st_dev, st_ino) were walked below ``root``: no name of a native
+    cache inode may live outside the cache (or the files of another case).
+    ``links`` lists each such group (sorted relative names); it is evidence,
+    retained copies are deliberately independent single-link files.
+    """
+    files, directories, inodes = {}, {}, {}
     for path, relative, info in budget.walk(root, missing=missing):
         if stat.S_ISDIR(info.st_mode):
             directories[relative] = format(stat.S_IMODE(info.st_mode), "04o")
         else:
-            files[relative] = snapshot_file(path, root, budget)
+            files[relative] = snapshot_file(path, root, budget, walked=info)
+            if info.st_nlink != 1:
+                inodes.setdefault((info.st_dev, info.st_ino), (info.st_nlink, []))[1].append(relative)
+    links = []
+    for nlink, names in inodes.values():
+        budget.check()
+        if len(names) != nlink:
+            raise RuntimeViolation("linked native publication has names outside the snapshotted cache: "
+                                   + str(Path(root) / sorted(names)[0]) + f" ({len(names)} of {nlink} links inside)")
+        links.append(sorted(names))
     budget.check()
-    return {"cache_exists": "" in directories, "files": files, "directories": directories}
+    return {"cache_exists": "" in directories, "files": files, "directories": directories, "links": sorted(links)}
+
+
+CAS_BLOB = re.compile(r"cas/([0-9a-f]{64})-([0-7]{3})")
+
+
+def blob_mode_valid(mode):
+    """N36 blob modes: read-only 0444 plus a subset of the executable bits."""
+    return mode & 0o444 == 0o444 and mode & ~0o555 == 0
+
+
+def link_groups(snapshot):
+    """Validate recorded in-cache hardlink groups against the recorded files.
+
+    Each group is >= 2 distinct recorded files with identical bytes and mode
+    (one inode necessarily has one content and one mode), containing exactly
+    one ``cas/<sha256>-<mode>`` blob, every other name being a published action
+    output (``actions/<key>/outputs/...``). Anything else (a linked repository
+    tree file, manifest, lock, two blobs on one inode) is not N36's design.
+    Groups are optional: a copy/rename fallback publication has none.
+    """
+    require("links" in snapshot, "native link-group evidence required")
+    groups, files = snapshot["links"], snapshot["files"]
+    require(type(groups) is list, "typed native link groups")
+    seen = set()
+    for group in groups:
+        require(type(group) is list and len(group) >= 2 and group == sorted(set(group)), "canonical native link group")
+        for name in group:
+            Q.inventory_key(name)
+            require(name in files and name not in seen, "native link group names a non-file or repeats a name")
+            seen.add(name)
+        require(all(files[name] == files[group[0]] for name in group), "native link group bytes/mode differ")
+        blobs = [name for name in group if CAS_BLOB.fullmatch(name)]
+        require(len(blobs) == 1, "native link group must contain exactly one content-addressed blob")
+        require(all(re.fullmatch(r"actions/[0-9a-f]{64}/outputs/.+", name) for name in group if name != blobs[0]),
+                "native link group aliases a non-output cache file")
+    require(groups == sorted(groups), "canonical native link group order")
+    return groups
 
 
 def snapshot_entries(snapshot, prefix=""):
@@ -651,7 +721,10 @@ def tree_entries(root):
 
 def publication_entries(snapshot):
     entries = snapshot_entries(snapshot)
-    roots = ("repositories/direct/trees", "repositories/direct/manifests", "actions")
+    # N36: cas/ (the content-addressed store whose blobs back published action
+    # outputs) is a publication root too, so a failed callback cannot leave
+    # blobs and every positive blob must be accounted for.
+    roots = ("repositories/direct/trees", "repositories/direct/manifests", "actions", "cas")
     # Empty namespace parents/locks/registry metadata are not publications.
     # Every descendant (including an empty orphan identity directory) is.
     return sorted(name for name, entry in entries.items() if any(
@@ -708,12 +781,18 @@ def discover_publications(snapshot, cache):
                 Q.equal(sorted(manifest), ["format", "key", "outputs"], "action manifest schema")
                 key = path.parent.name
                 require(bool(re.fullmatch(r"[0-9a-f]{64}", key)), "action identity path")
-                Q.equal([manifest["format"], manifest["key"]], ["native-action-v5", key], "action identity/profile")
+                # The KEY identity stays native-action-v5; the manifest is
+                # native-action-v7 since N36 (src/action.rs MANIFEST_FORMAT).
+                Q.equal([manifest["format"], manifest["key"]], [ACTION_MANIFEST_FORMAT, key], "action identity/profile")
                 require(type(manifest["outputs"]) is list and bool(manifest["outputs"]), "action outputs required")
                 claimed = {relative}
                 names = set()
                 for output in manifest["outputs"]:
-                    Q.equal(sorted(output), ["digest", "executable", "name"], "action output schema")
+                    Q.equal(sorted(output), ["digest", "mode", "name", "symlink", "tree"], "action output schema")
+                    # Only regular-file outputs are in this fixture's scope:
+                    # a tree or symlink output is a publication this checker
+                    # does not account for, never silently accepted.
+                    Q.equal([output["tree"], output["symlink"]], [None, None], "regular-file action output")
                     name = bytes.fromhex(output["name"]).decode("utf-8", errors="strict")
                     Q.inventory_key(name)
                     Q.equal(name.encode().hex(), output["name"], "canonical output-name encoding")
@@ -722,8 +801,8 @@ def discover_publications(snapshot, cache):
                     full = "actions/" + key + "/outputs/" + name
                     actual = entries[full]
                     require(not actual["directory"], "declared action output is not a file")
-                    Q.equal([output["digest"], output["executable"], actual["mode"]],
-                            [actual["sha256"], 0o111, 0o555], "action output digest/mode")
+                    Q.equal([output["digest"], output["mode"], actual["mode"]],
+                            [actual["sha256"], 0o555, 0o555], "action output digest/mode")
                     claimed.add(full)
                     parent = Path(full).parent
                     while str(parent) != "actions":
@@ -735,6 +814,24 @@ def discover_publications(snapshot, cache):
                 result["decode_errors"].append({"path": str(path), "error": str(error)})
                 continue
             result["actions"].append({"key": path.parent.name, "path": str(path), "manifest": file["data"]})
+    # N36 store blobs: a regular file directly below cas/ whose name is its
+    # own content digest and its own read-only mode. Stale blobs are legitimate
+    # (no store GC), so membership needs no manifest reference; a misnamed,
+    # wrong-mode, nested or leftover temporary entry stays unaccounted.
+    for relative in sorted(snapshot["files"]):
+        if not relative.startswith("cas/"):
+            continue
+        match = CAS_BLOB.fullmatch(relative)
+        try:
+            require(match is not None, "content-addressed blob name")
+            mode = int(match[2], 8)
+            require(blob_mode_valid(mode), "content-addressed blob mode profile")
+            Q.equal([entries[relative]["sha256"], entries[relative]["mode"]], [match[1], mode],
+                    "content-addressed blob digest/mode vs name")
+        except (ValueError, TypeError, KeyError, RuntimeViolation) as error:
+            result["decode_errors"].append({"path": str(cache / relative), "error": str(error)})
+            continue
+        accounted.add(relative)
     result["unaccounted_publications"] = sorted(set(result["publication_entries"]) - accounted)
     return result
 
@@ -760,6 +857,8 @@ def observe(root, case, budget=None):
             raise RuntimeViolation("native action workdir leak")
         if any(part.startswith((".stage-", ".trash-")) for part in Path(relative).parts):
             raise RuntimeViolation("native publication stage leak")
+    # Link-group SHAPE is judged by validate_stage after retention, like every
+    # other publication property; only escaping links are rejected here.
     result.update(discover_publications(snapshot, cache))
     budget.check()
     return result
@@ -805,8 +904,9 @@ def positive_artifacts(row, spec, case, root):
     Q.equal(action["path"], str(cache / "actions" / key / "manifest.json"), "native action manifest provenance")
     Q.equal(action["manifest"], artifacts["files"]["actions/" + key + "/manifest.json"]["data"], "actual action manifest bytes")
     action_manifest = Q.load_json(bounded_blob(action["manifest"]))
-    Q.equal(action_manifest, {"format": "native-action-v5", "key": key, "outputs": [
-        {"name": OUTPUT.encode().hex(), "digest": data["data"]["sha256"], "executable": 0o111}]}, "native actual action output manifest")
+    Q.equal(action_manifest, {"format": ACTION_MANIFEST_FORMAT, "key": key, "outputs": [
+        {"name": OUTPUT.encode().hex(), "digest": data["data"]["sha256"], "mode": 0o555, "tree": None, "symlink": None}]},
+        "native actual action output manifest")
     output = artifacts["files"]["actions/" + key + "/outputs/" + OUTPUT]
     Q.equal(output["mode"], "0555", "native completed action mode")
     Q.equal(output["data"], data["data"], "native independent consumer bytes")
@@ -819,6 +919,7 @@ def validate_stage(row, spec, case, freeze):
     root = Path(freeze["plan"][0]["cwd"]).parent
     source = Q.unblob(freeze["fixtures"][case.name]["extension.bzl"])
     Q.equal(row["artifacts"]["cache_root"], str(root / "scratch/cache" / case.name), "native observed cache boundary")
+    links = link_groups(row["artifacts"])
     # HTTP effects are independent physical evidence. Framing/wording mismatches
     # can never downgrade an extra, reordered or wrong-method request to UNMATCHED.
     require([(r.get("method"), r["path"]) for r in row["requests"]] == [("GET", path) for path in case.requests],
@@ -863,6 +964,7 @@ def validate_stage(row, spec, case, freeze):
         Q.equal(row["artifacts"]["publication_entries"], physical, "negative physical publication inventory")
         require(not physical, "native negative left physical repository/action publication")
         require(not row["artifacts"]["repositories"] and not row["artifacts"]["actions"], "native failed callback published outputs")
+        require(not links, "native negative left hardlinked publications")
         if row["status"] != 1 or Q.unblob(row["stdout"]):
             issues.append("native controlled-negative exit/stdout")
         try:
@@ -1163,6 +1265,10 @@ def bind_retained(root, report, frozen, budget=None):
             actual = snapshot_tree(retained, budget, missing=True)
             for key in ("cache_exists", "files", "directories"):
                 Q.equal(actual[key], row["artifacts"][key], "native independently retained " + key)
+            # Retained copies are independent files; recorded live link groups
+            # are evidence bound to those retained bytes by link_groups().
+            Q.equal(actual["links"], [], "native retained copies are single-link files")
+            link_groups(row["artifacts"])
             cache = original / "scratch/cache" / spec["case"]
             Q.equal(row["artifacts"]["cache_root"], str(cache), "retained actual cache boundary")
             verify_publication_discovery(row["artifacts"], actual, cache)
