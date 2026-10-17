@@ -1328,14 +1328,18 @@ fn redacted_form(form: &str) -> String {
 /// unrecognized in an rc file, so the native client rejects it there and
 /// accepts it only on the command line.
 pub fn native_only_option(arg: &str) -> Option<&'static str> {
-    ["--experimental-builtin-modules", "--cache-dir"]
-        .into_iter()
-        .find(|name| {
-            arg == *name
-                || arg
-                    .strip_prefix(name)
-                    .is_some_and(|rest| rest.starts_with('='))
-        })
+    [
+        "--experimental-builtin-modules",
+        "--cache-dir",
+        "--native-lockfile",
+    ]
+    .into_iter()
+    .find(|name| {
+        arg == *name
+            || arg
+                .strip_prefix(name)
+                .is_some_and(|rest| rest.starts_with('='))
+    })
 }
 
 /// The error for a native-only option from an rc file.

@@ -76,6 +76,13 @@ impl Fixture {
         let mut all = Vec::new();
         if builtin {
             all.extend(["--experimental-builtin-modules", registry.as_str()]);
+        } else {
+            // Without the built-in modules the stub overrides name modules
+            // outside the graph; keep the lazy native profile instead of the
+            // eager resolution a lockfile with the default remote registry
+            // implies (N37, docs/REGISTRY_LOCKFILE.md), never touching
+            // https://bcr.bazel.build/.
+            all.push("--lockfile_mode=off");
         }
         all.extend_from_slice(args);
         Command::new("timeout")
