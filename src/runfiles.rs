@@ -527,6 +527,20 @@ pub fn manifest_line(path: &str, target: Option<&str>, out: &mut Vec<u8>) {
     out.push(b'\n');
 }
 
+impl Runfiles {
+    /// Bazel compares Runfiles by identity (no equals override,
+    /// analysis/Runfiles.java): the shared nested sets and the policy of
+    /// this value (clones of one value are the same object).
+    pub(crate) fn identity_key(&self) -> (usize, usize, usize, bool) {
+        (
+            Arc::as_ptr(&self.artifacts) as usize,
+            Arc::as_ptr(&self.symlinks) as usize,
+            Arc::as_ptr(&self.root_symlinks) as usize,
+            self.conflict_error,
+        )
+    }
+}
+
 impl fmt::Display for Runfiles {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // StarlarkValue.repr default (net/starlark/java/eval/StarlarkValue.java:50-52).

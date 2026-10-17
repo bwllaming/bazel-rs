@@ -1,0 +1,68 @@
+//ds:r_default
+  len=9
+  names=["struct:l1", "struct:l1", "struct:l1", "struct:l2", "struct:l2", "struct:l2", "struct:own", "struct:l1", "struct:l2"]
+  repr=depset([struct(files = (<generated file ds/l1.f>,), fn = <function mapper from //ds:defs.bzl>, name = "l1", nested = depset(["l1"]), none = None, tags = ("a",)), struct(kind = "struct", name = "l1"), struct(name = "l1"), struct(files = (<generated file ds/l2.f>,), fn = <function mapper from //ds:defs.bzl>, name = "l2", nested = depset(["l2"]), none = None, tags = ("a",)), struct(kind = "struct", name = "l2"), struct(name = "l2"), struct(files = (), fn = <function mapper from //ds:defs.bzl>, name = "own", nested = depset(["own"]), none = None, tags = ()), struct(files = (<generated file ds/l1.f>,), fn = <function mapper from //ds:defs.bzl>, name = "l1", nested = depset(["l1"]), none = None, tags = ("a",)), struct(files = (<generated file ds/l2.f>,), fn = <function mapper from //ds:defs.bzl>, name = "l2", nested = depset(["l2"]), none = None, tags = ("a",))])
+  eq_own=False
+  struct_vs_info=False
+  plain_eq=True
+  depset_eq=False False True
+  nested=[["l1"], ["l2"], ["own"], ["l1"], ["l2"]]
+  fields=[["files", "fn", "name", "nested", "none", "tags"], ["kind", "name"]]
+  holders=4 [("runfiles", "None"), ("runfiles", "None"), ("runfiles", "<target //ds:l1>"), ("runfiles", "<target //ds:l2>")]
+  same_holder=4
+  none=[None]
+  nested_depsets=3
+  tuple_struct=[(struct(a = 1), "x")]
+  orders=[("topological", "default", ["c", "d", "x", "b", "a"]), ("topological", "topological", ["c", "d", "x", "a", "b"]), ("preorder", "default", ["c", "d", "a", "b", "x"]), ("preorder", "preorder", ["c", "d", "a", "b", "x"]), ("postorder", "default", ["a", "b", "x", "c", "d"]), ("postorder", "postorder", ["a", "b", "x", "c", "d"]), ("default", "topological", ["b", "a", "x", "c", "d"]), ("default", "preorder", ["a", "b", "x", "c", "d"]), ("default", "postorder", ["a", "b", "x", "c", "d"]), ("default", "default", ["a", "b", "x", "c", "d"])]
+  deep=[["e", "c", "a", "b"], ["p", "a", "b", "c", "e"], ["f", "p", "a", "b", "c", "e"]]
+//ds:r_post
+  len=5
+  names=["struct:l3", "struct:l3", "struct:l3", "struct:own", "struct:l3"]
+  repr=depset([struct(files = (<generated file ds/l3.f>,), fn = <function mapper from //ds:defs.bzl>, name = "l3", nested = depset(["l3"]), none = None, tags = ("a",)), struct(kind = "struct", name = "l3"), struct(name = "l3"), struct(files = (), fn = <function mapper from //ds:defs.bzl>, name = "own", nested = depset(["own"]), none = None, tags = ()), struct(files = (<generated file ds/l3.f>,), fn = <function mapper from //ds:defs.bzl>, name = "l3", nested = depset(["l3"]), none = None, tags = ("a",))], order = "postorder")
+  eq_own=False
+  struct_vs_info=False
+  plain_eq=True
+  depset_eq=False False True
+  nested=[["l3"], ["own"], ["l3"]]
+  fields=[["files", "fn", "name", "nested", "none", "tags"], ["kind", "name"]]
+  holders=2 [("runfiles", "None"), ("runfiles", "<target //ds:l3>")]
+  same_holder=2
+  none=[None]
+  nested_depsets=3
+  tuple_struct=[(struct(a = 1), "x")]
+  orders=[("topological", "default", ["c", "d", "x", "b", "a"]), ("topological", "topological", ["c", "d", "x", "a", "b"]), ("preorder", "default", ["c", "d", "a", "b", "x"]), ("preorder", "preorder", ["c", "d", "a", "b", "x"]), ("postorder", "default", ["a", "b", "x", "c", "d"]), ("postorder", "postorder", ["a", "b", "x", "c", "d"]), ("default", "topological", ["b", "a", "x", "c", "d"]), ("default", "preorder", ["a", "b", "x", "c", "d"]), ("default", "postorder", ["a", "b", "x", "c", "d"]), ("default", "default", ["a", "b", "x", "c", "d"])]
+  deep=[["e", "c", "a", "b"], ["p", "a", "b", "c", "e"], ["f", "p", "a", "b", "c", "e"]]
+//ds:r_pre
+  len=5
+  names=["struct:own", "struct:l1", "struct:l1", "struct:l1", "struct:l1"]
+  repr=depset([struct(files = (), fn = <function mapper from //ds:defs.bzl>, name = "own", nested = depset(["own"]), none = None, tags = ()), struct(files = (<generated file ds/l1.f>,), fn = <function mapper from //ds:defs.bzl>, name = "l1", nested = depset(["l1"]), none = None, tags = ("a",)), struct(kind = "struct", name = "l1"), struct(files = (<generated file ds/l1.f>,), fn = <function mapper from //ds:defs.bzl>, name = "l1", nested = depset(["l1"]), none = None, tags = ("a",)), struct(name = "l1")], order = "preorder")
+  eq_own=False
+  struct_vs_info=False
+  plain_eq=True
+  depset_eq=False False True
+  nested=[["own"], ["l1"], ["l1"]]
+  fields=[["files", "fn", "name", "nested", "none", "tags"], ["files", "fn", "name", "nested", "none", "tags"]]
+  holders=2 [("runfiles", "None"), ("runfiles", "<target //ds:l1>")]
+  same_holder=2
+  none=[None]
+  nested_depsets=3
+  tuple_struct=[(struct(a = 1), "x")]
+  orders=[("topological", "default", ["c", "d", "x", "b", "a"]), ("topological", "topological", ["c", "d", "x", "a", "b"]), ("preorder", "default", ["c", "d", "a", "b", "x"]), ("preorder", "preorder", ["c", "d", "a", "b", "x"]), ("postorder", "default", ["a", "b", "x", "c", "d"]), ("postorder", "postorder", ["a", "b", "x", "c", "d"]), ("default", "topological", ["b", "a", "x", "c", "d"]), ("default", "preorder", ["a", "b", "x", "c", "d"]), ("default", "postorder", ["a", "b", "x", "c", "d"]), ("default", "default", ["a", "b", "x", "c", "d"])]
+  deep=[["e", "c", "a", "b"], ["p", "a", "b", "c", "e"], ["f", "p", "a", "b", "c", "e"]]
+//ds:r_topo
+  len=9
+  names=["struct:own", "struct:l1", "struct:l2", "struct:l1", "struct:l1", "struct:l1", "struct:l2", "struct:l2", "struct:l2"]
+  repr=depset([struct(files = (), fn = <function mapper from //ds:defs.bzl>, name = "own", nested = depset(["own"]), none = None, tags = ()), struct(files = (<generated file ds/l1.f>,), fn = <function mapper from //ds:defs.bzl>, name = "l1", nested = depset(["l1"]), none = None, tags = ("a",)), struct(files = (<generated file ds/l2.f>,), fn = <function mapper from //ds:defs.bzl>, name = "l2", nested = depset(["l2"]), none = None, tags = ("a",)), struct(name = "l1"), struct(kind = "struct", name = "l1"), struct(files = (<generated file ds/l1.f>,), fn = <function mapper from //ds:defs.bzl>, name = "l1", nested = depset(["l1"]), none = None, tags = ("a",)), struct(name = "l2"), struct(kind = "struct", name = "l2"), struct(files = (<generated file ds/l2.f>,), fn = <function mapper from //ds:defs.bzl>, name = "l2", nested = depset(["l2"]), none = None, tags = ("a",))], order = "topological")
+  eq_own=skip
+  struct_vs_info=False
+  plain_eq=True
+  depset_eq=False False True
+  nested=[["own"], ["l1"], ["l2"], ["l1"], ["l2"]]
+  fields=[["files", "fn", "name", "nested", "none", "tags"], ["files", "fn", "name", "nested", "none", "tags"]]
+  holders=4 [("runfiles", "None"), ("runfiles", "None"), ("runfiles", "<target //ds:l1>"), ("runfiles", "<target //ds:l2>")]
+  same_holder=4
+  none=[None]
+  nested_depsets=3
+  tuple_struct=[(struct(a = 1), "x")]
+  orders=[("topological", "default", ["c", "d", "x", "b", "a"]), ("topological", "topological", ["c", "d", "x", "a", "b"]), ("preorder", "default", ["c", "d", "a", "b", "x"]), ("preorder", "preorder", ["c", "d", "a", "b", "x"]), ("postorder", "default", ["a", "b", "x", "c", "d"]), ("postorder", "postorder", ["a", "b", "x", "c", "d"]), ("default", "topological", ["b", "a", "x", "c", "d"]), ("default", "preorder", ["a", "b", "x", "c", "d"]), ("default", "postorder", ["a", "b", "x", "c", "d"]), ("default", "default", ["a", "b", "x", "c", "d"])]
+  deep=[["e", "c", "a", "b"], ["p", "a", "b", "c", "e"], ["f", "p", "a", "b", "c", "e"]]

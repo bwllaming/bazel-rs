@@ -505,6 +505,46 @@ where
     }
 }
 
+/// The parts of a Starlark provider instance (N49 depset snapshots,
+/// crate::depset_items): its provider key and display name, its fields in
+/// name order and its creation location.
+pub(crate) type InstanceParts<'v> = (
+    String,
+    String,
+    Vec<(String, Value<'v>)>,
+    Option<starlark::codemap::FileSpan>,
+);
+
+pub(crate) fn instance_parts<'v>(value: Value<'v>) -> Option<InstanceParts<'v>> {
+    let instance = ProviderInstance::from_value(value)?;
+    Some((
+        instance.identity.clone(),
+        instance.name.clone(),
+        instance
+            .fields
+            .iter()
+            .map(|(name, value)| (name.clone(), *value))
+            .collect(),
+        instance.location.clone(),
+    ))
+}
+
+/// A provider instance with the given parts (fields sorted by name).
+pub(crate) fn alloc_instance<'v>(
+    heap: Heap<'v>,
+    identity: String,
+    name: String,
+    fields: Vec<(String, Value<'v>)>,
+    location: Option<starlark::codemap::FileSpan>,
+) -> Value<'v> {
+    heap.alloc(ProviderInstanceGen {
+        identity,
+        name,
+        fields,
+        location,
+    })
+}
+
 /// Stable identity of an exported constructor, never of an instance.
 pub fn provider_identity(value: Value<'_>) -> Option<String> {
     if crate::rule_declarations::is_output_group_info(value) {

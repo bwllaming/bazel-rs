@@ -125,6 +125,19 @@ mod owned {
         Bool(bool),
         Tuple(Vec<Item>),
         Symlink(SymlinkEntry),
+        /// N49: `None` (NoneType.isImmutable).
+        None,
+        /// N49: an immutable `struct()` or provider instance, snapshotted
+        /// (crate::depset_items).
+        Struct(Arc<crate::depset_items::StructItem>),
+        /// N49: a depset value (Depset.isImmutable).
+        Depset(crate::depset_items::DepsetItem),
+        /// N49: a configured target (AbstractConfiguredTarget.isImmutable).
+        Target(crate::depset_items::TargetItem),
+        /// N49: a runfiles object (Runfiles.isImmutable).
+        Runfiles(crate::depset_items::RunfilesItem),
+        /// N49: a global `def` (StarlarkFunction.isImmutable).
+        Function(crate::depset_items::FunctionItem),
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Allocative)]
@@ -144,6 +157,12 @@ mod owned {
         Bool,
         Tuple,
         Symlink,
+        NoneType,
+        Struct,
+        Depset,
+        Target,
+        Runfiles,
+        Function,
     }
 
     #[derive(Debug, Allocative, StarlarkPagable)]
@@ -184,7 +203,7 @@ mod owned {
     pub(super) struct DefaultInfoConstructor;
 
     #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
-    pub(super) struct Target {
+    pub(crate) struct Target {
         pub label: LabelValue,
         pub files: Vec<File>,
         pub providers: BTreeMap<String, OwnedFrozenValue>,
@@ -201,7 +220,8 @@ mod owned {
         pub files_depset: Depset,
     }
 }
-use owned::{DefaultInfoConstructor, DefaultInfoValue, FileRoot, LabelValue, Target};
+pub(crate) use owned::Target;
+use owned::{DefaultInfoConstructor, DefaultInfoValue, FileRoot, LabelValue};
 pub(crate) use owned::{Depset, DepsetNode, Item, ItemType, Order};
 pub use owned::{File, SymlinkEntry};
 
@@ -797,41 +817,15 @@ pub fn file_list(value: Value<'_>) -> anyhow::Result<Vec<File>> {
 }
 
 impl Item {
-    fn unpack(value: Value<'_>) -> anyhow::Result<Self> {
-        Self::unpack_at_depth(value, 0)
-    }
-
-    fn unpack_at_depth(value: Value<'_>, depth: usize) -> anyhow::Result<Self> {
-        if depth > 128 {
-            bail!("depset tuple element exceeds nesting depth limit 128");
-        }
-        if let Some(file) = File::from_value(value) {
-            Ok(Self::File(file.clone()))
-        } else if let Some(entry) = SymlinkEntry::from_value(value) {
-            Ok(Self::Symlink(entry.clone()))
-        } else if let Some(s) = value.unpack_str() {
-            Ok(Self::String(s.to_owned()))
-        } else if let Some(label) = LabelValue::from_value(value) {
-            Ok(Self::Label(label.clone()))
-        } else if let Some(boolean) = value.unpack_bool() {
-            Ok(Self::Bool(boolean))
-        } else if let Some(integer) = value.unpack_i32() {
-            Ok(Self::Int(integer))
-        } else if value.get_type() == "int" {
-            bail!("depset integers outside the signed 32-bit range are unsupported");
-        } else if let Some(tuple) = TupleRef::from_value(value) {
-            Ok(Self::Tuple(
-                tuple
-                    .iter()
-                    .map(|item| Self::unpack_at_depth(item, depth + 1))
-                    .collect::<anyhow::Result<_>>()?,
-            ))
-        } else {
-            bail!(
-                "depset elements must be immutable File, SymlinkEntry, string, Label, int, bool or tuple values; {} is unsupported",
-                value.get_type()
-            )
-        }
+    /// Depset.checkElement (collect/nestedset/Depset.java:125-152) with the
+    /// strict `--incompatible_always_check_depset_elements` (default true),
+    /// then the owned snapshot of the element (crate::depset_items).
+    pub(crate) fn unpack(
+        value: Value<'_>,
+        functions: &dyn Fn(Value<'_>) -> Option<OwnedFrozenValue>,
+    ) -> anyhow::Result<Self> {
+        crate::depset_items::check_element(value)?;
+        crate::depset_items::snapshot(value, functions, 0)
     }
 
     pub(crate) fn alloc<'v>(&self, heap: Heap<'v>) -> Value<'v> {
@@ -845,10 +839,16 @@ impl Item {
             Self::Tuple(items) => heap.alloc(starlark::values::tuple::AllocTuple(
                 items.iter().map(|item| item.alloc(heap)),
             )),
+            Self::None => Value::new_none(),
+            Self::Struct(item) => item.alloc(heap),
+            Self::Depset(item) => heap.alloc(item.0.clone()),
+            Self::Target(item) => heap.alloc(item.0.as_ref().clone()),
+            Self::Runfiles(item) => heap.alloc(item.0.as_ref().clone()),
+            Self::Function(item) => heap.access_owned_frozen_value(&item.0),
         }
     }
 
-    fn kind(&self) -> ItemType {
+    pub(crate) fn kind(&self) -> ItemType {
         match self {
             Self::File(_) => ItemType::File,
             Self::String(_) => ItemType::String,
@@ -857,6 +857,12 @@ impl Item {
             Self::Bool(_) => ItemType::Bool,
             Self::Tuple(_) => ItemType::Tuple,
             Self::Symlink(_) => ItemType::Symlink,
+            Self::None => ItemType::NoneType,
+            Self::Struct(_) => ItemType::Struct,
+            Self::Depset(_) => ItemType::Depset,
+            Self::Target(_) => ItemType::Target,
+            Self::Runfiles(_) => ItemType::Runfiles,
+            Self::Function(_) => ItemType::Function,
         }
     }
 }
@@ -898,6 +904,15 @@ impl ItemType {
             Self::Int => "int",
             Self::Bool => "bool",
             Self::Tuple => "tuple",
+            // Starlark.classType of the StarlarkBuiltin ancestor
+            // (Depset.ElementType.getTypeClass, :455-480): struct() and
+            // provider instances are both StructApi `struct`.
+            Self::NoneType => "NoneType",
+            Self::Struct => "struct",
+            Self::Depset => "depset",
+            Self::Target => "Target",
+            Self::Runfiles => "runfiles",
+            Self::Function => "function",
         }
     }
 
@@ -910,6 +925,12 @@ impl ItemType {
             4 => Ok(Self::Bool),
             5 => Ok(Self::Tuple),
             6 => Ok(Self::Symlink),
+            7 => Ok(Self::NoneType),
+            8 => Ok(Self::Struct),
+            9 => Ok(Self::Depset),
+            10 => Ok(Self::Target),
+            11 => Ok(Self::Runfiles),
+            12 => Ok(Self::Function),
             _ => bail!("invalid serialized depset element type {tag}"),
         }
     }
@@ -965,6 +986,16 @@ impl starlark::pagable::StarlarkSerialize for Item {
             Self::Bool(boolean) => boolean.starlark_serialize(ctx),
             Self::Tuple(items) => items.starlark_serialize(ctx),
             Self::Symlink(entry) => entry.starlark_serialize(ctx),
+            Self::None => Ok(()),
+            // Snapshots of Starlark values are analysis-only.
+            Self::Struct(_)
+            | Self::Depset(_)
+            | Self::Target(_)
+            | Self::Runfiles(_)
+            | Self::Function(_) => Err(starlark::Error::new_other(anyhow!(
+                "a depset of {} elements cannot be serialized",
+                self.kind().name()
+            ))),
         }
     }
 }
@@ -981,6 +1012,13 @@ impl starlark::pagable::StarlarkDeserialize for Item {
             ItemType::Bool => Self::Bool(bool::starlark_deserialize(ctx)?),
             ItemType::Tuple => Self::Tuple(Vec::starlark_deserialize(ctx)?),
             ItemType::Symlink => Self::Symlink(SymlinkEntry::starlark_deserialize(ctx)?),
+            ItemType::NoneType => Self::None,
+            kind => {
+                return Err(starlark::Error::new_other(anyhow!(
+                    "a depset of {} elements cannot be deserialized",
+                    kind.name()
+                )));
+            }
         })
     }
 }
@@ -1007,6 +1045,12 @@ impl fmt::Display for Item {
                 }
                 f.write_str(")")
             }
+            Self::None => f.write_str("None"),
+            Self::Struct(item) => write!(f, "{item}"),
+            Self::Depset(item) => write!(f, "{}", item.0),
+            Self::Target(item) => write!(f, "{}", item.0),
+            Self::Runfiles(item) => write!(f, "{}", item.0),
+            Self::Function(item) => f.write_str(&item.0.value().to_repr()),
         }
     }
 }
@@ -1040,11 +1084,12 @@ impl Depset {
         const MAX_DEPTH: usize = 1024;
         let mut merge_type = |kind: ItemType| -> anyhow::Result<()> {
             if let Some(expected) = element_type {
+                // Depset.checkType (collect/nestedset/Depset.java:181-193).
                 if kind != expected {
                     bail!(
-                        "depset elements must have the same type; cannot mix {} and {}",
-                        expected.name(),
-                        kind.name()
+                        "cannot add an item of type '{}' to a depset of '{}'",
+                        kind.name(),
+                        expected.name()
                     );
                 }
             } else {
@@ -1086,16 +1131,25 @@ impl Depset {
         })
     }
 
-    /// Iterative traversal visits shared nodes once and deduplicates values at
-    /// their first encounter. For topological order, reverse postorder visits
-    /// rightmost children first and reverses the final unique sequence. This
-    /// keeps shared descendants behind all their parents, not just the first.
+    /// NestedSet.toList (collect/nestedset/NestedSet.java:485-498, 604-627):
+    /// a left-to-right depth-first walk over each node's children array,
+    /// visiting a node once and keeping each element's first occurrence,
+    /// reversed at the end iff the depset itself is topological. Each node's
+    /// array is laid out by **its own** order when it is built
+    /// (NestedSet.java:180-250, NestedSetBuilder.LinkOrderNestedSetBuilder,
+    /// NestedSetBuilder.java:314-380): preorder = direct then transitive;
+    /// default/postorder = transitive then direct; topological = transitive
+    /// reversed then direct reversed. (N49: a node of another order nested in a
+    /// topological depset, or a topological node in another, keeps its own
+    /// layout — paired capture tests/fixtures/depset_structs.)
+    // A struct item's creation location (a FileSpan with a shared code map)
+    // takes no part in its ordering.
+    #[allow(clippy::mutable_key_type)]
     pub(crate) fn flatten(&self) -> Vec<&Item> {
         enum Visit<'a> {
             Node(&'a DepsetNode),
             Item(&'a Item),
         }
-        let reverse = self.node.order == Order::Topological;
         let mut stack = vec![Visit::Node(&self.node)];
         let mut seen_nodes = HashSet::new();
         let mut seen_items = BTreeSet::new();
@@ -1112,30 +1166,25 @@ impl Depset {
                         continue;
                     }
                     let mut next = Vec::with_capacity(node.direct.len() + node.children.len());
-                    if node.order == Order::Preorder {
-                        next.extend(node.direct.iter().map(Visit::Item));
-                        next.extend(node.children.iter().map(|child| Visit::Node(child)));
-                    } else {
-                        next.extend(node.children.iter().map(|child| Visit::Node(child)));
-                        next.extend(node.direct.iter().map(Visit::Item));
-                    }
-                    // Topological traversal reverses siblings separately, not
-                    // the direct-vs-transitive grouping of each DAG node.
-                    if reverse {
-                        next.clear();
-                        if node.order == Order::Preorder {
-                            next.extend(node.direct.iter().rev().map(Visit::Item));
-                            next.extend(node.children.iter().rev().map(|child| Visit::Node(child)));
-                        } else {
+                    match node.order {
+                        Order::Preorder => {
+                            next.extend(node.direct.iter().map(Visit::Item));
+                            next.extend(node.children.iter().map(|child| Visit::Node(child)));
+                        }
+                        Order::Topological => {
                             next.extend(node.children.iter().rev().map(|child| Visit::Node(child)));
                             next.extend(node.direct.iter().rev().map(Visit::Item));
+                        }
+                        Order::Default | Order::Postorder => {
+                            next.extend(node.children.iter().map(|child| Visit::Node(child)));
+                            next.extend(node.direct.iter().map(Visit::Item));
                         }
                     }
                     stack.extend(next.into_iter().rev());
                 }
             }
         }
-        if reverse {
+        if self.node.order == Order::Topological {
             result.reverse();
         }
         result
@@ -1165,8 +1214,20 @@ impl<'v> StarlarkValue<'v> for Depset {
     fn to_bool(&self) -> bool {
         !self.node.empty
     }
+
+    /// Depset.equals delegates to the NestedSet, compared by identity
+    /// (collect/nestedset/Depset.java:552-562): the same DAG node, or the
+    /// empty depsets of one order (crate::depset_items::DepsetItem).
+    fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
+        Ok(Depset::from_value(other).is_some_and(|other| {
+            crate::depset_items::DepsetItem(self.clone())
+                == crate::depset_items::DepsetItem(other.clone())
+        }))
+    }
 }
 
+// See Depset::flatten: struct locations are not part of the ordering.
+#[allow(clippy::mutable_key_type)]
 fn dedup(items: impl IntoIterator<Item = Item>) -> Vec<Item> {
     let mut seen = BTreeSet::new();
     items
@@ -1882,8 +1943,9 @@ pub fn analysis_globals(builder: &mut GlobalsBuilder) {
         #[starlark(default = NoneType)] direct: Value<'v>,
         #[starlark(default = "default")] order: &str,
         #[starlark(require = named, default = NoneType)] transitive: Value<'v>,
-        heap: Heap<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
+        let heap = eval.heap();
         // Depset.depset's `Sequence or NoneType` parameter checks
         // (collect/nestedset/Depset.java:572-627; BuiltinFunction.java:404-410);
         // a range is a Sequence (RangeList).
@@ -1912,15 +1974,47 @@ pub fn analysis_globals(builder: &mut GlobalsBuilder) {
                 children.push(Arc::clone(&child.node));
             }
         }
-        let direct = direct_items
-            .into_iter()
-            .map(Item::unpack)
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        Ok(heap.alloc(Depset::compose(direct, children, order, None)?))
+        // Depset.fromDirectAndTransitive (:354-376): each element is checked
+        // and type-checked in turn.
+        let functions =
+            |value: Value<'_>| crate::analysis_runtime::owned_top_level_function(eval, value);
+        let mut items = Vec::new();
+        let mut element_type: Option<ItemType> = None;
+        {
+            for value in direct_items {
+                let item = Item::unpack(value, &functions)?;
+                let kind = item.kind();
+                if let Some(expected) = element_type
+                    && expected != kind
+                {
+                    bail!(
+                        "cannot add an item of type '{}' to a depset of '{}'",
+                        kind.name(),
+                        expected.name()
+                    );
+                }
+                element_type = Some(kind);
+                items.push(item);
+            }
+        }
+        Ok(heap.alloc(Depset::compose(items, children, order, None)?))
     }
 }
 
 use starlark::values::none::NoneType;
+
+/// A label value as a depset item (crate::depset_items).
+pub(crate) fn label_item(value: Value<'_>) -> Option<Item> {
+    LabelValue::from_value(value).map(|label| Item::Label(label.clone()))
+}
+
+/// The analysis globals with Starlark's `struct` (crate::depset_items tests).
+#[cfg(test)]
+pub(crate) fn analysis_test_globals() -> starlark::environment::Globals {
+    GlobalsBuilder::extended_by(&[starlark::environment::LibraryExtension::StructType])
+        .with(analysis_globals)
+        .build()
+}
 
 #[cfg(test)]
 mod tests {
@@ -2573,10 +2667,16 @@ copies = [Label(main), Label(external)]
             "depset(('x', 'x', 'y')).to_list() == ['x', 'y'] and not depset() and bool(depset(['x']))",
         );
         pass("d = depset([a]); x = d.to_list(); x.append(b); d.to_list() == [a]");
-        fail("depset([a, 'x'])", "same type");
-        fail("depset([a], transitive=[depset(['x'])])", "same type");
+        fail(
+            "depset([a, 'x'])",
+            "cannot add an item of type 'string' to a depset of 'File'",
+        );
+        fail(
+            "depset([a], transitive=[depset(['x'])])",
+            "cannot add an item of type 'string' to a depset of 'File'",
+        );
         pass("depset([1, 2, 1]).to_list() == [1, 2]");
-        fail("depset([[]])", "unsupported");
+        fail("depset([[]])", "depset elements must not be mutable values");
         fail("depset(transitive=[[a]])", "must be depsets");
         // A range is a Sequence (RangeList) for both depset parameters.
         pass("depset(range(3)).to_list() == [0, 1, 2] and depset(direct=range(0)).to_list() == []");
@@ -2735,11 +2835,23 @@ ok = (len(labels.to_list()) == 2 and owner == target.label and
         fail("depset([2147483648])", "32-bit");
         fail("depset([-2147483649])", "32-bit");
         fail("depset([999999999999999999999999999999])", "32-bit");
-        fail("depset([True, 1])", "same type");
-        fail("depset([1], transitive=[depset(['s'])])", "same type");
-        fail("depset([Label('//p:a'), '//p:a'])", "same type");
-        fail("depset([{}])", "unsupported");
-        fail("depset([([1],)])", "unsupported");
+        fail(
+            "depset([True, 1])",
+            "cannot add an item of type 'int' to a depset of 'bool'",
+        );
+        fail(
+            "depset([1], transitive=[depset(['s'])])",
+            "cannot add an item of type 'string' to a depset of 'int'",
+        );
+        fail(
+            "depset([Label('//p:a'), '//p:a'])",
+            "cannot add an item of type 'string' to a depset of 'Label'",
+        );
+        fail("depset([{}])", "depset elements must not be mutable values");
+        fail(
+            "depset([([1],)])",
+            "depset elements must not be mutable values",
+        );
         pass("repr(depset(['x'], order='preorder')) == 'depset([\"x\"], order = \"preorder\")'");
         pass(
             "[f.path for f in depset([a, b], order='topological').to_list()] == ['pkg/a.txt', 'pkg/b']",
@@ -2921,7 +3033,7 @@ ok = (len(labels.to_list()) == 2 and owner == target.label and
                     .eval_module(ast, &globals())
                     .unwrap_err()
                     .to_string()
-                    .contains("same type")
+                    .contains("cannot add an item of type 'File' to a depset of 'string'")
             );
             module.set("a", alloc_file(module.heap(), file("pkg/a.txt")));
             module.set("b", alloc_file(module.heap(), file("pkg/b")));

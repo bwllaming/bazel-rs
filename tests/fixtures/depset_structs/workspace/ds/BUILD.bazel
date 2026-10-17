@@ -1,0 +1,28 @@
+load(":defs.bzl", "bad", "leaf", "report")
+
+leaf(name = "l1")
+
+leaf(name = "l2")
+
+leaf(name = "l3", order = "postorder")
+
+report(name = "r_default", deps = [":l1", ":l2"])
+
+report(name = "r_post", deps = [":l3"], order = "postorder")
+
+report(name = "r_pre", deps = [":l1"], order = "preorder")
+
+report(name = "r_topo", deps = [":l1", ":l2"], order = "topological")
+
+[bad(name = "bad_" + kind, dep = ":l1", kind = kind) for kind in [
+    "mutable_field",
+    "list",
+    "dict",
+    "frozen_list",
+    "builtin",
+    "mix",
+    "mix_transitive",
+    "mutable_provider_field",
+    "frozen_list_field",
+    "lambda_field",
+]]

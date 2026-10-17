@@ -34,6 +34,7 @@ pub mod credentials;
 pub mod ctx_surface;
 pub mod custom_rule;
 pub mod download_proxy;
+mod depset_items;
 pub mod engine;
 mod exec_groups;
 pub mod extension_calls;

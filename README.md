@@ -105,7 +105,8 @@ Implemented:
   across packages. Provider-carried generated files remain usable even when they
   are not default outputs. File values and depsets preserve artifact identity.
 - Persistent-DAG depsets support all four orders and homogeneous File, string,
-  Label, bool, int32 and immutable tuple elements. Native `Args` supports `add`,
+  Label, bool, int32 and immutable tuple elements, and immutable structs and
+  provider instances with Bazel's equality (docs/DEPSETS.md). Native `Args` supports `add`,
   `add_all`, `add_joined`, registered top-level mappers and action-registration snapshots.
 - `ctx.actions.declare_file`, binary-safe native `write`, `run_shell` and direct
   `run`. Shell arguments/environment are keyed; custom shell actions do not
