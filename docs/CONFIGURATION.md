@@ -948,10 +948,12 @@ errors and in attribute order:
   = the end of the alias chain (for `label_flag`/`label_setting` keys this is
   the target the setting points to, `AliasConfiguredTarget.getLabel`,
   `rules/AliasConfiguredTarget.java:178-185`);
-* without BuildSettingProvider: `error while parsing user-defined
-  configuration values: flag_values keys must be build settings or feature
-  flags and L is not` (no Bazel 9.3 rule of this profile provides
-  `config_feature_flag`);
+* a key that returns FeatureFlagInfo (`config_feature_flag`, or a Starlark
+  rule returning `config_common.FeatureFlagInfo`) is matched by that
+  provider first (docs/TEST_FLAGS.md);
+* without FeatureFlagInfo or BuildSettingProvider: `error while parsing
+  user-defined configuration values: flag_values keys must be build settings
+  or feature flags and L is not`;
 * label-typed settings canonicalize the expected value in the
   `config_setting`'s package (`maybeCanonicalizeLabel`, `:799-834`); the value
   converts with the setting's converter (`'V' cannot be converted to L type
@@ -967,6 +969,16 @@ errors and in attribute order:
 All are `LOC: in flag_values attribute of config_setting rule L: ...`
 attribute errors. The specified flag values (keyed by actual label) take part
 in `refines` specialization.
+
+A Starlark key's provider exists only once its implementation has run, so a
+`config_setting` with a Starlark rule among its `flag_values` keys first
+plans every target analyzed so far (`Engine::plan_pending`): those Starlark
+implementations run before the rest of phase 1, as in Bazel, where a
+configured target's implementation runs as soon as its dependencies are
+configured (the `config_setting` depends on the configured key). Planned
+targets are complete (post-order), and early planning is ordinary planning
+(prerequisite checks, per-edge and transitioned configurations, rule
+transition delegation, runfiles); see docs/TEST_FLAGS.md.
 
 ## `alias`, `label_flag`, `label_setting` (`src/engine.rs`)
 

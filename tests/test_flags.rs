@@ -221,6 +221,128 @@ probe(name = "p", deps = [":r", ":r_alias"])
     );
 }
 
+/// Rules for flag_values keys whose implementations run early
+/// (Engine::plan_pending), before the rest of phase 1: they still get the
+/// prerequisite/duplicate checks, per-edge (transitioned) configurations,
+/// rule-transition delegation and runfiles of ordinary planning.
+const EARLY_RULES: &str = r#"
+FFI = config_common.FeatureFlagInfo
+Marker = provider(fields = [])
+Val = provider(fields = ["v"])
+ALLOW = {"_allowlist_function_transition": attr.label(default = "//tools/allowlists/function_transition_allowlist")}
+def _sf(ctx):
+    return []
+sf = rule(implementation = _sf, build_setting = config.string(flag = True))
+def _set_t(settings, attr):
+    return {"//:sf": "t"}
+set_t = transition(implementation = _set_t, inputs = [], outputs = ["//:sf"])
+def _leaf(ctx):
+    return [Val(v = ctx.attr.v)]
+leaf = rule(implementation = _leaf, attrs = {"v": attr.string()})
+def _needs(ctx):
+    print("RAN", ctx.label)
+    return [FFI(value = "x")]
+needs = rule(implementation = _needs, attrs = {
+    "deps": attr.label_list(providers = [Marker]),
+    "any": attr.label_list(),
+})
+def _via_edge(ctx):
+    print("EDGE", ctx.label, ctx.attr.dep[0][Val].v)
+    return [FFI(value = ctx.attr.dep[0][Val].v)]
+via_edge = rule(implementation = _via_edge, attrs = dict(ALLOW, dep = attr.label_list(cfg = set_t)))
+def _constant(ctx):
+    print("RULE_TR", ctx.label)
+    return [FFI(value = "rt")]
+via_rule = rule(implementation = _constant, cfg = set_t, attrs = ALLOW)
+def _with_data(ctx):
+    return [FFI(value = "r"), DefaultInfo(runfiles = ctx.runfiles(files = ctx.files.data))]
+with_data = rule(implementation = _with_data, attrs = {"data": attr.label_list(allow_files = True)})
+def _rf_probe(ctx):
+    for d in ctx.attr.deps:
+        print("RF", d.label, sorted([f.short_path for f in d[DefaultInfo].default_runfiles.files.to_list()]), ctx.attr.s)
+    return []
+rf_probe = rule(implementation = _rf_probe, attrs = {"deps": attr.label_list(), "s": attr.string()})
+"#;
+
+#[test]
+fn early_planned_flag_keys_keep_checks_edge_configurations_and_runfiles() {
+    let f = Fixture::new();
+    f.file("defs.bzl", &format!("{EARLY_RULES}{SHOW}"));
+    f.file(
+        "tools/allowlists/function_transition_allowlist/BUILD.bazel",
+        "package_group(name = \"function_transition_allowlist\", packages = [\"public\"])\n",
+    );
+    f.file("data.txt", "data\n");
+    f.file("a.txt", "a\n");
+    f.file("dir/inner.txt", "inner\n");
+    f.file(
+        "BUILD.bazel",
+        r#"load(":defs.bzl", "leaf", "needs", "rf_probe", "sf", "show", "via_edge", "via_rule", "with_data")
+sf(name = "sf", build_setting_default = "")
+config_setting(name = "sf_t", flag_values = {":sf": "t"})
+leaf(name = "leaf", v = select({":sf_t": "T", "//conditions:default": "D"}))
+leaf(name = "plain")
+needs(name = "bad_providers", deps = [":plain"])
+config_setting(name = "dbg", values = {"compilation_mode": "dbg"})
+needs(name = "bad_dup", any = [":leaf"] + select({":dbg": [], "//conditions:default": [":leaf"]}))
+config_setting(name = "providers_x", flag_values = {":bad_providers": "x"})
+config_setting(name = "dup_x", flag_values = {":bad_dup": "x"})
+show(name = "sel_providers", s = select({":providers_x": "X", "//conditions:default": "-"}))
+show(name = "sel_dup", s = select({":dup_x": "X", "//conditions:default": "-"}))
+via_edge(name = "edge", dep = [":leaf"])
+config_setting(name = "edge_t", flag_values = {":edge": "T"})
+show(name = "sel_edge", s = select({":edge_t": "transitioned", "//conditions:default": "untransitioned"}))
+via_rule(name = "rule_tr")
+config_setting(name = "rule_tr_rt", flag_values = {":rule_tr": "rt"})
+show(name = "sel_rule_tr", s = select({":rule_tr_rt": "handed back", "//conditions:default": "lost"}))
+filegroup(name = "group", srcs = ["a.txt"])
+with_data(name = "data", data = ["data.txt", ":group"])
+config_setting(name = "data_r", flag_values = {":data": "r"})
+rf_probe(name = "rf", deps = [":data"], s = select({":data_r": "matched", "//conditions:default": "-"}))
+with_data(name = "data_dir", data = ["dir"])
+config_setting(name = "data_dir_r", flag_values = {":data_dir": "r"})
+show(name = "sel_dir", s = select({":data_dir_r": "D", "//conditions:default": "-"}))
+"#,
+    );
+    // (i) N27's prerequisite pass and the held-back duplicate-label errors
+    // run before an early-planned implementation, which then never runs.
+    let text = rejected(
+        &f.run("build", &["//:sel_providers"]),
+        "in deps attribute of needs rule //:bad_providers: '//:plain' does not have mandatory providers: 'Marker'",
+    );
+    assert!(!text.contains("RAN"), "{text}");
+    let text = rejected(
+        &f.run("build", &["//:sel_dup"]),
+        "in any attribute of needs rule //:bad_dup: Label '//:leaf' is duplicated\n",
+    );
+    assert!(!text.contains("RAN"), "{text}");
+    // (ii) N18c: an early-planned key sees its dependency in the attribute
+    // transition's configuration, and a rule-transitioned key hands its
+    // providers back to the requested key.
+    let text = ok(&f.run("build", &["//:sel_edge"]));
+    assert!(
+        text.contains("EDGE //:edge T") && text.contains("SHOW //:sel_edge transitioned"),
+        "{text}"
+    );
+    let text = ok(&f.run("build", &["//:sel_rule_tr"]));
+    assert!(
+        text.contains("RULE_TR //:rule_tr") && text.contains("SHOW //:sel_rule_tr handed back"),
+        "{text}"
+    );
+    // (iii) N23a: runfiles of an early-planned key reach its dependents,
+    // and N27's source-directory gate covers a requested early-planned
+    // key's runfiles.
+    let text = ok(&f.run("build", &["//:rf"]));
+    assert!(
+        text.contains("RF //:data [\"a.txt\", \"data.txt\"] matched"),
+        "{text}"
+    );
+    rejected(
+        &f.run("build", &["//:sel_dir", "//:data_dir"]),
+        "//:data_dir: source directory '//:dir' in its runfiles is not supported by the native profile",
+    );
+}
+
 #[test]
 fn feature_flag_info_constructor_follows_java_binding() {
     let f = Fixture::new();

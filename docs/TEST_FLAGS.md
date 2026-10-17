@@ -174,12 +174,33 @@ the key's implementation (and every target analyzed so far, in plan order)
 runs before the config_setting is matched (`Engine::plan_pending`): Bazel's
 config_setting depends on the configured key the same way.
 
+Implementations therefore may run before the rest of phase 1 (analysis of
+the remaining targets) has finished. Natively, Starlark implementations run
+in phase 2 (`Engine::plan_target`, in post-order of the analysis plan) and
+phase 1 only resolves configurations, select()s and dependency edges; Bazel
+has no such split, a configured target's implementation runs as soon as its
+dependencies are configured. Every target analyzed so far is complete (its
+dependencies precede it in the plan), so planning them early gives the same
+results as planning them later, and a flush plans exactly what ordinary
+planning would: N27's prerequisite pass (provider, file and held-back
+duplicate-label checks) runs before the implementation; dependencies use
+their edge's configuration (exec, no-config or Starlark-transitioned, N18c)
+and alias chains end in that configuration; a rule-transitioned key's
+delegate hands its providers, files and runfiles back to the requested key;
+runfiles (N23a) are built in the same post-order, and the requested targets'
+source-directory runfiles gate (N27) still sees them. A flush cannot nest:
+a `config_setting` with Starlark keys analyzed while action planning itself
+runs (e.g. inside a deferred target platform's tree) fails explicitly
+(`config_setting L: the implementation of a Starlark flag_values key is
+needed during action planning ...`).
+
 ## Explicitly unsupported
 
 * Transitions that set feature flags: `config_common.config_feature_flag_transition`
   (`config_common.config_feature_flag_transition is not implemented in the
-  native profile`), Android's `feature_flags`; Starlark transitions are
-  generally unsupported.
+  native profile`), Android's `feature_flags`; Starlark 1:1 transitions
+  (N18c, docs/CONFIGURATION.md) write only Starlark build settings and the
+  modelled native options, never feature flags.
 * `--enforce_transitive_configs_for_config_feature_flag` (an unsupported
   option) and `transitive_configs` values (common-attribute gap,
   docs/COMMON_RULE_ATTRIBUTES.md): Bazel's tagged trimming

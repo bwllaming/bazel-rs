@@ -2872,7 +2872,7 @@ impl Engine {
                 )
         });
         if starlark_keys {
-            self.plan_pending(plan, configured)?;
+            self.plan_pending(rule, plan, configured)?;
         }
         let shown = crate::rule_declarations::canonical_form(&rule.label);
         let requesting_package = rule_authority(rule);
@@ -5356,15 +5356,22 @@ impl Engine {
     /// providers its Starlark `flag_values` keys return (FeatureFlagInfo,
     /// ConfigSetting.java:651-687): in Bazel the key's implementation runs
     /// before the config_setting's (a Skyframe dependency).
+    ///
+    /// The planning state is absent while action planning itself runs (an
+    /// implementation's analysis reaching a `config_setting` with Starlark
+    /// keys, e.g. a deferred target platform's tree): a nested flush is not
+    /// modelled and fails explicitly.
     fn plan_pending(
         &mut self,
+        config_setting: &Rule,
         plan: &Plan,
         configured: &mut ConfiguredNodes,
     ) -> Result<(), String> {
         let Some(mut state) = self.action_planning.take() else {
-            return Err(
-                "a config_setting flag_values key needs its Starlark implementation outside of a build; this is not implemented in the native profile".to_owned(),
-            );
+            return Err(format!(
+                "config_setting {}: the implementation of a Starlark flag_values key is needed during action planning (a nested flush of pending targets); this is not implemented in the native profile",
+                crate::rule_declarations::canonical_form(&config_setting.label)
+            ));
         };
         let result = self.plan_targets(&mut state, plan, configured);
         self.action_planning = Some(state);
