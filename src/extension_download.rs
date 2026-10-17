@@ -1189,6 +1189,30 @@ pub(crate) mod tests {
         );
     }
 
+    /// A loopback port nothing listens on and nothing CAN listen on while
+    /// the returned sockets live. Binding port 0 and dropping the listener
+    /// (the old recipe) freed the port at once: any other test server binding
+    /// port 0 could get it, and the "refused" request then reached that
+    /// server, failed this test (a status instead of a refusal, or a reset)
+    /// and consumed a response the other test expected. Here the port is the
+    /// local end of an established connection: its socket has no
+    /// SO_REUSEADDR, so the kernel refuses every bind of the port (explicit or
+    /// port 0) while it lives, and a SYN to it finds no listener (RST, i.e.
+    /// ECONNREFUSED). The peer listener must stay open too, or it would reset
+    /// the connection and release the port.
+    fn refused_port() -> ((std::net::TcpListener, std::net::TcpStream), u16) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let port = stream.local_addr().unwrap().port();
+        assert_eq!(
+            std::net::TcpListener::bind(("127.0.0.1", port))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AddrInUse
+        );
+        ((listener, stream), port)
+    }
+
     #[test]
     fn bazel_failure_classes_and_messages_for_status_and_connection_errors() {
         let server = Server::new(vec![
@@ -1227,11 +1251,7 @@ pub(crate) mod tests {
             BazelFailure::new(UNRECOVERABLE, "GET returned 418 Fixture")
         );
         // A closed port: java.net.ConnectException "Connection refused".
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
+        let (_held, port) = refused_port();
         let refused = open_detailed(
             &client().unwrap(),
             &Url::parse(&format!("http://127.0.0.1:{port}/x")).unwrap(),
