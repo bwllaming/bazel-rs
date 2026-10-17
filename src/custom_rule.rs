@@ -4455,6 +4455,23 @@ mod tests {
     use starlark::environment::{FrozenModule, Module};
     use starlark::syntax::{AstModule, Dialect};
 
+    /// Type.toString (packages/Type.java, BuildType.java), e.g. for
+    /// ImplicitOutputsFunction's `Attributes of type dict(label, string)
+    /// cannot be used in an outputs substitution template`
+    /// (packages/ImplicitOutputsFunction.java:395-398, N46).
+    #[test]
+    fn attribute_type_names_are_bazel_type_to_string() {
+        for (kind, name) in [
+            (AttrKind::LabelKeyedStringDict, "dict(label, string)"),
+            (AttrKind::StringKeyedLabelDict, "dict(string, label)"),
+            (AttrKind::LabelListDict, "dict(string, list(label))"),
+            (AttrKind::StringListDict, "dict(string, list(string))"),
+            (AttrKind::OutputList, "list(output)"),
+        ] {
+            assert_eq!(kind.type_name(), name);
+        }
+    }
+
     #[test]
     fn allowed_file_types_match_suffixes_and_join_english_lists() {
         let types = |list: &[&str]| {

@@ -66,7 +66,35 @@ fn output_label<'v>(heap: Heap<'v>, rule: &Rule, output: &str) -> anyhow::Result
 /// A `ctx.attr` Target whose repr names its configured-target class, with
 /// its runfiles providers. A requested label that differs from the resolved
 /// one is an alias.
-fn alloc_dependency<'v>(heap: Heap<'v>, requested: &str, target: &DependencyTarget) -> Value<'v> {
+/// One Target value per configured target and requested label within a
+/// rule context: Bazel hands the same ConfiguredTarget instance (per label
+/// and configuration; an alias is its own AliasConfiguredTarget) to every
+/// attribute, so `ctx.attr.a[0] == ctx.attr.b.keys()[0]` for one dependency.
+/// The dependency entry (one per configured-target key) and the requested
+/// label identify it (N50b; per rule context only, docs/SH_BINARY.md).
+#[derive(Default)]
+struct TargetInterner<'v>(RefCell<std::collections::HashMap<(usize, String), Value<'v>>>);
+
+fn alloc_dependency<'v>(
+    heap: Heap<'v>,
+    interner: &TargetInterner<'v>,
+    requested: &str,
+    target: &DependencyTarget,
+) -> Value<'v> {
+    let key = (std::ptr::from_ref(target) as usize, requested.to_owned());
+    if let Some(value) = interner.0.borrow().get(&key) {
+        return *value;
+    }
+    let value = alloc_dependency_value(heap, requested, target);
+    interner.0.borrow_mut().insert(key, value);
+    value
+}
+
+fn alloc_dependency_value<'v>(
+    heap: Heap<'v>,
+    requested: &str,
+    target: &DependencyTarget,
+) -> Value<'v> {
     use crate::starlark_types::TargetKind;
     let mut provider_keys = target.provider_keys.clone();
     let actual = if target.is_source {
@@ -385,6 +413,7 @@ struct DictPrerequisites<'v, 'a> {
     files: Value<'v>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dict_prerequisites<'v, 'a>(
     labels: impl Iterator<Item = &'a str>,
     name: &str,
@@ -393,6 +422,7 @@ fn dict_prerequisites<'v, 'a>(
     prefix: &str,
     consumer: Consumer<'_>,
     heap: Heap<'v>,
+    interner: &TargetInterner<'v>,
 ) -> anyhow::Result<DictPrerequisites<'v, 'a>> {
     let mut values = BTreeMap::new();
     let mut files = Vec::new();
@@ -407,7 +437,7 @@ fn dict_prerequisites<'v, 'a>(
                 files.push(alloc_file(heap, file.clone()));
             }
         }
-        values.insert(label, alloc_dependency(heap, label, target));
+        values.insert(label, alloc_dependency(heap, interner, label, target));
     }
     Ok(DictPrerequisites {
         values,
@@ -766,6 +796,7 @@ fn ctx_attribute_structs<'v>(
         rule_class: invocation.declaration.rule_class.as_str(),
         label: &shown_label,
     };
+    let interner = TargetInterner::default();
     let mut attrs = BTreeMap::new();
     let mut files = BTreeMap::new();
     let mut single_files = BTreeMap::new();
@@ -804,6 +835,7 @@ fn ctx_attribute_structs<'v>(
                     &attribute_prefix(name),
                     consumer,
                     heap,
+                    &interner,
                 )?;
                 files.insert(name.clone(), targets.files);
                 let mut items = Vec::new();
@@ -824,6 +856,7 @@ fn ctx_attribute_structs<'v>(
                     &attribute_prefix(name),
                     consumer,
                     heap,
+                    &interner,
                 )?;
                 files.insert(name.clone(), targets.files);
                 let mut items = Vec::new();
@@ -845,6 +878,7 @@ fn ctx_attribute_structs<'v>(
                     &attribute_prefix(name),
                     consumer,
                     heap,
+                    &interner,
                 )?;
                 files.insert(name.clone(), targets.files);
                 let mut items = Vec::new();
@@ -889,7 +923,7 @@ fn ctx_attribute_structs<'v>(
                         .unwrap_or_else(Value::new_none),
                     Some(target) => value
                         .as_deref()
-                        .map(|requested| alloc_dependency(heap, requested, target))
+                        .map(|requested| alloc_dependency(heap, &interner, requested, target))
                         .unwrap_or_else(Value::new_none),
                 };
                 lifted.push((name.as_str(), value));
@@ -907,7 +941,7 @@ fn ctx_attribute_structs<'v>(
                             &attribute_prefix(name),
                             consumer,
                         )
-                        .map(|target| alloc_dependency(heap, label, target))
+                        .map(|target| alloc_dependency(heap, &interner, label, target))
                     })
                     .collect::<anyhow::Result<Vec<_>>>()?;
                 lifted.push((name.as_str(), heap.alloc(targets)));
@@ -984,7 +1018,7 @@ fn ctx_attribute_structs<'v>(
                 let dependency = value
                     .as_deref()
                     .zip(target)
-                    .map(|(requested, target)| alloc_dependency(heap, requested, target));
+                    .map(|(requested, target)| alloc_dependency(heap, &interner, requested, target));
                 // A label attribute with a Starlark (split) transition is a
                 // list of its prerequisites
                 // (StarlarkAttributesCollection.convertAttributeValue,
@@ -1024,7 +1058,7 @@ fn ctx_attribute_structs<'v>(
                     labels
                         .iter()
                         .zip(&targets)
-                        .map(|(requested, target)| alloc_dependency(heap, requested, target))
+                        .map(|(requested, target)| alloc_dependency(heap, &interner, requested, target))
                         .collect::<Vec<_>>(),
                 )
             }
@@ -1095,7 +1129,15 @@ fn ctx_attribute_structs<'v>(
         let file = alloc_file(heap, context.declare(output)?);
         outputs.insert(key.clone(), file);
     }
-    builtin_ctx_attrs(rule, invocation, dependencies, &mut attrs, &mut files, heap)?;
+    builtin_ctx_attrs(
+        rule,
+        invocation,
+        dependencies,
+        &mut attrs,
+        &mut files,
+        heap,
+        &interner,
+    )?;
     Ok([
         heap.alloc(AllocStruct(attrs)),
         heap.alloc(AllocStruct(files)),
@@ -1144,6 +1186,7 @@ fn builtin_ctx_attrs<'v>(
     attrs: &mut BTreeMap<String, Value<'v>>,
     files: &mut BTreeMap<String, Value<'v>>,
     heap: Heap<'v>,
+    interner: &TargetInterner<'v>,
 ) -> anyhow::Result<()> {
     use crate::native_rules::NativeType;
     let builtin = &invocation.declaration.builtin;
@@ -1219,7 +1262,7 @@ fn builtin_ctx_attrs<'v>(
                             .cloned()
                             .map(|file| alloc_file(heap, file)),
                     );
-                    targets.push(alloc_dependency(heap, &key, dependency));
+                    targets.push(alloc_dependency(heap, interner, &key, dependency));
                 }
                 files.insert(name.to_owned(), heap.alloc(metadata_files));
                 heap.alloc(targets)
@@ -1244,7 +1287,7 @@ fn builtin_ctx_attrs<'v>(
                             .cloned()
                             .map(|file| alloc_file(heap, file)),
                     );
-                    targets.push(alloc_dependency(heap, &key, dependency));
+                    targets.push(alloc_dependency(heap, interner, &key, dependency));
                 }
                 files.insert(name.to_owned(), heap.alloc(constraint_files));
                 heap.alloc(targets)

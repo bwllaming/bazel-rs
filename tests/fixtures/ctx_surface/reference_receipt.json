@@ -17,7 +17,15 @@
     "run 2 (artifacts/ctx_surface-paired-capture.run2.json): EXACT 26, EXACT_MESSAGE 71, EXPECTED_NATIVE_UNSUPPORTED 10, MISMATCH 1 (target listing order only)",
     "review B1-B4 fixes (package feature layers, exec default_jvm_opts, objc uses_device_debug_entitlements, attribute TemplateVariableInfo) and new rows (T3; every fragment under -c opt, -c dbg and exec); run 3 is this receipt"
   ],
-  "post_capture_changes": [],
+  "post_capture_changes": [
+    {
+      "what": "integration-15 (N53 + N50b): rows T1 errors://test:e_location and P2 errors://test:e_expand_location_bad (EXPECTED_NATIVE_UNSUPPORTED here: ctx.expand_location was not implemented) are superseded by N53's LocationExpander; natively they now report Bazel's rule error text verbatim ('in err rule //test:e_location: label '//test:x' in $(location) expression is not a declared prerequisite of this rule'; tests/ctx_surface.rs). The authoritative paired evidence for expand_location is tests/fixtures/expand_location/reference_receipt.json and tests/fixtures/genrule_toolchains/reference_receipt.json.",
+      "rows": [
+        "T1/errors://test:e_location",
+        "P2/errors://test:e_expand_location_bad"
+      ]
+    }
+  ],
   "note": "N23c paired capture (artifacts/ctx_surface-capture.py, run once); no test reads this file. Native roots rust- are compared as k8- (D1); configuration.short_id normalized.",
   "rows": [
     {

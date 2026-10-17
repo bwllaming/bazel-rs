@@ -130,7 +130,10 @@ found more than once in 'targets' list.`) plus the rule's outputs, its `srcs`
 files and the executable (else files) of `deps`, `implementation_deps` and
 `tools` — each only when declared as a label list (`withExecPaths`,
 `:149-161`). A failure is a rule error `in R rule L: ...` and the input is
-returned.
+returned. `targets` absent is `[]`; an explicit None is `in call to
+expand_location(), parameter 'targets' got value of type 'NoneType', want
+'sequence'` (N50b; interned Targets and label-keyed dict merging:
+docs/EXPAND_LOCATION.md).
 
 ## Evidence
 

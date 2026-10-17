@@ -124,17 +124,19 @@ pub(crate) fn surface_properties(builder: &mut MethodsBuilder) {
         }
         surface::expand_make_variables(rule, attribute_name, command, &additional)
     }
-    /// StarlarkRuleContext.expandLocation (:1029-1053).
+    /// StarlarkRuleContext.expandLocation (:1029-1053). `targets` defaults to
+    /// `[]` (an absent argument); an explicit None is a parameter type error
+    /// (`want 'sequence'`, N50b).
     fn expand_location<'v>(
         this: Value<'v>,
         #[starlark(require = pos)] input: &str,
-        #[starlark(default = NoneType)] targets: Value<'v>,
+        targets: Option<Value<'v>>,
         #[starlark(require = named, default = false)] short_paths: bool,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<String> {
         let rule = current_surface(this).map_err(starlark::Error::new_other)?;
         let mut entries: Vec<(String, Vec<crate::starlark_types::File>)> = Vec::new();
-        if !targets.is_none() {
+        if let Some(targets) = targets {
             let items = sequence(targets).ok_or_else(|| {
                 starlark::Error::new_other(anyhow!(
                     "in call to expand_location(), parameter 'targets' got value of type '{}', want 'sequence'",

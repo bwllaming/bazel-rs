@@ -1,0 +1,3 @@
+module(name = "loc_fixture")
+
+bazel_dep(name = "rules_shell", version = "0.6.1")

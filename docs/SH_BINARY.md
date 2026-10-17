@@ -121,8 +121,17 @@ receipt (`reference_run_outputs`); genuine `bazel test //sh:t` PASSED.
   `bazel test`, which also analyzes the implicit `collect_coverage` edge.
   The integration-15 native replay against N50's recorded genuine reference re-pairs them: `bazel run //sh:bin` and `//sh:launcher` (stdout, runfiles tree listing, MANIFEST paths, `_repo_mapping` bytes including rules_shell's `@bazel_tools` lines) and `bazel test --test_output=all //sh:t` (test output and summary) are EXACT
   (receipt `post_capture_changes`).)
-* `ctx.expand_location` with location functions (sh_binary
-  `env = {"X": "$(rlocationpath ...)"}`) fails explicitly
-  (crate::ctx_surface).
+* (N50b/N53) `ctx.expand_location` location functions, used by sh_binary
+  `env = {"X": "$(rlocationpath ...)"}`, are implemented: N53's
+  LocationExpander (src/location_expander.rs) with N50b's `targets` checks
+  (docs/EXPAND_LOCATION.md).
+* Target identity: one Target value per configured target and requested
+  label **within a rule context** (N50b's TargetInterner in
+  crate::analysis), so `ctx.attr.a[0] == ctx.attr.b.keys()[0]`. Bazel's
+  identity is per ConfiguredTargetKey across the whole analysis
+  (provider-carried Targets, depset TargetItems across targets, attributes
+  of the same transition); that wider identity is follow-up N55 (one frozen
+  Target value per configured node, keyed by ConfiguredTargetKey, pointer
+  identity).
 * `InstrumentedFilesInfo` as a global / `target[InstrumentedFilesInfo]`,
   coverage collection.
