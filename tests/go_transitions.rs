@@ -255,7 +255,7 @@ fn rules_go_transitions_and_command_line_options_follow_bazel() {
     assert_ne!(root("//probe:cov_true"), root("//probe:cov_false"));
     assert_eq!(
         root("//probe:p"),
-        "bazel-out/rust-fastbuild/bin/probe/p.t.txt"
+        "bazel-out/k8-fastbuild/bin/probe/p.t.txt"
     );
 }
 
@@ -354,12 +354,10 @@ cov_edge(name = "cov_late", dep = ":late", value = "@bool_true")
         stderr.contains("//cov:late: the late-bound attribute '_gen' (configuration_field(\"coverage\", ...)) in a configuration with --collect_code_coverage"),
         "{stderr}"
     );
-    // Without coverage both analyze.
-    ws.report(&args(
-        &profile,
-        &[],
-        &["//cov:t_test".to_owned(), "//cov:late".to_owned()],
-    ));
+    // Without coverage the late-bound default analyzes. (The test rule's
+    // implicit test-runner edges, N23g, reach rules_shell's sh_binary in
+    // the built-in profile, analyzable only with N50.)
+    ws.report(&args(&profile, &[], &["//cov:late".to_owned()]));
 }
 
 /// Args.validateMapEach accepts any global function (Args.java:366-385):
@@ -374,7 +372,7 @@ fn map_each_from_another_package_and_file_root() {
     let report = ws.report(&args(&profile, &[], &["//use:u".to_owned()]));
     assert_eq!(
         report,
-        "//use:u bazel-out/rust-fastbuild/bin/use/u.roots\n  [\"\", \"bazel-out/rust-fastbuild/bin\", \"\"] [<source root>, <derived root>, <source root>] 2 root [\"path\"] True True\n//use:u bazel-out/rust-fastbuild/bin/use/u.txt\n  use bazel-out/rust-fastbuild/bin/use\n"
+        "//use:u bazel-out/k8-fastbuild/bin/use/u.roots\n  [\"\", \"bazel-out/k8-fastbuild/bin\", \"\"] [<source root>, <derived root>, <source root>] 2 root [\"path\"] True True\n//use:u bazel-out/k8-fastbuild/bin/use/u.txt\n  use bazel-out/k8-fastbuild/bin/use\n"
     );
     // An external-repository source file's root has the empty exec path
     // like the main repository's (ArtifactRoot.asExternalSourceRoot,
@@ -382,7 +380,7 @@ fn map_each_from_another_package_and_file_root() {
     let report = ws.report(&args(&profile, &[], &["//use:ext".to_owned()]));
     assert_eq!(
         report,
-        "//use:ext bazel-out/rust-fastbuild/bin/use/ext.roots\n  [\"\", \"bazel-out/rust-fastbuild/bin\", \"\"] [<source root>, <derived root>, <source root>] 2 root [\"path\"] True False\n//use:ext bazel-out/rust-fastbuild/bin/use/ext.txt\n  external/bazel_skylib+ bazel-out/rust-fastbuild/bin/use <source file LICENSE> <generated file use/ext.gen> \"LICENSE\"\n"
+        "//use:ext bazel-out/k8-fastbuild/bin/use/ext.roots\n  [\"\", \"bazel-out/k8-fastbuild/bin\", \"\"] [<source root>, <derived root>, <source root>] 2 root [\"path\"] True False\n//use:ext bazel-out/k8-fastbuild/bin/use/ext.txt\n  external/bazel_skylib+ bazel-out/k8-fastbuild/bin/use <source file LICENSE> <generated file use/ext.gen> \"LICENSE\"\n"
     );
     let stderr = ws.rejected(&args(&profile, &[], &["//use:c".to_owned()]));
     assert!(
@@ -406,11 +404,11 @@ fn raw_string_list_values_in_selects_aliases_and_identities() {
     let report = normalize(&ws.report(&args(&profile, &[], &targets)));
     assert_eq!(
         report,
-        "//raw:default bazel-out/rust-fastbuild/bin/raw/s.txt\n  bazel-out/rust-fastbuild/bin list [] other\n\
-//raw:default_tuple bazel-out/rust-fastbuild/bin/raw/s.txt\n  bazel-out/rust-fastbuild/bin list [] other\n\
-//raw:list bazel-out/rust-fastbuild-ST-#/bin/raw/s.txt\n  bazel-out/rust-fastbuild-ST-#/bin list [\"netgo\", \"x\"] netgo\n\
-//raw:s bazel-out/rust-fastbuild/bin/raw/s.txt\n  bazel-out/rust-fastbuild/bin list [] other\n\
-//raw:tuple bazel-out/rust-fastbuild-ST-#/bin/raw/s.txt\n  bazel-out/rust-fastbuild-ST-#/bin tuple (\"netgo\", \"x\") netgo\n"
+        "//raw:default bazel-out/k8-fastbuild/bin/raw/s.txt\n  bazel-out/k8-fastbuild/bin list [] other\n\
+//raw:default_tuple bazel-out/k8-fastbuild/bin/raw/s.txt\n  bazel-out/k8-fastbuild/bin list [] other\n\
+//raw:list bazel-out/k8-fastbuild-ST-#/bin/raw/s.txt\n  bazel-out/k8-fastbuild-ST-#/bin list [\"netgo\", \"x\"] netgo\n\
+//raw:s bazel-out/k8-fastbuild/bin/raw/s.txt\n  bazel-out/k8-fastbuild/bin list [] other\n\
+//raw:tuple bazel-out/k8-fastbuild-ST-#/bin/raw/s.txt\n  bazel-out/k8-fastbuild-ST-#/bin tuple (\"netgo\", \"x\") netgo\n"
     );
     let raw = ws.report(&args(&profile, &[], &targets));
     let root = |label: &str| {

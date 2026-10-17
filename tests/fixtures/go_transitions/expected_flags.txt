@@ -1,9 +1,9 @@
-//probe:cov_false bazel-out/rust-dbg-ST-#/bin/probe/p.t.txt
+//probe:cov_false bazel-out/k8-dbg-ST-#/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg-ST-#/bin
+  bin_dir=bazel-out/k8-dbg-ST-#/bin
   coverage_enabled=False
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg-ST-#/bin
+  BINDIR=bazel-out/k8-dbg-ST-#/bin
   platform=@@//p:linux
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec-ST-#/bin/probe/leaf.leaf
@@ -23,12 +23,12 @@
   sdk_version=""
   static=True
   tags=["netgo", "b"]
-//probe:cov_str_true bazel-out/rust-dbg-ST-#/bin/probe/p.t.txt
+//probe:cov_str_true bazel-out/k8-dbg-ST-#/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg-ST-#/bin
+  bin_dir=bazel-out/k8-dbg-ST-#/bin
   coverage_enabled=True
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg-ST-#/bin
+  BINDIR=bazel-out/k8-dbg-ST-#/bin
   platform=@@//p:linux
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec-ST-#/bin/probe/leaf.leaf
@@ -48,12 +48,12 @@
   sdk_version=""
   static=True
   tags=["netgo", "b"]
-//probe:cov_str_yes bazel-out/rust-dbg-ST-#/bin/probe/p.t.txt
+//probe:cov_str_yes bazel-out/k8-dbg-ST-#/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg-ST-#/bin
+  bin_dir=bazel-out/k8-dbg-ST-#/bin
   coverage_enabled=True
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg-ST-#/bin
+  BINDIR=bazel-out/k8-dbg-ST-#/bin
   platform=@@//p:linux
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec-ST-#/bin/probe/leaf.leaf
@@ -73,12 +73,12 @@
   sdk_version=""
   static=True
   tags=["netgo", "b"]
-//probe:cov_str_zero bazel-out/rust-dbg-ST-#/bin/probe/p.t.txt
+//probe:cov_str_zero bazel-out/k8-dbg-ST-#/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg-ST-#/bin
+  bin_dir=bazel-out/k8-dbg-ST-#/bin
   coverage_enabled=False
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg-ST-#/bin
+  BINDIR=bazel-out/k8-dbg-ST-#/bin
   platform=@@//p:linux
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec-ST-#/bin/probe/leaf.leaf
@@ -98,12 +98,12 @@
   sdk_version=""
   static=True
   tags=["netgo", "b"]
-//probe:cov_then_stdlib bazel-out/rust-dbg-ST-#/bin/probe/p.t.txt
+//probe:cov_then_stdlib bazel-out/k8-dbg-ST-#/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg-ST-#/bin
+  bin_dir=bazel-out/k8-dbg-ST-#/bin
   coverage_enabled=False
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg-ST-#/bin
+  BINDIR=bazel-out/k8-dbg-ST-#/bin
   platform=@@//p:linux
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec-ST-#/bin/probe/leaf.leaf
@@ -123,12 +123,12 @@
   sdk_version=""
   static=False
   tags=["netgo"]
-//probe:cov_then_tool bazel-out/rust-dbg-ST-#/bin/probe/p.t.txt
+//probe:cov_then_tool bazel-out/k8-dbg-ST-#/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg-ST-#/bin
+  bin_dir=bazel-out/k8-dbg-ST-#/bin
   coverage_enabled=True
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg-ST-#/bin
+  BINDIR=bazel-out/k8-dbg-ST-#/bin
   platform=@@//p:linux
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec-ST-#/bin/probe/leaf.leaf
@@ -148,12 +148,12 @@
   sdk_version=""
   static=True
   tags=[]
-//probe:cov_toggle bazel-out/rust-dbg-ST-#/bin/probe/p.t.txt
+//probe:cov_toggle bazel-out/k8-dbg-ST-#/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg-ST-#/bin
+  bin_dir=bazel-out/k8-dbg-ST-#/bin
   coverage_enabled=True
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg-ST-#/bin
+  BINDIR=bazel-out/k8-dbg-ST-#/bin
   platform=@@//p:linux
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec-ST-#/bin/probe/leaf.leaf
@@ -173,12 +173,12 @@
   sdk_version=""
   static=True
   tags=["netgo", "b"]
-//probe:cov_true bazel-out/rust-dbg-ST-#/bin/probe/p.t.txt
+//probe:cov_true bazel-out/k8-dbg-ST-#/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg-ST-#/bin
+  bin_dir=bazel-out/k8-dbg-ST-#/bin
   coverage_enabled=True
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg-ST-#/bin
+  BINDIR=bazel-out/k8-dbg-ST-#/bin
   platform=@@//p:linux
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec-ST-#/bin/probe/leaf.leaf
@@ -198,12 +198,12 @@
   sdk_version=""
   static=True
   tags=["netgo", "b"]
-//probe:cov_twice bazel-out/rust-dbg-ST-#/bin/probe/p.t.txt
+//probe:cov_twice bazel-out/k8-dbg-ST-#/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg-ST-#/bin
+  bin_dir=bazel-out/k8-dbg-ST-#/bin
   coverage_enabled=False
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg-ST-#/bin
+  BINDIR=bazel-out/k8-dbg-ST-#/bin
   platform=@@//p:linux
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec-ST-#/bin/probe/leaf.leaf
@@ -223,12 +223,12 @@
   sdk_version=""
   static=True
   tags=["netgo", "b"]
-//probe:cross_dbg bazel-out/rust-dbg-ST-#/bin/probe/p.t.txt
+//probe:cross_dbg bazel-out/k8-dbg-ST-#/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg-ST-#/bin
+  bin_dir=bazel-out/k8-dbg-ST-#/bin
   coverage_enabled=False
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg-ST-#/bin
+  BINDIR=bazel-out/k8-dbg-ST-#/bin
   platform=@@//go/toolchain:linux_amd64
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec-ST-#/bin/probe/leaf.leaf
@@ -248,12 +248,12 @@
   sdk_version="1.26.2"
   static=True
   tags=["netgo", "b"]
-//probe:cross_noop bazel-out/rust-dbg/bin/probe/p.t.txt
+//probe:cross_noop bazel-out/k8-dbg/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg/bin
+  bin_dir=bazel-out/k8-dbg/bin
   coverage_enabled=False
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg/bin
+  BINDIR=bazel-out/k8-dbg/bin
   platform=@@//p:linux
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec/bin/probe/leaf.leaf
@@ -273,14 +273,14 @@
   sdk_version=""
   static=True
   tags=["netgo", "b"]
-//probe:gen_plain bazel-out/rust-dbg/bin/probe/gen_plain.gen
+//probe:gen_plain bazel-out/k8-dbg/bin/probe/gen_plain.gen
   output_generator=None
-//probe:gobin_cgo bazel-out/rust-dbg-ST-#/bin/probe/p.t.txt
+//probe:gobin_cgo bazel-out/k8-dbg-ST-#/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg-ST-#/bin
+  bin_dir=bazel-out/k8-dbg-ST-#/bin
   coverage_enabled=False
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg-ST-#/bin
+  BINDIR=bazel-out/k8-dbg-ST-#/bin
   platform=@@//go/toolchain:linux_amd64_cgo
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec/bin/probe/leaf.leaf
@@ -300,12 +300,12 @@
   sdk_version=""
   static=True
   tags=["netgo", "b"]
-//probe:gobin_cross bazel-out/rust-dbg-ST-#/bin/probe/p.t.txt
+//probe:gobin_cross bazel-out/k8-dbg-ST-#/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg-ST-#/bin
+  bin_dir=bazel-out/k8-dbg-ST-#/bin
   coverage_enabled=False
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg-ST-#/bin
+  BINDIR=bazel-out/k8-dbg-ST-#/bin
   platform=@@//go/toolchain:darwin_arm64
   pgoprofile=@@//probe:prof
   exec_tool=bazel-out/linux-opt-exec-ST-#/bin/probe/leaf.leaf
@@ -325,12 +325,12 @@
   sdk_version=""
   static=True
   tags=["netgo", "b"]
-//probe:gobin_cross bazel-out/rust-dbg-ST-#/bin/probe/p.t.txt
+//probe:gobin_cross bazel-out/k8-dbg-ST-#/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg-ST-#/bin
+  bin_dir=bazel-out/k8-dbg-ST-#/bin
   coverage_enabled=False
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg-ST-#/bin
+  BINDIR=bazel-out/k8-dbg-ST-#/bin
   platform=@@//go/toolchain:darwin_arm64
   pgoprofile=@@//probe:prof
   exec_tool=bazel-out/linux-opt-exec-ST-#/bin/probe/leaf.leaf
@@ -350,12 +350,12 @@
   sdk_version=""
   static=False
   tags=["netgo"]
-//probe:gobin_pure_static bazel-out/rust-dbg-ST-#/bin/probe/p.t.txt
+//probe:gobin_pure_static bazel-out/k8-dbg-ST-#/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg-ST-#/bin
+  bin_dir=bazel-out/k8-dbg-ST-#/bin
   coverage_enabled=False
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg-ST-#/bin
+  BINDIR=bazel-out/k8-dbg-ST-#/bin
   platform=@@//p:linux
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec-ST-#/bin/probe/leaf.leaf
@@ -375,12 +375,12 @@
   sdk_version=""
   static=True
   tags=["netgo", "b"]
-//probe:gobin_pure_static bazel-out/rust-dbg-ST-#/bin/probe/p.t.txt
+//probe:gobin_pure_static bazel-out/k8-dbg-ST-#/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg-ST-#/bin
+  bin_dir=bazel-out/k8-dbg-ST-#/bin
   coverage_enabled=False
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg-ST-#/bin
+  BINDIR=bazel-out/k8-dbg-ST-#/bin
   platform=@@//p:linux
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec-ST-#/bin/probe/leaf.leaf
@@ -400,12 +400,12 @@
   sdk_version=""
   static=False
   tags=["netgo"]
-//probe:gobin_race bazel-out/rust-dbg-ST-#/bin/probe/p.t.txt
+//probe:gobin_race bazel-out/k8-dbg-ST-#/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg-ST-#/bin
+  bin_dir=bazel-out/k8-dbg-ST-#/bin
   coverage_enabled=False
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg-ST-#/bin
+  BINDIR=bazel-out/k8-dbg-ST-#/bin
   platform=@@//p:linux
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec-ST-#/bin/probe/leaf.leaf
@@ -425,12 +425,12 @@
   sdk_version=""
   static=True
   tags=["netgo", "b"]
-//probe:gobin_race bazel-out/rust-dbg-ST-#/bin/probe/p.t.txt
+//probe:gobin_race bazel-out/k8-dbg-ST-#/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg-ST-#/bin
+  bin_dir=bazel-out/k8-dbg-ST-#/bin
   coverage_enabled=False
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg-ST-#/bin
+  BINDIR=bazel-out/k8-dbg-ST-#/bin
   platform=@@//p:linux
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec-ST-#/bin/probe/leaf.leaf
@@ -450,12 +450,12 @@
   sdk_version=""
   static=True
   tags=[]
-//probe:gobin_race bazel-out/rust-dbg-ST-#/bin/probe/p.t.txt
+//probe:gobin_race bazel-out/k8-dbg-ST-#/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg-ST-#/bin
+  bin_dir=bazel-out/k8-dbg-ST-#/bin
   coverage_enabled=False
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg-ST-#/bin
+  BINDIR=bazel-out/k8-dbg-ST-#/bin
   platform=@@//p:linux
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec-ST-#/bin/probe/leaf.leaf
@@ -475,14 +475,14 @@
   sdk_version=""
   static=False
   tags=[]
-//probe:inst_plain bazel-out/rust-dbg/bin/probe/inst_plain.inst
+//probe:inst_plain bazel-out/k8-dbg/bin/probe/inst_plain.inst
   instrumented=False
-//probe:non_go bazel-out/rust-dbg/bin/probe/p.t.txt
+//probe:non_go bazel-out/k8-dbg/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg/bin
+  bin_dir=bazel-out/k8-dbg/bin
   coverage_enabled=False
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg/bin
+  BINDIR=bazel-out/k8-dbg/bin
   platform=@@//p:linux
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec/bin/probe/leaf.leaf
@@ -502,12 +502,12 @@
   sdk_version=""
   static=True
   tags=["netgo", "b"]
-//probe:non_go_tool bazel-out/rust-dbg-ST-#/bin/probe/p.t.txt
+//probe:non_go_tool bazel-out/k8-dbg-ST-#/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg-ST-#/bin
+  bin_dir=bazel-out/k8-dbg-ST-#/bin
   coverage_enabled=False
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg-ST-#/bin
+  BINDIR=bazel-out/k8-dbg-ST-#/bin
   platform=@@//p:linux
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec-ST-#/bin/probe/leaf.leaf
@@ -527,12 +527,12 @@
   sdk_version=""
   static=False
   tags=[]
-//probe:non_request_nogo bazel-out/rust-dbg-ST-#/bin/probe/p.t.txt
+//probe:non_request_nogo bazel-out/k8-dbg-ST-#/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg-ST-#/bin
+  bin_dir=bazel-out/k8-dbg-ST-#/bin
   coverage_enabled=False
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg-ST-#/bin
+  BINDIR=bazel-out/k8-dbg-ST-#/bin
   platform=@@//p:linux
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec-ST-#/bin/probe/leaf.leaf
@@ -552,12 +552,12 @@
   sdk_version=""
   static=True
   tags=["netgo", "b"]
-//probe:opt_plat_list bazel-out/rust-dbg-ST-#/bin/probe/p.t.txt
+//probe:opt_plat_list bazel-out/k8-dbg-ST-#/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg-ST-#/bin
+  bin_dir=bazel-out/k8-dbg-ST-#/bin
   coverage_enabled=False
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg-ST-#/bin
+  BINDIR=bazel-out/k8-dbg-ST-#/bin
   platform=@@//p:mac
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec-ST-#/bin/probe/leaf.leaf
@@ -577,12 +577,12 @@
   sdk_version=""
   static=True
   tags=["netgo", "b"]
-//probe:opt_plat_str bazel-out/rust-dbg-ST-#/bin/probe/p.t.txt
+//probe:opt_plat_str bazel-out/k8-dbg-ST-#/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg-ST-#/bin
+  bin_dir=bazel-out/k8-dbg-ST-#/bin
   coverage_enabled=False
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg-ST-#/bin
+  BINDIR=bazel-out/k8-dbg-ST-#/bin
   platform=@@//p:mac
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec-ST-#/bin/probe/leaf.leaf
@@ -602,12 +602,12 @@
   sdk_version=""
   static=True
   tags=["netgo", "b"]
-//probe:opt_same bazel-out/rust-dbg-ST-#/bin/probe/p.t.txt
+//probe:opt_same bazel-out/k8-dbg-ST-#/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg-ST-#/bin
+  bin_dir=bazel-out/k8-dbg-ST-#/bin
   coverage_enabled=False
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg-ST-#/bin
+  BINDIR=bazel-out/k8-dbg-ST-#/bin
   platform=@@//p:linux
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec-ST-#/bin/probe/leaf.leaf
@@ -627,12 +627,12 @@
   sdk_version=""
   static=True
   tags=["netgo", "b"]
-//probe:opt_str bazel-out/rust-opt-ST-#/bin/probe/p.t.txt
+//probe:opt_str bazel-out/k8-opt-ST-#/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-opt-ST-#/bin
+  bin_dir=bazel-out/k8-opt-ST-#/bin
   coverage_enabled=False
   COMPILATION_MODE=opt
-  BINDIR=bazel-out/rust-opt-ST-#/bin
+  BINDIR=bazel-out/k8-opt-ST-#/bin
   platform=@@//p:linux
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec-ST-#/bin/probe/leaf.leaf
@@ -652,12 +652,12 @@
   sdk_version=""
   static=True
   tags=["netgo", "b"]
-//probe:p bazel-out/rust-dbg/bin/probe/p.t.txt
+//probe:p bazel-out/k8-dbg/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg/bin
+  bin_dir=bazel-out/k8-dbg/bin
   coverage_enabled=False
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg/bin
+  BINDIR=bazel-out/k8-dbg/bin
   platform=@@//p:linux
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec/bin/probe/leaf.leaf
@@ -677,12 +677,12 @@
   sdk_version=""
   static=True
   tags=["netgo", "b"]
-//probe:stdlib bazel-out/rust-dbg-ST-#/bin/probe/p.t.txt
+//probe:stdlib bazel-out/k8-dbg-ST-#/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg-ST-#/bin
+  bin_dir=bazel-out/k8-dbg-ST-#/bin
   coverage_enabled=False
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg-ST-#/bin
+  BINDIR=bazel-out/k8-dbg-ST-#/bin
   platform=@@//p:linux
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec-ST-#/bin/probe/leaf.leaf
@@ -702,12 +702,12 @@
   sdk_version=""
   static=False
   tags=["netgo"]
-//probe:tool bazel-out/rust-dbg-ST-#/bin/probe/p.t.txt
+//probe:tool bazel-out/k8-dbg-ST-#/bin/probe/p.t.txt
   probe p
-  bin_dir=bazel-out/rust-dbg-ST-#/bin
+  bin_dir=bazel-out/k8-dbg-ST-#/bin
   coverage_enabled=False
   COMPILATION_MODE=dbg
-  BINDIR=bazel-out/rust-dbg-ST-#/bin
+  BINDIR=bazel-out/k8-dbg-ST-#/bin
   platform=@@//p:linux
   pgoprofile=@@//go/config:empty
   exec_tool=bazel-out/linux-opt-exec-ST-#/bin/probe/leaf.leaf

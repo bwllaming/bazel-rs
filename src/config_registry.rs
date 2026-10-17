@@ -1013,7 +1013,7 @@ mod tests {
             .collect::<String>();
         assert_eq!(
             mnemonic(&coverage, &top),
-            Ok(format!("rust-fastbuild-ST-{}", &digest[..12]))
+            Ok(format!("k8-fastbuild-ST-{}", &digest[..12]))
         );
         let none = BTreeSet::new();
         assert_eq!(
@@ -1047,7 +1047,7 @@ mod tests {
         );
         assert_eq!(
             mnemonic(&raw, &top),
-            Ok("rust-fastbuild-ST-91a4ed8818d5".to_owned())
+            Ok("k8-fastbuild-ST-91a4ed8818d5".to_owned())
         );
     }
 
