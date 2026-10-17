@@ -300,8 +300,9 @@ class DiagnosticTests(unittest.TestCase):
     def test_native_projection_never_weakens_reference_diagnostics(self):
         for d,message in s.NATIVE_MESSAGES.items():
             s.require_rejection(record('error: '+message,1),d,'native')
-            # 'frozen': the native text is Bazel's own Starlark.checkMutable text.
-            if d not in ('native-info','external-file','depth65','range-quota','default-quota','frozen'):
+            # 'frozen': the native text is Bazel's own Starlark.checkMutable text;
+            # 'immutable': since N33 it is Bazel's field-assignment text.
+            if d not in ('native-info','external-file','depth65','range-quota','default-quota','frozen','immutable'):
                 with self.assertRaises(ValueError):s.require_rejection(record('Error: '+message,1),d,'reference')
             for wrong in (message+' unrelated', 'unrelated '+message, '    error: '+message):
                 with self.assertRaises(ValueError):s.require_rejection(record('error: '+wrong if not wrong.startswith('    ') else wrong,1),d,'native')
@@ -318,6 +319,13 @@ class DiagnosticTests(unittest.TestCase):
         for which in ('native','reference'):
             with self.assertRaises(ValueError):s.require_rejection(record('error: Immutable',1),'frozen',which)
         with self.assertRaises(ValueError):s.require_rejection(record('error: trying to mutate a frozen dict value',1),'frozen','native')
+
+    def test_immutable_native_text_is_bazels_and_obsolete_operation_text_is_rejected(self):
+        self.assertEqual(s.NATIVE_MESSAGES['immutable'],MESSAGES['immutable'])
+        s.require_rejection(record('error: cannot set .encode field of json value',1),'immutable','native')
+        for wrong in ('error: Operation `.encode=` not supported on type `json`',
+                'error: cannot set .decode field of json value','error: cannot set .encode field of json value extra'):
+            with self.assertRaises(ValueError):s.require_rejection(record(wrong,1),'immutable','native')
 
     def test_resource_message_is_exact_neutral_and_never_fallback(self):
         for probe in ('range-quota','default-quota'):

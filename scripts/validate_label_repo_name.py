@@ -251,10 +251,13 @@ def rejection(row, case, engine, files):
                    r"'Label' value has no field or method 'missing_field'" if case == 'unknown-field' else
                    r"'repo_name' is not allowed on invalid Label")
     else:
-        # Source-backed defaults: vendor/starlark-0.14.2/src/values/error.rs,
-        # LabelValue has no set_attr; src/label.rs mapping miss rejects eagerly.
-        pattern = (r'error: Operation `\.repo_name=` not supported on type `Label`' if case == 'assignment' else
-                   r'error: Object of type `Label` has no attribute `missing_field`' if case == 'unknown-field' else
+        # Since N33 the interpreter reports Bazel's own assignment/unknown-field
+        # texts (formerly "Operation `.repo_name=` not supported on type `Label`"
+        # and "Object of type `Label` has no attribute `missing_field`"), anchored
+        # as the whole native error line. src/label.rs mapping miss still
+        # rejects eagerly (the documented DIVERGENCE cases).
+        pattern = (r'(?m)^error: cannot set \.repo_name field of Label value$' if case == 'assignment' else
+                   r"(?m)^error: 'Label' value has no field or method 'missing_field'$" if case == 'unknown-field' else
                    re.escape('unknown apparent repository @'+('' if case == 'external-empty' else 'not_visible')+
                        ' from canonical repository '+('"dep+"' if case.startswith('external') else '""')+
                        '; extension repository not materialized or dependency not declared'))

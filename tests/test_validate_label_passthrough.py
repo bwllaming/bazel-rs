@@ -21,10 +21,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import validate_label_passthrough as suite
 
 
-# Mechanical excerpts only, not invented full native transcripts. Original:
+# OBSOLETE pre-N33 native binder wording, retained only as negative evidence
+# (since N33 native reports Bazel's Label() text). Original:
 # artifacts/label-passthrough-implementation/attempt-4-fixture-syntax/
 # 03-all-cli-groups.stderr SHA256 4b1332ac954ff3b7d619a8f5be95493ab506bc43ebefe108501fc2518070e495.
-OBSERVED_NATIVE_ACTUAL = {
+OBSOLETE_NATIVE_ACTUAL = {
     'none': 'NoneType (repr: None)', 'bool': 'bool (repr: True)', 'int': 'int (repr: 1)',
     'list': 'list (repr: [])', 'dict': 'dict (repr: {})',
     'struct': 'struct (repr: struct(type="Label"))',
@@ -43,23 +44,35 @@ REFERENCE_CALLBACK_OBSERVATIONS = {
     ('extension', 'warm', 'cquery'): ('LP_EXTENSION_CALLBACK',),
 }
 MUTATION_PROOFS = []  # In-memory unit evidence; never CLI/Starlark acceptance.
-BINDING_FIXTURE = json.loads((suite.FIXTURES / 'native_binding_observations.json').read_bytes())
+# Current (post-N33) actual native rows: all thirteen Label() binding cases from
+# the integration-14 pre-gate BOUNDED_PAIRED_PASS report (provenance in the fixture).
+BINDING_FIXTURE = json.loads((suite.FIXTURES / 'native_binding_observations_n33.json').read_bytes())
 BINDING_OBSERVATIONS = BINDING_FIXTURE['observations']
+# Pre-N33 retained rows (starlark-rust binder wording): obsolete negative evidence only.
+OBSOLETE_BINDING_FIXTURE = json.loads((suite.FIXTURES / 'native_binding_observations.json').read_bytes())
+OBSOLETE_BINDING_OBSERVATIONS = OBSOLETE_BINDING_FIXTURE['observations']
 PUBLICATION_OBSERVATION = json.loads((suite.FIXTURES / 'native_publication_observation.json').read_bytes())
 BINDING_STDERR_PINS = {
-    'missing': (556, 'c9f7ab93fd45cd590784055c4fd54af6b0b2ae962673c42f2176481f9667afe0'),
-    'extra': (608, 'ec96cf84f98a92781c5212eeefff5a1e148fac633b10ba2dd1c87471e878faca'),
-    'keyword-string': (612, '7bf0330d46015e714878372b1b97ab0af03903c5976ce3eacd3f17f08f899c8a'),
-    'keyword-label': (632, '12c5528be0dac2945a358a7c6b6b85998a202aa486c8459034b5a3bf9157fd72'),
-    'keyword-native-name': (645, '1778c13e8abe08b639282e48325ad6f572a59b792cf6f29fabc939d83fbb8964'),
-    'keyword-unknown': (621, '447b6155a074973376e8fb1d1b9ff05139b01024a4083b58aed117bb4a8171b2'),
-    'positional-plus-keyword': (648, '744007f93260a35ae7aa4d8c2d8fb56b5cdd8501c9da57a4b066dd3f0dcad43e'),
+    'wrong-type-none': (620, 'cb9ab15fa90b93799db2f204236170dfa8fcdf9a91c03e34be0fe7e28aa7d402'),
+    'wrong-type-bool': (616, 'b23f3fe56ae055156fa5f7ae8db09db273640da6fa0760a7bc899a95efcb210d'),
+    'wrong-type-int': (605, 'a25f229053cc7c7bbbc3e56a1da15e65d56b29fcacbbf1855033c0b79e1ad757'),
+    'wrong-type-list': (610, '8fa8d8e7fa300486c839711a276f28e7323c156555c2e1a000c4afb8f955a9dd'),
+    'wrong-type-dict': (610, '87e42df95f9a45c49612608fa1cbbb6f0a4474fd3c3344a05a2210ee314d724d'),
+    'wrong-type-struct': (641, '18d0d646c653851e2b6eaf9fbdf60a3cc82cfc6b824c54e3d8663e9efe2a2e6d'),
+    'missing': (563, '0cf48b8de1c4df59060c443a4400757eedcf0f08a42f5c2a98276e91e05204db'),
+    'extra': (622, 'da62a11ebbca3f7b3e3bf0c1765691aef8d0a0854e2dd562647d75e33799526d'),
+    'keyword-string': (626, '29f5efd51cc5c95adf9ac156a3afcff21600531d3058fa149fdc2bea968b859b'),
+    'keyword-label': (646, '08cdfed1e16bc2bd35617ee98cc9b294704c028f2d270004600f819b7b09a436'),
+    'keyword-native-name': (642, 'fa4539bc09c0bd3502f171656500f62c6e9465be5c48be0b50f67311306ceeb8'),
+    'keyword-unknown': (618, '0e1ef922991fa3e444534e1f35d9844f67b11d6c5ffd9eaa505ce1cad9ba5df8'),
+    'positional-plus-keyword': (662, '3bf3d3199c7732ca3135c42851a95c06500a2e4d459b05286016b17dd172c09c'),
 }
-# Exact 607-byte stderr from native preparation report SHA256
+KEYWORD_CASES = ('keyword-string', 'keyword-label', 'keyword-native-name', 'keyword-unknown', 'positional-plus-keyword')
+# OBSOLETE (pre-N33) exact 607-byte stderr from native preparation report SHA256
 # 15919ac3c8a64cf45070131a8ae57afed86e2f01e5142158b104fc23542455e4,
-# run 6 (wrong-type-none), exit 1. No path or whitespace normalization.
-# Keeping this inline makes the test portable without reading ignored reports.
-RETAINED_NATIVE_NONE_STDERR = (
+# run 6 (wrong-type-none), exit 1. Since N33 it must be REJECTED; the current
+# retained wrong-type-none row is BINDING_OBSERVATIONS['wrong-type-none'].
+OBSOLETE_NATIVE_NONE_STDERR = (
     b'BEFORE_CALL\n'
     b'bazel-rs: Traceback (most recent call last):\n'
     b'  * /tmp/opencode/bazel-parity-label-passthrough/artifacts/label-passthrough-native-prep-k3jn39vp/cases/wrong-type-none/native/workspace/BUILD.bazel:2, in <module>\n'
@@ -97,11 +110,16 @@ def reference_error(case):
 
 
 def native_error(case):
-    # Observed native binder form; query_row's surrounding trace is synthetic.
+    # Since N33 the native binder's primary line is Bazel's own body.
+    return reference_error(case)
+
+
+def obsolete_native_error(case):
+    # Pre-N33 starlark-rust binder wording; must now be rejected.
     if case.startswith('wrong-type-'):
-        actual = OBSERVED_NATIVE_ACTUAL[case.removeprefix('wrong-type-')]
+        actual = OBSOLETE_NATIVE_ACTUAL[case.removeprefix('wrong-type-')]
         if case == 'wrong-type-struct':
-            actual = 'struct (repr: struct(x=1))'  # Synthetic value for this QA fixture.
+            actual = 'struct (repr: struct(x=1))'
         return "Type of parameter `input` doesn't match, expected `Label | str`, actual `" + actual + '`'
     if case == 'missing':
         return 'Wrong number of positional arguments, expected 1, got 0'
@@ -112,7 +130,7 @@ def native_error(case):
 
 
 def query_row(case, engine='reference'):
-    if engine == 'native' and case in BINDING_OBSERVATIONS:
+    if engine == 'native' and case in suite.CALLS:
         observed = BINDING_OBSERVATIONS[case]
         row = record(code=observed['returncode'])
         row.update(stdout=copy.deepcopy(observed['stdout']), stderr=copy.deepcopy(observed['stderr']))
@@ -122,8 +140,8 @@ def query_row(case, engine='reference'):
                          for n, repo in suite.COPY_ROWS)
         return record(text + '\nFROZEN_EXPORT_TWO_READERS_OK @@dep+//:same external-frozen-key\nPOSITIVE_COMPLETE\n', stdout=b'//:ok\n')
     if case in suite.CALLS:
-        error = 'Error in Label: ' + reference_error(case) if engine == 'reference' else 'error: ' + native_error(case)
-        return record('BEFORE_CALL\nprobe.bzl:3:19\n    result = ' + suite.CALLS[case] + '\n' + error + '\n', 7 if engine == 'reference' else 1)
+        return record('BEFORE_CALL\nprobe.bzl:3:19\n    result = ' + suite.CALLS[case] + '\n'
+                      'Error in Label: ' + reference_error(case) + '\n', 7)
     if engine == 'native':
         return record('BEFORE_INVALID_CONSTRUCTION\nprobe.bzl:3:22\n    original = Label("@not_visible//:missing")\n'
                       'error: unknown apparent repository @not_visible from canonical repository ""\n', 1)
@@ -332,10 +350,25 @@ class FixtureTests(unittest.TestCase):
 
 class RejectionTests(unittest.TestCase):
     def test_observed_native_binder_primary_diagnostics(self):
-        for name, actual in OBSERVED_NATIVE_ACTUAL.items():
-            text = "error: Type of parameter `input` doesn't match, expected `Label | str`, actual `" + actual + '`\n'
-            with self.subTest(name=name):
-                suite.diagnostic('wrong-type-' + name, 'native', text)
+        # Since N33: the native primary line is exactly Bazel's body.
+        for case in suite.CALLS:
+            text = suite.unblob(BINDING_OBSERVATIONS[case]['stderr']).decode()
+            self.assertIn('\nerror: ' + reference_error(case) + '\n', text)
+            with self.subTest(case=case):
+                suite.diagnostic(case, 'native', text)
+
+    def test_obsolete_pre_n33_native_wording_is_rejected(self):
+        for case in suite.CALLS:
+            text = suite.unblob(BINDING_OBSERVATIONS[case]['stderr']).decode()
+            old = text.replace('error: ' + reference_error(case), 'error: ' + obsolete_native_error(case))
+            self.assertNotEqual(old, text)
+            with self.subTest(case=case), self.assertRaisesRegex(ValueError, 'wrong native'):
+                suite.diagnostic(case, 'native', old)
+        for case, observed in OBSOLETE_BINDING_OBSERVATIONS.items():
+            with self.subTest(case=case, retained=True), self.assertRaisesRegex(ValueError, 'wrong native'):
+                suite.query_result(dict(record(code=1), stderr=copy.deepcopy(observed['stderr'])), case, 'native')
+        with self.assertRaisesRegex(ValueError, 'wrong native type/parameter category'):
+            suite.query_result(record(OBSOLETE_NATIVE_NONE_STDERR.decode(), 1), 'wrong-type-none', 'native')
 
     def test_reference_and_synthetic_native_categories(self):
         for case in suite.CALLS:
@@ -564,7 +597,17 @@ class OracleMutationTests(unittest.TestCase):
                 with self.subTest(engine=engine, text=text):
                     report = copy.deepcopy(self.report)
                     row = report['runs'][index]
-                    row['stderr'] = suite.blob(suite.unblob(row['stderr']) + text.encode() + b'\n')
+                    raw = suite.unblob(row['stderr'])
+                    footer = suite.NATIVE_LOADING_FOOTER.encode()
+                    if engine == 'native':
+                        # Actual native rows end in the terminal footer: inject
+                        # before it so the action/fallback guard (not the footer
+                        # guard) is what must reject.
+                        self.assertTrue(raw.endswith(footer))
+                        raw = raw[:-len(footer)] + text.encode() + b'\n' + footer
+                    else:
+                        raw += text.encode() + b'\n'
+                    row['stderr'] = suite.blob(raw)
                     self.reject(report, index, 'negative-query-guards', text,
                                 'fallback/infrastructure/crash/global failure|query executed action/callback')
 
@@ -583,15 +626,19 @@ class OracleMutationTests(unittest.TestCase):
             case = 'wrong-type-' + kind
             index = self.row_id([case, 'native', 'query', 'query'])
             good = native_error(case)
+            typename = suite.BAD_TYPES[kind][1]
             wrong_actual = 'bool' if kind != 'bool' else 'int'
             variants = {
-                'parameter-substring-prefix': good.replace('`input`', '`otherinput`'),
-                'parameter-substring-suffix': good.replace('`input`', '`input_other`'),
-                'expected-scalar-not-union': good.replace('`Label | str`', '`int`'),
-                'expected-string-only': good.replace('`Label | str`', '`str`'),
-                'expected-label-only': good.replace('`Label | str`', '`Label`'),
-                'wrong-actual-type': re.sub(r'actual `\w+', 'actual `' + wrong_actual, good),
-                'reversed-expected-actual': "Type of parameter `input` doesn't match, expected `int`, actual `str (repr: Label)`",
+                'parameter-substring-prefix': good.replace("'input'", "'otherinput'"),
+                'parameter-substring-suffix': good.replace("'input'", "'input_other'"),
+                'expected-scalar-not-union': good.replace("'string or Label'", "'int'"),
+                'expected-string-only': good.replace("'string or Label'", "'string'"),
+                'expected-label-only': good.replace("'string or Label'", "'Label'"),
+                'wrong-actual-type': good.replace("type '" + typename + "'", "type '" + wrong_actual + "'"),
+                'reversed-expected-actual': "in call to Label(), parameter 'input' got value of type 'string or Label', want '" + typename + "'",
+                'other-callee': good.replace('in call to Label()', 'in call to Other()'),
+                'trailing-text': good + ' extra',
+                'obsolete-pre-n33': obsolete_native_error(case),
                 'oracle-token-reversal': 'Label input expected int, got string',
                 'oracle-parameter-substring': 'Label otherinput expected string or Label, got int',
             }
@@ -731,14 +778,20 @@ class NativeTerminalFooterTests(unittest.TestCase):
         self.scratch = Path(self.report['scratch'])
         self.index = next(r['id'] for r in self.report['runs']
                           if r['step'] == ['wrong-type-none', 'native', 'query', 'query'])
-        self.report['runs'][self.index]['stderr'] = suite.blob(RETAINED_NATIVE_NONE_STDERR)
-        self.footer = RETAINED_NATIVE_NONE_STDERR.splitlines(keepends=True)[-1]
-        self.body = RETAINED_NATIVE_NONE_STDERR[:-len(self.footer)]
+        # Current retained row (post-N33 body, current footer). The legacy-footer
+        # variant below is synthetic: the same actual body plus the legacy literal,
+        # which the validator still accepts for older captures.
+        self.retained = suite.unblob(BINDING_OBSERVATIONS['wrong-type-none']['stderr'])
+        current = suite.NATIVE_LOADING_FOOTER.encode()
+        assert self.retained.endswith(b'\n' + current)
+        self.body = self.retained[:-len(current)]
+        self.footer = suite.LEGACY_NATIVE_LOADING_FOOTER.encode()
+        self.raw = self.body + self.footer
+        self.report['runs'][self.index]['stderr'] = suite.blob(self.raw)
 
-    def test_exact_retained_607_bytes_accept_without_modifying_raw_receipt(self):
-        self.assertEqual(len(RETAINED_NATIVE_NONE_STDERR), 607)
-        self.assertEqual(suite.sha(RETAINED_NATIVE_NONE_STDERR),
-                         '75289874d51a1fe479db7fe7ac01dde329d37715057df90f1fd84f0f73332e31')
+    def test_exact_retained_bytes_accept_without_modifying_raw_receipt(self):
+        self.assertEqual((len(self.retained), suite.sha(self.retained)), BINDING_STDERR_PINS['wrong-type-none'])
+        self.report['runs'][self.index]['stderr'] = suite.blob(self.retained)
         before = copy.deepcopy(self.report)
         self.assertEqual(suite.query_result(self.report['runs'][self.index], 'wrong-type-none', 'native'),
                          'PARITY_REJECTION_CATEGORY')
@@ -746,8 +799,16 @@ class NativeTerminalFooterTests(unittest.TestCase):
         self.assertEqual(suite.replay(self.report, self.config, self.binding), 'BOUNDED_PAIRED_PASS')
         self.assertEqual(self.report, before)
 
+    def test_obsolete_retained_607_bytes_now_rejected(self):
+        self.assertEqual(len(OBSOLETE_NATIVE_NONE_STDERR), 607)
+        self.assertEqual(suite.sha(OBSOLETE_NATIVE_NONE_STDERR),
+                         '75289874d51a1fe479db7fe7ac01dde329d37715057df90f1fd84f0f73332e31')
+        report = copy.deepcopy(self.report)
+        report['runs'][self.index]['stderr'] = suite.blob(OBSOLETE_NATIVE_NONE_STDERR)
+        self.reject(report, self.index, 'native-terminal-footer', 'obsolete-pre-n33-capture',
+                    'wrong native type/parameter category')
+
     def test_footer_literal_is_bound_to_real_package_and_main_print_sites(self):
-        # The retained capture predates the native-rule-class footer.
         self.assertEqual(self.footer, suite.LEGACY_NATIVE_LOADING_FOOTER.encode())
         package = (suite.ROOT / 'src/package.rs').read_text()
         main = (suite.ROOT / 'src/main.rs').read_text()
@@ -791,8 +852,8 @@ class NativeTerminalFooterTests(unittest.TestCase):
         variants = {
             'duplicate': self.body + self.footer + self.footer,
             'duplicate-separated': self.body + self.footer + b'\n' + self.footer,
-            'nonterminal-text': RETAINED_NATIVE_NONE_STDERR + b'trailing ordinary text\n',
-            'nonterminal-blank-line': RETAINED_NATIVE_NONE_STDERR + b'\n',
+            'nonterminal-text': self.raw + b'trailing ordinary text\n',
+            'nonterminal-blank-line': self.raw + b'\n',
             'footer-before-body': self.footer + self.body,
             'missing-final-lf': self.body + self.footer[:-1],
             'crlf': self.body + self.footer[:-1] + b'\r\n',
@@ -819,7 +880,7 @@ class NativeTerminalFooterTests(unittest.TestCase):
                      b'panicked at parser\n', b'failed to download archive\n', b'name Label is not defined\n'):
             for position in ('before', 'after'):
                 report = copy.deepcopy(self.report)
-                raw = self.body + line + self.footer if position == 'before' else RETAINED_NATIVE_NONE_STDERR + line
+                raw = self.body + line + self.footer if position == 'before' else self.raw + line
                 report['runs'][self.index]['stderr'] = suite.blob(raw)
                 with self.subTest(line=line, position=position):
                     self.reject(report, self.index, 'native-terminal-footer', position + ':' + line.decode().rstrip('\n'),
@@ -839,11 +900,11 @@ class NativeTerminalFooterTests(unittest.TestCase):
 
     def test_exact_footer_does_not_relax_parameter_type_callsite_or_phase(self):
         variants = {
-            'wrong-parameter': self.body.replace(b'`input`', b'`otherinput`'),
-            'wrong-expected-union': self.body.replace(b'`Label | str`', b'`int`'),
-            'wrong-actual-type': self.body.replace(b'NoneType (repr: None)', b'bool (repr: None)'),
-            'reversed-types': self.body.replace(b'expected `Label | str`, actual `NoneType (repr: None)`',
-                                                b'expected `NoneType`, actual `Label | str (repr: None)`'),
+            'wrong-parameter': self.body.replace(b"parameter 'input'", b"parameter 'otherinput'"),
+            'wrong-expected-union': self.body.replace(b"want 'string or Label'", b"want 'int'"),
+            'wrong-actual-type': self.body.replace(b"type 'NoneType'", b"type 'bool'"),
+            'reversed-types': self.body.replace(b"type 'NoneType', want 'string or Label'",
+                                                b"type 'string or Label', want 'NoneType'"),
             'wrong-site': self.body.replace(b'//:probe.bzl:3', b'//:probe.bzl:4'),
             'wrong-expression': self.body.replace(b'result = Label(None)', b'result = Label(True)'),
             'source-echo-before-marker': self.body.replace(b'BEFORE_CALL\n', b'    print("BEFORE_CALL")\n'),
@@ -876,13 +937,19 @@ class NativeBindingObservationTests(unittest.TestCase):
     def test_portable_exact_raw_fields_hashes_source_and_provenance(self):
         self.assertEqual(BINDING_FIXTURE['schema'], 1)
         origin = BINDING_FIXTURE['origin']
-        self.assertEqual(origin['report_sha256'], '630620c1d40bfe0b6877ff1894086b5c45c29c896bb7977ff554d1e4995c8aca')
-        self.assertEqual(origin['native_sha256'], '6e6bdf3d13d9a2970a6a47c3eb5edd48d072fa6b282b8b382ec77e095a7d2ed2')
-        self.assertEqual(origin['manifest_sha256'], '77f9c9856f72e1d92e5b598e7563aab5add2ad289ccaa08defb7c987f87bf0b7')
+        self.assertEqual(origin['report_sha256'], '03a17107759f2eba4e8e427168f0333cec912c276df846d77f5948a0ca5feef1')
+        self.assertEqual(origin['native_sha256'], 'eac59a1eca721b985b39e8397bf13f06bf944dfd2fa306ff4faea7fee6a91e73')
+        self.assertEqual(origin['reference_sha256'], suite.REFERENCE_SHA)
+        self.assertEqual(list(BINDING_OBSERVATIONS), list(suite.CALLS))
         self.assertEqual(list(BINDING_OBSERVATIONS), list(BINDING_STDERR_PINS))
-        for index, (case, observed) in enumerate(BINDING_OBSERVATIONS.items(), 11):
+        # Obsolete pre-N33 provenance stays pinned and unmodified.
+        obsolete = OBSOLETE_BINDING_FIXTURE['origin']
+        self.assertEqual(obsolete['report_sha256'], '630620c1d40bfe0b6877ff1894086b5c45c29c896bb7977ff554d1e4995c8aca')
+        self.assertEqual(obsolete['native_sha256'], '6e6bdf3d13d9a2970a6a47c3eb5edd48d072fa6b282b8b382ec77e095a7d2ed2')
+        plan = suite.plan(False)
+        for case, observed in BINDING_OBSERVATIONS.items():
             with self.subTest(case=case):
-                self.assertEqual(observed['id'], index)
+                self.assertEqual(observed['id'], plan.index([case, 'native', 'query', 'query']))
                 self.assertEqual(observed['step'], [case, 'native', 'query', 'query'])
                 raw = suite.unblob(observed['stderr'])
                 self.assertEqual((len(raw), suite.sha(raw)), BINDING_STDERR_PINS[case])
@@ -897,6 +964,8 @@ class NativeBindingObservationTests(unittest.TestCase):
         self.assertEqual(suite.replay(self.report, self.config, self.binding), 'BOUNDED_PAIRED_PASS')
 
     def test_reference_diagnostics_are_not_normalized_to_native_wording(self):
+        # Same Bazel body, but the reference oracle still requires Java's
+        # "Error in Label: " frame, never the native "error: " line.
         for case in BINDING_OBSERVATIONS:
             with self.subTest(case=case):
                 suite.diagnostic(case, 'reference', 'Error in Label: ' + reference_error(case) + '\n')
@@ -904,40 +973,56 @@ class NativeBindingObservationTests(unittest.TestCase):
                     suite.diagnostic(case, 'reference', 'error: ' + native_error(case) + '\n')
 
     def test_arity_wrong_expected_actual_and_reversed_counts_rehashed(self):
-        for case, got in (('missing', 0), ('extra', 2)):
+        bads = {'missing': ['Label() missing 0 required positional argument: input',
+                            'Label() missing 2 required positional arguments: input',
+                            'Label() missing 1 required positional argument: label_string',
+                            'Label() missing 1 required positional argument: inputs',
+                            'Other() missing 1 required positional argument: input',
+                            'Label() accepts no more than 1 positional argument but got 0',
+                            obsolete_native_error('missing')],
+                'extra': ['Label() accepts no more than 1 positional argument but got 1',
+                          'Label() accepts no more than 1 positional argument but got 3',
+                          'Label() accepts no more than 2 positional arguments but got 2',
+                          'Label() accepts no more than 0 positional arguments but got 2',
+                          'Other() accepts no more than 1 positional argument but got 2',
+                          'Label() accepts no more than 1 positional argument but got 20',
+                          obsolete_native_error('extra')]}
+        for case, variants in bads.items():
             raw = suite.unblob(BINDING_OBSERVATIONS[case]['stderr'])
             good = native_error(case).encode()
-            for expected, actual in ((0, got), (2, got), (1, 1), (1, 2 if got == 0 else 0),
-                                     (got, 1), (1, -1), (1, 20), (10, got)):
-                bad = f'Wrong number of positional arguments, expected {expected}, got {actual}'.encode()
-                with self.subTest(case=case, expected=expected, actual=actual):
-                    self.mutate(case, raw.replace(good, bad), f'counts-{expected}-{actual}',
+            self.assertIn(good, raw)
+            for bad in variants:
+                with self.subTest(case=case, bad=bad):
+                    self.mutate(case, raw.replace(good, bad.encode()), 'counts-' + bad,
                                 'wrong native arity|wrong native missing parameter')
 
     def test_wrong_substring_duplicate_keyword_and_other_callee_rehashed(self):
-        for case in BINDING_OBSERVATIONS:
-            if case in ('missing', 'extra'):
-                continue
+        for case in KEYWORD_CASES:
             raw = suite.unblob(BINDING_OBSERVATIONS[case]['stderr'])
             good = native_error(case)
+            self.assertIn(good.encode(), raw)
             key = 'label_string' if case == 'keyword-native-name' else 'unknown' if case == 'keyword-unknown' else 'input'
             wrong = 'unknown' if key != 'unknown' else 'input'
+            positional_only = 'positional-only' in good
+            other_form = ("Label() got unexpected keyword argument '" + key + "'" if positional_only
+                          else "Label() got named argument for positional-only parameter '" + key + "'")
             variants = {
-                'wrong-keyword': good.replace('`' + key + '`', '`' + wrong + '`'),
-                'keyword-prefix': good.replace('`' + key + '`', '`other' + key + '`'),
-                'keyword-suffix': good.replace('`' + key + '`', '`' + key + '_other`'),
-                'duplicate-keyword': good.replace('`' + key + '`', '`' + key + '` `' + key + '`'),
-                'extra-keyword': good.replace('`' + key + '`', '`' + key + '` `additional`'),
-                'other-function': good.replace('call to function', 'call to Other'),
-                'unobserved-Label-name': good.replace('call to function', 'call to Label'),
-                'extra-token-only': 'Found extra named parameter(s)',
+                'wrong-keyword': good.replace("'" + key + "'", "'" + wrong + "'"),
+                'keyword-prefix': good.replace("'" + key + "'", "'other" + key + "'"),
+                'keyword-suffix': good.replace("'" + key + "'", "'" + key + "_other'"),
+                'duplicate-keyword': good.replace("'" + key + "'", "'" + key + "' '" + key + "'"),
+                'extra-keyword': good.replace("'" + key + "'", "'" + key + "', 'additional'"),
+                'other-function': good.replace('Label()', 'Other()'),
+                'other-binding-form': other_form,
+                'extra-token-only': 'got unexpected keyword argument',
+                'obsolete-pre-n33': obsolete_native_error(case),
             }
             for name, bad in variants.items():
                 with self.subTest(case=case, mutation=name):
                     self.mutate(case, raw.replace(good.encode(), bad.encode()), name, 'wrong native positional-only binding')
 
     def test_real_Label_call_frame_span_and_phase_not_unrelated_source_echo(self):
-        footer = suite.LEGACY_NATIVE_LOADING_FOOTER.encode()
+        footer = suite.NATIVE_LOADING_FOOTER.encode()
         for case in BINDING_OBSERVATIONS:
             raw = suite.unblob(BINDING_OBSERVATIONS[case]['stderr'])
             body = raw[:-len(footer)]
@@ -961,7 +1046,7 @@ class NativeBindingObservationTests(unittest.TestCase):
                                 'wrong native binder operation/callsite|wrong target operation/callsite|not a bound loading rejection')
 
     def test_duplicate_primary_and_crash_fallback_action_footer_rehashed(self):
-        footer = suite.LEGACY_NATIVE_LOADING_FOOTER.encode()
+        footer = suite.NATIVE_LOADING_FOOTER.encode()
         for case in BINDING_OBSERVATIONS:
             raw = suite.unblob(BINDING_OBSERVATIONS[case]['stderr'])
             body = raw[:-len(footer)]
@@ -974,7 +1059,7 @@ class NativeBindingObservationTests(unittest.TestCase):
                 'action-after': raw + b'INFO: Build completed successfully, 1 total action\n',
                 'duplicate-footer': raw + footer,
                 'nonterminal-footer': raw + b'\n',
-                'modified-footer': body + footer.replace(b'unsupported.', b'supported.'),
+                'modified-footer': body + footer.replace(b'(docs/CONFIGURATION.md).', b'(docs/CONFIGURATION.md)!'),
             }
             for name, changed in variants.items():
                 with self.subTest(case=case, mutation=name):

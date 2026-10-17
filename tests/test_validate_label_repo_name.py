@@ -53,8 +53,8 @@ def negative(case, engine='reference'):
             "'Label' value has no field or method 'missing_field'" if case == 'unknown-field' else
             "'repo_name' is not allowed on invalid Label")
     else:
-        message = ('error: Operation `.repo_name=` not supported on type `Label`' if case == 'assignment' else
-            'error: Object of type `Label` has no attribute `missing_field`' if case == 'unknown-field' else
+        message = ('error: cannot set .repo_name field of Label value' if case == 'assignment' else
+            "error: 'Label' value has no field or method 'missing_field'" if case == 'unknown-field' else
             'unknown apparent repository @'+('' if case == 'external-empty' else 'not_visible')+
             ' from canonical repository '+('"dep+"' if external else '""')+
             '; extension repository not materialized or dependency not declared')
@@ -252,6 +252,19 @@ class LabelRepoNameTests(unittest.TestCase):
                 for update in [dict(returncode=0), dict(stdout='//:result\n'), dict(timed_out=True), dict(client_reaped=False)]:
                     with self.subTest(case=case, engine=engine, update=update), self.assertRaises(ValueError):
                         qa.rejection(dict(row, **update), case, engine, qa.fixture(case))
+
+    def test_native_obsolete_pre_n33_texts_rejected(self):
+        old = {'assignment': ("error: cannot set .repo_name field of Label value",
+                              'error: Operation `.repo_name=` not supported on type `Label`'),
+               'unknown-field': ("error: 'Label' value has no field or method 'missing_field'",
+                                 'error: Object of type `Label` has no attribute `missing_field`')}
+        for case, (current, obsolete) in old.items():
+            row = negative(case, 'native')
+            qa.rejection(row, case, 'native', qa.fixture(case))
+            for text in (row['stderr'].replace(current, obsolete), row['stderr'].replace(current, current+' extra'),
+                         row['stderr'].replace(current, 'note: '+current[len('error: '):])):
+                with self.subTest(case=case, text=text), self.assertRaises(ValueError):
+                    qa.rejection(streams(dict(row), stderr=text), case, 'native', qa.fixture(case))
 
     def test_full_synthetic_replay(self):
         self.assertTrue(qa.validate_report(synthetic_report()))

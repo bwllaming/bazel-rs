@@ -35,20 +35,22 @@ def native_immutable_record(probe):
         callbacks += ['HOST_REPO_CALLBACK']
     text = '\n'.join(callbacks)+'\n'
     text += ('bazel-rs: controlled fixture traceback\n'
-             'error: Operation `.'+field+'=` not supported on type `repository_os`\n'
+             'error: cannot set .'+field+' field of repository_os value\n'
              ' --> //:'+source+':'+str(line)+':5\n'
              '  |\n'+str(line)+' | '+assignment+'\n  |     ^^^^^^^^^\n  |\n')
     return value, record(text), source, line
 
 
 def native_proxy_record(workspace=None):
-    """Run 112's exact stderr layout, with only its private workspace relocated.
+    """Exact stderr layout of the integration-14 pre-gate row (formerly run 112's
+    pre-N33 wording), with only its private workspace relocated.
 
     No ignored report dependency: verification separately compares this literal
     transcript to the retained actual row before the parent rebinds QA sources.
     """
     workspace = str(workspace or (suite.ROOT / 'artifacts/host-os-s4jrw22c/workspace'))
-    text = ('bazel-rs: error: Object of type `TagCallable` has no attribute `name`\n'
+    # Since N33 the body is Bazel's text (genuine 9.3.0 for the same line).
+    text = ("bazel-rs: error: 'TagCallable' value has no field or method 'name'\n"
             ' --> '+workspace+'/MODULE.bazel:4:7\n'
             '  |\n'
             '4 | value=e.os.name\n'
@@ -60,12 +62,14 @@ def native_proxy_record(workspace=None):
 
 def native_build_os_record(workspace='/private/workspace'):
     # Compiler boundary, not an executed BUILD callback. Source echo is not a
-    # runtime marker. The actual preparation row is checked separately.
-    text = ('bazel-rs: error: Variable `os` not found\n'
+    # runtime marker. Byte-identical (workspace relocated) to the
+    # integration-14 pre-gate row; the actual row is checked separately.
+    # Since N33 the body is Bazel's text ("name 'os' is not defined").
+    text = ("bazel-rs: error: name 'os' is not defined\n"
             ' --> '+str(workspace)+'/BUILD.bazel:1:7\n'
             '  |\n1 | value=os.name\n  |       ^^\n  |\n\n'
-            'Supported rules: filegroup, genrule, and local custom rules. '
-            'select and non-local repositories remain unsupported.\n')
+            'Supported rules: the native rule classes in docs/NATIVE_BUILD_RULES.md and Starlark rule() '
+            'definitions. select() resolves against modelled config_setting values (docs/CONFIGURATION.md).\n')
     return dict(record(text), cwd=str(workspace))
 
 
@@ -319,13 +323,14 @@ class DiagnosticsTests(unittest.TestCase):
             field = probe.split('.')[1]
             other = 'arch' if field == 'name' else 'name'
             text = row['stderr']
-            error = 'error: Operation `.'+field+'=` not supported on type `repository_os`'
-            wrongs = [text.replace('`.'+field+'=`', '`.'+other+'=`'),
-                      text.replace('`repository_os`', '`struct`'),
+            error = 'error: cannot set .'+field+' field of repository_os value'
+            wrongs = [text.replace('.'+field+' field', '.'+other+' field'),
+                      text.replace('repository_os value', 'struct value'),
                       text.replace(error, 'error: Immutable'),
                       text.replace(error, 'error: repository_os is immutable'),
                       text.replace(error, 'error: cannot set '+field),
-                      text.replace('error: Operation', 'note: Operation'),
+                      text.replace(error, 'error: Operation `.'+field+'=` not supported on type `repository_os`'),
+                      text.replace('error: cannot set', 'note: cannot set'),
                       text.replace(error, error+' extra'),
                       text+'error: Other\n', text+error+'\n']
             for wrong in wrongs:
@@ -384,7 +389,11 @@ class DiagnosticsTests(unittest.TestCase):
 
     def test_native_immutable_does_not_relax_reference_or_other_boundaries(self):
         value, row, _, _ = native_immutable_record('direct.name')
-        for engine in ('reference', 'baseline', 'unknown'):
+        # Since N33 the native body is Bazel's own text, so the native record
+        # also satisfies the (unchanged) reference pattern; that is convergence,
+        # not relaxation. Unknown engines are still refused.
+        suite.require_rejection(row, value, 'reference')
+        for engine in ('baseline', 'unknown'):
             with self.subTest(engine=engine), self.assertRaises(ValueError):
                 suite.require_rejection(row, value, engine)
         for probe in ('extension.whole-json', 'ordinary.whole-json', 'direct.whole-json'):
@@ -405,14 +414,16 @@ class DiagnosticsTests(unittest.TestCase):
         value = suite.fixture('native-boundary', 'proxy.os')
         row = native_proxy_record()
         text = row['stderr']
-        for wrong in (text.replace('`TagCallable`', '`module_ctx`'),
-                      text.replace('`TagCallable`', '`repository_os`'),
-                      text.replace('`TagCallable`', '`module_extension_tag`'),
-                      text.replace('`name`', '`os`'), text.replace('`name`', '`arch`'),
-                      text.replace('error: Object', 'note: Object'),
-                      text.replace('has no attribute `name`', 'has no attribute `name` extra'),
+        for wrong in (text.replace("'TagCallable'", "'module_ctx'"),
+                      text.replace("'TagCallable'", "'repository_os'"),
+                      text.replace("'TagCallable'", "'module_extension_tag'"),
+                      text.replace("method 'name'", "method 'os'"), text.replace("method 'name'", "method 'arch'"),
+                      text.replace("error: 'TagCallable'", "note: 'TagCallable'"),
+                      text.replace("method 'name'", "method 'name' extra"),
+                      text.replace(text.splitlines()[0],
+                                   'bazel-rs: error: Object of type `TagCallable` has no attribute `name`'),
                       text+'error: Other\n', text+text.splitlines()[0]+'\n',
-                      text.replace(text.splitlines()[0], "error: Variable `os` not found")):
+                      text.replace(text.splitlines()[0], "error: name 'os' is not defined")):
             with self.subTest(wrong=wrong), self.assertRaises(ValueError):
                 suite.require_rejection(dict(row, stderr=wrong), value, 'native')
 
@@ -507,10 +518,11 @@ class DiagnosticsTests(unittest.TestCase):
         original = ('bazel-rs: error: Variable `print` not found, did you mean `int`?\n'
                     ' --> /private/workspace/BUILD.bazel:1:1\n'
                     '  |\n1 | print("HOST_BUILD_PHASE")\n  | ^^^^^\n  |\n')
-        for text in (original, row['stderr'].replace('Variable `os`', 'Variable `print`'),
-                     row['stderr'].replace('Variable `os`', 'Variable `ctx`'),
-                     row['stderr'].replace('Variable `os` not found', 'no such target result'),
-                     row['stderr'].replace('Variable `os` not found', 'syntax error')):
+        for text in (original, row['stderr'].replace("name 'os'", "name 'print'"),
+                     row['stderr'].replace("name 'os'", "name 'ctx'"),
+                     row['stderr'].replace("name 'os' is not defined", 'Variable `os` not found'),
+                     row['stderr'].replace("name 'os' is not defined", 'no such target result'),
+                     row['stderr'].replace("name 'os' is not defined", 'syntax error')):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 suite.require_rejection(dict(row, stderr=text), value, 'native')
 

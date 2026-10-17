@@ -330,11 +330,14 @@ DIAGNOSTICS = {
 # and 'frozen': since N20 the vendored interpreter reports Bazel's
 # Starlark.checkMutable text for the frozen decoded list
 # (net/starlark/java/eval/Starlark.java:262-265; docs/STARLARK_VENDOR.md),
-# replacing the first run's native "Immutable".
+# replacing the first run's native "Immutable", and 'immutable': since N33 the
+# interpreter reports Bazel's field-assignment text for a module value
+# ("cannot set .encode field of json value"), replacing the earlier native
+# "Operation `.encode=` not supported on type `json`".
 # No catch-all "nonzero" waiver. Reference patterns above remain unchanged.
 # Fixture/phase/argument and source bindings are mandatory for this projection.
 NATIVE_MESSAGES = {
-    'immutable': 'Operation `.encode=` not supported on type `json`',
+    'immutable': 'cannot set .encode field of json value',
     'frozen': 'trying to mutate a frozen list value',
     'type-default': 'JSON argument must be a string',
     'option-type': 'JSON argument must be a string',

@@ -356,7 +356,9 @@ def require_rejection(row, value, engine):
     if diagnostic == 'build-os':
         # Suppress only this expected undefined-name error, not crashes,
         # infrastructure errors or a different missing builtin such as print.
-        health_text = (re.sub(r'(?m)^bazel-rs: error: Variable `os` not found$', '', text)
+        # Since N33 the native compiler reports Bazel's own undefined-name
+        # text (formerly "Variable `os` not found").
+        health_text = (re.sub(r"(?m)^bazel-rs: error: name 'os' is not defined$", '', text)
                        if engine == 'native' else '')
     controlled.healthy(dict(row, stderr=health_text))
     if (not 0 < row['returncode'] < 128 or row['stdout'].strip()
@@ -378,8 +380,10 @@ def require_rejection(row, value, engine):
             pattern = r'cannot set \.'+field+r' field of repository_os value'
         else:
             # Only the planned host-field assignment may accept this native
-            # operation error. Do not generalize UnsupportedOperation wording
-            # to other fields, types, phases or native capability boundaries.
+            # diagnostic. Since N33 the native interpreter reports Bazel's
+            # field-assignment text (formerly "Operation `.<field>=` not
+            # supported on type `repository_os`"); the source site stays bound.
+            # Do not generalize to other fields, types or phases.
             planned = fixture('immutable', value['probe'])
             if (value['name'] != 'immutable' or field not in ('name', 'arch')
                     or diagnostic != planned['diagnostic'] or value['files'] != planned['files']):
@@ -388,7 +392,7 @@ def require_rejection(row, value, engine):
             lines = planned['files'][source].decode().splitlines()
             assignment = '    '+required_source
             line = lines.index(assignment)+1
-            error = 'error: Operation `.'+field+'=` not supported on type `repository_os`'
+            error = 'error: cannot set .'+field+' field of repository_os value'
             pattern = r'(?m)^'+re.escape(error)+r'$'
             if (re.findall(r'(?m)^error: [^\n]*$', text) != [error]
                     or not re.search(r'(?m)^ --> //:'+re.escape(source)+':'+str(line)+r':5$', text)
@@ -407,7 +411,10 @@ def require_rejection(row, value, engine):
         required_source = 'value=e.os.name'
         line = planned['files'][source].decode().splitlines().index(required_source)+1
         workspace = Path(row.get('cwd', ''))
-        error = 'bazel-rs: error: Object of type `TagCallable` has no attribute `name`'
+        # Since N33: Bazel's own text for the same expression (genuine 9.3.0:
+        # "Error: 'TagCallable' value has no field or method 'name'"); formerly
+        # "Object of type `TagCallable` has no attribute `name`".
+        error = "bazel-rs: error: 'TagCallable' value has no field or method 'name'"
         pattern = r'(?m)^'+re.escape(error)+r'$'
         if (not workspace.is_absolute() or '..' in workspace.parts or workspace.name != 'workspace'
                 or re.findall(r'(?m)^(?:bazel-rs: )?error: [^\n]*$', text) != [error]
@@ -422,7 +429,8 @@ def require_rejection(row, value, engine):
             raise ValueError('unplanned native BUILD namespace boundary')
         required_source = 'value=os.name'
         workspace = Path(row.get('cwd', ''))
-        error = 'bazel-rs: error: Variable `os` not found'
+        # Genuine 9.3.0 for the same BUILD line: "name 'os' is not defined".
+        error = "bazel-rs: error: name 'os' is not defined"
         pattern = r'(?m)^'+re.escape(error)+r'$'
         if (not workspace.is_absolute() or '..' in workspace.parts or workspace.name != 'workspace'
                 or re.findall(r'(?m)^(?:bazel-rs: )?error: [^\n]*$', text) != [error]

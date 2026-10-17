@@ -299,51 +299,45 @@ def success(row, text):
     require(row['returncode'] == 0 and not re.search(r'(?m)^(?:ERROR:|Error(?: in |:)|error:)', text), 'unexpected successful-command diagnostic')
 
 
+def bazel_body(case):
+    """Bazel 9.3 Label() binder text (BuiltinFunction/ParamDescriptor, pinned in OFFICIAL)."""
+    if case.startswith('wrong-type-'):
+        typename = BAD_TYPES[case.removeprefix('wrong-type-')][1]
+        return "in call to Label(), parameter 'input' got value of type '" + typename + "', want 'string or Label'"
+    if case == 'missing':
+        return 'Label() missing 1 required positional argument: input'
+    if case == 'extra':
+        return 'Label() accepts no more than 1 positional argument but got 2'
+    if case in ('keyword-native-name', 'keyword-unknown'):
+        return "Label() got unexpected keyword argument '" + ('unknown' if case == 'keyword-unknown' else 'label_string') + "'"
+    require(case in ('keyword-string', 'keyword-label', 'positional-plus-keyword'), 'unplanned binding case')
+    return "Label() got named argument for positional-only parameter 'input'"
+
+
 def diagnostic(case, engine, text):
+    body = bazel_body(case)
     if engine == 'reference':
-        if case.startswith('wrong-type-'):
-            typename = BAD_TYPES[case.removeprefix('wrong-type-')][1]
-            body = "in call to Label(), parameter 'input' got value of type '" + typename + "', want 'string or Label'"
-        elif case == 'missing':
-            body = 'Label() missing 1 required positional argument: input'
-        elif case == 'extra':
-            body = 'Label() accepts no more than 1 positional argument but got 2'
-        elif case in ('keyword-native-name', 'keyword-unknown'):
-            body = "Label() got unexpected keyword argument '" + ('unknown' if case == 'keyword-unknown' else 'label_string') + "'"
-        else:
-            body = "Label() got named argument for positional-only parameter 'input'"
         require('Error in Label: ' + body in text.splitlines(), 'wrong reference type/binding category')
     else:
-        # Native wording is category-bound, not claimed to match Java. Fail closed
-        # on an unrecognised frozen candidate; never accept an arbitrary nonzero.
+        # Since N33 the native binder reports Bazel's own Label() text (formerly
+        # starlark-rust "Type of parameter `input` doesn't match ...", "Wrong
+        # number of positional arguments ..." and "Found `x` extra named
+        # parameter(s) ..."). Fail closed: exactly one native primary diagnostic,
+        # equal to the Bazel body, never an arbitrary nonzero.
         errors = re.findall(r'(?m)^error: (.+)$', text)
         require(len(errors) == 1, 'one native primary diagnostic required')
         if case.startswith('wrong-type-'):
-            typename = BAD_TYPES[case.removeprefix('wrong-type-')][1]
-            # Observed native binder, not Java full-text parity. Its parameter,
-            # union and expected/actual direction are structural, never tokens
-            # found anywhere in an unrelated diagnostic. Repr is opaque here;
-            # the complete planned expression/callsite is bound by query_result.
-            require(re.fullmatch(r"Type of parameter `input` doesn't match, expected `Label \| str`, actual `"
-                + re.escape(typename) + r' \(repr: [^\n`]+\)`', errors[0]), 'wrong native type/parameter category')
-        elif case == 'extra':
-            require(errors[0] == 'Wrong number of positional arguments, expected 1, got 2', 'wrong native arity')
-        elif case == 'missing':
-            require(errors[0] == 'Wrong number of positional arguments, expected 1, got 0', 'wrong native missing parameter')
+            require(errors[0] == body, 'wrong native type/parameter category')
+        elif case in ('extra', 'missing'):
+            require(errors[0] == body, 'wrong native arity' if case == 'extra' else 'wrong native missing parameter')
         else:
-            keywords = {'keyword-string': 'input', 'keyword-label': 'input', 'keyword-native-name': 'label_string',
-                        'keyword-unknown': 'unknown', 'positional-plus-keyword': 'input'}
-            require(case in keywords, 'unplanned native binding case')
-            require(errors[0] == 'Found `' + keywords[case] + '` extra named parameter(s) for call to function',
-                    'wrong native positional-only binding')
-        if not case.startswith('wrong-type-'):
-            # The actual typed-macro binder says "function", not "Label" (capture
-            # 630620c1...). Bind its generic arity/keyword error to the one real
-            # Label call frame AND source span, not a disconnected source echo.
-            source = 'result = ' + CALLS[case]
-            frames = re.findall(r'(?m)^  \* //:probe\.bzl:3, in run_probe\n      ([^\n]+)\n', text)
-            spans = re.findall(r'(?m)^ --> //:probe\.bzl:3:14\n  \|\n3 \|     ([^\n]+)\n', text)
-            require(frames == spans == [source], 'wrong native binder operation/callsite')
+            require(errors[0] == body, 'wrong native positional-only binding')
+        # Bind the error to the one real Label call frame AND source span, not
+        # a disconnected source echo.
+        source = 'result = ' + CALLS[case]
+        frames = re.findall(r'(?m)^  \* //:probe\.bzl:3, in run_probe\n      ([^\n]+)\n', text)
+        spans = re.findall(r'(?m)^ --> //:probe\.bzl:3:14\n  \|\n3 \|     ([^\n]+)\n', text)
+        require(frames == spans == [source], 'wrong native binder operation/callsite')
 
 
 def query_result(row, case, engine):
