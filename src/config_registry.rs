@@ -384,8 +384,11 @@ pub fn mnemonic(configuration: &Configuration, baseline: &Configuration) -> Resu
 /// analysis/config/ExecutionTransitionFactory.java:192-268):
 ///
 /// * `compilation_mode` = `host_compilation_mode`, `is exec configuration`
-///   = true, `stamp` = false (`_core_options`, builtin_exec_platforms.bzl:221-229);
-///   `host_compilation_mode` propagates (:231-235);
+///   = true, `stamp` = false, `action_env` = `host_action_env` (`_core_options`,
+///   builtin_exec_platforms.bzl:221-229); `host_compilation_mode` and
+///   `host_action_env` propagate (:231-235, 259), like
+///   `incompatible_strict_action_env` (:203-207) and TestOptions (cloned,
+///   FunctionTransitionUtil.java:199-207);
 /// * `strip` = `always` (CppOptions, :291-348); `force_pic` is not
 ///   propagated, so it is the default;
 /// * `--define` is carried (`experimental_exclude_defines_from_exec_config`
@@ -447,6 +450,11 @@ pub fn exec_transition(
         // AppleCommandLineOptions propagates the SDK versions
         // (builtin_exec_platforms.bzl:170-176).
         apple_sdk_versions: from.native.apple_sdk_versions.clone(),
+        action_env: from.native.host_action_env.clone(),
+        host_action_env: from.native.host_action_env.clone(),
+        strict_action_env: from.native.strict_action_env,
+        // TestOptions are cloned (FunctionTransitionUtil.java:199-207).
+        test_env: from.native.test_env.clone(),
     };
     let starlark = from
         .starlark
@@ -966,6 +974,37 @@ mod tests {
             Ok("fastbuild-noconfig".to_owned())
         );
         assert_eq!(no_config().id, id);
+    }
+
+    #[test]
+    fn exec_transition_uses_host_action_env() {
+        use crate::action_env::EnvVar;
+        let from = Configuration::new(
+            parsed(&[
+                "--action_env=A=1",
+                "--host_action_env=H",
+                "--noincompatible_strict_action_env",
+                "--test_env=T=1",
+            ])
+            .native,
+            BTreeMap::new(),
+        );
+        let none = BTreeSet::new();
+        let exec = exec_transition(&from, label("//p:exec"), &none);
+        let host = [EnvVar::Inherit("H".into())];
+        assert_eq!(exec.native.action_env, host);
+        assert_eq!(exec.native.host_action_env, host);
+        assert!(!exec.native.strict_action_env);
+        assert_eq!(exec.native.test_env, [EnvVar::Set("T".into(), "1".into())]);
+        assert_eq!(exec_transition(&exec, label("//p:exec"), &none).id, exec.id);
+        // The exec baseline carries the same environment: no mnemonic hash.
+        assert_eq!(mnemonic(&exec, &exec), Ok("exec-opt-exec".to_owned()));
+        let env = exec.native.action_environment();
+        assert!(env.fixed.is_empty());
+        assert_eq!(
+            env.inherited,
+            BTreeSet::from(["H".to_owned(), "LD_LIBRARY_PATH".into(), "PATH".into()])
+        );
     }
 
     #[test]

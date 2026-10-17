@@ -1,0 +1,5862 @@
+{
+ "schema": "n42-action-env-reference-receipt/v1",
+ "purpose": "Paired genuine Bazel 9.3.0 vs native bazel-rs capture of N42 (docs/ACTION_ENV.md): the environment genrules, Starlark run_shell/run (use_default_shell_env True/False, env overrides) and exec-configured tools observe under --action_env (set, inherit, unset), --host_action_env, -c opt, --noincompatible_strict_action_env, --test_env and a changed inherited client value; Bazel with --spawn_strategy=local and with its default strategy; ctx.configuration.default_shell_env reference-only; option diagnostics. Evidence only; no test reads it.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private> --output_base=<private> --host_jvm_args=-Xmx512m",
+  "command_flags": "--registry=file://<private copy of tests/fixtures/builtin_modules/registry> --repository_disable_download --incompatible_autoload_externally= --lockfile_mode=off --noshow_progress --color=no --curses=no --repository_cache=<private> --distdir=<private: platforms-1.0.0.tar.gz> --shell_executable=/bin/bash --show_result=1000 [--spawn_strategy=local]; one output base per strategy"
+ },
+ "native": {
+  "binary": "target/debug/bazel-rs",
+  "sha256": "0afe6f9fccd2532c95b5070ae08d91376f9479628a02edd3a3dc065db32cf2e5",
+  "flags": "--ignore_all_rc_files --cache-dir=<private> build --registry=file://<private copy of the same registry> --experimental-builtin-modules"
+ },
+ "script": {
+  "path": "artifacts/action_env-capture.py",
+  "sha256": "8b9180880091ca283ff707c6a1950a76fc3fbaf4325a689f9af786eadecc33fe"
+ },
+ "environment": "client env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 HOME=<scratch>/home TMPDIR=<scratch>/tmp USER=n42 FOO=client LD_LIBRARY_PATH=/nonexistent/n42-lib (inherit_changed_value: HOME=<scratch>/changed-home), umask 022; scratch /tmp/opencode/ae-capture",
+ "normalization": "per output the `env | LC_ALL=C sort` lines without PWD=, SHLVL=, _= (bash's own); an absolute TMPDIR value -> TMPDIR=<tmp>, its class recorded as `tmpdir` (client-TMPDIR, /tmp, other-absolute) and not compared; outputs keyed by their path below bazel-bin/ (configuration root removed)",
+ "strategies": {
+  "default/local": "INFO: 15 processes: 3 internal, 12 local.",
+  "default/default": "INFO: 15 processes: 3 internal, 12 processwrapper-sandbox.",
+  "action_env_set/local": "INFO: 9 processes: 6 action cache hit, 2 internal, 7 local.",
+  "action_env_set/default": "INFO: 9 processes: 6 action cache hit, 2 internal, 7 processwrapper-sandbox.",
+  "action_env_inherit/local": "INFO: 9 processes: 6 action cache hit, 2 internal, 7 local.",
+  "action_env_inherit/default": "INFO: 9 processes: 6 action cache hit, 2 internal, 7 processwrapper-sandbox.",
+  "action_env_unset_path/local": "INFO: 9 processes: 6 action cache hit, 2 internal, 7 local.",
+  "action_env_unset_path/default": "INFO: 9 processes: 6 action cache hit, 2 internal, 7 processwrapper-sandbox.",
+  "action_env_combined/local": "INFO: 9 processes: 6 action cache hit, 2 internal, 7 local.",
+  "action_env_combined/default": "INFO: 9 processes: 6 action cache hit, 2 internal, 7 processwrapper-sandbox.",
+  "host_action_env/local": "INFO: 12 processes: 3 action cache hit, 3 internal, 9 local.",
+  "host_action_env/default": "INFO: 12 processes: 3 action cache hit, 3 internal, 9 processwrapper-sandbox.",
+  "host_action_env_unset_path/local": "INFO: 12 processes: 3 action cache hit, 3 internal, 9 local.",
+  "host_action_env_unset_path/default": "INFO: 12 processes: 3 action cache hit, 3 internal, 9 processwrapper-sandbox.",
+  "action_env_tmpdir/local": "INFO: 12 processes: 3 action cache hit, 3 internal, 9 local.",
+  "action_env_tmpdir/default": "INFO: 12 processes: 3 action cache hit, 3 internal, 9 processwrapper-sandbox.",
+  "compilation_mode_opt/local": "INFO: 12 processes: 3 action cache hit, 2 internal, 10 local.",
+  "compilation_mode_opt/default": "INFO: 12 processes: 3 action cache hit, 2 internal, 10 processwrapper-sandbox.",
+  "non_strict/local": "INFO: 12 processes: 3 action cache hit, 3 internal, 9 local.",
+  "non_strict/default": "INFO: 12 processes: 3 action cache hit, 3 internal, 9 processwrapper-sandbox.",
+  "test_env/local": "INFO: 12 processes: 3 action cache hit, 3 internal, 9 local.",
+  "test_env/default": "INFO: 12 processes: 3 action cache hit, 3 internal, 9 processwrapper-sandbox.",
+  "inherit_changed_value/local": "INFO: 7 processes: 8 action cache hit, 1 internal, 6 local.",
+  "inherit_changed_value/default": "INFO: 7 processes: 8 action cache hit, 1 internal, 6 processwrapper-sandbox."
+ },
+ "runs": {
+  "run1": {
+   "counts": {
+    "REFERENCE_ONLY": 48,
+    "EXACT": 217,
+    "EXACT_MESSAGE": 4
+   },
+   "invalid_evidence": "both Bazel strategies shared one output base, so every default-strategy build was served from the local run's action cache (strategies: \"1 process: 14 action cache hit, 1 internal\"); the default-strategy rows did not observe a sandboxed execution",
+   "fixed_after": [
+    "capture script only: one Bazel output base per strategy (no product change)"
+   ],
+   "kept": "artifacts/action_env-receipt-run1.json"
+  },
+  "run1b": "an accidental identical repeat of run 1 (the script edit for run 2 failed and the unchanged script ran; same counts, same invalid default-strategy evidence; overwritten)",
+  "run2": "this receipt (final; the one intended rerun)"
+ },
+ "started_at": "2026-10-17T04:06:13.334652+00:00",
+ "finished_at": "2026-10-17T04:07:42.077676+00:00",
+ "counts": {
+  "REFERENCE_ONLY": 48,
+  "EXACT": 217,
+  "EXACT_MESSAGE": 4
+ },
+ "rows": [
+  {
+   "case": "default/local:cfg/shell_env.json",
+   "flags": [],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "default/local:cfg/via_cfg_tool.json",
+   "flags": [],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "default/local:pkg/gen.txt",
+   "flags": [],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "default/local:pkg/run_default.txt",
+   "flags": [],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "default/local:pkg/run_plain.txt",
+   "flags": [],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "default/local:pkg/sl_default.txt",
+   "flags": [],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "default/local:pkg/sl_none.txt",
+   "flags": [],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "default/local:pkg/sl_override.txt",
+   "flags": [],
+   "reference": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "default/local:pkg/sl_plain.txt",
+   "flags": [],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "default/local:pkg/via_gen_tool.txt",
+   "flags": [],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "default/local:pkg/via_sl_tool.txt",
+   "flags": [],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "default/default:cfg/shell_env.json",
+   "flags": [],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "default/default:cfg/via_cfg_tool.json",
+   "flags": [],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "default/default:pkg/gen.txt",
+   "flags": [],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "default/default:pkg/run_default.txt",
+   "flags": [],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "default/default:pkg/run_plain.txt",
+   "flags": [],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "default/default:pkg/sl_default.txt",
+   "flags": [],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "default/default:pkg/sl_none.txt",
+   "flags": [],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "default/default:pkg/sl_override.txt",
+   "flags": [],
+   "reference": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "default/default:pkg/sl_plain.txt",
+   "flags": [],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "default/default:pkg/via_gen_tool.txt",
+   "flags": [],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "default/default:pkg/via_sl_tool.txt",
+   "flags": [],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_set/local:cfg/shell_env.json",
+   "flags": [
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "{\"FOO\":\"bar\",\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "action_env_set/local:cfg/via_cfg_tool.json",
+   "flags": [
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "action_env_set/local:pkg/gen.txt",
+   "flags": [
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=bar",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=bar",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_set/local:pkg/run_default.txt",
+   "flags": [
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=bar",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=bar",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_set/local:pkg/run_plain.txt",
+   "flags": [
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_set/local:pkg/sl_default.txt",
+   "flags": [
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=bar",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=bar",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_set/local:pkg/sl_none.txt",
+   "flags": [
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_set/local:pkg/sl_override.txt",
+   "flags": [
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_set/local:pkg/sl_plain.txt",
+   "flags": [
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_set/local:pkg/via_gen_tool.txt",
+   "flags": [
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_set/local:pkg/via_sl_tool.txt",
+   "flags": [
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_set/default:cfg/shell_env.json",
+   "flags": [
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "{\"FOO\":\"bar\",\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "action_env_set/default:cfg/via_cfg_tool.json",
+   "flags": [
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "action_env_set/default:pkg/gen.txt",
+   "flags": [
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=bar",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=bar",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_set/default:pkg/run_default.txt",
+   "flags": [
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=bar",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=bar",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_set/default:pkg/run_plain.txt",
+   "flags": [
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_set/default:pkg/sl_default.txt",
+   "flags": [
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=bar",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=bar",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_set/default:pkg/sl_none.txt",
+   "flags": [
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_set/default:pkg/sl_override.txt",
+   "flags": [
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_set/default:pkg/sl_plain.txt",
+   "flags": [
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_set/default:pkg/via_gen_tool.txt",
+   "flags": [
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_set/default:pkg/via_sl_tool.txt",
+   "flags": [
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_inherit/local:cfg/shell_env.json",
+   "flags": [
+    "--action_env=HOME",
+    "--action_env=USER",
+    "--action_env=NOT_IN_CLIENT"
+   ],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "action_env_inherit/local:cfg/via_cfg_tool.json",
+   "flags": [
+    "--action_env=HOME",
+    "--action_env=USER",
+    "--action_env=NOT_IN_CLIENT"
+   ],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "action_env_inherit/local:pkg/gen.txt",
+   "flags": [
+    "--action_env=HOME",
+    "--action_env=USER",
+    "--action_env=NOT_IN_CLIENT"
+   ],
+   "reference": {
+    "lines": [
+     "HOME=/tmp/opencode/ae-capture/home",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "USER=n42"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "HOME=/tmp/opencode/ae-capture/home",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "USER=n42"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_inherit/local:pkg/run_default.txt",
+   "flags": [
+    "--action_env=HOME",
+    "--action_env=USER",
+    "--action_env=NOT_IN_CLIENT"
+   ],
+   "reference": {
+    "lines": [
+     "HOME=/tmp/opencode/ae-capture/home",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "USER=n42",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "HOME=/tmp/opencode/ae-capture/home",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "USER=n42",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_inherit/local:pkg/run_plain.txt",
+   "flags": [
+    "--action_env=HOME",
+    "--action_env=USER",
+    "--action_env=NOT_IN_CLIENT"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_inherit/local:pkg/sl_default.txt",
+   "flags": [
+    "--action_env=HOME",
+    "--action_env=USER",
+    "--action_env=NOT_IN_CLIENT"
+   ],
+   "reference": {
+    "lines": [
+     "HOME=/tmp/opencode/ae-capture/home",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "USER=n42",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "HOME=/tmp/opencode/ae-capture/home",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "USER=n42",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_inherit/local:pkg/sl_none.txt",
+   "flags": [
+    "--action_env=HOME",
+    "--action_env=USER",
+    "--action_env=NOT_IN_CLIENT"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_inherit/local:pkg/sl_override.txt",
+   "flags": [
+    "--action_env=HOME",
+    "--action_env=USER",
+    "--action_env=NOT_IN_CLIENT"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "USER=n42"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "USER=n42"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_inherit/local:pkg/sl_plain.txt",
+   "flags": [
+    "--action_env=HOME",
+    "--action_env=USER",
+    "--action_env=NOT_IN_CLIENT"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_inherit/local:pkg/via_gen_tool.txt",
+   "flags": [
+    "--action_env=HOME",
+    "--action_env=USER",
+    "--action_env=NOT_IN_CLIENT"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_inherit/local:pkg/via_sl_tool.txt",
+   "flags": [
+    "--action_env=HOME",
+    "--action_env=USER",
+    "--action_env=NOT_IN_CLIENT"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_inherit/default:cfg/shell_env.json",
+   "flags": [
+    "--action_env=HOME",
+    "--action_env=USER",
+    "--action_env=NOT_IN_CLIENT"
+   ],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "action_env_inherit/default:cfg/via_cfg_tool.json",
+   "flags": [
+    "--action_env=HOME",
+    "--action_env=USER",
+    "--action_env=NOT_IN_CLIENT"
+   ],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "action_env_inherit/default:pkg/gen.txt",
+   "flags": [
+    "--action_env=HOME",
+    "--action_env=USER",
+    "--action_env=NOT_IN_CLIENT"
+   ],
+   "reference": {
+    "lines": [
+     "HOME=/tmp/opencode/ae-capture/home",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "USER=n42"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "HOME=/tmp/opencode/ae-capture/home",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "USER=n42"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_inherit/default:pkg/run_default.txt",
+   "flags": [
+    "--action_env=HOME",
+    "--action_env=USER",
+    "--action_env=NOT_IN_CLIENT"
+   ],
+   "reference": {
+    "lines": [
+     "HOME=/tmp/opencode/ae-capture/home",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "USER=n42",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "HOME=/tmp/opencode/ae-capture/home",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "USER=n42",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_inherit/default:pkg/run_plain.txt",
+   "flags": [
+    "--action_env=HOME",
+    "--action_env=USER",
+    "--action_env=NOT_IN_CLIENT"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_inherit/default:pkg/sl_default.txt",
+   "flags": [
+    "--action_env=HOME",
+    "--action_env=USER",
+    "--action_env=NOT_IN_CLIENT"
+   ],
+   "reference": {
+    "lines": [
+     "HOME=/tmp/opencode/ae-capture/home",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "USER=n42",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "HOME=/tmp/opencode/ae-capture/home",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "USER=n42",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_inherit/default:pkg/sl_none.txt",
+   "flags": [
+    "--action_env=HOME",
+    "--action_env=USER",
+    "--action_env=NOT_IN_CLIENT"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_inherit/default:pkg/sl_override.txt",
+   "flags": [
+    "--action_env=HOME",
+    "--action_env=USER",
+    "--action_env=NOT_IN_CLIENT"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "USER=n42"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "USER=n42"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_inherit/default:pkg/sl_plain.txt",
+   "flags": [
+    "--action_env=HOME",
+    "--action_env=USER",
+    "--action_env=NOT_IN_CLIENT"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_inherit/default:pkg/via_gen_tool.txt",
+   "flags": [
+    "--action_env=HOME",
+    "--action_env=USER",
+    "--action_env=NOT_IN_CLIENT"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_inherit/default:pkg/via_sl_tool.txt",
+   "flags": [
+    "--action_env=HOME",
+    "--action_env=USER",
+    "--action_env=NOT_IN_CLIENT"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_unset_path/local:cfg/shell_env.json",
+   "flags": [
+    "--action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "{}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "action_env_unset_path/local:cfg/via_cfg_tool.json",
+   "flags": [
+    "--action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "action_env_unset_path/local:pkg/gen.txt",
+   "flags": [
+    "--action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_unset_path/local:pkg/run_default.txt",
+   "flags": [
+    "--action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_unset_path/local:pkg/run_plain.txt",
+   "flags": [
+    "--action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_unset_path/local:pkg/sl_default.txt",
+   "flags": [
+    "--action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_unset_path/local:pkg/sl_none.txt",
+   "flags": [
+    "--action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_unset_path/local:pkg/sl_override.txt",
+   "flags": [
+    "--action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_unset_path/local:pkg/sl_plain.txt",
+   "flags": [
+    "--action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_unset_path/local:pkg/via_gen_tool.txt",
+   "flags": [
+    "--action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_unset_path/local:pkg/via_sl_tool.txt",
+   "flags": [
+    "--action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_unset_path/default:cfg/shell_env.json",
+   "flags": [
+    "--action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "{}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "action_env_unset_path/default:cfg/via_cfg_tool.json",
+   "flags": [
+    "--action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "action_env_unset_path/default:pkg/gen.txt",
+   "flags": [
+    "--action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_unset_path/default:pkg/run_default.txt",
+   "flags": [
+    "--action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_unset_path/default:pkg/run_plain.txt",
+   "flags": [
+    "--action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_unset_path/default:pkg/sl_default.txt",
+   "flags": [
+    "--action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_unset_path/default:pkg/sl_none.txt",
+   "flags": [
+    "--action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_unset_path/default:pkg/sl_override.txt",
+   "flags": [
+    "--action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_unset_path/default:pkg/sl_plain.txt",
+   "flags": [
+    "--action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_unset_path/default:pkg/via_gen_tool.txt",
+   "flags": [
+    "--action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_unset_path/default:pkg/via_sl_tool.txt",
+   "flags": [
+    "--action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_combined/local:cfg/shell_env.json",
+   "flags": [
+    "--action_env=FOO=bar",
+    "--action_env=HOME",
+    "--action_env==PATH",
+    "--action_env=A=1",
+    "--action_env=B=2",
+    "--action_env==A"
+   ],
+   "reference": {
+    "lines": [
+     "{\"B\":\"2\",\"FOO\":\"bar\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "action_env_combined/local:cfg/via_cfg_tool.json",
+   "flags": [
+    "--action_env=FOO=bar",
+    "--action_env=HOME",
+    "--action_env==PATH",
+    "--action_env=A=1",
+    "--action_env=B=2",
+    "--action_env==A"
+   ],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "action_env_combined/local:pkg/gen.txt",
+   "flags": [
+    "--action_env=FOO=bar",
+    "--action_env=HOME",
+    "--action_env==PATH",
+    "--action_env=A=1",
+    "--action_env=B=2",
+    "--action_env==A"
+   ],
+   "reference": {
+    "lines": [
+     "B=2",
+     "FOO=bar",
+     "HOME=/tmp/opencode/ae-capture/home",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "B=2",
+     "FOO=bar",
+     "HOME=/tmp/opencode/ae-capture/home",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_combined/local:pkg/run_default.txt",
+   "flags": [
+    "--action_env=FOO=bar",
+    "--action_env=HOME",
+    "--action_env==PATH",
+    "--action_env=A=1",
+    "--action_env=B=2",
+    "--action_env==A"
+   ],
+   "reference": {
+    "lines": [
+     "B=2",
+     "FOO=bar",
+     "HOME=/tmp/opencode/ae-capture/home",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "B=2",
+     "FOO=bar",
+     "HOME=/tmp/opencode/ae-capture/home",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_combined/local:pkg/run_plain.txt",
+   "flags": [
+    "--action_env=FOO=bar",
+    "--action_env=HOME",
+    "--action_env==PATH",
+    "--action_env=A=1",
+    "--action_env=B=2",
+    "--action_env==A"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_combined/local:pkg/sl_default.txt",
+   "flags": [
+    "--action_env=FOO=bar",
+    "--action_env=HOME",
+    "--action_env==PATH",
+    "--action_env=A=1",
+    "--action_env=B=2",
+    "--action_env==A"
+   ],
+   "reference": {
+    "lines": [
+     "B=2",
+     "FOO=bar",
+     "HOME=/tmp/opencode/ae-capture/home",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "B=2",
+     "FOO=bar",
+     "HOME=/tmp/opencode/ae-capture/home",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_combined/local:pkg/sl_none.txt",
+   "flags": [
+    "--action_env=FOO=bar",
+    "--action_env=HOME",
+    "--action_env==PATH",
+    "--action_env=A=1",
+    "--action_env=B=2",
+    "--action_env==A"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_combined/local:pkg/sl_override.txt",
+   "flags": [
+    "--action_env=FOO=bar",
+    "--action_env=HOME",
+    "--action_env==PATH",
+    "--action_env=A=1",
+    "--action_env=B=2",
+    "--action_env==A"
+   ],
+   "reference": {
+    "lines": [
+     "B=2",
+     "FOO=from-env",
+     "HOME=/override",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "B=2",
+     "FOO=from-env",
+     "HOME=/override",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_combined/local:pkg/sl_plain.txt",
+   "flags": [
+    "--action_env=FOO=bar",
+    "--action_env=HOME",
+    "--action_env==PATH",
+    "--action_env=A=1",
+    "--action_env=B=2",
+    "--action_env==A"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_combined/local:pkg/via_gen_tool.txt",
+   "flags": [
+    "--action_env=FOO=bar",
+    "--action_env=HOME",
+    "--action_env==PATH",
+    "--action_env=A=1",
+    "--action_env=B=2",
+    "--action_env==A"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_combined/local:pkg/via_sl_tool.txt",
+   "flags": [
+    "--action_env=FOO=bar",
+    "--action_env=HOME",
+    "--action_env==PATH",
+    "--action_env=A=1",
+    "--action_env=B=2",
+    "--action_env==A"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_combined/default:cfg/shell_env.json",
+   "flags": [
+    "--action_env=FOO=bar",
+    "--action_env=HOME",
+    "--action_env==PATH",
+    "--action_env=A=1",
+    "--action_env=B=2",
+    "--action_env==A"
+   ],
+   "reference": {
+    "lines": [
+     "{\"B\":\"2\",\"FOO\":\"bar\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "action_env_combined/default:cfg/via_cfg_tool.json",
+   "flags": [
+    "--action_env=FOO=bar",
+    "--action_env=HOME",
+    "--action_env==PATH",
+    "--action_env=A=1",
+    "--action_env=B=2",
+    "--action_env==A"
+   ],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "action_env_combined/default:pkg/gen.txt",
+   "flags": [
+    "--action_env=FOO=bar",
+    "--action_env=HOME",
+    "--action_env==PATH",
+    "--action_env=A=1",
+    "--action_env=B=2",
+    "--action_env==A"
+   ],
+   "reference": {
+    "lines": [
+     "B=2",
+     "FOO=bar",
+     "HOME=/tmp/opencode/ae-capture/home",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "B=2",
+     "FOO=bar",
+     "HOME=/tmp/opencode/ae-capture/home",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_combined/default:pkg/run_default.txt",
+   "flags": [
+    "--action_env=FOO=bar",
+    "--action_env=HOME",
+    "--action_env==PATH",
+    "--action_env=A=1",
+    "--action_env=B=2",
+    "--action_env==A"
+   ],
+   "reference": {
+    "lines": [
+     "B=2",
+     "FOO=bar",
+     "HOME=/tmp/opencode/ae-capture/home",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "B=2",
+     "FOO=bar",
+     "HOME=/tmp/opencode/ae-capture/home",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_combined/default:pkg/run_plain.txt",
+   "flags": [
+    "--action_env=FOO=bar",
+    "--action_env=HOME",
+    "--action_env==PATH",
+    "--action_env=A=1",
+    "--action_env=B=2",
+    "--action_env==A"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_combined/default:pkg/sl_default.txt",
+   "flags": [
+    "--action_env=FOO=bar",
+    "--action_env=HOME",
+    "--action_env==PATH",
+    "--action_env=A=1",
+    "--action_env=B=2",
+    "--action_env==A"
+   ],
+   "reference": {
+    "lines": [
+     "B=2",
+     "FOO=bar",
+     "HOME=/tmp/opencode/ae-capture/home",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "B=2",
+     "FOO=bar",
+     "HOME=/tmp/opencode/ae-capture/home",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_combined/default:pkg/sl_none.txt",
+   "flags": [
+    "--action_env=FOO=bar",
+    "--action_env=HOME",
+    "--action_env==PATH",
+    "--action_env=A=1",
+    "--action_env=B=2",
+    "--action_env==A"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_combined/default:pkg/sl_override.txt",
+   "flags": [
+    "--action_env=FOO=bar",
+    "--action_env=HOME",
+    "--action_env==PATH",
+    "--action_env=A=1",
+    "--action_env=B=2",
+    "--action_env==A"
+   ],
+   "reference": {
+    "lines": [
+     "B=2",
+     "FOO=from-env",
+     "HOME=/override",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "B=2",
+     "FOO=from-env",
+     "HOME=/override",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_combined/default:pkg/sl_plain.txt",
+   "flags": [
+    "--action_env=FOO=bar",
+    "--action_env=HOME",
+    "--action_env==PATH",
+    "--action_env=A=1",
+    "--action_env=B=2",
+    "--action_env==A"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_combined/default:pkg/via_gen_tool.txt",
+   "flags": [
+    "--action_env=FOO=bar",
+    "--action_env=HOME",
+    "--action_env==PATH",
+    "--action_env=A=1",
+    "--action_env=B=2",
+    "--action_env==A"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_combined/default:pkg/via_sl_tool.txt",
+   "flags": [
+    "--action_env=FOO=bar",
+    "--action_env=HOME",
+    "--action_env==PATH",
+    "--action_env=A=1",
+    "--action_env=B=2",
+    "--action_env==A"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env/local:cfg/shell_env.json",
+   "flags": [
+    "--host_action_env=HOST=1",
+    "--host_action_env=USER",
+    "--action_env=TARGET=1"
+   ],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\",\"TARGET\":\"1\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "host_action_env/local:cfg/via_cfg_tool.json",
+   "flags": [
+    "--host_action_env=HOST=1",
+    "--host_action_env=USER",
+    "--action_env=TARGET=1"
+   ],
+   "reference": {
+    "lines": [
+     "{\"HOST\":\"1\",\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "host_action_env/local:pkg/gen.txt",
+   "flags": [
+    "--host_action_env=HOST=1",
+    "--host_action_env=USER",
+    "--action_env=TARGET=1"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TARGET=1",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TARGET=1",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env/local:pkg/run_default.txt",
+   "flags": [
+    "--host_action_env=HOST=1",
+    "--host_action_env=USER",
+    "--action_env=TARGET=1"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TARGET=1",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TARGET=1",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env/local:pkg/run_plain.txt",
+   "flags": [
+    "--host_action_env=HOST=1",
+    "--host_action_env=USER",
+    "--action_env=TARGET=1"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env/local:pkg/sl_default.txt",
+   "flags": [
+    "--host_action_env=HOST=1",
+    "--host_action_env=USER",
+    "--action_env=TARGET=1"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TARGET=1",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TARGET=1",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env/local:pkg/sl_none.txt",
+   "flags": [
+    "--host_action_env=HOST=1",
+    "--host_action_env=USER",
+    "--action_env=TARGET=1"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env/local:pkg/sl_override.txt",
+   "flags": [
+    "--host_action_env=HOST=1",
+    "--host_action_env=USER",
+    "--action_env=TARGET=1"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TARGET=1",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TARGET=1",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env/local:pkg/sl_plain.txt",
+   "flags": [
+    "--host_action_env=HOST=1",
+    "--host_action_env=USER",
+    "--action_env=TARGET=1"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env/local:pkg/via_gen_tool.txt",
+   "flags": [
+    "--host_action_env=HOST=1",
+    "--host_action_env=USER",
+    "--action_env=TARGET=1"
+   ],
+   "reference": {
+    "lines": [
+     "HOST=1",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "USER=n42"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "HOST=1",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "USER=n42"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env/local:pkg/via_sl_tool.txt",
+   "flags": [
+    "--host_action_env=HOST=1",
+    "--host_action_env=USER",
+    "--action_env=TARGET=1"
+   ],
+   "reference": {
+    "lines": [
+     "HOST=1",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "USER=n42",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "HOST=1",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "USER=n42",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env/default:cfg/shell_env.json",
+   "flags": [
+    "--host_action_env=HOST=1",
+    "--host_action_env=USER",
+    "--action_env=TARGET=1"
+   ],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\",\"TARGET\":\"1\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "host_action_env/default:cfg/via_cfg_tool.json",
+   "flags": [
+    "--host_action_env=HOST=1",
+    "--host_action_env=USER",
+    "--action_env=TARGET=1"
+   ],
+   "reference": {
+    "lines": [
+     "{\"HOST\":\"1\",\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "host_action_env/default:pkg/gen.txt",
+   "flags": [
+    "--host_action_env=HOST=1",
+    "--host_action_env=USER",
+    "--action_env=TARGET=1"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TARGET=1",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TARGET=1",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env/default:pkg/run_default.txt",
+   "flags": [
+    "--host_action_env=HOST=1",
+    "--host_action_env=USER",
+    "--action_env=TARGET=1"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TARGET=1",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TARGET=1",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env/default:pkg/run_plain.txt",
+   "flags": [
+    "--host_action_env=HOST=1",
+    "--host_action_env=USER",
+    "--action_env=TARGET=1"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env/default:pkg/sl_default.txt",
+   "flags": [
+    "--host_action_env=HOST=1",
+    "--host_action_env=USER",
+    "--action_env=TARGET=1"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TARGET=1",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TARGET=1",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env/default:pkg/sl_none.txt",
+   "flags": [
+    "--host_action_env=HOST=1",
+    "--host_action_env=USER",
+    "--action_env=TARGET=1"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env/default:pkg/sl_override.txt",
+   "flags": [
+    "--host_action_env=HOST=1",
+    "--host_action_env=USER",
+    "--action_env=TARGET=1"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TARGET=1",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TARGET=1",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env/default:pkg/sl_plain.txt",
+   "flags": [
+    "--host_action_env=HOST=1",
+    "--host_action_env=USER",
+    "--action_env=TARGET=1"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env/default:pkg/via_gen_tool.txt",
+   "flags": [
+    "--host_action_env=HOST=1",
+    "--host_action_env=USER",
+    "--action_env=TARGET=1"
+   ],
+   "reference": {
+    "lines": [
+     "HOST=1",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "USER=n42"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "HOST=1",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "USER=n42"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env/default:pkg/via_sl_tool.txt",
+   "flags": [
+    "--host_action_env=HOST=1",
+    "--host_action_env=USER",
+    "--action_env=TARGET=1"
+   ],
+   "reference": {
+    "lines": [
+     "HOST=1",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "USER=n42",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "HOST=1",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "USER=n42",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env_unset_path/local:cfg/shell_env.json",
+   "flags": [
+    "--host_action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "host_action_env_unset_path/local:cfg/via_cfg_tool.json",
+   "flags": [
+    "--host_action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "{}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "host_action_env_unset_path/local:pkg/gen.txt",
+   "flags": [
+    "--host_action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env_unset_path/local:pkg/run_default.txt",
+   "flags": [
+    "--host_action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env_unset_path/local:pkg/run_plain.txt",
+   "flags": [
+    "--host_action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env_unset_path/local:pkg/sl_default.txt",
+   "flags": [
+    "--host_action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env_unset_path/local:pkg/sl_none.txt",
+   "flags": [
+    "--host_action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env_unset_path/local:pkg/sl_override.txt",
+   "flags": [
+    "--host_action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env_unset_path/local:pkg/sl_plain.txt",
+   "flags": [
+    "--host_action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env_unset_path/local:pkg/via_gen_tool.txt",
+   "flags": [
+    "--host_action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env_unset_path/local:pkg/via_sl_tool.txt",
+   "flags": [
+    "--host_action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env_unset_path/default:cfg/shell_env.json",
+   "flags": [
+    "--host_action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "host_action_env_unset_path/default:cfg/via_cfg_tool.json",
+   "flags": [
+    "--host_action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "{}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "host_action_env_unset_path/default:pkg/gen.txt",
+   "flags": [
+    "--host_action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env_unset_path/default:pkg/run_default.txt",
+   "flags": [
+    "--host_action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env_unset_path/default:pkg/run_plain.txt",
+   "flags": [
+    "--host_action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env_unset_path/default:pkg/sl_default.txt",
+   "flags": [
+    "--host_action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env_unset_path/default:pkg/sl_none.txt",
+   "flags": [
+    "--host_action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env_unset_path/default:pkg/sl_override.txt",
+   "flags": [
+    "--host_action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env_unset_path/default:pkg/sl_plain.txt",
+   "flags": [
+    "--host_action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env_unset_path/default:pkg/via_gen_tool.txt",
+   "flags": [
+    "--host_action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "host_action_env_unset_path/default:pkg/via_sl_tool.txt",
+   "flags": [
+    "--host_action_env==PATH"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_tmpdir/local:cfg/shell_env.json",
+   "flags": [
+    "--action_env=TMPDIR=/explicit",
+    "--action_env=EMPTY="
+   ],
+   "reference": {
+    "lines": [
+     "{\"EMPTY\":\"\",\"PATH\":\"/bin:/usr/bin:/usr/local/bin\",\"TMPDIR\":\"/explicit\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "action_env_tmpdir/local:cfg/via_cfg_tool.json",
+   "flags": [
+    "--action_env=TMPDIR=/explicit",
+    "--action_env=EMPTY="
+   ],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "action_env_tmpdir/local:pkg/gen.txt",
+   "flags": [
+    "--action_env=TMPDIR=/explicit",
+    "--action_env=EMPTY="
+   ],
+   "reference": {
+    "lines": [
+     "EMPTY=",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "EMPTY=",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_tmpdir/local:pkg/run_default.txt",
+   "flags": [
+    "--action_env=TMPDIR=/explicit",
+    "--action_env=EMPTY="
+   ],
+   "reference": {
+    "lines": [
+     "EMPTY=",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "EMPTY=",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_tmpdir/local:pkg/run_plain.txt",
+   "flags": [
+    "--action_env=TMPDIR=/explicit",
+    "--action_env=EMPTY="
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_tmpdir/local:pkg/sl_default.txt",
+   "flags": [
+    "--action_env=TMPDIR=/explicit",
+    "--action_env=EMPTY="
+   ],
+   "reference": {
+    "lines": [
+     "EMPTY=",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "EMPTY=",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_tmpdir/local:pkg/sl_none.txt",
+   "flags": [
+    "--action_env=TMPDIR=/explicit",
+    "--action_env=EMPTY="
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_tmpdir/local:pkg/sl_override.txt",
+   "flags": [
+    "--action_env=TMPDIR=/explicit",
+    "--action_env=EMPTY="
+   ],
+   "reference": {
+    "lines": [
+     "EMPTY=",
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "EMPTY=",
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_tmpdir/local:pkg/sl_plain.txt",
+   "flags": [
+    "--action_env=TMPDIR=/explicit",
+    "--action_env=EMPTY="
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_tmpdir/local:pkg/via_gen_tool.txt",
+   "flags": [
+    "--action_env=TMPDIR=/explicit",
+    "--action_env=EMPTY="
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_tmpdir/local:pkg/via_sl_tool.txt",
+   "flags": [
+    "--action_env=TMPDIR=/explicit",
+    "--action_env=EMPTY="
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_tmpdir/default:cfg/shell_env.json",
+   "flags": [
+    "--action_env=TMPDIR=/explicit",
+    "--action_env=EMPTY="
+   ],
+   "reference": {
+    "lines": [
+     "{\"EMPTY\":\"\",\"PATH\":\"/bin:/usr/bin:/usr/local/bin\",\"TMPDIR\":\"/explicit\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "action_env_tmpdir/default:cfg/via_cfg_tool.json",
+   "flags": [
+    "--action_env=TMPDIR=/explicit",
+    "--action_env=EMPTY="
+   ],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "action_env_tmpdir/default:pkg/gen.txt",
+   "flags": [
+    "--action_env=TMPDIR=/explicit",
+    "--action_env=EMPTY="
+   ],
+   "reference": {
+    "lines": [
+     "EMPTY=",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "EMPTY=",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_tmpdir/default:pkg/run_default.txt",
+   "flags": [
+    "--action_env=TMPDIR=/explicit",
+    "--action_env=EMPTY="
+   ],
+   "reference": {
+    "lines": [
+     "EMPTY=",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "EMPTY=",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_tmpdir/default:pkg/run_plain.txt",
+   "flags": [
+    "--action_env=TMPDIR=/explicit",
+    "--action_env=EMPTY="
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_tmpdir/default:pkg/sl_default.txt",
+   "flags": [
+    "--action_env=TMPDIR=/explicit",
+    "--action_env=EMPTY="
+   ],
+   "reference": {
+    "lines": [
+     "EMPTY=",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "EMPTY=",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_tmpdir/default:pkg/sl_none.txt",
+   "flags": [
+    "--action_env=TMPDIR=/explicit",
+    "--action_env=EMPTY="
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_tmpdir/default:pkg/sl_override.txt",
+   "flags": [
+    "--action_env=TMPDIR=/explicit",
+    "--action_env=EMPTY="
+   ],
+   "reference": {
+    "lines": [
+     "EMPTY=",
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "EMPTY=",
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_tmpdir/default:pkg/sl_plain.txt",
+   "flags": [
+    "--action_env=TMPDIR=/explicit",
+    "--action_env=EMPTY="
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_tmpdir/default:pkg/via_gen_tool.txt",
+   "flags": [
+    "--action_env=TMPDIR=/explicit",
+    "--action_env=EMPTY="
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "action_env_tmpdir/default:pkg/via_sl_tool.txt",
+   "flags": [
+    "--action_env=TMPDIR=/explicit",
+    "--action_env=EMPTY="
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "compilation_mode_opt/local:cfg/shell_env.json",
+   "flags": [
+    "-c",
+    "opt",
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "{\"FOO\":\"bar\",\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "compilation_mode_opt/local:cfg/via_cfg_tool.json",
+   "flags": [
+    "-c",
+    "opt",
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "compilation_mode_opt/local:pkg/gen.txt",
+   "flags": [
+    "-c",
+    "opt",
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=bar",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=bar",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "compilation_mode_opt/local:pkg/run_default.txt",
+   "flags": [
+    "-c",
+    "opt",
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=bar",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=bar",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "compilation_mode_opt/local:pkg/run_plain.txt",
+   "flags": [
+    "-c",
+    "opt",
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "compilation_mode_opt/local:pkg/sl_default.txt",
+   "flags": [
+    "-c",
+    "opt",
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=bar",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=bar",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "compilation_mode_opt/local:pkg/sl_none.txt",
+   "flags": [
+    "-c",
+    "opt",
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "compilation_mode_opt/local:pkg/sl_override.txt",
+   "flags": [
+    "-c",
+    "opt",
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "compilation_mode_opt/local:pkg/sl_plain.txt",
+   "flags": [
+    "-c",
+    "opt",
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "compilation_mode_opt/local:pkg/via_gen_tool.txt",
+   "flags": [
+    "-c",
+    "opt",
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "compilation_mode_opt/local:pkg/via_sl_tool.txt",
+   "flags": [
+    "-c",
+    "opt",
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "compilation_mode_opt/default:cfg/shell_env.json",
+   "flags": [
+    "-c",
+    "opt",
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "{\"FOO\":\"bar\",\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "compilation_mode_opt/default:cfg/via_cfg_tool.json",
+   "flags": [
+    "-c",
+    "opt",
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "compilation_mode_opt/default:pkg/gen.txt",
+   "flags": [
+    "-c",
+    "opt",
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=bar",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=bar",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "compilation_mode_opt/default:pkg/run_default.txt",
+   "flags": [
+    "-c",
+    "opt",
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=bar",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=bar",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "compilation_mode_opt/default:pkg/run_plain.txt",
+   "flags": [
+    "-c",
+    "opt",
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "compilation_mode_opt/default:pkg/sl_default.txt",
+   "flags": [
+    "-c",
+    "opt",
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=bar",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=bar",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "compilation_mode_opt/default:pkg/sl_none.txt",
+   "flags": [
+    "-c",
+    "opt",
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "compilation_mode_opt/default:pkg/sl_override.txt",
+   "flags": [
+    "-c",
+    "opt",
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "compilation_mode_opt/default:pkg/sl_plain.txt",
+   "flags": [
+    "-c",
+    "opt",
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "compilation_mode_opt/default:pkg/via_gen_tool.txt",
+   "flags": [
+    "-c",
+    "opt",
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "compilation_mode_opt/default:pkg/via_sl_tool.txt",
+   "flags": [
+    "-c",
+    "opt",
+    "--action_env=FOO=bar"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "non_strict/local:cfg/shell_env.json",
+   "flags": [
+    "--noincompatible_strict_action_env"
+   ],
+   "reference": {
+    "lines": [
+     "{}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "non_strict/local:cfg/via_cfg_tool.json",
+   "flags": [
+    "--noincompatible_strict_action_env"
+   ],
+   "reference": {
+    "lines": [
+     "{}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "non_strict/local:pkg/gen.txt",
+   "flags": [
+    "--noincompatible_strict_action_env"
+   ],
+   "reference": {
+    "lines": [
+     "LD_LIBRARY_PATH=/nonexistent/n42-lib",
+     "PATH=/usr/bin:/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "LD_LIBRARY_PATH=/nonexistent/n42-lib",
+     "PATH=/usr/bin:/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "non_strict/local:pkg/run_default.txt",
+   "flags": [
+    "--noincompatible_strict_action_env"
+   ],
+   "reference": {
+    "lines": [
+     "LD_LIBRARY_PATH=/nonexistent/n42-lib",
+     "PATH=/usr/bin:/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "LD_LIBRARY_PATH=/nonexistent/n42-lib",
+     "PATH=/usr/bin:/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "non_strict/local:pkg/run_plain.txt",
+   "flags": [
+    "--noincompatible_strict_action_env"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "non_strict/local:pkg/sl_default.txt",
+   "flags": [
+    "--noincompatible_strict_action_env"
+   ],
+   "reference": {
+    "lines": [
+     "LD_LIBRARY_PATH=/nonexistent/n42-lib",
+     "PATH=/usr/bin:/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "LD_LIBRARY_PATH=/nonexistent/n42-lib",
+     "PATH=/usr/bin:/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "non_strict/local:pkg/sl_none.txt",
+   "flags": [
+    "--noincompatible_strict_action_env"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "non_strict/local:pkg/sl_override.txt",
+   "flags": [
+    "--noincompatible_strict_action_env"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "LD_LIBRARY_PATH=/nonexistent/n42-lib",
+     "PATH=/usr/bin:/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "LD_LIBRARY_PATH=/nonexistent/n42-lib",
+     "PATH=/usr/bin:/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "non_strict/local:pkg/sl_plain.txt",
+   "flags": [
+    "--noincompatible_strict_action_env"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "non_strict/local:pkg/via_gen_tool.txt",
+   "flags": [
+    "--noincompatible_strict_action_env"
+   ],
+   "reference": {
+    "lines": [
+     "LD_LIBRARY_PATH=/nonexistent/n42-lib",
+     "PATH=/usr/bin:/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "LD_LIBRARY_PATH=/nonexistent/n42-lib",
+     "PATH=/usr/bin:/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "non_strict/local:pkg/via_sl_tool.txt",
+   "flags": [
+    "--noincompatible_strict_action_env"
+   ],
+   "reference": {
+    "lines": [
+     "LD_LIBRARY_PATH=/nonexistent/n42-lib",
+     "PATH=/usr/bin:/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "LD_LIBRARY_PATH=/nonexistent/n42-lib",
+     "PATH=/usr/bin:/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "non_strict/default:cfg/shell_env.json",
+   "flags": [
+    "--noincompatible_strict_action_env"
+   ],
+   "reference": {
+    "lines": [
+     "{}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "non_strict/default:cfg/via_cfg_tool.json",
+   "flags": [
+    "--noincompatible_strict_action_env"
+   ],
+   "reference": {
+    "lines": [
+     "{}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "non_strict/default:pkg/gen.txt",
+   "flags": [
+    "--noincompatible_strict_action_env"
+   ],
+   "reference": {
+    "lines": [
+     "LD_LIBRARY_PATH=/nonexistent/n42-lib",
+     "PATH=/usr/bin:/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "LD_LIBRARY_PATH=/nonexistent/n42-lib",
+     "PATH=/usr/bin:/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "non_strict/default:pkg/run_default.txt",
+   "flags": [
+    "--noincompatible_strict_action_env"
+   ],
+   "reference": {
+    "lines": [
+     "LD_LIBRARY_PATH=/nonexistent/n42-lib",
+     "PATH=/usr/bin:/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "LD_LIBRARY_PATH=/nonexistent/n42-lib",
+     "PATH=/usr/bin:/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "non_strict/default:pkg/run_plain.txt",
+   "flags": [
+    "--noincompatible_strict_action_env"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "non_strict/default:pkg/sl_default.txt",
+   "flags": [
+    "--noincompatible_strict_action_env"
+   ],
+   "reference": {
+    "lines": [
+     "LD_LIBRARY_PATH=/nonexistent/n42-lib",
+     "PATH=/usr/bin:/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "LD_LIBRARY_PATH=/nonexistent/n42-lib",
+     "PATH=/usr/bin:/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "non_strict/default:pkg/sl_none.txt",
+   "flags": [
+    "--noincompatible_strict_action_env"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "non_strict/default:pkg/sl_override.txt",
+   "flags": [
+    "--noincompatible_strict_action_env"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "LD_LIBRARY_PATH=/nonexistent/n42-lib",
+     "PATH=/usr/bin:/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "LD_LIBRARY_PATH=/nonexistent/n42-lib",
+     "PATH=/usr/bin:/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "non_strict/default:pkg/sl_plain.txt",
+   "flags": [
+    "--noincompatible_strict_action_env"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "non_strict/default:pkg/via_gen_tool.txt",
+   "flags": [
+    "--noincompatible_strict_action_env"
+   ],
+   "reference": {
+    "lines": [
+     "LD_LIBRARY_PATH=/nonexistent/n42-lib",
+     "PATH=/usr/bin:/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "LD_LIBRARY_PATH=/nonexistent/n42-lib",
+     "PATH=/usr/bin:/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "non_strict/default:pkg/via_sl_tool.txt",
+   "flags": [
+    "--noincompatible_strict_action_env"
+   ],
+   "reference": {
+    "lines": [
+     "LD_LIBRARY_PATH=/nonexistent/n42-lib",
+     "PATH=/usr/bin:/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "LD_LIBRARY_PATH=/nonexistent/n42-lib",
+     "PATH=/usr/bin:/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "test_env/local:cfg/shell_env.json",
+   "flags": [
+    "--test_env=T=1",
+    "--test_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "test_env/local:cfg/via_cfg_tool.json",
+   "flags": [
+    "--test_env=T=1",
+    "--test_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "test_env/local:pkg/gen.txt",
+   "flags": [
+    "--test_env=T=1",
+    "--test_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "test_env/local:pkg/run_default.txt",
+   "flags": [
+    "--test_env=T=1",
+    "--test_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "test_env/local:pkg/run_plain.txt",
+   "flags": [
+    "--test_env=T=1",
+    "--test_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "test_env/local:pkg/sl_default.txt",
+   "flags": [
+    "--test_env=T=1",
+    "--test_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "test_env/local:pkg/sl_none.txt",
+   "flags": [
+    "--test_env=T=1",
+    "--test_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "test_env/local:pkg/sl_override.txt",
+   "flags": [
+    "--test_env=T=1",
+    "--test_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "test_env/local:pkg/sl_plain.txt",
+   "flags": [
+    "--test_env=T=1",
+    "--test_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "test_env/local:pkg/via_gen_tool.txt",
+   "flags": [
+    "--test_env=T=1",
+    "--test_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "test_env/local:pkg/via_sl_tool.txt",
+   "flags": [
+    "--test_env=T=1",
+    "--test_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "test_env/default:cfg/shell_env.json",
+   "flags": [
+    "--test_env=T=1",
+    "--test_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "test_env/default:cfg/via_cfg_tool.json",
+   "flags": [
+    "--test_env=T=1",
+    "--test_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "test_env/default:pkg/gen.txt",
+   "flags": [
+    "--test_env=T=1",
+    "--test_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "test_env/default:pkg/run_default.txt",
+   "flags": [
+    "--test_env=T=1",
+    "--test_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "test_env/default:pkg/run_plain.txt",
+   "flags": [
+    "--test_env=T=1",
+    "--test_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "test_env/default:pkg/sl_default.txt",
+   "flags": [
+    "--test_env=T=1",
+    "--test_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "test_env/default:pkg/sl_none.txt",
+   "flags": [
+    "--test_env=T=1",
+    "--test_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "test_env/default:pkg/sl_override.txt",
+   "flags": [
+    "--test_env=T=1",
+    "--test_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "test_env/default:pkg/sl_plain.txt",
+   "flags": [
+    "--test_env=T=1",
+    "--test_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "test_env/default:pkg/via_gen_tool.txt",
+   "flags": [
+    "--test_env=T=1",
+    "--test_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "test_env/default:pkg/via_sl_tool.txt",
+   "flags": [
+    "--test_env=T=1",
+    "--test_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "inherit_changed_value/local:cfg/shell_env.json",
+   "flags": [
+    "--action_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "inherit_changed_value/local:cfg/via_cfg_tool.json",
+   "flags": [
+    "--action_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "inherit_changed_value/local:pkg/gen.txt",
+   "flags": [
+    "--action_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "HOME=/tmp/opencode/ae-capture/changed-home",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "HOME=/tmp/opencode/ae-capture/changed-home",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "inherit_changed_value/local:pkg/run_default.txt",
+   "flags": [
+    "--action_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "HOME=/tmp/opencode/ae-capture/changed-home",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "HOME=/tmp/opencode/ae-capture/changed-home",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "inherit_changed_value/local:pkg/run_plain.txt",
+   "flags": [
+    "--action_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "inherit_changed_value/local:pkg/sl_default.txt",
+   "flags": [
+    "--action_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "HOME=/tmp/opencode/ae-capture/changed-home",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "HOME=/tmp/opencode/ae-capture/changed-home",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "inherit_changed_value/local:pkg/sl_none.txt",
+   "flags": [
+    "--action_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "inherit_changed_value/local:pkg/sl_override.txt",
+   "flags": [
+    "--action_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "inherit_changed_value/local:pkg/sl_plain.txt",
+   "flags": [
+    "--action_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "inherit_changed_value/local:pkg/via_gen_tool.txt",
+   "flags": [
+    "--action_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "inherit_changed_value/local:pkg/via_sl_tool.txt",
+   "flags": [
+    "--action_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "inherit_changed_value/default:cfg/shell_env.json",
+   "flags": [
+    "--action_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "inherit_changed_value/default:cfg/via_cfg_tool.json",
+   "flags": [
+    "--action_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "{\"PATH\":\"/bin:/usr/bin:/usr/local/bin\"}"
+    ],
+    "tmpdir": null
+   },
+   "verdict": "REFERENCE_ONLY"
+  },
+  {
+   "case": "inherit_changed_value/default:pkg/gen.txt",
+   "flags": [
+    "--action_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "HOME=/tmp/opencode/ae-capture/changed-home",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "HOME=/tmp/opencode/ae-capture/changed-home",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "inherit_changed_value/default:pkg/run_default.txt",
+   "flags": [
+    "--action_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "HOME=/tmp/opencode/ae-capture/changed-home",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "HOME=/tmp/opencode/ae-capture/changed-home",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "inherit_changed_value/default:pkg/run_plain.txt",
+   "flags": [
+    "--action_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "Y=2"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "inherit_changed_value/default:pkg/sl_default.txt",
+   "flags": [
+    "--action_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "HOME=/tmp/opencode/ae-capture/changed-home",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "HOME=/tmp/opencode/ae-capture/changed-home",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "inherit_changed_value/default:pkg/sl_none.txt",
+   "flags": [
+    "--action_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "inherit_changed_value/default:pkg/sl_override.txt",
+   "flags": [
+    "--action_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "FOO=from-env",
+     "HOME=/override",
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "inherit_changed_value/default:pkg/sl_plain.txt",
+   "flags": [
+    "--action_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "inherit_changed_value/default:pkg/via_gen_tool.txt",
+   "flags": [
+    "--action_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "inherit_changed_value/default:pkg/via_sl_tool.txt",
+   "flags": [
+    "--action_env=HOME"
+   ],
+   "reference": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "client-TMPDIR"
+   },
+   "native": {
+    "lines": [
+     "PATH=/bin:/usr/bin:/usr/local/bin",
+     "TMPDIR=<tmp>",
+     "X=1"
+    ],
+    "tmpdir": "other-absolute"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "native-rebuild-cache-hits",
+   "native": "bazel-rs: 0 actions executed, 11 cache hits (experimental local execution; not sandboxed)\n",
+   "verdict": "EXACT"
+  },
+  {
+   "case": "error:error_action_env_empty",
+   "flags": [
+    "--action_env="
+   ],
+   "reference_code": 2,
+   "native_code": 1,
+   "reference_message": "While parsing option --action_env=: Variable definitions must be in the form of a 'name=value', 'name', or '=name' assignment",
+   "native_message": [
+    "bazel-rs: While parsing option --action_env=: Variable definitions must be in the form of a 'name=value', 'name', or '=name' assignment"
+   ],
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "error:error_host_action_env_equals",
+   "flags": [
+    "--host_action_env=="
+   ],
+   "reference_code": 2,
+   "native_code": 1,
+   "reference_message": "While parsing option --host_action_env==: Variable definitions must be in the form of a 'name=value', 'name', or '=name' assignment",
+   "native_message": [
+    "bazel-rs: While parsing option --host_action_env==: Variable definitions must be in the form of a 'name=value', 'name', or '=name' assignment"
+   ],
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "error:error_no_prefix",
+   "flags": [
+    "--noaction_env"
+   ],
+   "reference_code": 2,
+   "native_code": 1,
+   "reference_message": "--noaction_env :: Illegal use of 'no' prefix on non-boolean option: --noaction_env",
+   "native_message": [
+    "bazel-rs: --noaction_env :: Illegal use of 'no' prefix on non-boolean option: --noaction_env"
+   ],
+   "verdict": "EXACT_MESSAGE"
+  },
+  {
+   "case": "error:error_strict_not_boolean",
+   "flags": [
+    "--incompatible_strict_action_env=maybe"
+   ],
+   "reference_code": 2,
+   "native_code": 1,
+   "reference_message": "While parsing option --incompatible_strict_action_env=maybe: 'maybe' is not a boolean",
+   "native_message": [
+    "bazel-rs: While parsing option --incompatible_strict_action_env=maybe: 'maybe' is not a boolean"
+   ],
+   "verdict": "EXACT_MESSAGE"
+  }
+ ],
+ "post_capture_changes": [
+  "docs only: docs/ACTION_ENV.md 'Paired capture' section, capabilities.json action_environment receipt counts, docs/HARDLINK_STAGING.md and docs/ACTIONS_PARAMS.md notes that N42 moved the key identity to native-action-v6; no product source, test or capture-script change after run 2"
+ ]
+}

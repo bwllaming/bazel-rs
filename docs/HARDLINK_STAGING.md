@@ -96,7 +96,9 @@ keyed without ctime and memoized when written.
 The action key is unchanged (`native-action-v5`, including the symlink
 action's framing of the target's mode); `tests/configured_target_keys.rs`
 pins pass unchanged. Manifests record symlink outputs and are
-`native-action-v7`; pre-v7 entries (v5 from main, v6) rebuild once.
+`native-action-v7`; pre-v7 entries (v5 from main, v6) rebuild once. (N42 later
+moved the key identity to `native-action-v6` for exact action environments,
+docs/ACTION_ENV.md.)
 
 ## Trade-offs and limits
 

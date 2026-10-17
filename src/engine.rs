@@ -108,6 +108,9 @@ struct ActionPlanning {
     /// (flush_delegations).
     delegations: Vec<(ConfiguredTargetKey, ConfiguredTargetKey)>,
     done: usize,
+    /// The client environment inherited action variables resolve against,
+    /// read once per build on first need (crate::action_env).
+    client_environment: std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
 }
 
 /// An analyzed rule target in its configuration.
@@ -5283,6 +5286,9 @@ impl Engine {
             features,
             build_file_path,
             apple_sdk_versions: native.apple_sdk_versions.clone(),
+            // Replaced by the analyzed target's own Context::action_env
+            // (crate::analysis), the same configuration's environment.
+            action_env: Arc::new(native.action_environment()),
         }
     }
 
@@ -5506,11 +5512,15 @@ impl Engine {
             producers,
             nodes,
             source_inputs,
+            client_environment,
             ..
         } = state;
         let key = key.clone();
         let config = key.config;
         let output_root = self.configurations.output_root(config);
+        // BuildConfigurationValue.getActionEnvironment of the target's
+        // configuration (SHELL_ACTION_ENV; crate::action_env).
+        let action_env = Arc::new(self.configurations.get(config).native.action_environment());
         let action_owner = key.action_owner(top);
         // The configuration of the target's exec-transition edges.
         let exec_config = self
@@ -5877,6 +5887,7 @@ impl Engine {
             let outputs = analysis::ConfiguredOutputs {
                 output_root: &output_root,
                 action_owner: &action_owner,
+                action_env: action_env.clone(),
             };
             let (mut analyzed, mut printed) = analysis::analyze_buffered(
                 &analyzed_rule,
@@ -5989,7 +6000,8 @@ impl Engine {
                     self.action_executions
                         .insert(registered.action.id.clone(), execution.clone());
                 }
-                let mut planned = plan_action(registered.action, inputs, &main_ignored)?;
+                let mut planned =
+                    plan_action(registered.action, inputs, &main_ignored, client_environment)?;
                 planned.deferred = registered.deferred;
                 nodes.push(planned);
             }
@@ -6084,6 +6096,7 @@ impl Engine {
             for output in &outputs {
                 register_output(producers, output, &key)?;
             }
+            // GenRuleBase.java:210-219: the configuration's action environment.
             let action = Action {
                 id: action_owner.clone(),
                 command,
@@ -6092,13 +6105,21 @@ impl Engine {
                 write: None,
                 program: None,
                 shell_strict: true,
-                extra: Default::default(),
+                extra: action::ActionExtra {
+                    inherited_environment: action_env.inherited.clone(),
+                    ..Default::default()
+                },
                 arguments: Vec::new(),
-                environment: BTreeMap::new(),
+                environment: action_env.fixed.clone(),
             };
             let action_inputs = inputs.iter().cloned().chain(tools).collect::<Vec<_>>();
             source_inputs.insert(action.id.clone(), source_paths(&action_inputs));
-            nodes.push(plan_action(action, action_inputs, &main_ignored)?);
+            nodes.push(plan_action(
+                action,
+                action_inputs,
+                &main_ignored,
+                client_environment,
+            )?);
             let artifacts = outputs
                 .into_iter()
                 .enumerate()
@@ -6963,7 +6984,16 @@ fn plan_action(
     mut action: Action,
     inputs: Vec<Artifact>,
     main_ignored: &IgnoredSubdirectories,
+    client_environment: &std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
 ) -> Result<PlannedAction, String> {
+    // The inherited values are resolved here, keyed and fixed for the
+    // execution (ActionExecutionFunction.java:221-242 reads them per action).
+    if !action.extra.inherited_environment.is_empty() {
+        action.extra.client_environment = crate::action_env::ActionEnvironment::resolve_inherited(
+            &action.extra.inherited_environment,
+            client_environment.get_or_init(crate::action_env::client_environment),
+        );
+    }
     action.inputs = inputs
         .iter()
         .map(|artifact| (artifact.real.clone(), artifact.exec.clone()))

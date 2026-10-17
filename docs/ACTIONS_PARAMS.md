@@ -112,14 +112,12 @@ runs eagerly at `add_joined` (Bazel: when the template action executes).
 
 ## run/run_shell environment and execution requirements
 
-* Starlark spawns get exactly their environment plus `TMPDIR`
-  (`exec/local/PosixLocalEnvProvider.java:41-55`): `env`, or with
-  `use_default_shell_env=True` the strict default shell environment
-  `PATH=/bin:/usr/bin:/usr/local/bin` (`--incompatible_strict_action_env`
-  defaults to true, `bazel/rules/BazelRuleClassProvider.java:74-87,139-190,346-362`)
-  overridden by `env` (`SpawnAction.createActionEnvironment`, `:584-614`).
-  `--action_env` is not modelled. (Genrules keep the native controlled
-  `PATH`/`LANG`/`LC_ALL` environment.)
+* Starlark spawns get exactly their action environment plus `TMPDIR`
+  (`exec/local/PosixLocalEnvProvider.java:41-59`): `env`, or with
+  `use_default_shell_env=True` the configuration's shell environment (the
+  strict `PATH=/bin:/usr/bin:/usr/local/bin` and `--action_env`) overridden by
+  `env` (`SpawnAction.createActionEnvironment`, `:584-614`). Genrules use the
+  configuration's shell environment as is. See docs/ACTION_ENV.md (N42).
 * `execution_requirements` (string dict) is accepted and keyed; it has no
   local effect. `mnemonic`, `progress_message` and `resource_set` are
   accepted; `exec_group` and `toolchain` choose the action's exec group with
@@ -139,9 +137,12 @@ building that output (workspace-status stamping) fails explicitly.
 ## Cache identity
 
 Cache manifests use format `native-action-v6` (tree entries, per-output
-modes); the key identity stays `native-action-v5` so actions without N23d
-features keep their keys. Tree outputs/inputs, parameter files, the
-exact-environment flag of Starlark spawns, execution requirements and the
+modes); the key identity stayed `native-action-v5` so actions without N23d
+features kept their keys (N42 moved it to `native-action-v6`: the environment
+is framed as fixed map, inherited names and resolved client values for every
+action, and the exact-environment flag is gone, docs/ACTION_ENV.md). Tree
+outputs/inputs, parameter files, the
+exact-environment flag of Starlark spawns (until N42), execution requirements and the
 native transforms (symlink target and its mode, template substitutions) are
 framed in an extra key block. Starlark run/run_shell keys therefore changed
 (exact environment). Deferred tree expansion runs before the key is computed,

@@ -146,7 +146,9 @@ scope in [`docs/capabilities.json`](docs/capabilities.json).
 
 **Trusted BUILD files and commands only. There is no security sandbox.** Shell
 actions can access the host and network. Working-directory isolation is not
-hermetic execution. The action environment is cleared and explicitly set, but
+hermetic execution. Each process gets exactly its Bazel action environment
+(strict `PATH`, `--action_env`/`--host_action_env`, keyed inherited values and a
+fresh `TMPDIR`; docs/ACTION_ENV.md) and nothing else from the caller, but
 undeclared host tools/files, time and network responses are not tracked. Cache
 correctness requires actions to depend only on declared inputs and a stable host
 tool environment. Absolute temporary/working paths must not enter outputs.

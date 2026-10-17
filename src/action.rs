@@ -6,10 +6,17 @@
 //! modified by an adversary racing filesystem checks. Symlink checks prevent
 //! accidental escapes, but are not a substitute for OS sandboxing.
 //!
-//! No caller environment is inherited: otherwise secrets could leak and an
-//! unkeyed environment variable could silently change a cached result. TMPDIR
-//! defaults to a fresh absolute directory; its spelling (and the working directory's)
-//! is intentionally not stable, so actions must not embed these paths in output.
+//! A process gets exactly its action environment (docs/ACTION_ENV.md): the
+//! fixed variables, then the values the client environment has for its
+//! inherited names (resolved when the action is planned, crate::action_env),
+//! then TMPDIR. Nothing else from the caller's environment is inherited:
+//! otherwise secrets could leak and an unkeyed environment variable could
+//! silently change a cached result; the resolved inherited values are keyed.
+//! TMPDIR is always a fresh absolute directory, replacing any TMPDIR of the
+//! action environment (PosixLocalEnvProvider.rewriteLocalEnv,
+//! exec/local/PosixLocalEnvProvider.java:41-59, always replaces it too); its
+//! spelling (and the working directory's) is intentionally not stable, so
+//! actions must not embed these paths in output.
 //!
 //! Tree artifacts (declared directories, docs/ACTIONS_PARAMS.md) are directory
 //! outputs and inputs: their regular files and subdirectories are keyed,
@@ -45,12 +52,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
-// The key identity stays `native-action-v5`: actions without N23d features
-// (no tree artifacts, parameter files, exact environment, execution
-// requirements or transforms) keep their keys; those features are framed in
-// an extra block. Hardlink staging (N36) changes no key. Manifests record
-// symlink outputs since N36, so their format is v7.
-const FORMAT: &str = "native-action-v5";
+// `native-action-v6` (N42): the native PATH/LANG/LC_ALL defaults are gone;
+// every process runs with exactly its Bazel action environment, framed as
+// the fixed map, the inherited names and their resolved client values
+// (ActionEnvironment.addTo plus ActionCacheChecker.computeEffectiveEnvironment).
+// N23d features (tree artifacts, parameter files, execution requirements,
+// transforms) are framed in an extra block. Hardlink staging (N36) changes
+// no key. Manifests record symlink outputs since N36, so their format is v7.
+const FORMAT: &str = "native-action-v6";
 const MANIFEST_FORMAT: &str = "native-action-v7";
 /// The content-addressed store below the cache root.
 const CAS: &str = "cas";
@@ -76,7 +85,6 @@ const TREE_ROOT_MODE: u32 = 0o555;
 const SHELL: &str = "/bin/bash";
 const SHELL_FLAGS: [&str; 4] = ["-e", "-o", "pipefail", "-c"];
 const LOG_TAIL_BYTES: usize = 64 * 1024;
-const ENV: [(&str, &str); 3] = [("PATH", "/usr/bin:/bin"), ("LANG", "C"), ("LC_ALL", "C")];
 const SPAWN_RETRY_DELAYS_MS: [u64; 7] = [1, 2, 4, 8, 16, 32, 64];
 static NEXT_WORK: AtomicU64 = AtomicU64::new(0);
 
@@ -92,7 +100,8 @@ pub struct Action {
     pub program: Option<String>,
     /// Literal process arguments, or shell positional parameters starting at `$1`.
     pub arguments: Vec<String>,
-    /// Explicit overrides applied after controlled defaults, including TMPDIR.
+    /// The fixed part of the action environment (a TMPDIR entry is keyed
+    /// but replaced by the fresh temporary directory).
     pub environment: BTreeMap<String, String>,
     /// Enable genrule-style errexit and pipefail; ignored for writes/direct runs.
     pub shell_strict: bool,
@@ -110,9 +119,14 @@ pub struct ActionExtra {
     /// Parameter files (CommandLines.ParamFileActionInput): written below
     /// the execution root before the process starts; content-keyed.
     pub param_files: Vec<(PathBuf, Vec<u8>)>,
-    /// Starlark spawn environment: exactly `environment` plus TMPDIR
-    /// (PosixLocalEnvProvider), without the PATH/LANG/LC_ALL defaults.
-    pub exact_environment: bool,
+    /// The inherited part of the action environment: names whose values
+    /// come from the client environment (ActionEnvironment.getInheritedEnv).
+    pub inherited_environment: BTreeSet<String>,
+    /// The client values of the inherited names that the client
+    /// environment sets, resolved when the action is planned
+    /// (crate::action_env::ActionEnvironment::resolve_inherited); keyed,
+    /// and they override fixed values of the same name.
+    pub client_environment: BTreeMap<String, std::ffi::OsString>,
     /// Execution requirements: keyed, no local effect.
     pub execution_info: BTreeMap<String, String>,
     /// A native, process-free transform of one input into the only output.
@@ -625,6 +639,21 @@ pub fn validate_structure(action: &Action) -> Result<(), String> {
     {
         return Err("write action requires exactly one output, no program, and empty command, arguments, environment, and inputs".into());
     }
+    if let Some(name) = action
+        .extra
+        .client_environment
+        .keys()
+        .find(|name| !action.extra.inherited_environment.contains(*name))
+    {
+        return Err(format!(
+            "client environment value for '{name}', which is not inherited"
+        ));
+    }
+    if (action.write.is_some() || action.extra.transform.is_some())
+        && !action.extra.inherited_environment.is_empty()
+    {
+        return Err("only process actions inherit environment variables".into());
+    }
     if action.write.is_some() && !action.extra.tree_outputs.is_empty() {
         return Err("write action output cannot be a tree artifact".into());
     }
@@ -812,10 +841,6 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
     for value in [FORMAT, std::env::consts::OS, std::env::consts::ARCH] {
         frame(&mut hash, value.as_bytes());
     }
-    for (name, value) in ENV {
-        frame(&mut hash, name.as_bytes());
-        frame(&mut hash, value.as_bytes());
-    }
     frame(&mut hash, b"TMPDIR=fresh-absolute-work-tmp");
     frame(&mut hash, action.id.as_bytes());
     match (&action.write, &action.program, &action.extra.transform) {
@@ -892,6 +917,15 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
         frame(&mut hash, name.as_bytes());
         frame(&mut hash, value.as_bytes());
     }
+    frame_count(&mut hash, action.extra.inherited_environment.len());
+    for name in &action.extra.inherited_environment {
+        frame(&mut hash, name.as_bytes());
+    }
+    frame_count(&mut hash, action.extra.client_environment.len());
+    for (name, value) in &action.extra.client_environment {
+        frame(&mut hash, name.as_bytes());
+        frame(&mut hash, value.as_bytes());
+    }
     frame(&mut hash, &(inputs.len() as u64).to_le_bytes());
     for (name, input) in &inputs {
         frame(&mut hash, name.as_os_str().as_bytes());
@@ -905,7 +939,6 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
     if !extra.tree_outputs.is_empty()
         || !extra.tree_inputs.is_empty()
         || !extra.param_files.is_empty()
-        || extra.exact_environment
         || !extra.execution_info.is_empty()
         || extra.transform.is_some()
     {
@@ -918,7 +951,6 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
         for name in &extra.tree_inputs {
             frame(&mut hash, name.as_os_str().as_bytes());
         }
-        frame(&mut hash, &[u8::from(extra.exact_environment)]);
         frame_count(&mut hash, extra.execution_info.len());
         for (name, value) in &extra.execution_info {
             frame(&mut hash, name.as_bytes());
@@ -1666,9 +1698,9 @@ fn run_transform(
 /// cross-process locks, so unrelated actions may execute concurrently.
 /// Shell commands are trusted and unsandboxed, run with Bash; `shell_strict` adds
 /// -e -o pipefail for genrules, while custom run_shell actions use only -c.
-/// All shell actions get an empty `$0`, then literal `$1`, `$2`, ... . Explicit environment
-/// entries override PATH/LANG/LC_ALL/TMPDIR defaults; no caller variables leak in.
-/// Starlark actions (`exact_environment`) get exactly their environment plus TMPDIR.
+/// All shell actions get an empty `$0`, then literal `$1`, `$2`, ... . Processes get
+/// exactly their fixed environment, the resolved inherited values over it, and
+/// the fresh TMPDIR (which replaces any TMPDIR entry); no other caller variables leak in.
 /// Direct programs receive arguments verbatim, without a shell or strictness flags.
 /// Relative programs containing a slash resolve in the action working directory;
 /// bare names search PATH, and absolute paths are accepted. Host executables are
@@ -1786,12 +1818,16 @@ pub fn execute(cache_root: &Path, action: &Action) -> Result<ActionResult, Strin
             command
         };
         command.current_dir(&execroot).env_clear();
-        if !action.extra.exact_environment {
-            command.envs(ENV);
+        // ActionEnvironment.resolve (ActionEnvironment.java:113-122): fixed,
+        // then inherited values; then PosixLocalEnvProvider's TMPDIR.
+        for (name, value) in &action.environment {
+            command.env(name, value);
+        }
+        for (name, value) in &action.extra.client_environment {
+            command.env(name, value);
         }
         command
             .env("TMPDIR", &tmp)
-            .envs(&action.environment)
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout.try_clone().map_err(|e| e.to_string())?))
             .stderr(Stdio::from(stderr.try_clone().map_err(|e| e.to_string())?));
@@ -2128,7 +2164,7 @@ mod tests {
     fn direct_executable_input_preserves_literal_arguments_and_environment() {
         let fixture = Fixture::new();
         let mut action = fixture.direct_action(
-            "#!/bin/bash\nfalse\nfalse | true\ntest \"$#\" = 4 || exit 12\ntest \"$PATH\" = /usr/bin:/bin || exit 13\ntest -z \"${HOME+x}\" || exit 14\n[[ $TMPDIR = /* ]] && test -d \"$TMPDIR\" || exit 15\nprintf '%s\\0' \"$0\" \"$1\" \"$2\" \"$3\" \"$4\" \"$VALUE\" > out/result\n",
+            "#!/bin/bash\nfalse\nfalse | true\ntest \"$#\" = 4 || exit 12\ncase \"$(export -p)\" in *' PATH='*) exit 13;; esac\ntest -z \"${HOME+x}\" || exit 14\n[[ $TMPDIR = /* ]] && test -d \"$TMPDIR\" || exit 15\nprintf '%s\\0' \"$0\" \"$1\" \"$2\" \"$3\" \"$4\" \"$VALUE\" > out/result\n",
         );
         let marker = fixture.0.join("expanded");
         action.arguments = vec![
@@ -2357,7 +2393,7 @@ mod tests {
     }
 
     #[test]
-    fn shell_environment_overlays_defaults_and_is_keyed() {
+    fn shell_environment_is_exact_keyed_and_tmpdir_always_fresh() {
         let fixture = Fixture::new();
         let mut action = fixture.action();
         action.environment = BTreeMap::from([
@@ -2368,7 +2404,9 @@ mod tests {
             ("TMPDIR".into(), "/explicit/tmp".into()),
             ("EMPTY".into(), String::new()),
         ]);
-        action.command = "test \"$PATH\" = /explicit/path && test \"$LANG\" = POSIX && test \"$LC_ALL\" = POSIX && test \"$TMPDIR\" = /explicit/tmp && test \"${EMPTY+x}\" = x && test -z \"$EMPTY\" && test -z \"${HOME+x}\" && printf '%s' \"$VALUE\" > out/result".into();
+        // PosixLocalEnvProvider.rewriteLocalEnv (:41-59): an action TMPDIR
+        // never reaches the process.
+        action.command = "test \"$PATH\" = /explicit/path && test \"$LANG\" = POSIX && test \"$LC_ALL\" = POSIX && [[ $TMPDIR = /* ]] && test \"$TMPDIR\" != /explicit/tmp && test -d \"$TMPDIR\" && test \"${EMPTY+x}\" = x && test -z \"$EMPTY\" && test -z \"${HOME+x}\" && printf '%s' \"$VALUE\" > out/result".into();
         let first = execute(&fixture.cache(), &action).unwrap();
         assert_eq!(
             fs::read(&first.outputs[0]).unwrap(),
@@ -2733,10 +2771,13 @@ mod tests {
     }
 
     #[test]
-    fn controlled_environment_and_absolute_tmpdir() {
+    fn empty_environment_is_only_tmpdir() {
         let fixture = Fixture::new();
         let mut action = fixture.action();
-        action.command = "test \"$PATH\" = /usr/bin:/bin && test \"$LANG\" = C && test \"$LC_ALL\" = C && test -z \"${HOME+x}\" && test -z \"${CARGO_HOME+x}\" && [[ $TMPDIR = /* ]] && test -d \"$TMPDIR\" && printf ok > out/result".into();
+        // No native PATH/LANG/LC_ALL defaults (docs/ACTION_ENV.md); bash
+        // itself exports PWD, SHLVL and OLDPWD and defines (without
+        // exporting) a default PATH.
+        action.command = "case \"$(export -p)\" in *' PATH='*) exit 1;; esac && test -z \"${LANG+x}\" && test -z \"${LC_ALL+x}\" && test -z \"${HOME+x}\" && test -z \"${CARGO_HOME+x}\" && [[ $TMPDIR = /* ]] && test -d \"$TMPDIR\" && printf ok > out/result".into();
         assert!(execute(&fixture.cache(), &action).is_ok());
     }
 
@@ -3013,21 +3054,49 @@ mod tests {
     }
 
     #[test]
-    fn exact_environment_and_execution_info_are_keyed() {
+    fn inherited_environment_and_execution_info_are_keyed() {
         let fixture = Fixture::new();
         let mut action = fixture.action();
-        action.extra.exact_environment = true;
         action.environment.insert("X".into(), "1".into());
-        action.command = "test -z \"${LANG+x}\" && test -z \"${LC_ALL+x}\" && [[ $TMPDIR = /* ]] && printf '%s' \"$X\" > out/result".into();
+        action.environment.insert("H".into(), "fixed".into());
+        action.command =
+            "test -z \"${LANG+x}\" && [[ $TMPDIR = /* ]] && printf '%s:%s' \"$X\" \"$H\" > out/result"
+                .into();
         let first = execute(&fixture.cache(), &action).unwrap();
-        assert_eq!(fs::read(&first.outputs[0]).unwrap(), b"1");
+        assert_eq!(fs::read(&first.outputs[0]).unwrap(), b"1:fixed");
         action
             .extra
             .execution_info
             .insert("no-sandbox".into(), "1".into());
         assert!(!execute(&fixture.cache(), &action).unwrap().cache_hit);
-        action.extra.exact_environment = false;
-        assert!(execute(&fixture.cache(), &action).is_err());
+        // An inherited name the client does not set keeps the fixed value
+        // but is keyed (ActionEnvironment.addTo).
+        action.extra.inherited_environment.insert("H".into());
+        let unset = execute(&fixture.cache(), &action).unwrap();
+        assert!(!unset.cache_hit);
+        assert_eq!(fs::read(&unset.outputs[0]).unwrap(), b"1:fixed");
+        // A resolved client value overrides the fixed one and is keyed
+        // (ActionEnvironment.resolve; ActionCacheChecker.computeEffectiveEnvironment).
+        action
+            .extra
+            .client_environment
+            .insert("H".into(), "client".into());
+        let client = execute(&fixture.cache(), &action).unwrap();
+        assert!(!client.cache_hit);
+        assert_eq!(fs::read(&client.outputs[0]).unwrap(), b"1:client");
+        action
+            .extra
+            .client_environment
+            .insert("H".into(), "other".into());
+        assert!(!execute(&fixture.cache(), &action).unwrap().cache_hit);
+        action
+            .extra
+            .client_environment
+            .insert("NOT_INHERITED".into(), "x".into());
+        assert_eq!(
+            execute(&fixture.cache(), &action).unwrap_err(),
+            "client environment value for 'NOT_INHERITED', which is not inherited"
+        );
     }
 
     #[test]

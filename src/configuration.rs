@@ -13,6 +13,7 @@ use std::fmt;
 
 use sha2::{Digest, Sha256};
 
+use crate::action_env::{ActionEnvironment, EnvVar};
 use crate::label::Label;
 
 /// Value shape and converter of a modelled option.
@@ -635,6 +636,26 @@ pub struct NativeOptions {
     /// serialization while all are null.
     #[serde(skip_serializing_if = "AppleSdkVersions::is_unset")]
     pub apple_sdk_versions: AppleSdkVersions,
+    /// `--action_env` (CoreOptions.java:525-545), normalized; the exec
+    /// configuration's is the parent's `--host_action_env`
+    /// (builtin_exec_platforms.bzl:227). Omitted from the identity when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub action_env: Vec<EnvVar>,
+    /// `--host_action_env` (CoreOptions.java:547-564), normalized; propagates
+    /// to exec configurations (builtin_exec_platforms.bzl:259).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub host_action_env: Vec<EnvVar>,
+    /// `--incompatible_strict_action_env` (BazelRuleClassProvider.java:73-87,
+    /// default true; propagates to exec, builtin_exec_platforms.bzl:203-207).
+    /// Omitted from the identity when true.
+    #[serde(skip_serializing_if = "is_true")]
+    pub strict_action_env: bool,
+    /// `--test_env` (TestConfiguration.java:90-107), normalized. TestOptions
+    /// are trimmed from the modelled (non-test) configurations
+    /// (`--trim_test_configuration`), so it is part of the untrimmed identity
+    /// only (Configuration::untrimmed_id); recorded for a test command.
+    #[serde(skip)]
+    pub test_env: Vec<EnvVar>,
 }
 
 /// The JavaOptions version strings (N28b).
@@ -725,6 +746,10 @@ impl AppleSdkVersions {
     }
 }
 
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
 /// The default `--host_compilation_mode` (CoreOptions.java:406-417).
 pub const DEFAULT_HOST_COMPILATION_MODE: &str = "opt";
 
@@ -770,6 +795,10 @@ impl Default for NativeOptions {
             use_target_platform_for_tests: false,
             incompatible_auto_exec_groups: false,
             apple_sdk_versions: AppleSdkVersions::default(),
+            action_env: Vec::new(),
+            host_action_env: Vec::new(),
+            strict_action_env: true,
+            test_env: Vec::new(),
         }
     }
 }
@@ -779,6 +808,19 @@ impl NativeOptions {
     /// entry (PlatformOptions.computeTargetPlatform, PlatformOptions.java:205-212).
     pub fn target_platform(&self) -> &Label {
         self.platforms.first().unwrap_or(&self.host_platform)
+    }
+
+    /// The configuration's shell action environment
+    /// (BuildConfigurationValue.getActionEnvironment, SHELL_ACTION_ENV;
+    /// crate::action_env).
+    pub fn action_environment(&self) -> ActionEnvironment {
+        ActionEnvironment::shell(self.strict_action_env, &self.action_env)
+    }
+
+    /// The configuration's test environment
+    /// (BuildConfigurationValue.setupTestEnvironment, :180-195).
+    pub fn test_environment(&self) -> ActionEnvironment {
+        ActionEnvironment::test(&self.test_env)
     }
 
     /// BuildOptionDetails.getOptionValue (BuildOptionDetails.java:145-158) of a
@@ -909,12 +951,16 @@ fn canonical_serialization(
         /// configuration; omitted otherwise, so identities are unchanged.
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         test_options: bool,
+        /// `--test_env` of the untrimmed TestOptions; omitted when empty.
+        #[serde(skip_serializing_if = "<[EnvVar]>::is_empty")]
+        test_env: &'a [EnvVar],
     }
     serde_json::to_vec(&Canonical {
         version: 1,
         native,
         java: native.java.identity(native.is_exec),
         test_options,
+        test_env: if test_options { &native.test_env } else { &[] },
         starlark: starlark
             .iter()
             .map(|(label, value)| (crate::rule_declarations::canonical_form(label), value))
@@ -941,7 +987,30 @@ pub struct CommandLineOptions {
     /// OptionsParserImpl warnings (deprecated options), each once, in first
     /// occurrence order (OptionsParserImpl.java:191, 336-369).
     warnings: Vec<String>,
+    /// `--action_env`/`--host_action_env`/`--test_env` entries
+    /// (option name, converted entry) in command-line order.
+    env_vars: Vec<(&'static str, EnvVar)>,
+    /// The last `--incompatible_strict_action_env` value.
+    strict_action_env: Option<bool>,
 }
+
+/// The repeatable EnvVarsConverter options (docs/ACTION_ENV.md): name and
+/// whether `query` registers it (CoreOptions only, QueryCommand.java:59-67).
+const ENV_VAR_OPTIONS: [(&str, bool); 3] = [
+    // CoreOptions.java:525-545
+    ("action_env", true),
+    // CoreOptions.java:547-564
+    ("host_action_env", true),
+    // analysis/test/TestConfiguration.java:90-107
+    ("test_env", false),
+];
+
+/// `--incompatible_strict_action_env` and its old name
+/// (BazelRuleClassProvider.StrictActionEnvOptions, :73-87).
+const STRICT_ACTION_ENV: [&str; 2] = [
+    "incompatible_strict_action_env",
+    "experimental_strict_action_env",
+];
 
 /// OptionsParsingException with an invalid argument: BlazeOptionHandler prints
 /// `ARG :: MESSAGE` (runtime/BlazeOptionHandler.java:104, 628-637).
@@ -1055,6 +1124,44 @@ impl CommandLineOptions {
                         .is_some_and(|name| JAVA_VERSIONS.contains(&name)))
             {
                 return Err(invalid_argument(arg, format!("Unrecognized option: {arg}")));
+            }
+            // `query` registers neither TestOptions nor StrictActionEnvOptions.
+            if query
+                && (name == "test_env"
+                    || STRICT_ACTION_ENV
+                        .iter()
+                        .any(|option| name == *option || name.strip_prefix("no") == Some(option)))
+            {
+                return Err(invalid_argument(arg, format!("Unrecognized option: {arg}")));
+            }
+            if let Some((option, _)) = ENV_VAR_OPTIONS
+                .iter()
+                .find(|(option, _)| name == *option || name.strip_prefix("no") == Some(option))
+            {
+                if name != *option {
+                    return Err(invalid_argument(
+                        arg,
+                        format!("Illegal use of 'no' prefix on non-boolean option: {arg}"),
+                    ));
+                }
+                let (value, form, used_next) = match value {
+                    Some(value) => (value.to_owned(), arg.to_owned(), false),
+                    None => {
+                        let value = next.ok_or_else(|| format!("Expected value after {arg}"))?;
+                        (value.to_owned(), format!("{arg} {value}"), true)
+                    }
+                };
+                let entry = EnvVar::parse(&value)
+                    .map_err(|error| format!("While parsing option {form}: {error}"))?;
+                self.env_vars.push((option, entry));
+                return Ok(Parsed::Consumed(used_next));
+            }
+            if let Some(result) = STRICT_ACTION_ENV
+                .iter()
+                .find_map(|option| boolean_option(arg, option))
+            {
+                self.strict_action_env = Some(result?);
+                return Ok(Parsed::Consumed(false));
             }
             // --extra_toolchains (PlatformOptions.java:98-116): a repeatable
             // comma-separated list of target patterns (empty values kept,
@@ -1218,6 +1325,23 @@ impl CommandLineOptions {
         }
         extra_toolchains.reverse();
         native.extra_toolchains = extra_toolchains;
+        // CoreOptions/TestOptions.getNormalized (CoreOptions.java:1253-1254,
+        // TestConfiguration.java:409; FragmentOptions.normalizeEnvVars).
+        let entries = |name: &str| {
+            crate::action_env::normalize(
+                self.env_vars
+                    .iter()
+                    .filter(|(option, _)| *option == name)
+                    .map(|(_, entry)| entry.clone())
+                    .collect(),
+            )
+        };
+        native.action_env = entries("action_env");
+        native.host_action_env = entries("host_action_env");
+        native.test_env = entries("test_env");
+        if let Some(strict) = self.strict_action_env {
+            native.strict_action_env = strict;
+        }
         // PlatformOptions.getNormalized keeps only the first entry (:189-200);
         // an empty list becomes [--host_platform] (PlatformMappingValue.computeMapping,
         // skyframe/config/PlatformMappingValue.java:154-158). The platforms are
@@ -1816,6 +1940,78 @@ mod tests {
         assert_ne!(
             Configuration::new(no_config, BTreeMap::new()).id,
             default.id
+        );
+    }
+
+    #[test]
+    fn action_environment_options_parse_normalize_and_enter_the_identity() {
+        use crate::action_env::{EnvVar, STRICT_PATH};
+        let default = parsed(&[]).unwrap();
+        let configured = parsed(&[
+            "--action_env=A=1",
+            "--action_env",
+            "B",
+            "--action_env==C",
+            "--action_env=A=2",
+            "--host_action_env=H=x",
+        ])
+        .unwrap();
+        assert_eq!(
+            configured.native.action_env,
+            [
+                EnvVar::Set("A".into(), "2".into()),
+                EnvVar::Inherit("B".into()),
+                EnvVar::Unset("C".into()),
+            ]
+        );
+        assert_eq!(
+            configured.native.host_action_env,
+            [EnvVar::Set("H".into(), "x".into())]
+        );
+        assert_ne!(configured.id, default.id);
+        let env = configured.native.action_environment();
+        assert_eq!(
+            env.fixed,
+            BTreeMap::from([
+                ("A".to_owned(), "2".to_owned()),
+                ("PATH".to_owned(), STRICT_PATH.to_owned()),
+            ])
+        );
+        assert_eq!(
+            env.inherited,
+            std::collections::BTreeSet::from(["B".to_owned()])
+        );
+        // Normalized forms are one configuration.
+        assert_eq!(
+            parsed(&["--action_env=A=0", "--action_env=A=2"])
+                .unwrap()
+                .id,
+            parsed(&["--action_env=A=2"]).unwrap().id
+        );
+        // --incompatible_strict_action_env (old name experimental_*): the
+        // default spelled explicitly keeps the identity.
+        assert_eq!(
+            parsed(&["--incompatible_strict_action_env"]).unwrap().id,
+            default.id
+        );
+        let loose = parsed(&["--experimental_strict_action_env=false"]).unwrap();
+        assert!(!loose.native.strict_action_env);
+        assert_ne!(loose.id, default.id);
+        // --test_env: trimmed, so only the untrimmed identity changes.
+        let test = parsed(&["--test_env=T=1", "--test_env=U"]).unwrap();
+        assert_eq!(test.id, default.id);
+        assert_ne!(test.untrimmed_id(), default.untrimmed_id());
+        assert_eq!(
+            test.native.test_environment().fixed,
+            BTreeMap::from([("T".to_owned(), "1".to_owned())])
+        );
+        assert_eq!(
+            parsed(&["--action_env="]).unwrap_err(),
+            "While parsing option --action_env=: Variable definitions must be in the form of a 'name=value', 'name', or '=name' assignment"
+        );
+        assert_eq!(
+            parsed(&["--nohost_action_env"]).unwrap_err(),
+            "--nohost_action_env :: Illegal use of 'no' prefix on non-boolean option: --nohost_action_env"
         );
     }
 

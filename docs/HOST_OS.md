@@ -24,10 +24,13 @@ unchanged. This is the captured `--batch`/JVM-argv behavior; a persistent Bazel
 server receives the same arguments over gRPC as raw Latin-1 bytes
 (GrpcServerImpl.java:601-605,784-786) and would keep `0xff`; the native CLI is
 serverless and follows the JVM-argv form. The map is the process environment with
-`--repo_env` applied (N40, [RC_OPTIONS.md](RC_OPTIONS.md); `--action_env` is not a
-native option and `--experimental_strict_repo_env` defaults to false,
-CommonCommandOptions.java:624-651, CommandEnvironment.java:342-416), fixed once
-per invocation and shared by every repository of that invocation. A snapshot failure (bounds:
+`--repo_env` applied (N40, [RC_OPTIONS.md](RC_OPTIONS.md)); `--action_env` is
+accepted for actions (docs/ACTION_ENV.md) but never reaches repositories
+(`--incompatible_repo_env_ignores_action_env` keeps its true default,
+CommonCommandOptions.java:624-633), and `--experimental_strict_repo_env` defaults
+to false (CommonCommandOptions.java:624-651, CommandEnvironment.java:342-416). The
+map is fixed once per invocation and shared by every repository of that
+invocation. A snapshot failure (bounds:
 10,000 entries, 1 MiB per value, 16 MiB total) is cached and reported only when
 `environ`, `which` or `execute` needs it. Like Bazel, reading `environ` records no
 dependency; the native store re-executes every repository in every invocation, so

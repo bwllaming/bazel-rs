@@ -74,6 +74,10 @@ pub struct CtxSurface {
     /// AppleCommandLineOptions `--{ios,watchos,tvos,macos}_sdk_version`
     /// (N40; DottedVersion.Option strings, `None` for null).
     pub apple_sdk_versions: crate::configuration::AppleSdkVersions,
+    /// The configured target's shell action environment, the same value its
+    /// actions use (analysis_runtime::Context::action_env, crate::action_env):
+    /// `ctx.configuration.default_shell_env`.
+    pub action_env: Arc<crate::action_env::ActionEnvironment>,
 }
 
 impl Default for CtxSurface {
@@ -95,6 +99,9 @@ impl Default for CtxSurface {
             features: FeatureSet::default(),
             build_file_path: String::new(),
             apple_sdk_versions: Default::default(),
+            action_env: Arc::new(
+                crate::configuration::NativeOptions::default().action_environment(),
+            ),
         }
     }
 }
@@ -567,14 +574,6 @@ fn configuration<'v>(this: Value<'v>) -> anyhow::Result<&'v CtxSurface> {
         .surface)
 }
 
-/// The fixed action environment (BuildConfigurationValue.getLocalShellEnvironment,
-/// BuildConfigurationValue.java:555-558): StrictActionEnvOptions
-/// `--incompatible_strict_action_env` (default true in Bazel 9.3,
-/// bazel/rules/BazelRuleClassProvider.java:73-90) fixes PATH; `--action_env`
-/// is not modelled natively (rejected). The same value N23d's
-/// `use_default_shell_env` actions run with (crate::analysis_runtime).
-const STRICT_PATH: &str = crate::analysis_runtime::DEFAULT_SHELL_PATH;
-
 #[starlark_module]
 fn configuration_methods(builder: &mut MethodsBuilder) {
     /// BuildConfigurationValue.getBinDir (BuildConfigurationValue.java:396-400).
@@ -594,13 +593,21 @@ fn configuration_methods(builder: &mut MethodsBuilder) {
         configuration(this)?;
         Ok(":")
     }
+    /// The fixed action environment (BuildConfigurationValue.getLocalShellEnvironment,
+    /// BuildConfigurationValue.java:555-558) of the configured target's
+    /// configuration (N42, crate::action_env: strict PATH by default,
+    /// `--action_env` / `--host_action_env` in exec configurations): the
+    /// same environment its `use_default_shell_env` actions get.
     #[starlark(attribute)]
     fn default_shell_env<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
-        configuration(this)?;
-        Ok(frozen_dict(
-            heap,
-            &[("PATH".to_owned(), STRICT_PATH.to_owned())],
-        ))
+        let surface = configuration(this)?;
+        let env = surface
+            .action_env
+            .default_shell_env()
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect::<Vec<_>>();
+        Ok(frozen_dict(heap, &env))
     }
     /// BuildConfigurationValue.getTestEnv (:709-712): `--test_env` is not
     /// modelled natively (rejected), so empty.

@@ -73,6 +73,9 @@ mod owned {
         pub runfiles: crate::runfiles::ContextRunfiles,
         /// The exec groups an action may run in (crate::exec_groups).
         pub exec_groups: crate::exec_groups::ActionExecGroups,
+        /// The shell action environment of the target's configuration
+        /// (BuildConfigurationValue.getActionEnvironment; crate::action_env).
+        pub action_env: Arc<crate::action_env::ActionEnvironment>,
     }
 
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
@@ -511,29 +514,20 @@ fn string_dict(value: Value<'_>, what: &str) -> anyhow::Result<BTreeMap<String, 
         .collect()
 }
 
-/// The default shell environment of the strict action environment
-/// (`--incompatible_strict_action_env`, true in Bazel 9.3:
-/// bazel/rules/BazelRuleClassProvider.java:74-87, 139-190, 346-362) without
-/// `--action_env`. Also `ctx.configuration.default_shell_env`
-/// (crate::ctx_surface): one value for both.
-pub(crate) const DEFAULT_SHELL_PATH: &str = "/bin:/usr/bin:/usr/local/bin";
-
-/// SpawnAction.createActionEnvironment (analysis/actions/SpawnAction.java:584-614):
-/// `env` alone, or the default shell environment overridden by `env`.
+/// SpawnAction.createActionEnvironment (analysis/actions/SpawnAction.java:584-614)
+/// in the configured target's configuration (crate::action_env): `env` alone,
+/// or the configuration's shell environment (its inherited names that `env`
+/// sets removed) overridden by `env`.
 fn spawn_environment(
+    context: &Context,
     env: Option<Value<'_>>,
     use_default_shell_env: bool,
-) -> anyhow::Result<BTreeMap<String, String>> {
+) -> anyhow::Result<crate::action_env::ActionEnvironment> {
     let env = match env {
         Some(env) if !env.is_none() => string_dict(env, "env")?,
         _ => BTreeMap::new(),
     };
-    if !use_default_shell_env {
-        return Ok(env);
-    }
-    let mut result = BTreeMap::from([("PATH".to_owned(), DEFAULT_SHELL_PATH.to_owned())]);
-    result.extend(env);
-    Ok(result)
+    Ok(context.action_env.for_spawn(use_default_shell_env, env))
 }
 
 /// Common Starlark spawn options of run/run_shell
@@ -609,15 +603,16 @@ fn register_spawn(
         primary_output: outputs[0].path.clone(),
         max_length: crate::command_line::MIN_PARAM_FILE_SIZE,
     };
+    let environment = spawn_environment(context, options.env, options.use_default_shell_env)?;
     let extra = ActionExtra {
-        exact_environment: true,
+        inherited_environment: environment.inherited,
         execution_info: match options.execution_requirements {
             Some(value) if !value.is_none() => string_dict(value, "execution_requirements")?,
             _ => BTreeMap::new(),
         },
         ..ActionExtra::default()
     };
-    let environment = spawn_environment(options.env, options.use_default_shell_env)?;
+    let environment = environment.fixed;
     let (arguments, param_files, deferred) = if spec.deferred() {
         let spec = Arc::new(spec);
         let deferred = Deferred(Arc::new(
@@ -1423,6 +1418,7 @@ mod tests {
     fn write_context() -> Context {
         Context {
             label: Label::parse_canonical("//:target").unwrap(),
+            action_env: Default::default(),
             output_root: crate::label::GENERATED_EXEC_ROOT.into(),
             action_owner: "//:target".into(),
             dependency_files: BTreeSet::new(),
@@ -1625,6 +1621,7 @@ r=rule(implementation=_rule,subrules=[S])
         use starlark::environment::Module;
         let make_context = || Context {
             label: Label::parse_canonical("//:target").unwrap(),
+            action_env: Default::default(),
             output_root: crate::label::GENERATED_EXEC_ROOT.into(),
             action_owner: "//:target".into(),
             dependency_files: BTreeSet::new(),

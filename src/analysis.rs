@@ -1166,6 +1166,7 @@ pub fn analyze_in(
     let target = ConfiguredOutputs {
         output_root: crate::label::GENERATED_EXEC_ROOT,
         action_owner: &owner,
+        action_env: Arc::new(crate::configuration::NativeOptions::default().action_environment()),
     };
     let (result, printed) = analyze_buffered(rule, dependencies, repositories, &target);
     for line in printed {
@@ -1180,6 +1181,8 @@ pub fn analyze_in(
 pub(crate) struct ConfiguredOutputs<'a> {
     pub output_root: &'a str,
     pub action_owner: &'a str,
+    /// The configuration's shell action environment (crate::action_env).
+    pub action_env: Arc<crate::action_env::ActionEnvironment>,
 }
 
 /// `print()` output of an implementation, kept until the caller decides
@@ -1276,8 +1279,13 @@ fn analyze_inner(
             }))
         })
         .transpose()?;
-    let surface = Arc::new(rule_surface(rule, invocation, &repositories, dependencies));
+    let mut surface = rule_surface(rule, invocation, &repositories, dependencies);
+    // ctx.configuration.default_shell_env reads the environment the target's
+    // actions get (crate::action_env), not a constant.
+    Arc::make_mut(&mut surface.config).action_env = target.action_env.clone();
+    let surface = Arc::new(surface);
     let context = Context {
+        action_env: target.action_env.clone(),
         label: rule.label.clone(),
         output_root: target.output_root.to_owned(),
         action_owner: target.action_owner.to_owned(),
@@ -2120,6 +2128,7 @@ r = rule(implementation=impl, attrs={
     fn empty_context() -> Context {
         Context {
             label: Label::parse("//pkg:rule", "").unwrap(),
+            action_env: Default::default(),
             output_root: crate::label::GENERATED_EXEC_ROOT.into(),
             action_owner: "//pkg:rule".into(),
             dependency_files: BTreeSet::new(),

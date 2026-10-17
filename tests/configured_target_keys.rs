@@ -183,26 +183,30 @@ fn action_keys_and_output_roots_match_the_pre_n18a_binary() {
     let ws = Workspace::new(FIXTURE);
     let targets = ["--host_platform=//p:linux", "//g:final", "//g:c", "//g:u"];
     let cold = ws.build("default-cache", &targets);
-    // Deliberately re-pinned for N23d (docs/ACTIONS_PARAMS.md): the three
-    // custom run_shell actions now run with Bazel's exact Starlark spawn
-    // environment, which is keyed; genrule and write keys are unchanged.
+    // Deliberately re-pinned for N42 (docs/ACTION_ENV.md, key format
+    // native-action-v6): every key changed. Genrules now run with Bazel's
+    // configuration action environment (PATH=/bin:/usr/bin:/usr/local/bin,
+    // no LANG/LC_ALL), and the native PATH/LANG/LC_ALL constant is no longer
+    // framed into every key (writes included); the environment is framed as
+    // fixed map, inherited names and resolved client values. (N23d had
+    // re-pinned the three run_shell keys for the exact Starlark environment.)
     assert_eq!(
         ws.keys("default-cache"),
         [
-            "15141e806b30397e3393947015a1d6e32b303bb067c294c713ae4627cddfcca7",
-            "265a940b253d0c8e09543a3bcac2df2349645e9a1e43d64efdd20edf0205c8b6",
-            "382700d248d34b5ec3f7d8c517e193de7d2d038bb923740b308247b279fb360d",
-            "740b95552d53eeed22ce5f061580452d8ed2e6080ffc3030effb94b6e8206b25",
-            "cf3b7022b3ca724555b019381a173ddc32a361f6e9e0e282046a927068820cb0",
-            "e7f9951295dd31f728ce3f592ad932505647b0faf1ea4cea62b56f520e6c0bec",
+            "11030ee4e782b318d5640ac1fcc9f7b5d8578895582ce216152c59b342dc51c6",
+            "3960c70b19b130b0693f17736f303d5ec583a387a19c8ecbd3f64144a0612543",
+            "3b01a9dccd47ae94f0a3b4a51470379aea2a3346ac59d7fd4ada7d8b4d6c30ff",
+            "6058b04e540df1675767c990713b5507bf005b4b999e8cce492c8127195704f2",
+            "8aada8c6738e4ace6d47e999cf824f528ac9a196a638b04e8da48b9759c8cbe8",
+            "c60fb2f4e69892a8f78fcb7eaf25d3a6d7e8323d1c8707b64ce36aee86c1b603",
         ]
     );
     assert_eq!(
         ws.outputs("default-cache", &cold),
         [
-            "//g:c\tACTIONS/382700d248d34b5ec3f7d8c517e193de7d2d038bb923740b308247b279fb360d/outputs/bazel-out/rust-fastbuild/bin/g/c.txt",
-            "//g:final\tACTIONS/e7f9951295dd31f728ce3f592ad932505647b0faf1ea4cea62b56f520e6c0bec/outputs/bazel-out/rust-fastbuild/bin/g/final.txt",
-            "//g:u\tACTIONS/265a940b253d0c8e09543a3bcac2df2349645e9a1e43d64efdd20edf0205c8b6/outputs/bazel-out/rust-fastbuild/bin/g/u.txt",
+            "//g:c\tACTIONS/c60fb2f4e69892a8f78fcb7eaf25d3a6d7e8323d1c8707b64ce36aee86c1b603/outputs/bazel-out/rust-fastbuild/bin/g/c.txt",
+            "//g:final\tACTIONS/3b01a9dccd47ae94f0a3b4a51470379aea2a3346ac59d7fd4ada7d8b4d6c30ff/outputs/bazel-out/rust-fastbuild/bin/g/final.txt",
+            "//g:u\tACTIONS/6058b04e540df1675767c990713b5507bf005b4b999e8cce492c8127195704f2/outputs/bazel-out/rust-fastbuild/bin/g/u.txt",
         ]
     );
     assert!(summary(&cold).contains("6 actions executed, 0 cache hits"));
@@ -211,7 +215,7 @@ fn action_keys_and_output_roots_match_the_pre_n18a_binary() {
             .unwrap()
             .map(|entry| entry.unwrap().path())
             .find(|path| {
-                path.ends_with("e7f9951295dd31f728ce3f592ad932505647b0faf1ea4cea62b56f520e6c0bec")
+                path.ends_with("3b01a9dccd47ae94f0a3b4a51470379aea2a3346ac59d7fd4ada7d8b4d6c30ff")
             })
             .unwrap()
             .join("outputs/bazel-out/rust-fastbuild/bin/g/final.txt"),
@@ -236,25 +240,28 @@ fn action_keys_and_output_roots_match_the_pre_n18a_binary() {
     assert_eq!(
         ws.keys("dbg-cache"),
         [
-            "100c8a6e17f6e324414c7002000ec61af5c731a9e94dd3ff49c52062cf83a079",
-            "150b8fe9961dcbc8932b4390175c6d828e9fbf348921ec11b13235d6a15f3897",
-            "4d0e0511ed24c72a6994f01d7b848c551b678efce544873f94ef77be2ac51909",
-            "78451de3c4d27e495f8f3982863911c7455ef9022cce5597b0bd6fc43d7ec83f",
-            "b92f05c73a90c1b81a3b71857f6cb91ba2677435afc8f6062a7a96ed93646ca7",
-            "bb8ade762653bc566c4f0735f620669f4f3f458d1b29acd7b83289f95fd11c2b",
+            "4aaeadae82d4dab8603e1e7d8422c295e009f88559bae16dedb1a1b462a87acb",
+            "5d52495a3673511bf545abbe0c0324253207345d47ac28732f7e6365cf0b68f6",
+            "830ca6ab7d268a5bb38c676db5fdc90cbc899d6aee9ee97c15769c4261455b8a",
+            "c6d36ff3afbd6b3feb7b8276c8a0d275505a027384d3192b1636b10ede3a509a",
+            "ccebf87fccbd15f4612ed44d0df3f11c5f4959acc0640b70fee04bb3ac8ded5e",
+            "f9996de0e7750bba7965c4d89d029cb40c487f5133dc78c85b2b85825ec0cd1c",
         ]
     );
     assert_eq!(
         ws.outputs("dbg-cache", &dbg),
         [
-            "//g:c\tACTIONS/100c8a6e17f6e324414c7002000ec61af5c731a9e94dd3ff49c52062cf83a079/outputs/bazel-out/rust-dbg/bin/g/c.txt",
-            "//g:final\tACTIONS/bb8ade762653bc566c4f0735f620669f4f3f458d1b29acd7b83289f95fd11c2b/outputs/bazel-out/rust-dbg/bin/g/final.txt",
+            "//g:c\tACTIONS/4aaeadae82d4dab8603e1e7d8422c295e009f88559bae16dedb1a1b462a87acb/outputs/bazel-out/rust-dbg/bin/g/c.txt",
+            "//g:final\tACTIONS/ccebf87fccbd15f4612ed44d0df3f11c5f4959acc0640b70fee04bb3ac8ded5e/outputs/bazel-out/rust-dbg/bin/g/final.txt",
         ]
     );
 }
 
+/// Re-pinned for N42 (docs/ACTION_ENV.md): genrules run with the strict
+/// configuration environment and the key format is native-action-v6; the
+/// keys stay stable across builds.
 #[test]
-fn existing_genrule_fixture_keys_are_unchanged() {
+fn existing_genrule_fixture_keys_are_pinned() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/basic");
     let files = ["MODULE.bazel", "BUILD.bazel", "input.txt"]
         .map(|name| (name, fs::read_to_string(fixture.join(name)).unwrap()));
@@ -267,8 +274,8 @@ fn existing_genrule_fixture_keys_are_unchanged() {
     assert_eq!(
         ws.keys("cache"),
         [
-            "827d15fcd4ef1f1e5bf9ab808cab4db4ab2ad43e23a2b1869ec8b9bd032a6948",
-            "b24966cb54a67d7474b3d04d6a5e95a13b5d8abe1819771c41726642de2de21e",
+            "070b0f6973d83f4dd2c4d4f446008d1730c9b9def52f64a895612d7784c85812",
+            "6eac64d5b44bf36fe44662922d5e270dfa8d8abfb97f8faf09d7671495a6d67e",
         ]
     );
     assert!(summary(&output).contains("2 actions executed, 0 cache hits"));
