@@ -1399,14 +1399,14 @@ pub fn unpack_depset(value: Value<'_>) -> anyhow::Result<Vec<File>> {
 
 /// Scalar metadata depsets contain no File dependencies. Tuples may contain
 /// File values and must not hide those dependencies from provider traversal.
-pub(crate) fn contained_depset_files(value: Value<'_>) -> Option<Vec<File>> {
+pub(crate) fn contained_depset_files(value: Value<'_>) -> Option<anyhow::Result<Vec<File>>> {
     Depset::from_value(value).map(depset_payload_files)
 }
 
 /// The files a depset's elements carry, in first-encounter order: Files,
 /// symlink targets, and (N49) those inside tuples, struct and provider
 /// elements, nested depsets, runfiles and configured targets.
-fn depset_payload_files(depset: &Depset) -> Vec<File> {
+fn depset_payload_files(depset: &Depset) -> anyhow::Result<Vec<File>> {
     let mut stack: Vec<Item> = depset.flatten().into_iter().cloned().collect();
     stack.reverse();
     let mut files = BTreeSet::new();
@@ -1430,7 +1430,7 @@ fn depset_payload_files(depset: &Depset) -> Vec<File> {
             ),
             Item::Struct(item) => stack.extend(item.fields.iter().rev().map(|(_, v)| v.clone())),
             Item::Depset(item) => {
-                for file in depset_payload_files(&item.0) {
+                for file in depset_payload_files(&item.0)? {
                     add(file, &mut result);
                 }
             }
@@ -1440,7 +1440,7 @@ fn depset_payload_files(depset: &Depset) -> Vec<File> {
                 }
             }
             Item::Target(item) => {
-                for file in target_payload_files(&item.0) {
+                for file in target_payload_files(&item.0)? {
                     add(file, &mut result);
                 }
             }
@@ -1452,17 +1452,25 @@ fn depset_payload_files(depset: &Depset) -> Vec<File> {
             | Item::Function(_) => {}
         }
     }
-    result
+    Ok(result)
 }
 
 /// The files a configured target value carries for a holder of it: its
 /// files to build, runfiles and the files of its providers.
-pub(crate) fn target_payload_files(target: &Target) -> Vec<File> {
+pub(crate) fn target_payload_files(target: &Target) -> anyhow::Result<Vec<File>> {
     let mut seen = BTreeSet::new();
     let mut result = Vec::new();
-    let provider_files = target.providers.values().flat_map(|provider| {
-        crate::providers::provider_files(provider.value()).unwrap_or_default()
-    });
+    let mut provider_files = Vec::new();
+    for (key, provider) in &target.providers {
+        provider_files.extend(crate::providers::provider_files(provider.value()).map_err(
+            |error| {
+                anyhow!(
+                    "files of provider {key} of target {} held in a provider: {error}",
+                    target.label.canonical_form()
+                )
+            },
+        )?);
+    }
     for file in target
         .files
         .iter()
@@ -1474,11 +1482,11 @@ pub(crate) fn target_payload_files(target: &Target) -> Vec<File> {
             result.push(file);
         }
     }
-    result
+    Ok(result)
 }
 
 /// [`target_payload_files`] of a Target value.
-pub(crate) fn target_value_files(value: Value<'_>) -> Option<Vec<File>> {
+pub(crate) fn target_value_files(value: Value<'_>) -> Option<anyhow::Result<Vec<File>>> {
     Target::from_value(value).map(target_payload_files)
 }
 
@@ -3342,7 +3350,7 @@ ok = (len(labels.to_list()) == 2 and owner == target.label and
                 };
                 assert_eq!(unpack_depset(value).unwrap(), expected);
                 assert_eq!(file_list(value).unwrap(), expected);
-                assert_eq!(contained_depset_files(value).unwrap(), expected);
+                assert_eq!(contained_depset_files(value).unwrap().unwrap(), expected);
             }
             let ast = AstModule::parse(
                 "tuple.star",
@@ -3355,7 +3363,7 @@ ok = (len(labels.to_list()) == 2 and owner == target.label and
                 .unwrap();
             assert!(unpack_depset(value).is_err());
             assert_eq!(
-                contained_depset_files(value).unwrap(),
+                contained_depset_files(value).unwrap().unwrap(),
                 vec![file("pkg/a.txt"), file("pkg/b")]
             );
         });

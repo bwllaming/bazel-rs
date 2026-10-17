@@ -58,5 +58,8 @@
  "counts": {
   "EXACT_D1": 1
  },
- "post_capture_changes": "none to src after the capture; the native worktree hash covers both small fixes (ctx.info_file/version_file and provider payload files), committed as two consecutive commits on 51ce4ae"
+ "post_capture_changes": [
+  "none to src after the capture; the native worktree hash covers both small fixes (ctx.info_file/version_file and provider payload files), committed as two consecutive commits on 51ce4ae",
+  "N54 follow-up: provider_files errors of a held Target's providers now propagate (naming provider and target) instead of being dropped; successful walks unchanged, rows not rerun"
+ ]
 }

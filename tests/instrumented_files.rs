@@ -186,10 +186,36 @@ fn parameter_validation_and_private_api_follow_bazel() {
     }
 }
 
+/// RuleConfiguredTargetBuilder.java:179-186: with coverage every rule
+/// without InstrumentedFilesInfo or ToolchainInfo carries the forwarded
+/// provider (present; its members fail explicitly natively).
+#[test]
+fn coverage_configurations_forward_instrumented_files_info_on_every_rule() {
+    let ws = Workspace::fixture();
+    let read = |target: &str| {
+        let output = ws.run(target);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        fs::read_to_string(stdout.lines().next().unwrap().split_once('\t').unwrap().1).unwrap()
+    };
+    assert_eq!(
+        read("//inf:presence"),
+        "pl False\ntc False\nfg2 True\ngen.go True\na.go False\n"
+    );
+    assert_eq!(
+        read("//inf:cov_presence"),
+        "pl True\ntc False\nfg2 True\ngen.go True\na.go False\n"
+    );
+}
+
 #[test]
 fn coverage_configurations_stay_explicit() {
     let ws = Workspace::fixture();
-    for target in ["//inf:cov", "//inf:cov_p"] {
+    for target in ["//inf:cov", "//inf:cov_p", "//inf:cov_presence_read"] {
         let output = ws.run(target);
         assert_eq!(output.status.code(), Some(1), "{target}");
         let stderr = String::from_utf8_lossy(&output.stderr);

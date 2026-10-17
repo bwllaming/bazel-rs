@@ -1,4 +1,4 @@
-load(":defs.bzl", "bad", "cov_edge", "lib", "outlib", "plain", "probe")
+load(":defs.bzl", "bad", "cov_edge", "lib", "outlib", "plain", "presence", "probe", "tc")
 
 exports_files(["a.go"])
 
@@ -55,3 +55,15 @@ probe(
 
 cov_edge(name = "cov", dep = ":top")
 cov_edge(name = "cov_p", dep = ":p")
+
+tc(name = "tc")
+
+filegroup(name = "fg2", srcs = ["a.go"])
+
+presence(name = "presence", deps = [":pl", ":tc", ":fg2", ":gen.go", "a.go"])
+
+presence(name = "presence_read", deps = [":pl"], read = True)
+
+cov_edge(name = "cov_presence", dep = ":presence")
+
+cov_edge(name = "cov_presence_read", dep = ":presence_read")

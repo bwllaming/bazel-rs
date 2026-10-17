@@ -75,5 +75,8 @@
   "EXACT_D1": 1,
   "EXPECTED_NATIVE_GAP": 1
  },
- "post_capture_changes": "none to src after the capture; the native worktree hash covers both small fixes (ctx.info_file/version_file and provider payload files), committed as two consecutive commits on 51ce4ae"
+ "post_capture_changes": [
+  "none to src after the capture; the native worktree hash covers both small fixes (ctx.info_file/version_file and provider payload files), committed as two consecutive commits on 51ce4ae",
+  "N54 follow-up: docs/CTX_SURFACE.md notes that rules passing ctx.info_file/version_file to actions unconditionally fail explicitly natively; no src change affecting these rows"
+ ]
 }

@@ -57,8 +57,13 @@ Targets carrying it without coverage: Starlark rules that return it,
 (`rules/genrule/GenRuleBase.java:234-239`), and every output file (its
 generating rule's or EMPTY, `analysis/configuredtargets/OutputFileConfiguredTarget.java:100-107`);
 aliases answer for their actual. Source files and rules that do not return it
-have none (RuleConfiguredTargetBuilder only forwards it with coverage,
-`analysis/RuleConfiguredTargetBuilder.java:179-186`).
+have none. With coverage, RuleConfiguredTargetBuilder adds
+InstrumentedFilesCollector.forwardAll to **every** rule that provides neither
+InstrumentedFilesInfo nor ToolchainInfo (`analysis/RuleConfiguredTargetBuilder.java:179-186`):
+natively such a rule (and filegroup, genrule, output files) carries the
+provider in a coverage configuration — `InstrumentedFilesInfo in dep` is True
+— but its collected value is not modelled, so reading any member fails
+explicitly.
 
 Paired capture: `artifacts/instrumented_files-capture.py`, receipt
 `tests/fixtures/instrumented_files/reference_receipt.json`.

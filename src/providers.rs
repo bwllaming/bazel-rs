@@ -776,7 +776,7 @@ pub fn provider_files(value: Value<'_>) -> anyhow::Result<Vec<File>> {
                 // verbatim @_builtins providers.bzl (it captures only
                 // strings, DottedVersions and the platform tables).
             } else if let Some(files) = crate::starlark_types::contained_depset_files(value) {
-                for file in files {
+                for file in files? {
                     self.file(file);
                 }
             } else if let Some(files) = crate::starlark_types::runfiles_payload_files(value) {
@@ -827,7 +827,7 @@ pub fn provider_files(value: Value<'_>) -> anyhow::Result<Vec<File>> {
                 // A configured target value (Targets are immutable values a
                 // provider may hold, e.g. rules_go's GoArchiveData._cdeps):
                 // its files, runfiles and providers' files.
-                for file in files {
+                for file in files? {
                     self.file(file);
                 }
             } else if !matches!(

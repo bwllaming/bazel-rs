@@ -139,3 +139,21 @@ def _cov_edge_impl(ctx):
     return [DefaultInfo(files = depset(transitive = [d[DefaultInfo].files for d in ctx.attr.dep]))]
 
 cov_edge = rule(_cov_edge_impl, attrs = {"dep": attr.label(cfg = _cov)})
+
+# Coverage configurations: RuleConfiguredTargetBuilder forwards
+# InstrumentedFilesInfo on every rule without it or ToolchainInfo
+# (RuleConfiguredTargetBuilder.java:179-186).
+def _presence_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    lines = ["%s %s" % (d.label.name, InstrumentedFilesInfo in d) for d in ctx.attr.deps]
+    if ctx.attr.read:
+        lines += ["%s %s" % (d.label.name, d[InstrumentedFilesInfo].instrumented_files.to_list()) for d in ctx.attr.deps if InstrumentedFilesInfo in d]
+    ctx.actions.write(out, "\n".join(lines) + "\n")
+    return [DefaultInfo(files = depset([out]))]
+
+presence = rule(_presence_impl, attrs = {"deps": attr.label_list(allow_files = True), "read": attr.bool()})
+
+def _tc_impl(ctx):
+    return [platform_common.ToolchainInfo(x = 1)]
+
+tc = rule(_tc_impl)

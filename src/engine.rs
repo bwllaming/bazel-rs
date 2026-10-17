@@ -6461,8 +6461,20 @@ impl Engine {
                 // and genrule add it (Filegroup.java:63-108,
                 // GenRuleBase.java:234-239); an output file answers with its
                 // generating rule's or EMPTY (OutputFileConfiguredTarget.java:100-107).
-                // In a coverage configuration both would collect: explicit.
+                // In a coverage configuration RuleConfiguredTargetBuilder also
+                // adds InstrumentedFilesCollector.forwardAll to every rule
+                // without InstrumentedFilesInfo or ToolchainInfo
+                // (RuleConfiguredTargetBuilder.java:179-186); every such
+                // collected value is unmodelled: present, members explicit.
+                let coverage = self
+                    .configurations
+                    .get(edge_config)
+                    .native
+                    .collect_code_coverage;
                 let instrumented = match &target {
+                    Target::Rule(rule) if coverage => {
+                        is_rule && !providers.contains_key(crate::toolchain_info::PROVIDER_ID)
+                    }
                     Target::Rule(rule) => {
                         matches!(rule.kind, RuleKind::Filegroup | RuleKind::Genrule)
                     }
@@ -6470,12 +6482,7 @@ impl Engine {
                     Target::Source(_) => false,
                 };
                 if instrumented && !providers.contains_key(crate::instrumented_files::PROVIDER_ID) {
-                    let info = if self
-                        .configurations
-                        .get(edge_config)
-                        .native
-                        .collect_code_coverage
-                    {
+                    let info = if coverage {
                         crate::instrumented_files::coverage_gap_frozen(&actual.to_string())?
                     } else {
                         crate::instrumented_files::empty_frozen()?

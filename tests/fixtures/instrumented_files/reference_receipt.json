@@ -8,24 +8,22 @@
  },
  "native": {
   "binary": "target/debug/bazel-rs",
-  "sha256": "4970a29bdbdd11a2c1f6978e00a9a7344af1a15319efc9e09301631985771c6a",
+  "sha256": "2307c95fc159f5833d24fb9a0387268944668006d97e975f79907bce0fb6add4",
   "argv": "--ignore_all_rc_files --cache-dir=<private> build --experimental-builtin-modules --registry=<same registry copy>",
   "worktree": {
-   "base_commit": "26c6ba78050d10796c00aff430a56048bf336bf7",
-   "src_diff_plus_untracked_sha256": "78e44537ae4403656b418d307b3f4c0a58dc660491997c8c46c4681c9a47abc2",
-   "untracked_src": [
-    "src/instrumented_files.rs"
-   ]
+   "base_commit": "b93a7ecccb2c0101fa9faf58ccc663aa95d18ee5",
+   "src_diff_plus_untracked_sha256": "ea490654303feb2c0dd52ba6a981eaefb316b505e7a950e9b1b611ac0367283d",
+   "untracked_src": []
   }
  },
  "capture_script": {
   "path": "artifacts/instrumented_files-capture.py (ignored)",
-  "sha256": "98ff5e9e533adc8f5468425fcad954281f767d3d3907fbfab7c96c4e894c96b9",
+  "sha256": "4c158ebe687557ba205e3825121b0d47627391cf4b55ee85e82a58efea873de3",
   "harness": "artifacts/go_transitions-capture.py",
   "harness_sha256": "c6eaf955cb08ff8a4de4be36efe3911f0871bfbddecdf8e60296dca9828e2b98"
  },
  "fixture_tree_sha256": [
-  "c1585b486db285ea903caffbefe1b01d88107d99bd2071d7968851b955291eb4",
+  "a88933dbb45a4dc57adf9d5ce1b0b61131d2eea70df32d6b4ca798f794f89882",
   5
  ],
  "verdicts": {
@@ -36,18 +34,21 @@
  },
  "declared_gaps": {
   "cov": "instrumented files collection in a --collect_code_coverage configuration (instrumentation filter not modelled)",
-  "cov_p": "InstrumentedFilesInfo / coverage_instrumented in a --collect_code_coverage configuration"
+  "cov_p": "InstrumentedFilesInfo / coverage_instrumented in a --collect_code_coverage configuration",
+  "cov_presence_read": "the collected InstrumentedFilesInfo forwarded on a Starlark rule in a coverage configuration (fields explicit)"
  },
  "scenarios": {
   "O/reports": {
    "args": [],
    "targets": [
-    "//inf:p"
+    "//inf:p",
+    "//inf:presence",
+    "//inf:cov_presence"
    ],
    "reference_exit": 0,
    "native_exit": 0,
-   "reference_seconds": 3.8,
-   "native_seconds": 0.3,
+   "reference_seconds": 3.0,
+   "native_seconds": 3.0,
    "rows": {
     "//inf:p": {
      "verdict": "EXACT_D1",
@@ -56,6 +57,24 @@
      ],
      "native_paths": [
       "bazel-out/rust-fastbuild/bin/inf/p.txt"
+     ]
+    },
+    "//inf:presence": {
+     "verdict": "EXACT_D1",
+     "reference_paths": [
+      "bazel-out/k8-fastbuild/bin/inf/presence.txt"
+     ],
+     "native_paths": [
+      "bazel-out/rust-fastbuild/bin/inf/presence.txt"
+     ]
+    },
+    "//inf:cov_presence": {
+     "verdict": "EXACT_D1",
+     "reference_paths": [
+      "bazel-out/k8-fastbuild-ST-0a6d1b0f07f2/bin/inf/presence.txt"
+     ],
+     "native_paths": [
+      "bazel-out/rust-fastbuild-ST-0a6d1b0f07f2/bin/inf/presence.txt"
      ]
     }
    },
@@ -296,6 +315,20 @@
    ],
    "native_message": "coverage_common.instrumented_files_info() in a configuration with --collect_code_coverage (set by a Starlark transition) is not implemented in the native profile (coverage instrumentation: --instrumentation_filter, --instrument_test_targets and --coverage_output_generator are not modelled)",
    "label": "EXPECTED_NATIVE_GAP"
+  },
+  "G/cov_presence_read": {
+   "target": "//inf:cov_presence_read",
+   "declared_gap": "the collected InstrumentedFilesInfo forwarded on a Starlark rule in a coverage configuration (fields explicit)",
+   "reference_exit": 0,
+   "native_exit": 1,
+   "reference_outputs": [
+    [
+     "bazel-out/k8-fastbuild-ST-0a6d1b0f07f2/bin/inf/presence_read.txt",
+     "pl True\npl []\n"
+    ]
+   ],
+   "native_message": "InstrumentedFilesInfo of //inf:pl in a configuration with --collect_code_coverage (set by a Starlark transition) is not implemented in the native profile (coverage instrumentation: --instrumentation_filter, --instrument_test_targets and --coverage_output_generator are not modelled)",
+   "label": "EXPECTED_NATIVE_GAP"
   }
  },
  "distdir_seeded": {
@@ -322,7 +355,60 @@
  "counts": {
   "EXACT_D1": 1,
   "EXACT_MESSAGE": 26,
-  "EXPECTED_NATIVE_GAP": 2
+  "EXPECTED_NATIVE_GAP": 3
  },
- "post_capture_changes": "none to src/Cargo (src diff+untracked hash at receipt write equals native.worktree: True)"
+ "history": [
+  {
+   "native_sha256": "4970a29bdbdd11a2c1f6978e00a9a7344af1a15319efc9e09301631985771c6a",
+   "worktree": {
+    "base_commit": "26c6ba78050d10796c00aff430a56048bf336bf7",
+    "src_diff_plus_untracked_sha256": "78e44537ae4403656b418d307b3f4c0a58dc660491997c8c46c4681c9a47abc2",
+    "untracked_src": [
+     "src/instrumented_files.rs"
+    ]
+   },
+   "capture_script_sha256": "98ff5e9e533adc8f5468425fcad954281f767d3d3907fbfab7c96c4e894c96b9",
+   "counts": {
+    "EXACT_D1": 1,
+    "EXACT_MESSAGE": 26,
+    "EXPECTED_NATIVE_GAP": 2
+   },
+   "scenario_labels": {
+    "O/reports": "EXACT_D1",
+    "E/ctx_string": "EXACT_MESSAGE",
+    "E/source_string": "EXACT_MESSAGE",
+    "E/source_int": "EXACT_MESSAGE",
+    "E/deps_none": "EXACT_MESSAGE",
+    "E/ext_string": "EXACT_MESSAGE",
+    "E/ext_int": "EXACT_MESSAGE",
+    "E/metadata_string": "EXACT_MESSAGE",
+    "E/metadata_depset": "EXACT_MESSAGE",
+    "E/baseline_string": "EXACT_MESSAGE",
+    "E/reported_strings": "EXACT_MESSAGE",
+    "E/reported_list": "EXACT_MESSAGE",
+    "E/reported_tuples": "EXACT_MESSAGE",
+    "E/env_private": "EXACT_MESSAGE",
+    "E/env_int": "EXACT_MESSAGE",
+    "E/env_list": "EXACT_MESSAGE",
+    "E/support_int": "EXACT_MESSAGE",
+    "E/support_strings": "EXACT_MESSAGE",
+    "E/support_file": "EXACT_MESSAGE",
+    "E/support_string_arg": "EXACT_MESSAGE",
+    "E/unknown_kw": "EXACT_MESSAGE",
+    "E/two_positional": "EXACT_MESSAGE",
+    "E/missing_ctx": "EXACT_MESSAGE",
+    "E/construct": "EXACT_MESSAGE",
+    "E/get_env": "EXACT_MESSAGE",
+    "E/get_support": "EXACT_MESSAGE",
+    "E/order": "EXACT_MESSAGE",
+    "G/cov": "EXPECTED_NATIVE_GAP",
+    "G/cov_p": "EXPECTED_NATIVE_GAP"
+   },
+   "o_reports_rows": {
+    "//inf:p": "EXACT_D1"
+   },
+   "note": "run 1 (51ce4ae tree): O 1 EXACT_D1, E 26 EXACT_MESSAGE, G 2 EXPECTED_NATIVE_GAP; run 2 adds presence/cov_presence/cov_presence_read for forwardAll in coverage configurations"
+  }
+ ],
+ "post_capture_changes": "run 2 on the N54 follow-up tree (forwardAll on every rule in coverage configurations, payload error propagation); none to src after run 2 (hash equal: True)"
 }
