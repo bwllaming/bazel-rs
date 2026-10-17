@@ -152,6 +152,11 @@ pub fn load_modules(
 pub struct LoadedModules {
     pub modules: HashMap<String, FrozenModule>,
     pub functions: Vec<OwnedFrozenValue>,
+    /// The BUILD file's direct loads in statement order, then each loaded
+    /// `.bzl` file's direct loads: Package.Declarations.visitLoadGraph's
+    /// graph (packages/Package.java), read by `query buildfiles/loadfiles`.
+    pub direct_loads: Vec<Label>,
+    pub load_graph: HashMap<Label, Vec<Label>>,
 }
 
 /// Exact input bytes and the owning repository's mapping for one evaluated file.
@@ -290,7 +295,7 @@ fn load_build_file_modules(
     }
     let mut loader = Loader::new(repositories, globals, false);
     loader.shared = shared;
-    for label in labels {
+    for label in labels.iter().cloned() {
         loader.load(label)?;
     }
     // PackageFunction.java:1134-1154: BUILD loads are checked against the
@@ -309,6 +314,8 @@ fn load_build_file_modules(
     Ok(LoadedModules {
         modules: loader.imports(package, ast)?,
         functions: loader.functions,
+        direct_loads: labels,
+        load_graph: loader.load_graph,
     })
 }
 
@@ -419,6 +426,8 @@ struct Loader<'a> {
     functions: Vec<OwnedFrozenValue>,
     provenance_capture: bool,
     sources: BTreeMap<String, SourceProvenance>,
+    /// Direct loads of every evaluated `.bzl` file.
+    load_graph: HashMap<Label, Vec<Label>>,
 }
 
 enum Work {
@@ -443,6 +452,7 @@ impl<'a> Loader<'a> {
             functions: Vec::new(),
             provenance_capture,
             sources: BTreeMap::new(),
+            load_graph: HashMap::new(),
         }
     }
 
@@ -474,6 +484,7 @@ impl<'a> Loader<'a> {
                         let cached = cached?;
                         active.push(label.clone());
                         let loads = cached.loads.clone();
+                        self.load_graph.insert(label.clone(), loads.clone());
                         work.push(Work::Reuse(label, cached));
                         work.extend(loads.into_iter().rev().map(Work::Enter));
                         continue;
@@ -481,6 +492,7 @@ impl<'a> Loader<'a> {
                     let (path, ast, dependencies) = self
                         .enter_module(&label)
                         .or_else(|error| self.failed(&label, error))?;
+                    self.load_graph.insert(label.clone(), dependencies.clone());
                     active.push(label.clone());
                     work.extend(
                         std::iter::once(Work::Finish(

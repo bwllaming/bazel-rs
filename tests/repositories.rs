@@ -165,8 +165,9 @@ fn external_patterns_and_repository_scoped_aliases_do_not_leak() {
         let output = fixture.run(&["query", pattern]);
         assert!(output.status.success(), "{}", stderr(&output));
         let labels = String::from_utf8_lossy(&output.stdout);
-        assert!(labels.contains("@@alpha+//p:copy\n"));
-        assert!(labels.lines().all(|label| label.starts_with("@@alpha+//")));
+        // LabelPrinter.displayForm: `@@alpha+` is `@first` from main.
+        assert!(labels.contains("@first//p:copy\n"));
+        assert!(labels.lines().all(|label| label.starts_with("@first//")));
     }
     let unknown = fixture.run(&["query", "@dep//p:files"]);
     assert!(!unknown.status.success());
@@ -314,7 +315,7 @@ fn registry_local_source_uses_selected_metadata_and_configured_base_path() {
     assert_eq!(fs::read(&files(&built)[0].1).unwrap(), b"alpha");
     let query = fixture.run(&["query", &registry, "@first//p:all"]);
     assert!(query.status.success(), "{}", stderr(&query));
-    assert!(String::from_utf8_lossy(&query.stdout).contains("@@alpha+//p:copy"));
+    assert!(String::from_utf8_lossy(&query.stdout).contains("@first//p:copy"));
     fixture.file("repos/alpha/p/data.txt", "live local registry source");
     let changed = fixture.run(&["build", &registry, "@first//p:copy"]);
     assert_eq!(
@@ -331,7 +332,7 @@ fn unavailable_native_dependency_is_resolved_only_when_selected() {
     fixture.file("repos/alpha/p/BUILD.bazel", "exports_files(['data.txt'])\ngenrule(name='copy',srcs=['data.txt'],outs=['copy.txt'],cmd='cat $(SRCS) > $@')\nfilegroup(name='unavailable',srcs=['@not_declared//:file'])\n");
     let query = fixture.run(&["query", "@first//p:all"]);
     assert!(query.status.success(), "{}", stderr(&query));
-    assert!(String::from_utf8_lossy(&query.stdout).contains("@@alpha+//p:unavailable"));
+    assert!(String::from_utf8_lossy(&query.stdout).contains("@first//p:unavailable"));
     assert_eq!(
         fs::read(&files(&fixture.run(&["build", "@first//p:copy"]))[0].1).unwrap(),
         b"alpha"
@@ -353,7 +354,7 @@ fn git_query_build_and_exported_files_use_pinned_private_tree_and_selected_cache
     f.file("repos/alpha/p/data.txt", "uncommitted upstream change");
     let query = f.run(&["--cache-dir=chosen", "query", "@first//p:all"]);
     assert!(query.status.success(), "{}", stderr(&query));
-    assert!(String::from_utf8_lossy(&query.stdout).contains("@@alpha+//p:copy"));
+    assert!(String::from_utf8_lossy(&query.stdout).contains("@first//p:copy"));
     let source = files(&f.run(&["--cache-dir=chosen", "build", "@first//p:data.txt"]));
     assert_eq!(source[0].0, "@@alpha+//p:data.txt");
     assert!(source[0].1.starts_with(f.0.join("chosen/repositories/git")));

@@ -21,7 +21,9 @@ native `label_flag`/`label_setting` rules, which are analyzed (docs/CONFIGURATIO
 `rule(build_setting=descriptor)` injects a mandatory typed
 `build_setting_default` and a string `help` attribute, rejecting collisions with
 explicit schemas. Missing and `None` defaults fail. Boolean setting defaults
-accept booleans or integers 0/1; this does not relax ordinary `attr.bool` rules.
+accept booleans or integers 0/1, like every `attr.bool` value given in a BUILD
+call (Type.BOOLEAN.convert, packages/Type.java:409-429; N39: rules_java's
+`remote_coverage_tools` passes `create_executable = 1`).
 Integer defaults use the signed 32-bit declaration range. Defaults are owned
 invocation-time snapshots, not shared mutable rule metadata.
 

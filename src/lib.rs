@@ -62,7 +62,7 @@ pub mod patching;
 mod platform_providers;
 pub mod platforms;
 pub mod providers;
-pub mod query_expression;
+pub mod query_language;
 pub mod registry;
 pub mod repository;
 mod repository_budget;

@@ -1,0 +1,4 @@
+filegroup(
+    name = "root",
+    srcs = ["//app:bin"],
+)

@@ -163,7 +163,7 @@ fn genuine_builtin_query_build_and_helper_loading_use_standalone_native_resource
     success(&query);
     assert_eq!(
         query.stdout,
-        b"@@bazel_tools//tools/build_defs/repo:utils.bzl\n"
+        b"@bazel_tools//tools/build_defs/repo:utils.bzl\n"
     );
     fs::write(
         root.path().join("BUILD.bazel"),

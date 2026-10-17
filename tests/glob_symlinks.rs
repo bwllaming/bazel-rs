@@ -191,7 +191,7 @@ fn generated_local_jdk_repository_globs_and_builds_through_host_links() {
     assert!(query.status.success(), "{}", stderr(&query));
     assert_eq!(
         stdout(&query),
-        "@@+local_java_repository+local_jdk//:copy\n@@+local_java_repository+local_jdk//:java\n@@+local_java_repository+local_jdk//:jdk-bin\n@@+local_java_repository+local_jdk//:jdk-lib\n@@+local_java_repository+local_jdk//:jre\n@@+local_java_repository+local_jdk//:list\n"
+        "@local_jdk//:copy\n@local_jdk//:java\n@local_jdk//:jdk-bin\n@local_jdk//:jdk-lib\n@local_jdk//:jre\n@local_jdk//:list\n"
     );
     // The dangling lib/src.zip is silently skipped (Bazel tolerates it).
     let listed = outputs(&f.run(&["build", "@local_jdk//:list"]));

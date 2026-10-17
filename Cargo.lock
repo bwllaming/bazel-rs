@@ -143,6 +143,7 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "bzip2",
+ "fancy-regex",
  "flate2",
  "fs2",
  "hyper",

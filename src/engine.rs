@@ -25,6 +25,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
+pub mod query;
+mod query_attrs;
+
 #[derive(Clone, Debug)]
 struct Artifact {
     real: PathBuf,
@@ -624,6 +627,26 @@ pub struct BuildSummary {
     pub outputs: Vec<(Label, PathBuf)>,
     pub executed: usize,
     pub cache_hits: usize,
+}
+
+/// A target pattern evaluation failure (`Engine::expand_pattern`).
+#[derive(Clone, Debug)]
+pub(crate) enum PatternError {
+    /// A TargetParsingException raised while evaluating a parsed pattern
+    /// (`no targets found beneath`, a path that names no target); syntax
+    /// errors are crate::target_pattern::parse's.
+    Parsing(String),
+    /// Resolving the pattern's repository, or loading a package or target it
+    /// names, failed.
+    Loading(String),
+}
+
+impl PatternError {
+    pub(crate) fn into_message(self) -> String {
+        match self {
+            PatternError::Parsing(message) | PatternError::Loading(message) => message,
+        }
+    }
 }
 
 pub struct Engine {
@@ -1226,7 +1249,9 @@ impl Engine {
         let mut selected = BTreeSet::new();
         for pattern in &parsed {
             let filter = filter_manual && !pattern.negative;
-            let targets = self.expand_pattern(pattern, filter, filter_manual)?;
+            let targets = self
+                .expand_pattern(pattern, filter, filter_manual)
+                .map_err(PatternError::into_message)?;
             if pattern.negative {
                 selected.retain(|label| !targets.contains(label));
             } else {
@@ -1242,24 +1267,26 @@ impl Engine {
     /// whose package errors for `:all` carry the `while parsing` prefix; the
     /// query environment reports them unwrapped (paired capture
     /// tests/fixtures/label_syntax, E/relative_in_non_package_dir).
-    fn expand_pattern(
+    pub(crate) fn expand_pattern(
         &mut self,
         pattern: &crate::target_pattern::Pattern,
         filter_manual: bool,
         build: bool,
-    ) -> Result<BTreeSet<Label>, String> {
+    ) -> Result<BTreeSet<Label>, PatternError> {
         use crate::target_pattern::Kind;
+        use PatternError::{Loading, Parsing};
         let original = &pattern.original;
         let mut found = BTreeSet::new();
         match &pattern.kind {
             Kind::TargetsBelowDirectory { rules_only } => {
-                let context =
-                    self.repositories
-                        .parse(&pattern.label_text("__pattern__"), "", "")?;
+                let context = self
+                    .repositories
+                    .parse(&pattern.label_text("__pattern__"), "", "")
+                    .map_err(Loading)?;
                 // TargetPattern.TargetsBelowDirectory.eval: a directory inside
                 // an ignored directory yields a warning and no targets; the
                 // rest is searched with filterForDirectory'd entries.
-                let ignored = self.ignored(&context.repository)?;
+                let ignored = self.ignored(&context.repository).map_err(Loading)?;
                 if let Some(entry) = ignored.matching_entry(&context.package) {
                     self.warnings.push(format!(
                         "Pattern '{original}' was filtered out by ignored directory '{entry}'"
@@ -1267,24 +1294,35 @@ impl Engine {
                     return Ok(found);
                 }
                 let ignored = ignored.filter_for_directory(&context.package);
-                let root = self.repositories.root(&context.repository)?.to_path_buf();
+                let root = self
+                    .repositories
+                    .root(&context.repository)
+                    .map_err(Loading)?
+                    .to_path_buf();
                 let skip = self.repositories.link_policy(&context.repository).blocked;
                 let packages = if root.join(&context.package).is_dir() {
-                    workspace::discover_packages_skipping(&root, &context.package, &ignored, &skip)?
+                    workspace::discover_packages_skipping(&root, &context.package, &ignored, &skip)
+                        .map_err(Loading)?
                 } else {
                     Vec::new()
                 };
                 // RecursivePackageProviderBackedTargetPatternResolver.java:326-329.
                 if packages.is_empty() {
-                    return Err(format!("no targets found beneath '{}'", context.package));
+                    return Err(Parsing(format!(
+                        "no targets found beneath '{}'",
+                        context.package
+                    )));
                 }
                 for package in packages {
                     let id = PackageId {
                         repository: context.repository.clone(),
                         package,
                     };
-                    self.load_package(&id)?;
-                    found.extend(self.package_targets(&id, *rules_only, filter_manual)?);
+                    self.load_package(&id).map_err(Loading)?;
+                    found.extend(
+                        self.package_targets(&id, *rules_only, filter_manual)
+                            .map_err(Loading)?,
+                    );
                 }
             }
             Kind::TargetsInPackage {
@@ -1294,11 +1332,14 @@ impl Engine {
             } => {
                 let id = self
                     .repositories
-                    .parse(&pattern.label_text("__pattern__"), "", "")?
+                    .parse(&pattern.label_text("__pattern__"), "", "")
+                    .map_err(Loading)?
                     .package_id();
                 // TargetsInPackage.getWildcardConflict (TargetPattern.java:
                 // 524-560): an absolute `:all` naming an existing target.
-                if *absolute && let Some(kind) = self.existing_target_kind(&id, suffix)? {
+                if *absolute
+                    && let Some(kind) = self.existing_target_kind(&id, suffix).map_err(Loading)?
+                {
                     self.warnings.push(format!(
                         "The target pattern '{original}' is ambiguous: ':{suffix}' is both a wildcard, and the name of an existing {kind}; using the latter interpretation"
                     ));
@@ -1312,24 +1353,28 @@ impl Engine {
                 // TargetPatternResolverUtil.getParsingErrorMessage
                 // (pkgcache/TargetPatternResolverUtil.java:33-39).
                 self.load_package(&id).map_err(|error| {
-                    if build {
+                    Loading(if build {
                         format!("while parsing '{original}': {error}")
                     } else {
                         error
-                    }
+                    })
                 })?;
-                found.extend(self.package_targets(&id, *rules_only, filter_manual)?);
+                found.extend(
+                    self.package_targets(&id, *rules_only, filter_manual)
+                        .map_err(Loading)?,
+                );
             }
             Kind::SingleTarget { target } => {
                 let label = self
                     .repositories
-                    .parse(&pattern.label_text(target), "", "")?;
-                self.target(&label)?;
+                    .parse(&pattern.label_text(target), "", "")
+                    .map_err(Loading)?;
+                self.target(&label).map_err(Loading)?;
                 found.insert(label);
             }
             Kind::PathAsTarget { path } => {
                 let label = self.path_as_target(path)?;
-                self.target(&label)?;
+                self.target(&label).map_err(Loading)?;
                 found.insert(label);
             }
         }
@@ -1339,15 +1384,18 @@ impl Engine {
     /// InterpretPathAsTarget.eval (cmdline/TargetPattern.java:348-383): the
     /// path itself as a package (its default target), else the longest
     /// package prefix owning the rest as a file target.
-    fn path_as_target(&mut self, path: &str) -> Result<Label, String> {
-        let root = self.repositories.root("")?.to_path_buf();
-        let ignored = self.ignored("")?;
-        let is_package = |package: &str| -> Result<bool, String> {
-            Ok(ignored.matching_entry(package).is_none() && workspace::is_package(&root, package)?)
+    fn path_as_target(&mut self, path: &str) -> Result<Label, PatternError> {
+        use PatternError::{Loading, Parsing};
+        let root = self.repositories.root("").map_err(Loading)?.to_path_buf();
+        let ignored = self.ignored("").map_err(Loading)?;
+        let is_package = |package: &str| -> Result<bool, PatternError> {
+            Ok(ignored.matching_entry(package).is_none()
+                && workspace::is_package(&root, package).map_err(Loading)?)
         };
         let pieces: Vec<&str> = path.split('/').collect();
         if is_package(path)? {
-            return Label::parse_canonical(&format!("//{path}:{}", pieces[pieces.len() - 1]));
+            return Label::parse_canonical(&format!("//{path}:{}", pieces[pieces.len() - 1]))
+                .map_err(Parsing);
         }
         for split in (0..pieces.len()).rev() {
             let package = pieces[..split].join("/");
@@ -1358,10 +1406,13 @@ impl Engine {
                     package,
                     name: String::new(),
                 }
-                .with_name(&target);
+                .with_name(&target)
+                .map_err(Parsing);
             }
         }
-        Err(format!("couldn't determine target from filename '{path}'"))
+        Err(Parsing(format!(
+            "couldn't determine target from filename '{path}'"
+        )))
     }
 
     /// `Target.getTargetKind` of an existing target `name` of package `id`,
@@ -7318,6 +7369,9 @@ mod tests {
             unanalyzed: Vec::new(),
             package_metadata: Vec::new(),
             location: None,
+            explicit_visibility: false,
+            call_stack: Vec::new(),
+            generator: None,
         }
     }
 
@@ -8359,6 +8413,9 @@ m = macro(implementation=emit)
             unanalyzed: Vec::new(),
             package_metadata: Vec::new(),
             location: None,
+            explicit_visibility: false,
+            call_stack: Vec::new(),
+            generator: None,
         };
         assert_eq!(
             engine.resolve_rule_src(&rule, "//p:in").unwrap().repository,

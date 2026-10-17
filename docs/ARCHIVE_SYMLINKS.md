@@ -151,8 +151,9 @@ shared policy as source artifacts and loads (N28d).
 
 ## Remaining documented differences
 
-The paired capture's remaining classes are documented rather than fixed here:
-query label form (`@@repo+//:t` native vs `@repo//:t` apparent in Bazel), the
+The paired capture's remaining classes are documented rather than fixed here
+(the query label form difference, native `@@repo+//:t` vs Bazel's apparent
+`@repo//:t`, is fixed by N39, docs/QUERY.md): the
 CLI report for source-only targets (Bazel prints `(nothing to build)`, native
 lists the source path), PAX/GNU long link targets, hard links to directories,
 links escaping a repository to host paths outside repository-rule-generated

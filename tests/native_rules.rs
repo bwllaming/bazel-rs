@@ -210,7 +210,9 @@ fn query_lists_native_rule_targets_like_bazel() {
         let pattern = format!("{}:all", package.replace("@@platforms", "@platforms"));
         let query = ws.run(&["query", &pattern]);
         assert!(query.status.success(), "{pattern}: {}", errors(&query));
-        assert_eq!(stdout(&query), labels(package, names), "{pattern}");
+        // LabelPrinter.displayForm: the main repository's apparent name.
+        let shown = package.replace("@@platforms", "@platforms");
+        assert_eq!(stdout(&query), labels(&shown, names), "{pattern}");
     }
     // Implicit outputs and assumed input files are targets too.
     for target in [

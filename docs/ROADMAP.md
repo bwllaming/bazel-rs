@@ -163,7 +163,8 @@ Bzlmod dependencies. Representative workload:
 - Protobuf/gRPC, Java tooling, C/C++, Zig GNU-libc cross-toolchains.
 - OCI images with amd64/arm64 transitions, packaging, custom repository downloads,
   archive extraction and patches.
-- Query/cquery/aquery, JSON/protobuf output, BEP consumers, test caching and
+- cquery/aquery, SkyQuery and xml/proto query output (`query` itself: N39,
+  docs/QUERY.md), JSON/protobuf output, BEP consumers, test caching and
   architecture-dependent native artifacts.
 
 The local checkout contains pre-existing modifications. Its wrapper can run

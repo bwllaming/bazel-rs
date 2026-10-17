@@ -1,0 +1,33 @@
+load("//:defs.bzl", "my_library")
+
+package(default_visibility = ["//visibility:public"])
+
+my_library(
+    name = "base",
+    srcs = ["base.txt"],
+)
+
+my_library(
+    name = "util",
+    srcs = ["util.txt"] + select({
+        "//conf:fast": ["fast.txt"],
+        "//conditions:default": ["slow.txt"],
+    }),
+    deps = [":base"],
+    flavor = "spicy",
+    # Type.BOOLEAN.convert tolerates 0 and 1.
+    stripped = 1,
+)
+
+genrule(
+    name = "gen",
+    srcs = ["base.txt"],
+    outs = ["gen.out"],
+    cmd = "cp $< $@",
+    tools = [":tool"],
+)
+
+filegroup(
+    name = "tool",
+    srcs = ["tool.sh"],
+)

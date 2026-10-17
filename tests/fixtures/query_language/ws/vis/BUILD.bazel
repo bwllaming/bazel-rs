@@ -1,0 +1,10 @@
+package_group(
+    name = "friends",
+    packages = ["//app/..."],
+    includes = [":more"],
+)
+
+package_group(
+    name = "more",
+    packages = ["//tests/..."],
+)

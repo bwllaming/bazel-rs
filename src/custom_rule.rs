@@ -108,6 +108,11 @@ pub struct AttrDeclaration {
     /// Exported aspect identities (`<extension>%<name>`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub aspects: Vec<String>,
+    /// The aspects' query-visible definitions, required aspects first
+    /// (AspectsList; read by `query` LabelVisitor.visitAspectsIfRequired).
+    #[serde(skip)]
+    #[allow(private_interfaces)]
+    pub aspect_definitions: Vec<crate::rule_declarations::QueryAspect>,
     /// `default = configuration_field(...)` (StarlarkLateBoundDefault).
     #[serde(skip_serializing_if = "is_false")]
     pub late_bound: bool,
@@ -332,6 +337,11 @@ pub struct InvocationDeclaration {
     pub explicit_scope: crate::starlark_options::ScopeAttribute,
     /// Bazel's built-in attributes of this instance (docs/COMMON_RULE_ATTRIBUTES.md).
     pub builtin: BuiltinAttributes,
+    /// Starlark attributes given a value by the BUILD call or an initializer
+    /// (Rule.isAttributeValueExplicitlySpecified): `query --noimplicit_deps`.
+    pub explicit: std::collections::BTreeSet<String>,
+    /// RuleClass.getCallStack (`query --output=build`).
+    pub definition_stack: Vec<(String, String)>,
 }
 
 /// Values of the built-in attributes a Starlark rule class inherits from
@@ -1457,6 +1467,11 @@ mod values {
                 }
                 _ => crate::starlark_options::ScopeAttribute::Unspecified,
             };
+            let explicit = attrs
+                .keys()
+                .chain(configurable.keys())
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>();
             for (key, spec) in &self.schema {
                 // A select()-valued attribute is resolved at analysis
                 // (crate::configured_attributes); its default is not a value.
@@ -1596,6 +1611,8 @@ mod values {
                         target: builtin,
                         ..Default::default()
                     },
+                    explicit,
+                    definition_stack: self.declaration.definition_stack.clone(),
                 },
             )
             .map_err(starlark::Error::new_other)?;
@@ -1637,6 +1654,9 @@ pub(crate) struct RuleDeclaration {
     pub implicit_outputs: ImplicitOutputs,
     /// `extendable=` as given: "True"/"False" or a canonical allowlist label.
     pub extendable: Option<String>,
+    /// RuleClass.getCallStack: the stack of the rule() call
+    /// (StarlarkRuleClassFunctions.java:916-918), for `query --output=build`.
+    pub definition_stack: Vec<(String, String)>,
 }
 
 /// `rule(outputs=...)` (StarlarkRuleClassFunctions.java:1102-1122).
@@ -3105,6 +3125,7 @@ fn dependency_descriptor<'v>(
         .is_some_and(|context| context.repositories.disable_starlark_host_transitions());
     declaration.cfg = crate::rule_declarations::attribute_cfg(options.cfg, disable_host)?;
     declaration.aspects = crate::rule_declarations::aspect_identities(options.aspects, "aspects")?;
+    declaration.aspect_definitions = crate::rule_declarations::query_aspects(options.aspects);
     let declaration = declaration.clone();
     let mut descriptor = with_required_providers(descriptor, options.providers)?;
     descriptor.0.declaration = declaration;
@@ -3874,6 +3895,7 @@ fn define_rule<'v>(
         provides,
         implicit_outputs,
         extendable,
+        definition_stack: crate::package::java_call_stack(eval),
     };
     budget
         .string(&declaration.definition_label)

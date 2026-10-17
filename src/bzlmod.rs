@@ -820,8 +820,15 @@ fn invoke<'v>(
             let s = string(v, "repository name")?;
             imports.push((s.clone(), s));
         }
-        for (local, value) in kwargs.0 {
-            imports.push((local, string(value, "exported repository name")?));
+        // Keyword imports in call order (ModuleFileGlobals.useRepo iterates the
+        // kwargs Dict, which keeps insertion order); the order is the main
+        // repository mapping's entry order (RepositoryMapping.getInverse).
+        drop(kwargs);
+        for (local, value) in args.names_map().map_err(|e| anyhow!("{e}"))?.iter() {
+            imports.push((
+                local.as_str().to_owned(),
+                string(*value, "exported repository name")?,
+            ));
         }
         for (local, exported) in imports {
             validate_repo_name(&local)?;

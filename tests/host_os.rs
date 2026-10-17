@@ -298,7 +298,7 @@ fn extension_metadata_passes_string_attrs_through_repository_to_consumer() {
     f.metadata_flow("");
     let query = f.run(&["query", "@made//:data"], &[]);
     assert!(query.status.success(), "{}", error(&query));
-    assert_eq!(query.stdout, b"@@+ext+made//:data\n");
+    assert_eq!(query.stdout, b"@made//:data\n");
     f.build(&[]).assert_bytes(golden_flow().as_bytes());
 }
 

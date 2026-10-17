@@ -1,0 +1,22 @@
+load(":aspects.bzl", "advertising", "aspected", "plain")
+
+# The dependency's rule class does not advertise NeedInfo: needs_aspect's
+# attributes are not followed, open_aspect's are.
+aspected(
+    name = "unmatched",
+    deps = [":plain", "data.txt"],
+)
+
+# One dependency advertises NeedInfo.
+aspected(
+    name = "matched",
+    deps = [":plain", ":advertising"],
+)
+
+plain(name = "plain")
+
+advertising(name = "advertising")
+
+filegroup(name = "needs_tool")
+
+filegroup(name = "open_tool")

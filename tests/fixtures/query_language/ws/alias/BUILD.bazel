@@ -1,0 +1,5 @@
+alias(
+    name = "util_alias",
+    actual = "//lib:util",
+    visibility = ["//visibility:public"],
+)

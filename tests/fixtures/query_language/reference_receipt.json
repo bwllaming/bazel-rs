@@ -1,0 +1,2690 @@
+{
+ "bazel": "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+ "bazel_prefix": [
+  "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+  "--batch",
+  "--ignore_all_rc_files",
+  "--output_user_root=/tmp/opencode/n39-query-2_dhl95a/our",
+  "--output_base=${OUTPUT_BASE}",
+  "--host_jvm_args=-Xmx1g",
+  "query",
+  "--lockfile_mode=off",
+  "--color=no",
+  "--curses=no",
+  "--noshow_progress"
+ ],
+ "bazel_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+ "cases": [
+  {
+   "args": [
+    "//lib:all"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 8.521,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//lib:base\n//lib:gen\n//lib:tool\n//lib:util\n",
+    "timed_out": false
+   },
+   "id": "pattern.all",
+   "native": {
+    "elapsed_seconds": 0.056,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//lib:base\n//lib:gen\n//lib:tool\n//lib:util\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "//lib:*"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.59,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//lib:BUILD.bazel\n//lib:base\n//lib:base.txt\n//lib:fast.txt\n//lib:gen\n//lib:gen.out\n//lib:slow.txt\n//lib:tool\n//lib:tool.sh\n//lib:util\n//lib:util.txt\n",
+    "timed_out": false
+   },
+   "id": "pattern.star",
+   "native": {
+    "elapsed_seconds": 0.05,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//lib:BUILD.bazel\n//lib:base\n//lib:base.txt\n//lib:fast.txt\n//lib:gen\n//lib:gen.out\n//lib:slow.txt\n//lib:tool\n//lib:tool.sh\n//lib:util\n//lib:util.txt\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "//lib:all-targets"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 8.57,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//lib:BUILD.bazel\n//lib:base\n//lib:base.txt\n//lib:fast.txt\n//lib:gen\n//lib:gen.out\n//lib:slow.txt\n//lib:tool\n//lib:tool.sh\n//lib:util\n//lib:util.txt\n",
+    "timed_out": false
+   },
+   "id": "pattern.all_targets",
+   "native": {
+    "elapsed_seconds": 0.035,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//lib:BUILD.bazel\n//lib:base\n//lib:base.txt\n//lib:fast.txt\n//lib:gen\n//lib:gen.out\n//lib:slow.txt\n//lib:tool\n//lib:tool.sh\n//lib:util\n//lib:util.txt\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "//..."
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.696,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//:root\n//alias:util_alias\n//app:all_tests\n//app:bin\n//app:bin_test\n//app:manual_test\n//app:unit_tests\n//app:wrapped\n//app:wrapped_impl\n//conf:fast\n//cyc:a\n//cyc:b\n//lib:base\n//lib:gen\n//lib:tool\n//lib:util\n//tests:broken\n",
+    "timed_out": false
+   },
+   "id": "pattern.recursive",
+   "native": {
+    "elapsed_seconds": 0.05,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//:root\n//alias:util_alias\n//app:all_tests\n//app:bin\n//app:bin_test\n//app:manual_test\n//app:unit_tests\n//app:wrapped\n//app:wrapped_impl\n//conf:fast\n//cyc:a\n//cyc:b\n//lib:base\n//lib:gen\n//lib:tool\n//lib:util\n//tests:broken\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "//app/...:*"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.651,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//app:BUILD.bazel\n//app:all_tests\n//app:bin\n//app:bin_test\n//app:main.txt\n//app:manual_test\n//app:test.txt\n//app:unit_tests\n//app:wrapped\n//app:wrapped_impl\n",
+    "timed_out": false
+   },
+   "id": "pattern.recursive_star",
+   "native": {
+    "elapsed_seconds": 0.029,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//app:BUILD.bazel\n//app:all_tests\n//app:bin\n//app:bin_test\n//app:main.txt\n//app:manual_test\n//app:test.txt\n//app:unit_tests\n//app:wrapped\n//app:wrapped_impl\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    ":all"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 8.066,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//:root\n",
+    "timed_out": false
+   },
+   "id": "pattern.relative",
+   "native": {
+    "elapsed_seconds": 0.024,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//:root\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "//lib:base + //lib:util - //lib:base"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.838,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//lib:util\n",
+    "timed_out": false
+   },
+   "id": "algebra.minus",
+   "native": {
+    "elapsed_seconds": 0.043,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//lib:util\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "//lib:all intersect //lib:util union //cyc:a"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.986,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//cyc:a\n//lib:util\n",
+    "timed_out": false
+   },
+   "id": "algebra.union_intersect",
+   "native": {
+    "elapsed_seconds": 0.041,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//cyc:a\n//lib:util\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "//lib:all ^ set(//lib:util //lib:base)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.709,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//lib:base\n//lib:util\n",
+    "timed_out": false
+   },
+   "id": "algebra.caret",
+   "native": {
+    "elapsed_seconds": 0.029,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//lib:base\n//lib:util\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "set(//lib:base //cyc:a) except //cyc:a"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.558,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//lib:base\n",
+    "timed_out": false
+   },
+   "id": "algebra.except",
+   "native": {
+    "elapsed_seconds": 0.031,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//lib:base\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "let v = //lib:util in $v + deps($v, 1)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.691,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//conf:fast\n//lib:base\n//lib:fast.txt\n//lib:slow.txt\n//lib:tool\n//lib:util\n//lib:util.txt\n",
+    "timed_out": false
+   },
+   "id": "algebra.let",
+   "native": {
+    "elapsed_seconds": 0.031,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//conf:fast\n//lib:base\n//lib:fast.txt\n//lib:slow.txt\n//lib:tool\n//lib:util\n//lib:util.txt\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "//lib:base",
+    "+",
+    "//cyc:b"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.527,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//cyc:b\n//lib:base\n",
+    "timed_out": false
+   },
+   "id": "algebra.residue",
+   "native": {
+    "elapsed_seconds": 0.03,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//cyc:b\n//lib:base\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "deps(//app:bin)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.705,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//alias:util_alias\n//app:bin\n//app:main.txt\n//conf:fast\n//lib:base\n//lib:base.txt\n//lib:fast.txt\n//lib:gen\n//lib:gen.out\n//lib:slow.txt\n//lib:tool\n//lib:tool.sh\n//lib:util\n//lib:util.txt\n//vis:friends\n//vis:more\n@bazel_tools//tools/genrule:genrule-setup.sh\n",
+    "timed_out": false
+   },
+   "id": "deps.default",
+   "native": {
+    "elapsed_seconds": 31.848,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//alias:util_alias\n//app:bin\n//app:main.txt\n//conf:fast\n//lib:base\n//lib:base.txt\n//lib:fast.txt\n//lib:gen\n//lib:gen.out\n//lib:slow.txt\n//lib:tool\n//lib:tool.sh\n//lib:util\n//lib:util.txt\n//vis:friends\n//vis:more\n@bazel_tools//tools/genrule:genrule-setup.sh\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "deps(//app:bin, 1)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.785,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//alias:util_alias\n//app:bin\n//app:main.txt\n//lib:gen.out\n//lib:tool\n//lib:util\n//vis:friends\n",
+    "timed_out": false
+   },
+   "id": "deps.depth1",
+   "native": {
+    "elapsed_seconds": 0.04,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//alias:util_alias\n//app:bin\n//app:main.txt\n//lib:gen.out\n//lib:tool\n//lib:util\n//vis:friends\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "--output=label_kind",
+    "deps(//app:bin, 2)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.837,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "alias rule //alias:util_alias\nmy_library rule //app:bin\nsource file //app:main.txt\nconfig_setting rule //conf:fast\nmy_library rule //lib:base\nsource file //lib:fast.txt\ngenrule rule //lib:gen\ngenerated file //lib:gen.out\nsource file //lib:slow.txt\nfilegroup rule //lib:tool\nsource file //lib:tool.sh\nmy_library rule //lib:util\nsource file //lib:util.txt\npackage group //vis:friends\npackage group //vis:more\n",
+    "timed_out": false
+   },
+   "id": "deps.depth2_label_kind",
+   "native": {
+    "elapsed_seconds": 0.044,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "alias rule //alias:util_alias\nmy_library rule //app:bin\nsource file //app:main.txt\nconfig_setting rule //conf:fast\nmy_library rule //lib:base\nsource file //lib:fast.txt\ngenrule rule //lib:gen\ngenerated file //lib:gen.out\nsource file //lib:slow.txt\nfilegroup rule //lib:tool\nsource file //lib:tool.sh\nmy_library rule //lib:util\nsource file //lib:util.txt\npackage group //vis:friends\npackage group //vis:more\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "--noimplicit_deps",
+    "deps(//app:bin)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.748,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//alias:util_alias\n//app:bin\n//app:main.txt\n//conf:fast\n//lib:base\n//lib:base.txt\n//lib:fast.txt\n//lib:gen\n//lib:gen.out\n//lib:slow.txt\n//lib:tool\n//lib:tool.sh\n//lib:util\n//lib:util.txt\n//vis:friends\n//vis:more\n",
+    "timed_out": false
+   },
+   "id": "deps.noimplicit",
+   "native": {
+    "elapsed_seconds": 0.038,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//alias:util_alias\n//app:bin\n//app:main.txt\n//conf:fast\n//lib:base\n//lib:base.txt\n//lib:fast.txt\n//lib:gen\n//lib:gen.out\n//lib:slow.txt\n//lib:tool\n//lib:tool.sh\n//lib:util\n//lib:util.txt\n//vis:friends\n//vis:more\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "--notool_deps",
+    "deps(//app:bin)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.95,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//alias:util_alias\n//app:bin\n//app:main.txt\n//conf:fast\n//lib:base\n//lib:base.txt\n//lib:fast.txt\n//lib:gen\n//lib:gen.out\n//lib:slow.txt\n//lib:tool\n//lib:tool.sh\n//lib:util\n//lib:util.txt\n//vis:friends\n//vis:more\n",
+    "timed_out": false
+   },
+   "id": "deps.notool",
+   "native": {
+    "elapsed_seconds": 0.043,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//alias:util_alias\n//app:bin\n//app:main.txt\n//conf:fast\n//lib:base\n//lib:base.txt\n//lib:fast.txt\n//lib:gen\n//lib:gen.out\n//lib:slow.txt\n//lib:tool\n//lib:tool.sh\n//lib:util\n//lib:util.txt\n//vis:friends\n//vis:more\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "--nohost_deps",
+    "deps(//app:bin)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.912,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: Option 'host_deps' is deprecated: Use --tool_deps instead\n",
+    "stdout": "//alias:util_alias\n//app:bin\n//app:main.txt\n//conf:fast\n//lib:base\n//lib:base.txt\n//lib:fast.txt\n//lib:gen\n//lib:gen.out\n//lib:slow.txt\n//lib:tool\n//lib:tool.sh\n//lib:util\n//lib:util.txt\n//vis:friends\n//vis:more\n",
+    "timed_out": false
+   },
+   "id": "deps.nohost",
+   "native": {
+    "elapsed_seconds": 0.042,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//alias:util_alias\n//app:bin\n//app:main.txt\n//conf:fast\n//lib:base\n//lib:base.txt\n//lib:fast.txt\n//lib:gen\n//lib:gen.out\n//lib:slow.txt\n//lib:tool\n//lib:tool.sh\n//lib:util\n//lib:util.txt\n//vis:friends\n//vis:more\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "deps(//app:bin_test, 1)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 8.891,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//app:bin\n//app:bin_test\n//app:test.txt\n@bazel_tools//tools/test:collect_coverage\n@bazel_tools//tools/test:coverage_report_generator\n@bazel_tools//tools/test:coverage_support\n@bazel_tools//tools/test:runtime\n@bazel_tools//tools/test:test_setup\n@bazel_tools//tools/test:test_wrapper\n@bazel_tools//tools/test:test_xml_generator\n@bazel_tools//tools/test:xml_writer\n",
+    "timed_out": false
+   },
+   "id": "deps.test_direct",
+   "native": {
+    "elapsed_seconds": 32.886,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//app:bin\n//app:bin_test\n//app:test.txt\n@bazel_tools//tools/test:collect_coverage\n@bazel_tools//tools/test:coverage_report_generator\n@bazel_tools//tools/test:coverage_support\n@bazel_tools//tools/test:runtime\n@bazel_tools//tools/test:test_setup\n@bazel_tools//tools/test:test_wrapper\n@bazel_tools//tools/test:test_xml_generator\n@bazel_tools//tools/test:xml_writer\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "deps(//app:bin_test)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 10.047,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//alias:util_alias\n//app:bin\n//app:bin_test\n//app:main.txt\n//app:test.txt\n//conf:fast\n//lib:base\n//lib:base.txt\n//lib:fast.txt\n//lib:gen\n//lib:gen.out\n//lib:slow.txt\n//lib:tool\n//lib:tool.sh\n//lib:util\n//lib:util.txt\n//vis:friends\n//vis:more\n@bazel_tools//src/conditions:windows\n@bazel_tools//tools/build_defs/build_info:java_build_info\n@bazel_tools//tools/build_defs/build_info/templates:non_volatile_file.properties.template\n@bazel_tools//tools/build_defs/build_info/templates:redacted_file.properties.template\n@bazel_tools//tools/build_defs/build_info/templates:volatile_file.properties.template\n@bazel_tools//tools/cpp:toolchain_type\n@bazel_tools//tools/genrule:genrule-setup.sh\n@bazel_tools//tools/jdk:current_java_toolchain\n@bazel_tools//tools/jdk:java_plugins_flag_alias\n@bazel_tools//tools/jdk:launcher_flag_alias\n@bazel_tools//tools/jdk:runtime_toolchain_type\n@bazel_tools//tools/jdk:toolchain_type\n@bazel_tools//tools/launcher:launcher\n@bazel_tools//tools/launcher:launcher_maker_toolchain_type\n@bazel_tools//tools/launcher:launcher_toolchain_type\n@bazel_tools//tools/test:collect_coverage\n@bazel_tools//tools/test:collect_coverage.sh\n@bazel_tools//tools/test:coverage_report_generator\n@bazel_tools//tools/test:coverage_support\n@bazel_tools//tools/test:dummy.sh\n@bazel_tools//tools/test:generate-xml.sh\n@bazel_tools//tools/test:runtime\n@bazel_tools//tools/test:test-setup.sh\n@bazel_tools//tools/test:test_setup\n@bazel_tools//tools/test:test_wrapper\n@bazel_tools//tools/test:test_xml_generator\n@bazel_tools//tools/test:tw.exe\n@bazel_tools//tools/test:xml.exe\n@bazel_tools//tools/test:xml_writer\n@@bazel_tools+remote_coverage_tools_extension+remote_coverage_tools//:Main\n@@bazel_tools+remote_coverage_tools_extension+remote_coverage_tools//:all_lcov_merger_lib\n@@bazel_tools+remote_coverage_tools_extension+remote_coverage_tools//:all_lcov_merger_tools_deploy.jar\n@@bazel_tools+remote_coverage_tools_extension+remote_coverage_tools//:coverage_report_generator\n@@platforms//os:os\n@@platforms//os:windows\n@@rules_java+//:LICENSE\n@@rules_java+//:license\n@@rules_java+//java/bazel/rules:java_stub_template.txt\n@@rules_java+//toolchains:current_java_toolchain\n@@rules_shell+//shell:toolchain_type\n@@rules_shell+//shell/runfiles:runfiles\n@@rules_shell+//shell/runfiles:runfiles.bash\n@@rules_shell+//shell/runfiles:runfiles_at_legacy_location\n@@rules_shell+//shell/runfiles:runfiles_impl\n",
+    "timed_out": false
+   },
+   "id": "deps.test_full",
+   "native": {
+    "elapsed_seconds": 43.086,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//alias:util_alias\n//app:bin\n//app:bin_test\n//app:main.txt\n//app:test.txt\n//conf:fast\n//lib:base\n//lib:base.txt\n//lib:fast.txt\n//lib:gen\n//lib:gen.out\n//lib:slow.txt\n//lib:tool\n//lib:tool.sh\n//lib:util\n//lib:util.txt\n//vis:friends\n//vis:more\n@bazel_tools//src/conditions:windows\n@bazel_tools//tools/build_defs/build_info:java_build_info\n@bazel_tools//tools/build_defs/build_info/templates:non_volatile_file.properties.template\n@bazel_tools//tools/build_defs/build_info/templates:redacted_file.properties.template\n@bazel_tools//tools/build_defs/build_info/templates:volatile_file.properties.template\n@bazel_tools//tools/cpp:toolchain_type\n@bazel_tools//tools/genrule:genrule-setup.sh\n@bazel_tools//tools/jdk:current_java_toolchain\n@bazel_tools//tools/jdk:java_plugins_flag_alias\n@bazel_tools//tools/jdk:launcher_flag_alias\n@bazel_tools//tools/jdk:runtime_toolchain_type\n@bazel_tools//tools/jdk:toolchain_type\n@bazel_tools//tools/launcher:launcher\n@bazel_tools//tools/launcher:launcher_maker_toolchain_type\n@bazel_tools//tools/launcher:launcher_toolchain_type\n@bazel_tools//tools/test:collect_coverage\n@bazel_tools//tools/test:collect_coverage.sh\n@bazel_tools//tools/test:coverage_report_generator\n@bazel_tools//tools/test:coverage_support\n@bazel_tools//tools/test:dummy.sh\n@bazel_tools//tools/test:generate-xml.sh\n@bazel_tools//tools/test:runtime\n@bazel_tools//tools/test:test-setup.sh\n@bazel_tools//tools/test:test_setup\n@bazel_tools//tools/test:test_wrapper\n@bazel_tools//tools/test:test_xml_generator\n@bazel_tools//tools/test:tw.exe\n@bazel_tools//tools/test:xml.exe\n@bazel_tools//tools/test:xml_writer\n@@bazel_tools+remote_coverage_tools_extension+remote_coverage_tools//:Main\n@@bazel_tools+remote_coverage_tools_extension+remote_coverage_tools//:all_lcov_merger_lib\n@@bazel_tools+remote_coverage_tools_extension+remote_coverage_tools//:all_lcov_merger_tools_deploy.jar\n@@bazel_tools+remote_coverage_tools_extension+remote_coverage_tools//:coverage_report_generator\n@@platforms//os:os\n@@platforms//os:windows\n@@rules_java+//:LICENSE\n@@rules_java+//:license\n@@rules_java+//java/bazel/rules:java_stub_template.txt\n@@rules_java+//toolchains:current_java_toolchain\n@@rules_shell+//shell:toolchain_type\n@@rules_shell+//shell/runfiles:runfiles\n@@rules_shell+//shell/runfiles:runfiles.bash\n@@rules_shell+//shell/runfiles:runfiles_at_legacy_location\n@@rules_shell+//shell/runfiles:runfiles_impl\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "deps(//cyc:a)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.7,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//cyc:a\n//cyc:b\n",
+    "timed_out": false
+   },
+   "id": "deps.cycle",
+   "native": {
+    "elapsed_seconds": 0.025,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//cyc:a\n//cyc:b\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "deps(//app:wrapped)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.646,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//app:wrapped\n//app:wrapped_impl\n//lib:base\n//lib:base.txt\n//lib:tool\n//lib:tool.sh\n",
+    "timed_out": false
+   },
+   "id": "deps.macro",
+   "native": {
+    "elapsed_seconds": 0.036,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//app:wrapped\n//app:wrapped_impl\n//lib:base\n//lib:base.txt\n//lib:tool\n//lib:tool.sh\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "deps(//alias:util_alias)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.825,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//alias:util_alias\n//conf:fast\n//lib:base\n//lib:base.txt\n//lib:fast.txt\n//lib:slow.txt\n//lib:tool\n//lib:tool.sh\n//lib:util\n//lib:util.txt\n",
+    "timed_out": false
+   },
+   "id": "deps.alias",
+   "native": {
+    "elapsed_seconds": 0.033,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//alias:util_alias\n//conf:fast\n//lib:base\n//lib:base.txt\n//lib:fast.txt\n//lib:slow.txt\n//lib:tool\n//lib:tool.sh\n//lib:util\n//lib:util.txt\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "deps(//vis:friends)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.943,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//vis:friends\n//vis:more\n",
+    "timed_out": false
+   },
+   "id": "deps.package_group",
+   "native": {
+    "elapsed_seconds": 0.026,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//vis:friends\n//vis:more\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "deps(//lib:gen)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 8.044,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//lib:base.txt\n//lib:gen\n//lib:tool\n//lib:tool.sh\n@bazel_tools//tools/genrule:genrule-setup.sh\n",
+    "timed_out": false
+   },
+   "id": "deps.genrule",
+   "native": {
+    "elapsed_seconds": 32.37,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//lib:base.txt\n//lib:gen\n//lib:tool\n//lib:tool.sh\n@bazel_tools//tools/genrule:genrule-setup.sh\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "rdeps(//app/... + //lib/... + //alias/..., //lib:base)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 9.176,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//alias:util_alias\n//app:all_tests\n//app:bin\n//app:bin_test\n//app:unit_tests\n//app:wrapped\n//app:wrapped_impl\n//lib:base\n//lib:util\n",
+    "timed_out": false
+   },
+   "id": "rdeps.unbounded",
+   "native": {
+    "elapsed_seconds": 42.189,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//alias:util_alias\n//app:all_tests\n//app:bin\n//app:bin_test\n//app:unit_tests\n//app:wrapped\n//app:wrapped_impl\n//lib:base\n//lib:util\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "rdeps(//app/... + //lib/... + //alias/..., //lib:base, 1)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 8.263,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//app:wrapped_impl\n//lib:base\n//lib:util\n",
+    "timed_out": false
+   },
+   "id": "rdeps.depth1",
+   "native": {
+    "elapsed_seconds": 41.721,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//app:wrapped_impl\n//lib:base\n//lib:util\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "rdeps(//..., //lib:base)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.775,
+    "events": [
+     "ERROR: Evaluation of query \"rdeps(//..., //lib:base)\" failed: preloading transitive closure failed: no such target '//lib:absent': target 'absent' not declared in package 'lib' defined by ${WS}/lib/BUILD.bazel"
+    ],
+    "exit_code": 7,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Evaluation of query \"rdeps(//..., //lib:base)\" failed: preloading transitive closure failed: no such target '//lib:absent': target 'absent' not declared in package 'lib' defined by ${WS}/lib/BUILD.bazel\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "rdeps.broken_universe",
+   "native": {
+    "elapsed_seconds": 41.143,
+    "events": [
+     "ERROR: Evaluation of query \"rdeps(//..., //lib:base)\" failed: preloading transitive closure failed: no such target '//lib:absent': target 'absent' not declared in package 'lib' defined by ${WS}/lib/BUILD.bazel"
+    ],
+    "exit_code": 7,
+    "stderr_tail": "ERROR: Evaluation of query \"rdeps(//..., //lib:base)\" failed: preloading transitive closure failed: no such target '//lib:absent': target 'absent' not declared in package 'lib' defined by ${WS}/lib/BUILD.bazel\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "allpaths(//app:bin, //lib:base)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.749,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//alias:util_alias\n//app:bin\n//lib:base\n//lib:util\n",
+    "timed_out": false
+   },
+   "id": "allpaths",
+   "native": {
+    "elapsed_seconds": 31.008,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//alias:util_alias\n//app:bin\n//lib:base\n//lib:util\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "somepath(//app:bin, //lib:base.txt)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.707,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//app:bin\n//lib:gen.out\n//lib:gen\n//lib:base.txt\n",
+    "timed_out": false
+   },
+   "id": "somepath",
+   "native": {
+    "elapsed_seconds": 30.984,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//app:bin\n//lib:gen.out\n//lib:gen\n//lib:base.txt\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "somepath(//lib:base, //app:bin)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 10.163,
+    "events": [
+     "INFO: Empty results"
+    ],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Empty results\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "somepath.none",
+   "native": {
+    "elapsed_seconds": 0.038,
+    "events": [
+     "INFO: Empty results"
+    ],
+    "exit_code": 0,
+    "stderr_tail": "INFO: Empty results\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "attr(flavor, spicy, //lib:all)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.822,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//lib:util\n",
+    "timed_out": false
+   },
+   "id": "attr.string",
+   "native": {
+    "elapsed_seconds": 0.031,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//lib:util\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "attr(srcs, fast, //lib:all)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.869,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//lib:util\n",
+    "timed_out": false
+   },
+   "id": "attr.select",
+   "native": {
+    "elapsed_seconds": 0.029,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//lib:util\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "attr(tags, unit, //app:all)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.742,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//app:bin_test\n//app:unit_tests\n",
+    "timed_out": false
+   },
+   "id": "attr.tags",
+   "native": {
+    "elapsed_seconds": 0.032,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//app:bin_test\n//app:unit_tests\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "attr(testonly, 1, //app:all)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.766,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//app:all_tests\n//app:bin_test\n//app:manual_test\n//app:unit_tests\n",
+    "timed_out": false
+   },
+   "id": "attr.bool",
+   "native": {
+    "elapsed_seconds": 0.031,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//app:all_tests\n//app:bin_test\n//app:manual_test\n//app:unit_tests\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "attr(stripped, 1, //lib:all)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.612,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//lib:util\n",
+    "timed_out": false
+   },
+   "id": "attr.bool_int_value",
+   "native": {
+    "elapsed_seconds": 0.03,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//lib:util\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "filter('_test$', //app:all)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.483,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//app:bin_test\n//app:manual_test\n",
+    "timed_out": false
+   },
+   "id": "filter",
+   "native": {
+    "elapsed_seconds": 0.03,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//app:bin_test\n//app:manual_test\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "kind('my_.* rule', //...)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.549,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//app:bin\n//app:bin_test\n//app:manual_test\n//app:wrapped_impl\n//lib:base\n//lib:util\n",
+    "timed_out": false
+   },
+   "id": "kind.rules",
+   "native": {
+    "elapsed_seconds": 0.05,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//app:bin\n//app:bin_test\n//app:manual_test\n//app:wrapped_impl\n//lib:base\n//lib:util\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "kind('source file', deps(//lib:util))"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.72,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//lib:base.txt\n//lib:fast.txt\n//lib:slow.txt\n//lib:tool.sh\n//lib:util.txt\n",
+    "timed_out": false
+   },
+   "id": "kind.source",
+   "native": {
+    "elapsed_seconds": 0.029,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//lib:base.txt\n//lib:fast.txt\n//lib:slow.txt\n//lib:tool.sh\n//lib:util.txt\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "labels(srcs, //lib:util)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.62,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//lib:fast.txt\n//lib:slow.txt\n//lib:util.txt\n",
+    "timed_out": false
+   },
+   "id": "labels",
+   "native": {
+    "elapsed_seconds": 0.033,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//lib:fast.txt\n//lib:slow.txt\n//lib:util.txt\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "labels(srcs, //tests:broken)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.727,
+    "events": [
+     "ERROR: Evaluation of query \"labels('srcs', //tests:broken)\" failed: in 'srcs' of rule //tests:broken: no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nope"
+    ],
+    "exit_code": 7,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Evaluation of query \"labels('srcs', //tests:broken)\" failed: in 'srcs' of rule //tests:broken: no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nope\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "labels.missing",
+   "native": {
+    "elapsed_seconds": 0.026,
+    "events": [
+     "ERROR: Evaluation of query \"labels('srcs', //tests:broken)\" failed: in 'srcs' of rule //tests:broken: no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nope"
+    ],
+    "exit_code": 7,
+    "stderr_tail": "ERROR: Evaluation of query \"labels('srcs', //tests:broken)\" failed: in 'srcs' of rule //tests:broken: no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nope\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "tests(//app:all_tests)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.819,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//app:bin_test\n",
+    "timed_out": false
+   },
+   "id": "tests.implicit",
+   "native": {
+    "elapsed_seconds": 0.034,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//app:bin_test\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "tests(//app:unit_tests)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.738,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//app:bin_test\n",
+    "timed_out": false
+   },
+   "id": "tests.tagged",
+   "native": {
+    "elapsed_seconds": 0.032,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//app:bin_test\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "tests(//app:all)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.687,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//app:bin_test\n//app:manual_test\n",
+    "timed_out": false
+   },
+   "id": "tests.package",
+   "native": {
+    "elapsed_seconds": 0.031,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//app:bin_test\n//app:manual_test\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "buildfiles(//app:bin)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.694,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//:BUILD.bazel\n//:defs.bzl\n//app:BUILD.bazel\n//macros:BUILD.bazel\n//macros:inner.bzl\n//macros:wrap.bzl\n",
+    "timed_out": false
+   },
+   "id": "buildfiles",
+   "native": {
+    "elapsed_seconds": 0.03,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//:BUILD.bazel\n//:defs.bzl\n//app:BUILD.bazel\n//macros:BUILD.bazel\n//macros:inner.bzl\n//macros:wrap.bzl\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "loadfiles(//app:bin)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.593,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//:defs.bzl\n//macros:inner.bzl\n//macros:wrap.bzl\n",
+    "timed_out": false
+   },
+   "id": "loadfiles",
+   "native": {
+    "elapsed_seconds": 0.031,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//:defs.bzl\n//macros:inner.bzl\n//macros:wrap.bzl\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "siblings(//lib:base)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.762,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//lib:BUILD.bazel\n//lib:base\n//lib:base.txt\n//lib:fast.txt\n//lib:gen\n//lib:gen.out\n//lib:slow.txt\n//lib:tool\n//lib:tool.sh\n//lib:util\n//lib:util.txt\n",
+    "timed_out": false
+   },
+   "id": "siblings",
+   "native": {
+    "elapsed_seconds": 0.03,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//lib:BUILD.bazel\n//lib:base\n//lib:base.txt\n//lib:fast.txt\n//lib:gen\n//lib:gen.out\n//lib:slow.txt\n//lib:tool\n//lib:tool.sh\n//lib:util\n//lib:util.txt\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "some(//lib:all)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.849,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//lib:base\n",
+    "timed_out": false
+   },
+   "id": "some.one",
+   "native": {
+    "elapsed_seconds": 0.027,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//lib:base\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "some(//lib:all, 2)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.747,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//lib:base\n//lib:gen\n",
+    "timed_out": false
+   },
+   "id": "some.two",
+   "native": {
+    "elapsed_seconds": 0.027,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//lib:base\n//lib:gen\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "visible(//app:bin, //lib:all + //cyc:a)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.702,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//lib:base\n//lib:gen\n//lib:tool\n//lib:util\n",
+    "timed_out": false
+   },
+   "id": "visible",
+   "native": {
+    "elapsed_seconds": 0.035,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//lib:base\n//lib:gen\n//lib:tool\n//lib:util\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "same_pkg_direct_rdeps(//lib:base)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.59,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//lib:util\n",
+    "timed_out": false
+   },
+   "id": "same_pkg_direct_rdeps",
+   "native": {
+    "elapsed_seconds": 0.027,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//lib:util\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "executables(//app:all)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.722,
+    "events": [
+     "INFO: Empty results"
+    ],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Empty results\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "executables",
+   "native": {
+    "elapsed_seconds": 0.028,
+    "events": [
+     "INFO: Empty results"
+    ],
+    "exit_code": 0,
+    "stderr_tail": "INFO: Empty results\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "--output=label_kind",
+    "deps(//lib:util)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.663,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "config_setting rule //conf:fast\nmy_library rule //lib:base\nsource file //lib:base.txt\nsource file //lib:fast.txt\nsource file //lib:slow.txt\nfilegroup rule //lib:tool\nsource file //lib:tool.sh\nmy_library rule //lib:util\nsource file //lib:util.txt\n",
+    "timed_out": false
+   },
+   "id": "output.label_kind",
+   "native": {
+    "elapsed_seconds": 0.029,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "config_setting rule //conf:fast\nmy_library rule //lib:base\nsource file //lib:base.txt\nsource file //lib:fast.txt\nsource file //lib:slow.txt\nfilegroup rule //lib:tool\nsource file //lib:tool.sh\nmy_library rule //lib:util\nsource file //lib:util.txt\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "--output=package",
+    "deps(//app:bin)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.892,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "@bazel_tools//tools/genrule\nalias\napp\nconf\nlib\nvis\n",
+    "timed_out": false
+   },
+   "id": "output.package",
+   "native": {
+    "elapsed_seconds": 30.81,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "@bazel_tools//tools/genrule\nalias\napp\nconf\nlib\nvis\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "--output=location",
+    "//conf:fast + //lib:base.txt + //lib:gen.out + //vis:friends + //app:wrapped_impl"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.725,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "${WS}/app/BUILD.bazel:15:16: my_library rule //app:wrapped_impl\n${WS}/conf/BUILD.bazel:1:15: config_setting rule //conf:fast\n${WS}/lib/base.txt:1:1: source file //lib:base.txt\n${WS}/lib/BUILD.bazel:22:8: generated file //lib:gen.out\n${WS}/vis/BUILD.bazel:1:14: package group //vis:friends\n",
+    "timed_out": false
+   },
+   "id": "output.location",
+   "native": {
+    "elapsed_seconds": 0.035,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "${WS}/app/BUILD.bazel:15:16: my_library rule //app:wrapped_impl\n${WS}/conf/BUILD.bazel:1:15: config_setting rule //conf:fast\n${WS}/lib/base.txt:1:1: source file //lib:base.txt\n${WS}/lib/BUILD.bazel:22:8: generated file //lib:gen.out\n${WS}/vis/BUILD.bazel:1:14: package group //vis:friends\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "--output=location",
+    "--relative_locations",
+    "//conf:fast + //lib:base.txt"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.564,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "conf/BUILD.bazel:1:15: config_setting rule //conf:fast\nlib/base.txt:1:1: source file //lib:base.txt\n",
+    "timed_out": false
+   },
+   "id": "output.location_relative",
+   "native": {
+    "elapsed_seconds": 0.029,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "conf/BUILD.bazel:1:15: config_setting rule //conf:fast\nlib/base.txt:1:1: source file //lib:base.txt\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "--output=build",
+    "//lib:util + //conf:fast + //app:wrapped_impl + //lib:gen + //app:bin_test"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.701,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "# ${WS}/app/BUILD.bazel:20:8\nmy_test(\n  name = \"bin_test\",\n  tags = [\"unit\"],\n  srcs = [\"//app:test.txt\"],\n  deps = [\"//app:bin\"],\n)\n# Rule bin_test instantiated at (most recent call last):\n#   ${WS}/app/BUILD.bazel:20:8 in <toplevel>\n# Rule my_test defined at (most recent call last):\n#   ${WS}/defs.bzl:20:15 in <toplevel>\n\n# ${WS}/app/BUILD.bazel:15:16\nmy_library(\n  name = \"wrapped_impl\",\n  generator_name = \"wrapped\",\n  generator_function = \"wrapped_library\",\n  generator_location = \"app/BUILD.bazel:15:16\",\n  deps = [\"//lib:base\"],\n)\n# Rule wrapped_impl instantiated at (most recent call last):\n#   ${WS}/app/BUILD.bazel:15:16 in <toplevel>\n#   ${WS}/macros/wrap.bzl:4:15  in wrapped_library\n# Rule my_library defined at (most recent call last):\n#   ${WS}/defs.bzl:8:18 in <toplevel>\n\n# ${WS}/conf/BUILD.bazel:1:15\nconfig_setting(\n  name = \"fast\",\n  visibility = [\"//visibility:public\"],\n  define_values = {\"speed\": \"fast\"},\n)\n# Rule fast instantiated at (most recent call last):\n#   ${WS}/conf/BUILD.bazel:1:15 in <toplevel>\n\n# ${WS}/lib/BUILD.bazel:22:8\ngenrule(\n  name = \"gen\",\n  srcs = [\"//lib:base.txt\"],\n  tools = [\"//lib:tool\"],\n  outs = [\"//lib:gen.out\"],\n  cmd = \"cp $< $@\",\n)\n# Rule gen instantiated at (most recent call last):\n#   ${WS}/lib/BUILD.bazel:22:8 in <toplevel>\n\n# ${WS}/lib/BUILD.bazel:10:11\nmy_library(\n  name = \"util\",\n  srcs = [\"//lib:util.txt\"] + select({\"//conf:fast\": [\"//lib:fast.txt\"], \"//conditions:default\": [\"//lib:slow.txt\"]}),\n  deps = [\"//lib:base\"],\n  flavor = \"spicy\",\n  stripped = True,\n)\n# Rule util instantiated at (most recent call last):\n#   ${WS}/lib/BUILD.bazel:10:11 in <toplevel>\n# Rule my_library defined at (most recent call last):\n#   ${WS}/defs.bzl:8:18 in <toplevel>\n\n",
+    "timed_out": false
+   },
+   "id": "output.build",
+   "native": {
+    "elapsed_seconds": 0.038,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "# ${WS}/app/BUILD.bazel:20:8\nmy_test(\n  name = \"bin_test\",\n  tags = [\"unit\"],\n  srcs = [\"//app:test.txt\"],\n  deps = [\"//app:bin\"],\n)\n# Rule bin_test instantiated at (most recent call last):\n#   ${WS}/app/BUILD.bazel:20:8 in <toplevel>\n# Rule my_test defined at (most recent call last):\n#   ${WS}/defs.bzl:20:15 in <toplevel>\n\n# ${WS}/app/BUILD.bazel:15:16\nmy_library(\n  name = \"wrapped_impl\",\n  generator_name = \"wrapped\",\n  generator_function = \"wrapped_library\",\n  generator_location = \"app/BUILD.bazel:15:16\",\n  deps = [\"//lib:base\"],\n)\n# Rule wrapped_impl instantiated at (most recent call last):\n#   ${WS}/app/BUILD.bazel:15:16 in <toplevel>\n#   ${WS}/macros/wrap.bzl:4:15  in wrapped_library\n# Rule my_library defined at (most recent call last):\n#   ${WS}/defs.bzl:8:18 in <toplevel>\n\n# ${WS}/conf/BUILD.bazel:1:15\nconfig_setting(\n  name = \"fast\",\n  visibility = [\"//visibility:public\"],\n  define_values = {\"speed\": \"fast\"},\n)\n# Rule fast instantiated at (most recent call last):\n#   ${WS}/conf/BUILD.bazel:1:15 in <toplevel>\n\n# ${WS}/lib/BUILD.bazel:22:8\ngenrule(\n  name = \"gen\",\n  srcs = [\"//lib:base.txt\"],\n  tools = [\"//lib:tool\"],\n  outs = [\"//lib:gen.out\"],\n  cmd = \"cp $< $@\",\n)\n# Rule gen instantiated at (most recent call last):\n#   ${WS}/lib/BUILD.bazel:22:8 in <toplevel>\n\n# ${WS}/lib/BUILD.bazel:10:11\nmy_library(\n  name = \"util\",\n  srcs = [\"//lib:util.txt\"] + select({\"//conf:fast\": [\"//lib:fast.txt\"], \"//conditions:default\": [\"//lib:slow.txt\"]}),\n  deps = [\"//lib:base\"],\n  flavor = \"spicy\",\n  stripped = True,\n)\n# Rule util instantiated at (most recent call last):\n#   ${WS}/lib/BUILD.bazel:10:11 in <toplevel>\n# Rule my_library defined at (most recent call last):\n#   ${WS}/defs.bzl:8:18 in <toplevel>\n\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "--output=minrank",
+    "deps(//lib:util)"
+   ],
+   "comparison": "unordered",
+   "genuine": {
+    "elapsed_seconds": 7.619,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "0 //lib:util\n1 //lib:util.txt\n1 //conf:fast\n1 //lib:fast.txt\n1 //lib:slow.txt\n1 //lib:base\n1 //lib:tool\n2 //lib:base.txt\n2 //lib:tool.sh\n",
+    "timed_out": false
+   },
+   "id": "output.minrank_auto",
+   "native": {
+    "elapsed_seconds": 0.031,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "0 //lib:util\n1 //conf:fast\n1 //lib:base\n1 //lib:fast.txt\n1 //lib:slow.txt\n1 //lib:tool\n1 //lib:util.txt\n2 //lib:base.txt\n2 //lib:tool.sh\n",
+    "timed_out": false
+   },
+   "status": "EXACT_UNORDERED"
+  },
+  {
+   "args": [
+    "--output=minrank",
+    "--order_output=full",
+    "deps(//lib:util)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.74,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "0 //lib:util\n1 //conf:fast\n1 //lib:base\n1 //lib:fast.txt\n1 //lib:slow.txt\n1 //lib:tool\n1 //lib:util.txt\n2 //lib:base.txt\n2 //lib:tool.sh\n",
+    "timed_out": false
+   },
+   "id": "output.minrank_full",
+   "native": {
+    "elapsed_seconds": 0.045,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "0 //lib:util\n1 //conf:fast\n1 //lib:base\n1 //lib:fast.txt\n1 //lib:slow.txt\n1 //lib:tool\n1 //lib:util.txt\n2 //lib:base.txt\n2 //lib:tool.sh\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "--output=maxrank",
+    "deps(//lib:util)"
+   ],
+   "comparison": "unordered",
+   "genuine": {
+    "elapsed_seconds": 7.837,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "0 //lib:util\n1 //lib:util.txt\n1 //lib:base\n1 //conf:fast\n1 //lib:fast.txt\n1 //lib:slow.txt\n2 //lib:base.txt\n2 //lib:tool\n3 //lib:tool.sh\n",
+    "timed_out": false
+   },
+   "id": "output.maxrank_auto",
+   "native": {
+    "elapsed_seconds": 0.032,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "0 //lib:util\n1 //conf:fast\n1 //lib:base\n1 //lib:fast.txt\n1 //lib:slow.txt\n1 //lib:util.txt\n2 //lib:base.txt\n2 //lib:tool\n3 //lib:tool.sh\n",
+    "timed_out": false
+   },
+   "status": "EXACT_UNORDERED"
+  },
+  {
+   "args": [
+    "--output=maxrank",
+    "--order_output=full",
+    "deps(//lib:util)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.812,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "0 //lib:util\n1 //conf:fast\n1 //lib:base\n1 //lib:fast.txt\n1 //lib:slow.txt\n1 //lib:util.txt\n2 //lib:base.txt\n2 //lib:tool\n3 //lib:tool.sh\n",
+    "timed_out": false
+   },
+   "id": "output.maxrank_full",
+   "native": {
+    "elapsed_seconds": 0.032,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "0 //lib:util\n1 //conf:fast\n1 //lib:base\n1 //lib:fast.txt\n1 //lib:slow.txt\n1 //lib:util.txt\n2 //lib:base.txt\n2 //lib:tool\n3 //lib:tool.sh\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "--output=graph",
+    "--order_output=full",
+    "deps(//lib:util)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.625,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "digraph mygraph {\n  node [shape=box];\n  \"//lib:util\"\n  \"//lib:util\" -> \"//conf:fast\\n//lib:fast.txt\\n//lib:slow.txt\\n//lib:util.txt\"\n  [label=\"//conf:fast//conditions:default\"];\n  \"//lib:util\" -> \"//lib:base\"\n  \"//lib:util\" -> \"//lib:tool\"\n  \"//lib:base\"\n  \"//lib:base\" -> \"//lib:base.txt\"\n  \"//lib:base\" -> \"//lib:tool\"\n  \"//lib:tool\"\n  \"//lib:tool\" -> \"//lib:tool.sh\"\n  \"//lib:tool.sh\"\n  \"//lib:base.txt\"\n  \"//conf:fast\\n//lib:fast.txt\\n//lib:slow.txt\\n//lib:util.txt\"\n}\n",
+    "timed_out": false
+   },
+   "id": "output.graph_full",
+   "native": {
+    "elapsed_seconds": 0.031,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "digraph mygraph {\n  node [shape=box];\n  \"//lib:util\"\n  \"//lib:util\" -> \"//conf:fast\\n//lib:fast.txt\\n//lib:slow.txt\\n//lib:util.txt\"\n  [label=\"//conf:fast//conditions:default\"];\n  \"//lib:util\" -> \"//lib:base\"\n  \"//lib:util\" -> \"//lib:tool\"\n  \"//lib:base\"\n  \"//lib:base\" -> \"//lib:base.txt\"\n  \"//lib:base\" -> \"//lib:tool\"\n  \"//lib:tool\"\n  \"//lib:tool\" -> \"//lib:tool.sh\"\n  \"//lib:tool.sh\"\n  \"//lib:base.txt\"\n  \"//conf:fast\\n//lib:fast.txt\\n//lib:slow.txt\\n//lib:util.txt\"\n}\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "--output=graph",
+    "deps(//lib:util)"
+   ],
+   "comparison": "graph_unordered",
+   "genuine": {
+    "elapsed_seconds": 7.695,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "digraph mygraph {\n  node [shape=box];\n  \"//lib:util\"\n  \"//lib:util\" -> \"//lib:slow.txt\\n//conf:fast\\n//lib:fast.txt\\n//lib:util.txt\"\n  [label=\"//conditions:default//conf:fast\"];\n  \"//lib:util\" -> \"//lib:base\"\n  \"//lib:util\" -> \"//lib:tool\"\n  \"//lib:base\"\n  \"//lib:base\" -> \"//lib:base.txt\"\n  \"//lib:base\" -> \"//lib:tool\"\n  \"//lib:tool\"\n  \"//lib:tool\" -> \"//lib:tool.sh\"\n  \"//lib:tool.sh\"\n  \"//lib:base.txt\"\n  \"//lib:slow.txt\\n//conf:fast\\n//lib:fast.txt\\n//lib:util.txt\"\n}\n",
+    "timed_out": false
+   },
+   "id": "output.graph_auto",
+   "native": {
+    "elapsed_seconds": 0.033,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "digraph mygraph {\n  node [shape=box];\n  \"//lib:util\"\n  \"//lib:util\" -> \"//conf:fast\\n//lib:fast.txt\\n//lib:slow.txt\\n//lib:util.txt\"\n  [label=\"//conf:fast//conditions:default\"];\n  \"//lib:util\" -> \"//lib:base\"\n  \"//lib:util\" -> \"//lib:tool\"\n  \"//lib:base\"\n  \"//lib:base\" -> \"//lib:base.txt\"\n  \"//lib:base\" -> \"//lib:tool\"\n  \"//lib:tool\"\n  \"//lib:tool\" -> \"//lib:tool.sh\"\n  \"//lib:tool.sh\"\n  \"//lib:base.txt\"\n  \"//conf:fast\\n//lib:fast.txt\\n//lib:slow.txt\\n//lib:util.txt\"\n}\n",
+    "timed_out": false
+   },
+   "status": "EXACT_UNORDERED"
+  },
+  {
+   "args": [
+    "--output=graph",
+    "--order_output=full",
+    "--nograph:factored",
+    "deps(//lib:util)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.899,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "digraph mygraph {\n  node [shape=box];\n  \"//lib:util\"\n  \"//lib:util\" -> \"//conf:fast\"\n  \"//lib:util\" -> \"//lib:base\"\n  \"//lib:util\" -> \"//lib:fast.txt\"\n  [label=\"//conf:fast\"];\n  \"//lib:util\" -> \"//lib:slow.txt\"\n  [label=\"//conditions:default\"];\n  \"//lib:util\" -> \"//lib:tool\"\n  \"//lib:util\" -> \"//lib:util.txt\"\n  \"//lib:util.txt\"\n  \"//lib:slow.txt\"\n  \"//lib:fast.txt\"\n  \"//lib:base\"\n  \"//lib:base\" -> \"//lib:base.txt\"\n  \"//lib:base\" -> \"//lib:tool\"\n  \"//lib:tool\"\n  \"//lib:tool\" -> \"//lib:tool.sh\"\n  \"//lib:tool.sh\"\n  \"//lib:base.txt\"\n  \"//conf:fast\"\n}\n",
+    "timed_out": false
+   },
+   "id": "output.graph_unfactored",
+   "native": {
+    "elapsed_seconds": 0.032,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "digraph mygraph {\n  node [shape=box];\n  \"//lib:util\"\n  \"//lib:util\" -> \"//conf:fast\"\n  \"//lib:util\" -> \"//lib:base\"\n  \"//lib:util\" -> \"//lib:fast.txt\"\n  [label=\"//conf:fast\"];\n  \"//lib:util\" -> \"//lib:slow.txt\"\n  [label=\"//conditions:default\"];\n  \"//lib:util\" -> \"//lib:tool\"\n  \"//lib:util\" -> \"//lib:util.txt\"\n  \"//lib:util.txt\"\n  \"//lib:slow.txt\"\n  \"//lib:fast.txt\"\n  \"//lib:base\"\n  \"//lib:base\" -> \"//lib:base.txt\"\n  \"//lib:base\" -> \"//lib:tool\"\n  \"//lib:tool\"\n  \"//lib:tool\" -> \"//lib:tool.sh\"\n  \"//lib:tool.sh\"\n  \"//lib:base.txt\"\n  \"//conf:fast\"\n}\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "--output=graph",
+    "--order_output=full",
+    "deps(//cyc:a)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.605,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "digraph mygraph {\n  node [shape=box];\n  \"//cyc:a\"\n  \"//cyc:a\" -> \"//cyc:b\"\n  \"//cyc:b\"\n  \"//cyc:b\" -> \"//cyc:a\"\n}\n",
+    "timed_out": false
+   },
+   "id": "output.graph_cycle",
+   "native": {
+    "elapsed_seconds": 0.026,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "digraph mygraph {\n  node [shape=box];\n  \"//cyc:a\"\n  \"//cyc:a\" -> \"//cyc:b\"\n  \"//cyc:b\"\n  \"//cyc:b\" -> \"//cyc:a\"\n}\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "--order_output=full",
+    "deps(//lib:base)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.699,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//lib:base\n//lib:tool\n//lib:tool.sh\n//lib:base.txt\n",
+    "timed_out": false
+   },
+   "id": "order.full",
+   "native": {
+    "elapsed_seconds": 0.029,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//lib:base\n//lib:tool\n//lib:tool.sh\n//lib:base.txt\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "--order_output=deps",
+    "deps(//lib:base)"
+   ],
+   "comparison": "unordered",
+   "genuine": {
+    "elapsed_seconds": 7.715,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//lib:base\n//lib:tool\n//lib:base.txt\n//lib:tool.sh\n",
+    "timed_out": false
+   },
+   "id": "order.deps",
+   "native": {
+    "elapsed_seconds": 0.03,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//lib:base\n//lib:tool\n//lib:tool.sh\n//lib:base.txt\n",
+    "timed_out": false
+   },
+   "status": "EXACT_UNORDERED"
+  },
+  {
+   "args": [
+    "--order_output=no",
+    "deps(//lib:base)"
+   ],
+   "comparison": "unordered",
+   "genuine": {
+    "elapsed_seconds": 7.739,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "//lib:base.txt\n//lib:tool.sh\n//lib:tool\n//lib:base\n",
+    "timed_out": false
+   },
+   "id": "order.no",
+   "native": {
+    "elapsed_seconds": 0.044,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//lib:base\n//lib:base.txt\n//lib:tool\n//lib:tool.sh\n",
+    "timed_out": false
+   },
+   "status": "EXACT_UNORDERED"
+  },
+  {
+   "args": [
+    "--null",
+    "//cyc:all"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.587,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n\n",
+    "stdout": "//cyc:a\u0000//cyc:b\u0000",
+    "timed_out": false
+   },
+   "id": "output.null",
+   "native": {
+    "elapsed_seconds": 0.028,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "//cyc:a\u0000//cyc:b\u0000",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "--consistent_labels",
+    "deps(//lib:gen)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.666,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "@@//lib:base.txt\n@@//lib:gen\n@@//lib:tool\n@@//lib:tool.sh\n@@bazel_tools//tools/genrule:genrule-setup.sh\n",
+    "timed_out": false
+   },
+   "id": "output.consistent_labels",
+   "native": {
+    "elapsed_seconds": 31.064,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "",
+    "stdout": "@@//lib:base.txt\n@@//lib:gen\n@@//lib:tool\n@@//lib:tool.sh\n@@bazel_tools//tools/genrule:genrule-setup.sh\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "deps(//lib:util"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.595,
+    "events": [
+     "ERROR: Error while parsing 'deps(//lib:util': premature end of input"
+    ],
+    "exit_code": 2,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Error while parsing 'deps(//lib:util': premature end of input\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "error.syntax",
+   "native": {
+    "elapsed_seconds": 0.029,
+    "events": [
+     "ERROR: Error while parsing 'deps(//lib:util': premature end of input"
+    ],
+    "exit_code": 2,
+    "stderr_tail": "ERROR: Error while parsing 'deps(//lib:util': premature end of input\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "allrdeps(//lib:util)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.728,
+    "events": [
+     "ERROR: Error while parsing 'allrdeps(//lib:util)': unknown function 'allrdeps' at 'allrdeps ( //lib:util'; expected one of ['allpaths', 'attr', 'buildfiles', 'deps', 'executables', 'filter', 'kind', 'labels', 'loadfiles', 'rdeps', 'same_pkg_direct_rdeps', 'siblings', 'some', 'somepath', 'tests', 'visible']"
+    ],
+    "exit_code": 2,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Error while parsing 'allrdeps(//lib:util)': unknown function 'allrdeps' at 'allrdeps ( //lib:util'; expected one of ['allpaths', 'attr', 'buildfiles', 'deps', 'executables', 'filter', 'kind', 'labels', 'loadfiles', 'rdeps', 'same_pkg_direct_rdeps', 'siblings', 'some', 'somepath', 'tests', 'visible']\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "error.unknown_function",
+   "native": {
+    "elapsed_seconds": 0.031,
+    "events": [
+     "ERROR: Error while parsing 'allrdeps(//lib:util)': unknown function 'allrdeps' at 'allrdeps ( //lib:util'; expected one of ['allpaths', 'attr', 'buildfiles', 'deps', 'executables', 'filter', 'kind', 'labels', 'loadfiles', 'rdeps', 'same_pkg_direct_rdeps', 'siblings', 'some', 'somepath', 'tests', 'visible']"
+    ],
+    "exit_code": 2,
+    "stderr_tail": "ERROR: Error while parsing 'allrdeps(//lib:util)': unknown function 'allrdeps' at 'allrdeps ( //lib:util'; expected one of ['allpaths', 'attr', 'buildfiles', 'deps', 'executables', 'filter', 'kind', 'labels', 'loadfiles', 'rdeps', 'same_pkg_direct_rdeps', 'siblings', 'some', 'somepath', 'tests', 'visible']\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "deps(//lib:util, 1, 2)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.5,
+    "events": [
+     "ERROR: Error while parsing 'deps(//lib:util, 1, 2)': too many arguments to function 'deps' at ', 2 )'"
+    ],
+    "exit_code": 2,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Error while parsing 'deps(//lib:util, 1, 2)': too many arguments to function 'deps' at ', 2 )'\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "error.too_many_arguments",
+   "native": {
+    "elapsed_seconds": 0.023,
+    "events": [
+     "ERROR: Error while parsing 'deps(//lib:util, 1, 2)': too many arguments to function 'deps' at ', 2 )'"
+    ],
+    "exit_code": 2,
+    "stderr_tail": "ERROR: Error while parsing 'deps(//lib:util, 1, 2)': too many arguments to function 'deps' at ', 2 )'\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "deps(//lib:util, x)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.626,
+    "events": [
+     "ERROR: Error while parsing 'deps(//lib:util, x)': expected an integer literal: 'x'"
+    ],
+    "exit_code": 2,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Error while parsing 'deps(//lib:util, x)': expected an integer literal: 'x'\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "error.bad_integer",
+   "native": {
+    "elapsed_seconds": 0.022,
+    "events": [
+     "ERROR: Error while parsing 'deps(//lib:util, x)': expected an integer literal: 'x'"
+    ],
+    "exit_code": 2,
+    "stderr_tail": "ERROR: Error while parsing 'deps(//lib:util, x)': expected an integer literal: 'x'\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "--output=json",
+    "//lib:util"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.791,
+    "events": [
+     "ERROR: Invalid output format 'json'. Valid values are: label, label_kind, build, minrank, maxrank, package, location, graph, xml, proto, streamed_jsonproto, streamed_proto"
+    ],
+    "exit_code": 2,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Invalid output format 'json'. Valid values are: label, label_kind, build, minrank, maxrank, package, location, graph, xml, proto, streamed_jsonproto, streamed_proto\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "error.output_format",
+   "native": {
+    "elapsed_seconds": 0.024,
+    "events": [
+     "ERROR: Invalid output format 'json'. Valid values are: label, label_kind, build, minrank, maxrank, package, location, graph, xml, proto, streamed_jsonproto, streamed_proto"
+    ],
+    "exit_code": 2,
+    "stderr_tail": "ERROR: Invalid output format 'json'. Valid values are: label, label_kind, build, minrank, maxrank, package, location, graph, xml, proto, streamed_jsonproto, streamed_proto\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "//nope:x"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 8.421,
+    "events": [
+     "ERROR: no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nope"
+    ],
+    "exit_code": 7,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nope\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "error.missing_package",
+   "native": {
+    "elapsed_seconds": 0.023,
+    "events": [
+     "ERROR: no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nope"
+    ],
+    "exit_code": 7,
+    "stderr_tail": "ERROR: no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nope\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "//lib:nothere"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.704,
+    "events": [
+     "ERROR: no such target '//lib:nothere': target 'nothere' not declared in package 'lib' defined by ${WS}/lib/BUILD.bazel"
+    ],
+    "exit_code": 7,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: no such target '//lib:nothere': target 'nothere' not declared in package 'lib' defined by ${WS}/lib/BUILD.bazel\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "error.missing_target",
+   "native": {
+    "elapsed_seconds": 0.031,
+    "events": [
+     "ERROR: no such target '//lib:nothere': target 'nothere' not declared in package 'lib' defined by ${WS}/lib/BUILD.bazel"
+    ],
+    "exit_code": 7,
+    "stderr_tail": "ERROR: no such target '//lib:nothere': target 'nothere' not declared in package 'lib' defined by ${WS}/lib/BUILD.bazel\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "//nothing/..."
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.713,
+    "events": [
+     "ERROR: no targets found beneath 'nothing'"
+    ],
+    "exit_code": 7,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: no targets found beneath 'nothing'\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "error.no_targets_beneath",
+   "native": {
+    "elapsed_seconds": 0.023,
+    "events": [
+     "ERROR: no targets found beneath 'nothing'"
+    ],
+    "exit_code": 7,
+    "stderr_tail": "ERROR: no targets found beneath 'nothing'\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "deps(//tests:broken)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.774,
+    "events": [
+     "ERROR: Evaluation of query \"deps(//tests:broken)\" failed: preloading transitive closure failed: no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nope"
+    ],
+    "exit_code": 7,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Evaluation of query \"deps(//tests:broken)\" failed: preloading transitive closure failed: no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nope\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "error.deps_missing_edges",
+   "native": {
+    "elapsed_seconds": 0.032,
+    "events": [
+     "ERROR: Evaluation of query \"deps(//tests:broken)\" failed: preloading transitive closure failed: no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nope"
+    ],
+    "exit_code": 7,
+    "stderr_tail": "ERROR: Evaluation of query \"deps(//tests:broken)\" failed: preloading transitive closure failed: no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nope\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "--keep_going",
+    "deps(//tests:broken) + //cyc:a"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 14.507,
+    "events": [
+     "ERROR: ${WS}/tests/BUILD.bazel:1:10: no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nope and referenced by '//tests:broken'",
+     "ERROR: ${WS}/tests/BUILD.bazel:1:10: no such target '//lib:absent': target 'absent' not declared in package 'lib' defined by ${WS}/lib/BUILD.bazel and referenced by '//tests:broken'",
+     "ERROR: ${WS}/tests/BUILD.bazel:1:10: no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nope and referenced by '//tests:broken'",
+     "ERROR: ${WS}/tests/BUILD.bazel:1:10: no such target '//lib:absent': target 'absent' not declared in package 'lib' defined by ${WS}/lib/BUILD.bazel and referenced by '//tests:broken'",
+     "ERROR: Evaluation of query \"deps(//tests:broken)\" failed: errors were encountered while computing transitive closure",
+     "WARNING: --keep_going specified, ignoring errors. Results may be inaccurate"
+    ],
+    "exit_code": 3,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: ${WS}/tests/BUILD.bazel:1:10: no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nope and referenced by '//tests:broken'\nERROR: ${WS}/tests/BUILD.bazel:1:10: no such target '//lib:absent': target 'absent' not declared in package 'lib' defined by ${WS}/lib/BUILD.bazel and referenced by '//tests:broken'\nERROR: ${WS}/tests/BUILD.bazel:1:10: no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nope and referenced by '//tests:broken'\nERROR: ${WS}/tests/BUILD.bazel:1:10: no such target '//lib:absent': target 'absent' not declared in package 'lib' defined by ${WS}/lib/BUILD.bazel and referenced by '//tests:broken'\nERROR: Evaluation of query \"deps(//tests:broken)\" failed: errors were encountered while computing transitive closure\nWARNING: --keep_going specified, ignoring errors. Results may be inaccurate\n",
+    "stdout": "//cyc:a\n//tests:broken\n",
+    "timed_out": false
+   },
+   "id": "error.keep_going_edges",
+   "native": {
+    "elapsed_seconds": 0.037,
+    "events": [
+     "ERROR: ${WS}/tests/BUILD.bazel:1:10: no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nope and referenced by '//tests:broken'",
+     "ERROR: ${WS}/tests/BUILD.bazel:1:10: no such target '//lib:absent': target 'absent' not declared in package 'lib' defined by ${WS}/lib/BUILD.bazel and referenced by '//tests:broken'",
+     "ERROR: ${WS}/tests/BUILD.bazel:1:10: no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nope and referenced by '//tests:broken'",
+     "ERROR: ${WS}/tests/BUILD.bazel:1:10: no such target '//lib:absent': target 'absent' not declared in package 'lib' defined by ${WS}/lib/BUILD.bazel and referenced by '//tests:broken'",
+     "ERROR: Evaluation of query \"deps(//tests:broken)\" failed: errors were encountered while computing transitive closure",
+     "WARNING: --keep_going specified, ignoring errors. Results may be inaccurate"
+    ],
+    "exit_code": 3,
+    "stderr_tail": "ERROR: ${WS}/tests/BUILD.bazel:1:10: no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nope and referenced by '//tests:broken'\nERROR: ${WS}/tests/BUILD.bazel:1:10: no such target '//lib:absent': target 'absent' not declared in package 'lib' defined by ${WS}/lib/BUILD.bazel and referenced by '//tests:broken'\nERROR: ${WS}/tests/BUILD.bazel:1:10: no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nope and referenced by '//tests:broken'\nERROR: ${WS}/tests/BUILD.bazel:1:10: no such target '//lib:absent': target 'absent' not declared in package 'lib' defined by ${WS}/lib/BUILD.bazel and referenced by '//tests:broken'\nERROR: Evaluation of query \"deps(//tests:broken)\" failed: errors were encountered while computing transitive closure\nWARNING: --keep_going specified, ignoring errors. Results may be inaccurate\n",
+    "stdout": "//cyc:a\n//tests:broken\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "-k",
+    "//nope:x + //cyc:a"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.727,
+    "events": [
+     "ERROR: Skipping '//nope:x': no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nope",
+     "WARNING: --keep_going specified, ignoring errors. Results may be inaccurate"
+    ],
+    "exit_code": 3,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Skipping '//nope:x': no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nope\nWARNING: --keep_going specified, ignoring errors. Results may be inaccurate\n",
+    "stdout": "//cyc:a\n",
+    "timed_out": false
+   },
+   "id": "error.keep_going_pattern",
+   "native": {
+    "elapsed_seconds": 0.026,
+    "events": [
+     "ERROR: Skipping '//nope:x': no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nope",
+     "WARNING: --keep_going specified, ignoring errors. Results may be inaccurate"
+    ],
+    "exit_code": 3,
+    "stderr_tail": "ERROR: Skipping '//nope:x': no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - nope\nWARNING: --keep_going specified, ignoring errors. Results may be inaccurate\n",
+    "stdout": "//cyc:a\n",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "//cyc:a + some(//cyc:a - //cyc:a)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.657,
+    "events": [
+     "ERROR: Evaluation of subquery \"some((//cyc:a - //cyc:a))\" failed (did you want to use --keep_going?): argument set is empty"
+    ],
+    "exit_code": 7,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Evaluation of subquery \"some((//cyc:a - //cyc:a))\" failed (did you want to use --keep_going?): argument set is empty\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "error.some_empty",
+   "native": {
+    "elapsed_seconds": 0.025,
+    "events": [
+     "ERROR: Evaluation of subquery \"some((//cyc:a - //cyc:a))\" failed (did you want to use --keep_going?): argument set is empty"
+    ],
+    "exit_code": 7,
+    "stderr_tail": "ERROR: Evaluation of subquery \"some((//cyc:a - //cyc:a))\" failed (did you want to use --keep_going?): argument set is empty\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "$undefined"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.661,
+    "events": [
+     "ERROR: Evaluation of query \"$undefined\" failed: undefined variable 'undefined'"
+    ],
+    "exit_code": 7,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Evaluation of query \"$undefined\" failed: undefined variable 'undefined'\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "error.undefined_variable",
+   "native": {
+    "elapsed_seconds": 0.025,
+    "events": [
+     "ERROR: Evaluation of query \"$undefined\" failed: undefined variable 'undefined'"
+    ],
+    "exit_code": 7,
+    "stderr_tail": "ERROR: Evaluation of query \"$undefined\" failed: undefined variable 'undefined'\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "let 1x = //cyc:a in //cyc:b"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.786,
+    "events": [
+     "ERROR: Evaluation of query \"let 1x = //cyc:a in //cyc:b\" failed: invalid variable name '1x' in let expression"
+    ],
+    "exit_code": 7,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Evaluation of query \"let 1x = //cyc:a in //cyc:b\" failed: invalid variable name '1x' in let expression\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "error.invalid_let_name",
+   "native": {
+    "elapsed_seconds": 0.028,
+    "events": [
+     "ERROR: Evaluation of query \"let 1x = //cyc:a in //cyc:b\" failed: invalid variable name '1x' in let expression"
+    ],
+    "exit_code": 7,
+    "stderr_tail": "ERROR: Evaluation of query \"let 1x = //cyc:a in //cyc:b\" failed: invalid variable name '1x' in let expression\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "filter('(', //cyc:a)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.748,
+    "events": [
+     "ERROR: Evaluation of query \"filter('(', //cyc:a)\" failed: illegal 'filter' pattern regexp '(': Unclosed group near index 1\n("
+    ],
+    "exit_code": 7,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Evaluation of query \"filter('(', //cyc:a)\" failed: illegal 'filter' pattern regexp '(': Unclosed group near index 1\n(\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "error.bad_regex",
+   "native": {
+    "elapsed_seconds": 0.025,
+    "events": [
+     "ERROR: Evaluation of query \"filter('(', //cyc:a)\" failed: illegal 'filter' pattern regexp '(': Unclosed group near index 1\n("
+    ],
+    "exit_code": 7,
+    "stderr_tail": "ERROR: Evaluation of query \"filter('(', //cyc:a)\" failed: illegal 'filter' pattern regexp '(': Unclosed group near index 1\n(\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "//cyc:a - //cyc:a"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.787,
+    "events": [
+     "INFO: Empty results"
+    ],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Empty results\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "error.empty_result",
+   "native": {
+    "elapsed_seconds": 0.027,
+    "events": [
+     "INFO: Empty results"
+    ],
+    "exit_code": 0,
+    "stderr_tail": "INFO: Empty results\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "--output=location",
+    "buildfiles(//cyc:a)"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.685,
+    "events": [
+     "ERROR: Query expressions involving 'buildfiles' or 'loadfiles' cannot be used with --output=location"
+    ],
+    "exit_code": 2,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Query expressions involving 'buildfiles' or 'loadfiles' cannot be used with --output=location\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "error.location_buildfiles",
+   "native": {
+    "elapsed_seconds": 0.023,
+    "events": [
+     "ERROR: Query expressions involving 'buildfiles' or 'loadfiles' cannot be used with --output=location"
+    ],
+    "exit_code": 2,
+    "stderr_tail": "ERROR: Query expressions involving 'buildfiles' or 'loadfiles' cannot be used with --output=location\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 7.652,
+    "events": [],
+    "exit_code": 2,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "error.no_expression",
+   "native": {
+    "elapsed_seconds": 0.021,
+    "events": [],
+    "exit_code": 2,
+    "stderr_tail": "",
+    "stdout": "",
+    "timed_out": false
+   },
+   "status": "EXACT"
+  },
+  {
+   "args": [
+    "--output=xml",
+    "//cyc:a"
+   ],
+   "comparison": "exact",
+   "genuine": {
+    "elapsed_seconds": 8.057,
+    "events": [],
+    "exit_code": 0,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "stdout": "<?xml version=\"1.1\" encoding=\"UTF-8\" standalone=\"no\"?>\n<query version=\"2\">\n    <rule class=\"filegroup\" location=\"${WS}/cyc/BUILD.bazel:1:10\" name=\"//cyc:a\">\n        <string name=\"name\" value=\"a\"/>\n        <list name=\"srcs\">\n            <label value=\"//cyc:b\"/>\n        </list>\n        <rule-input name=\"//cyc:b\"/>\n    </rule>\n</query>\n",
+    "timed_out": false
+   },
+   "id": "unsupported.xml",
+   "native": {
+    "elapsed_seconds": 0.022,
+    "events": [
+     "NATIVE-FATAL: unsupported --output=xml: only label, label_kind, build, minrank, maxrank, package, location and graph are implemented in the native profile"
+    ],
+    "exit_code": 1,
+    "stderr_tail": "bazel-rs: unsupported --output=xml: only label, label_kind, build, minrank, maxrank, package, location and graph are implemented in the native profile\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "status": "EXPECTED_NATIVE_UNSUPPORTED"
+  }
+ ],
+ "changes_after_capture": [
+  "no source, test or fixture changes after the rerun",
+  "this receipt: first_run, fixes_between_runs, post_processing and changes_after_capture fields",
+  "docs/QUERY.md evidence and application measurement sections",
+  "artifacts/query-code-measure.py and artifacts/query-code-measurement.json (native-only ~/code measurement, same native binary)"
+ ],
+ "counts": {
+  "EXACT": 83,
+  "EXACT_UNORDERED": 5,
+  "EXPECTED_NATIVE_UNSUPPORTED": 1
+ },
+ "dirty_paths": [
+  " M Cargo.lock",
+  " M Cargo.toml",
+  " M README.md",
+  " M docs/ARCHIVE_SYMLINKS.md",
+  " M docs/BUILD_SETTINGS.md",
+  " M docs/ROADMAP.md",
+  " M docs/capabilities.json",
+  " M src/custom_rule.rs",
+  " M src/engine.rs",
+  " M src/lib.rs",
+  " M src/loading.rs",
+  " M src/main.rs",
+  " M src/package.rs",
+  " M src/rule_declarations.rs",
+  " M tests/archive_symlinks.rs",
+  " M tests/builtin_modules.rs",
+  " M tests/glob_symlinks.rs",
+  " M tests/host_os.rs",
+  " M tests/module_cli.rs",
+  " M tests/module_extensions.rs",
+  " M tests/native.rs",
+  " M tests/native_rules.rs",
+  " M tests/repositories.rs",
+  " M tests/repository_rules.rs",
+  " M tests/root_module_validation.rs",
+  " M tests/starlark_sets_cli.rs",
+  "?? docs/QUERY.md",
+  "?? src/engine/",
+  "?? src/query_language.rs",
+  "?? tests/fixtures/query_language/",
+  "?? tests/query_language.rs"
+ ],
+ "finished": "2026-10-17T04:10:04.415295+00:00",
+ "first_run": {
+  "counts": {
+   "EVENTS_DIFFER": 4,
+   "EXACT": 68,
+   "EXACT_UNORDERED": 4,
+   "EXPECTED_NATIVE_UNSUPPORTED": 1,
+   "MISMATCH": 11
+  },
+  "mismatches": [
+   "pattern.star",
+   "pattern.all_targets",
+   "pattern.recursive_star",
+   "deps.test_full",
+   "rdeps.unbounded",
+   "rdeps.depth1",
+   "rdeps.broken_universe",
+   "siblings",
+   "output.location",
+   "output.graph_auto",
+   "error.no_targets_beneath",
+   "error.deps_missing_edges",
+   "error.keep_going_edges",
+   "error.bad_regex",
+   "error.no_expression"
+  ],
+  "native_sha256": "3382bd8db3d7549d0cd7e003d89c582a57531e7655ed56d48ca65165fe5df1aa",
+  "note": "summary of the first paired run (same script, earlier native build); the fixes listed in fixes_between_runs were made before this rerun"
+ },
+ "fixes_between_runs": [
+  "BUILD file input targets in :*/:all-targets/...:* and siblings()",
+  "package_group locations (call left parenthesis)",
+  "unbounded visitation without --keep_going fails with QueryTransitivePackagePreloader text, no edge events; --keep_going reports edges from preload and visitor",
+  "no targets found beneath 'dir' for missing directories",
+  "Java PatternSyntaxException texts for common regex errors",
+  "QueryOptionHelper errors (missing expression) exit 2 without an event",
+  "attr.bool BUILD values 0/1 (Type.BOOLEAN.convert; rules_java remote_coverage_tools create_executable = 1)",
+  "fixture: stripped = 1 attr.bool value; case attr.bool_int_value added; capture: graph_auto label-set normalization, event continuation lines"
+ ],
+ "fixture_sha256": {
+  "BUILD.bazel": "5065a3dcee078690a3d967c0deffefe85f75cbaf1d0070e48ffe91b8e58ff445",
+  "MODULE.bazel": "b4ba5a98d0c27f42b90e930c50f5263707c50e45ac8efd305f4ce954393de9bc",
+  "alias/BUILD.bazel": "33fd8b017c0fce1f5f912c35135d46d170082108e18c5ceb8d6c8b99e0b75aa7",
+  "app/BUILD.bazel": "be01a7607dc14173e9dbeef62b0de2b0e95806ee97c65c9da09a594d8d2d2a4d",
+  "app/main.txt": "6403203dd5a0867eb14d104ee8a73730bd72dd9ad92e78d996a6dba0a5dcfc01",
+  "app/test.txt": "f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2",
+  "conf/BUILD.bazel": "f70e9bf24fc8ff71e1d9b1ecec6d1c014cf8a5e0f112d9a23939790f65389217",
+  "cyc/BUILD.bazel": "0d5313a6c8e0d9866848b8eeed7a9cb00ac90a0e31a314eb72f1d1775712f870",
+  "defs.bzl": "c8a9a4d7c93f7908a4d90467a8a137c36cfb8da42d7a0db0d7322ad24ea6b55c",
+  "lib/BUILD.bazel": "65b643f96ab7d12c9b5e197d83946d58cd185a9df9e0b209f5652c3e9eb1f213",
+  "lib/base.txt": "1e4657914fa82bc79890b915c22a63765b530ca32716ec3cff09e82502071de0",
+  "lib/fast.txt": "4020777bd9a311d4cb5ed7193eb04855966647fc79bc2071b3100b5c485ebe27",
+  "lib/slow.txt": "f85ea4224ee227dcce66127c25bf28ff011c0a1130a3eff49452970e1bd75b4d",
+  "lib/tool.sh": "1fdb78a675d5aa79e7e345b3367ff9067556a4492e4b10ba6f3d20e53e955996",
+  "lib/util.txt": "9668d631cb1faf17e029d5e1120e17db27351488f192f62dfb8d434bc73a4334",
+  "macros/BUILD.bazel": "e17d09c9e1f7bef9b2ea00ac0bfa54063587cc4cb7bdcdf789dac313e25aac95",
+  "macros/inner.bzl": "0742c3c09856ed97d7681ecddcdeb45fc7208d639bb4312581f608daa096e1e6",
+  "macros/wrap.bzl": "1894be3901fbc4b43a2e4563bd18d86104643b8d7dda83d3fe59d66c8a3fe1d2",
+  "tests/BUILD.bazel": "c87a36a897334198fe37b469466f274d6db1dceddae844ceda0ccf180147f06c",
+  "vis/BUILD.bazel": "e0c011caaf1604b085e3b434306af8f61083ca3dd433edd85a938138d2b0952c"
+ },
+ "head": "738c0920a0257132e5abc0898541b0a3035595cb",
+ "mismatches": [],
+ "native": "/tmp/opencode/bazel-parity-query/target/debug/bazel-rs",
+ "native_sha256": "87ac8d105affa7df97791824cf9a393ab40919eb885244a111b40219757eda87",
+ "network": "public BCR (https://bcr.bazel.build) for both engines; no credentials",
+ "post_capture_changes": [
+  {
+   "change": "filter()/attr()/kind(): a fancy-regex runtime error (backtracking limit) is an explicit query error (exit 7) instead of a non-match",
+   "evidence": "tests/query_language.rs regex_runtime_limits_are_errors_not_mismatches; native-only (Java has no such limit)"
+  },
+  {
+   "change": "display-form labels use RepositoryMapping.getInverse entry order (extension imports in use_repo call order, \"\", root repo_name, bazel_deps in declaration order) instead of the alphabetically first apparent name; use_repo keyword imports keep call order (were name-sorted)",
+   "evidence": "src/engine/query.rs display_form_takes_the_first_mapping_entry, tests/module_extensions.rs main_mapping_order_follows_bazel_entry_order; the native resolver rejects two apparent names for one module, so no genuine paired case"
+  },
+  {
+   "change": "aspects: confirmed (no code change) that aspect attributes are followed only when AspectDefinition.satisfies the target rule class advertised providers; new fixture tests/fixtures/query_language/aspects",
+   "evidence": "targeted genuine rerun targeted_reruns[-1] (2026-10-17T04:42:06.832741+00:00): {'EXACT': 7}; tests/query_language.rs aspects_follow_attributes_only_when_required_providers_are_advertised"
+  }
+ ],
+ "post_processing": "first_run and fixes_between_runs were added to this receipt after the rerun; case data is unmodified",
+ "scope": "N39_QUERY_LANGUAGE_PAIRED_CAPTURE",
+ "scratch_removed": true,
+ "started": "2026-10-17T03:58:17.081236+00:00",
+ "targeted_reruns": [
+  {
+   "bazel": "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+   "bazel_prefix": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--ignore_all_rc_files",
+    "--output_user_root=/tmp/opencode/n39-query-u8016902/our",
+    "--output_base=${OUTPUT_BASE}",
+    "--host_jvm_args=-Xmx1g",
+    "query",
+    "--lockfile_mode=off",
+    "--color=no",
+    "--curses=no",
+    "--noshow_progress"
+   ],
+   "bazel_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+   "cases": [
+    {
+     "args": [
+      "deps(//asp:unmatched)"
+     ],
+     "comparison": "exact",
+     "genuine": {
+      "elapsed_seconds": 8.786,
+      "events": [],
+      "exit_code": 0,
+      "stderr_tail": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+      "stdout": "//asp:data.txt\n//asp:open_tool\n//asp:plain\n//asp:unmatched\n",
+      "timed_out": false
+     },
+     "id": "aspects.required_providers_unmatched",
+     "native": {
+      "elapsed_seconds": 0.031,
+      "events": [],
+      "exit_code": 0,
+      "stderr_tail": "",
+      "stdout": "//asp:data.txt\n//asp:open_tool\n//asp:plain\n//asp:unmatched\n",
+      "timed_out": false
+     },
+     "status": "EXACT"
+    },
+    {
+     "args": [
+      "deps(//asp:matched)"
+     ],
+     "comparison": "exact",
+     "genuine": {
+      "elapsed_seconds": 7.833,
+      "events": [],
+      "exit_code": 0,
+      "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+      "stdout": "//asp:advertising\n//asp:matched\n//asp:needs_tool\n//asp:open_tool\n//asp:plain\n",
+      "timed_out": false
+     },
+     "id": "aspects.required_providers_matched",
+     "native": {
+      "elapsed_seconds": 0.033,
+      "events": [],
+      "exit_code": 0,
+      "stderr_tail": "",
+      "stdout": "//asp:advertising\n//asp:matched\n//asp:needs_tool\n//asp:open_tool\n//asp:plain\n",
+      "timed_out": false
+     },
+     "status": "EXACT"
+    },
+    {
+     "args": [
+      "deps(//asp:matched, 1)"
+     ],
+     "comparison": "exact",
+     "genuine": {
+      "elapsed_seconds": 7.747,
+      "events": [],
+      "exit_code": 0,
+      "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+      "stdout": "//asp:advertising\n//asp:matched\n//asp:plain\n",
+      "timed_out": false
+     },
+     "id": "aspects.depth1",
+     "native": {
+      "elapsed_seconds": 0.031,
+      "events": [],
+      "exit_code": 0,
+      "stderr_tail": "",
+      "stdout": "//asp:advertising\n//asp:matched\n//asp:plain\n",
+      "timed_out": false
+     },
+     "status": "EXACT"
+    },
+    {
+     "args": [
+      "--output=label_kind",
+      "deps(//asp:unmatched) + deps(//asp:matched)"
+     ],
+     "comparison": "exact",
+     "genuine": {
+      "elapsed_seconds": 7.948,
+      "events": [],
+      "exit_code": 0,
+      "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+      "stdout": "advertising rule //asp:advertising\nsource file //asp:data.txt\naspected rule //asp:matched\nfilegroup rule //asp:needs_tool\nfilegroup rule //asp:open_tool\nplain rule //asp:plain\naspected rule //asp:unmatched\n",
+      "timed_out": false
+     },
+     "id": "aspects.label_kind",
+     "native": {
+      "elapsed_seconds": 0.034,
+      "events": [],
+      "exit_code": 0,
+      "stderr_tail": "",
+      "stdout": "advertising rule //asp:advertising\nsource file //asp:data.txt\naspected rule //asp:matched\nfilegroup rule //asp:needs_tool\nfilegroup rule //asp:open_tool\nplain rule //asp:plain\naspected rule //asp:unmatched\n",
+      "timed_out": false
+     },
+     "status": "EXACT"
+    },
+    {
+     "args": [
+      "rdeps(//asp:all, //asp:needs_tool)"
+     ],
+     "comparison": "exact",
+     "genuine": {
+      "elapsed_seconds": 7.648,
+      "events": [],
+      "exit_code": 0,
+      "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+      "stdout": "//asp:matched\n//asp:needs_tool\n",
+      "timed_out": false
+     },
+     "id": "aspects.rdeps",
+     "native": {
+      "elapsed_seconds": 0.029,
+      "events": [],
+      "exit_code": 0,
+      "stderr_tail": "",
+      "stdout": "//asp:matched\n//asp:needs_tool\n",
+      "timed_out": false
+     },
+     "status": "EXACT"
+    },
+    {
+     "args": [
+      "somepath(//asp:matched, //asp:needs_tool)"
+     ],
+     "comparison": "exact",
+     "genuine": {
+      "elapsed_seconds": 7.444,
+      "events": [],
+      "exit_code": 0,
+      "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+      "stdout": "//asp:matched\n//asp:needs_tool\n",
+      "timed_out": false
+     },
+     "id": "aspects.somepath",
+     "native": {
+      "elapsed_seconds": 0.041,
+      "events": [],
+      "exit_code": 0,
+      "stderr_tail": "",
+      "stdout": "//asp:matched\n//asp:needs_tool\n",
+      "timed_out": false
+     },
+     "status": "EXACT"
+    },
+    {
+     "args": [
+      "--noimplicit_deps",
+      "deps(//asp:matched)"
+     ],
+     "comparison": "exact",
+     "genuine": {
+      "elapsed_seconds": 7.637,
+      "events": [],
+      "exit_code": 0,
+      "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+      "stdout": "//asp:advertising\n//asp:matched\n//asp:plain\n",
+      "timed_out": false
+     },
+     "id": "aspects.noimplicit",
+     "native": {
+      "elapsed_seconds": 0.028,
+      "events": [],
+      "exit_code": 0,
+      "stderr_tail": "",
+      "stdout": "//asp:advertising\n//asp:matched\n//asp:plain\n",
+      "timed_out": false
+     },
+     "status": "EXACT"
+    }
+   ],
+   "changes_after_capture": [],
+   "counts": {
+    "EXACT": 7
+   },
+   "dirty_paths": [
+    " M Cargo.lock",
+    " M Cargo.toml",
+    " M README.md",
+    " M docs/ARCHIVE_SYMLINKS.md",
+    " M docs/BUILD_SETTINGS.md",
+    " M docs/ROADMAP.md",
+    " M docs/capabilities.json",
+    " M src/bzlmod.rs",
+    " M src/custom_rule.rs",
+    " M src/engine.rs",
+    " M src/lib.rs",
+    " M src/loading.rs",
+    " M src/main.rs",
+    " M src/package.rs",
+    " M src/repository.rs",
+    " M src/rule_declarations.rs",
+    " M tests/archive_symlinks.rs",
+    " M tests/builtin_modules.rs",
+    " M tests/glob_symlinks.rs",
+    " M tests/host_os.rs",
+    " M tests/module_cli.rs",
+    " M tests/module_extensions.rs",
+    " M tests/native.rs",
+    " M tests/native_rules.rs",
+    " M tests/repositories.rs",
+    " M tests/repository_rules.rs",
+    " M tests/root_module_validation.rs",
+    " M tests/starlark_sets_cli.rs",
+    "?? docs/QUERY.md",
+    "?? src/engine/",
+    "?? src/query_language.rs",
+    "?? tests/fixtures/query_language/",
+    "?? tests/query_language.rs"
+   ],
+   "finished": "2026-10-17T04:42:06.832741+00:00",
+   "fixture_sha256": {
+    "MODULE.bazel": "5d0362cd46c930ad1a8ac778849680a51ec2408b703c5ea097aa9c268b041ef7",
+    "asp/BUILD.bazel": "d5cd9698288bf5a6d65c4d0c6f44becbceea850566cac0911bf6f39ad4447bd5",
+    "asp/aspects.bzl": "6884bf7a6064b5a420f018ff6876e043bd427bb1f0e8abd0383eff74a56da626",
+    "asp/data.txt": "6667b2d1aab6a00caa5aee5af8ad9f1465e567abf1c209d15727d57b3e8f6e5f"
+   },
+   "head": "738c0920a0257132e5abc0898541b0a3035595cb",
+   "mismatches": [],
+   "native": "/tmp/opencode/bazel-parity-query/target/debug/bazel-rs",
+   "native_sha256": "918b3e1407c52b1f868436dd62d8eb8b288df0c43e707af4a1bce28ba98d4c66",
+   "network": "public BCR (https://bcr.bazel.build) for both engines; no credentials",
+   "scope": "N39_TARGETED_ASPECT_RERUN",
+   "scratch_removed": true,
+   "started": "2026-10-17T04:41:11.714966+00:00",
+   "workspace_untouched": {
+    "MODULE.bazel": true,
+    "asp/BUILD.bazel": true,
+    "asp/aspects.bzl": true,
+    "asp/data.txt": true
+   },
+   "worktree": "/tmp/opencode/bazel-parity-query"
+  }
+ ],
+ "workspace_untouched": {
+  "BUILD.bazel": true,
+  "MODULE.bazel": true,
+  "alias/BUILD.bazel": true,
+  "app/BUILD.bazel": true,
+  "app/main.txt": true,
+  "app/test.txt": true,
+  "conf/BUILD.bazel": true,
+  "cyc/BUILD.bazel": true,
+  "defs.bzl": true,
+  "lib/BUILD.bazel": true,
+  "lib/base.txt": true,
+  "lib/fast.txt": true,
+  "lib/slow.txt": true,
+  "lib/tool.sh": true,
+  "lib/util.txt": true,
+  "macros/BUILD.bazel": true,
+  "macros/inner.bzl": true,
+  "macros/wrap.bzl": true,
+  "tests/BUILD.bazel": true,
+  "vis/BUILD.bazel": true
+ },
+ "worktree": "/tmp/opencode/bazel-parity-query"
+}

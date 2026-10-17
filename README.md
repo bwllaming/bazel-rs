@@ -110,7 +110,9 @@ Implemented:
 - `ctx.actions.declare_file`, binary-safe native `write`, `run_shell` and direct
   `run`. Shell arguments/environment are keyed; custom shell actions do not
   inherit genrule's strict-shell flags. Only requested output actions execute.
-- Literal `query` patterns: labels, `//pkg:all`, `//pkg/...`, and `//...`.
+- `query`: Bazel 9.3's query language (every default function, set algebra,
+  `let`, label/label_kind/build/package/location/minrank/maxrank/graph output,
+  `--keep_going`, `--[no]implicit_deps`, `--[no]tool_deps`; docs/QUERY.md).
 - Scoped `mod graph --output=json` for explicit modules, with optional
   `--registry=file:///absolute/path` filesystem registries: local metadata/MVS,
   nodep and multiple-version selection. The captured module report passes 11

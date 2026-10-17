@@ -449,7 +449,7 @@ fn module_extension_transitive_frozen_set_publishes_real_repository_and_tracks_t
     let (ws, case) = Workspace::reference("module-extension-set-repository");
     let query = ws.run(&["query", "@generated//:data"]);
     success(&query);
-    assert_eq!(query.stdout, b"@@+ext+generated//:data\n");
+    assert_eq!(query.stdout, b"@generated//:data\n");
     ws.untouched();
     let cold = ws.run(&["build", ":consume"]);
     assert_eq!(content(&cold), reference_bytes(&case, "cold"));

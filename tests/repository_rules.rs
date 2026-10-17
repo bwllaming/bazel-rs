@@ -130,7 +130,7 @@ fn frozen_private_helpers_real_query_build_and_fresh_process_inputs() {
     assert!(query.status.success(), "{}", text(&query));
     assert_eq!(
         String::from_utf8(query.stdout).unwrap(),
-        "@@+make+made//:data.txt\n"
+        "@made//:data.txt\n"
     );
     assert_eq!(bytes(&f.build("//:copy")[0].1), b"hello Ada\n");
     let generated = f.build("@made//:data.txt");

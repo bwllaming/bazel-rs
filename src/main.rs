@@ -5,7 +5,7 @@ use std::sync::Arc;
 const HELP: &str = "bazel-rs — experimental native build engine (NOT full Bazel parity)
 
 Usage:
-  bazel-rs [STARTUP...] [--cache-dir=PATH] query PATTERN
+  bazel-rs [STARTUP...] [--cache-dir=PATH] query [QUERY-OPTION...] EXPRESSION
   bazel-rs [STARTUP...] [--cache-dir=PATH] build [--jobs=N] [CONFIG...] TARGET...
   bazel-rs [STARTUP...] mod graph --output=json [--registry=URL]
   bazel-rs version | --version | capabilities
@@ -13,7 +13,12 @@ Usage:
 Startup: --[no]system_rc --[no]workspace_rc --[no]home_rc --[no]ignore_all_rc_files
   --bazelrc=FILE; rc files are evaluated like Bazel 9.3 (--config, common/always,
   --announce_rc; docs/BAZELRC.md); unmodelled rc options fail naming file:line.
-Patterns: //..., //package/..., //package:all, //package:target, :target
+Patterns: //..., //package/..., //package:all, //package:*, //package:target, :target
+Query: the Bazel 9.3 query language (deps, rdeps, allpaths, somepath, attr, filter,
+  kind, labels, tests, buildfiles, loadfiles, siblings, some, visible, set, let,
+  same_pkg_direct_rdeps, executables, union/+, intersect/^, except/-) with
+  --output=label|label_kind|build|package|location|minrank|maxrank|graph,
+  --order_output, --[no]implicit_deps, --[no]tool_deps, --[no]keep_going (docs/QUERY.md).
 Build options: --jobs=N or --jobs N (positive integer; default: available CPUs, max 32)
 Configuration (build): -c/--compilation_mode, --[no]stamp, --strip, --[no]force_pic,
   --define NAME=VALUE, --platforms, --host_platform, Starlark build settings
@@ -29,7 +34,7 @@ Loading: local .bzl legacy macros, glob, package defaults and exports_files.
 Analysis: custom rules/attributes/providers, declared files, write/run/run_shell actions.
 No upstream fallback. Repository rules and module extensions have bounded native profiles.
 No test command, complete repository/extension APIs, execution platforms,
-remote execution, sandbox or full query language yet.
+remote execution, sandbox, SkyQuery or xml/proto query output yet.
 Builds execute trusted shell commands locally; this is not a security sandbox.
 ";
 
@@ -90,6 +95,7 @@ fn run() -> Result<(), String> {
     let mut resolver_options = bazel_rs::module_graph::ResolverOptions::default();
     let mut repository_downloads_enabled = true;
     let mut configuration_options = bazel_rs::configuration::CommandLineOptions::default();
+    let mut query_options = bazel_rs::engine::query::QueryOptions::default();
     let mut deferred = None;
     let rest = if command == "mod" {
         mod_arguments(&options)?
@@ -126,6 +132,7 @@ fn run() -> Result<(), String> {
         resolver_options = native.resolver;
         repository_downloads_enabled = native.downloads;
         configuration_options = native.configuration;
+        query_options = native.query;
         options.residue.iter().map(|arg| arg.text.clone()).collect()
     };
     announce(&options);
@@ -229,50 +236,58 @@ fn run() -> Result<(), String> {
     // the workspace root, whether or not it is a package
     // (cmdline/TargetPattern.java:783-789).
     let relative_directory = relative_directory(&root, &cwd)?;
-    let labels = if command == "query" {
-        // QueryCommand.doQuery (runtime/commands/QueryCommand.java:84-99):
-        // only a single target literal is evaluated natively.
-        match bazel_rs::query_expression::target_literal(&rest[0]) {
-            Ok(literal) => engine.select(&[literal], &relative_directory),
-            Err(error) => Err(error),
+    if command == "query" {
+        let outcome = engine.query(&rest, &query_options, &relative_directory);
+        // Pattern warnings precede the query's own events.
+        for warning in engine.take_warnings() {
+            eprintln!("WARNING: {warning}");
         }
-    } else {
-        engine.select_for_build(&rest, &relative_directory)
-    };
+        let outcome = outcome?;
+        for event in &outcome.events {
+            eprintln!("{event}");
+        }
+        if let Some(fatal) = outcome.fatal {
+            return Err(fatal);
+        }
+        use std::io::Write;
+        let mut stdout = std::io::stdout().lock();
+        stdout
+            .write_all(&outcome.stdout)
+            .and_then(|()| stdout.flush())
+            .map_err(|e| format!("I/O error: {e}"))?;
+        if outcome.exit_code != 0 {
+            std::process::exit(outcome.exit_code);
+        }
+        return Ok(());
+    }
+    let labels = engine.select_for_build(&rest, &relative_directory);
     // Bazel reports pattern warnings as they happen, before a later error.
     for warning in engine.take_warnings() {
         eprintln!("WARNING: {warning}");
     }
     let labels = labels?;
-    if command == "query" {
-        // Print only after all packages have loaded successfully.
-        for label in labels {
-            println!("{label}");
-        }
-    } else {
-        let result = engine.build_with_jobs(&labels, &cache, jobs);
-        // Analysis warnings precede the result, also when the build fails.
-        for warning in engine.take_warnings() {
-            eprintln!("WARNING: {warning}");
-        }
-        let summary = result?;
-        for (label, output) in summary.outputs {
-            // The path's raw bytes: a lone-byte target name names the byte
-            // itself (bazel_bytes::internal_path), not U+FFFD.
-            use std::io::Write as _;
-            use std::os::unix::ffi::OsStrExt as _;
-            let mut stdout = std::io::stdout().lock();
-            stdout
-                .write_all(format!("{label}\t").as_bytes())
-                .and_then(|()| stdout.write_all(output.as_os_str().as_bytes()))
-                .and_then(|()| stdout.write_all(b"\n"))
-                .map_err(|error| error.to_string())?;
-        }
-        eprintln!(
-            "bazel-rs: {} actions executed, {} cache hits (experimental local execution; not sandboxed)",
-            summary.executed, summary.cache_hits
-        );
+    let result = engine.build_with_jobs(&labels, &cache, jobs);
+    // Analysis warnings precede the result, also when the build fails.
+    for warning in engine.take_warnings() {
+        eprintln!("WARNING: {warning}");
     }
+    let summary = result?;
+    for (label, output) in summary.outputs {
+        // The path's raw bytes: a lone-byte target name names the byte
+        // itself (bazel_bytes::internal_path), not U+FFFD.
+        use std::io::Write as _;
+        use std::os::unix::ffi::OsStrExt as _;
+        let mut stdout = std::io::stdout().lock();
+        stdout
+            .write_all(format!("{label}\t").as_bytes())
+            .and_then(|()| stdout.write_all(output.as_os_str().as_bytes()))
+            .and_then(|()| stdout.write_all(b"\n"))
+            .map_err(|error| error.to_string())?;
+    }
+    eprintln!(
+        "bazel-rs: {} actions executed, {} cache hits (experimental local execution; not sandboxed)",
+        summary.executed, summary.cache_hits
+    );
     Ok(())
 }
 
@@ -316,6 +331,8 @@ struct NativeOptions {
     resolver: bazel_rs::module_graph::ResolverOptions,
     downloads: bool,
     configuration: bazel_rs::configuration::CommandLineOptions,
+    /// QueryCommand's own options (QueryOptions/CommonQueryOptions).
+    query: bazel_rs::engine::query::QueryOptions,
 }
 
 impl NativeOptions {
@@ -331,6 +348,7 @@ impl NativeOptions {
             } else {
                 bazel_rs::configuration::CommandLineOptions::default()
             },
+            query: bazel_rs::engine::query::QueryOptions::default(),
         }
     }
 
@@ -346,7 +364,14 @@ impl NativeOptions {
                 &unit.option.origin_suffix(),
             ));
         }
-        let used_next = if let Some(disabled) =
+        let query = if command == "query" {
+            self.query.parse(arg, next)?
+        } else {
+            None
+        };
+        let used_next = if let Some(used) = query {
+            used
+        } else if let Some(disabled) =
             bazel_rs::module_cli::repository_disable_download_argument(arg)?
         {
             self.downloads = !disabled;

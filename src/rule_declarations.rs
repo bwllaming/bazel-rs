@@ -869,6 +869,48 @@ pub(crate) fn provider_identifiers(
     Ok(result)
 }
 
+/// The query-visible part of an aspect definition: its attributes (all
+/// implicit, Aspect.isAttributeValueExplicitlySpecified,
+/// packages/Aspect.java:108-111) and required providers.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Allocative)]
+pub(crate) struct QueryAspect {
+    pub identity: String,
+    pub attrs: Vec<(String, crate::custom_rule::AttrSpec)>,
+    pub required_providers: Vec<Vec<ProviderRequirement>>,
+}
+
+/// The aspects of an `aspects=` list with their required aspects first, once
+/// each (AspectsList.Builder).
+pub(crate) fn query_aspects(value: Value<'_>) -> Vec<QueryAspect> {
+    fn add(value: Value<'_>, result: &mut Vec<QueryAspect>, depth: usize) {
+        let Some(aspect) = Aspect::from_value(value) else {
+            return;
+        };
+        let Some(identity) = aspect.identity() else {
+            return;
+        };
+        if depth > 64 || result.iter().any(|known| known.identity == identity) {
+            return;
+        }
+        for required in &aspect.requires {
+            add(*required, result, depth + 1);
+        }
+        if result.iter().any(|known| known.identity == identity) {
+            return;
+        }
+        result.push(QueryAspect {
+            identity,
+            attrs: aspect.declaration.attrs.clone(),
+            required_providers: aspect.declaration.required_providers.clone(),
+        });
+    }
+    let mut result = Vec::new();
+    for item in crate::custom_rule::sequence_ref(value).unwrap_or_default() {
+        add(*item, &mut result, 0);
+    }
+    result
+}
+
 /// Exported aspect identities for `attr.*(aspects=...)` / `aspect(requires=...)`.
 pub(crate) fn aspect_identities(value: Value<'_>, what: &str) -> anyhow::Result<Vec<String>> {
     let items = crate::custom_rule::sequence_ref(value)

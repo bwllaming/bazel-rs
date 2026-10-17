@@ -86,6 +86,14 @@ pub struct Rule {
     /// `Rule.getLocation()`: the BUILD-level call (`/abs/BUILD:L:C`, the
     /// call's left parenthesis), as Bazel prefixes rule events.
     pub location: Option<String>,
+    /// Whether `visibility` was given (Rule.isAttributeValueExplicitlySpecified),
+    /// for `query --noimplicit_deps`.
+    pub explicit_visibility: bool,
+    /// Rule.reconstructCallStack (packages/Rule.java:322-329), for
+    /// `query --output=build`.
+    pub call_stack: Vec<(String, String)>,
+    /// The computed `generator_*` values of a rule created by a macro.
+    pub generator: Option<Generator>,
 }
 
 impl Rule {
@@ -222,6 +230,12 @@ pub struct Package {
     pub macro_names: BTreeSet<String>,
     /// Effective REPO.bazel/package() arguments.
     pub args: PackageArgs,
+    /// The BUILD file (`Package.getBuildFile`), absolute.
+    pub build_file: PathBuf,
+    /// The BUILD file's direct `.bzl` loads and the load graph below them
+    /// (Package.Declarations.visitLoadGraph), for `query buildfiles/loadfiles`.
+    pub direct_loads: Vec<Label>,
+    pub load_graph: HashMap<Label, Vec<Label>>,
 }
 
 impl std::ops::Deref for Package {
@@ -356,7 +370,7 @@ pub(crate) fn register_custom<'v>(
 ) -> anyhow::Result<()> {
     let context = declarations(eval)?;
     let (location, generator) = rule_origin(eval, context, name);
-    declaration.builtin.generator = generator;
+    declaration.builtin.generator = generator.clone();
     let visibility = rule_visibility(visibility, context, name)?;
     // ctx.attr.visibility is the explicit, simplified attribute value.
     declaration.builtin.visibility = visibility.as_ref().map(|visibility| {
@@ -384,8 +398,11 @@ pub(crate) fn register_custom<'v>(
     );
     let index = context.rules.borrow().len();
     context.declare(name, RuleKind::Custom, srcs, outs, None, visibility)?;
+    let call_stack = java_call_stack(eval);
     if let Some(rule) = context.rules.borrow_mut().last_mut() {
         rule.location = location;
+        rule.call_stack = call_stack;
+        rule.generator = generator;
     }
     // Not a valid Starlark identifier: BUILD assignments cannot overwrite roots.
     let slot = format!("__custom_implementation${index}");
@@ -478,6 +495,7 @@ impl Declarations {
                 .map_err(|e| anyhow!("invalid output path {out:?}: {e}"))?;
         }
         let macro_owner = self.active_macro.borrow().clone();
+        let explicit_visibility = visibility.is_some();
         let visibility = if let Some(owner) = &macro_owner {
             visibility
                 .unwrap_or(Visibility::Private)
@@ -506,6 +524,9 @@ impl Declarations {
             unanalyzed: Vec::new(),
             package_metadata: Vec::new(),
             location: None,
+            explicit_visibility,
+            call_stack: Vec::new(),
+            generator: None,
         });
         Ok(NoneType)
     }
@@ -604,6 +625,57 @@ fn rule_origin(
             .map(|position| site.location[position..].to_owned()),
     });
     (location, generator)
+}
+
+/// StarlarkThread.getCallStack (net/starlark/java/eval/StarlarkThread.java:603-610)
+/// at a call of a built-in, without the built-in's own innermost frame
+/// (RuleFactory.createRule, packages/RuleFactory.java:96-98;
+/// StarlarkRuleClassFunctions.java:915-918): `(function name, location)`
+/// entries, outermost first, starting with `<toplevel>`. Starlark-rust frames
+/// are `(callee, call site in the caller)`; Java locations are call left
+/// parentheses (CallExpression.getLparenLocation) and `.bzl` files print as
+/// paths.
+pub(crate) fn java_call_stack(eval: &Evaluator<'_, '_, '_>) -> Vec<(String, String)> {
+    let repositories = crate::loading::repositories(eval);
+    let frames = eval.call_stack().frames;
+    let mut stack = Vec::new();
+    let mut caller = "<toplevel>".to_owned();
+    for frame in &frames {
+        let Some(span) = frame.location.as_ref() else {
+            continue;
+        };
+        let source = span.file.source().as_bytes();
+        let mut lparen = span.span.begin().get() as usize;
+        while lparen < source.len() && source[lparen] != b'(' {
+            lparen += 1;
+        }
+        let position = starlark::codemap::Pos::new(lparen.min(source.len()) as u32);
+        let resolved = span
+            .file
+            .resolve_span(starlark::codemap::Span::new(position, position));
+        let filename = span.filename();
+        let path = Label::parse_canonical(filename)
+            .ok()
+            .and_then(|label| {
+                let root = repositories.as_ref()?.root(&label.repository).ok()?;
+                Some(
+                    root.join(&label.package)
+                        .join(&label.name)
+                        .to_string_lossy()
+                        .into_owned(),
+                )
+            })
+            .unwrap_or_else(|| filename.to_owned());
+        stack.push((
+            std::mem::replace(&mut caller, frame.name.clone()),
+            format!(
+                "{path}:{}:{}",
+                resolved.begin.line + 1,
+                resolved.begin.column + 1
+            ),
+        ));
+    }
+    stack
 }
 
 /// Starlark-rust frames are `(callee, call site in the caller)`, outermost
@@ -1092,12 +1164,15 @@ fn declare_native<'v>(
             None,
         ),
     };
-    let (location, _) = rule_origin(eval, context, &instance.name);
+    let (location, generator) = rule_origin(eval, context, &instance.name);
+    let call_stack = java_call_stack(eval);
     context.declare(&instance.name, kind, srcs, outs, cmd, visibility)?;
     let mut rules = context.rules.borrow_mut();
     let rule = rules.last_mut().expect("declared rule");
     rule.native = Some(Arc::new(target));
     rule.location = location;
+    rule.call_stack = call_stack;
+    rule.generator = generator;
     Ok(())
 }
 
@@ -1204,6 +1279,7 @@ fn rule_globals(builder: &mut GlobalsBuilder) {
                 }
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
+        let (location, _) = rule_origin(eval, context, name);
         context.declare(
             name,
             RuleKind::PackageGroup(Arc::new(GroupDefinition {
@@ -1214,7 +1290,12 @@ fn rule_globals(builder: &mut GlobalsBuilder) {
             Vec::new(),
             None,
             Some(Visibility::Public),
-        )
+        )?;
+        // PackageGroup.getLocation: the call's left parenthesis.
+        if let Some(rule) = context.rules.borrow_mut().last_mut() {
+            rule.location = location;
+        }
+        Ok(NoneType)
     }
 }
 
@@ -1979,6 +2060,8 @@ fn evaluate_at(
         .iter()
         .map(|(name, module)| (name.as_str(), module))
         .collect::<HashMap<_, _>>();
+    let direct_loads = loaded.direct_loads.clone();
+    let load_graph = loaded.load_graph.clone();
     let loader = ReturnFileLoader { modules: &modules };
     let repo_defaults = repo_args(&repositories, &package.repository)?;
     let declarations = Declarations {
@@ -2137,6 +2220,9 @@ fn evaluate_at(
         default_visibility,
         macro_names: declarations.macro_names.into_inner(),
         args,
+        build_file: PathBuf::from(filename),
+        direct_loads,
+        load_graph,
     })
 }
 
@@ -3807,6 +3893,8 @@ ordinary(name="ordinary", help="ordinary help", build_setting_default=True)
                 "{error}"
             );
         }
+        let defs = "def impl(ctx):\n    return []\nr = rule(implementation=impl, attrs={'ordinary_bool': attr.bool()})";
+        custom_fixture(defs, "load(':defs.bzl', 'r')\nr(name='x', ordinary_bool=1)").unwrap();
     }
 
     #[test]

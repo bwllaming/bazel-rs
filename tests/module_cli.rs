@@ -289,7 +289,7 @@ fn uppercase_git_pin_is_consistent_between_graph_and_repository_query() {
     succeeded(&f.command(&["--cache-dir=chosen", "mod", "graph", "--output=json"]));
     let result = f.command(&["--cache-dir=chosen", "query", "@alias//:data"]);
     succeeded(&result);
-    assert_eq!(String::from_utf8(result.stdout).unwrap(), "@@a+//:data\n");
+    assert_eq!(String::from_utf8(result.stdout).unwrap(), "@alias//:data\n");
 }
 
 #[test]
@@ -773,7 +773,7 @@ fn http_query_and_build_local_sources_keep_live_paths_and_absolute_bases() {
         );
         let query = fixture.command(&["query", "--lockfile_mode=off", &registry, "@alias//:all"]);
         succeeded(&query);
-        assert!(String::from_utf8_lossy(&query.stdout).contains("@@a+//:copy"));
+        assert!(String::from_utf8_lossy(&query.stdout).contains("@alias//:copy"));
         assert!(!fixture.0.join("bazel-rs-out").exists());
     }
     let custom_cache = fixture.0.join("custom-cache");

@@ -79,7 +79,7 @@ fn computed_repo_real_query_and_build() {
     f.file("ext.bzl", "load(':rules.bzl','maker')\ndef _impl(ctx):\n    maker(name='ma'+'de',text='Ada')\nfiles=module_extension(_impl)\n");
     let query = f.run(&["query", "@chosen//:data.txt"]);
     assert!(query.status.success(), "{}", error(&query));
-    assert_eq!(query.stdout, b"@@+files+made//:data.txt\n");
+    assert_eq!(query.stdout, b"@chosen//:data.txt\n");
     assert_eq!(f.build("//:copy"), b"hello Ada\n");
     assert_eq!(f.build("@@+files+made//:data.txt"), b"hello Ada\n");
     assert_eq!(f.roots().len(), 1);
@@ -200,7 +200,7 @@ fn private_extension_symbols_are_distinct_requested_identities() {
     f.file("ext.bzl", "load(':rules.bzl','maker')\ndef _impl(ctx):\n    maker(name='made',text='private')\n_private=module_extension(_impl)\nfiles=_private\n");
     let output = f.run(&["query", "@chosen//:data.txt"]);
     assert!(output.status.success(), "{}", error(&output));
-    assert_eq!(output.stdout, b"@@+_private+made//:data.txt\n");
+    assert_eq!(output.stdout, b"@chosen//:data.txt\n");
     assert_eq!(f.build("//:copy"), b"hello private\n");
 }
 
@@ -617,4 +617,21 @@ fn skylib_use_all_repos_pattern_from_a_non_root_module_never_warns() {
     let result = f.run(&["build", "//:copy"]);
     assert!(result.status.success(), "{}", error(&result));
     assert_eq!(warnings(&result), 0, "{}", error(&result));
+}
+
+#[test]
+fn main_mapping_order_follows_bazel_entry_order() {
+    // BazelDepGraphValue.getRepositoryMapping: extension imports first
+    // (positional, then keywords in call order), then "", the root's repo
+    // name and bazel_deps in declaration order.
+    let f = Fixture::new();
+    f.file(
+        "MODULE.bazel",
+        "module(name='main',version='1.0',repo_name='self')\ne=use_extension('//:ext.bzl','files')\ne.make(name='made',text='Ada')\ne.make(name='other',text='Bob')\nuse_repo(e,'other',zed='made',alpha='made2')\ne.make(name='made2',text='Cy')\n",
+    );
+    let repos = bazel_rs::repository::RepositorySet::new(f.0.path().to_owned());
+    assert_eq!(
+        repos.main_mapping_order(),
+        ["other", "zed", "alpha", "", "self"].map(str::to_owned)
+    );
 }

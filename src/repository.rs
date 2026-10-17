@@ -525,6 +525,48 @@ impl RepositorySet {
             .map_err(Clone::clone)
     }
 
+    /// The main repository mapping's apparent names in Bazel's entry order
+    /// (BazelDepGraphValue.getRepositoryMapping, bzlmod/BazelDepGraphValue.java:126-160,
+    /// with RepositoryMapping.withAdditionalMappings putting extension imports
+    /// first, :108-117; Module.getRepoMappingWithBazelDepsOnly, Module.java:49-68:
+    /// `""`, the root's repo name, then bazel_deps in declaration order).
+    /// RepositoryMapping.getInverse returns the FIRST of these for a canonical
+    /// name (cmdline/RepositoryMapping.java:142-150). The native mapping
+    /// itself is name-ordered; names missing here fall back to it.
+    pub fn main_mapping_order(&self) -> Vec<String> {
+        let Ok(graph) = self.resolve_graph() else {
+            return Vec::new();
+        };
+        let root = &graph.root;
+        let mut names = Vec::new();
+        // ModuleExtensionUsages of one extension merge in first-use order.
+        let mut usages: Vec<&crate::bzlmod::ExtensionUsage> = Vec::new();
+        for usage in &root.extension_usages {
+            if !usages.iter().any(|known| known.identity == usage.identity) {
+                usages.push(usage);
+            }
+        }
+        for first in usages {
+            for usage in root
+                .extension_usages
+                .iter()
+                .filter(|usage| usage.identity == first.identity)
+            {
+                names.extend(usage.imports.iter().map(|import| import.local_name.clone()));
+            }
+        }
+        names.push(String::new());
+        if let Some(module) = &root.module {
+            names.push(module.effective_repo_name().to_owned());
+        }
+        names.extend(
+            root.effective_dependencies()
+                .filter_map(|dependency| dependency.effective_repo_name())
+                .map(str::to_owned),
+        );
+        names
+    }
+
     /// Canonical repository roots already materialized by this repository set
     /// (the current invocation): main, local_path modules of a resolved graph,
     /// published registry/Git/built-in trees and generated repositories whose

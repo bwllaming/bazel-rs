@@ -157,7 +157,9 @@ fn flags_test_command_and_rc_are_not_silently_ignored() {
     for args in [
         &["test", ":ok"][..],
         &["build", "--remote_cache=http://example.invalid", ":ok"],
-        &["query", "deps(:ok)"],
+        // SkyQuery and the xml output formatter are not implemented.
+        &["query", "--universe_scope=//...", "deps(:ok)"],
+        &["query", "--output=xml", ":ok"],
     ] {
         assert!(!ws.run(args).status.success());
     }

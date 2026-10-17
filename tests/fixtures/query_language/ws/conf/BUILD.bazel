@@ -1,0 +1,5 @@
+config_setting(
+    name = "fast",
+    define_values = {"speed": "fast"},
+    visibility = ["//visibility:public"],
+)

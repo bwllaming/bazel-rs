@@ -1,0 +1,40 @@
+load("//:defs.bzl", "my_library", "my_test")
+load("//macros:wrap.bzl", "wrapped_library")
+
+my_library(
+    name = "bin",
+    srcs = ["main.txt", "//lib:gen.out"],
+    deps = [
+        "//lib:util",
+        "//alias:util_alias",
+    ],
+    data = ["//lib:tool"],
+    visibility = ["//vis:friends"],
+)
+
+wrapped_library(
+    name = "wrapped",
+    deps = ["//lib:base"],
+)
+
+my_test(
+    name = "bin_test",
+    srcs = ["test.txt"],
+    deps = [":bin"],
+    tags = ["unit"],
+)
+
+my_test(
+    name = "manual_test",
+    srcs = ["test.txt"],
+    tags = ["manual"],
+)
+
+test_suite(
+    name = "all_tests",
+)
+
+test_suite(
+    name = "unit_tests",
+    tags = ["unit"],
+)

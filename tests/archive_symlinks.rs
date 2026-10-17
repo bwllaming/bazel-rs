@@ -173,10 +173,7 @@ fn registry_archive_links_materialize_and_build_through_links() {
     assert!(query.status.success(), "{}", stderr(&query));
     let listed = String::from_utf8_lossy(&query.stdout).into_owned();
     for name in ["copy", "dangling", "escape", "data_files"] {
-        assert!(
-            listed.contains(&format!("@@linked+//:{name}\n")),
-            "{listed}"
-        );
+        assert!(listed.contains(&format!("@linked//:{name}\n")), "{listed}");
     }
 
     let root = fixture.tree();
@@ -251,7 +248,7 @@ fn dangling_and_escaping_archive_links_fail_and_globbed_links_follow() {
     assert!(globbed.status.success(), "{}", stderr(&globbed));
     assert_eq!(
         String::from_utf8_lossy(&globbed.stdout),
-        "@@linked+//globbed:g\n"
+        "@linked//globbed:g\n"
     );
     assert_eq!(
         fs::read_to_string(fixture.path().join("outside.txt")).unwrap(),
