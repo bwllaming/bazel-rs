@@ -3,7 +3,8 @@
 //! docs/DEPSETS.md "Identity of a depset built from one transitive set")
 //! changes which node a depset value is, never its elements or their order.
 //! The action cache keys of this build are golden values recorded with the
-//! pre-N49b binary (26c6ba7): run_shell inputs and Args built from every
+//! pre-N49b binary (branch: 26c6ba7; integration-15: 011497d, whose
+//! native-action-v8 keys and k8 roots differ from the branch's): run_shell inputs and Args built from every
 //! shortcut shape (one transitive set, an empty sibling, a repeated set, a
 //! direct element equal to a singleton set, topological, a compatible but
 //! different order) and a write of their `to_list()`/repr. Action keys frame
@@ -132,9 +133,9 @@ fn shortcut_shapes_keep_their_action_keys() {
     assert_eq!(
         ws.keys("cache"),
         [
-            "3a80bbfdb3381477ce5493be608aaa89da6fd3bbd7c5a56c9e7f5802b4fa03e0",
-            "b5ba4d5eecc2cb75d933ed0074d748f1e229d893145e8e5648a9eb3094e48541",
-            "ff200d1e0a17439dd7db3bb1f3dfbaf20a1efa851c1a266bacbd4678669c35c7",
+            "a670b84b00002fdcb6d4faa97b34dc4207687cd6170fd30483e2b5c45c877a62",
+            "c9a46e55953656672fdbfe0144fb054ccf9680a2755ed62ec99aa62d52179b5b",
+            "ff149b80f0f803f80652ae8b72e8bcebe980226cb4f12278820b7d28845713cc",
         ]
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
