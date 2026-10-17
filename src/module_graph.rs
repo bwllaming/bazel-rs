@@ -599,20 +599,25 @@ fn check_selected_registry_modules(
             }
         }
     }
+    // BazelDepGraphFunction (Bazel 9.3) follows module resolution in every
+    // command and lockfile mode: its extension usage table
+    // (getExtensionUsagesById, :97-137) fails the command, which reports
+    // "Error computing the main repository mapping: <message>"
+    // (RepositoryMappingFunction). Only this table is eager; the native
+    // preparation catalog (repository_catalog::build: canonical namespaces,
+    // imports, budgets) stays demanded lazily, like Bazel's extension and
+    // repository evaluation.
+    let table = crate::repository_catalog::usage_table(graph, options.ignore_dev_dependencies)
+        .map_err(|error| format!("Error computing the main repository mapping: {error}"))?;
     if let Some(session) = access.session() {
-        // The extension usage table (BazelDepGraphFunction.java:97-137)
-        // prunes preserved extension sections before writing. Like Bazel's
-        // getExtensionUsagesById, a failure fails the command (with the same
-        // error the lazy catalog reports); it never silently skips the write.
-        let usages = if session.mode().writes() {
-            let catalog = crate::repository_catalog::build(graph, options.ignore_dev_dependencies)?;
-            Some(crate::registry_session::ExtensionUsages {
-                ids: catalog.usage_extension_ids,
-                isolated_prefixes: catalog.isolated_usage_id_prefixes,
-            })
-        } else {
-            None
-        };
+        // The usage table prunes preserved extension sections before writing.
+        let usages = session
+            .mode()
+            .writes()
+            .then_some(crate::registry_session::ExtensionUsages {
+                ids: table.ids,
+                isolated_prefixes: table.isolated_prefixes,
+            });
         session.record_resolution(crate::registry_session::Resolution {
             selected_yanked,
             usages,

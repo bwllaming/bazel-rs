@@ -138,47 +138,14 @@ pub fn build(graph: &ResolvedGraph, ignore_root_dev: bool) -> Result<DirectCatal
             budget.string(&usage.identity.label)?;
             budget.string(&usage.identity.extension_name)?;
             if !usage.identity.is_repo_rule() {
+                let label = usage_label(usage, owner, base_mapping, ignore_dev)?;
                 if usage.identity.isolation.is_some() {
                     has_isolated = true;
-                    let raw_label = &usage.identity.label;
-                    let apparent_label = raw_label
-                        .strip_prefix('@')
-                        .filter(|_| raw_label.starts_with("@@"))
-                        .unwrap_or(raw_label);
-                    if let Ok(label) = Label::parse_in(apparent_label, owner, "", base_mapping) {
-                        // IsolationKey.toString (ModuleExtensionId.java:66-69)
-                        // with ModuleKey.toString (ModuleKey.java:63-68).
-                        let module_key = match graph.modules.get(owner.as_str()) {
-                            _ if owner.is_empty() => "<root>".to_owned(),
-                            Some(module) if module.version.is_empty() => {
-                                format!("{}@_", module.name)
-                            }
-                            Some(module) => format!("{}@{}", module.name, module.version),
-                            None => continue,
-                        };
-                        catalog.isolated_usage_id_prefixes.insert(format!(
-                            "{label}%{}%{module_key}+",
-                            usage.identity.extension_name
-                        ));
+                    if let Some(prefix) = isolated_prefix(graph, owner, usage, &label) {
+                        catalog.isolated_usage_id_prefixes.insert(prefix);
                     }
                     continue;
                 }
-                // Public extension identities use only bazel_dep mappings, not
-                // the full generated-repository mapping assembled below.
-                // ModuleFileGlobals.normalizeLabelString (Bazel 9.3:486-519)
-                // stringifies even @@repo labels as APPARENT @repo labels before
-                // BazelDepGraphFunction resolves them. This MODULE-only step
-                // must not alter direct rule requests or general label parsing.
-                let raw_label = &usage.identity.label;
-                let apparent_label = if raw_label.starts_with("@@") {
-                    &raw_label[1..]
-                } else {
-                    raw_label
-                };
-                let label =
-                    Label::parse_in(apparent_label, owner, "", base_mapping).map_err(|e| {
-                        format!("invalid ordinary extension label in MODULE owner {owner:?}: {e}")
-                    })?;
                 record_ordinary(
                     &mut catalog,
                     &mut prefixes,
@@ -520,6 +487,107 @@ fn record_root_usage(
                 .map(|import| import.exported_name.clone())
                 .collect(),
         });
+    }
+}
+
+/// The extension usage table of BazelDepGraphFunction.getExtensionUsagesById
+/// (Bazel 9.3 :97-137), which Bazel computes after module resolution in every
+/// command: the IDs of active ordinary usages and the `label%name%<module
+/// key>+` prefixes of isolated ones. It does only what Bazel does eagerly
+/// (label resolution with bazel_dep mappings); the rest of [`build`] (names,
+/// namespaces, imports, budgets) is native preparation, demanded lazily.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UsageTable {
+    pub ids: BTreeSet<String>,
+    pub isolated_prefixes: BTreeSet<String>,
+}
+
+pub fn usage_table(graph: &ResolvedGraph, ignore_root_dev: bool) -> Result<UsageTable, String> {
+    let mut table = UsageTable::default();
+    for owner in owner_order(graph, ignore_root_dev)? {
+        let (module, base_mapping) = owner_data(graph, &owner)?;
+        let ignore_dev = !owner.is_empty() || ignore_root_dev;
+        for usage in &module.extension_usages {
+            if !active_usage(usage, ignore_dev) || usage.identity.is_repo_rule() {
+                continue;
+            }
+            let label = usage_label(usage, &owner, base_mapping, ignore_dev)?;
+            if usage.identity.isolation.is_some() {
+                table
+                    .isolated_prefixes
+                    .extend(isolated_prefix(graph, &owner, usage, &label));
+            } else {
+                table
+                    .ids
+                    .insert(format!("{label}%{}", usage.identity.extension_name));
+            }
+        }
+    }
+    Ok(table)
+}
+
+/// Public extension identities use only bazel_dep mappings, not the full
+/// generated-repository mapping. ModuleFileGlobals.normalizeLabelString
+/// (Bazel 9.3:486-519) stringifies even @@repo labels as APPARENT @repo labels
+/// before BazelDepGraphFunction resolves them. This MODULE-only step must not
+/// alter direct rule requests or general label parsing.
+fn usage_label(
+    usage: &ExtensionUsage,
+    owner: &str,
+    base_mapping: &BTreeMap<String, String>,
+    ignore_dev: bool,
+) -> Result<Label, String> {
+    let raw_label = &usage.identity.label;
+    let apparent_label = if raw_label.starts_with("@@") {
+        &raw_label[1..]
+    } else {
+        raw_label
+    };
+    Label::parse_in(apparent_label, owner, "", base_mapping)
+        .map_err(|e| extension_label_error(usage, ignore_dev, &e))
+}
+
+/// IsolationKey.toString (ModuleExtensionId.java:66-69) with ModuleKey.toString
+/// (ModuleKey.java:63-68).
+fn isolated_prefix(
+    graph: &ResolvedGraph,
+    owner: &str,
+    usage: &ExtensionUsage,
+    label: &Label,
+) -> Option<String> {
+    let module_key = match graph.modules.get(owner) {
+        _ if owner.is_empty() => "<root>".to_owned(),
+        Some(module) if module.version.is_empty() => format!("{}@_", module.name),
+        Some(module) => format!("{}@{}", module.name, module.version),
+        None => return None,
+    };
+    Some(format!(
+        "{label}%{}%{module_key}+",
+        usage.identity.extension_name
+    ))
+}
+
+/// BazelDepGraphFunction.getExtensionUsagesById (Bazel 9.3 :111-130): the
+/// location is the usage's first proxy, i.e. its first active use_extension
+/// call (`file:line:col` of the left parenthesis). An invisible repository is
+/// reported as such; a syntax error appends the LabelSyntaxException message
+/// (ExternalDepsException.withCauseAndMessage, :64-68).
+fn extension_label_error(usage: &ExtensionUsage, ignore_dev: bool, error: &str) -> String {
+    let location = usage
+        .declarations
+        .iter()
+        .find(|declaration| !declaration.dev_dependency || !ignore_dev)
+        .or(usage.declarations.first())
+        .map_or("", |declaration| declaration.location.as_str());
+    let invisible = error
+        .strip_prefix("unknown apparent repository @")
+        .and_then(|rest| rest.split_once(" from canonical repository "))
+        .map(|(name, _)| name);
+    match invisible {
+        Some(name) => format!(
+            "invalid label for module extension found at {location}: no repo visible as '@{name}' here"
+        ),
+        None => format!("invalid label for module extension found at {location}: {error}"),
     }
 }
 
@@ -1191,10 +1259,13 @@ values.append("after")
     fn ordinary_module_label_double_at_requires_an_apparent_dependency_alias() {
         let mut graph = graph("bazel_dep(name='z')\ne=use_extension('@@z+//:ext.bzl','ext')");
         dependency(&mut graph, "z", "z+", "module(name='z')");
-        assert!(
-            build(&graph, false)
-                .unwrap_err()
-                .contains("unknown apparent repository @z+")
+        assert_eq!(
+            build(&graph, false).unwrap_err(),
+            "invalid label for module extension found at MODULE.bazel:2:16: no repo visible as '@z+' here"
+        );
+        assert_eq!(
+            usage_table(&graph, false).unwrap_err(),
+            build(&graph, false).unwrap_err()
         );
 
         graph.root.extension_usages = evaluate(
@@ -1246,9 +1317,11 @@ values.append("after")
             "z+",
             "module(name='z')\ne=use_extension('@@//:ext.bzl','ext')",
         );
-        let error = build(&graph, false).unwrap_err();
-        assert!(error.contains("unknown apparent repository @ from"));
-        assert!(error.contains("z+"));
+        // Bazel's message names the empty repository as '@'.
+        assert_eq!(
+            build(&graph, false).unwrap_err(),
+            "invalid label for module extension found at MODULE.bazel:2:16: no repo visible as '@' here"
+        );
     }
 
     #[test]
@@ -1638,6 +1711,32 @@ use_repo(n, normal_alias="normal_repo")
     }
 
     #[test]
+    fn eager_usage_table_matches_the_catalog_and_skips_native_preparation() {
+        let source = r#"
+isolated=use_extension("//:ext.bzl", "ext", isolate=True)
+normal=use_extension("//:ext.bzl", "ext")
+use_repo(isolated, "hidden")
+use_repo(normal, "visible")
+r=use_repo_rule("//:rule.bzl", "ext")
+r(name="direct")
+"#;
+        let resolved = graph(source);
+        let catalog = build(&resolved, false).unwrap();
+        let table = usage_table(&resolved, false).unwrap();
+        assert_eq!(table.ids, catalog.usage_extension_ids);
+        assert_eq!(table.isolated_prefixes, catalog.isolated_usage_id_prefixes);
+        assert_eq!(table.ids.len(), 1);
+        assert_eq!(table.isolated_prefixes.len(), 1);
+        // Native-only preparation limits are not part of Bazel's eager table.
+        let private = source.replace(
+            "normal=use_extension(\"//:ext.bzl\", \"ext\")",
+            "normal=use_extension(\"//:ext.bzl\", \"_private\")",
+        );
+        assert!(build(&graph(&private), false).is_err());
+        assert!(usage_table(&graph(&private), false).is_ok());
+    }
+
+    #[test]
     fn isolated_imports_do_not_fabricate_ordinary_identities_or_routes() {
         let source = r#"
 isolated=use_extension("//:ext.bzl", "ext", isolate=True)
@@ -1669,10 +1768,9 @@ r(name="direct")
         let generated_definition = graph(
             "r=use_repo_rule('//:rule.bzl','rule')\nr(name='generated')\ne=use_extension('@generated//:ext.bzl','ext')",
         );
-        assert!(
-            build(&generated_definition, false)
-                .unwrap_err()
-                .contains("invalid ordinary extension label")
+        assert_eq!(
+            build(&generated_definition, false).unwrap_err(),
+            "invalid label for module extension found at MODULE.bazel:3:16: no repo visible as '@generated' here"
         );
         let mut invalid = graph("e=use_extension('//:ext.bzl','ext')");
         invalid.root.extension_usages[0].identity.extension_name = "bad symbol".to_owned();

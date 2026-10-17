@@ -205,9 +205,42 @@ fn eager_lockfile_path_fails_loudly_on_a_bad_extension_label() {
     .unwrap();
     assert_eq!(
         last_error(&f.query("update", &["//:plain"])),
-        "invalid ordinary extension label in MODULE owner \"badext+\": unknown apparent repository @nope from canonical repository \"badext+\"; extension repository not materialized or dependency not declared"
+        "Error computing the main repository mapping: invalid label for module extension found at @@badext+//:MODULE.bazel:3:21: no repo visible as '@nope' here"
     );
     assert!(f.lock().is_none());
+    // Every command that resolves the module graph fails the same way, in
+    // any lockfile mode and with a local file: registry, even when it needs
+    // no mapping (a canonical label of a selected module).
+    let file_registry = format!(
+        "--registry=file://{}",
+        f.temp.path().join("registry").display()
+    );
+    for (registry, mode) in [
+        (format!("--registry=http://127.0.0.1:{}", f.port), "off"),
+        (file_registry.clone(), "off"),
+        (file_registry, "update"),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", f.temp.path().join("home"))
+            .env("TMPDIR", f.temp.path())
+            .arg("--ignore_all_rc_files")
+            .arg(format!(
+                "--cache-dir={}",
+                f.temp.path().join("cache").display()
+            ))
+            .args(["query", &registry, &format!("--lockfile_mode={mode}")])
+            .args(["--repository_disable_download", "@@badext+//:MODULE.bazel"])
+            .current_dir(f.temp.path().join("ws"))
+            .output()
+            .unwrap();
+        assert_eq!(
+            last_error(&output),
+            "Error computing the main repository mapping: invalid label for module extension found at @@badext+//:MODULE.bazel:3:21: no repo visible as '@nope' here",
+            "{registry} {mode}"
+        );
+    }
 }
 
 #[test]

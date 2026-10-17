@@ -70,6 +70,24 @@ contents:
     (`ModuleFileFunction.java:752-777`).
   - Profile-free recording (`bzlmod::evaluate*`) still permits the name.
 
+**Residual divergence.** Native resolves the module graph lazily, so a command
+that never resolves it can succeed where Bazel fails. Examples are a
+dependency's `bazel_tools` name collision or a broken extension label, in a
+main-repository-only query without a lockfile session. Whenever the graph is
+resolved, the MODULE checks and Bazel's eager extension usage table apply in
+every lockfile mode (docs/REGISTRY_LOCKFILE.md, "Eager resolution boundary").
+
+**Intentional repository identity re-key (N51).** Native repository provenance
+serialises the repository mapping. Adding `@bazel_tools` to every
+default-profile mapping therefore gives every default-profile direct and
+extension-generated repository a new native cache identity.
+`tests/repository_rules.rs` re-pins its two goldens. Retained default-profile
+native identity evidence is historical and does not describe the current
+binary. Examples are the label_passthrough publication observation
+`2fb9dd9d…` (`tests/fixtures/label_passthrough/native_publication_observation.json`)
+and the V-series identity tables in earlier receipts. Built-in-profile mappings
+already contained the entry, so this change does not re-key them.
+
 Evidence comes from a paired capture against genuine Bazel 9.3.0, plus a
 follow-up check: `tests/fixtures/eager_resolution_mapping/reference_receipt.json`. With the
 built-in profile, all 6 steps match exactly. In the default profile, the

@@ -335,7 +335,9 @@ inputs) remain; the former 16 MiB input cap was removed in N32.
   recorded as file inputs. Label templates are not: their existing `templates`
   entry (canonical label and full bytes) already keys their content, so
   repositories that only use `ctx.file` and Label templates keep their
-  pre-N21 publication identity (no rekey).
+  pre-N21 publication identity (no rekey). N51 later re-keyed every
+  default-profile repository on purpose, because the mapping now includes
+  `@bazel_tools` (docs/BUILTIN_MODULES.md).
 * The process-wrapper timeout path was probed (EXACT); `timeout=0` crashes
   genuine Bazel and is an explicit native error.
 

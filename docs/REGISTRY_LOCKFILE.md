@@ -119,12 +119,14 @@ write.
   labels resolved with each module's bazel_dep mapping, and IDs spelled as in
   `GsonTypeAdapterUtil.java:176-187`. An isolated usage matches by its
   `label%name%<module key>+` prefix, because native does not record the exported
-  proxy name. If the usage table cannot be built, the command fails with the
-  error the lazy path reports, and nothing is written. Bazel fails the command
-  as well (`getExtensionUsagesById`, `:115-130`) and writes nothing without a
-  `BazelDepGraphValue` (`:95-100`). Before N51 native silently skipped the
-  write. The message text differs: Bazel reports `invalid label for module
-  extension found at <loc>: no repo visible as '@x' here`. Order is the file
+  proxy name. If the usage table cannot be built, the command fails and
+  nothing is written. Bazel fails the command as well
+  (`getExtensionUsagesById`, `:115-130`) and writes nothing without a
+  `BazelDepGraphValue` (`:95-100`). Native uses Bazel's text: `Error computing
+  the main repository mapping: invalid label for module extension found at
+  <file>:<line>:<col>: no repo visible as '@x' here`. The location is the
+  usage's first `use_extension` left parenthesis. Before N51 native silently
+  skipped the write. Order is the file
   order; Bazel sorts by `ModuleExtensionId.LEXICOGRAPHIC_COMPARATOR`, which is
   already the order of a Bazel-written file.
   - Genuine Bazel reads such a file the same way: missing entries are evaluated
@@ -175,10 +177,25 @@ when a lockfile mode other than `off` is combined with a remote (`http`/`https`)
 registry, including the default `https://bcr.bazel.build/`, and the workspace
 has a `MODULE.bazel`. Otherwise native keeps its
 lazy profile (`NATIVE_BOUNDARY` tests): a main-repository-only query does not
-resolve, and nothing is written. As a result, with `--lockfile_mode=off` a bad
-extension label, or a dependency's `bazel_tools` name collision, fails only when
-demanded. Bazel fails every command (`artifacts/eager_mapping-followup-check.py`
-rows F1/off).
+resolve, and nothing is written.
+
+Whenever native does resolve the graph, in any lockfile mode and with
+`file:`/local registries too, it then builds Bazel's eager extension usage
+table (`repository_catalog::usage_table`). A broken extension label therefore
+fails the command exactly where Bazel's `BazelDepGraphFunction` would, even if
+the command needs no repository mapping. Native-only preparation
+(`repository_catalog::build`: canonical namespaces, imports, budgets) stays
+lazy, like Bazel's extension evaluation. On ~/code the extra work is not
+measurable: the warm `query` median was 6.380 s before and 6.360 s after
+(`artifacts/eager_mapping-code-timing.json`).
+
+**Residual divergence.** A command that never resolves the module graph can
+succeed where Bazel fails on a broken dependency MODULE file or extension label.
+Bazel resolves in every command. Native skips resolution for a
+main-repository-only query without a lockfile session: `--lockfile_mode=off`,
+or a workspace that needs no external repository. Example:
+`artifacts/eager_mapping-followup-check.py` rows F1/off, where `query //:plain`
+exits 0 natively and 48 in Bazel.
 
 ## Native-only `--native-lockfile=workspace|readonly|/absolute/path`
 

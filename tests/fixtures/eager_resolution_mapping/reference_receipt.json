@@ -844,6 +844,68 @@
   "final_release_sha256": "f5b43ad6181ef45fee424a5c052c88de63f955bde14c807299d771f867c57a3e",
   "code_rerun": {
    "note": "The exact ~/code query was re-run with the final binary: default profile update exits 1 at the same @@bazel_tools utils.bzl stop; builtin profile update exits 0. Both private lockfiles are byte-identical to artifacts/code-*-update.MODULE.bazel.lock. ~/code/MODULE.bazel.lock sha256 and git status are unchanged."
+  },
+  "review_follow_up": {
+   "changes": [
+    "repository_catalog: extension label failures use Bazel's text (BazelDepGraphFunction.getExtensionUsagesById :111-130): 'invalid label for module extension found at <first active use_extension lparen location>: no repo visible as '@X' here'. Syntax errors append the cause (ExternalDepsException.withCauseAndMessage :64-68). Isolated usages no longer skip unparsable labels silently.",
+    "module_graph: after every successful resolution (any lockfile mode, any registry kind) the eager usage table repository_catalog::usage_table is built. On failure the command fails with 'Error computing the main repository mapping: <message>'. Only Bazel's eager work is done here: label resolution with bazel_dep mappings, plus usage IDs and isolated prefixes for the lockfile. The native preparation catalog (repository_catalog::build) stays lazy. Making it eager would add native-only failures Bazel does not have, e.g. canonical-namespace validation of a raw use_repo_rule identity (module_graph test repo_rule_recording_uses_root_and_registry_dependency_contexts_without_mappings)."
+   ],
+   "native_verification": {
+    "note": "Native-only re-run of every follow-up row against the RECORDED genuine Bazel errors (no new genuine run).",
+    "script": {
+     "path": "artifacts/eager_mapping-f1-native-verify.py",
+     "sha256": "56f3212afcc3f41bff8a684de5e57544f154f079027415b9b3a46d04b26da5dd"
+    },
+    "output": {
+     "path": "artifacts/eager_mapping-f1-native-verify.json",
+     "sha256": "c5176228879123b4fdb797690bf1612923a71199a866cdf2f2189aa6969740bd"
+    },
+    "native_sha256": "04f460777ff4da01ee160d2a8270f9ea5f9cc6f4240edca1784ae6a00393835e",
+    "exact_rows": 26,
+    "total_rows": 30,
+    "divergent_rows": [
+     "F1/non_root_bad_label/off",
+     "F1/root_bad_label/off"
+    ],
+    "divergence_reason": "F1 off: query //:plain never resolves the module graph natively (no lockfile session, main-repository-only), so nothing fails; Bazel resolves in every command. Documented residual divergence."
+   },
+   "code_timing": {
+    "script": {
+     "path": "artifacts/eager_mapping-code-timing.py",
+     "sha256": "e3e7ef55b32726e1e7f4a034bfbb2b6e21c50b9f0233db8d7c8cacdf6ecba1d8"
+    },
+    "output": {
+     "path": "artifacts/eager_mapping-code-timing.json",
+     "sha256": "ff5463bc6de87f7fd3d4cd276b35e49ff4b0ca8ca06920f37697edc2b08071f9"
+    },
+    "isolation": "env -i, private HOME/TMPDIR/cache per binary, --ignore_all_rc_files, --lockfile_mode=off, --experimental-builtin-modules, --remote_cache= --noremote_upload_local_results; ~/code read-only; one warm-up per binary, then 9 interleaved runs",
+    "binaries": {
+     "before": "f5b43ad6181ef45fee424a5c052c88de63f955bde14c807299d771f867c57a3e",
+     "after": "04f460777ff4da01ee160d2a8270f9ea5f9cc6f4240edca1784ae6a00393835e"
+    },
+    "median_s": {
+     "before": 6.3798,
+     "after": 6.3597
+    },
+    "min_s": {
+     "before": 5.7748,
+     "after": 5.7805
+    },
+    "median_delta_s": -0.0201,
+    "result": {
+     "before": {
+      "rc": 0,
+      "stdout": "//src/beyondwork.ai/utils/str:str\n"
+     },
+     "after": {
+      "rc": 0,
+      "stdout": "//src/beyondwork.ai/utils/str:str\n"
+     }
+    },
+    "code_lockfile_unchanged": true
+   },
+   "final_release_sha256": "04f460777ff4da01ee160d2a8270f9ea5f9cc6f4240edca1784ae6a00393835e",
+   "reproducibility_note": "Rebuilding 7a1f7d4 from git archive gave f5b43ad6..., exactly the final_release_sha256 recorded for that commit, so release builds are reproducible from the tree."
   }
  }
 }

@@ -156,7 +156,11 @@ fn canonical_aliases_merge_ordered_tags_and_only_bfs_participants_are_exposed() 
     );
     reject(
         &f.run(&["build", "//:copy"]),
-        "unknown apparent repository @shared+",
+        "invalid label for module extension found at ",
+    );
+    reject(
+        &f.run(&["build", "//:copy"]),
+        "/MODULE.bazel:10:20: no repo visible as '@shared+' here",
     );
     // The ignore flag also suppresses root overrides in the pinned MODULE
     // contract. Test its tag filtering without relying on local overrides.
