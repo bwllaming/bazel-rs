@@ -221,6 +221,10 @@ negative cases; accepted attributes may never become silent no-ops.
 - Remote Execution API/CAS/AC, disk-cache policy, persistent workers, resource
   scheduling, path/symlink semantics and crash recovery.
 - Correct action keys across tool, config, environment and input changes.
+- Content-addressed store maintenance (N36 follow-up): garbage collection of
+  unreferenced `cache/cas/<sha256>-<mode>` blobs and a sweep of abandoned
+  `.tmp-*` staging files left by killed processes; the store currently only
+  grows (docs/HARDLINK_STAGING.md).
 
 Gate: warm/cold/no-op/incremental builds with artifact and exit-code equivalence;
 cache corruption and concurrent-process tests; reproducibility tests across hosts.

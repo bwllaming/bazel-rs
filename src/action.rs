@@ -364,14 +364,15 @@ fn timestamp(seconds: i64, nanoseconds: i64) -> Option<SystemTime> {
 }
 
 /// Whether a file's timestamps are old enough that a change made after
-/// `start` could not reproduce them.
-fn racy_safe(metadata: &fs::Metadata, start: SystemTime) -> bool {
-    [
-        (metadata.mtime(), metadata.mtime_nsec()),
-        (metadata.ctime(), metadata.ctime_nsec()),
-    ]
-    .into_iter()
-    .all(|(seconds, nanoseconds)| {
+/// `start` could not reproduce them. A file the cache owns (store blob,
+/// published output) is judged by its mtime only, like its memo key: every
+/// link() to it bumps its ctime, while its bytes are immutable and verified.
+fn racy_safe(metadata: &fs::Metadata, start: SystemTime, owned: bool) -> bool {
+    let mut times = vec![(metadata.mtime(), metadata.mtime_nsec())];
+    if !owned {
+        times.push((metadata.ctime(), metadata.ctime_nsec()));
+    }
+    times.into_iter().all(|(seconds, nanoseconds)| {
         timestamp(seconds, nanoseconds)
             .and_then(|time| time.checked_add(RACY_MARGIN))
             .is_some_and(|time| time <= start)
@@ -410,7 +411,7 @@ fn hash_file(path: &Path, owned: bool, trusted: bool) -> Result<(String, fs::Met
         ));
     }
     let digest = hex(&hash.finalize());
-    if trusted || racy_safe(&after, start) {
+    if trusted || racy_safe(&after, start, owned) {
         remember_digest(key, &digest);
     }
     Ok((digest, before))
@@ -998,8 +999,12 @@ fn blob_path(cas: &Path, input: &Input) -> PathBuf {
 
 #[cfg(test)]
 thread_local! {
-    /// Test hook: every hardlink attempt fails (cross-device fallback).
-    static FORCE_COPY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Test hook: every hardlink attempt fails with this errno (0: none),
+    /// e.g. EXDEV (cross-device) or EMLINK (link count limit).
+    static FORCE_LINK_ERRNO: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
+    /// Test hook: the next staged blob is removed after ensure_blob found it
+    /// valid and before it is linked (a concurrent damaged-blob removal).
+    static REMOVE_BLOB_BEFORE_LINK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Test observation: (hardlinked, copied) staged and published files.
     static LINK_COUNTS: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
 }
@@ -1020,8 +1025,11 @@ fn count_link(linked: bool) {
 
 fn hard_link(source: &Path, target: &Path) -> io::Result<()> {
     #[cfg(test)]
-    if FORCE_COPY.with(std::cell::Cell::get) {
-        return Err(io::Error::from_raw_os_error(18));
+    {
+        let errno = FORCE_LINK_ERRNO.with(std::cell::Cell::get);
+        if errno != 0 {
+            return Err(io::Error::from_raw_os_error(errno));
+        }
     }
     fs::hard_link(source, target)
 }
@@ -1138,24 +1146,73 @@ fn ensure_blob(cas: &Path, input: &Input, root: &Path) -> Result<PathBuf, String
     published.map(|()| blob)
 }
 
+/// A failed [`link_or_copy_detail`]: the blob vanished (neither linkable
+/// nor readable), or any other error.
+enum LinkFailure {
+    BlobMissing(String),
+    Other(String),
+}
+
 /// Link `blob` to `target`, or copy it when the hardlink fails
 /// (HardlinkedSandboxedSpawn.hardLinkRecursive, :85-102).
 fn link_or_copy(blob: &Path, target: &Path, mode: u32) -> Result<(), String> {
+    link_or_copy_detail(blob, target, mode).map_err(|failure| match failure {
+        LinkFailure::BlobMissing(error) | LinkFailure::Other(error) => error,
+    })
+}
+
+/// [`link_or_copy`] of the blob [`ensure_blob`] returned for `input`. The
+/// blob can disappear between ensure_blob's validity check and the link
+/// (another process removing it as damaged, a store cleanup): then the
+/// blob is ensured once more and linked again; a second disappearance is
+/// an error.
+fn link_ensured_blob(
+    cas: &Path,
+    root: &Path,
+    input: &Input,
+    target: &Path,
+    mode: u32,
+) -> Result<PathBuf, String> {
+    let blob = ensure_blob(cas, input, root)?;
+    #[cfg(test)]
+    if REMOVE_BLOB_BEFORE_LINK.with(|hook| hook.replace(false)) {
+        let _ = fs::remove_file(&blob);
+    }
+    match link_or_copy_detail(&blob, target, mode) {
+        Ok(()) => Ok(blob),
+        Err(LinkFailure::BlobMissing(_)) => {
+            let blob = ensure_blob(cas, input, root)?;
+            link_or_copy(&blob, target, mode)?;
+            Ok(blob)
+        }
+        Err(LinkFailure::Other(error)) => Err(error),
+    }
+}
+
+fn link_or_copy_detail(blob: &Path, target: &Path, mode: u32) -> Result<(), LinkFailure> {
+    let other = LinkFailure::Other;
     match hard_link(blob, target) {
         Ok(()) => {
             count_link(true);
             Ok(())
         }
         Err(_) => {
-            let mut input = File::open(blob).map_err(|e| io_error("cannot read", blob, e))?;
+            let mut input = File::open(blob).map_err(|e| {
+                if e.kind() == io::ErrorKind::NotFound {
+                    LinkFailure::BlobMissing(io_error("cannot read", blob, e))
+                } else {
+                    LinkFailure::Other(io_error("cannot read", blob, e))
+                }
+            })?;
             let mut output = OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(target)
-                .map_err(|e| io_error("cannot write", target, e))?;
-            io::copy(&mut input, &mut output).map_err(|e| io_error("cannot copy", target, e))?;
+                .map_err(|e| other(io_error("cannot write", target, e)))?;
+            io::copy(&mut input, &mut output)
+                .map_err(|e| other(io_error("cannot copy", target, e)))?;
             drop(output);
-            set_mode(target, mode)?;
+            set_mode(target, mode).map_err(other)?;
             count_link(false);
             Ok(())
         }
@@ -1195,12 +1252,11 @@ fn stage_file(
     destination: &Path,
     staged: &mut Vec<StagedFile>,
 ) -> Result<(), String> {
-    let blob = ensure_blob(cas, input, root)?;
     let target = execroot.join(destination);
     if let Some(parent) = target.parent() {
         ensure_directory(parent)?;
     }
-    link_or_copy(&blob, &target, blob_mode(input))?;
+    let blob = link_ensured_blob(cas, root, input, &target, blob_mode(input))?;
     let metadata =
         fs::symlink_metadata(&target).map_err(|e| io_error("cannot inspect", &target, e))?;
     staged.push(StagedFile {
@@ -1286,7 +1342,7 @@ fn publish_file(cas: &Path, root: &Path, source: &Path, target: &Path) -> Result
     if hard_link(&blob, target).is_ok() || fs::rename(source, target).is_ok() {
         count_link(true);
     } else {
-        link_or_copy(&blob, target, OUTPUT_MODE)?;
+        link_ensured_blob(cas, root, &input, target, OUTPUT_MODE)?;
     }
     Ok(input)
 }
@@ -3198,10 +3254,10 @@ mod tests {
         let fixture = Fixture::new();
         let mut action = fixture.action();
         action.command = "stat -c %i src/input > out/result; cat src/input >> out/result".into();
-        FORCE_COPY.with(|force| force.set(true));
+        FORCE_LINK_ERRNO.with(|force| force.set(18));
         LINK_COUNTS.with(|counts| counts.set((0, 0)));
         let result = execute(&fixture.cache(), &action);
-        FORCE_COPY.with(|force| force.set(false));
+        FORCE_LINK_ERRNO.with(|force| force.set(0));
         let result = result.unwrap();
         let text = fs::read_to_string(&result.outputs[0]).unwrap();
         let store = blob(&fixture, b"hello\n", 0o444);
@@ -3353,10 +3409,72 @@ mod tests {
             Some(digest(b"fresh"))
         );
         let old = SystemTime::now() - Duration::from_secs(60);
-        assert!(!racy_safe(&fs::metadata(&path).unwrap(), old));
+        assert!(!racy_safe(&fs::metadata(&path).unwrap(), old, false));
         assert!(racy_safe(
             &fs::metadata(&path).unwrap(),
-            SystemTime::now() + RACY_MARGIN + Duration::from_secs(1)
+            SystemTime::now() + RACY_MARGIN + Duration::from_secs(1),
+            false
         ));
+        // An old mtime with a fresh ctime (as every link() to a store blob
+        // leaves): settled for a cache-owned file, racy for any other.
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(60))
+            .unwrap();
+        let metadata = fs::metadata(&path).unwrap();
+        assert!(racy_safe(&metadata, SystemTime::now(), true));
+        assert!(!racy_safe(&metadata, SystemTime::now(), false));
+        let blob = fixture.0.join("blob");
+        fs::write(&blob, b"blob").unwrap();
+        File::options()
+            .write(true)
+            .open(&blob)
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(60))
+            .unwrap();
+        fs::hard_link(&blob, fixture.0.join("blob-link")).unwrap();
+        let (_, metadata) = hash_file(&blob, true, false).unwrap();
+        assert_eq!(
+            memoized_digest(&file_key(&metadata, true)),
+            Some(digest(b"blob"))
+        );
+    }
+
+    #[test]
+    fn emlink_hardlink_failures_fall_back_to_copies() {
+        // EMLINK: the blob reached the filesystem's link-count limit.
+        let fixture = Fixture::new();
+        let mut action = fixture.action();
+        action.command = "stat -c %i src/input > out/result; cat src/input >> out/result".into();
+        FORCE_LINK_ERRNO.with(|force| force.set(31));
+        LINK_COUNTS.with(|counts| counts.set((0, 0)));
+        let result = execute(&fixture.cache(), &action);
+        FORCE_LINK_ERRNO.with(|force| force.set(0));
+        let result = result.unwrap();
+        let text = fs::read_to_string(&result.outputs[0]).unwrap();
+        let store = blob(&fixture, b"hello\n", 0o444);
+        assert!(text.ends_with("\nhello\n"), "{text}");
+        assert_ne!(text, format!("{}\nhello\n", ino(&store)));
+        assert_eq!(fs::read(&store).unwrap(), b"hello\n");
+        assert_eq!(link_counts(), (1, 1));
+        assert!(execute(&fixture.cache(), &action).unwrap().cache_hit);
+    }
+
+    #[test]
+    fn a_blob_removed_before_linking_is_ensured_again() {
+        let fixture = Fixture::new();
+        let mut action = fixture.action();
+        action.command = "stat -c %i src/input > out/result; cat src/input >> out/result".into();
+        REMOVE_BLOB_BEFORE_LINK.with(|hook| hook.set(true));
+        let result = execute(&fixture.cache(), &action);
+        REMOVE_BLOB_BEFORE_LINK.with(|hook| hook.set(false));
+        let result = result.unwrap();
+        let store = blob(&fixture, b"hello\n", 0o444);
+        assert_eq!(
+            fs::read_to_string(&result.outputs[0]).unwrap(),
+            format!("{}\nhello\n", ino(&store))
+        );
     }
 }

@@ -122,9 +122,15 @@ pins pass unchanged. Manifests record symlink outputs and are
   symlinks. `readlink` of a published symlink output names a native path
   (workspace source or cache entry), like Bazel's absolute execroot path.
 * The store persists one copy of each distinct input/output content; there is
-  no store garbage collection (native has no cache GC).
+  no store garbage collection (native has no cache GC) and no sweep of
+  `.tmp-*` files a killed process left (docs/ROADMAP.md, milestone 3).
 * Cross-device or link-limited filesystems (`EXDEV`, `EMLINK`, ...) fall back
-  to copies for staging and to rename/copy for publication.
+  to copies for staging and to rename/copy for publication (unit tests
+  `failed_hardlinks_fall_back_to_copies`, `emlink_hardlink_failures_fall_back_to_copies`).
+* A blob removed between its validity check and the link (a concurrent
+  damaged-blob removal) is ensured once more and linked again.
+* The digest memo trusts a cache-owned file (blob, published output) by its
+  mtime alone, since every link() to it bumps its ctime.
 
 ## Benchmark
 

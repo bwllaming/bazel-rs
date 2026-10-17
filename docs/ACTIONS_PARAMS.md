@@ -155,6 +155,11 @@ so expanded arguments and parameter-file contents are keyed like any other.
   (docs/HARDLINK_STAGING.md). Inside a consuming action every input,
   including a symlink output, is a read-only hardlink (Bazel's sandboxes
   stage symlinks).
+* Source inputs are read-only inside actions since N36: a staged source is a
+  hardlink to a 0444 store blob (0555 when executable), so a process sees
+  mode 0444 and cannot write it, where Bazel's sandboxes show the source
+  file's own mode (e.g. 0644) through a symlink (docs/HARDLINK_STAGING.md;
+  the paired capture's documented mismatches).
 * map_each of non-directory values, TemplateDict map_each and the
   file/directory conflict run at analysis as before; directory contents are
   mapped at execution like Bazel.
