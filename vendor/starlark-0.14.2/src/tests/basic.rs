@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified: test expectations follow Bazel 9.3 interpreter error texts; see vendor
+// provenance.
+
 // Modified for native Bazel 9.3 repr/type/hashability compatibility; see vendor provenance.
 
 //! Basic expression tests.
@@ -136,13 +139,29 @@ False < True
 (1, 3) < (1, 3, 4)
 "#,
     );
-    assert::fail("noop(None) < None", "`compare` not supported");
-    assert::fail_skip_typecheck("(None, ) < (None, )", "`compare` not supported");
-    assert::fail_skip_typecheck("x = (None,); x < x", "`compare` not supported");
-    assert::fail_skip_typecheck("x = {}; x < x", "`compare` not supported");
-    assert::fail_skip_typecheck("{} < {1: 2}", "`compare` not supported");
-    assert::fail_skip_typecheck("range(1) < range(2)", "`compare` not supported");
-    assert::fail_skip_typecheck("repr < str", "`compare` not supported");
+    // Modified: Bazel's `unsupported comparison` text (Starlark.java:517).
+    assert::fail(
+        "noop(None) < None",
+        "unsupported comparison: NoneType <=> NoneType",
+    );
+    assert::fail_skip_typecheck(
+        "(None, ) < (None, )",
+        "unsupported comparison: NoneType <=> NoneType",
+    );
+    assert::fail_skip_typecheck(
+        "x = (None,); x < x",
+        "unsupported comparison: NoneType <=> NoneType",
+    );
+    assert::fail_skip_typecheck("x = {}; x < x", "unsupported comparison: dict <=> dict");
+    assert::fail_skip_typecheck("{} < {1: 2}", "unsupported comparison: dict <=> dict");
+    assert::fail_skip_typecheck(
+        "range(1) < range(2)",
+        "unsupported comparison: range <=> range",
+    );
+    assert::fail_skip_typecheck(
+        "repr < str",
+        "unsupported comparison: builtin_function_or_method <=> builtin_function_or_method",
+    );
 }
 
 #[test]
@@ -172,7 +191,8 @@ assert_eq(all([frozen_dict[x] != None for x in values]), True)
 
 #[test]
 fn test_compare() {
-    assert::fail("noop(1) > False", "Operation `compare` not supported");
+    // Modified: Bazel's `unsupported comparison` text (Starlark.java:517).
+    assert::fail("noop(1) > False", "unsupported comparison: int <=> bool");
     assert::is_true("[1, 2] == [1, 2]");
     assert::is_true("noop(1) != True");
     assert::is_true("not (noop(None) == [1])");

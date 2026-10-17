@@ -253,10 +253,10 @@ resolves never silently becomes `None`.
   `analysis/RuleContext.java:2070-2095`,
   `packages/RequiredProviders.java:157-212, 308-321`; native prefixes
   `analysis of L: `).
-* **Divergence (interpreter wording):** a missing ToolchainInfo field is
-  ``Object of type `ToolchainInfo` has no attribute `zz` `` where Bazel says
+* **Interpreter wording (fixed by N33):** a missing ToolchainInfo field was
+  ``Object of type `ToolchainInfo` has no attribute `zz` ``; it is now Bazel's
   `'ToolchainInfo' value has no field or method 'zz'` / `Available
-  attributes: a` (as for the platform providers, docs/PLATFORMS.md);
+  attributes: a` (`src/toolchain_info.rs`, docs/STARLARK_VENDOR.md);
   Starlark tracebacks keep the native format.
 
 ## Explicitly unsupported

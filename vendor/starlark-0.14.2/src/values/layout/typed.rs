@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified: test expectations follow Bazel 9.3 interpreter error texts; see vendor
+// provenance.
+
 pub(crate) mod string;
 
 use std::convert::Infallible;
@@ -532,7 +535,11 @@ mod tests {
         a.globals_add(module);
 
         a.pass("takes_frozen_value_typed(FROZEN)");
-        a.fail("takes_frozen_value_typed(1)", "Type of parameter `value` doesn't match, expected `TestComplexValue`, actual `int (repr: 1)`");
+        // Modified: Bazel's BuiltinFunction parameter type text.
+        a.fail(
+            "takes_frozen_value_typed(1)",
+            "in call to takes_frozen_value_typed(), parameter 'value' got value of type 'int', want 'TestComplexValue'",
+        );
         a.fail(
             "takes_frozen_value_typed(mutable())",
             "Expected frozen value",

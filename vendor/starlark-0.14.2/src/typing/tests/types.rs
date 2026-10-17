@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified: test expectations follow Bazel 9.3 interpreter error texts; see vendor
+// provenance.
+
 // Modified for native Bazel 9.3 set compatibility; see vendor provenance.
 
 //! Type-related operations.
@@ -67,7 +70,8 @@ fn test_function_as_type_parameterize() {
 def f(x: str[int]):
     pass
 "#,
-        "not supported",
+        // Modified: Bazel's EvalUtils.index text.
+        "type 'builtin_function_or_method' has no operator [](type)",
     );
 }
 
@@ -104,7 +108,8 @@ fn test_set_parametrize() {
 def f(x: set[int]) -> set[int]:
     return x
 "#,
-        "Operation `[]` not supported for types `builtin_function_or_method` and `type`",
+        // Modified: Bazel's EvalUtils.index text.
+        "type 'builtin_function_or_method' has no operator [](type)",
     );
 }
 

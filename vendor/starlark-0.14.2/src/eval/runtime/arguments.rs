@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 call-argument error texts
+// (net/starlark/java/eval/Eval.java:730-756); see vendor provenance.
+
 use std::fmt::Debug;
 use std::iter;
 use std::marker::PhantomData;
@@ -45,21 +48,26 @@ use crate::values::iter::StarlarkIterator;
 
 #[derive(Debug, Clone, Error)]
 pub(crate) enum FunctionError {
-    #[error("Found {count} extra positional argument(s) for call to {function}")]
-    ExtraPositionalArg { count: usize, function: String },
+    // Modified: surplus positional arguments of a `ParametersSpec` call are
+    // reported with Bazel's texts by `ParametersSpec` itself.
     #[error("Found `{}` extra named parameter(s) for call to {function}", .names.join("` `"))]
     ExtraNamedArg {
         names: Vec<String>,
         function: String,
     },
+    /// Modified: a Bazel argument-binding text (`ParametersSpec`).
+    #[error("{0}")]
+    BazelBinding(String),
     #[error("Argument `{name}` occurs more than once")]
     RepeatedArg { name: String },
-    #[error("The argument provided for *args is not an identifier")]
-    ArgsValueIsNotString,
-    #[error("The argument provided for *args is not iterable")]
-    ArgsArrayIsNotIterable,
-    #[error("The argument provided for **kwargs is not a dictionary")]
-    KwArgsIsNotDict,
+    // Modified: Bazel's call-argument texts (Eval.java:735, 749, 754); the
+    // payload is the offending value's type.
+    #[error("keywords must be strings, not {0}")]
+    ArgsValueIsNotString(String),
+    #[error("argument after * must be an iterable, not {0}")]
+    ArgsArrayIsNotIterable(String),
+    #[error("argument after ** must be a dict, not {0}")]
+    KwArgsIsNotDict(String),
     #[error("Wrong number of positional arguments, expected {}, got {got}",
         if min == max {min.to_string()} else {format!("between {min} and {max}")})]
     WrongNumberOfArgs { min: usize, max: usize, got: usize },
@@ -294,7 +302,13 @@ impl<'v, 'a> Arguments<'v, 'a> {
                 if self.0.names().names().is_empty() {
                     match kwargs.downcast_ref_key_string() {
                         Some(kwargs) => Ok(kwargs.clone()),
-                        None => Err(FunctionError::ArgsValueIsNotString.into()),
+                        None => {
+                            let key = kwargs.keys().find(|k| StringValue::new(*k).is_none());
+                            Err(FunctionError::ArgsValueIsNotString(
+                                key.map_or("NoneType", |k| k.get_type()).to_owned(),
+                            )
+                            .into())
+                        }
                     }
                 } else {
                     // We have to insert the names before the kwargs since the iteration order is observable
@@ -366,7 +380,7 @@ impl<'v, 'a> Arguments<'v, 'a> {
         match self.0.kwargs {
             None => Ok(None),
             Some(kwargs) => match DictRef::from_value(kwargs) {
-                None => Err(FunctionError::KwArgsIsNotDict.into()),
+                None => Err(FunctionError::KwArgsIsNotDict(kwargs.get_type().to_owned()).into()),
                 Some(x) => Ok(Some(x)),
             },
         }
@@ -376,7 +390,7 @@ impl<'v, 'a> Arguments<'v, 'a> {
     #[inline(always)]
     pub(crate) fn unpack_kwargs_key_as_value(k: Value<'v>) -> crate::Result<StringValue<'v>> {
         match StringValue::new(k) {
-            None => Err(FunctionError::ArgsValueIsNotString.into()),
+            None => Err(FunctionError::ArgsValueIsNotString(k.get_type().to_owned()).into()),
             Some(k) => Ok(k),
         }
     }

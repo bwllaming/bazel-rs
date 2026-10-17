@@ -409,16 +409,18 @@ impl GlobalsBuilder {
         special_builtin_function: Option<SpecialBuiltinFunction>,
         f: NativeFuncFn,
     ) {
+        let ty = ty.unwrap_or_else(|| components.make_type(as_type.as_ref().map(|x| x.0.dupe())));
+        // Modified: parameter types for Bazel's binding-time type checks.
+        let param_tys = crate::values::function::native_param_tys(&ty);
         self.set(
             name,
             NativeFunction {
-                function: NativeFunc(f, sig),
+                function: NativeFunc(f, sig, param_tys),
                 name: name.to_owned(),
                 repr_receiver: self.builtin_receiver.clone(),
                 speculative_exec_safe: components.speculative_exec_safe,
                 as_type: as_type.as_ref().map(|x| x.0.dupe()),
-                ty: ty
-                    .unwrap_or_else(|| components.make_type(as_type.as_ref().map(|x| x.0.dupe()))),
+                ty,
                 docs: components.into_docs(as_type),
                 special_builtin_function,
             },

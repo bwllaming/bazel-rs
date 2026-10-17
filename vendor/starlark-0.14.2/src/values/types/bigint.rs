@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified: test expectations follow Bazel 9.3 interpreter error texts; see vendor
+// provenance.
+
 //! Outside of `i32` range int.
 
 mod convert;
@@ -536,8 +539,14 @@ mod tests {
 
     #[test]
     fn test_bit_and_float() {
-        assert::fail_skip_typecheck("0x60000000000000000000000 & 1.0", "not supported");
-        assert::fail_skip_typecheck("1.0 & 0x60000000000000000000000", "not supported");
+        assert::fail_skip_typecheck(
+            "0x60000000000000000000000 & 1.0",
+            "unsupported binary operation: int & float",
+        );
+        assert::fail_skip_typecheck(
+            "1.0 & 0x60000000000000000000000",
+            "unsupported binary operation: float & int",
+        );
         assert::fail(
             "def f(): 0x60000000000000000000000 & 1.0",
             "is not available on the types",
@@ -570,8 +579,14 @@ mod tests {
 
     #[test]
     fn test_bit_or_float() {
-        assert::fail_skip_typecheck("0x60000000000000000000000 | 1.0", "not supported");
-        assert::fail_skip_typecheck("1.0 | 0x60000000000000000000000", "not supported");
+        assert::fail_skip_typecheck(
+            "0x60000000000000000000000 | 1.0",
+            "unsupported binary operation: int | float",
+        );
+        assert::fail_skip_typecheck(
+            "1.0 | 0x60000000000000000000000",
+            "unsupported binary operation: float | int",
+        );
         assert::fail(
             "def f(): 0x60000000000000000000000 | 1.0",
             "is not available on the types",
@@ -604,8 +619,14 @@ mod tests {
 
     #[test]
     fn test_bit_xor_float() {
-        assert::fail_skip_typecheck("0x60000000000000000000000 ^ 1.0", "not supported");
-        assert::fail_skip_typecheck("1.0 ^ 0x60000000000000000000000", "not supported");
+        assert::fail_skip_typecheck(
+            "0x60000000000000000000000 ^ 1.0",
+            "unsupported binary operation: int ^ float",
+        );
+        assert::fail_skip_typecheck(
+            "1.0 ^ 0x60000000000000000000000",
+            "unsupported binary operation: float ^ int",
+        );
         assert::fail(
             "def f(): 0x60000000000000000000000 ^ 1.0",
             "Binary operator `^` is not available",
@@ -661,8 +682,14 @@ mod tests {
 
     #[test]
     fn test_left_shift_float() {
-        assert::fail_skip_typecheck("0x10000000000000000000000000000000 << 1.0", "not supported");
-        assert::fail_skip_typecheck("1.0 << 0x10000000000000000000000000000000", "not supported");
+        assert::fail_skip_typecheck(
+            "0x10000000000000000000000000000000 << 1.0",
+            "unsupported binary operation: int << float",
+        );
+        assert::fail_skip_typecheck(
+            "1.0 << 0x10000000000000000000000000000000",
+            "unsupported binary operation: float << int",
+        );
         assert::fail(
             "def f(): 0x10000000000000000000000000000000 << 1.0",
             "is not available",
@@ -709,8 +736,14 @@ mod tests {
 
     #[test]
     fn test_right_shift_float() {
-        assert::fail_skip_typecheck("0x20000000000000000000000000000000 >> 1.0", "not supported");
-        assert::fail_skip_typecheck("1.0 >> 0x20000000000000000000000000000000", "not supported");
+        assert::fail_skip_typecheck(
+            "0x20000000000000000000000000000000 >> 1.0",
+            "unsupported binary operation: int >> float",
+        );
+        assert::fail_skip_typecheck(
+            "1.0 >> 0x20000000000000000000000000000000",
+            "unsupported binary operation: float >> int",
+        );
         assert::fail(
             "def f(): 0x20000000000000000000000000000000 >> 1.0",
             "is not available",

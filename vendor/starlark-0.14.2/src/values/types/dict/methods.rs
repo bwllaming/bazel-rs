@@ -85,8 +85,9 @@ pub(crate) fn dict_methods(registry: &mut MethodsBuilder) {
     fn get<'v>(
         this: DictRef<'v>,
         #[starlark(require = pos)] key: Value<'v>,
-        #[starlark(require = pos)] default: Option<Value<'v>>,
+        default: Option<Value<'v>>,
     ) -> starlark::Result<Value<'v>> {
+        // Modified: Bazel's `default` may be named (Dict.java).
         match this.get(key)? {
             None => Ok(default.unwrap_or_else(Value::new_none)),
             Some(x) => Ok(x),
@@ -264,8 +265,9 @@ pub(crate) fn dict_methods(registry: &mut MethodsBuilder) {
     fn setdefault<'v>(
         this: Value<'v>,
         #[starlark(require = pos)] key: Value<'v>,
-        #[starlark(require = pos)] default: Option<Value<'v>>,
+        default: Option<Value<'v>>,
     ) -> starlark::Result<Value<'v>> {
+        // Modified: Bazel's `default` may be named (Dict.java).
         let mut this = DictMut::from_value(this)?;
         let key = key.get_hashed()?;
         match this.aref.content.entry_hashed(key) {
@@ -397,16 +399,31 @@ mod tests {
 
     #[test]
     fn test_dict_add() {
-        assert::fail("{1: 2} + {3: 4}", "not supported");
+        // Modified: Bazel's EvalUtils.binaryOp text.
+        assert::fail(
+            "{1: 2} + {3: 4}",
+            "unsupported binary operation: dict + dict",
+        );
     }
 
     #[test]
     fn test_dict_with_duplicates() {
         // In Starlark spec this is a runtime error. In Python it's fine.
         // We make it a runtime error, plus have a lint that checks for it statically.
-        assert::fails("{40+2: 2, 6*7: 3}", &["key repeated", "42"]);
+        // Modified: Bazel's text with the key's repr (Eval.java:650).
+        assert::fail(
+            "{40+2: 2, 6*7: 3}",
+            "dictionary expression has duplicate key: 42",
+        );
         // Also check we fail if the entire dictionary is static (a different code path).
-        assert::fails("{42: 2, 42: 3}", &["key repeated", "42"]);
+        assert::fail(
+            "{42: 2, 42: 3}",
+            "dictionary expression has duplicate key: 42",
+        );
+        assert::fail(
+            "{'a': 2, 'a': 3}",
+            "dictionary expression has duplicate key: \"a\"",
+        );
     }
 
     #[test]

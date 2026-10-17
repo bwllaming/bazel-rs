@@ -302,10 +302,12 @@ and referenced by '//:cv_missing'`) or select() key error.
 * The configuration identifier in `While resolving toolchains for target L
   (CONFIG)` is the native one (the paired capture normalizes it like the other
   7-hex identifiers).
-* Gated provider fields fail with the interpreter's ``Object of type
+* Gated provider fields failed with the interpreter's ``Object of type
   `PlatformInfo` has no attribute `label` `` where Bazel says `'PlatformInfo'
-  value has no field or method 'label'`; `platform_common.PlatformInfo()` fails
-  explicitly where Bazel says `'Provider' object is not callable`.
+  value has no field or method 'label'`; since N33 the native text is Bazel's
+  (with its SpellChecker hint, docs/STARLARK_VENDOR.md).
+  `platform_common.PlatformInfo()` fails explicitly where Bazel says
+  `'Provider' object is not callable`.
 * The BUILD file itself is not a target natively (pre-existing), so
   `default_constraint_value = "BUILD.bazel"` or `--platforms=//p:BUILD.bazel`
   differ.

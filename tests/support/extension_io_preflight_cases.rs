@@ -37,7 +37,8 @@ fn n3_preflight_cases(
         (
             "label",
             format!("{base}, output=Label('//:owned'))"),
-            "Type of parameter `output` doesn't match, expected `str`, actual `Label",
+            // The native profile accepts only a string output (BuiltinFunction text).
+            "in call to download(), parameter 'output' got value of type 'Label', want 'string'",
         ),
         (
             "file-scheme",

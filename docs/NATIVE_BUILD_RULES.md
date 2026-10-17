@@ -323,7 +323,8 @@ Recorded by the paired capture (`tests/fixtures/native_rules/reference_receipt.j
 * The native label grammar is a stricter subset (`//a b:c` is rejected at
   loading; Bazel accepts it).
 * Unregistered Bazel native rule classes (`java_library`, ...) are unknown
-  globals (`Variable `java_library` not found`).
+  globals (`name 'java_library' is not defined`; before N33 ``Variable
+  `java_library` not found``).
 * A missing source target (fixed by the configuration increment) reports
   Bazel's `no such target '//pkg:k': target 'k' not declared in package 'pkg'
   defined by BUILD ...` with the source-file and did-you-mean suggestions

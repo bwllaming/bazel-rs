@@ -107,8 +107,16 @@ fn constructor_metadata_and_exact_method_surface() {
 type(set) == "builtin_function_or_method" and repr(set) == "<built-in function set>" and str(set) == "<built-in function set>" and dir(set) == [] and not hasattr(set, "type") and dir(set()) == {METHODS} and type(set()) == "set"
 "#
     ));
-    reject("set[int]", &["not supported", "unsupported", "index"]);
-    reject("set.type", &["attribute"]);
+    // EvalUtils.index (EvalUtils.java:498-500).
+    reject(
+        "set[int]",
+        &["type 'builtin_function_or_method' has no operator [](builtin_function_or_method)"],
+    );
+    // Starlark.getattr (Starlark.java:1014-1016).
+    reject(
+        "set.type",
+        &["'builtin_function_or_method' value has no field or method 'type'"],
+    );
 }
 
 #[test]

@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified: test expectations follow Bazel 9.3 interpreter error texts; see vendor
+// provenance.
+
 pub(crate) mod param;
 
 use std::convert::Infallible;
@@ -597,7 +600,8 @@ def test():
 
 test()
         "#,
-            "Type of parameter `_f` doesn't match",
+            // Modified: Bazel's BuiltinFunction parameter type text.
+            "in call to accept_f(), parameter '_f' got value of type 'builtin_function_or_method', want 'typing.Callable'",
         );
     }
 }

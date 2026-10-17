@@ -16,8 +16,9 @@
  */
 
 // Modified for allocation-free integer inspection for native JSON compatibility.
-// Modified for native Bazel 9.3 `dict | select` and unknown-attribute messages;
-// see vendor provenance.
+// Modified for native Bazel 9.3 `dict | select` and unknown-attribute messages
+// (including Bazel's `'T' value has no field or method 'x'` text); see vendor
+// provenance.
 
 // Possible optimisations:
 // Avoid the Box duplication
@@ -1008,13 +1009,31 @@ impl<'v> Value<'v> {
     pub fn get_attr_error(self, attribute: &str, heap: Heap<'v>) -> crate::Result<Value<'v>> {
         match self.get_attr(attribute, heap)? {
             // Modified: a value-specific message (StarlarkValue::unknown_attribute_message).
-            None => match self.get_ref().unknown_attribute_message(attribute) {
-                Some(message) => Err(crate::Error::new_value(anyhow::anyhow!(message))),
-                None => {
-                    ValueError::unsupported_owned(self.get_type(), &format!(".{attribute}"), None)
-                }
-            },
+            None => Err(self.unknown_attr_error(attribute)),
             Some(x) => Ok(x),
+        }
+    }
+
+    /// Modified: the error for reading the missing attribute `attribute`: the
+    /// value-specific message (StarlarkValue::unknown_attribute_message), else
+    /// Bazel's `'T' value has no field or method 'x'` with a spelling hint over
+    /// the sorted `dir(x)` (net/starlark/java/eval/Starlark.java:1002-1017).
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn unknown_attr_error(self, attribute: &str) -> crate::Error {
+        if let Some(message) = self.get_ref().unknown_attribute_message(attribute) {
+            return crate::Error::new_value(anyhow::anyhow!(message));
+        }
+        let dir = self.dir_attr();
+        match crate::errors::did_you_mean::bazel_suggest(attribute, dir.iter().map(|s| s.as_str()))
+        {
+            None => ValueError::NoAttr(self.get_type().to_owned(), attribute.to_owned()).into(),
+            Some(better) => ValueError::NoAttrDidYouMean(
+                self.get_type().to_owned(),
+                attribute.to_owned(),
+                better.to_owned(),
+            )
+            .into(),
         }
     }
 

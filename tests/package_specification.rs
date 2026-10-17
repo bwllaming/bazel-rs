@@ -1006,7 +1006,7 @@ fn provider_globals_are_bzl_only_uncallable_and_module_loaded() {
     );
     rejected(
         &uncallable.run(&["query", "//:all"]),
-        "Operation `call()` not supported on type `Provider`",
+        "'Provider' object is not callable",
     );
     uncallable.untouched();
     let ws = Workspace::new(

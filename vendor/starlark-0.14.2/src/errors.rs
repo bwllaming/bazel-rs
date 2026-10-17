@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified: Bazel's SpellChecker is public (`bazel_suggest`, ...); see vendor
+// provenance.
+
 //! Error types used by Starlark.
 
 pub use starlark_syntax::frame::Frame;
@@ -24,3 +27,9 @@ pub use crate::analysis::EvalSeverity;
 pub use crate::analysis::Lint;
 
 pub(crate) mod did_you_mean;
+
+// Modified: Bazel's SpellChecker port, public for bazel-rs so that it has one
+// spelling checker; see vendor provenance.
+pub use crate::errors::did_you_mean::bazel_did_you_mean;
+pub use crate::errors::did_you_mean::bazel_edit_distance;
+pub use crate::errors::did_you_mean::bazel_suggest;

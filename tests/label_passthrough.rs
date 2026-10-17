@@ -293,22 +293,21 @@ fn analysis_file_owner_and_target_labels_feed_real_output_consumer() {
 
 #[test]
 fn wrong_types_fail_in_typed_binder_after_argument_evaluation() {
+    // BuiltinFunction.checkParamValue (BuiltinFunction.java:404-410) with
+    // Label's allowedTypes String, Label.
     for (expression, actual) in [
-        ("None", "NoneType (repr: None)"),
-        ("True", "bool (repr: True)"),
-        ("1", "int (repr: 1)"),
-        ("[]", "list (repr: [])"),
-        ("{}", "dict (repr: {})"),
-        (
-            "struct(type='Label')",
-            "struct (repr: struct(type = \"Label\"))",
-        ),
+        ("None", "NoneType"),
+        ("True", "bool"),
+        ("1", "int"),
+        ("[]", "list"),
+        ("{}", "dict"),
+        ("struct(type='Label')", "struct"),
     ] {
         let f = Fixture::new();
         f.failure(
             expression,
             &format!(
-                "Type of parameter `input` doesn't match, expected `Label | str`, actual `{actual}`"
+                "in call to Label(), parameter 'input' got value of type '{actual}', want 'string or Label'"
             ),
             true,
         );
@@ -317,34 +316,36 @@ fn wrong_types_fail_in_typed_binder_after_argument_evaluation() {
 
 #[test]
 fn missing_extra_and_both_keyword_spellings_are_rejected() {
+    // Bazel 9.3 BuiltinFunction binding texts (BuiltinFunction.java:320-490);
+    // Label's `input` is positional-only.
     for (expression, diagnostic) in [
         (
             "Label()",
-            "Wrong number of positional arguments, expected 1, got 0",
+            "Label() missing 1 required positional argument: input",
         ),
         (
             "Label('//:a','//:b')",
-            "Wrong number of positional arguments, expected 1, got 2",
+            "Label() accepts no more than 1 positional argument but got 2",
         ),
         (
             "Label(input='//:a')",
-            "Found `input` extra named parameter(s) for call to function",
+            "Label() got named argument for positional-only parameter 'input'",
         ),
         (
             "Label(label_string='//:a')",
-            "Found `label_string` extra named parameter(s) for call to function",
+            "Label() got unexpected keyword argument 'label_string'",
         ),
         (
             "Label(input=Label('//:a'))",
-            "Found `input` extra named parameter(s) for call to function",
+            "Label() got named argument for positional-only parameter 'input'",
         ),
         (
             "Label('//:a',input='//:b')",
-            "Found `input` extra named parameter(s) for call to function",
+            "Label() got named argument for positional-only parameter 'input'",
         ),
         (
             "Label('//:a',label_string='//:b')",
-            "Found `label_string` extra named parameter(s) for call to function",
+            "Label() got unexpected keyword argument 'label_string'",
         ),
     ] {
         Fixture::new().failure(expression, diagnostic, false);

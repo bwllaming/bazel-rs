@@ -15,8 +15,8 @@
  * limitations under the License.
  */
 
-// Modified for native Bazel 9.3 builtin function repr compatibility; see vendor
-// provenance.
+// Modified for native Bazel 9.3 builtin function repr compatibility and
+// builtin argument-binding error texts; see vendor provenance.
 
 //! Function types, including native functions and `object.member` functions.
 
@@ -100,6 +100,11 @@ pub(crate) struct NativeFunc(
     #[starlark_pagable(skip = "{ |_a, _b, _c| { unimplemented!() } }")]
     pub(crate) NativeFuncFn,
     pub(crate) ParametersSpec<FrozenValue>,
+    /// Modified: the parameter types (aligned with the spec), for Bazel's
+    /// binding-time type checks in errors (`native_param_tys`).
+    #[allocative(skip)]
+    #[starlark_pagable(pagable)]
+    pub(crate) Box<[Ty]>,
 );
 
 impl NativeFunc {
@@ -109,7 +114,9 @@ impl NativeFunc {
         eval: &mut Evaluator<'v, '_, '_>,
         args: &Arguments<'v, '_>,
     ) -> crate::Result<Value<'v>> {
+        // Modified: Bazel's binding texts for positional-only builtins.
         (self.0)(eval, &self.1, args)
+            .map_err(|e| self.1.bazel_rebind_error(e, args, &self.2, eval.heap()))
     }
 }
 
@@ -149,7 +156,11 @@ impl NativeFunction {
     /// Modified: the same function, as a builtin method of a `receiver` value.
     pub(crate) fn with_repr_receiver(&self, receiver: &str) -> NativeFunction {
         NativeFunction {
-            function: NativeFunc(self.function.0, self.function.1.clone()),
+            function: NativeFunc(
+                self.function.0,
+                self.function.1.clone(),
+                self.function.2.clone(),
+            ),
             name: self.name.clone(),
             repr_receiver: Some(receiver.to_owned()),
             as_type: self.as_type.clone(),
@@ -158,6 +169,27 @@ impl NativeFunction {
             docs: self.docs.clone(),
             special_builtin_function: self.special_builtin_function,
         }
+    }
+}
+
+/// Modified: the parameter types of a native callable type `ty` (in
+/// parameter order, including `*args`/`**kwargs`), or empty.
+pub(crate) fn native_param_tys(ty: &Ty) -> Box<[Ty]> {
+    let callable = match ty.as_function() {
+        Some(function) => Some(function.callable().clone()),
+        None => ty.iter_union().iter().find_map(|basic| match basic {
+            TyBasic::Callable(c) => Some(c.clone()),
+            _ => None,
+        }),
+    };
+    match callable {
+        Some(callable) => callable
+            .params()
+            .params()
+            .iter()
+            .map(|p| p.ty.clone())
+            .collect(),
+        None => Box::new([]),
     }
 }
 
@@ -245,7 +277,8 @@ impl<'v> StarlarkValue<'v> for NativeFunction {
                 let index = TypeCompiled::new(index, heap)?;
                 Ok(TypeCompiled::type_set_of(index, heap).to_inner())
             }
-            _ => ValueError::unsupported(self, "[]"),
+            // Modified: Bazel's EvalUtils.index text names the index type.
+            _ => ValueError::unsupported_with(self, "[]", index),
         }
     }
 
@@ -297,6 +330,10 @@ pub(crate) struct NativeMeth(
     #[starlark_pagable(skip = "{ |_a, _b, _c, _d| { unimplemented!() } }")]
     pub(crate) NativeMethFn,
     pub(crate) ParametersSpec<FrozenValue>,
+    /// Modified: the parameter types, as for `NativeFunc`.
+    #[allocative(skip)]
+    #[starlark_pagable(pagable)]
+    pub(crate) Box<[Ty]>,
 );
 
 impl NativeMeth {
@@ -307,7 +344,9 @@ impl NativeMeth {
         this: Value<'v>,
         args: &Arguments<'v, '_>,
     ) -> crate::Result<Value<'v>> {
+        // Modified: Bazel's binding texts for positional-only builtins.
         (self.0)(eval, this, &self.1, args)
+            .map_err(|e| self.1.bazel_rebind_error(e, args, &self.2, eval.heap()))
     }
 }
 

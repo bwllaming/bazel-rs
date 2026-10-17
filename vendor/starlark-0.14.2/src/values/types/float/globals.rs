@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified: test expectations follow Bazel 9.3 interpreter error texts; see vendor
+// provenance.
+
 use either::Either;
 use starlark_derive::starlark_module;
 
@@ -51,12 +54,14 @@ pub(crate) fn register_float(globals: &mut GlobalsBuilder) {
     /// # "#, "not a valid number");
     /// # starlark::assert::fail(r#"
     /// float([])   # error
-    /// # "#, "doesn't match, expected");
+    /// # "#, "in call to float(), parameter 'x' got value of type 'list'");
     /// ```
     #[starlark(as_type = StarlarkFloat, speculative_exec_safe)]
     fn float(
-        #[starlark(require = pos)] a: Option<Either<Either<NumRef, bool>, &str>>,
+        #[starlark(require = pos)] x: Option<Either<Either<NumRef, bool>, &str>>,
     ) -> anyhow::Result<f64> {
+        // Modified: Bazel's parameter names (net/starlark/java/eval/MethodLibrary.java `float(x)`); see vendor provenance.
+        let a = x;
         if a.is_none() {
             return Ok(0.0);
         }

@@ -479,7 +479,10 @@ fn strict_sequence_boundaries_reject_direct_sets_before_actions() {
     // This is not a claim that every Bazel Java Sequence surface accepts sets.
     for (operation, diagnostic) in [
         ("ctx.actions.args().add_all(set(['a']))", "list or tuple"),
-        ("depset(direct=set(['a']))", "list or tuple"),
+        (
+            "depset(direct=set(['a']))",
+            "in call to depset(), parameter 'direct' got value of type 'set', want 'sequence or NoneType'",
+        ),
         (
             "ctx.actions.run_shell(inputs=set(),outputs=[out],command='true')",
             "list or tuple",

@@ -15,6 +15,10 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 argument-binding error texts
+// (net/starlark/java/eval/StarlarkFunction.java:385-523 for `def`,
+// BuiltinFunction.java:150-160,320-490 for builtins); see vendor provenance.
+
 use std::cmp;
 use std::collections::HashMap;
 use std::fmt;
@@ -38,6 +42,7 @@ use crate::collections::symbol::map::SymbolMap;
 use crate::docs::DocParam;
 use crate::docs::DocParams;
 use crate::docs::DocString;
+use crate::errors::did_you_mean::bazel_did_you_mean;
 use crate::eval::Arguments;
 use crate::eval::Evaluator;
 use crate::eval::ParametersParser;
@@ -136,6 +141,8 @@ pub(crate) struct ParametersSpecBuilder<V> {
 
     args: Option<usize>,
     kwargs: Option<usize>,
+    /// Modified: binding errors use Bazel's `def` texts (see `ParametersSpec`).
+    def_style: bool,
 }
 
 /// Define a list of parameters. This code assumes that all names are distinct and that
@@ -159,6 +166,10 @@ pub struct ParametersSpec<V> {
     #[freeze(identity)]
     #[starlark_pagable(pagable)]
     indices: DefParamIndices,
+    /// Modified: `true` for a Starlark `def`/`lambda`, whose argument-binding
+    /// errors use Bazel's `StarlarkFunction` texts; otherwise Bazel's
+    /// `BuiltinFunction` texts.
+    def_style: bool,
 }
 
 impl<V> ParametersSpecBuilder<V> {
@@ -308,6 +319,11 @@ impl<V> ParametersSpecBuilder<V> {
         self.kwargs = Some(self.params.len() - 1);
     }
 
+    /// Modified: report argument-binding errors with Bazel's `def` texts.
+    pub(crate) fn def_style(&mut self) {
+        self.def_style = true;
+    }
+
     /// Construct the parameters specification.
     pub(crate) fn finish(self) -> ParametersSpec<V> {
         let ParametersSpecBuilder {
@@ -319,6 +335,7 @@ impl<V> ParametersSpecBuilder<V> {
             kwargs,
             params,
             names,
+            def_style,
         } = self;
         let _ = current_style;
         let positional_only: u32 = positional_only.try_into().unwrap();
@@ -337,6 +354,7 @@ impl<V> ParametersSpecBuilder<V> {
                 args: args.map(|args| args.try_into().unwrap()),
                 kwargs: kwargs.map(|kwargs| kwargs.try_into().unwrap()),
             },
+            def_style,
         }
     }
 }
@@ -356,6 +374,7 @@ impl<V> ParametersSpec<V> {
             current_style: CurrentParameterStyle::PosOnly,
             args: None,
             kwargs: None,
+            def_style: false,
         }
     }
 
@@ -731,10 +750,9 @@ impl<'v> ParametersSpec<Value<'v>> {
 
         // Next up are the *args parameters
         if let Some(param_args) = args.args() {
-            for v in param_args
-                .iterate(heap)
-                .map_err(|_| FunctionError::ArgsArrayIsNotIterable)?
-            {
+            for v in param_args.iterate(heap).map_err(|_| {
+                FunctionError::ArgsArrayIsNotIterable(param_args.get_type().to_owned())
+            })? {
                 if next_position < (self.indices.num_positional as usize) {
                     slots[next_position] = Some(v);
                     next_position += 1;
@@ -744,12 +762,14 @@ impl<'v> ParametersSpec<Value<'v>> {
             }
         }
 
-        // Check if the named arguments clashed with the positional arguments
-        if unlikely(next_position > lowest_name) {
-            return Err(FunctionError::RepeatedArg {
-                name: self.param_names[lowest_name].clone(),
-            }
-            .into());
+        // Check if the named arguments clashed with the positional arguments.
+        // Modified: only the explicit positional arguments clash; Bazel binds
+        // `*args` elements after the named arguments and lets them overwrite a
+        // parameter already given by name (StarlarkFunction.java:460-472,
+        // BuiltinFunction.java:307-319, Eval.java:716-741).
+        if unlikely(cmp::min(args.pos().len(), self.indices.num_positional as usize) > lowest_name)
+        {
+            return Err(self.bazel_binding_error(args, heap));
         }
 
         // Now insert the kwargs, if there are any
@@ -758,7 +778,12 @@ impl<'v> ParametersSpec<Value<'v>> {
                 Some(y) => {
                     for (k, v) in y.iter_hashed() {
                         match StringValue::new(*k.key()) {
-                            None => return Err(FunctionError::ArgsValueIsNotString.into()),
+                            None => {
+                                return Err(FunctionError::ArgsValueIsNotString(
+                                    k.key().get_type().to_owned(),
+                                )
+                                .into());
+                            }
                             Some(s) => {
                                 let repeat = match self
                                     .names
@@ -773,17 +798,28 @@ impl<'v> ParametersSpec<Value<'v>> {
                                     }
                                 };
                                 if unlikely(repeat) {
-                                    return Err(FunctionError::RepeatedArg {
-                                        name: s.as_str().to_owned(),
-                                    }
-                                    .into());
+                                    return Err(self.bazel_binding_error(args, heap));
                                 }
                             }
                         }
                     }
                 }
-                None => return Err(FunctionError::KwArgsIsNotDict.into()),
+                None => {
+                    return Err(
+                        FunctionError::KwArgsIsNotDict(param_kwargs.get_type().to_owned()).into(),
+                    );
+                }
             }
+        }
+
+        // Modified: Bazel reports surplus positional or unexpected named
+        // arguments before missing ones (StarlarkFunction.java:507-523,
+        // BuiltinFunction.java:320-430).
+        if unlikely(
+            (self.indices.args.is_none() && !star_args.is_empty())
+                || (self.indices.kwargs.is_none() && kwargs.kwargs.is_some()),
+        ) {
+            return Err(self.bazel_binding_error(args, heap));
         }
 
         // We have moved parameters into all the relevant slots, so need to finalise things.
@@ -802,21 +838,8 @@ impl<'v> ParametersSpec<Value<'v>> {
             }
             match def {
                 ParameterKind::Required => {
-                    let function_name = &self.function_name;
-                    let param_name = &self.param_names[index];
-                    if index < self.indices.num_positional_only as usize {
-                        return Err(function_error!(
-                            "Missing positional-only parameter `{param_name}` for call to `{function_name}`",
-                        ));
-                    } else if index >= self.indices.num_positional as usize {
-                        return Err(function_error!(
-                            "Missing named-only parameter `{param_name}` for call to `{function_name}`",
-                        ));
-                    } else {
-                        return Err(function_error!(
-                            "Missing parameter `{param_name}` for call to `{function_name}`"
-                        ));
-                    }
+                    // Modified: Bazel lists every missing parameter.
+                    return Err(self.bazel_binding_error(args, heap));
                 }
                 ParameterKind::Defaulted(x) => {
                     *slot = Some(x.to_value());
@@ -828,28 +851,375 @@ impl<'v> ParametersSpec<Value<'v>> {
         // Now set the kwargs/args slots, if they are requested, and fail it they are absent but used
         // Note that we deliberately give warnings about missing parameters _before_ giving warnings
         // about unexpected extra parameters, so if a user misspells an argument they get a better error.
+        // Surplus positional and unexpected named arguments were rejected above.
         if let Some(args_pos) = self.indices.args {
             slots[args_pos as usize] = Some(heap.alloc_tuple(&star_args));
-        } else if unlikely(!star_args.is_empty()) {
-            return Err(FunctionError::ExtraPositionalArg {
-                count: star_args.len(),
-                function: self.signature(),
-            }
-            .into());
         }
 
         if let Some(kwargs_pos) = self.indices.kwargs {
             slots[kwargs_pos as usize] = Some(kwargs.alloc(heap));
-        } else if let Some(kwargs) = kwargs.kwargs {
-            return Err(FunctionError::ExtraNamedArg {
-                names: kwargs.keys().map(|x| x.as_str().to_owned()).collect(),
-                function: self.signature(),
-            }
-            .into());
         }
         Ok(())
     }
 
+    /// Modified: the Bazel 9.3 argument-binding error for a call that cannot
+    /// bind. Bazel's call evaluation (Eval.java:716-756) adds the explicit
+    /// positional arguments, the explicit named ones, the `*args` elements
+    /// and then the `**kwargs` entries; its argument processor then checks the
+    /// positional count, unexpected names and missing parameters. This replays
+    /// that order. Only called on the (cold) error path; a builtin replays it
+    /// again with its parameter types (`bazel_rebind_error`).
+    #[cold]
+    #[inline(never)]
+    fn bazel_binding_error<'a, A: ArgumentsImpl<'v, 'a>>(
+        &self,
+        args: &A,
+        heap: Heap<'v>,
+    ) -> crate::Error
+    where
+        'v: 'a,
+    {
+        let star: Vec<Value<'v>> = match args.args() {
+            None => Vec::new(),
+            Some(star) => match star.iterate(heap) {
+                Ok(it) => it.collect(),
+                Err(_) => {
+                    return FunctionError::ArgsArrayIsNotIterable(star.get_type().to_owned())
+                        .into();
+                }
+            },
+        };
+        let mut named: Vec<(StringValue<'v>, Value<'v>)> = args
+            .names()
+            .names()
+            .iter()
+            .map(|(_, name)| *name)
+            .zip(args.named().iter().copied())
+            .collect();
+        let num_explicit_named = named.len();
+        if let Some(param_kwargs) = args.kwargs() {
+            let Some(dict) = DictRef::from_value(param_kwargs) else {
+                return FunctionError::KwArgsIsNotDict(param_kwargs.get_type().to_owned()).into();
+            };
+            for (k, v) in dict.iter() {
+                match StringValue::new(k) {
+                    Some(k) => named.push((k, v)),
+                    None => {
+                        return FunctionError::ArgsValueIsNotString(k.get_type().to_owned()).into();
+                    }
+                }
+            }
+        }
+        let call = BazelCall {
+            explicit_positional: args.pos(),
+            star: &star,
+            named: &named,
+            num_explicit_named,
+        };
+        let message = BazelBinder::new(self, &[])
+            .bind(&call)
+            .unwrap_or_else(|| format!("{}() got invalid arguments", self.bazel_name()));
+        FunctionError::BazelBinding(message).into()
+    }
+
+    /// Modified: the Bazel binding error for `args`, if they cannot bind to
+    /// this signature (checking each argument against `param_tys`, the
+    /// builtin's parameter types, as Bazel's argument processor does); `None`
+    /// if they can (or `*args`/`**kwargs` are invalid).
+    #[cold]
+    #[inline(never)]
+    fn bazel_rebind_error_impl(
+        &self,
+        args: &Arguments<'v, '_>,
+        param_tys: &[Ty],
+        heap: Heap<'v>,
+    ) -> Option<crate::Error> {
+        let star: Vec<Value<'v>> = match args.0.args {
+            Some(star) => star.iterate(heap).ok()?.collect(),
+            None => Vec::new(),
+        };
+        let mut named: Vec<(StringValue<'v>, Value<'v>)> = args
+            .0
+            .names
+            .names()
+            .iter()
+            .map(|(_, name)| *name)
+            .zip(args.0.named.iter().copied())
+            .collect();
+        let num_explicit_named = named.len();
+        if let Some(param_kwargs) = args.0.kwargs {
+            for (k, v) in DictRef::from_value(param_kwargs)?.iter() {
+                named.push((StringValue::new(k)?, v));
+            }
+        }
+        let call = BazelCall {
+            explicit_positional: args.0.pos,
+            star: &star,
+            named: &named,
+            num_explicit_named,
+        };
+        BazelBinder::new(self, param_tys)
+            .bind(&call)
+            .map(|message| function_error!("{message}"))
+    }
+
+    /// The name Bazel uses in binding errors: a `def`'s own name (its
+    /// `function_name` is `file.name`), or the builtin method name.
+    fn bazel_name(&self) -> &str {
+        if self.def_style {
+            match self.function_name.rsplit_once('.') {
+                Some((_, name)) => name,
+                None => &self.function_name,
+            }
+        } else {
+            &self.function_name
+        }
+    }
+
+    /// Indices of the parameters that are neither `*args` nor `**kwargs`.
+    fn bazel_ordinary_params(&self) -> impl Iterator<Item = usize> + '_ {
+        self.param_kinds
+            .iter()
+            .enumerate()
+            .filter(|(_, kind)| !matches!(kind, ParameterKind::Args | ParameterKind::KWargs))
+            .map(|(index, _)| index)
+    }
+}
+
+/// Modified: a call in Bazel's argument order (see
+/// `ParametersSpec::bazel_binding_error`).
+struct BazelCall<'a, 'v> {
+    explicit_positional: &'a [Value<'v>],
+    star: &'a [Value<'v>],
+    /// Explicit named arguments, then the `**kwargs` entries.
+    named: &'a [(StringValue<'v>, Value<'v>)],
+    num_explicit_named: usize,
+}
+
+/// Modified: a replay of Bazel's argument processors over a call:
+/// `StarlarkFunction.ArgumentProcessor` (StarlarkFunction.java:385-523) for a
+/// `def`, `BuiltinFunction.ArgumentProcessor` (BuiltinFunction.java:307-430,
+/// 470-490) for a builtin, which checks each argument's type as it is added
+/// (`checkParamValue`, :400-412), before the positional count.
+struct BazelBinder<'s, 'v> {
+    spec: &'s ParametersSpec<Value<'v>>,
+    name: &'s str,
+    /// The builtin's parameter types, aligned with `spec.param_kinds`, or
+    /// empty (no type checks; always for a `def`).
+    param_tys: &'s [Ty],
+    filled: Vec<bool>,
+    /// Positional arguments added so far (Bazel's `numNonSurplusPositionalArgs`
+    /// / `argIndex + unexpectedPositionalArgCount`).
+    num_positional: usize,
+    residual: Vec<&'s str>,
+    unexpected: Vec<&'s str>,
+}
+
+impl<'s, 'v> BazelBinder<'s, 'v> {
+    fn new(spec: &'s ParametersSpec<Value<'v>>, param_tys: &'s [Ty]) -> Self {
+        let param_tys = if !spec.def_style && param_tys.len() == spec.param_kinds.len() {
+            param_tys
+        } else {
+            &[]
+        };
+        BazelBinder {
+            spec,
+            name: spec.bazel_name(),
+            param_tys,
+            filled: vec![false; spec.param_kinds.len()],
+            num_positional: 0,
+            residual: Vec::new(),
+            unexpected: Vec::new(),
+        }
+    }
+
+    fn plural(n: usize) -> &'static str {
+        if n == 1 { "" } else { "s" }
+    }
+
+    fn multiple_values(&self, key: &str) -> String {
+        if self.spec.def_style {
+            format!("{}() got multiple values for parameter '{key}'", self.name)
+        } else {
+            format!("{}() got multiple values for argument '{key}'", self.name)
+        }
+    }
+
+    /// `checkParamValue` for parameter `index` (builtins only).
+    fn check_type(&self, index: usize, value: Value<'v>) -> Result<(), String> {
+        match self.param_tys.get(index) {
+            Some(ty) => match crate::values::error::bazel_param_type_mismatch(
+                self.name,
+                &self.spec.param_names[index],
+                ty,
+                value,
+            ) {
+                Some(error) => Err(error),
+                None => Ok(()),
+            },
+            None => Ok(()),
+        }
+    }
+
+    fn bind(&mut self, call: &BazelCall<'s, 'v>) -> Option<String> {
+        let result = (|| {
+            for value in call.explicit_positional {
+                self.positional(*value)?;
+            }
+            for (key, value) in &call.named[..call.num_explicit_named] {
+                self.named(key.as_str(), *value)?;
+            }
+            for value in call.star {
+                self.positional(*value)?;
+            }
+            for (key, value) in &call.named[call.num_explicit_named..] {
+                self.named(key.as_str(), *value)?;
+            }
+            Ok(())
+        })();
+        match result {
+            Err(error) => Some(error),
+            Ok(()) => self.finish(),
+        }
+    }
+
+    /// `addPositionalArg`: fills the next positional parameter, overwriting a
+    /// value already bound by name without a duplicate check (Bazel binds
+    /// `*args` elements after the named arguments).
+    fn positional(&mut self, value: Value<'v>) -> Result<(), String> {
+        let index = self.num_positional;
+        if index < self.spec.indices.num_positional as usize {
+            self.check_type(index, value)?;
+            self.filled[index] = true;
+            self.num_positional += 1;
+        } else if self.spec.indices.args.is_none() {
+            self.num_positional += 1;
+        }
+        Ok(())
+    }
+
+    /// `addNamedArg`: `Err(error)` for an error Bazel raises immediately.
+    fn named(&mut self, key: &'s str, value: Value<'v>) -> Result<(), String> {
+        let spec = self.spec;
+        let error = if let Some(index) = spec.names.get_str(key) {
+            let index = *index as usize;
+            self.check_type(index, value)?;
+            if !self.filled[index] {
+                self.filled[index] = true;
+                return Ok(());
+            }
+            self.multiple_values(key)
+        } else if spec.indices.kwargs.is_some() {
+            if !self.residual.contains(&key) {
+                self.residual.push(key);
+                return Ok(());
+            }
+            if spec.def_style {
+                self.multiple_values(key)
+            } else {
+                format!(
+                    "{}() got multiple values for keyword argument '{key}'",
+                    self.name
+                )
+            }
+        } else if spec.def_style {
+            // Reported by `call()` after the positional count.
+            self.unexpected.push(key);
+            return Ok(());
+        } else if spec.param_names[..spec.indices.num_positional_only as usize]
+            .iter()
+            .any(|param| param == key)
+        {
+            format!(
+                "{}() got named argument for positional-only parameter '{key}'",
+                self.name
+            )
+        } else {
+            format!(
+                "{}() got unexpected keyword argument '{key}'{}",
+                self.name,
+                bazel_did_you_mean(
+                    key,
+                    spec.bazel_ordinary_params()
+                        .map(|index| spec.param_names[index].as_str())
+                )
+            )
+        };
+        Err(error)
+    }
+
+    /// `call()`: the positional count, then (`def`) the unexpected names,
+    /// then the missing parameters.
+    fn finish(&self) -> Option<String> {
+        let spec = self.spec;
+        let name = self.name;
+        let max = spec.indices.num_positional as usize;
+        if spec.indices.args.is_none() && self.num_positional > max {
+            let got = self.num_positional;
+            return Some(if max > 0 {
+                format!(
+                    "{name}() accepts no more than {max} positional argument{} but got {got}",
+                    Self::plural(max)
+                )
+            } else if spec.def_style {
+                format!("{name}() does not accept positional arguments, but got {got}")
+            } else {
+                format!("{name}() got unexpected positional argument")
+            });
+        }
+        if !self.unexpected.is_empty() {
+            // A spelling hint only for exactly one (StarlarkFunction.java:385-397),
+            // over the parameters a name can bind (Bazel defs have no
+            // positional-only parameters).
+            let hint = match self.unexpected.as_slice() {
+                [only] => bazel_did_you_mean(
+                    only,
+                    spec.bazel_ordinary_params()
+                        .filter(|index| *index >= spec.indices.num_positional_only as usize)
+                        .map(|index| spec.param_names[index].as_str()),
+                ),
+                _ => String::new(),
+            };
+            return Some(format!(
+                "{name}() got unexpected keyword argument{}: {}{hint}",
+                Self::plural(self.unexpected.len()),
+                self.unexpected.join(", ")
+            ));
+        }
+        let mut positional = Vec::new();
+        let mut keyword = Vec::new();
+        for index in spec.bazel_ordinary_params() {
+            if self.filled[index] || !matches!(spec.param_kinds[index], ParameterKind::Required) {
+                continue;
+            }
+            if index < max {
+                positional.push(spec.param_names[index].as_str());
+            } else {
+                keyword.push(spec.param_names[index].as_str());
+            }
+        }
+        let (kind, missing) = if !positional.is_empty() {
+            ("positional", positional)
+        } else if !keyword.is_empty() {
+            let kind = if spec.def_style {
+                "keyword-only"
+            } else {
+                "named"
+            };
+            (kind, keyword)
+        } else {
+            return None;
+        };
+        Some(format!(
+            "{name}() missing {} required {kind} argument{}: {}",
+            missing.len(),
+            Self::plural(missing.len()),
+            missing.join(", ")
+        ))
+    }
+}
+
+impl<'v> ParametersSpec<Value<'v>> {
     /// Check if current parameters can be filled with given arguments signature.
     #[allow(clippy::needless_range_loop)]
     fn can_fill_with_args_impl(&self, pos: usize, names: &[&str]) -> bool {
@@ -1003,5 +1373,49 @@ impl<'v, V: ValueLike<'v>> ParametersSpec<V> {
     /// Check if current parameters can be filled with given arguments signature.
     pub fn can_fill_with_args(&self, pos: usize, names: &[&str]) -> bool {
         self.as_value().can_fill_with_args_impl(pos, names)
+    }
+
+    /// Modified: replace a generic positional-binding error (`Wrong number of
+    /// positional arguments`, `extra named parameter(s) for call to function`)
+    /// of a builtin with this spec with Bazel's text, when `args` indeed
+    /// cannot bind to it, and a parameter type error with Bazel's `in call to`
+    /// text. A binding error is replayed with the builtin's parameter types
+    /// `param_tys` (Bazel checks each argument's type while binding). Any
+    /// other error is returned unchanged.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn bazel_rebind_error(
+        &self,
+        error: crate::Error,
+        args: &Arguments<'v, '_>,
+        param_tys: &[Ty],
+        heap: Heap<'v>,
+    ) -> crate::Error {
+        let generic = match error.kind() {
+            crate::ErrorKind::Function(e) => matches!(
+                e.downcast_ref::<FunctionError>(),
+                Some(FunctionError::WrongNumberOfArgs { .. })
+                    | Some(FunctionError::ExtraNamedArg { .. })
+                    | Some(FunctionError::BazelBinding(_))
+            ),
+            // A parameter of this builtin with a value of the wrong type
+            // (`UnpackValue::unpack_named_param` in generated code).
+            crate::ErrorKind::Value(e) => {
+                if let Some(message) = e
+                    .downcast_ref::<crate::values::error::IncorrectParameterTypeNamedWithExpected>()
+                    .and_then(|e| e.bazel_message(self.as_value().bazel_name()))
+                {
+                    return function_error!("{message}");
+                }
+                false
+            }
+            _ => false,
+        };
+        if !generic {
+            return error;
+        }
+        self.as_value()
+            .bazel_rebind_error_impl(args, param_tys, heap)
+            .unwrap_or(error)
     }
 }

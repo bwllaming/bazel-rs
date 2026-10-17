@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified: test expectations follow Bazel 9.3 interpreter error texts; see vendor
+// provenance.
+
 // Modified for native Bazel 9.3 frozen-mutation messages; see vendor provenance.
 
 //! Test call expression and parameter binding.
@@ -91,10 +94,23 @@ def f3(a, b, c):
 {x}"
         )
     }
-    assert::fail(&f("noop(f3)(1,2,3,4)"), "extra positional");
-    assert::fail(&f("noop(f3)(1,2)"), "Missing parameter");
-    assert::fail(&f("noop(f3)(a=1, b=2)"), "Missing parameter");
-    assert::fail(&f("noop(f3)(a=1, b=2, c=3, d=4)"), "extra named");
+    // Modified: Bazel's StarlarkFunction binding texts.
+    assert::fail(
+        &f("noop(f3)(1,2,3,4)"),
+        "f3() accepts no more than 3 positional arguments but got 4",
+    );
+    assert::fail(
+        &f("noop(f3)(1,2)"),
+        "f3() missing 1 required positional argument: c",
+    );
+    assert::fail(
+        &f("noop(f3)(a=1, b=2)"),
+        "f3() missing 1 required positional argument: c",
+    );
+    assert::fail(
+        &f("noop(f3)(a=1, b=2, c=3, d=4)"),
+        "f3() got unexpected keyword argument: d",
+    );
 }
 
 #[test]
@@ -106,9 +122,10 @@ fn test_repeated_parameters() {
 
 #[test]
 fn test_bad_application() {
-    assert::fail("noop(['1'])(2)", "not supported");
-    assert::fail("noop('test')(2)", "not supported");
-    assert::fail("noop(1 == 1)(2)", "not supported");
+    // Modified: Bazel's text (Starlark.java:904).
+    assert::fail("noop(['1'])(2)", "'list' object is not callable");
+    assert::fail("noop('test')(2)", "'string' object is not callable");
+    assert::fail("noop(1 == 1)(2)", "'bool' object is not callable");
 }
 
 #[test]
@@ -117,17 +134,36 @@ fn test_extra_args_native() {
     // In this module to use String functions as a test suite.
     assert::is_true(r#"("bonbon".find("on") == 1)"#);
     // Should fail because find declares #needle, so hide the parameter
-    assert::fail(r#"("bonbon".find(needle = "on") == 1)"#, "extra named");
-    assert::fail(r#""bonbon".find("on", 2, 3, 4)"#, "Wrong number of");
-    assert::fail(r#""bonbon".find("on", needless="on")"#, "extra named");
-    assert::fail(r#""bonbon".find()"#, "Wrong number of");
+    // Modified: Bazel's BuiltinFunction binding texts.
+    assert::fail(
+        r#"("bonbon".find(needle = "on") == 1)"#,
+        "find() got unexpected keyword argument 'needle'",
+    );
+    // Bazel's positional-only `sub` (StringModule.java).
+    assert::fail(
+        r#""bonbon".find(sub = "on")"#,
+        "find() got named argument for positional-only parameter 'sub'",
+    );
+    assert::fail(
+        r#""bonbon".find("on", 2, 3, 4)"#,
+        "find() accepts no more than 3 positional arguments but got 4",
+    );
+    assert::fail(
+        r#""bonbon".find("on", needless="on")"#,
+        "find() got unexpected keyword argument 'needless'",
+    );
+    assert::fail(
+        r#""bonbon".find()"#,
+        "find() missing 1 required positional argument: sub",
+    );
 }
 
 #[test]
 fn test_insufficient_args_native() {
-    assert::fails(
+    // Modified: Bazel's BuiltinFunction text.
+    assert::fail(
         "noop(filter)([])",
-        &["Wrong number of positional", "expected 2", "got 1"],
+        "filter() missing 1 required positional argument: seq",
     );
 }
 
@@ -189,14 +225,36 @@ def h(a=1, *, b=2):
     }
     assert::is_true(&f("f(*[2, 3]) == 11"));
     assert::is_true(&f("f(*[2, 3, 7]) == 13"));
-    assert::fail(&f("f(*[2])"), "Missing parameter");
+    // Modified: Bazel's StarlarkFunction binding texts.
+    assert::fail(
+        &f("f(*[2])"),
+        "f() missing 1 required positional argument: b",
+    );
     assert::is_true(&f("f(**{'b':3, 'a':2}) == 11"));
     assert::is_true(&f("f(**{'c':7, 'a':2, 'b':3}) == 13"));
-    assert::fail(&f("f(**{'a':2})"), "Missing parameter");
-    assert::fail(&f("f(**{'c':7, 'a':2, 'b':3, 'd':5})"), "extra named");
-    assert::fail(&f("noop(f)(1, a=1, b=2)"), "occurs more");
-    assert::fail(&f("noop(g)(a=1,*[2])"), "occurs more");
-    assert::fail(&f("noop(h)(1, 2)"), "extra positional");
+    assert::fail(
+        &f("f(**{'a':2})"),
+        "f() missing 1 required positional argument: b",
+    );
+    assert::fail(
+        &f("f(**{'c':7, 'a':2, 'b':3, 'd':5})"),
+        "f() got unexpected keyword argument: d",
+    );
+    assert::fail(
+        &f("noop(f)(1, a=1, b=2)"),
+        "f() got multiple values for parameter 'a'",
+    );
+    // Modified: as in Bazel, the `*args` element is bound after the named
+    // argument and overwrites `a` (StarlarkFunction.java:460-472).
+    assert::eq(&f("noop(g)(a=1,*[2])"), "4");
+    assert::fail(
+        &f("noop(g)(*[1], **{'a': 2})"),
+        "g() got multiple values for parameter 'a'",
+    );
+    assert::fail(
+        &f("noop(h)(1, 2)"),
+        "h() accepts no more than 1 positional argument but got 2",
+    );
     assert::is_true(&f("h(2, b=3) == 5"));
     assert::is_true(&f("h(a=2, b=3) == 5"));
     assert::fail(
@@ -242,7 +300,8 @@ def f(x, *, y):
     pass
 noop(f)(1)
 "#,
-        "Missing named-only parameter `y`",
+        // Modified: Bazel's StarlarkFunction text.
+        "f() missing 1 required keyword-only argument: y",
     );
 }
 
@@ -278,8 +337,9 @@ def f(x, /, y):
 g = noop(f) # Hide from static type checker.
 g(x=1, y=2)
 "#,
-        // TODO(nga): bad message.
-        "Missing positional-only parameter `x` for call",
+        // Modified: Bazel's StarlarkFunction text (Bazel defs have no
+        // positional-only parameters, so `x` is an unexpected keyword).
+        "f() got unexpected keyword argument: x",
     );
 }
 

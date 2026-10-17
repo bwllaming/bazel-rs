@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified: test expectations follow Bazel 9.3 interpreter error texts; see vendor
+// provenance.
+
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::fmt::Debug;
@@ -626,7 +629,8 @@ def test():
 
 test()
 "#,
-            "Object of type `function` has no attribute `PURPLE`",
+            // Modified: Bazel's Starlark.getattr text.
+            "'function' value has no field or method 'PURPLE'",
         );
     }
 

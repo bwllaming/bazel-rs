@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified: test expectations follow Bazel 9.3 interpreter error texts; see vendor
+// provenance.
+
 use std::convert::Infallible;
 
 use crate::typing::Ty;
@@ -73,7 +76,8 @@ mod tests {
         a.pass("takes_type(list[str] | None)");
         a.fail(
             "takes_type(1)",
-            "Type of parameter `_t` doesn't match, expected `type`,",
+            // Modified: Bazel's BuiltinFunction parameter type text.
+            "in call to takes_type(), parameter '_t' got value of type 'int', want 'type'",
         );
     }
 }

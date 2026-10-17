@@ -78,10 +78,11 @@ override `repr`. This implementation copies that behaviour:
 - Native construction still requires an exported provider. This applies to the
   provider, to the raw constructor, and to calls with or without `init`. Bazel
   would build instances of an unexported provider named `<no name>`.
-- Messages for `init` signature mismatches come from the Starlark interpreter,
-  e.g. a positional argument to a keyword-only `init` gives ``Missing named-only
-  parameter `metadata` ...`` where Bazel says `_init() does not accept positional
-  arguments, but got 1`.
+- Messages for `init` signature mismatches come from the Starlark interpreter;
+  since N33 they are Bazel's `StarlarkFunction` texts, e.g. a positional argument
+  to a keyword-only `init` gives `_init() does not accept positional arguments,
+  but got 1` (formerly ``Missing named-only parameter `metadata` ...``;
+  docs/STARLARK_VENDOR.md).
 - Tracebacks show two `<builtin>` frames (`in <provider ...%Name>` and `in None`)
   where Bazel shows one frame `in Name` at the `provider(` call line.
 - `repr(P)`/`str(P)` of the provider itself is unchanged: `<provider label%Name>`

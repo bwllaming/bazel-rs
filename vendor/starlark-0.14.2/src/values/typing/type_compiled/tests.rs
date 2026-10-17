@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified: test expectations follow Bazel 9.3 interpreter error texts; see vendor
+// provenance.
+
 #![cfg(test)]
 
 use crate::assert;
@@ -32,7 +35,8 @@ f(8) == False"#,
     );
 
     // If the types are either malformed or runtime errors, it should fail
-    a.fail("def f(i: made_up):\n pass", "Variable");
+    // Modified: Bazel's undefined-name text.
+    a.fail("def f(i: made_up):\n pass", "name 'made_up' is not defined");
     a.fail(
         "def f(i: fail('bad')):\n pass",
         "call expression is not allowed in type expression",

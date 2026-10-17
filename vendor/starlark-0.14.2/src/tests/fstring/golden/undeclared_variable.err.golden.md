@@ -4,7 +4,7 @@
 # STARLARK_RUST_REGENERATE_GOLDEN_TESTS=1 cargo test -p starlark --lib
 # ```
 
-error: Variable `bar` not found, did you mean `chr`?
+error: name 'bar' is not defined
  --> assert.bzl:1:8
   |
 1 | f'foo {bar}'

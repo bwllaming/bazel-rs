@@ -116,6 +116,21 @@ where
         self.fields.iter().map(|(name, _)| name.clone()).collect()
     }
 
+    /// A StructImpl is a Structure (Structure.java:78-81).
+    fn set_attr(&self, _attribute: &str, _new_value: Value<'v>) -> starlark::Result<()> {
+        crate::runfiles::no_field_assignment("ToolchainInfo")
+    }
+
+    /// StructImpl.getErrorMessageForUnknownField (packages/StructImpl.java:85-95,
+    /// packages/Provider.java:54-56): the sorted field names.
+    fn unknown_attribute_message(&self, attribute: &str) -> Option<String> {
+        Some(crate::providers::unknown_field_message(
+            "ToolchainInfo",
+            attribute,
+            self.fields.iter().map(|(name, _)| name.as_str()),
+        ))
+    }
+
     /// StructImpl.repr (packages/StructImpl.java:139-153).
     fn collect_repr(&self, collector: &mut String) {
         collector.push_str("struct(");

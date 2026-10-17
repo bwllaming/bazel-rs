@@ -270,29 +270,12 @@ pub fn fragment_option(name: &str) -> Option<bool> {
         .map(|(_, _, non_configurable, _)| *non_configurable)
 }
 
-/// SpellChecker.suggest (net/starlark/java/spelling/SpellChecker.java:83-96):
-/// whether some word is within `min(5, (len + 1) / 2)` case-insensitive edits.
+/// SpellChecker.suggest (net/starlark/java/spelling/SpellChecker.java:83-96),
+/// the vendored interpreter's port: whether some word is within
+/// `min(5, (len + 1) / 2)` case-insensitive edits.
 fn has_suggestion(input: &str, words: impl IntoIterator<Item = String>) -> bool {
-    fn distance(a: &[char], b: &[char]) -> usize {
-        let mut row = (0..=b.len()).collect::<Vec<_>>();
-        for i in 1..=a.len() {
-            let mut previous = row[0];
-            row[0] = i;
-            for j in 1..=b.len() {
-                let old = row[j];
-                row[j] =
-                    (previous + usize::from(a[i - 1] != b[j - 1])).min(1 + row[j - 1].min(row[j]));
-                previous = old;
-            }
-        }
-        row[b.len()]
-    }
-    let input = input.to_lowercase().chars().collect::<Vec<_>>();
-    let threshold = 5.min(input.len().div_ceil(2));
-    words.into_iter().any(|word| {
-        let word = word.to_lowercase().chars().collect::<Vec<_>>();
-        input.len().abs_diff(word.len()) < threshold && distance(&input, &word) < threshold
-    })
+    let words: Vec<String> = words.into_iter().collect();
+    starlark::errors::bazel_suggest(input, words.iter().map(String::as_str)).is_some()
 }
 
 /// OptionsParserImpl.identifyOptionAndPossibleArgument for a `--` argument

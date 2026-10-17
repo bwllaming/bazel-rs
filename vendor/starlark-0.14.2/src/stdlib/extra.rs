@@ -137,6 +137,8 @@ pub fn print(builder: &mut GlobalsBuilder) {
     /// Print some values to the output.
     fn print<'v>(
         #[starlark(args)] args: UnpackTuple<Value<'v>>,
+        // Modified: Bazel's named-only `sep` (MethodLibrary.java:917-955).
+        #[starlark(require = named, default = " ")] sep: &str,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<NoneType> {
         // Modified: Bazel MethodLibrary.print (net/starlark/java/eval/MethodLibrary.java:940-955)
@@ -144,7 +146,7 @@ pub fn print(builder: &mut GlobalsBuilder) {
         let mut text = String::new();
         for (index, x) in args.items.iter().enumerate() {
             if index != 0 {
-                text.push(' ');
+                text.push_str(sep);
             }
             debug_print(*x, &mut text, eval);
         }

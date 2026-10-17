@@ -804,16 +804,25 @@ S = subrule(*[], **{'implementation': impl, 'attrs': {}, 'toolchains': (), 'frag
 "#, &globals).unwrap();
             for (source, expected) in [
                 ("subrule.type", "type"),
-                ("subrule[int]", "not supported"),
+                // EvalUtils.index (EvalUtils.java:498-500).
+                (
+                    "subrule[int]",
+                    "type 'builtin_function_or_method' has no operator [](builtin_function_or_method)",
+                ),
                 (
                     "{subrule: 1}",
                     "unhashable type: 'builtin_function_or_method'",
                 ),
+                // BuiltinFunction.java:380-382.
                 (
                     "subrule(implementation=impl, **{'implementation': impl})",
-                    "more than once",
+                    "subrule() got multiple values for argument 'implementation'",
                 ),
-                ("subrule(*[impl], **{})", "named-only"),
+                // BuiltinFunction.java:420-423: `implementation` is named-only.
+                (
+                    "subrule(*[impl], **{})",
+                    "subrule() got unexpected positional argument",
+                ),
                 ("subrule(**{'implementation': impl, 'doc': ''})", "doc"),
                 (
                     "subrule(implementation=subrule)",
@@ -877,7 +886,10 @@ S = subrule(*[], **{'implementation': impl, 'attrs': {}, 'toolchains': (), 'frag
         ] {
             for (call, expected) in [
                 ("subrule()", "implementation"),
-                ("subrule(impl)", "named-only"),
+                (
+                    "subrule(impl)",
+                    "subrule() got unexpected positional argument",
+                ),
                 (
                     "subrule(implementation=len)",
                     "parameter 'implementation' got value of type 'builtin_function_or_method', want 'function'",
@@ -1409,11 +1421,19 @@ def dict_payload(s):
                 context.scope.root().current(&context.scope).unwrap();
             }
             for (name, expected) in [
-                ("invalid_key", "identifier"),
+                // Eval.java:735-756 call-argument texts.
+                ("invalid_key", "keywords must be strings, not int"),
                 ("duplicate_key", "more than once"),
                 ("invalid_star", "len"),
-                ("invalid_kw", "dictionary"),
-                ("late_binding", "required"),
+                (
+                    "invalid_kw",
+                    "argument after ** must be a dict, not NoneType",
+                ),
+                // StarlarkFunction.java:385-397, before missing parameters.
+                (
+                    "late_binding",
+                    "callback() got unexpected keyword argument: unexpected",
+                ),
             ] {
                 let function = module.get(name).unwrap();
                 let error = eval

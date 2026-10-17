@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified: test expectations follow Bazel 9.3 interpreter error texts; see vendor
+// provenance.
+
 use either::Either;
 use itertools::Itertools;
 use starlark_derive::starlark_module;
@@ -117,15 +120,19 @@ fn validate_module(builder: &mut GlobalsBuilder) {
     }
 }
 
-// The standard error these raise on incorrect types
-const BAD: &str = "Type of parameter";
+// Modified: a value of the wrong type gets Bazel's `in call to` text; a
+// container of the expected type with wrong elements keeps the detailed text.
+const BAD: &str = "Type of parameter `v` doesn't match, expected `";
 
 #[test]
 fn test_value_of() {
     let mut a = Assert::new();
     a.globals_add(validate_module);
     a.eq("(1, '1')", "with_int(1)");
-    a.fail("with_int(noop(None))", BAD);
+    a.fail(
+        "with_int(noop(None))",
+        "in call to with_int(), parameter 'v' got value of type 'NoneType', want 'int'",
+    );
 }
 
 #[test]
@@ -133,7 +140,10 @@ fn test_list_of() {
     let mut a = Assert::new();
     a.globals_add(validate_module);
     a.eq("([1, 2, 3], '1, 2, 3')", "with_int_list([1, 2, 3])");
-    a.fail("with_int_list(noop(1))", BAD);
+    a.fail(
+        "with_int_list(noop(1))",
+        "in call to with_int_list(), parameter 'v' got value of type 'int', want 'sequence'",
+    );
     a.fail("with_int_list(noop([1, 'foo']))", BAD);
     a.fail("with_int_list(noop([[]]))", BAD);
 
@@ -152,7 +162,10 @@ fn test_dict_of() {
     let mut a = Assert::new();
     a.globals_add(validate_module);
     a.eq("({1: 2}, '1: 2')", "with_int_dict({1: 2})");
-    a.fail(r#"with_int_dict(noop(1))"#, BAD);
+    a.fail(
+        r#"with_int_dict(noop(1))"#,
+        "in call to with_int_dict(), parameter 'v' got value of type 'int', want 'dict'",
+    );
     a.fail(r#"with_int_dict(noop({1: "str"}))"#, BAD);
     a.fail(r#"with_int_dict(noop({1: {}}))"#, BAD);
 
@@ -172,6 +185,12 @@ fn test_either_of() {
     a.eq("'2'", "with_either(2)");
     a.eq("'[2, 3]'", "with_either([2,3])");
     a.eq("'s'", "with_either('s')");
-    a.fail("with_either(noop(None))", BAD);
-    a.fail("with_either(noop({}))", BAD);
+    a.fail(
+        "with_either(noop(None))",
+        "in call to with_either(), parameter 'v' got value of type 'NoneType', want 'string, int, or sequence'",
+    );
+    a.fail(
+        "with_either(noop({}))",
+        "in call to with_either(), parameter 'v' got value of type 'dict', want 'string, int, or sequence'",
+    );
 }

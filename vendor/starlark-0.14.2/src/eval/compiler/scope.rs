@@ -15,6 +15,10 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 undefined-name text (`name 'x' is not defined`,
+// net/starlark/java/eval/Module.java:250-256 and syntax/Resolver.java:941-952);
+// see vendor provenance.
+
 pub(crate) mod payload;
 pub(crate) mod scope_resolver_globals;
 mod tests;
@@ -54,7 +58,7 @@ use crate::codemap::Span;
 use crate::environment::Module;
 use crate::environment::names::MutableNames;
 use crate::environment::slots::ModuleSlotId;
-use crate::errors::did_you_mean::did_you_mean;
+use crate::errors::did_you_mean::bazel_suggest;
 use crate::eval::compiler::def::CopySlotFromParent;
 use crate::eval::compiler::scope::payload::CstAssignIdent;
 use crate::eval::compiler::scope::payload::CstAssignTarget;
@@ -77,9 +81,10 @@ use crate::values::any::FrozenAnyValue;
 
 #[derive(Debug, thiserror::Error)]
 enum ScopeError {
-    #[error("Variable `{0}` not found")]
+    // Modified: Bazel 9.3 texts.
+    #[error("name '{0}' is not defined")]
     VariableNotFound(String),
-    #[error("Variable `{0}` not found, did you mean `{1}`?")]
+    #[error("name '{0}' is not defined (did you mean '{1}'?)")]
     VariableNotFoundDidYouMean(String, String),
     #[error("Identifiers in type expressions can only refer globals or builtins: `{0}`")]
     TypeExpressionGlobalOrBuiltin(String),
@@ -658,10 +663,14 @@ impl<'f> ModuleScopeBuilder<'f> {
 
     #[cold]
     fn variable_not_found_err(&self, ident: &CstIdent) -> EvalException {
-        let variants = self
+        let mut variants = self
             .current_scope_all_visible_names_for_did_you_mean()
             .unwrap_or_default();
-        let better = did_you_mean(
+        // Modified: Bazel's SpellChecker; Bazel iterates a hash set, ties are
+        // broken here by sorted order.
+        variants.sort();
+        variants.dedup();
+        let better = bazel_suggest(
             ident.node.ident.as_str(),
             variants.iter().map(|s| s.as_str()),
         );

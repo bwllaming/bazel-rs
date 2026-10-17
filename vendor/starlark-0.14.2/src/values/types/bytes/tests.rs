@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified: test expectations follow Bazel 9.3 interpreter error texts; see vendor
+// provenance.
+
 #![cfg(test)]
 
 use std::cell::RefCell;
@@ -322,7 +325,8 @@ b"ab" * -1 == b""
 
 #[test]
 fn test_bytes_not_iterable() {
-    assert::fail("for x in b\"abc\": pass", "not supported");
+    // Modified: Bazel's Starlark.toIterable text.
+    assert::fail("for x in b\"abc\": pass", "type 'bytes' is not iterable");
 }
 
 #[test]
@@ -460,7 +464,8 @@ fn test_bytes_add_type_error() {
 // bytes < non-bytes produces a type error.
 #[test]
 fn test_bytes_compare_type_error() {
-    assert::fail(r#"b"abc" < 1"#, "cmp()");
+    // Modified: Bazel's `unsupported comparison` text.
+    assert::fail(r#"b"abc" < 1"#, "unsupported comparison: bytes <=> int");
 }
 
 // elems() on multi-byte UTF-8 content iterates individual bytes, not codepoints.

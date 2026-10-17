@@ -1,0 +1,3106 @@
+{
+ "schema": "n33-interpreter-wording-reference-receipt/v1",
+ "purpose": "N33 paired capture: genuine Bazel 9.3.0 vs native bazel-rs for the Starlark interpreter error\ntexts changed by N33 (argument binding, unknown fields, operators, undefined names, call-argument\nand builtin parameter texts). Each probe is one package whose BUILD loads `t.bzl` (or, for BUILD\nprobes, the BUILD itself); `query //pNNN:all` fails while loading it. The compared value is the error\nmessage only: Bazel's `Error[ in NAME]: MSG` line (plus continuation lines) or its resolver\n`ERROR: FILE:L:C: MSG`; native's `error: MSG` (traceback layout and the `Error in NAME:` prefix are\nout of scope). Harness after artifacts/n22-capture.py of bazel-parity-repr: --batch,\n--ignore_all_rc_files, private output roots under /tmp/opencode, env -i, umask 022, private registry\ncopy of tests/fixtures/builtin_modules/registry, scratch removed. Writes\ntests/fixtures/interpreter_wording/reference_receipt.json. Evidence only; no test reads it.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private> --output_base=<private> --host_jvm_args=-Xmx512m",
+  "command": "query --registry=file://<private copy of tests/fixtures/builtin_modules/registry> --repository_disable_download --incompatible_autoload_externally= --lockfile_mode=off --noshow_progress --color=no --curses=no --repository_cache=<private> //pNNN:all"
+ },
+ "native": {
+  "binary": "target/debug/bazel-rs",
+  "sha256": "80fe673252685e2720e62692297eafcadad1d6fb08d307fd8c01c2aa90a9fbe8",
+  "command": "--ignore_all_rc_files --cache-dir=<private> query //pNNN:all",
+  "worktree": {
+   "head": "738c0920a0257132e5abc0898541b0a3035595cb",
+   "src_vendor_diff_sha256": "3d6026e32b6684052f1c6bda2421f42705c0f01449f40df1ab5ce5805c90857d"
+  }
+ },
+ "script": {
+  "path": "artifacts/wording-capture.py (untracked)",
+  "sha256": "9bc650c497929148efb74c58142da0fce93ed974497769aaa90e8a1da2adaac5"
+ },
+ "environment": "env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8, private HOME/TMPDIR, umask 022",
+ "normalization": "workspace/base/scratch paths replaced by <WS>/<BASE>/<SCRATCH>; messages compared byte-exactly, except that native's `fail: ` display prefix of fail() errors is removed (Bazel frames it as `Error in fail: `); successful probes compare their N33PRINT lines",
+ "scratch_removed": true,
+ "duration_seconds": 73.3,
+ "counts": {
+  "EXACT_MESSAGE": 157,
+  "EXACT_PRINT": 11
+ },
+ "counts_by_group": {
+  "D": {
+   "EXACT_MESSAGE": 30,
+   "EXACT_PRINT": 2
+  },
+  "B": {
+   "EXACT_MESSAGE": 36
+  },
+  "A": {
+   "EXACT_MESSAGE": 19
+  },
+  "O": {
+   "EXACT_MESSAGE": 28
+  },
+  "C": {
+   "EXACT_MESSAGE": 10,
+   "EXACT_PRINT": 3
+  },
+  "K": {
+   "EXACT_MESSAGE": 19,
+   "EXACT_PRINT": 6
+  },
+  "T": {
+   "EXACT_MESSAGE": 7
+  },
+  "N": {
+   "EXACT_MESSAGE": 6
+  },
+  "NB": {
+   "EXACT_MESSAGE": 2
+  }
+ },
+ "probe_count": 168,
+ "rows": [
+  {
+   "id": "D/kw_one_positional",
+   "package": "p000",
+   "source": "def kw(*, a, b = 1):\n    return a\nkw(1)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "kw() does not accept positional arguments, but got 1",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "kw() does not accept positional arguments, but got 1",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/kw_two_positional",
+   "package": "p001",
+   "source": "def kw(*, a, b = 1):\n    return a\nkw(1, 2)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "kw() does not accept positional arguments, but got 2",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "kw() does not accept positional arguments, but got 2",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/too_many_positional",
+   "package": "p002",
+   "source": "def two(x, y, *, z):\n    return x\ntwo(1, 2, 3)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "two() accepts no more than 2 positional arguments but got 3",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "two() accepts no more than 2 positional arguments but got 3",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/too_many_positional_singular",
+   "package": "p003",
+   "source": "def one(a):\n    return a\none(1, 2)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "one() accepts no more than 1 positional argument but got 2",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "one() accepts no more than 1 positional argument but got 2",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/missing_two_positional",
+   "package": "p004",
+   "source": "def two(x, y, *, z):\n    return x\ntwo()",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "two() missing 2 required positional arguments: x, y",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "two() missing 2 required positional arguments: x, y",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/missing_one_positional",
+   "package": "p005",
+   "source": "def two(x, y, *, z):\n    return x\ntwo(1)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "two() missing 1 required positional argument: y",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "two() missing 1 required positional argument: y",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/missing_keyword_only",
+   "package": "p006",
+   "source": "def two(x, y, *, z):\n    return x\ntwo(1, 2)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "two() missing 1 required keyword-only argument: z",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "two() missing 1 required keyword-only argument: z",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/missing_two_keyword_only",
+   "package": "p007",
+   "source": "def kw2(*, a, b):\n    pass\nkw2()",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "kw2() missing 2 required keyword-only arguments: a, b",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "kw2() missing 2 required keyword-only arguments: a, b",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/missing_two_of_three_keyword_only",
+   "package": "p008",
+   "source": "def kw3(*, a, b, c):\n    pass\nkw3(b = 1)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "kw3() missing 2 required keyword-only arguments: a, c",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "kw3() missing 2 required keyword-only arguments: a, c",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/missing_three_positional",
+   "package": "p009",
+   "source": "def p3(a, b, c):\n    pass\np3()",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "p3() missing 3 required positional arguments: a, b, c",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "p3() missing 3 required positional arguments: a, b, c",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/unexpected_keyword",
+   "package": "p010",
+   "source": "def kw(*, a, b = 1):\n    return a\nkw(a = 1, c = 2)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "kw() got unexpected keyword argument: c",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "kw() got unexpected keyword argument: c",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/unexpected_keywords",
+   "package": "p011",
+   "source": "def kw(*, a, b = 1):\n    return a\nkw(a = 1, c = 2, d = 3)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "kw() got unexpected keyword arguments: c, d",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "kw() got unexpected keyword arguments: c, d",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/unexpected_keyword_hint",
+   "package": "p012",
+   "source": "def rule_like(*, name, srcs = []):\n    pass\nrule_like(name = \"x\", srcz = [])",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "rule_like() got unexpected keyword argument: srcz (did you mean 'srcs'?)",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "rule_like() got unexpected keyword argument: srcz (did you mean 'srcs'?)",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/multiple_values_positional_named",
+   "package": "p013",
+   "source": "def two(x, y, *, z):\n    return x\ntwo(1, x = 2)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "two() got multiple values for parameter 'x'",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "two() got multiple values for parameter 'x'",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/multiple_values_named_kwargs",
+   "package": "p014",
+   "source": "def kw(*, a, b = 1):\n    return a\nkw(a = 1, **{\"a\": 2})",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "kw() got multiple values for parameter 'a'",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "kw() got multiple values for parameter 'a'",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/multiple_values_residual_kwargs",
+   "package": "p015",
+   "source": "def anyk(**kwargs):\n    pass\nanyk(x = 1, **{\"x\": 2})",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "anyk() got multiple values for parameter 'x'",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "anyk() got multiple values for parameter 'x'",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/star_args_positional",
+   "package": "p016",
+   "source": "def kw(*, a, b = 1):\n    return a\nkw(*[1])",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "kw() does not accept positional arguments, but got 1",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "kw() does not accept positional arguments, but got 1",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/star_args_too_many",
+   "package": "p017",
+   "source": "def two(x, y, *, z):\n    return x\ntwo(z = 1, *[1, 2, 3])",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "two() accepts no more than 2 positional arguments but got 3",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "two() accepts no more than 2 positional arguments but got 3",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/lambda_missing",
+   "package": "p018",
+   "source": "(lambda x: x)()",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "lambda() missing 1 required positional argument: x",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "lambda() missing 1 required positional argument: x",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/positional_before_unexpected",
+   "package": "p019",
+   "source": "def kw(*, a, b = 1):\n    return a\nkw(1, c = 2)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "kw() does not accept positional arguments, but got 1",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "kw() does not accept positional arguments, but got 1",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/unexpected_before_missing",
+   "package": "p020",
+   "source": "def two(x, y, *, z):\n    return x\ntwo(z = 1, q = 2)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "two() got unexpected keyword argument: q",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "two() got unexpected keyword argument: q",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/nested_def_missing",
+   "package": "p021",
+   "source": "def f():\n    def inner(a):\n        pass\n    inner()\nf()",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "inner() missing 1 required positional argument: a",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "inner() missing 1 required positional argument: a",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/star_not_iterable",
+   "package": "p022",
+   "source": "def kw(*, a, b = 1):\n    return a\nkw(*1)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "argument after * must be an iterable, not int",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "argument after * must be an iterable, not int",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/kwargs_not_dict",
+   "package": "p023",
+   "source": "def kw(*, a, b = 1):\n    return a\nkw(**[])",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "argument after ** must be a dict, not list",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "argument after ** must be a dict, not list",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/kwargs_key_not_string",
+   "package": "p024",
+   "source": "def kw(*, a, b = 1):\n    return a\nkw(**{1: 2})",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "keywords must be strings, not int",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "keywords must be strings, not int",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/missing_positional_before_keyword_only",
+   "package": "p025",
+   "source": "def mix(a, b = 1, *args, c, **kw):\n    pass\nmix()",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "mix() missing 1 required positional argument: a",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "mix() missing 1 required positional argument: a",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/star_overwrites_named",
+   "package": "p026",
+   "source": "def g(a = 1, b = 2):\n    return [a, b]\ny = g(a = 1, *[2])\nprint(\"N33PRINT\", y)",
+   "verdict": "EXACT_PRINT",
+   "reference": {
+    "exit": 0,
+    "message": null,
+    "frame": null,
+    "prints": [
+     "N33PRINT [2, 2]"
+    ]
+   },
+   "native": {
+    "exit": 0,
+    "message": null,
+    "prints": [
+     "N33PRINT [2, 2]"
+    ]
+   }
+  },
+  {
+   "id": "D/star_then_kwargs_duplicate",
+   "package": "p027",
+   "source": "def g(a = 1, b = 2):\n    return [a, b]\ng(*[1], **{\"a\": 2})",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "g() got multiple values for parameter 'a'",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "g() got multiple values for parameter 'a'",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/star_fills_after_named",
+   "package": "p028",
+   "source": "def g(a = 1, b = 2):\n    return [a, b]\ny = g(b = 5, *[3, 4])\nprint(\"N33PRINT\", y)",
+   "verdict": "EXACT_PRINT",
+   "reference": {
+    "exit": 0,
+    "message": null,
+    "frame": null,
+    "prints": [
+     "N33PRINT [3, 4]"
+    ]
+   },
+   "native": {
+    "exit": 0,
+    "message": null,
+    "prints": [
+     "N33PRINT [3, 4]"
+    ]
+   }
+  },
+  {
+   "id": "D/no_parameters_positional",
+   "package": "p029",
+   "source": "def none():\n    pass\nnone(1)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "none() does not accept positional arguments, but got 1",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "none() does not accept positional arguments, but got 1",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/defaults_too_many",
+   "package": "p030",
+   "source": "def defaults(a, b = 2):\n    pass\ndefaults(1, 2, 3, 4)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "defaults() accepts no more than 2 positional arguments but got 4",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "defaults() accepts no more than 2 positional arguments but got 4",
+    "prints": []
+   }
+  },
+  {
+   "id": "D/provider_init_positional",
+   "package": "p031",
+   "source": "def _init(*, metadata):\n    return {\"metadata\": metadata}\nP, _new = provider(init = _init)\nP(1)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "_init() does not accept positional arguments, but got 1",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "_init() does not accept positional arguments, but got 1",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/len_missing",
+   "package": "p032",
+   "source": "len()",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "len() missing 1 required positional argument: x",
+    "frame": "Error in len",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "len() missing 1 required positional argument: x",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/len_too_many",
+   "package": "p033",
+   "source": "len(1, 2)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "in call to len(), parameter 'x' got value of type 'int', want 'iterable or string'",
+    "frame": "Error in len",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "in call to len(), parameter 'x' got value of type 'int', want 'iterable or string'",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/len_named",
+   "package": "p034",
+   "source": "len(x = [])",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "len() got named argument for positional-only parameter 'x'",
+    "frame": "Error in len",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "len() got named argument for positional-only parameter 'x'",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/find_unexpected_keyword",
+   "package": "p035",
+   "source": "\"a\".find(\"a\", needless = \"x\")",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "find() got unexpected keyword argument 'needless'",
+    "frame": "Error in find",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "find() got unexpected keyword argument 'needless'",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/int_too_many",
+   "package": "p036",
+   "source": "int(1, 2, 3)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "int() accepts no more than 2 positional arguments but got 3",
+    "frame": "Error in int",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "int() accepts no more than 2 positional arguments but got 3",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/label_missing",
+   "package": "p037",
+   "source": "Label()",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "Label() missing 1 required positional argument: input",
+    "frame": "Error in Label",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "Label() missing 1 required positional argument: input",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/label_too_many",
+   "package": "p038",
+   "source": "Label(\"//:a\", \"//:b\")",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "Label() accepts no more than 1 positional argument but got 2",
+    "frame": "Error in Label",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "Label() accepts no more than 1 positional argument but got 2",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/label_named_positional_only",
+   "package": "p039",
+   "source": "Label(input = \"//:a\")",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "Label() got named argument for positional-only parameter 'input'",
+    "frame": "Error in Label",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "Label() got named argument for positional-only parameter 'input'",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/label_unexpected_keyword",
+   "package": "p040",
+   "source": "Label(label_string = \"//:a\")",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "Label() got unexpected keyword argument 'label_string'",
+    "frame": "Error in Label",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "Label() got unexpected keyword argument 'label_string'",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/label_wrong_type",
+   "package": "p041",
+   "source": "Label(None)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "in call to Label(), parameter 'input' got value of type 'NoneType', want 'string or Label'",
+    "frame": "Error in Label",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "in call to Label(), parameter 'input' got value of type 'NoneType', want 'string or Label'",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/rule_missing",
+   "package": "p042",
+   "source": "rule()",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "rule() missing 1 required positional argument: implementation",
+    "frame": "Error in rule",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "rule() missing 1 required positional argument: implementation",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/rule_unexpected_keyword_hint",
+   "package": "p043",
+   "source": "def _i(ctx):\n    pass\nr = rule(implementation = _i, attrz = {})",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "rule() got unexpected keyword argument 'attrz' (did you mean 'attrs'?)",
+    "frame": "Error in rule",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "rule() got unexpected keyword argument 'attrz' (did you mean 'attrs'?)",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/attr_string_hint",
+   "package": "p044",
+   "source": "attr.string(defaultt = \"\")",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "string() got unexpected keyword argument 'defaultt' (did you mean 'default'?)",
+    "frame": "Error in string",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "string() got unexpected keyword argument 'defaultt' (did you mean 'default'?)",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/provider_hint",
+   "package": "p045",
+   "source": "provider(fieldz = [])",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "provider() got unexpected keyword argument 'fieldz' (did you mean 'fields'?)",
+    "frame": "Error in provider",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "provider() got unexpected keyword argument 'fieldz' (did you mean 'fields'?)",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/struct_positional",
+   "package": "p046",
+   "source": "struct(1)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "struct() got unexpected positional argument",
+    "frame": "Error in struct",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "struct() got unexpected positional argument",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/depset_too_many",
+   "package": "p047",
+   "source": "depset(1, 2, 3)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "in call to depset(), parameter 'direct' got value of type 'int', want 'sequence or NoneType'",
+    "frame": "Error in depset",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "in call to depset(), parameter 'direct' got value of type 'int', want 'sequence or NoneType'",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/select_missing",
+   "package": "p048",
+   "source": "select()",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "select() missing 1 required positional argument: x",
+    "frame": "Error in select",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "select() missing 1 required positional argument: x",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/subrule_positional",
+   "package": "p049",
+   "source": "def _s(ctx):\n    pass\nsubrule(_s)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "subrule() got unexpected positional argument",
+    "frame": "Error in subrule",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "subrule() got unexpected positional argument",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/subrule_missing",
+   "package": "p050",
+   "source": "subrule()",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "subrule() missing 1 required named argument: implementation",
+    "frame": "Error in subrule",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "subrule() missing 1 required named argument: implementation",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/macro_positional",
+   "package": "p051",
+   "source": "def _m(name, visibility):\n    pass\nmacro(_m)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "macro() got unexpected positional argument",
+    "frame": "Error in macro",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "macro() got unexpected positional argument",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/set_named",
+   "package": "p052",
+   "source": "set(elements = [1])",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "set() got named argument for positional-only parameter 'elements'",
+    "frame": "Error in set",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "set() got named argument for positional-only parameter 'elements'",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/set_too_many",
+   "package": "p053",
+   "source": "set([], [])",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "set() accepts no more than 1 positional argument but got 2",
+    "frame": "Error in set",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "set() accepts no more than 1 positional argument but got 2",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/set_not_iterable",
+   "package": "p054",
+   "source": "set(None)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "in call to set(), parameter 'elements' got value of type 'NoneType', want 'iterable'",
+    "frame": "Error in set",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "in call to set(), parameter 'elements' got value of type 'NoneType', want 'iterable'",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/list_not_iterable",
+   "package": "p055",
+   "source": "list(1)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "in call to list(), parameter 'x' got value of type 'int', want 'iterable'",
+    "frame": "Error in list",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "in call to list(), parameter 'x' got value of type 'int', want 'iterable'",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/tuple_not_iterable",
+   "package": "p056",
+   "source": "tuple(1)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "in call to tuple(), parameter 'x' got value of type 'int', want 'iterable'",
+    "frame": "Error in tuple",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "in call to tuple(), parameter 'x' got value of type 'int', want 'iterable'",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/len_wrong_type",
+   "package": "p057",
+   "source": "len(1)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "in call to len(), parameter 'x' got value of type 'int', want 'iterable or string'",
+    "frame": "Error in len",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "in call to len(), parameter 'x' got value of type 'int', want 'iterable or string'",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/startswith_wrong_type",
+   "package": "p058",
+   "source": "\"abc\".startswith(1)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "in call to startswith(), parameter 'sub' got value of type 'int', want 'string or tuple'",
+    "frame": "Error in startswith",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "in call to startswith(), parameter 'sub' got value of type 'int', want 'string or tuple'",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/hash_wrong_type",
+   "package": "p059",
+   "source": "hash(1)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "in call to hash(), parameter 'value' got value of type 'int', want 'string'",
+    "frame": "Error in hash",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "in call to hash(), parameter 'value' got value of type 'int', want 'string'",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/join_not_iterable",
+   "package": "p060",
+   "source": "\"a\".join(1)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "in call to join(), parameter 'elements' got value of type 'int', want 'iterable'",
+    "frame": "Error in join",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "in call to join(), parameter 'elements' got value of type 'int', want 'iterable'",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/getattr_missing",
+   "package": "p061",
+   "source": "getattr(1)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "getattr() missing 1 required positional argument: name",
+    "frame": "Error in getattr",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "getattr() missing 1 required positional argument: name",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/sorted_not_iterable",
+   "package": "p062",
+   "source": "sorted(1)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "in call to sorted(), parameter 'iterable' got value of type 'int', want 'iterable'",
+    "frame": "Error in sorted",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "in call to sorted(), parameter 'iterable' got value of type 'int', want 'iterable'",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/range_missing",
+   "package": "p063",
+   "source": "range()",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "range() missing 1 required positional argument: start_or_stop",
+    "frame": "Error in range",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "range() missing 1 required positional argument: start_or_stop",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/split_hint",
+   "package": "p064",
+   "source": "\"a,b\".split(sepp = \",\")",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "split() got unexpected keyword argument 'sepp' (did you mean 'sep'?)",
+    "frame": "Error in split",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "split() got unexpected keyword argument 'sepp' (did you mean 'sep'?)",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/fail_unexpected_keyword",
+   "package": "p065",
+   "source": "fail(\"m\", foo = 3)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "fail() got unexpected keyword argument 'foo'",
+    "frame": "Error in fail",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "fail() got unexpected keyword argument 'foo'",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/select_wrong_type",
+   "package": "p066",
+   "source": "select(1)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "in call to select(), parameter 'x' got value of type 'int', want 'dict'",
+    "frame": "Error in select",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "in call to select(), parameter 'x' got value of type 'int', want 'dict'",
+    "prints": []
+   }
+  },
+  {
+   "id": "B/dict_too_many",
+   "package": "p067",
+   "source": "dict(1, 2)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "dict() accepts no more than 1 positional argument but got 2",
+    "frame": "Error in dict",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "dict() accepts no more than 1 positional argument but got 2",
+    "prints": []
+   }
+  },
+  {
+   "id": "A/list_hint",
+   "package": "p068",
+   "source": "[].appen",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "'list' value has no field or method 'appen' (did you mean 'append'?)",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "'list' value has no field or method 'appen' (did you mean 'append'?)",
+    "prints": []
+   }
+  },
+  {
+   "id": "A/string_no_field",
+   "package": "p069",
+   "source": "\"abc\".nope",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "'string' value has no field or method 'nope'",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "'string' value has no field or method 'nope'",
+    "prints": []
+   }
+  },
+  {
+   "id": "A/getattr_no_field",
+   "package": "p070",
+   "source": "getattr(1, \"nope\")",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "'int' value has no field or method 'nope'",
+    "frame": "Error in getattr",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "'int' value has no field or method 'nope'",
+    "prints": []
+   }
+  },
+  {
+   "id": "A/struct_one_field",
+   "package": "p071",
+   "source": "struct(a = 1).b",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "'struct' value has no field or method 'b'\nAvailable attributes: a",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "'struct' value has no field or method 'b'\nAvailable attributes: a",
+    "prints": []
+   }
+  },
+  {
+   "id": "A/struct_fields",
+   "package": "p072",
+   "source": "struct(c = 2, a = 1).b",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "'struct' value has no field or method 'b'\nAvailable attributes: a, c",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "'struct' value has no field or method 'b'\nAvailable attributes: a, c",
+    "prints": []
+   }
+  },
+  {
+   "id": "A/dict_hint",
+   "package": "p073",
+   "source": "{}.kyes",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "'dict' value has no field or method 'kyes'",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "'dict' value has no field or method 'kyes'",
+    "prints": []
+   }
+  },
+  {
+   "id": "A/depset_hint",
+   "package": "p074",
+   "source": "depset().to_lst",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "'depset' value has no field or method 'to_lst' (did you mean 'to_list'?)",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "'depset' value has no field or method 'to_lst' (did you mean 'to_list'?)",
+    "prints": []
+   }
+  },
+  {
+   "id": "A/label_hint",
+   "package": "p075",
+   "source": "Label(\"//:x\").nam",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "'Label' value has no field or method 'nam' (did you mean 'name'?)",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "'Label' value has no field or method 'nam' (did you mean 'name'?)",
+    "prints": []
+   }
+  },
+  {
+   "id": "A/none_no_field",
+   "package": "p076",
+   "source": "None.x",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "'NoneType' value has no field or method 'x'",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "'NoneType' value has no field or method 'x'",
+    "prints": []
+   }
+  },
+  {
+   "id": "A/provider_instance",
+   "package": "p077",
+   "source": "P = provider()\nP(a = 1).b",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "'P' value has no field or method 'b'\nAvailable attributes: a",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "'P' value has no field or method 'b'\nAvailable attributes: a",
+    "prints": []
+   }
+  },
+  {
+   "id": "A/struct_assignment",
+   "package": "p078",
+   "source": "s = struct(a = 1)\ns.a = 2",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "struct value does not support field assignment",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "struct value does not support field assignment",
+    "prints": []
+   }
+  },
+  {
+   "id": "A/list_assignment",
+   "package": "p079",
+   "source": "l = [1]\nl.foo = 1",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "cannot set .foo field of list value",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "cannot set .foo field of list value",
+    "prints": []
+   }
+  },
+  {
+   "id": "A/getattr_struct",
+   "package": "p080",
+   "source": "getattr(struct(a = 1), \"b\")",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "'struct' value has no field or method 'b'\nAvailable attributes: a",
+    "frame": "Error in getattr",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "'struct' value has no field or method 'b'\nAvailable attributes: a",
+    "prints": []
+   }
+  },
+  {
+   "id": "A/label_assignment",
+   "package": "p081",
+   "source": "l = Label(\"//:x\")\nl.name = \"y\"",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "cannot set .name field of Label value",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "cannot set .name field of Label value",
+    "prints": []
+   }
+  },
+  {
+   "id": "A/json_hint",
+   "package": "p082",
+   "source": "json.encod",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "'json' value has no field or method 'encod' (did you mean 'encode'?)",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "'json' value has no field or method 'encod' (did you mean 'encode'?)",
+    "prints": []
+   }
+  },
+  {
+   "id": "A/toolchain_info",
+   "package": "p083",
+   "source": "platform_common.ToolchainInfo(a = 1).zz",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "'ToolchainInfo' value has no field or method 'zz'\nAvailable attributes: a",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "'ToolchainInfo' value has no field or method 'zz'\nAvailable attributes: a",
+    "prints": []
+   }
+  },
+  {
+   "id": "A/default_info",
+   "package": "p084",
+   "source": "DefaultInfo().nope",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "'DefaultInfo' value has no field or method 'nope'",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "'DefaultInfo' value has no field or method 'nope'",
+    "prints": []
+   }
+  },
+  {
+   "id": "A/json_assignment",
+   "package": "p085",
+   "source": "json.encode = 17",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "cannot set .encode field of json value",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "cannot set .encode field of json value",
+    "prints": []
+   }
+  },
+  {
+   "id": "A/attr_module_hint",
+   "package": "p086",
+   "source": "attr.strin",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "'attr' value has no field or method 'strin' (did you mean 'string'?)",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "'attr' value has no field or method 'strin' (did you mean 'string'?)",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/compare_int_string",
+   "package": "p087",
+   "source": "1 < \"a\"",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported comparison: int <=> string",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported comparison: int <=> string",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/compare_list_elements",
+   "package": "p088",
+   "source": "[1] < [\"a\"]",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported comparison: int <=> string",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported comparison: int <=> string",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/compare_none",
+   "package": "p089",
+   "source": "None < None",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported comparison: NoneType <=> NoneType",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported comparison: NoneType <=> NoneType",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/add_int_string",
+   "package": "p090",
+   "source": "1 + \"a\"",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported binary operation: int + string",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported binary operation: int + string",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/sub_strings",
+   "package": "p091",
+   "source": "\"a\" - \"b\"",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported binary operation: string - string",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported binary operation: string - string",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/or_dict_list",
+   "package": "p092",
+   "source": "{} | []",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported binary operation: dict | list",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported binary operation: dict | list",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/unary_minus_string",
+   "package": "p093",
+   "source": "-\"a\"",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported unary operation: -string",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported unary operation: -string",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/unary_invert_string",
+   "package": "p094",
+   "source": "~\"a\"",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported unary operation: ~string",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported unary operation: ~string",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/unary_plus_string",
+   "package": "p095",
+   "source": "+\"a\"",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported unary operation: +string",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported unary operation: +string",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/in_int",
+   "package": "p096",
+   "source": "1 in 2",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported binary operation: int in int",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported binary operation: int in int",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/in_string_non_string",
+   "package": "p097",
+   "source": "1 in \"abc\"",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "'in <string>' requires string as left operand, not 'int'",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "'in <string>' requires string as left operand, not 'int'",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/index_none",
+   "package": "p098",
+   "source": "None[0]",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "type 'NoneType' has no operator [](int)",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "type 'NoneType' has no operator [](int)",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/call_int",
+   "package": "p099",
+   "source": "1()",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "'int' object is not callable",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "'int' object is not callable",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/mul_strings",
+   "package": "p100",
+   "source": "\"a\" * \"b\"",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported binary operation: string * string",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported binary operation: string * string",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/and_lists",
+   "package": "p101",
+   "source": "[] & []",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported binary operation: list & list",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported binary operation: list & list",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/shift_string",
+   "package": "p102",
+   "source": "1 << \"a\"",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported binary operation: int << string",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported binary operation: int << string",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/for_not_iterable",
+   "package": "p103",
+   "source": "def f():\n    for x in 1:\n        pass\nf()",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "type 'int' is not iterable",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "type 'int' is not iterable",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/slice_int",
+   "package": "p104",
+   "source": "1[1:2]",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "invalid slice operand: int",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "invalid slice operand: int",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/sorted_mixed",
+   "package": "p105",
+   "source": "sorted([1, \"a\"])",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported comparison: string <=> int",
+    "frame": "Error in sorted",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported comparison: string <=> int",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/max_mixed",
+   "package": "p106",
+   "source": "max(1, \"a\")",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported comparison: int <=> string",
+    "frame": "Error in max",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported comparison: int <=> string",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/dict_duplicate_string_key",
+   "package": "p107",
+   "source": "{\"a\": 1, \"a\": 2}",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "dictionary expression has duplicate key: \"a\"",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "dictionary expression has duplicate key: \"a\"",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/dict_duplicate_int_key",
+   "package": "p108",
+   "source": "{1: 1, 1: 2}",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "dictionary expression has duplicate key: 1",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "dictionary expression has duplicate key: 1",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/add_list_tuple",
+   "package": "p109",
+   "source": "[] + ()",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported binary operation: list + tuple",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported binary operation: list + tuple",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/div_int_string",
+   "package": "p110",
+   "source": "1 / \"a\"",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported binary operation: int / string",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported binary operation: int / string",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/add_dicts",
+   "package": "p111",
+   "source": "{} + {}",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported binary operation: dict + dict",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported binary operation: dict + dict",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/compare_structs",
+   "package": "p112",
+   "source": "struct() < struct()",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported comparison: struct <=> struct",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported comparison: struct <=> struct",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/compare_label_int",
+   "package": "p113",
+   "source": "Label(\"//:a\") < 1",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported comparison: Label <=> int",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported comparison: Label <=> int",
+    "prints": []
+   }
+  },
+  {
+   "id": "O/index_function",
+   "package": "p114",
+   "source": "len[1]",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "type 'builtin_function_or_method' has no operator [](int)",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "type 'builtin_function_or_method' has no operator [](int)",
+    "prints": []
+   }
+  },
+  {
+   "id": "C/sorted_structs",
+   "package": "p115",
+   "source": "sorted([struct(a = 2), struct(a = 1)])",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported comparison: struct <=> struct",
+    "frame": "Error in sorted",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported comparison: struct <=> struct",
+    "prints": []
+   }
+  },
+  {
+   "id": "C/compare_provider_instances",
+   "package": "p116",
+   "source": "P = provider()\nP(a = 1) < P(a = 2)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported comparison: struct <=> struct",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported comparison: struct <=> struct",
+    "prints": []
+   }
+  },
+  {
+   "id": "C/compare_depsets",
+   "package": "p117",
+   "source": "depset() < depset()",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported comparison: depset <=> depset",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported comparison: depset <=> depset",
+    "prints": []
+   }
+  },
+  {
+   "id": "C/compare_bool_int",
+   "package": "p118",
+   "source": "True < 1",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported comparison: bool <=> int",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported comparison: bool <=> int",
+    "prints": []
+   }
+  },
+  {
+   "id": "C/compare_builtins",
+   "package": "p119",
+   "source": "len < len",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported comparison: builtin_function_or_method <=> builtin_function_or_method",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported comparison: builtin_function_or_method <=> builtin_function_or_method",
+    "prints": []
+   }
+  },
+  {
+   "id": "C/compare_defs",
+   "package": "p120",
+   "source": "def f():\n    pass\nf < f",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported comparison: function <=> function",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported comparison: function <=> function",
+    "prints": []
+   }
+  },
+  {
+   "id": "C/compare_dicts",
+   "package": "p121",
+   "source": "{} < {}",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported comparison: dict <=> dict",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported comparison: dict <=> dict",
+    "prints": []
+   }
+  },
+  {
+   "id": "C/compare_tuple_list",
+   "package": "p122",
+   "source": "() < []",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported comparison: tuple <=> list",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported comparison: tuple <=> list",
+    "prints": []
+   }
+  },
+  {
+   "id": "C/compare_ranges",
+   "package": "p123",
+   "source": "range(1) < range(2)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported comparison: range <=> range",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported comparison: range <=> range",
+    "prints": []
+   }
+  },
+  {
+   "id": "C/compare_sets",
+   "package": "p124",
+   "source": "set() < set()",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported comparison: set <=> set",
+    "frame": "Error",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported comparison: set <=> set",
+    "prints": []
+   }
+  },
+  {
+   "id": "C/compare_bools",
+   "package": "p125",
+   "source": "y = [False < True, sorted([True, False])]\nprint(\"N33PRINT\", y)",
+   "verdict": "EXACT_PRINT",
+   "reference": {
+    "exit": 0,
+    "message": null,
+    "frame": null,
+    "prints": [
+     "N33PRINT [True, [False, True]]"
+    ]
+   },
+   "native": {
+    "exit": 0,
+    "message": null,
+    "prints": [
+     "N33PRINT [True, [False, True]]"
+    ]
+   }
+  },
+  {
+   "id": "C/sorted_labels",
+   "package": "p126",
+   "source": "y = sorted([Label(\"//b:b\"), Label(\"//a:a\")])\nprint(\"N33PRINT\", y)",
+   "verdict": "EXACT_PRINT",
+   "reference": {
+    "exit": 0,
+    "message": null,
+    "frame": null,
+    "prints": [
+     "N33PRINT [Label(\"//a:a\"), Label(\"//b:b\")]"
+    ]
+   },
+   "native": {
+    "exit": 0,
+    "message": null,
+    "prints": [
+     "N33PRINT [Label(\"//a:a\"), Label(\"//b:b\")]"
+    ]
+   }
+  },
+  {
+   "id": "C/compare_tuples",
+   "package": "p127",
+   "source": "y = [(1, \"a\") < (1, \"b\"), [1] < [1, 0]]\nprint(\"N33PRINT\", y)",
+   "verdict": "EXACT_PRINT",
+   "reference": {
+    "exit": 0,
+    "message": null,
+    "frame": null,
+    "prints": [
+     "N33PRINT [True, True]"
+    ]
+   },
+   "native": {
+    "exit": 0,
+    "message": null,
+    "prints": [
+     "N33PRINT [True, True]"
+    ]
+   }
+  },
+  {
+   "id": "K/find_sub_named",
+   "package": "p128",
+   "source": "\"a\".find(sub = \"a\")",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "find() got named argument for positional-only parameter 'sub'",
+    "frame": "Error in find",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "find() got named argument for positional-only parameter 'sub'",
+    "prints": []
+   }
+  },
+  {
+   "id": "K/find_needle_named",
+   "package": "p129",
+   "source": "\"a\".find(needle = \"a\")",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "find() got unexpected keyword argument 'needle'",
+    "frame": "Error in find",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "find() got unexpected keyword argument 'needle'",
+    "prints": []
+   }
+  },
+  {
+   "id": "K/startswith_prefix_named",
+   "package": "p130",
+   "source": "\"a\".startswith(prefix = \"a\")",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "startswith() got unexpected keyword argument 'prefix'",
+    "frame": "Error in startswith",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "startswith() got unexpected keyword argument 'prefix'",
+    "prints": []
+   }
+  },
+  {
+   "id": "K/count_missing",
+   "package": "p131",
+   "source": "\"a\".count()",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "count() missing 1 required positional argument: sub",
+    "frame": "Error in count",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "count() missing 1 required positional argument: sub",
+    "prints": []
+   }
+  },
+  {
+   "id": "K/partition_sep_named",
+   "package": "p132",
+   "source": "\"a,b\".partition(sep = \",\")",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "partition() got named argument for positional-only parameter 'sep'",
+    "frame": "Error in partition",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "partition() got named argument for positional-only parameter 'sep'",
+    "prints": []
+   }
+  },
+  {
+   "id": "K/join_elements_named",
+   "package": "p133",
+   "source": "\",\".join(elements = [])",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "join() got named argument for positional-only parameter 'elements'",
+    "frame": "Error in join",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "join() got named argument for positional-only parameter 'elements'",
+    "prints": []
+   }
+  },
+  {
+   "id": "K/range_stop_named",
+   "package": "p134",
+   "source": "range(1, stop = 2)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "range() got named argument for positional-only parameter 'stop'",
+    "frame": "Error in range",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "range() got named argument for positional-only parameter 'stop'",
+    "prints": []
+   }
+  },
+  {
+   "id": "K/list_append_item_named",
+   "package": "p135",
+   "source": "[].append(item = 1)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "append() got named argument for positional-only parameter 'item'",
+    "frame": "Error in append",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "append() got named argument for positional-only parameter 'item'",
+    "prints": []
+   }
+  },
+  {
+   "id": "K/list_pop_i_named",
+   "package": "p136",
+   "source": "[1].pop(i = 0)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "pop() got named argument for positional-only parameter 'i'",
+    "frame": "Error in pop",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "pop() got named argument for positional-only parameter 'i'",
+    "prints": []
+   }
+  },
+  {
+   "id": "K/list_insert_missing",
+   "package": "p137",
+   "source": "[].insert(0)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "insert() missing 1 required positional argument: item",
+    "frame": "Error in insert",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "insert() missing 1 required positional argument: item",
+    "prints": []
+   }
+  },
+  {
+   "id": "K/list_remove_missing",
+   "package": "p138",
+   "source": "[].remove()",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "remove() missing 1 required positional argument: x",
+    "frame": "Error in remove",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "remove() missing 1 required positional argument: x",
+    "prints": []
+   }
+  },
+  {
+   "id": "K/dict_get_default_named",
+   "package": "p139",
+   "source": "y = {}.get(1, default = 2)\nprint(\"N33PRINT\", y)",
+   "verdict": "EXACT_PRINT",
+   "reference": {
+    "exit": 0,
+    "message": null,
+    "frame": null,
+    "prints": [
+     "N33PRINT 2"
+    ]
+   },
+   "native": {
+    "exit": 0,
+    "message": null,
+    "prints": [
+     "N33PRINT 2"
+    ]
+   }
+  },
+  {
+   "id": "K/dict_setdefault_default_named",
+   "package": "p140",
+   "source": "d = {}\ny = d.setdefault(1, default = 3)\nprint(\"N33PRINT\", y, d)",
+   "verdict": "EXACT_PRINT",
+   "reference": {
+    "exit": 0,
+    "message": null,
+    "frame": null,
+    "prints": [
+     "N33PRINT 3 {1: 3}"
+    ]
+   },
+   "native": {
+    "exit": 0,
+    "message": null,
+    "prints": [
+     "N33PRINT 3 {1: 3}"
+    ]
+   }
+  },
+  {
+   "id": "K/sorted_key_positional",
+   "package": "p141",
+   "source": "y = sorted([1, 3, 2], lambda v: -v)\nprint(\"N33PRINT\", y)",
+   "verdict": "EXACT_PRINT",
+   "reference": {
+    "exit": 0,
+    "message": null,
+    "frame": null,
+    "prints": [
+     "N33PRINT [3, 2, 1]"
+    ]
+   },
+   "native": {
+    "exit": 0,
+    "message": null,
+    "prints": [
+     "N33PRINT [3, 2, 1]"
+    ]
+   }
+  },
+  {
+   "id": "K/enumerate_list_named",
+   "package": "p142",
+   "source": "y = enumerate(list = [\"a\"], start = 1)\nprint(\"N33PRINT\", y)",
+   "verdict": "EXACT_PRINT",
+   "reference": {
+    "exit": 0,
+    "message": null,
+    "frame": null,
+    "prints": [
+     "N33PRINT [(1, \"a\")]"
+    ]
+   },
+   "native": {
+    "exit": 0,
+    "message": null,
+    "prints": [
+     "N33PRINT [(1, \"a\")]"
+    ]
+   }
+  },
+  {
+   "id": "K/int_missing",
+   "package": "p143",
+   "source": "int()",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "int() missing 1 required positional argument: x",
+    "frame": "Error in int",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "int() missing 1 required positional argument: x",
+    "prints": []
+   }
+  },
+  {
+   "id": "K/int_x_named",
+   "package": "p144",
+   "source": "int(x = \"1\")",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "int() got named argument for positional-only parameter 'x'",
+    "frame": "Error in int",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "int() got named argument for positional-only parameter 'x'",
+    "prints": []
+   }
+  },
+  {
+   "id": "K/tuple_x_named",
+   "package": "p145",
+   "source": "tuple(x = [])",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "tuple() got named argument for positional-only parameter 'x'",
+    "frame": "Error in tuple",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "tuple() got named argument for positional-only parameter 'x'",
+    "prints": []
+   }
+  },
+  {
+   "id": "K/str_missing",
+   "package": "p146",
+   "source": "str()",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "str() missing 1 required positional argument: x",
+    "frame": "Error in str",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "str() missing 1 required positional argument: x",
+    "prints": []
+   }
+  },
+  {
+   "id": "K/getattr_name_named",
+   "package": "p147",
+   "source": "getattr(1, name = \"x\")",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "getattr() got named argument for positional-only parameter 'name'",
+    "frame": "Error in getattr",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "getattr() got named argument for positional-only parameter 'name'",
+    "prints": []
+   }
+  },
+  {
+   "id": "K/fail_msg_attr",
+   "package": "p148",
+   "source": "fail(msg = \"m\", attr = \"a\")",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "attribute a: m",
+    "frame": "Error in fail",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "attribute a: m",
+    "prints": []
+   }
+  },
+  {
+   "id": "K/fail_sep",
+   "package": "p149",
+   "source": "fail(\"x\", \"y\", sep = \"-\")",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "x-y",
+    "frame": "Error in fail",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "x-y",
+    "prints": []
+   }
+  },
+  {
+   "id": "K/print_sep",
+   "package": "p150",
+   "source": "print(\"N33PRINT\", \"a\", sep = \"-\")",
+   "verdict": "EXACT_PRINT",
+   "reference": {
+    "exit": 0,
+    "message": null,
+    "frame": null,
+    "prints": [
+     "N33PRINT-a"
+    ]
+   },
+   "native": {
+    "exit": 0,
+    "message": null,
+    "prints": [
+     "N33PRINT-a"
+    ]
+   }
+  },
+  {
+   "id": "K/min_key_positional",
+   "package": "p151",
+   "source": "min([1], lambda v: v)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "unsupported comparison: list <=> function",
+    "frame": "Error in min",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "unsupported comparison: list <=> function",
+    "prints": []
+   }
+  },
+  {
+   "id": "K/max_key_named",
+   "package": "p152",
+   "source": "y = max([1, 3], key = lambda v: -v)\nprint(\"N33PRINT\", y)",
+   "verdict": "EXACT_PRINT",
+   "reference": {
+    "exit": 0,
+    "message": null,
+    "frame": null,
+    "prints": [
+     "N33PRINT 1"
+    ]
+   },
+   "native": {
+    "exit": 0,
+    "message": null,
+    "prints": [
+     "N33PRINT 1"
+    ]
+   }
+  },
+  {
+   "id": "T/startswith_type_before_count",
+   "package": "p153",
+   "source": "\"abc\".startswith(1, 2, 3, 4)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "in call to startswith(), parameter 'sub' got value of type 'int', want 'string or tuple'",
+    "frame": "Error in startswith",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "in call to startswith(), parameter 'sub' got value of type 'int', want 'string or tuple'",
+    "prints": []
+   }
+  },
+  {
+   "id": "T/find_start_type_before_count",
+   "package": "p154",
+   "source": "\"a\".find(\"a\", \"x\", 1, 2)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "in call to find(), parameter 'start' got value of type 'string', want 'int or NoneType'",
+    "frame": "Error in find",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "in call to find(), parameter 'start' got value of type 'string', want 'int or NoneType'",
+    "prints": []
+   }
+  },
+  {
+   "id": "T/find_start_named",
+   "package": "p155",
+   "source": "\"a\".find(\"a\", start = 0)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "find() got named argument for positional-only parameter 'start'",
+    "frame": "Error in find",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "find() got named argument for positional-only parameter 'start'",
+    "prints": []
+   }
+  },
+  {
+   "id": "T/join_element_type",
+   "package": "p156",
+   "source": "\",\".join([\"a\", 1])",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "expected string for sequence element 1, got '1' of type int",
+    "frame": "Error in join",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "expected string for sequence element 1, got '1' of type int",
+    "prints": []
+   }
+  },
+  {
+   "id": "T/depset_direct_type",
+   "package": "p157",
+   "source": "depset(1)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "in call to depset(), parameter 'direct' got value of type 'int', want 'sequence or NoneType'",
+    "frame": "Error in depset",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "in call to depset(), parameter 'direct' got value of type 'int', want 'sequence or NoneType'",
+    "prints": []
+   }
+  },
+  {
+   "id": "T/depset_transitive_type",
+   "package": "p158",
+   "source": "depset(transitive = 1)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "in call to depset(), parameter 'transitive' got value of type 'int', want 'sequence or NoneType'",
+    "frame": "Error in depset",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "in call to depset(), parameter 'transitive' got value of type 'int', want 'sequence or NoneType'",
+    "prints": []
+   }
+  },
+  {
+   "id": "T/len_named_type",
+   "package": "p159",
+   "source": "len(1, x = 2)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "in call to len(), parameter 'x' got value of type 'int', want 'iterable or string'",
+    "frame": "Error in len",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "in call to len(), parameter 'x' got value of type 'int', want 'iterable or string'",
+    "prints": []
+   }
+  },
+  {
+   "id": "N/undefined",
+   "package": "p160",
+   "source": "undefinedx",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "name 'undefinedx' is not defined",
+    "frame": "resolver",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "name 'undefinedx' is not defined",
+    "prints": []
+   }
+  },
+  {
+   "id": "N/undefined_hint_builtin",
+   "package": "p161",
+   "source": "lenn(1)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "name 'lenn' is not defined (did you mean 'len'?)",
+    "frame": "resolver",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "name 'lenn' is not defined (did you mean 'len'?)",
+    "prints": []
+   }
+  },
+  {
+   "id": "N/undefined_hint_local",
+   "package": "p162",
+   "source": "def f(discreet):\n    return discrete",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "name 'discrete' is not defined (did you mean 'discreet'?)",
+    "frame": "resolver",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "name 'discrete' is not defined (did you mean 'discreet'?)",
+    "prints": []
+   }
+  },
+  {
+   "id": "N/undefined_hint_case",
+   "package": "p163",
+   "source": "true",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "name 'true' is not defined (did you mean 'True'?)",
+    "frame": "resolver",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "name 'true' is not defined (did you mean 'True'?)",
+    "prints": []
+   }
+  },
+  {
+   "id": "N/undefined_hint_struct",
+   "package": "p164",
+   "source": "strct(a = 1)",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "name 'strct' is not defined (did you mean 'struct'?)",
+    "frame": "resolver",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "name 'strct' is not defined (did you mean 'struct'?)",
+    "prints": []
+   }
+  },
+  {
+   "id": "N/undefined_no_hint_short",
+   "package": "p165",
+   "source": "_y = 1\nz = y",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "name 'y' is not defined",
+    "frame": "resolver",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "name 'y' is not defined",
+    "prints": []
+   }
+  },
+  {
+   "id": "NB/build_undefined_subrule",
+   "package": "p166",
+   "source": "subrule(name = \"x\")",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "name 'subrule' is not defined (did you mean 'genrule'?)",
+    "frame": "resolver",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "name 'subrule' is not defined (did you mean 'genrule'?)",
+    "prints": []
+   }
+  },
+  {
+   "id": "NB/build_undefined",
+   "package": "p167",
+   "source": "filegroup(name = \"f\")\nundefined_in_build",
+   "verdict": "EXACT_MESSAGE",
+   "reference": {
+    "exit": 7,
+    "message": "name 'undefined_in_build' is not defined",
+    "frame": "resolver",
+    "prints": []
+   },
+   "native": {
+    "exit": 1,
+    "message": "name 'undefined_in_build' is not defined",
+    "prints": []
+   }
+  }
+ ],
+ "run_history": [
+  {
+   "run": 1,
+   "script_sha256": "bde9ec6bc721537e709af2ca180098b451ba856ab9634e2bfe85d5365dc7151b",
+   "native_sha256": "e127b19080181af9070d45d5291a18727ad1b0e422f7b421aadf51d3350fc3f1",
+   "probe_count": 121,
+   "counts": {
+    "EXACT_MESSAGE": 113,
+    "MISMATCH": 7,
+    "NATIVE_ACCEPTS": 1
+   },
+   "counts_by_group": {
+    "D": {
+     "EXACT_MESSAGE": 29,
+     "MISMATCH": 1
+    },
+    "B": {
+     "EXACT_MESSAGE": 30,
+     "MISMATCH": 6
+    },
+    "A": {
+     "EXACT_MESSAGE": 19
+    },
+    "O": {
+     "EXACT_MESSAGE": 27,
+     "NATIVE_ACCEPTS": 1
+    },
+    "N": {
+     "EXACT_MESSAGE": 6
+    },
+    "NB": {
+     "EXACT_MESSAGE": 2
+    }
+   },
+   "non_exact": [
+    {
+     "id": "D/star_overwrites_named",
+     "verdict": "MISMATCH",
+     "reference": "'x' redeclared at top level",
+     "native": "g() got multiple values for parameter 'a'"
+    },
+    {
+     "id": "B/len_too_many",
+     "verdict": "MISMATCH",
+     "reference": "in call to len(), parameter 'x' got value of type 'int', want 'iterable or string'",
+     "native": "len() accepts no more than 1 positional argument but got 2"
+    },
+    {
+     "id": "B/find_unexpected_keyword",
+     "verdict": "MISMATCH",
+     "reference": "find() got unexpected keyword argument 'needless'",
+     "native": "find() got unexpected keyword argument 'needless' (did you mean 'needle'?)"
+    },
+    {
+     "id": "B/depset_too_many",
+     "verdict": "MISMATCH",
+     "reference": "in call to depset(), parameter 'direct' got value of type 'int', want 'sequence or NoneType'",
+     "native": "depset() accepts no more than 2 positional arguments but got 3"
+    },
+    {
+     "id": "B/startswith_wrong_type",
+     "verdict": "MISMATCH",
+     "reference": "in call to startswith(), parameter 'sub' got value of type 'int', want 'string or tuple'",
+     "native": "in call to startswith(), parameter 'prefix' got value of type 'int', want 'string or tuple'"
+    },
+    {
+     "id": "B/join_not_iterable",
+     "verdict": "MISMATCH",
+     "reference": "in call to join(), parameter 'elements' got value of type 'int', want 'iterable'",
+     "native": "type 'int' is not iterable"
+    },
+    {
+     "id": "B/range_missing",
+     "verdict": "MISMATCH",
+     "reference": "range() missing 1 required positional argument: start_or_stop",
+     "native": "range() missing 1 required positional argument: a1"
+    },
+    {
+     "id": "O/compare_structs",
+     "verdict": "NATIVE_ACCEPTS",
+     "reference": "unsupported comparison: struct <=> struct",
+     "native": null
+    }
+   ],
+   "mismatch_classes": {
+    "D/star_overwrites_named": "probe defect: the probe assigns x and the harness appends `x = 1`, so Bazel reports the resolver error \"'x' redeclared at top level\"; Bazel's acceptance of an *args element overwriting a named parameter (Eval.java:716-741 adds named before *args, addPositionalArg has no duplicate check) stays documented from source only",
+    "B/len_too_many, B/depset_too_many": "BuiltinFunction.addPositionalArg type-checks each positional argument before the count check (BuiltinFunction.java:307-319); native checks types after binding",
+    "B/find_unexpected_keyword, B/startswith_wrong_type, B/range_missing": "starlark-rust parameter names (needle/prefix/a1) differ from Bazel's (sub/sub/start_or_stop); the hint follows the names",
+    "B/join_not_iterable": "Bazel types join's `elements` parameter (in call to join() ... want 'iterable'); native iterates first",
+    "O/compare_structs": "semantic: starlark-rust orders struct values, Bazel's StructImpl is not Comparable"
+   }
+  },
+  {
+   "run": 2,
+   "script_sha256": "9bc650c497929148efb74c58142da0fce93ed974497769aaa90e8a1da2adaac5",
+   "native_sha256": "80fe673252685e2720e62692297eafcadad1d6fb08d307fd8c01c2aa90a9fbe8",
+   "probe_count": 168,
+   "counts": {
+    "EXACT_MESSAGE": 157,
+    "EXACT_PRINT": 11
+   },
+   "counts_by_group": {
+    "D": {
+     "EXACT_MESSAGE": 30,
+     "EXACT_PRINT": 2
+    },
+    "B": {
+     "EXACT_MESSAGE": 36
+    },
+    "A": {
+     "EXACT_MESSAGE": 19
+    },
+    "O": {
+     "EXACT_MESSAGE": 28
+    },
+    "C": {
+     "EXACT_MESSAGE": 10,
+     "EXACT_PRINT": 3
+    },
+    "K": {
+     "EXACT_MESSAGE": 19,
+     "EXACT_PRINT": 6
+    },
+    "T": {
+     "EXACT_MESSAGE": 7
+    },
+    "N": {
+     "EXACT_MESSAGE": 6
+    },
+    "NB": {
+     "EXACT_MESSAGE": 2
+    }
+   }
+  }
+ ],
+ "post_capture_changes": [
+  "after run 2 (not re-captured): depset(direct/transitive) and Args.add_all/add_joined `values` accept range() as a Bazel Sequence (RangeList); no captured probe passes a range there",
+  "after run 2 (not re-captured): bazel-rs uses the vendored SpellChecker port (starlark::errors::bazel_suggest/bazel_did_you_mean/bazel_edit_distance, UTF-16 units) instead of its local ports; captured hints are ASCII and unchanged",
+  "after run 2: docs only — fail(stack_trace=False) still prints the native traceback; undefined-name hint ties resolve in sorted order (Bazel: HashSet order)"
+ ]
+}

@@ -1327,50 +1327,10 @@ pub(crate) fn input_labels(target: &NativeTarget, nodep: impl Fn(&str) -> bool) 
     labels
 }
 
-/// SpellChecker.didYouMean (net/starlark/java/spelling/SpellChecker.java).
+/// SpellChecker.didYouMean (net/starlark/java/spelling/SpellChecker.java),
+/// the vendored interpreter's port (UTF-16 code units, as in Java).
 pub(crate) fn did_you_mean(input: &str, words: &[&str]) -> String {
-    fn edit_distance(s1: &[u8], s2: &[u8], max: usize) -> Option<usize> {
-        if s1 == s2 {
-            return Some(0);
-        }
-        if s1.len().abs_diff(s2.len()) > max {
-            return None;
-        }
-        let mut row = (0..=s2.len()).collect::<Vec<_>>();
-        for i in 1..=s1.len() {
-            row[0] = i;
-            let mut best = row[0];
-            let mut previous = i - 1;
-            for j in 1..=s2.len() {
-                let old = row[j];
-                row[j] = (previous + usize::from(s1[i - 1] != s2[j - 1]))
-                    .min(1 + row[j - 1].min(row[j]));
-                previous = old;
-                best = best.min(row[j]);
-            }
-            if best > max {
-                return None;
-            }
-        }
-        let result = row[s2.len()];
-        (result <= max).then_some(result)
-    }
-    let mut best = None;
-    let mut best_distance = 5.min(input.len().div_ceil(2));
-    let input = input.to_lowercase();
-    for word in words {
-        if let Some(distance) = edit_distance(
-            input.as_bytes(),
-            word.to_lowercase().as_bytes(),
-            best_distance,
-        ) && distance < best_distance
-        {
-            best_distance = distance;
-            best = Some(*word);
-        }
-    }
-    best.map(|word| format!(" (did you mean '{word}'?)"))
-        .unwrap_or_default()
+    starlark::errors::bazel_did_you_mean(input, words.iter().copied())
 }
 
 fn collect_labels(value: &AttrValue, labels: &mut Vec<Label>) {
@@ -1825,6 +1785,14 @@ mod tests {
             " (did you mean 'actual'?)"
         );
         assert_eq!(did_you_mean("zzzzzzzz", &["name", "actual"]), "");
+        // Java string lengths are UTF-16 units: the bound of `日本` is
+        // min(5, (2 + 1) / 2) = 1, so distance 1 is too far (a UTF-8 byte
+        // count would allow it).
+        assert_eq!(did_you_mean("日本", &["日本x"]), "");
+        assert_eq!(
+            did_you_mean("日本語", &["日本x"]),
+            " (did you mean '日本x'?)"
+        );
         // Exempted constraint attributes are absent; toolchain re-adds its own.
         let toolchain = rule_class("toolchain").unwrap();
         assert!(toolchain.attribute("compatible_with").is_none());

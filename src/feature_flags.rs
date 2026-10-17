@@ -149,7 +149,7 @@ fn single_string_argument<'v>(
         if name != "value" {
             return Err(error(format!(
                 "{method}() got unexpected keyword argument '{name}'{}",
-                crate::extension_ctx::did_you_mean(name, &["value"])
+                crate::native_rules::did_you_mean(name, &["value"])
             )));
         }
         let value = check(*value)?;

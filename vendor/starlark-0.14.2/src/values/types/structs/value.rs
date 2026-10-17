@@ -15,7 +15,8 @@
  * limitations under the License.
  */
 
-// Modified for native Bazel 9.3 struct repr compatibility; see vendor provenance.
+// Modified for native Bazel 9.3 struct repr compatibility and the unknown field
+// message; see vendor provenance.
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -55,7 +56,6 @@ use crate::values::StringValueLike;
 use crate::values::Value;
 use crate::values::ValueError;
 use crate::values::ValueLike;
-use crate::values::comparison::compare_small_map;
 use crate::values::comparison::equals_small_map;
 use crate::values::structs::unordered_hasher::UnorderedHasher;
 
@@ -183,16 +183,10 @@ where
         }
     }
 
+    /// Modified: Bazel's StructImpl is not Comparable, so ordering structs
+    /// fails (net/starlark/java/eval/Starlark.java:492-518).
     fn compare(&self, other: Value<'v>) -> crate::Result<Ordering> {
-        match Struct::from_value(other) {
-            None => ValueError::unsupported_with(self, "cmp()", other),
-            Some(other) => compare_small_map(
-                coerce(&self.fields),
-                &other.fields,
-                |k| k.as_str(),
-                |x, y| x.compare(*y),
-            ),
-        }
+        ValueError::unsupported_with(self, "compare", other)
     }
 
     fn get_attr(&self, attribute: &str, heap: Heap<'v>) -> Option<Value<'v>> {
@@ -224,6 +218,18 @@ where
 
     fn dir_attr(&self) -> Vec<String> {
         self.fields.keys().map(|x| x.as_str().to_owned()).collect()
+    }
+
+    /// Modified: Bazel's `StructImpl.getErrorMessageForUnknownField` for
+    /// `struct()` values (packages/StructImpl.java:85-95 with
+    /// packages/Provider.java:54-56): every field name, sorted.
+    fn unknown_attribute_message(&self, attribute: &str) -> Option<String> {
+        let mut names: Vec<&str> = self.fields.keys().map(|x| x.as_str()).collect();
+        names.sort_unstable();
+        Some(format!(
+            "'struct' value has no field or method '{attribute}'\nAvailable attributes: {}",
+            names.join(", ")
+        ))
     }
 
     fn documentation(&self) -> DocItem {
@@ -316,11 +322,14 @@ json.encode(struct(foo = [struct(bar = "some")])) == '{"foo":[{"bar":"some"}]}'
 
     #[test]
     fn test_comparison_bug() {
-        // TODO(nga): this should be false, because `a < b`,
-        //   and comparisons are usually lexicographic.
-        // TODO(nga): Also, since structs are ordered, but not sorted,
-        //   comparisons on structs should be forbidden
-        //   (because it is too expensive to sort keys on each comparison).
-        assert::is_true("struct(b=1) < struct(a=1, x=1)")
+        // Modified: as in Bazel, structs are not ordered.
+        assert::fail(
+            "struct(b=1) < struct(a=1, x=1)",
+            "unsupported comparison: struct <=> struct",
+        );
+        assert::fail(
+            "sorted([struct(a=1), struct(a=2)])",
+            "unsupported comparison: struct <=> struct",
+        );
     }
 }

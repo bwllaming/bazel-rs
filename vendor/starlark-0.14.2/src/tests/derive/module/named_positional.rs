@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified: test expectations follow Bazel 9.3 interpreter error texts; see vendor
+// provenance.
+
 use starlark_derive::starlark_module;
 
 use crate as starlark;
@@ -57,7 +60,10 @@ fn test_positional_only() {
     let mut a = Assert::new();
     a.globals_add(named_positional_functions);
     a.eq("17", "positional(17)");
-    a.fail("noop(positional)(x=19)", "extra named parameter");
+    a.fail(
+        "noop(positional)(x=19)",
+        "positional() got named argument for positional-only parameter 'x'",
+    );
 }
 
 #[test]
@@ -73,7 +79,10 @@ fn test_named_only() {
     let mut a = Assert::new();
     a.globals_add(named_positional_functions);
     a.eq("31", "named_only(x=31)");
-    a.fail("noop(named_only)(37)", "Missing named-only parameter");
+    a.fail(
+        "noop(named_only)(37)",
+        "named_only() got unexpected positional argument",
+    );
 }
 
 #[test]
@@ -83,7 +92,7 @@ fn test_named_after_args() {
     a.eq("13", "named_after_args(1, 2, x=10)");
     a.fail(
         "noop(named_after_args)(1, 2, 3)",
-        "Missing named-only parameter",
+        "named_after_args() missing 1 required named argument: x",
     );
 }
 
@@ -94,6 +103,6 @@ fn test_named_after_args_explicitly_marked() {
     a.eq("13", "named_after_args_explicitly_marked(1, 2, x=10)");
     a.fail(
         "noop(named_after_args_explicitly_marked)(1, 2, 3)",
-        "Missing named-only parameter",
+        "named_after_args_explicitly_marked() missing 1 required named argument: x",
     );
 }

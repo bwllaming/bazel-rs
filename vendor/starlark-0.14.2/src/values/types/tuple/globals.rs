@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 `tuple(x)` parameter type text
+// (net/starlark/java/eval/MethodLibrary.java:375-388); see vendor provenance.
+
 use starlark_derive::starlark_module;
 
 use crate as starlark;
@@ -48,15 +51,20 @@ pub(crate) fn register_tuple(globals: &mut GlobalsBuilder) {
         special_builtin_function = SpecialBuiltinFunction::Tuple,
     )]
     fn tuple<'v>(
-        #[starlark(require = pos)] a: Option<ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>>,
+        #[starlark(require = pos)] x: Option<ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>>,
         heap: Heap<'v>,
     ) -> starlark::Result<ValueOfUnchecked<'v, &'v TupleRef<'v>>> {
+        // Modified: Bazel's parameter names (MethodLibrary.java:375-383).
+        let a = x;
         if let Some(a) = a {
             if TupleRef::from_value(a.get()).is_some() {
                 return Ok(ValueOfUnchecked::new(a.get()));
             }
 
-            let it = a.get().iterate(heap)?;
+            // Modified: Bazel checks `x` is a StarlarkIterable.
+            let it = a.get().iterate(heap).map_err(|_| {
+                crate::values::error::bazel_param_type_error("tuple", "x", a.get(), "iterable")
+            })?;
             Ok(ValueOfUnchecked::new(heap.alloc_tuple_iter(it)))
         } else {
             Ok(ValueOfUnchecked::new(heap.alloc(AllocTuple::EMPTY)))

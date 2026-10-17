@@ -186,8 +186,9 @@ fn init_validation_and_schema_errors_fail_analysis() {
                 "PackageMetadataInfo(metadata = ctx.file.metadata, purl = ctx.attr.purl)",
                 "PackageMetadataInfo(ctx.file.metadata)",
             ),
-            // Positional arguments reach the keyword-only init unchanged.
-            "parameter `metadata` for call to `//providers:package_metadata_info.bzl._init`",
+            // Positional arguments reach the keyword-only init unchanged
+            // (StarlarkFunction.java:507-520).
+            "_init() does not accept positional arguments, but got 1",
         ),
         (
             RULES.replace(

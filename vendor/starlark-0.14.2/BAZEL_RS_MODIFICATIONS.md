@@ -54,6 +54,19 @@ so this separate notice replaces inline comments:
 - `src/tests/bc/golden/opt_recursion.golden`
 - `src/typing/tests/golden/incorrect_type_dot.golden`
 
+For Bazel 9.3 interpreter error texts (N33: argument binding, unknown fields,
+operators and undefined names, see `docs/STARLARK_VENDOR.md` of bazel-rs), the
+following golden files were regenerated with the crate's own mechanism
+(`STARLARK_RUST_REGENERATE_GOLDEN_TESTS=1`); only their `error:` lines change
+(`src/typing/tests/golden/incorrect_type_dot.golden`, listed above, also has its
+two `error:` lines changed to `'builtin_function_or_method' value has no field
+or method 'foo'`):
+
+- `src/tests/fstring/golden/undeclared_variable.err.golden.md`
+  (`error: name 'bar' is not defined`)
+- `src/values/types/record/record_type/missing_field_error.golden`
+  (`error: RecFail() missing 1 required named argument: b`)
+
 Modified Rust sources carry inline modification notices. Their original and
 current hashes, and this added notice, are recorded in the adjacent
 `../starlark-0.14.2.provenance.json`. Original upstream license and copyright

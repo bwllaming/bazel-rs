@@ -100,7 +100,10 @@ asserts.eq(1 + \
 ---
 # A regression test for error position information.
 
-_ = {}.get(1, default=2) ### "get: unexpected keyword arguments"
+# Modified for native Bazel 9.3 compatibility (see vendor provenance): Bazel's
+# dict.get takes `default` by name (Dict.java).
+_ = {}.get(1, default=2)
+assert_eq({}.get(1, default=2), 2)
 
 ---
 # Load exposes explicitly declared globals from other modules.

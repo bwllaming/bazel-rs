@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 `x in <string>` with a non-string `x`
+// (net/starlark/java/eval/EvalUtils.java:382-386); see vendor provenance.
+
 use std::cmp;
 use std::cmp::Ordering;
 use std::fmt;
@@ -308,7 +311,13 @@ impl<'v> StarlarkValue<'v> for StarlarkStr {
     }
 
     fn is_in(&self, other: Value) -> crate::Result<bool> {
-        let s = <&str>::unpack_param(other)?;
+        // Modified: Bazel's text for a non-string left operand.
+        let Some(s) = other.unpack_str() else {
+            return Err(crate::Error::new_value(anyhow::anyhow!(
+                "'in <string>' requires string as left operand, not '{}'",
+                other.get_type()
+            )));
+        };
         Ok(fast_string::contains(self, s))
     }
 

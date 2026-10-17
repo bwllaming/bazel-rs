@@ -6483,38 +6483,12 @@ fn subpackages_first(a: &str, b: &str) -> std::cmp::Ordering {
 /// TargetSuggester.suggestTargets (packages/TargetSuggester.java:41-140) with
 /// SpellChecker.editDistance (net/starlark/java/spelling/SpellChecker.java:33-77).
 fn suggest_targets(input: &str, words: &BTreeSet<String>) -> String {
-    fn edit_distance(s1: &[char], s2: &[char], max: usize) -> Option<usize> {
-        if s1 == s2 {
-            return Some(0);
-        }
-        if s1.len().abs_diff(s2.len()) > max {
-            return None;
-        }
-        let mut row = (0..=s2.len()).collect::<Vec<_>>();
-        for i in 1..=s1.len() {
-            row[0] = i;
-            let mut best = row[0];
-            let mut previous = i - 1;
-            for j in 1..=s2.len() {
-                let old = row[j];
-                row[j] = (previous + usize::from(s1[i - 1] != s2[j - 1]))
-                    .min(1 + row[j - 1].min(row[j]));
-                previous = old;
-                best = best.min(row[j]);
-            }
-            if best > max {
-                return None;
-            }
-        }
-        let result = row[s2.len()];
-        (result <= max).then_some(result)
-    }
-    let lower = input.to_lowercase().chars().collect::<Vec<_>>();
-    let max = 5.min(input.chars().count().div_ceil(2));
+    let lower = input.to_lowercase();
+    let max = 5.min(input.encode_utf16().count().div_ceil(2));
     let mut by_distance: BTreeMap<usize, Vec<&str>> = BTreeMap::new();
     for word in words {
-        let candidate = word.to_lowercase().chars().collect::<Vec<_>>();
-        if let Some(distance) = edit_distance(&lower, &candidate, max) {
+        let candidate = word.to_lowercase();
+        if let Some(distance) = starlark::errors::bazel_edit_distance(&lower, &candidate, max) {
             by_distance.entry(distance).or_default().push(word);
         }
     }

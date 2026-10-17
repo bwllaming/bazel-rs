@@ -3227,10 +3227,11 @@ unused = [genrule(name = "make_" + n, outs = [n + ".out"], cmd = "echo " + n + "
             "m(name='x')",
             "must return None",
         );
+        // StarlarkFunction.java:385-397 for the implementation call.
         symbolic_error(
             "def impl():\n    pass\nm = macro(implementation=impl)",
             "m(name='x')",
-            "parameter",
+            "impl() got unexpected keyword arguments: name, visibility",
         );
         symbolic_error(
             "def impl(name, visibility):\n    m(name=name + '_nested')\nm = macro(implementation=impl)",

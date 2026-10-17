@@ -557,7 +557,11 @@ mod tests {
         ] {
             assert::fail(&format!("set().{method}([2, []])"), "unhashable type");
             assert::fail(&format!("set().{method}('abc')"), "collection");
-            assert::fail(&format!("set().{method}(other=[])"), "parameter");
+            // Modified: Bazel's BuiltinFunction binding texts.
+            assert::fails(
+                &format!("set().{method}(other=[])"),
+                &[&format!("{method}() got "), "'other'"],
+            );
         }
         for method in [
             "symmetric_difference",
@@ -570,7 +574,10 @@ mod tests {
             assert::fail(&format!("set().{method}([], [])"), "positional");
         }
         for method in ["add", "remove", "discard"] {
-            assert::fail(&format!("set().{method}(element=1)"), "parameter");
+            assert::fail(
+                &format!("set().{method}(element=1)"),
+                &format!("{method}() got named argument for positional-only parameter 'element'"),
+            );
         }
         assert::fail("set([1]).issuperset([2, []])", "unhashable type");
         assert::fail("set([1]).isdisjoint([1, []])", "unhashable type");

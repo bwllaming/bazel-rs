@@ -16,7 +16,8 @@
  */
 
 // Modified for native Bazel 9.3 debugPrint (print/fail) compatibility and
-// getattr unknown-attribute messages; see vendor provenance.
+// getattr unknown-attribute messages (Bazel's unknown field text); see vendor
+// provenance.
 
 //! A module with the standard function and constants that are by default in all
 //! dialect of Starlark
@@ -32,8 +33,9 @@ use crate::values::AllocValue;
 use crate::values::FrozenStringValue;
 use crate::values::Heap;
 use crate::values::Value;
-use crate::values::ValueError;
 use crate::values::list::AllocList;
+use crate::values::none::NoneOr;
+use crate::values::none::NoneType;
 use crate::values::tuple::UnpackTuple;
 use crate::values::typing::StarlarkIter;
 use crate::values::typing::never::StarlarkNever;
@@ -54,14 +56,40 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
     /// ```
     fn fail<'v>(
         #[starlark(args)] args: UnpackTuple<Value<'v>>,
+        // Modified: Bazel's named-only `msg`, `attr`, `sep` and `stack_trace`
+        // (net/starlark/java/eval/MethodLibrary.java:841-915).
+        #[starlark(require = named, default = NoneType)] msg: Value<'v>,
+        #[starlark(require = named, default = NoneOr::None)] attr: NoneOr<&str>,
+        #[starlark(require = named, default = " ")] sep: &str,
+        #[starlark(require = named, default = true)] stack_trace: bool,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<StarlarkNever> {
+        let _ = stack_trace;
         // Modified: Bazel MethodLibrary.fail (net/starlark/java/eval/MethodLibrary.java:895-913)
-        // formats each argument with Printer.debugPrint, not repr.
+        // formats each argument with Printer.debugPrint, not repr; `attr` is a
+        // leading `attribute NAME:` and `msg` a leading element. The message
+        // keeps starlark-rust's leading space (`fail: MSG` display).
         let mut s = String::new();
-        for x in args.items {
-            s.push(' ');
+        let mut need_separator = false;
+        if let NoneOr::Other(attr) = attr {
+            s.push_str("attribute ");
+            s.push_str(attr);
+            s.push(':');
+            need_separator = true;
+        }
+        for x in (!msg.is_none())
+            .then_some(msg)
+            .into_iter()
+            .chain(args.items)
+        {
+            if need_separator {
+                s.push_str(sep);
+            }
             crate::stdlib::extra::debug_print(x, &mut s, eval);
+            need_separator = true;
+        }
+        if !s.is_empty() {
+            s.insert(0, ' ');
         }
         Err(starlark::Error::new_kind(starlark::ErrorKind::Fail(
             anyhow::Error::msg(s),
@@ -84,10 +112,15 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
     /// ```
     #[starlark(speculative_exec_safe)]
     fn any<'v>(
-        #[starlark(require = pos)] x: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
+        // Modified: Bazel's parameter name and iterable check (MethodLibrary.java:221-230).
+        #[starlark(require = pos)] elements: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
         heap: Heap<'v>,
     ) -> starlark::Result<bool> {
-        for i in x.get().iterate(heap)? {
+        let elements = elements.get();
+        let it = elements.iterate(heap).map_err(|_| {
+            crate::values::error::bazel_param_type_error("any", "elements", elements, "iterable")
+        })?;
+        for i in it {
             if i.to_bool() {
                 return Ok(true);
             }
@@ -114,10 +147,15 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
     /// ```
     #[starlark(speculative_exec_safe)]
     fn all<'v>(
-        #[starlark(require = pos)] x: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
+        // Modified: Bazel's parameter name and iterable check (MethodLibrary.java:209-218).
+        #[starlark(require = pos)] elements: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
         heap: Heap<'v>,
     ) -> starlark::Result<bool> {
-        for i in x.get().iterate(heap)? {
+        let elements = elements.get();
+        let it = elements.iterate(heap).map_err(|_| {
+            crate::values::error::bazel_param_type_error("all", "elements", elements, "iterable")
+        })?;
+        for i in it {
             if !i.to_bool() {
                 return Ok(false);
             }
@@ -162,11 +200,13 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
     /// ```
     #[starlark(speculative_exec_safe)]
     fn enumerate<'v>(
-        #[starlark(require = pos)] it: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
+        // Modified: Bazel's parameter name (MethodLibrary.java:697-710).
+        list: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
         #[starlark(default = 0)] start: i32,
         heap: Heap<'v>,
     ) -> starlark::Result<impl AllocValue<'v>> {
-        let v = it
+        // Modified: Bazel's `list` may be named (MethodLibrary.java:697-710).
+        let v = list
             .get()
             .iterate(heap)?
             .enumerate()
@@ -193,11 +233,13 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
     /// ```
     #[starlark(speculative_exec_safe)]
     fn getattr<'v>(
-        #[starlark(require = pos)] a: Value<'v>,
-        #[starlark(require = pos)] attr: &str,
+        // Modified: Bazel's parameter names (MethodLibrary.java:801-820).
+        #[starlark(require = pos)] x: Value<'v>,
+        #[starlark(require = pos)] name: &str,
         #[starlark(require = pos)] default: Option<Value<'v>>,
         heap: Heap<'v>,
     ) -> starlark::Result<Value<'v>> {
+        let (a, attr) = (x, name);
         // TODO(nga): this doesn't cache string hash, so it is suboptimal.
         match a.get_attr(attr, heap)? {
             Some(v) => Ok(v),
@@ -207,10 +249,9 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
                 // (StarlarkValue::unknown_attribute_message), as Bazel's
                 // Starlark.getattr uses Structure.getErrorMessageForUnknownField
                 // (net/starlark/java/eval/Starlark.java:1002-1008).
-                None => match a.get_ref().unknown_attribute_message(attr) {
-                    Some(message) => Err(starlark::Error::new_value(anyhow::anyhow!(message))),
-                    None => ValueError::unsupported_owned(a.get_type(), &format!(".{attr}"), None),
-                },
+                // Otherwise Bazel's `'T' value has no field or method 'x'` text
+                // (Starlark.java:1014-1016).
+                None => Err(a.unknown_attr_error(attr)),
             },
         }
     }
@@ -223,11 +264,12 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
     /// named `name`.
     #[starlark(speculative_exec_safe)]
     fn hasattr<'v>(
-        #[starlark(require = pos)] a: Value<'v>,
-        #[starlark(require = pos)] attr: &str,
+        // Modified: Bazel's parameter names (MethodLibrary.java:786-797).
+        #[starlark(require = pos)] x: Value<'v>,
+        #[starlark(require = pos)] name: &str,
         heap: Heap<'v>,
     ) -> anyhow::Result<bool> {
-        Ok(a.has_attr(attr, heap))
+        Ok(x.has_attr(name, heap))
     }
 
     /// [hash](
@@ -246,7 +288,9 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
     /// # "#);
     /// ```
     #[starlark(speculative_exec_safe)]
-    fn hash(#[starlark(require = pos)] a: &str) -> anyhow::Result<i32> {
+    // Modified: Bazel's parameter name (MethodLibrary.java:720-731).
+    fn hash(#[starlark(require = pos)] value: &str) -> anyhow::Result<i32> {
+        let a = value;
         // From the starlark spec:
         // > the hash function for strings is the same as that implemented by java.lang.String.hashCode,
         // > a simple polynomial accumulator over the UTF-16 transcoding of the string:
@@ -290,12 +334,13 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
     /// len({'16': 10}) == 1
     /// # "#);
     /// # starlark::assert::fail(r#"
-    /// len(True)    # error: not supported
-    /// # "#, "not supported");
+    /// len(True)    # error: not iterable or string
+    /// # "#, "in call to len(), parameter 'x' got value of type 'bool', want 'iterable or string'");
     /// ```
     #[starlark(speculative_exec_safe)]
-    fn len(#[starlark(require = pos)] a: Value) -> starlark::Result<i32> {
-        a.length()
+    // Modified: Bazel's parameter name (MethodLibrary.java:403-418).
+    fn len(#[starlark(require = pos)] x: Value) -> starlark::Result<i32> {
+        x.length()
     }
 
     /// [reversed](
@@ -315,10 +360,19 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
     /// ```
     #[starlark(speculative_exec_safe)]
     fn reversed<'v>(
-        #[starlark(require = pos)] a: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
+        // Modified: Bazel's parameter name and iterable check (MethodLibrary.java:358-368).
+        #[starlark(require = pos)] sequence: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
         heap: Heap<'v>,
     ) -> starlark::Result<Vec<Value<'v>>> {
-        let mut v: Vec<Value> = a.get().iterate(heap)?.collect();
+        let sequence = sequence.get();
+        let mut v: Vec<Value> = sequence
+            .iterate(heap)
+            .map_err(|_| {
+                crate::values::error::bazel_param_type_error(
+                    "reversed", "sequence", sequence, "iterable",
+                )
+            })?
+            .collect();
         v.reverse();
         Ok(v)
     }
@@ -348,12 +402,17 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
     // This function is not spec-safe, because it may call `key` function
     // which might be not spec-safe.
     fn sorted<'v>(
-        #[starlark(require = pos)] x: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
-        #[starlark(require = named)] key: Option<Value<'v>>,
+        // Modified: Bazel's parameter name and iterable check (MethodLibrary.java:243-280).
+        #[starlark(require = pos)] iterable: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
+        key: Option<Value<'v>>,
         #[starlark(require = named, default = false)] reverse: bool,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<AllocList<impl IntoIterator<Item = Value<'v>> + use<'v>>> {
-        let it = x.get().iterate(eval.heap())?;
+        // Modified: Bazel's `key` may be positional (MethodLibrary.java:243-280).
+        let iterable = iterable.get();
+        let it = iterable.iterate(eval.heap()).map_err(|_| {
+            crate::values::error::bazel_param_type_error("sorted", "iterable", iterable, "iterable")
+        })?;
         let mut it = match key {
             None => it.map(|x| (x, x)).collect(),
             Some(key) => {
@@ -401,7 +460,9 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
     /// # "#);
     /// ```
     #[starlark(speculative_exec_safe, as_type = AbstractType)]
-    fn r#type<'v>(#[starlark(require = pos)] a: Value) -> anyhow::Result<FrozenStringValue> {
+    fn r#type<'v>(#[starlark(require = pos)] x: Value) -> anyhow::Result<FrozenStringValue> {
+        // Modified: Bazel's parameter names (net/starlark/java/eval/MethodLibrary.java `type(x)`); see vendor provenance.
+        let a = x;
         Ok(a.get_type_value())
     }
 }
@@ -453,20 +514,30 @@ hash("te") != hash("st")
 x = "test"; y = "te" + "st"; hash(y) == hash(y)
 "#,
         );
-        assert::fail("noop(hash)(None)", "doesn't match");
-        assert::fail("noop(hash)(True)", "doesn't match");
-        assert::fail("noop(hash)(1)", "doesn't match");
-        assert::fail("noop(hash)([])", "doesn't match");
-        assert::fail("noop(hash)({})", "doesn't match");
-        assert::fail("noop(hash)(range(1))", "doesn't match");
-        assert::fail("noop(hash)((1, 2))", "doesn't match");
+        // Modified: Bazel's BuiltinFunction parameter type text.
+        for (value, typ) in [
+            ("None", "NoneType"),
+            ("True", "bool"),
+            ("1", "int"),
+            ("[]", "list"),
+            ("{}", "dict"),
+            ("range(1)", "range"),
+            ("(1, 2)", "tuple"),
+        ] {
+            assert::fail(
+                &format!("noop(hash)({value})"),
+                &format!(
+                    "in call to hash(), parameter 'value' got value of type '{typ}', want 'string'"
+                ),
+            );
+        }
         assert::fail(
             r#"
 def foo():
     pass
 noop(hash)(foo)
 "#,
-            "doesn't match",
+            "in call to hash(), parameter 'value' got value of type 'function', want 'string'",
         );
     }
 

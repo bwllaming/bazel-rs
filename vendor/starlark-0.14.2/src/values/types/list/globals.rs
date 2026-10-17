@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 `list(x)` parameter type text
+// (net/starlark/java/eval/MethodLibrary.java:390-400); see vendor provenance.
+
 use allocative::Allocative;
 use dupe::Dupe;
 use once_cell::sync::Lazy;
@@ -106,8 +109,8 @@ pub(crate) fn register_list(globals: &mut GlobalsBuilder) {
     /// list((1,2,3)) == [1, 2, 3]
     /// # "#);
     /// # starlark::assert::fail(r#"
-    /// list("strings are not iterable") # error: not supported
-    /// # "#, r#"not supported on type"#);
+    /// list("strings are not iterable") # error: not iterable
+    /// # "#, r#"in call to list(), parameter 'x' got value of type 'string', want 'iterable'"#);
     /// ```
     #[starlark(
     as_type = FrozenList,
@@ -116,14 +119,19 @@ pub(crate) fn register_list(globals: &mut GlobalsBuilder) {
     ty_custom_function = ListType,
     )]
     fn list<'v>(
-        #[starlark(require = pos)] a: Option<ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>>,
+        #[starlark(require = pos)] x: Option<ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>>,
         heap: Heap<'v>,
     ) -> starlark::Result<ValueOfUnchecked<'v, &'v ListRef<'v>>> {
+        // Modified: Bazel's parameter names (MethodLibrary.java:390-399).
+        let a = x;
         Ok(ValueOfUnchecked::new(if let Some(a) = a {
             if let Some(xs) = ListRef::from_value(a.get()) {
                 heap.alloc_list(xs.content())
             } else {
-                let it = a.get().iterate(heap)?;
+                // Modified: Bazel checks `x` is a StarlarkIterable.
+                let it = a.get().iterate(heap).map_err(|_| {
+                    crate::values::error::bazel_param_type_error("list", "x", a.get(), "iterable")
+                })?;
                 heap.alloc(AllocList(it))
             }
         } else {

@@ -510,7 +510,8 @@ mod tests {
     fn test_bit_or_fail_iter() {
         assert::fail(
             "set([1, 2, 3]) | []",
-            "Operation `|` not supported for types `set` and `list`",
+            // Modified: Bazel's EvalUtils.binaryOp text.
+            "unsupported binary operation: set | list",
         );
     }
 
@@ -543,7 +544,8 @@ mod tests {
     fn test_bit_and_fail_iter() {
         assert::fail(
             "set([1, 2, 3]) & []",
-            "Operation `&` not supported for types `set` and `list`",
+            // Modified: Bazel's EvalUtils.binaryOp text.
+            "unsupported binary operation: set & list",
         );
     }
 
@@ -571,7 +573,8 @@ mod tests {
     fn test_bit_xor_fail_iter() {
         assert::fail(
             "set([1, 2, 3]) ^ []",
-            "Operation `^` not supported for types `set` and `list`",
+            // Modified: Bazel's EvalUtils.binaryOp text.
+            "unsupported binary operation: set ^ list",
         );
     }
 
@@ -594,7 +597,8 @@ mod tests {
     fn test_sub_fail_iter() {
         assert::fail(
             "set([1, 2, 3]) - []",
-            "Operation `-` not supported for types `set` and `list`",
+            // Modified: Bazel's EvalUtils.binaryOp text.
+            "unsupported binary operation: set - list",
         );
     }
 }

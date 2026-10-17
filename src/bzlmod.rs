@@ -1445,7 +1445,11 @@ e.tag(names=list(names))
             fails(source, "unhashable type: 'builtin_function_or_method'");
         }
         fails("x = set.type", "type");
-        fails("x = set[int]", "not supported");
+        // EvalUtils.index (EvalUtils.java:498-500).
+        fails(
+            "x = set[int]",
+            "type 'builtin_function_or_method' has no operator [](builtin_function_or_method)",
+        );
         fails("names=set()\nnames |= set(['c'])", "may not be reassigned");
         fails("load('//:defs.bzl', 'Set')", "load");
         fails("def f():\n    return set()", "def");

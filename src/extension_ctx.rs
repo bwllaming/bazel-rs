@@ -121,6 +121,11 @@ mod values {
             self.attrs.to_value().get_attr(name, heap).ok().flatten()
         }
 
+        /// TypeCheckedTag is a Structure (Structure.java:78-81).
+        fn set_attr(&self, _attribute: &str, _new_value: Value<'v>) -> starlark::Result<()> {
+            crate::runfiles::no_field_assignment("bazel_module_tag")
+        }
+
         fn dir_attr(&self) -> Vec<String> {
             self.attrs.to_value().dir_attr()
         }
@@ -195,6 +200,12 @@ mod values {
 
         fn dir_attr(&self) -> Vec<String> {
             self.classes.to_value().dir_attr()
+        }
+
+        /// StarlarkBazelModule.Tags is a Structure (StarlarkBazelModule.java:66,
+        /// Structure.java:78-81).
+        fn set_attr(&self, _attribute: &str, _new_value: Value<'v>) -> starlark::Result<()> {
+            crate::runfiles::no_field_assignment("bazel_module_tags")
         }
     }
 
@@ -853,47 +864,8 @@ fn create_metadata(
 }
 
 /// SpellChecker.didYouMean (net/starlark/java/spelling/SpellChecker.java).
-pub(crate) fn did_you_mean(input: &str, words: &[&str]) -> String {
-    fn edit_distance(s1: &[char], s2: &[char], max: usize) -> Option<usize> {
-        if s1 == s2 {
-            return Some(0);
-        }
-        if s1.len().abs_diff(s2.len()) > max {
-            return None;
-        }
-        let mut row: Vec<usize> = (0..=s2.len()).collect();
-        for i in 1..=s1.len() {
-            row[0] = i;
-            let mut best_in_row = row[0];
-            let mut previous = i - 1;
-            for j in 1..=s2.len() {
-                let old = row[j];
-                row[j] = (previous + usize::from(s1[i - 1] != s2[j - 1]))
-                    .min(1 + row[j - 1].min(row[j]));
-                previous = old;
-                best_in_row = best_in_row.min(row[j]);
-            }
-            if best_in_row > max {
-                return None;
-            }
-        }
-        let result = row[s2.len()];
-        (result <= max).then_some(result)
-    }
-    let mut best = None;
-    let mut best_distance = 5.min(input.chars().count().div_ceil(2));
-    let lower: Vec<char> = input.to_lowercase().chars().collect();
-    for candidate in words {
-        let other: Vec<char> = candidate.to_lowercase().chars().collect();
-        if let Some(distance) = edit_distance(&lower, &other, best_distance)
-            && distance < best_distance
-        {
-            best_distance = distance;
-            best = Some(*candidate);
-        }
-    }
-    best.map(|word| format!(" (did you mean '{word}'?)"))
-        .unwrap_or_default()
+fn did_you_mean(input: &str, words: &[&str]) -> String {
+    crate::native_rules::did_you_mean(input, words)
 }
 
 /// Facts.java MAX_FACTS_DEPTH.
@@ -1766,13 +1738,26 @@ ctx.is_dev_dependency(t) or fail('hidden dev flag')
                 "trying to mutate a frozen list value",
             );
         }
-        for assignment in [
-            "ctx.modules = []",
-            "ctx.modules[0].name = 'changed'",
-            "ctx.modules[0].tags.t = []",
-            "ctx.modules[0].tags.t[0].words = []",
+        // Bazel 9.3 EvalUtils.setField / Structure.setField texts.
+        for (assignment, expected) in [
+            (
+                "ctx.modules = []",
+                "cannot set .modules field of module_ctx value",
+            ),
+            (
+                "ctx.modules[0].name = 'changed'",
+                "cannot set .name field of bazel_module value",
+            ),
+            (
+                "ctx.modules[0].tags.t = []",
+                "bazel_module_tags value does not support field assignment",
+            ),
+            (
+                "ctx.modules[0].tags.t[0].words = []",
+                "bazel_module_tag value does not support field assignment",
+            ),
         ] {
-            fixture.error(assignment, classes, &participants, "not supported");
+            fixture.error(assignment, classes, &participants, expected);
         }
         fixture
             .run(
@@ -1815,11 +1800,12 @@ ctx.is_dev_dependency(t) or fail('hidden dev flag')
             &participants,
             "tag",
         );
+        // A bool struct field, not a method (Starlark.java:904).
         fixture.error(
             "ctx.root_module_has_non_dev_dependency()",
             classes,
             &participants,
-            "not supported",
+            "'bool' object is not callable",
         );
     }
 
@@ -2107,7 +2093,7 @@ r(name='sdk', words=[version])
             ),
             (
                 "ctx.read(Label('//:go.mod'), 'no')".to_owned(),
-                "extra positional argument".to_owned(),
+                "read() accepts no more than 1 positional argument but got 2".to_owned(),
             ),
         ] {
             fixture.error(&body, "{}", &[], &expected);

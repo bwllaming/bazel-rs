@@ -17,6 +17,7 @@
 
 // Modified for native Bazel 9.3 set assignment compatibility; see vendor provenance.
 // Modified for location-aware indexing and `in` (native ctx.toolchains string keys); see vendor provenance.
+// Modified for native Bazel 9.3 `def` argument-binding and duplicate dict key texts; see vendor provenance.
 
 //! Instruction implementations.
 
@@ -1075,8 +1076,9 @@ impl InstrNoFlowImpl for InstrDictNPopImpl {
             };
             let prev = dict.insert_hashed(k, v);
             if prev.is_some() {
+                // Modified: Bazel shows the key's repr (Eval.java:650).
                 let e =
-                    crate::Error::new_other(EvalError::DuplicateDictionaryKey(k.key().to_string()));
+                    crate::Error::new_other(EvalError::DuplicateDictionaryKey(k.key().to_repr()));
                 let spans = &Bc::slow_arg_at_ptr(ip).spans;
                 return Err(add_span_to_expr_error(e, spans[i], eval).into_error());
             }
@@ -1468,6 +1470,8 @@ impl InstrNoFlowImpl for InstrDefImpl {
             def_data.function_name.clone(),
             def_data.params.params.len(),
         );
+        // Modified: Bazel `StarlarkFunction` argument-binding texts.
+        parameters.def_style();
         let mut parameter_types = Vec::new();
 
         let mut pop_index = 0;

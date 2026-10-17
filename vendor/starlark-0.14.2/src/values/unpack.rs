@@ -15,6 +15,10 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 builtin parameter type texts (the typed
+// `values::error::IncorrectParameterTypeNamedWithExpected` error is rewritten by
+// native function calls); see vendor provenance.
+
 //! Parameter conversion utilities for `starlark_module` macros.
 
 use std::convert::Infallible;
@@ -226,15 +230,14 @@ pub trait UnpackValue<'v>: Sized + StarlarkTypeRepr {
     fn unpack_named_param(value: Value<'v>, param_name: &str) -> crate::Result<Self> {
         #[cold]
         fn error<'v>(value: Value<'v>, param_name: &str, ty: fn() -> Ty) -> crate::Error {
-            #[derive(thiserror::Error, Debug)]
-            #[error("Type of parameter `{0}` doesn't match, expected `{1}`, actual `{2}`")]
-            struct IncorrectParameterTypeNamedWithExpected(String, Ty, String);
-
-            crate::Error::new_value(IncorrectParameterTypeNamedWithExpected(
-                param_name.to_owned(),
-                ty(),
-                value.to_string_for_type_error(),
-            ))
+            crate::Error::new_value(
+                crate::values::error::IncorrectParameterTypeNamedWithExpected(
+                    param_name.to_owned(),
+                    ty(),
+                    value.to_string_for_type_error(),
+                    value.get_type().to_owned(),
+                ),
+            )
         }
 
         Self::unpack_value(value)

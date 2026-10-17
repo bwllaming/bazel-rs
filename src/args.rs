@@ -382,7 +382,10 @@ fn vector_group<'v>(
             .map_err(|e| anyhow!(e.to_string()))?;
         sequence(list)?
     } else {
-        sequence(values)?
+        // Args.add_all/add_joined `values`: Sequence or Depset; a range is a
+        // Sequence (RangeList).
+        crate::starlark_types::bazel_sequence(values, eval.heap())
+            .map_or_else(|| sequence(values), Ok)?
     };
     // Args.addVectorArg (Args.java:416-475): an empty omitted vector records
     // no argument group at all.
@@ -898,6 +901,8 @@ expanded([a]) == ["pkg/file with $ spaces", "prefix:x,prefix:y"]
         fail("a.add('a', 'b', 'c')", "requires one value");
         fail("a.add(1, 'b')", "arg name must be a string");
         fail("a.add_all('abc')", "expected list or tuple");
+        // Args.add_all `values` is a Sequence; a range is one (RangeList).
+        pass("a.add_all('--n', range(2))\nexpanded([a]) == ['--n', '0', '1']");
         fail("a.add_all([], map_each=42)", "map_each must be a function");
         for returned in ["42", "['ok', 42]", "('tuple',)"] {
             fail(
@@ -908,7 +913,8 @@ expanded([a]) == ["pkg/file with $ spaces", "prefix:x,prefix:y"]
             );
         }
         fail("a.to_list()", "to_list");
-        fail("list(a)", "Operation `(iter)` not supported");
+        // Starlark.toIterable (Starlark.java:284).
+        fail("[x for x in a]", "type 'Args' is not iterable");
         fail("expanded(a)", "expected list or tuple");
         fail(
             "expanded([[]])",

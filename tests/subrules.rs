@@ -149,7 +149,12 @@ fn rejected(output: &Output, diagnostic: &str) {
         "expected {diagnostic:?}: {}",
         stderr(output)
     );
-    for unexpected in ["panicked", "Variable `subrule` not found", "GUARD_BYPASSED"] {
+    for unexpected in [
+        "panicked",
+        "Variable `subrule` not found",
+        "name 'subrule' is not defined",
+        "GUARD_BYPASSED",
+    ] {
         assert!(!stderr(output).contains(unexpected), "{}", stderr(output));
     }
 }
@@ -295,15 +300,22 @@ check=rule(implementation=_check,subrules=[S,Alias,S])
 #[test]
 fn constructor_is_keyword_only_and_requires_actual_user_function() {
     for (expression, diagnostic) in [
-        ("subrule(_sub)", "implementation"),
-        ("subrule()", "implementation"),
+        // BuiltinFunction.java:420-423: `implementation` is named-only.
+        (
+            "subrule(_sub)",
+            "subrule() got unexpected positional argument",
+        ),
+        (
+            "subrule()",
+            "subrule() missing 1 required named argument: implementation",
+        ),
         ("subrule(implementation=len)", "function"),
         ("subrule(implementation=Label)", "function"),
         ("subrule(implementation=P)", "function"),
         ("subrule(implementation=17)", "function"),
         (
             "subrule(implementation=_sub,doc='unsupported')",
-            "parameter",
+            "subrule() got unexpected keyword argument 'doc'",
         ),
     ] {
         let ws = Workspace::new(
@@ -613,7 +625,7 @@ fn constructor_is_absent_from_build_and_root_module_globals() {
         let output = ws.run(&["query", ":check"]);
         assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
         assert!(
-            stderr(&output).contains("Variable `subrule` not found"),
+            stderr(&output).contains("name 'subrule' is not defined"),
             "{}",
             stderr(&output)
         );

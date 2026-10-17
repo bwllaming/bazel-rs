@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 builtin binding-time type checks in errors;
+// see vendor provenance.
+
 use dupe::Dupe;
 use once_cell::sync::OnceCell;
 use starlark_map::Hashed;
@@ -241,11 +244,13 @@ impl MethodsBuilder {
         f: NativeMethFn,
     ) {
         let ty = components.make_type(None);
+        // Modified: parameter types for Bazel's binding-time type checks.
+        let param_tys = crate::values::function::native_param_tys(&ty);
 
         self.members.insert(
             name,
             UnboundValue::Method(self.heap.alloc_simple_typed_static(NativeMethod {
-                function: NativeMeth(f, sig),
+                function: NativeMeth(f, sig, param_tys),
                 name: name.to_owned(),
                 speculative_exec_safe: components.speculative_exec_safe,
                 docs: components.into_docs(None),

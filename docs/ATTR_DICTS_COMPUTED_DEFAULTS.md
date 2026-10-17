@@ -198,7 +198,8 @@ instantiate, and fail analysis explicitly.
 `tests/fixtures/attr_dicts_computed_defaults/reference_receipt.json` records
 the paired capture. Left as documented differences: Starlark traceback framing
 and interpreter argument-error wording (`Found X extra named parameter(s)` vs
-`got unexpected keyword argument`); `Target`/`Label` repr (`<Target @@//:a>` /
+`got unexpected keyword argument`; since N33 the native text is Bazel's, see
+docs/STARLARK_VENDOR.md); `Target`/`Label` repr (`<Target @@//:a>` /
 `@@//:a` versus `<target //:a>` / `Label("//:a")`; a separate repr increment);
 the native label-syntax subset (`//:a:b`); BUILD-time conversion and mandatory
 messages of plain (non-`select()`) values; the mandatory-provider message form;

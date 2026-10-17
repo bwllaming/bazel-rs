@@ -287,7 +287,8 @@ fail analysis: the testonly check below uses the effective value.
   `ctx.executable` was absent (added by N23a, docs/RUNFILES.md); invalid attribute names report `invalid
   attribute name "1bad"` (Bazel: ``attribute name `1bad` is not a valid
   identifier.``); `attr.string(configurable = False)` reports ``Found
-  `configurable` extra named parameter(s) for call to string`` (Bazel:
+  `configurable` extra named parameter(s) for call to string`` (since N33
+  `string() got unexpected keyword argument 'configurable'`; Bazel:
   `attribute 'size' has the 'configurable' argument set, which is not
   allowed in rule definitions`); `**kwargs` in BUILD reports `*args and
   **kwargs calls are not allowed in BUILD files` (Bazel: `**kwargs arguments

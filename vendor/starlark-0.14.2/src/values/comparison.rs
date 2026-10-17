@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified: `compare_small_map` is unused since structs are unordered (Bazel 9.3);
+// see vendor provenance.
+
 use std::cmp::Ordering;
 use std::hash::Hash;
 
@@ -97,6 +100,7 @@ pub(crate) fn compare_slice<E, X1, X2>(
     Ok(xs.len().cmp(&ys.len()))
 }
 
+#[allow(dead_code)] // Modified: structs are unordered.
 pub(crate) fn compare_small_map<E, K, K2: Ord + Hash, V1, V2>(
     x: &SmallMap<K, V1>,
     y: &SmallMap<K, V2>,

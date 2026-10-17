@@ -136,43 +136,15 @@ fn first_free(ast: &AstModule, names: &[&str]) -> Option<(String, Span, Vec<Stri
     finder.found
 }
 
-/// SpellChecker.editDistance (net/starlark/java/spelling/SpellChecker.java)
-/// without the early cut-off, which does not change results below the bound.
-fn edit_distance(left: &[char], right: &[char]) -> usize {
-    let mut row: Vec<usize> = (0..=right.len()).collect();
-    for (i, a) in left.iter().enumerate() {
-        let mut previous = row[0];
-        row[0] = i + 1;
-        for (j, b) in right.iter().enumerate() {
-            let old = row[j + 1];
-            row[j + 1] = (previous + usize::from(a != b)).min(1 + row[j].min(row[j + 1]));
-            previous = old;
-        }
-    }
-    row[right.len()]
-}
-
-/// SpellChecker.didYouMean/suggest: case-insensitive edit distance below
-/// min(5, (len + 1) / 2); the first strictly better candidate wins. Bazel
-/// iterates a HashSet of every visible name; ties are broken here by sorted
-/// order. Predeclared and universe names are not candidates here: none is
-/// within the bound of `chr` or `ord`.
+/// SpellChecker.didYouMean/suggest (the vendored interpreter's port):
+/// case-insensitive edit distance below min(5, (len + 1) / 2); the first
+/// strictly better candidate wins. Bazel iterates a HashSet of every visible
+/// name; ties are broken here by sorted order. Predeclared and universe names
+/// are not candidates here: none is within the bound of `chr` or `ord`.
 fn did_you_mean(input: &str, mut candidates: Vec<String>) -> String {
     candidates.sort();
     candidates.dedup();
-    let lowered: Vec<char> = input.to_lowercase().chars().collect();
-    let mut best = None;
-    let mut best_distance = 5.min(input.chars().count().div_ceil(2));
-    for candidate in candidates {
-        let other: Vec<char> = candidate.to_lowercase().chars().collect();
-        let distance = edit_distance(&lowered, &other);
-        if distance < best_distance {
-            best_distance = distance;
-            best = Some(candidate);
-        }
-    }
-    best.map(|name| format!(" (did you mean '{name}'?)"))
-        .unwrap_or_default()
+    starlark::errors::bazel_did_you_mean(input, candidates.iter().map(String::as_str))
 }
 
 /// Bazel's resolver error for a free `chr`/`ord` reference in a `.bzl`,
@@ -554,7 +526,13 @@ mod tests {
         for source in ["def g(word):\n    pass\nx = ord\n", "abc = 1\nx = ord\n"] {
             assert!(universe(source).unwrap_err().ends_with("is not defined"));
         }
-        assert_eq!(edit_distance(&['c', 'h', 'r'], &['c', 'h', 'a', 'r']), 1);
-        assert_eq!(edit_distance(&['o', 'r', 'd'], &['d', 'i', 'r']), 3);
+        assert_eq!(
+            starlark::errors::bazel_edit_distance("chr", "char", 5),
+            Some(1)
+        );
+        assert_eq!(
+            starlark::errors::bazel_edit_distance("ord", "dir", 5),
+            Some(3)
+        );
     }
 }

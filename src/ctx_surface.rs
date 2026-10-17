@@ -275,7 +275,7 @@ pub(crate) fn no_field_message(ty: &str, name: &str, fields: &[String]) -> Strin
     let fields = fields.iter().map(String::as_str).collect::<Vec<_>>();
     format!(
         "'{ty}' value has no field or method '{name}'{}",
-        crate::extension_ctx::did_you_mean(name, &fields)
+        crate::native_rules::did_you_mean(name, &fields)
     )
 }
 

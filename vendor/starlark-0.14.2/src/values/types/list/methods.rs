@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 builtin parameter names and kinds; see vendor
+// provenance.
+
 //! Methods for the `list` type.
 
 use starlark_derive::starlark_module;
@@ -54,9 +57,11 @@ pub(crate) fn list_methods(builder: &mut MethodsBuilder) {
     /// ```
     fn append<'v>(
         this: Value<'v>,
-        #[starlark(require = pos)] el: Value<'v>,
+        #[starlark(require = pos)] item: Value<'v>,
         heap: Heap<'v>,
     ) -> anyhow::Result<NoneType> {
+        // Modified: Bazel's parameter names (StarlarkList.java).
+        let el = item;
         let this = ListData::from_value_mut(this)?;
         this.push(el, heap);
         Ok(NoneType)
@@ -102,9 +107,11 @@ pub(crate) fn list_methods(builder: &mut MethodsBuilder) {
     /// ```
     fn extend<'v>(
         this: Value<'v>,
-        #[starlark(require = pos)] other: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
+        #[starlark(require = pos)] items: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
         heap: Heap<'v>,
     ) -> starlark::Result<NoneType> {
+        // Modified: Bazel's parameter names (StarlarkList.java).
+        let other = items;
         let res = ListData::from_value_mut(this)?;
         if this.ptr_eq(other.get()) {
             // If the types alias, we can't borrow the `other` for iteration.
@@ -147,10 +154,12 @@ pub(crate) fn list_methods(builder: &mut MethodsBuilder) {
     #[starlark(speculative_exec_safe)]
     fn index<'v>(
         this: &ListRef<'v>,
-        #[starlark(require = pos)] needle: Value<'v>,
+        #[starlark(require = pos)] x: Value<'v>,
         #[starlark(require = pos, default = NoneOr::None)] start: NoneOr<i32>,
         #[starlark(require = pos, default = NoneOr::None)] end: NoneOr<i32>,
     ) -> starlark::Result<i32> {
+        // Modified: Bazel's parameter names (StarlarkList.java).
+        let needle = x;
         let (start, end) =
             convert_indices(this.len() as i32, start.into_option(), end.into_option());
         if let Some(haystack) = this.get(start..end) {
@@ -187,9 +196,11 @@ pub(crate) fn list_methods(builder: &mut MethodsBuilder) {
     fn insert<'v>(
         this: Value<'v>,
         #[starlark(require = pos)] index: i32,
-        #[starlark(require = pos)] el: Value<'v>,
+        #[starlark(require = pos)] item: Value<'v>,
         heap: Heap<'v>,
     ) -> anyhow::Result<NoneType> {
+        // Modified: Bazel's parameter names (StarlarkList.java).
+        let el = item;
         let this = ListData::from_value_mut(this)?;
         let index = convert_index(this.len() as i32, index);
         this.insert(index, el, heap);
@@ -219,8 +230,10 @@ pub(crate) fn list_methods(builder: &mut MethodsBuilder) {
     /// ```
     fn pop<'v>(
         this: Value<'v>,
-        #[starlark(require = pos)] index: Option<i32>,
+        #[starlark(require = pos)] i: Option<i32>,
     ) -> anyhow::Result<Value<'v>> {
+        // Modified: Bazel's parameter names (StarlarkList.java).
+        let index = i;
         let this = ListData::from_value_mut(this)?;
         let index = index.unwrap_or_else(|| (this.len() as i32) - 1);
         if index < 0 || index >= this.len() as i32 {
@@ -265,8 +278,10 @@ pub(crate) fn list_methods(builder: &mut MethodsBuilder) {
     /// ```
     fn remove<'v>(
         this: Value<'v>,
-        #[starlark(require = pos)] needle: Value<'v>,
+        #[starlark(require = pos)] x: Value<'v>,
     ) -> anyhow::Result<NoneType> {
+        // Modified: Bazel's parameter names (StarlarkList.java).
+        let needle = x;
         // Written in two separate blocks so we ensure we give up the
         // immutable borrow before making the mutable borrow.
         let position = {

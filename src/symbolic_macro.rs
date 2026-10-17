@@ -199,7 +199,8 @@ mod tests {
         let globals = crate::package::bzl_globals();
         for (call, expected) in [
             ("macro()", "implementation"),
-            ("macro(impl)", "named-only"),
+            // BuiltinFunction.java:420-423: `implementation` is named-only.
+            ("macro(impl)", "macro() got unexpected positional argument"),
             ("macro(implementation=impl, unknown=None)", "unknown"),
             ("macro(implementation=impl, attrs=None)", "dict"),
             ("macro(implementation=impl, attrs=[])", "dict"),

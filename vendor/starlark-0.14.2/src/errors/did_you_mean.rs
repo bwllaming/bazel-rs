@@ -15,9 +15,86 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 spelling suggestions (`bazel_did_you_mean`,
+// net/starlark/java/spelling/SpellChecker.java), public through
+// `crate::errors`; see vendor provenance.
+
 //! Spelling suggestions.
 
 use strsim::levenshtein;
+
+/// Modified: Bazel's `SpellChecker.editDistance` with its `maxEditDistance`
+/// cut-off (net/starlark/java/spelling/SpellChecker.java:33-74), over UTF-16
+/// code units like Java strings; `None` stands for Java's `-1`. The strings
+/// are compared as given (`bazel_suggest` lower-cases them first).
+pub fn bazel_edit_distance(s1: &str, s2: &str, max: usize) -> Option<usize> {
+    let s1: Vec<u16> = s1.encode_utf16().collect();
+    let s2: Vec<u16> = s2.encode_utf16().collect();
+    edit_distance_utf16(&s1, &s2, max)
+}
+
+fn edit_distance_utf16(s1: &[u16], s2: &[u16], max: usize) -> Option<usize> {
+    if s1 == s2 {
+        return Some(0);
+    }
+    if s1.len().abs_diff(s2.len()) > max {
+        return None;
+    }
+    let mut row: Vec<usize> = (0..=s2.len()).collect();
+    for i in 1..=s1.len() {
+        row[0] = i;
+        let mut best_in_the_row = row[0];
+        let mut previous = i - 1;
+        for j in 1..=s2.len() {
+            let old = row[j];
+            row[j] = cmp_min(
+                previous + usize::from(s1[i - 1] != s2[j - 1]),
+                1 + cmp_min(row[j - 1], row[j]),
+            );
+            previous = old;
+            best_in_the_row = cmp_min(best_in_the_row, row[j]);
+        }
+        if best_in_the_row > max {
+            return None;
+        }
+    }
+    let result = row[s2.len()];
+    (result <= max).then_some(result)
+}
+
+fn cmp_min(a: usize, b: usize) -> usize {
+    if a < b { a } else { b }
+}
+
+/// Modified: Bazel's `SpellChecker.suggest`
+/// (net/starlark/java/spelling/SpellChecker.java:81-94): the candidate with
+/// the smallest case-insensitive edit distance below
+/// `min(5, (len + 1) / 2)`; on a tie the first candidate wins.
+pub fn bazel_suggest<'a>(input: &str, words: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    let lowered: Vec<u16> = input.to_lowercase().encode_utf16().collect();
+    let mut best_distance = cmp_min(5, (input.encode_utf16().count() + 1) / 2);
+    let mut best = None;
+    for candidate in words {
+        let other: Vec<u16> = candidate.to_lowercase().encode_utf16().collect();
+        if let Some(d) = edit_distance_utf16(&lowered, &other, best_distance) {
+            if d < best_distance {
+                best_distance = d;
+                best = Some(candidate);
+            }
+        }
+    }
+    best
+}
+
+/// Modified: Bazel's `SpellChecker.didYouMean`
+/// (net/starlark/java/spelling/SpellChecker.java:100-107): an empty string,
+/// or ` (did you mean 'x'?)`.
+pub fn bazel_did_you_mean<'a>(input: &str, words: impl IntoIterator<Item = &'a str>) -> String {
+    match bazel_suggest(input, words) {
+        None => String::new(),
+        Some(suggestion) => format!(" (did you mean '{suggestion}'?)"),
+    }
+}
 
 /// Find a suggestion for a typo.
 pub(crate) fn did_you_mean<'a>(
@@ -71,6 +148,26 @@ mod tests {
             did_you_mean("cxx_libraxx", vec!["cxx_library"])
         );
         assert_eq!(None, did_you_mean("cxx_librxxx", vec!["cxx_library"]));
+    }
+
+    // Modified: Bazel SpellChecker parity.
+    #[test]
+    fn bazel_spell_checker() {
+        use crate::errors::did_you_mean::bazel_did_you_mean;
+        use crate::errors::did_you_mean::bazel_suggest;
+        assert_eq!(Some("append"), bazel_suggest("appen", ["append", "clear"]));
+        // Case-insensitive; the first of equally close candidates wins.
+        assert_eq!(Some("Foo"), bazel_suggest("fOO", ["Foo", "foo"]));
+        assert_eq!(Some("abd"), bazel_suggest("abc", ["abd", "abe"]));
+        // The bound is min(5, (len + 1) / 2) and the distance must be below it.
+        assert_eq!(None, bazel_suggest("a", ["b"]));
+        assert_eq!(None, bazel_suggest("abcd", ["abxy"]));
+        assert_eq!(Some("abcx"), bazel_suggest("abcd", ["abcx"]));
+        assert_eq!(
+            " (did you mean 'srcs'?)",
+            bazel_did_you_mean("src", ["srcs"])
+        );
+        assert_eq!("", bazel_did_you_mean("zzz", ["srcs"]));
     }
 
     #[test]

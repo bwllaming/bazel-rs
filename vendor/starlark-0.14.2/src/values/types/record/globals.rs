@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified: test expectations follow Bazel 9.3 interpreter error texts; see vendor
+// provenance.
+
 //! Implementation of `record` function.
 
 use dupe::Dupe;
@@ -139,7 +142,8 @@ rec_type(host=1, port=80)
 rec_type = record(host=str, port=int)
 rec_type(port=80)
 "#,
-            &["Missing named-only parameter", "`host`"],
+            // Modified: Bazel's BuiltinFunction binding text.
+            &["rec_type() missing 1 required named argument: host"],
         );
     }
 
@@ -150,7 +154,7 @@ rec_type(port=80)
 rec_type = record(host=str, port=int)
 rec_type(host="localhost", port=80, mask=255)
 "#,
-            &["extra named", "mask"],
+            &["rec_type() got unexpected keyword argument 'mask'"],
         );
     }
 

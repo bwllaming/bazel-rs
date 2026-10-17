@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 builtin parameter names and kinds; see vendor
+// provenance.
+
 use std::num::NonZeroI32;
 
 use starlark_derive::starlark_module;
@@ -59,10 +62,13 @@ pub(crate) fn register_range(globals: &mut GlobalsBuilder) {
     /// ```
     #[starlark(as_type = Range, speculative_exec_safe)]
     fn range(
-        #[starlark(require = pos)] a1: i32,
-        #[starlark(require = pos)] a2: Option<i32>,
+        #[starlark(require = pos)] start_or_stop: i32,
+        #[starlark(require = pos)] stop: Option<i32>,
         #[starlark(require = pos, default = 1)] step: i32,
     ) -> anyhow::Result<Range> {
+        // Modified: Bazel's parameter names (MethodLibrary.java:736-765).
+        let a1 = start_or_stop;
+        let a2 = stop;
         let start = match a2 {
             None => 0,
             Some(_) => a1,

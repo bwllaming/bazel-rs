@@ -149,10 +149,10 @@ In the rerun, 46 steps compare as follows: 16 EXACT, 28 KNOWN_DIVERGENCE and 2
 MISMATCH. Both mismatches are the BUILD-file undefined-name text below. The
 remaining divergences:
 
-- **Undefined name in a BUILD file:** native prints the general starlark-rust
-  interpreter text ``Variable `visibility` not found``; Bazel prints
-  `name 'visibility' is not defined`. This applies to every undefined name and is
-  not specific to N8.
+- **Undefined name in a BUILD file:** native printed the general starlark-rust
+  interpreter text ``Variable `visibility` not found`` when this capture ran;
+  Bazel prints `name 'visibility' is not defined`. Since N33 the native text is
+  Bazel's for every undefined name (docs/STARLARK_VENDOR.md, `tests/fixtures/interpreter_wording/reference_receipt.json`).
 - **Exit code:** a failing `query` exits with 1 natively and 7 in Bazel.
 - **Framing:**
   - Native joins all violations and the summary into one error with no `ERROR:`

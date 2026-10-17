@@ -16,7 +16,8 @@
  */
 
 // Modified for native Bazel 9.3 unknown-attribute messages of rule-context
-// structures; see vendor provenance.
+// structures, Bazel's unknown field text and the duplicate dict key text; see
+// vendor provenance.
 
 //! Evaluation of an expression.
 
@@ -41,7 +42,6 @@ use crate as starlark;
 use crate::codemap::Spanned;
 use crate::collections::symbol::symbol::Symbol;
 use crate::environment::slots::ModuleSlotId;
-use crate::errors::did_you_mean::did_you_mean;
 use crate::eval::Arguments;
 use crate::eval::Evaluator;
 use crate::eval::compiler::Compiler;
@@ -73,7 +73,6 @@ use crate::values::FrozenValueTyped;
 use crate::values::Heap;
 use crate::values::StarlarkValue;
 use crate::values::Value;
-use crate::values::ValueError;
 use crate::values::ValueLike;
 use crate::values::bool::StarlarkBool;
 use crate::values::function::BoundMethodGen;
@@ -1024,7 +1023,9 @@ impl ExprCompiled {
 
 #[derive(Debug, Clone, Error)]
 pub(crate) enum EvalError {
-    #[error("Dictionary key repeated for `{0}`")]
+    // Modified: Bazel 9.3 text (net/starlark/java/eval/Eval.java:650); the
+    // payload is the key's repr.
+    #[error("dictionary expression has duplicate key: {0}")]
     DuplicateDictionaryKey(String),
 }
 
@@ -1114,19 +1115,9 @@ impl<P: AstPayload> CompilerExprUtil<P> for ExprP<P> {
 #[cold]
 #[inline(never)]
 fn get_attr_no_attr_error<'v>(x: Value<'v>, attribute: &Symbol) -> crate::Error {
-    // Modified: a value-specific message (StarlarkValue::unknown_attribute_message).
-    if let Some(message) = x.get_ref().unknown_attribute_message(attribute.as_str()) {
-        return crate::Error::new_value(anyhow::anyhow!(message));
-    }
-    match did_you_mean(attribute.as_str(), x.dir_attr().iter().map(|s| s.as_str())) {
-        None => ValueError::NoAttr(x.get_type().to_owned(), attribute.as_str().to_owned()).into(),
-        Some(better) => ValueError::NoAttrDidYouMean(
-            x.get_type().to_owned(),
-            attribute.as_str().to_owned(),
-            better.to_owned(),
-        )
-        .into(),
-    }
+    // Modified: a value-specific message (StarlarkValue::unknown_attribute_message),
+    // else Bazel's text and spelling hint (Value::unknown_attr_error).
+    x.unknown_attr_error(attribute.as_str())
 }
 
 pub(crate) enum MemberOrValue<'v, 'a> {

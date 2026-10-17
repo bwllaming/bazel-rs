@@ -16,6 +16,8 @@
  */
 
 // Modified for native Bazel 9.3 set compatibility; see vendor provenance.
+// Modified for Bazel's `set(elements)` binding and parameter type texts
+// (net/starlark/java/eval/MethodLibrary.java:667-690); see vendor provenance.
 // Expose the Bazel constructor contract, not a parametric type object.
 use allocative::Allocative;
 use derive_more::Display;
@@ -37,6 +39,23 @@ use crate::values::Value;
 use crate::values::ValueLike;
 use crate::values::set::refs::SetRef;
 use crate::values::set::value::SetData;
+
+/// Modified: `set(elements=[])` with a positional-only `elements`
+/// (MethodLibrary.java:667-690), for Bazel's binding texts.
+fn set_signature() -> &'static crate::eval::ParametersSpec<crate::values::FrozenValue> {
+    static SIGNATURE: std::sync::OnceLock<crate::eval::ParametersSpec<crate::values::FrozenValue>> =
+        std::sync::OnceLock::new();
+    SIGNATURE.get_or_init(|| {
+        crate::eval::ParametersSpec::new_parts(
+            "set",
+            [("elements", crate::eval::ParametersSpecParam::Optional)],
+            [],
+            false,
+            [],
+            false,
+        )
+    })
+}
 
 pub(crate) fn register_set(globals: &mut GlobalsBuilder) {
     globals.set("set", SetConstructor);
@@ -71,14 +90,21 @@ impl<'v> StarlarkValue<'v> for SetConstructor {
         args: &Arguments<'v, '_>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> crate::Result<Value<'v>> {
-        args.no_named_args()?;
         let heap = eval.heap();
-        let arg = args.optional1(heap)?;
+        // Modified: Bazel's binding texts for the positional-only `elements`.
+        let arg = args
+            .no_named_args()
+            .and_then(|()| args.optional1(heap))
+            .map_err(|e| set_signature().bazel_rebind_error(e, args, &[], heap))?;
         let set = match arg {
             Some(pos) => match SetRef::unpack_value_opt(pos) {
                 Some(set) => (set.aref).clone(),
                 None => {
-                    let it = pos.iterate(heap)?;
+                    let it = pos.iterate(heap).map_err(|_| {
+                        crate::values::error::bazel_param_type_error(
+                            "set", "elements", pos, "iterable",
+                        )
+                    })?;
                     let mut data = SetData::default();
                     for el in it {
                         let el = el.get_hashed()?;
@@ -112,11 +138,27 @@ not hasattr(set, 'type') and set == set and set != list
         assert::eq("list(set(*[(3, 1, 3)], **{}))", "[3, 1]");
         assert::eq("list(set({'b': 1, 'a': 2}))", "['b', 'a']");
         assert::eq("list(set(range(3)))", "[0, 1, 2]");
-        assert::fail("set(elements=[1])", "named");
-        assert::fail("set([], [])", "positional");
-        assert::fail("set(None)", "not supported");
-        assert::fail("set('abc')", "not supported");
-        assert::fail("set[int]", "not supported");
+        // Modified: Bazel's BuiltinFunction binding and parameter texts.
+        assert::fail(
+            "set(elements=[1])",
+            "set() got named argument for positional-only parameter 'elements'",
+        );
+        assert::fail(
+            "set([], [])",
+            "set() accepts no more than 1 positional argument but got 2",
+        );
+        assert::fail(
+            "set(None)",
+            "in call to set(), parameter 'elements' got value of type 'NoneType', want 'iterable'",
+        );
+        assert::fail(
+            "set('abc')",
+            "in call to set(), parameter 'elements' got value of type 'string', want 'iterable'",
+        );
+        assert::fail(
+            "set[int]",
+            "type 'builtin_function_or_method' has no operator [](builtin_function_or_method)",
+        );
         assert::fail("{set: 1}", "unhashable type");
         assert::fail("set([set])", "unhashable type");
     }
@@ -193,7 +235,8 @@ s = set(['not_int'])
 
 f_fail_ct(s)
 ",
-            "Operation `[]` not supported for types `builtin_function_or_method` and `type`",
+            // Modified: Bazel's EvalUtils.index text.
+            "type 'builtin_function_or_method' has no operator [](type)",
         );
     }
 
@@ -206,7 +249,8 @@ def f_fail_ct(x: str) -> set[int]:
 
 f_fail_ct('not_int')
 ",
-            "Operation `[]` not supported for types `builtin_function_or_method` and `type`",
+            // Modified: Bazel's EvalUtils.index text.
+            "type 'builtin_function_or_method' has no operator [](type)",
         );
     }
 
@@ -221,7 +265,8 @@ s = set(['not_int'])
 
 noop(f_fail_rt)(s)
 ",
-            "Operation `[]` not supported for types `builtin_function_or_method` and `type`",
+            // Modified: Bazel's EvalUtils.index text.
+            "type 'builtin_function_or_method' has no operator [](type)",
         );
     }
 }

@@ -403,6 +403,22 @@ where
     }
 }
 
+/// Bazel's unknown-field text of a struct-like value, `'NAME' value has no field
+/// or method 'x'` followed by `Available attributes:` and the field names in
+/// natural order (packages/StructImpl.java:85-95).
+pub(crate) fn unknown_field_message<'a>(
+    name: &str,
+    attribute: &str,
+    fields: impl Iterator<Item = &'a str>,
+) -> String {
+    let mut fields: Vec<&str> = fields.collect();
+    fields.sort_unstable();
+    format!(
+        "'{name}' value has no field or method '{attribute}'\nAvailable attributes: {}",
+        fields.join(", ")
+    )
+}
+
 /// StarlarkInfo inherits StructImpl.repr (packages/StructImpl.java:139-153):
 /// `struct(` then the present fields sorted by name as `name = repr`.
 impl<'v, V: ValueLike<'v>> fmt::Display for ProviderInstanceGen<V> {
@@ -434,6 +450,17 @@ where
 
     fn dir_attr(&self) -> Vec<String> {
         self.fields.iter().map(|(name, _)| name.clone()).collect()
+    }
+
+    /// StarlarkInfo: StructImpl.getErrorMessageForUnknownField
+    /// (packages/StructImpl.java:85-95) with StarlarkProvider's text for an
+    /// exported provider (packages/StarlarkProvider.java:465-469).
+    fn unknown_attribute_message(&self, attribute: &str) -> Option<String> {
+        Some(unknown_field_message(
+            &self.name,
+            attribute,
+            self.fields.iter().map(|(name, _)| name.as_str()),
+        ))
     }
 
     fn collect_repr(&self, collector: &mut String) {
@@ -1038,7 +1065,11 @@ names.append("consumer")
         pass(
             "P = PackageSpecificationInfo\n(type(P) == 'Provider' and repr(P) == '<function PackageSpecificationInfo>' and dir(P) == []) or fail('native key')\n(P == PackageSpecificationInfo and {P: 1}[PackageSpecificationInfo] == 1 and P != DefaultInfo) or fail('identity')",
         );
-        fail("PackageSpecificationInfo()", "not supported on type");
+        // Starlark.call on a non-callable (Starlark.java:904).
+        fail(
+            "PackageSpecificationInfo()",
+            "'Provider' object is not callable",
+        );
     }
 
     fn fail(source: &str, message: &str) {
@@ -1069,8 +1100,19 @@ names.append("consumer")
             "P = provider()\nx = P(1)",
             "P: unexpected positional arguments",
         );
-        fail("P = provider()\nx = P(x=1)\nx.x = 2", "not supported");
-        fail("P = provider()\nx = P().missing", "missing");
+        fail(
+            "P = provider()\nx = P(x=1)\nx.x = 2",
+            "struct value does not support field assignment",
+        );
+        fail(
+            "P = provider()\nx = P().missing",
+            "'P' value has no field or method 'missing'\nAvailable attributes: ",
+        );
+        // StarlarkInfo is not Comparable (Starlark.java:492-518).
+        fail(
+            "P = provider()\nx = P(a=1) < P(a=2)",
+            "unsupported comparison: struct <=> struct",
+        );
         fail("provider()()", "exported name");
     }
 

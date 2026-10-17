@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 `dict()` binding texts; see vendor provenance.
+
 use starlark_derive::starlark_module;
 use starlark_map::small_map::SmallMap;
 
@@ -27,6 +29,23 @@ use crate::values::dict::Dict;
 use crate::values::dict::DictRef;
 use crate::values::dict::value::FrozenDict;
 use crate::values::function::SpecialBuiltinFunction;
+
+/// Modified: `dict(pairs=[], **kwargs)` with a positional-only `pairs`
+/// (MethodLibrary.java:640-656), for Bazel's binding texts.
+fn dict_signature() -> &'static crate::eval::ParametersSpec<crate::values::FrozenValue> {
+    static SIGNATURE: std::sync::OnceLock<crate::eval::ParametersSpec<crate::values::FrozenValue>> =
+        std::sync::OnceLock::new();
+    SIGNATURE.get_or_init(|| {
+        crate::eval::ParametersSpec::new_parts(
+            "dict",
+            [("pairs", crate::eval::ParametersSpecParam::Optional)],
+            [],
+            false,
+            [],
+            true,
+        )
+    })
+}
 
 fn unpack_pair<'v>(pair: Value<'v>, heap: Heap<'v>) -> crate::Result<(Value<'v>, Value<'v>)> {
     let mut it = pair.iterate(heap)?;
@@ -88,7 +107,11 @@ pub(crate) fn register_dict(globals: &mut GlobalsBuilder) {
         // It might have one positional argument, which could be a dict or an array of pairs.
         // It might have named/kwargs arguments, which we copy over (afterwards).
 
-        let pos = args.optional1(heap)?;
+        // Modified: Bazel's binding texts for `dict(pairs=[], **kwargs)` with a
+        // positional-only `pairs` (MethodLibrary.java:640-656).
+        let pos = args
+            .optional1(heap)
+            .map_err(|e| dict_signature().bazel_rebind_error(e, args, &[], heap))?;
         let kwargs = args.names()?;
 
         match pos {

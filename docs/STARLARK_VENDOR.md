@@ -113,6 +113,117 @@ struct uses it for Bazel's `No attribute '%s'. ...` texts with
 `Available attributes: ...`. The patched file carries an inline notice and its
 current hash is updated in the provenance; no vendored test changes.
 
+The [N33 interpreter-wording increment](#n33-interpreter-error-texts) gives
+the most common interpreter errors Bazel 9.3's `net.starlark.java` texts.
+
+### N33 interpreter error texts
+
+Sources are the pinned Bazel tree (`src/main/java/net/starlark/java/eval/`):
+
+- **`def` binding** (`StarlarkFunction.java:385-523`): `NAME() does not accept
+  positional arguments, but got N`, `NAME() accepts no more than K positional
+  argument(s) but got N`, `NAME() got unexpected keyword argument(s): a, b` with
+  ` (did you mean 'x'?)` only for exactly one, `NAME() missing N required
+  positional|keyword-only argument(s): a, b` (all listed) and `NAME() got
+  multiple values for parameter 'x'`. `NAME` is the def's own name (`lambda` for
+  lambdas). Bazel's order is replayed: the call adds explicit positional
+  arguments, explicit named ones, `*args` elements, then `**kwargs` entries
+  (`Eval.java:716-756`); duplicates fail immediately; then the positional count,
+  unexpected names and missing parameters (`call()`). As in Bazel, `*args`
+  elements bind after the named arguments and overwrite a parameter already
+  given by name (`g(a = 1, *[2])` binds `a = 2`; `addPositionalArg` has no
+  duplicate check, StarlarkFunction.java:460-472, BuiltinFunction.java:307-319);
+  only explicit positional arguments and `**kwargs` entries clash.
+- **Builtin binding** (`BuiltinFunction.java:150-160, 307-430, 470-490`):
+  `NAME() got unexpected keyword argument 'x'` (+ hint over all parameters),
+  `NAME() got named argument for positional-only parameter 'x'`, `NAME() got
+  multiple values for argument 'x'` / `for keyword argument 'x'`, `NAME() got
+  unexpected positional argument`, `NAME() accepts no more than ...`, `NAME()
+  missing N required positional|named argument(s): ...`. `NAME` is the method
+  name. Positional-only builtins bound by generated code
+  (`Arguments::optional`/`no_named_args`), `set()` and `dict()` are rebound
+  against their spec on the error path (`ParametersSpec::bazel_rebind_error`).
+  A parameter of the wrong type gives `in call to NAME(), parameter 'P' got value
+  of type 'T', want 'W'` (`BuiltinFunction.java:404-410`); like Bazel's
+  `checkParamValue`, a binding error is replayed with each argument's class
+  checked as it binds, so a wrong type wins over the positional count
+  (`len(1, 2)`, `depset(1, 2, 3)`; native parameter types are kept on
+  `NativeFunc`/`NativeMeth`, with Bazel's declarations for the unchecked `len`,
+  `enumerate` and `depset` parameters); `W` derives from the
+  starlark-rust type (`str` -> `string`, `None` -> `NoneType`, lists ->
+  `sequence`, `string` first, `NoneType` last, `a, b, or c` form,
+  `ParamDescriptor.java:122-145`); a container of the right type with wrong
+  elements keeps the detailed text. `list`, `tuple`, `set`, `sorted`,
+  `reversed`, `any` and `all` check their iterable like Bazel, and `len`,
+  `hash`, `getattr`, `hasattr`, `enumerate`, `reversed`, `sorted`, `any` and
+  `all` use Bazel's parameter names. All string, list and dict methods and the
+  `MethodLibrary` builtins were audited against Bazel's `@Param` names and
+  kinds (StringModule.java, StarlarkList.java, Dict.java, MethodLibrary.java):
+  `find`/`rfind`/`index`/`rindex`/`count`/`startswith`/`endswith` take a
+  positional-only `sub` (so `sub = ` and `needle = ` both fail like Bazel),
+  `partition`/`rpartition` `sep`, `join` `elements` (with Bazel's `expected
+  string for sequence element N` text), `range(start_or_stop, stop, step)`,
+  list `append`/`insert` `item`, `extend` `items`, `index`/`remove` `x`, `pop`
+  `i`, `tuple`/`list`/`str`/`repr`/`float`/`type` `x`, `int` a required `x`;
+  `dict.get`/`setdefault` take `default` by name, `sorted`'s `key` and
+  `enumerate`'s `list` may be positional or named, and `fail` (`msg`, `attr`,
+  `sep`, `stack_trace`) and `print` (`sep`) gain Bazel's named-only
+  parameters. Approximation: `fail(stack_trace = False)` is accepted, but the
+  native error still prints its traceback (Bazel omits it,
+  `MethodLibrary.java:891-914`).
+- **Call arguments** (`Eval.java:735, 749, 754`): `argument after * must be an
+  iterable, not T`, `argument after ** must be a dict, not T`, `keywords must be
+  strings, not T`.
+- **Fields** (`Starlark.java:1002-1017`, `EvalUtils.java:526-535`):
+  `'T' value has no field or method 'x'` with `SpellChecker.didYouMean` over the
+  sorted `dir(x)` (a port in `src/errors/did_you_mean.rs`); `struct()` values,
+  custom provider instances and `ToolchainInfo` list `Available attributes:`
+  instead (`StructImpl.java:85-95`); `cannot set .x field of T value`, and
+  `T value does not support field assignment` for structures.
+- **Operators**: `unsupported comparison: T1 <=> T2` (`Starlark.java:517`),
+  `unsupported binary operation: T1 OP T2` (`EvalUtils.java:416-417`, also for
+  `in`), `unsupported unary operation: OPT` (`:472`), `type 'T' has no operator
+  [](K)` (`:498-500`), `'T' object is not callable` (`Starlark.java:904`), `type
+  'T' is not iterable` (`:284`), `invalid slice operand: T` (`:672`), `'in
+  <string>' requires string as left operand, not 'T'` (`EvalUtils.java:382-386`)
+  and `dictionary expression has duplicate key: REPR` (`Eval.java:650`).
+- **Ordering** (`Starlark.java:492-518`): only bool, int/float, string,
+  list, tuple, `Label` and `File` (Artifact by exec path, `Artifact.java:134-145,
+  197-199`; `src/starlark_types.rs`) are ordered; `struct()` values are no
+  longer ordered (`unsupported comparison: struct <=> struct`), like provider
+  instances, depsets, functions, dicts, sets, ranges and `None`.
+- **Names**: `name 'x' is not defined` with the SpellChecker hint
+  (`Module.java:250-256`, `syntax/Resolver.java:941-952`). Approximation: Bazel
+  iterates its candidates in `HashSet` order and keeps the first of equally
+  close names; natively the candidates are sorted, so a tie resolves to the
+  first in sorted order, which may differ from Bazel's choice.
+- **One spelling checker**: the SpellChecker port (`bazel_suggest`,
+  `bazel_did_you_mean`, `bazel_edit_distance`, over UTF-16 code units like Java
+  strings) is public in `starlark::errors`; bazel-rs uses it for native rule
+  attributes, `extension_metadata`, guarded globals, target suggestions and
+  option suggestions instead of its former local ports (one of which counted
+  UTF-8 bytes).
+- **Sequences**: Bazel's `Sequence` includes ranges (`RangeList`); `depset`'s
+  `direct`/`transitive` and `Args.add_all`/`add_joined` `values` accept
+  `range(...)` (`src/starlark_types.rs` `bazel_sequence`). Parameters whose
+  elements must be strings, labels, files or providers still report a
+  container error for a range where Bazel reports the element.
+
+Every changed vendored file carries an inline notice and is declared in the
+provenance (103 declared patches, 30 new); the three regenerated goldens are
+listed in `BAZEL_RS_MODIFICATIONS.md`. The crate's own tests that asserted the
+replaced texts now assert the Bazel texts. Under the frozen isolated test graph
+(`/tmp/opencode/n33-vendor-tests/run.py`, the N22 procedure: copied tree, frozen
+h1 test lock, direct 1.99.0 binaries, offline) the vendored crate passes 968 lib
+tests and 157 doc tests (17 ignored). A paired capture against genuine Bazel
+9.3.0 (`tests/fixtures/interpreter_wording/reference_receipt.json`) matched 113 of
+121 load-time probes in run 1; after the follow-up (ordering, `*args` binding,
+binding-time type checks, parameter names, a fixed probe) run 2 matches all
+168 probes (157 identical messages, 11 identical `print` outputs; run 1 is kept
+in `run_history`, no changes after run 2). `File` ordering is covered by unit
+tests only (the capture evaluates at load time). Static syntax errors from `starlark_syntax` (`repeated named
+argument`) and the traceback layout are unchanged.
+
 ## Original published contents
 
 The source archive is

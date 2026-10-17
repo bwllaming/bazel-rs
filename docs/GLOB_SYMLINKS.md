@@ -209,7 +209,8 @@ Native (`repository_rule::label_dict_json` and
 * Duplicate keys in a dict *literal* are an interpreter error before any
   attribute check: Bazel `dictionary expression has duplicate key: Label("//:a")`
   vs native starlark-rust `Dictionary key repeated for Label("//:a")`
-  (interpreter-generic, documented).
+  (interpreter-generic; since N33 the native text is Bazel's,
+  docs/STARLARK_VENDOR.md).
 * Provenance: bound values serialize as the existing
   `LabelKeyedStringDict` attribute variant, present only when the attribute is
   declared. `attr.int_list` remains unsupported in repository rules and tags.

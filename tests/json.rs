@@ -133,7 +133,12 @@ fn rejected(output: &Output, diagnostic: &str) {
         "expected {diagnostic:?}: {}",
         errors(output)
     );
-    for bad in ["panicked", "GUARD_BYPASSED", "Variable `json` not found"] {
+    for bad in [
+        "panicked",
+        "GUARD_BYPASSED",
+        "Variable `json` not found",
+        "name 'json' is not defined",
+    ] {
         assert!(!errors(output).contains(bad), "{}", errors(output));
     }
 }
@@ -253,7 +258,7 @@ fn root_module_json_is_undefined_even_for_direct_local_query() {
     let output = ws.run(&["query", ":check"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(
-        errors(&output).contains("Variable `json` not found")
+        errors(&output).contains("name 'json' is not defined")
             && errors(&output).contains("MODULE.bazel"),
         "{}",
         errors(&output)
@@ -307,10 +312,8 @@ fn json_and_methods_unhashable_immutable_and_not_native_aliases() {
     for body in ["x={json:1}", "x={json.encode:1}", "x=set([json.decode])"] {
         Workspace::rejects(body, "hash");
     }
-    Workspace::rejects(
-        "json.encode=17",
-        "Operation `.encode=` not supported on type `json`",
-    );
+    // EvalUtils.setField (EvalUtils.java:526-535): json is not a Structure.
+    Workspace::rejects("json.encode=17", "cannot set .encode field of json value");
     Workspace::rejects("x=native.json", "json");
 }
 

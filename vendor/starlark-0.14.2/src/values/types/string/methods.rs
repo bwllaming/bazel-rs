@@ -381,10 +381,12 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     #[starlark(speculative_exec_safe)]
     fn count(
         this: &str,
-        #[starlark(require = pos)] needle: &str,
+        #[starlark(require = pos)] sub: &str,
         #[starlark(require = pos, default = NoneOr::None)] start: NoneOr<i32>,
         #[starlark(require = pos, default = NoneOr::None)] end: NoneOr<i32>,
     ) -> anyhow::Result<i32> {
+        // Modified: Bazel's parameter names (StringModule.java).
+        let needle = sub;
         if let Some(StrIndices { haystack, .. }) =
             convert_str_indices(this, start.into_option(), end.into_option())
         {
@@ -411,10 +413,12 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     #[starlark(speculative_exec_safe)]
     fn endswith(
         this: &str,
-        #[starlark(require = pos)] suffix: StringOrTuple,
+        #[starlark(require = pos)] sub: StringOrTuple,
         #[starlark(require = pos, default = NoneOr::None)] start: NoneOr<i32>,
         #[starlark(require = pos, default = NoneOr::None)] end: NoneOr<i32>,
     ) -> anyhow::Result<bool> {
+        // Modified: Bazel's parameter names (StringModule.java).
+        let suffix = sub;
         let haystack = match convert_str_indices(this, start.into_option(), end.into_option()) {
             Some(StrIndices { haystack, .. }) => haystack,
             None => return Ok(false),
@@ -449,10 +453,12 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     #[starlark(speculative_exec_safe)]
     fn find(
         this: &str,
-        #[starlark(require = pos)] needle: &str,
+        #[starlark(require = pos)] sub: &str,
         #[starlark(require = pos, default = NoneOr::None)] start: NoneOr<i32>,
         #[starlark(require = pos, default = NoneOr::None)] end: NoneOr<i32>,
     ) -> anyhow::Result<i32> {
+        // Modified: Bazel's parameter names (StringModule.java).
+        let needle = sub;
         if let Some(StrIndices { start, haystack }) =
             convert_str_indices(this, start.into_option(), end.into_option())
         {
@@ -551,10 +557,12 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     #[starlark(speculative_exec_safe)]
     fn index(
         this: &str,
-        #[starlark(require = pos)] needle: &str,
+        #[starlark(require = pos)] sub: &str,
         #[starlark(require = pos, default = NoneOr::None)] start: NoneOr<i32>,
         #[starlark(require = pos, default = NoneOr::None)] end: NoneOr<i32>,
     ) -> anyhow::Result<i32> {
+        // Modified: Bazel's parameter names (StringModule.java).
+        let needle = sub;
         if let Some(StrIndices { start, haystack }) =
             convert_str_indices(this, start.into_option(), end.into_option())
         {
@@ -780,26 +788,38 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     #[starlark(speculative_exec_safe)]
     fn join<'v>(
         this: &str,
-        #[starlark(require = pos)] to_join: ValueOfUnchecked<'v, StarlarkIter<String>>,
+        // Modified: Bazel's `elements` parameter, its iterable check and element
+        // text (net/starlark/java/eval/StringModule.java:140-168).
+        #[starlark(require = pos)] elements: ValueOfUnchecked<'v, StarlarkIter<String>>,
         heap: Heap<'v>,
     ) -> starlark::Result<ValueOfUnchecked<'v, String>> {
         #[inline(always)]
-        fn as_str<'v>(x: Value<'v>) -> crate::Result<StringValue<'v>> {
-            StringValue::unpack_named_param(x, "to_join")
+        fn as_str<'v>(x: Value<'v>, index: usize) -> crate::Result<StringValue<'v>> {
+            match StringValue::new(x) {
+                Some(s) => Ok(s),
+                None => Err(crate::Error::new_value(anyhow::anyhow!(
+                    "expected string for sequence element {index}, got '{}' of type {}",
+                    x.to_str(),
+                    x.get_type()
+                ))),
+            }
         }
 
-        let mut it = to_join.get().iterate(heap)?;
+        let elements = elements.get();
+        let mut it = elements.iterate(heap).map_err(|_| {
+            crate::values::error::bazel_param_type_error("join", "elements", elements, "iterable")
+        })?;
         match it.next() {
             None => Ok(ValueOfUnchecked::new(Value::new_empty_string())),
             Some(x1) => {
                 match it.next() {
                     None => {
                         // If there is a singleton we can avoid reallocation
-                        Ok(as_str(x1)?.to_value_of_unchecked().cast())
+                        Ok(as_str(x1, 0)?.to_value_of_unchecked().cast())
                     }
                     Some(x2) => {
-                        let s1 = as_str(x1)?.as_str();
-                        let s2 = as_str(x2)?.as_str();
+                        let s1 = as_str(x1, 0)?.as_str();
+                        let s2 = as_str(x2, 1)?.as_str();
                         // guess towards the upper bound, since we throw away over-allocations quickly
                         // include a buffer (20 bytes)
                         let n = it.size_hint().0 + 2;
@@ -809,9 +829,9 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
                         r.push_str(s1);
                         r.push_str(this);
                         r.push_str(s2);
-                        for x in it {
+                        for (index, x) in it.enumerate() {
                             r.push_str(this);
-                            r.push_str(as_str(x)?.as_str());
+                            r.push_str(as_str(x, index + 2)?.as_str());
                         }
                         Ok(heap.alloc_typed_unchecked(r))
                     }
@@ -872,9 +892,11 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     #[starlark(speculative_exec_safe)]
     fn partition<'v>(
         this: StringValue<'v>,
-        #[starlark(require = pos)] needle: StringValue<'v>,
+        #[starlark(require = pos)] sep: StringValue<'v>,
         heap: Heap<'v>,
     ) -> anyhow::Result<(StringValue<'v>, StringValue<'v>, StringValue<'v>)> {
+        // Modified: Bazel's parameter names (StringModule.java).
+        let needle = sep;
         if needle.is_empty() {
             return Err(anyhow::anyhow!(
                 "Empty separator cannot be used for partitioning"
@@ -970,10 +992,12 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     #[starlark(speculative_exec_safe)]
     fn rfind(
         this: &str,
-        #[starlark(require = pos)] needle: &str,
+        #[starlark(require = pos)] sub: &str,
         #[starlark(require = pos, default = NoneOr::None)] start: NoneOr<i32>,
         #[starlark(require = pos, default = NoneOr::None)] end: NoneOr<i32>,
     ) -> anyhow::Result<i32> {
+        // Modified: Bazel's parameter names (StringModule.java).
+        let needle = sub;
         if let Some(StrIndices { start, haystack }) =
             convert_str_indices(this, start.into_option(), end.into_option())
         {
@@ -1005,10 +1029,12 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     #[starlark(speculative_exec_safe)]
     fn rindex(
         this: &str,
-        #[starlark(require = pos)] needle: &str,
+        #[starlark(require = pos)] sub: &str,
         #[starlark(require = pos, default = NoneOr::None)] start: NoneOr<i32>,
         #[starlark(require = pos, default = NoneOr::None)] end: NoneOr<i32>,
     ) -> anyhow::Result<i32> {
+        // Modified: Bazel's parameter names (StringModule.java).
+        let needle = sub;
         if let Some(StrIndices { start, haystack }) =
             convert_str_indices(this, start.into_option(), end.into_option())
         {
@@ -1040,9 +1066,11 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     #[starlark(speculative_exec_safe)]
     fn rpartition<'v>(
         this: StringValue<'v>,
-        #[starlark(require = pos)] needle: StringValue<'v>,
+        #[starlark(require = pos)] sep: StringValue<'v>,
         heap: Heap<'v>,
     ) -> anyhow::Result<(StringValue<'v>, StringValue<'v>, StringValue<'v>)> {
+        // Modified: Bazel's parameter names (StringModule.java).
+        let needle = sep;
         if needle.is_empty() {
             return Err(anyhow::anyhow!(
                 "Empty separator cannot be used for partitioning"
@@ -1241,10 +1269,12 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     #[starlark(speculative_exec_safe)]
     fn startswith(
         this: &str,
-        #[starlark(require = pos)] prefix: StringOrTuple,
+        #[starlark(require = pos)] sub: StringOrTuple,
         #[starlark(require = pos, default = NoneOr::None)] start: NoneOr<i32>,
         #[starlark(require = pos, default = NoneOr::None)] end: NoneOr<i32>,
     ) -> anyhow::Result<bool> {
+        // Modified: Bazel's parameter names (StringModule.java).
+        let prefix = sub;
         let haystack = match convert_str_indices(this, start.into_option(), end.into_option()) {
             Some(StrIndices { haystack, .. }) => haystack,
             None => return Ok(false),

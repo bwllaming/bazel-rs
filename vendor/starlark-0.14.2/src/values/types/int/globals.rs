@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified for native Bazel 9.3 builtin parameter names and kinds; see vendor
+// provenance.
+
 use either::Either;
 use starlark_derive::starlark_module;
 
@@ -49,11 +52,10 @@ pub(crate) fn register_int(globals: &mut GlobalsBuilder) {
     /// in that base and no base prefix is permitted; the base argument may
     /// specified by name.
     ///
-    /// `int()` with no arguments returns 0.
+    /// Modified: as in Bazel, `x` is required.
     ///
     /// ```
     /// # starlark::assert::all_true(r#"
-    /// int() == 0
     /// int(1) == 1
     /// int(False) == 0
     /// int(True) == 1
@@ -68,6 +70,9 @@ pub(crate) fn register_int(globals: &mut GlobalsBuilder) {
     /// int(2e9) == 2000000000
     /// # "#);
     /// # starlark::assert::fail(r#"
+    /// int()   # error: missing x
+    /// # "#, "int() missing 1 required positional argument: x");
+    /// # starlark::assert::fail(r#"
     /// int("hello")   # error: Cannot parse
     /// # "#, "Cannot parse");
     /// # starlark::assert::fail(r#"
@@ -79,12 +84,12 @@ pub(crate) fn register_int(globals: &mut GlobalsBuilder) {
     /// ```
     #[starlark(as_type = PointerI32, speculative_exec_safe)]
     fn int<'v>(
-        #[starlark(require = pos)] a: Option<
-            ValueOf<'v, Either<Either<NumRef<'v>, bool>, &'v str>>,
-        >,
+        #[starlark(require = pos)] x: ValueOf<'v, Either<Either<NumRef<'v>, bool>, &'v str>>,
         base: Option<i32>,
         heap: Heap<'v>,
     ) -> starlark::Result<ValueOfUnchecked<'v, StarlarkInt>> {
+        // Modified: Bazel's required `x` (MethodLibrary.java `int(x, base)`).
+        let a = Some(x);
         let Some(a) = a else {
             return Ok(ValueOfUnchecked::new(heap.alloc(0)));
         };

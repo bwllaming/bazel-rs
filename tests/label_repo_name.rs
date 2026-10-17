@@ -91,7 +91,12 @@ impl Fixture {
         assert_eq!(output.status.code(), Some(1), "{diagnostic}");
         assert!(output.stdout.is_empty(), "partial success");
         assert!(diagnostic.contains(marker), "{marker:?}: {diagnostic}");
-        for unexpected in ["Variable `Label` not found", "Variable `print` not found"] {
+        for unexpected in [
+            "Variable `Label` not found",
+            "Variable `print` not found",
+            "name 'Label' is not defined",
+            "name 'print' is not defined",
+        ] {
             assert!(!diagnostic.contains(unexpected), "{diagnostic}");
         }
         for (marker, expected) in [("BEFORE_OPERATION", 1), ("AFTER_OPERATION", 0)] {
@@ -348,9 +353,19 @@ print('GENERATED_GETTER_OK')
 #[test]
 fn constructed_label_assignment_and_missing_property_fail_at_access() {
     for (operation, diagnostic) in [
-        ("label.repo_name = 'changed'", "not supported"),
-        ("label.workspace_name = 'changed'", "not supported"),
-        ("value = label.missing_field", "missing_field"),
+        // EvalUtils.setField / Starlark.getattr texts.
+        (
+            "label.repo_name = 'changed'",
+            "cannot set .repo_name field of Label value",
+        ),
+        (
+            "label.workspace_name = 'changed'",
+            "cannot set .workspace_name field of Label value",
+        ),
+        (
+            "value = label.missing_field",
+            "'Label' value has no field or method 'missing_field'",
+        ),
     ] {
         let f = Fixture::new();
         f.probe(&format!("label = Label('//:root.txt')\ncheck(label, '')\nprint('BEFORE_OPERATION')\n{operation}\nprint('AFTER_OPERATION')\n"));

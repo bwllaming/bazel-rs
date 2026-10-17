@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified: test expectations follow Bazel 9.3 interpreter error texts; see vendor
+// provenance.
+
 // Modified for native Bazel 9.3 set assignment compatibility and frozen-mutation messages; see vendor provenance.
 
 use std::cell::Cell;
@@ -613,7 +616,8 @@ assert_eq(orig, (1, 2))
 x = {1: 2}
 x += {3: 4}
 "#,
-        "not supported",
+        // Modified: Bazel's text (EvalUtils.java:416-417).
+        "unsupported binary operation: dict + dict",
     );
     assert::pass(
         r#"
@@ -979,7 +983,8 @@ fn test_module_visibility_preserved_by_evaluator() -> crate::Result<()> {
                     .expect_err("Evaluation should have failed using a private symbol");
 
                 let msg = err.to_string();
-                let expected_msg = "Variable `b` not found";
+                // Modified: Bazel's text (Module.java:250-256).
+                let expected_msg = "name 'b' is not defined";
                 assert!(
                     msg.contains(expected_msg),
                     "Expected `{expected_msg}` to be in error message `{msg}`"
@@ -1040,59 +1045,63 @@ fn test_load_did_you_mean() {
 
 #[test]
 fn test_getattr_did_you_mean_builtin() {
+    // Modified: Bazel's Starlark.getattr text and SpellChecker hint.
     assert::fail(
         "[].appen",
-        "Object of type `list` has no attribute `appen`, did you mean `append`?",
+        "'list' value has no field or method 'appen' (did you mean 'append'?)",
     );
 }
 
 #[test]
 fn test_getattr_did_you_mean_custom() {
+    // Modified: Bazel's struct text lists the fields instead of a hint
+    // (StructImpl.java:85-95); other values get the SpellChecker hint.
     assert::fail(
         "noop(struct(grey=1)).gray",
-        "Object of type `struct` has no attribute `gray`, did you mean `grey`?",
+        "'struct' value has no field or method 'gray'\nAvailable attributes: grey",
     );
     assert::fail(
         "Rec = record(grey=int); Rec(grey=1).gray",
-        "Object of type `record` has no attribute `gray`, did you mean `grey`?",
+        "'record' value has no field or method 'gray' (did you mean 'grey'?)",
     );
 }
 
 #[test]
 fn test_globals_did_you_mean() {
-    assert::fail("true", "Variable `true` not found, did you mean `True`?");
+    // Modified: Bazel's text and SpellChecker hint (case-insensitive).
+    assert::fail("true", "name 'true' is not defined (did you mean 'True'?)");
 }
 
 #[test]
 fn test_module_level_did_you_mean() {
-    assert::fail(
-        "_x = 1; print(x)",
-        "Variable `x` not found, did you mean `_x`?",
-    );
+    // Modified: Bazel's SpellChecker needs a distance below (len + 1) / 2.
+    let error = assert::fail("_x = 1; print(x)", "name 'x' is not defined");
+    assert!(!error.to_string().contains("did you mean"), "{error}");
 }
 
 #[test]
 fn test_module_level_from_def_did_you_mean() {
+    // Modified: Bazel's text and SpellChecker hint.
     assert::fail(
         "def _func(): return func",
-        "Variable `func` not found, did you mean `_func`?",
+        "name 'func' is not defined (did you mean '_func'?)",
     );
 }
 
 #[test]
 fn test_local_from_def_did_you_mean() {
+    // Modified: Bazel's text and SpellChecker hint.
     assert::fail(
         "def f(discreet): return discrete",
-        "Variable `discrete` not found, did you mean `discreet`?",
+        "name 'discrete' is not defined (did you mean 'discreet'?)",
     );
 }
 
 #[test]
 fn test_compr_did_you_mean() {
-    assert::fail(
-        "[val for value in []]",
-        "Variable `val` not found, did you mean `value`?",
-    );
+    // Modified: Bazel's SpellChecker needs a distance below (len + 1) / 2.
+    let error = assert::fail("[val for value in []]", "name 'val' is not defined");
+    assert!(!error.to_string().contains("did you mean"), "{error}");
 }
 
 #[test]
@@ -1247,7 +1256,8 @@ xs == [1, 2, 3, 1, 2, 3]
 xs = [1, 2, 3]
 xs.pop(xs)
 "#,
-        "Type of parameter `index` doesn't match",
+        // Modified: Bazel's BuiltinFunction parameter type text.
+        "in call to pop(), parameter 'i' got value of type 'list', want 'int'",
     );
     a.fail(
         r#"

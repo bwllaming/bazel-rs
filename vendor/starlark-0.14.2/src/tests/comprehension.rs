@@ -15,6 +15,9 @@
  * limitations under the License.
  */
 
+// Modified: test expectations follow Bazel 9.3 interpreter error texts; see vendor
+// provenance.
+
 //! Test dict and list comprehension.
 
 use crate::assert;
@@ -57,7 +60,8 @@ fn test_scopes() {
         "[1//0 for x in [1] for y in z for z in ()]",
         "Local variable `z` referenced before assignment",
     );
-    assert::fail_skip_typecheck("[() for x in w for w in [1]]", "Variable `w` not found");
+    // Modified: Bazel's text (Module.java:250-256).
+    assert::fail_skip_typecheck("[() for x in w for w in [1]]", "name 'w' is not defined");
 }
 
 #[test]

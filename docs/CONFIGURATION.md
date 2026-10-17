@@ -400,7 +400,9 @@ the configuration (`LABEL[CONFIG8]`).
 **Remaining exec divergences (paired capture, tests/fixtures/exec_transition/reference_receipt.json):**
 the CPU token `rust` where Bazel writes `k8` (D1, also in `ctx.bin_dir`,
 `ctx.genfiles_dir` and `ctx.var`, docs/CTX_SURFACE.md); `File.root` is
-absent; the CLI lists source files among a target's outputs
+absent (an interpreter unknown-field error, with Bazel's
+`'T' value has no field or method 'x'` text since N33); the CLI lists source
+files among a target's outputs
 where Bazel's `--show_result` omits them; action reuse after another
 configuration's build: Bazel's output tree is path-keyed, so an action whose
 `bazel-out` output another build overwrote is re-run, while native outputs
@@ -1130,7 +1132,8 @@ rows): 246 EXACT, 139 EXACT_MESSAGE, 54 EXPECTED_NATIVE_UNSUPPORTED, 15
 MISMATCH. The remaining mismatches (docs/PLATFORMS.md Divergences): 3
 source-only CLI listings; `A9/bad` (same final error, Starlark traceback
 framing); 6 B4 flag-gated provider fields (interpreter wording ``Object of type
-`X` has no attribute `f` `` versus `'X' value has no field or method 'f'`); and
+`X` has no attribute `f` `` versus `'X' value has no field or method 'f'`;
+Bazel's text natively since N33, docs/STARLARK_VENDOR.md); and
 5 explicit gaps (platform flags, `platform_common.PlatformInfo()`,
 execution-platform registrations / `--extra_execution_platforms`).
 

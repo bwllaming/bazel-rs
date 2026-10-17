@@ -473,6 +473,16 @@ impl<'v> StarlarkValue<'v> for File {
         Ok(())
     }
 
+    /// Artifact is Comparable by exec path (actions/Artifact.java:119-145,
+    /// 197-199); Starlark orders Comparable values of one type with it
+    /// (net/starlark/java/eval/Starlark.java:492-518).
+    fn compare(&self, other: Value<'v>) -> starlark::Result<std::cmp::Ordering> {
+        match Self::from_value(other) {
+            Some(other) => Ok(self.path.cmp(&other.path)),
+            None => starlark::values::ValueError::unsupported_with(self, "compare", other),
+        }
+    }
+
     fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
         Ok(Self::from_value(other) == Some(self))
     }
@@ -561,6 +571,22 @@ pub(crate) fn file_json_root(file: &File) -> anyhow::Result<&str> {
             Some((root, relative)) if relative == file.short_path => Ok(root),
             _ => bail!("unsupported File JSON profile: inconsistent generated metadata"),
         }
+    }
+}
+
+/// A Bazel `Sequence` value (net/starlark/java/eval/Sequence.java): a list, a
+/// tuple or a range (RangeList), as its elements; `None` for other values.
+pub(crate) fn bazel_sequence<'v>(value: Value<'v>, heap: Heap<'v>) -> Option<Vec<Value<'v>>> {
+    if let Some(list) = ListRef::from_value(value) {
+        Some(list.iter().collect())
+    } else if let Some(tuple) = TupleRef::from_value(value) {
+        Some(tuple.iter().collect())
+    } else if starlark::values::ValueLike::downcast_ref::<starlark::values::range::Range>(value)
+        .is_some()
+    {
+        value.iterate(heap).ok().map(Iterator::collect)
+    } else {
+        None
     }
 }
 
@@ -1634,23 +1660,38 @@ pub fn analysis_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named, default = NoneType)] transitive: Value<'v>,
         heap: Heap<'v>,
     ) -> anyhow::Result<Value<'v>> {
+        // Depset.depset's `Sequence or NoneType` parameter checks
+        // (collect/nestedset/Depset.java:572-627; BuiltinFunction.java:404-410);
+        // a range is a Sequence (RangeList).
+        let mut items = [Vec::new(), Vec::new()];
+        for (slot, (param, value)) in [("direct", direct), ("transitive", transitive)]
+            .into_iter()
+            .enumerate()
+        {
+            if value.is_none() {
+                continue;
+            }
+            items[slot] = bazel_sequence(value, heap).ok_or_else(|| {
+                anyhow!(
+                    "in call to depset(), parameter '{param}' got value of type '{}', want 'sequence or NoneType'",
+                    value.get_type()
+                )
+            })?;
+        }
+        let [direct_items, transitive_items] = items;
         let order = Order::parse(order)?;
         let mut children = Vec::new();
         if !transitive.is_none() {
-            for child in sequence(transitive)? {
+            for child in transitive_items {
                 let child = Depset::from_value(child)
                     .ok_or_else(|| anyhow!("depset transitive entries must be depsets"))?;
                 children.push(Arc::clone(&child.node));
             }
         }
-        let direct = if direct.is_none() {
-            vec![]
-        } else {
-            sequence(direct)?
-                .into_iter()
-                .map(Item::unpack)
-                .collect::<anyhow::Result<Vec<_>>>()?
-        };
+        let direct = direct_items
+            .into_iter()
+            .map(Item::unpack)
+            .collect::<anyhow::Result<Vec<_>>>()?;
         Ok(heap.alloc(Depset::compose(direct, children, order, None)?))
     }
 }
@@ -1716,8 +1757,25 @@ mod tests {
         pass(
             r#"Label("//pkg") == Label("//pkg:pkg") and {Label("//pkg"): 7}[Label("//pkg:pkg")] == 7"#,
         );
-        fail("a.missing", "missing");
-        fail("a.path = 'changed'", "not supported");
+        // Artifact orders by exec path (Artifact.java:134-145, 197-199).
+        pass("a < b and not (a < a2) and sorted([b, a]) == [a, b] and max([a, b]) == b");
+        fail("a < 1", "unsupported comparison: File <=> int");
+        // Other values Bazel does not order (Starlark.java:492-518).
+        for (expression, types) in [
+            ("depset() < depset()", "depset <=> depset"),
+            ("None < None", "NoneType <=> NoneType"),
+            ("True < 1", "bool <=> int"),
+            (
+                "len < len",
+                "builtin_function_or_method <=> builtin_function_or_method",
+            ),
+            ("{} < {}", "dict <=> dict"),
+        ] {
+            fail(expression, &format!("unsupported comparison: {types}"));
+        }
+        // Bazel 9.3 Starlark.getattr / EvalUtils.setField texts.
+        fail("a.missing", "'File' value has no field or method 'missing'");
+        fail("a.path = 'changed'", "cannot set .path field of File value");
         fail("Label(':relative')", "absolute");
         fail("Label('@external//p:x')", "absolute");
     }
@@ -1751,10 +1809,13 @@ x = Label({input:?})
         for field in ["repo_name", "workspace_name"] {
             fail(
                 &format!("x = Label('//pkg:rule'); x.{field} = 'changed'"),
-                "not supported",
+                &format!("cannot set .{field} field of Label value"),
             );
         }
-        fail("Label('//pkg:rule').missing_field", "missing_field");
+        fail(
+            "Label('//pkg:rule').missing_field",
+            "'Label' value has no field or method 'missing_field'",
+        );
     }
 
     #[test]
@@ -1980,13 +2041,16 @@ names = [main.repo_name, external.repo_name]
                     &globals,
                 )
                 .unwrap();
-            for expression in [
-                "None",
-                "True",
-                "1",
-                "[]",
-                "{}",
-                "struct(type='Label', workspace_name='dep+', package='pkg', name='item')",
+            for (expression, actual) in [
+                ("None", "NoneType"),
+                ("True", "bool"),
+                ("1", "int"),
+                ("[]", "list"),
+                ("{}", "dict"),
+                (
+                    "struct(type='Label', workspace_name='dep+', package='pkg', name='item')",
+                    "struct",
+                ),
             ] {
                 let value = evaluator
                     .eval_module(
@@ -2000,10 +2064,13 @@ names = [main.repo_name, external.repo_name]
                     .eval_function(constructor, &[value], &[])
                     .unwrap_err()
                     .to_string();
-                assert!(error.contains("Type of parameter"), "{expression}: {error}");
+                // BuiltinFunction.checkParamValue (BuiltinFunction.java:404-410)
+                // with Label's allowedTypes String, Label.
                 assert!(
-                    error.contains("expected `") && error.contains("Label"),
-                    "{error}"
+                    error.contains(&format!(
+                        "in call to Label(), parameter 'input' got value of type '{actual}', want 'string or Label'"
+                    )),
+                    "{expression}: {error}"
                 );
                 assert!(!error.contains("absolute canonical"), "{error}");
             }
@@ -2021,22 +2088,45 @@ names = [main.repo_name, external.repo_name]
                 )
                 .unwrap();
             let string = module.heap().alloc("//pkg:item");
-            for (positional, named) in [
-                (vec![], vec![]),
-                (vec![string, string], vec![]),
-                (vec![], vec![("input", string)]),
-                (vec![], vec![("label_string", string)]),
-                (vec![string], vec![("input", string)]),
-                (vec![string], vec![("label_string", string)]),
+            // Bazel 9.3 BuiltinFunction binding texts (BuiltinFunction.java:320-490):
+            // `input` is positional-only.
+            for (positional, named, expected) in [
+                (
+                    vec![],
+                    vec![],
+                    "Label() missing 1 required positional argument: input",
+                ),
+                (
+                    vec![string, string],
+                    vec![],
+                    "Label() accepts no more than 1 positional argument but got 2",
+                ),
+                (
+                    vec![],
+                    vec![("input", string)],
+                    "Label() got named argument for positional-only parameter 'input'",
+                ),
+                (
+                    vec![],
+                    vec![("label_string", string)],
+                    "Label() got unexpected keyword argument 'label_string'",
+                ),
+                (
+                    vec![string],
+                    vec![("input", string)],
+                    "Label() got named argument for positional-only parameter 'input'",
+                ),
+                (
+                    vec![string],
+                    vec![("label_string", string)],
+                    "Label() got unexpected keyword argument 'label_string'",
+                ),
             ] {
                 let error = evaluator
                     .eval_function(constructor, &positional, &named)
                     .unwrap_err()
                     .to_string();
-                assert!(
-                    error.contains("positional") || error.contains("named"),
-                    "{error}"
-                );
+                assert!(error.contains(expected), "{expected}: {error}");
                 assert!(!error.contains("absolute canonical"), "{error}");
             }
         });
@@ -2234,7 +2324,18 @@ copies = [Label(main), Label(external)]
         pass("depset([1, 2, 1]).to_list() == [1, 2]");
         fail("depset([[]])", "unsupported");
         fail("depset(transitive=[[a]])", "must be depsets");
-        fail("depset(direct=depset([a]))", "list or tuple");
+        // A range is a Sequence (RangeList) for both depset parameters.
+        pass("depset(range(3)).to_list() == [0, 1, 2] and depset(direct=range(0)).to_list() == []");
+        pass("depset(range(2), transitive=[depset([5])]).to_list() == [5, 0, 1]");
+        fail(
+            "depset(transitive=range(1))",
+            "depset transitive entries must be depsets",
+        );
+        // Depset.depset's `Sequence or NoneType` (Depset.java:572-627).
+        fail(
+            "depset(direct=depset([a]))",
+            "in call to depset(), parameter 'direct' got value of type 'depset', want 'sequence or NoneType'",
+        );
         fail("depset(order='invalid')", "unsupported");
         fail("depset().order", "order");
         fail("depset().to_list(1)", "argument");
