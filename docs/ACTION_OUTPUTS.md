@@ -14,12 +14,13 @@ write requests do not collapse merely because their published modes match.
 Source and repository file permissions, staging input copies and manifest-file
 permissions are not changed by this policy.
 
-The `native-action-v5` cache identity invalidates earlier mode-preserving entries.
+The `native-action-v5` cache identity invalidated earlier mode-preserving entries
+(manifests are now `native-action-v6`, docs/ACTIONS_PARAMS.md).
 Cache hits require exact `0555` output permissions, executable masks and content
 digests. Writable, non-executable or privileged-mode tampering causes a rebuild.
-The upstream writable-output option (`0755`) is not implemented. Output
-directories, symlink artifacts and tree artifacts are outside this regular-file
-profile.
+The upstream writable-output option (`0755`) is not implemented. Tree
+artifacts (docs/ACTIONS_PARAMS.md) normalize the root and every entry below
+it to `0555`; symlink outputs carry their target's mode.
 
 The pinned reference contract is `OutputPermissions.READONLY` and
 `ActionOutputMetadataStore.getOutputMetadata`: commit

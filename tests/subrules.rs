@@ -1064,18 +1064,27 @@ check=rule(implementation=_check,subrules=[S])
         let output = ws.analysis_rejection(":check", "scope", "BEFORE_EXPIRED_WRITE");
         scope_error(&output, "write");
     }
-    for operation in [
-        "args.set_param_file_format('shell')",
-        "args.set_param_file_format('multiline')",
-        "args.use_param_file('@%s',use_always=True)",
+    // Parameter-file settings are supported (N23d, docs/ACTIONS_PARAMS.md):
+    // a written Args uses its file format; use_param_file does not change it.
+    for (operation, content) in [
+        ("args.set_param_file_format('shell')", "'two words'\n"),
+        ("args.set_param_file_format('multiline')", "two words\n"),
+        (
+            "args.use_param_file('@%s',use_always=True)",
+            "'two words'\n",
+        ),
     ] {
         let ws = Workspace::new(
             &format!(
-                "def _check(ctx):\n    args=ctx.actions.args()\n    args.add('word')\n    out=ctx.actions.declare_file('check.out')\n    print('BEFORE_UNSUPPORTED_PARAMFILE')\n    {operation}\n    ctx.actions.write(out,args)\n    return [DefaultInfo(files=depset([out]))]\ncheck=rule(implementation=_check)\n"
+                "def _check(ctx):\n    args=ctx.actions.args()\n    args.add('two words')\n    out=ctx.actions.declare_file('check.out')\n    {operation}\n    ctx.actions.write(out,args)\n    return [DefaultInfo(files=depset([out]))]\ncheck=rule(implementation=_check)\n"
             ),
             CHECK,
         );
-        ws.analysis_rejection(":check", "unsupported", "BEFORE_UNSUPPORTED_PARAMFILE");
+        let output = ws.run(&["build", ":check"]);
+        success(&output);
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let path = stdout.lines().next().unwrap().split_once('\t').unwrap().1;
+        assert_eq!(fs::read_to_string(path).unwrap(), content, "{operation}");
     }
 }
 

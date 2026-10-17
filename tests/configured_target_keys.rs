@@ -183,23 +183,26 @@ fn action_keys_and_output_roots_match_the_pre_n18a_binary() {
     let ws = Workspace::new(FIXTURE);
     let targets = ["--host_platform=//p:linux", "//g:final", "//g:c", "//g:u"];
     let cold = ws.build("default-cache", &targets);
+    // Deliberately re-pinned for N23d (docs/ACTIONS_PARAMS.md): the three
+    // custom run_shell actions now run with Bazel's exact Starlark spawn
+    // environment, which is keyed; genrule and write keys are unchanged.
     assert_eq!(
         ws.keys("default-cache"),
         [
             "15141e806b30397e3393947015a1d6e32b303bb067c294c713ae4627cddfcca7",
-            "1fda1aa0324ddf2d085d8986b96f0b3ef159620e942c2a6941e47cdc343b8084",
+            "265a940b253d0c8e09543a3bcac2df2349645e9a1e43d64efdd20edf0205c8b6",
+            "382700d248d34b5ec3f7d8c517e193de7d2d038bb923740b308247b279fb360d",
             "740b95552d53eeed22ce5f061580452d8ed2e6080ffc3030effb94b6e8206b25",
-            "ca668fc4c15a181572fe29ec28ffd844540d4434d85168d0642097c26a01f42a",
+            "cf3b7022b3ca724555b019381a173ddc32a361f6e9e0e282046a927068820cb0",
             "e7f9951295dd31f728ce3f592ad932505647b0faf1ea4cea62b56f520e6c0bec",
-            "f1c31acc1f83836061f8cbea2591c26218e20f44f284aaf9610674b5e695f80f",
         ]
     );
     assert_eq!(
         ws.outputs("default-cache", &cold),
         [
-            "//g:c\tACTIONS/f1c31acc1f83836061f8cbea2591c26218e20f44f284aaf9610674b5e695f80f/outputs/bazel-out/rust-fastbuild/bin/g/c.txt",
+            "//g:c\tACTIONS/382700d248d34b5ec3f7d8c517e193de7d2d038bb923740b308247b279fb360d/outputs/bazel-out/rust-fastbuild/bin/g/c.txt",
             "//g:final\tACTIONS/e7f9951295dd31f728ce3f592ad932505647b0faf1ea4cea62b56f520e6c0bec/outputs/bazel-out/rust-fastbuild/bin/g/final.txt",
-            "//g:u\tACTIONS/ca668fc4c15a181572fe29ec28ffd844540d4434d85168d0642097c26a01f42a/outputs/bazel-out/rust-fastbuild/bin/g/u.txt",
+            "//g:u\tACTIONS/265a940b253d0c8e09543a3bcac2df2349645e9a1e43d64efdd20edf0205c8b6/outputs/bazel-out/rust-fastbuild/bin/g/u.txt",
         ]
     );
     assert!(summary(&cold).contains("6 actions executed, 0 cache hits"));
@@ -233,18 +236,18 @@ fn action_keys_and_output_roots_match_the_pre_n18a_binary() {
     assert_eq!(
         ws.keys("dbg-cache"),
         [
+            "100c8a6e17f6e324414c7002000ec61af5c731a9e94dd3ff49c52062cf83a079",
             "150b8fe9961dcbc8932b4390175c6d828e9fbf348921ec11b13235d6a15f3897",
-            "72396987f01b239fe5a9b98b073c329ca30dbdcf7fa8600b917f26acc9a39af9",
-            "72598e33a3484a6ece9c52dfe645af70c21c4e82a0daa929e35c1e649fe00dcc",
+            "4d0e0511ed24c72a6994f01d7b848c551b678efce544873f94ef77be2ac51909",
             "78451de3c4d27e495f8f3982863911c7455ef9022cce5597b0bd6fc43d7ec83f",
-            "99ae03e9056f07bde68b1ec8b1bc7d3e283ec36b3f87e0f791f8499b90163443",
+            "b92f05c73a90c1b81a3b71857f6cb91ba2677435afc8f6062a7a96ed93646ca7",
             "bb8ade762653bc566c4f0735f620669f4f3f458d1b29acd7b83289f95fd11c2b",
         ]
     );
     assert_eq!(
         ws.outputs("dbg-cache", &dbg),
         [
-            "//g:c\tACTIONS/72598e33a3484a6ece9c52dfe645af70c21c4e82a0daa929e35c1e649fe00dcc/outputs/bazel-out/rust-dbg/bin/g/c.txt",
+            "//g:c\tACTIONS/100c8a6e17f6e324414c7002000ec61af5c731a9e94dd3ff49c52062cf83a079/outputs/bazel-out/rust-dbg/bin/g/c.txt",
             "//g:final\tACTIONS/bb8ade762653bc566c4f0735f620669f4f3f458d1b29acd7b83289f95fd11c2b/outputs/bazel-out/rust-dbg/bin/g/final.txt",
         ]
     );

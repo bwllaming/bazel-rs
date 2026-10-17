@@ -94,8 +94,7 @@ CASEPLAN = [
     common.case('configuration', ('lifted-attrs', 'late-bound-rule', 'read-fragments', 'read-toolchains',
         'undeclared-fragment', 'private-cpp-api', 'override', 'public-attr', 'nonlabel-attr', 'no-default',
         'computed-default', 'bad-cfg', 'two-toolchains', 'mandatory-lifted')),
-    common.case('boundaries', ('explicit-flag', 'ordinary-setting-visibility', 'param-file-format', 'use-param-file',
-        'lifted-label-list')),
+    common.case('boundaries', ('explicit-flag', 'ordinary-setting-visibility', 'lifted-label-list')),
 ]
 DEFECTS = ('child_object', 'child_bound')
 KNOWN_REFERENCE_DEFECTS = [dict(id=p, classification='INTENTIONAL_DIVERGENCE',
@@ -110,7 +109,7 @@ LIMITATIONS = [
     'Still-live ancestor Args factories are allowed; returned Args builders survive until root analysis ends.',
     'actions.write(Args) checks exact SHELL_QUOTED UTF-8/LF bytes, including empty Args versus one empty argument. Final 0555 modes do not mean is_executable was ignored.',
     'Existing native map_each eagerly evaluates at Args mutation; Bazel defers it to write execution. write-mapped compares successful bytes ONLY, not callback timing. The recorded reference mapper_failure --nobuild/build phase difference is not a native parity case.',
-    'set_param_file_format/use_param_file remain explicit native-only unsupported boundaries; no parameter-file filesystem or silent format acceptance.',
+    'set_param_file_format/use_param_file are supported since N23d (docs/ACTIONS_PARAMS.md, paired receipt tests/fixtures/actions_params/reference_receipt.json); they are no longer subrule boundary probes.',
     'Explicit experimental flag is a native-only unsupported boundary, not Bazel allowlist parity.',
     'configuration family (N24) is differential but NEW: it needs a genuine reference recapture; no prior receipt covers it.',
     'Late-bound fields resolve only where every native configuration has Bazel\'s option default (cpp FDO/malloc/libc/proto/zipper, coverage.output_generator, java launcher/proguard/local optimization: None; apple.xcode_config_label: @bazel_tools//tools/cpp:host_xcodes); others stay explicit analysis gaps.',
@@ -482,9 +481,6 @@ def fixture(family, probe):
             prefix = ('def _sub(ctx,_deps):\n    print("I0_CHILD")\n    return None\n'
                 'S=subrule(implementation=_sub,attrs={"_deps":attr.label_list(default=[])})\n')
             v['markers'] = ['I0_RULE']
-        elif probe in ('param-file-format','use-param-file'):
-            operation = 'set_param_file_format("multiline")' if probe == 'param-file-format' else 'use_param_file("@%s",use_always=True)'
-            body = 'ctx.actions.args().'+operation+'\n'+write_result()
         elif probe in ('attrs', 'toolchains', 'fragments'):
             value = {'attrs': '{"_dep":attr.label(default=":data")}', 'toolchains': '["//:toolchain"]', 'fragments': '["cpp"]'}[probe]
             prefix += 'X=subrule(implementation=_sub,'+probe+'='+value+')\n'
@@ -544,8 +540,6 @@ DIAGNOSTICS = {
     'explicit-flag': r'(?:unsupported|unknown|unrecognized)[^\n]*experimental_rule_extension_api',
     'write-list': r"content[^\n]*(?:string|str)[^\n]*Args|content[^\n]*list[^\n]*(?:want|expected)",
     'write-tuple': r"content[^\n]*(?:string|str)[^\n]*Args|content[^\n]*tuple[^\n]*(?:want|expected)",
-    'param-file-format': r'(?:parameter files|param.file|set_param_file_format)[^\n]*(?:unsupported|not supported)',
-    'use-param-file': r'(?:parameter files|param.file|use_param_file)[^\n]*(?:unsupported|not supported)',
 }
 GUARDS = {'parent-label': ('label','rule'), 'parent-declare': ('actions.declare_file','rule'),
     'parent-write': ('actions.write','rule'), 'child-label': ('label','subrule'),

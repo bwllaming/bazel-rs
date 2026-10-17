@@ -190,7 +190,8 @@ every access, so the same comparison is `False` (FileConfiguredTarget.java:85-10
   (StarlarkActionFactory.java:765-806); a provider's files to run are staged as
   inputs. When an executable or tool carries runfiles (a FullFilesToRunProvider
   or a File from `ctx.executable` with one), analysis fails explicitly:
-  attaching executable runfiles to spawns is N23d (Bazel accepts it).
+  attaching executable runfiles to spawns needs runfiles trees (N23f; Bazel
+  accepts it).
 
 ## Native rules
 
@@ -216,7 +217,8 @@ the 72, 58 have the same final error text and differ only in framing (15
 rule-context prefixes, 43 Starlark tracebacks). The other 14: generic
 interpreter no-field wording for runfiles/SymlinkEntry/DefaultInfo values,
 positional/keyword argument wording (`merge(other=)`, `DefaultInfo(x)`,
-`attr.label_list(executable=)`), `ctx.actions.symlink` (N23d), the provider
+`attr.label_list(executable=)`), `ctx.actions.symlink` (N23d at the time;
+implemented since, docs/ACTIONS_PARAMS.md), the provider
 type/repr of `DefaultInfo` (N22), `dir(ctx)` (N23c members), and the explicit
 `args`, `run_lazy`/`run_provider` and source-listing differences described
 below. No mismatch concerns runfiles content, order, identity or the
@@ -224,10 +226,10 @@ DefaultInfo target view.
 
 ## Not covered (explicit or documented)
 
-`ctx.actions.symlink` (N23d, the attribute does not exist), `ctx.workspace_name`
+`ctx.workspace_name`
 (N23c) and the other ctx members (Bazel's `dir(ctx)` has 36 names, native 10),
 runfiles trees, MANIFEST/`_repo_mapping`/`.repo_mapping` files and their actions
-(N23f), runfiles attached to actions (N23d), test-runner implicit dependencies,
+(N23f), runfiles attached to actions (N23f), test-runner implicit dependencies,
 `args` tokenization and `bazel test`/`run` (N23g), the nested-set depth-limit message,
 empty-files suppliers. The native CLI also lists source files among a target's
 outputs, which Bazel's `--show_result` omits (pre-existing).

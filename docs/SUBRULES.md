@@ -187,8 +187,9 @@ with one LF after each argument. Empty Args writes zero bytes, and an empty
 argument writes `''` followed by LF. Quoting preserves embedded newlines and
 UTF-8. Receiver validation precedes serialization and action registration.
 
-This does not enable `use_param_file` or `set_param_file_format`; both remain
-explicitly unsupported. Existing native Args mappers still expand eagerly,
+`use_param_file` and `set_param_file_format` are supported since N23d
+(docs/ACTIONS_PARAMS.md): a written Args uses its parameter-file format.
+Existing native Args mappers of non-directory values still expand eagerly,
 unlike Bazel's deferred write/action expansion. The write-format evidence in
 `artifacts/actions-write-args-contract.json` does not establish mapper-phase parity.
 

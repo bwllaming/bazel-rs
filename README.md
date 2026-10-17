@@ -137,11 +137,12 @@ hermetic execution. The action environment is cleared and explicitly set, but
 undeclared host tools/files, time and network responses are not tracked. Cache
 correctness requires actions to depend only on declared inputs and a stable host
 tool environment. Absolute temporary/working paths must not enter outputs.
-Only regular files are supported; no trees or symlink artifacts. On action failure,
+Regular files and tree artifacts are supported; symlink outputs are published as
+copies and unresolved symlinks are unsupported (docs/ACTIONS_PARAMS.md). On action failure,
 new scheduling stops and in-flight actions are joined. There is no process
 cancellation/timeout or persistent analysis server yet. Globs do not follow
 symlinks; potentially matching symlinks fail explicitly (Bazel can follow them).
-Full symbolic-macro schemas, test/run commands, runfiles trees, tree artifacts,
+Full symbolic-macro schemas, test/run commands, runfiles trees,
 the full package-specification grammar and license metadata remain unsupported.
 External loading supports the
 bounded verified registry/archive, text-patch and pinned Git profiles described

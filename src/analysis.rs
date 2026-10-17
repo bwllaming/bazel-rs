@@ -1183,6 +1183,7 @@ fn analyze_inner(
             // Below the target's own configuration output root (an exec
             // configuration's executable lives in its exec root).
             Ok(crate::runfiles::DefaultExecutable::new(File {
+                is_directory: false,
                 path: output
                     .generated_exec_path(target.output_root)
                     .to_string_lossy()
@@ -1356,6 +1357,25 @@ fn analyze_inner(
     }
     let declared = context.take_declared();
     let actions = std::mem::take(&mut *context.actions.borrow_mut());
+    // StarlarkProviderValidationUtil.validateArtifacts
+    // (analysis/StarlarkProviderValidationUtil.java:25-32): tree artifacts
+    // whose path was also declared as a file, before orphans.
+    let conflicting = declared
+        .iter()
+        .filter(|file| {
+            file.is_directory
+                && declared
+                    .iter()
+                    .any(|other| !other.is_directory && other.path == file.path)
+        })
+        .map(|file| crate::runfiles::root_relative(file).to_owned())
+        .collect::<Vec<_>>();
+    if !conflicting.is_empty() {
+        bail!(
+            "The following directories were also declared as files:\n{}",
+            conflicting.join("\n")
+        );
+    }
     // StarlarkProviderValidationUtil.validateArtifacts
     // (analysis/StarlarkProviderValidationUtil.java:25-46): every orphan by its
     // root-relative path (Bazel iterates a HashMap; here declaration order).
@@ -1846,6 +1866,7 @@ erased = attr.label(providers=[[], [NotPackageSpecificationInfo]])
                 .contains("must produce a single file")
         );
         deps.get_mut("//pkg:dep").unwrap().files.push(File {
+            is_directory: false,
             path: "pkg/dep".into(),
             short_path: "pkg/dep".into(),
             owner: "//pkg:dep".into(),
@@ -2102,11 +2123,11 @@ ctx.actions.write(first, 'hello')
             ),
             (
                 "ctx.actions.run_shell(outputs=[], command='true')",
-                "at least one",
+                "param 'outputs' may not be empty",
             ),
             (
-                "ctx.actions.run_shell(outputs=[out], command='true', use_default_shell_env=True)",
-                "unsupported",
+                "ctx.actions.run_shell(outputs=[out], command='true', exec_group='other')",
+                "not supported by the native profile",
             ),
             (
                 "ctx.actions.run_shell(outputs=[out], command='true', tools=1)",

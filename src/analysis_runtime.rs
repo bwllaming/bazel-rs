@@ -8,9 +8,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::{anyhow, bail, ensure};
 
-use crate::action::{Action, WriteAction};
+use crate::action::{Action, ActionExtra, Transform, WriteAction};
+use crate::command_line::CommandLineSpec;
 use crate::label::Label;
 use crate::repository::RepositorySet;
+use crate::scheduler::Deferred;
 use crate::starlark_types::File;
 use crate::starlark_types::{alloc_file, file_list, unpack_file};
 use allocative::Allocative;
@@ -35,6 +37,8 @@ pub struct RegisteredAction {
     pub action: Action,
     pub inputs: Vec<File>,
     pub outputs: Vec<File>,
+    /// Execution-time completion (tree artifact expansion).
+    pub deferred: Option<Deferred>,
 }
 
 // Marker derive only. These fields own Rust data, never hidden heap Values.
@@ -105,9 +109,15 @@ impl Context {
     }
 
     pub(crate) fn declare(&self, name: &str) -> anyhow::Result<File> {
+        self.declare_kind(name, false)
+    }
+
+    /// Declare a regular file or a tree artifact (directory) output.
+    pub(crate) fn declare_kind(&self, name: &str, directory: bool) -> anyhow::Result<File> {
         self.sync_default_executable();
         let output = self.label.with_name(name).map_err(anyhow::Error::msg)?;
         let file = File {
+            is_directory: directory,
             path: output
                 .generated_exec_path(&self.output_root)
                 .to_string_lossy()
@@ -117,6 +127,8 @@ impl Context {
             is_source: false,
         };
         let mut declared = self.declared.borrow_mut();
+        // A path declared both as a file and as a directory is reported when
+        // the implementation returns (StarlarkProviderValidationUtil), like Bazel.
         if !declared.contains(&file) {
             ensure!(
                 !self
@@ -147,6 +159,31 @@ impl Context {
         arguments: Vec<String>,
         environment: BTreeMap<String, String>,
     ) -> anyhow::Result<()> {
+        self.register_action(Registration {
+            outputs,
+            inputs,
+            command,
+            write,
+            program,
+            arguments,
+            environment,
+            extra: ActionExtra::default(),
+            deferred: None,
+        })
+    }
+
+    pub(crate) fn register_action(&self, registration: Registration) -> anyhow::Result<()> {
+        let Registration {
+            outputs,
+            inputs,
+            command,
+            write,
+            program,
+            arguments,
+            environment,
+            mut extra,
+            deferred,
+        } = registration;
         ensure!(
             !outputs.is_empty(),
             "an action must have at least one output"
@@ -185,7 +222,12 @@ impl Context {
                 input.path
             );
         }
-        let action = Action {
+        extra.tree_outputs = outputs
+            .iter()
+            .filter(|file| file.is_directory)
+            .map(|file| file.path.clone().into())
+            .collect();
+        let mut action = Action {
             id: format!("{}#{}", self.action_owner, actions.len()),
             command,
             inputs: Vec::new(),
@@ -198,15 +240,43 @@ impl Context {
             shell_strict: false,
             arguments,
             environment,
+            extra,
         };
+        // Validate with the inputs at their execution paths; the engine maps
+        // them to artifacts (plan_action) and validates again.
+        action.inputs = inputs
+            .iter()
+            .map(|file| (file.path.clone().into(), file.path.clone().into()))
+            .collect();
+        action.extra.tree_inputs = inputs
+            .iter()
+            .filter(|file| file.is_directory)
+            .map(|file| file.path.clone().into())
+            .collect();
         crate::action::validate_structure(&action).map_err(anyhow::Error::msg)?;
+        action.inputs.clear();
+        action.extra.tree_inputs.clear();
         actions.push(RegisteredAction {
             action,
             inputs,
             outputs,
+            deferred,
         });
         Ok(())
     }
+}
+
+/// One action registration (crate::analysis_runtime::Context::register_action).
+pub(crate) struct Registration {
+    pub outputs: Vec<File>,
+    pub inputs: Vec<File>,
+    pub command: String,
+    pub write: Option<WriteAction>,
+    pub program: Option<String>,
+    pub arguments: Vec<String>,
+    pub environment: BTreeMap<String, String>,
+    pub extra: ActionExtra,
+    pub deferred: Option<Deferred>,
 }
 
 pub(crate) fn context<'a>(eval: &'a Evaluator<'_, '_, '_>) -> anyhow::Result<&'a Context> {
@@ -221,6 +291,21 @@ pub(crate) fn is_top_level_mapper(eval: &Evaluator<'_, '_, '_>, value: Value<'_>
             .top_level_functions
             .iter()
             .any(|function| function.value().ptr_eq(value))
+    })
+}
+
+/// The frozen top-level function a map_each value is, usable after analysis
+/// (execution-time expansion of tree artifacts).
+pub(crate) fn owned_top_level_function(
+    eval: &Evaluator<'_, '_, '_>,
+    value: Value<'_>,
+) -> Option<OwnedFrozenValue> {
+    context(eval).ok().and_then(|context| {
+        context
+            .top_level_functions
+            .iter()
+            .find(|function| function.value().ptr_eq(value))
+            .cloned()
     })
 }
 
@@ -278,6 +363,7 @@ starlark::methods_static!(ACTION_METHODS = all_action_methods);
 fn all_action_methods(builder: &mut MethodsBuilder) {
     action_methods(builder);
     direct_action_methods(builder);
+    file_action_methods(builder);
 }
 
 #[starlark_value(type = "actions")]
@@ -287,26 +373,214 @@ impl<'v> StarlarkValue<'v> for Actions {
     }
 }
 
-fn string_list(value: Value<'_>) -> anyhow::Result<Vec<String>> {
-    crate::args::expand_arguments(value)
-}
-
-fn environment(value: Value<'_>) -> anyhow::Result<BTreeMap<String, String>> {
-    let dict =
-        DictRef::from_value(value).ok_or_else(|| anyhow!("env must be a string-to-string dict"))?;
+fn string_dict(value: Value<'_>, what: &str) -> anyhow::Result<BTreeMap<String, String>> {
+    let dict = DictRef::from_value(value)
+        .ok_or_else(|| anyhow!("{what} must be a string-to-string dict"))?;
     dict.iter()
         .map(|(key, value)| {
             Ok((
                 key.unpack_str()
-                    .ok_or_else(|| anyhow!("env keys must be strings"))?
+                    .ok_or_else(|| anyhow!("{what} keys must be strings"))?
                     .to_owned(),
                 value
                     .unpack_str()
-                    .ok_or_else(|| anyhow!("env values must be strings"))?
+                    .ok_or_else(|| anyhow!("{what} values must be strings"))?
                     .to_owned(),
             ))
         })
         .collect()
+}
+
+/// The default shell environment of the strict action environment
+/// (`--incompatible_strict_action_env`, true in Bazel 9.3:
+/// bazel/rules/BazelRuleClassProvider.java:74-87, 139-190, 346-362) without
+/// `--action_env`.
+const DEFAULT_SHELL_PATH: &str = "/bin:/usr/bin:/usr/local/bin";
+
+/// SpawnAction.createActionEnvironment (analysis/actions/SpawnAction.java:584-614):
+/// `env` alone, or the default shell environment overridden by `env`.
+fn spawn_environment(
+    env: Option<Value<'_>>,
+    use_default_shell_env: bool,
+) -> anyhow::Result<BTreeMap<String, String>> {
+    let env = match env {
+        Some(env) if !env.is_none() => string_dict(env, "env")?,
+        _ => BTreeMap::new(),
+    };
+    if !use_default_shell_env {
+        return Ok(env);
+    }
+    let mut result = BTreeMap::from([("PATH".to_owned(), DEFAULT_SHELL_PATH.to_owned())]);
+    result.extend(env);
+    Ok(result)
+}
+
+/// Common Starlark spawn options of run/run_shell
+/// (StarlarkActionFactory.registerStarlarkAction, :724-860).
+struct SpawnOptions<'v> {
+    outputs: Value<'v>,
+    inputs: Option<Value<'v>>,
+    tools: Option<Value<'v>>,
+    arguments: Option<Value<'v>>,
+    env: Option<Value<'v>>,
+    use_default_shell_env: bool,
+    execution_requirements: Option<Value<'v>>,
+    input_manifests: Option<Value<'v>>,
+    exec_group: Option<Value<'v>>,
+    progress_message: Option<String>,
+}
+
+/// Register a Starlark spawn: `executable` is Bazel's executable command-line
+/// part (for the parameter-file threshold), `program`/`command` the native spawn.
+fn register_spawn(
+    context: &Context,
+    options: SpawnOptions<'_>,
+    mut inputs: Vec<File>,
+    executable: Vec<String>,
+    command: String,
+    program: Option<String>,
+    function: &str,
+) -> anyhow::Result<()> {
+    if let Some(manifests) = options.input_manifests
+        && !manifests.is_none()
+        && ListRef::from_value(manifests).is_none_or(|list| !list.is_empty())
+    {
+        bail!(
+            "input_manifests (runfiles manifests of tools) are not supported by the native profile"
+        );
+    }
+    if let Some(group) = options.exec_group
+        && !group.is_none()
+    {
+        bail!(
+            "exec_group={} of {function}() is not supported by the native profile (single execution platform)",
+            group.to_repr()
+        );
+    }
+    ensure!(
+        ListRef::from_value(options.outputs).is_some(),
+        "outputs must be a list of Files"
+    );
+    let outputs = file_list(options.outputs)?;
+    ensure!(!outputs.is_empty(), "param 'outputs' may not be empty");
+    inputs.extend(
+        options
+            .inputs
+            .map(file_list)
+            .transpose()?
+            .unwrap_or_default(),
+    );
+    if let Some(tools) = options.tools {
+        inputs.extend(action_tools(context, tools, function)?);
+    }
+    let parts = match options.arguments {
+        Some(arguments) => crate::args::command_line_parts(arguments)?,
+        None => Vec::new(),
+    };
+    // VectorArg.expandDirectories (StarlarkCustomCommandLine.java:456-485): an
+    // expanded directory that is not an input fails when the action executes,
+    // prefixed by the action's progress message (AbstractAction.java:380-400,
+    // default "Action %{output}" for Starlark spawns).
+    let progress = options
+        .progress_message
+        .as_deref()
+        .unwrap_or("Action %{output}")
+        .replace("%{label}", &context.label.to_string())
+        .replace("%{output}", crate::runfiles::root_relative(&outputs[0]));
+    let spec = CommandLineSpec {
+        executable,
+        parts,
+        primary_output: outputs[0].path.clone(),
+        max_length: crate::command_line::MIN_PARAM_FILE_SIZE,
+    };
+    let extra = ActionExtra {
+        exact_environment: true,
+        execution_info: match options.execution_requirements {
+            Some(value) if !value.is_none() => string_dict(value, "execution_requirements")?,
+            _ => BTreeMap::new(),
+        },
+        ..ActionExtra::default()
+    };
+    let environment = spawn_environment(options.env, options.use_default_shell_env)?;
+    let (arguments, param_files, deferred) = if spec.deferred() {
+        let spec = Arc::new(spec);
+        let deferred = Deferred(Arc::new(
+            move |listings: &crate::scheduler::TreeListings, action: &mut Action| {
+                let lookup = |file: &File| tree_listing(listings, file);
+                let (arguments, param_files) = spec
+                    .expand(Some(&lookup))
+                    .map_err(|e| format!("{progress} failed: {e}"))?;
+                action.arguments = arguments;
+                action.extra.param_files = param_files;
+                Ok(())
+            },
+        ));
+        (Vec::new(), Vec::new(), Some(deferred))
+    } else {
+        let (arguments, files) = spec.expand(None).map_err(anyhow::Error::msg)?;
+        (arguments, files, None)
+    };
+    context.register_action(Registration {
+        outputs,
+        inputs,
+        command,
+        write: None,
+        program,
+        arguments,
+        environment,
+        extra: ActionExtra {
+            param_files,
+            ..extra
+        },
+        deferred,
+    })
+}
+
+fn tree_listing(
+    listings: &crate::scheduler::TreeListings,
+    file: &File,
+) -> Result<Vec<std::path::PathBuf>, String> {
+    listings
+        .get(std::path::Path::new(&file.path))
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "Failed to expand directory {file}. Either add the directory as an input of the action or set 'expand_directories = False' in the 'add_all' or 'add_joined' call to have the path of the directory added to the command line instead of its contents."
+            )
+        })
+}
+
+fn declared_name(context: &Context, filename: &str, sibling: Value<'_>) -> anyhow::Result<String> {
+    if sibling.is_none() {
+        return Ok(filename.to_owned());
+    }
+    let sibling = unpack_file(sibling)?;
+    ensure!(
+        context.known_file(&sibling),
+        "sibling must be a dependency or declared File"
+    );
+    let owner = Label::parse_canonical(&sibling.owner).map_err(anyhow::Error::msg)?;
+    ensure!(
+        owner.package_id() == context.label.package_id(),
+        "sibling must be in the current package"
+    );
+    let exec = if sibling.is_source {
+        std::path::Path::new(&sibling.path)
+    } else {
+        // Relative to the sibling's own configuration root.
+        crate::label::split_generated_root(&sibling.path)
+            .map(|(_, relative)| std::path::Path::new(relative))
+            .ok_or_else(|| anyhow!("invalid generated sibling execution path"))?
+    };
+    let relative = exec
+        .strip_prefix(context.label.package_exec_path())
+        .map_err(|_| anyhow!("sibling is outside the current package"))?;
+    Ok(relative
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""))
+        .join(filename)
+        .to_string_lossy()
+        .into_owned())
 }
 
 #[starlark_module]
@@ -324,71 +598,110 @@ fn action_methods(builder: &mut MethodsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
         let context = action_receiver(this, eval, false)?;
-        let name = if sibling.is_none() {
-            filename.to_owned()
-        } else {
-            let sibling = unpack_file(sibling)?;
-            ensure!(
-                context.known_file(&sibling),
-                "sibling must be a dependency or declared File"
-            );
-            let owner = Label::parse_canonical(&sibling.owner).map_err(anyhow::Error::msg)?;
-            ensure!(
-                owner.package_id() == context.label.package_id(),
-                "sibling must be in the current package"
-            );
-            let exec = if sibling.is_source {
-                std::path::Path::new(&sibling.path)
-            } else {
-                // Relative to the sibling's own configuration root.
-                crate::label::split_generated_root(&sibling.path)
-                    .map(|(_, relative)| std::path::Path::new(relative))
-                    .ok_or_else(|| anyhow!("invalid generated sibling execution path"))?
-            };
-            let relative = exec
-                .strip_prefix(context.label.package_exec_path())
-                .map_err(|_| anyhow!("sibling is outside the current package"))?;
-            relative
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new(""))
-                .join(filename)
-                .to_string_lossy()
-                .into_owned()
-        };
+        let name = declared_name(context, filename, sibling)?;
         Ok(alloc_file(eval.heap(), context.declare(&name)?))
+    }
+    /// StarlarkActionFactory.declareDirectory (:166-192): a tree artifact.
+    fn declare_directory<'v>(
+        this: Value<'v>,
+        filename: &str,
+        #[starlark(default = NoneType)] sibling: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let context = action_receiver(this, eval, false)?;
+        let name = declared_name(context, filename, sibling)?;
+        Ok(alloc_file(eval.heap(), context.declare_kind(&name, true)?))
+    }
+    /// StarlarkActionFactory.declareSymlink (:194-225): unresolved symlink
+    /// artifacts are not modelled (explicit).
+    fn declare_symlink<'v>(
+        this: Value<'v>,
+        filename: &str,
+        #[starlark(default = NoneType)] sibling: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        action_receiver(this, eval, false)?;
+        let _ = sibling;
+        bail!(
+            "actions.declare_symlink('{filename}'): unresolved symlink artifacts are not supported by the native profile (docs/ACTIONS_PARAMS.md)"
+        )
     }
     fn write<'v>(
         this: Value<'v>,
         output: Value<'v>,
         content: Value<'v>,
         #[starlark(default = false)] is_executable: bool,
+        #[starlark(require = named)] mnemonic: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let context = action_receiver(this, eval, false)?;
-        let content = if let Some(text) = content.unpack_str() {
+        let _ = mnemonic;
+        let output = unpack_file(output)?;
+        ensure!(
+            !output.is_directory,
+            "actions.write output {} is a directory; write requires a file output",
+            output.path
+        );
+        if let Some(text) = content.unpack_str() {
             // FileWriteAction writes Bazel's internal bytes (bazel_bytes.rs).
-            crate::bazel_bytes::internal_bytes(text).into_owned()
+            context.register(
+                vec![output],
+                Vec::new(),
+                String::new(),
+                Some(WriteAction {
+                    content: crate::bazel_bytes::internal_bytes(text).into_owned(),
+                    executable: is_executable,
+                }),
+                None,
+                Vec::new(),
+                BTreeMap::new(),
+            )?;
+            return Ok(NoneType);
+        }
+        // ParameterFileWriteAction (StarlarkActionFactory.write, :356-410):
+        // the Args' file type; its directories are inputs and expand when
+        // the action executes.
+        let snapshot = crate::args::snapshot(content)?
+            .ok_or_else(|| anyhow!("write content must be a string or Args"))?;
+        let directories = snapshot.directories();
+        let (content, deferred) = if directories.is_empty() {
+            (
+                crate::args::serialize_write_content_of(&snapshot).map_err(anyhow::Error::msg)?,
+                None,
+            )
         } else {
-            // ParameterFile.java:97 also writes the internal bytes
-            // (StringUnsafe.getInternalStringBytes) of the serialized Args.
-            let serialized = crate::args::serialize_write_content(content)?;
-            match String::from_utf8(serialized) {
-                Ok(text) => crate::bazel_bytes::internal_bytes(&text).into_owned(),
-                Err(error) => error.into_bytes(),
-            }
+            let snapshot = Arc::new(snapshot);
+            let deferred = Deferred(Arc::new(
+                move |listings: &crate::scheduler::TreeListings, action: &mut Action| {
+                    let lookup = |file: &File| tree_listing(listings, file);
+                    let arguments = crate::command_line::expand_groups(
+                        &snapshot.groups,
+                        snapshot.flag_per_line,
+                        Some(&lookup),
+                    )?;
+                    if let Some(write) = action.write.as_mut() {
+                        write.content =
+                            crate::command_line::param_file_bytes(&arguments, snapshot.file_type);
+                    }
+                    Ok(())
+                },
+            ));
+            (Vec::new(), Some(deferred))
         };
-        context.register(
-            vec![unpack_file(output)?],
-            Vec::new(),
-            String::new(),
-            Some(WriteAction {
+        context.register_action(Registration {
+            outputs: vec![output],
+            inputs: directories,
+            command: String::new(),
+            write: Some(WriteAction {
                 content,
                 executable: is_executable,
             }),
-            None,
-            Vec::new(),
-            BTreeMap::new(),
-        )?;
+            program: None,
+            arguments: Vec::new(),
+            environment: BTreeMap::new(),
+            extra: ActionExtra::default(),
+            deferred,
+        })?;
         Ok(NoneType)
     }
     fn run_shell<'v>(
@@ -400,32 +713,48 @@ fn action_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named)] arguments: Option<Value<'v>>,
         #[starlark(require = named)] env: Option<Value<'v>>,
         #[starlark(require = named, default = false)] use_default_shell_env: bool,
+        #[starlark(require = named)] execution_requirements: Option<Value<'v>>,
+        #[starlark(require = named)] input_manifests: Option<Value<'v>>,
+        #[starlark(require = named)] exec_group: Option<Value<'v>>,
+        #[starlark(require = named)] resource_set: Option<Value<'v>>,
+        #[starlark(require = named)] toolchain: Option<Value<'v>>,
         #[starlark(require = named)] mnemonic: Option<&str>,
         #[starlark(require = named)] progress_message: Option<&str>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let context = action_receiver(this, eval, false)?;
-        let _ = (mnemonic, progress_message);
-        ensure!(
-            !use_default_shell_env,
-            "use_default_shell_env=True is unsupported"
-        );
-        ensure!(
-            ListRef::from_value(outputs).is_some(),
-            "outputs must be a list of Files"
-        );
-        let mut inputs = inputs.map(file_list).transpose()?.unwrap_or_default();
-        if let Some(tools) = tools {
-            inputs.extend(action_tools(context, tools, "run_shell")?);
+        // Scheduling hints with no effect on a local spawn's results.
+        let _ = (mnemonic, resource_set, toolchain);
+        // ShellCommand (analysis/actions/ShellCommand.java:37-48): padded with
+        // "" only when `arguments` is nonempty.
+        let pad = arguments.is_some_and(|value| {
+            ListRef::from_value(value).is_some_and(|list| !list.is_empty())
+                || starlark::values::tuple::TupleRef::from_value(value)
+                    .is_some_and(|tuple| tuple.len() != 0)
+        });
+        let mut executable = vec!["/bin/bash".to_owned(), "-c".to_owned(), command.to_owned()];
+        if pad {
+            executable.push(String::new());
         }
-        context.register(
-            file_list(outputs)?,
-            inputs,
+        register_spawn(
+            context,
+            SpawnOptions {
+                outputs,
+                inputs,
+                tools,
+                arguments,
+                env,
+                use_default_shell_env,
+                execution_requirements,
+                input_manifests,
+                exec_group,
+                progress_message: progress_message.map(str::to_owned),
+            },
+            Vec::new(),
+            executable,
             command.to_owned(),
             None,
-            None,
-            arguments.map(string_list).transpose()?.unwrap_or_default(),
-            env.map(environment).transpose()?.unwrap_or_default(),
+            "run_shell",
         )?;
         Ok(NoneType)
     }
@@ -433,8 +762,8 @@ fn action_methods(builder: &mut MethodsBuilder) {
 
 /// The `tools` of run/run_shell (analysis/starlark/StarlarkActionFactory.java:765-806):
 /// Files, FilesToRunProviders and depsets of Files. Tools whose
-/// FilesToRunProvider carries runfiles need the runfiles attached to the spawn,
-/// which is N23d (explicit failure).
+/// FilesToRunProvider carries runfiles need the runfiles tree attached to the
+/// spawn, which needs runfiles trees (N23f): explicit failure.
 fn action_tools(context: &Context, tools: Value<'_>, function: &str) -> anyhow::Result<Vec<File>> {
     const WANT: &str = "expected value of type 'File, FilesToRunProvider or Depset of Files' for a member of parameter 'tools' but";
     let items: Vec<Value<'_>> = if let Some(list) = ListRef::from_value(tools) {
@@ -488,33 +817,27 @@ fn direct_action_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named)] arguments: Option<Value<'v>>,
         #[starlark(require = named)] env: Option<Value<'v>>,
         #[starlark(require = named, default = false)] use_default_shell_env: bool,
+        #[starlark(require = named)] execution_requirements: Option<Value<'v>>,
+        #[starlark(require = named)] input_manifests: Option<Value<'v>>,
+        #[starlark(require = named)] exec_group: Option<Value<'v>>,
+        #[starlark(require = named)] resource_set: Option<Value<'v>>,
+        #[starlark(require = named)] toolchain: Option<Value<'v>>,
         #[starlark(require = named)] mnemonic: Option<&str>,
         #[starlark(require = named)] progress_message: Option<&str>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let context = action_receiver(this, eval, false)?;
-        let _ = (mnemonic, progress_message);
-        ensure!(
-            !use_default_shell_env,
-            "use_default_shell_env=True is unsupported"
-        );
-        ensure!(
-            ListRef::from_value(outputs).is_some(),
-            "outputs must be a list of Files"
-        );
-        let mut inputs = inputs.map(file_list).transpose()?.unwrap_or_default();
-        if let Some(tools) = tools {
-            inputs.extend(action_tools(context, tools, "run")?);
-        }
-        let program = if let Some(program) = executable.unpack_str() {
-            program.to_owned()
+        let _ = (mnemonic, resource_set, toolchain);
+        let mut extra_inputs = Vec::new();
+        let (program, bazel_executable) = if let Some(program) = executable.unpack_str() {
+            (program.to_owned(), program.to_owned())
         } else {
             let file =
                 if let Some(files_to_run) = crate::runfiles::FilesToRun::from_value(executable) {
                     crate::runfiles::ensure_without_runfiles(files_to_run, "executable")?;
                     // StarlarkAction.Builder.setExecutable(FilesToRunProvider)
                     // also adds the provider's files to run as tools.
-                    inputs.extend(files_to_run.files.iter().cloned());
+                    extra_inputs.extend(files_to_run.files.iter().cloned());
                     files_to_run.executable.clone().ok_or_else(|| {
                         anyhow!("actions.run executable FilesToRunProvider has no executable")
                     })?
@@ -524,20 +847,273 @@ fn direct_action_methods(builder: &mut MethodsBuilder) {
                     file
                 };
             let program = format!("./{}", file.path);
-            inputs.push(file);
-            program
+            let path = file.path.clone();
+            extra_inputs.push(file);
+            (program, path)
         };
-        context.register(
-            file_list(outputs)?,
-            inputs,
+        register_spawn(
+            context,
+            SpawnOptions {
+                outputs,
+                inputs,
+                tools,
+                arguments,
+                env,
+                use_default_shell_env,
+                execution_requirements,
+                input_manifests,
+                exec_group,
+                progress_message: progress_message.map(str::to_owned),
+            },
+            extra_inputs,
+            vec![bazel_executable],
             String::new(),
-            None,
             Some(program),
-            arguments.map(string_list).transpose()?.unwrap_or_default(),
-            env.map(environment).transpose()?.unwrap_or_default(),
+            "run",
         )?;
         Ok(NoneType)
     }
+}
+
+#[starlark_module]
+fn file_action_methods(builder: &mut MethodsBuilder) {
+    /// StarlarkActionFactory.symlink (:254-354) with target_file: the output
+    /// observes the target's bytes and permission bits. target_path needs an
+    /// unresolved symlink output (declare_symlink), which is unsupported.
+    fn symlink<'v>(
+        this: Value<'v>,
+        #[starlark(require = named)] output: Value<'v>,
+        #[starlark(require = named, default = NoneType)] target_file: Value<'v>,
+        #[starlark(require = named, default = NoneType)] target_path: Value<'v>,
+        #[starlark(require = named, default = NoneType)] target_type: Value<'v>,
+        #[starlark(require = named, default = false)] is_executable: bool,
+        #[starlark(require = named)] progress_message: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let context = action_receiver(this, eval, false)?;
+        if target_file.is_none() == target_path.is_none() {
+            bail!("Exactly one of \"target_file\" or \"target_path\" is required");
+        }
+        let output = unpack_file(output)?;
+        if target_file.is_none() {
+            // Every declarable native output is a file or directory.
+            bail!(
+                "symlink() with \"target_path\" param requires that \"output\" be declared as a symlink, not a file or directory (did you mean to use declare_symlink() instead of declare_file() or declare_directory()?)"
+            );
+        }
+        if !target_type.is_none() {
+            bail!("\"target_type\" cannot be used with \"target_file\"");
+        }
+        let target = unpack_file(target_file)?;
+        if target.is_directory != output.is_directory {
+            let kind = |directory: bool| if directory { "directory" } else { "file" };
+            bail!(
+                "symlink() with \"target_file\" {0} param requires that \"output\" be declared as a {0} (did you mean to use declare_{0}() instead of declare_{1}()?)",
+                kind(target.is_directory),
+                kind(output.is_directory)
+            );
+        }
+        if is_executable && output.is_directory {
+            bail!("symlink() with \"output\" directory param cannot be executable");
+        }
+        // AbstractAction.getProgressMessage (actions/AbstractAction.java:380-400):
+        // "Creating symlink %{output}" unless given.
+        let progress = match progress_message {
+            Some(value) if !value.is_none() => value
+                .unpack_str()
+                .ok_or_else(|| anyhow!("progress_message must be a string or None"))?
+                .to_owned(),
+            _ => "Creating symlink %{output}".to_owned(),
+        }
+        .replace("%{label}", &context.label.to_string())
+        .replace("%{output}", crate::runfiles::root_relative(&output))
+        .replace("%{input}", crate::runfiles::root_relative(&target));
+        context.register_action(Registration {
+            outputs: vec![output],
+            inputs: vec![target.clone()],
+            command: String::new(),
+            write: None,
+            program: None,
+            arguments: Vec::new(),
+            environment: BTreeMap::new(),
+            extra: ActionExtra {
+                transform: Some(Transform::Symlink {
+                    target: target.path.clone().into(),
+                    require_executable: is_executable,
+                    progress,
+                }),
+                ..ActionExtra::default()
+            },
+            deferred: None,
+        })?;
+        Ok(NoneType)
+    }
+
+    /// StarlarkActionFactory.expandTemplate (:1219-1254).
+    fn expand_template<'v>(
+        this: Value<'v>,
+        #[starlark(require = named)] template: Value<'v>,
+        #[starlark(require = named)] output: Value<'v>,
+        #[starlark(require = named)] substitutions: Option<Value<'v>>,
+        #[starlark(require = named, default = false)] is_executable: bool,
+        #[starlark(require = named)] computed_substitutions: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let context = action_receiver(this, eval, false)?;
+        let template = unpack_file(template)?;
+        let output = unpack_file(output)?;
+        ensure!(
+            !template.is_directory && !output.is_directory,
+            "expand_template template and output must be files, not directories"
+        );
+        let mut entries: Vec<(String, String)> = match substitutions {
+            Some(value) => {
+                let dict = DictRef::from_value(value).ok_or_else(|| {
+                    anyhow!(
+                        "in call to expand_template(), parameter 'substitutions' got value of type '{}', want 'dict'",
+                        value.get_type()
+                    )
+                })?;
+                dict.iter()
+                    .map(|(key, value)| {
+                        let (Some(key), Some(value)) = (key.unpack_str(), value.unpack_str())
+                        else {
+                            bail!(
+                                "got dict<{}, {}> for 'substitutions', want dict<string, string>",
+                                key.get_type(),
+                                value.get_type()
+                            );
+                        };
+                        Ok((key.to_owned(), value.to_owned()))
+                    })
+                    .collect::<anyhow::Result<_>>()?
+            }
+            None => Vec::new(),
+        };
+        if let Some(value) = computed_substitutions {
+            for (key, value) in crate::template_dict::substitutions(value)? {
+                // ImmutableMap.Builder.buildOrThrow duplicate-key failure.
+                if let Some((_, previous)) = entries.iter().find(|(other, _)| *other == key) {
+                    bail!(
+                        "Multiple entries with same key: {key}=Substitution({key} -> {value}) and {key}=Substitution({key} -> {previous})"
+                    );
+                }
+                entries.push((key, value));
+            }
+        }
+        context.register_action(Registration {
+            outputs: vec![output],
+            inputs: vec![template.clone()],
+            command: String::new(),
+            write: None,
+            program: None,
+            arguments: Vec::new(),
+            environment: BTreeMap::new(),
+            extra: ActionExtra {
+                transform: Some(Transform::Template {
+                    template: template.path.into(),
+                    substitutions: entries
+                        .iter()
+                        .map(|(key, value)| {
+                            (
+                                crate::bazel_bytes::internal_bytes(key).into_owned(),
+                                crate::bazel_bytes::internal_bytes(value).into_owned(),
+                            )
+                        })
+                        .collect(),
+                    executable: is_executable,
+                }),
+                ..ActionExtra::default()
+            },
+            deferred: None,
+        })?;
+        Ok(NoneType)
+    }
+
+    fn template_dict<'v>(
+        this: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let context = action_receiver(this, eval, true)?;
+        Ok(crate::template_dict::alloc_template_dict(
+            eval.heap(),
+            context.active.clone(),
+        ))
+    }
+
+    /// StarlarkActionFactory.transformVersionFile (:475-486): builtin-only;
+    /// the declared output is registered, executing it (stamping) is explicit.
+    fn transform_version_file<'v>(
+        this: Value<'v>,
+        #[starlark(require = named)] transform_func: Value<'v>,
+        #[starlark(require = named)] template: Value<'v>,
+        #[starlark(require = named)] output_file_name: &str,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        transform_build_info(this, transform_func, template, output_file_name, true, eval)
+    }
+
+    /// StarlarkActionFactory.transformInfoFile (:488-499).
+    fn transform_info_file<'v>(
+        this: Value<'v>,
+        #[starlark(require = named)] transform_func: Value<'v>,
+        #[starlark(require = named)] template: Value<'v>,
+        #[starlark(require = named)] output_file_name: &str,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        transform_build_info(
+            this,
+            transform_func,
+            template,
+            output_file_name,
+            false,
+            eval,
+        )
+    }
+}
+
+/// StarlarkActionFactory.transformBuildInfoFile (:501-534).
+fn transform_build_info<'v>(
+    this: Value<'v>,
+    transform_func: Value<'v>,
+    template: Value<'v>,
+    output_file_name: &str,
+    volatile: bool,
+    eval: &mut Evaluator<'v, '_, '_>,
+) -> anyhow::Result<Value<'v>> {
+    crate::subrule_fragments::private_api(eval).map_err(|e| anyhow!("{e}"))?;
+    let context = action_receiver(this, eval, false)?;
+    ensure!(
+        transform_func.function_name().is_some(),
+        "transform_func must be a function"
+    );
+    let template = unpack_file(template)?;
+    let output = context.declare(output_file_name)?;
+    let function = if volatile {
+        "transform_version_file"
+    } else {
+        "transform_info_file"
+    };
+    context.register_action(Registration {
+        outputs: vec![output.clone()],
+        inputs: vec![template],
+        command: String::new(),
+        write: None,
+        program: None,
+        arguments: Vec::new(),
+        environment: BTreeMap::new(),
+        extra: ActionExtra {
+            transform: Some(Transform::Unsupported {
+                message: format!(
+                    "actions.{function} output {}: workspace status (build info) transformation is not supported by the native profile (docs/ACTIONS_PARAMS.md)",
+                    output.path
+                ),
+            }),
+            ..ActionExtra::default()
+        },
+        deferred: None,
+    })?;
+    Ok(alloc_file(eval.heap(), output))
 }
 
 #[derive(Debug)]

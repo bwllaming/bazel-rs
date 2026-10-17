@@ -10,6 +10,7 @@ use crate::action::{self, Action, ActionResult};
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
@@ -22,11 +23,31 @@ pub struct Dependency {
     pub destination: PathBuf,
 }
 
+/// Tree listings of an action's generated tree inputs, by input destination:
+/// the tree's regular files relative to its root, in byte order.
+pub type TreeListings = BTreeMap<PathBuf, Vec<PathBuf>>;
+
+/// Execution-time completion of an action whose command line (or written
+/// Args content) expands tree artifact inputs (docs/ACTIONS_PARAMS.md). It
+/// runs once all dependencies are published, before the action key is taken.
+#[derive(Clone)]
+pub struct Deferred(pub Arc<DeferredFn>);
+
+/// The completion callback of [`Deferred`].
+pub type DeferredFn = dyn Fn(&TreeListings, &mut Action) -> Result<(), String> + Send + Sync;
+
+impl std::fmt::Debug for Deferred {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Deferred")
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PlannedAction {
     /// Inputs here are filesystem sources; generated inputs go in dependencies.
     pub action: crate::action::Action,
     pub dependencies: Vec<Dependency>,
+    pub deferred: Option<Deferred>,
 }
 
 struct Graph {
@@ -167,8 +188,12 @@ where
                     break;
                 };
                 let mut node = graph.nodes.remove(&id).expect("ready node exists");
-                for dependency in node.dependencies {
+                let mut listings = TreeListings::new();
+                for dependency in std::mem::take(&mut node.dependencies) {
                     let producer = &results[&dependency.action_id];
+                    if let Some(listing) = producer.trees.get(&dependency.output_index) {
+                        listings.insert(dependency.destination.clone(), listing.clone());
+                    }
                     node.action.inputs.push((
                         producer.outputs[dependency.output_index].clone(),
                         dependency.destination,
@@ -185,6 +210,9 @@ where
                         return;
                     }
                     let result = catch_unwind(AssertUnwindSafe(|| {
+                        if let Some(deferred) = &node.deferred {
+                            (deferred.0)(&listings, &mut node.action)?;
+                        }
                         let result = execute(cache, &node.action)?;
                         if result.outputs.len() != node.action.outputs.len() {
                             return Err(format!(
@@ -312,8 +340,10 @@ mod tests {
                 arguments: Vec::new(),
                 environment: BTreeMap::new(),
                 shell_strict: true,
+                extra: Default::default(),
             },
             dependencies: vec![],
+            deferred: None,
         }
     }
 
@@ -329,6 +359,7 @@ mod tests {
         Ok(ActionResult {
             outputs: action.outputs.clone(),
             cache_hit: false,
+            trees: BTreeMap::new(),
         })
     }
 

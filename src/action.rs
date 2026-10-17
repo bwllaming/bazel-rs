@@ -10,11 +10,15 @@
 //! unkeyed environment variable could silently change a cached result. TMPDIR
 //! defaults to a fresh absolute directory; its spelling (and the working directory's)
 //! is intentionally not stable, so actions must not embed these paths in output.
+//!
+//! Tree artifacts (declared directories, docs/ACTIONS_PARAMS.md) are directory
+//! outputs and inputs: their regular files and subdirectories are keyed,
+//! staged and published; symlinks inside a tree are rejected explicitly.
 
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::os::unix::ffi::OsStrExt;
@@ -24,10 +28,22 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+// The key identity stays `native-action-v5`: actions without N23d features
+// (no tree artifacts, parameter files, exact environment, execution
+// requirements or transforms) keep their keys; those features are framed in
+// an extra block. Manifests changed shape, so their format is v6.
 const FORMAT: &str = "native-action-v5";
+const MANIFEST_FORMAT: &str = "native-action-v6";
 // Bazel 9.3 OutputPermissions.READONLY: all completed regular action outputs,
 // including non-executable writes, normalize after execution, not during it.
 const OUTPUT_MODE: u32 = 0o555;
+// Completed tree artifacts: every entry below the root (files and
+// subdirectories) is chmod'ed by
+// ActionOutputMetadataStore.constructTreeArtifactValueFromFilesystem
+// (skyframe/ActionOutputMetadataStore.java:245-281); genuine Bazel 9.3 also
+// leaves the root read-only (0555, observed by the paired capture,
+// tests/fixtures/actions_params/reference_receipt.json).
+const TREE_ROOT_MODE: u32 = 0o555;
 const SHELL: &str = "/bin/bash";
 const SHELL_FLAGS: [&str; 4] = ["-e", "-o", "pipefail", "-c"];
 const LOG_TAIL_BYTES: usize = 64 * 1024;
@@ -51,6 +67,50 @@ pub struct Action {
     pub environment: BTreeMap<String, String>,
     /// Enable genrule-style errexit and pipefail; ignored for writes/direct runs.
     pub shell_strict: bool,
+    /// Starlark-action features (docs/ACTIONS_PARAMS.md).
+    pub extra: ActionExtra,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ActionExtra {
+    /// Outputs (members of `Action::outputs`) that are tree artifacts.
+    pub tree_outputs: BTreeSet<PathBuf>,
+    /// Input destinations that are tree artifacts (directories); every other
+    /// input must be a regular file.
+    pub tree_inputs: BTreeSet<PathBuf>,
+    /// Parameter files (CommandLines.ParamFileActionInput): written below
+    /// the execution root before the process starts; content-keyed.
+    pub param_files: Vec<(PathBuf, Vec<u8>)>,
+    /// Starlark spawn environment: exactly `environment` plus TMPDIR
+    /// (PosixLocalEnvProvider), without the PATH/LANG/LC_ALL defaults.
+    pub exact_environment: bool,
+    /// Execution requirements: keyed, no local effect.
+    pub execution_info: BTreeMap<String, String>,
+    /// A native, process-free transform of one input into the only output.
+    pub transform: Option<Transform>,
+}
+
+#[derive(Clone, Debug)]
+pub enum Transform {
+    /// SymlinkAction: the output observes the target's bytes and permission
+    /// bits (published as a copy, not a filesystem symlink).
+    Symlink {
+        target: PathBuf,
+        require_executable: bool,
+        /// The expanded progress message that prefixes execution failures
+        /// (`<progress message> failed: ...`); not keyed, like Bazel.
+        progress: String,
+    },
+    /// TemplateExpansionAction: literal, sequential replacement of internal
+    /// bytes (LocalTemplateExpansionStrategy.getExpandedTemplateUnsafe).
+    Template {
+        template: PathBuf,
+        substitutions: Vec<(Vec<u8>, Vec<u8>)>,
+        executable: bool,
+    },
+    /// An action whose execution is an explicit native gap (its outputs are
+    /// declared and registered, e.g. workspace-status transforms).
+    Unsupported { message: String },
 }
 
 #[derive(Clone, Debug)]
@@ -63,12 +123,29 @@ pub struct WriteAction {
 pub struct ActionResult {
     pub outputs: Vec<PathBuf>,
     pub cache_hit: bool,
+    /// Declaration-order output index of each tree output: its regular files,
+    /// relative to the tree root, in byte order (TreeArtifactValue children).
+    pub trees: BTreeMap<usize, Vec<PathBuf>>,
 }
 
+#[derive(Clone, PartialEq, Eq)]
 struct Input {
     bytes: Vec<u8>,
     digest: String,
     executable: u32,
+    mode: u32,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct Tree {
+    files: BTreeMap<PathBuf, Input>,
+    directories: BTreeSet<PathBuf>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum Staged {
+    File(Input),
+    Tree(Tree),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -85,14 +162,22 @@ struct Output {
     // Hex encoding supports even non-UTF-8 Unix filenames.
     name: String,
     digest: String,
-    executable: u32,
+    mode: u32,
+    tree: Option<TreeManifest>,
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct TreeManifest {
+    files: Vec<(String, String)>,
+    directories: Vec<String>,
 }
 
 struct WorkDir(PathBuf);
 
 impl Drop for WorkDir {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        let _ = remove_directory(&self.0);
     }
 }
 
@@ -121,6 +206,10 @@ fn frame(hash: &mut Sha256, bytes: &[u8]) {
     hash.update(bytes);
 }
 
+fn frame_count(hash: &mut Sha256, count: usize) {
+    frame(hash, &(count as u64).to_le_bytes());
+}
+
 fn validate_relative(path: &Path) -> Result<(), String> {
     let bytes = path.as_os_str().as_bytes();
     if bytes.is_empty()
@@ -146,7 +235,7 @@ fn overlaps(a: &Path, b: &Path) -> bool {
 
 // Check all ancestors, not just the leaf: dir/link/file must not escape via
 // dir/link. This intentionally rejects source paths through symlink directories.
-fn regular_file(path: &Path) -> Result<fs::Metadata, String> {
+fn no_linked_ancestor(path: &Path) -> Result<fs::Metadata, String> {
     let mut prefix = PathBuf::new();
     for component in path.components() {
         prefix.push(component.as_os_str());
@@ -156,9 +245,21 @@ fn regular_file(path: &Path) -> Result<fs::Metadata, String> {
             return Err(format!("symlink is not allowed: '{}'", prefix.display()));
         }
     }
-    let metadata = fs::symlink_metadata(path).map_err(|e| io_error("cannot inspect", path, e))?;
+    fs::symlink_metadata(path).map_err(|e| io_error("cannot inspect", path, e))
+}
+
+fn regular_file(path: &Path) -> Result<fs::Metadata, String> {
+    let metadata = no_linked_ancestor(path)?;
     if !metadata.is_file() {
         return Err(format!("expected regular file: '{}'", path.display()));
+    }
+    Ok(metadata)
+}
+
+fn real_directory(path: &Path) -> Result<fs::Metadata, String> {
+    let metadata = no_linked_ancestor(path)?;
+    if !metadata.is_dir() {
+        return Err(format!("expected directory: '{}'", path.display()));
     }
     Ok(metadata)
 }
@@ -170,10 +271,84 @@ fn read_input(path: &Path) -> Result<Input, String> {
         digest: digest(&bytes),
         bytes,
         executable: metadata.permissions().mode() & 0o111,
+        mode: metadata.permissions().mode() & 0o7777,
     })
 }
 
-type PreparedAction = (BTreeMap<PathBuf, Input>, Vec<PathBuf>, String);
+/// Walk a directory without following symlinks. Entries are visited in byte
+/// order; a symlink or special file below the root is an explicit error.
+fn read_tree(root: &Path) -> Result<Tree, String> {
+    real_directory(root)?;
+    let mut tree = Tree {
+        files: BTreeMap::new(),
+        directories: BTreeSet::new(),
+    };
+    let mut pending = vec![PathBuf::new()];
+    while let Some(relative) = pending.pop() {
+        let directory = root.join(&relative);
+        let mut entries = fs::read_dir(&directory)
+            .map_err(|e| io_error("cannot list directory", &directory, e))?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| io_error("cannot list directory", &directory, e))?;
+        entries.sort();
+        for name in entries {
+            let child = relative.join(&name);
+            let path = root.join(&child);
+            let metadata =
+                fs::symlink_metadata(&path).map_err(|e| io_error("cannot inspect", &path, e))?;
+            if metadata.file_type().is_symlink() {
+                return Err(format!(
+                    "tree artifact entry '{}' is a symlink; symlinks inside tree artifacts are not supported by the native profile",
+                    path.display()
+                ));
+            } else if metadata.is_dir() {
+                tree.directories.insert(child.clone());
+                pending.push(child);
+            } else if metadata.is_file() {
+                tree.files.insert(child, read_input(&path)?);
+            } else {
+                return Err(format!(
+                    "tree artifact entry '{}' is not a regular file or directory",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(tree)
+}
+
+fn read_staged(path: &Path, tree: bool) -> Result<Staged, String> {
+    if tree {
+        Ok(Staged::Tree(read_tree(path)?))
+    } else {
+        Ok(Staged::File(read_input(path)?))
+    }
+}
+
+/// Byte-ordered relative paths of a tree's regular files.
+fn tree_listing(tree: &Tree) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = tree.files.keys().cloned().collect();
+    files.sort_by(|a, b| a.as_os_str().as_bytes().cmp(b.as_os_str().as_bytes()));
+    files
+}
+
+type PreparedAction = (BTreeMap<PathBuf, Staged>, Vec<PathBuf>, String);
+
+fn check_one_output(action: &Action, kind: &str) -> Result<(), String> {
+    if !action.command.is_empty()
+        || action.program.is_some()
+        || !action.arguments.is_empty()
+        || !action.environment.is_empty()
+        || !action.extra.param_files.is_empty()
+        || action.outputs.len() != 1
+    {
+        return Err(format!(
+            "{kind} action requires exactly one output, no program, and empty command, arguments, environment, and parameter files"
+        ));
+    }
+    Ok(())
+}
 
 /// Validate commands and mapped input/output namespaces without filesystem I/O.
 ///
@@ -182,16 +357,62 @@ type PreparedAction = (BTreeMap<PathBuf, Input>, Vec<PathBuf>, String);
 /// Direct runs require a nonempty, NUL-free program and an empty shell command.
 /// Empty output lists are permitted for process actions. Duplicate input names
 /// are permitted here; preparation checks that their contents and modes agree.
+/// Transforms (symlink, template) require one output and their source among
+/// the input destinations; parameter files must not overlap other paths.
 pub fn validate_structure(action: &Action) -> Result<(), String> {
     if action.write.is_some()
         && (!action.command.is_empty()
             || action.program.is_some()
             || !action.arguments.is_empty()
             || !action.environment.is_empty()
-            || !action.inputs.is_empty()
+            // Only tree inputs, which written Args expand (ParameterFileWriteAction).
+            || action
+                .inputs
+                .iter()
+                .any(|(_, name)| !action.extra.tree_inputs.contains(name))
+            || !action.extra.param_files.is_empty()
+            || action.extra.transform.is_some()
             || action.outputs.len() != 1)
     {
         return Err("write action requires exactly one output, no program, and empty command, arguments, environment, and inputs".into());
+    }
+    if action.write.is_some() && !action.extra.tree_outputs.is_empty() {
+        return Err("write action output cannot be a tree artifact".into());
+    }
+    match &action.extra.transform {
+        Some(Transform::Symlink { target, .. }) => {
+            check_one_output(action, "symlink")?;
+            if !action.inputs.iter().any(|(_, name)| name == target) {
+                return Err("symlink action target must be an input".into());
+            }
+        }
+        Some(Transform::Template { template, .. }) => {
+            check_one_output(action, "template")?;
+            if !action.inputs.iter().any(|(_, name)| name == template) {
+                return Err("template action template must be an input".into());
+            }
+            if !action.extra.tree_outputs.is_empty() {
+                return Err("template action output cannot be a tree artifact".into());
+            }
+        }
+        Some(Transform::Unsupported { .. }) => check_one_output(action, "unsupported")?,
+        None => {}
+    }
+    for tree in &action.extra.tree_inputs {
+        if !action.inputs.iter().any(|(_, name)| name == tree) {
+            return Err(format!(
+                "tree input '{}' is not an action input",
+                tree.display()
+            ));
+        }
+    }
+    for tree in &action.extra.tree_outputs {
+        if !action.outputs.contains(tree) {
+            return Err(format!(
+                "tree output '{}' is not an action output",
+                tree.display()
+            ));
+        }
     }
     if let Some(program) = &action.program {
         if program.is_empty() || program.as_bytes().contains(&0) {
@@ -209,7 +430,11 @@ pub fn validate_structure(action: &Action) -> Result<(), String> {
             return Err("argument contains a NUL byte".into());
         }
     }
-    for (name, value) in &action.environment {
+    for (name, value) in action
+        .environment
+        .iter()
+        .chain(&action.extra.execution_info)
+    {
         if name.is_empty() || name.as_bytes().contains(&b'=') || name.as_bytes().contains(&0) {
             return Err("environment key must be nonempty and contain neither '=' nor NUL".into());
         }
@@ -247,18 +472,63 @@ pub fn validate_structure(action: &Action) -> Result<(), String> {
         }
         outputs.push(output.clone());
     }
+    let mut params: Vec<&PathBuf> = Vec::new();
+    for (path, _) in &action.extra.param_files {
+        validate_relative(path)?;
+        if input_names
+            .iter()
+            .chain(outputs.iter())
+            .chain(params.iter().copied())
+            .any(|p| overlaps(p, path))
+        {
+            return Err(format!(
+                "parameter file '{}' overlaps another action path",
+                path.display()
+            ));
+        }
+        params.push(path);
+    }
     Ok(())
+}
+
+fn frame_input(hash: &mut Sha256, input: &Input) {
+    frame(hash, input.digest.as_bytes());
+    frame(hash, &input.executable.to_le_bytes());
+}
+
+fn frame_staged(hash: &mut Sha256, staged: &Staged) {
+    match staged {
+        Staged::File(input) => frame_input(hash, input),
+        Staged::Tree(tree) => {
+            frame(hash, b"tree");
+            frame_count(hash, tree.files.len());
+            for (name, input) in &tree.files {
+                frame(hash, name.as_os_str().as_bytes());
+                frame_input(hash, input);
+            }
+            frame_count(hash, tree.directories.len());
+            for name in &tree.directories {
+                frame(hash, name.as_os_str().as_bytes());
+            }
+        }
+    }
 }
 
 fn prepare(action: &Action) -> Result<PreparedAction, String> {
     validate_structure(action)?;
     let mut outputs = action.outputs.clone();
     outputs.sort();
-    let mut inputs: BTreeMap<PathBuf, Input> = BTreeMap::new();
+    let mut inputs: BTreeMap<PathBuf, Staged> = BTreeMap::new();
     for (source, destination) in &action.inputs {
-        let input = read_input(source)?;
+        let input = read_staged(source, action.extra.tree_inputs.contains(destination))?;
         if let Some(previous) = inputs.get(destination) {
-            if previous.digest != input.digest || previous.executable != input.executable {
+            let same = match (previous, &input) {
+                (Staged::File(a), Staged::File(b)) => {
+                    a.digest == b.digest && a.executable == b.executable
+                }
+                (a, b) => a == b,
+            };
+            if !same {
                 return Err(format!(
                     "conflicting duplicate input destination '{}'",
                     destination.display()
@@ -278,17 +548,56 @@ fn prepare(action: &Action) -> Result<PreparedAction, String> {
     }
     frame(&mut hash, b"TMPDIR=fresh-absolute-work-tmp");
     frame(&mut hash, action.id.as_bytes());
-    match (&action.write, &action.program) {
-        (Some(write), _) => {
+    match (&action.write, &action.program, &action.extra.transform) {
+        (Some(write), _, _) => {
             frame(&mut hash, b"write");
             frame(&mut hash, &write.content);
             frame(&mut hash, &[u8::from(write.executable)]);
         }
-        (None, Some(program)) => {
+        (
+            None,
+            _,
+            Some(Transform::Symlink {
+                target,
+                require_executable,
+                ..
+            }),
+        ) => {
+            frame(&mut hash, b"symlink");
+            frame(&mut hash, target.as_os_str().as_bytes());
+            frame(&mut hash, &[u8::from(*require_executable)]);
+            // The published copy carries the target's complete permission bits.
+            if let Some(Staged::File(input)) = inputs.get(target) {
+                frame(&mut hash, &input.mode.to_le_bytes());
+            }
+        }
+        (
+            None,
+            _,
+            Some(Transform::Template {
+                template,
+                substitutions,
+                executable,
+            }),
+        ) => {
+            frame(&mut hash, b"template");
+            frame(&mut hash, template.as_os_str().as_bytes());
+            frame_count(&mut hash, substitutions.len());
+            for (key, value) in substitutions {
+                frame(&mut hash, key);
+                frame(&mut hash, value);
+            }
+            frame(&mut hash, &[u8::from(*executable)]);
+        }
+        (None, _, Some(Transform::Unsupported { message })) => {
+            frame(&mut hash, b"unsupported");
+            frame(&mut hash, message.as_bytes());
+        }
+        (None, Some(program), None) => {
             frame(&mut hash, b"direct");
             frame(&mut hash, program.as_bytes());
         }
-        (None, None) => {
+        (None, None, None) => {
             frame(&mut hash, b"shell");
             frame(&mut hash, SHELL.as_bytes());
             frame(&mut hash, &[u8::from(action.shell_strict)]);
@@ -316,12 +625,42 @@ fn prepare(action: &Action) -> Result<PreparedAction, String> {
     frame(&mut hash, &(inputs.len() as u64).to_le_bytes());
     for (name, input) in &inputs {
         frame(&mut hash, name.as_os_str().as_bytes());
-        frame(&mut hash, input.digest.as_bytes());
-        frame(&mut hash, &input.executable.to_le_bytes());
+        frame_staged(&mut hash, input);
     }
     frame(&mut hash, &(outputs.len() as u64).to_le_bytes());
     for name in &outputs {
         frame(&mut hash, name.as_os_str().as_bytes());
+    }
+    let extra = &action.extra;
+    if !extra.tree_outputs.is_empty()
+        || !extra.tree_inputs.is_empty()
+        || !extra.param_files.is_empty()
+        || extra.exact_environment
+        || !extra.execution_info.is_empty()
+        || extra.transform.is_some()
+    {
+        frame(&mut hash, b"n23d-extra");
+        frame_count(&mut hash, extra.tree_outputs.len());
+        for name in &extra.tree_outputs {
+            frame(&mut hash, name.as_os_str().as_bytes());
+        }
+        frame_count(&mut hash, extra.tree_inputs.len());
+        for name in &extra.tree_inputs {
+            frame(&mut hash, name.as_os_str().as_bytes());
+        }
+        frame(&mut hash, &[u8::from(extra.exact_environment)]);
+        frame_count(&mut hash, extra.execution_info.len());
+        for (name, value) in &extra.execution_info {
+            frame(&mut hash, name.as_bytes());
+            frame(&mut hash, value.as_bytes());
+        }
+        let mut params: Vec<&(PathBuf, Vec<u8>)> = extra.param_files.iter().collect();
+        params.sort_by(|a, b| a.0.cmp(&b.0));
+        frame_count(&mut hash, params.len());
+        for (path, content) in params {
+            frame(&mut hash, path.as_os_str().as_bytes());
+            frame(&mut hash, content);
+        }
     }
     Ok((inputs, outputs, hex(&hash.finalize())))
 }
@@ -336,44 +675,144 @@ fn ensure_directory(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        .map_err(|e| io_error("cannot set permissions", path, e))
+}
+
 fn write_file(path: &Path, bytes: &[u8], executable: u32) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         ensure_directory(parent)?;
     }
     fs::write(path, bytes).map_err(|e| io_error("cannot write", path, e))?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o644 | executable))
-        .map_err(|e| io_error("cannot set permissions", path, e))
+    set_mode(path, 0o644 | executable)
 }
 
-fn cache_valid(directory: &Path, key: &str, outputs: &[PathBuf]) -> bool {
+/// Remove a directory tree, first making read-only (0555) tree directories
+/// writable again. Symlinks are never followed.
+fn remove_directory(path: &Path) -> io::Result<()> {
+    let mut pending = vec![path.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let metadata = fs::symlink_metadata(&directory)?;
+        if !metadata.is_dir() {
+            continue;
+        }
+        if metadata.permissions().mode() & 0o700 != 0o700 {
+            fs::set_permissions(
+                &directory,
+                fs::Permissions::from_mode(metadata.permissions().mode() | 0o700),
+            )?;
+        }
+        for entry in fs::read_dir(&directory)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                pending.push(entry.path());
+            }
+        }
+    }
+    fs::remove_dir_all(path)
+}
+
+fn stage_tree(root: &Path, tree: &Tree) -> Result<(), String> {
+    ensure_directory(root)?;
+    for directory in &tree.directories {
+        ensure_directory(&root.join(directory))?;
+    }
+    for (name, input) in &tree.files {
+        write_file(&root.join(name), &input.bytes, input.executable)?;
+    }
+    Ok(())
+}
+
+/// Publish a tree with Bazel's completed-tree permissions: every file and
+/// subdirectory 0555, the root TREE_ROOT_MODE. Directories are made read-only
+/// deepest first, after their contents are written.
+fn publish_tree(root: &Path, tree: &Tree) -> Result<(), String> {
+    stage_tree(root, tree)?;
+    for name in tree.files.keys() {
+        set_mode(&root.join(name), OUTPUT_MODE)?;
+    }
+    let mut directories: Vec<&PathBuf> = tree.directories.iter().collect();
+    directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    for directory in directories {
+        set_mode(&root.join(directory), OUTPUT_MODE)?;
+    }
+    set_mode(root, TREE_ROOT_MODE)
+}
+
+fn tree_manifest(tree: &Tree) -> TreeManifest {
+    TreeManifest {
+        files: tree
+            .files
+            .iter()
+            .map(|(name, input)| (hex(name.as_os_str().as_bytes()), input.digest.clone()))
+            .collect(),
+        directories: tree
+            .directories
+            .iter()
+            .map(|name| hex(name.as_os_str().as_bytes()))
+            .collect(),
+    }
+}
+
+fn cache_valid(
+    directory: &Path,
+    key: &str,
+    outputs: &[PathBuf],
+    trees: &BTreeSet<PathBuf>,
+) -> Option<BTreeMap<PathBuf, Vec<PathBuf>>> {
     let manifest_path = directory.join("manifest.json");
-    let check = || -> Result<bool, String> {
+    let check = || -> Result<Option<BTreeMap<PathBuf, Vec<PathBuf>>>, String> {
         regular_file(&manifest_path)?;
         let bytes = fs::read(&manifest_path)
             .map_err(|e| io_error("cannot read manifest", &manifest_path, e))?;
         let manifest: Manifest = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-        if manifest.format != FORMAT
+        if manifest.format != MANIFEST_FORMAT
             || manifest.key != key
             || manifest.outputs.len() != outputs.len()
         {
-            return Ok(false);
+            return Ok(None);
         }
+        let mut listings = BTreeMap::new();
         for (entry, name) in manifest.outputs.iter().zip(outputs) {
-            if entry.name != hex(name.as_os_str().as_bytes()) || entry.executable != 0o111 {
-                return Ok(false);
+            if entry.name != hex(name.as_os_str().as_bytes()) {
+                return Ok(None);
             }
             let path = directory.join("outputs").join(name);
-            if regular_file(&path)?.permissions().mode() & 0o7777 != OUTPUT_MODE {
-                return Ok(false);
-            }
-            let actual = read_input(&path)?;
-            if actual.digest != entry.digest || actual.executable != entry.executable {
-                return Ok(false);
+            match (&entry.tree, trees.contains(name)) {
+                (Some(expected), true) => {
+                    if real_directory(&path)?.permissions().mode() & 0o7777 != TREE_ROOT_MODE {
+                        return Ok(None);
+                    }
+                    let tree = read_tree(&path)?;
+                    if tree_manifest(&tree) != *expected
+                        || tree.files.values().any(|input| input.mode != OUTPUT_MODE)
+                    {
+                        return Ok(None);
+                    }
+                    for directory in &tree.directories {
+                        let mode = fs::symlink_metadata(path.join(directory))
+                            .map_err(|e| e.to_string())?
+                            .permissions()
+                            .mode();
+                        if mode & 0o7777 != OUTPUT_MODE {
+                            return Ok(None);
+                        }
+                    }
+                    listings.insert(name.clone(), tree_listing(&tree));
+                }
+                (None, false) => {
+                    let actual = read_input(&path)?;
+                    if actual.mode != entry.mode || actual.digest != entry.digest {
+                        return Ok(None);
+                    }
+                }
+                _ => return Ok(None),
             }
         }
-        Ok(true)
+        Ok(Some(listings))
     };
-    check().unwrap_or(false)
+    check().unwrap_or(None)
 }
 
 fn fresh_work(parent: &Path, key: &str) -> Result<WorkDir, String> {
@@ -392,7 +831,7 @@ fn remove_stale(path: &Path) -> Result<(), String> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
             let result = if metadata.is_dir() && !metadata.file_type().is_symlink() {
-                fs::remove_dir_all(path)
+                remove_directory(path)
             } else {
                 fs::remove_file(path)
             };
@@ -451,16 +890,105 @@ fn retry_spawn<T>(
     }
 }
 
+/// StringUtilities.replaceAllLiteral (util/StringUtilities.java:70-88) on
+/// internal bytes: non-overlapping, left to right; an empty key is a no-op.
+fn replace_all_literal(input: &[u8], literal: &[u8], replacement: &[u8]) -> Vec<u8> {
+    if literal.is_empty() {
+        return input.to_vec();
+    }
+    let mut result = Vec::with_capacity(input.len());
+    let mut start = 0;
+    while let Some(offset) = input[start..]
+        .windows(literal.len())
+        .position(|window| window == literal)
+    {
+        result.extend_from_slice(&input[start..start + offset]);
+        result.extend_from_slice(replacement);
+        start += offset + literal.len();
+    }
+    result.extend_from_slice(&input[start..]);
+    result
+}
+
+/// Run a native transform; the output is left in the execution root.
+fn run_transform(
+    action: &Action,
+    transform: &Transform,
+    inputs: &BTreeMap<PathBuf, Staged>,
+    execroot: &Path,
+) -> Result<(), String> {
+    let output = execroot.join(&action.outputs[0]);
+    match transform {
+        Transform::Unsupported { message } => Err(message.clone()),
+        Transform::Template {
+            template,
+            substitutions,
+            executable,
+        } => {
+            let Some(Staged::File(input)) = inputs.get(template) else {
+                return Err(format!(
+                    "failed to load template file '{}': not a regular file",
+                    template.display()
+                ));
+            };
+            let mut text = input.bytes.clone();
+            for (key, value) in substitutions {
+                text = replace_all_literal(&text, key, value);
+            }
+            write_file(&output, &text, if *executable { 0o111 } else { 0 })
+        }
+        Transform::Symlink {
+            target,
+            require_executable,
+            progress,
+        } => {
+            let tree_output = action.extra.tree_outputs.contains(&action.outputs[0]);
+            match inputs.get(target) {
+                Some(Staged::File(input)) if !tree_output => {
+                    // SymlinkAction.maybeVerifyTargetIsExecutable
+                    // (analysis/actions/SymlinkAction.java:296-330): S_IXUSR.
+                    if *require_executable && input.mode & 0o100 == 0 {
+                        return Err(format!(
+                            "{progress} failed: failed to create symbolic link '{}': file '{}' is not executable",
+                            action.outputs[0].display(),
+                            target.display()
+                        ));
+                    }
+                    write_file(&output, &input.bytes, input.executable)
+                }
+                Some(Staged::Tree(tree)) if tree_output => {
+                    if output.exists() {
+                        remove_directory(&output)
+                            .map_err(|e| io_error("cannot replace", &output, e))?;
+                    }
+                    stage_tree(&output, tree)
+                }
+                _ => Err(format!(
+                    "symlink target '{}' and output '{}' must both be files or both be directories",
+                    target.display(),
+                    action.outputs[0].display()
+                )),
+            }
+        }
+    }
+}
+
+enum Collected {
+    File(Input),
+    Tree(Tree),
+}
+
 /// Execute an action or return its verified cached outputs in declaration order.
 ///
 /// Executable bits are preserved and keyed. Other permission bits, timestamps,
 /// and source path spellings are not inputs. Only declared regular output files
-/// are published; undeclared files are discarded. The cache uses per-key
+/// and tree outputs are published; undeclared files are discarded. The cache uses per-key
 /// cross-process locks, so unrelated actions may execute concurrently.
 /// Shell commands are trusted and unsandboxed, run with Bash; `shell_strict` adds
 /// -e -o pipefail for genrules, while custom run_shell actions use only -c.
 /// All shell actions get an empty `$0`, then literal `$1`, `$2`, ... . Explicit environment
 /// entries override PATH/LANG/LC_ALL/TMPDIR defaults; no caller variables leak in.
+/// Starlark actions (`exact_environment`) get exactly their environment plus TMPDIR.
 /// Direct programs receive arguments verbatim, without a shell or strictness flags.
 /// Relative programs containing a slash resolve in the action working directory;
 /// bare names search PATH, and absolute paths are accepted. Host executables are
@@ -504,18 +1032,22 @@ pub fn execute(cache_root: &Path, action: &Action) -> Result<ActionResult, Strin
     FileExt::lock_exclusive(&lock).map_err(|e| io_error("cannot lock", &lock_path, e))?;
     // File drop releases the advisory lock on every success/error path.
     let cached = actions.join(&key);
-    let result_paths = || {
-        action
+    let result = |listings: BTreeMap<PathBuf, Vec<PathBuf>>, cache_hit: bool| ActionResult {
+        outputs: action
             .outputs
             .iter()
             .map(|p| cached.join("outputs").join(p))
-            .collect()
+            .collect(),
+        cache_hit,
+        trees: action
+            .outputs
+            .iter()
+            .enumerate()
+            .filter_map(|(index, name)| Some((index, listings.get(name)?.clone())))
+            .collect(),
     };
-    if cache_valid(&cached, &key, &outputs) {
-        return Ok(ActionResult {
-            outputs: result_paths(),
-            cache_hit: true,
-        });
+    if let Some(listings) = cache_valid(&cached, &key, &outputs, &action.extra.tree_outputs) {
+        return Ok(result(listings, true));
     }
     remove_stale(&cached)?;
     let work = fresh_work(&work_parent, &key)?;
@@ -524,11 +1056,23 @@ pub fn execute(cache_root: &Path, action: &Action) -> Result<ActionResult, Strin
     ensure_directory(&execroot)?;
     ensure_directory(&tmp)?;
     for (name, input) in &inputs {
-        write_file(&execroot.join(name), &input.bytes, input.executable)?;
+        match input {
+            Staged::File(input) => {
+                write_file(&execroot.join(name), &input.bytes, input.executable)?
+            }
+            Staged::Tree(tree) => stage_tree(&execroot.join(name), tree)?,
+        }
+    }
+    for (name, content) in &action.extra.param_files {
+        write_file(&execroot.join(name), content, 0)?;
     }
     for name in &outputs {
         if let Some(parent) = execroot.join(name).parent() {
             ensure_directory(parent)?;
+        }
+        // Bazel creates tree artifact directories before execution.
+        if action.extra.tree_outputs.contains(name) {
+            ensure_directory(&execroot.join(name))?;
         }
     }
     if let Some(write) = &action.write {
@@ -537,6 +1081,8 @@ pub fn execute(cache_root: &Path, action: &Action) -> Result<ActionResult, Strin
             &write.content,
             if write.executable { 0o111 } else { 0 },
         )?;
+    } else if let Some(transform) = &action.extra.transform {
+        run_transform(action, transform, &inputs, &execroot)?;
     } else {
         let mut stdout = create_log(&work.0.join("stdout.log"))?;
         let mut stderr = create_log(&work.0.join("stderr.log"))?;
@@ -554,10 +1100,11 @@ pub fn execute(cache_root: &Path, action: &Action) -> Result<ActionResult, Strin
             command.arg(&action.command).arg("").args(&action.arguments);
             command
         };
+        command.current_dir(&execroot).env_clear();
+        if !action.extra.exact_environment {
+            command.envs(ENV);
+        }
         command
-            .current_dir(&execroot)
-            .env_clear()
-            .envs(ENV)
             .env("TMPDIR", &tmp)
             .envs(&action.environment)
             .stdin(Stdio::null())
@@ -587,44 +1134,77 @@ pub fn execute(cache_root: &Path, action: &Action) -> Result<ActionResult, Strin
     }
     // Validate every output before creating the completed directory. Snapshot
     // output contents too, so the manifest describes exactly what is published.
+    let symlink_mode = match &action.extra.transform {
+        Some(Transform::Symlink { target, .. }) => match inputs.get(target) {
+            Some(Staged::File(input)) => Some(input.mode),
+            _ => None,
+        },
+        _ => None,
+    };
     let mut collected = Vec::new();
     for name in &outputs {
         let path = execroot.join(name);
-        let snapshot = || -> Result<Input, String> {
+        let snapshot = || -> Result<(Collected, u32), String> {
+            if action.extra.tree_outputs.contains(name) {
+                return Ok((Collected::Tree(read_tree(&path)?), TREE_ROOT_MODE));
+            }
             // Match metadata collection order: a successful action may leave a
             // regular output unreadable. Normalize before reading its bytes,
             // but never chmod a symlink or a path through a linked ancestor.
             regular_file(&path)?;
             fs::set_permissions(&path, fs::Permissions::from_mode(OUTPUT_MODE))
                 .map_err(|e| io_error("cannot normalize action output permissions", &path, e))?;
-            read_input(&path)
+            Ok((
+                Collected::File(read_input(&path)?),
+                symlink_mode.unwrap_or(OUTPUT_MODE),
+            ))
         };
-        let input = snapshot().map_err(|e| {
+        let (input, mode) = snapshot().map_err(|e| {
             format!(
                 "action '{}' has missing or invalid output '{}': {e}",
                 action.id,
                 name.display()
             )
         })?;
-        collected.push((name, input));
+        collected.push((name, input, mode));
     }
     let completed = work.0.join("completed");
     ensure_directory(&completed.join("outputs"))?;
     let mut manifest = Manifest {
-        format: FORMAT.into(),
+        format: MANIFEST_FORMAT.into(),
         key: key.clone(),
         outputs: Vec::new(),
     };
-    for (name, input) in collected {
+    let mut listings = BTreeMap::new();
+    for (name, input, mode) in collected {
         let path = completed.join("outputs").join(name);
-        write_file(&path, &input.bytes, 0o111)?;
-        fs::set_permissions(&path, fs::Permissions::from_mode(OUTPUT_MODE))
-            .map_err(|e| io_error("cannot normalize action output permissions", &path, e))?;
-        manifest.outputs.push(Output {
-            name: hex(name.as_os_str().as_bytes()),
-            digest: input.digest,
-            executable: 0o111,
-        });
+        match input {
+            Collected::File(input) => {
+                write_file(&path, &input.bytes, 0o111)?;
+                fs::set_permissions(&path, fs::Permissions::from_mode(mode)).map_err(|e| {
+                    io_error("cannot normalize action output permissions", &path, e)
+                })?;
+                manifest.outputs.push(Output {
+                    name: hex(name.as_os_str().as_bytes()),
+                    digest: input.digest,
+                    mode,
+                    tree: None,
+                });
+            }
+            Collected::Tree(tree) => {
+                if let Some(parent) = path.parent() {
+                    ensure_directory(parent)?;
+                }
+                publish_tree(&path, &tree)?;
+                listings.insert(name.clone(), tree_listing(&tree));
+                manifest.outputs.push(Output {
+                    name: hex(name.as_os_str().as_bytes()),
+                    digest: String::new(),
+                    mode,
+                    tree: Some(tree_manifest(&tree)),
+                });
+            }
+        }
     }
     let manifest_bytes =
         serde_json::to_vec(&manifest).map_err(|e| format!("cannot encode manifest: {e}"))?;
@@ -632,10 +1212,7 @@ pub fn execute(cache_root: &Path, action: &Action) -> Result<ActionResult, Strin
     // Same-filesystem rename publishes all declared files and the manifest at
     // once. Crash durability is not promised; damaged entries rebuild on use.
     fs::rename(&completed, &cached).map_err(|e| io_error("cannot publish action", &cached, e))?;
-    Ok(ActionResult {
-        outputs: result_paths(),
-        cache_hit: false,
-    })
+    Ok(result(listings, false))
 }
 
 #[cfg(test)]
@@ -681,6 +1258,7 @@ mod tests {
                 arguments: Vec::new(),
                 environment: BTreeMap::new(),
                 shell_strict: true,
+                extra: ActionExtra::default(),
             }
         }
 
@@ -707,6 +1285,7 @@ mod tests {
                 arguments: Vec::new(),
                 environment: BTreeMap::new(),
                 shell_strict: true,
+                extra: ActionExtra::default(),
             }
         }
 
@@ -724,13 +1303,15 @@ mod tests {
                 arguments: Vec::new(),
                 environment: BTreeMap::new(),
                 shell_strict: true,
+                extra: ActionExtra::default(),
             }
         }
     }
 
     impl Drop for Fixture {
         fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
+            // Published tree artifacts are read-only (0555) directories.
+            let _ = remove_directory(&self.0);
         }
     }
 
@@ -1623,5 +2204,206 @@ mod tests {
         assert_eq!(results.iter().filter(|r| !r.cache_hit).count(), 1);
         assert_eq!(fs::read_to_string(count).unwrap(), "run\n");
         assert!(results.iter().all(|r| r.outputs == results[0].outputs));
+    }
+
+    fn mode(path: &Path) -> u32 {
+        fs::symlink_metadata(path).unwrap().permissions().mode() & 0o7777
+    }
+
+    #[test]
+    fn tree_outputs_are_published_keyed_and_staged_as_tree_inputs() {
+        let fixture = Fixture::new();
+        let mut producer = fixture.action();
+        producer.inputs.clear();
+        producer.outputs = vec!["out/tree".into()];
+        producer.extra.tree_outputs = BTreeSet::from([PathBuf::from("out/tree")]);
+        producer.command =
+            "test -d out/tree && mkdir -p out/tree/sub/empty && printf a > out/tree/a && printf b > out/tree/sub/b && chmod 600 out/tree/a".into();
+        let first = execute(&fixture.cache(), &producer).unwrap();
+        let tree = &first.outputs[0];
+        assert_eq!(mode(tree), TREE_ROOT_MODE);
+        for (name, expected) in [
+            ("a", OUTPUT_MODE),
+            ("sub", OUTPUT_MODE),
+            ("sub/b", OUTPUT_MODE),
+            ("sub/empty", OUTPUT_MODE),
+        ] {
+            assert_eq!(mode(&tree.join(name)), expected, "{name}");
+        }
+        assert_eq!(
+            first.trees[&0],
+            [PathBuf::from("a"), PathBuf::from("sub/b")]
+        );
+        let hit = execute(&fixture.cache(), &producer).unwrap();
+        assert!(hit.cache_hit);
+        assert_eq!(hit.trees, first.trees);
+        // Tampering with a published tree entry rebuilds it.
+        fs::set_permissions(tree.join("sub"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(tree.join("sub/b"), fs::Permissions::from_mode(0o644)).unwrap();
+        fs::write(tree.join("sub/b"), "tampered").unwrap();
+        assert!(!execute(&fixture.cache(), &producer).unwrap().cache_hit);
+        assert_eq!(fs::read(tree.join("sub/b")).unwrap(), b"b");
+        // A consumer stages the tree; its key covers the tree contents.
+        let mut consumer = fixture.action();
+        consumer.inputs = vec![(tree.clone(), "in/tree".into())];
+        consumer.extra.tree_inputs = BTreeSet::from([PathBuf::from("in/tree")]);
+        consumer.command =
+            "cat in/tree/a in/tree/sub/b > out/result; test -d in/tree/sub/empty".into();
+        let consumed = execute(&fixture.cache(), &consumer).unwrap();
+        assert_eq!(fs::read(&consumed.outputs[0]).unwrap(), b"ab");
+        producer.command = producer.command.replace("printf b", "printf c");
+        let changed = execute(&fixture.cache(), &producer).unwrap();
+        consumer.inputs = vec![(changed.outputs[0].clone(), "in/tree".into())];
+        let reconsumed = execute(&fixture.cache(), &consumer).unwrap();
+        assert!(!reconsumed.cache_hit);
+        assert_eq!(fs::read(&reconsumed.outputs[0]).unwrap(), b"ac");
+        // Without the tree flag a directory input is still rejected.
+        consumer.extra.tree_inputs.clear();
+        assert!(
+            execute(&fixture.cache(), &consumer)
+                .unwrap_err()
+                .contains("expected regular file")
+        );
+        // Removing a cache entry with read-only directories works.
+        drop(fixture);
+    }
+
+    #[test]
+    fn tree_outputs_reject_symlinks_and_missing_directories() {
+        let fixture = Fixture::new();
+        let mut action = fixture.action();
+        action.inputs.clear();
+        action.outputs = vec!["out/tree".into()];
+        action.extra.tree_outputs = BTreeSet::from([PathBuf::from("out/tree")]);
+        action.command = "printf x > out/tree/real && ln -s real out/tree/link".into();
+        assert!(
+            execute(&fixture.cache(), &action)
+                .unwrap_err()
+                .contains("symlinks inside tree artifacts are not supported by the native profile")
+        );
+        action.command = "rmdir out/tree && printf x > out/tree".into();
+        assert!(
+            execute(&fixture.cache(), &action)
+                .unwrap_err()
+                .contains("expected directory")
+        );
+        fixture.assert_unpublished();
+    }
+
+    #[test]
+    fn param_files_are_written_before_execution_and_keyed_by_content() {
+        let fixture = Fixture::new();
+        let mut action = fixture.action();
+        action.extra.param_files = vec![("out/result-0.params".into(), b"'a b'\n".to_vec())];
+        action.command = "cat out/result-0.params > out/result".into();
+        let first = execute(&fixture.cache(), &action).unwrap();
+        assert_eq!(fs::read(&first.outputs[0]).unwrap(), b"'a b'\n");
+        assert!(execute(&fixture.cache(), &action).unwrap().cache_hit);
+        action.extra.param_files[0].1 = b"changed\n".to_vec();
+        let changed = execute(&fixture.cache(), &action).unwrap();
+        assert!(!changed.cache_hit);
+        assert_eq!(fs::read(&changed.outputs[0]).unwrap(), b"changed\n");
+        action
+            .extra
+            .param_files
+            .push(("src/input".into(), Vec::new()));
+        assert!(
+            validate_structure(&action)
+                .unwrap_err()
+                .contains("overlaps")
+        );
+    }
+
+    #[test]
+    fn exact_environment_and_execution_info_are_keyed() {
+        let fixture = Fixture::new();
+        let mut action = fixture.action();
+        action.extra.exact_environment = true;
+        action.environment.insert("X".into(), "1".into());
+        action.command = "test -z \"${LANG+x}\" && test -z \"${LC_ALL+x}\" && [[ $TMPDIR = /* ]] && printf '%s' \"$X\" > out/result".into();
+        let first = execute(&fixture.cache(), &action).unwrap();
+        assert_eq!(fs::read(&first.outputs[0]).unwrap(), b"1");
+        action
+            .extra
+            .execution_info
+            .insert("no-sandbox".into(), "1".into());
+        assert!(!execute(&fixture.cache(), &action).unwrap().cache_hit);
+        action.extra.exact_environment = false;
+        assert!(execute(&fixture.cache(), &action).is_err());
+    }
+
+    #[test]
+    fn symlink_transform_copies_bytes_and_target_mode_and_checks_executable() {
+        let fixture = Fixture::new();
+        let mut action = fixture.action();
+        action.command.clear();
+        action.extra.transform = Some(Transform::Symlink {
+            target: "src/input".into(),
+            require_executable: false,
+            progress: "Creating symlink out/result".into(),
+        });
+        let first = execute(&fixture.cache(), &action).unwrap();
+        assert_eq!(fs::read(&first.outputs[0]).unwrap(), b"hello\n");
+        assert_eq!(mode(&first.outputs[0]), 0o644);
+        assert!(execute(&fixture.cache(), &action).unwrap().cache_hit);
+        action.extra.transform = Some(Transform::Symlink {
+            target: "src/input".into(),
+            require_executable: true,
+            progress: "Creating symlink out/result".into(),
+        });
+        let error = execute(&fixture.cache(), &action).unwrap_err();
+        assert!(
+            error.contains(
+                "failed to create symbolic link 'out/result': file 'src/input' is not executable"
+            ),
+            "{error}"
+        );
+        fs::set_permissions(&action.inputs[0].0, fs::Permissions::from_mode(0o755)).unwrap();
+        let executable = execute(&fixture.cache(), &action).unwrap();
+        assert_eq!(mode(&executable.outputs[0]), 0o755);
+        action.extra.transform = Some(Transform::Symlink {
+            target: "missing".into(),
+            require_executable: false,
+            progress: "Creating symlink out/result".into(),
+        });
+        assert!(
+            validate_structure(&action)
+                .unwrap_err()
+                .contains("target must be an input")
+        );
+    }
+
+    #[test]
+    fn template_transform_replaces_sequentially_and_literally() {
+        let fixture = Fixture::new();
+        let mut action = fixture.action();
+        fs::write(&action.inputs[0].0, b"A B $x \xff\n").unwrap();
+        action.command.clear();
+        action.extra.transform = Some(Transform::Template {
+            template: "src/input".into(),
+            substitutions: vec![
+                (b"A".to_vec(), b"AB".to_vec()),
+                (b"B".to_vec(), b"C".to_vec()),
+                (Vec::new(), b"never".to_vec()),
+                (b"$x".to_vec(), b"$y".to_vec()),
+            ],
+            executable: true,
+        });
+        let first = execute(&fixture.cache(), &action).unwrap();
+        assert_eq!(fs::read(&first.outputs[0]).unwrap(), b"AC C $y \xff\n");
+        assert_eq!(mode(&first.outputs[0]), OUTPUT_MODE);
+        assert_eq!(replace_all_literal(b"aaa", b"aa", b"b"), b"ba");
+        if let Some(Transform::Template { executable, .. }) = action.extra.transform.as_mut() {
+            *executable = false;
+        }
+        assert!(!execute(&fixture.cache(), &action).unwrap().cache_hit);
+        action.extra.transform = Some(Transform::Unsupported {
+            message: "explicit gap".into(),
+        });
+        assert!(
+            execute(&fixture.cache(), &action)
+                .unwrap_err()
+                .contains("explicit gap")
+        );
     }
 }

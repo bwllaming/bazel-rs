@@ -1,10 +1,17 @@
-//! Analysis-only, eagerly expanded Args builders. Unlike Bazel, transformations
-//! run at mutation time, not execution time; only owned strings are retained.
-//! Builders cannot be frozen, iterated, or converted to lists from Starlark.
-//! Parameter files and two-argument DirectoryExpander callbacks are unsupported.
+//! Analysis-only Args builders. Unlike Bazel, transformations of known values
+//! run at mutation time, not execution time; only owned data is retained.
+//! Values that are tree artifacts (with expand_directories) are kept and
+//! expanded when the consuming action executes, calling a frozen top-level
+//! map_each (crate::command_line). Builders cannot be frozen, iterated, or
+//! converted to lists from Starlark. Two-argument DirectoryExpander callbacks
+//! are unsupported.
 // Match Bazel's keyword-rich Args API, including generated call trampolines.
 #![allow(clippy::too_many_arguments)]
 
+use crate::command_line::{
+    DeferredVector, Group, Item, ParamFileInfo, ParamFileType, Part, VectorShape,
+};
+use crate::starlark_types::File;
 use allocative::Allocative;
 use anyhow::{anyhow, bail, ensure};
 use starlark::environment::{Methods, MethodsBuilder};
@@ -19,20 +26,34 @@ use starlark::values::{
     ValueLike,
 };
 use std::cell::RefCell;
-use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// use_param_file / set_param_file_format state (Args.MutableArgs,
+/// analysis/starlark/Args.java:262-292, 548-595).
+#[derive(Debug, Default)]
+pub(crate) struct ParamState {
+    flag_format: Option<String>,
+    always: bool,
+    /// The file type and flag_per_line; None until set_param_file_format.
+    format: Option<(ParamFileType, bool)>,
+}
+
 // Only upstream derives generate unsafe marker implementations. No heap values
-// are retained: both fields are ordinary owned Rust data.
+// are retained: all fields are ordinary owned Rust data.
 #[allow(unsafe_code)]
 mod owned {
     use super::*;
 
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
     pub(super) struct Args {
-        pub(super) values: RefCell<Vec<String>>,
+        #[allocative(skip)]
+        #[trace(static)]
+        pub(super) groups: RefCell<Vec<Group>>,
+        #[allocative(skip)]
+        #[trace(static)]
+        pub(super) param: RefCell<ParamState>,
         #[allocative(skip)]
         #[trace(static)]
         pub(super) active: Arc<AtomicBool>,
@@ -55,11 +76,82 @@ impl Args {
         Ok(())
     }
 
-    fn append(&self, values: Vec<String>) -> anyhow::Result<()> {
+    fn push(&self, group: Group) -> anyhow::Result<()> {
         self.check_active()?;
-        self.values.borrow_mut().extend(values);
+        self.groups.borrow_mut().push(group);
         Ok(())
     }
+
+    #[cfg(test)]
+    fn append(&self, values: Vec<String>) -> anyhow::Result<()> {
+        self.push(Group::Strings(values))
+    }
+
+    fn flag_per_line(&self) -> bool {
+        self.param.borrow().format.is_some_and(|(_, line)| line)
+    }
+
+    /// getParameterFileType: SHELL_QUOTED unless set.
+    fn file_type(&self) -> ParamFileType {
+        self.param
+            .borrow()
+            .format
+            .map_or(ParamFileType::Shell, |(file_type, _)| file_type)
+    }
+
+    /// getParamFileInfo: only after use_param_file; flagsOnly is flag_per_line.
+    fn param_file_info(&self) -> Option<ParamFileInfo> {
+        let param = self.param.borrow();
+        let flag_format = param.flag_format.clone()?;
+        Some(ParamFileInfo {
+            flag_format,
+            always: param.always,
+            file_type: self.file_type(),
+            flags_only: self.flag_per_line(),
+        })
+    }
+
+    fn snapshot(&self) -> anyhow::Result<ArgsSnapshot> {
+        self.check_active()?;
+        Ok(ArgsSnapshot {
+            groups: self.groups.borrow().clone(),
+            flag_per_line: self.flag_per_line(),
+            file_type: self.file_type(),
+            param: self.param_file_info(),
+        })
+    }
+}
+
+/// An immutable copy of an Args object at action registration.
+#[derive(Clone, Debug)]
+pub(crate) struct ArgsSnapshot {
+    pub groups: Vec<Group>,
+    pub flag_per_line: bool,
+    pub file_type: ParamFileType,
+    pub param: Option<ParamFileInfo>,
+}
+
+impl ArgsSnapshot {
+    /// getDirectoryArtifacts: tree artifacts expanded by this command line.
+    pub(crate) fn directories(&self) -> Vec<File> {
+        directories(&self.groups)
+    }
+}
+
+pub(crate) fn directories(groups: &[Group]) -> Vec<File> {
+    let mut result = Vec::new();
+    for group in groups {
+        if let Group::Deferred(vector) = group {
+            for item in &vector.items {
+                if let Item::Directory(file) = item
+                    && !result.contains(file)
+                {
+                    result.push(file.clone());
+                }
+            }
+        }
+    }
+    result
 }
 
 /// Args.repr (analysis/starlark/Args.java:67-70); str() is repr().
@@ -81,7 +173,10 @@ impl<'v> StarlarkValue<'v> for Args {
     /// arguments joined by spaces. (Bazel expands Labels there without a
     /// main repository mapping; native arguments are already expanded.)
     fn collect_debug_print(&self, collector: &mut String, _eval: &Evaluator<'v, '_, '_>) {
-        collector.push_str(&self.values.borrow().join(" "));
+        let expanded =
+            crate::command_line::expand_groups(&self.groups.borrow(), self.flag_per_line(), None)
+                .unwrap_or_default();
+        collector.push_str(&expanded.join(" "));
     }
 }
 
@@ -89,78 +184,38 @@ impl<'v> StarlarkValue<'v> for Args {
 /// `active` to false when analysis ends, including error/unwind paths.
 pub fn alloc_args<'v>(heap: Heap<'v>, active: Arc<AtomicBool>) -> Value<'v> {
     heap.alloc_complex_no_freeze(Args {
-        values: RefCell::new(Vec::new()),
+        groups: RefCell::new(Vec::new()),
+        param: RefCell::new(ParamState::default()),
         active,
     })
 }
 
-/// Serialize only genuine, active Args for actions.write's default SHELL_QUOTED
-/// format: shell-escape each argument and append LF. Borrow the already-expanded
-/// strings directly; do not allocate an intermediate list or clone their payloads.
-/// Native map_each remains eager at builder mutation, unlike Bazel's deferred
-/// command-line expansion. This adds neither deferred callbacks nor param files;
-/// use_param_file/set_param_file_format deliberately remain unsupported.
+/// The snapshot of a genuine, active Args value; None for other values.
+pub(crate) fn snapshot(value: Value<'_>) -> anyhow::Result<Option<ArgsSnapshot>> {
+    match value.downcast_ref::<Args>() {
+        Some(args) => Ok(Some(args.snapshot()?)),
+        None => Ok(None),
+    }
+}
+
+/// actions.write content of an Args value without tree artifacts:
+/// ParameterFileWriteAction writes the command line (flag_per_line grouping
+/// applied) in the Args' parameter file format (shell-quoted by default).
+#[cfg(test)]
 pub(crate) fn serialize_write_content(value: Value<'_>) -> anyhow::Result<Vec<u8>> {
     let args = value
         .downcast_ref::<Args>()
         .ok_or_else(|| anyhow!("write content must be a string or Args"))?;
-    args.check_active()?;
-    let values = args.values.borrow();
-    // Compute the exact output allocation with checked arithmetic, without an
-    // invented content-size cap. Each embedded apostrophe expands from 1 to 4
-    // bytes; quotes contribute 2 and every argument contributes a trailing LF.
-    let mut size = 0usize;
-    for text in values.iter() {
-        size = size
-            .checked_add(text.len())
-            .and_then(|size| size.checked_add(1))
-            .ok_or_else(|| anyhow!("Args write content size overflow"))?;
-        if shell_quote_required(text) {
-            size = size
-                .checked_add(2)
-                .ok_or_else(|| anyhow!("Args write content size overflow"))?;
-            for byte in text.bytes() {
-                if byte == b'\'' {
-                    size = size
-                        .checked_add(3)
-                        .ok_or_else(|| anyhow!("Args write content size overflow"))?;
-                }
-            }
-        }
-    }
-    let mut output = Vec::new();
-    output
-        .try_reserve_exact(size)
-        .map_err(|error| anyhow!("cannot allocate Args write content: {error}"))?;
-    for text in values.iter() {
-        if shell_quote_required(text) {
-            output.push(b'\'');
-            for byte in text.bytes() {
-                if byte == b'\'' {
-                    output.extend_from_slice(b"'\\''");
-                } else {
-                    output.push(byte);
-                }
-            }
-            output.push(b'\'');
-        } else {
-            output.extend_from_slice(text.as_bytes());
-        }
-        output.push(b'\n');
-    }
-    debug_assert_eq!(output.len(), size);
-    Ok(output)
+    serialize_write_content_of(&args.snapshot()?).map_err(anyhow::Error::msg)
 }
 
-fn shell_quote_required(text: &str) -> bool {
-    // Pinned Bazel ShellEscaper.java:57-110. Only ASCII letters/digits and
-    // @%-_+:,./ are safe; ~ is additionally safe except at the start. Preserve
-    // UTF-8, backslashes and embedded newlines literally within strong quotes.
-    text.is_empty()
-        || text.starts_with('~')
-        || !text
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"@%-_+:,./~".contains(&byte))
+pub(crate) fn serialize_write_content_of(snapshot: &ArgsSnapshot) -> Result<Vec<u8>, String> {
+    let arguments =
+        crate::command_line::expand_groups(&snapshot.groups, snapshot.flag_per_line, None)?;
+    Ok(crate::command_line::param_file_bytes(
+        &arguments,
+        snapshot.file_type,
+    ))
 }
 
 fn sequence(value: Value<'_>) -> anyhow::Result<Vec<Value<'_>>> {
@@ -173,22 +228,55 @@ fn sequence(value: Value<'_>) -> anyhow::Result<Vec<Value<'_>>> {
     }
 }
 
-/// Snapshot a list/tuple of strings and active Args objects for action registration.
-/// Bare Args, nested lists, and other element types are rejected.
-pub fn expand_arguments(value: Value<'_>) -> anyhow::Result<Vec<String>> {
-    let mut result = Vec::new();
+/// StarlarkActionFactory.buildCommandLine
+/// (analysis/starlark/StarlarkActionFactory.java:690-717): consecutive strings
+/// form one part; each Args is its own part with its ParamFileInfo.
+pub(crate) fn command_line_parts(value: Value<'_>) -> anyhow::Result<Vec<Part>> {
+    let mut parts = Vec::new();
+    let mut strings: Option<Vec<String>> = None;
     for item in sequence(value)? {
         if let Some(text) = item.unpack_str() {
-            result.push(text.to_owned());
+            strings.get_or_insert_with(Vec::new).push(text.to_owned());
         } else if let Some(args) = item.downcast_ref::<Args>() {
-            args.check_active()?;
-            result.extend(args.values.borrow().iter().cloned());
+            if let Some(run) = strings.take() {
+                parts.push(Part {
+                    groups: vec![Group::Strings(run)],
+                    flag_per_line: false,
+                    param: None,
+                });
+            }
+            let snapshot = args.snapshot()?;
+            parts.push(Part {
+                groups: snapshot.groups,
+                flag_per_line: snapshot.flag_per_line,
+                param: snapshot.param,
+            });
         } else {
             bail!(
-                "arguments must contain only strings or Args, got {}",
+                "expected list of strings or ctx.actions.args() for arguments instead of {}",
                 item.get_type()
             );
         }
+    }
+    if let Some(run) = strings {
+        parts.push(Part {
+            groups: vec![Group::Strings(run)],
+            flag_per_line: false,
+            param: None,
+        });
+    }
+    Ok(parts)
+}
+
+/// Snapshot a list/tuple of strings and active Args objects without tree
+/// artifacts or parameter files (CommandLines.allArguments).
+pub fn expand_arguments(value: Value<'_>) -> anyhow::Result<Vec<String>> {
+    let mut result = Vec::new();
+    for part in command_line_parts(value)? {
+        result.extend(
+            crate::command_line::expand_groups(&part.groups, part.flag_per_line, None)
+                .map_err(anyhow::Error::msg)?,
+        );
     }
     Ok(result)
 }
@@ -227,36 +315,8 @@ fn named_value<'v>(args: &[Value<'v>]) -> anyhow::Result<(Option<String>, Value<
     }
 }
 
-// Exactly one %s, with %% representing a literal percent. Do not recursively
-// interpret inserted values: argument strings remain literal, including NULs.
 fn formatted(template: Option<&str>, value: &str) -> anyhow::Result<String> {
-    let Some(template) = template else {
-        return Ok(value.to_owned());
-    };
-    let mut result = String::new();
-    let mut placeholders = 0;
-    let mut chars = template.chars();
-    while let Some(ch) = chars.next() {
-        if ch != '%' {
-            result.push(ch);
-        } else {
-            match chars.next() {
-                Some('%') => result.push('%'),
-                Some('s') => {
-                    placeholders += 1;
-                    result.push_str(value);
-                }
-                _ => bail!(
-                    "Args format requires exactly one %s placeholder; only %s and %% are supported"
-                ),
-            }
-        }
-    }
-    ensure!(
-        placeholders == 1,
-        "Args format requires exactly one %s placeholder"
-    );
-    Ok(result)
+    crate::command_line::format(template, value).map_err(anyhow::Error::msg)
 }
 
 fn check_mapper(
@@ -286,15 +346,32 @@ fn check_mapper(
     Ok(())
 }
 
-fn mapped_values<'v>(
-    values: Value<'v>,
+fn map_one<'v>(
+    item: Value<'v>,
     map_each: Value<'v>,
-    format_each: Option<&str>,
-    uniquify: bool,
-    allow_closure: bool,
     eval: &mut Evaluator<'v, '_, '_>,
 ) -> anyhow::Result<Vec<String>> {
-    formatted(format_each, "")?;
+    if map_each.is_none() {
+        return Ok(vec![string_value(item, eval)?]);
+    }
+    let mapped = eval
+        .eval_function(map_each, &[item], &[])
+        .map_err(|e| anyhow!("map_each failed: {e}"))?;
+    crate::command_line::mapped_strings(mapped).map_err(anyhow::Error::msg)
+}
+
+/// One add_all/add_joined call as a group: eager unless a value is a tree
+/// artifact and expand_directories is set (VectorArg.maybeExpandDirectories).
+fn vector_group<'v>(
+    values: Value<'v>,
+    shape: VectorShape,
+    map_each: Value<'v>,
+    expand_directories: bool,
+    allow_closure: bool,
+    eval: &mut Evaluator<'v, '_, '_>,
+) -> anyhow::Result<Option<Group>> {
+    formatted(shape.format_each.as_deref(), "")?;
+    formatted(shape.format_joined.as_deref(), "")?;
     check_mapper(map_each, allow_closure, eval)?;
     let values = if values.get_type() == "depset" {
         let to_list = values
@@ -307,39 +384,58 @@ fn mapped_values<'v>(
     } else {
         sequence(values)?
     };
-    let mut result = Vec::new();
-    let mut seen = BTreeSet::new();
+    // Args.addVectorArg (Args.java:416-475): an empty omitted vector records
+    // no argument group at all.
+    if values.is_empty() && shape.omit_if_empty {
+        return Ok(None);
+    }
+    let mut items: Vec<Item> = Vec::new();
+    let mut deferred = false;
     for item in values {
-        let strings = if map_each.is_none() {
-            vec![string_value(item, eval)?]
-        } else {
-            let mapped = eval
-                .eval_function(map_each, &[item], &[])
-                .map_err(|e| anyhow!("map_each failed: {e}"))?;
-            if mapped.is_none() {
-                Vec::new()
-            } else if let Some(text) = mapped.unpack_str() {
-                vec![text.to_owned()]
-            } else if let Some(list) = ListRef::from_value(mapped) {
-                list.iter()
-                    .map(|value| {
-                        value.unpack_str().map(str::to_owned).ok_or_else(|| {
-                            anyhow!("map_each must return None, a string, or a list of strings")
-                        })
-                    })
-                    .collect::<anyhow::Result<Vec<_>>>()?
-            } else {
-                bail!("map_each must return None, a string, or a list of strings");
-            }
-        };
-        for text in strings {
-            let text = formatted(format_each, &text)?;
-            if !uniquify || seen.insert(text.clone()) {
-                result.push(text);
-            }
+        if expand_directories
+            && let Some(file) = File::from_value(item)
+            && file.is_directory
+        {
+            deferred = true;
+            items.push(Item::Directory(file.clone()));
+            continue;
+        }
+        let strings = map_one(item, map_each, eval)?;
+        match items.last_mut() {
+            Some(Item::Strings(previous)) => previous.extend(strings),
+            _ => items.push(Item::Strings(strings)),
         }
     }
-    Ok(result)
+    if deferred {
+        let map_each = if map_each.is_none() {
+            None
+        } else {
+            Some(
+                crate::analysis_runtime::owned_top_level_function(eval, map_each).ok_or_else(
+                    || {
+                        anyhow!(
+                            "map_each over the contents of a directory requires a top-level function of a loaded .bzl file (native execution-time expansion)"
+                        )
+                    },
+                )?,
+            )
+        };
+        return Ok(Some(Group::Deferred(Arc::new(DeferredVector {
+            shape,
+            items,
+            map_each,
+        }))));
+    }
+    let values = items
+        .into_iter()
+        .flat_map(|item| match item {
+            Item::Strings(strings) => strings,
+            Item::Directory(_) => unreachable!("no directory items"),
+        })
+        .collect();
+    Ok(Some(Group::Strings(
+        crate::command_line::assemble(&shape, values).map_err(anyhow::Error::msg)?,
+    )))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -354,12 +450,18 @@ fn args_methods(builder: &mut MethodsBuilder) {
         let builder = Args::from_value(this)?;
         builder.check_active()?;
         let (name, value) = named_value(&args.items)?;
+        // Args.validateNoDirectory (analysis/starlark/Args.java:534-541).
+        if File::from_value(value).is_some_and(|file| file.is_directory) {
+            bail!(
+                "Cannot add directories to Args#add since they may expand to multiple values. Either use Args#add_all (if you want expansion) or args.add(directory.path) (if you do not)."
+            );
+        }
         let mut values: Vec<_> = name.into_iter().collect();
         values.push(formatted(
             format.into_option(),
             &string_value(value, eval)?,
         )?);
-        builder.append(values)?;
+        builder.push(Group::Strings(values))?;
         Ok(this)
     }
 
@@ -378,30 +480,26 @@ fn args_methods(builder: &mut MethodsBuilder) {
     ) -> anyhow::Result<Value<'v>> {
         let builder = Args::from_value(this)?;
         builder.check_active()?;
-        let _ = expand_directories; // All currently supported File values are regular files.
-        let (name, values) = named_value(&args.items)?;
-        let values = mapped_values(
-            values,
-            map_each,
-            format_each.into_option(),
+        let (arg_name, values) = named_value(&args.items)?;
+        let shape = VectorShape {
+            arg_name,
+            format_each: format_each.into_option().map(str::to_owned),
+            before_each: before_each.into_option().map(str::to_owned),
+            omit_if_empty,
             uniquify,
+            terminate_with: terminate_with.into_option().map(str::to_owned),
+            ..VectorShape::default()
+        };
+        if let Some(group) = vector_group(
+            values,
+            shape,
+            map_each,
+            expand_directories,
             allow_closure,
             eval,
-        )?;
-        if omit_if_empty && values.is_empty() {
-            return Ok(this);
+        )? {
+            builder.push(group)?;
         }
-        let mut result: Vec<_> = name.into_iter().collect();
-        for value in values {
-            if let NoneOr::Other(before) = before_each {
-                result.push(before.to_owned());
-            }
-            result.push(value);
-        }
-        if let NoneOr::Other(end) = terminate_with {
-            result.push(end.to_owned());
-        }
-        builder.append(result)?;
         Ok(this)
     }
 
@@ -420,41 +518,65 @@ fn args_methods(builder: &mut MethodsBuilder) {
     ) -> anyhow::Result<Value<'v>> {
         let builder = Args::from_value(this)?;
         builder.check_active()?;
-        let _ = expand_directories;
-        let format_joined = format_joined.into_option();
-        formatted(format_joined, "")?;
-        let (name, values) = named_value(&args.items)?;
-        let values = mapped_values(
-            values,
-            map_each,
-            format_each.into_option(),
+        let (arg_name, values) = named_value(&args.items)?;
+        let shape = VectorShape {
+            arg_name,
+            format_each: format_each.into_option().map(str::to_owned),
+            join_with: Some(join_with.to_owned()),
+            format_joined: format_joined.into_option().map(str::to_owned),
+            omit_if_empty,
             uniquify,
+            ..VectorShape::default()
+        };
+        if let Some(group) = vector_group(
+            values,
+            shape,
+            map_each,
+            expand_directories,
             allow_closure,
             eval,
-        )?;
-        if omit_if_empty && values.is_empty() {
-            return Ok(this);
+        )? {
+            builder.push(group)?;
         }
-        let mut result: Vec<_> = name.into_iter().collect();
-        result.push(formatted(format_joined, &values.join(join_with))?);
-        builder.append(result)?;
         Ok(this)
     }
 
+    /// Args.useParamsFile (analysis/starlark/Args.java:548-563).
     fn use_param_file<'v>(
         this: Value<'v>,
         param_file_arg: &str,
         #[starlark(require = named, default = false)] use_always: bool,
     ) -> anyhow::Result<Value<'v>> {
-        Args::from_value(this)?.check_active()?;
-        let _ = (param_file_arg, use_always);
-        bail!("Args parameter files are unsupported; use_param_file cannot be ignored")
+        let builder = Args::from_value(this)?;
+        builder.check_active()?;
+        if crate::command_line::format(Some(param_file_arg), "").is_err() {
+            bail!(
+                "Invalid value for parameter \"param_file_arg\": Expected string with a single \"%s\", got \"{param_file_arg}\""
+            );
+        }
+        let mut param = builder.param.borrow_mut();
+        param.flag_format = Some(param_file_arg.to_owned());
+        param.always = use_always;
+        Ok(this)
     }
 
+    /// Args.setParamFileFormat (analysis/starlark/Args.java:565-595).
     fn set_param_file_format<'v>(this: Value<'v>, format: &str) -> anyhow::Result<Value<'v>> {
-        Args::from_value(this)?.check_active()?;
-        let _ = format;
-        bail!("Args parameter files are unsupported; set_param_file_format cannot be ignored")
+        let builder = Args::from_value(this)?;
+        builder.check_active()?;
+        let mut param = builder.param.borrow_mut();
+        if param.format.is_some() {
+            bail!("set_param_file_format() may only be called once");
+        }
+        param.format = Some(match format {
+            "shell" => (ParamFileType::Shell, false),
+            "multiline" => (ParamFileType::Unquoted, false),
+            "flag_per_line" => (ParamFileType::Unquoted, true),
+            _ => bail!(
+                "Invalid value for parameter \"format\": Expected one of \"shell\", \"multiline\", \"flag_per_line\""
+            ),
+        });
+        Ok(this)
     }
 }
 
@@ -502,6 +624,7 @@ mod tests {
                 crate::starlark_types::alloc_file(
                     module.heap(),
                     crate::starlark_types::File {
+                        is_directory: false,
                         path: "pkg/file with $ spaces".into(),
                         short_path: "pkg/file with $ spaces".into(),
                         owner: "//pkg:rule".into(),
@@ -559,7 +682,7 @@ mod tests {
                 ("!#$&*?[]();<>|`", "'!#$&*?[]();<>|`'\n"),
                 ("\0", "'\0'\n"),
             ] {
-                builder.values.borrow_mut().clear();
+                builder.groups.borrow_mut().clear();
                 builder.append(vec![text.to_owned()]).unwrap();
                 assert_eq!(
                     serialize_write_content(value).unwrap(),
@@ -567,7 +690,7 @@ mod tests {
                     "{text:?}"
                 );
             }
-            builder.values.borrow_mut().clear();
+            builder.groups.borrow_mut().clear();
             builder
                 .append(
                     [
@@ -607,7 +730,7 @@ mod tests {
     }
 
     #[test]
-    fn write_serializes_eager_formatting_and_mapping_without_new_param_file_support() {
+    fn write_serializes_eager_formatting_and_mapping() {
         pass(
             r#"
 a.add('v w', format='pre:%s:%%')
@@ -643,13 +766,41 @@ serialized(a) == "'[x y]'\n'[q'\\''z]'\n'[z]'\n"
             "def bad(x):\n    fail('EAGER_NATIVE_MAPPER')\na.add_all(['x'], map_each=bad)\nserialized(a)",
             "EAGER_NATIVE_MAPPER",
         );
-        for format in ["shell", "multiline", "flag_per_line"] {
+    }
+
+    #[test]
+    fn param_file_formats_shape_written_content() {
+        // ParameterFileWriteAction uses the Args' file type and flag_per_line
+        // grouping (StarlarkActionFactory.write, Args.build).
+        pass(
+            r#"
+a.set_param_file_format("multiline").use_param_file("@%s", use_always=True)
+a.add("--k", "v w").add_all(["x y", "z"])
+serialized(a) == "--k\nv w\nx y\nz\n"
+"#,
+        );
+        pass(
+            r#"
+a.set_param_file_format("flag_per_line")
+a.add("--k", "v w").add_all("--many", ["x", "y"]).add("pos").add_all(["p", "q"])
+serialized(a) == "--k=v w\n--many=x y\npos\np=q\n" and expanded([a]) == ["--k=v w", "--many=x y", "pos", "p=q"]
+"#,
+        );
+        pass("a.set_param_file_format('shell')\na.add('x y')\nserialized(a) == \"'x y'\\n\"");
+        fail(
+            "a.set_param_file_format('shell').set_param_file_format('shell')",
+            "may only be called once",
+        );
+        fail(
+            "a.set_param_file_format('other')",
+            "Expected one of \"shell\", \"multiline\", \"flag_per_line\"",
+        );
+        for invalid in ["@", "@%s%s", "%d", "%"] {
             fail(
-                &format!("a.set_param_file_format({format:?})"),
-                "parameter files are unsupported",
+                &format!("a.use_param_file({invalid:?})"),
+                "Invalid value for parameter \"param_file_arg\"",
             );
         }
-        fail("a.use_param_file('@%s')", "parameter files are unsupported");
     }
 
     #[test]
@@ -756,15 +907,13 @@ expanded([a]) == ["pkg/file with $ spaces", "prefix:x,prefix:y"]
                 "map_each must return",
             );
         }
-        fail("a.use_param_file('@%s')", "parameter files are unsupported");
-        fail(
-            "a.set_param_file_format('shell')",
-            "parameter files are unsupported",
-        );
         fail("a.to_list()", "to_list");
         fail("list(a)", "Operation `(iter)` not supported");
         fail("expanded(a)", "expected list or tuple");
-        fail("expanded([[]])", "only strings or Args");
+        fail(
+            "expanded([[]])",
+            "expected list of strings or ctx.actions.args()",
+        );
     }
 
     #[test]

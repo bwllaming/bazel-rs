@@ -1,0 +1,884 @@
+{
+ "schema": "n23d-actions-params-reference-receipt/v1",
+ "purpose": "Paired genuine Bazel 9.3.0 vs native bazel-rs capture of N23d (docs/ACTIONS_PARAMS.md): Args parameter files (use_param_file, set_param_file_format, threshold and naming), tree artifacts (declare_directory, Args directory expansion with map_each, written Args), actions.symlink, expand_template with TemplateDict, run/run_shell env/use_default_shell_env/execution_requirements, and rejection messages. Evidence only; no test reads it.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private> --output_base=<private> --host_jvm_args=-Xmx512m",
+  "command_flags": "--registry=file://<private copy of tests/fixtures/builtin_modules/registry> --repository_disable_download --incompatible_autoload_externally= --lockfile_mode=off --noshow_progress --color=no --curses=no --repository_cache=<private> --distdir=<private: platforms-1.0.0.tar.gz>",
+  "build_only_flags": "--spawn_strategy=local --shell_executable=/bin/bash --show_result=1000"
+ },
+ "native": {
+  "binary": "target/debug/bazel-rs",
+  "sha256": "4866badc1ed3c86db34537562ee74c249d7164b48456d9a7ed6f95c868eac1f3",
+  "flags": "--ignore_all_rc_files --cache-dir=<private> build --registry=file://<private copy of the same registry> --experimental-builtin-modules"
+ },
+ "script": {
+  "path": "artifacts/actions_params-capture.py",
+  "sha256": "7f890184bdd42b2e51d74b34c8efeb282d76c66601bcfc77937e07a8011f97e9"
+ },
+ "environment": "env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 HOME/TMPDIR private, umask 022; scratch /tmp/opencode/ap-capture",
+ "normalization": "output roots bazel-out/{k8-fastbuild,rust-fastbuild}/ -> bazel-out/<CFG>/; workspace -> <WS>; outputs compared by followed bytes (latin-1) and followed permission bits; lstat kind recorded but not compared (native publishes symlink outputs as copies); reference error message = the `Error in <fn>: ` text or the first ERROR line without its location, required verbatim in native stderr",
+ "boundary": {
+  "exec_part_length": 56,
+  "n_max_inline": 31687
+ },
+ "started_at": "2026-10-17T00:34:20.664896+00:00",
+ "finished_at": "2026-10-17T00:35:49.729736+00:00",
+ "counts": {
+  "EXACT": 32,
+  "EXACT_MESSAGE": 15,
+  "MISMATCH": 2,
+  "EXPECTED_NATIVE_UNSUPPORTED": 3
+ },
+ "rows": [
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/boundary_in.txt",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "1 x\n"
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "1 x\n"
+   },
+   "lstat": {
+    "reference": "file",
+    "native": "file"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/boundary_out.txt",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "1 @\n"
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "1 @\n"
+   },
+   "lstat": {
+    "reference": "file",
+    "native": "file"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/env_default.txt",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "PATH=/bin:/usr/bin:/usr/local/bin\n"
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "PATH=/bin:/usr/bin:/usr/local/bin\n"
+   },
+   "lstat": {
+    "reference": "file",
+    "native": "file"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/env_default_override.txt",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "PATH=/usr/bin:/bin\nX=1\n"
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "PATH=/usr/bin:/bin\nX=1\n"
+   },
+   "lstat": {
+    "reference": "file",
+    "native": "file"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/env_none.txt",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": ""
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": ""
+   },
+   "lstat": {
+    "reference": "file",
+    "native": "file"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/env_plain.txt",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "X=1\n"
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "X=1\n"
+   },
+   "lstat": {
+    "reference": "file",
+    "native": "file"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/expanded.txt",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "AC C %PLACIN% [src.txt;txt;tool.sh;sh]  Ã©\n"
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "AC C %PLACIN% [src.txt;txt;tool.sh;sh]  Ã©\n"
+   },
+   "lstat": {
+    "reference": "file",
+    "native": "file"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/flag_per_line.txt",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "[@bazel-out/<CFG>/bin/ok/flag_per_line.txt-0.params]\n<<bazel-out/<CFG>/bin/ok/flag_per_line.txt-0.params>>\n--k=v w\n--many=1 2\n--solo\n--j=a,b\n--empty\n<<end>>\n[pos]\n[p=q]\n"
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "[@bazel-out/<CFG>/bin/ok/flag_per_line.txt-0.params]\n<<bazel-out/<CFG>/bin/ok/flag_per_line.txt-0.params>>\n--k=v w\n--many=1 2\n--solo\n--j=a,b\n--empty\n<<end>>\n[pos]\n[p=q]\n"
+   },
+   "lstat": {
+    "reference": "file",
+    "native": "file"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/flag_per_line_inline.txt",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "[--k=v]\n[p=q]\n"
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "[--k=v]\n[p=q]\n"
+   },
+   "lstat": {
+    "reference": "file",
+    "native": "file"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/from_generated.txt",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "x and xx\n"
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "x and xx\n"
+   },
+   "lstat": {
+    "reference": "file",
+    "native": "file"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/link_dir",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "symlink",
+    "mode": "0o555",
+    "tree": {
+     "n": {
+      "mode": "0o555",
+      "kind": "dir"
+     },
+     "n/one": {
+      "mode": "0o555",
+      "kind": "file",
+      "content": "1"
+     }
+    }
+   },
+   "native": {
+    "lstat_kind": "dir",
+    "mode": "0o555",
+    "tree": {
+     "n": {
+      "mode": "0o555",
+      "kind": "dir"
+     },
+     "n/one": {
+      "mode": "0o555",
+      "kind": "file",
+      "content": "1"
+     }
+    }
+   },
+   "lstat": {
+    "reference": "symlink",
+    "native": "dir"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/link_exec.sh",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "symlink",
+    "mode": "0o755",
+    "content": "#!/bin/bash\nfor a in \"$@\"; do printf '[%s]\\n' \"$a\"; case \"$a\" in @*) f=\"${a#@}\";; --params=*) f=\"${a#--params=}\";; *) f=;; esac; if [ -n \"$f\" ]; then printf '<<%s>>\\n' \"$f\"; cat \"$f\"; echo '<<end>>'; fi; done > \"$OUT\"\n"
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o755",
+    "content": "#!/bin/bash\nfor a in \"$@\"; do printf '[%s]\\n' \"$a\"; case \"$a\" in @*) f=\"${a#@}\";; --params=*) f=\"${a#--params=}\";; *) f=;; esac; if [ -n \"$f\" ]; then printf '<<%s>>\\n' \"$f\"; cat \"$f\"; echo '<<end>>'; fi; done > \"$OUT\"\n"
+   },
+   "lstat": {
+    "reference": "symlink",
+    "native": "file"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/link_generated.txt",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "symlink",
+    "mode": "0o555",
+    "content": "generated\n"
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "generated\n"
+   },
+   "lstat": {
+    "reference": "symlink",
+    "native": "file"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/link_source.txt",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "symlink",
+    "mode": "0o644",
+    "content": "source Ã©\n"
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o644",
+    "content": "source Ã©\n"
+   },
+   "lstat": {
+    "reference": "symlink",
+    "native": "file"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/multiline.txt",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "[--params=bazel-out/<CFG>/bin/ok/multiline.txt-0.params]\n<<bazel-out/<CFG>/bin/ok/multiline.txt-0.params>>\n--flag\nv w\nx y\nit's\n<<end>>\n"
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "[--params=bazel-out/<CFG>/bin/ok/multiline.txt-0.params]\n<<bazel-out/<CFG>/bin/ok/multiline.txt-0.params>>\n--flag\nv w\nx y\nit's\n<<end>>\n"
+   },
+   "lstat": {
+    "reference": "file",
+    "native": "file"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/run_direct.txt",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "[@bazel-out/<CFG>/bin/ok/run_direct.txt-0.params]\n<<bazel-out/<CFG>/bin/ok/run_direct.txt-0.params>>\n--direct\n'a b'\n<<end>>\n[tail]\n"
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "[@bazel-out/<CFG>/bin/ok/run_direct.txt-0.params]\n<<bazel-out/<CFG>/bin/ok/run_direct.txt-0.params>>\n--direct\n'a b'\n<<end>>\n[tail]\n"
+   },
+   "lstat": {
+    "reference": "file",
+    "native": "file"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/shell_always.txt",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "[@bazel-out/<CFG>/bin/ok/shell_always.txt-0.params]\n<<bazel-out/<CFG>/bin/ok/shell_always.txt-0.params>>\n--flag\n'v w'\n'x y'\nz\n'it'\\''s'\n'~home'\n'Ã©'\n''\n<<end>>\n"
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "[@bazel-out/<CFG>/bin/ok/shell_always.txt-0.params]\n<<bazel-out/<CFG>/bin/ok/shell_always.txt-0.params>>\n--flag\n'v w'\n'x y'\nz\n'it'\\''s'\n'~home'\n'Ã©'\n''\n<<end>>\n"
+   },
+   "lstat": {
+    "reference": "file",
+    "native": "file"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/sibling_dir",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "dir",
+    "mode": "0o555",
+    "tree": {
+     "s.txt": {
+      "mode": "0o555",
+      "kind": "file",
+      "content": "s"
+     }
+    }
+   },
+   "native": {
+    "lstat_kind": "dir",
+    "mode": "0o555",
+    "tree": {
+     "s.txt": {
+      "mode": "0o555",
+      "kind": "file",
+      "content": "s"
+     }
+    }
+   },
+   "lstat": {
+    "reference": "dir",
+    "native": "dir"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/threshold_large.txt",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content_sha256": "20b931490494990f0dbcba6e760f1e106092547e0100bbfc5a5e5a1059d9fbe6",
+    "content_length": 54136,
+    "content_head": "[before]\n[@bazel-out/<CFG>/bin/ok/threshold_large.txt-0.params]\n<<bazel-out/<CFG>/bin/ok/threshold_large.txt-0.params>>\narg-10000-padding-xxxxxxxx\narg-10001-padding-xxxxxxxx\narg-10002-padding-xxxxxxxx\narg-10003-padding-xxxxxxxx\narg-10004-padding-xxxxxxxx\narg-10005-padding-xxxxxxxx\narg-10006-padding-xxxxxxxx\narg-10007-padding-xxxxxxxx\narg-10008-padding-xxxxxxxx\narg-10009-padding-xxxxxxxx\narg-10010-"
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content_sha256": "20b931490494990f0dbcba6e760f1e106092547e0100bbfc5a5e5a1059d9fbe6",
+    "content_length": 54136,
+    "content_head": "[before]\n[@bazel-out/<CFG>/bin/ok/threshold_large.txt-0.params]\n<<bazel-out/<CFG>/bin/ok/threshold_large.txt-0.params>>\narg-10000-padding-xxxxxxxx\narg-10001-padding-xxxxxxxx\narg-10002-padding-xxxxxxxx\narg-10003-padding-xxxxxxxx\narg-10004-padding-xxxxxxxx\narg-10005-padding-xxxxxxxx\narg-10006-padding-xxxxxxxx\narg-10007-padding-xxxxxxxx\narg-10008-padding-xxxxxxxx\narg-10009-padding-xxxxxxxx\narg-10010-"
+   },
+   "lstat": {
+    "reference": "file",
+    "native": "file"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/threshold_small.txt",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "[small]\n[args]\n"
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "[small]\n[args]\n"
+   },
+   "lstat": {
+    "reference": "file",
+    "native": "file"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/tree_consumer.txt",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "[bazel-out/<CFG>/bin/ok/tree_dir/Z.txt]\n[bazel-out/<CFG>/bin/ok/tree_dir/a.txt]\n[bazel-out/<CFG>/bin/ok/tree_dir/sub/b.txt]\n[bazel-out/<CFG>/bin/ok/tree_dir/sub/deeper/c d.txt]\n[base:Z.txt]\n[base:a.txt]\n[base:b.txt]\n[base:c d.txt]\n[--x]\n[-b]\n[<bazel-out/<CFG>/bin/ok/tree_dir/Z.txt>]\n[-b]\n[<bazel-out/<CFG>/bin/ok/tree_dir/a.txt>]\n[-b]\n[<bazel-out/<CFG>/bin/ok/tree_dir/sub/b.txt>]\n[-b]\n[<bazel-out/<CFG>/bin/ok/tree_dir/sub/deeper/c d.txt>]\n[-b]\n[<ok/src.txt>]\n[Z.txt,txt,a.txt,b.txt,c d.txt]\n[bazel-out/<CFG>/bin/ok/tree_dir]\n[bazel-out/<CFG>/bin/ok/tree_dir/Z.txt]\n[bazel-out/<CFG>/bin/ok/tree_dir/a.txt]\n[bazel-out/<CFG>/bin/ok/tree_dir/sub/b.txt]\n[bazel-out/<CFG>/bin/ok/tree_dir/sub/deeper/c d.txt]\n[--kept]\n[--end]\n.\n./Z.txt\n./a.txt\n./empty\n./sub\n./sub/b.txt\n./sub/deeper\n./sub/deeper/c d.txt\n"
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "[bazel-out/<CFG>/bin/ok/tree_dir/Z.txt]\n[bazel-out/<CFG>/bin/ok/tree_dir/a.txt]\n[bazel-out/<CFG>/bin/ok/tree_dir/sub/b.txt]\n[bazel-out/<CFG>/bin/ok/tree_dir/sub/deeper/c d.txt]\n[base:Z.txt]\n[base:a.txt]\n[base:b.txt]\n[base:c d.txt]\n[--x]\n[-b]\n[<bazel-out/<CFG>/bin/ok/tree_dir/Z.txt>]\n[-b]\n[<bazel-out/<CFG>/bin/ok/tree_dir/a.txt>]\n[-b]\n[<bazel-out/<CFG>/bin/ok/tree_dir/sub/b.txt>]\n[-b]\n[<bazel-out/<CFG>/bin/ok/tree_dir/sub/deeper/c d.txt>]\n[-b]\n[<ok/src.txt>]\n[Z.txt,txt,a.txt,b.txt,c d.txt]\n[bazel-out/<CFG>/bin/ok/tree_dir]\n[bazel-out/<CFG>/bin/ok/tree_dir/Z.txt]\n[bazel-out/<CFG>/bin/ok/tree_dir/a.txt]\n[bazel-out/<CFG>/bin/ok/tree_dir/sub/b.txt]\n[bazel-out/<CFG>/bin/ok/tree_dir/sub/deeper/c d.txt]\n[--kept]\n[--end]\n.\n./Z.txt\n./a.txt\n./empty\n./sub\n./sub/b.txt\n./sub/deeper\n./sub/deeper/c d.txt\n"
+   },
+   "lstat": {
+    "reference": "file",
+    "native": "file"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/tree_dir",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "dir",
+    "mode": "0o555",
+    "tree": {
+     "Z.txt": {
+      "mode": "0o555",
+      "kind": "file",
+      "content": "z"
+     },
+     "a.txt": {
+      "mode": "0o555",
+      "kind": "file",
+      "content": "a"
+     },
+     "empty": {
+      "mode": "0o555",
+      "kind": "dir"
+     },
+     "sub": {
+      "mode": "0o555",
+      "kind": "dir"
+     },
+     "sub/b.txt": {
+      "mode": "0o555",
+      "kind": "file",
+      "content": "b"
+     },
+     "sub/deeper": {
+      "mode": "0o555",
+      "kind": "dir"
+     },
+     "sub/deeper/c d.txt": {
+      "mode": "0o555",
+      "kind": "file",
+      "content": "c"
+     }
+    }
+   },
+   "native": {
+    "lstat_kind": "dir",
+    "mode": "0o555",
+    "tree": {
+     "Z.txt": {
+      "mode": "0o555",
+      "kind": "file",
+      "content": "z"
+     },
+     "a.txt": {
+      "mode": "0o555",
+      "kind": "file",
+      "content": "a"
+     },
+     "empty": {
+      "mode": "0o555",
+      "kind": "dir"
+     },
+     "sub": {
+      "mode": "0o555",
+      "kind": "dir"
+     },
+     "sub/b.txt": {
+      "mode": "0o555",
+      "kind": "file",
+      "content": "b"
+     },
+     "sub/deeper": {
+      "mode": "0o555",
+      "kind": "dir"
+     },
+     "sub/deeper/c d.txt": {
+      "mode": "0o555",
+      "kind": "file",
+      "content": "c"
+     }
+    }
+   },
+   "lstat": {
+    "reference": "dir",
+    "native": "dir"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/tree_empty",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "dir",
+    "mode": "0o555",
+    "tree": {}
+   },
+   "native": {
+    "lstat_kind": "dir",
+    "mode": "0o555",
+    "tree": {}
+   },
+   "lstat": {
+    "reference": "dir",
+    "native": "dir"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/tree_params.txt",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "[@bazel-out/<CFG>/bin/ok/tree_params.txt-0.params]\n<<bazel-out/<CFG>/bin/ok/tree_params.txt-0.params>>\nbazel-out/<CFG>/bin/ok/tree_dir/Z.txt\nbazel-out/<CFG>/bin/ok/tree_dir/a.txt\nbazel-out/<CFG>/bin/ok/tree_dir/sub/b.txt\n'bazel-out/<CFG>/bin/ok/tree_dir/sub/deeper/c d.txt'\n<<end>>\n"
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "[@bazel-out/<CFG>/bin/ok/tree_params.txt-0.params]\n<<bazel-out/<CFG>/bin/ok/tree_params.txt-0.params>>\nbazel-out/<CFG>/bin/ok/tree_dir/Z.txt\nbazel-out/<CFG>/bin/ok/tree_dir/a.txt\nbazel-out/<CFG>/bin/ok/tree_dir/sub/b.txt\n'bazel-out/<CFG>/bin/ok/tree_dir/sub/deeper/c d.txt'\n<<end>>\n"
+   },
+   "lstat": {
+    "reference": "file",
+    "native": "file"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/tree_write.txt",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "bazel-out/<CFG>/bin/ok/tree_dir/Z.txt\nbazel-out/<CFG>/bin/ok/tree_dir/a.txt\nbazel-out/<CFG>/bin/ok/tree_dir/sub/b.txt\n'bazel-out/<CFG>/bin/ok/tree_dir/sub/deeper/c d.txt'\nbase:Z.txt\nbase:a.txt\nbase:b.txt\n'base:c d.txt'\n--x\n-b\n'<bazel-out/<CFG>/bin/ok/tree_dir/Z.txt>'\n-b\n'<bazel-out/<CFG>/bin/ok/tree_dir/a.txt>'\n-b\n'<bazel-out/<CFG>/bin/ok/tree_dir/sub/b.txt>'\n-b\n'<bazel-out/<CFG>/bin/ok/tree_dir/sub/deeper/c d.txt>'\n-b\n'<ok/src.txt>'\n'Z.txt,txt,a.txt,b.txt,c d.txt'\nbazel-out/<CFG>/bin/ok/tree_dir\nbazel-out/<CFG>/bin/ok/tree_dir/Z.txt\nbazel-out/<CFG>/bin/ok/tree_dir/a.txt\nbazel-out/<CFG>/bin/ok/tree_dir/sub/b.txt\n'bazel-out/<CFG>/bin/ok/tree_dir/sub/deeper/c d.txt'\n--kept\n--end\n"
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "bazel-out/<CFG>/bin/ok/tree_dir/Z.txt\nbazel-out/<CFG>/bin/ok/tree_dir/a.txt\nbazel-out/<CFG>/bin/ok/tree_dir/sub/b.txt\n'bazel-out/<CFG>/bin/ok/tree_dir/sub/deeper/c d.txt'\nbase:Z.txt\nbase:a.txt\nbase:b.txt\n'base:c d.txt'\n--x\n-b\n'<bazel-out/<CFG>/bin/ok/tree_dir/Z.txt>'\n-b\n'<bazel-out/<CFG>/bin/ok/tree_dir/a.txt>'\n-b\n'<bazel-out/<CFG>/bin/ok/tree_dir/sub/b.txt>'\n-b\n'<bazel-out/<CFG>/bin/ok/tree_dir/sub/deeper/c d.txt>'\n-b\n'<ok/src.txt>'\n'Z.txt,txt,a.txt,b.txt,c d.txt'\nbazel-out/<CFG>/bin/ok/tree_dir\nbazel-out/<CFG>/bin/ok/tree_dir/Z.txt\nbazel-out/<CFG>/bin/ok/tree_dir/a.txt\nbazel-out/<CFG>/bin/ok/tree_dir/sub/b.txt\n'bazel-out/<CFG>/bin/ok/tree_dir/sub/deeper/c d.txt'\n--kept\n--end\n"
+   },
+   "lstat": {
+    "reference": "file",
+    "native": "file"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/two_files.txt",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "[lit1]\n[@bazel-out/<CFG>/bin/ok/two_files.txt-0.params]\n<<bazel-out/<CFG>/bin/ok/two_files.txt-0.params>>\none\n<<end>>\n[lit2]\n[@bazel-out/<CFG>/bin/ok/two_files.txt-1.params]\n<<bazel-out/<CFG>/bin/ok/two_files.txt-1.params>>\ntwo\n<<end>>\n[three]\n[lit3]\n"
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "[lit1]\n[@bazel-out/<CFG>/bin/ok/two_files.txt-0.params]\n<<bazel-out/<CFG>/bin/ok/two_files.txt-0.params>>\none\n<<end>>\n[lit2]\n[@bazel-out/<CFG>/bin/ok/two_files.txt-1.params]\n<<bazel-out/<CFG>/bin/ok/two_files.txt-1.params>>\ntwo\n<<end>>\n[three]\n[lit3]\n"
+   },
+   "lstat": {
+    "reference": "file",
+    "native": "file"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/use_links.txt",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "source Ã©\ngenerated\n1"
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "source Ã©\ngenerated\n1"
+   },
+   "lstat": {
+    "reference": "file",
+    "native": "file"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/write_default.txt",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "--k\n'v w'\npos\n'it'\\''s'\n'Ã©'\n--j\n1,2\n"
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "--k\n'v w'\npos\n'it'\\''s'\n'Ã©'\n--j\n1,2\n"
+   },
+   "lstat": {
+    "reference": "file",
+    "native": "file"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/write_flag_per_line.txt",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "--k=v w\npos\nit's=Ã©\n--j=1,2\n"
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "--k=v w\npos\nit's=Ã©\n--j=1,2\n"
+   },
+   "lstat": {
+    "reference": "file",
+    "native": "file"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/write_multiline.txt",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "--k\nv w\npos\nit's\nÃ©\n--j\n1,2\n"
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "--k\nv w\npos\nit's\nÃ©\n--j\n1,2\n"
+   },
+   "lstat": {
+    "reference": "file",
+    "native": "file"
+   }
+  },
+  {
+   "case": "output:bazel-out/<CFG>/bin/ok/write_shell.txt",
+   "verdict": "EXACT",
+   "reference": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "--k\n'v w'\npos\n'it'\\''s'\n'Ã©'\n--j\n1,2\n"
+   },
+   "native": {
+    "lstat_kind": "file",
+    "mode": "0o555",
+    "content": "--k\n'v w'\npos\n'it'\\''s'\n'Ã©'\n--j\n1,2\n"
+   },
+   "lstat": {
+    "reference": "file",
+    "native": "file"
+   }
+  },
+  {
+   "case": "native-rebuild-cache-hits",
+   "verdict": "EXACT",
+   "native": "bazel-rs: 0 actions executed, 34 cache hits (experimental local execution; not sandboxed)\n"
+  },
+  {
+   "case": "error:param_file_arg",
+   "reference_code": 1,
+   "native_code": 1,
+   "reference_message": "Invalid value for parameter \"param_file_arg\": Expected string with a single \"%s\", got \"@\"",
+   "verdict": "EXACT_MESSAGE",
+   "native_message": "bazel-rs: analysis of //e_param_file_arg:case: Traceback (most recent call last):\nerror: Invalid value for parameter \"param_file_arg\": Expected string with a single \"%s\", got \"@\""
+  },
+  {
+   "case": "error:format_twice",
+   "reference_code": 1,
+   "native_code": 1,
+   "reference_message": "set_param_file_format() may only be called once",
+   "verdict": "EXACT_MESSAGE",
+   "native_message": "bazel-rs: analysis of //e_format_twice:case: Traceback (most recent call last):\nerror: set_param_file_format() may only be called once"
+  },
+  {
+   "case": "error:format_bad",
+   "reference_code": 1,
+   "native_code": 1,
+   "reference_message": "Invalid value for parameter \"format\": Expected one of \"shell\", \"multiline\", \"flag_per_line\"",
+   "verdict": "EXACT_MESSAGE",
+   "native_message": "bazel-rs: analysis of //e_format_bad:case: Traceback (most recent call last):\nerror: Invalid value for parameter \"format\": Expected one of \"shell\", \"multiline\", \"flag_per_line\""
+  },
+  {
+   "case": "error:add_directory",
+   "reference_code": 1,
+   "native_code": 1,
+   "reference_message": "Cannot add directories to Args#add since they may expand to multiple values. Either use Args#add_all (if you want expansion) or args.add(directory.path) (if you do not).",
+   "verdict": "EXACT_MESSAGE",
+   "native_message": "bazel-rs: analysis of //e_add_directory:case: Traceback (most recent call last):\nerror: Cannot add directories to Args#add since they may expand to multiple values. Either use Args#add_all (if you want expansion) or args.add(directory.path) (if you do not)."
+  },
+  {
+   "case": "error:symlink_both",
+   "reference_code": 1,
+   "native_code": 1,
+   "reference_message": "Exactly one of \"target_file\" or \"target_path\" is required",
+   "verdict": "EXACT_MESSAGE",
+   "native_message": "bazel-rs: analysis of //e_symlink_both:case: Traceback (most recent call last):\nerror: Exactly one of \"target_file\" or \"target_path\" is required"
+  },
+  {
+   "case": "error:symlink_neither",
+   "reference_code": 1,
+   "native_code": 1,
+   "reference_message": "Exactly one of \"target_file\" or \"target_path\" is required",
+   "verdict": "EXACT_MESSAGE",
+   "native_message": "bazel-rs: analysis of //e_symlink_neither:case: Traceback (most recent call last):\nerror: Exactly one of \"target_file\" or \"target_path\" is required"
+  },
+  {
+   "case": "error:symlink_path_file",
+   "reference_code": 1,
+   "native_code": 1,
+   "reference_message": "symlink() with \"target_path\" param requires that \"output\" be declared as a symlink, not a file or directory (did you mean to use declare_symlink() instead of declare_file() or declare_directory()?)",
+   "verdict": "EXACT_MESSAGE",
+   "native_message": "bazel-rs: analysis of //e_symlink_path_file:case: Traceback (most recent call last):\nerror: symlink() with \"target_path\" param requires that \"output\" be declared as a symlink, not a file or directory (did you mean to use declare_symlink() instead of declare_file() or declare_directory()?)"
+  },
+  {
+   "case": "error:symlink_kind",
+   "reference_code": 1,
+   "native_code": 1,
+   "reference_message": "symlink() with \"target_file\" file param requires that \"output\" be declared as a file (did you mean to use declare_file() instead of declare_directory()?)",
+   "verdict": "EXACT_MESSAGE",
+   "native_message": "bazel-rs: analysis of //e_symlink_kind:case: Traceback (most recent call last):\nerror: symlink() with \"target_file\" file param requires that \"output\" be declared as a file (did you mean to use declare_file() instead of declare_directory()?)"
+  },
+  {
+   "case": "error:symlink_kind_dir",
+   "reference_code": 1,
+   "native_code": 1,
+   "reference_message": "symlink() with \"target_file\" directory param requires that \"output\" be declared as a directory (did you mean to use declare_directory() instead of declare_file()?)",
+   "verdict": "EXACT_MESSAGE",
+   "native_message": "bazel-rs: analysis of //e_symlink_kind_dir:case: Traceback (most recent call last):\nerror: symlink() with \"target_file\" directory param requires that \"output\" be declared as a directory (did you mean to use declare_directory() instead of declare_file()?)"
+  },
+  {
+   "case": "error:symlink_exec_dir",
+   "reference_code": 1,
+   "native_code": 1,
+   "reference_message": "symlink() with \"output\" directory param cannot be executable",
+   "verdict": "EXACT_MESSAGE",
+   "native_message": "bazel-rs: analysis of //e_symlink_exec_dir:case: Traceback (most recent call last):\nerror: symlink() with \"output\" directory param cannot be executable"
+  },
+  {
+   "case": "error:symlink_not_executable",
+   "reference_code": 1,
+   "native_code": 1,
+   "reference_message": "Creating symlink e_symlink_not_executable/o failed: failed to create symbolic link 'bazel-out/<CFG>/bin/e_symlink_not_executable/o': file 'e_symlink_not_executable/src.txt' is not executable",
+   "verdict": "EXACT_MESSAGE",
+   "native_message": "bazel-rs: action '//e_symlink_not_executable:case#0': Creating symlink e_symlink_not_executable/o failed: failed to create symbolic link 'bazel-out/<CFG>/bin/e_symlink_not_executable/o': file 'e_symlink_not_executable/src.txt' is not executable"
+  },
+  {
+   "case": "error:file_then_directory",
+   "reference_code": 1,
+   "native_code": 1,
+   "reference_message": "in case rule //e_file_then_directory:case: ",
+   "verdict": "MISMATCH",
+   "native_message": "bazel-rs: analysis of //e_file_then_directory:case: The following directories were also declared as files:",
+   "reference_stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/e_file_then_directory/BUILD.bazel:3:5: in case rule //e_file_then_directory:case: \n<WS>/e_file_then_directory/defs.bzl:12:5: The following directories were also declared as files:\ne_file_then_directory/same\nERROR: <WS>/e_file_then_directory/BUILD.bazel:3:5: Analysis of target '//e_file_then_directory:case' (config: 6117f93) failed\nERROR: Analysis of target '//e_file_then_directory:case' failed; build aborted\nINFO: Elapsed time: 1.340s, Critical Path: 0.02s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+  },
+  {
+   "case": "error:template_duplicate",
+   "reference_code": 1,
+   "native_code": 1,
+   "reference_message": "Multiple entries with same key: K=Substitution(K -> 2) and K=Substitution(K -> 1)",
+   "verdict": "EXACT_MESSAGE",
+   "native_message": "bazel-rs: analysis of //e_template_duplicate:case: Traceback (most recent call last):\nerror: Multiple entries with same key: K=Substitution(K -> 2) and K=Substitution(K -> 1)"
+  },
+  {
+   "case": "error:template_dict_list",
+   "reference_code": 1,
+   "native_code": 1,
+   "reference_message": "in call to add_joined(), parameter 'values' got value of type 'list', want 'depset'",
+   "verdict": "EXACT_MESSAGE",
+   "native_message": "bazel-rs: analysis of //e_template_dict_list:case: Traceback (most recent call last):\nerror: in call to add_joined(), parameter 'values' got value of type 'list', want 'depset'"
+  },
+  {
+   "case": "error:directory_not_input",
+   "reference_code": 1,
+   "native_code": 1,
+   "reference_message": "Action e_directory_not_input/o failed: Failed to expand directory <generated file e_directory_not_input/d>. Either add the directory as an input of the action or set 'expand_directories = False' in the 'add_all' or 'add_joined' call to have the path of the directory added to the command line instead of its contents.",
+   "verdict": "EXACT_MESSAGE",
+   "native_message": "bazel-rs: action '//e_directory_not_input:case#1': Action e_directory_not_input/o failed: Failed to expand directory <generated file e_directory_not_input/d>. Either add the directory as an input of the action or set 'expand_directories = False' in the 'add_all' or 'add_joined' call to have the path of the directory added to the command line instead of its contents."
+  },
+  {
+   "case": "error:transform_private",
+   "reference_code": 1,
+   "native_code": 1,
+   "reference_message": "file '//e_transform_private:defs.bzl' cannot use private API",
+   "verdict": "EXACT_MESSAGE",
+   "native_message": "bazel-rs: analysis of //e_transform_private:case: Traceback (most recent call last):\nerror: file '//e_transform_private:defs.bzl' cannot use private API"
+  },
+  {
+   "case": "error:declare_symlink",
+   "reference_code": 0,
+   "native_code": 1,
+   "reference_message": null,
+   "verdict": "EXPECTED_NATIVE_UNSUPPORTED",
+   "native_message": "bazel-rs: analysis of //e_declare_symlink:case: Traceback (most recent call last):\nerror: actions.declare_symlink('o'): unresolved symlink artifacts are not supported by the native profile (docs/ACTIONS_PARAMS.md)"
+  },
+  {
+   "case": "error:tree_symlink_entry",
+   "reference_code": 0,
+   "native_code": 1,
+   "reference_message": null,
+   "verdict": "EXPECTED_NATIVE_UNSUPPORTED",
+   "native_message": "bazel-rs: action '//e_tree_symlink_entry:case#0': action '//e_tree_symlink_entry:case#0' has missing or invalid output 'bazel-out/<CFG>/bin/e_tree_symlink_entry/d': tree artifact entry '/tmp/opencode/ap-capture/native-cache/work/a74e539e6350f529931e9f2f4b4ec2ac7a42c0974a0a1550e36e3447b4bd6172-1939843-0/execroot/bazel-out/<CFG>/bin/e_tree_symlink_entry/d/link' is a symlink; symlinks inside tree artifacts are not supported by the native profile"
+  },
+  {
+   "case": "error:write_directory",
+   "reference_code": 36,
+   "native_code": 1,
+   "reference_message": "Writing file e_write_directory/d failed: java.io.FileNotFoundException: /tmp/opencode/ap-capture/ob/execroot/_main/bazel-out/<CFG>/bin/e_write_directory/d (Is a directory)",
+   "verdict": "MISMATCH",
+   "native_message": "bazel-rs: analysis of //e_write_directory:case: Traceback (most recent call last):\nerror: actions.write output bazel-out/<CFG>/bin/e_write_directory/d is a directory; write requires a file output",
+   "reference_stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //e_write_directory:case (5 packages loaded, 9 targets configured).\nERROR: <WS>/e_write_directory/BUILD.bazel:3:5: Writing file e_write_directory/d failed: java.io.FileNotFoundException: /tmp/opencode/ap-capture/ob/execroot/_main/bazel-out/<CFG>/bin/e_write_directory/d (Is a directory)\nTarget //e_write_directory:case failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nINFO: Elapsed time: 1.298s, Critical Path: 0.02s\nINFO: 2 processes: 2 internal.\nERROR: Build did NOT complete successfully\n"
+  },
+  {
+   "case": "error:tools_with_runfiles",
+   "reference_code": 0,
+   "native_code": 1,
+   "reference_message": null,
+   "verdict": "EXPECTED_NATIVE_UNSUPPORTED",
+   "native_message": "bazel-rs: analysis of //e_tools_with_runfiles:case: Traceback (most recent call last):\nerror: action tool bazel-out/rust-opt-exec/bin/e_tools_with_runfiles/exe.sh has runfiles; attaching executable runfiles to actions is not supported by the native profile (docs/RUNFILES.md)"
+  }
+ ],
+ "runs": {
+  "run1": {
+   "counts": {
+    "EXACT": 28,
+    "MISMATCH": 8,
+    "EXACT_MESSAGE": 13,
+    "EXPECTED_NATIVE_UNSUPPORTED": 3
+   },
+   "fixed_after": [
+    "tree artifact root mode 0555 (native had 0755): link_dir, sibling_dir, tree_dir, tree_empty",
+    "symlink is_executable failure prefixed by the progress message (Creating symlink <out> failed: ...)",
+    "directory not an action input: failure moved to execution with the Action %{output} failed: prefix",
+    "file and directory with one path: reported at validateArtifacts with Bazel text"
+   ]
+  },
+  "run2": "this receipt (final; the one allowed rerun)"
+ },
+ "mismatch_analysis": {
+  "error:file_then_directory": "framing only (post-hoc note, not a script verdict): both report \"The following directories were also declared as files:\\ne_file_then_directory/same\"; Bazel frames it as \"in case rule //e_file_then_directory:case: \\n<WS>/e_file_then_directory/defs.bzl:12:5: ...\" and the script extracted only that first framing line, native as \"bazel-rs: analysis of //e_file_then_directory:case: ...\".",
+  "error:write_directory": "substantive, intentional: Bazel registers actions.write to a declared directory and fails at execution with \"Writing file e_write_directory/d failed: java.io.FileNotFoundException: <execroot>/bazel-out/<CFG>/bin/e_write_directory/d (Is a directory)\"; native rejects it at analysis with \"actions.write output bazel-out/<CFG>/bin/e_write_directory/d is a directory; write requires a file output\" (docs/ACTIONS_PARAMS.md)."
+ }
+}

@@ -483,8 +483,14 @@ class LabelRepoNameTests(unittest.TestCase):
         self.assertTrue(item['inputs_before_after_equal'])
         self.assertEqual(item['input_sha256'], {p: qa.digest(raw) for p, raw in qa.fixture('analysis').items()})
         self.assertEqual(item['official'], {qa.JAVA: qa.JAVA_SHA})
+        # Deliberately re-pinned for N23d (docs/ACTIONS_PARAMS.md): the retained
+        # output was produced with the pre-N23d action.rs (native-action-v5).
+        # src/action.rs changed since (tree artifacts, parameter files,
+        # transforms; native-action-v6) but keeps OUTPUT_MODE 0555 for
+        # completed regular outputs, the property this retained output pins.
         self.assertEqual(item['source_pins']['src/action.rs']['sha256'],
-                         qa.digest((ROOT / 'src/action.rs').read_bytes()))
+                         '18084fd1f3b2ff8405e6697899c24388ded2f2e501078350242868caf570008d')
+        self.assertIn(b'const OUTPUT_MODE: u32 = 0o555;', (ROOT / 'src/action.rs').read_bytes())
         self.assertEqual(item['source_pins']['scripts/validate_label_repo_name.py']['sha256'],
                          '1e16cd72777aa6011ab89c9e7e36d482f480eb3082db9ca2a63589d33aeac79e')
         row, scratch = item['command'], Path(item['scratch'])

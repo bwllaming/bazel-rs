@@ -326,7 +326,7 @@ pub(crate) fn structure_builtins(builder: &mut GlobalsBuilder) {
 
 /// CcModule.checkPrivateStarlarkificationAllowlist (rules/cpp/CcModule.java:189-192):
 /// BuiltinRestriction.failIfCalledOutsideDefaultAllowlist for the calling `.bzl`.
-fn private_api(eval: &Evaluator<'_, '_, '_>) -> starlark::Result<()> {
+pub(crate) fn private_api(eval: &Evaluator<'_, '_, '_>) -> starlark::Result<()> {
     crate::cc_common::check_private_api(eval, 0, &allowlist())
 }
 

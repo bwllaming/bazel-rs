@@ -822,8 +822,29 @@ consumer(name = "consumer", binary = ":tool")
         "executable": "shell/tool",
         "manifest": "shell/tool.runfiles/MANIFEST"
     })));
-    // ctx.actions.symlink is not available yet (N23d): explicit failure.
-    rejected(&ws.run(&["build", "//shell:linked"]), "symlink");
+    // ctx.actions.symlink(is_executable=True) checks the target's owner
+    // execute bit (SymlinkAction.java:296-330); the output observes the
+    // target's bytes and permission bits (docs/ACTIONS_PARAMS.md).
+    rejected(
+        &ws.run(&["build", "//shell:linked"]),
+        "file 'shell/tool.sh' is not executable",
+    );
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(
+        ws.path().join("shell/tool.sh"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let linked = outputs(&ws.run(&["build", "//shell:linked"]));
+    let (_, path) = linked
+        .iter()
+        .find(|(_, path)| path.ends_with("shell/linked"))
+        .unwrap();
+    assert_eq!(fs::read(path).unwrap(), b"#!/bin/sh\necho tool\n");
+    assert_eq!(
+        fs::metadata(path).unwrap().permissions().mode() & 0o7777,
+        0o755
+    );
 }
 
 /// Bazel 9.3 messages and identities captured by the N23a paired capture

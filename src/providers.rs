@@ -836,6 +836,7 @@ mod tests {
 
     fn file() -> File {
         File {
+            is_directory: false,
             path: "pkg/input.txt".to_owned(),
             short_path: "pkg/input.txt".to_owned(),
             owner: "//pkg:input.txt".to_owned(),
@@ -1756,12 +1757,14 @@ template = platform_common.TemplateVariableInfo({})
     #[test]
     fn set_payload_files_preserve_first_encounter_order_shared_values_and_freeze() {
         let generated = File {
+            is_directory: false,
             path: "bazel-rs-out/bin/pkg/generated.txt".into(),
             short_path: "pkg/generated.txt".into(),
             owner: "//pkg:producer".into(),
             is_source: false,
         };
         let second_source = File {
+            is_directory: false,
             path: "pkg/second.txt".into(),
             short_path: "pkg/second.txt".into(),
             owner: "//pkg:second.txt".into(),

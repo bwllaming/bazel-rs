@@ -31,6 +31,8 @@ struct Artifact {
     exec: PathBuf,
     producer: Option<(String, usize)>,
     owner: String,
+    /// A tree artifact (declared directory).
+    directory: bool,
 }
 
 impl Artifact {
@@ -54,6 +56,7 @@ impl Artifact {
             relative.to_path_buf()
         };
         File {
+            is_directory: self.directory,
             path: self.exec.to_string_lossy().into_owned(),
             short_path: short_path.to_string_lossy().into_owned(),
             owner: self.owner.clone(),
@@ -4568,6 +4571,7 @@ impl Engine {
     ) -> Result<Vec<Artifact>, String> {
         match self.target(label)? {
             Target::Source(real) => Ok(vec![Artifact {
+                directory: false,
                 real,
                 exec: label.source_exec_path(),
                 producer: None,
@@ -5051,6 +5055,7 @@ impl Engine {
                     let exec = PathBuf::from(&file.path);
                     register_output(producers, &exec, &key)?;
                     let artifact = Artifact {
+                        directory: file.is_directory,
                         real: exec.clone(),
                         exec: exec.clone(),
                         producer: Some((registered.action.id.clone(), index)),
@@ -5088,7 +5093,9 @@ impl Engine {
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 source_inputs.insert(registered.action.id.clone(), source_paths(&inputs));
-                nodes.push(plan_action(registered.action, inputs, &main_ignored)?);
+                let mut planned = plan_action(registered.action, inputs, &main_ignored)?;
+                planned.deferred = registered.deferred;
+                nodes.push(planned);
             }
             let defaults = analyzed
                 .files
@@ -5189,6 +5196,7 @@ impl Engine {
                 write: None,
                 program: None,
                 shell_strict: true,
+                extra: Default::default(),
                 arguments: Vec::new(),
                 environment: BTreeMap::new(),
             };
@@ -5199,6 +5207,7 @@ impl Engine {
                 .into_iter()
                 .enumerate()
                 .map(|(index, exec)| Artifact {
+                    directory: false,
                     real: exec.clone(),
                     exec,
                     producer: Some((action_owner.clone(), index)),
@@ -6073,6 +6082,12 @@ fn plan_action(
         .iter()
         .map(|artifact| (artifact.real.clone(), artifact.exec.clone()))
         .collect();
+    // Tree artifact inputs are staged and keyed as directories.
+    action.extra.tree_inputs = inputs
+        .iter()
+        .filter(|artifact| artifact.directory)
+        .map(|artifact| artifact.exec.clone())
+        .collect();
     action::validate_structure(&action)?;
     action.inputs.clear();
     let mut dependencies = Vec::new();
@@ -6100,6 +6115,7 @@ fn plan_action(
     Ok(PlannedAction {
         action,
         dependencies,
+        deferred: None,
     })
 }
 
@@ -6396,6 +6412,7 @@ mod tests {
             vec!["**/node_modules".into()],
         );
         let source = |exec: &str, owner: &str| Artifact {
+            directory: false,
             real: PathBuf::from("/ws").join(exec),
             exec: PathBuf::from(exec),
             producer: None,
@@ -6416,6 +6433,7 @@ mod tests {
             ),
             (
                 Artifact {
+                    directory: false,
                     producer: Some(("//:gen".into(), 0)),
                     ..source("node_modules/o.txt", "//:gen")
                 },
@@ -7316,6 +7334,7 @@ m = macro(implementation=emit)
             ),
         ] {
             let artifact = Artifact {
+                directory: false,
                 real: PathBuf::from("/real/local/root/p/in"),
                 exec: PathBuf::from(exec),
                 producer,
@@ -7325,6 +7344,7 @@ m = macro(implementation=emit)
             assert_eq!(artifact.file().path, exec);
         }
         let main = Artifact {
+            directory: false,
             real: PathBuf::from("/root/external/dep/in"),
             exec: PathBuf::from("external/dep/in"),
             producer: None,

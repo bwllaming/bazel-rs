@@ -957,6 +957,7 @@ fn rooted_sets_survive_real_gc_and_freeze_with_native_file_label_members() {
             alloc_file(
                 module.heap(),
                 File {
+                    is_directory: false,
                     path: "pkg/input.txt".to_owned(),
                     short_path: "pkg/input.txt".to_owned(),
                     owner: "//pkg:rule".to_owned(),

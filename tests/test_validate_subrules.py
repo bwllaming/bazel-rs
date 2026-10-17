@@ -59,7 +59,6 @@ MESSAGES = {
     'lifted-label-list': "subrule S attribute '_deps' (attr.label_list) is not supported by the native profile: Bazel 9.3 crashes passing a lifted label_list to the implementation (InvalidStarlarkValueException: Lists$TransformingRandomAccessList)",
     'explicit-flag': 'unsupported option --experimental_rule_extension_api=false',
     'write-list': 'write content must be a string or Args', 'write-tuple': 'write content must be a string or Args',
-    'param-file-format': 'parameter files are unsupported', 'use-param-file': 'parameter files are unsupported',
 }
 
 
@@ -172,12 +171,12 @@ def synthetic(reference_only=False):
     return report
 
 
-COMMANDS_REFERENCE,COMMANDS_FULL=115,198
+COMMANDS_REFERENCE,COMMANDS_FULL=115,196
 
 
 class PlanTests(unittest.TestCase):
     def test_complete_bounded_plan_and_syntax(self):
-        self.assertEqual((len(s.CASEPLAN),s.plan_receipt(True)['phases'],s.plan_receipt(False)['phases']),(9,59,123))
+        self.assertEqual((len(s.CASEPLAN),s.plan_receipt(True)['phases'],s.plan_receipt(False)['phases']),(9,59,121))
         self.assertEqual((s.plan_receipt(True)['commands'],s.plan_receipt(False)['commands']),(COMMANDS_REFERENCE,COMMANDS_FULL))
         for c in s.CASEPLAN:
             self.assertEqual(len(c['probes']),len(set(c['probes'])))
@@ -226,14 +225,13 @@ class PlanTests(unittest.TestCase):
         self.assertNotIn(b'run_shell',defs)
         self.assertEqual(v['expected']['args_escape.out'],b'from-subrule\nfrom-parent\n')
 
-    def test_mapper_timing_not_claimed_and_paramfile_setters_stay_native_boundaries(self):
+    def test_mapper_timing_not_claimed_and_paramfile_setters_are_not_boundaries(self):
         probes=[p for c in s.CASEPLAN for p in c['probes']]
         self.assertNotIn('mapper_failure',probes)
         self.assertIn('Bazel defers it to write execution',str(s.LIMITATIONS))
         for probe in ('param-file-format','use-param-file'):
-            v=s.fixture('boundaries',probe)
-            self.assertTrue(v['native_only']);self.assertEqual(v['diagnostic'],probe)
-            self.assertEqual(v['expected'],{})
+            self.assertNotIn(probe,probes)
+        self.assertIn('supported since N23d',str(s.LIMITATIONS))
 
     def test_constructor_hash_is_separate_from_instance_metadata(self):
         v=s.fixture('constructor','factory-unhashable')
