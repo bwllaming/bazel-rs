@@ -1,0 +1,2998 @@
+{
+ "cases": [
+  {
+   "args": [
+    "build",
+    "//:mode"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "build -c opt\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "opt\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:mode"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 9.65,
+   "id": "rc-build-applies",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "mode.txt": "opt\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/rc-build-applies/tmp/cache",
+    "build",
+    "//:mode"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "-c",
+    "fastbuild",
+    "//:mode"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "build -c opt\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "-c",
+    "fastbuild",
+    "//:mode"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.34,
+   "id": "cmdline-overrides-rc",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/cmdline-overrides-rc/tmp/cache",
+    "build",
+    "-c",
+    "fastbuild",
+    "//:mode"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--config=d",
+    "-c",
+    "opt",
+    "//:mode"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "build:d -c dbg\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "opt\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--config=d",
+    "-c",
+    "opt",
+    "//:mode"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.33,
+   "id": "config-in-place-before",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "mode.txt": "opt\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/config-in-place-before/tmp/cache",
+    "build",
+    "--config=d",
+    "-c",
+    "opt",
+    "//:mode"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "-c",
+    "opt",
+    "--config",
+    "d",
+    "//:mode"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "build:d -c dbg\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "dbg\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "-c",
+    "opt",
+    "--config",
+    "d",
+    "//:mode"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.23,
+   "id": "config-in-place-after",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "mode.txt": "dbg\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/config-in-place-after/tmp/cache",
+    "build",
+    "-c",
+    "opt",
+    "--config",
+    "d",
+    "//:mode"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--config=x",
+    "//:define"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "build:x --define=x=1\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "define.txt": "x\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--config=x",
+    "//:define"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.25,
+   "id": "config-define",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "define.txt": "x\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/config-define/tmp/cache",
+    "build",
+    "--config=x",
+    "//:define"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:define"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "build --config=x\nbuild:x --define=x=1\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "define.txt": "x\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:define"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.19,
+   "id": "rc-config-in-rc",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "define.txt": "x\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/rc-config-in-rc/tmp/cache",
+    "build",
+    "//:define"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--config=a",
+    "//:mode",
+    "//:define"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "build:a --config=b\nbuild:b -c dbg\ncommon:b --define=x=1\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "define.txt": "x\n",
+     "mode.txt": "dbg\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--config=a",
+    "//:mode",
+    "//:define"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.15,
+   "id": "nested-config",
+   "native": {
+    "error": "2 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "define.txt": "x\n",
+     "mode.txt": "dbg\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/nested-config/tmp/cache",
+    "build",
+    "--config=a",
+    "//:mode",
+    "//:define"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:mode"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "build -c dbg\ncommon -c opt\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "dbg\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:mode"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.38,
+   "id": "build-beats-common",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "mode.txt": "dbg\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/build-beats-common/tmp/cache",
+    "build",
+    "//:mode"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:define"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "always --define=x=1\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "define.txt": "x\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:define"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.17,
+   "id": "always-applies",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "define.txt": "x\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/always-applies/tmp/cache",
+    "build",
+    "//:define"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--config=o",
+    "//:mode"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "common --announce_rc\ncommon --output=label -c opt\nbuild:o -c dbg\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [
+     "Options provided by the client:\n  Inherited 'common' options: --isatty=0 --terminal_columns=80",
+     "Reading rc options for 'build' from <WS>/.bazelrc:\n  Inherited 'common' options: --announce_rc --output=label -c opt\n  Ignored as unsupported by 'build': --output=label",
+     "Found applicable config definition build:o in file <WS>/.bazelrc: -c dbg"
+    ],
+    "outputs": {
+     "mode.txt": "dbg\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--config=o",
+    "//:mode"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.31,
+   "id": "common-ignored-announce",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [
+     "Options provided by the client:\n  Inherited 'common' options: --isatty=0 --terminal_columns=80",
+     "Reading rc options for 'build' from <WS>/.bazelrc:\n  Inherited 'common' options: --announce_rc --output=label -c opt\n  Ignored as unsupported by 'build': --output=label",
+     "Found applicable config definition build:o in file <WS>/.bazelrc: -c dbg"
+    ],
+    "outputs": {
+     "mode.txt": "dbg\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/common-ignored-announce/tmp/cache",
+    "build",
+    "--config=o",
+    "//:mode"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "query",
+    "//:ok"
+   ],
+   "classification": "EXPECTED_NATIVE_UNSUPPORTED",
+   "env": {},
+   "files": {
+    ".bazelrc": "common --output=label\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {},
+    "stdout": "//:ok\n",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "query",
+    "//:ok"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 7.59,
+   "id": "common-query-option-for-query",
+   "native": {
+    "error": "unsupported option \"--output=label\" from rc file <WS>/.bazelrc:1 ('common' options); options are never silently ignored",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/common-query-option-for-query/tmp/cache",
+    "query",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "query",
+    "--config=q",
+    "//:ok"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "common -c opt\nquery:q --define=a=1\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {},
+    "stdout": "//:ok\n",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "query",
+    "--config=q",
+    "//:ok"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 7.62,
+   "id": "common-coreoption-for-query",
+   "native": {
+    "error": null,
+    "notes": [],
+    "outputs": {},
+    "stdout": "//:ok\n",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/common-coreoption-for-query/tmp/cache",
+    "query",
+    "--config=q",
+    "//:ok"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "query",
+    "//:ok"
+   ],
+   "classification": "EXPECTED_NATIVE_UNSUPPORTED",
+   "env": {},
+   "files": {
+    ".bazelrc": "always --test_output=errors\n"
+   },
+   "genuine": {
+    "error": "--test_output=errors :: Unrecognized option: --test_output=errors",
+    "notes": [
+     "Reading rc options for 'query' from <WS>/.bazelrc:\n  Inherited 'always' options: --test_output=errors"
+    ],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "query",
+    "//:ok"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 1.22,
+   "id": "always-unknown-for-query",
+   "native": {
+    "error": "unsupported option \"--test_output=errors\" from rc file <WS>/.bazelrc:1 ('always' options); options are never silently ignored",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/always-unknown-for-query/tmp/cache",
+    "query",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:mode"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "test --bogus_xyz\nquery --define=a=1\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:mode"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.22,
+   "id": "test-group-not-inherited",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/test-group-not-inherited/tmp/cache",
+    "build",
+    "//:mode"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "build //:mode\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.21,
+   "id": "rc-residue-target",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/rc-residue-target/tmp/cache",
+    "build"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:flagged"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "build --//:flag\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "flagged.txt": "on\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:flagged"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.17,
+   "id": "starlark-flag-in-rc",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "flagged.txt": "on\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/starlark-flag-in-rc/tmp/cache",
+    "build",
+    "//:flagged"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--no//:flag",
+    "//:flagged"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "common --//:flag\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "flagged.txt": "off\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--no//:flag",
+    "//:flagged"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.18,
+   "id": "starlark-flag-cmdline-override",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "flagged.txt": "off\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/starlark-flag-cmdline-override/tmp/cache",
+    "build",
+    "--no//:flag",
+    "//:flagged"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:define"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "# comment\nbuild \\\n  --define=\"y=a b\" # trailing\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "define.txt": "y\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:define"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.23,
+   "id": "quotes-continuation-comments",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "define.txt": "y\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/quotes-continuation-comments/tmp/cache",
+    "build",
+    "//:define"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:mode"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "common --enable_platform_specific_config\nbuild:linux -c opt\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "opt\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:mode"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.27,
+   "id": "platform-specific-config",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "mode.txt": "opt\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/platform-specific-config/tmp/cache",
+    "build",
+    "//:mode"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--config=x",
+    "--config=x",
+    "//:define"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "build:x --define=x=1\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "define.txt": "x\n"
+    },
+    "stdout": "",
+    "warnings": [
+     "The following configs were expanded more than once: [x]. For repeatable flags, repeats are counted twice and may lead to unexpected behavior."
+    ]
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--config=x",
+    "--config=x",
+    "//:define"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.52,
+   "id": "duplicate-config-warning",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "define.txt": "x\n"
+    },
+    "stdout": "",
+    "warnings": [
+     "The following configs were expanded more than once: [x]. For repeatable flags, repeats are counted twice and may lead to unexpected behavior."
+    ]
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/duplicate-config-warning/tmp/cache",
+    "build",
+    "--config=x",
+    "--config=x",
+    "//:define"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:mode"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "bulid -c opt\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": [
+     "while reading option defaults file '<WS>/.bazelrc':\n  invalid command name 'bulid'.",
+     "while reading option defaults file '<WS>/.bazelrc':\n  invalid command name 'bulid'."
+    ]
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:mode"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.41,
+   "id": "invalid-command-warning",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": [
+     "while reading option defaults file '<WS>/.bazelrc':\n  invalid command name 'bulid'.",
+     "while reading option defaults file '<WS>/.bazelrc':\n  invalid command name 'bulid'."
+    ]
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/invalid-command-warning/tmp/cache",
+    "build",
+    "//:mode"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--config=nope",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {},
+   "genuine": {
+    "error": "Config value 'nope' is not defined in any .rc file",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--config=nope",
+    "//:ok"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 1.17,
+   "id": "undefined-config",
+   "native": {
+    "error": "Config value 'nope' is not defined in any .rc file",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/undefined-config/tmp/cache",
+    "build",
+    "--config=nope",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--config=a",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {
+    ".bazelrc": "build:a --config=b\nbuild:b --config=a\n"
+   },
+   "genuine": {
+    "error": "Config expansion has a cycle: config value a expands to itself, see inheritance chain [a, b]",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--config=a",
+    "//:ok"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 1.2,
+   "id": "config-cycle",
+   "native": {
+    "error": "Config expansion has a cycle: config value a expands to itself, see inheritance chain [a, b]",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/config-cycle/tmp/cache",
+    "build",
+    "--config=a",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--config=a",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {
+    ".bazelrc": "build:a --config b\n"
+   },
+   "genuine": {
+    "error": "In file <WS>/.bazelrc, the definition of config a expands to another config that either has no value or is not in the form --config=value. For recursive config definitions, please do not provide the value in a separate token, such as in the form '--config value'.",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--config=a",
+    "//:ok"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 1.16,
+   "id": "config-separate-token",
+   "native": {
+    "error": "In file <WS>/.bazelrc, the definition of config a expands to another config that either has no value or is not in the form --config=value. For recursive config definitions, please do not provide the value in a separate token, such as in the form '--config value'.",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/config-separate-token/tmp/cache",
+    "build",
+    "--config=a",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "query",
+    "--config=q",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {
+    ".bazelrc": "build:q -c opt\n"
+   },
+   "genuine": {
+    "error": "Config value 'q' is not defined in any .rc file",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "query",
+    "--config=q",
+    "//:ok"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 1.17,
+   "id": "build-config-not-for-query",
+   "native": {
+    "error": "Config value 'q' is not defined in any .rc file",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/build-config-not-for-query/tmp/cache",
+    "query",
+    "--config=q",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--noconfig",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {},
+   "genuine": {
+    "error": "--noconfig :: Illegal use of 'no' prefix on non-boolean option: --noconfig",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--noconfig",
+    "//:ok"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 1.15,
+   "id": "noconfig",
+   "native": {
+    "error": "--noconfig :: Illegal use of 'no' prefix on non-boolean option: --noconfig",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/noconfig/tmp/cache",
+    "build",
+    "--noconfig",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "query",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {
+    ".bazelrc": "common --announce_rc=maybe\n"
+   },
+   "genuine": {
+    "error": "While parsing option --announce_rc=maybe: 'maybe' is not a boolean",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "query",
+    "//:ok"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 1.16,
+   "id": "announce-not-boolean",
+   "native": {
+    "error": "While parsing option --announce_rc=maybe: 'maybe' is not a boolean",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/announce-not-boolean/tmp/cache",
+    "query",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "query",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {
+    ".bazelrc": "common --test_output\n"
+   },
+   "genuine": {
+    "error": "Expected value after --test_output",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "query",
+    "//:ok"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 1.1,
+   "id": "common-missing-value",
+   "native": {
+    "error": "Expected value after --test_output",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/common-missing-value/tmp/cache",
+    "query",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {
+    ".bazelrc": "test --flag_alias=a=//:flag\n"
+   },
+   "genuine": {
+    "error": "<WS>/.bazelrc: \"test --flag_alias=a=//:flag\" disallowed. --flag_alias only supports these commands: build, common, always",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:ok"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 1.06,
+   "id": "flag-alias-restricted",
+   "native": {
+    "error": "<WS>/.bazelrc: \"test --flag_alias=a=//:flag\" disallowed. --flag_alias only supports these commands: build, common, always",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/flag-alias-restricted/tmp/cache",
+    "build",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "query",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {
+    ".bazelrc": "query --zzqqxx_not_an_option\n"
+   },
+   "genuine": {
+    "error": "--zzqqxx_not_an_option :: Unrecognized option: --zzqqxx_not_an_option",
+    "notes": [
+     "Reading rc options for 'query' from <WS>/.bazelrc:\n  'query' options: --zzqqxx_not_an_option"
+    ],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "query",
+    "//:ok"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 1.08,
+   "id": "bad-option-query-notes",
+   "native": {
+    "error": "--zzqqxx_not_an_option :: Unrecognized option: --zzqqxx_not_an_option",
+    "notes": [
+     "Reading rc options for 'query' from <WS>/.bazelrc:\n  'query' options: --zzqqxx_not_an_option"
+    ],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/bad-option-query-notes/tmp/cache",
+    "query",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {
+    ".bazelrc": "build --zzqqxx_not_an_option\n"
+   },
+   "genuine": {
+    "error": "--zzqqxx_not_an_option :: Unrecognized option: --zzqqxx_not_an_option",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:ok"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 7.59,
+   "id": "bad-option-build-second-round",
+   "native": {
+    "error": "--zzqqxx_not_an_option :: Unrecognized option: --zzqqxx_not_an_option",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/bad-option-build-second-round/tmp/cache",
+    "build",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:mode"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "import %workspace%/extra.rc\n",
+    "extra.rc": "build -c opt\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "opt\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:mode"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.41,
+   "id": "import-workspace",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "mode.txt": "opt\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/import-workspace/tmp/cache",
+    "build",
+    "//:mode"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:mode"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "try-import %workspace%/missing.rc\ntry-import /nonexistent/x.rc\nbuild -c dbg\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "dbg\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:mode"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.18,
+   "id": "try-import-missing",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "mode.txt": "dbg\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/try-import-missing/tmp/cache",
+    "build",
+    "//:mode"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {
+    ".bazelrc": "import %workspace%/missing.rc\n"
+   },
+   "genuine": {
+    "error": "Nonexistent path in import declaration in config file '<WS>/.bazelrc': 'import %workspace%/missing.rc' (are you in your source checkout/WORKSPACE?)",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:ok"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 0.0,
+   "id": "import-missing",
+   "native": {
+    "error": "Nonexistent path in import declaration in config file '<WS>/.bazelrc': 'import %workspace%/missing.rc' (are you in your source checkout/WORKSPACE?)",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/import-missing/tmp/cache",
+    "build",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {
+    ".bazelrc": "import %workspace%/loop.rc\n",
+    "loop.rc": "import %workspace%/.bazelrc\n"
+   },
+   "genuine": {
+    "error": "Import loop detected:\n  <WS>/.bazelrc\n  <WS>/loop.rc\n  <WS>/.bazelrc",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:ok"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 0.0,
+   "id": "import-loop",
+   "native": {
+    "error": "Import loop detected:\n  <WS>/.bazelrc\n  <WS>/loop.rc\n  <WS>/.bazelrc",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/import-loop/tmp/cache",
+    "build",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {
+    ".bazelrc": "import a b\n"
+   },
+   "genuine": {
+    "error": "Invalid import declaration in config file '<WS>/.bazelrc': 'import a b'",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:ok"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 0.0,
+   "id": "import-invalid",
+   "native": {
+    "error": "Invalid import declaration in config file '<WS>/.bazelrc': 'import a b'",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/import-invalid/tmp/cache",
+    "build",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:mode",
+    "//:define"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "try-import-if-bazel-version >=9.0.0 %workspace%/opt.rc\ntry-import-if-bazel-version <9.0.0 %workspace%/dbg.rc\ntry-import-if-bazel-version ~9.3 %workspace%/x.rc\n",
+    "dbg.rc": "build -c dbg\n",
+    "opt.rc": "build -c opt\n",
+    "x.rc": "build --define=x=1\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "define.txt": "x\n",
+     "mode.txt": "opt\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:mode",
+    "//:define"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.21,
+   "id": "import-if-version",
+   "native": {
+    "error": "2 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "define.txt": "x\n",
+     "mode.txt": "opt\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/import-if-version/tmp/cache",
+    "build",
+    "//:mode",
+    "//:define"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {
+    ".bazelrc": "try-import-if-bazel-version =9 %workspace%/x.rc\n"
+   },
+   "genuine": {
+    "error": "Invalid version condition in config file '<WS>/.bazelrc': 'try-import-if-bazel-version =9 %workspace%/x.rc'. Condition '=9'. A valid condition is one of the following 7 comparison operators ('<', '<=', '>', '>=', '==', '!=', '~') followed by a semantic version.",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:ok"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 0.0,
+   "id": "import-bad-condition",
+   "native": {
+    "error": "Invalid version condition in config file '<WS>/.bazelrc': 'try-import-if-bazel-version =9 %workspace%/x.rc'. Condition '=9'. A valid condition is one of the following 7 comparison operators ('<', '<=', '>', '>=', '==', '!=', '~') followed by a semantic version.",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/import-bad-condition/tmp/cache",
+    "build",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {
+    ".bazelrc": "try-import-if-bazel-version >=9.x %workspace%/x.rc\n"
+   },
+   "genuine": {
+    "error": "Invalid import declaration in config file '<WS>/.bazelrc': 'try-import-if-bazel-version >=9.x %workspace%/x.rc'. Could not parse version '9.x' as a valid semantic version.",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:ok"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 0.0,
+   "id": "import-bad-version",
+   "native": {
+    "error": "Invalid import declaration in config file '<WS>/.bazelrc': 'try-import-if-bazel-version >=9.x %workspace%/x.rc'. Could not parse version '9.x' as a valid semantic version.",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/import-bad-version/tmp/cache",
+    "build",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:mode"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    "~/.bazelrc": "build -c dbg\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "dbg\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:mode"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.08,
+   "id": "home-rc",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "mode.txt": "dbg\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/home-rc/tmp/cache",
+    "build",
+    "//:mode"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:mode"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    "~/.bazelrc": "build -c dbg\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": [
+     "The following rc files are no longer being read, please transfer their contents or import their path into one of the standard rc files:\n<HOME>/.bazelrc"
+    ]
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "--nohome_rc",
+    "build",
+    "//:mode"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.22,
+   "id": "nohome-rc-lost-warning",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": [
+     "The following rc files are no longer being read, please transfer their contents or import their path into one of the standard rc files:\n<HOME>/.bazelrc"
+    ]
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/nohome-rc-lost-warning/tmp/cache",
+    "--nohome_rc",
+    "build",
+    "//:mode"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": [
+    "--nohome_rc"
+   ]
+  },
+  {
+   "args": [
+    "build",
+    "//:mode"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "build -c opt\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": [
+     "The following rc files are no longer being read, please transfer their contents or import their path into one of the standard rc files:\n<WS>/.bazelrc"
+    ]
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "--noworkspace_rc",
+    "build",
+    "//:mode"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.06,
+   "id": "noworkspace-rc",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": [
+     "The following rc files are no longer being read, please transfer their contents or import their path into one of the standard rc files:\n<WS>/.bazelrc"
+    ]
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/noworkspace-rc/tmp/cache",
+    "--noworkspace_rc",
+    "build",
+    "//:mode"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": [
+    "--noworkspace_rc"
+   ]
+  },
+  {
+   "args": [
+    "build",
+    "//:mode"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    "opt.rc": "build -c opt\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "opt\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "--bazelrc=opt.rc",
+    "build",
+    "//:mode"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.07,
+   "id": "bazelrc-relative",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "mode.txt": "opt\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/bazelrc-relative/tmp/cache",
+    "--bazelrc=opt.rc",
+    "build",
+    "//:mode"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": [
+    "--bazelrc=opt.rc"
+   ]
+  },
+  {
+   "args": [
+    "build",
+    "//:mode"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    "opt.rc": "build -c opt\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "opt\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "--bazelrc",
+    "opt.rc",
+    "build",
+    "//:mode"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.21,
+   "id": "bazelrc-split-value",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "mode.txt": "opt\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/bazelrc-split-value/tmp/cache",
+    "--bazelrc",
+    "opt.rc",
+    "build",
+    "//:mode"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": [
+    "--bazelrc",
+    "opt.rc"
+   ]
+  },
+  {
+   "args": [
+    "build",
+    "//:mode",
+    "//:define"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "build --define=x=1\n",
+    "opt.rc": "build -c opt\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "define.txt": "x\n",
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "--bazelrc=/dev/null",
+    "--bazelrc=opt.rc",
+    "build",
+    "//:mode",
+    "//:define"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.11,
+   "id": "bazelrc-dev-null",
+   "native": {
+    "error": "2 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "define.txt": "x\n",
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/bazelrc-dev-null/tmp/cache",
+    "--bazelrc=/dev/null",
+    "--bazelrc=opt.rc",
+    "build",
+    "//:mode",
+    "//:define"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": [
+    "--bazelrc=/dev/null",
+    "--bazelrc=opt.rc"
+   ]
+  },
+  {
+   "args": [
+    "build",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {},
+   "genuine": {
+    "error": "Error: Unable to read .bazelrc file '<WS>/missing.rc'.",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "--bazelrc=missing.rc",
+    "build",
+    "//:ok"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 0.0,
+   "id": "bazelrc-missing",
+   "native": {
+    "error": "Error: Unable to read .bazelrc file '<WS>/missing.rc'.",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/bazelrc-missing/tmp/cache",
+    "--bazelrc=missing.rc",
+    "build",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": [
+    "--bazelrc=missing.rc"
+   ]
+  },
+  {
+   "args": [
+    "build",
+    "//:mode"
+   ],
+   "classification": "EXACT",
+   "env": {
+    "BAZELRC": "opt.rc"
+   },
+   "files": {
+    "opt.rc": "build -c opt\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "opt\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:mode"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.76,
+   "id": "bazelrc-env",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "mode.txt": "opt\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/bazelrc-env/tmp/cache",
+    "build",
+    "//:mode"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:mode"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "import %workspace%/extra.rc\n",
+    "extra.rc": "build -c opt\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "opt\n"
+    },
+    "stdout": "",
+    "warnings": [
+     "Duplicate rc file: <WS>/extra.rc is read multiple times, it is a standard rc file location but must have been unnecessarily imported earlier."
+    ]
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "--bazelrc=extra.rc",
+    "build",
+    "//:mode"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.14,
+   "id": "duplicate-rc-warning",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "mode.txt": "opt\n"
+    },
+    "stdout": "",
+    "warnings": [
+     "Duplicate rc file: <WS>/extra.rc is read multiple times, it is a standard rc file location but must have been unnecessarily imported earlier."
+    ]
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/duplicate-rc-warning/tmp/cache",
+    "--bazelrc=extra.rc",
+    "build",
+    "//:mode"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": [
+    "--bazelrc=extra.rc"
+   ]
+  },
+  {
+   "args": [
+    "build",
+    "//:mode"
+   ],
+   "classification": "EXACT",
+   "env": {},
+   "files": {
+    ".bazelrc": "build -c opt\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": [
+     "Value of --bazelrc is ignored, since --ignore_all_rc_files is on."
+    ]
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "--ignore_all_rc_files",
+    "--bazelrc=x",
+    "build",
+    "//:mode"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.7,
+   "id": "ignore-all-rc-warning",
+   "native": {
+    "error": "1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": [
+     "Value of --bazelrc is ignored, since --ignore_all_rc_files is on."
+    ]
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/ignore-all-rc-warning/tmp/cache",
+    "--ignore_all_rc_files",
+    "--bazelrc=x",
+    "build",
+    "//:mode"
+   ],
+   "native_returncode": 0,
+   "native_seconds": 0.01,
+   "startup": [
+    "--ignore_all_rc_files",
+    "--bazelrc=x"
+   ]
+  },
+  {
+   "args": [
+    "build",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {
+    ".bazelrc": "startup --nohome_rc\n"
+   },
+   "genuine": {
+    "error": "Can't specify --nohome_rc in the .bazelrc file.",
+    "notes": [
+     "Reading 'startup' options from <WS>/.bazelrc: --nohome_rc"
+    ],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:ok"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 0.0,
+   "id": "startup-norc-flag-in-rc",
+   "native": {
+    "error": "Can't specify --nohome_rc in the .bazelrc file.",
+    "notes": [
+     "Reading 'startup' options from <WS>/.bazelrc: --nohome_rc"
+    ],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/startup-norc-flag-in-rc/tmp/cache",
+    "build",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {
+    ".bazelrc": "startup --bazelrc=x\n"
+   },
+   "genuine": {
+    "error": "Can't specify --bazelrc in the RC file.",
+    "notes": [
+     "Reading 'startup' options from <WS>/.bazelrc: --bazelrc=x"
+    ],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:ok"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 0.0,
+   "id": "startup-bazelrc-in-rc",
+   "native": {
+    "error": "Can't specify --bazelrc in the RC file.",
+    "notes": [
+     "Reading 'startup' options from <WS>/.bazelrc: --bazelrc=x"
+    ],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/startup-bazelrc-in-rc/tmp/cache",
+    "build",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {
+    ".bazelrc": "startup --bogus_startup\n"
+   },
+   "genuine": {
+    "error": "Unknown startup option: '--bogus_startup'.\n  For more info, run 'bazel help startup_options'.",
+    "notes": [
+     "Reading 'startup' options from <WS>/.bazelrc: --bogus_startup"
+    ],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:ok"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 0.0,
+   "id": "startup-unknown-in-rc",
+   "native": {
+    "error": "Unknown startup option: '--bogus_startup'.\n  For more info, run 'bazel help startup_options'.",
+    "notes": [
+     "Reading 'startup' options from <WS>/.bazelrc: --bogus_startup"
+    ],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/startup-unknown-in-rc/tmp/cache",
+    "build",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "query",
+    "//:ok"
+   ],
+   "classification": "EXPECTED_NATIVE_UNSUPPORTED",
+   "env": {},
+   "files": {
+    ".bazelrc": "startup --host_jvm_args=-Xmx1g\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {},
+    "stdout": "//:ok\n",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "query",
+    "//:ok"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 7.61,
+   "id": "startup-valid-in-rc",
+   "native": {
+    "error": "unsupported startup option \"--host_jvm_args=-Xmx1g\" from rc file <WS>/.bazelrc:1; startup options are never silently ignored",
+    "notes": [
+     "Reading 'startup' options from <WS>/.bazelrc: --host_jvm_args=-Xmx1g"
+    ],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/startup-valid-in-rc/tmp/cache",
+    "query",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {},
+   "genuine": {
+    "error": "Unknown startup option: '--bogus_startup'.\n  For more info, run 'bazel help startup_options'.",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "--bogus_startup",
+    "build",
+    "//:ok"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 0.0,
+   "id": "startup-unknown-cmdline",
+   "native": {
+    "error": "Unknown startup option: '--bogus_startup'.\n  For more info, run 'bazel help startup_options'.",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/startup-unknown-cmdline/tmp/cache",
+    "--bogus_startup",
+    "build",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": [
+    "--bogus_startup"
+   ]
+  },
+  {
+   "args": [
+    "build",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {},
+   "genuine": {
+    "error": "In argument '--home_rc=1': option '--home_rc' does not take a value.",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "--home_rc=1",
+    "build",
+    "//:ok"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 0.0,
+   "id": "startup-nullary-value",
+   "native": {
+    "error": "In argument '--home_rc=1': option '--home_rc' does not take a value.",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/startup-nullary-value/tmp/cache",
+    "--home_rc=1",
+    "build",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": [
+    "--home_rc=1"
+   ]
+  },
+  {
+   "args": [
+    "build",
+    "//:ok"
+   ],
+   "classification": "EXPECTED_NATIVE_UNSUPPORTED",
+   "env": {},
+   "files": {
+    ".bazelrc": "# c\nbuild --remote_cache=http://127.0.0.1:9\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "//:ok"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.15,
+   "id": "unmodelled-rc-option",
+   "native": {
+    "error": "unsupported option \"--remote_cache=http://127.0.0.1:9\" from rc file <WS>/.bazelrc:2 ('build' options); options are never silently ignored",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/unmodelled-rc-option/tmp/cache",
+    "build",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "build",
+    "--config=cross",
+    "//:mode"
+   ],
+   "classification": "EXPECTED_NATIVE_UNSUPPORTED",
+   "env": {},
+   "files": {
+    ".bazelrc": "build:cross --sandbox_add_mount_pair=/tmp\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {
+     "mode.txt": "fastbuild\n"
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "build",
+    "--config=cross",
+    "//:mode"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 8.15,
+   "id": "unmodelled-config-option",
+   "native": {
+    "error": "unsupported option \"--sandbox_add_mount_pair=/tmp\" from rc file <WS>/.bazelrc:1 (config definition 'build:cross'); options are never silently ignored",
+    "notes": [],
+    "outputs": {
+     "mode.txt": null
+    },
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/unmodelled-config-option/tmp/cache",
+    "build",
+    "--config=cross",
+    "//:mode"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "query",
+    "//:ok"
+   ],
+   "classification": "EXPECTED_NATIVE_UNSUPPORTED",
+   "env": {},
+   "files": {
+    ".bazelrc": "common --credential_helper=example.invalid=%workspace%/helper\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {},
+    "stdout": "//:ok\n",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "query",
+    "//:ok"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 7.61,
+   "id": "unmodelled-common-credential-helper",
+   "native": {
+    "error": "unsupported option \"--credential_helper=example.invalid=%workspace%/helper\" from rc file <WS>/.bazelrc:1 ('common' options); options are never silently ignored",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/unmodelled-common-credential-helper/tmp/cache",
+    "query",
+    "//:ok"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "mod",
+    "graph",
+    "--config=nope"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "env": {},
+   "files": {},
+   "genuine": {
+    "error": "Config value 'nope' is not defined in any .rc file",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "mod",
+    "graph",
+    "--config=nope"
+   ],
+   "genuine_returncode": 2,
+   "genuine_seconds": 1.23,
+   "id": "mod-undefined-config",
+   "native": {
+    "error": "Config value 'nope' is not defined in any .rc file",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/mod-undefined-config/tmp/cache",
+    "mod",
+    "graph",
+    "--config=nope"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  },
+  {
+   "args": [
+    "mod",
+    "graph"
+   ],
+   "classification": "EXPECTED_NATIVE_UNSUPPORTED",
+   "env": {},
+   "files": {
+    ".bazelrc": "common --remote_cache=http://127.0.0.1:9\n"
+   },
+   "genuine": {
+    "error": null,
+    "notes": [],
+    "outputs": {},
+    "stdout": "<root> (rc@_)\n\n",
+    "warnings": []
+   },
+   "genuine_argv": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--output_user_root=<SCRATCH>/genuine-output-user-root",
+    "mod",
+    "graph"
+   ],
+   "genuine_returncode": 0,
+   "genuine_seconds": 9.67,
+   "id": "mod-unmodelled-rc",
+   "native": {
+    "error": "unsupported option \"--remote_cache=http://127.0.0.1:9\" from rc file <WS>/.bazelrc:1 ('common' options); options are never silently ignored",
+    "notes": [],
+    "outputs": {},
+    "stdout": "",
+    "warnings": []
+   },
+   "native_argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/native/mod-unmodelled-rc/tmp/cache",
+    "mod",
+    "graph"
+   ],
+   "native_returncode": 1,
+   "native_seconds": 0.0,
+   "startup": []
+  }
+ ],
+ "code_probe": [
+  {
+   "argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/code-probe-build/cache",
+    "build",
+    "//src/docker:config"
+   ],
+   "cwd": "/home/coder/code",
+   "returncode": 1,
+   "stderr": "bazel-rs: unsupported option \"--credential_helper=u609859-sub1.your-storagebox.de=%workspace%/bin/bazel-credential-helper\" from rc file /home/coder/code/.bazelrc:2 ('common' options); options are never silently ignored\n"
+  },
+  {
+   "argv": [
+    "/tmp/opencode/bazel-parity-bazelrc/target/release/bazel-rs",
+    "--cache-dir=<SCRATCH>/code-probe-query/cache",
+    "query",
+    "//src/docker:config"
+   ],
+   "cwd": "/home/coder/code",
+   "returncode": 1,
+   "stderr": "bazel-rs: unsupported option \"--credential_helper=u609859-sub1.your-storagebox.de=%workspace%/bin/bazel-credential-helper\" from rc file /home/coder/code/.bazelrc:2 ('common' options); options are never silently ignored\n"
+  }
+ ],
+ "counts": {
+  "EXACT": 31,
+  "EXACT_MESSAGE": 22,
+  "EXPECTED_NATIVE_UNSUPPORTED": 7
+ },
+ "genuine": {
+  "path": "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "source_commit": "e89755babf3e941bc1e9d8120b1cd48854ab9dfa",
+  "version": "9.3.0"
+ },
+ "milestone": "N31",
+ "native": {
+  "sha256": "5abf87d1e7cfcadcde07e9923a1288f89af497bd67cb3f84ebbe7a0c9f8430c9"
+ },
+ "normalization": "workspace and HOME paths replaced by <WS>/<HOME>; notes = INFO rc notes, warnings = rc warnings, error = first ERROR/FATAL (client log prefixes stripped) or bazel-rs: line; build outputs compared by content",
+ "post_capture_changes": [
+  "native-only options (--experimental-builtin-modules[=BOOL], --cache-dir=PATH incl. startup lines) from rc files are rejected naming the rc file:line (command-line use unchanged); no captured case uses them",
+  "--announce_rc/early-exit rc notes redact --repo_env/--action_env/--host_action_env/--test_env values as KEY=<redacted> (deliberate difference from Bazel verbatim echo); no captured case contains these options",
+  "scripts/extract_command_options.py verifies the genuine binary SHA-256 and the flags-as-proto output SHA-256 before generating; regenerated src/command_options.rs byte-identical",
+  "docs: ~/code .envrc exports BAZELRC (.bazelrc.coder) under direnv; never sourced here"
+ ],
+ "post_capture_note": "Capture not rerun after these changes: none alters the behavior of any captured case.",
+ "schema": "bazelrc-reference-receipt-v1",
+ "system_bazelrc_exists": false
+}

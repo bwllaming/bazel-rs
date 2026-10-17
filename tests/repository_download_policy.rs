@@ -410,7 +410,7 @@ fn malformed_boolean_options_fail_before_any_metadata_or_source_execution() {
             for suffix in ["=", "=true", "=false", "=0", "=YES"] {
                 rejected(
                     &fixture.run(command, &[&format!("--no{name}{suffix}")], "cache"),
-                    "unexpected value after boolean option",
+                    "Unexpected value after boolean option",
                 );
             }
         }

@@ -68,6 +68,13 @@ next. This
 is a query and loading result only: application build/test and performance
 remain unproven.
 
+These application runs pass `--ignore_all_rc_files`. With rc evaluation (N31,
+docs/BAZELRC.md) a native `build` or `query` in `~/code` without it evaluates the
+checkout's `.bazelrc` and stops at the first unmodelled option, the `common`
+group's `--credential_helper=…` (`.bazelrc:2`), naming the file and line; the
+remote cache, credential helper, sandbox, Java/macOS, `--repo_env` and other rc
+options remain unimplemented.
+
 The previously captured native query of `//src/beyondwork.ai/utils/str:str` failed
 before application analysis because `aspect_bazel_lib@2.22.5` is unavailable in
 the supplied local registries (none); remote fetching was then unsupported. See

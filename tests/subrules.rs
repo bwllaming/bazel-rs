@@ -1335,7 +1335,14 @@ fn explicit_experimental_flag_is_unsupported_not_reference_allowlist_enforcement
         "--experimental_rule_extension_api=true",
         "--experimental_rule_extension_api=false",
     ] {
-        rejected(&ws.run(&[flag, "query", ":check"]), "unsupported");
+        // Before the command, a command option is an unknown startup option
+        // (OptionProcessor::SplitCommandLine, option_processor.cc:138-147).
+        rejected(
+            &ws.run(&[flag, "query", ":check"]),
+            "Unknown startup option",
+        );
+        ws.untouched();
+        rejected(&ws.run(&["query", flag, ":check"]), "unsupported");
         ws.untouched();
     }
 }

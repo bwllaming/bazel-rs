@@ -163,12 +163,17 @@ fn flags_test_command_and_rc_are_not_silently_ignored() {
     }
     ws.file(".bazelrc", "build --config=production\n");
     let result = Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
-        .args(["build", ":ok"])
+        .args(["--nosystem_rc", "--nohome_rc", "build", ":ok"])
+        .env_remove("BAZELRC")
         .current_dir(&ws.0)
         .output()
         .unwrap();
     assert!(!result.status.success());
-    assert!(stderr(&result).contains("rc evaluation is not implemented"));
+    assert!(
+        stderr(&result).contains("Config value 'production' is not defined in any .rc file"),
+        "{}",
+        stderr(&result)
+    );
     assert!(ws.run(&["query", ":ok"]).status.success());
 }
 

@@ -126,6 +126,35 @@ impl Options {
     }
 }
 
+/// Whether the native `mod graph` profile parses `arg` (an option name the
+/// [`Options::parse`] loop handles), for rc-file options that must otherwise
+/// fail naming their rc file:line.
+pub fn models_graph_option(arg: &str) -> bool {
+    let flag = arg.split_once('=').map_or(arg, |(flag, _)| flag);
+    matches!(
+        flag,
+        "--registry"
+            | "--output"
+            | "--extension_info"
+            | "--lockfile_mode"
+            | "--ignore_dev_dependency"
+            | "--noignore_dev_dependency"
+            | "--cycles"
+            | "--nocycles"
+            | "--include_builtin"
+            | "--noinclude_builtin"
+            | "--include_unused"
+            | "--noinclude_unused"
+            | "--verbose"
+            | "--noverbose"
+            | "--repository_disable_download"
+            | "--norepository_disable_download"
+            | "--experimental_repository_disable_download"
+            | "--noexperimental_repository_disable_download"
+            | "--experimental-builtin-modules"
+    )
+}
+
 fn boolean(flag: &str, value: Option<&str>) -> Result<bool, String> {
     let value = match value {
         None | Some("true") => true,

@@ -283,7 +283,7 @@ fn no_native_placeholder_or_silently_ignored_disabled_set_flag() {
             "query",
             ":check",
         ]),
-        "unsupported",
+        "Unknown startup option: '--incompatible_disable_starlark_set=true'.",
     );
     flag.untouched();
 }

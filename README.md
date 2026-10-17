@@ -124,9 +124,11 @@ Implemented:
   mode validation on cache hits; per-key cross-process locks; atomic publication.
 
 Unknown attributes, options, rules, and unsupported commands fail rather than
-being silently ignored. Existing rc files require explicit
-`--ignore_all_rc_files`: **this deliberately removes their configuration** and is
-not a way to claim rc compatibility. `capabilities` prints the machine-readable
+being silently ignored. rc files are evaluated like Bazel 9.3 (system, workspace,
+home, `$BAZELRC` and `--bazelrc` files, imports, `common`/`always`/command groups,
+`--config`, `--announce_rc`; [`docs/BAZELRC.md`](docs/BAZELRC.md)); every
+resulting option goes through the native parsers, and options the profile does not
+model fail naming the rc file:line they came from. `capabilities` prints the machine-readable
 scope in [`docs/capabilities.json`](docs/capabilities.json).
 
 ### Execution and cache limitations
