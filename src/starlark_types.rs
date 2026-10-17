@@ -1400,26 +1400,86 @@ pub fn unpack_depset(value: Value<'_>) -> anyhow::Result<Vec<File>> {
 /// Scalar metadata depsets contain no File dependencies. Tuples may contain
 /// File values and must not hide those dependencies from provider traversal.
 pub(crate) fn contained_depset_files(value: Value<'_>) -> Option<Vec<File>> {
-    Some({
-        let mut stack = Depset::from_value(value)?.flatten();
-        stack.reverse();
-        let mut files = BTreeSet::new();
-        let mut result = Vec::new();
-        while let Some(item) = stack.pop() {
-            match item {
-                Item::File(file) if files.insert(file.clone()) => result.push(file.clone()),
-                Item::Symlink(entry) if files.insert(entry.target.clone()) => {
-                    result.push(entry.target.clone())
-                }
-                Item::Tuple(items) | Item::List(items) => stack.extend(items.iter().rev()),
-                Item::Dict(dict) => {
-                    stack.extend(dict.0.iter().rev().flat_map(|(key, value)| [value, key]))
-                }
-                _ => {}
-            }
+    Depset::from_value(value).map(depset_payload_files)
+}
+
+/// The files a depset's elements carry, in first-encounter order: Files,
+/// symlink targets, and (N49) those inside tuples, struct and provider
+/// elements, nested depsets, runfiles and configured targets.
+fn depset_payload_files(depset: &Depset) -> Vec<File> {
+    let mut stack: Vec<Item> = depset.flatten().into_iter().cloned().collect();
+    stack.reverse();
+    let mut files = BTreeSet::new();
+    let mut result = Vec::new();
+    let mut add = |file: File, result: &mut Vec<File>| {
+        if files.insert(file.clone()) {
+            result.push(file);
         }
-        result
-    })
+    };
+    while let Some(item) = stack.pop() {
+        match item {
+            Item::File(file) => add(file, &mut result),
+            Item::Symlink(entry) => add(entry.target, &mut result),
+            // N49b: frozen lists and dicts inside depset elements.
+            Item::Tuple(items) | Item::List(items) => stack.extend(items.into_iter().rev()),
+            Item::Dict(dict) => stack.extend(
+                dict.0
+                    .iter()
+                    .rev()
+                    .flat_map(|(key, value)| [value.clone(), key.clone()]),
+            ),
+            Item::Struct(item) => stack.extend(item.fields.iter().rev().map(|(_, v)| v.clone())),
+            Item::Depset(item) => {
+                for file in depset_payload_files(&item.0) {
+                    add(file, &mut result);
+                }
+            }
+            Item::Runfiles(item) => {
+                for file in item.0.all_artifacts() {
+                    add(file, &mut result);
+                }
+            }
+            Item::Target(item) => {
+                for file in target_payload_files(&item.0) {
+                    add(file, &mut result);
+                }
+            }
+            Item::String(_)
+            | Item::Label(_)
+            | Item::Int(_)
+            | Item::Bool(_)
+            | Item::None
+            | Item::Function(_) => {}
+        }
+    }
+    result
+}
+
+/// The files a configured target value carries for a holder of it: its
+/// files to build, runfiles and the files of its providers.
+pub(crate) fn target_payload_files(target: &Target) -> Vec<File> {
+    let mut seen = BTreeSet::new();
+    let mut result = Vec::new();
+    let provider_files = target.providers.values().flat_map(|provider| {
+        crate::providers::provider_files(provider.value()).unwrap_or_default()
+    });
+    for file in target
+        .files
+        .iter()
+        .cloned()
+        .chain(target.runfiles.files())
+        .chain(provider_files)
+    {
+        if seen.insert(file.clone()) {
+            result.push(file);
+        }
+    }
+    result
+}
+
+/// [`target_payload_files`] of a Target value.
+pub(crate) fn target_value_files(value: Value<'_>) -> Option<Vec<File>> {
+    Target::from_value(value).map(target_payload_files)
 }
 
 /// BuiltinProvider.repr (packages/BuiltinProvider.java:94-97).

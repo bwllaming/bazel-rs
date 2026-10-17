@@ -823,6 +823,13 @@ pub fn provider_files(value: Value<'_>) -> anyhow::Result<Vec<File>> {
             } else if let Some(fields) = crate::runfiles::outputs_fields(value) {
                 // ctx.outputs (formerly a plain struct): its predeclared output Files.
                 self.walk(fields, depth + 1)?;
+            } else if let Some(files) = crate::starlark_types::target_value_files(value) {
+                // A configured target value (Targets are immutable values a
+                // provider may hold, e.g. rules_go's GoArchiveData._cdeps):
+                // its files, runfiles and providers' files.
+                for file in files {
+                    self.file(file);
+                }
             } else if !matches!(
                 value.get_type(),
                 "NoneType" | "bool" | "int" | "float" | "string"

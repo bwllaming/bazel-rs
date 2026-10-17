@@ -1,0 +1,62 @@
+{
+ "schema": "n54-small-fix-reference-receipt/v1",
+ "fixture": "provider_payload_files",
+ "purpose": "Files reachable through a configured-target value and through struct/provider elements (and their nested depsets and Target tuples) of a depset in a dependency provider are action inputs of the dependent, as in Bazel.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "flags": "as artifacts/go_transitions-capture.py, without --host_platform"
+ },
+ "native": {
+  "binary": "target/debug/bazel-rs",
+  "sha256": "58601064a1ec306c4403bc30a6b81adfc58ecab6ceec29a2fb304063a31a4776",
+  "worktree": {
+   "base_commit": "51ce4ae8f6150f4037c74867ee2beb6f7d50d18e",
+   "src_diff_plus_untracked_sha256": "0602615284126b0fddd0475f2ff72b4c5c4df9b9d7aa380fd03f196a520beab8",
+   "untracked_src": []
+  }
+ },
+ "capture_script": {
+  "path": "artifacts/small-fixes-capture.py (ignored)",
+  "sha256": "a8eca3671ac2ba160233e3ed233e530a334c7a46619f59031a13c5608012029b",
+  "harness_sha256": "c6eaf955cb08ff8a4de4be36efe3911f0871bfbddecdf8e60296dca9828e2b98"
+ },
+ "fixture_tree_sha256": [
+  "511a0696fb76e320a3a734f552da8ac48ed1a96e7bb219d2db84c3d032acb77f",
+  2
+ ],
+ "verdicts": {
+  "EXACT_D1": "equal exit class; per target equal output paths and bytes after bazel-out/k8-<mode> -> rust-<mode>",
+  "EXPECTED_NATIVE_GAP": "genuine succeeds; native fails with the declared explicit message",
+  "MISMATCH": "anything else"
+ },
+ "scenarios": {
+  "O/outputs": {
+   "args": [],
+   "targets": [
+    "//pp:c"
+   ],
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_seconds": 20.5,
+   "native_seconds": 0.7,
+   "rows": {
+    "//pp:c": {
+     "verdict": "EXACT_D1",
+     "reference_paths": [
+      "bazel-out/k8-fastbuild/bin/pp/c.txt"
+     ],
+     "native_paths": [
+      "bazel-out/rust-fastbuild/bin/pp/c.txt"
+     ]
+    }
+   },
+   "label": "EXACT_D1"
+  }
+ },
+ "scratch_removed": true,
+ "counts": {
+  "EXACT_D1": 1
+ },
+ "post_capture_changes": "none to src after the capture; the native worktree hash covers both small fixes (ctx.info_file/version_file and provider payload files), committed as two consecutive commits on 51ce4ae"
+}

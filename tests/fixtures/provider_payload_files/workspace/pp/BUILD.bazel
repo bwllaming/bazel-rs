@@ -1,0 +1,7 @@
+load(":defs.bzl", "consumer", "gen", "producer")
+
+gen(name = "g")
+
+producer(name = "p", dep = ":g")
+
+consumer(name = "c", producer = ":p")
