@@ -293,9 +293,9 @@ def steps_for(item, probe, engine):
 
 
 def require_query(record, value, engine):
+    # N39: native query prints Bazel's display form, so both engines must print
+    # the planned label exactly (formerly native-only '@@+r+one//:data'/'@@+e+one//:data').
     expected = value['query']
-    if engine == 'native' and value['repos']:
-        expected = '@@+'+('r' if value['route'] == 'direct' else 'e')+'+one//:data'
     if success(record).splitlines() != [expected]:
         raise ValueError('query did not return exact planned target identity')
 

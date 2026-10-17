@@ -55,8 +55,13 @@ CASEPLAN = [
     # module_ctx.getenv (N21; genuine Bazel records it as an extension input):
     # the only dependency path is extension getenv -> repository attribute.
     common.case('module-getenv', ('ordinary',)),
-    common.case('native-boundary', ('nonascii', 'nonutf8', 'name-limit', 'getter-limit',
-                                   'repo-env-inline', 'repo-env-split'), 'native_boundary'),
+    # --repo_env (N40 implements it like Bazel; before N40 these were the native
+    # repo-env-inline/repo-env-split rejection probes): RepositoryOptions.repoEnvironment
+    # overlays the client environment for repository rules, so the flag value wins,
+    # a changed flag value is a watched input, a client change under the override is
+    # not, and dropping the flag falls back to the client value. Both argv spellings.
+    common.case('repo-env', ('direct.inline', 'ordinary.split')),
+    common.case('native-boundary', ('nonascii', 'nonutf8', 'name-limit', 'getter-limit'), 'native_boundary'),
 ]
 PLAN = [(c['name'], c['kind']) for c in CASEPLAN]
 digest, evidence, snapshot, valid_evidence = direct.digest, direct.evidence, direct.snapshot, direct.valid_evidence
@@ -71,7 +76,6 @@ DIAGNOSTICS = {
     'frozen': r'(?:frozen|immutable)[^\n]*list|list[^\n]*(?:frozen|immutable)',
     'encoding': r'(?:environment|repository)[^\n]*(?:ASCII|UTF-8|encoding)',
     'limit': r'(?:environment|getenv)[^\n]*(?:limit|budget|too (?:long|many)|exceed)',
-    'repo-env': r'--repo_env[^\n]*(?:unsupported|not supported)',
 }
 # Native errors are deliberately value-free constants, not Bazel binder wording.
 # Keep logical argument/type/encoding/quota classes distinct: an observation
@@ -86,7 +90,6 @@ NATIVE_ERRORS = {
     'encoding': 'repository environment values must be ASCII',
     'name-limit': 'repository environment name exceeds 4096 bytes',
     'getter-limit': 'repository environment exceeds 10000 observations per callback',
-    'repo-env': 'unsupported option --repo_env; repository environment overrides are not implemented',
 }
 BAD = re.compile(r'panicked|internal error|FATAL:|network unavailable|permission denied|failed to download|'
                  r'parse error|unexpected token|not defined|Variable .+ not found|unknown global', re.I)
@@ -264,11 +267,9 @@ def fixture(name, probe):
             names, diagnostic, callbacks = '['+repr(A)+']', 'encoding', 0
         elif probe == 'name-limit':
             names, diagnostic, callbacks = '['+repr('X'*4097)+']', 'limit', 0
-        elif probe == 'getter-limit':
+        else:
             names, diagnostic = '[]', 'limit'
             before = 'for i in range(10001):\n    ctx.getenv('+repr(A)+')\n'
-        else:
-            diagnostic, callbacks = 'repo-env', 0
     body = 'print("ENV_CALLBACK_A")\n'+before
     body += 'if getattr(ctx.attr,"environ",None) != None:\n    fail("ENV_BECAME_ATTR")\n'
     body += 'value=CAPTURED+'+expression+'+"\\n"\n'
@@ -328,6 +329,12 @@ def states(name, probe):
     if name == 'odd':
         absent = {k: v for k, v in base.items() if k != '?'}
         return [('absent', absent, False), ('warm', absent, False), ('present', base, False), ('restore', absent, False)]
+    if name == 'repo-env':
+        # The client A changes only under an unchanged override ('unrelated');
+        # repo_env_override() supplies the per-state flag value.
+        return [('cold', base, False), ('warm', base, False), ('watched', base, False),
+                ('unrelated', dict(base, **{A: 'beta', UNUSED: 'different', B: 'bee2'}), False),
+                ('restore', base, False), ('dropped', base, False)]
     if name == 'privacy':
         base[A] = SECRET
     result = [('cold', base, False), ('warm', base, False),
@@ -339,8 +346,19 @@ def states(name, probe):
     return result
 
 
-def expected_outputs(name, probe, values, source):
-    value = values.get(A)
+REPO_ENV_OVERRIDES = {'cold': 'override-1', 'warm': 'override-1', 'watched': 'override-2',
+                      'unrelated': 'override-2', 'restore': 'override-1', 'dropped': None}
+
+
+def repo_env_override(name, probe, index):
+    """The --repo_env value for A in this planned state, or None (no flag)."""
+    if name != 'repo-env':
+        return None
+    return REPO_ENV_OVERRIDES[states(name, probe)[index][0]]
+
+
+def expected_outputs(name, probe, values, source, override=None):
+    value = values.get(A) if override is None else override
     if name in ('identity', 'privacy'):
         text = 'CONST'
     elif name == 'defaults':
@@ -445,10 +463,14 @@ def phase_steps(name, probe, engine):
             for cmd in (['build'] if value['diagnostic'] or engine == 'native' else ['build', 'cquery'])]
 
 
-def extras(name, probe, command):
-    if name == 'native-boundary' and probe.startswith('repo-env-'):
-        return ['--repo_env='+A+'='+SECRET] if probe.endswith('inline') else ['--repo_env', A+'='+SECRET]
-    return ['--output=files'] if command == 'cquery' else []
+def extras(name, probe, command, index):
+    # Every command of a state (build and its cquery listing) carries the same
+    # flag, so the listing never observes a different repository environment.
+    override = repo_env_override(name, probe, index)
+    flags = []
+    if override is not None:
+        flags = ['--repo_env='+A+'='+override] if probe.endswith('.inline') else ['--repo_env', A+'='+override]
+    return flags+(['--output=files'] if command == 'cquery' else [])
 
 
 def run_phase(args, runner, scratch, workspace, ref, item, probe, engine):
@@ -464,7 +486,7 @@ def run_phase(args, runner, scratch, workspace, ref, item, probe, engine):
             if value['template']:
                 (workspace / 'input.tpl').write_bytes(b'@VALUE@source-v2\n' if source else value['files']['input.tpl'])
             before = snapshot(workspace / p for p in value['files'])
-            argv = command_argv(args, ref, engine, cache, scratch / 'registry', command, extras(name, probe, command))
+            argv = command_argv(args, ref, engine, cache, scratch / 'registry', command, extras(name, probe, command, i))
             row = runner.run(name+'.'+probe+'.'+engine+'.'+str(i)+'.'+command, argv, workspace)
             phase['runs'].append(row['id'])
             observation = dict(index=i, command=command, inputs_before=before,
@@ -509,7 +531,7 @@ def validate_phase(phase, report, args, workspace, ref, item):
         row = report['runs'][rid]
         label, values, source = states(name, probe)[i]
         if (row['name'] != name+'.'+probe+'.'+engine+'.'+str(i)+'.'+command
-                or row['argv'] != command_argv(args, ref, engine, cache, scratch / 'registry', command, extras(name, probe, command))
+                or row['argv'] != command_argv(args, ref, engine, cache, scratch / 'registry', command, extras(name, probe, command, i))
                 or row['cwd'] != str(workspace) or row['timeout_seconds'] != args.timeout
                 or row['controlled_environment'] != encoded_environment(controlled_environment(scratch, values))
                 or (obs['index'], obs['command']) != (i, command)):
@@ -539,7 +561,7 @@ def validate_phase(phase, report, args, workspace, ref, item):
             if obs['outputs'] or obs['roots'] or obs['metadata']:
                 raise ValueError('reference build invented output listing')
             continue
-        expected_files = expected_outputs(name, probe, values, source)
+        expected_files = expected_outputs(name, probe, values, source, repo_env_override(name, probe, i))
         if set(obs['outputs']) != set(expected_files) or set(obs['roots']) != set(expected_files)-{'result.txt'}:
             raise ValueError('missing actual source/consumer artifacts')
         listed = (direct.native_paths(row, '//:result', scratch) if engine == 'native' else
@@ -756,11 +778,12 @@ def main(argv=None):
             'Reference paths are observations, never native content-addressed identity claims.',
             'Genuine builtin toolchain closure may download pinned upstream archives; no synthetic replacement toolchains.',
             'Reference-only preparation cannot certify candidate parity; source movement fails the report.',
-            'NonASCII/nonUTF8/quotas and unsupported flags are EXPLICIT_NATIVE_BOUNDARY, not Bazel error parity.',
+            'NonASCII/nonUTF8/quotas are EXPLICIT_NATIVE_BOUNDARY, not Bazel error parity.',
             'Reader error memoization, raw absent/default watch counts, runtime clone ownership, resource digest vectors are core-unit gates.',
             'Initial OS allocation cannot be precharged; no oversized OS spawn or RSS/OOM guarantee.',
             'module_ctx.getenv is differential only through an extension-computed repository attribute (module-getenv).',
-            'No module_extension(environ=...), OS SDK, flag override, or application completeness claim here (see validate_host_os).'])
+            '--repo_env is differential only as a repository_ctx.getenv override of one declared key (repo-env).',
+            'No module_extension(environ=...), OS SDK, other flag override, or application completeness claim here (see validate_host_os).'])
     scratch = ref = runner = None
     interrupted = False
     try:

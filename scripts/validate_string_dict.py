@@ -94,11 +94,16 @@ NATIVE = {
     'duplicate': r'(?:allow_empty[^\n]*(?:multiple|twice)|(?:multiple|twice)[^\n]*allow_empty)',
 }
 BAD = re.compile(common.UNRELATED.pattern+r'|has no attribute|Unknown attribute|Variable .+ not found|name .+ is not defined', re.I)
+# N33: the native interpreter reports Bazel's binder texts; each body is exactly
+# genuine Bazel 9.3.0's "Error in string_dict: <body>" for the same fixture
+# (previously starlark-rust's "Type of parameter `allow_empty` doesn't match, ...",
+# "Found `values` extra named parameter(s) ...", "Argument `allow_empty` occurs more
+# than once"). The native trace/location binding below is unchanged.
 NATIVE_CTOR_ERRORS = {
-    'allow-int': "Type of parameter `allow_empty` doesn't match, expected `bool`, actual `int (repr: 1)`",
-    'mandatory-int': "Type of parameter `mandatory` doesn't match, expected `bool`, actual `int (repr: 0)`",
-    'values': 'Found `values` extra named parameter(s) for call to string_dict',
-    'duplicate': 'Argument `allow_empty` occurs more than once',
+    'allow-int': "in call to string_dict(), parameter 'allow_empty' got value of type 'int', want 'bool'",
+    'mandatory-int': "in call to string_dict(), parameter 'mandatory' got value of type 'int', want 'bool'",
+    'values': "string_dict() got unexpected keyword argument 'values'",
+    'duplicate': "string_dict() got multiple values for argument 'allow_empty'",
 }
 NATIVE_SCALAR_ERROR = 'attribute "d": expected a dict of strings to strings'
 # BUILD loading footer (src/package.rs NATIVE_LOADING_FOOTER) and the literal of

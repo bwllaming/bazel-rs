@@ -31,9 +31,9 @@ error: trying to mutate a frozen list value
 
 
 class PlanTests(unittest.TestCase):
-    def test_nine_families_complete_unique_plan(self):
-        self.assertEqual(len(suite.CASEPLAN), 9)
-        self.assertEqual(len(set(suite.PLAN)), 9)
+    def test_ten_families_complete_unique_plan(self):
+        self.assertEqual(len(suite.CASEPLAN), 10)
+        self.assertEqual(len(set(suite.PLAN)), 10)
         for item in suite.CASEPLAN:
             self.assertEqual(len(item['probes']), len(set(item['probes'])))
             for probe in item['probes']:
@@ -145,15 +145,47 @@ class PlanTests(unittest.TestCase):
             else:
                 self.assertEqual(value['callbacks'], 0)
 
-    def test_flags_are_only_explicit_native_negative_probes(self):
+    def test_repo_env_is_a_differential_override_not_a_native_rejection(self):
+        # N40 implements --repo_env like Bazel; the former native repo-env-inline/
+        # repo-env-split rejection probes and their classifier are gone.
         args = suite.argument_parser().parse_args([])
         scratch = Path('/private')
         ref = suite.DirectReference(args.reference, scratch / 'workspace', scratch, None, 'repository-environment')
         for engine in ('native', 'reference'):
             argv = suite.command_argv(args, ref, engine, scratch / 'cache', scratch / 'registry', 'build')
             self.assertFalse(any(x.startswith('--repo_env') for x in argv))
-        self.assertEqual(suite.extras('native-boundary', 'repo-env-split', 'build'),
-                         ['--repo_env', suite.A+'='+suite.SECRET])
+        boundary = next(c for c in suite.CASEPLAN if c['name'] == 'native-boundary')
+        self.assertFalse(any(p.startswith('repo-env') for p in boundary['probes']))
+        self.assertNotIn('repo-env', suite.DIAGNOSTICS)
+        self.assertNotIn('repo-env', suite.NATIVE_ERRORS)
+        item = next(c for c in suite.CASEPLAN if c['name'] == 'repo-env')
+        self.assertEqual((item['kind'], item['probes']), ('differential', ['direct.inline', 'ordinary.split']))
+        self.assertEqual(suite.phases_for(item), [('direct.inline', 'reference'), ('direct.inline', 'native'),
+                                                  ('ordinary.split', 'reference'), ('ordinary.split', 'native')])
+        for probe in item['probes']:
+            value = suite.fixture('repo-env', probe)
+            self.assertIsNone(value['diagnostic'])
+            self.assertIn(b'environ=['+repr(suite.A).encode()+b','+repr(suite.A).encode()+b']', value['files']['defs.bzl'])
+            self.assertIn(b'ctx.getenv('+repr(suite.A).encode()+b',"MISSING")', value['files']['defs.bzl'])
+        self.assertEqual([suite.extras('repo-env', 'direct.inline', 'build', i) for i in range(6)],
+                         [['--repo_env='+suite.A+'=override-1']]*2+[['--repo_env='+suite.A+'=override-2']]*2
+                         + [['--repo_env='+suite.A+'=override-1'], []])
+        self.assertEqual(suite.extras('repo-env', 'ordinary.split', 'cquery', 2),
+                         ['--repo_env', suite.A+'=override-2', '--output=files'])
+        self.assertEqual(suite.extras('repo-env', 'ordinary.split', 'cquery', 5), ['--output=files'])
+        self.assertEqual(suite.extras('watched', 'direct.list', 'build', 0), [])
+        self.assertFalse(any(suite.SECRET in x for i in range(6) for x in suite.extras('repo-env', 'direct.inline', 'build', i)))
+        # The flag wins over the client value; an override-masked client change is
+        # unrelated; dropping the flag falls back to the client value.
+        outputs = [suite.expected_outputs('repo-env', 'direct.inline', env, source,
+                                          suite.repo_env_override('repo-env', 'direct.inline', i))['a.txt']
+                   for i, (_, env, source) in enumerate(suite.states('repo-env', 'direct.inline'))]
+        self.assertEqual(outputs, [b'prefix:override-1\n']*2+[b'prefix:override-2\n']*2
+                         + [b'prefix:override-1\n', b'prefix:alpha\n'])
+        self.assertEqual(suite.states('repo-env', 'direct.inline')[3][1][suite.A], 'beta')
+        self.assertEqual([suite.expected_callbacks('repo-env', 'ordinary.split', 'reference', i) for i in range(6)],
+                         [['A'], [], ['A'], [], ['A'], ['A']])
+        self.assertEqual([suite.expected_callbacks('repo-env', 'ordinary.split', 'native', i) for i in range(6)], [['A']]*6)
 
 
 class PrivacyTests(unittest.TestCase):
@@ -251,8 +283,7 @@ class DiagnosticTests(unittest.TestCase):
                     'arity': 'getenv missing argument name', 'environ-shape': 'environ must be a list or tuple',
                     'environ-element': 'environ entries must be strings', 'frozen': 'cannot mutate frozen list',
                     'encoding': 'repository environment must contain ASCII text',
-                    'limit': 'repository environment name limit exceeded',
-                    'repo-env': '--repo_env is unsupported'}
+                    'limit': 'repository environment name limit exceeded'}
         for diagnostic, text in messages.items():
             suite.require_rejection(record(text), diagnostic)
             for extra in ('panicked', 'network unavailable', 'permission denied', 'internal error', 'name ctx is not defined'):
@@ -266,8 +297,6 @@ class DiagnosticTests(unittest.TestCase):
                 row[flag] = True
                 with self.assertRaises(ValueError):
                     suite.require_rejection(row, diagnostic)
-        with self.assertRaises(ValueError):
-            suite.require_rejection(record('--repo_env='+suite.SECRET+' is unsupported'), 'repo-env')
         for key, message in suite.NATIVE_ERRORS.items():
             diagnostic = 'limit' if key.endswith('-limit') else key
             suite.require_rejection(record('error: '+message), diagnostic, 'native', key)
@@ -349,10 +378,13 @@ class ReplayTests(unittest.TestCase):
         report = dict(runs=[], scratch_directory=str(root))
         known, seen_payloads = set(), set()
         for i, (_, env, source) in enumerate(suite.states(name, probe)):
-            identity = ('c' if source else 'b' if env[suite.A] == 'beta' else 'a')*64
+            override = suite.repo_env_override(name, probe, i)
+            effective = env[suite.A] if override is None else override
+            identity = ('c' if source else 'b' if effective in ('beta', 'override-2')
+                        else 'd' if name == 'repo-env' and override is None else 'a')*64
             tree = suite.direct.trees_directory(cache) / identity
             tree.mkdir(parents=True, exist_ok=True)
-            data = suite.expected_outputs(name, probe, env, source)
+            data = suite.expected_outputs(name, probe, env, source, override)
             # This fixture helper has one non-executable logical input. Derive
             # its synthetic action identity independently from repository identity.
             payload = data['a.txt']
@@ -372,7 +404,8 @@ class ReplayTests(unittest.TestCase):
             known.add(identity)
             row = record('ENV_CALLBACK_A\n'+('0 actions executed, 1 cache hits' if hit else '1 actions executed, 0 cache hits'), 0)
             row.update(id=i, name=name+'.'+probe+'.native.'+str(i)+'.build', cwd=str(workspace), timeout_seconds=args.timeout,
-                       argv=suite.command_argv(args, ref, engine, cache, root / 'registry', 'build'),
+                       argv=suite.command_argv(args, ref, engine, cache, root / 'registry', 'build',
+                                               suite.extras(name, probe, 'build', i)),
                        controlled_environment=suite.encoded_environment(suite.controlled_environment(root, env)),
                        stdout='//:result\t'+str(src)+'\n//:result\t'+str(out)+'\n')
             report['runs'].append(row)
@@ -411,6 +444,21 @@ class ReplayTests(unittest.TestCase):
                 mutate(phase, report)
                 with self.assertRaises((ValueError, KeyError, IndexError)):
                     suite.validate_phase(phase, report, *values[2:])
+
+    def test_repo_env_native_replay_uses_the_generic_identity_rules(self):
+        for probe in ('direct.inline', 'ordinary.split'):
+            with self.subTest(probe=probe), tempfile.TemporaryDirectory() as tmp:
+                values = self.positive(Path(tmp), 'repo-env', probe)
+                suite.validate_phase(*values)
+                roots = [o['roots']['a.txt'] for o in values[0]['observations']]
+                self.assertEqual((roots[0], roots[2], roots[4]), (roots[1], roots[3], roots[0]))
+                self.assertNotIn(roots[5], roots[:5])
+                for mutate in (lambda r: r['runs'][2].update(argv=r['runs'][0]['argv']),
+                               lambda r: r['runs'][5].update(argv=r['runs'][4]['argv'])):
+                    phase, report = copy.deepcopy(values[:2])
+                    mutate(report)
+                    with self.assertRaisesRegex(ValueError, 'provenance'):
+                        suite.validate_phase(phase, report, *values[2:])
 
     def test_module_getenv_native_replay_uses_the_generic_identity_rules(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -50,21 +50,22 @@ NATIVE_DOC_TRACE = ('bazel-rs: cannot evaluate //:defs.bzl: Traceback (most rece
     '  |\n\n')
 
 # Transcribed from the native preparation rows, including caret widths and the
-# final blank line. The offline preparation replay checks these against the raw
+# final blank line (binder bodies re-transcribed from the integration-14 pre-gate
+# native rows: N33 prints genuine Bazel's binder text). The offline preparation replay checks these against the raw
 # receipts; portable units never read ignored artifacts. Only the workspace path
 # is substituted for BUILD diagnostics.
 NATIVE_BINDER_OBSERVATIONS = {
     'allow-int': ('A=attr.string_dict(allow_empty=1)',
-        "Type of parameter `allow_empty` doesn't match, expected `bool`, actual `int (repr: 1)`",
+        "in call to string_dict(), parameter 'allow_empty' got value of type 'int', want 'bool'",
         '^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^'),
     'mandatory-int': ('A=attr.string_dict(mandatory=0)',
-        "Type of parameter `mandatory` doesn't match, expected `bool`, actual `int (repr: 0)`",
+        "in call to string_dict(), parameter 'mandatory' got value of type 'int', want 'bool'",
         '^^^^^^^^^^^^^^^^^^^^^^^^^^^^^'),
     'values': ('A=attr.string_dict(values=["x"])',
-        'Found `values` extra named parameter(s) for call to string_dict',
+        "string_dict() got unexpected keyword argument 'values'",
         '^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^'),
     'duplicate': ('A=attr.string_dict(True,allow_empty=True)',
-        'Argument `allow_empty` occurs more than once',
+        "string_dict() got multiple values for argument 'allow_empty'",
         '^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^'),
 }
 NATIVE_SHAPE_OBSERVATIONS = {
@@ -283,8 +284,14 @@ class DiagnosticTests(unittest.TestCase):
             row = native_observed_row(probe)
             with self.subTest(probe=probe):
                 suite.require_rejection(row,diagnostic,'native')
-                with self.assertRaises(ValueError):
+                if probe in NATIVE_BINDER_OBSERVATIONS:
+                    # N33: the native binder body IS genuine Bazel's text, so the
+                    # reference classifier accepts it too (it did not before N33).
                     suite.require_rejection(row,diagnostic,'reference')
+                    self.assertRegex(row['stderr'],suite.DIAGNOSTICS[diagnostic])
+                else:
+                    with self.assertRaises(ValueError):
+                        suite.require_rejection(row,diagnostic,'reference')
                 wrong = 'mandatory-int' if diagnostic=='allow-int' else 'allow-int' if diagnostic in NATIVE_BINDER_OBSERVATIONS else 'value' if diagnostic=='key' else 'key'
                 with self.assertRaises(ValueError):
                     suite.require_rejection(row,wrong,'native')

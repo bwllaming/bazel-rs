@@ -192,9 +192,11 @@ class DiagnosticTests(unittest.TestCase):
     def test_exact_query_identity(self):
         value = suite.fixture('direct', 'tuples')
         good = record('', 0)
-        good['stdout'] = '@@+r+one//:data\n'
-        suite.require_query(good, value, 'native')
-        for text in ('', '@one//:data\n', '@@+r+one//:data\n//:extra\n'):
+        # N39: Bazel's display form on both engines, never a native-only @@ spelling.
+        for engine in ('native', 'reference'):
+            good['stdout'] = '@one//:data\n'
+            suite.require_query(good, value, engine)
+        for text in ('', '@@+r+one//:data\n', '@one//:data\n//:extra\n'):
             good['stdout'] = text
             with self.assertRaises(ValueError):
                 suite.require_query(good, value, 'native')

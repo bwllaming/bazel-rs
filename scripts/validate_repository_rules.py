@@ -41,6 +41,11 @@ FAIL_MARKER = 'RULE_ROLLBACK_SENTINEL'
 LAZY_MARKER = 'UNUSED_CALLBACK_MUST_NOT_RUN'
 ROOT_CANONICAL = '+maker+made'
 DEP_CANONICAL = 'contractdep++maker+made'
+# Plain `query` prints Label.getDisplayForm(main repo mapping) (N39): the visible
+# apparent name for the root's repo, `@@canonical` for the invisible dependency
+# repo. Genuine Bazel 9.3.0 prints exactly these lines for these two targets.
+ROOT_DISPLAY = '@made//:data'
+DEP_DISPLAY = '@@' + DEP_CANONICAL + '//:data'
 MAX_STREAM = 1024 * 1024
 
 
@@ -138,14 +143,16 @@ CASES = [
     case('group.unused-unknown-attribute'),
     case('execute.host-process'),
     # N26: Bazel-faithful behavior that used to be native boundaries.
-    case('literal.latin1-octal'),
+    case('literal.latin1-octal', probes=('result', 'raw-source')),
     case('return.metadata-and-values', probes=('repo-metadata', 'attrs-metadata', 'dict', 'integer')),
     case('patch.label-strip-directory'),
     case('resolver.free-chr'),
     case('native.rollback', 'native_boundary'),
     case('native.path-containment', 'native_boundary', ('dotdot', 'absolute', 'source-symlink')),
     case('native.unsupported', 'native_boundary', ('facts_version_unsupported',)),
-    case('native.ascii-profile', 'native_boundary', ('module-unicode', 'closure-unicode', 'hex', 'u', 'U')),
+    # N38: raw non-ASCII .bzl literals are Latin-1 (literal.latin1-octal raw-source);
+    # only MODULE.bazel raw non-ASCII and the \x/\u/\U escapes remain native rejections.
+    case('native.ascii-profile', 'native_boundary', ('module-unicode', 'hex', 'u', 'U')),
     case('native.template-cycle', 'native_boundary'),
     case('native.refresh-and-repair', 'native_boundary', ('cold', 'helper-change', 'input-change', 'repair')),
     case('native.parallel-publication', 'native_boundary', ('parallel-1', 'parallel-2')),
@@ -315,6 +322,14 @@ def fixture(name, probe='result', outside=None):
         files['helper.bzl'] = 'load(":leaf.bzl", _value = "value")\nvalue = _value\n'
         files['leaf.bzl'] = 'value = "\\377\\200A" + str(len("\\377")) + "\\n"\n'
         expected = {'data': (b'\xff\x80A1\n', False)}
+        if probe == 'raw-source':
+            # N38: StarlarkUtil.createParserInput -> ParserInput.fromLatin1 (well-
+            # formed UTF-8 .bzl bytes are one Latin-1 char each), so len("é") == 2
+            # and repository_ctx.file writes the internal bytes back unchanged
+            # (StarlarkBaseExternalContext.java:1500-1520). Was native.ascii-profile
+            # closure-unicode (a native rejection before N38).
+            files['leaf.bzl'] = 'value = "é" + str(len("é")) + "\\n"\n'
+            expected = {'data': (b'\xc3\xa92\n', False)}
     elif name == 'return.metadata-and-values':
         # RepositoryFetchFunction.java:681-695; StarlarkRepositoryContext.java:611-656.
         body = {'repo-metadata': 'return ctx.repo_metadata(reproducible = True)',
@@ -341,7 +356,7 @@ def fixture(name, probe='result', outside=None):
         files['defs.bzl'] = EXECUTE_DEFS
         expected = {'data': (b'3|one|two|err|True|data\n', False)}
     elif name == 'native.ascii-profile':
-        expression = {'module-unicode': 'str(len("é"))', 'closure-unicode': 'str(len("é"))',
+        expression = {'module-unicode': 'str(len("é"))',
                       'hex': 'str(len("\\x41"))',
                       'u': 'str(len("\\u0041"))', 'U': 'str(len("\\U00000041"))'}[probe]
         if probe == 'module-unicode':
@@ -504,6 +519,16 @@ def require_canonical(record, canonical):
         raise ValueError('observed reference canonical identity differs from contract')
 
 
+def require_display(record, key):
+    """Native plain query: Bazel's display form, not a native-only @@ spelling.
+
+    The canonical names themselves are proven by the published bytes
+    (ctx.name/ctx.attr.name per repository) and the reference cquery.
+    """
+    if success(record).splitlines() != [ROOT_DISPLAY if key == 'root' else DEP_DISPLAY]:
+        raise ValueError('native query label differs from Bazel display form')
+
+
 def phases_for(item):
     engines = ('reference', 'native') if item['kind'] == 'differential' else ('native',)
     return [(probe, engine) for probe in item['probes'] for engine in engines]
@@ -561,7 +586,7 @@ def run_case(args, runner, scratch, workspace, reference, item):
                     if logical.parts[-2:] != (canonical, 'data'):
                         raise ValueError('cquery file path disagrees with observed canonical label')
                 else:
-                    require_canonical(invoke(phase, engine, 'query', target), canonical)
+                    require_display(invoke(phase, engine, 'query', target), key)
                 phase['canonical'][key] = '@@' + canonical + '//:data'
         result = invoke(phase, engine, 'build', '//:copy')
         if engine == 'native':
@@ -739,7 +764,10 @@ def validate_check(check, report, args, workspace, reference):
                     raise ValueError('canonical identity mismatch')
                 for key, canonical in (('root', ROOT_CANONICAL), ('dep', DEP_CANONICAL)):
                     observed = next(r for r, link in zip(records, phase['runs']) if link['target'] == ('@made//:data' if key == 'root' else '@@' + canonical + '//:data'))
-                    require_canonical(observed, canonical)
+                    if phase['engine'] == 'native':
+                        require_display(observed, key)
+                    else:
+                        require_canonical(observed, canonical)
     if item['name'] == 'native.refresh-and-repair':
         phases = check['phases']
         for before, after in zip(phases, phases[1:]):
@@ -860,7 +888,7 @@ def main(argv=None):
                   configuration={k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
                   started_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                   limitations=['21 cases: twelve differential, nine native policy/lifecycle boundaries. No full Bazel parity.',
-                               'Raw non-ASCII source literals are a native boundary; octal escapes denote Latin-1 chars written as single bytes; raw templates preserve arbitrary bytes.',
+                               'Raw non-ASCII MODULE.bazel literals are a native boundary; .bzl sources and octal escapes denote Latin-1 chars written as single bytes; raw templates preserve arbitrary bytes.',
                                'Callback returns follow RepositoryFetchFunction (dict keys checked, repo_metadata/other values accepted); reproducibility has no native caching effect.',
                                'Nonzero module_extension facts_version is unsupported at definition load; this native-only boundary is not differential parity or a callback execution claim.',
                                'Genuine reference built-ins may download from BCR; no fake platforms or bazel_tools.',

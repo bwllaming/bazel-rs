@@ -170,13 +170,12 @@ class FixtureTests(unittest.TestCase):
 
     def test_ascii_policy_checks_source_even_when_result_is_ascii_or_dead(self):
         module = rules.fixture('native.ascii-profile', 'module-unicode')
-        closure = rules.fixture('native.ascii-profile', 'closure-unicode')
         self.assertIn('str(len("é"))'.encode(), module['files']['MODULE.bazel'])
-        self.assertIn('str(len("é"))'.encode(), closure['files']['leaf.bzl'])
-        self.assertIn(b'load(":leaf.bzl", "value")', closure['files']['helper.bzl'])
         ascii_profile = next(c for c in rules.CASES if c['name'] == 'native.ascii-profile')
-        self.assertEqual(ascii_profile['probes'], ['module-unicode', 'closure-unicode', 'hex', 'u', 'U'])
-        for probe in ('octal', 'chr'):
+        # N38: raw non-ASCII .bzl literals are Latin-1 like Bazel; that former
+        # closure-unicode boundary is now the literal.latin1-octal raw-source differential.
+        self.assertEqual(ascii_profile['probes'], ['module-unicode', 'hex', 'u', 'U'])
+        for probe in ('octal', 'chr', 'closure-unicode'):
             with self.assertRaises(KeyError):
                 rules.fixture('native.ascii-profile', probe)
         lazy = rules.fixture('native.main-query-lazy')
@@ -233,6 +232,14 @@ class BazelFaithfulN26Tests(unittest.TestCase):
         self.assertEqual(octal['files']['leaf.bzl'], b'value = "\\377\\200A" + str(len("\\377")) + "\\n"\n')
         self.assertIn(b'load(":leaf.bzl", _value = "value")', octal['files']['helper.bzl'])
         self.assertEqual(octal['expected'], {'data': (b'\xff\x80A1\n', False)})
+        item = next(c for c in rules.CASES if c['name'] == 'literal.latin1-octal')
+        self.assertEqual(rules.phases_for(item), [('result', 'reference'), ('result', 'native'),
+                                                  ('raw-source', 'reference'), ('raw-source', 'native')])
+        raw = rules.fixture('literal.latin1-octal', 'raw-source')
+        self.assertEqual(raw['files']['leaf.bzl'], 'value = "é" + str(len("é")) + "\\n"\n'.encode())
+        self.assertIn(b'load(":leaf.bzl", _value = "value")', raw['files']['helper.bzl'])
+        self.assertIsNone(raw['diagnostic'])
+        self.assertEqual(raw['expected'], {'data': (b'\xc3\xa92\n', False)})
         patch = rules.fixture('patch.label-strip-directory')
         self.assertTrue(patch['files']['private/fix.patch'].startswith(b'--- a/data\t2024-05-14'))
         self.assertIn(b'ctx.patch(Label("//private:fix.patch"), strip = 1)', patch['files']['defs.bzl'])
@@ -312,6 +319,18 @@ class DiagnosticTests(unittest.TestCase):
                      '@@+maker+made//:data\n@@+maker+made//:data\n', ''):
             with self.assertRaises(ValueError):
                 rules.require_canonical(record(text), rules.ROOT_CANONICAL)
+
+    def test_native_query_uses_bazel_display_form(self):
+        # N39: plain query prints the main-repo display form (genuine Bazel 9.3.0:
+        # `@made//:data` and `@@contractdep++maker+made//:data`).
+        rules.require_display(record('@made//:data\n'), 'root')
+        rules.require_display(record('@@contractdep++maker+made//:data\n'), 'dep')
+        for key, text in (('root', '@@+maker+made//:data\n'), ('root', '@@made//:data\n'),
+                          ('root', '@made//:data\n@made//:data\n'), ('root', ''),
+                          ('dep', '@contractdep++maker+made//:data\n'), ('dep', '@made//:data\n'),
+                          ('dep', '@dep//:data\n')):
+            with self.subTest(key=key, text=text), self.assertRaises(ValueError):
+                rules.require_display(record(text), key)
 
 
 class EvidenceTests(unittest.TestCase):
