@@ -445,6 +445,9 @@ pub fn exec_transition(
         // `cpu` = the parent's `--host_cpu` (builtin_exec_platforms.bzl:225),
         // which is not modelled: the host CPU default.
         cpu: None,
+        // Not in CoreOptions' propagate list (builtin_exec_platforms.bzl:231-275):
+        // the CoreOptions default (CoreOptions.java:566-578).
+        collect_code_coverage: defaults.collect_code_coverage,
         // Not in CoreOptions' propagate list (builtin_exec_platforms.bzl:231-275).
         use_target_platform_for_tests: defaults.use_target_platform_for_tests,
         // In CoreOptions' propagate list (builtin_exec_platforms.bzl:246).
@@ -505,6 +508,10 @@ fn native_option_strings(native: &NativeOptions) -> BTreeMap<&'static str, Strin
     options.insert("extra_toolchains", list(&native.extra_toolchains));
     options.insert("is exec configuration", format!("={}", native.is_exec));
     options.insert(
+        "collect_code_coverage",
+        format!("={}", native.collect_code_coverage),
+    );
+    options.insert(
         "cpu",
         format!(
             "={}",
@@ -557,7 +564,15 @@ fn name_fragment_with_diff(
         .chain(baseline.starlark.keys())
     {
         let current = configuration.starlark.get(label);
-        if current != baseline.starlark.get(label) {
+        // OptionsDiff.diff (analysis/config/OptionsDiff.java:107-118):
+        // `first.equals(second)` with the transitioned options first, so a
+        // raw StarlarkList differs from the baseline's equal converted list.
+        let equal = match (current, baseline.starlark.get(label)) {
+            (Some(first), Some(second)) => first.java_equals(second),
+            (None, None) => true,
+            _ => false,
+        };
+        if !equal {
             let key = crate::rule_declarations::canonical_form(label);
             chosen.insert(key.clone(), starlark_value(current, &key));
         }
@@ -976,6 +991,64 @@ mod tests {
             Ok("fastbuild-noconfig".to_owned())
         );
         assert_eq!(no_config().id, id);
+    }
+
+    /// N47: a Starlark transition's `--collect_code_coverage` is hashed as
+    /// `//command_line_option:collect_code_coverage=true` against the
+    /// top-level baseline (computeNameFragmentWithDiff), and the exec
+    /// transition takes the CoreOptions default (builtin_exec_platforms.bzl:231-275
+    /// does not propagate it).
+    #[test]
+    fn collect_code_coverage_enters_the_st_hash_and_not_the_exec_configuration() {
+        let top = parsed(&["--host_platform=//p:h"]);
+        let mut native = top.native.clone();
+        native.collect_code_coverage = true;
+        let coverage = Configuration::new(native, BTreeMap::new());
+        let text = "//command_line_option:collect_code_coverage=true";
+        let mut bytes = vec![text.len() as u8];
+        bytes.extend_from_slice(text.as_bytes());
+        let digest = Sha256::digest(&bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            mnemonic(&coverage, &top),
+            Ok(format!("rust-fastbuild-ST-{}", &digest[..12]))
+        );
+        let none = BTreeSet::new();
+        assert_eq!(
+            exec_transition(&coverage, label("//p:h"), &none).id,
+            exec_transition(&top, label("//p:h"), &none).id
+        );
+    }
+
+    /// N47 (paired capture S2 gobin_race): a raw list equal to the
+    /// baseline's converted command-line list is still a difference, hashed
+    /// with its Starlark repr (Bazel's ST-91a4ed8818d5).
+    #[test]
+    fn raw_lists_differ_from_the_converted_baseline_list() {
+        let tags = label("//go/config:tags");
+        let top = Configuration::new(
+            NativeOptions::default(),
+            BTreeMap::from([(
+                tags.clone(),
+                SettingValue::StringList(vec!["netgo".into(), "b".into()]),
+            )]),
+        );
+        let raw = Configuration::new(
+            NativeOptions::default(),
+            BTreeMap::from([(
+                tags,
+                SettingValue::Sequence {
+                    tuple: false,
+                    items: vec!["netgo".into(), "b".into()],
+                },
+            )]),
+        );
+        assert_eq!(
+            mnemonic(&raw, &top),
+            Ok("rust-fastbuild-ST-91a4ed8818d5".to_owned())
+        );
     }
 
     #[test]

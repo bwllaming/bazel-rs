@@ -244,6 +244,9 @@ build-variable expansion and tool selection behind rules_cc's Starlark API.
 [C++ toolchains](docs/CC_TOOLCHAIN.md) analyze rules_cc's genuine `cc_toolchain`,
 `cc_toolchain_alias` and `cc_toolchain_config` rules (host `@local_config_cc`,
 zig configs) in target and exec configurations; compile/link remain unsupported.
+[rules_go transitions](docs/CONFIGURATION.md) run rules_go's genuine
+`transition.bzl` with `--collect_code_coverage`, `--compilation_mode` and
+`--platforms` as transition options; coverage instrumentation remains unsupported.
 [Scoped subrules](docs/SUBRULES.md) execute declared zero-attribute helpers with
 real actions and guarded contexts; private dependency attributes remain unsupported.
 [String methods](docs/STRING_METHODS.md) follow Bazel's UTF-8 byte-string case,

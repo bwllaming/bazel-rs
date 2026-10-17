@@ -69,17 +69,27 @@ pub(crate) fn surface_properties(builder: &mut MethodsBuilder) {
         let rule = current_surface(this)?;
         Ok(heap.alloc(rule.config.build_file_path.as_str()))
     }
-    /// StarlarkRuleContext.instrumentCoverage (:760-774): coverage is never
-    /// enabled natively (`--collect_code_coverage` is rejected).
+    /// StarlarkRuleContext.instrumentCoverage (:760-774): false unless
+    /// coverage is enabled (InstrumentedFilesCollector.shouldIncludeLocalSources
+    /// returns false first, analysis/test/InstrumentedFilesCollector.java).
+    /// With `--collect_code_coverage` (set natively only by a Starlark
+    /// transition, N47) the answer needs `--instrumentation_filter` and
+    /// `--instrument_test_targets`, which are not modelled: explicit.
     fn coverage_instrumented<'v>(
         this: Value<'v>,
         #[starlark(default = NoneType)] target: Value<'v>,
     ) -> anyhow::Result<bool> {
-        current_surface(this)?;
+        let rule = current_surface(this)?;
         if !target.is_none() && target.get_type() != "Target" {
             bail!(
                 "in call to coverage_instrumented(), parameter 'target' got value of type '{}', want 'Target or NoneType'",
                 target.get_type()
+            );
+        }
+        if rule.config.coverage_enabled {
+            bail!(
+                "{}",
+                crate::ctx_surface::coverage_gap("ctx.coverage_instrumented()")
             );
         }
         Ok(false)

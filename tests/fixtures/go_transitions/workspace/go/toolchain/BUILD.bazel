@@ -1,0 +1,24 @@
+load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
+
+package(default_visibility = ["//visibility:public"])
+
+# As rules_go 0.63.0 go/toolchain/BUILD.bazel:12-15.
+string_flag(
+    name = "sdk_version",
+    build_setting_default = "",
+)
+
+# The goos/goarch platforms go_transition names
+# (@io_bazel_rules_go//go/toolchain:<goos>_<goarch>[_cgo]).
+[
+    platform(
+        name = name,
+        constraint_values = ["//os:" + os],
+    )
+    for name, os in [
+        ("linux_amd64", "linux"),
+        ("linux_amd64_cgo", "linux"),
+        ("darwin_arm64", "osx"),
+        ("darwin_arm64_cgo", "osx"),
+    ]
+]

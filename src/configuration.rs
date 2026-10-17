@@ -292,6 +292,21 @@ pub const OPTIONS: &[OptionDef] = &[
     },
 ];
 
+/// `--collect_code_coverage` (CoreOptions.java:566-578): a boolean option
+/// that only a Starlark transition sets natively (N47), so not in
+/// [`OPTIONS`] (the command line and `config_setting` keep rejecting it).
+pub const COLLECT_CODE_COVERAGE: OptionDef = OptionDef {
+    name: "collect_code_coverage",
+    old_name: None,
+    abbrev: None,
+    kind: OptionKind::Bool,
+    default: "false",
+    allow_multiple: false,
+    non_configurable: false,
+    source: "build/lib/analysis/config/CoreOptions.java:566-578",
+    deprecation: None,
+};
+
 /// `--java_runtime_version` default (JavaOptions.java:373-379).
 pub const DEFAULT_JAVA_RUNTIME_VERSION: &str = "local_jdk";
 /// `--tool_java_runtime_version` default (JavaOptions.java:381-387).
@@ -612,6 +627,18 @@ pub struct NativeOptions {
     /// option stays unsupported). Omitted from the identity when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cpu: Option<String>,
+    /// CoreOptions.collectCodeCoverage (`--collect_code_coverage`,
+    /// analysis/config/CoreOptions.java:566-578, default false): a value
+    /// only a Starlark transition sets natively (N47: rules_go's
+    /// go_stdlib_transition writes it; the command-line option and the
+    /// `coverage` command stay unsupported). Read by
+    /// `ctx.configuration.coverage_enabled` (BuildConfigurationValue.isCodeCoverageEnabled,
+    /// :730-733); instrumentation in such a configuration fails explicitly
+    /// (docs/CONFIGURATION.md). Not propagated by the exec transition
+    /// (builtin_exec_platforms.bzl:231-275). Omitted from the identity when
+    /// false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub collect_code_coverage: bool,
     /// `--java_runtime_version`, `--java_language_version`,
     /// `--tool_java_runtime_version`, `--tool_java_language_version`
     /// (JavaOptions.java:373-403). Serialized separately
@@ -792,6 +819,7 @@ impl Default for NativeOptions {
             java: JavaVersions::default(),
             no_config: false,
             cpu: None,
+            collect_code_coverage: false,
             use_target_platform_for_tests: false,
             incompatible_auto_exec_groups: false,
             apple_sdk_versions: AppleSdkVersions::default(),
@@ -864,13 +892,72 @@ pub enum SettingValue {
     Bool(bool),
     Int(i64),
     String(String),
+    /// A converted `List<String>` (the command line's and the default's
+    /// ImmutableList).
     StringList(Vec<String>),
     Label(#[serde(serialize_with = "serialize_label")] Label),
+    /// The raw Starlark list (`tuple: false`) or tuple a Starlark transition
+    /// returned for a string-list setting (N47). Bazel keeps the returned
+    /// object in BuildOptions (FunctionTransitionUtil.applyTransition,
+    /// analysis/starlark/FunctionTransitionUtil.java:619-659;
+    /// StarlarkTransition.validate converts it only to compare it with the
+    /// default, StarlarkTransition.java:225-274), so it is a different
+    /// configuration than the equal converted list: its `toString` is the
+    /// Starlark repr (StarlarkList.java:272-274, Tuple.java:139-141) in the
+    /// options checksum and the ST- hash, and StarlarkList/Tuple.equals
+    /// only accept their own class (StarlarkList.java:244-251,
+    /// Tuple.java:129-135). rules_go's go_transition writes
+    /// `//go/config:tags` this way.
+    Sequence {
+        tuple: bool,
+        items: Vec<String>,
+    },
+}
+
+impl SettingValue {
+    /// The elements of a string-list value, converted or raw.
+    pub fn string_items(&self) -> Option<&[String]> {
+        match self {
+            Self::StringList(items) | Self::Sequence { items, .. } => Some(items),
+            _ => None,
+        }
+    }
+
+    /// Java `first.equals(second)` of the stored objects: a converted list
+    /// (ImmutableList) equals any List with equal elements, a raw
+    /// StarlarkList or Tuple only its own class (StarlarkList.java:244-251,
+    /// Tuple.java:129-135).
+    pub fn java_equals(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::StringList(items), _) => other.string_items() == Some(items.as_slice()),
+            _ => self == other,
+        }
+    }
+}
+
+/// Printer.appendQuoted (net/starlark/java/eval/Printer.java:225-259).
+fn starlark_quoted(text: &str, out: &mut String) {
+    out.push('"');
+    // Only characters below U+0020 are escaped numerically; they are single
+    // UTF-16 units, so iterating scalar values is equivalent.
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\r' => out.push_str("\\r"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 32 => out.push_str(&format!("\\x{:02x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
 }
 
 impl fmt::Display for SettingValue {
     /// Java `toString` of the stored value (Boolean, StarlarkInt,
-    /// AbstractCollection.toString, Label.toString = getCanonicalForm).
+    /// AbstractCollection.toString, Label.toString = getCanonicalForm, the
+    /// Starlark repr of a raw StarlarkList/Tuple).
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Bool(value) => write!(f, "{value}"),
@@ -878,6 +965,21 @@ impl fmt::Display for SettingValue {
             Self::String(value) => f.write_str(value),
             Self::StringList(values) => write!(f, "[{}]", values.join(", ")),
             Self::Label(label) => f.write_str(&crate::rule_declarations::canonical_form(label)),
+            Self::Sequence { tuple, items } => {
+                let quoted = items
+                    .iter()
+                    .map(|item| {
+                        let mut out = String::new();
+                        starlark_quoted(item, &mut out);
+                        out
+                    })
+                    .collect::<Vec<_>>();
+                match (tuple, quoted.as_slice()) {
+                    (false, _) => write!(f, "[{}]", quoted.join(", ")),
+                    (true, [single]) => write!(f, "({single},)"),
+                    (true, _) => write!(f, "({})", quoted.join(", ")),
+                }
+            }
         }
     }
 }
@@ -2065,6 +2167,47 @@ mod tests {
         ] {
             assert_eq!(unrecognized_option(arg), None, "{arg}");
         }
+    }
+
+    /// N47: a transition's raw StarlarkList/Tuple prints as its Starlark
+    /// repr and compares like Java (an ImmutableList equals any List with
+    /// equal elements; StarlarkList/Tuple only their own class).
+    #[test]
+    fn raw_sequences_print_and_compare_like_starlark_objects() {
+        let list = SettingValue::Sequence {
+            tuple: false,
+            items: vec!["netgo".into(), "a\"b\\\n\u{1}é".into()],
+        };
+        assert_eq!(list.to_string(), r#"["netgo", "a\"b\\\n\x01é"]"#);
+        let single = SettingValue::Sequence {
+            tuple: true,
+            items: vec!["x".into()],
+        };
+        assert_eq!(single.to_string(), r#"("x",)"#);
+        let empty = SettingValue::Sequence {
+            tuple: true,
+            items: vec![],
+        };
+        assert_eq!(empty.to_string(), "()");
+        let converted = SettingValue::StringList(vec!["x".into()]);
+        assert!(converted.java_equals(&single));
+        assert!(!single.java_equals(&converted));
+        let list_x = SettingValue::Sequence {
+            tuple: false,
+            items: vec!["x".into()],
+        };
+        assert!(!list_x.java_equals(&single));
+        assert!(list_x.java_equals(&list_x.clone()));
+        assert_eq!(single.string_items(), Some(&["x".to_owned()][..]));
+        // Distinct identities for equal elements.
+        let id = |value: SettingValue| {
+            Configuration::new(
+                NativeOptions::default(),
+                BTreeMap::from([(Label::parse_canonical("//f:tags").unwrap(), value)]),
+            )
+            .id
+        };
+        assert_ne!(id(converted), id(list_x));
     }
 
     #[test]

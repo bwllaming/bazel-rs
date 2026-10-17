@@ -1187,6 +1187,7 @@ pub fn analyze_in(
         action_owner: &owner,
         action_env: Arc::new(crate::configuration::NativeOptions::default().action_environment()),
         runfiles: crate::runfiles_tree::RunfilesOptions::default(),
+        loaded_functions: None,
     };
     let (result, printed) = analyze_buffered(rule, dependencies, repositories, &target);
     for line in printed {
@@ -1205,6 +1206,9 @@ pub(crate) struct ConfiguredOutputs<'a> {
     pub action_env: Arc<crate::action_env::ActionEnvironment>,
     /// Which runfiles manifests RunfilesSupport declares (N23f).
     pub runfiles: crate::runfiles_tree::RunfilesOptions,
+    /// The build's registry of loaded top-level functions
+    /// (crate::analysis_runtime::LoadedFunctions).
+    pub loaded_functions: Option<&'a Arc<crate::analysis_runtime::LoadedFunctions>>,
 }
 
 /// `print()` output of an implementation, kept until the caller decides
@@ -1348,6 +1352,7 @@ fn analyze_inner(
         actions: RefCell::new(Vec::new()),
         active,
         top_level_functions: invocation.top_level_functions.clone(),
+        loaded_functions: target.loaded_functions.cloned(),
         repositories,
         scope: crate::analysis_runtime::ScopeState::new(
             rule.label.to_string(),
@@ -2236,6 +2241,7 @@ r = rule(implementation=impl, attrs={
             actions: RefCell::new(Vec::new()),
             active: Arc::new(AtomicBool::new(true)),
             top_level_functions: Default::default(),
+            loaded_functions: None,
             repositories: Arc::new(RepositorySet::new(std::path::PathBuf::from("."))),
             scope: crate::analysis_runtime::ScopeState::new("//pkg:rule".into(), BTreeSet::new()),
             subrule: Default::default(),

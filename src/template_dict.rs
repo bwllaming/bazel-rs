@@ -125,7 +125,13 @@ fn template_dict_methods(builder: &mut MethodsBuilder) {
                 map_each.get_type()
             )
         })?;
-        if !allow_closure {
+        // TemplateDict.addJoined (analysis/starlark/TemplateDict.java:70-78):
+        // only a StarlarkFunction must be global; built-in callables pass.
+        let starlark_function = {
+            let repr = map_each.to_repr();
+            repr.starts_with("<function ") && repr.contains(" from ")
+        };
+        if !allow_closure && starlark_function {
             ensure!(
                 !name.contains("lambda")
                     && (crate::analysis_runtime::is_top_level_mapper(eval, map_each)

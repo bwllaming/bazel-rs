@@ -394,6 +394,18 @@ fn setting_properties(builder: &mut MethodsBuilder) {
             SettingValue::Int(value) => Ok(heap.alloc(*value)),
             SettingValue::String(value) => Ok(heap.alloc(value.as_str())),
             SettingValue::StringList(value) => Ok(heap.alloc(value.clone())),
+            // StarlarkRuleContext.getBuildSettingValue (:739-758) returns the
+            // stored object: a transition's raw list (frozen in Bazel; a
+            // copy natively, docs/CONFIGURATION.md) or tuple.
+            SettingValue::Sequence {
+                tuple: false,
+                items,
+            } => Ok(heap.alloc(items.clone())),
+            SettingValue::Sequence { tuple: true, items } => {
+                Ok(heap.alloc(starlark::values::tuple::AllocTuple(
+                    items.iter().map(|item| heap.alloc(item.as_str())),
+                )))
+            }
             SettingValue::Label(_) => bail!("unsupported build-setting value type label"),
         }
     }

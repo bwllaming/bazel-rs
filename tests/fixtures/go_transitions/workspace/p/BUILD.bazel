@@ -1,0 +1,5 @@
+package(default_visibility = ["//visibility:public"])
+
+platform(name = "linux", constraint_values = ["//os:linux"])
+
+platform(name = "mac", constraint_values = ["//os:osx"])

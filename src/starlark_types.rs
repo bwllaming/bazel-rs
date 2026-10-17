@@ -48,6 +48,33 @@ mod owned {
         pub is_directory: bool,
     }
 
+    /// A File's root (actions/ArtifactRoot.java; Starlark type `root`,
+    /// starlarkbuildapi/FileRootApi.java:26-37): its exec path and whether
+    /// it is a source root. Equal roots have equal exec paths and kinds
+    /// (ArtifactRoot.equals, :285-294); immutable and hashable (:202-205).
+    #[derive(
+        Clone,
+        Debug,
+        PartialEq,
+        Eq,
+        PartialOrd,
+        Ord,
+        Hash,
+        ProvidesStaticType,
+        NoSerialize,
+        Allocative,
+        StarlarkPagable,
+    )]
+    pub(crate) struct FileRoot {
+        pub path: String,
+        pub is_source: bool,
+        /// The repository of a source root (`""` for the main
+        /// repository): every source root has the empty exec path, but each
+        /// external repository's is another Root (ArtifactRoot.equals compares
+        /// the Root, the exec path and the root type).
+        pub source_repository: String,
+    }
+
     #[derive(
         Clone,
         Debug,
@@ -174,7 +201,7 @@ mod owned {
         pub files_depset: Depset,
     }
 }
-use owned::{DefaultInfoConstructor, DefaultInfoValue, LabelValue, Target};
+use owned::{DefaultInfoConstructor, DefaultInfoValue, FileRoot, LabelValue, Target};
 pub(crate) use owned::{Depset, DepsetNode, Item, ItemType, Order};
 pub use owned::{File, SymlinkEntry};
 
@@ -202,6 +229,7 @@ pub(crate) enum TargetKind {
 }
 
 starlark_simple_value!(File);
+starlark_simple_value!(FileRoot);
 starlark_simple_value!(LabelValue);
 starlark_simple_value!(Depset);
 starlark_simple_value!(DefaultInfoConstructor);
@@ -224,6 +252,54 @@ impl File {
             Some(external) => format!("external/{external}"),
             None => self.short_path.clone(),
         }
+    }
+
+    /// Artifact.getRoot().getExecPathString() (actions/ArtifactRoot.java:212-222):
+    /// every source root has the empty exec path - the main repository's
+    /// (asSourceRoot, :102-105) and an external repository's
+    /// (asExternalSourceRoot, :115-123; paired capture F/map_each_file_root:
+    /// `@bazel_skylib//:LICENSE` has root path `""`) - and a generated
+    /// file's is its configuration's `bazel-out/<mnemonic>/bin`.
+    pub(crate) fn root_path(&self) -> String {
+        if self.is_source {
+            return String::new();
+        }
+        let relative = self.root_relative_path();
+        self.path
+            .strip_suffix(relative.as_str())
+            .map(|root| root.strip_suffix('/').unwrap_or(root).to_owned())
+            .unwrap_or_default()
+    }
+}
+
+// ArtifactRoot.repr (actions/ArtifactRoot.java:301-304).
+impl fmt::Display for FileRoot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(if self.is_source {
+            "<source root>"
+        } else {
+            "<derived root>"
+        })
+    }
+}
+
+#[starlark_value(type = "root")]
+impl<'v> StarlarkValue<'v> for FileRoot {
+    fn write_hash(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
+        self.hash(hasher);
+        Ok(())
+    }
+
+    fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
+        Ok(Self::from_value(other) == Some(self))
+    }
+
+    fn get_attr(&self, name: &str, heap: Heap<'v>) -> Option<Value<'v>> {
+        (name == "path").then(|| heap.alloc(self.path.as_str()))
+    }
+
+    fn dir_attr(&self) -> Vec<String> {
+        vec!["path".to_owned()]
     }
 }
 
@@ -593,6 +669,19 @@ impl<'v> StarlarkValue<'v> for File {
             "extension" => heap.alloc(basename.rsplit_once('.').map_or("", |(_, ext)| ext)),
             "is_source" => heap.alloc(self.is_source),
             "is_directory" => heap.alloc(self.is_directory),
+            "root" => heap.alloc(FileRoot {
+                path: self.root_path(),
+                is_source: self.is_source,
+                source_repository: if self.is_source {
+                    self.short_path
+                        .strip_prefix("../")
+                        .and_then(|external| external.split_once('/'))
+                        .map_or("", |(repository, _)| repository)
+                        .to_owned()
+                } else {
+                    String::new()
+                },
+            }),
             "owner" => heap.alloc(
                 LabelValue::parse(&self.owner).expect("File owner must be an absolute valid label"),
             ),
@@ -610,6 +699,7 @@ impl<'v> StarlarkValue<'v> for File {
             "is_source",
             "is_directory",
             "owner",
+            "root",
         ]
         .map(String::from)
         .to_vec()

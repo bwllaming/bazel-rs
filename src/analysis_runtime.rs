@@ -32,6 +32,58 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::atomic::AtomicBool;
 
+/// The verified top-level `def` functions of every package loaded in one
+/// build (crate::engine registers each package's transitive load graph,
+/// crate::loading::LoadedModules::functions). Args `map_each` accepts any
+/// global StarlarkFunction (Args.validateMapEach, analysis/starlark/Args.java:366-385:
+/// `sfn.isGlobal()`); a function can reach a rule's analysis from another
+/// package's evaluation of its `.bzl` (a toolchain or dependency provider,
+/// e.g. rules_go's `go.toolchain.actions.stdlib`), so the package's own
+/// list is not enough. Keyed by value identity; a hash match is confirmed
+/// with `ptr_eq`.
+#[derive(Debug, Default)]
+pub struct LoadedFunctions {
+    by_identity: Mutex<std::collections::HashMap<u64, Vec<OwnedFrozenValue>>>,
+}
+
+impl LoadedFunctions {
+    fn key(value: Value<'_>) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        value.identity().hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Register the top-level functions of one loaded package.
+    pub fn register(&self, functions: &[OwnedFrozenValue]) {
+        let mut map = self
+            .by_identity
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for function in functions {
+            let entry = map.entry(Self::key(function.value())).or_default();
+            if !entry
+                .iter()
+                .any(|known| known.value().ptr_eq(function.value()))
+            {
+                entry.push(function.clone());
+            }
+        }
+    }
+
+    /// The registered function `value` is, if any.
+    pub fn find(&self, value: Value<'_>) -> Option<OwnedFrozenValue> {
+        let map = self
+            .by_identity
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        map.get(&Self::key(value))?
+            .iter()
+            .find(|known| known.value().ptr_eq(value))
+            .cloned()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct RegisteredAction {
     pub action: Action,
@@ -65,6 +117,9 @@ mod owned {
         pub actions: RefCell<Vec<RegisteredAction>>,
         pub active: Arc<AtomicBool>,
         pub top_level_functions: std::sync::Arc<[OwnedFrozenValue]>,
+        /// The build's registry of every loaded package's top-level
+        /// functions (`None` outside an engine build).
+        pub loaded_functions: Option<Arc<LoadedFunctions>>,
         pub repositories: Arc<RepositorySet>,
         pub scope: Arc<ScopeState>,
         /// The rule's subrule inputs: lifted attribute values and toolchain
@@ -338,12 +393,7 @@ pub(crate) fn context<'a>(eval: &'a Evaluator<'_, '_, '_>) -> anyhow::Result<&'a
 }
 
 pub(crate) fn is_top_level_mapper(eval: &Evaluator<'_, '_, '_>, value: Value<'_>) -> bool {
-    context(eval).is_ok_and(|context| {
-        context
-            .top_level_functions
-            .iter()
-            .any(|function| function.value().ptr_eq(value))
-    })
+    owned_top_level_function(eval, value).is_some()
 }
 
 /// The frozen top-level function a map_each value is, usable after analysis
@@ -358,6 +408,12 @@ pub(crate) fn owned_top_level_function(
             .iter()
             .find(|function| function.value().ptr_eq(value))
             .cloned()
+            .or_else(|| {
+                context
+                    .loaded_functions
+                    .as_ref()
+                    .and_then(|functions| functions.find(value))
+            })
     })
 }
 
@@ -1525,6 +1581,7 @@ mod tests {
             actions: RefCell::new(Vec::new()),
             active: Arc::new(AtomicBool::new(true)),
             top_level_functions: Default::default(),
+            loaded_functions: None,
             repositories: Arc::new(RepositorySet::new(".".into())),
             scope: ScopeState::new("rule".into(), BTreeSet::from(["S".into()])),
             subrule: Default::default(),
@@ -1728,6 +1785,7 @@ r=rule(implementation=_rule,subrules=[S])
             actions: RefCell::new(Vec::new()),
             active: Arc::new(AtomicBool::new(true)),
             top_level_functions: Default::default(),
+            loaded_functions: None,
             repositories: Arc::new(RepositorySet::new(".".into())),
             scope: ScopeState::new("rule".into(), BTreeSet::from(["S".into()])),
             subrule: Default::default(),

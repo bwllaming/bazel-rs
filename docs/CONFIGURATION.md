@@ -508,9 +508,9 @@ configuration.` (`:247-262`).
    `force_pic`, `platforms`, `host_platform`, `extra_toolchains`, the
    JavaOptions version strings `java_runtime_version`,
    `java_language_version`, `tool_java_runtime_version` and
-   `tool_java_language_version` (N28b) and `cpu`
-   (which only a transition sets natively; `--cpu` stays an unsupported
-   command-line option); `define` (never writable in Bazel) and `copt`
+   `tool_java_language_version` (N28b), `cpu` and `collect_code_coverage`
+   (N47; which only a transition sets natively; `--cpu` and
+   `--collect_code_coverage` stay unsupported command-line options); `define` (never writable in Bazel) and `copt`
    (always its default natively, `--copt` being unsupported) may only be
    read.
 3. The implementation is called as `impl(settings, attr)`
@@ -526,7 +526,7 @@ configuration.` (`:247-262`).
    com.google.devtools.build.lib.rules.cpp.CppConfiguration$StripMode>`;
    the type names are the enum classes' simple names, Starlark.classType,
    `net/starlark/java/eval/Starlark.java:337-418`), `platforms` a list of
-   Labels, `host_platform` a Label, `stamp`/`force_pic` bools,
+   Labels, `host_platform` a Label, `stamp`/`force_pic`/`collect_code_coverage` bools,
    `extra_toolchains` strings, the Java version options strings, `cpu` the host CPU string (AutoCpuConverter,
    `analysis/config/AutoCpuConverter.java:30-62`: `k8` here), `copt` `[]`,
    `define` `[]` without `--define`; a non-empty `--define` list is
@@ -624,6 +624,25 @@ configuration.` (`:247-262`).
    setting written with its default value**, so a transition that writes
    defaults is the same configuration (same root and action keys) as none.
    A setting written through an alias is stored under its actual label.
+   **The stored object is the returned one** (N47): applyTransition keeps
+   the previous object when `oldValue.equals(newValue)` (`:656-659`) and
+   otherwise the raw value, which validate converts only for the default
+   check. For bool/int/string/label values the raw and converted objects
+   print and compare alike; a list or tuple for a string-list setting stays a
+   raw StarlarkList/Tuple (`SettingValue::Sequence`): its `toString` is the
+   Starlark repr (`["netgo", "b"]`, `("x",)`) in the configuration identity
+   and the ST- hash, and Java's asymmetric equality holds — a converted
+   (command-line/default) ImmutableList equals any list or tuple with equal
+   elements (so a pass-through keeps it), a StarlarkList or Tuple only its
+   own class (StarlarkList.java:244-251, Tuple.java:129-135; OptionsDiff
+   compares the transitioned value first, OptionsDiff.java:107-118). So
+   rules_go's `go_transition` + `non_go_transition` restoring
+   `--//go/config:tags=netgo,b` from its JSON record is a different
+   configuration than the top-level one (`ST-91a4ed8818d5` on both engines,
+   N47 capture S2). A raw object of another class that is not at its default
+   (an int for a bool setting, a dict/set/range for a string list) fails
+   explicitly. `ctx.build_setting_value` of a raw list is a mutable copy
+   natively (Bazel returns the frozen object).
 
 Errors are reported like Bazel: the error events first (`LOCATION: MESSAGE`
 lines), then for a rule transition the TransitionException message at the
@@ -707,9 +726,10 @@ on coverdata, `go_tool_transition` on nogo, under the built-in profile and
 explicit `allowed file types` gap of its `srcs` extension list.
 
 **Remaining differences.** The `-ST-` hashes follow Bazel's algorithm over
-the native option set (the paired capture shows equal hashes wherever the
-transitioned values are equal, except rules_go's `go_transition`
-configurations); `print()` has no `DEBUG:` prefix and tracebacks use the
+the native option set (the N18c capture showed equal hashes wherever the
+transitioned values are equal except rules_go's `go_transition`
+configurations: raw lists, modelled since N47, whose capture has equal hash
+values in every row); `print()` has no `DEBUG:` prefix and tracebacks use the
 interpreter's layout (as elsewhere); private built-in `attr` values are
 `None`; the frozen `settings` dict; the transition identity is the
 `transition()` call (Bazel compares inputs, outputs and implementation),
@@ -724,6 +744,59 @@ ids would change every existing exec/transition action key and is left
 as is. The reverse (B5: Bazel re-runs a write after `--host_platform`
 changes, native reuses it) comes from Bazel keying its action cache by
 output path and its configuration-dependent action metadata.
+
+## rules_go's command-line options and coverage-enabled configurations (N47)
+
+Inventory (rules_go 0.63.0, every `.bzl` outside tests/examples; also its
+go_library dependency modules): `go/private/rules/transition.bzl` touches
+three `//command_line_option`s — `platforms` (go_transition input/output,
+go_cross_transition), `compilation_mode` (go_cross_transition) and
+`collect_code_coverage` (go_stdlib_transition writes `False`) — besides the
+Starlark settings `//go/config:{static,race,msan,pure,debug,linkmode,tags,pgoprofile}`
+(bool/string/string_list flags, `pgoprofile` a `label_flag`),
+`//go/private:{request_nogo,bootstrap_nogo}` (bool settings),
+`//go/private/rules:original_*` (string settings) and
+`//go/toolchain:sdk_version`. No other native option (`features`, `cpu`,
+`crosstool_top`, `fission`, `extra_toolchains`, ...) is read or written on
+the go_library path (protobuf's `dist.bzl` and apple_support's transitions
+write `cpu`/`platforms`, already modelled, and are not on it).
+
+`--collect_code_coverage` (CoreOptions.collectCodeCoverage,
+`analysis/config/CoreOptions.java:566-578`) is a modelled transition option:
+read as a bool, written as a bool or a string through BooleanConverter
+(`'maybe' is not a boolean`), `Invalid value type` for other types, `None`
+is the JDK's null-boolean-field text (`...CoreOptions.collectCodeCoverage to
+null value`); part of the identity only when true; hashed as
+`//command_line_option:collect_code_coverage=true` into the ST- fragment;
+not propagated by the exec transition (builtin_exec_platforms.bzl:231-275,
+so a coverage configuration's exec tools are the plain exec configuration).
+The command-line option (and `bazel coverage`) stays unsupported. In a
+configuration with coverage enabled `ctx.configuration.coverage_enabled` is
+True; coverage instrumentation, which needs `--instrumentation_filter`,
+`--instrument_test_targets` and CoverageOptions (not modelled), fails
+explicitly: `ctx.coverage_instrumented()`,
+`ctx.fragments.coverage.output_generator`, a test rule's analysis and a
+late-bound `configuration_field("coverage", ...)` default (`... in a
+configuration with --collect_code_coverage (set by a Starlark transition) is
+not implemented in the native profile (coverage instrumentation: ...)`).
+rules_cc's Starlark `configure_features` reads `coverage_enabled` itself.
+
+Paired capture (`artifacts/go_transitions-capture.py`, receipt
+`tests/fixtures/go_transitions/reference_receipt.json`, test
+`tests/go_transitions.rs`): go_shaped's genuine `transition.bzl` and probe
+rules dumping `coverage_enabled`, `ctx.var`, `bin_dir`, the target platform,
+the rules_go settings and an exec tool's path below every rules_go
+transition and below transitions on the three options (bool/string forms,
+toggles, nested coverage + stdlib/tool transitions, enum strings,
+platforms as string/list), with and without command-line rules_go flags and
+`-c dbg`; plus the `map_each`/`File.root` probe and a targeted follow-up row
+(F/map_each_file_root: `File.root.path` is `""` for main and external source
+files alike, ArtifactRoot.java:102-123, roots of different repositories are
+unequal; built-in `map_each` callables; raw string-list values through an
+alias, as a tuple and in `config_setting(flag_values)`). Mapping D1
+(`bazel-out/k8-<mode>` -> `bazel-out/rust-<mode>`; this base has no N41 k8
+roots; exec roots are `linux-opt-exec` on both sides with
+`--host_platform=//p:linux`).
 
 ## Analysis order per target
 

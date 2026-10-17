@@ -1,0 +1,8 @@
+load(":defs.bzl", "edge", "show")
+alias(name = "tags_alias", actual = "//go/config:tags")
+config_setting(name = "netgo", flag_values = {"//go/config:tags": "netgo"})
+show(name = "s", picked = select({":netgo": "netgo", "//conditions:default": "other"}))
+edge(name = "list", dep = ":s", tags_value = ["netgo", "x"])
+edge(name = "tuple", dep = ":s", tags_value = ["netgo", "x"], as_tuple = True)
+edge(name = "default", dep = ":s", tags_value = [])
+edge(name = "default_tuple", dep = ":s", tags_value = [], as_tuple = True)

@@ -339,7 +339,15 @@ fn check_mapper(
     let name = map_each
         .function_name()
         .ok_or_else(|| anyhow!("map_each must be a function or None"))?;
-    if !allow_closure {
+    // Args.validateMapEach (analysis/starlark/Args.java:366-386): only a
+    // StarlarkFunction (a `def` or lambda, repr `<function NAME from FILE>`,
+    // StarlarkFunction.java:222-231) must be global; built-in callables such
+    // as `str` are accepted as they are.
+    let starlark_function = {
+        let repr = map_each.to_repr();
+        repr.starts_with("<function ") && repr.contains(" from ")
+    };
+    if !allow_closure && starlark_function {
         // Analysis runs in a fresh module. The loader retains identities of
         // actual top-level def declarations, including private/imported helpers.
         ensure!(
@@ -889,6 +897,23 @@ expanded([a]) == ["pkg/file with $ spaces", "prefix:x,prefix:y"]
         );
         fail(
             "def build():\n    def nested(x):\n        return x\n    a.add_all(['x'], map_each=nested)\nbuild()",
+            "allow_closure=True",
+        );
+    }
+
+    /// N47 follow-up: built-in callables need not be global
+    /// (Args.validateMapEach, Args.java:366-386).
+    #[test]
+    fn map_each_accepts_builtin_callables() {
+        pass(
+            r#"
+a.add_all([1, 2], map_each=str)
+a.add_joined(["x"], join_with=",", map_each=repr)
+expanded([a]) == ["1", "2", "\"x\""]
+"#,
+        );
+        fail(
+            "a.add_all(['x'], map_each=lambda x: x)",
             "allow_closure=True",
         );
     }

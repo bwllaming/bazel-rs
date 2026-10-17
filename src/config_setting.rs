@@ -331,7 +331,8 @@ fn user_defined_flags(
         };
         // List-valued settings match if any entry equals the single expected
         // value (:722-756); allow_multiple settings are not modelled.
-        if let SettingValue::StringList(actual_values) = &configured {
+        // A transition's raw StarlarkList/Tuple is a java.util.List too.
+        if let Some(actual_values) = configured.string_items() {
             let SettingValue::StringList(expected) = &converted else {
                 unreachable!("string_list settings convert to lists");
             };

@@ -41,7 +41,8 @@ pub(crate) const COMMAND_LINE_OPTION_PREFIX: &str = "//command_line_option:";
 
 /// The native options a transition may read and write natively: the
 /// modelled options of crate::configuration (docs/CONFIGURATION.md),
-/// including N28b's JavaOptions version strings, and `--cpu`, which only a
+/// including N28b's JavaOptions version strings, and `--cpu` and
+/// `--collect_code_coverage` (N47, rules_go's go_stdlib_transition), which only a
 /// transition sets natively.
 const MODELLED_NATIVE_OPTIONS: &[&str] = &[
     "compilation_mode",
@@ -53,6 +54,7 @@ const MODELLED_NATIVE_OPTIONS: &[&str] = &[
     "host_platform",
     "extra_toolchains",
     "cpu",
+    "collect_code_coverage",
     "java_runtime_version",
     "java_language_version",
     "tool_java_runtime_version",
@@ -731,6 +733,7 @@ fn native_input<'v>(
         .alloc(heap),
         "stamp" => heap.alloc(native.stamp),
         "force_pic" => heap.alloc(native.force_pic),
+        "collect_code_coverage" => heap.alloc(native.collect_code_coverage),
         "platforms" => heap.alloc(
             native
                 .platforms
@@ -772,6 +775,14 @@ fn setting_input<'v>(value: &SettingValue, heap: Heap<'v>) -> anyhow::Result<Val
         SettingValue::Int(number) => heap.alloc(*number),
         SettingValue::String(text) => heap.alloc(text.as_str()),
         SettingValue::StringList(items) => heap.alloc(items.clone()),
+        // Starlark.fromJava of a StarlarkList or Tuple is the object itself.
+        SettingValue::Sequence {
+            tuple: false,
+            items,
+        } => heap.alloc(items.clone()),
+        SettingValue::Sequence { tuple: true, items } => heap.alloc(
+            starlark::values::tuple::AllocTuple(items.iter().map(|item| heap.alloc(item.as_str()))),
+        ),
         SettingValue::Label(label) => crate::starlark_types::alloc_label(heap, &label.to_string())?,
     })
 }
@@ -1243,7 +1254,15 @@ fn apply_changes(
                 } else {
                     raw
                 };
-                options.insert(label, OptionSlot::Raw(raw));
+                // `if (!Objects.equals(oldValue, optionValue))` (:656-659):
+                // an equal value keeps the previous object.
+                let unchanged = matches!(
+                    options.get(&label),
+                    Some(OptionSlot::Typed(old)) if java_equals_raw(old, &raw)
+                );
+                if !unchanged {
+                    options.insert(label, OptionSlot::Raw(raw));
+                }
             }
             SettingKey::Native(name) => {
                 if name == "platforms" {
@@ -1301,25 +1320,31 @@ fn apply_changes(
         };
         if is_input(&setting)
             && !is_output(&setting)
-            && matches!(&slot, OptionSlot::Typed(value) if *value == detail.default)
+            && matches!(&slot, OptionSlot::Typed(value) if detail.default.java_equals(value))
         {
             options.remove(actual);
             continue;
         }
-        let value = match slot {
-            OptionSlot::Typed(value) => value,
-            OptionSlot::Raw(raw) => convert_setting(
-                detail.ty,
-                &raw,
-                &crate::rule_declarations::canonical_form(&setting),
-            )
-            .map_err(Failure::message)?,
+        // The converted value is compared with the default
+        // (validateAndCheckIfAtDefault, StarlarkTransition.java:225-274);
+        // the raw object is what stays.
+        let what = crate::rule_declarations::canonical_form(&setting);
+        let (value, raw) = match slot {
+            OptionSlot::Typed(value) => (value, None),
+            OptionSlot::Raw(raw) => (
+                convert_setting(detail.ty, &raw, &what).map_err(Failure::message)?,
+                Some(raw),
+            ),
         };
-        if value == detail.default {
+        if converted_equals(&value, &detail.default) {
             options.remove(actual);
-        } else {
-            options.insert(actual.clone(), OptionSlot::Typed(value));
+            continue;
         }
+        let stored = match raw {
+            Some(raw) => stored_raw(detail.ty, &raw, &value, &what).map_err(Failure::message)?,
+            None => value,
+        };
+        options.insert(actual.clone(), OptionSlot::Typed(stored));
     }
     let starlark = options
         .into_iter()
@@ -1331,6 +1356,82 @@ fn apply_changes(
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
     Ok(Configuration::new(native, starlark))
+}
+
+/// `Objects.equals(oldValue, optionValue)` of FunctionTransitionUtil.applyTransition
+/// (:656-659) for a stored value and a returned one: Boolean, StarlarkInt,
+/// String and Label by value; a converted list (ImmutableList) equals any
+/// list or tuple with equal elements, a raw StarlarkList only a list and a
+/// raw Tuple only a tuple (StarlarkList.java:244-251, Tuple.java:129-135).
+fn java_equals_raw(old: &SettingValue, raw: &Raw) -> bool {
+    let strings = |items: &[Raw]| -> Option<Vec<String>> {
+        items
+            .iter()
+            .map(|item| match &item.kind {
+                RawKind::String(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    match (old, &raw.kind) {
+        (SettingValue::Bool(old), RawKind::Bool(new)) => old == new,
+        (SettingValue::Int(old), RawKind::Int(Some(new))) => old == new,
+        (SettingValue::String(old), RawKind::String(new)) => old == new,
+        (SettingValue::Label(old), RawKind::Label(new)) => old == new,
+        (SettingValue::StringList(old), RawKind::List(items)) => {
+            strings(items).as_ref() == Some(old)
+        }
+        (SettingValue::Sequence { tuple, items: old }, RawKind::List(items)) => {
+            *tuple == (raw.type_name == "tuple") && strings(items).as_ref() == Some(old)
+        }
+        _ => false,
+    }
+}
+
+/// `Type.convert(value).equals(default)`: a raw sequence converts to the
+/// list of its elements.
+fn converted_equals(value: &SettingValue, default: &SettingValue) -> bool {
+    match value {
+        SettingValue::Sequence { items, .. } => default.string_items() == Some(items.as_slice()),
+        _ => value == default,
+    }
+}
+
+/// The object BuildOptions keeps for a returned value that is not at its
+/// default (FunctionTransitionUtil.applyTransition keeps the raw value,
+/// StarlarkTransition.validate only converts it for the default check): a
+/// list or tuple for a string-list setting stays a raw sequence
+/// ([`SettingValue::Sequence`]); bool, int, string and label values are the
+/// converted ones, whose Java objects and `toString` are the raw ones'. A
+/// raw object of another class (an int for a bool setting, a dict/set/range
+/// for a string list) keeps a `toString` the native configuration does not
+/// model: explicit.
+fn stored_raw(
+    ty: SettingType,
+    raw: &Raw,
+    value: &SettingValue,
+    what: &str,
+) -> Result<SettingValue, String> {
+    let unmodelled = || {
+        Err(format!(
+            "a Starlark transition setting {what} to a value of type '{}' (kept unconverted in the configuration) is not implemented in the native profile",
+            raw.type_name
+        ))
+    };
+    match (ty, &raw.kind, value) {
+        (SettingType::StringList, RawKind::List(_), SettingValue::StringList(items)) => {
+            Ok(SettingValue::Sequence {
+                tuple: raw.type_name == "tuple",
+                items: items.clone(),
+            })
+        }
+        (SettingType::StringList, _, _) => unmodelled(),
+        (SettingType::Bool, RawKind::Bool(_), _)
+        | (SettingType::Int, RawKind::Int(_), _)
+        | (SettingType::String, RawKind::String(_), _)
+        | (SettingType::Label, RawKind::Label(_), _) => Ok(value.clone()),
+        _ => unmodelled(),
+    }
 }
 
 /// `Type.convert` of a build setting's type (packages/Type.java:296-321,
@@ -1421,11 +1522,15 @@ fn convert_native(
         // default top-level configuration's root).
         let defaults = NativeOptions::default();
         match name {
-            "stamp" | "force_pic" => {
-                let field = if name == "stamp" {
-                    "com.google.devtools.build.lib.analysis.config.CoreOptions.stampBinaries"
-                } else {
-                    "com.google.devtools.build.lib.rules.cpp.CppOptions.forcePic"
+            "stamp" | "force_pic" | "collect_code_coverage" => {
+                let field = match name {
+                    "stamp" => {
+                        "com.google.devtools.build.lib.analysis.config.CoreOptions.stampBinaries"
+                    }
+                    "force_pic" => "com.google.devtools.build.lib.rules.cpp.CppOptions.forcePic",
+                    _ => {
+                        "com.google.devtools.build.lib.analysis.config.CoreOptions.collectCodeCoverage"
+                    }
                 };
                 return Err(format!(
                     "IllegalArgumentError for option '{name}': Can not set boolean field {field} to null value"
@@ -1480,12 +1585,14 @@ fn convert_native(
                 _ => native.strip = value,
             }
         }
-        "stamp" | "force_pic" => {
+        "stamp" | "force_pic" | "collect_code_coverage" => {
             let value = match &raw.kind {
                 RawKind::Bool(flag) => *flag,
                 RawKind::String(text) => {
+                    // `--collect_code_coverage` has no modelled command-line
+                    // form; it converts with BooleanConverter like `--stamp`.
                     match crate::configuration::convert(
-                        option.expect("modelled option"),
+                        option.unwrap_or(&crate::configuration::COLLECT_CODE_COVERAGE),
                         text,
                         &|_| Err("no labels".to_owned()),
                     )
@@ -1497,10 +1604,10 @@ fn convert_native(
                 }
                 _ => return Err(invalid()),
             };
-            if name == "stamp" {
-                native.stamp = value;
-            } else {
-                native.force_pic = value;
+            match name {
+                "stamp" => native.stamp = value,
+                "force_pic" => native.force_pic = value,
+                _ => native.collect_code_coverage = value,
             }
         }
         "platforms" => {
@@ -1759,5 +1866,67 @@ mod tests {
         )
         .unwrap();
         assert_eq!(native.cpu, None);
+    }
+
+    /// N47: `--collect_code_coverage` (CoreOptions.java:566-578) converts
+    /// like the other boolean options (BooleanConverter for strings, the
+    /// value of a bool, `Invalid value type` otherwise, a null-field error
+    /// for None) and reads as a Starlark bool.
+    #[test]
+    fn collect_code_coverage_is_a_boolean_transition_option() {
+        let parse = |text: &str| Label::parse_canonical(text);
+        let mut native = NativeOptions::default();
+        for (value, expected) in [
+            (raw(RawKind::Bool(true), "True", "bool"), true),
+            (raw(RawKind::String("0".into()), "\"0\"", "string"), false),
+            (
+                raw(RawKind::String("yes".into()), "\"yes\"", "string"),
+                true,
+            ),
+            (
+                raw(RawKind::String("FALSE".into()), "\"FALSE\"", "string"),
+                false,
+            ),
+        ] {
+            convert_native(&mut native, "collect_code_coverage", &value, &parse).unwrap();
+            assert_eq!(native.collect_code_coverage, expected, "{}", value.repr);
+        }
+        for (value, error) in [
+            (
+                raw(RawKind::String("maybe".into()), "\"maybe\"", "string"),
+                "OptionsParsingError for option 'collect_code_coverage': 'maybe' is not a boolean",
+            ),
+            (
+                raw(RawKind::Int(Some(1)), "1", "int"),
+                "Invalid value type for option 'collect_code_coverage'",
+            ),
+            (
+                raw(RawKind::None, "None", "NoneType"),
+                "IllegalArgumentError for option 'collect_code_coverage': Can not set boolean field com.google.devtools.build.lib.analysis.config.CoreOptions.collectCodeCoverage to null value",
+            ),
+        ] {
+            assert_eq!(
+                convert_native(&mut native, "collect_code_coverage", &value, &parse),
+                Err(error.to_owned())
+            );
+        }
+        assert!(MODELLED_NATIVE_OPTIONS.contains(&"collect_code_coverage"));
+        Module::with_temp_heap(|module| {
+            native.collect_code_coverage = true;
+            let value = native_input(&native, "collect_code_coverage", module.heap()).unwrap();
+            assert_eq!(
+                (value.get_type(), value.to_repr()),
+                ("bool", "True".to_owned())
+            );
+        });
+        // The default keeps every existing identity.
+        assert_eq!(
+            Configuration::new(NativeOptions::default(), BTreeMap::new()).id,
+            Configuration::default().id
+        );
+        assert_ne!(
+            Configuration::new(native, BTreeMap::new()).id,
+            Configuration::default().id
+        );
     }
 }

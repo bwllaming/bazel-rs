@@ -802,6 +802,9 @@ pub struct Engine {
     /// input file has no configuration), not once per dependency edge
     /// (lookups only).
     analyzed_sources: HashSet<Label>,
+    /// Top-level functions of every loaded package (Args `map_each`,
+    /// crate::analysis_runtime::LoadedFunctions).
+    loaded_functions: Arc<crate::analysis_runtime::LoadedFunctions>,
     generated: BTreeMap<Label, (Label, String)>,
     group_nodes: BTreeMap<Label, Arc<GroupNode>>,
     group_budget: HostBudget,
@@ -910,6 +913,7 @@ impl Engine {
             declared_inputs: HashMap::new(),
             source_targets: HashMap::new(),
             analyzed_sources: HashSet::new(),
+            loaded_functions: Arc::default(),
             generated: BTreeMap::new(),
             group_nodes: BTreeMap::new(),
             group_budget: HostBudget::default(),
@@ -995,6 +999,10 @@ impl Engine {
                     self.generated
                         .insert(output, (rule.label.clone(), out.clone()));
                 }
+            }
+            // Every rule of a package shares its load graph's functions.
+            if let Some(custom) = rules.values().find_map(|rule| rule.custom.as_ref()) {
+                self.loaded_functions.register(&custom.top_level_functions);
             }
             self.packages.insert(package.to_owned(), rules);
         }
@@ -1972,6 +1980,7 @@ impl Engine {
             return Err(custom_gap_error(&rule, &custom.declaration.unanalyzed));
         }
         resolved_value_gate(&rule)?;
+        coverage_gate(&rule, &configuration)?;
         // An alias-like rule has one dependency, its (resolved) actual: the
         // `actual` attribute, or the late-bound `:alias` of label_flag /
         // label_setting (rules/LabelBuildSettings.java:62-83).
@@ -5413,6 +5422,7 @@ impl Engine {
             is_exec: native.is_exec,
             no_config: native.no_config,
             stamp: native.stamp,
+            coverage_enabled: native.collect_code_coverage,
             platforms: if native.platforms.is_empty() {
                 vec![native.host_platform.clone()]
             } else {
@@ -6505,11 +6515,13 @@ impl Engine {
             // print() output of a discarded attempt is dropped: Bazel
             // runs the implementation once, after its target platform is
             // known.
+            let loaded_functions = self.loaded_functions.clone();
             let outputs = analysis::ConfiguredOutputs {
                 output_root: &output_root,
                 action_owner: &action_owner,
                 action_env: action_env.clone(),
                 runfiles: self.runfiles_options,
+                loaded_functions: Some(&loaded_functions),
             };
             let (mut analyzed, mut printed) = analysis::analyze_buffered(
                 &analyzed_rule,
@@ -8180,6 +8192,49 @@ fn native_analysis_gate(rule: &Rule) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// N47: in a configuration a Starlark transition enabled
+/// `--collect_code_coverage` in, a test rule's coverage support
+/// (BaseRuleClasses' `:coverage_support`/`:lcov_merger` attributes and the
+/// coverage test action, analysis/test/TestActionBuilder.java) and a
+/// late-bound `configuration_field("coverage", "output_generator")` default
+/// (CoverageConfiguration.outputGenerator, analysis/test/CoverageConfiguration.java:76-95)
+/// are coverage instrumentation, which the native profile does not model:
+/// explicit before any dependency edge.
+fn coverage_gate(rule: &Rule, configuration: &Configuration) -> Result<(), String> {
+    if !configuration.native.collect_code_coverage {
+        return Ok(());
+    }
+    let Some(custom) = &rule.custom else {
+        return Ok(());
+    };
+    let what = if custom.declaration.builtin.kind.test {
+        Some(format!("analysis of test rule {}", rule.label))
+    } else {
+        custom
+            .schema
+            .iter()
+            .find(|(_, spec)| {
+                spec.declaration
+                    .configuration_field
+                    .as_ref()
+                    .is_some_and(|field| field.fragment == "coverage")
+            })
+            .map(|(name, _)| {
+                format!(
+                    "{}: the late-bound attribute '{name}' (configuration_field(\"coverage\", ...))",
+                    rule.label
+                )
+            })
+    };
+    match what {
+        Some(what) => Err(located(
+            rule.location.as_deref(),
+            crate::ctx_surface::coverage_gap(&what),
+        )),
+        None => Ok(()),
+    }
 }
 
 fn custom_gap_error(rule: &Rule, gaps: &[String]) -> String {

@@ -1,0 +1,4 @@
+load(':defs.bzl', 'use')
+use(name = 'u', tc = '//tc', src = 'a.txt')
+use(name = 'c', tc = '//tc', src = 'a.txt', closure = True)
+use(name = 'ext', tc = '//tc', src = '@bazel_skylib//:LICENSE', builtin = True)

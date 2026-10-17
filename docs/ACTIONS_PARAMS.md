@@ -69,6 +69,18 @@ Citations are to the pinned Bazel source
   `StarlarkCustomCommandLine.java:309-485`). `map_each` is then called on each
   child File; it must be a top-level function of a loaded `.bzl` file (the
   frozen function is called after analysis), else analysis fails explicitly.
+  Without `allow_closure=True`, `map_each` must be a global `def`
+  (Args.validateMapEach, `analysis/starlark/Args.java:366-385`): one of the
+  analyzing package's load graph, or (N47) of any package the build loaded,
+  as when a function reaches the rule through a dependency's or toolchain's
+  provider (rules_go's `go.toolchain.actions.stdlib` and its `_dirname`
+  mapper; `crate::analysis_runtime::LoadedFunctions`, keyed by value
+  identity). Built-in callables (`str`, `repr`, ...) are accepted as they
+  are (only StarlarkFunctions must be global; also TemplateDict.add_joined,
+  `TemplateDict.java:70-78`). Closures and lambdas stay rejected unless
+  `allow_closure = True`, with the native message
+  (`map_each must be a top-level function visible in this analysis module;
+  ...`, not Bazel's text).
   Non-directory values keep the existing eager mapping. An expanded directory
   that is not an action input fails when the action executes with Bazel's
   `Action %{output} failed: Failed to expand directory ...` text (the action's

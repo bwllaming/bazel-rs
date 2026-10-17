@@ -48,6 +48,9 @@ pub struct CtxSurface {
     pub no_config: bool,
     /// CoreOptions.stampBinaries (`--stamp`).
     pub stamp: bool,
+    /// CoreOptions.collectCodeCoverage (`--collect_code_coverage`, set
+    /// natively only by a Starlark transition, N47).
+    pub coverage_enabled: bool,
     /// PlatformOptions.platforms (normalized, never empty) and host_platform.
     pub platforms: Vec<Label>,
     pub host_platform: Label,
@@ -90,6 +93,7 @@ impl Default for CtxSurface {
             is_exec: false,
             no_config: false,
             stamp: false,
+            coverage_enabled: false,
             platforms: vec![host.clone()],
             host_platform: host,
             short_id: String::new(),
@@ -377,7 +381,10 @@ mod values {
                         member_names(Kind::$kind)
                     }
                     fn unknown_attribute_message(&self, name: &str) -> Option<String> {
-                        Some(unknown_member(Kind::$kind, name))
+                        Some(
+                            coverage_member_gap(Kind::$kind, &self.surface, name)
+                                .unwrap_or_else(|| unknown_member(Kind::$kind, name)),
+                        )
                     }
                 }
                 impl $name {
@@ -619,12 +626,12 @@ fn configuration_methods(builder: &mut MethodsBuilder) {
         configuration(this)?;
         Ok(frozen_dict(heap, &[]))
     }
-    /// CoreOptions.collectCodeCoverage (:730-733); `--collect_code_coverage`
-    /// is rejected natively.
+    /// CoreOptions.collectCodeCoverage (:730-733): true only in a
+    /// configuration a Starlark transition set `--collect_code_coverage` in
+    /// (N47; the command-line option is rejected natively).
     #[starlark(attribute)]
     fn coverage_enabled<'v>(this: Value<'v>) -> anyhow::Result<bool> {
-        configuration(this)?;
-        Ok(false)
+        Ok(configuration(this)?.coverage_enabled)
     }
     /// BuildOptions.shortId (:735-738): the native identity's prefix.
     #[starlark(attribute)]
@@ -939,6 +946,32 @@ enum Member {
 
 use Member::{Field, Gap, Method};
 
+/// CoverageConfiguration.outputGenerator (analysis/test/CoverageConfiguration.java:76-95):
+/// null unless coverage is enabled. With `--collect_code_coverage` (set by a
+/// Starlark transition, N47) it is `--coverage_output_generator`, a
+/// coverage-instrumentation value the native profile does not model.
+fn coverage_output_generator<'v>(
+    surface: &CtxSurface,
+    _heap: Heap<'v>,
+) -> anyhow::Result<Value<'v>> {
+    if surface.coverage_enabled {
+        bail!(
+            "{}",
+            coverage_gap("ctx.fragments.coverage.output_generator")
+        );
+    }
+    Ok(Value::new_none())
+}
+
+/// The explicit failure of coverage instrumentation in a configuration a
+/// Starlark transition enabled `--collect_code_coverage` in (N47,
+/// docs/CONFIGURATION.md "Coverage-enabled configurations").
+pub(crate) fn coverage_gap(what: &str) -> String {
+    format!(
+        "{what} in a configuration with --collect_code_coverage (set by a Starlark transition) is not implemented in the native profile (coverage instrumentation: --instrumentation_filter, --instrument_test_targets and --coverage_output_generator are not modelled)"
+    )
+}
+
 fn host_platform<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
     label_value(heap, &surface.host_platform)
 }
@@ -1144,9 +1177,10 @@ fn members(kind: Kind) -> &'static [(&'static str, Member)] {
             ("platform", Field(V::Dyn(target_platform))),
             ("platforms", Field(V::Dyn(target_platforms))),
         ],
-        // CoverageConfiguration.outputGenerator (analysis/test/CoverageConfiguration.java:86-95):
-        // null without CoverageOptions (`--collect_code_coverage` is rejected).
-        Kind::Coverage => &[("output_generator", Field(V::None))],
+        // CoverageConfiguration.outputGenerator (analysis/test/CoverageConfiguration.java:76-95):
+        // null without `--collect_code_coverage`; the CoverageOptions label
+        // otherwise, which is an explicit gap (coverage_output_generator).
+        Kind::Coverage => &[("output_generator", Field(V::Dyn(coverage_output_generator)))],
         Kind::Android => &[],
         // BazelAndroidConfiguration (rules/android/BazelAndroidConfiguration.java).
         Kind::BazelAndroid => &[("merge_android_manifest_permissions", Gap)],
@@ -1358,6 +1392,13 @@ fn member_names(kind: Kind) -> Vec<String> {
         .iter()
         .map(|(name, _)| (*name).to_owned())
         .collect()
+}
+
+/// The explicit failure of a fragment member whose value needs coverage
+/// instrumentation options (N47), reported instead of the generic message.
+fn coverage_member_gap(kind: Kind, surface: &CtxSurface, name: &str) -> Option<String> {
+    (kind == Kind::Coverage && name == "output_generator" && surface.coverage_enabled)
+        .then(|| coverage_gap("ctx.fragments.coverage.output_generator"))
 }
 
 fn unknown_member(kind: Kind, name: &str) -> String {

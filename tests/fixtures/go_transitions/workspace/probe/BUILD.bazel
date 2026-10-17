@@ -1,0 +1,140 @@
+load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
+load(
+    ":defs.bzl",
+    "cfg_leaf",
+    "cfg_probe",
+    "cov_edge",
+    "generator_probe",
+    "go_binary_like",
+    "go_cross_like",
+    "go_tool_edge",
+    "instrumented_probe",
+    "non_go_edge",
+    "non_go_tool_edge",
+    "non_request_nogo_edge",
+    "opt_edge",
+    "stdlib_edge",
+)
+
+package(default_visibility = ["//visibility:public"])
+
+string_flag(name = "cov_seen", build_setting_default = "")
+
+cfg_leaf(name = "leaf")
+
+cfg_probe(name = "p")
+
+filegroup(name = "prof", srcs = ["prof.pprof"])
+
+# rules_go's edge transitions on the probe.
+stdlib_edge(name = "stdlib", dep = ":p")
+
+go_tool_edge(name = "tool", dep = ":p")
+
+non_go_tool_edge(name = "non_go_tool", dep = ":p")
+
+non_go_edge(name = "non_go", dep = ":p")
+
+non_request_nogo_edge(name = "non_request_nogo", dep = ":p")
+
+# go_transition (go_binary's rule transition), then non_go_transition and
+# go_stdlib_transition below it, and nested go_tool_transition.
+go_binary_like(
+    name = "gobin_race",
+    data = [":p"],
+    direct = [":tool"],
+    gotags = ["b", "a", "b"],
+    race = "on",
+    stdlib = [":p"],
+)
+
+go_binary_like(
+    name = "gobin_pure_static",
+    direct = [":p"],
+    linkmode = "pie",
+    pure = "on",
+    static = "on",
+    stdlib = [":p"],
+)
+
+go_binary_like(
+    name = "gobin_cross",
+    direct = [":p"],
+    goarch = "arm64",
+    goos = "darwin",
+    pgoprofile = ":prof",
+    stdlib = [":p"],
+)
+
+go_binary_like(
+    name = "gobin_cgo",
+    direct = [":p"],
+    goarch = "amd64",
+    goos = "linux",
+    pure = "off",
+)
+
+# go_cross_transition: sdk_version, compilation_mode, platform.
+go_cross_like(
+    name = "cross_dbg",
+    compilation_mode = "dbg",
+    direct = [":p"],
+    platform = "//go/toolchain:linux_amd64",
+    sdk_version = "1.26.2",
+)
+
+go_cross_like(
+    name = "cross_noop",
+    direct = [":p"],
+)
+
+# --collect_code_coverage in its Starlark forms.
+cov_edge(name = "cov_true", dep = ":p", value = "@bool_true")
+
+cov_edge(name = "cov_false", dep = ":p", value = "@bool_false")
+
+cov_edge(name = "cov_str_true", dep = ":p", value = "true")
+
+cov_edge(name = "cov_str_yes", dep = ":p", value = "yes")
+
+cov_edge(name = "cov_str_zero", dep = ":p", value = "0")
+
+cov_edge(name = "cov_toggle", dep = ":p", value = "@toggle")
+
+# A coverage configuration, then rules_go's stdlib/tool transitions below it.
+cov_edge(name = "cov_then_stdlib", dep = ":stdlib", value = "@bool_true")
+
+cov_edge(name = "cov_then_tool", dep = ":tool", value = "@bool_true")
+
+cov_edge(name = "cov_twice", dep = ":cov_toggle", value = "@bool_true")
+
+# Errors.
+cov_edge(name = "cov_none", dep = ":p", value = "@none")
+
+cov_edge(name = "cov_int", dep = ":p", value = "@int")
+
+cov_edge(name = "cov_bad", dep = ":p", value = "maybe")
+
+# compilation_mode / platforms in string and list forms.
+opt_edge(name = "opt_str", dep = ":p", mode = "OPT")
+
+opt_edge(name = "opt_plat_str", dep = ":p", platforms = ["//p:mac"])
+
+opt_edge(name = "opt_plat_list", dep = ":p", platforms = ["//p:mac", "//p:linux"])
+
+opt_edge(name = "opt_same", dep = ":p")
+
+opt_edge(name = "opt_bad", dep = ":p", mode = "fast")
+
+# Coverage instrumentation in a coverage configuration (native: explicit).
+instrumented_probe(name = "inst")
+
+cov_edge(name = "cov_inst", dep = ":inst", value = "@bool_true")
+
+instrumented_probe(name = "inst_plain")
+
+generator_probe(name = "gen")
+
+cov_edge(name = "cov_gen", dep = ":gen", value = "@bool_true")
+
+generator_probe(name = "gen_plain")
