@@ -74,6 +74,36 @@ enum Target {
     Source(PathBuf),
 }
 
+/// Phase-2 state of a build (action planning, plan order): dry
+/// artifacts, the Starlark providers of analyzed targets and the planned
+/// actions. `done` counts the planned entries of the build's plan.
+#[derive(Default)]
+struct ActionPlanning {
+    dry: BTreeMap<ConfiguredTargetKey, Vec<Artifact>>,
+    custom_providers:
+        BTreeMap<ConfiguredTargetKey, BTreeMap<String, starlark::values::OwnedFrozenValue>>,
+    provider_files: BTreeMap<ConfiguredTargetKey, Vec<File>>,
+    /// Returned declared-provider names per analyzed rule (Target debugPrint).
+    provider_keys: BTreeMap<ConfiguredTargetKey, Vec<String>>,
+    /// RunfilesProvider/FilesToRunProvider of analyzed rule targets
+    /// (docs/RUNFILES.md); file targets and other native rules have none.
+    runfiles_info: BTreeMap<ConfiguredTargetKey, crate::runfiles::TargetRunfiles>,
+    /// File metadata is not a source filesystem path. Keep the real artifact
+    /// identity even when a custom provider forwards a non-default file.
+    artifact_index: BTreeMap<File, Artifact>,
+    declared: Declared,
+    producers: BTreeMap<PathBuf, ConfiguredTargetKey>,
+    nodes: Vec<PlannedAction>,
+    /// Every source input of every action, before execroot planting drops
+    /// main-repository inputs under ignored top-level entries.
+    source_inputs: BTreeMap<String, Vec<PathBuf>>,
+    /// Requested keys delegating to the key a rule transition analyzed them
+    /// under (Engine::rule_delegations), waiting for that key to be planned
+    /// (flush_delegations).
+    delegations: Vec<(ConfiguredTargetKey, ConfiguredTargetKey)>,
+    done: usize,
+}
+
 /// An analyzed rule target in its configuration.
 #[derive(Clone, Debug, Default)]
 struct ConfiguredNode {
@@ -96,6 +126,9 @@ struct ConfiguredNode {
     toolchain_type: Option<ToolchainTypeInfo>,
     /// DeclaredToolchainInfo of a `toolchain` (forwarded by aliases).
     declared_toolchain: Option<Arc<DeclaredToolchainInfo>>,
+    /// ConfigFeatureFlagProvider of a `config_feature_flag` (forwarded by
+    /// aliases; Starlark FeatureFlagInfo values are phase-2 providers).
+    feature_flag: Option<crate::feature_flags::FeatureFlagValue>,
 }
 
 /// A failure of toolchain resolution: a ToolchainException, reported as
@@ -236,8 +269,14 @@ fn uses_toolchain_resolution(rule: &Rule) -> bool {
         }
         (
             RuleKind::Native(
-                "label_flag" | "label_setting" | "constraint_setting" | "constraint_value"
-                | "platform" | "toolchain" | "toolchain_type",
+                "label_flag"
+                | "label_setting"
+                | "constraint_setting"
+                | "constraint_value"
+                | "platform"
+                | "toolchain"
+                | "toolchain_type"
+                | "config_feature_flag",
             ),
             _,
         ) => false,
@@ -648,6 +687,11 @@ pub struct Engine {
     /// The resolved toolchain context of each toolchain-resolving rule of
     /// the build (UnloadedToolchainContext), read by the build loop.
     toolchain_contexts: BTreeMap<ConfiguredTargetKey, UnloadedToolchainContext>,
+    /// The resolved default `test` exec group of a Starlark test rule
+    /// (RuleClass.DEFAULT_TEST_RUNNER_EXEC_GROUP; docs/TEST_FLAGS.md).
+    test_toolchain_contexts: BTreeMap<ConfiguredTargetKey, UnloadedToolchainContext>,
+    /// Phase-2 state of the current build (Self::plan_pending).
+    action_planning: Option<ActionPlanning>,
     /// Targets analyzed as toolchain implementations: their own resolution
     /// forces the parent's execution platform, the host platform
     /// (ToolchainContextUtil.java:136-141; docs/TOOLCHAINS.md).
@@ -690,6 +734,8 @@ impl Engine {
             rule_delegations: BTreeMap::new(),
             requested_trimmed_root: None,
             toolchain_contexts: BTreeMap::new(),
+            test_toolchain_contexts: BTreeMap::new(),
+            action_planning: None,
             toolchain_implementations: BTreeSet::new(),
             deferred_duplicates: BTreeMap::new(),
             source_directories: BTreeMap::new(),
@@ -1408,7 +1454,30 @@ impl Engine {
         }
         // ToolchainResolutionFunction (skyframe/toolchains/ToolchainResolutionFunction.java:62-131).
         let toolchain_context = if uses_toolchains {
-            self.resolve_toolchains(&rule, config, active, configured, plan)?
+            let key = self.toolchain_context_key(&rule, config)?;
+            self.resolve_toolchains(&rule, config, key, active, configured, plan)?
+        } else {
+            None
+        };
+        // The default test exec group of a Starlark test rule, resolved after
+        // the default context (UnloadedToolchainContextsProducer.java:88-126;
+        // only the first error propagates, :181-186): the optional
+        // `@bazel_tools//tools/test:default_test_toolchain_type`
+        // (RuleClass.java:153-167, StarlarkRuleClassFunctions.java:1078-1082),
+        // no execution constraints and no forced execution platform
+        // (DeclaredExecGroup.process, :94-128). Declared exec groups fail
+        // before (custom_gap_error). Divergence D3 (docs/TEST_FLAGS.md):
+        // without the built-in profile there is no `@bazel_tools`, so the
+        // group is not resolved.
+        let test_toolchain_context = if uses_toolchains
+            && self.repositories.has_builtin_modules()
+            && rule
+                .custom
+                .as_ref()
+                .is_some_and(|custom| custom.declaration.builtin.kind.test)
+        {
+            let key = crate::toolchains::default_test_exec_group_key();
+            self.resolve_toolchains(&rule, config, key, active, configured, plan)?
         } else {
             None
         };
@@ -1671,7 +1740,12 @@ impl Engine {
         // attribute dependencies (DependencyResolutionHelpers.java:358-373),
         // analyzed in the parent's configuration (DependencyProducer.java:160-175,
         // DependencyResolver.java:835-866), each once.
-        if let Some(context) = &toolchain_context {
+        // Every exec group's toolchains are dependencies too, in
+        // ToolchainCollection order (default first; :358-373).
+        for context in [&toolchain_context, &test_toolchain_context]
+            .into_iter()
+            .flatten()
+        {
             for implementation in context.resolved_labels() {
                 self.toolchain_implementations
                     .insert(ConfiguredTargetKey::new(implementation.clone(), config));
@@ -1776,6 +1850,8 @@ impl Engine {
         // rules/platform/Toolchain.java:42-110).
         let (mut toolchain_type, mut declared_toolchain) =
             self.toolchain_rule_providers(&rule, config, &platform_prerequisites, configured)?;
+        // ConfigFeatureFlag.create (rules/config/ConfigFeatureFlag.java:109-169).
+        let mut feature_flag = self.config_feature_flag_provider(&rule)?;
         // AliasConfiguredTarget forwards the actual's providers; label_flag and
         // label_setting override BuildSettingProvider (LateBoundAlias.java:58-79).
         let mut actual = None;
@@ -1795,6 +1871,7 @@ impl Engine {
             platform = forwarded.platform;
             toolchain_type = forwarded.toolchain_type;
             declared_toolchain = forwarded.declared_toolchain;
+            feature_flag = forwarded.feature_flag;
             actual = Some(target);
         }
         // ctx.build_setting_value of a Starlark build setting.
@@ -1804,6 +1881,9 @@ impl Engine {
         active.pop();
         if let Some(context) = toolchain_context {
             self.toolchain_contexts.insert(key.clone(), context);
+        }
+        if let Some(context) = test_toolchain_context {
+            self.test_toolchain_contexts.insert(key.clone(), context);
         }
         configured.insert(
             key.clone(),
@@ -1816,6 +1896,7 @@ impl Engine {
                 platform,
                 toolchain_type,
                 declared_toolchain,
+                feature_flag,
             },
         );
         plan.push((key, rule));
@@ -2208,7 +2289,7 @@ impl Engine {
         &mut self,
         rule: &Rule,
         key: &ConfiguredTargetKey,
-        forwarded: &BTreeMap<ConfiguredTargetKey, Label>,
+        configured: &ConfiguredNodes,
     ) -> Result<(), String> {
         let Some(custom) = &rule.custom else {
             return Ok(());
@@ -2248,9 +2329,11 @@ impl Engine {
                 .unwrap_or(key.config),
             _ => key.config,
         };
-        let actual = forwarded
-            .get(&ConfiguredTargetKey::new(label.clone(), edge_config))
-            .cloned()
+        let actual = self
+            .forwarded_actual(
+                configured,
+                &ConfiguredTargetKey::new(label.clone(), edge_config),
+            )
             .unwrap_or(label);
         let group = match self.target(&actual)? {
             Target::Rule(group) if matches!(group.kind, RuleKind::PackageGroup(_)) => {
@@ -2778,6 +2861,19 @@ impl Engine {
             self.analyze(&dependency, config, active, configured, plan)?;
             keys.push(("constraint_values", dependency, None));
         }
+        // UserDefinedFlagMatch reads the FeatureFlagInfo a key returns
+        // (ConfigSetting.java:651-687): a Starlark key's implementation runs
+        // first (Self::plan_pending).
+        let starlark_keys = keys.iter().any(|(attribute, dependency, _)| {
+            *attribute == "flag_values"
+                && matches!(
+                    self.target(&self.alias_chain(configured, config, dependency).1),
+                    Ok(Target::Rule(dep)) if matches!(dep.kind, RuleKind::Custom)
+                )
+        });
+        if starlark_keys {
+            self.plan_pending(plan, configured)?;
+        }
         let shown = crate::rule_declarations::canonical_form(&rule.label);
         let requesting_package = rule_authority(rule);
         let mut errors = Vec::new();
@@ -2813,6 +2909,12 @@ impl Engine {
             let node = configured.get(&ConfiguredTargetKey::new(dependency.clone(), config));
             match value {
                 Some(value) => flags.push(crate::config_setting::FlagPrerequisite {
+                    feature_flag: node.and_then(|node| node.feature_flag.clone()).or_else(|| {
+                        self.planned_feature_flag(&ConfiguredTargetKey::new(
+                            dependency.clone(),
+                            config,
+                        ))
+                    }),
                     specified: dependency,
                     actual,
                     value,
@@ -3262,11 +3364,11 @@ impl Engine {
         &mut self,
         rule: &Rule,
         config: ConfigId,
+        key: ToolchainContextKey,
         active: &mut Vec<ConfiguredTargetKey>,
         configured: &mut ConfiguredNodes,
         plan: &mut Plan,
     ) -> Result<Option<UnloadedToolchainContext>, String> {
-        let key = self.toolchain_context_key(rule, config)?;
         let configuration = self.configurations.get(config).clone();
         let host = configuration.native.host_platform.clone();
         let target_label = configuration.native.target_platform().clone();
@@ -3764,6 +3866,70 @@ impl Engine {
             .collect()
     }
 
+    /// ConfigFeatureFlag.create (rules/config/ConfigFeatureFlag.java:109-169)
+    /// after RuleContext's checks: `allowed_values` must be non empty
+    /// (RuleContext.checkAttributesNonEmpty, analysis/RuleContext.java:1531-1549),
+    /// then the `$allowlist_config_feature_flag` package group
+    /// (`@bazel_tools//tools/allowlists/config_feature_flag:config_feature_flag`,
+    /// ConfigFeatureFlag.java:56-64, ConfigRuleClasses.java:459-466) must contain
+    /// the rule's package (Allowlist.isAvailableFor, analysis/Allowlist.java:88-99).
+    fn config_feature_flag_provider(
+        &mut self,
+        rule: &Rule,
+    ) -> Result<Option<crate::feature_flags::FeatureFlagValue>, String> {
+        let (RuleKind::Native("config_feature_flag"), Some(native)) = (&rule.kind, &rule.native)
+        else {
+            return Ok(None);
+        };
+        let shown = crate::rule_declarations::canonical_form(&rule.label);
+        let allowed = native.strings("allowed_values");
+        if allowed.is_empty() {
+            return Err(located(
+                rule.location.as_deref(),
+                format!(
+                    "in allowed_values attribute of config_feature_flag rule {shown}: attribute must be non empty"
+                ),
+            ));
+        }
+        let allowlist = Label::parse_canonical(
+            "@@bazel_tools//tools/allowlists/config_feature_flag:config_feature_flag",
+        )?;
+        if !self.repositories.has_builtin_modules() {
+            return Err(located(
+                rule.location.as_deref(),
+                format!(
+                    "config_feature_flag rule {shown}: its allowlist {} needs the built-in @bazel_tools repository, which this module profile does not provide; use --experimental-builtin-modules",
+                    crate::rule_declarations::canonical_form(&allowlist)
+                ),
+            ));
+        }
+        let group = self.resolve_group(&allowlist, &mut Vec::new())?;
+        if !group.contains(&rule.label.package_id()) {
+            // AllowlistChecker (ConfigRuleClasses.java:459-466); the genuine
+            // embedded group is `packages = ["public"]`.
+            return Err(located(
+                rule.location.as_deref(),
+                format!(
+                    "in config_feature_flag rule {shown}: the config_feature_flag rule is not available in this package"
+                ),
+            ));
+        }
+        crate::feature_flags::analyze(
+            &shown,
+            &allowed,
+            native
+                .explicit("default_value")
+                .then(|| native.string("default_value").unwrap_or_default()),
+        )
+        .map(Some)
+        .map_err(|errors| {
+            errors
+                .into_iter()
+                .map(|error| located(rule.location.as_deref(), error))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+    }
     /// ToolchainType.create (rules/ToolchainType.java:40-52) and
     /// Toolchain.create (rules/platform/Toolchain.java:42-110) from the
     /// validated prerequisites (crate::toolchains).
@@ -4527,6 +4693,693 @@ impl Engine {
         Ok(summary)
     }
 
+    /// Phase 2 of one planned target (in plan order): runs Starlark
+    /// implementations and plans actions (ActionPlanning).
+    fn plan_target(
+        &mut self,
+        state: &mut ActionPlanning,
+        key: &ConfiguredTargetKey,
+        rule: &Rule,
+        configured: &mut ConfiguredNodes,
+    ) -> Result<(), String> {
+        let top = self.configurations.top();
+        let main_ignored = self.ignored("")?;
+        let ActionPlanning {
+            dry,
+            custom_providers,
+            provider_files,
+            provider_keys,
+            runfiles_info,
+            artifact_index,
+            declared,
+            producers,
+            nodes,
+            source_inputs,
+            ..
+        } = state;
+        let key = key.clone();
+        let config = key.config;
+        let output_root = self.configurations.output_root(config);
+        let action_owner = key.action_owner(top);
+        // The configuration of the target's exec-transition edges.
+        let exec_config = self
+            .exec_configurations
+            .get(&key)
+            .copied()
+            .unwrap_or(config);
+        let dependency_key = |label: Label| ConfiguredTargetKey::new(label, config);
+        if matches!(rule.kind, RuleKind::PackageGroup(_)) {
+            let node = self.resolve_group(&rule.label, &mut Vec::new())?;
+            let info = starlark::environment::Module::with_temp_heap(|module| {
+                let value = package_specification::alloc_info(&module.heap(), node);
+                module.set("__info", value);
+                let frozen = module
+                    .freeze()
+                    .map_err(|error| format!("cannot freeze package group provider: {error:?}"))?;
+                frozen.get("__info").map_err(|error| error.to_string())
+            })?;
+            custom_providers.insert(
+                key.clone(),
+                BTreeMap::from([(package_specification::PROVIDER_ID.to_owned(), info)]),
+            );
+            provider_files.insert(key.clone(), Vec::new());
+            dry.insert(key, Vec::new());
+            return Ok(());
+        }
+        if matches!(rule.kind, RuleKind::Custom) {
+            let mut dependency_targets = BTreeMap::new();
+            let mut available = BTreeMap::new();
+            // Resolved dependencies only: `$config_dependencies` is never a
+            // prerequisite (DependencyResolutionHelpers.java:408-416). The
+            // resolved toolchain implementations are dependencies too
+            // (their ToolchainInfo files are action inputs).
+            // Each dependency with the configuration of its edge and its
+            // key in the implementation's dependency map
+            // (analysis::dependency_key).
+            let mut dependency_labels: Vec<(Label, ConfigId, String)> = Vec::new();
+            for edge in dependency_edges(rule) {
+                let label = self.resolve_rule_src(rule, &edge.label)?;
+                let (edge_config, map_key) = match &edge.cfg {
+                    EdgeCfg::Target => {
+                        (config, analysis::dependency_key(&label.to_string(), false))
+                    }
+                    EdgeCfg::Exec(_) => (
+                        exec_config,
+                        analysis::dependency_key(&label.to_string(), true),
+                    ),
+                    EdgeCfg::NoConfig => (
+                        self.configurations.intern_no_config(),
+                        analysis::metadata_dependency_key(&label.to_string()),
+                    ),
+                    EdgeCfg::Starlark(attribute) => (
+                        self.edge_configs
+                            .get(&key)
+                            .and_then(|configs| configs.get(attribute))
+                            .copied()
+                            .ok_or_else(|| {
+                                format!(
+                                    "internal error: no transitioned configuration for {} attribute {attribute}",
+                                    rule.label
+                                )
+                            })?,
+                        analysis::transition_dependency_key(&label.to_string(), attribute),
+                    ),
+                };
+                dependency_labels.push((label, edge_config, map_key));
+            }
+            let mut add_target = |label: Label| {
+                let map_key = label.to_string();
+                if !dependency_labels
+                    .iter()
+                    .any(|(_, _, seen)| *seen == map_key)
+                {
+                    dependency_labels.push((label, config, map_key));
+                }
+            };
+            for context in [
+                self.toolchain_contexts.get(&key),
+                self.test_toolchain_contexts.get(&key),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                for implementation in context.resolved_labels() {
+                    add_target(implementation);
+                }
+            }
+            // The target's exec_compatible_with constraint values
+            // (ctx.attr.exec_compatible_with), analyzed by its toolchain
+            // resolution.
+            if let Some(custom) = &rule.custom {
+                for text in custom
+                    .declaration
+                    .builtin
+                    .target
+                    .labels("exec_compatible_with")
+                {
+                    add_target(self.resolve_rule_src(rule, &text)?);
+                }
+            }
+            for (label, edge_config, map_key) in dependency_labels {
+                let artifacts = self.artifacts(&label, edge_config, dry, declared)?;
+                let files = artifacts.iter().map(Artifact::file).collect::<Vec<_>>();
+                for artifact in artifacts {
+                    artifact_index.insert(artifact.file(), artifact.clone());
+                    available.insert(artifact.file(), artifact);
+                }
+                let dependency = ConfiguredTargetKey::new(label.clone(), edge_config);
+                let target_provider_files =
+                    provider_files.get(&dependency).cloned().unwrap_or_default();
+                for file in &target_provider_files {
+                    let artifact = artifact_index.get(file).ok_or_else(|| {
+                        format!(
+                            "provider file has no declared artifact identity: {}",
+                            file.path
+                        )
+                    })?;
+                    available.insert(file.clone(), artifact.clone());
+                }
+                let actual = self
+                    .forwarded_actual(configured, &dependency)
+                    .unwrap_or_else(|| label.clone());
+                let target = self.target(&actual)?;
+                // The alias chain's end, in the same configuration
+                // (Self::alias_chain).
+                let actual_key = ConfiguredTargetKey::new(actual.clone(), edge_config);
+                let runfiles = dependency_runfiles(&target, &files, runfiles_info.get(&actual_key));
+                for file in runfiles.files() {
+                    let artifact = artifact_index.get(&file).ok_or_else(|| {
+                        format!(
+                            "runfiles file has no declared artifact identity: {}",
+                            file.path
+                        )
+                    })?;
+                    available.insert(file, artifact.clone());
+                }
+                dependency_targets.insert(
+                    map_key,
+                    DependencyTarget {
+                        label: actual.to_string(),
+                        files,
+                        is_source: matches!(target, Target::Source(_)),
+                        is_rule: matches!(&target, Target::Rule(rule) if !matches!(rule.kind, RuleKind::PackageGroup(_))),
+                        is_package_group: matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::PackageGroup(_))),
+                        is_filegroup: matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::Filegroup)),
+                        providers: custom_providers
+                            .get(&dependency)
+                            .cloned()
+                            .unwrap_or_default(),
+                        provider_files: target_provider_files,
+                        // The alias chain's end, in the same configuration
+                        // (Self::alias_chain).
+                        provider_keys: provider_keys
+                            .get(&actual_key)
+                            .cloned()
+                            .unwrap_or_default(),
+                        runfiles,
+                    },
+                );
+            }
+            // Prerequisite validation runs here, before the implementation,
+            // also for a target planned early (Self::plan_pending).
+            self.starlark_prerequisite_errors(
+                rule,
+                &key,
+                exec_config,
+                configured,
+                &dependency_targets,
+            )?;
+            // ctx.target_platform_has_constraint: a toolchain-resolving
+            // rule sees its target platform; a deferred default host
+            // platform is resolved only when the implementation asks,
+            // then the (side-effect free) analysis runs again.
+            let mut analyzed_rule = rule.clone();
+            let uses_toolchains =
+                uses_toolchain_resolution(rule) && !self.empty_configuration_rules.contains(&key);
+            let target = dependency_key(
+                self.configurations
+                    .get(config)
+                    .native
+                    .target_platform()
+                    .clone(),
+            );
+            if let Some(custom) = analyzed_rule.custom.as_mut() {
+                // The configuration's C++ options (subrule ctx.fragments.cpp).
+                // The target's own configuration: an exec configuration
+                // carries the exec transition's compilation mode
+                // (--host_compilation_mode) and strip=always
+                // (crate::config_registry::exec_transition).
+                custom.cpp = crate::custom_rule::CppConfigurationView::of(
+                    &self.configurations.get(config).native,
+                );
+                custom.target_platform = match self.platforms.get(&target) {
+                    _ if !uses_toolchains => crate::platforms::TargetPlatform::Absent,
+                    Some(Ok(platform)) => {
+                        crate::platforms::TargetPlatform::Resolved(platform.clone())
+                    }
+                    _ => crate::platforms::TargetPlatform::Deferred,
+                };
+                // ResolvedToolchainContext.load (analysis/ResolvedToolchainContext.java:48-110)
+                // with ConfiguredTargetFunction.java:348-366: the
+                // ToolchainInfo of each resolved implementation (through
+                // an alias), else TargetNotToolchainException.
+                custom.toolchains = if uses_toolchains {
+                    let mut toolchains = BTreeMap::new();
+                    let mut requested = Vec::new();
+                    if let Some(context) = self.toolchain_contexts.get(&key) {
+                        for (info, implementation) in &context.resolved {
+                            let Some(provider) = custom_providers
+                                .get(&dependency_key(implementation.clone()))
+                                .and_then(|providers| {
+                                    providers.get(crate::toolchain_info::PROVIDER_ID)
+                                })
+                            else {
+                                return Err(self.toolchain_error(
+                                    rule,
+                                    config,
+                                    "",
+                                    &crate::toolchains::not_a_toolchain(
+                                        &info.type_label,
+                                        implementation,
+                                    ),
+                                ));
+                            };
+                            toolchains.insert(info.type_label.clone(), provider.clone());
+                        }
+                        requested = context
+                            .requested
+                            .iter()
+                            .map(|(label, info)| (label.clone(), info.type_label.clone()))
+                            .collect();
+                    }
+                    // The test exec group's context loads the same way
+                    // (each ToolchainCollection context, default first);
+                    // its ToolchainInfo is only reachable through
+                    // ctx.exec_groups, which the native profile does not
+                    // expose.
+                    if let Some(context) = self.test_toolchain_contexts.get(&key) {
+                        for (info, implementation) in &context.resolved {
+                            if custom_providers
+                                .get(&dependency_key(implementation.clone()))
+                                .and_then(|providers| {
+                                    providers.get(crate::toolchain_info::PROVIDER_ID)
+                                })
+                                .is_none()
+                            {
+                                return Err(self.toolchain_error(
+                                    rule,
+                                    config,
+                                    "",
+                                    &crate::toolchains::not_a_toolchain(
+                                        &info.type_label,
+                                        implementation,
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                    Some(Arc::new(crate::toolchain_info::ToolchainContextData {
+                        target_description: format!(
+                            "{} rule {}",
+                            rule.rule_class_name(),
+                            crate::rule_declarations::canonical_form(&rule.label)
+                        ),
+                        requested,
+                        toolchains,
+                        repositories: self.repositories.clone(),
+                    }))
+                } else {
+                    None
+                };
+            }
+            // print() output of a discarded attempt is dropped: Bazel
+            // runs the implementation once, after its target platform is
+            // known.
+            let outputs = analysis::ConfiguredOutputs {
+                output_root: &output_root,
+                action_owner: &action_owner,
+            };
+            let (mut analyzed, mut printed) = analysis::analyze_buffered(
+                &analyzed_rule,
+                &dependency_targets,
+                self.repositories.clone(),
+                &outputs,
+            );
+            if analyzed
+                .as_ref()
+                .is_err_and(|error| error.contains(crate::platforms::NEEDS_TARGET_PLATFORM))
+            {
+                // The target's own configuration's target platform.
+                let platform = self.target_platform(config, configured, &mut Vec::new())?;
+                if let Some(custom) = analyzed_rule.custom.as_mut() {
+                    custom.target_platform = crate::platforms::TargetPlatform::Resolved(platform);
+                }
+                (analyzed, printed) = analysis::analyze_buffered(
+                    &analyzed_rule,
+                    &dependency_targets,
+                    self.repositories.clone(),
+                    &outputs,
+                );
+            }
+            for line in printed {
+                eprintln!("{line}");
+            }
+            let analyzed = analyzed?;
+            restricted_to_error(rule)?;
+            self.check_transition_allowlist(rule, &key, configured)?;
+            custom_providers.insert(key.clone(), analyzed.providers.clone());
+            provider_keys.insert(key.clone(), analyzed.provider_keys.clone());
+            provider_files.insert(key.clone(), analyzed.provider_files.clone());
+            for file in &analyzed.declared {
+                let package_output =
+                    PathBuf::from(&output_root).join(rule.label.package_exec_path());
+                let short_name = Path::new(&file.path)
+                    .strip_prefix(&package_output)
+                    .map_err(|_| format!("output outside declaring package: {}", file.path))?;
+                rule.label.with_name(&short_name.to_string_lossy())?;
+                let ignored = self.ignored(&rule.label.repository)?;
+                self.validate_output_directory(
+                    &rule.label.package_id(),
+                    &short_name.to_string_lossy(),
+                    &ignored,
+                )?;
+            }
+            // First index EVERY action's outputs, so registration order is not
+            // an execution order and forward generated dependencies are legal.
+            for registered in &analyzed.actions {
+                for (index, file) in registered.outputs.iter().enumerate() {
+                    let exec = PathBuf::from(&file.path);
+                    register_output(producers, &exec, &key)?;
+                    let artifact = Artifact {
+                        real: exec.clone(),
+                        exec: exec.clone(),
+                        producer: Some((registered.action.id.clone(), index)),
+                        owner: file.owner.clone(),
+                    };
+                    available.insert(file.clone(), artifact.clone());
+                    artifact_index.insert(file.clone(), artifact.clone());
+                    declared.insert((config, exec), artifact);
+                }
+            }
+            for file in analyzed
+                .provider_files
+                .iter()
+                .chain(&analyzed.runfiles.files())
+            {
+                if !available.contains_key(file) {
+                    return Err(format!(
+                        "{}: provider file has no declared artifact identity: {}",
+                        rule.label, file.path
+                    ));
+                }
+            }
+            runfiles_info.insert(key.clone(), analyzed.runfiles.clone());
+            for registered in analyzed.actions {
+                let inputs = registered
+                    .inputs
+                    .iter()
+                    .map(|file| {
+                        available.get(file).cloned().ok_or_else(|| {
+                            format!(
+                                "{}: input has no declared artifact: {}",
+                                rule.label, file.path
+                            )
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                source_inputs.insert(registered.action.id.clone(), source_paths(&inputs));
+                nodes.push(plan_action(registered.action, inputs, &main_ignored)?);
+            }
+            let defaults = analyzed
+                .files
+                .iter()
+                .map(|file| {
+                    available.get(file).cloned().ok_or_else(|| {
+                        format!(
+                            "{}: DefaultInfo file has no artifact: {}",
+                            rule.label, file.path
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            dry.insert(key, defaults);
+            return Ok(());
+        }
+        let (inputs, mut locations) = self.inputs(rule, config, dry, declared)?;
+        for artifact in &inputs {
+            artifact_index.insert(artifact.file(), artifact.clone());
+        }
+        // genrule `tools`, built in the exec configuration: action inputs
+        // and $(location) entries merged with the srcs' (CommandHelper,
+        // analysis/CommandHelper.java:128-180), never $(SRCS)
+        // (GenRuleBase.java:95-110, 170-175).
+        let mut tools = Vec::new();
+        if let (RuleKind::Genrule, Some(native)) = (&rule.kind, &rule.native) {
+            for text in native.labels("tools") {
+                let label = self.resolve_rule_src(rule, &text)?;
+                let artifacts = self.artifacts(&label, exec_config, dry, declared)?;
+                let paths = artifacts
+                    .iter()
+                    .map(|artifact| artifact.exec.clone())
+                    .collect::<Vec<_>>();
+                locations
+                    .entry(label.to_string())
+                    .or_default()
+                    .extend(paths.iter().cloned());
+                if text != label.to_string() {
+                    locations.entry(text).or_default().extend(paths);
+                }
+                for artifact in &artifacts {
+                    artifact_index.insert(artifact.file(), artifact.clone());
+                }
+                tools.extend(artifacts);
+            }
+        }
+        let outputs = rule
+            .outs
+            .iter()
+            .map(|o| {
+                rule.label
+                    .with_name(o)
+                    .map(|label| label.generated_exec_path(&output_root))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if matches!(rule.kind, RuleKind::Genrule) {
+            if outputs.is_empty() {
+                // GenRuleBase.create (rules/genrule/GenRuleBase.java:75-77) with
+                // RuleContext.attributeError's prefix.
+                return Err(located(
+                    rule.location.as_deref(),
+                    format!(
+                        "in outs attribute of genrule rule {}: Genrules without outputs don't make sense",
+                        crate::rule_declarations::canonical_form(&rule.label)
+                    ),
+                ));
+            }
+            add_output_locations(rule, &outputs, &mut locations)?;
+            let command = expand_command_in(
+                // GenRuleBase.determineCommandTypeAndAttribute
+                // (rules/genrule/GenRuleBase.java:262-284); cmd_bash makes
+                // the rule unanalyzed earlier, cmd_bat/cmd_ps are Windows-only.
+                rule.cmd.as_deref().ok_or_else(|| {
+                    located(
+                        rule.location.as_deref(),
+                        format!(
+                            "in cmd attribute of genrule rule {}: missing value for `cmd` attribute, you can also set `cmd_ps` or `cmd_bat` on Windows and `cmd_bash` on other platforms.",
+                            crate::rule_declarations::canonical_form(&rule.label)
+                        ),
+                    )
+                })?,
+                &inputs.iter().map(|a| a.exec.clone()).collect::<Vec<_>>(),
+                &outputs,
+                &locations,
+                &rule.label,
+                &self.repositories,
+                &output_root,
+            )?;
+            restricted_to_error(rule)?;
+            for output in &outputs {
+                register_output(producers, output, &key)?;
+            }
+            let action = Action {
+                id: action_owner.clone(),
+                command,
+                inputs: Vec::new(),
+                outputs: outputs.clone(),
+                write: None,
+                program: None,
+                shell_strict: true,
+                arguments: Vec::new(),
+                environment: BTreeMap::new(),
+            };
+            let action_inputs = inputs.iter().cloned().chain(tools).collect::<Vec<_>>();
+            source_inputs.insert(action.id.clone(), source_paths(&action_inputs));
+            nodes.push(plan_action(action, action_inputs, &main_ignored)?);
+            let artifacts = outputs
+                .into_iter()
+                .enumerate()
+                .map(|(index, exec)| Artifact {
+                    real: exec.clone(),
+                    exec,
+                    producer: Some((action_owner.clone(), index)),
+                    owner: rule.label.to_string(),
+                })
+                .collect::<Vec<_>>();
+            for artifact in &artifacts {
+                artifact_index.insert(artifact.file(), artifact.clone());
+                declared.insert((config, artifact.exec.clone()), artifact.clone());
+            }
+            runfiles_info.insert(
+                key.clone(),
+                crate::runfiles::TargetRunfiles::genrule(
+                    &artifacts.iter().map(Artifact::file).collect::<Vec<_>>(),
+                )
+                .map_err(|error| format!("{}: {error:#}", rule.label))?,
+            );
+            dry.insert(key, artifacts);
+        } else {
+            restricted_to_error(rule)?;
+            // The native platform providers, visible to Starlark as
+            // dep[platform_common.X] (crate::platform_providers).
+            if let Some(node) = configured.get(&key)
+                && !forwards(rule)
+            {
+                use crate::platform_providers::Provider;
+                let provider = match (
+                    &node.constraint_setting,
+                    &node.constraint_value,
+                    &node.platform,
+                ) {
+                    (Some(info), _, _) => Some(Provider::Setting(info.clone())),
+                    (_, Some(info), _) => Some(Provider::Value(info.clone())),
+                    (_, _, Some(info)) => Some(Provider::Platform(info.clone())),
+                    _ => None,
+                };
+                if let Some(provider) = provider {
+                    let (id, value) = crate::platform_providers::freeze(provider)?;
+                    custom_providers.insert(key.clone(), BTreeMap::from([(id, value)]));
+                    provider_files.insert(key.clone(), Vec::new());
+                }
+                // ConfigFeatureFlagProvider, visible as
+                // dep[config_common.FeatureFlagInfo].
+                if let Some(flag) = &node.feature_flag {
+                    let value = crate::feature_flags::freeze(flag.clone())?;
+                    custom_providers.insert(
+                        key.clone(),
+                        BTreeMap::from([(crate::feature_flags::PROVIDER_ID.to_owned(), value)]),
+                    );
+                    provider_files.insert(key.clone(), Vec::new());
+                }
+            }
+            // An alias-like target forwards its actual's files (above) and
+            // providers.
+            if forwards(rule) {
+                let actual = dependency_key(self.resolve_rule_src(rule, &rule.srcs[0])?);
+                if let Some(providers) = custom_providers.get(&actual).cloned() {
+                    custom_providers.insert(key.clone(), providers);
+                }
+                if let Some(files) = provider_files.get(&actual).cloned() {
+                    provider_files.insert(key.clone(), files);
+                }
+                if let Some(runfiles) = runfiles_info.get(&actual).cloned() {
+                    runfiles_info.insert(key.clone(), runfiles);
+                }
+            }
+            if matches!(rule.kind, RuleKind::Filegroup) {
+                let mut srcs = Vec::new();
+                for src in &rule.srcs {
+                    let label = self.resolve_rule_src(rule, src)?;
+                    let files = self
+                        .artifacts(&label, config, dry, declared)?
+                        .iter()
+                        .map(Artifact::file)
+                        .collect::<Vec<_>>();
+                    let actual = self
+                        .forwarded_actual(configured, &dependency_key(label.clone()))
+                        .unwrap_or_else(|| label.clone());
+                    let target = self.target(&actual)?;
+                    let runfiles = dependency_runfiles(
+                        &target,
+                        &files,
+                        runfiles_info.get(&dependency_key(actual)),
+                    );
+                    srcs.push((files, runfiles));
+                }
+                let files = inputs.iter().map(Artifact::file).collect::<Vec<_>>();
+                let srcs = srcs
+                    .iter()
+                    .map(|(files, runfiles)| (files.as_slice(), runfiles))
+                    .collect::<Vec<_>>();
+                runfiles_info.insert(
+                    key.clone(),
+                    crate::runfiles::TargetRunfiles::filegroup(&files, &srcs)
+                        .map_err(|error| format!("{}: {error:#}", rule.label))?,
+                );
+            }
+            dry.insert(key, inputs);
+        }
+        Ok(())
+    }
+
+    /// AliasConfiguredTarget: the end of the alias chain of an alias-like
+    /// planned target (dependents see its label, kind and providers).
+    fn forwarded_actual(
+        &self,
+        configured: &ConfiguredNodes,
+        key: &ConfiguredTargetKey,
+    ) -> Option<Label> {
+        configured.get(key)?.actual.as_ref()?;
+        Some(self.alias_chain(configured, key.config, &key.label).1)
+    }
+
+    /// Requested keys delegating to the key a rule transition analyzed them
+    /// under see that key's files and providers, copied once the delegate is
+    /// planned (dependents follow it in analysis order). Delegations recorded
+    /// since the last call (also between early flushes, Self::plan_pending)
+    /// join the pending ones first.
+    fn flush_delegations(&self, state: &mut ActionPlanning) {
+        for (requested, owner) in &self.rule_delegations {
+            if !state.dry.contains_key(requested)
+                && !state.delegations.iter().any(|(seen, _)| seen == requested)
+            {
+                state.delegations.push((requested.clone(), owner.clone()));
+            }
+        }
+        flush_delegations(
+            &mut state.delegations,
+            &mut state.dry,
+            &mut state.custom_providers,
+            &mut state.provider_files,
+            &mut state.provider_keys,
+            &mut state.runfiles_info,
+        );
+    }
+
+    /// Phase 2 of every planned target not planned yet, in plan order.
+    fn plan_targets(
+        &mut self,
+        state: &mut ActionPlanning,
+        plan: &Plan,
+        configured: &mut ConfiguredNodes,
+    ) -> Result<(), String> {
+        while let Some((key, rule)) = plan.get(state.done) {
+            state.done += 1;
+            self.flush_delegations(state);
+            self.plan_target(state, key, rule, configured)?;
+        }
+        self.flush_delegations(state);
+        Ok(())
+    }
+
+    /// Plans the targets analyzed so far (all complete, in post-order) before
+    /// the rest of phase 1 continues, so that a `config_setting` sees the
+    /// providers its Starlark `flag_values` keys return (FeatureFlagInfo,
+    /// ConfigSetting.java:651-687): in Bazel the key's implementation runs
+    /// before the config_setting's (a Skyframe dependency).
+    fn plan_pending(
+        &mut self,
+        plan: &Plan,
+        configured: &mut ConfiguredNodes,
+    ) -> Result<(), String> {
+        let Some(mut state) = self.action_planning.take() else {
+            return Err(
+                "a config_setting flag_values key needs its Starlark implementation outside of a build; this is not implemented in the native profile".to_owned(),
+            );
+        };
+        let result = self.plan_targets(&mut state, plan, configured);
+        self.action_planning = Some(state);
+        result
+    }
+
+    /// The FeatureFlagInfo a planned Starlark target returned.
+    fn planned_feature_flag(
+        &self,
+        key: &ConfiguredTargetKey,
+    ) -> Option<crate::feature_flags::FeatureFlagValue> {
+        let providers = self.action_planning.as_ref()?.custom_providers.get(key)?;
+        crate::feature_flags::value_of(providers.get(crate::feature_flags::PROVIDER_ID)?.value())
+    }
+
     /// Analysis and action planning of a build: the actions reachable from
     /// the requested targets' artifacts, validated before any execution.
     fn plan_build(&mut self, labels: &[Label]) -> Result<BuildPlan, String> {
@@ -4548,9 +5401,11 @@ impl Engine {
         self.exec_configurations.clear();
         self.deferred_duplicates.clear();
         self.toolchain_contexts.clear();
+        self.test_toolchain_contexts.clear();
         self.toolchain_implementations.clear();
         self.edge_configs.clear();
         self.rule_delegations.clear();
+        self.action_planning = Some(ActionPlanning::default());
         // BuildConfigurationKeyProducer resolves an explicit --platforms
         // entry when the top-level configuration is created, before analysis
         // (analysis/producers/BuildConfigurationKeyProducer.java:126-145). A
@@ -4606,596 +5461,22 @@ impl Engine {
                 )
             })
             .collect();
-        let main_ignored = self.ignored("")?;
-        // Validate every command before executing any action. The dry artifacts
-        // carry the same exec paths as the actual generated files.
-        let mut dry: BTreeMap<ConfiguredTargetKey, Vec<Artifact>> = BTreeMap::new();
-        let mut custom_providers: BTreeMap<
-            ConfiguredTargetKey,
-            BTreeMap<String, starlark::values::OwnedFrozenValue>,
-        > = BTreeMap::new();
-        let mut provider_files: BTreeMap<ConfiguredTargetKey, Vec<File>> = BTreeMap::new();
-        // Returned declared-provider names per analyzed rule (Target debugPrint).
-        let mut provider_keys: BTreeMap<ConfiguredTargetKey, Vec<String>> = BTreeMap::new();
-        // RunfilesProvider/FilesToRunProvider of analyzed rule targets
-        // (docs/RUNFILES.md); file targets and other native rules have none.
-        let mut runfiles_info: BTreeMap<ConfiguredTargetKey, crate::runfiles::TargetRunfiles> =
-            BTreeMap::new();
-        // File metadata is not a source filesystem path. Keep the real artifact
-        // identity even when a custom provider forwards a non-default file.
-        let mut artifact_index: BTreeMap<File, Artifact> = BTreeMap::new();
-        let mut declared = Declared::new();
-        let mut producers: BTreeMap<PathBuf, ConfiguredTargetKey> = BTreeMap::new();
-        let mut nodes = Vec::new();
-        // Every source input of every action, before execroot planting drops
-        // main-repository inputs under ignored top-level entries: Bazel's
-        // ArtifactFunction checks a source artifact regardless of planting.
-        let mut source_inputs: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
-        // Requested keys delegating to the key a rule transition analyzed
-        // them under see that key's files and providers (copied once the
-        // delegate is planned; dependents follow it in analysis order).
-        let mut delegations = self
-            .rule_delegations
-            .iter()
-            .map(|(requested, owner)| (requested.clone(), owner.clone()))
-            .collect::<Vec<_>>();
-        for (key, rule) in &plan {
-            flush_delegations(
-                &mut delegations,
-                &mut dry,
-                &mut custom_providers,
-                &mut provider_files,
-                &mut provider_keys,
-                &mut runfiles_info,
-            );
-            let key = key.clone();
-            let config = key.config;
-            let output_root = self.configurations.output_root(config);
-            let action_owner = key.action_owner(top);
-            // The configuration of the target's exec-transition edges.
-            let exec_config = self
-                .exec_configurations
-                .get(&key)
-                .copied()
-                .unwrap_or(config);
-            let dependency_key = |label: Label| ConfiguredTargetKey::new(label, config);
-            if matches!(rule.kind, RuleKind::PackageGroup(_)) {
-                let node = self.resolve_group(&rule.label, &mut Vec::new())?;
-                let info = starlark::environment::Module::with_temp_heap(|module| {
-                    let value = package_specification::alloc_info(&module.heap(), node);
-                    module.set("__info", value);
-                    let frozen = module.freeze().map_err(|error| {
-                        format!("cannot freeze package group provider: {error:?}")
-                    })?;
-                    frozen.get("__info").map_err(|error| error.to_string())
-                })?;
-                custom_providers.insert(
-                    key.clone(),
-                    BTreeMap::from([(package_specification::PROVIDER_ID.to_owned(), info)]),
-                );
-                provider_files.insert(key.clone(), Vec::new());
-                dry.insert(key, Vec::new());
-                continue;
-            }
-            if matches!(rule.kind, RuleKind::Custom) {
-                let mut dependency_targets = BTreeMap::new();
-                let mut available = BTreeMap::new();
-                // Resolved dependencies only: `$config_dependencies` is never a
-                // prerequisite (DependencyResolutionHelpers.java:408-416). The
-                // resolved toolchain implementations are dependencies too
-                // (their ToolchainInfo files are action inputs).
-                // Each dependency with the configuration of its edge and its
-                // key in the implementation's dependency map
-                // (analysis::dependency_key).
-                let mut dependency_labels: Vec<(Label, ConfigId, String)> = Vec::new();
-                for edge in dependency_edges(rule) {
-                    let label = self.resolve_rule_src(rule, &edge.label)?;
-                    let (edge_config, map_key) = match &edge.cfg {
-                        EdgeCfg::Target => {
-                            (config, analysis::dependency_key(&label.to_string(), false))
-                        }
-                        EdgeCfg::Exec(_) => (
-                            exec_config,
-                            analysis::dependency_key(&label.to_string(), true),
-                        ),
-                        EdgeCfg::NoConfig => (
-                            self.configurations.intern_no_config(),
-                            analysis::metadata_dependency_key(&label.to_string()),
-                        ),
-                        EdgeCfg::Starlark(attribute) => (
-                            self.edge_configs
-                                .get(&key)
-                                .and_then(|configs| configs.get(attribute))
-                                .copied()
-                                .ok_or_else(|| {
-                                    format!(
-                                        "internal error: no transitioned configuration for {} attribute {attribute}",
-                                        rule.label
-                                    )
-                                })?,
-                            analysis::transition_dependency_key(&label.to_string(), attribute),
-                        ),
-                    };
-                    dependency_labels.push((label, edge_config, map_key));
-                }
-                let mut add_target = |label: Label| {
-                    let map_key = label.to_string();
-                    if !dependency_labels
-                        .iter()
-                        .any(|(_, _, seen)| *seen == map_key)
-                    {
-                        dependency_labels.push((label, config, map_key));
-                    }
-                };
-                if let Some(context) = self.toolchain_contexts.get(&key) {
-                    for implementation in context.resolved_labels() {
-                        add_target(implementation);
-                    }
-                }
-                // The target's exec_compatible_with constraint values
-                // (ctx.attr.exec_compatible_with), analyzed by its toolchain
-                // resolution.
-                if let Some(custom) = &rule.custom {
-                    for text in custom
-                        .declaration
-                        .builtin
-                        .target
-                        .labels("exec_compatible_with")
-                    {
-                        add_target(self.resolve_rule_src(rule, &text)?);
-                    }
-                }
-                for (label, edge_config, map_key) in dependency_labels {
-                    let artifacts = self.artifacts(&label, edge_config, &dry, &declared)?;
-                    let files = artifacts.iter().map(Artifact::file).collect::<Vec<_>>();
-                    for artifact in artifacts {
-                        artifact_index.insert(artifact.file(), artifact.clone());
-                        available.insert(artifact.file(), artifact);
-                    }
-                    let dependency = ConfiguredTargetKey::new(label.clone(), edge_config);
-                    let target_provider_files =
-                        provider_files.get(&dependency).cloned().unwrap_or_default();
-                    for file in &target_provider_files {
-                        let artifact = artifact_index.get(file).ok_or_else(|| {
-                            format!(
-                                "provider file has no declared artifact identity: {}",
-                                file.path
-                            )
-                        })?;
-                        available.insert(file.clone(), artifact.clone());
-                    }
-                    let actual = forwarded.get(&dependency).unwrap_or(&label).clone();
-                    let target = self.target(&actual)?;
-                    // The alias chain's end, in the same configuration
-                    // (Self::alias_chain).
-                    let actual_key = ConfiguredTargetKey::new(actual.clone(), edge_config);
-                    let runfiles =
-                        dependency_runfiles(&target, &files, runfiles_info.get(&actual_key));
-                    for file in runfiles.files() {
-                        let artifact = artifact_index.get(&file).ok_or_else(|| {
-                            format!(
-                                "runfiles file has no declared artifact identity: {}",
-                                file.path
-                            )
-                        })?;
-                        available.insert(file, artifact.clone());
-                    }
-                    dependency_targets.insert(
-                        map_key,
-                        DependencyTarget {
-                            label: actual.to_string(),
-                            files,
-                            is_source: matches!(target, Target::Source(_)),
-                            is_rule: matches!(&target, Target::Rule(rule) if !matches!(rule.kind, RuleKind::PackageGroup(_))),
-                            is_package_group: matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::PackageGroup(_))),
-                            is_filegroup: matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::Filegroup)),
-                            providers: custom_providers
-                                .get(&dependency)
-                                .cloned()
-                                .unwrap_or_default(),
-                            provider_files: target_provider_files,
-                            // The alias chain's end, in the same configuration
-                            // (Self::alias_chain).
-                            provider_keys: provider_keys
-                                .get(&actual_key)
-                                .cloned()
-                                .unwrap_or_default(),
-                            runfiles,
-                        },
-                    );
-                }
-                self.starlark_prerequisite_errors(
-                    rule,
-                    &key,
-                    exec_config,
-                    &configured,
-                    &dependency_targets,
-                )?;
-                // ctx.target_platform_has_constraint: a toolchain-resolving
-                // rule sees its target platform; a deferred default host
-                // platform is resolved only when the implementation asks,
-                // then the (side-effect free) analysis runs again.
-                let mut analyzed_rule = rule.clone();
-                let uses_toolchains = uses_toolchain_resolution(rule)
-                    && !self.empty_configuration_rules.contains(&key);
-                let target = dependency_key(
-                    self.configurations
-                        .get(config)
-                        .native
-                        .target_platform()
-                        .clone(),
-                );
-                if let Some(custom) = analyzed_rule.custom.as_mut() {
-                    // The configuration's C++ options (subrule ctx.fragments.cpp).
-                    // The target's own configuration: an exec configuration
-                    // carries the exec transition's compilation mode
-                    // (--host_compilation_mode) and strip=always
-                    // (crate::config_registry::exec_transition).
-                    custom.cpp = crate::custom_rule::CppConfigurationView::of(
-                        &self.configurations.get(config).native,
-                    );
-                    custom.target_platform = match self.platforms.get(&target) {
-                        _ if !uses_toolchains => crate::platforms::TargetPlatform::Absent,
-                        Some(Ok(platform)) => {
-                            crate::platforms::TargetPlatform::Resolved(platform.clone())
-                        }
-                        _ => crate::platforms::TargetPlatform::Deferred,
-                    };
-                    // ResolvedToolchainContext.load (analysis/ResolvedToolchainContext.java:48-110)
-                    // with ConfiguredTargetFunction.java:348-366: the
-                    // ToolchainInfo of each resolved implementation (through
-                    // an alias), else TargetNotToolchainException.
-                    custom.toolchains = if uses_toolchains {
-                        let mut toolchains = BTreeMap::new();
-                        let mut requested = Vec::new();
-                        if let Some(context) = self.toolchain_contexts.get(&key) {
-                            for (info, implementation) in &context.resolved {
-                                let Some(provider) = custom_providers
-                                    .get(&dependency_key(implementation.clone()))
-                                    .and_then(|providers| {
-                                        providers.get(crate::toolchain_info::PROVIDER_ID)
-                                    })
-                                else {
-                                    return Err(self.toolchain_error(
-                                        rule,
-                                        config,
-                                        "",
-                                        &crate::toolchains::not_a_toolchain(
-                                            &info.type_label,
-                                            implementation,
-                                        ),
-                                    ));
-                                };
-                                toolchains.insert(info.type_label.clone(), provider.clone());
-                            }
-                            requested = context
-                                .requested
-                                .iter()
-                                .map(|(label, info)| (label.clone(), info.type_label.clone()))
-                                .collect();
-                        }
-                        Some(Arc::new(crate::toolchain_info::ToolchainContextData {
-                            target_description: format!(
-                                "{} rule {}",
-                                rule.rule_class_name(),
-                                crate::rule_declarations::canonical_form(&rule.label)
-                            ),
-                            requested,
-                            toolchains,
-                            repositories: self.repositories.clone(),
-                        }))
-                    } else {
-                        None
-                    };
-                }
-                // print() output of a discarded attempt is dropped: Bazel
-                // runs the implementation once, after its target platform is
-                // known.
-                let outputs = analysis::ConfiguredOutputs {
-                    output_root: &output_root,
-                    action_owner: &action_owner,
-                };
-                let (mut analyzed, mut printed) = analysis::analyze_buffered(
-                    &analyzed_rule,
-                    &dependency_targets,
-                    self.repositories.clone(),
-                    &outputs,
-                );
-                if analyzed
-                    .as_ref()
-                    .is_err_and(|error| error.contains(crate::platforms::NEEDS_TARGET_PLATFORM))
-                {
-                    // The target's own configuration's target platform.
-                    let platform =
-                        self.target_platform(config, &mut configured, &mut Vec::new())?;
-                    if let Some(custom) = analyzed_rule.custom.as_mut() {
-                        custom.target_platform =
-                            crate::platforms::TargetPlatform::Resolved(platform);
-                    }
-                    (analyzed, printed) = analysis::analyze_buffered(
-                        &analyzed_rule,
-                        &dependency_targets,
-                        self.repositories.clone(),
-                        &outputs,
-                    );
-                }
-                for line in printed {
-                    eprintln!("{line}");
-                }
-                let analyzed = analyzed?;
-                restricted_to_error(rule)?;
-                self.check_transition_allowlist(rule, &key, &forwarded)?;
-                custom_providers.insert(key.clone(), analyzed.providers.clone());
-                provider_keys.insert(key.clone(), analyzed.provider_keys.clone());
-                provider_files.insert(key.clone(), analyzed.provider_files.clone());
-                for file in &analyzed.declared {
-                    let package_output =
-                        PathBuf::from(&output_root).join(rule.label.package_exec_path());
-                    let short_name = Path::new(&file.path)
-                        .strip_prefix(&package_output)
-                        .map_err(|_| format!("output outside declaring package: {}", file.path))?;
-                    rule.label.with_name(&short_name.to_string_lossy())?;
-                    let ignored = self.ignored(&rule.label.repository)?;
-                    self.validate_output_directory(
-                        &rule.label.package_id(),
-                        &short_name.to_string_lossy(),
-                        &ignored,
-                    )?;
-                }
-                // First index EVERY action's outputs, so registration order is not
-                // an execution order and forward generated dependencies are legal.
-                for registered in &analyzed.actions {
-                    for (index, file) in registered.outputs.iter().enumerate() {
-                        let exec = PathBuf::from(&file.path);
-                        register_output(&mut producers, &exec, &key)?;
-                        let artifact = Artifact {
-                            real: exec.clone(),
-                            exec: exec.clone(),
-                            producer: Some((registered.action.id.clone(), index)),
-                            owner: file.owner.clone(),
-                        };
-                        available.insert(file.clone(), artifact.clone());
-                        artifact_index.insert(file.clone(), artifact.clone());
-                        declared.insert((config, exec), artifact);
-                    }
-                }
-                for file in analyzed
-                    .provider_files
-                    .iter()
-                    .chain(&analyzed.runfiles.files())
-                {
-                    if !available.contains_key(file) {
-                        return Err(format!(
-                            "{}: provider file has no declared artifact identity: {}",
-                            rule.label, file.path
-                        ));
-                    }
-                }
-                runfiles_info.insert(key.clone(), analyzed.runfiles.clone());
-                for registered in analyzed.actions {
-                    let inputs = registered
-                        .inputs
-                        .iter()
-                        .map(|file| {
-                            available.get(file).cloned().ok_or_else(|| {
-                                format!(
-                                    "{}: input has no declared artifact: {}",
-                                    rule.label, file.path
-                                )
-                            })
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
-                    source_inputs.insert(registered.action.id.clone(), source_paths(&inputs));
-                    nodes.push(plan_action(registered.action, inputs, &main_ignored)?);
-                }
-                let defaults = analyzed
-                    .files
-                    .iter()
-                    .map(|file| {
-                        available.get(file).cloned().ok_or_else(|| {
-                            format!(
-                                "{}: DefaultInfo file has no artifact: {}",
-                                rule.label, file.path
-                            )
-                        })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                dry.insert(key, defaults);
-                continue;
-            }
-            let (inputs, mut locations) = self.inputs(rule, config, &dry, &declared)?;
-            for artifact in &inputs {
-                artifact_index.insert(artifact.file(), artifact.clone());
-            }
-            // genrule `tools`, built in the exec configuration: action inputs
-            // and $(location) entries merged with the srcs' (CommandHelper,
-            // analysis/CommandHelper.java:128-180), never $(SRCS)
-            // (GenRuleBase.java:95-110, 170-175).
-            let mut tools = Vec::new();
-            if let (RuleKind::Genrule, Some(native)) = (&rule.kind, &rule.native) {
-                for text in native.labels("tools") {
-                    let label = self.resolve_rule_src(rule, &text)?;
-                    let artifacts = self.artifacts(&label, exec_config, &dry, &declared)?;
-                    let paths = artifacts
-                        .iter()
-                        .map(|artifact| artifact.exec.clone())
-                        .collect::<Vec<_>>();
-                    locations
-                        .entry(label.to_string())
-                        .or_default()
-                        .extend(paths.iter().cloned());
-                    if text != label.to_string() {
-                        locations.entry(text).or_default().extend(paths);
-                    }
-                    for artifact in &artifacts {
-                        artifact_index.insert(artifact.file(), artifact.clone());
-                    }
-                    tools.extend(artifacts);
-                }
-            }
-            let outputs = rule
-                .outs
-                .iter()
-                .map(|o| {
-                    rule.label
-                        .with_name(o)
-                        .map(|label| label.generated_exec_path(&output_root))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            if matches!(rule.kind, RuleKind::Genrule) {
-                if outputs.is_empty() {
-                    // GenRuleBase.create (rules/genrule/GenRuleBase.java:75-77) with
-                    // RuleContext.attributeError's prefix.
-                    return Err(located(
-                        rule.location.as_deref(),
-                        format!(
-                            "in outs attribute of genrule rule {}: Genrules without outputs don't make sense",
-                            crate::rule_declarations::canonical_form(&rule.label)
-                        ),
-                    ));
-                }
-                add_output_locations(rule, &outputs, &mut locations)?;
-                let command = expand_command_in(
-                    // GenRuleBase.determineCommandTypeAndAttribute
-                    // (rules/genrule/GenRuleBase.java:262-284); cmd_bash makes
-                    // the rule unanalyzed earlier, cmd_bat/cmd_ps are Windows-only.
-                    rule.cmd.as_deref().ok_or_else(|| {
-                        located(
-                            rule.location.as_deref(),
-                            format!(
-                                "in cmd attribute of genrule rule {}: missing value for `cmd` attribute, you can also set `cmd_ps` or `cmd_bat` on Windows and `cmd_bash` on other platforms.",
-                                crate::rule_declarations::canonical_form(&rule.label)
-                            ),
-                        )
-                    })?,
-                    &inputs.iter().map(|a| a.exec.clone()).collect::<Vec<_>>(),
-                    &outputs,
-                    &locations,
-                    &rule.label,
-                    &self.repositories,
-                    &output_root,
-                )?;
-                restricted_to_error(rule)?;
-                for output in &outputs {
-                    register_output(&mut producers, output, &key)?;
-                }
-                let action = Action {
-                    id: action_owner.clone(),
-                    command,
-                    inputs: Vec::new(),
-                    outputs: outputs.clone(),
-                    write: None,
-                    program: None,
-                    shell_strict: true,
-                    arguments: Vec::new(),
-                    environment: BTreeMap::new(),
-                };
-                let action_inputs = inputs.iter().cloned().chain(tools).collect::<Vec<_>>();
-                source_inputs.insert(action.id.clone(), source_paths(&action_inputs));
-                nodes.push(plan_action(action, action_inputs, &main_ignored)?);
-                let artifacts = outputs
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, exec)| Artifact {
-                        real: exec.clone(),
-                        exec,
-                        producer: Some((action_owner.clone(), index)),
-                        owner: rule.label.to_string(),
-                    })
-                    .collect::<Vec<_>>();
-                for artifact in &artifacts {
-                    artifact_index.insert(artifact.file(), artifact.clone());
-                    declared.insert((config, artifact.exec.clone()), artifact.clone());
-                }
-                runfiles_info.insert(
-                    key.clone(),
-                    crate::runfiles::TargetRunfiles::genrule(
-                        &artifacts.iter().map(Artifact::file).collect::<Vec<_>>(),
-                    )
-                    .map_err(|error| format!("{}: {error:#}", rule.label))?,
-                );
-                dry.insert(key, artifacts);
-            } else {
-                restricted_to_error(rule)?;
-                // The native platform providers, visible to Starlark as
-                // dep[platform_common.X] (crate::platform_providers).
-                if let Some(node) = configured.get(&key)
-                    && !forwards(rule)
-                {
-                    use crate::platform_providers::Provider;
-                    let provider = match (
-                        &node.constraint_setting,
-                        &node.constraint_value,
-                        &node.platform,
-                    ) {
-                        (Some(info), _, _) => Some(Provider::Setting(info.clone())),
-                        (_, Some(info), _) => Some(Provider::Value(info.clone())),
-                        (_, _, Some(info)) => Some(Provider::Platform(info.clone())),
-                        _ => None,
-                    };
-                    if let Some(provider) = provider {
-                        let (id, value) = crate::platform_providers::freeze(provider)?;
-                        custom_providers.insert(key.clone(), BTreeMap::from([(id, value)]));
-                        provider_files.insert(key.clone(), Vec::new());
-                    }
-                }
-                // An alias-like target forwards its actual's files (above) and
-                // providers.
-                if forwards(rule) {
-                    let actual = dependency_key(self.resolve_rule_src(rule, &rule.srcs[0])?);
-                    if let Some(providers) = custom_providers.get(&actual).cloned() {
-                        custom_providers.insert(key.clone(), providers);
-                    }
-                    if let Some(files) = provider_files.get(&actual).cloned() {
-                        provider_files.insert(key.clone(), files);
-                    }
-                    if let Some(runfiles) = runfiles_info.get(&actual).cloned() {
-                        runfiles_info.insert(key.clone(), runfiles);
-                    }
-                }
-                if matches!(rule.kind, RuleKind::Filegroup) {
-                    let mut srcs = Vec::new();
-                    for src in &rule.srcs {
-                        let label = self.resolve_rule_src(rule, src)?;
-                        let files = self
-                            .artifacts(&label, config, &dry, &declared)?
-                            .iter()
-                            .map(Artifact::file)
-                            .collect::<Vec<_>>();
-                        let actual = forwarded
-                            .get(&dependency_key(label.clone()))
-                            .unwrap_or(&label)
-                            .clone();
-                        let target = self.target(&actual)?;
-                        let runfiles = dependency_runfiles(
-                            &target,
-                            &files,
-                            runfiles_info.get(&dependency_key(actual)),
-                        );
-                        srcs.push((files, runfiles));
-                    }
-                    let files = inputs.iter().map(Artifact::file).collect::<Vec<_>>();
-                    let srcs = srcs
-                        .iter()
-                        .map(|(files, runfiles)| (files.as_slice(), runfiles))
-                        .collect::<Vec<_>>();
-                    runfiles_info.insert(
-                        key.clone(),
-                        crate::runfiles::TargetRunfiles::filegroup(&files, &srcs)
-                            .map_err(|error| format!("{}: {error:#}", rule.label))?,
-                    );
-                }
-                dry.insert(key, inputs);
-            }
-        }
-        flush_delegations(
-            &mut delegations,
-            &mut dry,
-            &mut custom_providers,
-            &mut provider_files,
-            &mut provider_keys,
-            &mut runfiles_info,
-        );
+        self.ignored("")?;
+        // Validate every command before executing any action (action
+        // planning, crate::engine::ActionPlanning). The dry artifacts carry
+        // the same exec paths as the actual generated files. Targets planned
+        // early (a Starlark flag_values key, Self::plan_pending) are kept.
+        let mut state = self.action_planning.take().unwrap_or_default();
+        self.plan_targets(&mut state, &plan, &mut configured)?;
+        let ActionPlanning {
+            dry,
+            runfiles_info,
+            artifact_index,
+            declared,
+            mut nodes,
+            source_inputs,
+            ..
+        } = state;
         let mut requested: Vec<(ConfiguredTargetKey, Artifact)> = Vec::new();
         for label in labels {
             for artifact in self.artifacts(label, top, &dry, &declared)? {
@@ -5848,6 +6129,7 @@ fn native_analysis_gate(rule: &Rule) -> Result<(), String> {
                 | "platform"
                 | "toolchain_type"
                 | "toolchain"
+                | "config_feature_flag"
         )
     {
         return Err(format!(
@@ -5894,6 +6176,7 @@ fn resolved_value_gate(rule: &Rule) -> Result<(), String> {
                 | "platform"
                 | "toolchain_type"
                 | "toolchain"
+                | "config_feature_flag"
         )
     {
         let gaps = crate::native_rules::analysis_gaps(native);

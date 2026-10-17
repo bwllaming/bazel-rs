@@ -264,7 +264,8 @@ resolves never silently becomes `None`.
 * Registered execution platforms (`register_execution_platforms`,
   `--extra_execution_platforms`): the host platform is the only execution
   platform; `required_settings` of platforms.
-* Exec groups (`rule(exec_groups = ...)`), automatic exec groups (a
+* Declared exec groups (`rule(exec_groups = ...)`; the implicit `test` exec
+  group of Starlark test rules resolves, docs/TEST_FLAGS.md), automatic exec groups (a
   `_use_auto_exec_groups` attribute that is True; `--incompatible_auto_exec_groups`
   defaults to false, `analysis/config/CoreOptions.java:419-432`,
   `packages/RuleClass.java:179-203`), `exec_group_compatible_with`, named

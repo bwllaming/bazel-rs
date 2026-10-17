@@ -1,0 +1,981 @@
+{
+ "schema": "n30-test-flags-reference-receipt/v1",
+ "purpose": "Paired genuine Bazel 9.3.0 vs native bazel-rs capture of N30 (docs/TEST_FLAGS.md): --use_target_platform_for_tests, the default test exec group with genuine @bazel_tools//tools/test toolchains, config_common.FeatureFlagInfo, config_feature_flag and config_setting flag_values over feature flags, genuine rules_python 1.7.0 version config_settings. Workspaces use tests/fixtures/test_flags/stubs. Evidence only; not an input of any test.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private> --output_base=<private> --host_jvm_args=-Xmx512m",
+  "flags": "--registry=file://<private copy of tests/fixtures/builtin_modules/registry> --incompatible_autoload_externally= --lockfile_mode=off --repository_cache=<private> --distdir=<seeded from verified local CAS>",
+  "env": "env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8, private HOME/TMPDIR, umask 022"
+ },
+ "native": {
+  "binary": "target/release/bazel-rs",
+  "sha256": "ed49dcf2df45763cd6b2c83f272e68305b1d743d205632582a21ec81d5e85c61",
+  "flags": "--experimental-builtin-modules --registry=file://<same registry copy> (explicit-module profile where noted)"
+ },
+ "worktree": {
+  "head": "53b9f3ef6930f871928c8db6fffbe24ac5efe4a5",
+  "src_diff_plus_untracked_sha256": "cfd80075d0eb4da7fe8e17bdf99df05229b90cfa006ffa8854dffff7cc0078a4",
+  "untracked_src": [
+   "src/feature_flags.rs"
+  ]
+ },
+ "script_sha256": "073545478d6a8cbdb5c38f8d4ba9877e0b12fdf9ca2eb1e01c01ab6775545b76",
+ "stubs_tree_sha256": "30907e8d162d5ebe72823902dca51fc69d6b711c8d1bbcb2a642b387846f85c1",
+ "distdir_seeded_count": 18,
+ "scratch_removed": true,
+ "counts": {
+  "EXACT": 37,
+  "EXACT_MESSAGE": 11,
+  "EXPECTED_NATIVE_UNSUPPORTED": 5
+ },
+ "rows": [
+  {
+   "row": "A1/sel_default",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//tt:sel"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "A2/sel_flag",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--use_target_platform_for_tests",
+    "//tt:sel"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "A3/sel_flag_twice",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--use_target_platform_for_tests",
+    "--use_target_platform_for_tests=yes",
+    "//tt:sel"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "A4/sel_flag_0",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--use_target_platform_for_tests=0",
+    "//tt:sel"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "A5/sel_noflag",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--nouse_target_platform_for_tests",
+    "//tt:sel"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "A6/flag_maybe",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--use_target_platform_for_tests=maybe",
+    "//tt:sel"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 2,
+   "native_exit": 1,
+   "reference_errors": [
+    "While parsing option --use_target_platform_for_tests=maybe: 'maybe' is not a boolean"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [],
+   "native_stderr": "bazel-rs: While parsing option --use_target_platform_for_tests=maybe: 'maybe' is not a boolean\n",
+   "framing": {
+    "exit": [
+     2,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": false
+   }
+  },
+  {
+   "row": "A7/config_setting_maybe",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//tt:sel_bad"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "A8/query_flag",
+   "argv": [
+    "query",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--use_target_platform_for_tests",
+    "//tt:sel"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "T1/test_default",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//tt:a_test"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "T2/test_broken_registration",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--extra_toolchains=//tt:notatoolchain",
+    "//tt:a_test"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "T3/test_impl_without_toolchaininfo",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--extra_toolchains=//tt:bad_impl_tc",
+    "//tt:a_test"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "T4/non_test_broken_registration",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--extra_toolchains=//tt:notatoolchain",
+    "//tt:noinfo"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "T5/test_custom_toolchain",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--extra_toolchains=//tt:custom_tc",
+    "//tt:a_test"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "T6/test_use_target_platform",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--use_target_platform_for_tests",
+    "//tt:a_test"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "T7/test_incompatible_false",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--@bazel_tools//tools/test:incompatible_use_default_test_toolchain=false",
+    "//tt:a_test"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "T8/test_foreign_target_platform",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--platforms=//tt:other",
+    "//tt:a_test"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "T9/test_custom_toolchain_foreign_platform",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--platforms=//tt:other",
+    "--extra_toolchains=//tt:custom_tc",
+    "//tt:a_test"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "T10/ctx_exec_groups",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//tt:eg_test"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXPECTED_NATIVE_UNSUPPORTED",
+   "reference_exit": 0,
+   "native_exit": 1,
+   "reference_errors": [],
+   "reference_warnings": [],
+   "reference_prints": [
+    "EG <exec_group_context>"
+   ],
+   "native_stderr": "bazel-rs: analysis of //tt:eg_test: Traceback (most recent call last):\n  File <builtin>, in <module>\nerror: Object of type `ctx` has no attribute `exec_groups`\n  --> //tt:defs.bzl:11:17\n   |\n11 |     print(\"EG\", ctx.exec_groups[\"test\"])\n   |                 ^^^^^^^^^^^^^^^\n   |\n\n"
+  },
+  {
+   "row": "T11/declared_test_exec_group",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//tt:own_test"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXPECTED_NATIVE_UNSUPPORTED",
+   "reference_exit": 0,
+   "native_exit": 1,
+   "reference_errors": [],
+   "reference_warnings": [],
+   "reference_prints": [],
+   "native_stderr": "bazel-rs: analysis of //tt:own_test: declared rule features accepted at load time but not analyzed by the native profile: rule(exec_groups=[test]) (execution platform resolution)\n"
+  },
+  {
+   "row": "B1/probe",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//ff:p"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "B2/none",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//ff:p_none"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "in call to FeatureFlagInfo(), parameter 'value' got value of type 'NoneType', want 'string'"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "T1 FeatureFlagInfo struct(error = None, value = \"x\") struct(error = None, value = \"x\") [\"error\", \"is_valid_value\", \"value\"]",
+    "T2 x None True True False builtin_function_or_method False",
+    "T3 1",
+    "T4 pos"
+   ],
+   "native_stderr": "T1 FeatureFlagInfo struct(error = None, value = \"x\") struct(error = None, value = \"x\") [\"error\", \"is_valid_value\", \"value\"]\nT2 x None True True False builtin_function_or_method False\nT3 1\nT4 pos\nbazel-rs: analysis of //ff:p_none: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //ff:defs.bzl:17, in _probe\n      FFI(value = None)\nerror: in call to FeatureFlagInfo(), parameter 'value' got value of type 'NoneType', want 'string'\n  --> //ff:defs.bzl:17:9\n   |\n17 |         FFI(value = None)\n   |         ^^^^^^^^^^^^^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "B2/int",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//ff:p_int"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "in call to FeatureFlagInfo(), parameter 'value' got value of type 'int', want 'string'"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "T1 FeatureFlagInfo struct(error = None, value = \"x\") struct(error = None, value = \"x\") [\"error\", \"is_valid_value\", \"value\"]",
+    "T2 x None True True False builtin_function_or_method False",
+    "T3 1",
+    "T4 pos"
+   ],
+   "native_stderr": "T1 FeatureFlagInfo struct(error = None, value = \"x\") struct(error = None, value = \"x\") [\"error\", \"is_valid_value\", \"value\"]\nT2 x None True True False builtin_function_or_method False\nT3 1\nT4 pos\nbazel-rs: analysis of //ff:p_int: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //ff:defs.bzl:19, in _probe\n      FFI(value = 1)\nerror: in call to FeatureFlagInfo(), parameter 'value' got value of type 'int', want 'string'\n  --> //ff:defs.bzl:19:9\n   |\n19 |         FFI(value = 1)\n   |         ^^^^^^^^^^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "B2/missing",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//ff:p_missing"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "FeatureFlagInfo() missing 1 required positional argument: value"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "T1 FeatureFlagInfo struct(error = None, value = \"x\") struct(error = None, value = \"x\") [\"error\", \"is_valid_value\", \"value\"]",
+    "T2 x None True True False builtin_function_or_method False",
+    "T3 1",
+    "T4 pos"
+   ],
+   "native_stderr": "T1 FeatureFlagInfo struct(error = None, value = \"x\") struct(error = None, value = \"x\") [\"error\", \"is_valid_value\", \"value\"]\nT2 x None True True False builtin_function_or_method False\nT3 1\nT4 pos\nbazel-rs: analysis of //ff:p_missing: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //ff:defs.bzl:21, in _probe\n      FFI()\nerror: FeatureFlagInfo() missing 1 required positional argument: value\n  --> //ff:defs.bzl:21:9\n   |\n21 |         FFI()\n   |         ^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "B2/extra",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//ff:p_extra"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "FeatureFlagInfo() got unexpected keyword argument 'other'"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "T1 FeatureFlagInfo struct(error = None, value = \"x\") struct(error = None, value = \"x\") [\"error\", \"is_valid_value\", \"value\"]",
+    "T2 x None True True False builtin_function_or_method False",
+    "T3 1",
+    "T4 pos"
+   ],
+   "native_stderr": "T1 FeatureFlagInfo struct(error = None, value = \"x\") struct(error = None, value = \"x\") [\"error\", \"is_valid_value\", \"value\"]\nT2 x None True True False builtin_function_or_method False\nT3 1\nT4 pos\nbazel-rs: analysis of //ff:p_extra: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //ff:defs.bzl:23, in _probe\n      FFI(value = \"a\", other = 1)\nerror: FeatureFlagInfo() got unexpected keyword argument 'other'\n  --> //ff:defs.bzl:23:9\n   |\n23 |         FFI(value = \"a\", other = 1)\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "B2/valu",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//ff:p_valu"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "FeatureFlagInfo() got unexpected keyword argument 'valu' (did you mean 'value'?)"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "T1 FeatureFlagInfo struct(error = None, value = \"x\") struct(error = None, value = \"x\") [\"error\", \"is_valid_value\", \"value\"]",
+    "T2 x None True True False builtin_function_or_method False",
+    "T3 1",
+    "T4 pos"
+   ],
+   "native_stderr": "T1 FeatureFlagInfo struct(error = None, value = \"x\") struct(error = None, value = \"x\") [\"error\", \"is_valid_value\", \"value\"]\nT2 x None True True False builtin_function_or_method False\nT3 1\nT4 pos\nbazel-rs: analysis of //ff:p_valu: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //ff:defs.bzl:25, in _probe\n      FFI(valu = \"a\")\nerror: FeatureFlagInfo() got unexpected keyword argument 'valu' (did you mean 'value'?)\n  --> //ff:defs.bzl:25:9\n   |\n25 |         FFI(valu = \"a\")\n   |         ^^^^^^^^^^^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "B2/two",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//ff:p_two"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "FeatureFlagInfo() accepts no more than 1 positional argument but got 2"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "T1 FeatureFlagInfo struct(error = None, value = \"x\") struct(error = None, value = \"x\") [\"error\", \"is_valid_value\", \"value\"]",
+    "T2 x None True True False builtin_function_or_method False",
+    "T3 1",
+    "T4 pos"
+   ],
+   "native_stderr": "T1 FeatureFlagInfo struct(error = None, value = \"x\") struct(error = None, value = \"x\") [\"error\", \"is_valid_value\", \"value\"]\nT2 x None True True False builtin_function_or_method False\nT3 1\nT4 pos\nbazel-rs: analysis of //ff:p_two: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //ff:defs.bzl:27, in _probe\n      FFI(\"a\", \"b\")\nerror: FeatureFlagInfo() accepts no more than 1 positional argument but got 2\n  --> //ff:defs.bzl:27:9\n   |\n27 |         FFI(\"a\", \"b\")\n   |         ^^^^^^^^^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "B2/dupl",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//ff:p_dupl"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "FeatureFlagInfo() got multiple values for argument 'value'"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "T1 FeatureFlagInfo struct(error = None, value = \"x\") struct(error = None, value = \"x\") [\"error\", \"is_valid_value\", \"value\"]",
+    "T2 x None True True False builtin_function_or_method False",
+    "T3 1",
+    "T4 pos"
+   ],
+   "native_stderr": "T1 FeatureFlagInfo struct(error = None, value = \"x\") struct(error = None, value = \"x\") [\"error\", \"is_valid_value\", \"value\"]\nT2 x None True True False builtin_function_or_method False\nT3 1\nT4 pos\nbazel-rs: analysis of //ff:p_dupl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //ff:defs.bzl:29, in _probe\n      FFI(\"a\", value = \"b\")\nerror: FeatureFlagInfo() got multiple values for argument 'value'\n  --> //ff:defs.bzl:29:9\n   |\n29 |         FFI(\"a\", value = \"b\")\n   |         ^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "B2/setattr",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//ff:p_setattr"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "cannot set .value field of FeatureFlagInfo value"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "T1 FeatureFlagInfo struct(error = None, value = \"x\") struct(error = None, value = \"x\") [\"error\", \"is_valid_value\", \"value\"]",
+    "T2 x None True True False builtin_function_or_method False",
+    "T3 1",
+    "T4 pos"
+   ],
+   "native_stderr": "T1 FeatureFlagInfo struct(error = None, value = \"x\") struct(error = None, value = \"x\") [\"error\", \"is_valid_value\", \"value\"]\nT2 x None True True False builtin_function_or_method False\nT3 1\nT4 pos\nbazel-rs: analysis of //ff:p_setattr: Traceback (most recent call last):\n  File <builtin>, in <module>\nerror: cannot set .value field of FeatureFlagInfo value\n  --> //ff:defs.bzl:31:9\n   |\n31 |         i.value = \"z\"\n   |         ^^^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "B2/ivv",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//ff:p_ivv"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "in call to is_valid_value(), parameter 'value' got value of type 'int', want 'string'"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [
+    "T1 FeatureFlagInfo struct(error = None, value = \"x\") struct(error = None, value = \"x\") [\"error\", \"is_valid_value\", \"value\"]",
+    "T2 x None True True False builtin_function_or_method False",
+    "T3 1",
+    "T4 pos"
+   ],
+   "native_stderr": "T1 FeatureFlagInfo struct(error = None, value = \"x\") struct(error = None, value = \"x\") [\"error\", \"is_valid_value\", \"value\"]\nT2 x None True True False builtin_function_or_method False\nT3 1\nT4 pos\nbazel-rs: analysis of //ff:p_ivv: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //ff:defs.bzl:33, in _probe\n      i.is_valid_value(1)\nerror: in call to is_valid_value(), parameter 'value' got value of type 'int', want 'string'\n  --> //ff:defs.bzl:33:9\n   |\n33 |         i.is_valid_value(1)\n   |         ^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+   "framing": {
+    "exit": [
+     1,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": true
+   }
+  },
+  {
+   "row": "B3/sel_r",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//ff:sel_r"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "B4/sel_r_other",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//ff:sel_r_other"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "B5/sel_s",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//ff:sel_s"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "B6/sel_s_cmdline",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--//ff:s=other",
+    "//ff:sel_s"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "B7/sel_s_explicit_profile",
+   "argv": [
+    "build",
+    "//ff:sel_s",
+    "//ff:sel_r"
+   ],
+   "native_profile": "explicit",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "C1/ff",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//ff:ff"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "C2/dup",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//ff:dup"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "C3/baddef",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//ff:baddef"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "C4/both",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//ff:both"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "C5/empty",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//ff:empty"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "C6/sel_ff",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//ff:sel_ff"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "C7/sel_ffb_alias",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//ff:sel_ffb"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "C8/sel_bad",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//ff:sel_bad"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "C9/sel_nodef",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//ff:sel_nodef"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "C10/sel_nodef_nomatch",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//ff:sel_nodef_nomatch"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1
+  },
+  {
+   "row": "C11/cmdline_ff",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--//ff:ff=b",
+    "//ff:ff"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 2,
+   "native_exit": 1,
+   "reference_errors": [
+    "//ff:ff :: Unrecognized option: //ff:ff"
+   ],
+   "reference_warnings": [],
+   "reference_prints": [],
+   "native_stderr": "bazel-rs: //ff:ff :: Unrecognized option: //ff:ff\n",
+   "framing": {
+    "exit": [
+     2,
+     1
+    ],
+    "prints_equal": true,
+    "warnings_equal": true,
+    "starlark_traceback": false
+   }
+  },
+  {
+   "row": "C12/query_ff",
+   "argv": [
+    "query",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//ff:ff"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "C13/enforce_transitive_configs",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--enforce_transitive_configs_for_config_feature_flag",
+    "//ff:sel_ff"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXPECTED_NATIVE_UNSUPPORTED",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_errors": [
+    "<<WS>>/ff/BUILD.bazel:21:5: Unresolvable config_settings for configurable attribute \"s\" in //ff:sel_ff:\nconfig_setting //ff:ff_a is unresolvable because: Feature flag //ff:ff was accessed in a configuration it is not present in. All targets which depend on //ff:ff directly or indirectly must name it in their transitive_configs attribute.\nconfig_setting //ff:ff_b is unresolvable because: Feature flag //ff:ff was accessed in a configuration it is not present in. All targets which depend on //ff:ff directly or indirectly must name it in their transitive_configs attribute."
+   ],
+   "reference_warnings": [],
+   "reference_prints": [],
+   "native_stderr": "bazel-rs: unsupported option \"--enforce_transitive_configs_for_config_feature_flag\"; options are never silently ignored\n",
+   "ref_errors_missing_natively": [
+    "<<WS>>/ff/BUILD.bazel:21:5: Unresolvable config_settings for configurable attribute \"s\" in //ff:sel_ff:\nconfig_setting //ff:ff_a is unresolvable because: Feature flag //ff:ff was accessed in a configuration it is not present in. All targets which depend on //ff:ff directly or indirectly must name it in their transitive_configs attribute.\nconfig_setting //ff:ff_b is unresolvable because: Feature flag //ff:ff was accessed in a configuration it is not present in. All targets which depend on //ff:ff directly or indirectly must name it in their transitive_configs attribute."
+   ]
+  },
+  {
+   "row": "C14/feature_flag_transition",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//tr:x"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXPECTED_NATIVE_UNSUPPORTED",
+   "reference_exit": 0,
+   "native_exit": 1,
+   "reference_errors": [],
+   "reference_warnings": [],
+   "reference_prints": [],
+   "native_stderr": "bazel-rs: cannot evaluate //tr:defs.bzl: Traceback (most recent call last):\n  * //tr:defs.bzl:1, in <module>\n      t = config_common.config_feature_flag_transition(\"flags\")\nerror: config_common.config_feature_flag_transition is not implemented in the native profile (analysis-time configuration API)\n --> //tr:defs.bzl:1:5\n  |\n1 | t = config_common.config_feature_flag_transition(\"flags\")\n  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\n"
+  },
+  {
+   "row": "C15/ff_explicit_profile",
+   "argv": [
+    "build",
+    "//ff:ff"
+   ],
+   "native_profile": "explicit",
+   "verdict": "EXPECTED_NATIVE_UNSUPPORTED",
+   "reference_exit": 0,
+   "native_exit": 1,
+   "reference_errors": [],
+   "reference_warnings": [],
+   "reference_prints": [],
+   "native_stderr": "bazel-rs: <<WS>>/ff/BUILD.bazel:2:20: config_feature_flag rule //ff:ff: its allowlist @@bazel_tools//tools/allowlists/config_feature_flag:config_feature_flag needs the built-in @bazel_tools repository, which this module profile does not provide; use --experimental-builtin-modules\n"
+  },
+  {
+   "row": "G1/default_version",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "//:py",
+    "//:ft",
+    "//:whl"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "G2/python_version_3_12",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--@rules_python//python/config_settings:python_version=3.12",
+    "//:py"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "G3/python_version_3_13_1",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--@rules_python//python/config_settings:python_version=3.13.1",
+    "//:py"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  },
+  {
+   "row": "G4/freethreaded",
+   "argv": [
+    "build",
+    "--experimental-builtin-modules",
+    "--registry=file://<SCRATCH>/registry",
+    "--@rules_python//python/config_settings:py_freethreaded=yes",
+    "//:ft"
+   ],
+   "native_profile": "builtin",
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0
+  }
+ ]
+}

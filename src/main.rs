@@ -244,6 +244,11 @@ fn run() -> Result<(), String> {
             return Err("build requires at least one target".into());
         }
     }
+    // Option parser warnings (deprecated options) once the native options
+    // parsed (runtime/BlazeOptionHandler.java:536-539).
+    for warning in configuration_options.warnings() {
+        eprintln!("WARNING: {warning}");
+    }
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let root = workspace::workspace_root(&cwd)?;
     if !ignore_rc {

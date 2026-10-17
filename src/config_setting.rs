@@ -26,6 +26,9 @@ pub struct FlagPrerequisite {
     pub value: String,
     /// The (forwarded) BuildSettingProvider.
     pub setting: Option<BuildSettingInfo>,
+    /// The ConfigFeatureFlagProvider (`config_common.FeatureFlagInfo`) the
+    /// key provides: a `config_feature_flag` or a Starlark rule returning it.
+    pub feature_flag: Option<crate::feature_flags::FeatureFlagValue>,
 }
 
 /// A `constraint_values` prerequisite of a `config_setting`, after
@@ -233,8 +236,8 @@ fn maybe_canonicalize_label(
 }
 
 /// UserDefinedFlagMatch.fromAttributeValueAndPrerequisites
-/// (ConfigSetting.java:633-797) for build settings (config_feature_flag is
-/// not a Bazel 9.3 rule of this profile). Attribute errors are appended to
+/// (ConfigSetting.java:633-797) for feature flags (ConfigFeatureFlagProvider)
+/// and build settings. Attribute errors are appended to
 /// `errors`; returns the match result and `getSpecifiedFlagValues` (keyed by
 /// the end of each alias chain).
 fn user_defined_flags(
@@ -250,6 +253,8 @@ fn user_defined_flags(
     let shown_label = crate::rule_declarations::canonical_form;
     let mut specified_values: Vec<(Label, String)> = Vec::new();
     let mut diffs = Vec::new();
+    // Only configuration-dependent errors are deferred (:637-638).
+    let mut deferred = Vec::new();
     let mut found_duplicate = false;
     for flag in flags {
         let specified = shown_label(&flag.specified);
@@ -264,6 +269,31 @@ fn user_defined_flags(
                 entry.1 = value.clone();
             }
             None => specified_values.push((flag.actual.clone(), value.clone())),
+        }
+        // A ConfigFeatureFlagProvider takes precedence over a
+        // BuildSettingProvider (:656-680): config_feature_flag and Starlark
+        // rules returning config_common.FeatureFlagInfo (rules_python's
+        // flags return both).
+        if let Some(feature) = &flag.feature_flag {
+            if !feature.is_valid_value(&value) {
+                errors.push(attribute_error(format!(
+                    "error while parsing user-defined configuration values: '{value}' is not a valid value for '{specified}'"
+                )));
+                continue;
+            }
+            if let Some(error) = feature.error.as_ref().filter(|error| !error.is_empty()) {
+                deferred.push(error.clone());
+                continue;
+            }
+            let want = feature.flag_value().unwrap_or_default();
+            if want != value {
+                diffs.push(Diff {
+                    what: flag.specified.clone(),
+                    got: value.clone(),
+                    want: want.to_owned(),
+                });
+            }
+            continue;
         }
         let Some(setting) = &flag.setting else {
             errors.push(attribute_error(format!(
@@ -338,7 +368,11 @@ fn user_defined_flags(
             }
         }
     }
-    let result = if diffs.is_empty() {
+    // :781-790: deferred errors make the match InError; attribute errors
+    // fail the config_setting (crate::config_setting::analyze).
+    let result = if !deferred.is_empty() {
+        MatchResult::InError(deferred)
+    } else if diffs.is_empty() {
         MatchResult::Match
     } else {
         MatchResult::NoMatch(diffs)
@@ -680,6 +714,7 @@ mod tests {
                 repeatable: false,
                 scope: Default::default(),
             }),
+            feature_flag: None,
         }
     }
 

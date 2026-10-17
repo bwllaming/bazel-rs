@@ -853,7 +853,7 @@ fn create_metadata(
 }
 
 /// SpellChecker.didYouMean (net/starlark/java/spelling/SpellChecker.java).
-fn did_you_mean(input: &str, words: &[&str]) -> String {
+pub(crate) fn did_you_mean(input: &str, words: &[&str]) -> String {
     fn edit_distance(s1: &[char], s2: &[char], max: usize) -> Option<usize> {
         if s1 == s2 {
             return Some(0);

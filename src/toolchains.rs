@@ -270,6 +270,28 @@ impl ToolchainContextKey {
     }
 }
 
+/// PlatformConstants.DEFAULT_TEST_TOOLCHAIN_TYPE
+/// (analysis/platform/PlatformConstants.java:27-28).
+pub const DEFAULT_TEST_TOOLCHAIN_TYPE: &str =
+    "@@bazel_tools//tools/test:default_test_toolchain_type";
+
+/// The ToolchainContextKey of RuleClass.DEFAULT_TEST_RUNNER_EXEC_GROUP
+/// (packages/RuleClass.java:153-167): the optional default test toolchain
+/// type, no execution constraints, no forced execution platform
+/// (UnloadedToolchainContextsProducer.java:110-124).
+pub fn default_test_exec_group_key() -> ToolchainContextKey {
+    ToolchainContextKey {
+        types: vec![ToolchainTypeRequirement {
+            label: Label::parse_canonical(DEFAULT_TEST_TOOLCHAIN_TYPE)
+                .expect("canonical default test toolchain type"),
+            mandatory: false,
+            ignore_if_invalid: false,
+        }],
+        exec_constraints: Vec::new(),
+        forced_exec: false,
+    }
+}
+
 /// UnloadedToolchainContextImpl (skyframe/toolchains/UnloadedToolchainContextImpl.java).
 #[derive(Clone, Debug)]
 pub struct UnloadedToolchainContext {

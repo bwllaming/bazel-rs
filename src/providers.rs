@@ -495,6 +495,7 @@ pub fn provider_identity(value: Value<'_>) -> Option<String> {
             crate::platform_providers::CONSTRAINT_VALUE_ID,
             crate::platform_providers::PLATFORM_ID,
             crate::toolchain_info::PROVIDER_ID,
+            crate::feature_flags::PROVIDER_ID,
         ]
         .contains(&id.as_str())
     {
@@ -516,6 +517,9 @@ pub fn instance_identity(value: Value<'_>) -> Option<String> {
     }
     if crate::toolchain_info::is_instance(value) {
         return Some(crate::toolchain_info::PROVIDER_ID.to_owned());
+    }
+    if crate::feature_flags::is_instance(value) {
+        return Some(crate::feature_flags::PROVIDER_ID.to_owned());
     }
     Some(ProviderInstance::from_value(value)?.identity.clone())
 }
@@ -654,6 +658,7 @@ pub fn provider_files(value: Value<'_>) -> anyhow::Result<Vec<File>> {
                 self.file(file.clone());
             } else if crate::template_variable_info::is_instance(value)
                 || crate::run_environment_info::is_instance(value)
+                || crate::feature_flags::is_instance(value)
             {
                 // Its fully owned string-to-string snapshot cannot contain files.
             } else if let Some(files) = crate::starlark_types::contained_depset_files(value) {

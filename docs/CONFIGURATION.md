@@ -40,6 +40,7 @@ Modelled options, with Bazel's defaults and converters:
 | `--java_language_version` | `""` | String option, as above | `JavaOptions.java:389-395` |
 | `--tool_java_runtime_version` | `remotejdk_11` | String option; the exec configuration's `java_runtime_version` (below) | `JavaOptions.java:381-387` |
 | `--tool_java_language_version` | `""` | String option; the exec configuration's `java_language_version` | `JavaOptions.java:397-403` |
+| `--[no]use_target_platform_for_tests` | `false` | BooleanConverter; Bazel's `WARNING: Option 'use_target_platform_for_tests' is deprecated: ...` once per invocation; selectable in `config_setting(values)`; a `query` option (CoreOptions); not carried by the exec transition; part of the identity only when true (docs/TEST_FLAGS.md) | `CoreOptions.java:1110-1123`, `common/options/OptionsParserImpl.java:336-369` |
 | `--extra_toolchains` | `[]` | repeatable comma list of target patterns (empty values kept, an empty value adds nothing); duplicates keep the last copy; part of the identity only when non-empty; not a `query` option (docs/TOOLCHAINS.md) | `PlatformOptions.java:98-116, 164-201`, `common/options/Converters.java:253-287` |
 
 Values that resolve to `@@bazel_tools//tools:host_platform` (or are empty)

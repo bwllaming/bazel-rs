@@ -50,6 +50,10 @@ pub struct OptionDef {
     /// OptionMetadataTag.NON_CONFIGURABLE (BuildOptionDetails.java:188-202).
     pub non_configurable: bool,
     pub source: &'static str,
+    /// `deprecationWarning` (Option.java:176-182): OptionsParserImpl adds
+    /// `Option 'NAME' is deprecated: TEXT` once per invocation
+    /// (OptionsParserImpl.java:336-369, a LinkedHashSet).
+    pub deprecation: Option<&'static str>,
 }
 
 const COMPILATION_MODES: &[&str] = &["fastbuild", "dbg", "opt"];
@@ -74,6 +78,7 @@ pub const OPTIONS: &[OptionDef] = &[
         allow_multiple: false,
         non_configurable: false,
         source: "build/lib/analysis/config/CoreOptions.java:396-404",
+        deprecation: None,
     },
     OptionDef {
         name: "host_compilation_mode",
@@ -89,6 +94,7 @@ pub const OPTIONS: &[OptionDef] = &[
         allow_multiple: false,
         non_configurable: false,
         source: "build/lib/analysis/config/CoreOptions.java:406-417",
+        deprecation: None,
     },
     OptionDef {
         name: "stamp",
@@ -99,6 +105,7 @@ pub const OPTIONS: &[OptionDef] = &[
         allow_multiple: false,
         non_configurable: false,
         source: "build/lib/analysis/config/CoreOptions.java:349-355",
+        deprecation: None,
     },
     OptionDef {
         name: "define",
@@ -109,6 +116,7 @@ pub const OPTIONS: &[OptionDef] = &[
         allow_multiple: true,
         non_configurable: false,
         source: "build/lib/analysis/config/CoreOptions.java:255-267",
+        deprecation: None,
     },
     OptionDef {
         name: "strip",
@@ -125,6 +133,7 @@ pub const OPTIONS: &[OptionDef] = &[
         allow_multiple: false,
         non_configurable: false,
         source: "build/lib/rules/cpp/CppOptions.java:337-347",
+        deprecation: None,
     },
     OptionDef {
         name: "force_pic",
@@ -135,6 +144,7 @@ pub const OPTIONS: &[OptionDef] = &[
         allow_multiple: false,
         non_configurable: false,
         source: "build/lib/rules/cpp/CppOptions.java:218-227",
+        deprecation: None,
     },
     OptionDef {
         name: "platforms",
@@ -145,6 +155,7 @@ pub const OPTIONS: &[OptionDef] = &[
         allow_multiple: false,
         non_configurable: false,
         source: "build/lib/analysis/PlatformOptions.java:82-96",
+        deprecation: None,
     },
     OptionDef {
         name: "host_platform",
@@ -155,6 +166,20 @@ pub const OPTIONS: &[OptionDef] = &[
         allow_multiple: false,
         non_configurable: false,
         source: "build/lib/analysis/PlatformOptions.java:52-64",
+        deprecation: None,
+    },
+    OptionDef {
+        name: "use_target_platform_for_tests",
+        old_name: None,
+        abbrev: None,
+        kind: OptionKind::Bool,
+        default: "false",
+        allow_multiple: false,
+        non_configurable: false,
+        source: "build/lib/analysis/config/CoreOptions.java:1110-1123",
+        deprecation: Some(
+            "Tests select an execution platform matching all constraints of the target platform by default. Instead of using this flag, make sure that all test target platform are registered as execution platforms.",
+        ),
     },
     // JavaOptions (N28b): the Java runtime/language version strings that
     // rules_java's toolchain config_settings select on. Not CoreOptions, so
@@ -168,6 +193,7 @@ pub const OPTIONS: &[OptionDef] = &[
         allow_multiple: false,
         non_configurable: false,
         source: "build/lib/rules/java/JavaOptions.java:373-379",
+        deprecation: None,
     },
     OptionDef {
         name: "java_language_version",
@@ -178,6 +204,7 @@ pub const OPTIONS: &[OptionDef] = &[
         allow_multiple: false,
         non_configurable: false,
         source: "build/lib/rules/java/JavaOptions.java:389-395",
+        deprecation: None,
     },
     OptionDef {
         name: "tool_java_runtime_version",
@@ -188,6 +215,7 @@ pub const OPTIONS: &[OptionDef] = &[
         allow_multiple: false,
         non_configurable: false,
         source: "build/lib/rules/java/JavaOptions.java:381-387",
+        deprecation: None,
     },
     OptionDef {
         name: "tool_java_language_version",
@@ -198,6 +226,7 @@ pub const OPTIONS: &[OptionDef] = &[
         allow_multiple: false,
         non_configurable: false,
         source: "build/lib/rules/java/JavaOptions.java:397-403",
+        deprecation: None,
     },
 ];
 
@@ -505,6 +534,13 @@ pub struct NativeOptions {
     /// Omitted from the identity when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub platform_suffix: Option<&'static str>,
+    /// `--use_target_platform_for_tests` (CoreOptions.java:1110-1123,
+    /// default false): selects which `@bazel_tools//tools/test` toolchain
+    /// the default test exec group resolves (docs/TEST_FLAGS.md). Not
+    /// propagated by the exec transition (builtin_exec_platforms.bzl:231-275).
+    /// Omitted from the identity when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub use_target_platform_for_tests: bool,
     /// CoreOptions.cpu (`--cpu`, CoreOptions.java:279-292; AutoCpuConverter
     /// gives the host CPU for the default ""): `None` is the host CPU, a
     /// value only a Starlark transition can set natively (the command-line
@@ -624,6 +660,7 @@ impl Default for NativeOptions {
             java: JavaVersions::default(),
             no_config: false,
             cpu: None,
+            use_target_platform_for_tests: false,
         }
     }
 }
@@ -647,6 +684,9 @@ impl NativeOptions {
             "force_pic" => OptionValue::Bool(self.force_pic),
             "platforms" => OptionValue::Labels(self.platforms.clone()),
             "host_platform" => OptionValue::Label(self.host_platform.clone()),
+            "use_target_platform_for_tests" => {
+                OptionValue::Bool(self.use_target_platform_for_tests)
+            }
             "java_runtime_version" => OptionValue::String(self.java.java_runtime_version.clone()),
             "java_language_version" => OptionValue::String(self.java.java_language_version.clone()),
             "tool_java_runtime_version" => {
@@ -783,6 +823,9 @@ pub struct CommandLineOptions {
     query: bool,
     /// `--extra_toolchains` values in command-line order.
     extra_toolchains: Vec<String>,
+    /// OptionsParserImpl warnings (deprecated options), each once, in first
+    /// occurrence order (OptionsParserImpl.java:191, 336-369).
+    warnings: Vec<String>,
 }
 
 /// OptionsParsingException with an invalid argument: BlazeOptionHandler prints
@@ -968,7 +1011,19 @@ impl CommandLineOptions {
                 .map_err(|error| format!("While parsing option {form}: {error}"))?;
         }
         self.entries.push((option, form, value));
+        if let Some(warning) = option.deprecation {
+            let warning = format!("Option '{}' is deprecated: {warning}", option.name);
+            if !self.warnings.contains(&warning) {
+                self.warnings.push(warning);
+            }
+        }
         Ok(Parsed::Consumed(used_next))
+    }
+
+    /// The parser's warnings, printed as `WARNING: ...` once the native
+    /// options parsed (runtime/BlazeOptionHandler.java:536-539).
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
     }
 
     /// The Starlark build setting arguments, in command-line order
@@ -1011,6 +1066,9 @@ impl CommandLineOptions {
                 ("define", OptionValue::Assignments(entries)) => defines.extend(entries),
                 ("platforms", OptionValue::Labels(labels)) => platforms = labels,
                 ("host_platform", OptionValue::Label(label)) => native.host_platform = label,
+                ("use_target_platform_for_tests", OptionValue::Bool(value)) => {
+                    native.use_target_platform_for_tests = value
+                }
                 ("java_runtime_version", OptionValue::String(value)) => {
                     native.java.java_runtime_version = value
                 }

@@ -256,6 +256,12 @@ impl RepositorySet {
         self.state.repository_downloads_enabled
     }
 
+    /// Whether the genuine built-in profile (`--experimental-builtin-modules`)
+    /// provides `@bazel_tools` and the builtin module closure.
+    pub(crate) fn has_builtin_modules(&self) -> bool {
+        self.state.options.builtin_profile == module_graph::BuiltinProfile::Bazel93Builtins
+    }
+
     /// `--incompatible_disable_starlark_host_transitions` (ResolverOptions).
     pub(crate) fn disable_starlark_host_transitions(&self) -> bool {
         self.state.options.disable_starlark_host_transitions

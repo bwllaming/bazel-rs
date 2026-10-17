@@ -402,8 +402,9 @@ pub fn mnemonic(configuration: &Configuration, baseline: &Configuration) -> Resu
 /// * Starlark flags are carried unless their `scope` is `target`
 ///   (`--incompatible_exclude_starlark_flags_from_exec_config` is false,
 ///   FunctionTransitionUtil.getExecPropagatingStarlarkFlags, :231-251).
-///   Feature flags (ExecutionTransitionFactory.java:209-221) do not exist
-///   natively (config_feature_flag fails explicitly).
+///   Feature flag values (ExecutionTransitionFactory.java:209-221) never
+///   enter a native configuration: no native transition sets them
+///   (crate::feature_flags).
 ///
 /// The transition is idempotent: the exec configuration of an exec
 /// configuration with the same execution platform is itself.
@@ -439,6 +440,8 @@ pub fn exec_transition(
         // `cpu` = the parent's `--host_cpu` (builtin_exec_platforms.bzl:225),
         // which is not modelled: the host CPU default.
         cpu: None,
+        // Not in CoreOptions' propagate list (builtin_exec_platforms.bzl:231-275).
+        use_target_platform_for_tests: defaults.use_target_platform_for_tests,
     };
     let starlark = from
         .starlark

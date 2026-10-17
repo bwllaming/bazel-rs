@@ -30,6 +30,7 @@ is `<built-in rule NAME>` (`packages/RuleFactory.java:342-344`), `type()` is
 | --- | --- | --- |
 | `alias` | `rules/Alias.java:61-107` | `actual` (label, mandatory); no `licenses`/`distribs` |
 | `config_setting` | `rules/config/ConfigRuleClasses.java:44-66, 130-320` | `values`, `define_values` (string dicts, *nc*), `flag_values` (label-keyed dict, *nc*), `constraint_values` (*nc*); default `tags=["manual"]`; licenses ignored (`setIgnoreLicenses`) |
+| `config_feature_flag` | `rules/config/ConfigRuleClasses.java:56-66, 455-499` | `allowed_values` (string list, mandatory, order independent, *nc*), `default_value` (*nc*), `scope` (*nc*, `universal`/`target`/`project`); default `tags=["manual"]`; no `transitive_configs`, no constraint attributes; analysis in docs/TEST_FLAGS.md |
 | `toolchain` | `rules/platform/ToolchainRule.java:44-111` | `toolchain_type` (mandatory, *nc*), `exec_compatible_with` / `target_compatible_with` / `use_target_platform_constraints` (*nc*), `target_settings` (configurable), `toolchain` (nodep label, mandatory); default `tags=["manual"]` |
 | `toolchain_type` | `rules/ToolchainType.java:57-81` | `no_match_error` (*nc*) |
 | `constraint_setting` | `rules/platform/ConstraintSettingRule.java:38-87` | `default_constraint_value` (nodep, *nc*), `refines_constraint_value` (*nc*); `manual`; no `package_metadata` |

@@ -79,6 +79,12 @@ Implemented:
   `config_setting` `values`/`define_values`/`flag_values`/`constraint_values`
   and `constraint_value` keys matched against the target platform
   (docs/CONFIGURATION.md, docs/PLATFORMS.md).
+- `--use_target_platform_for_tests`, the default `test` exec group of Starlark
+  test rules resolved against the genuine `@bazel_tools//tools/test`
+  toolchains (built-in profile), `config_common.FeatureFlagInfo`,
+  `config_feature_flag` and `config_setting(flag_values)` over feature flags
+  as rules_python 1.x uses them; feature-flag transitions fail explicitly
+  (docs/TEST_FLAGS.md).
 - `package(...)` and `REPO.bazel` `repo(...)` arguments, including late
   default visibility, `licenses()`, and `exports_files`.
   Exports default to public regardless of package defaults. Implicit files inherit

@@ -446,6 +446,7 @@ fn native_action_creating_rule(name: &'static str) -> RuleClass {
 pub const RULE_CLASSES: &[&str] = &[
     "alias",
     "config_setting",
+    "config_feature_flag",
     "constraint_setting",
     "constraint_value",
     "filegroup",
@@ -513,6 +514,24 @@ pub fn rule_class(name: &str) -> Option<RuleClass> {
                 )))
                 .add(nonconfigurable(attr("constraint_values", T::LabelList)));
             class.ignore_licenses = true;
+            class
+        }
+        // rules/config/ConfigRuleClasses.java:56-66 (ConfigBaseRule) and
+        // :455-499 (ConfigFeatureFlagRule). The private
+        // `$allowlist_config_feature_flag` (ConfigFeatureFlag.java:56-64) is
+        // checked by crate::engine.
+        "config_feature_flag" => {
+            let mut class = native_build_rule("config_feature_flag")
+                .manual_tags()
+                .exempt_from_constraint_checking()
+                .add(order_independent(mandatory(nonconfigurable(attr(
+                    "allowed_values",
+                    T::StringList,
+                )))))
+                .add(nonconfigurable(attr("default_value", T::String)))
+                .add(nonconfigurable(attr("scope", T::String)))
+                .remove("transitive_configs");
+            class.allowed_values = &[("scope", &["universal", "target", "project"])];
             class
         }
         // rules/ToolchainType.java:57-81.
@@ -1708,6 +1727,24 @@ pub(crate) fn analysis_gaps(target: &NativeTarget) -> Vec<String> {
             "use_target_platform_constraints",
             "target_settings",
             "toolchain",
+            "tags",
+            "deprecation",
+            "testonly",
+            "features",
+            "licenses",
+            "distribs",
+            "generator_name",
+            "generator_function",
+            "generator_location",
+        ],
+        // ConfigFeatureFlag.create reads `allowed_values` and `default_value`
+        // (rules/config/ConfigFeatureFlag.java:109-169); `scope` only affects
+        // how transitions carry feature flag values, and no native
+        // transition sets them (crate::feature_flags).
+        "config_feature_flag" => &[
+            "allowed_values",
+            "default_value",
+            "scope",
             "tags",
             "deprecation",
             "testonly",

@@ -654,7 +654,10 @@ impl<'v> StarlarkValue<'v> for FeatureFlagInfoProvider {
         args: &Arguments<'v, '_>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
-        self.0.invoke(me, args, eval)
+        // ConfigFeatureFlagProvider.Constructor.selfcall
+        // (rules/config/ConfigFeatureFlagProvider.java:84-90).
+        let _ = me;
+        crate::feature_flags::construct(args, eval)
     }
 
     fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
@@ -1658,6 +1661,10 @@ _all_providers()
 # ConfigFeatureFlagProvider.Constructor is @StarlarkBuiltin(name = "FeatureFlagInfo").
 (type(config_common.FeatureFlagInfo) == "FeatureFlagInfo" and dir(config_common.FeatureFlagInfo) == []) or fail("FeatureFlagInfo type")
 (config_common.FeatureFlagInfo == config_common.FeatureFlagInfo and config_common.FeatureFlagInfo != platform_common.ToolchainInfo) or fail("FeatureFlagInfo identity")
+f = config_common.FeatureFlagInfo(value = "x")
+(type(f) == "FeatureFlagInfo" and dir(f) == ["error", "is_valid_value", "value"] and f.value == "x" and f.error == None) or fail("FeatureFlagInfo instance")
+(repr(f) == 'struct(error = None, value = "x")' and str(f) == repr(f) and f.is_valid_value("y") and type(f.is_valid_value) == "builtin_function_or_method") or fail("FeatureFlagInfo repr")
+(f == f and f != config_common.FeatureFlagInfo("x") and {f: 1}[f] == 1) or fail("FeatureFlagInfo identity equality")
 ({config_common.FeatureFlagInfo: 1}[config_common.FeatureFlagInfo] == 1) or fail("FeatureFlagInfo hash")
 (type(testing.ExecutionInfo) == "Provider" and type(apple_common.XcodeVersionConfig) == "Provider") or fail("other provider types")
 (repr(testing.ExecutionInfo) == "<function ExecutionInfo>") or fail("ExecutionInfo")
@@ -1683,9 +1690,22 @@ t = platform_common.ToolchainInfo(z = [1], a = "x", m = None)
                 "platform_common.ConstraintValueInfo()",
                 "platform_common.ConstraintValueInfo is not implemented in the native profile",
             ),
+            // ConfigFeatureFlagProvider.Constructor (crate::feature_flags).
             (
-                "config_common.FeatureFlagInfo(value = 'x')",
-                "config_common.FeatureFlagInfo is not implemented in the native profile (analysis-time configuration API)",
+                "config_common.FeatureFlagInfo(value = 1)",
+                "in call to FeatureFlagInfo(), parameter 'value' got value of type 'int', want 'string'",
+            ),
+            (
+                "config_common.FeatureFlagInfo(valu = 'x')",
+                "FeatureFlagInfo() got unexpected keyword argument 'valu' (did you mean 'value'?)",
+            ),
+            (
+                "config_common.FeatureFlagInfo('a', 'b')",
+                "FeatureFlagInfo() accepts no more than 1 positional argument but got 2",
+            ),
+            (
+                "config_common.FeatureFlagInfo('a', value = 'b')",
+                "FeatureFlagInfo() got multiple values for argument 'value'",
             ),
             (
                 "config_common.config_feature_flag_transition('attr')",
