@@ -1,0 +1,101 @@
+parse "1" str=1 repr=1 to_string="1" type=DottedVersion dir=["compare_to", "to_string"]
+parse "1.2" str=1.2 repr=1.2 to_string="1.2" type=DottedVersion dir=["compare_to", "to_string"]
+parse "1.2.0" str=1.2.0 repr=1.2.0 to_string="1.2.0" type=DottedVersion dir=["compare_to", "to_string"]
+parse "1.0.0.0" str=1.0.0.0 repr=1.0.0.0 to_string="1.0.0.0" type=DottedVersion dir=["compare_to", "to_string"]
+parse "0" str=0 repr=0 to_string="0" type=DottedVersion dir=["compare_to", "to_string"]
+parse "0.0" str=0.0 repr=0.0 to_string="0.0" type=DottedVersion dir=["compare_to", "to_string"]
+parse "01.002" str=01.002 repr=01.002 to_string="01.002" type=DottedVersion dir=["compare_to", "to_string"]
+parse "5beta2" str=5beta2 repr=5beta2 to_string="5beta2" type=DottedVersion dir=["compare_to", "to_string"]
+parse "5BETA2" str=5BETA2 repr=5BETA2 to_string="5BETA2" type=DottedVersion dir=["compare_to", "to_string"]
+parse "1.2beta" str=1.2beta repr=1.2beta to_string="1.2beta" type=DottedVersion dir=["compare_to", "to_string"]
+parse "1.2.beta" str=1.2.beta repr=1.2.beta to_string="1.2.beta" type=DottedVersion dir=["compare_to", "to_string"]
+parse "1.2.beta.!!" str=1.2.beta.!! repr=1.2.beta.!! to_string="1.2.beta.!!" type=DottedVersion dir=["compare_to", "to_string"]
+parse "1.2.Experimental_3" str=1.2.Experimental_3 repr=1.2.Experimental_3 to_string="1.2.Experimental_3" type=DottedVersion dir=["compare_to", "to_string"]
+parse "1.x.y" str=1.x.y repr=1.x.y to_string="1.x.y" type=DottedVersion dir=["compare_to", "to_string"]
+parse "1a2b" str=1a2b repr=1a2b to_string="1a2b" type=DottedVersion dir=["compare_to", "to_string"]
+parse "1a2b34" str=1a2b34 repr=1a2b34 to_string="1a2b34" type=DottedVersion dir=["compare_to", "to_string"]
+parse "3.1.0alpha5.6" str=3.1.0alpha5.6 repr=3.1.0alpha5.6 to_string="3.1.0alpha5.6" type=DottedVersion dir=["compare_to", "to_string"]
+parse "7.3alpha.2" str=7.3alpha.2 repr=7.3alpha.2 to_string="7.3alpha.2" type=DottedVersion dir=["compare_to", "to_string"]
+parse "15.0.1" str=15.0.1 repr=15.0.1 to_string="15.0.1" type=DottedVersion dir=["compare_to", "to_string"]
+parse "2147483647" str=2147483647 repr=2147483647 to_string="2147483647" type=DottedVersion dir=["compare_to", "to_string"]
+parse "0000000000002147483647" str=0000000000002147483647 repr=0000000000002147483647 to_string="0000000000002147483647" type=DottedVersion dir=["compare_to", "to_string"]
+parse "8.4" str=8.4 repr=8.4 to_string="8.4" type=DottedVersion dir=["compare_to", "to_string"]
+parse "10.11" str=10.11 repr=10.11 to_string="10.11" type=DottedVersion dir=["compare_to", "to_string"]
+pair "3.1.25" "3.1.1" compare_to=1 reverse=-1 eq=False ne=True lt=False le=False gt=True ge=True hash=miss
+pair "3.1.20" "3.1.2" compare_to=1 reverse=-1 eq=False ne=True lt=False le=False gt=True ge=True hash=miss
+pair "3.1.1" "3.1" compare_to=1 reverse=-1 eq=False ne=True lt=False le=False gt=True ge=True hash=miss
+pair "3.1" "3.1.0.0" compare_to=0 reverse=0 eq=True ne=False lt=False le=True gt=False ge=True hash=hit
+pair "3.2" "3.1.8" compare_to=1 reverse=-1 eq=False ne=True lt=False le=False gt=True ge=True hash=miss
+pair "3.1.1" "3.1.1beta3" compare_to=1 reverse=-1 eq=False ne=True lt=False le=False gt=True ge=True hash=miss
+pair "3.1.1beta1" "3.1.0" compare_to=1 reverse=-1 eq=False ne=True lt=False le=False gt=True ge=True hash=miss
+pair "3.1" "3.1.0alpha1" compare_to=1 reverse=-1 eq=False ne=True lt=False le=False gt=True ge=True hash=miss
+pair "3.1.0beta0" "3.1.0alpha5.6" compare_to=1 reverse=-1 eq=False ne=True lt=False le=False gt=True ge=True hash=miss
+pair "3.4.2alpha2" "3.4.2alpha1" compare_to=1 reverse=-1 eq=False ne=True lt=False le=False gt=True ge=True hash=miss
+pair "3.4.2alpha2" "3.4.2alpha1.5" compare_to=1 reverse=-1 eq=False ne=True lt=False le=False gt=True ge=True hash=miss
+pair "3.1alpha1" "3.1alpha" compare_to=1 reverse=-1 eq=False ne=True lt=False le=False gt=True ge=True hash=miss
+pair "1beta" "1Beta" compare_to=1 reverse=-1 eq=False ne=True lt=False le=False gt=True ge=True hash=miss
+pair "01.2" "1.2.0" compare_to=0 reverse=0 eq=True ne=False lt=False le=True gt=False ge=True hash=hit
+pair "1.2" "1.2" compare_to=0 reverse=0 eq=True ne=False lt=False le=True gt=False ge=True hash=hit
+pair "1.0beta" "1" compare_to=-1 reverse=1 eq=False ne=True lt=True le=True gt=False ge=False hash=miss
+pair "1.2.beta" "1.2" compare_to=0 reverse=0 eq=True ne=False lt=False le=True gt=False ge=True hash=hit
+pair "0" "0.0.0" compare_to=0 reverse=0 eq=True ne=False lt=False le=True gt=False ge=True hash=hit
+pair "1.2.3" "1.2.4" compare_to=-1 reverse=1 eq=False ne=True lt=True le=True gt=False ge=False hash=miss
+pair "10" "9.99" compare_to=1 reverse=-1 eq=False ne=True lt=False le=False gt=True ge=True hash=miss
+pair "1a" "1" compare_to=-1 reverse=1 eq=False ne=True lt=True le=True gt=False ge=False hash=miss
+pair "1a0" "1a" compare_to=0 reverse=0 eq=True ne=False lt=False le=True gt=False ge=True hash=hit
+pair "2147483647" "2147483646" compare_to=1 reverse=-1 eq=False ne=True lt=False le=False gt=True ge=True hash=miss
+method repr=<built-in method compare_to of DottedVersion value> type=builtin_function_or_method
+other eq_str=False in_list=True bool=True named=True
+sorted ["1.0alpha", "1", "9.1beta", "9.1", "9.1.0", "10"]
+max 10 min 2.0
+hasattr True True False
+provider repr=<provider> type=Provider
+host_xcodes type=struct dir=["availability", "execution_info", "minimum_os_for_platform_type", "sdk_version_for_platform", "xcode_version"]
+host_xcodes minimum_os_for_platform_type(catalyst)=8.4
+host_xcodes minimum_os_for_platform_type(ios)=8.4
+host_xcodes minimum_os_for_platform_type(macos)=10.11
+host_xcodes minimum_os_for_platform_type(tvos)=9.0
+host_xcodes minimum_os_for_platform_type(visionos)=1.0
+host_xcodes minimum_os_for_platform_type(watchos)=2.0
+host_xcodes sdk_version_for_platform(catalyst)=10.11
+host_xcodes sdk_version_for_platform(ios_device)=8.4
+host_xcodes sdk_version_for_platform(ios_simulator)=8.4
+host_xcodes sdk_version_for_platform(macos)=10.11
+host_xcodes sdk_version_for_platform(tvos_device)=9.0
+host_xcodes sdk_version_for_platform(tvos_simulator)=9.0
+host_xcodes sdk_version_for_platform(visionos_device)=1.0
+host_xcodes sdk_version_for_platform(visionos_simulator)=1.0
+host_xcodes sdk_version_for_platform(watchos_device)=2.0
+host_xcodes sdk_version_for_platform(watchos_simulator)=2.0
+host_xcodes availability="unknown" xcode_version=None
+host_xcodes execution_info={"requires-darwin": "", "supports-xcode-requirements-set": ""}
+host_xcodes availability repr=<function lambda from @@_builtins//:common/xcode/providers.bzl> type=function
+host_xcodes execution_info repr=<function lambda from @@_builtins//:common/xcode/providers.bzl> type=function
+host_xcodes minimum_os_for_platform_type repr=<function _minimum_os_for_platform_type from @@_builtins//:common/xcode/providers.bzl> type=function
+host_xcodes sdk_version_for_platform repr=<function _sdk_version_for_platform from @@_builtins//:common/xcode/providers.bzl> type=function
+host_xcodes xcode_version repr=<function lambda from @@_builtins//:common/xcode/providers.bzl> type=function
+local type=struct dir=["availability", "execution_info", "minimum_os_for_platform_type", "sdk_version_for_platform", "xcode_version"]
+local minimum_os_for_platform_type(catalyst)=15.0
+local minimum_os_for_platform_type(ios)=15.0
+local minimum_os_for_platform_type(macos)=12.0
+local minimum_os_for_platform_type(tvos)=15.0
+local minimum_os_for_platform_type(visionos)=1.0
+local minimum_os_for_platform_type(watchos)=8.0
+local sdk_version_for_platform(catalyst)=14.0
+local sdk_version_for_platform(ios_device)=17.0
+local sdk_version_for_platform(ios_simulator)=17.0
+local sdk_version_for_platform(macos)=14.0
+local sdk_version_for_platform(tvos_device)=17.0
+local sdk_version_for_platform(tvos_simulator)=17.0
+local sdk_version_for_platform(visionos_device)=1.0
+local sdk_version_for_platform(visionos_simulator)=1.0
+local sdk_version_for_platform(watchos_device)=10.0
+local sdk_version_for_platform(watchos_simulator)=10.0
+local availability="local" xcode_version=15.0.1
+local execution_info={"requires-darwin": "", "supports-xcode-requirements-set": "", "no-remote": "", "requires-xcode:15.0.1": "", "requires-xcode-label:local": ""}
+local availability repr=<function lambda from @@_builtins//:common/xcode/providers.bzl> type=function
+local execution_info repr=<function lambda from @@_builtins//:common/xcode/providers.bzl> type=function
+local minimum_os_for_platform_type repr=<function _minimum_os_for_platform_type from @@_builtins//:common/xcode/providers.bzl> type=function
+local sdk_version_for_platform repr=<function _sdk_version_for_platform from @@_builtins//:common/xcode/providers.bzl> type=function
+local xcode_version repr=<function lambda from @@_builtins//:common/xcode/providers.bzl> type=function
+min_os_type=DottedVersion

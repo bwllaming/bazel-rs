@@ -90,6 +90,9 @@ pub(crate) enum Behavior {
     AppleDeveloperDir,
     AppleSdkDir,
     ApplePlatformDeveloperFrameworkDir,
+    /// AppleStarlarkCommon.dottedVersion; also the `apple_common_bazel`
+    /// lambda wrapper (Style::Def binds `version` positionally or by name).
+    DottedVersion,
     ToolchainType,
     ExecGroup,
     ConfigurationField,
@@ -820,16 +823,21 @@ pub(crate) fn bind_styled<'v>(
     for (value, &slot) in positions.iter().zip(&slots) {
         bound[slot] = Some(*value);
     }
+    let names: Vec<&str> = params.iter().map(|p| p.name).collect();
+    let mut unexpected: Vec<String> = Vec::new();
     for (name, value) in args.names_map()?.iter() {
         let name = name.as_str();
         match params.iter().position(|p| p.name == name) {
+            // StarlarkFunction.java:487-504: a `def` collects every unknown
+            // keyword and reports them after binding.
+            None if style == Style::Def => unexpected.push(name.to_owned()),
             None => {
-                return Err(failure(match style {
-                    Style::Builtin => {
-                        format!("{function}() got unexpected keyword argument '{name}'")
-                    }
-                    Style::Def => format!("{function}() got unexpected keyword argument: {name}"),
-                }));
+                // BuiltinFunction.java:322-337 fails at the first unknown
+                // keyword, with SpellChecker.didYouMean over the parameters.
+                let hint = crate::native_rules::did_you_mean(name, &names);
+                return Err(failure(format!(
+                    "{function}() got unexpected keyword argument '{name}'{hint}"
+                )));
             }
             Some(i) if !params[i].named => {
                 return Err(failure(format!(
@@ -837,12 +845,30 @@ pub(crate) fn bind_styled<'v>(
                 )));
             }
             Some(i) if bound[i].is_some() => {
+                // StarlarkFunction.java:482-485 says "parameter".
+                let noun = match style {
+                    Style::Builtin => "argument",
+                    Style::Def => "parameter",
+                };
                 return Err(failure(format!(
-                    "{function}() got multiple values for argument '{name}'"
+                    "{function}() got multiple values for {noun} '{name}'"
                 )));
             }
             Some(i) => bound[i] = Some(*value),
         }
+    }
+    // StarlarkFunction.java:389-403: plural for several, and a spelling
+    // hint only when exactly one keyword is unknown.
+    if !unexpected.is_empty() {
+        let hint = match unexpected.as_slice() {
+            [only] => crate::native_rules::did_you_mean(only, &names),
+            _ => String::new(),
+        };
+        return Err(failure(format!(
+            "{function}() got unexpected keyword argument{}: {}{hint}",
+            if unexpected.len() == 1 { "" } else { "s" },
+            unexpected.join(", ")
+        )));
     }
     let named_kind = match style {
         Style::Builtin => "named",
@@ -1000,6 +1026,18 @@ fn call<'v>(
             )))
         }
         Behavior::CcFeatures(op) => crate::cc_features::call(op, style, name, args, eval),
+        Behavior::DottedVersion => {
+            // The lambda's `version` binds by name too; the Java @Param
+            // (AppleCommonApi.java:146-152) is positional-only.
+            let bound = bind_styled(
+                style,
+                name,
+                &[param("version", true, style == Style::Def, true)],
+                args,
+                heap,
+            )?;
+            crate::apple_xcode::dotted_version(bound[0].expect("required"), heap)
+        }
         Behavior::ToolchainType => toolchain_type(args, eval),
         Behavior::ExecGroup => exec_group(args, eval),
         Behavior::ConfigurationField => configuration_field(args, eval),
@@ -1344,8 +1382,8 @@ const APPLE_PLATFORMS: [(&str, &str, &str, bool); 10] = [
     ("catalyst", "MacOSX", "catalyst", true),
 ];
 
-/// builtins_bzl/common/objc/apple_common.bzl `apple_common_bazel`.
-fn apple_common(heap: &FrozenHeap) -> FrozenValue {
+/// builtins_bzl/common/objc/apple_platform.bzl `(PLATFORM_TYPE, PLATFORM)`.
+pub(crate) fn apple_platform_tables(heap: &FrozenHeap) -> (FrozenValue, FrozenValue) {
     let platform_type = sorted_struct(
         heap,
         APPLE_PLATFORM_TYPES
@@ -1373,6 +1411,12 @@ fn apple_common(heap: &FrozenHeap) -> FrozenValue {
             })
             .collect(),
     );
+    (platform_type, platform)
+}
+
+/// builtins_bzl/common/objc/apple_common.bzl `apple_common_bazel`.
+fn apple_common(heap: &FrozenHeap) -> FrozenValue {
+    let (platform_type, platform) = apple_platform_tables(heap);
     let provider = |name, module| {
         heap.alloc(BuiltinProvider {
             name,
@@ -1399,9 +1443,10 @@ fn apple_common(heap: &FrozenHeap) -> FrozenValue {
             ("platform_type", platform_type),
             ("platform", platform),
             ("XcodeProperties", FrozenValue::new_none()),
+            // The verbatim @_builtins provider (crate::apple_xcode).
             (
                 "XcodeVersionConfig",
-                provider("XcodeVersionInfo", "common/xcode/providers.bzl"),
+                crate::apple_xcode::xcode_version_info(heap),
             ),
             (
                 "apple_host_system_env",
@@ -1430,7 +1475,7 @@ fn apple_common(heap: &FrozenHeap) -> FrozenValue {
                     "lambda",
                     "common/objc/apple_common.bzl",
                     "apple_common.dotted_version",
-                    unimplemented,
+                    Behavior::DottedVersion,
                 ),
             ),
             ("Objc", objc),
@@ -1835,14 +1880,6 @@ fragment = struct(single_arch_platform = apple_common.platform.ios_simulator)
             (
                 "apple_common.apple_host_system_env(None)",
                 "apple_common.apple_host_system_env is not implemented",
-            ),
-            (
-                "apple_common.dotted_version('1.2')",
-                "apple_common.dotted_version is not implemented",
-            ),
-            (
-                "apple_common.XcodeVersionConfig()",
-                "apple_common.XcodeVersionInfo is not implemented",
             ),
             (
                 "apple_common.apple_toolchain(1)",

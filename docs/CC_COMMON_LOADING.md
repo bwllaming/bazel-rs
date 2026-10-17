@@ -158,11 +158,11 @@ taken from `apple_toolchain.bzl`. Its functions are implemented:
 The remaining members are as follows:
 
 - `XcodeProperties` is `None`.
-- `XcodeVersionConfig` is the `XcodeVersionInfo` provider, and `Objc` and
-  `new_objc_provider` are `ObjcInfo`. These are `@_builtins` Starlark
-  providers with `repr` `<provider>`, so calling them fails explicitly.
-- `apple_host_system_env`, `target_apple_env` and `dotted_version` fail
-  explicitly.
+- `XcodeVersionConfig` is the real `XcodeVersionInfo` provider and
+  `dotted_version` is implemented; see [XCODE_VERSION_INFO.md](XCODE_VERSION_INFO.md).
+- `Objc` and `new_objc_provider` are `ObjcInfo`, a `@_builtins` Starlark
+  provider with `repr` `<provider>`; calling it fails explicitly.
+- `apple_host_system_env` and `target_apple_env` fail explicitly.
 
 ## Java builtin namespaces
 
@@ -180,7 +180,8 @@ The remaining members are as follows:
 carries its own `@StarlarkBuiltin(name = "FeatureFlagInfo")`, so its type is
 `FeatureFlagInfo`. `ToolchainInfo`, `PlatformInfo`, `ConstraintSettingInfo`,
 `ConstraintValueInfo` and `ExecutionInfo` are unannotated `BuiltinProvider`
-subclasses. `XcodeVersionInfo` and `ObjcInfo` are Starlark providers. All of
+subclasses. `XcodeVersionInfo` and `ObjcInfo` are Starlark providers
+(`XcodeVersionInfo` is the evaluated pinned `providers.bzl`). All of
 these report `Provider`. They compare and hash by key and are
 valid `attr.label(providers=[...])` requirements under `builtin:NAME`.
 `@_builtins` Starlark providers use `@@_builtins//:FILE%NAME`. Calling them

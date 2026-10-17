@@ -251,6 +251,9 @@ impl<'v, V: ValueLike<'v>> ProviderConstructorGen<V> {
             .iter()
             .map(|(name, value)| (name.as_str(), *value))
             .collect::<Vec<_>>();
+        if identity == crate::apple_xcode::XCODE_VERSION_INFO_ID {
+            crate::apple_xcode::check_init_arguments(&positional, &named)?;
+        }
         let result = eval.eval_function(init, &positional, &named)?;
         const WHAT: &str = "return value of provider init()";
         let dict = DictRef::from_value(result).ok_or_else(|| {
@@ -661,6 +664,10 @@ pub fn provider_files(value: Value<'_>) -> anyhow::Result<Vec<File>> {
                 || crate::feature_flags::is_instance(value)
             {
                 // Its fully owned string-to-string snapshot cannot contain files.
+            } else if crate::apple_xcode::is_file_free_payload(value) {
+                // DottedVersion, or an XcodeVersionInfo closure from the
+                // verbatim @_builtins providers.bzl (it captures only
+                // strings, DottedVersions and the platform tables).
             } else if let Some(files) = crate::starlark_types::contained_depset_files(value) {
                 for file in files {
                     self.file(file);

@@ -6,6 +6,7 @@ pub mod action;
 pub mod analysis;
 mod analysis_ctx;
 mod analysis_runtime;
+mod apple_xcode;
 pub mod archive;
 pub mod args;
 mod attribute_values;

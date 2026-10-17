@@ -1,0 +1,421 @@
+{
+ "schema": "n25d2a-xcode-dotted-reference-receipt/v1",
+ "purpose": "Paired native vs genuine Bazel 9.3.0 capture of apple_common.dotted_version (DottedVersion) and the @_builtins XcodeVersionInfo provider (F3: host_xcodes-like dump + dotted_version matrix).",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private> --output_base=<private> --host_jvm_args=-Xmx512m",
+  "flags": "--lockfile_mode=off --incompatible_autoload_externally= --spawn_strategy=local --registry=file://<private copy of tests/fixtures/builtin_modules/registry> --repository_cache=<private> --distdir=<platforms-1.0.0.tar.gz> (--repository_disable_download, except e2e: + --registry=https://bcr.bazel.build)"
+ },
+ "native": {
+  "binary": "target/debug/bazel-rs (uncommitted N25d2a worktree build)",
+  "sha256": "cd40239f1a9483be5debcaf231903b6bb870417618cc6dcc793ca4562f49f222",
+  "argv": "--ignore_all_rc_files --cache-dir=<private> build <targets>"
+ },
+ "capture_script": {
+  "path": "artifacts/xcode_dotted-capture.py (ignored)",
+  "sha256": "17a40f70b91d30d20a155c75f24ce01ad95123fde5553472fc5b624b2103449b"
+ },
+ "fixture_sha256": {
+  "expected_consume.txt": "eff2d855c634a4193494b2eaaab7a3e1a6c71dd7b91558ca2da1abee875c1a90",
+  "expected_dump.txt": "5c653eb5f16e188444f6d43c50e6180f13e1c841639ff8d638eb6b9e9abd6543",
+  "workspace/BUILD": "d416157bf3f8b436469b4e567bd9b699c49c9e02188e60ce4f0f250c4ed68ac5",
+  "workspace/MODULE.bazel": "b73a7fa02e5a6a80d91a8eb1b966f05fff40902a32eb7ee33faacc7d15fad3ed",
+  "workspace/defs.bzl": "58b5d5ee4eb2371fddef01808c2b7f30a9e99a09f528fc775f4ccead74883dc0",
+  "workspace/e2e/BUILD": "11fde26c513ee653a4e0a97c72bb55930c3d528d8d23abfe6e14729c0a438db7",
+  "workspace/e2e/defs.bzl": "d5f0d6e3f4ebd61470873eb493cf58b5d984eb2afa38eba94fde9e3abb551549",
+  "workspace/err/BUILD": "c5fad4e1763c84871055ca852271daa8deff77ddbe02b2d8873462b1f0f45dff"
+ },
+ "environment": "env -i PATH=/usr/bin:/bin LANG/LC_ALL=C.UTF-8, private HOME/TMPDIR, umask 022",
+ "verdicts": {
+  "EXACT": "equal exit class and equal output bytes / equal final error message (Bazel \"Error in F: \" and native \"error: [fail: ]\" framing stripped)",
+  "MISMATCH": "anything else; `declared` marks differences named before the run"
+ },
+ "scenarios": {
+  "dump": {
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_seconds": 3.0,
+   "dump.txt": {
+    "outputs_equal": true,
+    "reference_sha256": "5c653eb5f16e188444f6d43c50e6180f13e1c841639ff8d638eb6b9e9abd6543",
+    "native_sha256": "5c653eb5f16e188444f6d43c50e6180f13e1c841639ff8d638eb6b9e9abd6543",
+    "reference_equals_tracked_expected": true
+   },
+   "consume.txt": {
+    "outputs_equal": true,
+    "reference_sha256": "eff2d855c634a4193494b2eaaab7a3e1a6c71dd7b91558ca2da1abee875c1a90",
+    "native_sha256": "eff2d855c634a4193494b2eaaab7a3e1a6c71dd7b91558ca2da1abee875c1a90",
+    "reference_equals_tracked_expected": true
+   },
+   "label": "EXACT"
+  },
+  "err/none": {
+   "target": "//err:none",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error in dotted_version: in call to dotted_version(), parameter 'version' got value of type 'NoneType', want 'string'",
+   "native_error_line": "error: in call to dotted_version(), parameter 'version' got value of type 'NoneType', want 'string'",
+   "reference_message": "in call to dotted_version(), parameter 'version' got value of type 'NoneType', want 'string'",
+   "native_message": "in call to dotted_version(), parameter 'version' got value of type 'NoneType', want 'string'",
+   "label": "EXACT"
+  },
+  "err/int": {
+   "target": "//err:int",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error in dotted_version: in call to dotted_version(), parameter 'version' got value of type 'int', want 'string'",
+   "native_error_line": "error: in call to dotted_version(), parameter 'version' got value of type 'int', want 'string'",
+   "reference_message": "in call to dotted_version(), parameter 'version' got value of type 'int', want 'string'",
+   "native_message": "in call to dotted_version(), parameter 'version' got value of type 'int', want 'string'",
+   "label": "EXACT"
+  },
+  "err/empty": {
+   "target": "//err:empty",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error in dotted_version: Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got ''",
+   "native_error_line": "error: Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got ''",
+   "reference_message": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got ''",
+   "native_message": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got ''",
+   "label": "EXACT"
+  },
+  "err/double_dot": {
+   "target": "//err:double_dot",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error in dotted_version: Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '1..2'",
+   "native_error_line": "error: Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '1..2'",
+   "reference_message": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '1..2'",
+   "native_message": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '1..2'",
+   "label": "EXACT"
+  },
+  "err/trailing_dot": {
+   "target": "//err:trailing_dot",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error in dotted_version: Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '1.'",
+   "native_error_line": "error: Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '1.'",
+   "reference_message": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '1.'",
+   "native_message": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '1.'",
+   "label": "EXACT"
+  },
+  "err/descriptive_only": {
+   "target": "//err:descriptive_only",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error in dotted_version: Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got 'beta'",
+   "native_error_line": "error: Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got 'beta'",
+   "reference_message": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got 'beta'",
+   "native_message": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got 'beta'",
+   "label": "EXACT"
+  },
+  "err/hyphen": {
+   "target": "//err:hyphen",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error in dotted_version: Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '1.2-3'",
+   "native_error_line": "error: Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '1.2-3'",
+   "reference_message": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '1.2-3'",
+   "native_message": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '1.2-3'",
+   "label": "EXACT"
+  },
+  "err/overflow": {
+   "target": "//err:overflow",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error in dotted_version: Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '2147483648'",
+   "native_error_line": "error: Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '2147483648'",
+   "reference_message": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '2147483648'",
+   "native_message": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '2147483648'",
+   "label": "EXACT"
+  },
+  "err/overflow_second": {
+   "target": "//err:overflow_second",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error in dotted_version: Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '1a2147483648'",
+   "native_error_line": "error: Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '1a2147483648'",
+   "reference_message": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '1a2147483648'",
+   "native_message": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '1a2147483648'",
+   "label": "EXACT"
+  },
+  "err/space": {
+   "target": "//err:space",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error in dotted_version: Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got ' 1'",
+   "native_error_line": "error: Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got ' 1'",
+   "reference_message": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got ' 1'",
+   "native_message": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got ' 1'",
+   "label": "EXACT"
+  },
+  "err/unicode": {
+   "target": "//err:unicode",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error in dotted_version: Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '1.é'",
+   "native_error_line": "error: Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '1.é'",
+   "reference_message": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '1.é'",
+   "native_message": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '1.é'",
+   "label": "EXACT"
+  },
+  "err/missing": {
+   "target": "//err:missing",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error: lambda() missing 1 required positional argument: version",
+   "native_error_line": "error: lambda() missing 1 required positional argument: version",
+   "reference_message": "lambda() missing 1 required positional argument: version",
+   "native_message": "lambda() missing 1 required positional argument: version",
+   "label": "EXACT"
+  },
+  "err/two_positional": {
+   "target": "//err:two_positional",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error: lambda() accepts no more than 1 positional argument but got 2",
+   "native_error_line": "error: lambda() accepts no more than 1 positional argument but got 2",
+   "reference_message": "lambda() accepts no more than 1 positional argument but got 2",
+   "native_message": "lambda() accepts no more than 1 positional argument but got 2",
+   "label": "EXACT"
+  },
+  "err/unexpected_keyword": {
+   "target": "//err:unexpected_keyword",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error: lambda() got unexpected keyword argument: versio (did you mean 'version'?)",
+   "native_error_line": "error: lambda() got unexpected keyword argument: versio (did you mean 'version'?)",
+   "reference_message": "lambda() got unexpected keyword argument: versio (did you mean 'version'?)",
+   "native_message": "lambda() got unexpected keyword argument: versio (did you mean 'version'?)",
+   "label": "EXACT"
+  },
+  "err/compare_to_string": {
+   "target": "//err:compare_to_string",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error in compare_to: in call to compare_to(), parameter 'other' got value of type 'string', want 'DottedVersion'",
+   "native_error_line": "error: in call to compare_to(), parameter 'other' got value of type 'string', want 'DottedVersion'",
+   "reference_message": "in call to compare_to(), parameter 'other' got value of type 'string', want 'DottedVersion'",
+   "native_message": "in call to compare_to(), parameter 'other' got value of type 'string', want 'DottedVersion'",
+   "label": "EXACT"
+  },
+  "err/compare_to_named": {
+   "target": "//err:compare_to_named",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error in compare_to: compare_to() got named argument for positional-only parameter 'other'",
+   "native_error_line": "error: compare_to() got named argument for positional-only parameter 'other'",
+   "reference_message": "compare_to() got named argument for positional-only parameter 'other'",
+   "native_message": "compare_to() got named argument for positional-only parameter 'other'",
+   "label": "EXACT"
+  },
+  "err/compare_to_missing": {
+   "target": "//err:compare_to_missing",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error in compare_to: compare_to() missing 1 required positional argument: other",
+   "native_error_line": "error: compare_to() missing 1 required positional argument: other",
+   "reference_message": "compare_to() missing 1 required positional argument: other",
+   "native_message": "compare_to() missing 1 required positional argument: other",
+   "label": "EXACT"
+  },
+  "err/less_than_int": {
+   "target": "//err:less_than_int",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error: unsupported comparison: DottedVersion <=> int",
+   "native_error_line": "error: unsupported comparison: DottedVersion <=> int",
+   "reference_message": "unsupported comparison: DottedVersion <=> int",
+   "native_message": "unsupported comparison: DottedVersion <=> int",
+   "label": "EXACT"
+  },
+  "err/int_less_than": {
+   "target": "//err:int_less_than",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error: unsupported comparison: int <=> DottedVersion",
+   "native_error_line": "error: Operation `compare` not supported for types `int` and `DottedVersion`",
+   "reference_message": "unsupported comparison: int <=> DottedVersion",
+   "native_message": "Operation `compare` not supported for types `int` and `DottedVersion`",
+   "label": "MISMATCH",
+   "declared": "int-on-the-left ordered comparison is reported by the vendored Starlark int type",
+   "native_stderr_tail": "bazel-rs: analysis of //err:int_less_than: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:189, in _err_impl\n      ERRORS[ctx.label.name]()\nerror: Operation `compare` not supported for types `int` and `DottedVersion`\n   --> //:defs.bzl:176:30\n    |\n176 |     \"int_less_than\": lambda: 1 < dv(\"1\"),\n    |                              ^^^^^^^^^^^\n    |\n\n"
+  },
+  "err/no_field": {
+   "target": "//err:no_field",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error: 'DottedVersion' value has no field or method 'nope'",
+   "native_error_line": "error: Object of type `DottedVersion` has no attribute `nope`",
+   "reference_message": "'DottedVersion' value has no field or method 'nope'",
+   "native_message": "Object of type `DottedVersion` has no attribute `nope`",
+   "label": "MISMATCH",
+   "declared": "missing-attribute wording comes from the Starlark interpreter",
+   "native_stderr_tail": "bazel-rs: analysis of //err:no_field: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:189, in _err_impl\n      ERRORS[ctx.label.name]()\nerror: Object of type `DottedVersion` has no attribute `nope`\n   --> //:defs.bzl:177:25\n    |\n177 |     \"no_field\": lambda: dv(\"1\").nope,\n    |                         ^^^^^^^^^^^^\n    |\n\n"
+  },
+  "err/info_no_args": {
+   "target": "//err:info_no_args",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error: _xcode_version_info_init() missing 14 required keyword-only arguments: ios_sdk_version, ios_minimum_os_version, visionos_sdk_version, visionos_minimum_os_version, watchos_sdk_version, watchos_minimum_os_version, tvos_sdk_version, tvos_minimum_os_version, macos_sdk_version, macos_minimum_os_version, xcode_version, availability, xcode_version_flag, include_xcode_execution_info",
+   "native_error_line": "error: Missing named-only parameter `ios_sdk_version` for call to `@@_builtins//:common/xcode/providers.bzl._xcode_version_info_init`",
+   "reference_message": "_xcode_version_info_init() missing 14 required keyword-only arguments: ios_sdk_version, ios_minimum_os_version, visionos_sdk_version, visionos_minimum_os_version, watchos_sdk_version, watchos_minimum_os_version, tvos_sdk_version, tvos_minimum_os_version, macos_sdk_version, macos_minimum_os_version, xcode_version, availability, xcode_version_flag, include_xcode_execution_info",
+   "native_message": "Missing named-only parameter `ios_sdk_version` for call to `@@_builtins//:common/xcode/providers.bzl._xcode_version_info_init`",
+   "label": "MISMATCH",
+   "declared": "init signature-mismatch wording comes from the Starlark interpreter (docs/PROVIDER_INIT.md)",
+   "native_stderr_tail": "bazel-rs: analysis of //err:info_no_args: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:189, in _err_impl\n      ERRORS[ctx.label.name]()\n  * //:defs.bzl:178, in lambda\n      \"info_no_args\": lambda: apple_common.XcodeVersionConfig(),\n  File <builtin>, in <provider>\n  File <builtin>, in None\nerror: Missing named-only parameter `ios_sdk_version` for call to `@@_builtins//:common/xcode/providers.bzl._xcode_version_info_init`\n   --> //:defs.bzl:178:29\n    |\n178 |     \"info_no_args\": lambda: apple_common.XcodeVersionConfig(),\n    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n"
+  },
+  "err/info_positional": {
+   "target": "//err:info_positional",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error: _xcode_version_info_init() does not accept positional arguments, but got 1",
+   "native_error_line": "error: Missing named-only parameter `ios_sdk_version` for call to `@@_builtins//:common/xcode/providers.bzl._xcode_version_info_init`",
+   "reference_message": "_xcode_version_info_init() does not accept positional arguments, but got 1",
+   "native_message": "Missing named-only parameter `ios_sdk_version` for call to `@@_builtins//:common/xcode/providers.bzl._xcode_version_info_init`",
+   "label": "MISMATCH",
+   "declared": "init signature-mismatch wording comes from the Starlark interpreter (docs/PROVIDER_INIT.md)",
+   "native_stderr_tail": "bazel-rs: analysis of //err:info_positional: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:189, in _err_impl\n      ERRORS[ctx.label.name]()\n  * //:defs.bzl:179, in lambda\n      \"info_positional\": lambda: apple_common.XcodeVersionConfig(\"8.4\"),\n  File <builtin>, in <provider>\n  File <builtin>, in None\nerror: Missing named-only parameter `ios_sdk_version` for call to `@@_builtins//:common/xcode/providers.bzl._xcode_version_info_init`\n   --> //:defs.bzl:179:32\n    |\n179 |     \"info_positional\": lambda: apple_common.XcodeVersionConfig(\"8.4\"),\n    |                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n"
+  },
+  "err/info_bad_sdk": {
+   "target": "//err:info_bad_sdk",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error in dotted_version: Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '8..4'",
+   "native_error_line": "error: Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '8..4'",
+   "reference_message": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '8..4'",
+   "native_message": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '8..4'",
+   "label": "EXACT"
+  },
+  "err/info_none_sdk": {
+   "target": "//err:info_none_sdk",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error in dotted_version: in call to dotted_version(), parameter 'version' got value of type 'NoneType', want 'string'",
+   "native_error_line": "error: in call to dotted_version(), parameter 'version' got value of type 'NoneType', want 'string'",
+   "reference_message": "in call to dotted_version(), parameter 'version' got value of type 'NoneType', want 'string'",
+   "native_message": "in call to dotted_version(), parameter 'version' got value of type 'NoneType', want 'string'",
+   "label": "EXACT"
+  },
+  "err/info_bad_xcode_version": {
+   "target": "//err:info_bad_xcode_version",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error in dotted_version: Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got 'x'",
+   "native_error_line": "error: Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got 'x'",
+   "reference_message": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got 'x'",
+   "native_message": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got 'x'",
+   "label": "EXACT"
+  },
+  "err/info_path_xcode_version": {
+   "target": "//err:info_path_xcode_version",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error in fail: path=/Applications/Xcode.app",
+   "native_error_line": "error: fail: path=/Applications/Xcode.app",
+   "reference_message": "path=/Applications/Xcode.app",
+   "native_message": "path=/Applications/Xcode.app",
+   "label": "EXACT"
+  },
+  "err/info_platform_type": {
+   "target": "//err:info_platform_type",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error in fail: Unhandled platform type: beos",
+   "native_error_line": "error: fail: Unhandled platform type: beos",
+   "reference_message": "Unhandled platform type: beos",
+   "native_message": "Unhandled platform type: beos",
+   "label": "EXACT"
+  },
+  "err/info_platform": {
+   "target": "//err:info_platform",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_error_line": "Error in fail: Unhandled platform: struct(name = \"x\")",
+   "native_error_line": "error: fail: Unhandled platform: struct(name = \"x\")",
+   "reference_message": "Unhandled platform: struct(name = \"x\")",
+   "native_message": "Unhandled platform: struct(name = \"x\")",
+   "label": "EXACT"
+  },
+  "e2e": {
+   "target": "//e2e:host",
+   "reference_exit": 0,
+   "native_exit": 1,
+   "reference_seconds": 3.7,
+   "reference_output_sha256": "d65bc402d44b0bba44c19d24f4c52988e616079bae02fc1e0cf682eef2fd6e03",
+   "reference_output": "host_xcodes type=struct dir=[\"availability\", \"execution_info\", \"minimum_os_for_platform_type\", \"sdk_version_for_platform\", \"xcode_version\"]\nhost_xcodes minimum_os_for_platform_type(catalyst)=8.4\nhost_xcodes minimum_os_for_platform_type(ios)=8.4\nhost_xcodes minimum_os_for_platform_type(macos)=10.11\nhost_xcodes minimum_os_for_platform_type(tvos)=9.0\nhost_xcodes minimum_os_for_platform_type(visionos)=1.0\nhost_xcodes minimum_os_for_platform_type(watchos)=2.0\nhost_xcodes sdk_version_for_platform(catalyst)=10.11\nhost_xcodes sdk_version_for_platform(ios_device)=8.4\nhost_xcodes sdk_version_for_platform(ios_simulator)=8.4\nhost_xcodes sdk_version_for_platform(macos)=10.11\nhost_xcodes sdk_version_for_platform(tvos_device)=9.0\nhost_xcodes sdk_version_for_platform(tvos_simulator)=9.0\nhost_xcodes sdk_version_for_platform(visionos_device)=1.0\nhost_xcodes sdk_version_for_platform(visionos_simulator)=1.0\nhost_xcodes sdk_version_for_platform(watchos_device)=2.0\nhost_xcodes sdk_version_for_platform(watchos_simulator)=2.0\nhost_xcodes availability=\"unknown\" xcode_version=None\nhost_xcodes execution_info={\"requires-darwin\": \"\", \"supports-xcode-requirements-set\": \"\"}\nhost_xcodes availability repr=<function lambda from @@_builtins//:common/xcode/providers.bzl> type=function\nhost_xcodes execution_info repr=<function lambda from @@_builtins//:common/xcode/providers.bzl> type=function\nhost_xcodes minimum_os_for_platform_type repr=<function _minimum_os_for_platform_type from @@_builtins//:common/xcode/providers.bzl> type=function\nhost_xcodes sdk_version_for_platform repr=<function _sdk_version_for_platform from @@_builtins//:common/xcode/providers.bzl> type=function\nhost_xcodes xcode_version repr=<function lambda from @@_builtins//:common/xcode/providers.bzl> type=function\n",
+   "reference_equals_fixture_host_xcodes_lines": true,
+   "native_error_line": "error: Object of type `ctx` has no attribute `fragments`",
+   "native_message": "Object of type `ctx` has no attribute `fragments`",
+   "label": "EXPECTED_NATIVE_GAP",
+   "native_argv": "--ignore_all_rc_files --cache-dir=<private> build --experimental-builtin-modules --registry=file://<private copy of tests/fixtures/builtin_modules/registry> --lockfile_mode=off //e2e:host",
+   "native_seconds": 5.8,
+   "native_stop_frame": "@@apple_support+//xcode:xcode_config.bzl:37:22",
+   "native_sha256": "5e6c3c621af583d716d12905539275abc32dab027719c8fddea5ef1ee7e00d51",
+   "rerun_script_sha256": "b09a40756fe7008387118a8ab8749499b2b44ba1409aa4e62aab3905ba5abaea",
+   "native_stderr_tail": "bazel-rs: analysis of @@bazel_tools+xcode_configure_extension+local_config_xcode//:host_xcodes: Traceback (most recent call last):\n  File <builtin>, in <module>\nerror: Object of type `ctx` has no attribute `fragments`\n  --> @@apple_support+//xcode:xcode_config.bzl:37:22\n   |\n37 |     apple_fragment = ctx.fragments.apple\n   |                      ^^^^^^^^^^^^^\n   |\n\n",
+   "scratch_removed": true,
+   "gap": "N23c: ctx.fragments (apple/cpp) is not available natively; apple_support xcode_config.bzl reads ctx.fragments.apple",
+   "native_stop_frame_note": "parsed post-run from native_stderr_tail (the rerun script looked for a \"* \" frame line)",
+   "native_analyzed_target": "@@bazel_tools+xcode_configure_extension+local_config_xcode//:host_xcodes"
+  }
+ },
+ "scratch_removed": true,
+ "counts": {
+  "EXACT": 25,
+  "MISMATCH": 4,
+  "EXPECTED_NATIVE_GAP": 1
+ },
+ "history": [
+  {
+   "note": "first run: the native message extractor matched the \"bazel-rs: analysis of ... Traceback\" header instead of the \"error: \" diagnostic, so every err/* was MISMATCH by construction; reference messages below are the genuine ones; dump EXACT, e2e reference == fixture mirror. Native fix before rerun: unexpected-keyword SpellChecker hint.",
+   "native_sha256": "4e75663750a63788ddc539ce5ece580e666869f671397a1c14a40d6dce3d264a",
+   "capture_script_sha256": "d1ef5e29c34aac1109f6936006dc259af1affc926ccf107703a844f689836057",
+   "counts": {
+    "EXACT": 1,
+    "MISMATCH": 28,
+    "EXPECTED_NATIVE_GAP": 1
+   },
+   "reference_messages": {
+    "err/none": "in call to dotted_version(), parameter 'version' got value of type 'NoneType', want 'string'",
+    "err/int": "in call to dotted_version(), parameter 'version' got value of type 'int', want 'string'",
+    "err/empty": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got ''",
+    "err/double_dot": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '1..2'",
+    "err/trailing_dot": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '1.'",
+    "err/descriptive_only": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got 'beta'",
+    "err/hyphen": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '1.2-3'",
+    "err/overflow": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '2147483648'",
+    "err/overflow_second": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '1a2147483648'",
+    "err/space": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got ' 1'",
+    "err/unicode": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '1.é'",
+    "err/missing": "lambda() missing 1 required positional argument: version",
+    "err/two_positional": "lambda() accepts no more than 1 positional argument but got 2",
+    "err/unexpected_keyword": "lambda() got unexpected keyword argument: versio (did you mean 'version'?)",
+    "err/compare_to_string": "in call to compare_to(), parameter 'other' got value of type 'string', want 'DottedVersion'",
+    "err/compare_to_named": "compare_to() got named argument for positional-only parameter 'other'",
+    "err/compare_to_missing": "compare_to() missing 1 required positional argument: other",
+    "err/less_than_int": "unsupported comparison: DottedVersion <=> int",
+    "err/int_less_than": "unsupported comparison: int <=> DottedVersion",
+    "err/no_field": "'DottedVersion' value has no field or method 'nope'",
+    "err/info_no_args": "_xcode_version_info_init() missing 14 required keyword-only arguments: ios_sdk_version, ios_minimum_os_version, visionos_sdk_version, visionos_minimum_os_version, watchos_sdk_version, watchos_minimum_os_version, tvos_sdk_version, tvos_minimum_os_version, macos_sdk_version, macos_minimum_os_version, xcode_version, availability, xcode_version_flag, include_xcode_execution_info",
+    "err/info_positional": "_xcode_version_info_init() does not accept positional arguments, but got 1",
+    "err/info_bad_sdk": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got '8..4'",
+    "err/info_none_sdk": "in call to dotted_version(), parameter 'version' got value of type 'NoneType', want 'string'",
+    "err/info_bad_xcode_version": "Dotted version components must all start with the form \\d+([a-z0-9]*?)?(\\d+)? but got 'x'",
+    "err/info_path_xcode_version": "path=/Applications/Xcode.app",
+    "err/info_platform_type": "Unhandled platform type: beos",
+    "err/info_platform": "Unhandled platform: struct(name = \"x\")"
+   }
+  },
+  {
+   "note": "e2e native side re-run with the builtin-module profile. The first native e2e run used the default (explicit-module) profile, where bazel_tools is not resolved, so it stopped at the @bazel_tools mapping: a profile artifact, not the real gap. Genuine side unchanged.",
+   "previous_native": {
+    "argv": "--ignore_all_rc_files --cache-dir=<private> build //e2e:host",
+    "native_exit": 1,
+    "native_message": "unknown apparent repository @bazel_tools from canonical repository \"\"; extension repository not materialized or dependency not declared",
+    "native_sha256": "cd40239f1a9483be5debcaf231903b6bb870417618cc6dcc793ca4562f49f222"
+   }
+  }
+ ]
+}
