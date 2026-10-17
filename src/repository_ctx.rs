@@ -1142,20 +1142,22 @@ impl Context {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)?;
-        file.write_all(bytes)?;
-        {
+        // An executable is written under the exclusive spawn lock: no child
+        // started meanwhile can inherit its write descriptor (ETXTBSY).
+        crate::spawn_lock::exclusive(executable, || -> anyhow::Result<()> {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)?;
+            file.write_all(bytes)?;
             use std::os::unix::fs::PermissionsExt;
             file.set_permissions(fs::Permissions::from_mode(if executable {
                 0o755
             } else {
                 0o644
             }))?;
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Create the working directory if needed and note that it exists.
@@ -1515,6 +1517,9 @@ impl Context {
             use std::os::unix::fs::PermissionsExt;
             let mode = fs::metadata(&target)?.permissions().mode();
             fs::set_permissions(&target, fs::Permissions::from_mode(mode | 0o111))?;
+            // The download streamed without the spawn lock; re-create the file
+            // as an inode no child can hold open for writing.
+            crate::spawn_lock::seal(&target)?;
         }
         if let Some(error) = &request.deferred {
             bail!("Checksum error in {}: {error}", self.identifying());

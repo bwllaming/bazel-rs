@@ -609,7 +609,8 @@ fn write_source_file(
     executable: bool,
 ) -> Result<(), String> {
     let path = replaceable_source_path(root, relative)?;
-    fs::write(&path, bytes)
+    // Executables under the exclusive spawn lock (crate::spawn_lock).
+    crate::spawn_lock::exclusive(executable, || fs::write(&path, bytes))
         .map_err(|e| format!("cannot write source file {}: {e}", relative.display()))?;
     source_file_mode(&path, executable)
 }
@@ -623,10 +624,11 @@ fn copy_source_file(
 ) -> Result<(), String> {
     let path = replaceable_source_path(root, relative)?;
     let mut input = File::open(blob).map_err(|e| format!("cannot read cached blob: {e}"))?;
-    let mut output = File::create(&path)
-        .map_err(|e| format!("cannot write source file {}: {e}", relative.display()))?;
-    std::io::copy(&mut input, &mut output)
-        .map_err(|e| format!("cannot write source file {}: {e}", relative.display()))?;
+    crate::spawn_lock::exclusive(executable, || {
+        let mut output = File::create(&path)?;
+        std::io::copy(&mut input, &mut output).map(|_| ())
+    })
+    .map_err(|e| format!("cannot write source file {}: {e}", relative.display()))?;
     source_file_mode(&path, executable)
 }
 

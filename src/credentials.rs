@@ -509,12 +509,12 @@ pub fn invoke(
     }
     // A helper written just before may still be open for writing in another
     // concurrently forked child (ETXTBSY); retry like crate::action.
-    let mut spawned = command.spawn();
+    let mut spawned = crate::spawn_lock::spawn(&mut command);
     for delay in [1, 2, 4, 8, 16, 32, 64] {
         match &spawned {
             Err(error) if error.raw_os_error() == Some(26) => {
                 std::thread::sleep(Duration::from_millis(delay));
-                spawned = command.spawn();
+                spawned = crate::spawn_lock::spawn(&mut command);
             }
             _ => break,
         }

@@ -573,6 +573,7 @@ impl Extraction<'_> {
             Err(error) if error.kind() == io::ErrorKind::NotFound => false,
             Err(error) => return Err(format!("inspect archive file {path:?}: {error}")),
         };
+        let executable = mode & 0o111 != 0;
         let mut output = OpenOptions::new()
             .write(true)
             .create_new(!existing)
@@ -588,7 +589,16 @@ impl Extraction<'_> {
                 "archive file {path:?} has an incorrect expanded size"
             ));
         }
-        set_file_mode(&output, if mode & 0o111 != 0 { 0o755 } else { 0o644 })
+        set_file_mode(&output, if executable { 0o755 } else { 0o644 })?;
+        drop(output);
+        if executable {
+            // Decompression is too slow to hold the exclusive spawn lock;
+            // re-create the executable as an inode no child can hold open
+            // for writing (crate::spawn_lock::seal: a kernel copy).
+            crate::spawn_lock::seal(path)
+                .map_err(|e| format!("seal archive file {path:?}: {e}"))?;
+        }
+        Ok(())
     }
 }
 

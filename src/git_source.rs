@@ -514,12 +514,16 @@ fn export(
         let target = stage.join(relative);
         ensure_directory(target.parent().ok_or("Git export path has no parent")?)?;
         let mut input = File::open(&source).map_err(|e| e.to_string())?;
-        let mut output = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&target)
-            .map_err(|e| e.to_string())?;
-        std::io::copy(&mut input, &mut output).map_err(|e| e.to_string())?;
+        // Executables under the exclusive spawn lock (crate::spawn_lock).
+        crate::spawn_lock::exclusive(executable, || -> Result<(), String> {
+            let mut output = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&target)
+                .map_err(|e| e.to_string())?;
+            std::io::copy(&mut input, &mut output).map_err(|e| e.to_string())?;
+            Ok(())
+        })?;
         set_mode(&target, if executable { 0o755 } else { 0o644 })?;
     }
     for (relative, raw_target) in selected_links {

@@ -177,9 +177,7 @@ impl GitRunner {
         if Instant::now() >= deadline {
             return Err("Git deadline expired before spawn".into());
         }
-        let child = self
-            .command(cwd, args)
-            .spawn()
+        let child = crate::spawn_lock::spawn(&mut self.command(cwd, args))
             .map_err(|e| format!("cannot spawn trusted Git '{}': {e}", self.git.display()))?;
         let mut guard = GroupGuard {
             group: child.id(),
@@ -283,8 +281,7 @@ pub(crate) fn kill_group(kill: &Path, group: u32) -> Result<(), String> {
     if group <= 1 {
         return Err(format!("invalid Git process group {group}"));
     }
-    let mut helper = helper_command(kill, group)
-        .spawn()
+    let mut helper = crate::spawn_lock::spawn(&mut helper_command(kill, group))
         .map_err(|e| format!("cannot spawn group-kill helper '{}': {e}", kill.display()))?;
     let deadline = Instant::now() + CLEANUP_TIMEOUT;
     let status = loop {
@@ -336,8 +333,7 @@ fn group_exists(kill: &Path, group: u32) -> Result<bool, String> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    let mut probe = probe
-        .spawn()
+    let mut probe = crate::spawn_lock::spawn(&mut probe)
         .map_err(|e| format!("cannot spawn group probe '{}': {e}", kill.display()))?;
     let stderr = match probe.stderr.take() {
         Some(pipe) => Capture::start(pipe),

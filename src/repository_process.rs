@@ -234,8 +234,8 @@ pub(crate) fn run(request: &Request<'_>) -> Result<Outcome, String> {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .process_group(0)
-            .spawn()
+            .process_group(0);
+        crate::spawn_lock::spawn(&mut command)
     };
     // glibc __execvpe (posix/execvpe.c): EACCES, ENOENT, ESTALE, ENOTDIR,
     // ENODEV and ETIMEDOUT continue the search; any other error (e.g.

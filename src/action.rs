@@ -1271,6 +1271,14 @@ fn write_file(path: &Path, bytes: &[u8], executable: u32) -> Result<(), String> 
     set_mode(path, 0o644 | executable)
 }
 
+/// [`write_file`] for a file that is or will be executed: an action output
+/// (published 0555, OUTPUT_MODE) or an executable store blob. Written under
+/// the exclusive spawn lock so no concurrently started child inherits its
+/// write descriptor (crate::spawn_lock).
+fn write_executable_file(path: &Path, bytes: &[u8], executable: u32) -> Result<(), String> {
+    crate::spawn_lock::exclusive(true, || write_file(path, bytes, executable))
+}
+
 /// Remove a directory tree, first making read-only (0555) tree directories
 /// writable again. Symlinks are never followed.
 fn remove_directory(path: &Path) -> io::Result<()> {
@@ -1433,6 +1441,13 @@ fn ensure_blob(cas: &Path, input: &Input, root: &Path) -> Result<PathBuf, String
         }
     } else {
         copy_verified(&input.path, &candidate, &input.digest)?;
+        if input.executable != 0 {
+            // The verified copy hashes while it writes, too slow for the
+            // exclusive spawn lock; re-create the executable blob as an inode
+            // no child can hold open for writing (a kernel copy).
+            crate::spawn_lock::seal(&candidate)
+                .map_err(|e| io_error("cannot seal", &candidate, e))?;
+        }
         set_mode(&candidate, blob_mode(input))?;
         let metadata = fs::symlink_metadata(&candidate)
             .map_err(|e| io_error("cannot inspect", &candidate, e))?;
@@ -1512,14 +1527,16 @@ fn link_or_copy_detail(blob: &Path, target: &Path, mode: u32) -> Result<(), Link
                     LinkFailure::Other(io_error("cannot read", blob, e))
                 }
             })?;
-            let mut output = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(target)
-                .map_err(|e| other(io_error("cannot write", target, e)))?;
-            io::copy(&mut input, &mut output)
-                .map_err(|e| other(io_error("cannot copy", target, e)))?;
-            drop(output);
+            crate::spawn_lock::exclusive(mode & 0o111 != 0, || {
+                let mut output = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(target)
+                    .map_err(|e| other(io_error("cannot write", target, e)))?;
+                io::copy(&mut input, &mut output)
+                    .map_err(|e| other(io_error("cannot copy", target, e)))?;
+                Ok(())
+            })?;
             set_mode(target, mode).map_err(other)?;
             count_link(false);
             Ok(())
@@ -1854,10 +1871,16 @@ fn create_log(path: &Path) -> Result<File, String> {
 }
 
 // On Linux an executable can transiently remain open for writing in another
-// concurrently spawned child, even after our own fs::write has closed its fd.
-// Retry only an ETXTBSY spawn error: exec has not succeeded, so the action has
-// not run. Never retry wait errors or exit statuses. The injected backoff keeps
-// retry-count/error-classification tests deterministic and free of sleeps.
+// concurrently spawned child, even after our own write has closed its fd.
+// crate::spawn_lock removes that race for every executable this process writes
+// through it and every start through crate::spawn_lock::spawn (Bazel instead
+// serializes starts, JavaSubprocessFactory.java:124-157, and has no retry).
+// This bounded retry stays as a last resort for writers outside that
+// discipline (another process, or a file made executable after an unguarded
+// write). Retry only an ETXTBSY spawn error: exec has not succeeded, so the
+// action has not run. Never retry wait errors or exit statuses. The injected
+// backoff keeps retry-count/error-classification tests deterministic and free
+// of sleeps.
 fn retry_spawn<T>(
     mut spawn: impl FnMut() -> io::Result<T>,
     mut backoff: impl FnMut(Duration),
@@ -2012,7 +2035,7 @@ fn run_transform(
             for (key, value) in substitutions {
                 text = replace_all_literal(&text, key, value);
             }
-            write_file(&output, &text, if *executable { 0o111 } else { 0 })
+            write_executable_file(&output, &text, if *executable { 0o111 } else { 0 })
         }
         Transform::Symlink {
             target,
@@ -2267,7 +2290,7 @@ fn store_bytes(cas: &Path, bytes: &[u8], executable: u32) -> Result<PathBuf, Str
         return Ok(blob);
     }
     let candidate = temporary(cas, &input.digest);
-    write_file(&candidate, bytes, 0)?;
+    crate::spawn_lock::exclusive(executable != 0, || write_file(&candidate, bytes, 0))?;
     set_mode(&candidate, blob_mode(&input))?;
     let published = match fs::hard_link(&candidate, &blob) {
         Ok(()) => Ok(()),
@@ -2538,7 +2561,7 @@ pub fn execute_with_remote(
     let clock = std::time::Instant::now();
     let mut logs = (Vec::new(), Vec::new());
     if let Some(write) = &action.write {
-        write_file(
+        write_executable_file(
             &execroot.join(&outputs[0]),
             &write.content,
             if write.executable { 0o111 } else { 0 },
@@ -2549,7 +2572,7 @@ pub fn execute_with_remote(
         // The downloaded (verified) outputs take the place of the process's;
         // they are published below like executed outputs.
         for (name, bytes) in action.outputs.iter().zip(&hit.outputs) {
-            write_file(&execroot.join(name), bytes, 0o111)?;
+            write_executable_file(&execroot.join(name), bytes, 0o111)?;
         }
         replay_logs(
             &action.id,
@@ -2580,8 +2603,11 @@ pub fn execute_with_remote(
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout.try_clone().map_err(|e| e.to_string())?))
             .stderr(Stdio::from(stderr.try_clone().map_err(|e| e.to_string())?));
-        let mut child = retry_spawn(|| command.spawn(), std::thread::sleep)
-            .map_err(|e| format!("cannot execute action '{}': {e}", action.id))?;
+        let mut child = retry_spawn(
+            || crate::spawn_lock::spawn(&mut command),
+            std::thread::sleep,
+        )
+        .map_err(|e| format!("cannot execute action '{}': {e}", action.id))?;
         let status = child
             .wait()
             .map_err(|e| format!("cannot wait for action '{}': {e}", action.id))?;

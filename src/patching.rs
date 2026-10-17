@@ -1225,13 +1225,6 @@ impl PatchFs for TreeFs {
             }
             Err(_) => {}
         }
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&destination)
-            .map_err(|e| PatchError::Io(format!("write patch file {destination:?}: {e}")))?;
-        file.write_all(&bytes)
-            .map_err(|e| PatchError::Io(format!("write patch content: {e}")))?;
         let mode = if permission == -1 {
             base
         } else {
@@ -1239,6 +1232,16 @@ impl PatchFs for TreeFs {
         };
         // The store represents 0644/0755 only.
         let mode = if mode & 0o100 != 0 { 0o755 } else { 0o644 };
+        // Executables under the exclusive spawn lock (crate::spawn_lock).
+        crate::spawn_lock::exclusive(mode == 0o755, || {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&destination)
+                .map_err(|e| PatchError::Io(format!("write patch file {destination:?}: {e}")))?;
+            file.write_all(&bytes)
+                .map_err(|e| PatchError::Io(format!("write patch content: {e}")))
+        })?;
         set_mode(&destination, mode).map_err(PatchError::Io)
     }
 }

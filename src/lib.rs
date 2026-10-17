@@ -98,6 +98,7 @@ pub mod runfiles;
 pub mod runfiles_tree;
 pub mod scheduler;
 pub mod source_links;
+mod spawn_lock;
 pub mod starlark_options;
 mod starlark_transitions;
 pub mod starlark_types;
