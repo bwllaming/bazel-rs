@@ -15,6 +15,13 @@ was removed: Bazel records neither downloads nor working-directory reads as
 extension inputs. Recorded inputs are now `extension_inputs` (version 2:
 watched `files` and `host_facilities`) in the extension provenance.
 
+The validator `scripts/validate_module_extension_io.py` (and its native
+collector `tests/fixtures/module_extension_io/native_capture.py`) is retired
+(N43b): it is no gate or evidence, refuses every mode except `--plan`, and its
+stored receipts describe the removed model only. Its 33 recipes are replayed on
+genuine Bazel 9.3 and native by `artifacts/ext_ctx-capture.py --targeted-n43b`
+(`tests/fixtures/ext_ctx_surface/reference_receipt.json`, `targeted_rerun_n43b`).
+
 The evidence notes below are historical (they describe the removed profile).
 
 ## Evidence boundaries

@@ -1,3 +1,14 @@
+> **Superseded (N43b).** This collector and its stored receipts describe the
+> removed native owned-scratch module_ctx I/O model only (bounded scratch files,
+> owned-file identity checks, rejected `executable`/`block=False`/`auth`/
+> `headers`, `extension_io` observations). N43 replaced that model with the
+> shared StarlarkBaseExternalContext implementation
+> ([docs/EXTENSION_CTX_SURFACE.md](../../../docs/EXTENSION_CTX_SURFACE.md)).
+> The validator is no longer a gate or evidence and refuses every mode except
+> `--plan`. Its 33 case recipes are replayed on genuine Bazel 9.3 and native by
+> `artifacts/ext_ctx-capture.py --targeted-n43b`
+> (`tests/fixtures/ext_ctx_surface/reference_receipt.json`, `targeted_rerun_n43b`).
+
 # Module extension I/O genuine reference-only collector
 
 `python3 scripts/validate_module_extension_io.py --plan` emits concrete case and

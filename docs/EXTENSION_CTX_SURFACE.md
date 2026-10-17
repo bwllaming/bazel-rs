@@ -87,8 +87,15 @@ that returns 404, and adds every completed download to the cache
 `<cache>/downloads/<algorithm>/<hex>` (shared with registry archives),
 canonical ids as `<cache>/download_ids/<algorithm>/<hex>/id-<sha256(id)>`; a hit
 is copied to the output (a matching existing output is still reused first) and
-precedes the `--repository_disable_download` check. Distdirs and URL rewriting
-are not modelled.
+precedes the `--repository_disable_download` check, which then fails with
+Bazel's `java.io.IOException: Failed to download IDENTIFYING: download is
+disabled.` (java:331-333). A failing copy out of the cache is ignored (the
+download proceeds, java:266-276); a failing store after a completed download
+fails that download like Bazel (an uncaught IOException: `success = False`
+under `allow_fail`, java:381-386). An output that is an existing directory is
+still requested from every mirror and fails opening the output (`PATH (Is a
+directory)`), as HttpDownloader does. Distdirs and URL rewriting are not
+modelled.
 
 ## PendingDownload
 
@@ -145,7 +152,14 @@ errors. The JSON module's decode/encode budgets (docs/JSON.md) are unchanged.
 `dir()` of both contexts, `print(sort_key)`, `print(module_ctx.facts)`, the
 HTTP requests with auth/headers, 38 error texts). Run 1
 (`history/run1_reference_receipt.json`, 9 mismatches) found the repository
-download cache semantics described above.
+download cache semantics described above. The N43b targeted rerun
+(`targeted_rerun_n43b` in the receipt) replays the 33 module_ctx download/read
+cases of the retired `scripts/validate_module_extension_io.py` (mirrors, SRI
+sha1/sha256/sha384/sha512/blake3, gzip/x-gzip/redirect suffix rules, all-256
+byte reads, http filtering, disabled downloads, empty URL lists, malformed
+checksums, matching destinations, root-file/child outputs) on both engines:
+23 MATCH, 9 EXACT_MESSAGE, 1 MISMATCH (download onto an existing directory,
+fixed afterwards and listed in `post_capture_changes`).
 
 ## ~/code results
 

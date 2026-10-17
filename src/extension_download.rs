@@ -758,7 +758,19 @@ pub(crate) fn fetch_to_file(
                 .create(true)
                 .truncate(true)
                 .open(&path)
-                .map_err(io_error)?;
+                .map_err(|error| {
+                    if error.kind() == io::ErrorKind::IsADirectory {
+                        // HttpDownloader opens the output after connecting:
+                        // FileOutputStream's FileNotFoundException.
+                        let message = format!("{} (Is a directory)", path.display());
+                        OpenFailure {
+                            error: TypedIoError::Completion(message.clone()),
+                            bazel: BazelFailure::new("java.io.FileNotFoundException", message),
+                        }
+                    } else {
+                        io_error(error).into()
+                    }
+                })?;
             let mut hash = Hash::new(algorithm);
             let size = copy_hashed(&mut *reader, &mut file, &mut hash).map_err(io_error)?;
             file.flush().map_err(io_error)?;

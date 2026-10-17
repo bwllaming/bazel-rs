@@ -1383,8 +1383,12 @@ impl Context {
         target: DownloadTarget<'_>,
     ) -> Result<(transport::Fetched, PathBuf), DownloadFailure> {
         if !self.repositories.repository_downloads_enabled() {
+            // DownloadManager.java:331-333, after the cache lookups.
             return Err(DownloadFailure {
-                error: TypedIoError::Completion("repository downloads are disabled".into()),
+                error: TypedIoError::Completion(format!(
+                    "{DISABLED_PREFIX}Failed to download {}: download is disabled.",
+                    self.identifying()
+                )),
                 last: None,
             });
         }
@@ -1453,21 +1457,18 @@ impl Context {
             self.stage.clone()
         } else {
             self.mark_created()?;
-            self.output_parents(relative)?
-        };
-        if fs::symlink_metadata(&target).is_ok_and(|metadata| metadata.is_dir()) {
-            if allow_fail {
-                return Ok(DownloadOutcome::Failed);
+            // makeDirectories failing (e.g. the working directory became a
+            // file) is an IOException of the download itself (java:858-874):
+            // `success = False` under allow_fail.
+            match self.output_parents(relative) {
+                Ok(target) => target,
+                Err(_) if allow_fail => return Ok(DownloadOutcome::Failed),
+                Err(error) => return Err(error),
             }
-            return Err(download_error(
-                urls,
-                output,
-                &format!(
-                    "{} (Is a directory)",
-                    display(target.as_os_str().as_bytes())
-                ),
-            ));
-        }
+        };
+        // An output that is a directory is still requested from every
+        // mirror; each fails opening the output (HttpDownloader:
+        // `FileNotFoundException: PATH (Is a directory)`), see fetch_to_file.
         // DownloadManager.java:247-261: with a checksum, an existing output
         // whose digest already matches is used without any download (also
         // with downloads disabled: the disable check comes later, java:331).
@@ -1495,7 +1496,11 @@ impl Context {
                 DownloadTarget::File(&target),
             ) {
                 Ok((fetched, _)) => {
-                    self.cache_put(&fetched.checksum, &target, canonical_id)?;
+                    match self.cache_put(&fetched.checksum, &target, canonical_id) {
+                        Ok(()) => {}
+                        Err(_) if allow_fail => return Ok(DownloadOutcome::Failed),
+                        Err(error) => return Err(error),
+                    }
                     (fetched.checksum, fetched.size)
                 }
                 Err(failure)
@@ -1557,22 +1562,28 @@ impl Context {
         if digest != expected.bytes || (!canonical_id.is_empty() && !marker.exists()) {
             return Ok(None);
         }
-        if fs::symlink_metadata(target).is_ok_and(|metadata| !metadata.is_dir()) {
-            fs::remove_file(target)?;
-        }
-        {
+        // DownloadManager.java:266-276: a failing copy is ignored ("We'll
+        // just download again"), e.g. when the output is a directory.
+        let copied = (|| -> std::io::Result<()> {
+            if fs::symlink_metadata(target).is_ok_and(|metadata| !metadata.is_dir()) {
+                fs::remove_file(target)?;
+            }
             let mut source = fs::File::open(&blob)?;
             let mut destination = OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(target)?;
             std::io::copy(&mut source, &mut destination)?;
-        }
-        Ok(Some(size))
+            Ok(())
+        })();
+        Ok(copied.ok().map(|()| size))
     }
 
     /// DownloadManager.java:381-386: every completed download enters the
-    /// cache, keyed by the given checksum or by its SHA-256.
+    /// cache, keyed by the given checksum or by its SHA-256. A failing store
+    /// is not caught there: it is an IOException of the download itself
+    /// (`success = False` under allow_fail, else the download's error). Only
+    /// the distdir path (not modelled) downgrades it to a warning (java:310-315).
     fn cache_put(
         &self,
         checksum: &Checksum,
@@ -1582,27 +1593,36 @@ impl Context {
         let Some((blob, marker)) = self.cache_paths(checksum, canonical_id) else {
             return Ok(());
         };
-        let directory = blob.parent().expect("cache blob parent");
-        fs::create_dir_all(directory)?;
-        let present = fs::symlink_metadata(&blob).is_ok_and(|metadata| metadata.is_file())
-            && checksum
-                .algorithm
-                .hash_file(&blob)
-                .is_ok_and(|(digest, _)| digest == checksum.bytes);
-        if !present {
-            let mut temp = tempfile::NamedTempFile::new_in(directory)?;
-            std::io::copy(&mut fs::File::open(source)?, temp.as_file_mut())?;
-            temp.persist(&blob).map_err(|error| error.error)?;
-        }
-        if !canonical_id.is_empty() {
-            fs::create_dir_all(marker.parent().expect("marker parent"))?;
-            OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .write(true)
-                .open(&marker)?;
-        }
-        Ok(())
+        let store = || -> std::io::Result<()> {
+            let directory = blob.parent().expect("cache blob parent");
+            fs::create_dir_all(directory)?;
+            let present = fs::symlink_metadata(&blob).is_ok_and(|metadata| metadata.is_file())
+                && checksum
+                    .algorithm
+                    .hash_file(&blob)
+                    .is_ok_and(|(digest, _)| digest == checksum.bytes);
+            if !present {
+                let mut temp = tempfile::NamedTempFile::new_in(directory)?;
+                std::io::copy(&mut fs::File::open(source)?, temp.as_file_mut())?;
+                temp.persist(&blob).map_err(|error| error.error)?;
+            }
+            if !canonical_id.is_empty() {
+                fs::create_dir_all(marker.parent().expect("marker parent"))?;
+                OpenOptions::new()
+                    .create(true)
+                    .truncate(false)
+                    .write(true)
+                    .open(&marker)?;
+            }
+            Ok(())
+        };
+        store().map_err(|error| {
+            anyhow!(
+                "java.io.IOException: {} ({})",
+                blob.display(),
+                io_reason(&error)
+            )
+        })
     }
 
     /// Stream-extract the archive file into `output` (stage-relative),
@@ -1721,10 +1741,16 @@ impl DownloadFailure {
     fn into_error(self, urls: &[reqwest::Url], path: &[u8]) -> anyhow::Error {
         match (&self.error, self.last) {
             (TypedIoError::Completion(_), Some(last)) => download_error(urls, path, &last.message),
+            (TypedIoError::Completion(text), None) if text.starts_with(DISABLED_PREFIX) => {
+                anyhow!("{text}")
+            }
             _ => anyhow!("{}", self.error),
         }
     }
 }
+
+/// The IOException of a disabled download (DownloadManager.java:331-333).
+const DISABLED_PREFIX: &str = "java.io.IOException: ";
 
 /// On-disk name of a downloaded file: the URL's last path segment, or a
 /// fixed name when that segment cannot name a file.
@@ -2671,7 +2697,13 @@ pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
                 DownloadTarget::Directory(scratch.path()),
             ) {
                 Ok((fetched, file)) => {
-                    context.cache_put(&fetched.checksum, &file, canonical_id)?;
+                    match context.cache_put(&fetched.checksum, &file, canonical_id) {
+                        Ok(()) => {}
+                        Err(_) if allow_fail => {
+                            return Ok(eval.heap().alloc(AllocStruct([("success", false)])));
+                        }
+                        Err(error) => return Err(error),
+                    }
                     (fetched.checksum, fetched.size, file, Some(fetched.url))
                 }
                 Err(failure)
@@ -5090,15 +5122,63 @@ ctx.extract("archive.tar.gz", "out", strip_prefix = "top")"#);
         );
         disabled.error(
             "ctx.download_and_extract('https://example.invalid/a.tar.gz', sha256 = 'a' * 64)",
-            "repository downloads are disabled",
+            "download is disabled.",
         );
         disabled.ok("(not ctx.download_and_extract('https://example.invalid/a.tar.gz', allow_fail = True).success) or fail('allow_fail')");
         // A malformed checksum is deferred past a failed download (java:1159-1170).
         disabled.ok("(not ctx.download_and_extract('https://example.invalid/a.tar.gz', sha256 = 'bad', allow_fail = True).success) or fail('deferred')");
         disabled.error(
             "ctx.download_and_extract('https://example.invalid/a.tar.gz', sha256 = 'bad')",
-            "repository downloads are disabled",
+            "download is disabled.",
         );
+    }
+
+    #[test]
+    fn download_into_a_directory_requests_every_mirror_then_fails_opening_the_output() {
+        use crate::extension_io::tests::{Server, response};
+        let fixture = Fixture::new();
+        let server = Server::new(vec![
+            response(200, b"body", ""),
+            response(200, b"body", ""),
+            response(200, b"body", ""),
+        ]);
+        let url = server.url.clone();
+        let digest = sha256(b"body");
+        fixture.ok(&format!(
+            "ctx.file('d/x', '')\n(not ctx.download(['{url}/a', '{url}/b'], 'd', sha256 = '{digest}', allow_fail = True).success) or fail('dir')"
+        ));
+        // HttpDownloader connects before opening the output (captured N43b
+        // child-then-root-directory: two requests, then `(Is a directory)`).
+        assert_eq!(server.count(), 2);
+        fixture.error(
+            &format!("ctx.file('d/x', '')\nctx.download('{url}/c', 'd', sha256 = '{digest}')"),
+            &format!(
+                "java.io.IOException: Error downloading [{url}/c] to {stage}/d: {stage}/d (Is a directory)",
+                stage = fixture.stage_text()
+            ),
+        );
+        assert_eq!(server.count(), 3);
+    }
+
+    #[test]
+    fn a_failing_download_cache_store_fails_the_download_like_bazel() {
+        use crate::extension_io::tests::{Server, response};
+        let fixture = Fixture::new();
+        let downloads = fixture.root.path().join("cache/downloads");
+        fs::create_dir_all(&downloads).unwrap();
+        fs::write(downloads.join("sha256"), b"not a directory").unwrap();
+        let server = Server::new(vec![response(200, b"body", ""), response(200, b"body", "")]);
+        let url = server.url.clone();
+        let digest = sha256(b"body");
+        // DownloadManager.java:381-386 does not catch the store's IOException.
+        fixture.ok(&format!(
+            "(not ctx.download('{url}/a', 'a', sha256 = '{digest}', allow_fail = True).success) or fail('allow_fail')"
+        ));
+        fixture.error(
+            &format!("ctx.download('{url}/b', 'b', sha256 = '{digest}')"),
+            &format!("java.io.IOException: {}/sha256/", downloads.display()),
+        );
+        assert_eq!(server.count(), 2);
     }
 
     #[test]
@@ -5141,7 +5221,7 @@ ctx.download("https://example.invalid/other", "c", sha256 = "{digest}", canonica
             &format!(
                 "ctx.download('https://example.invalid/other', 'd', sha256 = '{digest}', canonical_id = 'id-2')"
             ),
-            "repository downloads are disabled",
+            "download is disabled.",
         );
         assert_eq!(server.count(), 1);
     }
@@ -5305,7 +5385,7 @@ r = ctx.download("https://example.invalid/tool", "bin/tool", "{tool}", executabl
             &format!(
                 "ctx.file('stale', 'old')\nctx.download('https://example.invalid/tool', 'stale', '{tool}')"
             ),
-            "repository downloads are disabled",
+            "download is disabled.",
         );
         // An existing hard-linked output is replaced, not written through.
         let fixture = Fixture::new();

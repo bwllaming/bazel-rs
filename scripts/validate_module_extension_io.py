@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""Bounded genuine REFERENCE-ONLY module download/read capture and replay.
+"""RETIRED (N43b): bounded genuine REFERENCE-ONLY module download/read capture
+and replay for the former native owned-scratch module_ctx I/O model.
+
+N43 replaced that model with the shared StarlarkBaseExternalContext
+implementation (docs/EXTENSION_CTX_SURFACE.md). This validator is no longer a
+gate or evidence: its stored receipts and replays describe the old model only,
+and its native collector pins source files that no longer exist in that form.
+Its 33 case recipes (cases(), response_plan()) remain as data and are replayed
+on both engines by `artifacts/ext_ctx-capture.py --targeted-n43b`
+(tests/fixtures/ext_ctx_surface/reference_receipt.json, targeted_rerun_n43b).
+Only `--plan` (launches nothing) still runs; every capture/replay mode refuses.
 
 Native execution is fail-closed until the parent freezes the independent core.
 Only owned QA, fixture, registry, official-reference and executable inputs are
@@ -41,6 +51,9 @@ SETUP_CASE = "platform-distdir-smoke"
 EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 EMPTY_BLAKE3 = "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
 MARKER = b"MODULE_IO_JSON "
+RETIRED_MESSAGE = ("validate_module_extension_io.py is retired (N43b): it validated the removed owned-scratch "
+                   "module_ctx I/O model; see docs/EXTENSION_CTX_SURFACE.md and "
+                   "artifacts/ext_ctx-capture.py --targeted-n43b. Only --plan still runs.")
 
 
 def digest(data):
@@ -1865,6 +1878,9 @@ def main(argv=None):
     parser.add_argument("--api-smoke-archive-sha256")
     parser.add_argument("--timeout", type=int, default=90)
     args = parser.parse_args(argv)
+    if not args.plan:
+        print(RETIRED_MESSAGE, file=sys.stderr)
+        return 2
     native_mode = args.native or args.native_replay or args.native_preparation_replay or args.paired_replay
     if args.native_sha256 and not native_mode:
         parser.error("--native-sha256 requires an explicit native diagnostic/replay mode")

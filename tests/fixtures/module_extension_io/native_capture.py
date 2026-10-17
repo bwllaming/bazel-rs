@@ -1,4 +1,8 @@
-"""Native-only diagnostic collection. No reference launch or implicit paired PASS.
+"""RETIRED (N43b) with scripts/validate_module_extension_io.py: this collector pins
+src/extension_ctx.rs / src/extension_io.rs of the removed owned-scratch model and
+is unreachable (the validator refuses every native mode). Kept as history.
+
+Native-only diagnostic collection. No reference launch or implicit paired PASS.
 
 Loaded only by the owned validator; no imports of legacy QA. Q is that validator's
 byte/inventory/process API, not a simulated Starlark host or fabricated API result.

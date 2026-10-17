@@ -1094,7 +1094,24 @@
  ],
  "native_sha256": "8233eb1212f94131f1341050c5d925d0fe1215825e2cfa6dbfaa9ca54227a271",
  "outside_written": false,
- "post_capture_changes": [],
+ "post_capture_changes": [
+  {
+   "change": "child-then-root-directory (targeted MISMATCH): download(output) onto an existing directory now requests every mirror and fails opening the output with FileNotFoundException 'PATH (Is a directory)' (WARNING per mirror; allow_fail -> success False) instead of failing before any request; a failing download-cache copy is ignored (DownloadManager.java:266-276)",
+   "evidence": "Bazel requested the URL twice in the targeted rerun; native dry run after the fix: requests ['/versions?mode=json&include=all'] x2, probes identical (artifacts/ext_ctx-n43b-native-dryrun.py); unit test repository_ctx::tests::download_into_a_directory_requests_every_mirror_then_fails_opening_the_output"
+  },
+  {
+   "change": "a failing repository-cache store after a completed download fails that download (IOException: allow_fail -> success False, else 'java.io.IOException: BLOB (REASON)'): DownloadManager.java:381-386 does not catch it inside downloadInExecutor; only the distdir copy (java:308-316, not modelled) is a warning. Previously the native error escaped allow_fail.",
+   "evidence": "source reading (DownloadManager.java:173-386, finalizeDownload java:162-171, completeDownload StarlarkBaseExternalContext.java:658-697); unit test repository_ctx::tests::a_failing_download_cache_store_fails_the_download_like_bazel; not genuinely captured (needs an unwritable cache)"
+  },
+  {
+   "change": "disabled downloads report Bazel's 'java.io.IOException: Failed to download IDENTIFYING: download is disabled.' (DownloadManager.java:331-333) and a makeDirectories failure of the output is a download IOException (allow_fail -> success False); made BEFORE the targeted rerun, so the rerun's disabled-miss-false and root-file-then-child rows evidence them",
+   "evidence": "targeted_rerun_n43b rows disabled-miss-false (EXACT_MESSAGE) and root-file-then-child (MATCH)"
+  },
+  {
+   "change": "scripts/validate_module_extension_io.py retired after the targeted rerun (docstring, RETIRED_MESSAGE, every mode except --plan refuses); the rerun used the committed validator (validator_sha256)",
+   "evidence": "cases() + response_plan() canonical digest identical before/after retirement: bd24a09b9e7b5497d1b5776bb4802e52494fd6b4dc078eb97647acb0c2c7ca72; tests/test_validate_module_extension_io.py"
+  }
+ ],
  "purpose": "Paired genuine Bazel 9.3.0 vs native bazel-rs capture of N43 (docs/EXTENSION_CTX_SURFACE.md): module_ctx sharing repository_ctx's StarlarkBaseExternalContext surface (path of string/Label/path and every path member, file, read(watch), watch rules of module extensions, execute, which, report_progress, os, getenv, download with executable/allow_fail/block=False+wait/auth basic+pattern/headers, download_and_extract, extract incl. Label archives, the repository download cache), tag_sort_key, facts print, dir(module_ctx)/dir(repository_ctx), repository_ctx watch_tree and PendingDownload, Label.same_package_label/relative/repo_root, removed tick/heap caps (3M-iteration loop, 200k x 1KiB list), tar headers with stale bytes after the name NUL, and 38 error cases.",
  "reference_argv": "bazel --batch --ignore_all_rc_files --output_user_root=<private> query --lockfile_mode=off --registry=file://<tests/fixtures/builtin_modules/registry> --incompatible_autoload_externally= --repository_cache=<private> TARGET",
  "reference_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
@@ -1880,6 +1897,1177 @@
  "scratch_removed": true,
  "script_sha256": "32430ac785cf55bf21f8bf6953c4031dca267aa49c76b2083b854e752a0ce8b9",
  "started": "2026-10-17T06:31:32Z",
+ "targeted_rerun_n43b": {
+  "comparisons": [
+   {
+    "case": "checksummed-json",
+    "exit": [
+     0,
+     0
+    ],
+    "flags": [],
+    "old_expected_result": "success",
+    "output_tails": {
+     "native": "@@+ext+r//:x\nN43|op0|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\nN43|op1|[620, 454610329]\n",
+     "reference": "@r//:x\nExtracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: <WS>/ext.bzl:12:10: N43|op0|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\nDEBUG: <WS>/ext.bzl:14:10: N43|op1|[620, 454610329]\n"
+    },
+    "probes": {
+     "native": {
+      "op0": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}",
+      "op1": "[620, 454610329]"
+     },
+     "reference": {
+      "op0": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}",
+      "op1": "[620, 454610329]"
+     }
+    },
+    "requests": [
+     [
+      "/versions?mode=json&include=all"
+     ],
+     [
+      "/versions?mode=json&include=all"
+     ]
+    ],
+    "verdict": "MATCH"
+   },
+   {
+    "case": "mirrors-404-success",
+    "exit": [
+     0,
+     0
+    ],
+    "flags": [],
+    "old_expected_result": "success",
+    "output_tails": {
+     "native": "@@+ext+r//:x\nWARNING: Download from http://127.0.0.1:40833/404 failed: class java.io.FileNotFoundException GET returned 404 Not Found\nN43|op0|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\nN43|op1|[620, 454610329]\n",
+     "reference": "@r//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: Download from http://127.0.0.1:40833/404 failed: class java.io.FileNotFoundException GET returned 404 Not Found\nDEBUG: <WS>/ext.bzl:12:10: N43|op0|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\nDEBUG: <WS>/ext.bzl:14:10: N43|op1|[620, 454610329]\n"
+    },
+    "probes": {
+     "native": {
+      "op0": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}",
+      "op1": "[620, 454610329]"
+     },
+     "reference": {
+      "op0": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}",
+      "op1": "[620, 454610329]"
+     }
+    },
+    "requests": [
+     [
+      "/404",
+      "/versions?mode=json&include=all"
+     ],
+     [
+      "/404",
+      "/versions?mode=json&include=all"
+     ]
+    ],
+    "verdict": "MATCH"
+   },
+   {
+    "case": "html-no-fallback",
+    "exit": [
+     0,
+     0
+    ],
+    "flags": [],
+    "old_expected_result": "success",
+    "output_tails": {
+     "native": "@@+ext+r//:x\nN43|op0|{\"integrity\": \"sha256-uJWvE6u8aqdrC8uBElmyf6oNEYuflnGKyaQB4aX/KKI=\", \"sha256\": \"b895af13abbc6aa76b0bcb811259b27faa0d118b9f96718ac9a401e1a5ff28a2\", \"size_bytes\": 44, \"success\": True}\nN43|op1|[44, 175295487]\n",
+     "reference": "@r//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: <WS>/ext.bzl:12:10: N43|op0|{\"integrity\": \"sha256-uJWvE6u8aqdrC8uBElmyf6oNEYuflnGKyaQB4aX/KKI=\", \"sha256\": \"b895af13abbc6aa76b0bcb811259b27faa0d118b9f96718ac9a401e1a5ff28a2\", \"size_bytes\": 44, \"success\": True}\nDEBUG: <WS>/ext.bzl:14:10: N43|op1|[44, 175295487]\n"
+    },
+    "probes": {
+     "native": {
+      "op0": "{\"integrity\": \"sha256-uJWvE6u8aqdrC8uBElmyf6oNEYuflnGKyaQB4aX/KKI=\", \"sha256\": \"b895af13abbc6aa76b0bcb811259b27faa0d118b9f96718ac9a401e1a5ff28a2\", \"size_bytes\": 44, \"success\": True}",
+      "op1": "[44, 175295487]"
+     },
+     "reference": {
+      "op0": "{\"integrity\": \"sha256-uJWvE6u8aqdrC8uBElmyf6oNEYuflnGKyaQB4aX/KKI=\", \"sha256\": \"b895af13abbc6aa76b0bcb811259b27faa0d118b9f96718ac9a401e1a5ff28a2\", \"size_bytes\": 44, \"success\": True}",
+      "op1": "[44, 175295487]"
+     }
+    },
+    "requests": [
+     [
+      "/html"
+     ],
+     [
+      "/html"
+     ]
+    ],
+    "verdict": "MATCH"
+   },
+   {
+    "case": "matching-destination",
+    "exit": [
+     0,
+     0
+    ],
+    "flags": [],
+    "old_expected_result": "success",
+    "output_tails": {
+     "native": "@@+ext+r//:x\nN43|op0|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\nN43|op1|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\nN43|op2|[620, 454610329]\n",
+     "reference": "@r//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: <WS>/ext.bzl:12:10: N43|op0|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\nDEBUG: <WS>/ext.bzl:14:10: N43|op1|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\nDEBUG: <WS>/ext.bzl:16:10: N43|op2|[620, 454610329]\n"
+    },
+    "probes": {
+     "native": {
+      "op0": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}",
+      "op1": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}",
+      "op2": "[620, 454610329]"
+     },
+     "reference": {
+      "op0": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}",
+      "op1": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}",
+      "op2": "[620, 454610329]"
+     }
+    },
+    "requests": [
+     [
+      "/versions?mode=json&include=all"
+     ],
+     [
+      "/versions?mode=json&include=all"
+     ]
+    ],
+    "verdict": "MATCH"
+   },
+   {
+    "case": "all256-auto-no",
+    "exit": [
+     0,
+     0
+    ],
+    "flags": [],
+    "old_expected_result": "success",
+    "output_tails": {
+     "native": "@@+ext+r//:x\nN43|op0|{\"integrity\": \"sha256-QK/y6dLYki5Hr9RkjmlnSXFYeF+9Hahw5xECZr+USIA=\", \"sha256\": \"40aff2e9d2d8922e47afd4648e6967497158785fbd1da870e7110266bf944880\", \"size_bytes\": 256, \"success\": True}\nN43|op1|[256, 445975249]\nN43|op2|[256, 445975249]\n",
+     "reference": "@r//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: <WS>/ext.bzl:12:10: N43|op0|{\"integrity\": \"sha256-QK/y6dLYki5Hr9RkjmlnSXFYeF+9Hahw5xECZr+USIA=\", \"sha256\": \"40aff2e9d2d8922e47afd4648e6967497158785fbd1da870e7110266bf944880\", \"size_bytes\": 256, \"success\": True}\nDEBUG: <WS>/ext.bzl:14:10: N43|op1|[256, 445975249]\nDEBUG: <WS>/ext.bzl:16:10: N43|op2|[256, 445975249]\n"
+    },
+    "probes": {
+     "native": {
+      "op0": "{\"integrity\": \"sha256-QK/y6dLYki5Hr9RkjmlnSXFYeF+9Hahw5xECZr+USIA=\", \"sha256\": \"40aff2e9d2d8922e47afd4648e6967497158785fbd1da870e7110266bf944880\", \"size_bytes\": 256, \"success\": True}",
+      "op1": "[256, 445975249]",
+      "op2": "[256, 445975249]"
+     },
+     "reference": {
+      "op0": "{\"integrity\": \"sha256-QK/y6dLYki5Hr9RkjmlnSXFYeF+9Hahw5xECZr+USIA=\", \"sha256\": \"40aff2e9d2d8922e47afd4648e6967497158785fbd1da870e7110266bf944880\", \"size_bytes\": 256, \"success\": True}",
+      "op1": "[256, 445975249]",
+      "op2": "[256, 445975249]"
+     }
+    },
+    "requests": [
+     [
+      "/all256"
+     ],
+     [
+      "/all256"
+     ]
+    ],
+    "verdict": "MATCH"
+   },
+   {
+    "case": "empty-output",
+    "exit": [
+     0,
+     0
+    ],
+    "flags": [],
+    "old_expected_result": "success",
+    "output_tails": {
+     "native": "@@+ext+r//:x\nN43|op0|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\nN43|op1|[620, 454610329]\n",
+     "reference": "@r//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: <WS>/ext.bzl:12:10: N43|op0|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\nDEBUG: <WS>/ext.bzl:14:10: N43|op1|[620, 454610329]\n"
+    },
+    "probes": {
+     "native": {
+      "op0": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}",
+      "op1": "[620, 454610329]"
+     },
+     "reference": {
+      "op0": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}",
+      "op1": "[620, 454610329]"
+     }
+    },
+    "requests": [
+     [
+      "/versions?mode=json&include=all"
+     ],
+     [
+      "/versions?mode=json&include=all"
+     ]
+    ],
+    "verdict": "MATCH"
+   },
+   {
+    "case": "http-filter-false",
+    "exit": [
+     1,
+     7
+    ],
+    "flags": [],
+    "native_message": "error: java.io.IOException: No URLs left after removing plain http URLs due to missing checksum. Please provide either a checksum or an https download location.",
+    "old_expected_result": "callback-error",
+    "output_tails": {
+     "native": "bazel-rs: module extension //:ext.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:ext.bzl:11, in _impl\n      value = mctx.download(\"http://127.0.0.1:40833/versions?mode=json&include=all\"...\nerror: java.io.IOException: No URLs left after removing plain http URLs due to missing checksum. Please provide either a checksum or an https download location.\n  --> //:ext.bzl:11:13\n   |\n11 |     value = mctx.download(\"http://127.0.0.1:40833/versions?mode=json&include=all\", output = \"metadata.json\", allow_fail = False)\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+     "reference": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/ext.bzl:11:26: Traceback (most recent call last):\n\tFile \"<WS>/ext.bzl\", line 11, column 26, in _impl\n\t\tvalue = mctx.download(\"http://127.0.0.1:40833/versions?mode=json&include=all\", output = \"metadata.json\", allow_fail = False)\nError in download: java.io.IOException: No URLs left after removing plain http URLs due to missing checksum. Please provide either a checksum or an https download location.\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:ext.bzl%ext\n"
+    },
+    "probes": {
+     "native": {},
+     "reference": {}
+    },
+    "rederived": true,
+    "reference_message": "java.io.IOException: No URLs left after removing plain http URLs due to missing checksum. Please provide either a checksum or an https download location.",
+    "requests": [
+     [],
+     []
+    ],
+    "verdict": "EXACT_MESSAGE"
+   },
+   {
+    "case": "allfail-false",
+    "exit": [
+     1,
+     7
+    ],
+    "flags": [],
+    "native_message": "error: java.io.IOException: Error downloading [<ORIGIN>/404, <ORIGIN>/also404] to <WD>/metadata.json: GET returned 404 Not Found",
+    "old_expected_result": "callback-error",
+    "output_tails": {
+     "native": "WARNING: Download from http://127.0.0.1:40833/404 failed: class java.io.FileNotFoundException GET returned 404 Not Found\nWARNING: Download from http://127.0.0.1:40833/also404 failed: class java.io.FileNotFoundException GET returned 404 Not Found\nbazel-rs: module extension //:ext.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:ext.bzl:11, in _impl\n      value = mctx.download([\"http://127.0.0.1:40833/404\", \"http://127.0.0.1:40833/...\nerror: java.io.IOException: Error downloading [http://127.0.0.1:40833/404, http://127.0.0.1:40833/also404] to <WD>/metadata.json: GET returned 404 Not Found\n  --> //:ext.bzl:11:13\n   |\n11 |     value = mctx.download([\"http://127.0.0.1:40833/404\", \"http://127.0.0.1:40833/also404\"], output = \"metadata.json\", sha256 = \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", allow_fail = False)\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+     "reference": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: Download from http://127.0.0.1:40833/404 failed: class java.io.FileNotFoundException GET returned 404 Not Found\nWARNING: Download from http://127.0.0.1:40833/also404 failed: class java.io.FileNotFoundException GET returned 404 Not Found\nERROR: <WS>/ext.bzl:11:26: Traceback (most recent call last):\n\tFile \"<WS>/ext.bzl\", line 11, column 26, in _impl\n\t\tvalue = mctx.download([\"http://127.0.0.1:40833/404\", \"http://127.0.0.1:40833/also404\"], output = \"metadata.json\", sha256 = \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", allow_fail = False)\nError in download: java.io.IOException: Error downloading [http://127.0.0.1:40833/404, http://127.0.0.1:40833/also404] to <WD>/metadata.json: GET returned 404 Not Found\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:ext.bzl%ext\n"
+    },
+    "probes": {
+     "native": {},
+     "reference": {}
+    },
+    "rederived": true,
+    "reference_message": "java.io.IOException: Error downloading [<ORIGIN>/404, <ORIGIN>/also404] to <WD>/metadata.json: GET returned 404 Not Found",
+    "requests": [
+     [
+      "/404",
+      "/also404"
+     ],
+     [
+      "/404",
+      "/also404"
+     ]
+    ],
+    "verdict": "EXACT_MESSAGE"
+   },
+   {
+    "case": "disabled-miss-false",
+    "exit": [
+     1,
+     7
+    ],
+    "flags": [
+     "--repository_disable_download"
+    ],
+    "native_message": "error: java.io.IOException: Failed to download module extension @@//:ext.bzl%ext: download is disabled.",
+    "old_expected_result": "callback-error",
+    "output_tails": {
+     "native": "bazel-rs: module extension //:ext.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:ext.bzl:11, in _impl\n      value = mctx.download(\"http://127.0.0.1:40833/versions?mode=json&include=all\"...\nerror: java.io.IOException: Failed to download module extension @@//:ext.bzl%ext: download is disabled.\n  --> //:ext.bzl:11:13\n   |\n11 |     value = mctx.download(\"http://127.0.0.1:40833/versions?mode=json&include=all\", output = \"metadata.json\", sha256 = \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", allow_fail = False)\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+     "reference": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/ext.bzl:11:26: Traceback (most recent call last):\n\tFile \"<WS>/ext.bzl\", line 11, column 26, in _impl\n\t\tvalue = mctx.download(\"http://127.0.0.1:40833/versions?mode=json&include=all\", output = \"metadata.json\", sha256 = \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", allow_fail = False)\nError in download: java.io.IOException: Failed to download module extension @@//:ext.bzl%ext: download is disabled.\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:ext.bzl%ext\n"
+    },
+    "probes": {
+     "native": {},
+     "reference": {}
+    },
+    "rederived": true,
+    "reference_message": "java.io.IOException: Failed to download module extension @@//:ext.bzl%ext: download is disabled.",
+    "requests": [
+     [],
+     []
+    ],
+    "verdict": "EXACT_MESSAGE"
+   },
+   {
+    "case": "empty-list-false",
+    "exit": [
+     1,
+     7
+    ],
+    "flags": [],
+    "native_message": "error: java.io.IOException: urls not set",
+    "old_expected_result": "callback-error",
+    "output_tails": {
+     "native": "bazel-rs: module extension //:ext.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:ext.bzl:11, in _impl\n      value = mctx.download([], output = \"metadata.json\", sha256 = \"9fff9f832042d09...\nerror: java.io.IOException: urls not set\n  --> //:ext.bzl:11:13\n   |\n11 |     value = mctx.download([], output = \"metadata.json\", sha256 = \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", allow_fail = False)\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+     "reference": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/ext.bzl:11:26: Traceback (most recent call last):\n\tFile \"<WS>/ext.bzl\", line 11, column 26, in _impl\n\t\tvalue = mctx.download([], output = \"metadata.json\", sha256 = \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", allow_fail = False)\nError in download: java.io.IOException: urls not set\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:ext.bzl%ext\n"
+    },
+    "probes": {
+     "native": {},
+     "reference": {}
+    },
+    "rederived": true,
+    "reference_message": "java.io.IOException: urls not set",
+    "requests": [
+     [],
+     []
+    ],
+    "verdict": "EXACT_MESSAGE"
+   },
+   {
+    "case": "empty-list-existing-false",
+    "exit": [
+     1,
+     7
+    ],
+    "flags": [],
+    "native_message": "error: java.io.IOException: urls not set",
+    "old_expected_result": "callback-error",
+    "output_tails": {
+     "native": "N43|op0|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\nbazel-rs: module extension //:ext.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:ext.bzl:13, in _impl\n      value = mctx.download([], output = \"metadata.json\", sha256 = \"9fff9f832042d09...\nerror: java.io.IOException: urls not set\n  --> //:ext.bzl:13:13\n   |\n13 |     value = mctx.download([], output = \"metadata.json\", sha256 = \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", allow_fail = False)\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+     "reference": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: <WS>/ext.bzl:12:10: N43|op0|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\nERROR: <WS>/ext.bzl:13:26: Traceback (most recent call last):\n\tFile \"<WS>/ext.bzl\", line 13, column 26, in _impl\n\t\tvalue = mctx.download([], output = \"metadata.json\", sha256 = \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", allow_fail = False)\nError in download: java.io.IOException: urls not set\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:ext.bzl%ext\n"
+    },
+    "probes": {
+     "native": {
+      "op0": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}"
+     },
+     "reference": {
+      "op0": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}"
+     }
+    },
+    "rederived": true,
+    "reference_message": "java.io.IOException: urls not set",
+    "requests": [
+     [
+      "/versions?mode=json&include=all"
+     ],
+     [
+      "/versions?mode=json&include=all"
+     ]
+    ],
+    "verdict": "EXACT_MESSAGE"
+   },
+   {
+    "case": "http-filter-true",
+    "exit": [
+     0,
+     0
+    ],
+    "flags": [],
+    "old_expected_result": "success",
+    "output_tails": {
+     "native": "@@+ext+r//:x\nN43|op0|{\"success\": False}\n",
+     "reference": "@r//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: <WS>/ext.bzl:12:10: N43|op0|{\"success\": False}\n"
+    },
+    "probes": {
+     "native": {
+      "op0": "{\"success\": False}"
+     },
+     "reference": {
+      "op0": "{\"success\": False}"
+     }
+    },
+    "requests": [
+     [],
+     []
+    ],
+    "verdict": "MATCH"
+   },
+   {
+    "case": "allfail-true",
+    "exit": [
+     0,
+     0
+    ],
+    "flags": [],
+    "old_expected_result": "success",
+    "output_tails": {
+     "native": "@@+ext+r//:x\nWARNING: Download from http://127.0.0.1:40833/404 failed: class java.io.FileNotFoundException GET returned 404 Not Found\nWARNING: Download from http://127.0.0.1:40833/also404 failed: class java.io.FileNotFoundException GET returned 404 Not Found\nN43|op0|{\"success\": False}\n",
+     "reference": "@r//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: Download from http://127.0.0.1:40833/404 failed: class java.io.FileNotFoundException GET returned 404 Not Found\nWARNING: Download from http://127.0.0.1:40833/also404 failed: class java.io.FileNotFoundException GET returned 404 Not Found\nDEBUG: <WS>/ext.bzl:12:10: N43|op0|{\"success\": False}\n"
+    },
+    "probes": {
+     "native": {
+      "op0": "{\"success\": False}"
+     },
+     "reference": {
+      "op0": "{\"success\": False}"
+     }
+    },
+    "requests": [
+     [
+      "/404",
+      "/also404"
+     ],
+     [
+      "/404",
+      "/also404"
+     ]
+    ],
+    "verdict": "MATCH"
+   },
+   {
+    "case": "disabled-miss-true",
+    "exit": [
+     0,
+     0
+    ],
+    "flags": [
+     "--repository_disable_download"
+    ],
+    "old_expected_result": "success",
+    "output_tails": {
+     "native": "@@+ext+r//:x\nN43|op0|{\"success\": False}\n",
+     "reference": "@r//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: <WS>/ext.bzl:12:10: N43|op0|{\"success\": False}\n"
+    },
+    "probes": {
+     "native": {
+      "op0": "{\"success\": False}"
+     },
+     "reference": {
+      "op0": "{\"success\": False}"
+     }
+    },
+    "requests": [
+     [],
+     []
+    ],
+    "verdict": "MATCH"
+   },
+   {
+    "case": "empty-list-true",
+    "exit": [
+     0,
+     0
+    ],
+    "flags": [],
+    "old_expected_result": "success",
+    "output_tails": {
+     "native": "@@+ext+r//:x\nN43|op0|{\"success\": False}\n",
+     "reference": "@r//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: <WS>/ext.bzl:12:10: N43|op0|{\"success\": False}\n"
+    },
+    "probes": {
+     "native": {
+      "op0": "{\"success\": False}"
+     },
+     "reference": {
+      "op0": "{\"success\": False}"
+     }
+    },
+    "requests": [
+     [],
+     []
+    ],
+    "verdict": "MATCH"
+   },
+   {
+    "case": "empty-list-existing-true",
+    "exit": [
+     0,
+     0
+    ],
+    "flags": [],
+    "old_expected_result": "success",
+    "output_tails": {
+     "native": "@@+ext+r//:x\nN43|op0|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\nN43|op1|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\n",
+     "reference": "@r//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: <WS>/ext.bzl:12:10: N43|op0|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\nDEBUG: <WS>/ext.bzl:14:10: N43|op1|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\n"
+    },
+    "probes": {
+     "native": {
+      "op0": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}",
+      "op1": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}"
+     },
+     "reference": {
+      "op0": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}",
+      "op1": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}"
+     }
+    },
+    "requests": [
+     [
+      "/versions?mode=json&include=all"
+     ],
+     [
+      "/versions?mode=json&include=all"
+     ]
+    ],
+    "verdict": "MATCH"
+   },
+   {
+    "case": "sri-sha1",
+    "exit": [
+     0,
+     0
+    ],
+    "flags": [],
+    "old_expected_result": "success",
+    "output_tails": {
+     "native": "@@+ext+r//:x\nN43|op0|{\"integrity\": \"sha1-/spc7D1gbfsjJIXs0Hu8573Ejxk=\", \"size_bytes\": 620, \"success\": True}\nN43|op1|[620, 454610329]\n",
+     "reference": "@r//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: <WS>/ext.bzl:12:10: N43|op0|{\"integrity\": \"sha1-/spc7D1gbfsjJIXs0Hu8573Ejxk=\", \"size_bytes\": 620, \"success\": True}\nDEBUG: <WS>/ext.bzl:14:10: N43|op1|[620, 454610329]\n"
+    },
+    "probes": {
+     "native": {
+      "op0": "{\"integrity\": \"sha1-/spc7D1gbfsjJIXs0Hu8573Ejxk=\", \"size_bytes\": 620, \"success\": True}",
+      "op1": "[620, 454610329]"
+     },
+     "reference": {
+      "op0": "{\"integrity\": \"sha1-/spc7D1gbfsjJIXs0Hu8573Ejxk=\", \"size_bytes\": 620, \"success\": True}",
+      "op1": "[620, 454610329]"
+     }
+    },
+    "requests": [
+     [
+      "/versions?mode=json&include=all"
+     ],
+     [
+      "/versions?mode=json&include=all"
+     ]
+    ],
+    "verdict": "MATCH"
+   },
+   {
+    "case": "sri-sha256",
+    "exit": [
+     0,
+     0
+    ],
+    "flags": [],
+    "old_expected_result": "success",
+    "output_tails": {
+     "native": "@@+ext+r//:x\nN43|op0|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\nN43|op1|[620, 454610329]\n",
+     "reference": "@r//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: <WS>/ext.bzl:12:10: N43|op0|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\nDEBUG: <WS>/ext.bzl:14:10: N43|op1|[620, 454610329]\n"
+    },
+    "probes": {
+     "native": {
+      "op0": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}",
+      "op1": "[620, 454610329]"
+     },
+     "reference": {
+      "op0": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}",
+      "op1": "[620, 454610329]"
+     }
+    },
+    "requests": [
+     [
+      "/versions?mode=json&include=all"
+     ],
+     [
+      "/versions?mode=json&include=all"
+     ]
+    ],
+    "verdict": "MATCH"
+   },
+   {
+    "case": "sri-sha384",
+    "exit": [
+     0,
+     0
+    ],
+    "flags": [],
+    "old_expected_result": "success",
+    "output_tails": {
+     "native": "@@+ext+r//:x\nN43|op0|{\"integrity\": \"sha384-Pvxl6ZEFC6UtpBIdfsvk7s0D9II6BSAN2Ljq7uTDteQoA4X3Pqi4xmPnbnDykKF1\", \"size_bytes\": 620, \"success\": True}\nN43|op1|[620, 454610329]\n",
+     "reference": "@r//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: <WS>/ext.bzl:12:10: N43|op0|{\"integrity\": \"sha384-Pvxl6ZEFC6UtpBIdfsvk7s0D9II6BSAN2Ljq7uTDteQoA4X3Pqi4xmPnbnDykKF1\", \"size_bytes\": 620, \"success\": True}\nDEBUG: <WS>/ext.bzl:14:10: N43|op1|[620, 454610329]\n"
+    },
+    "probes": {
+     "native": {
+      "op0": "{\"integrity\": \"sha384-Pvxl6ZEFC6UtpBIdfsvk7s0D9II6BSAN2Ljq7uTDteQoA4X3Pqi4xmPnbnDykKF1\", \"size_bytes\": 620, \"success\": True}",
+      "op1": "[620, 454610329]"
+     },
+     "reference": {
+      "op0": "{\"integrity\": \"sha384-Pvxl6ZEFC6UtpBIdfsvk7s0D9II6BSAN2Ljq7uTDteQoA4X3Pqi4xmPnbnDykKF1\", \"size_bytes\": 620, \"success\": True}",
+      "op1": "[620, 454610329]"
+     }
+    },
+    "requests": [
+     [
+      "/versions?mode=json&include=all"
+     ],
+     [
+      "/versions?mode=json&include=all"
+     ]
+    ],
+    "verdict": "MATCH"
+   },
+   {
+    "case": "sri-sha512",
+    "exit": [
+     0,
+     0
+    ],
+    "flags": [],
+    "old_expected_result": "success",
+    "output_tails": {
+     "native": "@@+ext+r//:x\nN43|op0|{\"integrity\": \"sha512-jPRv4O+DJBs0VsHmrnY2EHqLYMIGU4BJYvrmZ1vlFpsnLdIzbECUDq5l7WattptqD5fsr5BR9XbxZ/rLtvhwfA==\", \"size_bytes\": 620, \"success\": True}\nN43|op1|[620, 454610329]\n",
+     "reference": "@r//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: <WS>/ext.bzl:12:10: N43|op0|{\"integrity\": \"sha512-jPRv4O+DJBs0VsHmrnY2EHqLYMIGU4BJYvrmZ1vlFpsnLdIzbECUDq5l7WattptqD5fsr5BR9XbxZ/rLtvhwfA==\", \"size_bytes\": 620, \"success\": True}\nDEBUG: <WS>/ext.bzl:14:10: N43|op1|[620, 454610329]\n"
+    },
+    "probes": {
+     "native": {
+      "op0": "{\"integrity\": \"sha512-jPRv4O+DJBs0VsHmrnY2EHqLYMIGU4BJYvrmZ1vlFpsnLdIzbECUDq5l7WattptqD5fsr5BR9XbxZ/rLtvhwfA==\", \"size_bytes\": 620, \"success\": True}",
+      "op1": "[620, 454610329]"
+     },
+     "reference": {
+      "op0": "{\"integrity\": \"sha512-jPRv4O+DJBs0VsHmrnY2EHqLYMIGU4BJYvrmZ1vlFpsnLdIzbECUDq5l7WattptqD5fsr5BR9XbxZ/rLtvhwfA==\", \"size_bytes\": 620, \"success\": True}",
+      "op1": "[620, 454610329]"
+     }
+    },
+    "requests": [
+     [
+      "/versions?mode=json&include=all"
+     ],
+     [
+      "/versions?mode=json&include=all"
+     ]
+    ],
+    "verdict": "MATCH"
+   },
+   {
+    "case": "sri-blake3",
+    "exit": [
+     0,
+     0
+    ],
+    "flags": [],
+    "old_expected_result": "success",
+    "output_tails": {
+     "native": "@@+ext+r//:x\nN43|op0|{\"integrity\": \"blake3-rxNJufX5oaagQE3qNtzJSZvLJcmtwRK3zJqTyuQfMmI=\", \"size_bytes\": 0, \"success\": True}\nN43|op1|[0, 0]\n",
+     "reference": "@r//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: <WS>/ext.bzl:12:10: N43|op0|{\"integrity\": \"blake3-rxNJufX5oaagQE3qNtzJSZvLJcmtwRK3zJqTyuQfMmI=\", \"size_bytes\": 0, \"success\": True}\nDEBUG: <WS>/ext.bzl:14:10: N43|op1|[0, 0]\n"
+    },
+    "probes": {
+     "native": {
+      "op0": "{\"integrity\": \"blake3-rxNJufX5oaagQE3qNtzJSZvLJcmtwRK3zJqTyuQfMmI=\", \"size_bytes\": 0, \"success\": True}",
+      "op1": "[0, 0]"
+     },
+     "reference": {
+      "op0": "{\"integrity\": \"blake3-rxNJufX5oaagQE3qNtzJSZvLJcmtwRK3zJqTyuQfMmI=\", \"size_bytes\": 0, \"success\": True}",
+      "op1": "[0, 0]"
+     }
+    },
+    "requests": [
+     [
+      "/empty"
+     ],
+     [
+      "/empty"
+     ]
+    ],
+    "verdict": "MATCH"
+   },
+   {
+    "case": "gzip",
+    "exit": [
+     0,
+     0
+    ],
+    "flags": [],
+    "old_expected_result": "success",
+    "output_tails": {
+     "native": "@@+ext+r//:x\nN43|op0|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\nN43|op1|[620, 454610329]\n",
+     "reference": "@r//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: <WS>/ext.bzl:12:10: N43|op0|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\nDEBUG: <WS>/ext.bzl:14:10: N43|op1|[620, 454610329]\n"
+    },
+    "probes": {
+     "native": {
+      "op0": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}",
+      "op1": "[620, 454610329]"
+     },
+     "reference": {
+      "op0": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}",
+      "op1": "[620, 454610329]"
+     }
+    },
+    "requests": [
+     [
+      "/gzip"
+     ],
+     [
+      "/gzip"
+     ]
+    ],
+    "verdict": "MATCH"
+   },
+   {
+    "case": "x-gzip",
+    "exit": [
+     0,
+     0
+    ],
+    "flags": [],
+    "old_expected_result": "success",
+    "output_tails": {
+     "native": "@@+ext+r//:x\nN43|op0|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\nN43|op1|[620, 454610329]\n",
+     "reference": "@r//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: <WS>/ext.bzl:12:10: N43|op0|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\nDEBUG: <WS>/ext.bzl:14:10: N43|op1|[620, 454610329]\n"
+    },
+    "probes": {
+     "native": {
+      "op0": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}",
+      "op1": "[620, 454610329]"
+     },
+     "reference": {
+      "op0": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}",
+      "op1": "[620, 454610329]"
+     }
+    },
+    "requests": [
+     [
+      "/x-gzip"
+     ],
+     [
+      "/x-gzip"
+     ]
+    ],
+    "verdict": "MATCH"
+   },
+   {
+    "case": "original.gz",
+    "exit": [
+     0,
+     0
+    ],
+    "flags": [],
+    "old_expected_result": "success",
+    "output_tails": {
+     "native": "@@+ext+r//:x\nN43|op0|{\"integrity\": \"sha256-vTYLyxsPJKF9xp8NXr9lGQjqQttImt/cDe7/rVMYQF8=\", \"sha256\": \"bd360bcb1b0f24a17dc69f0d5ebf651908ea42db489adfdc0deeffad5318405f\", \"size_bytes\": 203, \"success\": True}\nN43|op1|[203, 297758058]\n",
+     "reference": "@r//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: <WS>/ext.bzl:12:10: N43|op0|{\"integrity\": \"sha256-vTYLyxsPJKF9xp8NXr9lGQjqQttImt/cDe7/rVMYQF8=\", \"sha256\": \"bd360bcb1b0f24a17dc69f0d5ebf651908ea42db489adfdc0deeffad5318405f\", \"size_bytes\": 203, \"success\": True}\nDEBUG: <WS>/ext.bzl:14:10: N43|op1|[203, 297758058]\n"
+    },
+    "probes": {
+     "native": {
+      "op0": "{\"integrity\": \"sha256-vTYLyxsPJKF9xp8NXr9lGQjqQttImt/cDe7/rVMYQF8=\", \"sha256\": \"bd360bcb1b0f24a17dc69f0d5ebf651908ea42db489adfdc0deeffad5318405f\", \"size_bytes\": 203, \"success\": True}",
+      "op1": "[203, 297758058]"
+     },
+     "reference": {
+      "op0": "{\"integrity\": \"sha256-vTYLyxsPJKF9xp8NXr9lGQjqQttImt/cDe7/rVMYQF8=\", \"sha256\": \"bd360bcb1b0f24a17dc69f0d5ebf651908ea42db489adfdc0deeffad5318405f\", \"size_bytes\": 203, \"success\": True}",
+      "op1": "[203, 297758058]"
+     }
+    },
+    "requests": [
+     [
+      "/original.gz",
+      "/compressed-bare"
+     ],
+     [
+      "/original.gz",
+      "/compressed-bare"
+     ]
+    ],
+    "verdict": "MATCH"
+   },
+   {
+    "case": "to-final-suffix",
+    "exit": [
+     0,
+     0
+    ],
+    "flags": [],
+    "old_expected_result": "success",
+    "output_tails": {
+     "native": "@@+ext+r//:x\nN43|op0|{\"integrity\": \"sha256-vTYLyxsPJKF9xp8NXr9lGQjqQttImt/cDe7/rVMYQF8=\", \"sha256\": \"bd360bcb1b0f24a17dc69f0d5ebf651908ea42db489adfdc0deeffad5318405f\", \"size_bytes\": 203, \"success\": True}\nN43|op1|[203, 297758058]\n",
+     "reference": "@r//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: <WS>/ext.bzl:12:10: N43|op0|{\"integrity\": \"sha256-vTYLyxsPJKF9xp8NXr9lGQjqQttImt/cDe7/rVMYQF8=\", \"sha256\": \"bd360bcb1b0f24a17dc69f0d5ebf651908ea42db489adfdc0deeffad5318405f\", \"size_bytes\": 203, \"success\": True}\nDEBUG: <WS>/ext.bzl:14:10: N43|op1|[203, 297758058]\n"
+    },
+    "probes": {
+     "native": {
+      "op0": "{\"integrity\": \"sha256-vTYLyxsPJKF9xp8NXr9lGQjqQttImt/cDe7/rVMYQF8=\", \"sha256\": \"bd360bcb1b0f24a17dc69f0d5ebf651908ea42db489adfdc0deeffad5318405f\", \"size_bytes\": 203, \"success\": True}",
+      "op1": "[203, 297758058]"
+     },
+     "reference": {
+      "op0": "{\"integrity\": \"sha256-vTYLyxsPJKF9xp8NXr9lGQjqQttImt/cDe7/rVMYQF8=\", \"sha256\": \"bd360bcb1b0f24a17dc69f0d5ebf651908ea42db489adfdc0deeffad5318405f\", \"size_bytes\": 203, \"success\": True}",
+      "op1": "[203, 297758058]"
+     }
+    },
+    "requests": [
+     [
+      "/to-final-suffix",
+      "/compressed.tgz"
+     ],
+     [
+      "/to-final-suffix",
+      "/compressed.tgz"
+     ]
+    ],
+    "verdict": "MATCH"
+   },
+   {
+    "case": "malformed-sha-transfer-success",
+    "exit": [
+     1,
+     7
+    ],
+    "flags": [],
+    "native_message": "error: Checksum error in module extension @@//:ext.bzl%ext: Invalid SHA-256 checksum 'not-hex'",
+    "old_expected_result": "callback-error",
+    "output_tails": {
+     "native": "bazel-rs: module extension //:ext.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:ext.bzl:11, in _impl\n      value = mctx.download(\"http://127.0.0.1:40833/versions?mode=json&include=all\"...\nerror: Checksum error in module extension @@//:ext.bzl%ext: Invalid SHA-256 checksum 'not-hex'\n  --> //:ext.bzl:11:13\n   |\n11 |     value = mctx.download(\"http://127.0.0.1:40833/versions?mode=json&include=all\", output = \"metadata.json\", sha256 = \"not-hex\", allow_fail = True)\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+     "reference": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/ext.bzl:11:26: Traceback (most recent call last):\n\tFile \"<WS>/ext.bzl\", line 11, column 26, in _impl\n\t\tvalue = mctx.download(\"http://127.0.0.1:40833/versions?mode=json&include=all\", output = \"metadata.json\", sha256 = \"not-hex\", allow_fail = True)\nError in download: Checksum error in module extension @@//:ext.bzl%ext: Invalid SHA-256 checksum 'not-hex'\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:ext.bzl%ext\n"
+    },
+    "probes": {
+     "native": {},
+     "reference": {}
+    },
+    "rederived": true,
+    "reference_message": "Checksum error in module extension @@//:ext.bzl%ext: Invalid SHA-256 checksum 'not-hex'",
+    "requests": [
+     [
+      "/versions?mode=json&include=all"
+     ],
+     [
+      "/versions?mode=json&include=all"
+     ]
+    ],
+    "verdict": "EXACT_MESSAGE"
+   },
+   {
+    "case": "malformed-sha-transfer-failure",
+    "exit": [
+     0,
+     0
+    ],
+    "flags": [],
+    "old_expected_result": "success",
+    "output_tails": {
+     "native": "@@+ext+r//:x\nWARNING: Download from http://127.0.0.1:40833/404 failed: class java.io.FileNotFoundException GET returned 404 Not Found\nN43|op0|{\"success\": False}\n",
+     "reference": "@r//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: Download from http://127.0.0.1:40833/404 failed: class java.io.FileNotFoundException GET returned 404 Not Found\nDEBUG: <WS>/ext.bzl:12:10: N43|op0|{\"success\": False}\n"
+    },
+    "probes": {
+     "native": {
+      "op0": "{\"success\": False}"
+     },
+     "reference": {
+      "op0": "{\"success\": False}"
+     }
+    },
+    "requests": [
+     [
+      "/404"
+     ],
+     [
+      "/404"
+     ]
+    ],
+    "verdict": "MATCH"
+   },
+   {
+    "case": "malformed-sha-disabled",
+    "exit": [
+     0,
+     0
+    ],
+    "flags": [
+     "--repository_disable_download"
+    ],
+    "old_expected_result": "success",
+    "output_tails": {
+     "native": "@@+ext+r//:x\nN43|op0|{\"success\": False}\n",
+     "reference": "@r//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: <WS>/ext.bzl:12:10: N43|op0|{\"success\": False}\n"
+    },
+    "probes": {
+     "native": {
+      "op0": "{\"success\": False}"
+     },
+     "reference": {
+      "op0": "{\"success\": False}"
+     }
+    },
+    "requests": [
+     [],
+     []
+    ],
+    "verdict": "MATCH"
+   },
+   {
+    "case": "read-watch-yes",
+    "exit": [
+     1,
+     7
+    ],
+    "flags": [],
+    "native_message": "error: attempted to watch path under working directory",
+    "old_expected_result": "callback-error",
+    "output_tails": {
+     "native": "N43|op0|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\nbazel-rs: module extension //:ext.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:ext.bzl:13, in _impl\n      value = mctx.read(\"metadata.json\", watch = \"yes\")\nerror: attempted to watch path under working directory\n  --> //:ext.bzl:13:13\n   |\n13 |     value = mctx.read(\"metadata.json\", watch = \"yes\")\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+     "reference": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: <WS>/ext.bzl:12:10: N43|op0|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\nERROR: <WS>/ext.bzl:13:22: Traceback (most recent call last):\n\tFile \"<WS>/ext.bzl\", line 13, column 22, in _impl\n\t\tvalue = mctx.read(\"metadata.json\", watch = \"yes\")\nError in read: attempted to watch path under working directory\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:ext.bzl%ext\n"
+    },
+    "probes": {
+     "native": {
+      "op0": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}"
+     },
+     "reference": {
+      "op0": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}"
+     }
+    },
+    "rederived": true,
+    "reference_message": "attempted to watch path under working directory",
+    "requests": [
+     [
+      "/versions?mode=json&include=all"
+     ],
+     [
+      "/versions?mode=json&include=all"
+     ]
+    ],
+    "verdict": "EXACT_MESSAGE"
+   },
+   {
+    "case": "read-missing",
+    "exit": [
+     1,
+     7
+    ],
+    "flags": [],
+    "native_message": "error: java.io.FileNotFoundException: <WD>/missing (No such file or directory)",
+    "old_expected_result": "callback-error",
+    "output_tails": {
+     "native": "bazel-rs: module extension //:ext.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:ext.bzl:11, in _impl\n      value = mctx.read(\"missing\", watch = \"auto\")\nerror: java.io.FileNotFoundException: <WD>/missing (No such file or directory)\n  --> //:ext.bzl:11:13\n   |\n11 |     value = mctx.read(\"missing\", watch = \"auto\")\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+     "reference": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/ext.bzl:11:22: Traceback (most recent call last):\n\tFile \"<WS>/ext.bzl\", line 11, column 22, in _impl\n\t\tvalue = mctx.read(\"missing\", watch = \"auto\")\nError in read: java.io.FileNotFoundException: <WD>/missing (No such file or directory)\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:ext.bzl%ext\n"
+    },
+    "probes": {
+     "native": {},
+     "reference": {}
+    },
+    "rederived": true,
+    "reference_message": "java.io.FileNotFoundException: <WD>/missing (No such file or directory)",
+    "requests": [
+     [],
+     []
+    ],
+    "verdict": "EXACT_MESSAGE"
+   },
+   {
+    "case": "read-invalid-watch",
+    "exit": [
+     1,
+     7
+    ],
+    "flags": [],
+    "native_message": "error: bad value for 'watch' parameter; want 'yes', 'no', or 'auto', got invalid",
+    "old_expected_result": "callback-error",
+    "output_tails": {
+     "native": "bazel-rs: module extension //:ext.bzl: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:ext.bzl:11, in _impl\n      value = mctx.read(\"missing\", watch = \"invalid\")\nerror: bad value for 'watch' parameter; want 'yes', 'no', or 'auto', got invalid\n  --> //:ext.bzl:11:13\n   |\n11 |     value = mctx.read(\"missing\", watch = \"invalid\")\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+     "reference": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/ext.bzl:11:22: Traceback (most recent call last):\n\tFile \"<WS>/ext.bzl\", line 11, column 22, in _impl\n\t\tvalue = mctx.read(\"missing\", watch = \"invalid\")\nError in read: bad value for 'watch' parameter; want 'yes', 'no', or 'auto', got invalid\nERROR: Target parsing failed due to unexpected exception: error evaluating module extension @@//:ext.bzl%ext\n"
+    },
+    "probes": {
+     "native": {},
+     "reference": {}
+    },
+    "rederived": true,
+    "reference_message": "bad value for 'watch' parameter; want 'yes', 'no', or 'auto', got invalid",
+    "requests": [
+     [],
+     []
+    ],
+    "verdict": "EXACT_MESSAGE"
+   },
+   {
+    "case": "root-file-then-child",
+    "exit": [
+     0,
+     0
+    ],
+    "flags": [],
+    "old_expected_result": "success",
+    "output_tails": {
+     "native": "@@+ext+r//:x\nN43|op0|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\nN43|op1|{\"success\": False}\nN43|op2|[620, 454610329]\n",
+     "reference": "@r//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: <WS>/ext.bzl:12:10: N43|op0|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\nDEBUG: <WS>/ext.bzl:14:10: N43|op1|{\"success\": False}\nDEBUG: <WS>/ext.bzl:16:10: N43|op2|[620, 454610329]\n"
+    },
+    "probes": {
+     "native": {
+      "op0": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}",
+      "op1": "{\"success\": False}",
+      "op2": "[620, 454610329]"
+     },
+     "reference": {
+      "op0": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}",
+      "op1": "{\"success\": False}",
+      "op2": "[620, 454610329]"
+     }
+    },
+    "requests": [
+     [
+      "/versions?mode=json&include=all"
+     ],
+     [
+      "/versions?mode=json&include=all"
+     ]
+    ],
+    "verdict": "MATCH"
+   },
+   {
+    "case": "child-then-root-directory",
+    "exit": [
+     0,
+     0
+    ],
+    "flags": [],
+    "old_expected_result": "success",
+    "output_tails": {
+     "native": "@@+ext+r//:x\nN43|op0|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\nN43|op1|{\"success\": False}\nN43|op2|[620, 454610329]\n",
+     "reference": "@r//:x\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: <WS>/ext.bzl:12:10: N43|op0|{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}\nWARNING: Download from http://127.0.0.1:40833/versions?mode=json&include=all failed: class java.io.FileNotFoundException <WD> (Is a directory)\nDEBUG: <WS>/ext.bzl:14:10: N43|op1|{\"success\": False}\nDEBUG: <WS>/ext.bzl:16:10: N43|op2|[620, 454610329]\n"
+    },
+    "probes": {
+     "native": {
+      "op0": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}",
+      "op1": "{\"success\": False}",
+      "op2": "[620, 454610329]"
+     },
+     "reference": {
+      "op0": "{\"integrity\": \"sha256-n/+fgyBC0JOzh1F9Mq6f0TAohTwDPMvQJx6y8CCaAbs=\", \"sha256\": \"9fff9f832042d093b387517d32ae9fd13028853c033ccbd0271eb2f0209a01bb\", \"size_bytes\": 620, \"success\": True}",
+      "op1": "{\"success\": False}",
+      "op2": "[620, 454610329]"
+     }
+    },
+    "requests": [
+     [
+      "/versions?mode=json&include=all"
+     ],
+     [
+      "/versions?mode=json&include=all",
+      "/versions?mode=json&include=all"
+     ]
+    ],
+    "verdict": "MISMATCH"
+   }
+  ],
+  "comparisons_as_captured": [
+   {
+    "case": "checksummed-json",
+    "verdict": "MATCH"
+   },
+   {
+    "case": "mirrors-404-success",
+    "verdict": "MATCH"
+   },
+   {
+    "case": "html-no-fallback",
+    "verdict": "MATCH"
+   },
+   {
+    "case": "matching-destination",
+    "verdict": "MATCH"
+   },
+   {
+    "case": "all256-auto-no",
+    "verdict": "MATCH"
+   },
+   {
+    "case": "empty-output",
+    "verdict": "MATCH"
+   },
+   {
+    "case": "http-filter-false",
+    "verdict": "MISMATCH"
+   },
+   {
+    "case": "allfail-false",
+    "verdict": "MISMATCH"
+   },
+   {
+    "case": "disabled-miss-false",
+    "verdict": "MISMATCH"
+   },
+   {
+    "case": "empty-list-false",
+    "verdict": "MISMATCH"
+   },
+   {
+    "case": "empty-list-existing-false",
+    "verdict": "MISMATCH"
+   },
+   {
+    "case": "http-filter-true",
+    "verdict": "MATCH"
+   },
+   {
+    "case": "allfail-true",
+    "verdict": "MATCH"
+   },
+   {
+    "case": "disabled-miss-true",
+    "verdict": "MATCH"
+   },
+   {
+    "case": "empty-list-true",
+    "verdict": "MATCH"
+   },
+   {
+    "case": "empty-list-existing-true",
+    "verdict": "MATCH"
+   },
+   {
+    "case": "sri-sha1",
+    "verdict": "MATCH"
+   },
+   {
+    "case": "sri-sha256",
+    "verdict": "MATCH"
+   },
+   {
+    "case": "sri-sha384",
+    "verdict": "MATCH"
+   },
+   {
+    "case": "sri-sha512",
+    "verdict": "MATCH"
+   },
+   {
+    "case": "sri-blake3",
+    "verdict": "MATCH"
+   },
+   {
+    "case": "gzip",
+    "verdict": "MATCH"
+   },
+   {
+    "case": "x-gzip",
+    "verdict": "MATCH"
+   },
+   {
+    "case": "original.gz",
+    "verdict": "MATCH"
+   },
+   {
+    "case": "to-final-suffix",
+    "verdict": "MATCH"
+   },
+   {
+    "case": "malformed-sha-transfer-success",
+    "verdict": "MISMATCH"
+   },
+   {
+    "case": "malformed-sha-transfer-failure",
+    "verdict": "MATCH"
+   },
+   {
+    "case": "malformed-sha-disabled",
+    "verdict": "MATCH"
+   },
+   {
+    "case": "read-watch-yes",
+    "verdict": "MISMATCH"
+   },
+   {
+    "case": "read-missing",
+    "verdict": "MISMATCH"
+   },
+   {
+    "case": "read-invalid-watch",
+    "verdict": "MISMATCH"
+   },
+   {
+    "case": "root-file-then-child",
+    "verdict": "MATCH"
+   },
+   {
+    "case": "child-then-root-directory",
+    "verdict": "MISMATCH"
+   }
+  ],
+  "counts": {
+   "EXACT_MESSAGE": 9,
+   "MATCH": 23,
+   "MISMATCH": 1
+  },
+  "counts_as_captured": {
+   "MATCH": 23,
+   "MISMATCH": 10
+  },
+  "finished": "2026-10-17T08:13:14Z",
+  "native_sha256": "5d52c268961e272ffd3bd329236dca34ce88f288e4ea98439aba732f9e064c9b",
+  "per_case": "fresh workspace and fresh native --cache-dir / Bazel --repository_cache per case and engine; case flags (--repository_disable_download) passed to both",
+  "reason": "retiring scripts/validate_module_extension_io.py (old owned-scratch model): its module_ctx download/read cases not covered by run 2 (mirrors, html first-mirror, matching destination, all256 bytes, http filter, all-fail mirrors, disabled downloads, empty URL lists, SRI sha1/sha256/sha384/sha512/blake3, gzip/x-gzip/redirect suffix rules, malformed checksums, root file vs child outputs) rerun on both engines",
+  "rederivation": "Failing cases reclassified from the recorded data with run 2's rule (both exit non-zero; probes and request paths equal; Bazel's message contained in native output). The executed comparator also required equal exit codes, but `bazel query` exits 7 for a failed extension while native exits 1 (diagnostic framing, as in run 2). Engines were not rerun.",
+  "reference_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "scratch_removed": true,
+  "script_sha256": "b9505a46215430682d4fe5a44f92b43f02404b8e1e8de76ea9cf3319fadae175",
+  "started": "2026-10-17T08:12:10Z",
+  "validator_sha256": "d3d07ac320f7f8fef37d4befea3d1576c75e5279ee8d5d5cc85c404d388e79d6"
+ },
  "verdicts": {
   "EXACT_MESSAGE": "Bazel's 'Error in F: MSG' (else last specific ERROR body), normalized, occurs in native output (whitespace squashed)",
   "MATCH": "probe value (normalized <WD>/<WS>/<REPO>/<BASE>) or exit code identical",

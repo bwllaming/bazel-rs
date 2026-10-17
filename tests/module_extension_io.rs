@@ -201,7 +201,7 @@ fn disable_is_default_false_and_failure_result_is_only_success_false() {
     let fixture = Fixture::new(&server.url, &sha(BODY));
     let result = fixture.run(&["build", "--repository_disable_download", "//:copy"]);
     assert!(!result.status.success());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("downloads are disabled"));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("java.io.IOException: Failed to download module extension @@//:ext.bzl%files: download is disabled."));
     assert_eq!(server.count(), 0);
     assert!(fixture.roots().is_empty());
     fixture.extension(&format!("r = ctx.download({:?}, sha256={:?}, allow_fail=True)\ndir(r) == ['success'] and r.success == False or fail(r)\nmaker(name='made', text='tolerated-real-failure')", server.url, sha(BODY)));
