@@ -480,17 +480,7 @@ fn parse_attribute(
                 .and_then(|n| i32::try_from(n).ok())
                 .ok_or_else(|| "expected a 32-bit int".to_owned())?,
         ),
-        // Type.BOOLEAN also converts the integers 0 and 1 (Type.java:409-428).
-        AttrKind::Bool => AttrValue::Bool(
-            value
-                .as_bool()
-                .or_else(|| match value.as_i64() {
-                    Some(0) => Some(false),
-                    Some(1) => Some(true),
-                    _ => None,
-                })
-                .ok_or_else(|| "expected a bool".to_owned())?,
-        ),
+        AttrKind::Bool => AttrValue::Bool(crate::repository_rule::convert_bool(name, value)?),
         AttrKind::Label => AttrValue::Label(Some(resolve(string()?)?.to_string())),
         AttrKind::LabelList => AttrValue::Labels(
             strings()?
@@ -1247,12 +1237,28 @@ mod tests {
             json!({"i":2147483648_i64}),
             json!({"i":-2147483649_i64}),
             json!({"i":u64::MAX}),
-            json!({"b":1}),
+            json!({"b":2}),
+            json!({"b":-1}),
+            json!({"b":"true"}),
             json!({"l":[]}),
             json!({"l":{"label":"//:x"}}),
             json!({"ls":["//:ok",false]}),
         ] {
             assert!(bind(&schema, value.clone()).is_err(), "{value}");
+        }
+        // Type.BOOLEAN.convert: 0 and 1 convert, anything else fails with
+        // Bazel's text (genuine Bazel 9.3.0 via ext.t(flag = 0/1/2)).
+        for (raw, flag) in [(json!(0), false), (json!(1), true), (json!(true), true)] {
+            let attrs = bind(&schema, json!({"b":raw})).unwrap();
+            assert_eq!(attrs["b"], AttrValue::Bool(flag), "{raw}");
+        }
+        for (raw, shown) in [(json!(2), "2 (int)"), (json!("true"), "\"true\" (string)")] {
+            assert_eq!(
+                bind(&schema, json!({"b":raw})).unwrap_err(),
+                format!(
+                    "in 't' tag, expected one of [False, True, 0, 1] for attribute 'b', but got {shown}"
+                )
+            );
         }
         for i in [i32::MIN, i32::MAX] {
             let attrs = bind(&schema, json!({"s":"", "ss":["a","b"], "i":i, "b":false})).unwrap();

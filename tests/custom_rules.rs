@@ -358,7 +358,9 @@ flagged = rule(implementation=_impl, attrs={"flag": attr.bool()})
     let output = ws.run(&["build", "//:two"]);
     assert!(!output.status.success());
     assert!(
-        errors(&output).contains("expected a bool"),
+        errors(&output).contains(
+            "//:two: expected one of [False, True, 0, 1] for attribute 'flag' of 'flagged', but got 2 (int)"
+        ),
         "{}",
         errors(&output)
     );

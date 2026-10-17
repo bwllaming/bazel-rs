@@ -462,6 +462,9 @@ pub fn bind_attributes_where(
 /// Type.ConversionException / label syntax text, to which the caller adds
 /// AttributeUtils' where-text (`in call to 'R' repo rule …, `, `in 'T' tag, `).
 pub(crate) fn bazel_conversion_error(kind: &AttrKind, error: &str) -> bool {
+    if *kind == AttrKind::Bool {
+        return error.starts_with(BOOL_EXPECTED);
+    }
     matches!(
         kind,
         AttrKind::StringKeyedLabelDict
@@ -805,17 +808,7 @@ fn parse_attribute(
                 .and_then(|n| i32::try_from(n).ok())
                 .ok_or_else(|| "expected a 32-bit int".to_owned())?,
         ),
-        // Type.BOOLEAN also converts the integers 0 and 1 (Type.java:409-428).
-        AttrKind::Bool => AttrValue::Bool(
-            value
-                .as_bool()
-                .or_else(|| match value.as_i64() {
-                    Some(0) => Some(false),
-                    Some(1) => Some(true),
-                    _ => None,
-                })
-                .ok_or_else(|| "expected a bool".to_owned())?,
-        ),
+        AttrKind::Bool => AttrValue::Bool(convert_bool(name, value)?),
         AttrKind::Label => AttrValue::Label(Some(resolve(string()?)?.to_string())),
         AttrKind::LabelList => AttrValue::Labels(
             strings()?
@@ -1074,6 +1067,27 @@ pub(crate) fn label_key_duplicates(what: &str, keys: &[(Label, String)]) -> Opti
         .collect::<Vec<_>>();
     (!duplicates.is_empty()).then(|| format!("duplicate labels in {what}:{}", duplicates.join(",")))
 }
+
+/// Type.BOOLEAN.convert of a JSON-transported value (packages/Type.java:409-428):
+/// True/False or the integers 0 and 1; anything else fails with
+/// `expected one of [False, True, 0, 1] for attribute 'NAME', but got REPR (TYPE)`
+/// (AttributeUtils.typeCheckAttrValues what-text).
+pub(crate) fn convert_bool(name: &str, value: &serde_json::Value) -> Result<bool, String> {
+    value
+        .as_bool()
+        .or_else(|| match value.as_i64() {
+            Some(0) => Some(false),
+            Some(1) => Some(true),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            let (repr, type_name) = starlark_repr(value);
+            format!("{BOOL_EXPECTED} for attribute '{name}', but got {repr} ({type_name})")
+        })
+}
+
+/// Type.BOOLEAN's ConversionException expectation (packages/Type.java:427).
+pub(crate) const BOOL_EXPECTED: &str = "expected one of [False, True, 0, 1]";
 
 /// `expected value of type 'T' for WHAT, but got REPR (TYPE)` of a
 /// JSON-transported Starlark value (Type.ConversionException, packages/Type.java:296-321).
@@ -2054,11 +2068,27 @@ mod tests {
             json!({"i": 2147483648_i64}),
             json!({"i": -2147483649_i64}),
             json!({"i": u64::MAX}),
-            json!({"b": 1}),
+            json!({"b": 2}),
+            json!({"b": -1}),
+            json!({"b": "true"}),
             json!({"l": []}),
             json!({"ls": ["//:ok", false]}),
         ] {
             assert!(bind(&definition, value.clone()).is_err(), "{value}");
+        }
+        // Type.BOOLEAN.convert: 0 and 1 convert, anything else fails with
+        // Bazel's text (genuine Bazel 9.3.0 via use_repo_rule rr(flag = 0/1/2)).
+        for (raw, flag) in [(json!(0), false), (json!(1), true), (json!(true), true)] {
+            let attrs = bind(&definition, json!({"b": raw})).unwrap();
+            assert_eq!(attrs["b"], AttrValue::Bool(flag), "{raw}");
+        }
+        for (raw, shown) in [(json!(2), "2 (int)"), (json!("true"), "\"true\" (string)")] {
+            assert_eq!(
+                bind(&definition, json!({"b": raw})).unwrap_err(),
+                format!(
+                    "in call to 'R' repo rule, expected one of [False, True, 0, 1] for attribute 'b', but got {shown}"
+                )
+            );
         }
         for i in [i32::MIN, i32::MAX] {
             let attrs = bind(

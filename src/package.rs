@@ -3664,9 +3664,22 @@ ordinary(name="ordinary", help="ordinary help", build_setting_default=True)
                 ", build_setting_default=None",
                 "missing mandatory attribute",
             ),
-            ("bool", ", build_setting_default=2", "expected a bool"),
-            ("bool", ", build_setting_default=-1", "expected a bool"),
-            ("bool", ", build_setting_default='true'", "expected a bool"),
+            // Type.BOOLEAN.convert texts verified against genuine Bazel 9.3.0.
+            (
+                "bool",
+                ", build_setting_default=2",
+                "//pkg:x: expected one of [False, True, 0, 1] for attribute 'build_setting_default' of 'r', but got 2 (int)",
+            ),
+            (
+                "bool",
+                ", build_setting_default=-1",
+                "//pkg:x: expected one of [False, True, 0, 1] for attribute 'build_setting_default' of 'r', but got -1 (int)",
+            ),
+            (
+                "bool",
+                ", build_setting_default='true'",
+                "//pkg:x: expected one of [False, True, 0, 1] for attribute 'build_setting_default' of 'r', but got \"true\" (string)",
+            ),
             (
                 "int",
                 ", build_setting_default=True",
@@ -3706,16 +3719,38 @@ ordinary(name="ordinary", help="ordinary help", build_setting_default=True)
             let error = custom_fixture(&defs, &build).unwrap_err();
             assert!(error.contains(expected), "{constructor}{argument}: {error}");
         }
-        for (setting, attribute) in [
-            ("None", "build_setting_default"),
-            ("config.bool()", "ordinary_bool"),
+        // Ordinary bool attributes are Type.BOOLEAN too: genuine Bazel 9.3.0
+        // accepts 0 and 1 and rejects 2 with the same conversion text.
+        for (setting, attribute, extra) in [
+            ("None", "build_setting_default", ""),
+            (
+                "config.bool()",
+                "ordinary_bool",
+                ", build_setting_default=True",
+            ),
         ] {
             let defs = format!(
                 "def impl(ctx):\n    return []\nr = rule(implementation=impl, build_setting={setting}, attrs={{'{attribute}': attr.bool()}})"
             );
-            let build = format!("load(':defs.bzl', 'r')\nr(name='x', {attribute}=1)");
+            let build = format!(
+                "load(':defs.bzl', 'r')\nr(name='x', {attribute}=0{extra})\nr(name='y', {attribute}=1{extra})"
+            );
+            let package = custom_fixture(&defs, &build).unwrap();
+            for (name, value) in [("x", false), ("y", true)] {
+                let custom = package[&Label::parse(&format!(":{name}"), "pkg").unwrap()]
+                    .custom
+                    .as_ref()
+                    .unwrap();
+                assert_eq!(custom.attrs[attribute], AttrValue::Bool(value), "{name}");
+            }
+            let build = format!("load(':defs.bzl', 'r')\nr(name='x', {attribute}=2{extra})");
             let error = custom_fixture(&defs, &build).unwrap_err();
-            assert!(error.contains("expected a bool"), "{error}");
+            assert!(
+                error.contains(&format!(
+                    "//pkg:x: expected one of [False, True, 0, 1] for attribute '{attribute}' of 'r', but got 2 (int)"
+                )),
+                "{error}"
+            );
         }
     }
 
@@ -3815,7 +3850,18 @@ r = rule(implementation=impl, attrs={
             ("r(name='x', s='', ss=(1,))", "list of strings"),
             ("r(name='x', s='', ss=[1])", "list of strings"),
             ("r(name='x', s='', i=True)", "int"),
-            ("r(name='x', s='', b=1)", "bool"),
+            (
+                "r(name='x', s='', b=2)",
+                "//pkg:x: expected one of [False, True, 0, 1] for attribute 'b' of 'r', but got 2 (int)",
+            ),
+            (
+                "r(name='x', s='', b=select({'//conditions:default': 2}))",
+                "//pkg:x: expected one of [False, True, 0, 1] for each branch in select expression of attribute 'b' of 'r' (including '//conditions:default'), but got 2 (int)",
+            ),
+            (
+                "r(name='x', s='', b='true')",
+                "//pkg:x: expected one of [False, True, 0, 1] for attribute 'b' of 'r', but got \"true\" (string)",
+            ),
             ("r(name='x', s='', dep=1)", "string"),
             ("r(name='x', s='', deps=[1])", "list of strings"),
             ("r(name='x', s='', out='../escape')", "output path"),

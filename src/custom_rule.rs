@@ -653,9 +653,15 @@ impl AttrKind {
         match self {
             Self::String => string(value, what),
             Self::Int => int(value, what),
-            Self::Bool => attr_bool(value)
-                .is_none()
-                .then(|| expected("boolean", value, what)),
+            // Type.BOOLEAN.convert's own expectation (packages/Type.java:409-428).
+            Self::Bool => attr_bool(value).is_none().then(|| {
+                format!(
+                    "{} for {what}, but got {} ({})",
+                    crate::repository_rule::BOOL_EXPECTED,
+                    value.to_repr(),
+                    value.get_type()
+                )
+            }),
             Self::Label => label(value, what),
             Self::Output => string(value, what),
             Self::StringList | Self::OutputList => list(value, &string),
@@ -1393,28 +1399,29 @@ mod values {
                             }
                             continue;
                         }
-                        // Bazel's build-setting boolean conversion accepts 0/1;
-                        // ordinary attr.bool attributes remain strictly boolean.
+                        // Every bool attribute, build_setting_default included, goes
+                        // through Type.BOOLEAN.convert: True/False or 0/1, else
+                        // `//pkg:x: expected one of [False, True, 0, 1] for attribute
+                        // 'K' of 'R', but got V (T)` (Type.java:409-428;
+                        // AttributeConversionContext.toString, BuildType.java:374-376).
+                        if spec.kind == AttrKind::Bool
+                            && let Some(error) = spec.kind.conversion_error(
+                                *value,
+                                &format!("attribute '{key}' of '{rule_class}'"),
+                            )
+                        {
+                            return Err(starlark::Error::new_other(anyhow!(
+                                "{target_text}: {error}"
+                            )));
+                        }
                         let parsed = (|| {
                             budget
                                 .borrow_mut()
                                 .string(key)
                                 .map_err(anyhow::Error::msg)?;
-                            if key == "build_setting_default"
-                                && self
-                                    .build_setting
-                                    .is_some_and(|s| s.kind == BuildSettingKind::Bool)
-                                && matches!(value.unpack_i32(), Some(0 | 1))
-                            {
-                                budget.borrow_mut().node().map_err(anyhow::Error::msg)?;
-                                Ok(AttrValue::Bool(value.unpack_i32() == Some(1)))
-                            } else {
-                                spec.kind.preflight_value_with_budget(
-                                    *value,
-                                    &mut budget.borrow_mut(),
-                                )?;
-                                spec.kind.parse(*value, Some(resolver))
-                            }
+                            spec.kind
+                                .preflight_value_with_budget(*value, &mut budget.borrow_mut())?;
+                            spec.kind.parse(*value, Some(resolver))
                         })()
                         .map_err(|e| {
                             starlark::Error::new_other(anyhow!("attribute {key:?}: {e}"))
@@ -3220,6 +3227,17 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] doc: Option<&str>,
     ) -> anyhow::Result<Descriptor> {
         let _ = doc;
+        // `default` is a Boolean parameter (StarlarkAttrModuleApi.java:1152-1157):
+        // the Starlark call check runs before any Type.BOOLEAN conversion, so
+        // unlike attribute values the integers 0 and 1 are rejected here.
+        if let Some(value) = default
+            && value.unpack_bool().is_none()
+        {
+            bail!(
+                "in call to bool(), parameter 'default' got value of type '{}', want 'bool'",
+                value.get_type()
+            );
+        }
         descriptor(AttrKind::Bool, default, mandatory, false, false)
     }
     fn label<'v>(
@@ -4897,7 +4915,30 @@ z = attr.string_dict()
             ("attr.string(default=1)", "string"),
             ("attr.string_list(default=[1])", "list of strings"),
             ("attr.int(default=True)", "int"),
-            ("attr.bool(default=1)", "bool"),
+            // Boolean parameter, not Type.BOOLEAN (genuine Bazel 9.3.0 rejects 0 and 1).
+            (
+                "attr.bool(default=1)",
+                "in call to bool(), parameter 'default' got value of type 'int', want 'bool'",
+            ),
+            (
+                "attr.bool(default=0)",
+                "in call to bool(), parameter 'default' got value of type 'int', want 'bool'",
+            ),
+            (
+                "attr.bool(default=None)",
+                "in call to bool(), parameter 'default' got value of type 'NoneType', want 'bool'",
+            ),
+            // rule()'s bool options are Boolean parameters: genuine Bazel 9.3.0
+            // rejects 0/1 ("in call to rule(), parameter 'executable' got value of
+            // type 'int', want 'bool'"); native rejects through the typed signature.
+            (
+                "rule(implementation=impl, executable=1)",
+                "Type of parameter `executable` doesn't match, expected `bool`, actual `int",
+            ),
+            (
+                "rule(implementation=impl, test=1)",
+                "Type of parameter `test` doesn't match, expected `bool`, actual `int",
+            ),
             (
                 "attr.label(cfg='bogus')",
                 "cfg must be either 'target', 'exec' or a starlark defined transition defined by the exec() or transition() functions.",
