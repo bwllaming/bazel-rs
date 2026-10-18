@@ -211,6 +211,14 @@ pub struct ActionExtra {
     pub client_environment: BTreeMap<String, std::ffi::OsString>,
     /// Execution requirements: keyed, no local effect.
     pub execution_info: BTreeMap<String, String>,
+    /// The spawn mnemonic (Spawn.getMnemonic): "Genrule" for genrule actions
+    /// (GenRuleAction.java:35), "TestRunner" for test spawns
+    /// (TestRunnerAction.java:112), the Starlark `mnemonic` parameter or
+    /// "Action" for ctx.actions spawns (StarlarkActionFactory.java:811).
+    /// Execution metadata, never part of the action key: --strategy matches
+    /// it (SpawnStrategyRegistry.getStrategies:142-143) exactly as Bazel's
+    /// strategy selection never changes an action cache key.
+    pub mnemonic: String,
     /// A native, process-free transform of one input into the only output.
     pub transform: Option<Transform>,
 }
@@ -2560,6 +2568,9 @@ pub fn execute_with_remote(
     let started = SystemTime::now();
     let clock = std::time::Instant::now();
     let mut logs = (Vec::new(), Vec::new());
+    // Whether the executed spawn ran under the sandbox strategy (N59); a
+    // native write, transform or remote hit runs no process at all.
+    let mut sandboxed = false;
     if let Some(write) = &action.write {
         write_executable_file(
             &execroot.join(&outputs[0]),
@@ -2583,21 +2594,53 @@ pub fn execute_with_remote(
         let mut stdout = create_log(&work.0.join("stdout.log"))?;
         let mut stderr = create_log(&work.0.join("stderr.log"))?;
         let argv = arguments(action);
-        let mut command = if action.executable_file && !argv[0].starts_with('/') {
+        // The spawn strategy (N59): the highest-priority strategy that can
+        // execute this spawn (SpawnStrategyResolver.resolveOne), resolved per
+        // action from its mnemonic. The strategy never changes the action key:
+        // a cache entry produced sandboxed satisfies a standalone request and
+        // vice versa, like Bazel's action cache.
+        let strategy = crate::sandbox::resolve(&action.extra.mnemonic, &action.execution_info)
+            .map_err(|error| format!("action '{}': {error}", action.id))?;
+        sandboxed = strategy == crate::sandbox::Strategy::Sandboxed;
+        let environment = resolved_environment(action);
+        let mut command = if sandboxed {
+            // The executor starts its own binary as the sandbox worker (the
+            // role linux-sandbox fills as the spawn's argv[0],
+            // SandboxedSpawnStrategy.exec -> LinuxSandboxCommandLineBuilder.
+            //buildForCommand) with the action's cwd and environment; the
+            // worker applies the sandbox and execs the action. The wrapped
+            // argv carries the action's own arguments after --.
+            let executable = std::env::current_exe()
+                .map_err(|e| format!("cannot start the sandbox worker for '{}': {e}", action.id))?;
+            let mut command = Command::new(&executable);
+            command.args(crate::sandbox::wrap(
+                &execroot,
+                &tmp,
+                &environment,
+                action.execution_info.contains("requires-network"),
+                &argv,
+                &work.0,
+                None,
+            ));
+            command
+        } else if action.executable_file && !argv[0].starts_with('/') {
             // Bazel runs a File executable by its execution path, relative
             // to the execution root; argv[0] keeps that spelling.
             use std::os::unix::process::CommandExt;
             let mut command = Command::new(execroot.join(&argv[0]));
             command.arg0(&argv[0]);
+            command.args(&argv[1..]);
             command
         } else {
-            Command::new(&argv[0])
+            let mut command = Command::new(&argv[0]);
+            command.args(&argv[1..]);
+            command
         };
-        command.args(&argv[1..]).current_dir(&execroot).env_clear();
+        command.current_dir(&execroot).env_clear();
         // Exactly resolved_environment (ActionEnvironment.resolve,
         // ActionEnvironment.java:113-122), the remote key's environment;
         // then PosixLocalEnvProvider's TMPDIR, last.
-        command.envs(resolved_environment(action));
+        command.envs(&environment);
         command
             .env("TMPDIR", &tmp)
             .stdin(Stdio::null())
@@ -2611,6 +2654,7 @@ pub fn execute_with_remote(
         let status = child
             .wait()
             .map_err(|e| format!("cannot wait for action '{}': {e}", action.id))?;
+        crate::sandbox::count(strategy);
         if remote_spec.is_some() {
             logs = (
                 fs::read(work.0.join("stdout.log"))
@@ -2623,8 +2667,56 @@ pub fn execute_with_remote(
             log_tail(&mut stdout).map_err(|e| format!("cannot read action stdout: {e}"))?;
         let stderr =
             log_tail(&mut stderr).map_err(|e| format!("cannot read action stderr: {e}"))?;
+        // A sandbox setup failure is an infrastructure failure of the
+        // strategy (AbstractSandboxSpawnRunner.runSpawn:
+        // sandbox.createFileSystem -> "Could not copy inputs into sandbox"),
+        // not the action's: the worker reports it through the setup-error
+        // file, so no action exit code is mistaken for one.
+        if sandboxed
+            && let Ok(error) = fs::read_to_string(work.0.join("sandbox-setup-error"))
+            && !error.is_empty()
+        {
+            let message = format!(
+                "action '{}' failed: could not set up the sandbox: {}",
+                action.id,
+                error.trim_end()
+            );
+            if crate::sandbox::debug() {
+                let sandbox_root = work.0.display().to_string();
+                std::mem::forget(work);
+                return Err(format!(
+                    "{message}\n\n(sandbox build root retained at '{sandbox_root}')"
+                ));
+            }
+            return Err(message);
+        }
         check_staged(&staged, &execroot).map_err(|e| format!("action '{}': {e}", action.id))?;
         if !status.success() {
+            // The sandbox strategy's failure message appends Bazel's
+            // suggestion unless --sandbox_debug itself is on (makeFailureMessage,
+            // AbstractSandboxSpawnRunner.java:186-195). The sandbox contents —
+            // this action's execroot, with the failed action's outputs in it —
+            // are retained below exactly when --sandbox_debug is on
+            // (runSpawn's finally: sandbox.delete() unless sandboxDebug).
+            if sandboxed {
+                if crate::sandbox::debug() {
+                    let sandbox_root = work.0.display().to_string();
+                    std::mem::forget(work);
+                    return Err(format!(
+                        "action '{}' failed ({}):\nstdout:\n{}\nstderr:\n{}\n\n\
+                         (sandbox build root retained at '{sandbox_root}')",
+                        action.id, status, stdout, stderr
+                    ));
+                }
+                return Err(format!(
+                    "action '{}' failed ({}):\nstdout:\n{}\nstderr:\n{}{}",
+                    action.id,
+                    status,
+                    stdout,
+                    stderr,
+                    crate::sandbox::SANDBOX_DEBUG_SUGGESTION
+                ));
+            }
             return Err(format!(
                 "action '{}' failed ({}):\nstdout:\n{}\nstderr:\n{}",
                 action.id, status, stdout, stderr
@@ -2768,6 +2860,12 @@ pub fn execute_with_remote(
         if let Err(error) = remote.upload(spec, &uploads, &logs.0, &logs.1, started, wall) {
             crate::remote_cache::warn(&error);
         }
+    }
+    // --sandbox_debug retains the sandbox build root after the build too
+    // (SandboxOptions.sandbox_debug: "the sandbox root contents are left
+    // untouched after a build").
+    if sandboxed && crate::sandbox::debug() {
+        std::mem::forget(work);
     }
     Ok(result(listings, false, false))
 }

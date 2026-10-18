@@ -663,6 +663,9 @@ struct SpawnOptions<'v> {
     /// The exec group arguments, already type-checked (N35).
     groups: GroupArguments,
     progress_message: Option<String>,
+    /// The spawn mnemonic (StarlarkActionFactory.getMnemonic with the
+    /// "Action" default, :811; crate::action::ActionExtra::mnemonic).
+    mnemonic: String,
 }
 
 /// Register a Starlark spawn: `executable` is Bazel's executable command-line
@@ -737,6 +740,7 @@ fn register_spawn(
             Some(value) if !value.is_none() => string_dict(value, "execution_requirements")?,
             _ => BTreeMap::new(),
         },
+        mnemonic: options.mnemonic,
         ..ActionExtra::default()
     };
     let environment = environment.fixed;
@@ -986,7 +990,7 @@ fn action_methods(builder: &mut MethodsBuilder) {
     ) -> anyhow::Result<NoneType> {
         let context = action_receiver(this, eval, false)?;
         // Scheduling hints with no effect on a local spawn's results.
-        let _ = (mnemonic, resource_set);
+        let _ = resource_set;
         let groups = group_arguments(this, context, "run_shell", exec_group, toolchain, eval)?;
         // runShell resolves the execution platform of a string command
         // first (StarlarkActionFactory.java:634-642, getExecutionPlatform:589-599).
@@ -1017,6 +1021,9 @@ fn action_methods(builder: &mut MethodsBuilder) {
                 input_manifests,
                 groups,
                 progress_message: progress_message.map(str::to_owned),
+                mnemonic: mnemonic
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| "Action".to_owned()),
             },
             Vec::new(),
             Vec::new(),
@@ -1128,7 +1135,7 @@ fn direct_action_methods(builder: &mut MethodsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let context = action_receiver(this, eval, false)?;
-        let _ = (mnemonic, resource_set);
+        let _ = resource_set;
         let groups = group_arguments(this, context, "run", exec_group, toolchain, eval)?;
         // The executable first (StarlarkActionFactory.run, :433-458).
         if let Some(file) = File::from_value(executable) {
@@ -1189,6 +1196,9 @@ fn direct_action_methods(builder: &mut MethodsBuilder) {
                 input_manifests,
                 groups,
                 progress_message: progress_message.map(str::to_owned),
+                mnemonic: mnemonic
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| "Action".to_owned()),
             },
             extra_inputs,
             trees,

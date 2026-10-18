@@ -189,10 +189,12 @@ struct Built {
 
 impl Built {
     fn actions(&self, executed: usize, hits: usize) {
+        // The summary's execution-mode note is strategy-dependent (N59):
+        // these fixtures run under the default (sandboxed) strategy.
         assert!(
-            self.stderr.lines().any(|line| line == format!(
-                "bazel-rs: {executed} actions executed, {hits} cache hits (experimental local execution; not sandboxed)"
-            )),
+            self.stderr.lines().any(|line| line.starts_with(&format!(
+                "bazel-rs: {executed} actions executed, {hits} cache hits (experimental local execution; "
+            ))),
             "{}",
             self.stderr
         );

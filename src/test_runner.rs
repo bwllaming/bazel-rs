@@ -772,6 +772,58 @@ impl Runner<'_> {
         fs::rename(&staging, entry).map_err(|e| io("cannot publish", entry, e))
     }
 
+    /// The spawn strategy and network requirement for one test spawn (N59):
+    /// TestRunner actions resolve like any other spawn
+    /// (crate::sandbox::resolve with the TestRunner mnemonic,
+    /// TestRunnerAction.java:112), the test rule's tags and execution
+    /// requirements as execution info (TargetUtils.getExecutionInfo).
+    fn strategy(&self, unit: &Unit<'_>) -> Result<(crate::sandbox::Strategy, bool), String> {
+        let mut info: std::collections::BTreeSet<String> =
+            unit.spec.info.tags.iter().cloned().collect();
+        let requires_network = info.contains("requires-network");
+        info.extend(unit.spec.info.execution_info().into_keys());
+        Ok((
+            crate::sandbox::resolve("TestRunner", &info)?,
+            requires_network,
+        ))
+    }
+
+    /// The sandbox worker's arguments for one test spawn: the full process
+    /// argv (`executable` in place of the wrapper's argv[0] spelling, which
+    /// travels as --arg0), the test environment for TEST_TMPDIR, and the
+    /// attempt's work directory for the worker's logs.
+    fn worker_args(
+        &self,
+        env: &BTreeMap<String, String>,
+        execroot: &Path,
+        args: &[String],
+        executable: &str,
+        arg0: &str,
+        requires_network: bool,
+    ) -> Vec<String> {
+        let environment: BTreeMap<String, std::ffi::OsString> = env
+            .iter()
+            .map(|(name, value)| (name.clone(), std::ffi::OsString::from(value)))
+            .collect();
+        let tmp = self
+            .client_env
+            .get("TMPDIR")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp"));
+        let mut arguments = vec![executable.to_owned()];
+        arguments.extend_from_slice(&args[1..]);
+        crate::sandbox::wrap(
+            execroot,
+            &tmp,
+            &environment,
+            requires_network,
+            &arguments,
+            execroot.parent().unwrap_or(execroot),
+            Some(arg0),
+        )
+    }
+
     /// One attempt (StandaloneTestRunnerSpawn.execute and runTestAttempt,
     /// exec/StandaloneTestStrategy.java:577-842). The outer error is an
     /// infrastructure failure; the inner one a TestExecException (the
@@ -810,30 +862,59 @@ impl Runner<'_> {
         let err_path = base.join("test.err");
         let log = fs::File::create(&log_path).map_err(|e| io("cannot create", &log_path, e))?;
         let err = fs::File::create(&err_path).map_err(|e| io("cannot create", &err_path, e))?;
-        let mut command = std::process::Command::new(execroot.join(SETUP_EXEC_PATH));
-        {
-            use std::os::unix::process::CommandExt;
-            command.arg0(&args[0]);
-            command.process_group(0);
-        }
+        let tmpdir = self
+            .client_env
+            .get("TMPDIR")
+            .filter(|value| !value.is_empty())
+            .map(String::as_str)
+            .unwrap_or("/tmp");
+        // Test spawns run under the same spawn strategy selection as build
+        // actions (N59, TestRunnerAction.java:112's TestRunner mnemonic; test
+        // actions stay local-only, N23g): sandboxed tests go through the
+        // sandbox worker, standalone ones start directly. A sandbox setup
+        // failure is an infrastructure failure of the attempt; a non-zero
+        // test exit under the sandbox is an ordinary test failure, without
+        // the action suggestion text (StandaloneTestStrategy reports the
+        // spawn's own status).
+        let (strategy, requires_network) = self.strategy(unit)?;
+        let sandboxed = strategy == crate::sandbox::Strategy::Sandboxed;
+        let mut command = if sandboxed {
+            let mut command = std::process::Command::new(
+                std::env::current_exe()
+                    .map_err(|e| format!("cannot start the sandbox worker: {e}"))?,
+            );
+            command.args(self.worker_args(
+                env,
+                execroot,
+                args,
+                SETUP_EXEC_PATH,
+                &args[0],
+                requires_network,
+            ));
+            {
+                use std::os::unix::process::CommandExt;
+                command.process_group(0);
+            }
+            command
+        } else {
+            let mut command = std::process::Command::new(execroot.join(SETUP_EXEC_PATH));
+            {
+                use std::os::unix::process::CommandExt;
+                command.arg0(&args[0]);
+                command.process_group(0);
+            }
+            command.args(&args[1..]);
+            command
+        };
         command
-            .args(&args[1..])
             .env_clear()
             .envs(env)
             // PosixLocalEnvProvider.rewriteLocalEnv (exec/local/PosixLocalEnvProvider.java:44-60).
-            .env(
-                "TMPDIR",
-                self.client_env
-                    .get("TMPDIR")
-                    .filter(|value| !value.is_empty())
-                    .map(String::as_str)
-                    .unwrap_or("/tmp"),
-            )
+            .env("TMPDIR", tmpdir)
             .current_dir(execroot)
             .stdin(std::process::Stdio::null())
             .stdout(log)
             .stderr(err);
-        let timeout = Duration::from_secs(options.timeout_seconds(unit.spec.info.timeout));
         let start = Instant::now();
         let mut child = crate::spawn_lock::spawn(&mut command)
             .map_err(|e| format!("cannot start {}: {e}", args[0]))?;
@@ -841,6 +922,7 @@ impl Runner<'_> {
         let mut streamer = (options.output == TestOutput::Streamed).then(Streamer::default);
         let mut timed_out = false;
         let mut terminated_at = None;
+        let timeout = Duration::from_secs(options.timeout_seconds(unit.spec.info.timeout));
         let status = loop {
             if let Some(streamer) = streamer.as_mut() {
                 streamer.pump(&log_path);
@@ -863,6 +945,19 @@ impl Runner<'_> {
         };
         // Kill any process the test left behind in its group.
         signal_group(pid, rustix::process::Signal::KILL);
+        // A sandbox setup failure is an infrastructure failure of the attempt
+        // (crate::sandbox), not a test result.
+        if sandboxed
+            && let Some(work) = execroot.parent()
+            && let Ok(error) = fs::read_to_string(work.join("sandbox-setup-error"))
+            && !error.is_empty()
+        {
+            return Ok(Err(format!(
+                "{test_name}: could not set up the sandbox: {}",
+                error.trim_end()
+            )));
+        }
+        crate::sandbox::count(strategy);
         let millis = start.elapsed().as_millis() as u64;
         if let Some(streamer) = streamer.as_mut() {
             streamer.pump(&log_path);
@@ -920,24 +1015,44 @@ impl Runner<'_> {
         // The XML generating spawn when the test wrote no test.xml (:784-813).
         let xml = base.join("test.xml");
         if !xml.exists() {
-            let mut command = std::process::Command::new(execroot.join(XML_EXEC_PATH));
-            {
-                use std::os::unix::process::CommandExt;
-                command.arg0(XML_EXEC_PATH);
-            }
             let mut xml_env = env.clone();
             xml_env.insert("TEST_NAME".to_owned(), test_name.to_owned());
             if unit.shards <= 1 {
                 xml_env.insert("TEST_SHARD_INDEX".to_owned(), "0".to_owned());
                 xml_env.insert("TEST_TOTAL_SHARDS".to_owned(), "0".to_owned());
             }
+            let xml_arguments = [
+                format!("{}/test.log", paths.base),
+                format!("{}/test.xml", paths.base),
+                (millis / 1000).to_string(),
+                exit_code.to_string(),
+            ];
+            let mut command = if sandboxed {
+                let mut command = std::process::Command::new(
+                    std::env::current_exe()
+                        .map_err(|e| format!("cannot start the sandbox worker: {e}"))?,
+                );
+                let mut arguments = vec![XML_EXEC_PATH.to_owned()];
+                arguments.extend(xml_arguments.iter().cloned());
+                command.args(self.worker_args(
+                    &xml_env,
+                    execroot,
+                    &arguments,
+                    XML_EXEC_PATH,
+                    XML_EXEC_PATH,
+                    requires_network,
+                ));
+                command
+            } else {
+                let mut command = std::process::Command::new(execroot.join(XML_EXEC_PATH));
+                {
+                    use std::os::unix::process::CommandExt;
+                    command.arg0(XML_EXEC_PATH);
+                }
+                command.args(&xml_arguments);
+                command
+            };
             command
-                .args([
-                    format!("{}/test.log", paths.base),
-                    format!("{}/test.xml", paths.base),
-                    (millis / 1000).to_string(),
-                    exit_code.to_string(),
-                ])
                 .env_clear()
                 .envs(&xml_env)
                 .env(

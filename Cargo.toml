@@ -18,6 +18,7 @@ fs2 = "0.4"
 # Only for the client-side HTTP/1 reason phrase (hyper::ext::ReasonPhrase) that
 # Bazel shows in "GET returned CODE REASON"; same version reqwest already uses.
 hyper = { version = "=1.12.0", default-features = false }
+landlock = "=0.4.7"
 lzma-rust2 = { version = "=0.22.0", default-features = false, features = ["std", "optimization", "xz"] }
 num-bigint = "=0.4.8"
 reqwest = { version = "=0.12.28", default-features = false, features = ["blocking", "rustls-tls-native-roots"] }

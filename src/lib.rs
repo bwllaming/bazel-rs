@@ -100,6 +100,7 @@ pub mod run_command;
 mod run_environment_info;
 pub mod runfiles;
 pub mod runfiles_tree;
+pub mod sandbox;
 pub mod scheduler;
 pub mod source_links;
 pub mod spawn_lock;

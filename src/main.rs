@@ -69,6 +69,16 @@ fn run() -> Result<(), String> {
                 .map_err(|_| "command-line arguments must be valid UTF-8".to_owned())
         })
         .collect::<Result<Vec<_>, _>>()?;
+    // The sandbox worker (crate::sandbox): the executor starts this binary
+    // with the hidden `__sandbox-worker` subcommand where Bazel starts its
+    // linux-sandbox tool. Dispatched before anything else: the worker is not
+    // a bazel command and shares none of the client state.
+    if args
+        .first()
+        .is_some_and(|arg| arg == bazel_rs::sandbox::WORKER_ARG)
+    {
+        std::process::exit(bazel_rs::sandbox::worker_main(&args[1..]));
+    }
     let line = bazelrc::split_command_line(args)?;
     let cache = line.cache_dir.clone().map(PathBuf::from);
     let command = line.command.clone().unwrap_or_else(|| "help".into());
@@ -114,6 +124,7 @@ fn run() -> Result<(), String> {
     let mut raw_registries = Vec::new();
     let mut credential_options = bazel_rs::credentials::CredentialOptions::default();
     let mut remote_options = bazel_rs::remote_cache::RemoteOptions::default();
+    let mut spawn_options = bazel_rs::sandbox::SpawnOptions::default();
     let mut runfiles_options = bazel_rs::runfiles_tree::RunfilesOptions::default();
     let mut output_selection = bazel_rs::output_group_info::OutputSelection::default();
     let mut aspects = Vec::new();
@@ -191,6 +202,7 @@ fn run() -> Result<(), String> {
         rc_options = native.rc;
         credential_options = native.credentials;
         remote_options = native.remote;
+        spawn_options = native.spawn;
         runfiles_options = native.runfiles;
         output_selection = native.output.clone();
         aspects = native.aspects;
@@ -236,6 +248,9 @@ fn run() -> Result<(), String> {
     }
     // Credential helpers and the remote cache (N41) for every command.
     let remote_enabled = setup_credentials_and_remote(&root, &credential_options, &remote_options)?;
+    // The spawn strategy and sandbox options (N59) for every executing
+    // command.
+    bazel_rs::sandbox::install(spawn_options);
     // Option parser warnings (deprecated options) once the native options
     // parsed (runtime/BlazeOptionHandler.java:536-539), after the rc notes.
     for warning in configuration_options.warnings() {
@@ -527,13 +542,18 @@ fn run() -> Result<(), String> {
     }
     if remote_enabled {
         eprintln!(
-            "bazel-rs: {} actions executed, {} cache hits, {} remote cache hits (experimental local execution; not sandboxed)",
-            summary.executed, summary.cache_hits, summary.remote_hits
+            "bazel-rs: {} actions executed, {} cache hits, {} remote cache hits (experimental local execution; {})",
+            summary.executed,
+            summary.cache_hits,
+            summary.remote_hits,
+            execution_note()
         );
     } else {
         eprintln!(
-            "bazel-rs: {} actions executed, {} cache hits (experimental local execution; not sandboxed)",
-            summary.executed, summary.cache_hits
+            "bazel-rs: {} actions executed, {} cache hits (experimental local execution; {})",
+            summary.executed,
+            summary.cache_hits,
+            execution_note()
         );
     }
     Ok(())
@@ -698,13 +718,18 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
     }
     if remote_enabled {
         eprintln!(
-            "bazel-rs: {} actions executed, {} cache hits, {} remote cache hits (experimental local execution; not sandboxed)",
-            summary.executed, summary.cache_hits, summary.remote_hits
+            "bazel-rs: {} actions executed, {} cache hits, {} remote cache hits (experimental local execution; {})",
+            summary.executed,
+            summary.cache_hits,
+            summary.remote_hits,
+            execution_note()
         );
     } else {
         eprintln!(
-            "bazel-rs: {} actions executed, {} cache hits (experimental local execution; not sandboxed)",
-            summary.executed, summary.cache_hits
+            "bazel-rs: {} actions executed, {} cache hits (experimental local execution; {})",
+            summary.executed,
+            summary.cache_hits,
+            execution_note()
         );
     }
     // getBuiltTargets/fullyValidateTarget (RunCommand.java:435-568, 1136-1185).
@@ -982,13 +1007,18 @@ fn test_targets(context: TestContext<'_>) -> Result<(), String> {
     }
     if remote_enabled {
         eprintln!(
-            "bazel-rs: {} actions executed, {} cache hits, {} remote cache hits (experimental local execution; not sandboxed)",
-            summary.executed, summary.cache_hits, summary.remote_hits
+            "bazel-rs: {} actions executed, {} cache hits, {} remote cache hits (experimental local execution; {})",
+            summary.executed,
+            summary.cache_hits,
+            summary.remote_hits,
+            execution_note()
         );
     } else {
         eprintln!(
-            "bazel-rs: {} actions executed, {} cache hits (experimental local execution; not sandboxed)",
-            summary.executed, summary.cache_hits
+            "bazel-rs: {} actions executed, {} cache hits (experimental local execution; {})",
+            summary.executed,
+            summary.cache_hits,
+            execution_note()
         );
     }
     if tests.is_empty() {
@@ -1315,6 +1345,23 @@ fn parse_jobs(value: &str) -> Result<usize, String> {
     Err(format!("--jobs requires a positive integer, got {value:?}"))
 }
 
+/// One comma-separated strategy list value
+/// (CommaSeparatedNonEmptyOptionListConverter: split on commas, empty
+/// segments drop out, order preserved).
+fn strategy_list(value: &str) -> Result<Vec<String>, String> {
+    let list = value
+        .split(',')
+        .filter(|identifier| !identifier.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if list.is_empty() {
+        return Err(format!(
+            "--spawn_strategy requires a comma-separated list of strategies, got {value:?}"
+        ));
+    }
+    Ok(list)
+}
+
 fn current_package(root: &Path, cwd: &Path) -> Result<String, String> {
     for dir in cwd.ancestors() {
         if dir.join("BUILD.bazel").is_file() || dir.join("BUILD").is_file() || dir == root {
@@ -1376,6 +1423,8 @@ struct NativeOptions {
     /// RunCommand.RunOptions (N23f, crate::run_command).
     run: bazel_rs::run_command::RunOptions,
     test: bazel_rs::test_command::TestOptions,
+    /// The spawn strategy and sandbox options (N59, crate::sandbox).
+    spawn: bazel_rs::sandbox::SpawnOptions,
 }
 
 impl NativeOptions {
@@ -1398,6 +1447,7 @@ impl NativeOptions {
             show_result: 1,
             run: bazel_rs::run_command::RunOptions::default(),
             test: bazel_rs::test_command::TestOptions::default(),
+            spawn: bazel_rs::sandbox::SpawnOptions::default(),
             configuration: if command == "query" {
                 // query is configuration-independent; it accepts (and validates)
                 // the modelled CoreOptions (runtime/commands/QueryCommand.java:59-67).
@@ -1538,6 +1588,66 @@ impl NativeOptions {
         } else if let Some(value) = arg.strip_prefix("--jobs=").filter(|_| builds(command)) {
             self.jobs = Some(parse_jobs(value)?);
             false
+        } else if builds(command) && arg == "--spawn_strategy" {
+            // CommaSeparatedNonEmptyOptionListConverter (ExecutionOptions.
+            // java:63-75): repeated flags append, highest priority first.
+            self.spawn.spawn_strategy.extend(strategy_list(
+                next.ok_or("--spawn_strategy requires a value")?,
+            )?);
+            true
+        } else if let Some(value) = arg
+            .strip_prefix("--spawn_strategy=")
+            .filter(|_| builds(command))
+        {
+            self.spawn.spawn_strategy.extend(strategy_list(value)?);
+            false
+        } else if builds(command) && arg == "--genrule_strategy" {
+            // ExecutionOptions.java:77-87: Genrule-only, deprecated in favor
+            // of --strategy=Genrule=.
+            self.spawn.genrule_strategy.extend(strategy_list(
+                next.ok_or("--genrule_strategy requires a value")?,
+            )?);
+            true
+        } else if let Some(value) = arg
+            .strip_prefix("--genrule_strategy=")
+            .filter(|_| builds(command))
+        {
+            self.spawn.genrule_strategy.extend(strategy_list(value)?);
+            false
+        } else if builds(command)
+            && arg == "--strategy"
+            && let Some(value) = next
+        {
+            self.parse_strategy(value)?;
+            true
+        } else if builds(command)
+            && let Some(value) = arg.strip_prefix("--strategy=")
+        {
+            self.parse_strategy(value)?;
+            false
+        } else if builds(command)
+            && let Some(value) = bazel_rs::configuration::boolean_option(arg, "sandbox_debug")
+        {
+            // SandboxOptions.java:87-97.
+            self.spawn.sandbox_debug = value?;
+            false
+        } else if builds(command)
+            && matches!(
+                arg,
+                "--sandbox_writable_path" | "--sandbox_block_path" | "--sandbox_tmpfs_path"
+            )
+        {
+            let path = next.ok_or_else(|| format!("{arg} requires a value"))?;
+            self.parse_sandbox_path(arg, path)?;
+            true
+        } else if builds(command)
+            && let Some(value) = arg
+                .strip_prefix("--sandbox_writable_path=")
+                .or_else(|| arg.strip_prefix("--sandbox_block_path="))
+                .or_else(|| arg.strip_prefix("--sandbox_tmpfs_path="))
+        {
+            self.parse_sandbox_path(arg, value)?;
+            false
         } else if builds(command)
             && let Some(value) = bazel_rs::configuration::boolean_option(arg, "run_validations")
                 .or_else(|| {
@@ -1655,6 +1765,55 @@ impl NativeOptions {
             return Err(format!(
                 "internal error: {arg} took the separate value {value:?} but its native parser did not consume it"
             ));
+        }
+        Ok(())
+    }
+
+    /// One `--strategy=<mnemonic>=<strategies>` (ExecutionOptions.java:89-93,
+    /// StringToStringListConverter: `name=value1[,value2]*`, repeated flags
+    /// accumulate; the last entry for a mnemonic wins, like Bazel's multimap
+    /// overwrite — SpawnStrategyRegistry.java:142-143 reads one list).
+    fn parse_strategy(&mut self, value: &str) -> Result<(), String> {
+        let Some((name, list)) = value.split_once('=') else {
+            return Err(format!(
+                "--strategy requires a 'mnemonic=strategy[,strategy...]' value, got {value:?}"
+            ));
+        };
+        let list = strategy_list(list)?;
+        if list.is_empty() {
+            return Err(format!(
+                "--strategy requires a 'mnemonic=strategy[,strategy...]' value, got {value:?}"
+            ));
+        }
+        self.spawn.strategy.retain(|(other, _)| other != name);
+        self.spawn.strategy.push((name.to_owned(), list));
+        Ok(())
+    }
+
+    /// One `--sandbox_{writable,block,tmpfs}_path` value (SandboxOptions;
+    /// allowMultiple, absolute paths in Bazel; a relative path resolves
+    /// against the client cwd as AbsolutePathFragmentConverter would).
+    fn parse_sandbox_path(&mut self, arg: &str, value: &str) -> Result<(), String> {
+        if value.is_empty() {
+            return Err(format!("{arg} requires a path"));
+        }
+        let path = std::path::Path::new(value);
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map_err(|e| format!("{arg}: cannot resolve the client directory: {e}"))?
+                .join(path)
+        };
+        match arg.split_once('=').map(|(name, _)| name).unwrap_or(arg) {
+            "--sandbox_writable_path" => self.spawn.sandbox_writable_path.push(path),
+            "--sandbox_block_path" => self.spawn.sandbox_block_path.push(path),
+            "--sandbox_tmpfs_path" => self.spawn.sandbox_tmpfs_path.push(path),
+            other => {
+                return Err(format!(
+                    "internal error: {other} is not a sandbox path option"
+                ));
+            }
         }
         Ok(())
     }
@@ -2038,5 +2197,17 @@ fn main() {
         let error = located(&error);
         eprintln!("bazel-rs: {error}");
         std::process::exit(1);
+    }
+}
+
+/// The build summary's execution-mode note: which strategy executed the
+/// actions (N59). "sandboxed" when every executed spawn ran under the sandbox
+/// strategy, "not sandboxed" otherwise (a --spawn_strategy=standalone request
+/// or a kernel without Landlock support).
+fn execution_note() -> &'static str {
+    if bazel_rs::sandbox::all_sandboxed() {
+        "sandboxed"
+    } else {
+        "not sandboxed"
     }
 }

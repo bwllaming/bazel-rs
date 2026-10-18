@@ -8791,6 +8791,8 @@ impl Engine {
                 outputs: outputs.clone(),
                 extra: action::ActionExtra {
                     inherited_environment: action_env.inherited.clone(),
+                    // GenRuleAction.MNEMONIC (GenRuleAction.java:35).
+                    mnemonic: "Genrule".into(),
                     ..Default::default()
                 },
                 environment: action_env.fixed.clone(),

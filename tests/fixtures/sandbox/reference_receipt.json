@@ -1,0 +1,242 @@
+{
+ "task": "N59 sandboxed local execution",
+ "reference": "bazel 9.3.0 (sha256 in scripts/fetch-bazel.sh receipt) vs bazel-rs on this host",
+ "method": "identical workspaces (genrules ok/leak/net/net2, sh_like_test leaky) built in scratch directories with private HOMEs; genuine runs with --nosystemrc --nohomerc and a scratch --output_user_root, native with --ignore_all_rc_files --cache-dir=cache; env PATH=/usr/bin:/bin",
+ "rows": [
+  {
+   "id": "environment",
+   "scenario": "namespace availability as the unprivileged build client (the design decision)",
+   "genuine": {
+    "kernel": "6.8.0-137-generic",
+    "seccomp": [
+     "Seccomp:\t2",
+     "Seccomp_filters:\t1"
+    ]
+   },
+   "native": {
+    "landlock_abi": {
+     "argv": [
+      "-c",
+      "grep -o 'landlock' /proc/self/status || true"
+     ],
+     "exit": 0,
+     "stderr": ""
+    },
+    "unshare_userns_mount": {
+     "argv": [
+      "--user",
+      "--map-root-user",
+      "--mount",
+      "true"
+     ],
+     "exit": 1,
+     "stderr": "unshare: write failed /proc/self/uid_map: Operation not permitted"
+    },
+    "unshare_userns_pid": {
+     "argv": [
+      "--user",
+      "--map-root-user",
+      "--pid",
+      "--fork",
+      "true"
+     ],
+     "exit": 1,
+     "stderr": "unshare: write failed /proc/self/uid_map: Operation not permitted"
+    },
+    "unshare_userns_only": {
+     "argv": [
+      "--user",
+      "--map-root-user",
+      "true"
+     ],
+     "exit": 1,
+     "stderr": "unshare: write failed /proc/self/uid_map: Operation not permitted"
+    }
+   },
+   "comparison": "DEVIATION",
+   "note": "mount/pid namespaces are seccomp-denied here (uid_map write EPERM / mount EPERM), so the native sandbox is Landlock-based; genuine 9.3.0 faces the same filter"
+  },
+  {
+   "id": "default-build",
+   "scenario": "build //:ok with the default strategy",
+   "genuine": {
+    "exit": 0,
+    "stderr": [
+     "INFO: 2 processes: 1 internal, 1 processwrapper-sandbox."
+    ],
+    "marker": false
+   },
+   "native": {
+    "exit": 0,
+    "stderr": [
+     "bazel-rs: 1 actions executed, 0 cache hits (experimental local execution; sandboxed)"
+    ],
+    "marker": false
+   },
+   "comparison": "EXACT",
+   "note": "both engines build under their default (sandboxed) strategy"
+  },
+  {
+   "id": "linux-sandbox-identifier",
+   "scenario": "explicit --spawn_strategy=linux-sandbox",
+   "genuine": {
+    "exit": 2,
+    "stderr": [
+     "ERROR: 'linux-sandbox' was requested for explicit default strategies but no strategy with that identifier was registered. Valid values are: [dynamic_worker, processwrapper-sandbox, standalone, dynamic, remote, worker, sandboxed, local]",
+     "ERROR: Build did NOT complete successfully"
+    ],
+    "marker": false
+   },
+   "native": {
+    "exit": 1,
+    "stderr": [
+     "/bin/bash: line 1: /home/coder/n59-capture-hou_hwm0/native/home/leak-marker: Permission denied",
+     "Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging"
+    ],
+    "marker": false
+   },
+   "comparison": "DEVIATION",
+   "note": "genuine: STRATEGY_NOT_FOUND (linux-sandbox unsupported under the container's seccomp filter, so `sandboxed` resolves to processwrapper-sandbox there); native: the Landlock sandbox accepts the alias and denies the out-of-sandbox write"
+  },
+  {
+   "id": "outside-write-default",
+   "scenario": "genrule writing outside the sandbox (scratch $HOME) under the default strategy",
+   "genuine": {
+    "exit": 0,
+    "stderr": [
+     "INFO: 2 processes: 1 internal, 1 processwrapper-sandbox."
+    ],
+    "marker": true
+   },
+   "native": {
+    "exit": 1,
+    "stderr": [
+     "/bin/bash: line 1: /home/coder/n59-capture-hou_hwm0/native/home/leak-marker: Permission denied",
+     "Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging"
+    ],
+    "marker": false
+   },
+   "comparison": "DEVIATION",
+   "note": "genuine processwrapper-sandbox does not isolate writes (marker created); the native Landlock sandbox fails the action (EACCES + Bazel's --sandbox_debug suggestion). On hosts where linux-sandbox can run, genuine fails with the same suggestion line and EROFS errno text"
+  },
+  {
+   "id": "outside-write-standalone",
+   "scenario": "the same genrule under --spawn_strategy=standalone",
+   "genuine": {
+    "exit": 0,
+    "stderr": [
+     "INFO: 2 processes: 1 internal, 1 local."
+    ],
+    "marker": true
+   },
+   "native": {
+    "exit": 0,
+    "stderr": [
+     "bazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)"
+    ],
+    "marker": true
+   },
+   "comparison": "EXACT",
+   "note": "both engines execute unsandboxed and create the marker"
+  },
+  {
+   "id": "strategy-list-no-escalation",
+   "scenario": "--spawn_strategy=sandboxed,standalone on the out-of-sandbox write",
+   "genuine": {
+    "exit": 0,
+    "stderr": [
+     "INFO: 2 processes: 1 internal, 1 processwrapper-sandbox."
+    ],
+    "marker": true
+   },
+   "native": {
+    "exit": 1,
+    "stderr": [
+     "/bin/bash: line 1: /home/coder/n59-capture-hou_hwm0/native/home/leak-marker: Permission denied",
+     "Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging"
+    ],
+    "marker": false
+   },
+   "comparison": "DEVIATION",
+   "note": "Bazel 9.3 picks the highest-priority usable strategy once (SpawnStrategyResolver.resolveOne) and does not retry with the next strategy on failure; genuine's processwrapper-sandbox succeeds (no isolation), the native Landlock sandbox fails once -- neither engine escalates"
+  },
+  {
+   "id": "network-default",
+   "scenario": "TCP connect under the default strategy (the connect error is net.txt)",
+   "genuine": {
+    "exit": 0,
+    "stderr": [
+     "INFO: 2 processes: 1 internal, 1 processwrapper-sandbox."
+    ],
+    "marker": false,
+    "output": "/bin/bash: connect: Connection refused\n/bin/bash: line 1: /dev/tcp/127.0.0.1/9: Connection refused\n"
+   },
+   "native": {
+    "exit": 0,
+    "stderr": [
+     "bazel-rs: 1 actions executed, 0 cache hits (experimental local execution; sandboxed)"
+    ],
+    "marker": false,
+    "output": "/bin/bash: connect: Permission denied\n/bin/bash: line 1: /dev/tcp/127.0.0.1/9: Permission denied\n"
+   },
+   "comparison": "DEVIATION",
+   "note": "genuine processwrapper leaves the network reachable (Connection refused); the native sandbox denies TCP (Permission denied), the counterpart of the network namespace linux-sandbox would create"
+  },
+  {
+   "id": "network-requires-tag",
+   "scenario": "the same connect with the requires-network tag",
+   "genuine": {
+    "exit": 0,
+    "stderr": [
+     "INFO: 2 processes: 1 internal, 1 processwrapper-sandbox."
+    ],
+    "marker": false,
+    "output": "/bin/bash: connect: Connection refused\n/bin/bash: line 1: /dev/tcp/127.0.0.1/9: Connection refused\n"
+   },
+   "native": {
+    "exit": 0,
+    "stderr": [
+     "bazel-rs: 1 actions executed, 0 cache hits (experimental local execution; sandboxed)"
+    ],
+    "marker": false,
+    "output": "/bin/bash: connect: Connection refused\n/bin/bash: line 1: /dev/tcp/127.0.0.1/9: Connection refused\n"
+   },
+   "comparison": "EXACT",
+   "note": "the tag lifts the restriction in both engines (both reach the network stack)"
+  },
+  {
+   "id": "output-bytes",
+   "scenario": "ok.txt digest across strategies (default build vs standalone rebuild)",
+   "genuine": {
+    "digest": "434728a410a78f56fc1b5899c3593436e61ab0c731e9072d95e96db290205e53",
+    "exit": 0
+   },
+   "native": {
+    "digest": "434728a410a78f56fc1b5899c3593436e61ab0c731e9072d95e96db290205e53",
+    "exit": 0
+   },
+   "comparison": "EXACT",
+   "note": "identical output bytes regardless of the executing strategy"
+  },
+  {
+   "id": "test-under-sandbox",
+   "scenario": "a test writing outside the sandbox (fails when the write is denied)",
+   "genuine": {
+    "exit": 0,
+    "stderr": [
+     "INFO: 7 processes: 6 internal, 2 processwrapper-sandbox."
+    ],
+    "marker": true
+   },
+   "native": {
+    "exit": 3,
+    "stderr": [
+     "bazel-rs: 4 actions executed, 0 cache hits (experimental local execution; not sandboxed)"
+    ],
+    "marker": false
+   },
+   "comparison": "DEVIATION",
+   "note": "genuine processwrapper-sandbox lets the write through (test passes); the native sandboxed test fails like a sandboxed build action"
+  }
+ ]
+}
