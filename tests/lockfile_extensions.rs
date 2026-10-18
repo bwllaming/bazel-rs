@@ -3,6 +3,7 @@
 //! written like Bazel 9.3, results reused from the workspace and hidden
 //! lockfiles, error-mode staleness texts, facts passed to extensions. Uses the
 //! local builtin-module fixture registry only; never a reference Bazel.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
