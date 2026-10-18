@@ -201,11 +201,11 @@ Read-only sources in the external cache:
   "cpp_link"`).
 
 The paired capture's chain E reproduces these declaration shapes with local
-types. Genuine rules_python/rules_go/rules_cc targets themselves still stop
-before analysis at other gaps (for example rules_java's registered
-toolchains, `java_common.google_legacy_api_enabled is not implemented in the
-native profile`; rules_cc's `cc_toolchain` itself is analyzed since N25d5,
-docs/CC_TOOLCHAIN.md).
+types. Genuine rules_python/rules_go/rules_cc targets analyze in the
+builtin-module profile (the demonstrated `~/code` build/test boundary,
+docs/ROADMAP.md; the former `java_common.google_legacy_api_enabled` gap is
+implemented since N28 as a getter), and rules_cc's `cc_toolchain` itself is
+analyzed since N25d5, docs/CC_TOOLCHAIN.md.
 
 ## Divergences and explicit failures
 

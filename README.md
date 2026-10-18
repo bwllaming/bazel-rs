@@ -330,10 +330,10 @@ repository differential validation passes 20 scoped checks and is not implied by
 module JSON parity. Its historical native application query failed on unavailable
 registry metadata for `aspect_bazel_lib@2.22.5`. The later N3 runtime-pinned query
 reached the JSON resource budget in effect before the decode-only JSON capacity
-profile (`ac9d646`). On the current tree, the native query of
-`//src/beyondwork.ai/utils/str:str` succeeds with the expected single-label
-output; a native build of that target passes loading and stops at the first
-analysis gap (`label_flag`/configuration). Evidence: main commit `2d2bfd4` with installed release `79bc245f…`, probe
+profile (`ac9d646`). By the N13–N15 promotion the native query of
+`//src/beyondwork.ai/utils/str:str` succeeded with the expected single-label
+output; a native build of that target then passed loading and stopped at
+the first analysis gap (`label_flag`/configuration). Evidence: main commit `2d2bfd4` with installed release `79bc245f…`, probe
 `artifacts/probe_application_v2.py` (native `query --experimental-builtin-modules
 --registry=https://bcr.bazel.build --lockfile_mode=off //src/beyondwork.ai/utils/str:str`,
 isolated HOME/TMPDIR/cache, tracked checkout state asserted unchanged): query exit 0,
@@ -346,9 +346,9 @@ build gets past that `label_flag` boundary and first stops at `go_library`'s own
 toolchain requirement (`rule(toolchains=[@@rules_go+//go:toolchain,
 @@bazel_tools//tools/cpp:toolchain_type])`, toolchain resolution is not yet
 implemented); its evidence receipt is recorded in `artifacts/n16a-m1-promotion.json`
-at promotion. With toolchain resolution (N17) the build of that target now enters toolchain
-resolution, which expands and analyzes every registered toolchain, and currently
-stops while loading rules_cc's `cc_shared_library.bzl` (computed attribute defaults
+at promotion. With toolchain resolution (N17) the build of that target entered toolchain
+resolution, which expanded and analyzed every registered toolchain, and then
+stopped while loading rules_cc's `cc_shared_library.bzl` (computed attribute defaults
 at `cc/common/semantics.bzl:62`, being added); its receipt is recorded in
 `artifacts/n17-n19-promotion.json` at promotion. With label dictionary attributes, computed defaults (N20) and the repository_ctx
 host APIs (N21) that load succeeds and the build stops later, while loading rules_cc's
@@ -359,11 +359,51 @@ later, while expanding registered toolchains: the `@build_stack_rules_proto`
 http_archive needs `repository_ctx.patch()` (being added in N26); its receipt is
 recorded in `artifacts/n18-n22-n24-promotion.json` at promotion. With runfiles/executable rules (N23a) and repository patches, lexer and
 string semantics (N26) that archive is fetched and patched, and the build
-stops later while expanding the rules_java toolchain registrations
-(`java_common.google_legacy_api_enabled`, an analysis-time Java API not yet
-implemented natively); its receipt is recorded in
-`artifacts/n23a-n26-promotion.json` at promotion. Application build/test, Go build/test
-parity and full-repository performance remain unestablished. See
+then stopped while expanding the rules_java toolchain registrations
+(`java_common.google_legacy_api_enabled`, an analysis-time Java API); its
+receipt is recorded in `artifacts/n23a-n26-promotion.json` at promotion.
+N28 (Java semantics getters, JavaOptions version strings, no-config
+`package_metadata` analysis) and the later increments moved past that
+boundary; the promotion receipts continuing the chain are
+`artifacts/n18c-n25-n27-n28-promotion.json`,
+`artifacts/n30-n23-n31-n32-n35-n36-promotion.json`,
+`artifacts/n33-n37-n44-promotion.json` and
+`artifacts/n51-n54-promotion.json` (integration-15: everything through the
+lockfile fail-closed write gate).
+
+On the current tree the demonstrated `~/code` application boundaries are:
+
+- **Build/test of `~/code` targets succeeds with
+  `--experimental-builtin-modules`** (and `--lockfile_mode=off`): `build
+  //src/beyondwork.ai/utils/str:str //:gazelle_bin //:aws_script` exits 0,
+  and `test //src/beyondwork.ai/utils/str:str_test` passes
+  (`Executed 1 out of 1 test: 1 test passes.`). The last analysis boundary
+  was the rules_go `go_library` `OutputGroupInfo(_validation=...)` shape,
+  lifted by N56 (receipt
+  `tests/fixtures/validation_actions/reference_receipt.json`; probe receipts
+  `artifacts/i16-app-build-final.json`, `artifacts/i16-app-test-final.json`,
+  isolated HOME/TMPDIR/cache, tracked checkout state asserted unchanged).
+- **The default module profile stops at `@@bazel_tools` no-contents**: a
+  build without `--experimental-builtin-modules` fails with `cannot load
+  '@@bazel_tools//tools/build_defs/repo/utils.bzl': the built-in repository
+  @@bazel_tools is visible to every module but has no contents in this
+  module profile; use --experimental-builtin-modules` (receipt
+  `artifacts/i16-app-defaultprofile-final.json`;
+  docs/BUILTIN_MODULES.md).
+- **Lockfile update mode is functional (fail-closed)** since N52: with
+  `--lockfile_mode=update --native-lockfile=<private path>` a `~/code`
+  query resolves, writes the private lockfile (`moduleExtensions` entries
+  with Bazel's digests) and reuses it byte-identically on the warm run
+  (`resolved N module extension(s)` prints only on an actual write);
+  receipt `artifacts/i16-code-lockfile-update.json` and the paired genuine
+  capture `tests/fixtures/lockfile_extensions/reference_receipt.json`
+  (22/22 steps exact, including its `~/code` `code_probe` cold/warm rows).
+  The write gate is fail-closed and stricter than Bazel: a command that
+  fails during module resolution or extension resolution writes nothing
+  (docs/REGISTRY_LOCKFILE.md).
+
+Go build/test parity beyond these targets and full-repository performance
+remain unestablished. See
 [`docs/REPOSITORY_VALIDATION.md`](docs/REPOSITORY_VALIDATION.md) for implementation
 scope, the source-preserving application probe and evidence boundaries.
 

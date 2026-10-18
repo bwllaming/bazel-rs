@@ -26,10 +26,11 @@ Successful fixture or filegroup builds do not establish application parity.
 
 The progression below records historical increment boundaries, not the current
 application state. The earlier N3 runtime-pinned query reached the JSON resource
-budget in effect before the decode-only JSON capacity profile (`ac9d646`). On the
-current tree, the native query of `//src/beyondwork.ai/utils/str:str` succeeds
-with the expected single-label output. A native build of that target passes
-loading and stops at the first analysis gap (`label_flag`/configuration).
+budget in effect before the decode-only JSON capacity profile (`ac9d646`). By
+the N13–N15 promotion the native query of
+`//src/beyondwork.ai/utils/str:str` succeeded with the expected single-label
+output. A native build of that target then passed loading and stopped at
+the first analysis gap (`label_flag`/configuration).
 Evidence: main commit `2d2bfd4` with installed release `79bc245f…`, probe
 `artifacts/probe_application_v2.py` (native `query --experimental-builtin-modules
 --registry=https://bcr.bazel.build --lockfile_mode=off //src/beyondwork.ai/utils/str:str`,
@@ -44,9 +45,9 @@ toolchain requirement (`rule(toolchains=[@@rules_go+//go:toolchain,
 @@bazel_tools//tools/cpp:toolchain_type])`, toolchain resolution was not yet
 implemented then; N17 implements it with the host platform as the only
 execution platform, docs/TOOLCHAINS.md); its evidence receipt is recorded in `artifacts/n16a-m1-promotion.json`
-at promotion. With toolchain resolution (N17) the build of that target now enters toolchain
-resolution, which expands and analyzes every registered toolchain, and currently
-stops while loading rules_cc's `cc_shared_library.bzl` (computed attribute defaults
+at promotion. With toolchain resolution (N17) the build of that target entered toolchain
+resolution, which expanded and analyzed every registered toolchain, and then
+stopped while loading rules_cc's `cc_shared_library.bzl` (computed attribute defaults
 at `cc/common/semantics.bzl:62`, being added); its receipt is recorded in
 `artifacts/n17-n19-promotion.json` at promotion. With label dictionary attributes, computed defaults (N20) and the repository_ctx
 host APIs (N21) that load succeeds and the build stops later, while loading rules_cc's
@@ -58,15 +59,28 @@ http_archive needs `repository_ctx.patch()` (being added in N26); its receipt is
 recorded in `artifacts/n18-n22-n24-promotion.json` at promotion. With runfiles/executable rules (N23a) and repository patches, lexer and
 string semantics (N26) that archive is fetched and patched, and the build
 stops later while expanding the rules_java toolchain registrations
-(`java_common.google_legacy_api_enabled`, an analysis-time Java API not yet
-implemented natively); its receipt is recorded in
-`artifacts/n23a-n26-promotion.json` at promotion. N28 implements the Java
-semantics getters (N28a), the JavaOptions version strings in
-`config_setting`/`select()` (N28b) and `package_metadata` analysis in the
-no-config configuration (N28c), which the rules_java toolchain packages need
-next. This
-is a query and loading result only: application build/test and performance
-remain unproven.
+(`java_common.google_legacy_api_enabled`, an analysis-time Java API); its
+receipt is recorded in `artifacts/n23a-n26-promotion.json` at promotion. N28
+implements the Java semantics getters (N28a), the JavaOptions version strings
+in `config_setting`/`select()` (N28b) and `package_metadata` analysis in the
+no-config configuration (N28c), which lifted that boundary at the time; the
+promotion receipts continuing the chain are
+`artifacts/n18c-n25-n27-n28-promotion.json`,
+`artifacts/n30-n23-n31-n32-n35-n36-promotion.json`,
+`artifacts/n33-n37-n44-promotion.json` and
+`artifacts/n51-n54-promotion.json` (integration-15: everything through the
+lockfile fail-closed write gate).
+
+That progression is history. The current demonstrated `~/code` application
+boundaries are: build/test of `~/code` targets succeeds with
+`--experimental-builtin-modules` (gazelle_bin, str, str_test, aws_script;
+`bazel test` passes — the last gap was the rules_go `_validation` output
+group, lifted by N56); the default module profile stops at `@@bazel_tools`
+no-contents (use `--experimental-builtin-modules`); and lockfile update mode
+is functional since N52 (fail-closed write gate; `moduleExtensions` entries
+computed, reused and written with Bazel's digests; see
+[REGISTRY_LOCKFILE.md](REGISTRY_LOCKFILE.md)). Full-repository performance
+and Go build/test parity beyond those targets remain unproven.
 
 These application runs pass `--ignore_all_rc_files`. With rc evaluation (N31,
 docs/BAZELRC.md) a native `build` or `query` in `~/code` without it evaluates the
