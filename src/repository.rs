@@ -611,9 +611,9 @@ impl RepositorySet {
     /// How many module extensions this invocation evaluated (prepared
     /// ordinary groups). BazelLockFileModule.afterCommand collects the
     /// SingleExtensionValues "evaluated in the current build" (:105-111) —
-    /// demand-driven, like SingleExtensionEvalFunction — and the native
-    /// lockfile write reports the same count when the loading phase
-    /// succeeded.
+    /// demand-driven, like SingleExtensionEvalFunction. Count-only input for
+    /// the write-path diagnostic: the catalog is metadata-only, and a
+    /// resolution error maps to 0, which merely omits the diagnostic.
     pub fn evaluated_module_extensions(&self) -> usize {
         self.direct_runtime()
             .map(|runtime| {

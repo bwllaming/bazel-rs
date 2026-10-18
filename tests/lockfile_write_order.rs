@@ -64,7 +64,7 @@ fn stderr(result: &Output) -> String {
     String::from_utf8_lossy(&result.stderr).into_owned()
 }
 
-const MARKER: &str = "bazel-rs: evaluated 1 module extension(s) before updating MODULE.bazel.lock";
+const MARKER: &str = "bazel-rs: evaluated 1 module extension(s) for MODULE.bazel.lock";
 
 #[test]
 fn failing_extension_in_update_writes_no_lockfile_and_fails() {
@@ -108,7 +108,13 @@ fn successful_update_evaluates_all_demanded_extensions_then_writes() {
     );
     let result = f.query("update");
     assert!(result.status.success(), "{}", stderr(&result));
-    assert!(stderr(&result).contains(MARKER), "{}", stderr(&result));
+    // The diagnostic prints exactly once, and only because a write happened.
+    assert_eq!(
+        stderr(&result).matches(MARKER).count(),
+        1,
+        "{}",
+        stderr(&result)
+    );
     let lock = f.lock().unwrap();
     assert!(
         lock.starts_with("{\n  \"lockFileVersion\": 28,\n"),
@@ -121,6 +127,12 @@ fn successful_update_evaluates_all_demanded_extensions_then_writes() {
         "{lock}"
     );
     assert!(!lock.contains("stale"), "{lock}");
+    // Write-only-if-changed: an unchanged value is not rewritten and the
+    // diagnostic stays silent.
+    let warm = f.query("update");
+    assert!(warm.status.success(), "{}", stderr(&warm));
+    assert!(!stderr(&warm).contains("evaluated"), "{}", stderr(&warm));
+    assert_eq!(f.lock().unwrap(), lock);
 }
 
 #[test]

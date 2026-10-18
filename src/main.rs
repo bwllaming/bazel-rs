@@ -493,9 +493,12 @@ fn run() -> Result<(), String> {
 /// demanded — evaluated successfully. BazelLockFileModule.afterCommand
 /// (Bazel 9.3 :63-100) writes only with BazelModuleResolutionValue,
 /// BazelDepGraphValue and the lockfile value present, using the
-/// SingleExtensionValues "evaluated in the current build" (:105-141); the
-/// native gate is fail-closed: a command that fails before this point
-/// writes nothing at all.
+/// SingleExtensionValues "evaluated in the current build" (:105-141). The
+/// native gate is fail-closed and STRICTER than Bazel: a command that fails
+/// before this point writes nothing at all, whereas genuine Bazel's
+/// afterCommand combines whatever evaluated and still writes when a demanded
+/// extension failed (E1c2 observation: rc=1, lockfile rewritten; expected
+/// native mismatch).
 struct LockfileGate {
     session: bazel_rs::registry_session::SessionHandle,
     repositories: Arc<bazel_rs::repository::RepositorySet>,
@@ -512,13 +515,10 @@ impl LockfileGate {
         if !session.mode().writes() {
             return;
         }
+        // The count only feeds the write-path diagnostic; Bazel prints
+        // nothing here.
         let evaluated = self.repositories.evaluated_module_extensions();
-        if evaluated > 0 {
-            eprintln!(
-                "bazel-rs: evaluated {evaluated} module extension(s) before updating MODULE.bazel.lock"
-            );
-        }
-        session.mark_module_extensions_evaluated();
+        session.mark_module_extensions_evaluated(evaluated);
     }
 }
 

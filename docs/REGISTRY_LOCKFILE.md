@@ -35,10 +35,16 @@ registries.
   that failed after its loading phase (target selection) succeeded, but never in
   `error` or `off` mode. A command that fails earlier — module resolution or any
   demanded module extension evaluation — writes nothing at all: the write gate
-  opens only when the whole resolution succeeded (loading phase), matching the
-  native fail-closed policy for partial lockfile updates (N37 follow-up; genuine
-  Bazel's `afterCommand` is laxer and combines whatever resolved). As
-  in Bazel, a write failure does not fail the command (native prints a warning).
+  opens only when the whole resolution succeeded (loading phase). This
+  fail-closed gate is **stricter than Bazel**: `BazelLockFileModule.afterCommand`
+  combines whatever evaluated (:105-141, over `getDoneValues()`) and genuine
+  Bazel 9.3 still rewrote MODULE.bazel.lock (184 `registryFileHashes`,
+  `moduleExtensions: {}`) for a command that failed on a demanded extension
+  (`fail()` in its implementation; the E1c2 observation) — an expected native
+  mismatch. As in Bazel, a write failure does not fail the command (native
+  prints a warning). When bytes were actually written, native prints the
+  diagnostic `bazel-rs: evaluated N module extension(s) for
+  MODULE.bazel.lock`; Bazel prints nothing.
 - Only remote URLs are recorded. `file:` registries are never written
   (`BazelLockFileModule.java:158-167`) and they ignore hashes
   (`bzlmod/RegistryFactoryImpl.java:59-71`).
@@ -247,6 +253,10 @@ private `--cache-dir`:
   order does not affect value equality.
 - Local registries keep lazy `source.json` reads, and their files are never
   recorded.
+- `bazel mod deps --lockfile_mode=update` — the remedy Bazel's own messages
+  suggest for an outdated lockfile — is a known gap: the native `mod` command
+  is the bounded graph profile and never writes MODULE.bazel.lock (only
+  `query`/`build`/`run`/`test` do).
 
 ## Evidence
 

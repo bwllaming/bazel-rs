@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Concurrent registry requests (Bazel's discovery fetches a whole horizon
@@ -77,13 +77,19 @@ pub struct RegistrySession {
     recorded: Mutex<BTreeMap<String, Option<String>>>,
     resolution: Mutex<Option<Resolution>>,
     /// Whether every module extension the command demanded evaluated
-    /// successfully in this invocation (the loading phase completed).
-    /// BazelLockFileModule.afterCommand combines BazelModuleResolutionValue
-    /// and BazelDepGraphValue with the SingleExtensionValues "evaluated in
-    /// the current build" (:95-100, :105-141); until the whole module
-    /// resolution — demanded extensions included — succeeded,
-    /// `updated_lockfile` stays None and nothing is written.
+    /// successfully in this invocation (the loading phase completed), and how
+    /// many were evaluated. BazelLockFileModule.afterCommand combines
+    /// BazelModuleResolutionValue and BazelDepGraphValue with the
+    /// SingleExtensionValues "evaluated in the current build" (:95-100,
+    /// :105-141). The native gate is fail-closed and STRICTER than Bazel:
+    /// until the whole module resolution — demanded extensions included —
+    /// succeeded, `updated_lockfile` stays None and nothing is written,
+    /// whereas genuine Bazel still writes after a demanded extension failed
+    /// (E1c2: rc=1, lockfile rewritten; expected native mismatch).
     extensions_evaluated: AtomicBool,
+    /// The evaluated count of the gated invocation, for the write-path
+    /// diagnostic only.
+    evaluated_extensions: AtomicUsize,
     /// Normalized registry URL -> spelling as given (IndexRegistry.getUrl()).
     spellings: BTreeMap<String, String>,
 }
@@ -187,6 +193,7 @@ impl RegistrySession {
             recorded: Mutex::default(),
             resolution: Mutex::default(),
             extensions_evaluated: AtomicBool::new(false),
+            evaluated_extensions: AtomicUsize::new(0),
             spellings: BTreeMap::new(),
         })
     }
@@ -457,8 +464,12 @@ impl RegistrySession {
     /// BazelLockFileModule.afterCommand collects, "evaluated in the current
     /// build" (:105-141), exist for this invocation and the lockfile may be
     /// written. A command that fails before this point — extension
-    /// evaluation included — leaves MODULE.bazel.lock untouched.
-    pub fn mark_module_extensions_evaluated(&self) {
+    /// evaluation included — leaves MODULE.bazel.lock untouched (stricter
+    /// than Bazel, see `extensions_evaluated`). `evaluated` only feeds the
+    /// write-path diagnostic.
+    pub fn mark_module_extensions_evaluated(&self, evaluated: usize) {
+        self.evaluated_extensions
+            .store(evaluated, Ordering::Release);
         self.extensions_evaluated.store(true, Ordering::Release);
     }
 
@@ -494,12 +505,26 @@ impl RegistrySession {
 
     /// Write the updated lockfile, if any, to the configured target. Like
     /// BazelLockFileModule.updateLockfile, failures do not fail the command.
+    /// The native-only diagnostic of how many module extensions the
+    /// invocation evaluated prints only after bytes were actually written
+    /// (write-only-if-changed; Bazel prints nothing).
     pub fn finish(&self) -> Option<String> {
         let path = self.write_path.as_ref()?;
         let lockfile = self.updated_lockfile()?;
-        std::fs::write(path, lockfile.serialize())
-            .err()
-            .map(|error| format!("Error while updating MODULE.bazel.lock file: {error}"))
+        match std::fs::write(path, lockfile.serialize()) {
+            Ok(()) => {
+                let evaluated = self.evaluated_extensions.load(Ordering::Acquire);
+                if evaluated > 0 {
+                    eprintln!(
+                        "bazel-rs: evaluated {evaluated} module extension(s) for MODULE.bazel.lock"
+                    );
+                }
+                None
+            }
+            Err(error) => Some(format!(
+                "Error while updating MODULE.bazel.lock file: {error}"
+            )),
+        }
     }
 }
 
@@ -772,7 +797,7 @@ mod tests {
             selected_yanked: Vec::new(),
             usages: Some(ExtensionUsages::default()),
         });
-        first.mark_module_extensions_evaluated();
+        first.mark_module_extensions_evaluated(0);
         assert_eq!(first.finish(), None);
         let text = std::fs::read_to_string(dir.path().join("MODULE.bazel.lock")).unwrap();
         assert!(
@@ -798,7 +823,7 @@ mod tests {
             selected_yanked: Vec::new(),
             usages: Some(ExtensionUsages::default()),
         });
-        second.mark_module_extensions_evaluated();
+        second.mark_module_extensions_evaluated(0);
         assert!(second.updated_lockfile().is_none());
         // Refresh retries "not found"; error mode requires hashes.
         let refresh = session(dir.path(), LockfileMode::Refresh, None);
@@ -964,7 +989,7 @@ mod tests {
         // usage-table extension evaluated (BazelLockFileModule.java:95-100).
         assert_eq!(session.finish(), None);
         assert!(!overlay.exists());
-        session.mark_module_extensions_evaluated();
+        session.mark_module_extensions_evaluated(0);
         assert_eq!(session.finish(), None);
         assert!(overlay.exists());
         assert!(
@@ -985,7 +1010,7 @@ mod tests {
             usages: Some(ExtensionUsages::default()),
         });
         assert!(readonly.updated_lockfile().is_none());
-        readonly.mark_module_extensions_evaluated();
+        readonly.mark_module_extensions_evaluated(0);
         assert!(readonly.updated_lockfile().is_some());
         assert_eq!(readonly.finish(), None);
     }
