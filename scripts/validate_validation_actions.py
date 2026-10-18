@@ -84,6 +84,32 @@ def structural_failures(receipt):
     return problems
 
 
+def post_failures(receipt):
+    """Hermetic checks of the post-refinement rows, when present."""
+    post = receipt.get('post_capture_changes')
+    if post is None:
+        return []
+    problems = []
+    for name in ('order/BUILD.bazel', 'order/defs.bzl'):
+        recorded = post.get('files', {}).get(name)
+        actual = digest((FIXTURE / name).read_bytes())
+        if recorded != actual:
+            problems.append(f'post fixture digest {name}')
+    phases = post.get('phases', [])
+    if [p.get('id') for p in phases] != ['P01-collection-order']:
+        problems.append('post phase ids')
+    for phase in phases:
+        if phase['classification'] != 'exact':
+            problems.append(f"{phase['id']} not exact")
+        elif phase['genuine']['order'] != phase['native']['order']:
+            problems.append(f"{phase['id']} order columns differ")
+        elif phase['genuine']['order'] != ('order/t_toolchains.validated,'
+                                           'order/t_z.validated,'
+                                           'order/t_a.validated'):
+            problems.append(f"{phase['id']} unexpected order")
+    return problems
+
+
 def counts(receipt):
     out = {}
     for phase in receipt['phases']:
@@ -166,7 +192,7 @@ def main():
                         help='replay the receipt\'s native phases with this binary')
     args = parser.parse_args()
     receipt = load_receipt()
-    problems = structural_failures(receipt)
+    problems = structural_failures(receipt) + post_failures(receipt)
     if counts(receipt) != expected_counts():
         problems.append(f"counts {counts(receipt)} != {expected_counts()}")
     if args.native is not None:

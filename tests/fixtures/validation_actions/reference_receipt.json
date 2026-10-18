@@ -615,6 +615,31 @@
    }
   }
  ],
+ "post_capture_changes": {
+  "files": {
+   "order/BUILD.bazel": "4ac2528eb20edd991fa3d4a906d9d0329586b297d02cd8f184220f5b1844e0e6",
+   "order/defs.bzl": "0e68ce6c1793a84d6c841cd142b56534bd9f0f6d29bd1f4ce54743d2f4bbd937"
+  },
+  "phases": [
+   {
+    "argv": [
+     "build",
+     "//order:check"
+    ],
+    "classification": "exact",
+    "genuine": {
+     "order": "order/t_toolchains.validated,order/t_z.validated,order/t_a.validated",
+     "returncode": 0
+    },
+    "id": "P01-collection-order",
+    "native": {
+     "order": "order/t_toolchains.validated,order/t_z.validated,order/t_a.validated",
+     "returncode": 0
+    }
+   }
+  ],
+  "purpose": "N56 review refinements: rule-class attribute order of the transitive collection (built-in toolchains before declared attributes in declaration order; _-prefixed DIRECT defaults stay implicit while LATE_BOUND _x becomes :x and would propagate), observed through the printed to_list() of //order:ordered's collected _validation group."
+ },
  "purpose": "Paired genuine Bazel 9.3.0 vs native bazel-rs capture of N56 (docs/VALIDATION_ACTIONS.md): the _validation output group (rule-returned, like rules_go go/private/rules/library.bzl:69-75), RuleConfiguredTargetBuilder transitive collection per attribute kind, OutputFileConfiguredTarget delegation, --output_groups +/- semantics with the -_validation quirk, --run_validations=false, failing validation actions, the _validation_transitive private API, the absent ValidationProvider symbol, and the genuine-only aspect and skip_validations boundaries. One fresh fixture copy per phase per engine; evidence only, never a build input.",
  "reference": {
   "binary": "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",

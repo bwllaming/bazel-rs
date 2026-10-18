@@ -171,27 +171,97 @@ pub(crate) fn attribute_dependency_key(label: &str, name: &str, spec: &AttrSpec)
     }
 }
 
+/// Whether the attribute named `name` (a rule-class attribute, Starlark
+/// spelling) is an implicit dependency whose validation outputs never
+/// propagate: a `$`-prefixed native name (Attribute.isImplicit,
+/// Attribute.java:2265-2275), or a `_`-prefixed Starlark name of an
+/// attribute whose value source converts `_x` to the native `$x` — DIRECT
+/// and COMPUTED_DEFAULT (AttributeValueSource.java:25-28, 64-72). A
+/// LATE_BOUND (or MATERIALIZER, unmodelled here) `_x` converts to `:x`,
+/// which is NOT implicit (AttributeValueSource.java:25-26): its
+/// prerequisite's `_validation` group propagates like any explicit
+/// dependency's (unless it is a tool dependency).
+pub(crate) fn implicit_attribute(name: &str, spec: &AttrSpec) -> bool {
+    name.starts_with('$') || (name.starts_with('_') && !spec.declaration.late_bound)
+}
+
+/// The built-in dependency-class attributes every Starlark rule class
+/// carries (StarlarkRuleClassFunctions.baseRule over
+/// BaseRuleClasses.commonCoreAndStarlarkAttributes), in rule-class order,
+/// with whether Attribute.isToolDependency (Attribute.java:2119-2127)
+/// filters them: `aspect_hints` (BaseRuleClasses.java:298) and `toolchains`
+/// (:167-170 of StarlarkRuleClassFunctions) are collected;
+/// `exec_compatible_with` and `target_compatible_with` are walked and
+/// dropped — `.tool("... exists for constraint checking, not to create an
+/// actual dependency")` (StarlarkRuleClassFunctions.java:174-177, 186-192).
+/// `visibility` is a nodep label list; `$`/`:`-prefixed built-ins
+/// (`:action_listener`, `$config_dependencies`, the no-config environment
+/// and `package_metadata` attributes) are implicit or tool dependencies.
+const BUILTIN_DEPENDENCY_ATTRIBUTES: [(&str, bool); 4] = [
+    ("aspect_hints", false),
+    ("toolchains", false),
+    ("exec_compatible_with", true),
+    ("target_compatible_with", true),
+];
+
 /// RuleConfiguredTargetBuilder.collectTransitiveValidationOutputGroups
-/// (:397-430): the `_validation` groups of every prerequisite reached
-/// through a label-class attribute of the rule class that is not an implicit
-/// dependency (`$`- and `_`-prefixed names), not a tool dependency (an
-/// exec/no-config transition, Attribute.isToolDependency :2119-2127 —
-/// `cfg = "exec"` Starlark attributes and the `package_metadata`
-/// NoConfigTransition alike) and not `skip_validations`. The framework's own
-/// edges (resolved toolchains, implicit test-runner attributes) are not
-/// attribute prerequisites and contribute nothing. Bazel iterates the rule
-/// class's attributes in declaration order; the schema's name order here.
-/// The `_`-prefix exclusion is the observed genuine-9.3 behavior of the
-/// paired receipt (tests/fixtures/validation_actions, phase A08).
+/// (:397-425): the `_validation` groups of every prerequisite reached
+/// through the rule class's label-class attributes that are not implicit
+/// (`$`-prefixed native names; `_`-prefixed Starlark DIRECT/
+/// COMPUTED_DEFAULT names, which become `$x` — AttributeValueSource.java:
+/// 25-28, 64-72), not tool dependencies (an exec/no-config transition or a
+/// `.tool()` built-in, Attribute.isToolDependency :2119-2127) and not
+/// `skip_validations`. Bazel iterates `ruleContext.attributes().
+/// getAttributeNames()` — the rule class's attributes in class order:
+/// built-ins first (BUILTIN_DEPENDENCY_ATTRIBUTES), then the declared
+/// attributes in declaration order (`attr_order`), so the collected
+/// to_list() order matches. The framework's own edges (resolved toolchain
+/// implementations, implicit test-runner attributes) are not attribute
+/// prerequisites and contribute nothing. `aspect_hints` prerequisites are
+/// not analyzed by the native profile (aspect machinery), so that walk
+/// finds no entries.
 fn transitive_validation(
+    rule: &Rule,
     invocation: &crate::custom_rule::CustomInvocation,
     dependencies: &BTreeMap<String, DependencyTarget>,
+    repositories: &RepositorySet,
 ) -> Vec<File> {
     let mut files = Vec::new();
     let mut seen = BTreeSet::new();
-    for (name, spec) in &invocation.schema {
-        if name.starts_with('$')
-            || name.starts_with('_')
+    let mut collect = |target: &DependencyTarget| {
+        let Some(info) = target.providers.get(crate::output_group_info::PROVIDER_ID) else {
+            return;
+        };
+        for file in crate::output_group_info::validation_files(info.value()) {
+            if seen.insert(file.clone()) {
+                files.push(file);
+            }
+        }
+    };
+    for (name, tool) in BUILTIN_DEPENDENCY_ATTRIBUTES {
+        // A `.tool()` built-in is walked and dropped, exactly like Bazel's
+        // isToolDependency filter.
+        if tool {
+            continue;
+        }
+        for text in invocation.declaration.builtin.target.labels(name) {
+            let Ok(label) = repositories.parse(
+                text.as_str(),
+                rule.label.repository.as_str(),
+                rule.label.package.as_str(),
+            ) else {
+                continue;
+            };
+            if let Some(target) = dependencies.get(&dependency_key(&label.to_string(), false)) {
+                collect(target);
+            }
+        }
+    }
+    for name in &invocation.declaration.attr_order {
+        let Some(spec) = invocation.schema.get(name) else {
+            continue;
+        };
+        if implicit_attribute(name, spec)
             || spec.declaration.skip_validations
             || matches!(spec.declaration.cfg, crate::rule_declarations::Cfg::Exec(_))
         {
@@ -225,14 +295,7 @@ fn transitive_validation(
             else {
                 continue;
             };
-            let Some(info) = target.providers.get(crate::output_group_info::PROVIDER_ID) else {
-                continue;
-            };
-            for file in crate::output_group_info::validation_files(info.value()) {
-                if seen.insert(file.clone()) {
-                    files.push(file);
-                }
-            }
+            collect(target);
         }
     }
     files
@@ -1654,7 +1717,7 @@ fn analyze_inner(
         active,
         top_level_functions: invocation.top_level_functions.clone(),
         loaded_functions: target.loaded_functions.cloned(),
-        repositories,
+        repositories: repositories.clone(),
         scope: crate::analysis_runtime::ScopeState::new(
             rule.label.to_string(),
             crate::subrule::direct_ids(invocation.subrules.iter().map(|value| value.value()))?,
@@ -1804,7 +1867,8 @@ fn analyze_inner(
                 // label attributes that are not implicit (`$`-prefixed), not
                 // tool dependencies (`cfg = "exec"`/no-config transitions) and
                 // not `skip_validations`, merged into the target's own group.
-                let collected = transitive_validation(invocation, dependencies);
+                let collected =
+                    transitive_validation(rule, invocation, dependencies, &repositories);
                 if !collected.is_empty() {
                     crate::output_group_info::add_group(
                         &mut groups,
@@ -1926,6 +1990,36 @@ mod tests {
     use crate::label::Label;
     use starlark::environment::Globals;
     use starlark::syntax::{AstModule, Dialect};
+
+    fn spec_of(declaration: crate::custom_rule::AttrDeclaration) -> AttrSpec {
+        AttrSpec {
+            kind: AttrKind::Label,
+            default: AttrValue::Label(None),
+            mandatory: false,
+            allow_files: false,
+            allow_single_file: false,
+            non_empty: false,
+            required_providers: Vec::new(),
+            declaration,
+        }
+    }
+
+    #[test]
+    fn implicit_attributes_follow_the_value_source_prefixes() {
+        let plain = crate::custom_rule::AttrDeclaration::default();
+        let late_bound = crate::custom_rule::AttrDeclaration {
+            late_bound: true,
+            ..Default::default()
+        };
+        // AttributeValueSource.java:25-28, 64-72: DIRECT/COMPUTED_DEFAULT
+        // `_x` becomes the native `$x` (implicit,
+        // Attribute.java:2265-2275); LATE_BOUND/MATERIALIZER `_x` becomes
+        // `:x`, which is not implicit.
+        assert!(implicit_attribute("$implicit", &spec_of(plain.clone())));
+        assert!(implicit_attribute("_direct", &spec_of(plain.clone())));
+        assert!(!implicit_attribute("_late", &spec_of(late_bound)));
+        assert!(!implicit_attribute("public", &spec_of(plain)));
+    }
 
     #[test]
     fn string_dict_analysis_nonempty_freeze_unicode_and_action_environment() {

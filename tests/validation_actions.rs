@@ -3,6 +3,7 @@
 //! tests/fixtures/validation_actions: the paired genuine-Bazel receipt
 //! (reference_receipt.json) records the same phases' native columns; these
 //! tests assert them executably.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -265,5 +266,25 @@ fn aspects_and_skip_validations_remain_explicit_boundaries() {
     rejected(
         &ws.build_with(&[], &["//:skipped"]),
         "attribute 'skipped' skip_validations=True",
+    );
+}
+
+#[test]
+fn collection_follows_rule_class_attribute_order() {
+    // P01: the built-in `toolchains` attribute collects before the declared
+    // attributes, and those in declaration order (`z_first` before
+    // `a_second`), matching genuine Bazel's printed to_list() order
+    // (receipt post_capture_changes).
+    let ws = Workspace::new();
+    let output = ws.run(&["build", "//order:check"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let text = stderr(&output);
+    let order = text
+        .lines()
+        .find_map(|line| line.split_once("ORDER ").map(|(_, rest)| rest.trim()))
+        .unwrap_or_else(|| panic!("no ORDER line in:\n{text}"));
+    assert_eq!(
+        order,
+        "order/t_toolchains.validated,order/t_z.validated,order/t_a.validated"
     );
 }

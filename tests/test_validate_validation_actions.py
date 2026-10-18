@@ -112,6 +112,17 @@ class ReceiptTests(unittest.TestCase):
         broken['reference']['sha256'] = '0' * 64
         self.assertIn('reference sha256 pin', suite.structural_failures(broken))
 
+    def test_post_capture_changes_order_rows(self):
+        post = self.receipt.get('post_capture_changes')
+        self.assertIsNotNone(post, 'post_capture_changes recorded')
+        self.assertEqual(suite.post_failures(self.receipt), [])
+        phase = post['phases'][0]
+        self.assertEqual(phase['classification'], 'exact')
+        self.assertEqual(
+            phase['genuine']['order'],
+            'order/t_toolchains.validated,order/t_z.validated,order/t_a.validated',
+        )
+
     def test_reported_parser(self):
         self.assertEqual(suite._reported('//:g\t/cache/g.extra\n//:g\t/cache/g.out'),
                          ['g.extra', 'g.out'])

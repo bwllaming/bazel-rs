@@ -37,22 +37,42 @@ outputs and the `_validation` groups of every prerequisite reached through
 
 - a label-class attribute (`label`, `label_list`, `label_keyed_string_dict`,
   `string_keyed_label_dict`, `label_list_dict` — `getLabelClass() ==
-  DEPENDENCY`),
-- that is not an implicit dependency (`$`-prefixed, Attribute.java:2273-2275,
-  **and `_`-prefixed Starlark private attributes** — the observed genuine-9.3
-  contract of receipt phase A08: a `_`-prefixed
-  `attr.label(default = ...)` prerequisite's validation outputs do not
-  propagate while a public attribute's do),
+  DEPENDENCY`) — the built-in dependency-class attributes included:
+  `aspect_hints` and `toolchains` collect; `exec_compatible_with` and
+  `target_compatible_with` are walked and dropped like Bazel's
+  `Attribute.isToolDependency` filter (`.tool("... exists for constraint
+  checking, not to create an actual dependency")`,
+  StarlarkRuleClassFunctions.java:174-177, 186-192); `visibility` is a nodep
+  label list;
+- that is not an implicit dependency: a `$`-prefixed native name
+  (Attribute.isImplicit, Attribute.java:2265-2275), or a `_`-prefixed
+  Starlark name whose value source converts `_x` to the native `$x` —
+  DIRECT and COMPUTED_DEFAULT (AttributeValueSource.java:25-28, 64-72).
+  A LATE_BOUND `_x` converts to `:x`, which is **not** implicit: its
+  prerequisite's `_validation` group propagates like any explicit
+  dependency's (unless it is a tool dependency); a MATERIALIZER `_x`
+  behaves the same way and remains unmodelled here. This source chain is
+  what the paired receipt observed as phase A08;
 - not a tool dependency (`cfg = "exec"`; the `package_metadata`
   NoConfigTransition is a tool transition too — Attribute.isToolDependency,
   :2119-2127),
 - and not `skip_validations=True` (genuine Bazel additionally gates that
   attribute kind behind `tools/allowlists/skip_validations_allowlist`).
 
-The framework's own edges (resolved toolchains, the implicit test-runner
-attributes) are not attribute prerequisites and contribute nothing. Native
-rules (genrule, filegroup, alias, ...) collect through their `srcs`
-(target-configuration) edges only. Analysis tests propagate nothing
+Bazel iterates `ruleContext.attributes().getAttributeNames()` — the rule
+class's attributes in class order — so the collected group's `to_list()`
+order follows it: built-ins first (`aspect_hints`, then `toolchains`), then
+the declared attributes in declaration order. The native walk matches
+(`BUILTIN_DEPENDENCY_ATTRIBUTES`, then `attr_order`; receipt
+`post_capture_changes` P01: both engines print
+`t_toolchains,t_z,t_a` for `toolchains = [":t_toolchains"]` with `z_first`
+declared before `a_second`). Native rules (genrule, filegroup, alias, ...)
+collect through their `toolchains` and `srcs` (target-configuration) edges
+in the same class order. The framework's own edges (resolved toolchain
+implementations, the implicit test-runner attributes) are not attribute
+prerequisites and contribute nothing, and `aspect_hints` prerequisites are
+not analyzed by the native profile (aspect machinery), so that walk finds
+no entries. Analysis tests propagate nothing
 (RuleConfiguredTargetBuilder.java:294-296); those rules never reach the
 native analysis (`rule(analysis_test=True)` is an unanalyzed declared
 feature).
@@ -99,7 +119,11 @@ explicitly.
   target it is applied to).
 - Everything else in the receipt is exact: exit codes, materialized
   bazel-bin trees and reported output sets of 16 phases match genuine Bazel
-  9.3.0.
+  9.3.0, and the post-refinement row P01 matches the collection order.
+- A LATE_BOUND `_x` attribute (native `:x`) propagating its prerequisite's
+  validation outputs is source-derived (AttributeValueSource) and unit
+  tested (`analysis::tests::implicit_attributes_follow_the_value_source_prefixes`);
+  no cheap genuine row exists without a custom configuration field.
 
 ## Evidence
 

@@ -1,0 +1,25 @@
+load(":defs.bzl", "check_order", "ordered", "tval")
+
+tval(
+    name = "t_toolchains",
+)
+
+tval(
+    name = "t_z",
+)
+
+tval(
+    name = "t_a",
+)
+
+ordered(
+    name = "ordered",
+    toolchains = [":t_toolchains"],
+    z_first = ":t_z",
+    a_second = ":t_a",
+)
+
+check_order(
+    name = "check",
+    dep = ":ordered",
+)

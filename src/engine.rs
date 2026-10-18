@@ -7113,7 +7113,16 @@ impl Engine {
         {
             let mut collected = Vec::new();
             let mut seen = BTreeSet::new();
-            for edge in self.rule_edges(rule) {
+            let edges = self.rule_edges(rule);
+            // Rule-class attribute order (AbstractAttributeMapper.
+            // getAttributeNames over RuleClass.getAttributes): the built-in
+            // `toolchains` attribute before the rule's own `srcs`.
+            let mut ordered = edges
+                .iter()
+                .filter(|edge| edge.attribute == "toolchains")
+                .collect::<Vec<_>>();
+            ordered.extend(edges.iter().filter(|edge| edge.attribute != "toolchains"));
+            for edge in ordered {
                 if edge.attribute.starts_with('$')
                     || edge.attribute.starts_with('_')
                     || !matches!(edge.cfg, EdgeCfg::Target)
