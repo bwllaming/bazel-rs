@@ -514,8 +514,7 @@ impl RegistrySession {
     /// `extensions_evaluated`). `resolved` only feeds the write-path
     /// diagnostic.
     pub fn mark_module_extensions_resolved(&self, resolved: usize) {
-        self.resolved_extensions
-            .store(resolved, Ordering::Release);
+        self.resolved_extensions.store(resolved, Ordering::Release);
         self.extensions_evaluated.store(true, Ordering::Release);
     }
 

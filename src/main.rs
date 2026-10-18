@@ -406,7 +406,8 @@ fn run() -> Result<(), String> {
             return Err(fatal);
         }
         // Loading — module resolution and every demanded extension
-        // evaluation — succeeded: the lockfile write is allowed.
+        // resolution (evaluation or lockfile reuse) — succeeded: the
+        // lockfile write is allowed.
         lockfile_gate.open();
         use std::io::Write;
         let mut stdout = std::io::stdout().lock();

@@ -122,18 +122,9 @@ fn successful_update_evaluates_all_demanded_extensions_then_writes() {
     );
     assert!(lock.contains("\"moduleExtensions\": {"), "{lock}");
     assert!(lock.contains("\"//:ext.bzl%files\": {"), "{lock}");
-    assert!(
-        lock.contains("\"bzlTransitiveDigest\": "),
-        "{lock}"
-    );
-    assert!(
-        lock.contains("\"usagesDigest\": "),
-        "{lock}"
-    );
-    assert!(
-        lock.contains("\"generatedRepoSpecs\": {"),
-        "{lock}"
-    );
+    assert!(lock.contains("\"bzlTransitiveDigest\": "), "{lock}");
+    assert!(lock.contains("\"usagesDigest\": "), "{lock}");
+    assert!(lock.contains("\"generatedRepoSpecs\": {"), "{lock}");
     assert!(!lock.contains("stale"), "{lock}");
     // Write-only-if-changed: an unchanged value is not rewritten and the
     // diagnostic stays silent, although the extension counts as resolved
