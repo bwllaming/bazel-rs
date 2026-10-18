@@ -209,7 +209,7 @@ mod owned {
     #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagable)]
     pub(super) struct DefaultInfoConstructor;
 
-    #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
+    #[derive(Clone, Debug, Allocative)]
     pub(crate) struct Target {
         pub label: LabelValue,
         pub files: Vec<File>,
@@ -226,8 +226,28 @@ mod owned {
         /// FileProvider.getFilesToBuild: one nested set per target.
         pub files_depset: Depset,
     }
+
+    /// The Starlark `Target` **value**: the one `Arc<Target>` of its
+    /// configured target (N55). Skyframe hands every consumer the same
+    /// ConfiguredTarget instance per (label, configuration) for the whole
+    /// analysis (one ConfiguredTargetValue per ConfiguredTargetKey,
+    /// skyframe/ConfiguredTargetKey.java:60; `AbstractConfiguredTarget` has
+    /// no equals override, so equality is Java identity,
+    /// analysis/configuredtargets/AbstractConfiguredTarget.java:46,95-97).
+    /// The engine therefore allocates each configured target's Target data
+    /// once and shares the `Arc` with every consumer's `ctx.attr`, every
+    /// provider that stores it and every depset snapshot (crate::engine
+    /// `ActionPlanning`); equality is `Arc::ptr_eq` and the hash (the
+    /// label) is consistent with it. An alias edge is the alias's own
+    /// configured target (an AliasConfiguredTarget,
+    /// rules/AliasConfiguredTarget.java:72,134-144) and an exec-configured
+    /// edge has its own ConfiguredTargetKey, so both stay distinct
+    /// instances.
+    #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
+    pub(crate) struct TargetValue(pub Arc<Target>);
 }
 pub(crate) use owned::Target;
+pub(crate) use owned::TargetValue;
 use owned::{DefaultInfoConstructor, DefaultInfoValue, FileRoot, LabelValue};
 pub(crate) use owned::{Depset, DepsetNode, Item, ItemType, Order};
 pub use owned::{File, SymlinkEntry};
@@ -261,7 +281,7 @@ starlark_simple_value!(LabelValue);
 starlark_simple_value!(Depset);
 starlark_simple_value!(DefaultInfoConstructor);
 starlark_simple_value!(DefaultInfoValue);
-starlark_simple_value!(Target);
+starlark_simple_value!(TargetValue);
 starlark_simple_value!(SymlinkEntry);
 
 impl File {
@@ -851,7 +871,7 @@ impl Item {
             Self::None => Value::new_none(),
             Self::Struct(item) => item.alloc(heap),
             Self::Depset(item) => heap.alloc(item.0.clone()),
-            Self::Target(item) => heap.alloc(item.0.as_ref().clone()),
+            Self::Target(item) => heap.alloc(TargetValue(item.0.clone())),
             Self::Runfiles(item) => heap.alloc(item.0.as_ref().clone()),
             Self::Function(item) => heap.access_owned_frozen_value(&item.0),
             Self::List(_) | Self::Dict(_) => {
@@ -1487,7 +1507,7 @@ pub(crate) fn target_payload_files(target: &Target) -> anyhow::Result<Vec<File>>
 
 /// [`target_payload_files`] of a Target value.
 pub(crate) fn target_value_files(value: Value<'_>) -> Option<anyhow::Result<Vec<File>>> {
-    Target::from_value(value).map(target_payload_files)
+    TargetValue::from_value(value).map(|target| target_payload_files(&target.0))
 }
 
 /// BuiltinProvider.repr (packages/BuiltinProvider.java:94-97).
@@ -1825,6 +1845,13 @@ impl fmt::Display for Target {
     }
 }
 
+/// The repr of the value is its configured-target class's repr.
+impl fmt::Display for TargetValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 impl Target {
     /// A rule configured target (directly or through an alias), which always
     /// has an OutputGroupInfo.
@@ -1855,22 +1882,28 @@ impl Target {
 }
 
 #[starlark_value(type = "Target")]
-impl<'v> StarlarkValue<'v> for Target {
+impl<'v> StarlarkValue<'v> for TargetValue {
     /// RuleConfiguredTarget.debugPrint (configuredtargets/RuleConfiguredTarget.java:288-303):
     /// the declared provider keys in insertion order, the returned providers
     /// then the framework's OutputGroupInfo (RuleConfiguredTargetBuilder.java:158-172,211-213).
     /// Other configured targets print their repr (StarlarkValue.java:77-79).
     fn collect_debug_print(&self, collector: &mut String, _eval: &Evaluator<'v, '_, '_>) {
         use std::fmt::Write;
+        let target = self.0.as_ref();
         if !matches!(
-            self.kind,
+            target.kind,
             TargetKind::Rule | TargetKind::SingleExecutableRule
         ) {
-            write!(collector, "{self}").unwrap();
+            write!(collector, "{}", target).unwrap();
             return;
         }
-        write!(collector, "<target {}, keys:[", self.label.canonical_form()).unwrap();
-        for key in &self.provider_keys {
+        write!(
+            collector,
+            "<target {}, keys:[",
+            target.label.canonical_form()
+        )
+        .unwrap();
+        for key in &target.provider_keys {
             collector.push_str(key);
             collector.push_str(", ");
         }
@@ -1879,18 +1912,26 @@ impl<'v> StarlarkValue<'v> for Target {
 
     /// Configured targets are immutable Starlark values, hence hashable
     /// (StarlarkValue.isHashable/isImmutable, net/starlark/java/eval/StarlarkValue.java;
-    /// AbstractConfiguredTarget.isImmutable), with Java identity equality:
-    /// the default pointer `equals` is kept and the hash is consistent with it.
-    /// `ctx.attr` label-keyed dictionaries use them as keys.
+    /// AbstractConfiguredTarget.isImmutable), with Java identity equality
+    /// (`AbstractConfiguredTarget` has no equals override): equality is the
+    /// one `Arc<Target>` per configured target (N55), the hash (the label)
+    /// is consistent with it. `ctx.attr` label-keyed dictionaries use them
+    /// as keys.
     fn write_hash(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
-        self.label.canonical_form().hash(hasher);
+        self.0.label.canonical_form().hash(hasher);
         Ok(())
+    }
+
+    /// Java identity equality of the ConfiguredTarget instance: the shared
+    /// `Arc<Target>` (one per ConfiguredTargetKey for the whole analysis).
+    fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
+        Ok(TargetValue::from_value(other).is_some_and(|other| Arc::ptr_eq(&self.0, &other.0)))
     }
 
     fn get_attr(&self, name: &str, heap: Heap<'v>) -> Option<Value<'v>> {
         Some(match name {
-            "files" => alloc_depset(heap, self.files.clone()),
-            "label" => heap.alloc(self.label.clone()),
+            "files" => alloc_depset(heap, self.0.files.clone()),
+            "label" => heap.alloc(self.0.label.clone()),
             _ => return None,
         })
     }
@@ -1901,7 +1942,7 @@ impl<'v> StarlarkValue<'v> for Target {
 
     fn at(&self, index: Value<'v>, heap: Heap<'v>) -> starlark::Result<Value<'v>> {
         if DefaultInfoConstructor::from_value(index).is_some() {
-            return Ok(heap.alloc(self.default_info()));
+            return Ok(heap.alloc(self.0.default_info()));
         }
         let identity = crate::providers::provider_identity(index).ok_or_else(|| {
             starlark::Error::new_other(anyhow!(
@@ -1909,18 +1950,18 @@ impl<'v> StarlarkValue<'v> for Target {
             ))
         })?;
         if identity == crate::output_group_info::PROVIDER_ID
-            && !self.providers.contains_key(&identity)
-            && self.is_rule()
+            && !self.0.providers.contains_key(&identity)
+            && self.0.is_rule()
         {
             return Ok(heap.alloc(crate::output_group_info::merged(
                 Vec::new(),
-                self.runfiles.default_runfiles().all_artifacts(),
+                self.0.runfiles.default_runfiles().all_artifacts(),
             )));
         }
-        let provider = self.providers.get(&identity).ok_or_else(|| {
+        let provider = self.0.providers.get(&identity).ok_or_else(|| {
             starlark::Error::new_other(anyhow!(
                 "Target {} does not provide {identity}",
-                self.label.unambiguous_canonical_form()
+                self.0.label.unambiguous_canonical_form()
             ))
         })?;
         Ok(heap.access_owned_frozen_value(provider))
@@ -1935,8 +1976,8 @@ impl<'v> StarlarkValue<'v> for Target {
                 "Target membership requires an exported provider constructor"
             ))
         })?;
-        Ok(self.providers.contains_key(&identity)
-            || (identity == crate::output_group_info::PROVIDER_ID && self.is_rule()))
+        Ok(self.0.providers.contains_key(&identity)
+            || (identity == crate::output_group_info::PROVIDER_ID && self.0.is_rule()))
     }
 }
 
@@ -2051,6 +2092,8 @@ pub fn alloc_target_with_providers<'v>(
 
 /// As [`alloc_target_with_providers`], for a dependency of a known
 /// configured-target class, with its RunfilesProvider/FilesToRunProvider.
+/// A standalone mint: its own `Arc<Target>` instance (not the configured
+/// target's shared one).
 pub(crate) fn alloc_target_of_kind<'v>(
     heap: Heap<'v>,
     label: &str,
@@ -2060,7 +2103,31 @@ pub(crate) fn alloc_target_of_kind<'v>(
     provider_keys: Vec<String>,
     runfiles: crate::runfiles::TargetRunfiles,
 ) -> Value<'v> {
-    heap.alloc(Target {
+    alloc_shared_target(
+        heap,
+        &Arc::new(target_of_kind(
+            label,
+            files,
+            providers,
+            kind,
+            provider_keys,
+            runfiles,
+        )),
+    )
+}
+
+/// The heap-free Target data of a configured target: built once per
+/// ConfiguredTargetKey for the whole analysis and shared by every consumer
+/// (crate::engine `ActionPlanning`, N55).
+pub(crate) fn target_of_kind(
+    label: &str,
+    files: Vec<File>,
+    providers: BTreeMap<String, OwnedFrozenValue>,
+    kind: TargetKind,
+    provider_keys: Vec<String>,
+    runfiles: crate::runfiles::TargetRunfiles,
+) -> Target {
+    Target {
         label: LabelValue::parse(label).expect("Target label must be an absolute valid label"),
         files_depset: Depset::from_files(files.clone()),
         files,
@@ -2068,7 +2135,13 @@ pub(crate) fn alloc_target_of_kind<'v>(
         kind,
         provider_keys,
         runfiles,
-    })
+    }
+}
+
+/// Re-allocates a configured target's shared `Target` value on `heap`
+/// (a cheap handle: the `Arc<Target>` identity is unchanged).
+pub(crate) fn alloc_shared_target<'v>(heap: Heap<'v>, shared: &Arc<Target>) -> Value<'v> {
+    heap.alloc(TargetValue(shared.clone()))
 }
 
 /// StarlarkRuleContext.makeLabelMap (analysis/starlark/StarlarkRuleContext.java:1284-1313)
@@ -2077,7 +2150,7 @@ pub(crate) fn alloc_target_of_kind<'v>(
 /// (default true), the executable when the files to build are not exactly
 /// one file, else the files to build. `None` for a non-Target.
 pub(crate) fn target_location_entry(value: Value<'_>) -> Option<(String, Vec<File>)> {
-    let target = Target::from_value(value)?;
+    let target = TargetValue::from_value(value)?.0.as_ref();
     let label = match &target.kind {
         TargetKind::Alias(alias, _) => alias.clone(),
         _ => target.label.canonical_form(),

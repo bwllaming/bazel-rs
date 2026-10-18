@@ -68,11 +68,17 @@ closure or lambda, and any other value whose immutability is not modelled
 built-in functions inside a frozen list, ...): `a depset element containing
 ... is not implemented in the native profile`. Known approximations: native
 functions are per-package `.bzl` evaluations, so the same `def` reached
-through two packages' evaluations is two functions natively (one in Bazel);
-a configured target element compares by label and the identity of its
-provider objects, and `to_list()` re-allocates it, so it is not `==` to the
-original Target value (no per-configured-target native handle on this base;
-for integration with N44's shared configured targets).
+through two packages' evaluations is two functions natively (one in Bazel).
+A configured target element is Bazel's identity comparison exactly (N55):
+the engine allocates one `Target` value per ConfiguredTargetKey for the
+whole analysis, the snapshot shares that allocation
+(`crate::depset_items::TargetItem`, `Arc::ptr_eq`), and `to_list()`
+re-allocates a value that is `==` to the original Target value and to every
+other consumer's. Paired capture
+`tests/fixtures/target_identity/reference_receipt.json`: every identity row
+(provider-carried, depset snapshots across producers, same-transition
+attributes, alias/exec distinct, Target-holding freeze) is EXACT against
+genuine Bazel 9.3.0.
 
 ## Frozen lists and dicts inside elements (N49b)
 
@@ -102,10 +108,13 @@ snapshots of the elements (`depset_items::frozen_copy`). Bazel's copy is
 shallow, so an element without a native frozen copy fails explicitly
 instead of yielding a mutable copy: a mutable value (`cc_internal.freeze of
 a list containing a mutable value of type 'list' (Bazel's shallow immutable
-copy keeps it mutable) is not implemented in the native profile`), a value
-holding a configured target, a closure, or a value whose immutability is not
-modelled. On this base every `freeze` reached by the rules_cc/cc_toolchain
-tests and the rules_go go_library fixture is of an empty list.
+copy keeps it mutable) is not implemented in the native profile`), a
+closure, or a value whose immutability is not modelled. A configured target
+keeps its identity through the copy (N55: the snapshot shares the
+configured target's one allocation), so a list or dict holding a Target
+freezes like any other immutable element. On this base every `freeze`
+reached by the rules_cc/cc_toolchain tests and the rules_go go_library
+fixture is of an empty list.
 
 ## Identity of a depset built from one transitive set (N49b)
 

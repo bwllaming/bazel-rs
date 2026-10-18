@@ -129,6 +129,15 @@ struct ActionPlanning {
     /// The runfiles support nodes of each configured target with runfiles
     /// support (N23f, Engine::plan_runfiles_support).
     runfiles_nodes: BTreeMap<ConfiguredTargetKey, RunfilesNodes>,
+    /// The one shared `Target` value of each dependency edge's configured
+    /// target (N55): keyed by the edge's ConfiguredTargetKey (the requested
+    /// label and its edge configuration), allocated once and referenced by
+    /// every consumer's `ctx.attr`, every provider that stores it and every
+    /// depset snapshot — Bazel's one ConfiguredTarget instance per label
+    /// and configuration (skyframe/ConfiguredTargetKey.java:60;
+    /// AbstractConfiguredTarget identity equality). An alias edge and an
+    /// exec-configured edge are their own keys, hence their own instances.
+    target_identities: BTreeMap<ConfiguredTargetKey, std::sync::Arc<crate::starlark_types::Target>>,
 }
 
 /// What `bazel run` executes after the build (Engine::build_for_run).
@@ -6366,6 +6375,7 @@ impl Engine {
             validation,
             repositories,
             runfiles_nodes,
+            target_identities,
             ..
         } = state;
         // The transitive repositories of this configured target: its own and
@@ -6653,6 +6663,33 @@ impl Engine {
                     };
                     providers.insert(crate::instrumented_files::PROVIDER_ID.to_owned(), info);
                 }
+                // The one shared Target value of this configured target
+                // (N55): the edge's own ConfiguredTargetKey — the requested
+                // label and its edge configuration — so every consumer (and
+                // every provider carrying it) sees the same instance, while
+                // an alias edge, an exec edge or a different Starlark
+                // transition's configuration is its own.
+                let identity = match target_identities.entry(dependency) {
+                    std::collections::btree_map::Entry::Occupied(shared) => shared.get().clone(),
+                    std::collections::btree_map::Entry::Vacant(vacant) => {
+                        let provider_keys =
+                            provider_keys.get(&actual_key).cloned().unwrap_or_default();
+                        vacant
+                            .insert(std::sync::Arc::new(analysis::dependency_target_data(
+                                &label.to_string(),
+                                &actual.to_string(),
+                                &files,
+                                matches!(target, Target::Source(_)),
+                                is_rule,
+                                matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::PackageGroup(_))),
+                                matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::Filegroup)),
+                                &providers,
+                                &provider_keys,
+                                &runfiles,
+                            )))
+                            .clone()
+                    }
+                };
                 dependency_targets.insert(
                     map_key,
                     DependencyTarget {
@@ -6677,6 +6714,7 @@ impl Engine {
                             }
                             _ => None,
                         },
+                        identity,
                     },
                 );
             }

@@ -16,7 +16,7 @@ use starlark::values::{FrozenHeapName, Heap, OwnedFrozenValue, Value};
 use crate::custom_rule::{AttrKind, AttrSpec, AttrValue};
 use crate::package::Rule;
 use crate::repository::RepositorySet;
-use crate::starlark_types::{Depset, File, alloc_file, alloc_target};
+use crate::starlark_types::{Depset, File, Target, alloc_file, alloc_shared_target, alloc_target};
 
 #[derive(Clone, Debug)]
 pub struct DependencyTarget {
@@ -38,6 +38,13 @@ pub struct DependencyTarget {
     /// The actual rule's class name (ConfiguredTargetAndData.getRuleClass):
     /// `None` for files and package groups.
     pub rule_class: Option<String>,
+    /// The configured target's one shared `Target` value (N55): the engine
+    /// allocates it once per ConfiguredTargetKey — the edge's requested label
+    /// and configuration — so every consumer's `ctx.attr`, every provider
+    /// that stores it and every depset snapshot references the same
+    /// `Arc<Target>` (crate::engine `ActionPlanning`; Bazel's one
+    /// ConfiguredTarget instance per label and configuration).
+    pub(crate) identity: std::sync::Arc<Target>,
 }
 
 use crate::analysis_runtime::Context;
@@ -66,70 +73,69 @@ fn output_label<'v>(heap: Heap<'v>, rule: &Rule, output: &str) -> anyhow::Result
 /// A `ctx.attr` Target whose repr names its configured-target class, with
 /// its runfiles providers. A requested label that differs from the resolved
 /// one is an alias.
-/// One Target value per configured target and requested label within a
-/// rule context: Bazel hands the same ConfiguredTarget instance (per label
-/// and configuration; an alias is its own AliasConfiguredTarget) to every
-/// attribute, so `ctx.attr.a[0] == ctx.attr.b.keys()[0]` for one dependency.
-/// The dependency entry (one per configured-target key) and the requested
-/// label identify it (N50b; per rule context only, docs/SH_BINARY.md).
-#[derive(Default)]
-struct TargetInterner<'v>(RefCell<std::collections::HashMap<(usize, String), Value<'v>>>);
-
-fn alloc_dependency<'v>(
-    heap: Heap<'v>,
-    interner: &TargetInterner<'v>,
-    requested: &str,
-    target: &DependencyTarget,
-) -> Value<'v> {
-    let key = (std::ptr::from_ref(target) as usize, requested.to_owned());
-    if let Some(value) = interner.0.borrow().get(&key) {
-        return *value;
-    }
-    let value = alloc_dependency_value(heap, requested, target);
-    interner.0.borrow_mut().insert(key, value);
-    value
+/// One Target value per configured target for the whole analysis (N55):
+/// Bazel hands the same ConfiguredTarget instance per label and
+/// configuration (an alias is its own AliasConfiguredTarget) to every
+/// consumer, so `ctx.attr.a[0] == ctx.attr.b.keys()[0]` within a rule
+/// context, a Target carried in a dependency's provider equals the
+/// consumer's own, and two attributes with the same Starlark transition see
+/// the same instance. The engine keys the shared value by the edge's
+/// ConfiguredTargetKey (the requested label and its edge configuration);
+/// exec-configured edges are distinct keys, hence distinct instances.
+fn alloc_dependency<'v>(heap: Heap<'v>, target: &DependencyTarget) -> Value<'v> {
+    alloc_shared_target(heap, &target.identity)
 }
 
-fn alloc_dependency_value<'v>(
-    heap: Heap<'v>,
+/// The Target data of a dependency edge (N55): built once per
+/// ConfiguredTargetKey by the engine (memoized in `ActionPlanning`), from
+/// the dependency's resolved fields and the edge's requested label.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn dependency_target_data(
     requested: &str,
-    target: &DependencyTarget,
-) -> Value<'v> {
+    label: &str,
+    files: &[File],
+    is_source: bool,
+    is_rule: bool,
+    is_package_group: bool,
+    is_filegroup: bool,
+    providers: &BTreeMap<String, OwnedFrozenValue>,
+    provider_keys: &[String],
+    runfiles: &crate::runfiles::TargetRunfiles,
+) -> Target {
     use crate::starlark_types::TargetKind;
-    let mut provider_keys = target.provider_keys.clone();
-    let actual = if target.is_source {
+    let mut provider_keys = provider_keys.to_vec();
+    let actual = if is_source {
         TargetKind::InputFile
-    } else if target.is_filegroup {
+    } else if is_filegroup {
         // Filegroup adds InstrumentedFilesInfo as its only declared provider
         // (rules/filegroup/Filegroup.java:103-108) and makes a single file its
         // executable (Filegroup.java:107,117-119).
         provider_keys = vec!["InstrumentedFilesInfo".to_owned()];
-        if target.files.len() == 1 {
+        if files.len() == 1 {
             TargetKind::SingleExecutableRule
         } else {
             TargetKind::Rule
         }
-    } else if target.is_rule {
+    } else if is_rule {
         TargetKind::Rule
-    } else if target.is_package_group {
+    } else if is_package_group {
         TargetKind::Unknown
     } else {
         TargetKind::OutputFile
     };
     // Both labels are canonical forms (crate::label::Label's Display).
-    let kind = if requested != target.label {
+    let kind = if requested != label {
         TargetKind::Alias(requested.to_owned(), Box::new(actual))
     } else {
         actual
     };
-    crate::starlark_types::alloc_target_of_kind(
-        heap,
-        &target.label,
-        target.files.clone(),
-        target.providers.clone(),
+    crate::starlark_types::target_of_kind(
+        label,
+        files.to_vec(),
+        providers.clone(),
         kind,
         provider_keys,
-        target.runfiles.clone(),
+        runfiles.clone(),
     )
 }
 
@@ -552,7 +558,6 @@ fn dict_prerequisites<'v, 'a>(
     prefix: &str,
     consumer: Consumer<'_>,
     heap: Heap<'v>,
-    interner: &TargetInterner<'v>,
 ) -> anyhow::Result<DictPrerequisites<'v, 'a>> {
     let mut values = BTreeMap::new();
     let mut files = Vec::new();
@@ -567,7 +572,7 @@ fn dict_prerequisites<'v, 'a>(
                 files.push(alloc_file(heap, file.clone()));
             }
         }
-        values.insert(label, alloc_dependency(heap, interner, label, target));
+        values.insert(label, alloc_dependency(heap, target));
     }
     Ok(DictPrerequisites {
         values,
@@ -926,7 +931,6 @@ fn ctx_attribute_structs<'v>(
         rule_class: invocation.declaration.rule_class.as_str(),
         label: &shown_label,
     };
-    let interner = TargetInterner::default();
     let mut attrs = BTreeMap::new();
     let mut files = BTreeMap::new();
     let mut single_files = BTreeMap::new();
@@ -965,7 +969,6 @@ fn ctx_attribute_structs<'v>(
                     &attribute_prefix(name),
                     consumer,
                     heap,
-                    &interner,
                 )?;
                 files.insert(name.clone(), targets.files);
                 let mut items = Vec::new();
@@ -986,7 +989,6 @@ fn ctx_attribute_structs<'v>(
                     &attribute_prefix(name),
                     consumer,
                     heap,
-                    &interner,
                 )?;
                 files.insert(name.clone(), targets.files);
                 let mut items = Vec::new();
@@ -1008,7 +1010,6 @@ fn ctx_attribute_structs<'v>(
                     &attribute_prefix(name),
                     consumer,
                     heap,
-                    &interner,
                 )?;
                 files.insert(name.clone(), targets.files);
                 let mut items = Vec::new();
@@ -1053,7 +1054,7 @@ fn ctx_attribute_structs<'v>(
                         .unwrap_or_else(Value::new_none),
                     Some(target) => value
                         .as_deref()
-                        .map(|requested| alloc_dependency(heap, &interner, requested, target))
+                        .map(|_| alloc_dependency(heap, target))
                         .unwrap_or_else(Value::new_none),
                 };
                 lifted.push((name.as_str(), value));
@@ -1071,7 +1072,7 @@ fn ctx_attribute_structs<'v>(
                             &attribute_prefix(name),
                             consumer,
                         )
-                        .map(|target| alloc_dependency(heap, &interner, label, target))
+                        .map(|target| alloc_dependency(heap, target))
                     })
                     .collect::<anyhow::Result<Vec<_>>>()?;
                 lifted.push((name.as_str(), heap.alloc(targets)));
@@ -1145,9 +1146,10 @@ fn ctx_attribute_structs<'v>(
                     };
                     executables.insert(name.clone(), executable);
                 }
-                let dependency = value.as_deref().zip(target).map(|(requested, target)| {
-                    alloc_dependency(heap, &interner, requested, target)
-                });
+                let dependency = value
+                    .as_deref()
+                    .zip(target)
+                    .map(|(_requested, target)| alloc_dependency(heap, target));
                 // A label attribute with a Starlark (split) transition is a
                 // list of its prerequisites
                 // (StarlarkAttributesCollection.convertAttributeValue,
@@ -1187,9 +1189,7 @@ fn ctx_attribute_structs<'v>(
                     labels
                         .iter()
                         .zip(&targets)
-                        .map(|(requested, target)| {
-                            alloc_dependency(heap, &interner, requested, target)
-                        })
+                        .map(|(_requested, target)| alloc_dependency(heap, target))
                         .collect::<Vec<_>>(),
                 )
             }
@@ -1260,15 +1260,7 @@ fn ctx_attribute_structs<'v>(
         let file = alloc_file(heap, context.declare(output)?);
         outputs.insert(key.clone(), file);
     }
-    builtin_ctx_attrs(
-        rule,
-        invocation,
-        dependencies,
-        &mut attrs,
-        &mut files,
-        heap,
-        &interner,
-    )?;
+    builtin_ctx_attrs(rule, invocation, dependencies, &mut attrs, &mut files, heap)?;
     Ok([
         heap.alloc(AllocStruct(attrs)),
         heap.alloc(AllocStruct(files)),
@@ -1317,7 +1309,6 @@ fn builtin_ctx_attrs<'v>(
     attrs: &mut BTreeMap<String, Value<'v>>,
     files: &mut BTreeMap<String, Value<'v>>,
     heap: Heap<'v>,
-    interner: &TargetInterner<'v>,
 ) -> anyhow::Result<()> {
     use crate::native_rules::NativeType;
     let builtin = &invocation.declaration.builtin;
@@ -1393,7 +1384,7 @@ fn builtin_ctx_attrs<'v>(
                             .cloned()
                             .map(|file| alloc_file(heap, file)),
                     );
-                    targets.push(alloc_dependency(heap, interner, &key, dependency));
+                    targets.push(alloc_dependency(heap, dependency));
                 }
                 files.insert(name.to_owned(), heap.alloc(metadata_files));
                 heap.alloc(targets)
@@ -1418,7 +1409,7 @@ fn builtin_ctx_attrs<'v>(
                             .cloned()
                             .map(|file| alloc_file(heap, file)),
                     );
-                    targets.push(alloc_dependency(heap, interner, &key, dependency));
+                    targets.push(alloc_dependency(heap, dependency));
                 }
                 files.insert(name.to_owned(), heap.alloc(constraint_files));
                 heap.alloc(targets)
@@ -2227,8 +2218,21 @@ strict = rule(implementation=consumer_impl, attrs={"dep": attr.label(providers=[
             &BTreeMap::new(),
         )
         .unwrap();
-        let deps = BTreeMap::from([(
-            "//:producer".into(),
+        let deps = BTreeMap::from([("//:producer".into(), {
+            // A direct analysis caller mints the identity (tests only;
+            // the engine shares one per ConfiguredTargetKey, N55).
+            let identity = std::sync::Arc::new(dependency_target_data(
+                "//:producer",
+                "//:producer",
+                &producer.files,
+                false,
+                true,
+                false,
+                false,
+                &producer.providers,
+                &producer.provider_keys,
+                &producer.runfiles,
+            ));
             DependencyTarget {
                 label: "//:producer".into(),
                 files: producer.files,
@@ -2241,8 +2245,9 @@ strict = rule(implementation=consumer_impl, attrs={"dep": attr.label(providers=[
                 is_filegroup: false,
                 runfiles: producer.runfiles,
                 rule_class: Some("producer".into()),
-            },
-        )]);
+                identity,
+            }
+        })]);
         let consumer = analyze(&package[&Label::parse("//:consumer", "").unwrap()], &deps).unwrap();
         assert_eq!(consumer.actions.len(), 1);
         assert_eq!(
@@ -2331,18 +2336,33 @@ erased = attr.label(providers=[[], [NotPackageSpecificationInfo]])
             )
         })
         .collect();
-        let target = DependencyTarget {
-            label: "//pkg:dep".into(),
-            files: Vec::new(),
-            is_source: false,
-            is_rule: true,
-            is_package_group: false,
-            providers,
-            provider_files: Vec::new(),
-            provider_keys: Vec::new(),
-            is_filegroup: false,
-            runfiles: Default::default(),
-            rule_class: Some("dep_rule".into()),
+        let target = {
+            let identity = std::sync::Arc::new(dependency_target_data(
+                "//pkg:dep",
+                "//pkg:dep",
+                &[],
+                false,
+                true,
+                false,
+                false,
+                &providers,
+                &[],
+                &Default::default(),
+            ));
+            DependencyTarget {
+                label: "//pkg:dep".into(),
+                files: Vec::new(),
+                is_source: false,
+                is_rule: true,
+                is_package_group: false,
+                providers,
+                provider_files: Vec::new(),
+                provider_keys: Vec::new(),
+                is_filegroup: false,
+                runfiles: Default::default(),
+                rule_class: Some("dep_rule".into()),
+                identity,
+            }
         };
         (BTreeMap::from([(target.label.clone(), target)]), specs)
     }

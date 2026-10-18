@@ -120,13 +120,15 @@ receipt (`reference_run_outputs`); genuine `bazel test //sh:t` PASSED.
   `env = {"X": "$(rlocationpath ...)"}`, are implemented: N53's
   LocationExpander (src/location_expander.rs) with N50b's `targets` checks
   (docs/EXPAND_LOCATION.md).
-* Target identity: one Target value per configured target and requested
-  label **within a rule context** (N50b's TargetInterner in
-  crate::analysis), so `ctx.attr.a[0] == ctx.attr.b.keys()[0]`. Bazel's
-  identity is per ConfiguredTargetKey across the whole analysis
-  (provider-carried Targets, depset TargetItems across targets, attributes
-  of the same transition); that wider identity is follow-up N55 (one frozen
-  Target value per configured node, keyed by ConfiguredTargetKey, pointer
-  identity).
+* Target identity: one Target value per configured target for the whole
+  analysis (N55): the engine allocates each configured target's Target data
+  once, keyed by the edge's ConfiguredTargetKey (the requested label and its
+  edge configuration — an alias is its own instance like Bazel's
+  AliasConfiguredTarget, an exec-configured edge is its own key), and every
+  consumer's `ctx.attr`, every provider that stores it and every depset
+  snapshot references that shared value; `==` is pointer identity, the hash
+  (label) is consistent with it. This closes N50b's within-a-rule-context
+  interning (provider-carried Targets, depset TargetItems across targets,
+  attributes of the same Starlark transition; tests/target_identity.rs).
 * Coverage collection (N54 provides the InstrumentedFilesInfo surface without
   coverage; collecting in coverage configurations is explicit).

@@ -1,0 +1,110 @@
+{
+ "schema": "n55-target-identity-reference-receipt/v1",
+ "purpose": "N55 one Target value per configured target: paired native vs genuine Evidence only; no test reads it.",
+ "what": "One Target value per configured target for the whole analysis (N55): identity across rule contexts (providers, depsets, same-transition attributes), distinct alias/exec instances, cc_internal.freeze of Target-holding lists/dicts.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private> --output_base=<private> --host_jvm_args=-Xmx512m",
+  "command_flags": "--lockfile_mode=off --noshow_progress --color=no --curses=no (after the command; native-only --experimental-builtin-modules is not passed to the reference)"
+ },
+ "native": {
+  "binary": "target/debug/bazel-rs",
+  "sha256": "50f24f1f7919ca61e7bf57d6eaec982fdd2488da7b5c2ca29682d3de7ac5d6bd",
+  "flags": "--ignore_all_rc_files --cache-dir=<private> --experimental-builtin-modules"
+ },
+ "script": {
+  "path": "artifacts/target_identity-capture.py",
+  "sha256": "a43ab4e79eee182d017f640b3bdd4a9ada499312980fd75c14f6e85705d2e692"
+ },
+ "fixture": {
+  "source": "tests/target_identity.rs",
+  "sha256": "fb599714d5d2d9ced0c43b15c2553e4e6ff4b4aeccfb6b56c090ac714aa18ebb",
+  "extracted": [
+   "ALLOW_BZL",
+   "DEFS",
+   "BAD_DEFS",
+   "BUILD",
+   "BAD_BUILD"
+  ],
+  "inline": [
+   "MODULE.bazel",
+   "flags/BUILD.bazel",
+   "flags/defs.bzl",
+   "third_party/bazel_rules/rules_cc/allow.bzl load line"
+  ]
+ },
+ "source_state": {
+  "base_commit": "6ecd846",
+  "head": "6ecd8463f1e543351c5bc40b4b0c0b2458e3b4a1",
+  "diff_sha256": "827f0b44be732983c8db1d61cd6a24895c69a0ade1cbe2d0dc9f0fb5a0dfb1ab",
+  "diff_scope": "git diff 6ecd846 plus the bytes of untracked non-ignored files, in path order"
+ },
+ "semantics": {
+  "bazel": [
+   "skyframe/ConfiguredTargetKey.java:60 (one key per label and configuration)",
+   "analysis/configuredtargets/AbstractConfiguredTarget.java:46,95-97 (no equals override; identity equality; isImmutable)",
+   "rules/AliasConfiguredTarget.java:72,134-144 (an alias is its own configured target)",
+   "skyframe/ConfiguredTargetAndData.java:57 (prerequisites hand the shared instance to every consumer)"
+  ],
+  "native": [
+   "src/engine.rs ActionPlanning.target_identities: one Arc<Target> per edge ConfiguredTargetKey",
+   "src/starlark_types.rs TargetValue: equality Arc::ptr_eq, hash the label",
+   "src/depset_items.rs TargetItem: pointer identity; frozen_copy keeps a configured target"
+  ]
+ },
+ "harness_adjustments": [
+  "run 1: engine options were misplaced (reference --lockfile_mode=off as a startup option, native --experimental-builtin-modules before the command); both engines exited 2/1 on the unknown-option error before running any scenario",
+  "run 2: the error extraction compared against the reference's first stderr line, an OpenJDK -Xverify warning, instead of Bazel's `Error in append: trying to mutate a frozen list value`; O/consumer was already EXACT",
+  "run 3 (the recorded one): harness-only fixes (option placement after the command, JVM-warning/framing-aware error extraction); fixture, engines and flags otherwise unchanged from run 2"
+ ],
+ "post_capture_changes": [
+  "docs/DEPSETS.md, docs/EXPAND_LOCATION.md: evidence pointers to this receipt (text only; no src, fixture or engine change; recorded in the receipt, not a rerun)"
+ ],
+ "environment": "env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 HOME/TMPDIR private, umask 022; scratch /tmp/opencode/n55-capture removed after",
+ "started_at": "2026-10-18T08:32:41.708201+00:00",
+ "finished_at": "2026-10-18T08:33:18.391430+00:00",
+ "counts": {
+  "EXACT": 2,
+  "EXPECTED_NATIVE_GAP": 1
+ },
+ "rows": [
+  {
+   "case": "O/consumer",
+   "reference": {
+    "exit": 0,
+    "report": "attr_dict=True\ndict_key=1\nprovider=True\nprovider_list=True\ndepset_direct=True\ndepset_merged=1\nsame_transition=True\ntransition_vs_plain=False\nalias=False\nexec=False\nfreeze_type=list dict\nfreeze_eq=True True\nfrozen_depset=1\nfrozen_depset_identity=True\nrepr=[<target //:leaf>, <alias target //:alias of //:leaf>, <target //:leaf>]\n"
+   },
+   "native": {
+    "exit": 0,
+    "report": "attr_dict=True\ndict_key=1\nprovider=True\nprovider_list=True\ndepset_direct=True\ndepset_merged=1\nsame_transition=True\ntransition_vs_plain=False\nalias=False\nexec=False\nfreeze_type=list dict\nfreeze_eq=True True\nfrozen_depset=1\nfrozen_depset_identity=True\nrepr=[<target //:leaf>, <alias target //:alias of //:leaf>, <target //:leaf>]\n"
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "case": "E/freeze_mutable",
+   "reference": {
+    "exit": 0,
+    "error": null
+   },
+   "native": {
+    "exit": 1,
+    "error": "cc_internal.freeze of a list containing a mutable value of type 'list' (Bazel's shallow immutable copy keeps it mutable) is not implemented in the native profile"
+   },
+   "verdict": "EXPECTED_NATIVE_GAP",
+   "why": "Bazel's copy is shallow (a mutable element stays mutable); the native profile fails explicitly"
+  },
+  {
+   "case": "E/freeze_mutate",
+   "reference": {
+    "exit": 1,
+    "error": "trying to mutate a frozen list value"
+   },
+   "native": {
+    "exit": 1,
+    "error": "trying to mutate a frozen list value"
+   },
+   "verdict": "EXACT"
+  }
+ ]
+}

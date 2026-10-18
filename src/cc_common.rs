@@ -448,10 +448,12 @@ pub(crate) fn check_private_api_call<'v>(
 /// crate::depset_items::frozen_copy): immutable (`trying to mutate a frozen
 /// list value`) and usable in a depset element — rules_cc's LinkerInputInfo
 /// (cc/private/link/create_linker_input.bzl:63-68). Bazel's copy is shallow;
-/// an element natively without such a copy (a mutable value, a configured
-/// target, a value whose immutability is not modelled) fails explicitly:
+/// an element natively without such a copy (a mutable value, a value whose
+/// immutability is not modelled) fails explicitly:
 /// `cc_internal.freeze of a list containing ... is not implemented in the
-/// native profile`.
+/// native profile`. A configured target element keeps its identity through
+/// the copy (N55: the snapshot shares the configured target's one
+/// allocation).
 pub(crate) fn freeze<'v>(
     value: Value<'v>,
     eval: &mut Evaluator<'v, '_, '_>,

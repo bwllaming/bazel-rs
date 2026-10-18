@@ -229,7 +229,10 @@ fn identity_hash(value: Value<'_>) -> u64 {
 }
 
 /// A configured target, compared by identity (AbstractConfiguredTarget has
-/// no equals override): its label and the same provider objects.
+/// no equals override): the one `Arc<Target>` per ConfiguredTargetKey for
+/// the whole analysis (N55, crate::engine `ActionPlanning`), so a snapshot
+/// taken by one target and a snapshot taken by another — and each
+/// consumer's own `ctx.attr` value — are all the same instance.
 #[derive(Clone, Debug, Allocative)]
 pub(crate) struct TargetItem(#[allocative(skip)] pub Arc<Target>);
 
@@ -248,14 +251,7 @@ impl TargetItem {
 
 impl PartialEq for TargetItem {
     fn eq(&self, other: &Self) -> bool {
-        self.0.label == other.0.label
-            && self.0.providers.len() == other.0.providers.len()
-            && self
-                .0
-                .providers
-                .iter()
-                .zip(&other.0.providers)
-                .all(|((a, x), (b, y))| a == b && x.value().ptr_eq(y.value()))
+        Arc::ptr_eq(&self.0, &other.0)
     }
 }
 
@@ -375,7 +371,7 @@ fn mutability(value: Value<'_>, depth: usize) -> Mutability {
         || SymlinkEntry::from_value(value).is_some()
         || crate::starlark_types::unpack_label(value).is_some()
         || Depset::from_value(value).is_some()
-        || Target::from_value(value).is_some()
+        || crate::starlark_types::TargetValue::from_value(value).is_some()
         || crate::runfiles::Runfiles::from_value(value).is_some()
         || is_starlark_def(value)
     {
@@ -432,23 +428,15 @@ pub(crate) fn check_element(value: Value<'_>) -> anyhow::Result<()> {
 /// StarlarkList/Dict.immutableCopyOf (N49b, crate::cc_common::freeze),
 /// re-allocated from owned snapshots. Bazel's copy is shallow; natively every
 /// element must be immutable (then shallow and deep agree) and have an owned
-/// snapshot without a configured target (whose re-allocation would not keep
-/// its `==` identity). Otherwise the error names the offending element.
+/// snapshot that keeps its identity: a configured target's shared `Arc`
+/// (N55) re-allocates as the same instance. Otherwise the error names the
+/// offending element.
 pub(crate) fn frozen_copy<'v>(
     heap: Heap<'v>,
     elements: &[Value<'v>],
     pairs: bool,
     functions: &dyn Fn(Value<'_>) -> Option<OwnedFrozenValue>,
 ) -> Result<Value<'v>, String> {
-    fn has_target(item: &Item) -> bool {
-        match item {
-            Item::Target(_) => true,
-            Item::Tuple(items) | Item::List(items) => items.iter().any(has_target),
-            Item::Dict(dict) => dict.0.iter().any(|(k, v)| has_target(k) || has_target(v)),
-            Item::Struct(item) => item.fields.iter().any(|(_, value)| has_target(value)),
-            _ => false,
-        }
-    }
     let mut items = Vec::with_capacity(elements.len());
     for &value in elements {
         let kind = value.get_type();
@@ -478,11 +466,6 @@ pub(crate) fn frozen_copy<'v>(
                 None => format!("a value of type '{kind}' ({error})"),
             }
         })?;
-        if has_target(&item) {
-            return Err(format!(
-                "a value of type '{kind}' holding a configured target (its re-allocation would not keep the Target's identity)"
-            ));
-        }
         items.push(item);
     }
     let container = if pairs {
@@ -535,8 +518,8 @@ pub(crate) fn snapshot(
         )
     } else if let Some(depset) = Depset::from_value(value) {
         Item::Depset(DepsetItem(depset.clone()))
-    } else if let Some(target) = Target::from_value(value) {
-        Item::Target(TargetItem(Arc::new(target.clone())))
+    } else if let Some(target) = crate::starlark_types::TargetValue::from_value(value) {
+        Item::Target(TargetItem(target.0.clone()))
     } else if let Some(runfiles) = crate::runfiles::Runfiles::from_value(value) {
         Item::Runfiles(RunfilesItem(Arc::new(runfiles.clone())))
     } else if is_starlark_def(value) {

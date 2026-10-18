@@ -55,13 +55,18 @@ variables) expand.
 
 ## Interned Targets
 
-Within one rule context every attribute gets the same `Target` value for a
-dependency configured target and requested label (Bazel hands out one
-ConfiguredTarget instance per label and configuration; an alias is its own
+Every consumer gets the same `Target` value for a dependency configured
+target and requested label (Bazel hands out one ConfiguredTarget instance
+per label and configuration; an alias is its own
 AliasConfiguredTarget): `ctx.attr.deps[0] == ctx.attr.lk.keys()[0] ==
 ctx.attr.single`, while an alias and an exec-configured edge differ.
 Equality is identity; the hash (label) is consistent with it. A Starlark
-transition's configuration is identified per attribute.
+transition's configuration is identified per attribute. Since N55 the
+identity is per ConfiguredTargetKey for the whole analysis (not just within
+a rule context): a Target carried in a dependency's provider, a depset
+TargetItem snapshot taken by another target and two attributes with the
+same Starlark transition all see the one shared instance
+(docs/SH_BINARY.md, tests/target_identity.rs).
 
 ## Label-keyed dict concatenation
 
@@ -94,3 +99,13 @@ the genuine output and runfiles tree are in the receipt; re-paired natively on
 integration-15, see the receipt's `post_capture_changes`). An undeclared
 label in sh_binary `env` yields Bazel's two errors: the location rule error
 and then Make expansion's `$(rlocationpath) not defined`.
+
+N55's analysis-wide identity (one Target value per configured target) is
+verified by `tests/target_identity.rs` and its paired capture
+`artifacts/target_identity-capture.py`, receipt
+`tests/fixtures/target_identity/reference_receipt.json`: 2 EXACT (the
+15-row identity report — provider-carried Targets, depset snapshots across
+producers, same-transition attributes, alias/exec distinct,
+`cc_internal.freeze` of Target-holding lists/dicts — and the frozen-list
+mutation error), 1 EXPECTED_NATIVE_GAP (Bazel's shallow freeze keeps a
+mutable element mutable; the native profile fails explicitly).
