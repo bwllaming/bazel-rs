@@ -6569,9 +6569,8 @@ impl Engine {
                     available.insert(artifact.file(), artifact);
                 }
                 let dependency = ConfiguredTargetKey::new(label.clone(), edge_config);
-                let actual = self
-                    .forwarded_actual(configured, &dependency)
-                    .unwrap_or_else(|| label.clone());
+                let forwarded = self.forwarded_actual(configured, &dependency);
+                let actual = forwarded.clone().unwrap_or_else(|| label.clone());
                 let target = self.target(&actual)?;
                 // The alias chain's end, in the same configuration
                 // (Self::alias_chain), under the configuration a rule
