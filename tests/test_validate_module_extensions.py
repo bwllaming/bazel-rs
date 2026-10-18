@@ -38,7 +38,8 @@ MESSAGES = {
     'immutable': 'trying to mutate a frozen list value',
     'name': 'invalid repository name "a+b"',
     'canonical': 'unknown canonical repository @@+unknown+made; extension repository not materialized',
-    'facts': 'Facts has no key "missing": persisted facts are unsupported (native lockfile mode is off)',
+    # Integration-16 (N52): ctx.facts is supported; a missing key keeps the native explicit failure.
+    'facts': 'error: Facts has no key "missing"',
     # Literal native stderr of the read-watch fixture (integration-15 pre-gate
     # binary, N43). These synthetic unit records replay its classifier
     # contract, not execution.

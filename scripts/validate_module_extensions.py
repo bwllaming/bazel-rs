@@ -114,8 +114,12 @@ DIAGNOSTICS = {
     # "Error in read: ..."; native (N43) as its whole primary error line.
     'read-watch': r'(?m)^(?:Error in read|error): attempted to watch path under working directory$',
 }
+# N52: ctx.facts is supported (Bazel's lockfile facts), so the former ": persisted facts are unsupported" suffix
+# is gone. A missing key stays a native boundary: Bazel's Facts.getIndex returns Java null, native fails
+# explicitly with "Facts has no key "missing"" (src/extension_ctx.rs).
 DIAGNOSTICS['facts'] = (r'(?:no (?:attribute|field|method)|has no|not supported|unsupported)[^\n]*\bfacts\b'
-                        r'|\bfacts\b[^\n]*(?:not supported|unsupported|not available|not found)')
+                        r'|\bfacts\b[^\n]*(?:not supported|unsupported|not available|not found)'
+                        r'|(?:^|\n)error: Facts has no key "missing"(?=\n|$)')
 UNRELATED = re.compile(direct.UNRELATED.pattern + r'|permission denied|access denied|syntax error|connection reset|'
                        r'failed to (?:download|fetch)|error downloading', re.I)
 
