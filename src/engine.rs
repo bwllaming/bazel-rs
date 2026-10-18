@@ -74,6 +74,15 @@ type Locations = BTreeMap<String, Vec<PathBuf>>;
 type Declared = BTreeMap<(ConfigId, PathBuf), Artifact>;
 type ResolvedInputs = (Vec<Artifact>, Locations);
 
+/// The identity key of a configured target's one shared `Target` value
+/// (N55): the label and the configuration Bazel keys the configured target
+/// by — `None` is the null configuration of a source file or package group
+/// (one InputFileConfiguredTarget/PackageGroupConfiguredTarget per label
+/// serves every consumer, InputFileConfiguredTarget.java:36-41,
+/// PackageGroup.java:166-168), `Some` the post-delegation
+/// configuration of a rule, alias or output-file edge.
+type TargetIdentityKey = (Label, Option<ConfigId>);
+
 #[derive(Clone)]
 enum Target {
     Rule(Arc<Rule>),
@@ -130,14 +139,23 @@ struct ActionPlanning {
     /// support (N23f, Engine::plan_runfiles_support).
     runfiles_nodes: BTreeMap<ConfiguredTargetKey, RunfilesNodes>,
     /// The one shared `Target` value of each dependency edge's configured
-    /// target (N55): keyed by the edge's ConfiguredTargetKey (the requested
-    /// label and its edge configuration), allocated once and referenced by
-    /// every consumer's `ctx.attr`, every provider that stores it and every
-    /// depset snapshot — Bazel's one ConfiguredTarget instance per label
-    /// and configuration (skyframe/ConfiguredTargetKey.java:60;
-    /// AbstractConfiguredTarget identity equality). An alias edge and an
-    /// exec-configured edge are their own keys, hence their own instances.
-    target_identities: BTreeMap<ConfiguredTargetKey, std::sync::Arc<crate::starlark_types::Target>>,
+    /// target (N55): allocated once and referenced by every consumer's
+    /// `ctx.attr`, every provider that stores it and every depset snapshot
+    /// — Bazel's one ConfiguredTarget instance per label and configuration
+    /// (skyframe/ConfiguredTargetKey.java:60; AbstractConfiguredTarget
+    /// identity equality), keyed as Bazel keys it: a rule or alias edge by
+    /// its label and POST-DELEGATION configuration (two edges whose
+    /// pre-transition configurations converge through the same Starlark
+    /// rule transition delegate to one key,
+    /// analysis/producers/TargetAndConfigurationProducer.java:244-251),
+    /// a source file or package group by its label and NO configuration
+    /// (`isConfigurable()` false, InputFile.java:88-90,
+    /// PackageGroup.java:166-168: one InputFileConfiguredTarget or
+    /// PackageGroupConfiguredTarget per label serves every consumer), an
+    /// output file by the generating rule's configuration. An alias edge
+    /// and an exec-configured rule edge are their own keys, hence their
+    /// own instances.
+    target_identities: BTreeMap<TargetIdentityKey, std::sync::Arc<crate::starlark_types::Target>>,
 }
 
 /// What `bazel run` executes after the build (Engine::build_for_run).
@@ -5914,6 +5932,18 @@ impl Engine {
             .unwrap_or(own)
     }
 
+    /// The configuration `key`'s configured target was analyzed under: a
+    /// rule transition's delegated (post-transition) configuration
+    /// (TargetAndConfigurationProducer.delegateTo, :244-251, returns the
+    /// TRANSITIONED key's ConfiguredTargetValue), else `config` itself.
+    /// Edges whose pre-transition configurations converge on one
+    /// transitioned configuration must see one configured target.
+    fn delegated_config(&self, key: &ConfiguredTargetKey, config: ConfigId) -> ConfigId {
+        self.rule_delegations
+            .get(key)
+            .map_or(config, |owner| owner.config)
+    }
+
     /// The configured key whose OutputGroupInfo serves requested target
     /// `label` in `config`: an output file's generating rule
     /// (OutputFileConfiguredTarget delegates its `_validation` group,
@@ -6544,8 +6574,17 @@ impl Engine {
                     .unwrap_or_else(|| label.clone());
                 let target = self.target(&actual)?;
                 // The alias chain's end, in the same configuration
-                // (Self::alias_chain).
-                let actual_key = ConfiguredTargetKey::new(actual.clone(), edge_config);
+                // (Self::alias_chain), under the configuration a rule
+                // transition analyzed it in when it delegated
+                // (Self::delegated_config): two edges whose pre-transition
+                // configurations converge see the actual's one analysis.
+                let actual_key = ConfiguredTargetKey::new(
+                    actual.clone(),
+                    self.delegated_config(
+                        &ConfiguredTargetKey::new(actual.clone(), edge_config),
+                        edge_config,
+                    ),
+                );
                 let is_rule = matches!(&target, Target::Rule(rule) if !matches!(rule.kind, RuleKind::PackageGroup(_)));
                 // The dependency's `_validation` files: a native rule's
                 // propagated group, an output-file target's generating rule's
@@ -6664,12 +6703,41 @@ impl Engine {
                     providers.insert(crate::instrumented_files::PROVIDER_ID.to_owned(), info);
                 }
                 // The one shared Target value of this configured target
-                // (N55): the edge's own ConfiguredTargetKey — the requested
-                // label and its edge configuration — so every consumer (and
-                // every provider carrying it) sees the same instance, while
-                // an alias edge, an exec edge or a different Starlark
-                // transition's configuration is its own.
-                let identity = match target_identities.entry(dependency) {
+                // (N55), keyed as Bazel keys the configured target: a rule
+                // or alias edge by the POST-DELEGATION configuration (a
+                // rule transition delegates to the transitioned key,
+                // TargetAndConfigurationProducer.java:244-251, so edges
+                // whose pre-transition configurations converge share one
+                // instance), a source file or package group by the label
+                // with NO configuration (isConfigurable() false,
+                // InputFile.java:88-90, PackageGroup.java:166-168: one
+                // null-configuration configured target serves every
+                // consumer), an output file by the generating rule's
+                // (post-transition) configuration. An alias edge (its own
+                // AliasConfiguredTarget) and an exec-configured rule edge
+                // stay their own instances.
+                let identity = match target_identities.entry({
+                    let identity_config = if forwarded.is_some() {
+                        // The alias edge itself keeps the edge's
+                        // configuration (its own AliasConfiguredTarget).
+                        Some(self.delegated_config(&dependency, edge_config))
+                    } else {
+                        match &target {
+                            Target::Source(_) => None,
+                            Target::Rule(rule)
+                                if matches!(rule.kind, RuleKind::PackageGroup(_)) =>
+                            {
+                                None
+                            }
+                            Target::Output(rule, _) => Some(self.delegated_config(
+                                &ConfiguredTargetKey::new(rule.label.clone(), edge_config),
+                                edge_config,
+                            )),
+                            _ => Some(self.delegated_config(&dependency, edge_config)),
+                        }
+                    };
+                    (label.clone(), identity_config)
+                }) {
                     std::collections::btree_map::Entry::Occupied(shared) => shared.get().clone(),
                     std::collections::btree_map::Entry::Vacant(vacant) => {
                         let provider_keys =

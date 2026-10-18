@@ -5,16 +5,22 @@
 //! equals override, so equality is Java identity,
 //! analysis/configuredtargets/AbstractConfiguredTarget.java:46,95-97).
 //! Natively the engine allocates each configured target's Target data once,
-//! keyed by the edge's ConfiguredTargetKey (src/engine.rs
+//! keyed as Bazel keys the configured target (src/engine.rs
 //! `ActionPlanning`), so identity crosses rule contexts: a Target carried in
 //! a dependency's provider equals the consumer's own `ctx.attr` Target, a
 //! depset TargetItem snapshot equals the other producer's snapshot, two
 //! attributes with the same Starlark transition see one instance, an alias
 //! edge and an exec-configured edge stay distinct (an alias is its own
-//! AliasConfiguredTarget, rules/AliasConfiguredTarget.java:72,134-144), and
-//! `cc_internal.freeze` of a list containing a Target keeps its identity
-//! (N49b's explicit error is gone). Expected outputs are genuine Bazel
-//! 9.3.0's (paired capture artifacts/target_identity-capture.py, receipt
+//! AliasConfiguredTarget, rules/AliasConfiguredTarget.java:72,134-144), a
+//! source file reached from target- and exec-configured attributes is one
+//! null-configuration instance (InputFileConfiguredTarget.java:36-41), two
+//! pre-transition configurations converging through a Starlark rule
+//! transition see one post-delegation instance
+//! (TargetAndConfigurationProducer.java:244-251), and an alias of a
+//! rule-transitioned target carries the actual's analysis. `cc_internal.freeze`
+//! of a list containing a Target keeps its identity (N49b's explicit error
+//! is gone). Expected outputs are genuine Bazel 9.3.0's (paired capture
+//! artifacts/target_identity-capture.py, receipt
 //! tests/fixtures/target_identity/reference_receipt.json).
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
@@ -56,6 +62,27 @@ def _set_mode(settings, attr):
 
 same_mode = transition(implementation = _set_mode, inputs = [], outputs = ["//flags:mode"])
 
+def _set_other(settings, attr):
+    return {"//flags:other": 1}
+
+set_other = transition(implementation = _set_other, inputs = [], outputs = ["//flags:other"])
+
+# A rule transition (rule(cfg = ...)): the switcher is analyzed in the one
+# configuration it maps every request to (mode 1, other 0), whatever
+# configuration the edge requested (TargetAndConfigurationProducer
+# delegates to the transitioned key).
+def _fix_impl(settings, attr):
+    return {"//flags:mode": 1, "//flags:other": 0}
+
+fix_flags = transition(implementation = _fix_impl, inputs = [], outputs = ["//flags:mode", "//flags:other"])
+
+def _switcher_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.write(out, ctx.label.name)
+    return [DefaultInfo(files = depset([out]))]
+
+switcher = rule(_switcher_impl, cfg = fix_flags)
+
 def _consumer_impl(ctx):
     own = ctx.attr.dep
     merged = depset(transitive = [ctx.attr.producer[DInfo].d, ctx.attr.producer2[DInfo].d])
@@ -74,6 +101,12 @@ def _consumer_impl(ctx):
         "transition_vs_plain=%s" % (own == ctx.attr.a),
         "alias=%s" % (own == ctx.attr.via_alias),
         "exec=%s" % (own == ctx.attr.tool),
+        "source_exec=%s" % (ctx.attr.src == ctx.attr.src_tool),
+        "rule_transition=%s" % (ctx.attr.converge_a == ctx.attr.converge_b),
+        "alias_actual=%s %s" % (
+            ctx.attr.via_sw == ctx.attr.dep_plain,
+            ctx.attr.via_sw[DefaultInfo].files.to_list()[0].short_path == "switcher.txt",
+        ),
         "freeze_type=%s %s" % (type(frozen), type(frozen_dict)),
         "freeze_eq=%s %s" % (frozen == [own, "x"], frozen_dict == {"t": own, "x": 1}),
         "frozen_depset=%d" % len(depset([struct(f = frozen)]).to_list()),
@@ -93,6 +126,12 @@ consumer = rule(_consumer_impl, attrs = {
     "tool": attr.label(cfg = "exec"),
     "a": attr.label(cfg = same_mode),
     "b": attr.label(cfg = same_mode),
+    "src": attr.label(allow_files = True),
+    "src_tool": attr.label(cfg = "exec", allow_files = True),
+    "dep_plain": attr.label(),
+    "converge_a": attr.label(cfg = set_other),
+    "converge_b": attr.label(cfg = same_mode),
+    "via_sw": attr.label(),
 })
 "#;
 
@@ -111,9 +150,11 @@ def _bad_impl(ctx):
 bad = rule(_bad_impl, attrs = {"dep": attr.label(), "kind": attr.string()})
 "#;
 
-const BUILD: &str = r#"load(":defs.bzl", "leaf", "producer", "consumer")
+const BUILD: &str = r#"load(":defs.bzl", "leaf", "producer", "consumer", "switcher")
 leaf(name = "leaf")
 alias(name = "alias", actual = ":leaf")
+switcher(name = "switcher")
+alias(name = "sw_alias", actual = ":switcher")
 producer(name = "p1", dep = ":leaf")
 producer(name = "p2", dep = ":leaf")
 consumer(
@@ -126,6 +167,12 @@ consumer(
     tool = ":leaf",
     a = ":leaf",
     b = ":leaf",
+    src = ":data.txt",
+    src_tool = ":data.txt",
+    dep_plain = ":switcher",
+    converge_a = ":switcher",
+    converge_b = ":switcher",
+    via_sw = ":sw_alias",
 )
 "#;
 
@@ -146,6 +193,9 @@ const EXPECTED: &str = "attr_dict=True\n\
          transition_vs_plain=False\n\
          alias=False\n\
          exec=False\n\
+         source_exec=True\n\
+         rule_transition=True\n\
+         alias_actual=False True\n\
          freeze_type=list dict\n\
          freeze_eq=True True\n\
          frozen_depset=1\n\
@@ -164,13 +214,14 @@ impl Workspace {
         fs::create_dir(&path).unwrap();
         let ws = Self(path);
         ws.file("MODULE.bazel", "module(name='target_identity')\n");
+        ws.file("data.txt", "data\n");
         ws.file(
             "flags/BUILD.bazel",
-            "load(':defs.bzl', 'mode_flag')\nmode_flag(name = 'mode', build_setting_default = 0)\n",
+            "load(':defs.bzl', 'mode_flag', 'other_flag')\nmode_flag(name = 'mode', build_setting_default = 0)\nother_flag(name = 'other', build_setting_default = 0)\n",
         );
         ws.file(
             "flags/defs.bzl",
-            "def _flag_impl(ctx):\n    return []\n\nmode_flag = rule(implementation = _flag_impl, build_setting = config.int(flag = True))\n",
+            "def _flag_impl(ctx):\n    return []\n\nmode_flag = rule(implementation = _flag_impl, build_setting = config.int(flag = True))\nother_flag = rule(implementation = _flag_impl, build_setting = config.int(flag = True))\n",
         );
         ws.file("third_party/bazel_rules/rules_cc/BUILD.bazel", "");
         ws.file("third_party/bazel_rules/rules_cc/allow.bzl", ALLOW_BZL);

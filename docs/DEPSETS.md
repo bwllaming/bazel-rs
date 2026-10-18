@@ -70,15 +70,20 @@ built-in functions inside a frozen list, ...): `a depset element containing
 functions are per-package `.bzl` evaluations, so the same `def` reached
 through two packages' evaluations is two functions natively (one in Bazel).
 A configured target element is Bazel's identity comparison exactly (N55):
-the engine allocates one `Target` value per ConfiguredTargetKey for the
-whole analysis, the snapshot shares that allocation
-(`crate::depset_items::TargetItem`, `Arc::ptr_eq`), and `to_list()`
-re-allocates a value that is `==` to the original Target value and to every
-other consumer's. Paired capture
+the engine allocates one `Target` value per configured target for the
+whole analysis, keyed as Bazel keys it — the label and the post-delegation
+configuration for a rule or alias edge (two edges whose pre-transition
+configurations converge through one Starlark rule transition share the
+instance), no configuration for a source file or package group, the
+generating rule's for an output file — and the snapshot shares that
+allocation (`crate::depset_items::TargetItem`, `Arc::ptr_eq`), and
+`to_list()` re-allocates a value that is `==` to the original Target value
+and to every other consumer's. Paired capture
 `tests/fixtures/target_identity/reference_receipt.json`: every identity row
 (provider-carried, depset snapshots across producers, same-transition
-attributes, alias/exec distinct, Target-holding freeze) is EXACT against
-genuine Bazel 9.3.0.
+attributes, alias/exec distinct, source file across target- and
+exec-configured edges, rule-transition convergence, Target-holding freeze)
+is EXACT against genuine Bazel 9.3.0.
 
 ## Frozen lists and dicts inside elements (N49b)
 

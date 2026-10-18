@@ -39,11 +39,14 @@ pub struct DependencyTarget {
     /// `None` for files and package groups.
     pub rule_class: Option<String>,
     /// The configured target's one shared `Target` value (N55): the engine
-    /// allocates it once per ConfiguredTargetKey — the edge's requested label
-    /// and configuration — so every consumer's `ctx.attr`, every provider
-    /// that stores it and every depset snapshot references the same
-    /// `Arc<Target>` (crate::engine `ActionPlanning`; Bazel's one
-    /// ConfiguredTarget instance per label and configuration).
+    /// allocates it once per configured target — keyed by the label and the
+    /// configuration Bazel keys it under (a rule/alias edge's
+    /// post-delegation configuration, no configuration for a source file
+    /// or package group, the generating rule's for an output file) — so
+    /// every consumer's `ctx.attr`, every provider that stores it and
+    /// every depset snapshot references the same `Arc<Target>`
+    /// (crate::engine `ActionPlanning`; Bazel's one ConfiguredTarget
+    /// instance per label and configuration).
     pub(crate) identity: std::sync::Arc<Target>,
 }
 
@@ -79,9 +82,11 @@ fn output_label<'v>(heap: Heap<'v>, rule: &Rule, output: &str) -> anyhow::Result
 /// consumer, so `ctx.attr.a[0] == ctx.attr.b.keys()[0]` within a rule
 /// context, a Target carried in a dependency's provider equals the
 /// consumer's own, and two attributes with the same Starlark transition see
-/// the same instance. The engine keys the shared value by the edge's
-/// ConfiguredTargetKey (the requested label and its edge configuration);
-/// exec-configured edges are distinct keys, hence distinct instances.
+/// the same instance. The engine keys the shared value as Bazel keys the
+/// configured target: a rule/alias edge's post-delegation configuration,
+/// no configuration for a source file or package group, the generating
+/// rule's for an output file; exec-configured rule edges are distinct
+/// keys, hence distinct instances.
 fn alloc_dependency<'v>(heap: Heap<'v>, target: &DependencyTarget) -> Value<'v> {
     alloc_shared_target(heap, &target.identity)
 }

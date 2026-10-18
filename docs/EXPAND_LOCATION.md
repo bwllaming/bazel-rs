@@ -62,10 +62,14 @@ AliasConfiguredTarget): `ctx.attr.deps[0] == ctx.attr.lk.keys()[0] ==
 ctx.attr.single`, while an alias and an exec-configured edge differ.
 Equality is identity; the hash (label) is consistent with it. A Starlark
 transition's configuration is identified per attribute. Since N55 the
-identity is per ConfiguredTargetKey for the whole analysis (not just within
-a rule context): a Target carried in a dependency's provider, a depset
-TargetItem snapshot taken by another target and two attributes with the
-same Starlark transition all see the one shared instance
+identity is per configured target for the whole analysis (not just within
+a rule context), keyed as Bazel keys it: a Target carried in a dependency's
+provider, a depset TargetItem snapshot taken by another target and two
+attributes with the same Starlark transition all see the one shared
+instance; a source file is one null-configuration instance however it is
+reached (target- or exec-configured edge), and two edges whose
+pre-transition configurations converge through one Starlark rule
+transition see the one post-delegation instance
 (docs/SH_BINARY.md, tests/target_identity.rs).
 
 ## Label-keyed dict concatenation
