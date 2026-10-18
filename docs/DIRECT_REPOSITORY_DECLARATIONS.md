@@ -68,5 +68,9 @@ diagnostics, binary hashes and cleanup receipts. The lazy-loading probe also
 passes against the reference. N52 retired the former native-only
 nonzero-extension-facts-version boundary check: `facts_version` is supported
 and compared against genuine Bazel by
-`tests/fixtures/lockfile_extensions/reference_receipt.json`. Adjacent module,
+`tests/fixtures/lockfile_extensions/reference_receipt.json`. N39 display-form
+labels with the N51 main-repository mapping retired the former native-only
+canonical-label output expectation: native `query` prints the apparent
+`@dep//:data` exactly like genuine Bazel, and both spellings of the fixture
+target are accepted identically for both engines. Adjacent module,
 local-repository and remote-archive reports pass 16, 20 and 17 checks respectively.

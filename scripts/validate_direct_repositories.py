@@ -4,7 +4,10 @@
 Registry source-file queries probe MODULE metadata and declaration laziness.
 (The former native-only nonzero facts_version boundary probe was retired in N52:
 facts_version is supported and compared against genuine Bazel by
-tests/fixtures/lockfile_extensions/reference_receipt.json.)
+tests/fixtures/lockfile_extensions/reference_receipt.json. The former
+native-only canonical-label output boundary was retired with N39/N51: native
+query now prints the apparent display-form label, identical to genuine Bazel,
+so query identity checks accept the same spellings for both engines.)
 No build/test, wrapper, credential environment changes, fake built-ins, or
 generated-repo success claim in this suite. Official Bazel may download its
 genuine built-in closure.
@@ -44,6 +47,9 @@ DATA = b"direct repository declaration fixture\x00\xff\n"
 BUILD = b'exports_files(["data"])\n'
 QUERY = "@dep//:data"
 # Canonical identity follows the MODULE name, not the root's apparent alias.
+# Since N39 display-form labels and the N51 main-repository mapping, native
+# query prints the apparent spelling @dep//:data, matching genuine Bazel; both
+# engines accept either spelling of the same single target (differential).
 CANONICAL = "@@decldep+//:data"
 
 
@@ -219,14 +225,15 @@ def snapshot(files):
     return {str(path): file_evidence(path, include_bytes=True) for path in files}
 
 
-def require_query(record, native=False):
+def require_query(record):
     text = require_success(record)
     if (record.get("spawn_error") or record.get("interrupted") or UNRELATED.search(record["stderr"])
             or SYNTAX_ERROR.search(record["stderr"])):
         raise ValueError("query was interrupted, crashed, or used fallback")
     labels = text.splitlines()
-    allowed = [[CANONICAL]] if native else [[QUERY], [CANONICAL]]
-    if labels not in allowed:
+    # Same acceptance for both engines: N39 display-form labels plus the N51
+    # main mapping make native print the apparent spelling like genuine Bazel.
+    if labels not in ([QUERY], [CANONICAL]):
         raise ValueError("query did not return exactly the fixture repository source identity")
     return {"exact_labels": labels, "canonical_identity": CANONICAL}
 
@@ -250,7 +257,7 @@ def evaluate(item, native, official, check):
             check["reference"] = require_rejection(official, item["diagnostic_class"])
         elif expected == "laziness" and official["returncode"] != 0:
             check["reference"] = require_rejection(official, "declaration_loaded")
-            check["native"] = require_query(native, native=True)
+            check["native"] = require_query(native)
             check["status"] = "UNSUPPORTED_BOUNDARY"
             check["parity_claim"] = False
             check["details"] = "Official query eagerly loaded the declaration fixture; no shared laziness claim."
@@ -261,7 +268,7 @@ def evaluate(item, native, official, check):
         check["status"] = "REFERENCE_FAILURE"
         raise
     check["native"] = (require_rejection(native, item["diagnostic_class"]) if expected == "rejection"
-                       else require_query(native, native=True))
+                       else require_query(native))
     check["parity_claim"] = True
     check["status"] = "PASS"
 
@@ -380,7 +387,9 @@ def main(argv=None):
               "planned_checks": CASES, "case_inputs_sha256": digest(json.dumps(CASES, sort_keys=True).encode()),
               "reference_version_required": "9.3.0", "reference_sha256_required": REFERENCE_SHA256,
               "test_commands_executed": False, "build_commands_executed": False,
-              "comparison": "Exact single source-label identity; controlled diagnostic classes, not exact error strings.",
+              "comparison": "Exact single source-label identity (either display or canonical spelling, "
+                          "identically accepted for both engines since N39/N51); controlled diagnostic "
+                          "classes, not exact error strings.",
               "limitations": ["MODULE declaration metadata only; full use_repo_rule/Bzlmod parity is NOT attained.",
                               "Nonzero module_extension facts_version is supported since N52 (differential evidence: tests/fixtures/lockfile_extensions/reference_receipt.json); its former native-only boundary probe is retired.",
                               "This suite makes no generated-repository success claim; pure direct execution is validated separately.",

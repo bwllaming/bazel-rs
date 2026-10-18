@@ -139,16 +139,17 @@ class FixtureTests(unittest.TestCase):
 
 
 class ComparisonTests(unittest.TestCase):
-    def test_query_compares_single_repository_identity_not_equal_raw_spelling(self):
-        native = direct.require_query(record("@@decldep+//:data\n"), native=True)
-        official = direct.require_query(record("@dep//:data\n"))
-        self.assertEqual(native["canonical_identity"], official["canonical_identity"])
-        self.assertNotEqual(native["exact_labels"], official["exact_labels"])
+    def test_query_compares_single_repository_identity_in_shared_spellings(self):
+        # N39 display-form labels + the N51 main mapping: native query prints
+        # the apparent @dep//:data exactly like genuine Bazel, so both engines
+        # accept either spelling of the same single target (no native-only form).
+        apparent = direct.require_query(record("@dep//:data\n"))
+        canonical = direct.require_query(record("@@decldep+//:data\n"))
+        self.assertEqual(apparent["canonical_identity"], canonical["canonical_identity"])
+        self.assertNotEqual(apparent["exact_labels"], canonical["exact_labels"])
         for text in ("//:data", "@@dep+//:data", "@other//:data", "@dep//:data\n@dep//:data", "", "not a label"):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 direct.require_query(record(text))
-        with self.assertRaises(ValueError):
-            direct.require_query(record("@dep//:data\n"), native=True)
 
     def test_all_diagnostic_classes_have_semantic_not_exact_matches(self):
         for diagnostic, message in MESSAGES.items():
@@ -220,7 +221,7 @@ class ComparisonTests(unittest.TestCase):
 
     def test_laziness_probe_records_eager_reference_as_boundary_not_parity(self):
         item = next(c for c in direct.CASES if c["expected"] == "laziness")
-        native = record("@@decldep+//:data\n")
+        native = record("@dep//:data\n")
         check = {}
         direct.evaluate(item, native, record(stderr=MESSAGES["declaration_loaded"], returncode=1), check)
         self.assertEqual(check["status"], "UNSUPPORTED_BOUNDARY")
@@ -350,7 +351,8 @@ class MainTests(unittest.TestCase):
                 elif eager and item["expected"] == "laziness" and engine == "reference":
                     result = record(stderr=MESSAGES["declaration_loaded"], returncode=1)
                 else:
-                    result = record("@@decldep+//:data\n" if engine == "native" else "@dep//:data\n")
+                    # Both engines print the display-form label (N39/N51).
+                    result = record("@dep//:data\n")
                 if fault == "reference" and engine == "reference":
                     result = record(stderr="BCR unavailable", returncode=1)
             result.update(id=len(runner.report["runs"]), name=name, argv=list(argv), cwd=str(cwd))
