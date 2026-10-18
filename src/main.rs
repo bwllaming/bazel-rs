@@ -36,10 +36,12 @@ Repository options: --registry=URL (file/http/https, repeatable; default https:/
   Verified caches, registry metadata and Git execution are unaffected (not an offline mode).
 Native transition: --experimental-builtin-modules[=true|false] opts into genuine Bazel 9.3 built-ins.
 Lockfile: --lockfile_mode=update (default)|refresh|error|off reads/writes MODULE.bazel.lock
-  (registryFileHashes, selectedYankedVersions; extension sections kept verbatim, never added;
-  docs/REGISTRY_LOCKFILE.md). --allow_yanked_versions=MODULE@VERSION,... (repeatable).
-  Native-only --native-lockfile=workspace|readonly|/abs/path: readonly never writes a lockfile;
-  a path is a private lockfile read instead of (seeded from) the workspace one and written instead.
+  (registryFileHashes, selectedYankedVersions; moduleExtensions/facts entries computed,
+  reused and written with Bazel's digests since N52; docs/REGISTRY_LOCKFILE.md).
+  --allow_yanked_versions=MODULE@VERSION,... (repeatable).
+  Native-only --native-lockfile=workspace|readonly|/abs/path: readonly never writes a lockfile
+  (the hidden one included); a path is a private lockfile read instead of (seeded from) the
+  workspace one and written instead.
   mod graph still requires --lockfile_mode=off for remote registries, including the default.
   Fast warm probes of real workspaces: --native-lockfile=/private/MODULE.bazel.lock.
 External sources: local_path_override, registry local_path entries and verified archives.
