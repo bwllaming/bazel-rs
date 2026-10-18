@@ -326,6 +326,18 @@ fn run() -> Result<(), String> {
     {
         repositories.resolve_graph()?;
     }
+    // BazelLockFileModule.afterCommand (Bazel 9.3 :63-100) runs in
+    // LockfileMode.UPDATE/REFRESH only and combines BazelModuleResolution-
+    // Value, BazelDepGraphValue and the SingleExtensionValues of the
+    // extensions "that have been evaluated in the current build" (:105-111,
+    // :112-141) — demand-driven, like SingleExtensionEvalFunction. Native:
+    // the loading phase — module resolution and every demanded extension
+    // evaluation — must succeed before MODULE.bazel.lock may be written
+    // (a failed command writes nothing); `off` and `error` never write.
+    let lockfile_gate = LockfileGate {
+        session: _lockfile_writer.0.clone(),
+        repositories: repositories.clone(),
+    };
     let mut engine = Engine::with_repositories(repositories.clone());
     engine.set_runfiles_options(runfiles_options);
     if builds(&command) {
@@ -381,6 +393,9 @@ fn run() -> Result<(), String> {
         if let Some(fatal) = outcome.fatal {
             return Err(fatal);
         }
+        // Loading — module resolution and every demanded extension
+        // evaluation — succeeded: the lockfile write is allowed.
+        lockfile_gate.open();
         use std::io::Write;
         let mut stdout = std::io::stdout().lock();
         stdout
@@ -403,6 +418,7 @@ fn run() -> Result<(), String> {
             runfiles: runfiles_options,
             options: &test_options,
             remote_enabled,
+            lockfile_gate: &lockfile_gate,
         });
     }
     let labels = if command == "run" {
@@ -417,6 +433,10 @@ fn run() -> Result<(), String> {
         warn(&warning);
     }
     let labels = labels?;
+    // Target-pattern loading succeeded: analysis or execution failures from
+    // here on no longer block the lockfile write, like a Bazel command that
+    // fails after loading (BazelLockFileModule.afterCommand still runs).
+    lockfile_gate.open();
     if command == "run" {
         return run_target(RunContext {
             engine: &mut engine,
@@ -468,6 +488,40 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
+/// Opens the MODULE.bazel.lock write (update/refresh only) once the whole
+/// module resolution — the dep graph and every module extension the command
+/// demanded — evaluated successfully. BazelLockFileModule.afterCommand
+/// (Bazel 9.3 :63-100) writes only with BazelModuleResolutionValue,
+/// BazelDepGraphValue and the lockfile value present, using the
+/// SingleExtensionValues "evaluated in the current build" (:105-141); the
+/// native gate is fail-closed: a command that fails before this point
+/// writes nothing at all.
+struct LockfileGate {
+    session: bazel_rs::registry_session::SessionHandle,
+    repositories: Arc<bazel_rs::repository::RepositorySet>,
+}
+
+impl LockfileGate {
+    fn open(&self) {
+        let Some(session) = self.session.session() else {
+            return;
+        };
+        // `off` and `error` never write; they keep the lazy profile and do
+        // not resolve anything for the lockfile (BazelLockFileModule.
+        // ENABLED_IN_MODES, :53-54).
+        if !session.mode().writes() {
+            return;
+        }
+        let evaluated = self.repositories.evaluated_module_extensions();
+        if evaluated > 0 {
+            eprintln!(
+                "bazel-rs: evaluated {evaluated} module extension(s) before updating MODULE.bazel.lock"
+            );
+        }
+        session.mark_module_extensions_evaluated();
+    }
+}
+
 /// Writes the updated lockfile when the command ends (success or error).
 struct LockfileWriter(bazel_rs::registry_session::SessionHandle);
 
@@ -495,7 +549,6 @@ struct RunContext<'a> {
     cwd: &'a Path,
     runfiles: bazel_rs::runfiles_tree::RunfilesOptions,
     options: &'a bazel_rs::run_command::RunOptions,
-    /// Whether the remote cache is set up (N41): the summary names its hits.
     remote_enabled: bool,
     test: &'a bazel_rs::test_command::TestOptions,
 }
@@ -693,6 +746,8 @@ struct TestContext<'a> {
     /// Whether the remote cache is set up (N41): the build summary names its
     /// hits. Test actions themselves are local-only (docs/TEST_COMMAND.md).
     remote_enabled: bool,
+    /// Opens the lockfile write once test-target loading succeeded.
+    lockfile_gate: &'a LockfileGate,
 }
 
 /// Label.print: `//pkg:name` or `@@repo//pkg:name`.
@@ -768,12 +823,15 @@ fn test_targets(context: TestContext<'_>) -> Result<(), String> {
         runfiles,
         options,
         remote_enabled,
+        lockfile_gate,
     } = context;
     let selected = engine.select_for_test(patterns, relative_directory);
     for warning in engine.take_warnings() {
         warn(&warning);
     }
     let (mut build, candidates) = selected?;
+    // Test-target loading succeeded: the lockfile write is allowed.
+    lockfile_gate.open();
     let mut tests = Vec::new();
     let mut infos = std::collections::BTreeMap::new();
     let any_candidate = !candidates.is_empty();

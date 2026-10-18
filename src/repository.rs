@@ -608,6 +608,24 @@ impl RepositorySet {
             .map_err(Clone::clone)
     }
 
+    /// How many module extensions this invocation evaluated (prepared
+    /// ordinary groups). BazelLockFileModule.afterCommand collects the
+    /// SingleExtensionValues "evaluated in the current build" (:105-111) —
+    /// demand-driven, like SingleExtensionEvalFunction — and the native
+    /// lockfile write reports the same count when the loading phase
+    /// succeeded.
+    pub fn evaluated_module_extensions(&self) -> usize {
+        self.direct_runtime()
+            .map(|runtime| {
+                runtime
+                    .ordinary
+                    .values()
+                    .filter(|slot| slot.ready().is_some())
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
     /// The main repository mapping's apparent names in Bazel's entry order
     /// (BazelDepGraphValue.getRepositoryMapping, bzlmod/BazelDepGraphValue.java:126-160,
     /// with RepositoryMapping.withAdditionalMappings putting extension imports

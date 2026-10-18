@@ -18,6 +18,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Concurrent registry requests (Bazel's discovery fetches a whole horizon
@@ -75,6 +76,14 @@ pub struct RegistrySession {
     memo: Mutex<HashMap<String, Arc<FetchSlot>>>,
     recorded: Mutex<BTreeMap<String, Option<String>>>,
     resolution: Mutex<Option<Resolution>>,
+    /// Whether every module extension the command demanded evaluated
+    /// successfully in this invocation (the loading phase completed).
+    /// BazelLockFileModule.afterCommand combines BazelModuleResolutionValue
+    /// and BazelDepGraphValue with the SingleExtensionValues "evaluated in
+    /// the current build" (:95-100, :105-141); until the whole module
+    /// resolution — demanded extensions included — succeeded,
+    /// `updated_lockfile` stays None and nothing is written.
+    extensions_evaluated: AtomicBool,
     /// Normalized registry URL -> spelling as given (IndexRegistry.getUrl()).
     spellings: BTreeMap<String, String>,
 }
@@ -177,6 +186,7 @@ impl RegistrySession {
             memo: Mutex::default(),
             recorded: Mutex::default(),
             resolution: Mutex::default(),
+            extensions_evaluated: AtomicBool::new(false),
             spellings: BTreeMap::new(),
         })
     }
@@ -442,9 +452,22 @@ impl RegistrySession {
         *self.resolution.lock().expect("resolution record") = Some(resolution);
     }
 
+    /// The loading phase — module resolution and every demanded module
+    /// extension evaluation — succeeded: the SingleExtensionValues
+    /// BazelLockFileModule.afterCommand collects, "evaluated in the current
+    /// build" (:105-141), exist for this invocation and the lockfile may be
+    /// written. A command that fails before this point — extension
+    /// evaluation included — leaves MODULE.bazel.lock untouched.
+    pub fn mark_module_extensions_evaluated(&self) {
+        self.extensions_evaluated.store(true, Ordering::Release);
+    }
+
     /// The lockfile BazelLockFileModule.afterCommand would write, if any.
     pub fn updated_lockfile(&self) -> Option<Lockfile> {
         if !self.mode.writes() {
+            return None;
+        }
+        if !self.extensions_evaluated.load(Ordering::Acquire) {
             return None;
         }
         let resolution = self.resolution.lock().expect("resolution record").clone()?;
@@ -749,6 +772,7 @@ mod tests {
             selected_yanked: Vec::new(),
             usages: Some(ExtensionUsages::default()),
         });
+        first.mark_module_extensions_evaluated();
         assert_eq!(first.finish(), None);
         let text = std::fs::read_to_string(dir.path().join("MODULE.bazel.lock")).unwrap();
         assert!(
@@ -774,6 +798,7 @@ mod tests {
             selected_yanked: Vec::new(),
             usages: Some(ExtensionUsages::default()),
         });
+        second.mark_module_extensions_evaluated();
         assert!(second.updated_lockfile().is_none());
         // Refresh retries "not found"; error mode requires hashes.
         let refresh = session(dir.path(), LockfileMode::Refresh, None);
@@ -935,6 +960,11 @@ mod tests {
             selected_yanked: Vec::new(),
             usages: Some(ExtensionUsages::default()),
         });
+        // BazelLockFileModule.afterCommand writes nothing before every
+        // usage-table extension evaluated (BazelLockFileModule.java:95-100).
+        assert_eq!(session.finish(), None);
+        assert!(!overlay.exists());
+        session.mark_module_extensions_evaluated();
         assert_eq!(session.finish(), None);
         assert!(overlay.exists());
         assert!(
@@ -954,6 +984,8 @@ mod tests {
             selected_yanked: Vec::new(),
             usages: Some(ExtensionUsages::default()),
         });
+        assert!(readonly.updated_lockfile().is_none());
+        readonly.mark_module_extensions_evaluated();
         assert!(readonly.updated_lockfile().is_some());
         assert_eq!(readonly.finish(), None);
     }

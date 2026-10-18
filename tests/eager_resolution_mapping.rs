@@ -187,8 +187,10 @@ fn loading_bazel_tools_contents_fails_explicitly_without_the_builtin_profile() {
     for mode in ["off", "update"] {
         assert_eq!(last_error(&f.query(mode, &["//loads:loads"])), UNAVAILABLE);
     }
-    // Module resolution succeeded, so update still recorded the registry.
-    assert!(f.lock().is_some());
+    // The command failed while loading (module extension .bzl chain): a
+    // writing lockfile mode writes NOTHING — the write happens only after
+    // the whole resolution, demanded extensions included, succeeded.
+    assert!(f.lock().is_none());
 }
 
 #[test]

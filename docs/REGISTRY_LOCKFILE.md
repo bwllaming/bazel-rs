@@ -32,7 +32,12 @@ registries.
 - **The lockfile is written only when its value changes** (`BazelLockFileModule.java:186`).
   Value equality ignores map order, so a semantically equal file is left
   byte-for-byte untouched. Writes happen after the command, including a command
-  that failed after resolution succeeded, but never in `error` or `off` mode. As
+  that failed after its loading phase (target selection) succeeded, but never in
+  `error` or `off` mode. A command that fails earlier — module resolution or any
+  demanded module extension evaluation — writes nothing at all: the write gate
+  opens only when the whole resolution succeeded (loading phase), matching the
+  native fail-closed policy for partial lockfile updates (N37 follow-up; genuine
+  Bazel's `afterCommand` is laxer and combines whatever resolved). As
   in Bazel, a write failure does not fail the command (native prints a warning).
 - Only remote URLs are recorded. `file:` registries are never written
   (`BazelLockFileModule.java:158-167`) and they ignore hashes
