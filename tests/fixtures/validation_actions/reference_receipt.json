@@ -1,0 +1,626 @@
+{
+ "counts": {
+  "exact": 16,
+  "native_unsupported": 2
+ },
+ "fixture": {
+  "files": {
+   "BUILD.bazel": "a339bdbe611ad1e17f3b9361180b440f16b5c4a16289ef3687c52149d9cd97e7",
+   "MODULE.bazel": "8eb382c8125885f35c6818a4b549c4cdd29558bb3ecfa13de3ad871f76a55792",
+   "aspects.bzl": "6237f0cafa18b68272de4da4489e47fd4c99af89bbdb46349982170fe60186a2",
+   "defs.bzl": "8b36ecc730550b6733940d38449b8a7800bf41423a47c818ffdc472f233b7354",
+   "probe/BUILD.bazel": "f7524ae41223c5ef957c7e1f406342b30df438ff7930eab3692df9345917b250",
+   "probe/defs.bzl": "084bc59dbe2d95caffb6974aee4cff4cbbf5da0a3635793fe9a13c26012730ee"
+  }
+ },
+ "phases": [
+  {
+   "argv": [
+    "build",
+    "//:top"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "bin": {
+     "leaf.validated": "validated:leaf",
+     "mid.mine": "mine",
+     "top.out": "middle"
+    },
+    "reported": [
+     "top.out"
+    ],
+    "returncode": 0,
+    "seconds": 10.557,
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nLoading: \nLoading: 0 packages loaded\n\nINFO: Analyzed target //:top (5 packages loaded, 9 targets configured).\nTarget //:top up-to-date:\n  bazel-bin/top.out",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "A01-transitive-collection",
+   "native": {
+    "bin": {
+     "leaf.validated": "validated:leaf",
+     "mid.mine": "mine",
+     "top.out": "middle"
+    },
+    "reported": [
+     "top.out"
+    ],
+    "returncode": 0,
+    "seconds": 0.028,
+    "stderr": "bazel-rs: 3 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "stdout": "//:top\t<scratch>/ws/cache/actions/056a3dfd91c464d66c2773ebad809170dd94fa3035e40fa88ddd9e901a73dc15/outputs/bazel-out/k8-fastbuild/bin/top.out",
+    "timed_out": false
+   }
+  },
+  {
+   "argv": [
+    "build",
+    "--run_validations=false",
+    "//:top"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "bin": {
+     "top.out": "middle"
+    },
+    "reported": [
+     "top.out"
+    ],
+    "returncode": 0,
+    "seconds": 10.45,
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nLoading: \nLoading: 0 packages loaded\n\nINFO: Analyzed target //:top (5 packages loaded, 9 targets configured).\nTarget //:top up-to-date:\n  bazel-bin/top.out",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "A02-run-validations-false",
+   "native": {
+    "bin": {
+     "top.out": "middle"
+    },
+    "reported": [
+     "top.out"
+    ],
+    "returncode": 0,
+    "seconds": 0.019,
+    "stderr": "bazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "stdout": "//:top\t<scratch>/ws/cache/actions/056a3dfd91c464d66c2773ebad809170dd94fa3035e40fa88ddd9e901a73dc15/outputs/bazel-out/k8-fastbuild/bin/top.out",
+    "timed_out": false
+   }
+  },
+  {
+   "argv": [
+    "build",
+    "--output_groups=-_validation",
+    "//:top"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "bin": {
+     "leaf.validated": "validated:leaf",
+     "mid.mine": "mine",
+     "top.out": "middle"
+    },
+    "reported": [
+     "top.out"
+    ],
+    "returncode": 0,
+    "seconds": 10.272,
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nLoading: \nLoading: 0 packages loaded\n\nINFO: Analyzed target //:top (5 packages loaded, 9 targets configured).\nTarget //:top up-to-date:\n  bazel-bin/top.out",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "A03-minus-validation-quirk",
+   "native": {
+    "bin": {
+     "leaf.validated": "validated:leaf",
+     "mid.mine": "mine",
+     "top.out": "middle"
+    },
+    "reported": [
+     "top.out"
+    ],
+    "returncode": 0,
+    "seconds": 0.022,
+    "stderr": "bazel-rs: 3 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "stdout": "//:top\t<scratch>/ws/cache/actions/056a3dfd91c464d66c2773ebad809170dd94fa3035e40fa88ddd9e901a73dc15/outputs/bazel-out/k8-fastbuild/bin/top.out",
+    "timed_out": false
+   }
+  },
+  {
+   "argv": [
+    "build",
+    "--output_groups=extra",
+    "//:g"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "bin": {
+     "g.extra": "extra"
+    },
+    "reported": [
+     "g.extra"
+    ],
+    "returncode": 0,
+    "seconds": 10.064,
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nLoading: \nLoading: 0 packages loaded\n\nINFO: Analyzed target //:g (5 packages loaded, 7 targets configured).\nTarget //:g up-to-date:\n  bazel-bin/g.extra",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "A04-output-groups-override",
+   "native": {
+    "bin": {
+     "g.extra": "extra"
+    },
+    "reported": [
+     "g.extra"
+    ],
+    "returncode": 0,
+    "seconds": 0.021,
+    "stderr": "bazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "stdout": "//:g\t<scratch>/ws/cache/actions/aa3dd8bbb3a3f4595ad95fa0b1baf05428c3c0f904eda273b52b7412c2c10e5d/outputs/bazel-out/k8-fastbuild/bin/g.extra",
+    "timed_out": false
+   }
+  },
+  {
+   "argv": [
+    "build",
+    "--output_groups=+extra",
+    "//:g"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "bin": {
+     "g.extra": "extra",
+     "g.out": "default"
+    },
+    "reported": [
+     "g.extra",
+     "g.out"
+    ],
+    "returncode": 0,
+    "seconds": 10.177,
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nLoading: \nLoading: 0 packages loaded\n\nINFO: Analyzed target //:g (5 packages loaded, 7 targets configured).\nTarget //:g up-to-date:\n  bazel-bin/g.out\n  bazel-bin/g.extra",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "A05-output-groups-add",
+   "native": {
+    "bin": {
+     "g.extra": "extra",
+     "g.out": "default"
+    },
+    "reported": [
+     "g.extra",
+     "g.out"
+    ],
+    "returncode": 0,
+    "seconds": 0.023,
+    "stderr": "bazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "stdout": "//:g\t<scratch>/ws/cache/actions/7c826d1cd96b4979b5d60910118222161a11d3c4ded9e1f1c3c7df25168577d8/outputs/bazel-out/k8-fastbuild/bin/g.out\n//:g\t<scratch>/ws/cache/actions/aa3dd8bbb3a3f4595ad95fa0b1baf05428c3c0f904eda273b52b7412c2c10e5d/outputs/bazel-out/k8-fastbuild/bin/g.extra",
+    "timed_out": false
+   }
+  },
+  {
+   "argv": [
+    "build",
+    "--output_groups=missing",
+    "//:g"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "bin": {},
+    "reported": [],
+    "returncode": 0,
+    "seconds": 10.456,
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nLoading: \nLoading: 0 packages loaded\n\nINFO: Analyzed target //:g (5 packages loaded, 7 targets configured).\nTarget //:g up-to-date (nothing to build)\nINFO: 1 process: 1 internal.",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "A06-output-groups-missing",
+   "native": {
+    "bin": {},
+    "reported": [],
+    "returncode": 0,
+    "seconds": 0.023,
+    "stderr": "bazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "stdout": "",
+    "timed_out": false
+   }
+  },
+  {
+   "argv": [
+    "build",
+    "//:tool_only"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "bin": {
+     "tool_only.out": "middle"
+    },
+    "reported": [
+     "tool_only.out"
+    ],
+    "returncode": 0,
+    "seconds": 10.511,
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nLoading: \nLoading: 0 packages loaded\n\nINFO: Analyzed target //:tool_only (5 packages loaded, 8 targets configured).\nTarget //:tool_only up-to-date:\n  bazel-bin/tool_only.out",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "A07-tool-dependency-not-collected",
+   "native": {
+    "bin": {
+     "tool_only.out": "middle"
+    },
+    "reported": [
+     "tool_only.out"
+    ],
+    "returncode": 0,
+    "seconds": 3.222,
+    "stderr": "bazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "stdout": "//:tool_only\t<scratch>/ws/cache/actions/fc5b28ce29618899879dbb644552de3080a5aa32a626a1f4e8ac1d335f8c0439/outputs/bazel-out/k8-fastbuild/bin/tool_only.out",
+    "timed_out": false
+   },
+   "native_extra": [
+    "--experimental-builtin-modules"
+   ]
+  },
+  {
+   "argv": [
+    "build",
+    "//:private_dep"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "bin": {
+     "private_dep.mine": "mine",
+     "private_dep.out": "middle"
+    },
+    "reported": [
+     "private_dep.out"
+    ],
+    "returncode": 0,
+    "seconds": 10.298,
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nLoading: \nLoading: 0 packages loaded\n\nINFO: Analyzed target //:private_dep (5 packages loaded, 8 targets configured).\nTarget //:private_dep up-to-date:\n  bazel-bin/private_dep.out",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "A08-private-attribute-collected",
+   "native": {
+    "bin": {
+     "private_dep.mine": "mine",
+     "private_dep.out": "middle"
+    },
+    "reported": [
+     "private_dep.out"
+    ],
+    "returncode": 0,
+    "seconds": 0.025,
+    "stderr": "bazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "stdout": "//:private_dep\t<scratch>/ws/cache/actions/c34dce8601aaed8b18019aa13152480ac40bca1b3edf43d220de26905f5e0e62/outputs/bazel-out/k8-fastbuild/bin/private_dep.out",
+    "timed_out": false
+   }
+  },
+  {
+   "argv": [
+    "build",
+    "//:dict_dep"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "bin": {
+     "dict_dep.mine": "mine",
+     "dict_dep.out": "middle",
+     "leaf.validated": "validated:leaf"
+    },
+    "reported": [
+     "dict_dep.out"
+    ],
+    "returncode": 0,
+    "seconds": 10.295,
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nLoading: \nLoading: 0 packages loaded\n\nINFO: Analyzed target //:dict_dep (5 packages loaded, 8 targets configured).\nTarget //:dict_dep up-to-date:\n  bazel-bin/dict_dep.out",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "A09-label-list-dict-collected",
+   "native": {
+    "bin": {
+     "dict_dep.mine": "mine",
+     "dict_dep.out": "middle",
+     "leaf.validated": "validated:leaf"
+    },
+    "reported": [
+     "dict_dep.out"
+    ],
+    "returncode": 0,
+    "seconds": 0.014,
+    "stderr": "bazel-rs: 3 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "stdout": "//:dict_dep\t<scratch>/ws/cache/actions/35c517a1068a6c9507cf9a644f3285aead6c8a57cef4a75171b7a258f1810428/outputs/bazel-out/k8-fastbuild/bin/dict_dep.out",
+    "timed_out": false
+   }
+  },
+  {
+   "argv": [
+    "build",
+    "//:vout.out"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "bin": {
+     "vout.out": "vout",
+     "vout.validated": "validated:vout"
+    },
+    "reported": [
+     "vout.out"
+    ],
+    "returncode": 0,
+    "seconds": 10.385,
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nLoading: \nLoading: 0 packages loaded\n\nINFO: Analyzed target //:vout.out (5 packages loaded, 8 targets configured).\nTarget //:vout.out up-to-date:\n  bazel-bin/vout.out",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "A10-output-file-target",
+   "native": {
+    "bin": {
+     "vout.out": "vout",
+     "vout.validated": "validated:vout"
+    },
+    "reported": [
+     "vout.out"
+    ],
+    "returncode": 0,
+    "seconds": 0.032,
+    "stderr": "bazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "stdout": "//:vout.out\t<scratch>/ws/cache/actions/b04dc1240c7b21e0a46fe3e829555db0c9c9c0f4c48dd8c21d8c40b06cd73b46/outputs/bazel-out/k8-fastbuild/bin/vout.out",
+    "timed_out": false
+   }
+  },
+  {
+   "argv": [
+    "build",
+    "//:file_consumer"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "bin": {
+     "file_consumer.out": "via-file",
+     "vout.validated": "validated:vout"
+    },
+    "reported": [
+     "file_consumer.out"
+    ],
+    "returncode": 0,
+    "seconds": 10.353,
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nLoading: \nLoading: 0 packages loaded\n\nINFO: Analyzed target //:file_consumer (5 packages loaded, 9 targets configured).\nTarget //:file_consumer up-to-date:\n  bazel-bin/file_consumer.out",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "A11-output-file-consumer",
+   "native": {
+    "bin": {
+     "file_consumer.out": "via-file",
+     "vout.validated": "validated:vout"
+    },
+    "reported": [
+     "file_consumer.out"
+    ],
+    "returncode": 0,
+    "seconds": 0.014,
+    "stderr": "bazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "stdout": "//:file_consumer\t<scratch>/ws/cache/actions/559a8434b856dedf68395c322283e2e4219dc09f9921b978ba3f75807f5574bb/outputs/bazel-out/k8-fastbuild/bin/file_consumer.out",
+    "timed_out": false
+   }
+  },
+  {
+   "argv": [
+    "build",
+    "//:gen"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "bin": {
+     "gen.txt": "\n",
+     "leaf.validated": "validated:leaf",
+     "mid.mine": "mine",
+     "top.out": "middle"
+    },
+    "reported": [
+     "gen.txt"
+    ],
+    "returncode": 0,
+    "seconds": 10.241,
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nLoading: \nLoading: 0 packages loaded\n\nINFO: Analyzed target //:gen (6 packages loaded, 11 targets configured).\nTarget //:gen up-to-date:\n  bazel-bin/gen.txt",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "A12-native-rule-propagation",
+   "native": {
+    "bin": {
+     "gen.txt": "\n",
+     "leaf.validated": "validated:leaf",
+     "mid.mine": "mine",
+     "top.out": "middle"
+    },
+    "reported": [
+     "gen.txt"
+    ],
+    "returncode": 0,
+    "seconds": 0.036,
+    "stderr": "bazel-rs: 4 actions executed, 0 cache hits (experimental local execution; not sandboxed)",
+    "stdout": "//:gen\t<scratch>/ws/cache/actions/26f4d2e0a172bbd6b36c4e3d7d5588c5e17bc75e267de27f681a5f46afabdfeb/outputs/bazel-out/k8-fastbuild/bin/gen.txt",
+    "timed_out": false
+   }
+  },
+  {
+   "argv": [
+    "build",
+    "//:failing"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "bin": {},
+    "reported": [],
+    "returncode": 1,
+    "seconds": 10.306,
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nLoading: \nLoading: 0 packages loaded\n\nINFO: Analyzed target //:failing (5 packages loaded, 7 targets configured).\nERROR: <scratch>/ws/BUILD.bazel:63:9: Action failing.validated failed: (Exit 1): bash failed: error executing Action command (from val_fail rule target //:failing) /bin/bash -c 'printf broken > $0; exit 1' '' bazel-out/k8-fastbuild/bin/failing.validated\n\nUse --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging\n: line 1: $0: ambiguous redirect\nTarget //:failing failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: Build did NOT complete successfully",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "A13-failing-validation-action",
+   "native": {
+    "bin": {},
+    "reported": [],
+    "returncode": 1,
+    "seconds": 0.029,
+    "stderr": "bazel-rs: action '//:failing#0': action '//:failing#0' failed (exit status: 1):\nstdout:\n\nstderr:\n: line 1: $0: ambiguous redirect",
+    "stdout": "",
+    "timed_out": false
+   }
+  },
+  {
+   "argv": [
+    "build",
+    "//:transitive"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "bin": {},
+    "reported": [],
+    "returncode": 1,
+    "seconds": 10.112,
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nLoading: \nLoading: 0 packages loaded\n\nERROR: <scratch>/ws/BUILD.bazel:67:11: in transitive rule //:transitive: //:defs.bzl cannot access the _transitive_validation private API\nERROR: <scratch>/ws/BUILD.bazel:67:11: Analysis of target '//:transitive' (config: a7a71fd) failed\nERROR: Analysis of target '//:transitive' failed; build aborted\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "A14-validation-transitive-private",
+   "native": {
+    "bin": {},
+    "reported": [],
+    "returncode": 1,
+    "seconds": 0.021,
+    "stderr": "bazel-rs: analysis of //:transitive: //:defs.bzl cannot access the _transitive_validation private API",
+    "stdout": "",
+    "timed_out": false
+   }
+  },
+  {
+   "argv": [
+    "build",
+    "//:skipped"
+   ],
+   "classification": "native_unsupported",
+   "genuine": {
+    "bin": {},
+    "reported": [],
+    "returncode": 1,
+    "seconds": 9.969,
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nLoading: \nLoading: 0 packages loaded\n\nERROR: no such package 'tools/allowlists/skip_validations_allowlist': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - tools/allowlists/skip_validations_allowlist\nERROR: <scratch>/ws/BUILD.bazel:71:8: every rule of type skipper implicitly depends upon the target '//tools/allowlists/skip_validations_allowlist:skip_validations_allowlist', but this target could not be found because of: no such package 'tools/allowlists/skip_validations_allowlist': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.\n - tools/allowlists/skip_validations_allowlist\nERROR: Analysis of target '//:skipped' failed; build aborted: Analysis failed\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "A15-skip-validations",
+   "native": {
+    "bin": {},
+    "reported": [],
+    "returncode": 1,
+    "seconds": 0.024,
+    "stderr": "bazel-rs: analysis of //:skipped: declared rule features accepted at load time but not analyzed by the native profile: attribute 'skipped' skip_validations=True",
+    "stdout": "",
+    "timed_out": false
+   },
+   "note": "both engines fail (rc 1): genuine Bazel requires the skip_validations allowlist (tools/allowlists/skip_validations_allowlist), the native profile rejects the declared feature at analysis"
+  },
+  {
+   "argv": [
+    "build",
+    "--aspects=//:aspects.bzl%val_aspect",
+    "//:plain"
+   ],
+   "classification": "native_unsupported",
+   "genuine": {
+    "bin": {
+     "plain.aspect_validated": "aspect",
+     "plain.out": "plain"
+    },
+    "reported": [
+     "plain.out"
+    ],
+    "returncode": 0,
+    "seconds": 10.088,
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nLoading: \nLoading: 0 packages loaded\n\nINFO: Analyzed target //:plain (5 packages loaded, 7 targets configured, 1 aspect application).\nTarget //:plain up-to-date:\n  bazel-bin/plain.out",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "A16-aspect-validation",
+   "native": {
+    "bin": {},
+    "reported": [],
+    "returncode": 1,
+    "seconds": 0.003,
+    "stderr": "bazel-rs: unsupported option \"--aspects=//:aspects.bzl%val_aspect\"; options are never silently ignored",
+    "stdout": "",
+    "timed_out": false
+   },
+   "note": "aspects are not modeled by the native profile; genuine runs the aspect's _validation outputs with the target"
+  },
+  {
+   "argv": [
+    "build",
+    "//probe:probe"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "bin": {},
+    "reported": [],
+    "returncode": 1,
+    "seconds": 9.029,
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nLoading: \nLoading: 0 packages loaded\nERROR: <scratch>/ws/probe/defs.bzl:11:24: name 'ValidationProvider' is not defined\nWARNING: Target pattern parsing failed.\nERROR: Skipping '//probe:probe': error loading package 'probe': compilation of module 'probe/defs.bzl' failed\nERROR: error loading package 'probe': compilation of module 'probe/defs.bzl' failed\nINFO: 0 processes.\nERROR: Build did NOT complete successfully",
+    "stdout": "",
+    "timed_out": false
+   },
+   "id": "A17-validationprovider-absent",
+   "native": {
+    "bin": {},
+    "reported": [],
+    "returncode": 1,
+    "seconds": 0.013,
+    "stderr": "bazel-rs: cannot evaluate //probe:defs.bzl: error: name 'ValidationProvider' is not defined\n  --> //probe:defs.bzl:11:24\n   |\n11 | _validation_outputs = [ValidationProvider]\n   |                        ^^^^^^^^^^^^^^^^^^\n   |",
+    "stdout": "",
+    "timed_out": false
+   }
+  },
+  {
+   "argv": [
+    "query",
+    "//:all"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "bin": {},
+    "reported": [],
+    "returncode": 0,
+    "seconds": 8.739,
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n no actions running\n no actions running\n no actions running\n no actions running\n no actions running\n no actions running\nLoading: 0 packages loaded",
+    "stdout": "//:dict_dep\n//:failing\n//:fg\n//:file_consumer\n//:g\n//:gen\n//:leaf\n//:mid\n//:plain\n//:private_dep\n//:skipped\n//:tool_only\n//:top\n//:transitive\n//:vout",
+    "timed_out": false
+   },
+   "id": "A18-query-labels",
+   "native": {
+    "bin": {},
+    "reported": [],
+    "returncode": 0,
+    "seconds": 0.008,
+    "stderr": "",
+    "stdout": "//:dict_dep\n//:failing\n//:fg\n//:file_consumer\n//:g\n//:gen\n//:leaf\n//:mid\n//:plain\n//:private_dep\n//:skipped\n//:tool_only\n//:top\n//:transitive\n//:vout",
+    "timed_out": false
+   }
+  }
+ ],
+ "purpose": "Paired genuine Bazel 9.3.0 vs native bazel-rs capture of N56 (docs/VALIDATION_ACTIONS.md): the _validation output group (rule-returned, like rules_go go/private/rules/library.bzl:69-75), RuleConfiguredTargetBuilder transitive collection per attribute kind, OutputFileConfiguredTarget delegation, --output_groups +/- semantics with the -_validation quirk, --run_validations=false, failing validation actions, the _validation_transitive private API, the absent ValidationProvider symbol, and the genuine-only aspect and skip_validations boundaries. One fresh fixture copy per phase per engine; evidence only, never a build input.",
+ "reference": {
+  "binary": "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+  "offline": "self-contained module; no registry or network access",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private> --output_base=<private>"
+ },
+ "schema": "n56-validation-actions-reference-receipt/v1"
+}

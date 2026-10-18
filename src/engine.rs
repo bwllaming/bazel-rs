@@ -7,6 +7,7 @@ use crate::configuration::{ConfigId, Configuration, LabelParser, SettingValue};
 use crate::configured_attributes::{self, ConfigMatching};
 use crate::ignored::IgnoredSubdirectories;
 use crate::label::{Label, PackageId};
+pub use crate::output_group_info::OutputSelection;
 use crate::package::{self, Package, Rule, RuleKind};
 use crate::package_specification::{self, GroupNode};
 use crate::platforms::{ConstraintSettingInfo, ConstraintValueInfo, PlatformInfo};
@@ -111,6 +112,11 @@ struct ActionPlanning {
     /// carry theirs in custom_providers), built once per configured target
     /// (the end of an alias chain) so every dependent sees one instance.
     native_output_groups: BTreeMap<ConfiguredTargetKey, starlark::values::OwnedFrozenValue>,
+    /// The `_validation` files RuleConfiguredTargetBuilder propagated to
+    /// each native rule target from its attribute prerequisites
+    /// (analysis::transitive_validation is the Starlark-rule path; custom
+    /// rules' groups live in their providers).
+    validation: BTreeMap<ConfiguredTargetKey, Vec<crate::starlark_types::File>>,
     done: usize,
     /// The client environment inherited action variables resolve against,
     /// read once per build on first need (crate::action_env).
@@ -909,6 +915,13 @@ pub struct Engine {
     source_directories: BTreeMap<PathBuf, BTreeSet<Label>>,
     /// The runfiles options of builds (N23f, crate::runfiles_tree).
     runfiles_options: crate::runfiles_tree::RunfilesOptions,
+    /// The requested top-level output groups of builds
+    /// (`--output_groups`/`--run_validations`, N56,
+    /// crate::output_group_info::determine_output_groups).
+    output_selection: OutputSelection,
+    /// Whether the building command runs tests (BuildRequest.shouldRunTests
+    /// keeps the `default` group for failure reporting).
+    tests_requested: bool,
     /// The target of a `run` build and what it runs (Self::build_for_run).
     run_requests: BTreeSet<Label>,
     /// Whether the run requests need their runfiles tree (`run`), or only
@@ -962,6 +975,8 @@ impl Engine {
             deferred_duplicates: BTreeMap::new(),
             source_directories: BTreeMap::new(),
             runfiles_options: crate::runfiles_tree::RunfilesOptions::default(),
+            output_selection: OutputSelection::default(),
+            tests_requested: false,
             run_requests: BTreeSet::new(),
             run_trees: true,
             run_plans: BTreeMap::new(),
@@ -972,6 +987,31 @@ impl Engine {
     /// The runfiles options of later builds (`--build_runfile_links`, ...).
     pub fn set_runfiles_options(&mut self, options: crate::runfiles_tree::RunfilesOptions) {
         self.runfiles_options = options;
+    }
+
+    /// The requested top-level output groups of later builds
+    /// (`--output_groups` tokens with their `+`/`-` prefixes and
+    /// `--run_validations`), BuildRequest.getTopLevelArtifactContext's
+    /// output-group half.
+    pub fn set_output_selection(&mut self, selection: OutputSelection) {
+        self.output_selection = selection;
+    }
+
+    /// Whether the building command also runs the tests it builds
+    /// (BuildRequest.shouldRunTests: `bazel test`).
+    pub fn set_tests_requested(&mut self, tests: bool) {
+        self.tests_requested = tests;
+    }
+
+    /// The effective top-level output groups of a build
+    /// (OutputGroupInfo.determineOutputGroups over `--output_groups`,
+    /// `--run_validations` and the command).
+    fn selected_output_groups(&self) -> BTreeSet<String> {
+        crate::output_group_info::determine_output_groups(
+            &self.output_selection.groups,
+            self.output_selection.run_validations,
+            self.tests_requested,
+        )
     }
 
     /// Analyze builds in `configuration` (default: the default configuration).
@@ -5865,6 +5905,93 @@ impl Engine {
             .unwrap_or(own)
     }
 
+    /// The configured key whose OutputGroupInfo serves requested target
+    /// `label` in `config`: an output file's generating rule
+    /// (OutputFileConfiguredTarget delegates its `_validation` group,
+    /// OutputFileConfiguredTarget.java:109-118, in the generating rule's
+    /// transitioned configuration, Self::artifacts), else the owner of a
+    /// rule transition's delegation, else the target itself.
+    fn output_group_key(
+        &mut self,
+        label: &Label,
+        config: ConfigId,
+    ) -> Result<ConfiguredTargetKey, String> {
+        let key = ConfiguredTargetKey::new(label.clone(), config);
+        if let Target::Output(rule, _) = self.target(label)?.to_owned() {
+            let owner = ConfiguredTargetKey::new(rule.label.clone(), config);
+            return Ok(self.rule_delegations.get(&owner).cloned().unwrap_or(owner));
+        }
+        Ok(self.rule_delegations.get(&key).cloned().unwrap_or(key))
+    }
+
+    /// The `_validation` files of the configured target `key` as planned: a
+    /// Starlark rule's merged OutputGroupInfo (an alias's forwarded copy;
+    /// the requested key of a rule transition resolves to its owner's), or
+    /// a native rule's propagated memo. The OutputGroupInfo every other
+    /// target collected from this one (RuleConfiguredTargetBuilder.
+    /// collectTransitiveValidationOutputGroups).
+    fn planned_validation(
+        &self,
+        custom_providers: &BTreeMap<
+            ConfiguredTargetKey,
+            BTreeMap<String, starlark::values::OwnedFrozenValue>,
+        >,
+        validation: &BTreeMap<ConfiguredTargetKey, Vec<crate::starlark_types::File>>,
+        key: &ConfiguredTargetKey,
+    ) -> Vec<crate::starlark_types::File> {
+        let key = self.rule_delegations.get(key).unwrap_or(key);
+        if let Some(files) = validation.get(key) {
+            return files.clone();
+        }
+        custom_providers
+            .get(key)
+            .and_then(|providers| providers.get(crate::output_group_info::PROVIDER_ID))
+            .map(|info| crate::output_group_info::validation_files(info.value()))
+            .unwrap_or_default()
+    }
+
+    /// The Files of configured target `key`'s output group `group`
+    /// (TopLevelArtifactHelper.getAllArtifactsToBuild's
+    /// outputGroupInfo.getOutputGroup, :217-220): a Starlark rule's returned
+    /// groups; a native rule has none beyond its hidden and validation
+    /// groups; the default group is the target's files to build, read by
+    /// the caller.
+    fn planned_output_group(
+        &self,
+        custom_providers: &BTreeMap<
+            ConfiguredTargetKey,
+            BTreeMap<String, starlark::values::OwnedFrozenValue>,
+        >,
+        validation: &BTreeMap<ConfiguredTargetKey, Vec<crate::starlark_types::File>>,
+        key: &ConfiguredTargetKey,
+        group: &str,
+    ) -> Vec<crate::starlark_types::File> {
+        if group == crate::output_group_info::VALIDATION {
+            return self.planned_validation(custom_providers, validation, key);
+        }
+        let key = self.rule_delegations.get(key).unwrap_or(key);
+        custom_providers
+            .get(key)
+            .and_then(|providers| providers.get(crate::output_group_info::PROVIDER_ID))
+            .and_then(|info| crate::output_group_info::groups(info.value()))
+            .and_then(|groups| {
+                groups
+                    .iter()
+                    .find(|(name, _)| name == group)
+                    .map(|(_, depset)| {
+                        depset
+                            .flatten()
+                            .into_iter()
+                            .filter_map(|item| match item {
+                                crate::starlark_types::Item::File(file) => Some(file.clone()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                    })
+            })
+            .unwrap_or_default()
+    }
+
     /// The dependency edges of a configured rule: its attribute edges and,
     /// for a Starlark test rule in the built-in profile (where
     /// `@bazel_tools` and the default `test` exec group exist, D3 of
@@ -6236,6 +6363,7 @@ impl Engine {
             source_inputs,
             client_environment,
             native_output_groups,
+            validation,
             repositories,
             runfiles_nodes,
             ..
@@ -6401,8 +6529,42 @@ impl Engine {
                     available.insert(artifact.file(), artifact);
                 }
                 let dependency = ConfiguredTargetKey::new(label.clone(), edge_config);
-                let target_provider_files =
+                let actual = self
+                    .forwarded_actual(configured, &dependency)
+                    .unwrap_or_else(|| label.clone());
+                let target = self.target(&actual)?;
+                // The alias chain's end, in the same configuration
+                // (Self::alias_chain).
+                let actual_key = ConfiguredTargetKey::new(actual.clone(), edge_config);
+                let is_rule = matches!(&target, Target::Rule(rule) if !matches!(rule.kind, RuleKind::PackageGroup(_)));
+                // The dependency's `_validation` files: a native rule's
+                // propagated group, an output-file target's generating rule's
+                // group (OutputFileConfiguredTarget.java:109-118, the
+                // configuration follows the generating rule's transition,
+                // Self::artifacts); a Starlark rule carries them in its
+                // providers already. They are provider payload files of the
+                // dependency: legal action inputs of the consumer
+                // (crate::analysis_runtime::Context::known_file).
+                let validation = match &target {
+                    Target::Output(generating, _) => {
+                        let owner = ConfiguredTargetKey::new(generating.label.clone(), edge_config);
+                        self.planned_validation(custom_providers, validation, &owner)
+                    }
+                    _ if is_rule => {
+                        self.planned_validation(custom_providers, validation, &actual_key)
+                    }
+                    _ => Vec::new(),
+                };
+                let mut target_provider_files =
                     provider_files.get(&dependency).cloned().unwrap_or_default();
+                // The validation files not already among the dependency's
+                // provider files (a Starlark rule lists them; a native rule
+                // or output-file target does not) join them here.
+                for file in &validation {
+                    if !target_provider_files.contains(file) {
+                        target_provider_files.push(file.clone());
+                    }
+                }
                 for file in &target_provider_files {
                     let artifact = artifact_index.get(file).ok_or_else(|| {
                         format!(
@@ -6412,13 +6574,6 @@ impl Engine {
                     })?;
                     available.insert(file.clone(), artifact.clone());
                 }
-                let actual = self
-                    .forwarded_actual(configured, &dependency)
-                    .unwrap_or_else(|| label.clone());
-                let target = self.target(&actual)?;
-                // The alias chain's end, in the same configuration
-                // (Self::alias_chain).
-                let actual_key = ConfiguredTargetKey::new(actual.clone(), edge_config);
                 let runfiles = dependency_runfiles(&target, &files, runfiles_info.get(&actual_key));
                 for file in runfiles.files() {
                     let artifact = artifact_index.get(&file).ok_or_else(|| {
@@ -6435,14 +6590,14 @@ impl Engine {
                         available.insert(file, artifact.clone());
                     }
                 }
-                let is_rule = matches!(&target, Target::Rule(rule) if !matches!(rule.kind, RuleKind::PackageGroup(_)));
                 let mut providers = custom_providers
                     .get(&dependency)
                     .cloned()
                     .unwrap_or_default();
                 // Every rule target has an OutputGroupInfo
                 // (RuleConfiguredTargetBuilder.java:155-173): a native rule's
-                // is the HIDDEN_TOP_LEVEL group of its default runfiles,
+                // is the HIDDEN_TOP_LEVEL group of its default runfiles plus
+                // the `_validation` group propagated from its prerequisites,
                 // built once per configured target.
                 if is_rule && !providers.contains_key(crate::output_group_info::PROVIDER_ID) {
                     let value = match native_output_groups.get(&actual_key) {
@@ -6450,12 +6605,21 @@ impl Engine {
                         None => {
                             let value = crate::output_group_info::freeze(
                                 runfiles.default_runfiles().all_artifacts(),
+                                validation.clone(),
                             )?;
                             native_output_groups.insert(actual_key.clone(), value.clone());
                             value
                         }
                     };
                     providers.insert(crate::output_group_info::PROVIDER_ID.to_owned(), value);
+                }
+                // An output-file target's OutputGroupInfo is that single
+                // `_validation` group, present only when non-empty.
+                if matches!(&target, Target::Output(..)) && !validation.is_empty() {
+                    providers.insert(
+                        crate::output_group_info::PROVIDER_ID.to_owned(),
+                        crate::output_group_info::freeze_validation(validation.clone())?,
+                    );
                 }
                 // InstrumentedFilesInfo.EMPTY (coverage disabled): filegroup
                 // and genrule add it (Filegroup.java:63-108,
@@ -6936,8 +7100,39 @@ impl Engine {
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            dry.insert(key, defaults);
+            dry.insert(key.clone(), defaults);
             return Ok(());
+        }
+        // RuleConfiguredTargetBuilder.propagateTransitiveValidationOutputGroups
+        // (:175-176, 294-296, 360-430): the native-rule collection of this
+        // target's attribute prerequisites' `_validation` groups (the
+        // Starlark-rule path is analysis::transitive_validation). Implicit
+        // `$` attributes and tool dependencies (exec/no-config edges: genrule
+        // `tools`, `package_metadata`) never contribute; every dependency was
+        // planned before its dependent (analysis postorder).
+        {
+            let mut collected = Vec::new();
+            let mut seen = BTreeSet::new();
+            for edge in self.rule_edges(rule) {
+                if edge.attribute.starts_with('$')
+                    || edge.attribute.starts_with('_')
+                    || !matches!(edge.cfg, EdgeCfg::Target)
+                {
+                    continue;
+                }
+                let Ok(label) = self.resolve_rule_src(rule, &edge.label) else {
+                    continue;
+                };
+                let dep_key = ConfiguredTargetKey::new(label, config);
+                for file in self.planned_validation(custom_providers, validation, &dep_key) {
+                    if seen.insert(file.clone()) {
+                        collected.push(file);
+                    }
+                }
+            }
+            if !collected.is_empty() {
+                validation.insert(key.clone(), collected);
+            }
         }
         let (inputs, _) = self.inputs(rule, config, dry, declared)?;
         for artifact in &inputs {
@@ -7488,26 +7683,85 @@ impl Engine {
             mut nodes,
             source_inputs,
             runfiles_nodes,
+            custom_providers,
+            validation,
             ..
         } = state;
+        // BuildRequest.getTopLevelArtifactContext (BuildRequest.java:412-421)
+        // with OutputGroupInfo.determineOutputGroups: the command's requested
+        // output groups. `default` is the files to build; every other
+        // requested group's files come from the target's OutputGroupInfo
+        // (TopLevelArtifactHelper.getAllArtifactsToBuild, :196-248). Groups
+        // whose name starts with `_` (validation, hidden top level) are
+        // built but never reported as the build's outputs (:228-236);
+        // `temp_files` is empty without --save_temps.
+        let selected = self.selected_output_groups();
+        let reports = |group: &str| !group.starts_with('_');
         let mut requested: Vec<(ConfiguredTargetKey, Artifact)> = Vec::new();
+        // The built-but-unreported artifacts of hidden requested groups.
+        let mut unreported = Vec::new();
+        let group_artifacts = |key: &ConfiguredTargetKey,
+                               label: &Label,
+                               group: &str,
+                               files: Vec<File>,
+                               requested: &mut Vec<(ConfiguredTargetKey, Artifact)>,
+                               unreported: &mut Vec<(ConfiguredTargetKey, Artifact)>|
+         -> Result<(), String> {
+            for file in files {
+                let artifact = artifact_index.get(&file).cloned().ok_or_else(|| {
+                    format!(
+                        "{label}: output group '{group}' file has no declared artifact identity: {}",
+                        file.path
+                    )
+                })?;
+                if reports(group) {
+                    requested.push((key.clone(), artifact));
+                } else {
+                    unreported.push((key.clone(), artifact));
+                }
+            }
+            Ok(())
+        };
         for label in labels {
-            for artifact in self.artifacts(label, top, &dry, &declared)? {
-                requested.push((self.configurations.top_key(label.clone()), artifact));
+            let key = self.configurations.top_key(label.clone());
+            if selected.contains(crate::output_group_info::DEFAULT) {
+                for artifact in self.artifacts(label, top, &dry, &declared)? {
+                    requested.push((key.clone(), artifact));
+                }
+            }
+            let group_key = self.output_group_key(label, top)?;
+            for group in &selected {
+                if matches!(
+                    group.as_str(),
+                    crate::output_group_info::DEFAULT
+                        | crate::output_group_info::TEMP_FILES
+                        | crate::output_group_info::HIDDEN_TOP_LEVEL
+                ) {
+                    continue;
+                }
+                let files =
+                    self.planned_output_group(&custom_providers, &validation, &group_key, group);
+                group_artifacts(&key, label, group, files, &mut requested, &mut unreported)?;
             }
         }
         // OutputGroupInfo.HIDDEN_TOP_LEVEL (RuleConfiguredTargetBuilder.java:156-171):
         // the default runfiles artifacts of requested targets are built too,
         // but not reported. The runfiles tree itself is not created (docs/RUNFILES.md).
-        let mut hidden = Vec::new();
+        // An `--output_groups` override drops the group from the request
+        // (determineOutputGroups), so the runfiles artifacts are not built.
+        let runfiles_requested = selected.contains(crate::output_group_info::HIDDEN_TOP_LEVEL);
+        let mut hidden = unreported;
         let mut seen: std::collections::HashSet<(ConfiguredTargetKey, File)> = requested
             .iter()
+            .chain(&hidden)
             .map(|(key, artifact)| (key.clone(), artifact.file()))
             .collect();
         for label in labels {
             let key = self.configurations.top_key(label.clone());
             let actual = forwarded.get(&key).unwrap_or(label);
-            if let Some(runfiles) = runfiles_info.get(&self.configurations.top_key(actual.clone()))
+            if runfiles_requested
+                && let Some(runfiles) =
+                    runfiles_info.get(&self.configurations.top_key(actual.clone()))
             {
                 for file in runfiles.default_runfiles().all_artifacts() {
                     let artifact = artifact_index.get(&file).cloned().ok_or_else(|| {

@@ -113,6 +113,7 @@ fn run() -> Result<(), String> {
     let mut credential_options = bazel_rs::credentials::CredentialOptions::default();
     let mut remote_options = bazel_rs::remote_cache::RemoteOptions::default();
     let mut runfiles_options = bazel_rs::runfiles_tree::RunfilesOptions::default();
+    let mut output_selection = bazel_rs::output_group_info::OutputSelection::default();
     let mut run_options = bazel_rs::run_command::RunOptions::default();
     let mut test_options = bazel_rs::test_command::TestOptions::default();
     let mut deferred = None;
@@ -186,6 +187,7 @@ fn run() -> Result<(), String> {
         credential_options = native.credentials;
         remote_options = native.remote;
         runfiles_options = native.runfiles;
+        output_selection = native.output;
         run_options = native.run;
         test_options = native.test;
         options.residue.iter().map(|arg| arg.text.clone()).collect()
@@ -340,6 +342,11 @@ fn run() -> Result<(), String> {
     };
     let mut engine = Engine::with_repositories(repositories.clone());
     engine.set_runfiles_options(runfiles_options);
+    // BuildRequest.getTopLevelArtifactContext (BuildRequest.java:412-421):
+    // the requested output groups; a command that runs the tests it builds
+    // keeps the `default` group for failure reporting (shouldRunTests).
+    engine.set_output_selection(output_selection);
+    engine.set_tests_requested(command == "test");
     if builds(&command) {
         // Label-typed options convert with the main repository mapping
         // (CoreOptionConverters.convertOptionsLabel, :351-357).
@@ -1249,6 +1256,9 @@ struct NativeOptions {
     remote: bazel_rs::remote_cache::RemoteOptions,
     /// Runfiles tree options of build and run (N23f, crate::runfiles_tree).
     runfiles: bazel_rs::runfiles_tree::RunfilesOptions,
+    /// The requested top-level output groups of build/run/test (N56,
+    /// `--output_groups`/`--run_validations`).
+    output: bazel_rs::output_group_info::OutputSelection,
     /// RunCommand.RunOptions (N23f, crate::run_command).
     run: bazel_rs::run_command::RunOptions,
     test: bazel_rs::test_command::TestOptions,
@@ -1268,6 +1278,7 @@ impl NativeOptions {
             credentials: Default::default(),
             remote: Default::default(),
             runfiles: bazel_rs::runfiles_tree::RunfilesOptions::default(),
+            output: bazel_rs::output_group_info::OutputSelection::default(),
             run: bazel_rs::run_command::RunOptions::default(),
             test: bazel_rs::test_command::TestOptions::default(),
             configuration: if command == "query" {
@@ -1409,6 +1420,44 @@ impl NativeOptions {
             true
         } else if let Some(value) = arg.strip_prefix("--jobs=").filter(|_| builds(command)) {
             self.jobs = Some(parse_jobs(value)?);
+            false
+        } else if builds(command)
+            && let Some(value) = bazel_rs::configuration::boolean_option(arg, "run_validations")
+                .or_else(|| {
+                    bazel_rs::configuration::boolean_option(arg, "experimental_run_validations")
+                })
+        {
+            // BuildRequestOptions.runValidationActions (BuildRequestOptions.
+            // java:178-190; experimental_run_validations is the old name).
+            self.output.run_validations = value?;
+            false
+        } else if builds(command)
+            && let Some(value) =
+                bazel_rs::configuration::boolean_option(arg, "experimental_use_validation_aspect")
+        {
+            // The ASPECT ValidationMode of OutputGroupInfo.determineOutputGroups
+            // (OutputGroupInfo.java:162-169, 246-250): validation outputs are
+            // promoted by the ValidateTarget aspect, which the native profile
+            // does not model (aspects are unsupported).
+            if value? {
+                return Err(format!(
+                    "unsupported option --experimental_use_validation_aspect{}; validation actions run through the _validation output group only (the ValidateTarget aspect is not modelled)",
+                    unit.option.origin_suffix()
+                ));
+            }
+            false
+        } else if builds(command) && arg == "--output_groups" {
+            // CommaSeparatedOptionListConverter with allowMultiple: repeated
+            // flags accumulate, empty segments drop out
+            // (BuildRequestOptions.java:160-177).
+            let value = next.ok_or("--output_groups requires a value")?;
+            self.output.parse_groups(value);
+            true
+        } else if let Some(value) = arg
+            .strip_prefix("--output_groups=")
+            .filter(|_| builds(command))
+        {
+            self.output.parse_groups(value);
             false
         } else if let Some(result) = builds(command).then(|| self.runfiles.parse(arg)).flatten() {
             result?;

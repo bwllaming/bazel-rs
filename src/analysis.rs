@@ -13,10 +13,10 @@ use starlark::eval::Evaluator;
 use starlark::values::structs::AllocStruct;
 use starlark::values::{FrozenHeapName, Heap, OwnedFrozenValue, Value};
 
-use crate::custom_rule::{AttrSpec, AttrValue};
+use crate::custom_rule::{AttrKind, AttrSpec, AttrValue};
 use crate::package::Rule;
 use crate::repository::RepositorySet;
-use crate::starlark_types::{File, alloc_file, alloc_target};
+use crate::starlark_types::{Depset, File, alloc_file, alloc_target};
 
 #[derive(Clone, Debug)]
 pub struct DependencyTarget {
@@ -169,6 +169,73 @@ pub(crate) fn attribute_dependency_key(label: &str, name: &str, spec: &AttrSpec)
             matches!(spec.declaration.cfg, crate::rule_declarations::Cfg::Exec(_)),
         )
     }
+}
+
+/// RuleConfiguredTargetBuilder.collectTransitiveValidationOutputGroups
+/// (:397-430): the `_validation` groups of every prerequisite reached
+/// through a label-class attribute of the rule class that is not an implicit
+/// dependency (`$`- and `_`-prefixed names), not a tool dependency (an
+/// exec/no-config transition, Attribute.isToolDependency :2119-2127 —
+/// `cfg = "exec"` Starlark attributes and the `package_metadata`
+/// NoConfigTransition alike) and not `skip_validations`. The framework's own
+/// edges (resolved toolchains, implicit test-runner attributes) are not
+/// attribute prerequisites and contribute nothing. Bazel iterates the rule
+/// class's attributes in declaration order; the schema's name order here.
+/// The `_`-prefix exclusion is the observed genuine-9.3 behavior of the
+/// paired receipt (tests/fixtures/validation_actions, phase A08).
+fn transitive_validation(
+    invocation: &crate::custom_rule::CustomInvocation,
+    dependencies: &BTreeMap<String, DependencyTarget>,
+) -> Vec<File> {
+    let mut files = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (name, spec) in &invocation.schema {
+        if name.starts_with('$')
+            || name.starts_with('_')
+            || spec.declaration.skip_validations
+            || matches!(spec.declaration.cfg, crate::rule_declarations::Cfg::Exec(_))
+        {
+            continue;
+        }
+        let Some(values) = invocation.attrs.get(name) else {
+            continue;
+        };
+        // Type.getLabelClass() == LabelClass.DEPENDENCY (BuildType): label,
+        // label_list, label_keyed_string_dict, string_keyed_label_dict and
+        // label_list_dict; outputs are not dependency attributes.
+        let labels: Vec<&str> = match (&spec.kind, values) {
+            (AttrKind::Label, AttrValue::Label(Some(label))) => vec![label.as_str()],
+            (AttrKind::LabelList, AttrValue::Labels(labels)) => {
+                labels.iter().map(String::as_str).collect()
+            }
+            (AttrKind::LabelKeyedStringDict, AttrValue::LabelKeyedStringDict(entries)) => {
+                entries.iter().map(|(label, _)| label.as_str()).collect()
+            }
+            (AttrKind::StringKeyedLabelDict, AttrValue::StringKeyedLabelDict(entries)) => {
+                entries.iter().map(|(_, label)| label.as_str()).collect()
+            }
+            (AttrKind::LabelListDict, AttrValue::LabelListDict(entries)) => entries
+                .iter()
+                .flat_map(|(_, labels)| labels.iter().map(String::as_str))
+                .collect(),
+            _ => continue,
+        };
+        for label in labels {
+            let Some(target) = dependencies.get(&attribute_dependency_key(label, name, spec))
+            else {
+                continue;
+            };
+            let Some(info) = target.providers.get(crate::output_group_info::PROVIDER_ID) else {
+                continue;
+            };
+            for file in crate::output_group_info::validation_files(info.value()) {
+                if seen.insert(file.clone()) {
+                    files.push(file);
+                }
+            }
+        }
+    }
+    files
 }
 
 /// Whether `spec`'s `cfg` is a Starlark (non analysis-test) transition.
@@ -1727,16 +1794,24 @@ fn analyze_inner(
                     crate::output_group_info::VALIDATION,
                     transitive,
                 );
-            }
-            if let Some((_, validation)) = groups
-                .iter()
-                .find(|(name, _)| name == crate::output_group_info::VALIDATION)
-                && !validation.node.empty
-            {
-                bail!(
-                    "output group '{}' (validation actions) is not supported by the native profile",
-                    crate::output_group_info::VALIDATION
-                );
+            } else {
+                // RuleConfiguredTargetBuilder.propagateValidationActionOutputGroup
+                // (:294-296): an analysis test propagates nothing; those rules
+                // never reach the native analysis (rule(analysis_test=True) is
+                // an unanalyzed declared feature). Every other rule collects
+                // its dependencies' `_validation` groups
+                // (collectTransitiveValidationOutputGroups, :397-430): through
+                // label attributes that are not implicit (`$`-prefixed), not
+                // tool dependencies (`cfg = "exec"`/no-config transitions) and
+                // not `skip_validations`, merged into the target's own group.
+                let collected = transitive_validation(invocation, dependencies);
+                if !collected.is_empty() {
+                    crate::output_group_info::add_group(
+                        &mut groups,
+                        crate::output_group_info::VALIDATION,
+                        Depset::from_files(collected),
+                    );
+                }
             }
             let merged = crate::output_group_info::merged(
                 groups,

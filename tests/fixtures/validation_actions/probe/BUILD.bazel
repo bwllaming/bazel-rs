@@ -1,0 +1,5 @@
+load(":defs.bzl", "make_probe")
+
+make_probe(
+    name = "probe",
+)

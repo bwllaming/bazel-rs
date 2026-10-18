@@ -29,8 +29,15 @@ use crate::starlark_types::{Depset, File, Item, ItemType};
 pub(crate) const PROVIDER_ID: &str = crate::rule_declarations::OUTPUT_GROUP_INFO_ID;
 /// OutputGroupInfo.HIDDEN_TOP_LEVEL (:111-112).
 pub(crate) const HIDDEN_TOP_LEVEL: &str = "_hidden_top_level_INTERNAL_";
-/// OutputGroupInfo.VALIDATION (:126).
+/// OutputGroupInfo.VALIDATION (:126): the output group of validation
+/// actions' outputs, built even when `--output_groups` overrides the
+/// defaults and unaffected by its `-` subtraction; disabled only by
+/// `--run_validations=false`.
 pub(crate) const VALIDATION: &str = "_validation";
+/// OutputGroupInfo.TEMP_FILES (:140-141).
+pub(crate) const TEMP_FILES: &str = "temp_files_INTERNAL_";
+/// OutputGroupInfo.DEFAULT (:144).
+pub(crate) const DEFAULT: &str = "default";
 
 static NEXT_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -189,22 +196,142 @@ pub(crate) fn add_group(groups: &mut Vec<(String, Depset)>, name: &str, files: D
     }
 }
 
-/// The frozen framework OutputGroupInfo of a native rule target (only the
-/// HIDDEN_TOP_LEVEL group), for its provider map.
+/// The frozen framework OutputGroupInfo of a native rule target: the
+/// HIDDEN_TOP_LEVEL group of its default runfiles' artifacts plus the
+/// `_validation` group RuleConfiguredTargetBuilder propagated from its
+/// dependencies (propagateTransitiveValidationOutputGroups, :175-176,
+/// 366-388), for its provider map.
 pub(crate) fn freeze(
     hidden_top_level: Vec<File>,
+    validation: Vec<File>,
 ) -> Result<starlark::values::OwnedFrozenValue, String> {
     starlark::environment::Module::with_temp_heap(|module| {
-        module.set(
-            "__info",
-            module.heap().alloc(merged(Vec::new(), hidden_top_level)),
-        );
+        let mut groups = Vec::new();
+        if !validation.is_empty() {
+            groups.push((VALIDATION.to_owned(), Depset::from_files(validation)));
+        }
+        let info = merged(groups, hidden_top_level);
+        module.set("__info", module.heap().alloc(info));
         module
             .freeze()
             .map_err(|error| format!("cannot freeze OutputGroupInfo: {error:?}"))?
             .get("__info")
             .map_err(|error| error.to_string())
     })
+}
+
+/// The frozen OutputGroupInfo of an output-file target
+/// (OutputFileConfiguredTarget.java:109-118): a single `_validation` group
+/// with the generating rule's validation outputs, present only when they are
+/// non-empty (the provider is absent otherwise).
+pub(crate) fn freeze_validation(
+    validation: Vec<File>,
+) -> Result<starlark::values::OwnedFrozenValue, String> {
+    starlark::environment::Module::with_temp_heap(|module| {
+        let info = OutputGroupInfo {
+            id: NEXT_INSTANCE_ID.fetch_add(1, Ordering::Relaxed),
+            groups: vec![(VALIDATION.to_owned(), Depset::from_files(validation))],
+        };
+        module.set("__info", module.heap().alloc(info));
+        module
+            .freeze()
+            .map_err(|error| format!("cannot freeze OutputGroupInfo: {error:?}"))?
+            .get("__info")
+            .map_err(|error| error.to_string())
+    })
+}
+
+/// The Files of an instance's `_validation` group (empty when the instance
+/// has none).
+pub(crate) fn validation_files(value: Value<'_>) -> Vec<File> {
+    groups(value)
+        .and_then(|groups| {
+            groups
+                .iter()
+                .find(|(name, _)| name == VALIDATION)
+                .map(|(_, depset)| depset_files(depset))
+        })
+        .unwrap_or_default()
+}
+
+/// The output-group half of a build request's TopLevelArtifactContext
+/// (BuildRequest.getTopLevelArtifactContext, buildtool/BuildRequest.java:
+/// 412-421): the `--output_groups` tokens (each with its `+`/`-` prefix
+/// kept, repeated flags and commas concatenated in order) and whether
+/// validation actions run (`--run_validations`, BuildRequestOptions.java:
+/// 178-190).
+#[derive(Clone, Debug)]
+pub struct OutputSelection {
+    pub groups: Vec<String>,
+    pub run_validations: bool,
+}
+
+impl Default for OutputSelection {
+    fn default() -> Self {
+        Self {
+            groups: Vec::new(),
+            run_validations: true,
+        }
+    }
+}
+
+impl OutputSelection {
+    /// One `--output_groups=VALUE` occurrence: CommaSeparatedOptionListConverter
+    /// (empty segments drop out) with allowMultiple's accumulation.
+    pub fn parse_groups(&mut self, value: &str) {
+        self.groups.extend(
+            value
+                .split(',')
+                .filter(|token| !token.is_empty())
+                .map(str::to_owned),
+        );
+    }
+}
+
+/// OutputGroupInfo.determineOutputGroups (:207-243) with
+/// DEFAULT_GROUPS (:146-147): the `--output_groups` tokens (each optionally
+/// `+`/`-` prefixed; an unprefixed token overrides the default set), the
+/// `_validation` group added whenever validation actions run (`--run_validations`,
+/// the only way to disable it; `-_validation` subtracts nothing), and the
+/// `default` group kept for a command that runs tests (BuildRequest.
+/// getTopLevelArtifactContext's shouldRunTests).
+pub(crate) fn determine_output_groups(
+    output_groups: &[String],
+    run_validations: bool,
+    should_run_tests: bool,
+) -> std::collections::BTreeSet<String> {
+    let mut current = std::collections::BTreeSet::new();
+    // If all of the requested output groups start with "+" or "-", then
+    // these are added or subtracted to the set of default output groups;
+    // otherwise the requested groups override the default set.
+    let add_default_output_groups = output_groups
+        .iter()
+        .all(|group| group.starts_with('+') || group.starts_with('-'));
+    if add_default_output_groups {
+        current.insert(DEFAULT.to_owned());
+        current.insert(TEMP_FILES.to_owned());
+        current.insert(HIDDEN_TOP_LEVEL.to_owned());
+    }
+    for group in output_groups {
+        if let Some(name) = group.strip_prefix('+') {
+            current.insert(name.to_owned());
+        } else if let Some(name) = group.strip_prefix('-') {
+            current.remove(name);
+        } else {
+            current.insert(group.clone());
+        }
+    }
+    // Add the validation output group regardless of the additions and
+    // subtractions above (the OUTPUT_GROUP ValidationMode of --run_validations;
+    // the ASPECT mode of --experimental_use_validation_aspect is rejected by
+    // the command line).
+    if run_validations {
+        current.insert(VALIDATION.to_owned());
+    }
+    if should_run_tests {
+        current.insert(DEFAULT.to_owned());
+    }
+    current
 }
 
 impl OutputGroupInfo {

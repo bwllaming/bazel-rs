@@ -36,6 +36,10 @@ impl Workspace {
     }
 
     fn build(&self, targets: &[&str]) -> Output {
+        self.build_with(&[], targets)
+    }
+
+    fn build_with(&self, flags: &[&str], targets: &[&str]) -> Output {
         Command::new("timeout")
             .args(["--kill-after=5s", "120s", env!("CARGO_BIN_EXE_bazel-rs")])
             .arg("--ignore_all_rc_files")
@@ -44,15 +48,46 @@ impl Workspace {
                 self.path().join("private-cache").display()
             ))
             .arg("build")
+            .args(flags)
             .args(targets)
             .current_dir(self.path())
             .output()
             .unwrap()
     }
+
+    fn read(&self, target: &str) -> Option<String> {
+        // Executed outputs materialize under the action cache
+        // (<cache>/actions/<id>/outputs/bazel-out/<config>/bin/...).
+        let mut matches = Vec::new();
+        let actions = self.path().join("private-cache/actions");
+        let Ok(entries) = std::fs::read_dir(actions) else {
+            return None;
+        };
+        for entry in entries.flatten() {
+            let bin = entry
+                .path()
+                .join("outputs/bazel-out/k8-fastbuild/bin")
+                .join(target);
+            if bin.is_file() {
+                matches.push(bin);
+            }
+        }
+        matches.sort();
+        matches
+            .iter()
+            .rev()
+            .map(std::fs::read_to_string)
+            .next()?
+            .ok()
+    }
 }
 
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+fn stdout(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 fn ok(output: &Output) -> String {
@@ -124,11 +159,147 @@ fn private_transitive_validation_group_is_restricted() {
             "//:defs.bzl cannot access the _transitive_validation private API",
         );
     }
-    rejected(
-        &ws.build(&[":validation"]),
-        "output group '_validation' (validation actions) is not supported by the native profile",
-    );
+    // The `_validation` group is a rule's ordinary output group now: the
+    // validation action runs when the target builds and the output is not
+    // reported (a `_`-prefixed group is never important,
+    // TopLevelArtifactHelper.java:228-236).
+    let text = ok(&ws.build(&[":validation"]));
+    assert!(!text.contains("validation.txt"), "{text}");
+    assert_eq!(ws.read("validation.txt").as_deref(), Some("x"));
     ok(&ws.build(&[":validation_empty"]));
+}
+
+const PROPAGATION: &str = r#"
+def _val(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".validated")
+    ctx.actions.write(out, "validated:" + ctx.label.name)
+    return [
+        DefaultInfo(files = depset([out])),
+        OutputGroupInfo(_validation = depset([out])),
+    ]
+
+val = rule(implementation = _val)
+
+def _middle(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".out")
+    ctx.actions.write(out, "middle")
+    validation = []
+    if ctx.attr.own:
+        own = ctx.actions.declare_file(ctx.label.name + ".mine")
+        ctx.actions.write(own, "mine")
+        validation = [own]
+    return [
+        DefaultInfo(files = depset([out])),
+        OutputGroupInfo(_validation = depset(validation)),
+    ]
+
+middle = rule(
+    implementation = _middle,
+    attrs = {
+        "direct": attr.label(),
+        "skipped": attr.label(skip_validations = True),
+        "tool": attr.label(cfg = "exec"),
+        "own": attr.bool(),
+    },
+)
+"#;
+
+#[test]
+fn validation_outputs_propagate_and_run_with_the_dependent() {
+    let build = "load(':defs.bzl', 'val', 'middle')\n\
+         val(name = 'leaf')\n\
+         middle(name = 'mid', direct = ':leaf', own = True)\n\
+         middle(name = 'top', direct = ':mid')\n\
+         filegroup(name = 'fg', srcs = [':top'])\n\
+         genrule(name = 'gen', srcs = [':top'], outs = ['gen.txt'], cmd = 'echo > $@')\n";
+    let ws = Workspace::new(PROPAGATION, build);
+    // Starlark collection: `top` builds its own output and runs every
+    // `_validation` output of `mid` (its own and `leaf`'s, already collected
+    // at `mid`); a hidden group is never reported.
+    let text = ok(&ws.build(&[":top"]));
+    assert!(!text.contains("validated"), "{text}");
+    assert_eq!(ws.read("leaf.validated").as_deref(), Some("validated:leaf"));
+    assert_eq!(ws.read("mid.mine").as_deref(), Some("mine"));
+    // Native rules collect too (RuleConfiguredTargetBuilder applies to every
+    // rule): a filegroup and a genrule run their dependency's validations.
+    ok(&ws.build(&[":fg", ":gen"]));
+    assert_eq!(ws.read("top.out").as_deref(), Some("middle"));
+    // --run_validations=false (BuildRequestOptions.java:178-190) is the only
+    // way to keep validation actions from running.
+    let ws_off = Workspace::new(PROPAGATION, build);
+    ok(&ws_off.build_with(&["--run_validations=false"], &[":top"]));
+    assert!(ws_off.read("leaf.validated").is_none());
+    // `-_validation` does not disable them: the group is re-added after the
+    // subtractions (OutputGroupInfo.determineOutputGroups, :236-242).
+    let ws_minus = Workspace::new(PROPAGATION, build);
+    ok(&ws_minus.build_with(&["--output_groups=-_validation"], &[":top"]));
+    assert!(ws_minus.read("leaf.validated").is_some());
+}
+
+#[test]
+fn tool_dependencies_do_not_propagate_validation() {
+    let ws = Workspace::new(
+        PROPAGATION,
+        "load(':defs.bzl', 'val', 'middle')\n\
+         val(name = 'leaf')\n\
+         middle(name = 'tool_only', tool = ':leaf')\n",
+    );
+    // collectTransitiveValidationOutputGroups (:406-419) skips tool
+    // dependencies (`cfg = "exec"`, Attribute.isToolDependency). A
+    // skip_validations=True attribute never reaches the native analysis
+    // (an unanalyzed declared feature), so that half of the filter is
+    // fixture-verified only (tests/fixtures/validation_actions).
+    let text = ok(&ws.build_with(&["--experimental-builtin-modules"], &[":tool_only"]));
+    assert!(!text.contains("validated"), "{text}");
+    assert!(ws.read("leaf.validated").is_none());
+}
+
+const OUTPUT_GROUPS: &str = r#"
+def _g(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".out")
+    ctx.actions.write(out, "default")
+    extra = ctx.actions.declare_file(ctx.label.name + ".extra")
+    ctx.actions.write(extra, "extra")
+    return [
+        DefaultInfo(files = depset([out])),
+        OutputGroupInfo(extra = depset([extra])),
+    ]
+
+g = rule(implementation = _g)
+"#;
+
+#[test]
+fn output_groups_flag_selects_and_reports_groups() {
+    let build = "load(':defs.bzl', 'g')\n\
+         g(name = 'g')\n";
+    // `--output_groups=+extra`: the default set plus `extra`, reported
+    // (an unprefixed group name is important).
+    let ws = Workspace::new(OUTPUT_GROUPS, build);
+    let text = stdout(&ws.build_with(&["--output_groups=+extra"], &[":g"]));
+    assert!(
+        text.contains("//:g\t") && text.contains("g.extra"),
+        "{text}"
+    );
+    assert_eq!(ws.read("g.out").as_deref(), Some("default"));
+    // `--output_groups=extra` overrides the default set: only `extra` is
+    // built and reported (determineOutputGroups :213-226).
+    let ws = Workspace::new(OUTPUT_GROUPS, build);
+    let text = stdout(&ws.build_with(&["--output_groups=extra"], &[":g"]));
+    assert!(text.contains("g.extra"), "{text}");
+    assert!(ws.read("g.out").is_none());
+    // A group the target does not have contributes no artifacts and no
+    // error (TopLevelArtifactHelper ignores empty groups, :221-224).
+    let ws = Workspace::new(OUTPUT_GROUPS, build);
+    let text = stdout(&ws.build_with(&["--output_groups=missing"], &[":g"]));
+    assert!(!text.contains("g.out"), "{text}");
+    // Repeated flags accumulate (allowMultiple); `+` tokens keep the
+    // default set (a mixed list with an unprefixed token would override it).
+    let ws = Workspace::new(OUTPUT_GROUPS, build);
+    ok(&ws.build_with(
+        &["--output_groups=+extra", "--output_groups=+missing"],
+        &[":g"],
+    ));
+    assert_eq!(ws.read("g.out").as_deref(), Some("default"));
 }
 
 const CLOSURE: &str = r#"

@@ -1,0 +1,74 @@
+load(":defs.bzl", "dict_collector", "g", "middle", "plain", "private_collector", "skipper", "transitive", "val", "val_fail", "val_out", "via_file")
+
+val(
+    name = "leaf",
+)
+
+val_out(
+    name = "vout",
+)
+
+middle(
+    name = "mid",
+    direct = ":leaf",
+    own = True,
+)
+
+middle(
+    name = "top",
+    direct = ":mid",
+)
+
+middle(
+    name = "tool_only",
+    tool = ":leaf",
+)
+
+private_collector(
+    name = "private_dep",
+    own = True,
+)
+
+dict_collector(
+    name = "dict_dep",
+    mapping = {"k": [":leaf"]},
+    own = True,
+)
+
+g(
+    name = "g",
+)
+
+plain(
+    name = "plain",
+)
+
+via_file(
+    name = "file_consumer",
+    dep = ":vout.out",
+)
+
+filegroup(
+    name = "fg",
+    srcs = [":top"],
+)
+
+genrule(
+    name = "gen",
+    srcs = [":top"],
+    outs = ["gen.txt"],
+    cmd = "echo > $@",
+)
+
+val_fail(
+    name = "failing",
+)
+
+transitive(
+    name = "transitive",
+)
+
+skipper(
+    name = "skipped",
+    skipped = ":leaf",
+)
