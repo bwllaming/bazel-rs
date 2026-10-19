@@ -30,7 +30,7 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(tuple(p['id'] for p in self.receipt['phases']), suite.PHASE_IDS)
         self.assertEqual(suite.counts(self.receipt), suite.expected_counts())
         self.assertEqual(suite.expected_counts(),
-                         {'exact': 16, 'native_unsupported': 2})
+                         {'exact': 17, 'native_unsupported': 1})
 
     def test_exact_phases_agree_on_rc_bin_and_reported_outputs(self):
         for phase in self.receipt['phases']:
@@ -78,8 +78,8 @@ class ReceiptTests(unittest.TestCase):
                             for k in bins['A12-native-rule-propagation']))
         self.assertEqual(bins['A13-failing-validation-action'], {})
         self.assertEqual(bins['A14-validation-transitive-private'], {})
-        # Genuine aspect validation outputs run with the target; genuine
-        # skip_validations needs Bazel's allowlist (both fail).
+        # Aspect validation outputs run with the target (A16, exact since
+        # N58); genuine skip_validations needs Bazel's allowlist (A15).
         aspect = bins['A16-aspect-validation']
         self.assertTrue(any(k.endswith('plain.aspect_validated') for k in aspect))
         self.assertEqual(bins['A15-skip-validations'], {})

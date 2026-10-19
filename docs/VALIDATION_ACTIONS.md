@@ -98,8 +98,10 @@ repeatable) with `OutputGroupInfo.determineOutputGroups` (:207-243):
   subtracted**: `--output_groups=-_validation` still builds them. The only
   switch is `--run_validations=false` (:178-190).
 - `--experimental_use_validation_aspect=true` (the ASPECT mode that promotes
-  `_validation` through the ValidateTarget aspect) fails explicitly: aspects
-  are not modeled by the native profile.
+  `_validation` through the ValidateTarget aspect) is accepted as a no-op:
+  since N58 the native profile analyzes aspects, and `_validation` is always
+  collected rule-side, so the mode changes nothing (`//:plain` builds
+  identically with the flag on).
 
 Groups whose name starts with `_` (validation, hidden top level) are built
 but never reported as the build's outputs
@@ -113,12 +115,15 @@ explicitly.
 
 ## Native profile boundaries
 
-- Aspects (`--aspects`, phase A16) and `skip_validations=True` attributes
-  (A15) are explicit native-unsupported boundaries; the receipt records
-  genuine behavior for both (an aspect's `_validation` outputs run with the
-  target it is applied to).
+- `skip_validations=True` attributes (A15) are the one explicit
+  native-unsupported boundary; the receipt records genuine behavior for it
+  (genuine Bazel gates the feature behind its own allowlist).
+- Aspects (`--aspects`, phase A16) are exact since N58 analyzes them: an
+  aspect's `_validation` outputs run with the target it is applied to
+  (`tests/validation_actions.rs::aspect_validation_outputs_run_with_the_target`;
+  native column re-recorded in place by i17).
 - Everything else in the receipt is exact: exit codes, materialized
-  bazel-bin trees and reported output sets of 16 phases match genuine Bazel
+  bazel-bin trees and reported output sets of 17 phases match genuine Bazel
   9.3.0, and the post-refinement row P01 matches the collection order.
 - A LATE_BOUND `_x` attribute (native `:x`) propagating its prerequisite's
   validation outputs is source-derived (AttributeValueSource) and unit
@@ -132,7 +137,7 @@ explicitly.
 `d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8` vs the
 native release binary) produced once by
 `artifacts/validation_actions-capture.py` plus one determinism rerun
-(byte-identical modulo per-command timings); 18 phases: 16 exact, 2
+(byte-identical modulo per-command timings); 18 phases: 17 exact, 1
 native-unsupported. Guards: `tests/validation_actions.rs` (executable
 native columns), `tests/test_validate_validation_actions.py` (hermetic
 receipt structure/pins/classifications) and

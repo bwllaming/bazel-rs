@@ -8,8 +8,8 @@ it is immutable evidence, never a runtime dependency of the build. This
 validator checks its structure and classification contract hermetically;
 `--native BINARY` replays the native phases in a private scratch and asserts
 they still match the receipt's native columns (rc, materialized bazel-bin
-tree, reported outputs). Never a full parity claim: 2 phases are recorded
-native-unsupported boundaries (docs/VALIDATION_ACTIONS.md).
+tree, reported outputs). Never a full parity claim: 1 phase is recorded
+native-unsupported boundary (docs/VALIDATION_ACTIONS.md).
 """
 import argparse
 import hashlib
@@ -40,7 +40,7 @@ PHASE_IDS = (
     'A15-skip-validations', 'A16-aspect-validation',
     'A17-validationprovider-absent', 'A18-query-labels',
 )
-NATIVE_UNSUPPORTED = ('A15-skip-validations', 'A16-aspect-validation')
+NATIVE_UNSUPPORTED = ('A15-skip-validations',)
 CLASSIFICATIONS = ('exact', 'documented_difference', 'native_unsupported', 'mismatch')
 
 
